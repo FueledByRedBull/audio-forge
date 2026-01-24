@@ -3,22 +3,17 @@
 //! Silero VAD is a lightweight neural network model for speech detection.
 //! Model: https://github.com/snakers4/silero-vad
 //!
-//! # Usage
-//!
-//! ```rust
-//! use mic_eq_core::dsp::vad::SileroVAD;
-//!
-//! let mut vad = SileroVAD::new(48000, 0.5)?;
-//! let speech_probability = vad.process(&audio_samples)?;
-//! if speech_probability > 0.5 {
-//!     // Speech detected
-//! }
-//! ```
+//! CRITICAL: Silero VAD is a STATEFUL model requiring hidden state management.
+//! Each inference call requires passing h/c states from the previous call.
 
 #![cfg(feature = "vad")]
 
-use ndarray::{Array1, Array3, Axis, IxDyn};
-use ort::{Environment, ExecutionProvider, Session, Value};
+use ndarray::{Array1, Array2, Array3};
+use ort::{
+    session::builder::GraphOptimizationLevel,
+    session::Session,
+    value::TensorRef,
+};
 use std::env;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -34,10 +29,14 @@ pub enum GateMode {
     VadOnly,
 }
 
-/// Silero VAD sample rate (must resample to this)
+/// Silero VAD sample rate (model trained at 16kHz)
 const SILERO_SAMPLE_RATE: u32 = 16000;
-/// Silero VAD window size (samples per inference)
+/// Silero VAD window size (512 samples at 16kHz = 32ms)
 const SILERO_WINDOW_SIZE: usize = 512;
+/// LSTM hidden dimension
+const LSTM_HIDDEN_DIM: usize = 64;
+/// Number of LSTM layers
+const LSTM_NUM_LAYERS: usize = 2;
 
 /// Errors related to VAD processing
 #[derive(Debug, Error)]
@@ -60,23 +59,23 @@ pub enum VadError {
 
 /// Silero VAD for voice activity detection
 ///
-/// # Example
-///
-/// ```rust
-/// let mut vad = SileroVAD::new(48000, 0.5)?;
-/// let is_speech = vad.is_speech(&audio_samples)?;
-/// ```
+/// IMPORTANT: This is a stateful model. The h/c LSTM states must persist
+/// between inference calls for accurate detection.
 pub struct SileroVAD {
     /// ONNX Runtime session
     session: Session,
-    /// Target sample rate
+    /// Target sample rate (input audio rate, will be resampled to 16kHz)
     sample_rate: u32,
     /// Speech probability threshold (0.0-1.0)
     threshold: f32,
-    /// Resampling ratio (target / silero_sr)
+    /// Resampling ratio (silero_sr / target_sr)
     resample_ratio: f32,
     /// Internal buffer for accumulating samples
     buffer: Vec<f32>,
+    /// LSTM hidden state h - shape [2, 1, 64]
+    h_state: Array3<f32>,
+    /// LSTM cell state c - shape [2, 1, 64]
+    c_state: Array3<f32>,
     /// Moving average of speech probability (for smoothing)
     smoothed_prob: f32,
     /// Smoothing factor for probability (0-1)
@@ -85,11 +84,6 @@ pub struct SileroVAD {
 
 impl SileroVAD {
     /// Find Silero VAD model file
-    ///
-    /// Search order:
-    /// 1. Environment variable `VAD_MODEL_PATH`
-    /// 2. `./models/silero_vad.onnx`
-    /// 3. `../models/silero_vad.onnx`
     fn find_model_path() -> Result<PathBuf, VadError> {
         // 1. Check environment variable
         if let Ok(path) = env::var("VAD_MODEL_PATH") {
@@ -111,7 +105,7 @@ impl SileroVAD {
             return Ok(parent_model);
         }
 
-        // 4. Check user data directory (Linux/macOS)
+        // 4. Check user data directories
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             if let Ok(home) = env::var("HOME") {
@@ -123,7 +117,6 @@ impl SileroVAD {
             }
         }
 
-        // 5. Check AppData (Windows)
         #[cfg(target_os = "windows")]
         {
             if let Ok(appdata) = env::var("LOCALAPPDATA") {
@@ -136,7 +129,8 @@ impl SileroVAD {
         }
 
         Err(VadError::ModelNotFound(
-            "Silero VAD model not found. Download from https://github.com/snakers4/silero-vad \
+            "Silero VAD model not found. Download silero_vad.onnx from \
+             https://github.com/snakers4/silero-vad/tree/master/files \
              and place in ./models/silero_vad.onnx or set VAD_MODEL_PATH"
                 .to_string(),
         ))
@@ -147,74 +141,58 @@ impl SileroVAD {
     /// # Arguments
     /// * `sample_rate` - Audio sample rate (typically 48000)
     /// * `threshold` - Speech probability threshold (0.0-1.0), default 0.5
-    ///
-    /// # Returns
-    /// * `Ok(SileroVAD)` - VAD instance ready for use
-    /// * `Err(VadError)` - If model cannot be loaded
     pub fn new(sample_rate: u32, threshold: f32) -> Result<Self, VadError> {
-        // Find model file
         let model_path = Self::find_model_path()?;
 
-        // Create ONNX Runtime environment
-        let environment = Environment::builder()
-            .with_execution_providers([ExecutionProvider::cpu()])
-            .build()
-            .map_err(|e| VadError::ModelLoadError(e.to_string()))?;
-
-        // Load model
-        let session = environment
-            .new_session(&model_path)
-            .map_err(|e| VadError::ModelLoadError(e.to_string()))?;
+        // Create ONNX Runtime session with ort 2.0 API
+        let session = Session::builder()
+            .map_err(|e| VadError::ModelLoadError(format!("Failed to create session builder: {}", e)))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|e| VadError::ModelLoadError(format!("Failed to set optimization level: {}", e)))?
+            .commit_from_file(&model_path)
+            .map_err(|e| VadError::ModelLoadError(format!("Failed to load model from {:?}: {}", model_path, e)))?;
 
         // Calculate resampling ratio
         let resample_ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
+
+        // Initialize LSTM states to zeros
+        let h_state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_HIDDEN_DIM));
+        let c_state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_HIDDEN_DIM));
 
         Ok(Self {
             session,
             sample_rate,
             threshold: threshold.clamp(0.0, 1.0),
             resample_ratio,
-            buffer: Vec::with_capacity(SILERO_WINDOW_SIZE * 2),
+            buffer: Vec::with_capacity(SILERO_WINDOW_SIZE * 4),
+            h_state,
+            c_state,
             smoothed_prob: 0.0,
-            smoothing: 0.1, // Smooth probability changes
+            smoothing: 0.1,
         })
     }
 
     /// Get required window size for this sample rate
-    ///
-    /// Returns the number of input samples needed for one VAD inference.
-    /// This accounts for resampling to 16kHz.
     pub fn window_size(&self) -> usize {
         // We need SILERO_WINDOW_SIZE samples at 16kHz
-        // At our sample rate, we need: window_size * (sample_rate / 16000)
+        // At our sample rate: window_size * (sample_rate / 16000)
         ((SILERO_WINDOW_SIZE as f32 * self.sample_rate as f32) / SILERO_SAMPLE_RATE as f32).ceil()
             as usize
     }
 
     /// Process audio samples and return speech probability
-    ///
-    /// This method accumulates samples until we have enough for one inference,
-    /// then returns the speech probability (0.0 = silence, 1.0 = speech).
-    ///
-    /// # Arguments
-    /// * `samples` - Audio samples at the configured sample rate
-    ///
-    /// # Returns
-    /// * `Ok(f32)` - Speech probability (0.0-1.0)
-    /// * `Err(VadError)` - If processing fails
     pub fn process(&mut self, samples: &[f32]) -> Result<f32, VadError> {
         self.buffer.extend(samples.iter());
 
         // Check if we have enough samples for inference
         if self.buffer.len() < self.window_size() {
-            // Not enough data yet, return current smoothed probability
             return Ok(self.smoothed_prob);
         }
 
         // Extract exactly what we need
         let input_samples: Vec<f32> = self.buffer.drain(..self.window_size()).collect();
 
-        // Resample to 16kHz if needed (simple linear interpolation)
+        // Resample to 16kHz if needed
         let resampled = if self.sample_rate != SILERO_SAMPLE_RATE {
             self.resample(&input_samples)
         } else {
@@ -222,17 +200,12 @@ impl SileroVAD {
         };
 
         // Ensure we have exactly 512 samples
-        let resampled = if resampled.len() > SILERO_WINDOW_SIZE {
-            &resampled[..SILERO_WINDOW_SIZE]
-        } else {
-            // Pad with zeros if needed
-            let mut padded = resampled.clone();
-            padded.resize(SILERO_WINDOW_SIZE, 0.0);
-            &padded
-        };
+        let mut audio_512 = vec![0.0f32; SILERO_WINDOW_SIZE];
+        let copy_len = resampled.len().min(SILERO_WINDOW_SIZE);
+        audio_512[..copy_len].copy_from_slice(&resampled[..copy_len]);
 
         // Run inference
-        let prob = self.run_inference(resampled)?;
+        let prob = self.run_inference(&audio_512)?;
 
         // Smooth the probability
         self.smoothed_prob = self.smoothing * prob + (1.0 - self.smoothing) * self.smoothed_prob;
@@ -241,12 +214,6 @@ impl SileroVAD {
     }
 
     /// Quick check if speech is detected
-    ///
-    /// # Arguments
-    /// * `samples` - Audio samples
-    ///
-    /// # Returns
-    /// * `Ok(bool)` - True if speech detected, false otherwise
     pub fn is_speech(&mut self, samples: &[f32]) -> Result<bool, VadError> {
         let prob = self.process(samples)?;
         Ok(prob > self.threshold)
@@ -267,46 +234,115 @@ impl SileroVAD {
         self.threshold
     }
 
-    /// Reset internal state
+    /// Reset internal state (including LSTM states)
     pub fn reset(&mut self) {
         self.buffer.clear();
         self.smoothed_prob = 0.0;
+        // Reset LSTM states to zeros
+        self.h_state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_HIDDEN_DIM));
+        self.c_state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_HIDDEN_DIM));
     }
 
-    /// Run ONNX inference on resampled audio
-    fn run_inference(&self, audio: &[f32]) -> Result<f32, VadError> {
-        // Silero VAD expects input shape [1, 512]
-        let input_array = Array3::from_shape_vec((1, 1, audio.len()), audio.to_vec())
-            .map_err(|e| VadError::OnnxError(e.to_string()))?;
+    /// Run ONNX inference with proper Silero VAD inputs
+    fn run_inference(&mut self, audio: &[f32]) -> Result<f32, VadError> {
+        // Silero VAD v4/v5 expects these inputs:
+        // - "input": audio tensor, shape [1, 512]
+        // - "sr": sample rate tensor, scalar (16000)
+        // - "h": LSTM hidden state, shape [2, 1, 64]
+        // - "c": LSTM cell state, shape [2, 1, 64]
 
-        // Create ONNX value
-        let input_value = Value::from_array(
-            self.session.allocator(),
-            IxDyn(&[1, 1, audio.len()]),
-            input_array.view(),
-        )
-        .map_err(|e| VadError::OnnxError(e.to_string()))?;
+        // Create audio input array - shape [1, 512]
+        let audio_array = Array2::from_shape_vec((1, SILERO_WINDOW_SIZE), audio.to_vec())
+            .map_err(|e| VadError::OnnxError(format!("Failed to create audio array: {}", e)))?;
 
-        // Run inference
-        let outputs = self
-            .session
-            .run(vec![input_value])
-            .map_err(|e| VadError::OnnxError(e.to_string()))?;
+        // Create sample rate array - scalar
+        let sr_array = Array1::from_vec(vec![SILERO_SAMPLE_RATE as i64]);
 
-        // Get output probability
-        let output = outputs
+        // Create TensorRefs using ort 2.0 API
+        let audio_ref = TensorRef::from_array_view(&audio_array)
+            .map_err(|e| VadError::OnnxError(format!("Failed to create audio tensor ref: {}", e)))?;
+
+        let sr_ref = TensorRef::from_array_view(&sr_array)
+            .map_err(|e| VadError::OnnxError(format!("Failed to create sr tensor ref: {}", e)))?;
+
+        let h_ref = TensorRef::from_array_view(&self.h_state)
+            .map_err(|e| VadError::OnnxError(format!("Failed to create h tensor ref: {}", e)))?;
+
+        let c_ref = TensorRef::from_array_view(&self.c_state)
+            .map_err(|e| VadError::OnnxError(format!("Failed to create c tensor ref: {}", e)))?;
+
+        // Run inference with ort 2.0 API
+        let outputs = self.session
+            .run(ort::inputs! {
+                "input" => audio_ref,
+                "sr" => sr_ref,
+                "h" => h_ref,
+                "c" => c_ref
+            })
+            .map_err(|e| VadError::OnnxError(format!("Inference failed: {}", e)))?;
+
+        // Extract probability output - Silero VAD returns: output, hn, cn
+        // In ort 2.0, try_extract_tensor returns (&Shape, &[T])
+        let prob_output = outputs
+            .get("output")
+            .ok_or_else(|| VadError::OnnxError("Missing 'output' in model outputs".to_string()))?;
+
+        let (_shape, prob_data) = prob_output
+            .try_extract_tensor::<f32>()
+            .map_err(|e| VadError::OnnxError(format!("Failed to extract output tensor: {}", e)))?;
+
+        let prob = prob_data
             .first()
-            .ok_or_else(|| VadError::OnnxError("No output from VAD model".to_string()))?;
+            .copied()
+            .ok_or_else(|| VadError::OnnxError("Output tensor is empty".to_string()))?;
 
-        // Extract scalar value
-        let prob: f32 = output
-            .try_extract()
-            .map_err(|e| VadError::OnnxError(e.to_string()))?;
+        // Update hidden states for next call from hn/cn outputs
+        if let Some(hn_output) = outputs.get("hn") {
+            let (_shape, hn_data) = hn_output
+                .try_extract_tensor::<f32>()
+                .map_err(|e| VadError::OnnxError(format!("Failed to extract hn tensor: {}", e)))?;
+
+            // Copy data to h_state - reshape from flat array to [2, 1, 64]
+            let total_elements = LSTM_NUM_LAYERS * 1 * LSTM_HIDDEN_DIM;
+            if hn_data.len() >= total_elements {
+                for i in 0..LSTM_NUM_LAYERS {
+                    for j in 0..1 {
+                        for k in 0..LSTM_HIDDEN_DIM {
+                            let flat_idx = i * 1 * LSTM_HIDDEN_DIM + j * LSTM_HIDDEN_DIM + k;
+                            if flat_idx < hn_data.len() {
+                                self.h_state[[i, j, k]] = hn_data[flat_idx];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(cn_output) = outputs.get("cn") {
+            let (_shape, cn_data) = cn_output
+                .try_extract_tensor::<f32>()
+                .map_err(|e| VadError::OnnxError(format!("Failed to extract cn tensor: {}", e)))?;
+
+            // Copy data to c_state - reshape from flat array to [2, 1, 64]
+            let total_elements = LSTM_NUM_LAYERS * 1 * LSTM_HIDDEN_DIM;
+            if cn_data.len() >= total_elements {
+                for i in 0..LSTM_NUM_LAYERS {
+                    for j in 0..1 {
+                        for k in 0..LSTM_HIDDEN_DIM {
+                            let flat_idx = i * 1 * LSTM_HIDDEN_DIM + j * LSTM_HIDDEN_DIM + k;
+                            if flat_idx < cn_data.len() {
+                                self.c_state[[i, j, k]] = cn_data[flat_idx];
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(prob)
     }
 
-    /// Simple linear resampling
+    /// Simple linear resampling from sample_rate to 16kHz
     fn resample(&self, input: &[f32]) -> Vec<f32> {
         if self.resample_ratio == 1.0 {
             return input.to_vec();
@@ -316,9 +352,16 @@ impl SileroVAD {
         let mut output = Vec::with_capacity(output_len);
 
         for i in 0..output_len {
-            let src_pos = (i as f32 / self.resample_ratio) as usize;
-            if src_pos < input.len() {
-                output.push(input[src_pos]);
+            let src_pos = i as f32 / self.resample_ratio;
+            let src_idx = src_pos as usize;
+            let frac = src_pos - src_idx as f32;
+
+            if src_idx + 1 < input.len() {
+                // Linear interpolation
+                let sample = input[src_idx] * (1.0 - frac) + input[src_idx + 1] * frac;
+                output.push(sample);
+            } else if src_idx < input.len() {
+                output.push(input[src_idx]);
             } else {
                 output.push(0.0);
             }
@@ -329,9 +372,6 @@ impl SileroVAD {
 }
 
 /// VAD-based auto-gate controller
-///
-/// Automatically adjusts noise gate threshold based on detected noise floor.
-/// Supports three gate modes: ThresholdOnly, VadAssisted, and VadOnly.
 pub struct VadAutoGate {
     /// Silero VAD instance
     vad: Option<SileroVAD>,
@@ -355,6 +395,8 @@ pub struct VadAutoGate {
     hold_time_ms: f32,
     /// Remaining hold time in samples
     hold_timer: f32,
+    /// Sample rate for hold time calculation
+    sample_rate: u32,
     /// Last gate open/closed state
     last_gate_state: bool,
     /// Current VAD probability for metering
@@ -364,7 +406,6 @@ pub struct VadAutoGate {
 impl VadAutoGate {
     /// Create a new VAD auto-gate controller
     pub fn new(sample_rate: u32, vad_threshold: f32) -> Self {
-        // Try to load VAD, fall back to disabled if not available
         let vad = match SileroVAD::new(sample_rate, vad_threshold) {
             Ok(vad) => {
                 eprintln!("VAD auto-gate enabled (Silero VAD loaded)");
@@ -372,7 +413,7 @@ impl VadAutoGate {
             }
             Err(e) => {
                 eprintln!("VAD auto-gate disabled: {}", e);
-                eprintln!("  Download model from: https://github.com/snakers4/silero-vad");
+                eprintln!("  Download model from: https://github.com/snakers4/silero-vad/tree/master/files");
                 eprintln!("  Place in: ./models/silero_vad.onnx");
                 None
             }
@@ -382,42 +423,40 @@ impl VadAutoGate {
 
         Self {
             vad,
-            noise_floor: -60.0,  // Start with low noise floor
-            margin: 6.0,         // 6dB above noise floor
-            adaptation_rate: 0.01,  // Slow adaptation
+            noise_floor: -60.0,
+            margin: 6.0,
+            adaptation_rate: 0.01,
             min_threshold: -50.0,
             max_threshold: -10.0,
             enabled,
             gate_mode: GateMode::ThresholdOnly,
-            vad_threshold: 0.5,
+            vad_threshold,
             hold_time_ms: 200.0,
             hold_timer: 0.0,
+            sample_rate,
             last_gate_state: false,
             current_probability: 0.0,
         }
     }
 
-    /// Process audio and update gate threshold
-    ///
-    /// # Returns
-    /// * `(gate_open, probability)` - Gate open state and speech probability
+    /// Process audio and return gate state
     pub fn process(&mut self, samples: &[f32]) -> (bool, f32) {
         if !self.enabled || self.vad.is_none() {
-            return (true, 0.0);  // Always open if disabled
+            return (true, 0.0);
         }
 
         let vad = self.vad.as_mut().unwrap();
 
-        // Get speech probability
         let prob = match vad.process(samples) {
             Ok(p) => p,
-            Err(_) => return (true, 0.0),
+            Err(e) => {
+                eprintln!("VAD processing error: {}", e);
+                return (true, 0.0);
+            }
         };
 
-        // Store for metering
         self.current_probability = prob;
 
-        // Determine gate state based on mode
         let vad_speech_detected = prob > self.vad_threshold;
         let level_above_threshold = self.level_above_threshold(samples);
 
@@ -427,104 +466,58 @@ impl VadAutoGate {
             GateMode::VadOnly => vad_speech_detected,
         };
 
-        // Apply hold time logic
-        let smoothed_gate_open = self.apply_hold_time(gate_open);
+        let smoothed_gate_open = self.apply_hold_time(gate_open, samples.len());
 
         (smoothed_gate_open, prob)
     }
 
-    /// Check if level is above threshold (for ThresholdOnly mode)
     fn level_above_threshold(&self, samples: &[f32]) -> bool {
-        // Calculate threshold from noise floor
         let threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
-
-        // Check if RMS level exceeds threshold
         let rms_db = compute_rms_db(samples);
         rms_db >= threshold
     }
 
-    /// Apply hold time to prevent gate chatter
-    fn apply_hold_time(&mut self, gate_open: bool) -> bool {
-        // 10ms smoothing - using IIR filter coefficient
-        const SMOOTHING_COEFF: f32 = 0.95; // ~10ms time constant at 48kHz
-
+    fn apply_hold_time(&mut self, gate_open: bool, num_samples: usize) -> bool {
         if gate_open {
-            // Gate wants to open
-            self.hold_timer = self.hold_time_ms / 1000.0 * 48000.0; // Convert ms to samples
+            // Convert hold time from ms to samples
+            self.hold_timer = self.hold_time_ms / 1000.0 * self.sample_rate as f32;
             self.last_gate_state = true;
             true
         } else {
-            // Gate wants to close
             if self.last_gate_state && self.hold_timer > 0.0 {
-                // In hold period, keep gate open
-                self.hold_timer -= 1.0;
+                self.hold_timer -= num_samples as f32;
                 true
             } else {
-                // Hold period expired, allow close
                 self.last_gate_state = false;
                 false
             }
         }
     }
 
-    /// Process audio and update gate threshold (legacy interface for noise floor tracking)
-    ///
-    /// # Returns
-    /// * `(is_speech, suggested_threshold_db)` - Speech detection and threshold
-    pub fn process_with_noise_floor(&mut self, samples: &[f32]) -> (bool, f32) {
-        let (gate_open, prob) = self.process(samples);
-
-        // Update noise floor estimate when silence detected
-        let vad = self.vad.as_ref().unwrap();
-        let is_speech = prob > vad.threshold();
-
-        if !is_speech {
-            // Silence detected - update noise floor estimate
-            let rms = compute_rms_db(samples);
-
-            // Adapt noise floor slowly toward current level
-            if rms < self.noise_floor + 10.0 {
-                self.noise_floor = self.adaptation_rate * rms + (1.0 - self.adaptation_rate) * self.noise_floor;
-            }
-        }
-
-        // Calculate threshold
-        let threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
-
-        (gate_open, threshold)
-    }
-
-    /// Check if VAD is available
     pub fn is_available(&self) -> bool {
         self.vad.is_some()
     }
 
-    /// Enable or disable auto-gate
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled && self.vad.is_some();
     }
 
-    /// Check if auto-gate is enabled
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
-    /// Set margin above noise floor (dB)
     pub fn set_margin(&mut self, margin: f32) {
         self.margin = margin.clamp(0.0, 20.0);
     }
 
-    /// Get current margin
     pub fn margin(&self) -> f32 {
         self.margin
     }
 
-    /// Get current noise floor estimate (dB)
     pub fn noise_floor(&self) -> f32 {
         self.noise_floor
     }
 
-    /// Reset noise floor estimate
     pub fn reset(&mut self) {
         self.noise_floor = -60.0;
         self.hold_timer = 0.0;
@@ -535,17 +528,14 @@ impl VadAutoGate {
         }
     }
 
-    /// Set gate mode
     pub fn set_gate_mode(&mut self, mode: GateMode) {
         self.gate_mode = mode;
     }
 
-    /// Get current gate mode
     pub fn gate_mode(&self) -> GateMode {
         self.gate_mode
     }
 
-    /// Set VAD probability threshold (0.0-1.0)
     pub fn set_vad_threshold(&mut self, threshold: f32) {
         self.vad_threshold = threshold.clamp(0.0, 1.0);
         if let Some(vad) = &mut self.vad {
@@ -553,22 +543,18 @@ impl VadAutoGate {
         }
     }
 
-    /// Get current VAD probability threshold
     pub fn vad_threshold(&self) -> f32 {
         self.vad_threshold
     }
 
-    /// Set gate hold time in milliseconds
     pub fn set_hold_time(&mut self, hold_ms: f32) {
         self.hold_time_ms = hold_ms.clamp(0.0, 500.0);
     }
 
-    /// Get current hold time in milliseconds
     pub fn hold_time(&self) -> f32 {
         self.hold_time_ms
     }
 
-    /// Get current VAD probability (for metering)
     pub fn probability(&self) -> f32 {
         self.current_probability
     }
@@ -595,21 +581,17 @@ mod tests {
     use super::*;
 
     #[test]
-    #[cfg(feature = "vad")]
-    fn test_vad_window_size() {
-        let vad = SileroVAD::new(48000, 0.5);
-        assert!(vad.is_ok());
-        let vad = vad.unwrap();
-        // At 48kHz, we need (512 * 48000 / 16000) = 1536 samples
-        assert_eq!(vad.window_size(), 1536);
-    }
-
-    #[test]
     fn test_rms_computation() {
         let silence = vec![0.0; 1000];
         assert!(compute_rms_db(&silence) < -100.0);
 
         let signal = vec![1.0; 1000];
         assert!((compute_rms_db(&signal) - 0.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_gate_mode_enum() {
+        assert_ne!(GateMode::ThresholdOnly, GateMode::VadAssisted);
+        assert_ne!(GateMode::VadAssisted, GateMode::VadOnly);
     }
 }

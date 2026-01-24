@@ -85,6 +85,10 @@ class CompressorSettings:
     attack_ms: float = 10.0
     release_ms: float = 200.0
     makeup_gain_db: float = 0.0
+    adaptive_release: bool = False  # v1.2.0+
+    base_release_ms: float = 50.0  # v1.2.0+
+    auto_makeup_enabled: bool = False  # v1.3.0+
+    target_lufs: float = -18.0  # v1.3.0+
 
 
 @dataclass
@@ -119,6 +123,9 @@ VALIDATION_RANGES = {
         'attack_ms': (0.1, 100.0),
         'release_ms': (10.0, 1000.0),
         'makeup_gain_db': (0.0, 24.0),
+        'adaptive_release': (bool, None),  # Boolean flag
+        'auto_makeup_enabled': (bool, None),  # Boolean flag
+        'target_lufs': (-24.0, -12.0),  # LUFS range
     },
     'limiter': {
         'ceiling_db': (-12.0, 0.0),
@@ -196,6 +203,29 @@ class Preset:
 
                 # Update version
                 data['version'] = '1.2.0'
+
+            # Migrate v1.2 presets → v1.3
+            if version < '1.3.0':
+                # Add missing auto makeup gain fields to compressor settings
+                if 'compressor' in data:
+                    data['compressor'].setdefault('auto_makeup_enabled', False)
+                    data['compressor'].setdefault('target_lufs', -18.0)
+                else:
+                    data['compressor'] = {
+                        'enabled': True,
+                        'threshold_db': -20.0,
+                        'ratio': 4.0,
+                        'attack_ms': 10.0,
+                        'release_ms': 200.0,
+                        'makeup_gain_db': 0.0,
+                        'adaptive_release': False,
+                        'base_release_ms': 50.0,
+                        'auto_makeup_enabled': False,
+                        'target_lufs': -18.0,
+                    }
+
+                # Update version
+                data['version'] = '1.3.0'
 
             # Extract and validate gate settings
             gate_data = data.get('gate', {})
@@ -285,6 +315,19 @@ class Preset:
                     comp_data.get('makeup_gain_db', 0.0),
                     *comp_ranges['makeup_gain_db'],
                     'makeup_gain_db', 'compressor'
+                ),
+                adaptive_release=comp_data.get('adaptive_release', False),
+                base_release_ms=_validate_range(
+                    comp_data.get('base_release_ms', 50.0),
+                    20.0,
+                    200.0,
+                    'base_release_ms', 'compressor'
+                ),
+                auto_makeup_enabled=comp_data.get('auto_makeup_enabled', False),
+                target_lufs=_validate_range(
+                    comp_data.get('target_lufs', -18.0),
+                    *comp_ranges['target_lufs'],
+                    'target_lufs', 'compressor'
                 ),
             )
 

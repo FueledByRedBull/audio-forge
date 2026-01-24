@@ -728,6 +728,17 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+            # Update auto makeup gain meters (if enabled)
+            try:
+                if hasattr(self, 'compressor_panel'):
+                    auto_makeup_enabled = self.processor.get_compressor_auto_makeup_enabled()
+                    if auto_makeup_enabled and hasattr(self.compressor_panel, 'update_auto_makeup_meters'):
+                        current_lufs = self.processor.get_compressor_current_lufs()
+                        makeup_gain = self.processor.get_compressor_current_makeup_gain()
+                        self.compressor_panel.update_auto_makeup_meters(current_lufs, makeup_gain)
+            except Exception as e:
+                print(f"Auto makeup meter update error: {e}")
+
             # Update VAD confidence meter
             try:
                 self.gate_panel.update_vad_confidence(vad_prob)

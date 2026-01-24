@@ -274,7 +274,7 @@ class GatePanel(QWidget):
 
     def get_settings(self) -> dict:
         """Get current gate settings as a dictionary."""
-        return {
+        settings = {
             'enabled': self.enabled_checkbox.isChecked(),
             'threshold_db': self.threshold_spinbox.value(),
             'attack_ms': self.attack_spinbox.value(),
@@ -283,25 +283,48 @@ class GatePanel(QWidget):
             'vad_threshold': self.vad_threshold_spinbox.value(),
             'vad_hold_time_ms': self.vad_hold_spinbox.value(),
         }
+        return settings
 
     def set_settings(self, settings: dict) -> None:
-        """Apply settings from a dictionary."""
+        """Apply settings from a dictionary with proper signal blocking."""
         if 'enabled' in settings:
+            self.enabled_checkbox.blockSignals(True)
             self.enabled_checkbox.setChecked(settings['enabled'])
+            self.enabled_checkbox.blockSignals(False)
         if 'threshold_db' in settings:
+            self.threshold_spinbox.blockSignals(True)
+            self.threshold_slider.blockSignals(True)
             self.threshold_spinbox.setValue(settings['threshold_db'])
             self.threshold_slider.setValue(int(settings['threshold_db']))
+            self.threshold_spinbox.blockSignals(False)
+            self.threshold_slider.blockSignals(False)
         if 'attack_ms' in settings:
+            self.attack_spinbox.blockSignals(True)
             self.attack_spinbox.setValue(settings['attack_ms'])
+            self.attack_spinbox.blockSignals(False)
         if 'release_ms' in settings:
+            self.release_spinbox.blockSignals(True)
             self.release_spinbox.setValue(settings['release_ms'])
+            self.release_spinbox.blockSignals(False)
+
+        # VAD mode settings (v1.2.0+)
         if 'gate_mode' in settings:
+            self.gate_mode_combo.blockSignals(True)
             self.gate_mode_combo.setCurrentIndex(settings['gate_mode'])
+            self.gate_mode_combo.blockSignals(False)
         if 'vad_threshold' in settings:
+            self.vad_threshold_spinbox.blockSignals(True)
+            self.vad_threshold_slider.blockSignals(True)
             self.vad_threshold_spinbox.setValue(settings['vad_threshold'])
             self.vad_threshold_slider.setValue(int(settings['vad_threshold'] * 100))
+            self.vad_threshold_spinbox.blockSignals(False)
+            self.vad_threshold_slider.blockSignals(False)
         if 'vad_hold_time_ms' in settings:
+            self.vad_hold_spinbox.blockSignals(True)
             self.vad_hold_spinbox.setValue(settings['vad_hold_time_ms'])
+            self.vad_hold_spinbox.blockSignals(False)
+
+        # Update processor and UI state after all settings applied
         self._update_gate()
         self._update_vad_mode()
         self._update_vad_controls_enabled()

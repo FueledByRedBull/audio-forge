@@ -1,0 +1,61 @@
+[package]
+name = "mic_eq_core"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance DSP engine for MicEq - real-time noise suppression and equalization"
+
+[lib]
+name = "mic_eq_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Audio I/O
+cpal = "0.15"
+rubato = "0.14"  # High-quality resampling
+
+# Noise suppression (RNNoise)
+nnnoiseless = "0.5"
+
+# Noise suppression (DeepFilterNet) - optional, C FFI approach
+# Uses C API via FFI to avoid Rc/Send issues with Rust libDF crate
+# No direct Rust dependency - links against pre-built DeepFilterNet C library
+# Build instructions: See rust-core/src/dsp/deepfilter_ffi.rs
+
+# Python bindings
+pyo3 = { version = "0.20", features = ["extension-module"] }
+numpy = "0.20"
+
+# Array operations (not needed for FFI mode)
+# ndarray = { version = "0.15", optional = true }
+
+# Lock-free ring buffers
+ringbuf = "0.3"
+
+# Dynamic library loading (for DeepFilterNet FFI)
+libloading = { version = "0.8", optional = true }
+
+# Audio thread optimization
+no_denormals = "0.3"
+thread-priority = "1.0"
+
+# Utilities
+thiserror = "1.0"
+
+[features]
+default = []
+
+# DeepFilterNet integration via C FFI (fallback: passthrough)
+# Uses C API to avoid Rc/Send issues with Rust libDF crate
+# Falls back to passthrough if C library is not available
+# Usage: --features deepfilter
+# Note: Does NOT require DeepFilterNet C library to be present at compile time
+# See: rust-core/src/dsp/deepfilter_ffi.rs for runtime library loading
+deepfilter = ["dep:libloading"]
+
+# DeepFilterNet real implementation (requires C library at runtime)
+# Same as deepfilter feature, kept for backward compatibility
+deepfilter-real = ["deepfilter"]
+
+[dev-dependencies]
+approx = "0.5"
+rand = "0.8"

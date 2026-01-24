@@ -89,6 +89,22 @@ mkdir models
 
 Or set `DEEPFILTER_MODEL_PATH` environment variable.
 
+#### Silero VAD (for VAD-assisted noise gate)
+
+For VAD-assisted gate modes, download the Silero VAD model:
+
+```bash
+# Create models directory
+mkdir models
+
+# Download Silero VAD model
+# Visit: https://github.com/snakers4/silero-vad/tree/master/files
+# Download: silero_vad.onnx (v4 or v5)
+# Place in: models/silero_vad.onnx
+```
+
+Or set the `VAD_MODEL_PATH` environment variable to specify a custom location.
+
 ## Usage
 
 1. **Select Audio Devices**

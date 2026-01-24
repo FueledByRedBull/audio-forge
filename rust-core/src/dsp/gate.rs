@@ -8,6 +8,9 @@
 //!
 //! Adapted from Spectral Workbench project.
 
+#[cfg(feature = "vad")]
+use crate::dsp::vad::{GateMode, VadAutoGate};
+
 /// Noise gate processor with IIR envelope follower
 pub struct NoiseGate {
     /// Threshold in dB (e.g., -40.0)
@@ -36,6 +39,14 @@ pub struct NoiseGate {
 
     /// Whether gate is enabled
     enabled: bool,
+
+    /// Gate operating mode (VAD feature only)
+    #[cfg(feature = "vad")]
+    gate_mode: GateMode,
+
+    /// VAD auto-gate controller (VAD feature only)
+    #[cfg(feature = "vad")]
+    vad_auto_gate: Option<VadAutoGate>,
 }
 
 impl NoiseGate {
@@ -65,6 +76,10 @@ impl NoiseGate {
             sample_rate,
             is_open: false,
             enabled: true,
+            #[cfg(feature = "vad")]
+            gate_mode: GateMode::ThresholdOnly,
+            #[cfg(feature = "vad")]
+            vad_auto_gate: None,
         }
     }
 
@@ -169,6 +184,30 @@ impl NoiseGate {
             return;
         }
 
+        #[cfg(feature = "vad")]
+        {
+            // Check if we should use VAD-based gate decision
+            if self.gate_mode != GateMode::ThresholdOnly {
+                if let Some(vad) = &mut self.vad_auto_gate {
+                    if vad.is_enabled() {
+                        // Get VAD gate decision and probability
+                        let (vad_gate_open, _probability) = vad.process(buffer);
+
+                        // Override is_open based on VAD decision
+                        self.is_open = vad_gate_open;
+
+                        // Apply VAD gate state to entire buffer
+                        let gain = if self.is_open { 1.0 } else { 0.0 };
+                        for sample in buffer.iter_mut() {
+                            *sample *= gain as f32;
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Default: use level-based gate
         for sample in buffer.iter_mut() {
             *sample = self.process_sample(*sample);
         }
@@ -184,6 +223,52 @@ impl NoiseGate {
     /// Get current envelope level (0.0 to 1.0)
     pub fn current_envelope(&self) -> f64 {
         self.envelope
+    }
+
+    // === VAD Integration Methods ===
+
+    #[cfg(feature = "vad")]
+    /// Set gate mode
+    pub fn set_gate_mode(&mut self, mode: GateMode) {
+        self.gate_mode = mode;
+    }
+
+    #[cfg(feature = "vad")]
+    /// Get current gate mode
+    pub fn gate_mode(&self) -> GateMode {
+        self.gate_mode
+    }
+
+    #[cfg(feature = "vad")]
+    /// Set VAD auto-gate controller
+    pub fn set_vad_auto_gate(&mut self, vad: Option<VadAutoGate>) {
+        self.vad_auto_gate = vad;
+    }
+
+    #[cfg(feature = "vad")]
+    /// Get VAD probability (for metering)
+    pub fn get_vad_probability(&self) -> f32 {
+        if let Some(vad) = &self.vad_auto_gate {
+            vad.probability()
+        } else {
+            0.0
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Set VAD probability threshold
+    pub fn set_vad_threshold(&mut self, threshold: f32) {
+        if let Some(vad) = &mut self.vad_auto_gate {
+            vad.set_vad_threshold(threshold);
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Set VAD hold time in milliseconds
+    pub fn set_hold_time(&mut self, hold_ms: f32) {
+        if let Some(vad) = &mut self.vad_auto_gate {
+            vad.set_hold_time(hold_ms);
+        }
     }
 }
 
@@ -251,7 +336,10 @@ mod tests {
         for sample in &signal_slightly_below {
             gate.process_sample(*sample);
         }
-        assert!(gate.is_open(), "Gate should still be open due to hysteresis");
+        assert!(
+            gate.is_open(),
+            "Gate should still be open due to hysteresis"
+        );
     }
 
     #[test]

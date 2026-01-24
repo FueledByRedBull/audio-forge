@@ -394,24 +394,6 @@ impl VadAutoGate {
             current_probability: 0.0,
         }
     }
-            Err(e) => {
-                eprintln!("VAD auto-gate disabled: {}", e);
-                eprintln!("  Download model from: https://github.com/snakers4/silero-vad");
-                eprintln!("  Place in: ./models/silero_vad.onnx");
-                None
-            }
-        };
-
-        Self {
-            vad,
-            noise_floor: -60.0,    // Start with low noise floor
-            margin: 6.0,           // 6dB above noise floor
-            adaptation_rate: 0.01, // Slow adaptation
-            min_threshold: -50.0,
-            max_threshold: -10.0,
-            enabled: vad.is_some(),
-        }
-    }
 
     /// Process audio and update gate threshold
     ///
@@ -508,36 +490,6 @@ impl VadAutoGate {
         let threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
 
         (gate_open, threshold)
-    }
-
-        let vad = self.vad.as_mut().unwrap();
-
-        // Get speech probability
-        let prob = match vad.process(samples) {
-            Ok(p) => p,
-            Err(_) => return (true, self.min_threshold),
-        };
-
-        let is_speech = prob > vad.threshold();
-
-        if !is_speech {
-            // Silence detected - update noise floor estimate
-            // Compute RMS of current audio
-            let rms = compute_rms_db(samples);
-
-            // Adapt noise floor slowly toward current level
-            if rms < self.noise_floor + 10.0 {
-                // Only update if current level is close to or below current noise floor
-                self.noise_floor =
-                    self.adaptation_rate * rms + (1.0 - self.adaptation_rate) * self.noise_floor;
-            }
-        }
-
-        // Calculate threshold
-        let threshold =
-            (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
-
-        (is_speech, threshold)
     }
 
     /// Check if VAD is available

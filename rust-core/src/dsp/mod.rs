@@ -5,6 +5,7 @@ pub mod compressor;
 pub mod eq;
 pub mod gate;
 pub mod limiter;
+pub mod loudness;
 pub mod noise_suppressor;
 pub mod rnnoise;
 
@@ -16,7 +17,8 @@ pub use compressor::Compressor;
 pub use eq::{ParametricEQ, DEFAULT_FREQUENCIES, DEFAULT_Q, NUM_BANDS};
 pub use gate::NoiseGate;
 pub use limiter::Limiter;
-pub use noise_suppressor::{NoiseModel, NoiseSuppressor, NoiseSuppressionEngine};
+pub use loudness::{LoudnessError, LoudnessMeter};
+pub use noise_suppressor::{NoiseModel, NoiseSuppressionEngine, NoiseSuppressor};
 pub use rnnoise::{RNNoiseProcessor, RNNOISE_FRAME_SIZE};
 
 #[cfg(feature = "deepfilter")]

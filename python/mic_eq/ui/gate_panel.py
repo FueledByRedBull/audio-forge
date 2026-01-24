@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QLabel,
     QHBoxLayout,
+    QComboBox,
 )
 from PyQt6.QtCore import Qt
 from .rate_limiter import RateLimiter
@@ -94,14 +95,84 @@ class GatePanel(QWidget):
         gate_layout.addWidget(QLabel("Release:"), 3, 0)
         gate_layout.addWidget(self.release_spinbox, 3, 1, 1, 2)
 
+        # Separator
+        gate_layout.addWidget(QLabel(""), 4, 0)
+        gate_layout.addWidget(QLabel(""), 4, 1)
+
+        # Gate Mode section
+        mode_label = QLabel("Gate Mode:")
+        mode_label.setStyleSheet("font-weight: bold;")
+        gate_layout.addWidget(mode_label, 5, 0)
+
+        # Mode dropdown
+        self.gate_mode_combo = QComboBox()
+        self.gate_mode_combo.addItems([
+            "Threshold Only",
+            "VAD Assisted",
+            "VAD Only"
+        ])
+        self.gate_mode_combo.setCurrentIndex(0)
+        self.gate_mode_combo.setToolTip(
+            "Threshold Only: Traditional gate using level threshold\n"
+            "VAD Assisted: Gate opens when level exceeded OR speech detected\n"
+            "VAD Only: Gate opens solely based on speech probability"
+        )
+        gate_layout.addWidget(QLabel(""), 6, 0)
+        gate_layout.addWidget(self.gate_mode_combo, 6, 1, 1, 2)
+
+        # VAD threshold slider
+        vad_threshold_layout = QHBoxLayout()
+        self.vad_threshold_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vad_threshold_slider.setRange(30, 80)  # 0.3 to 0.8
+        self.vad_threshold_slider.setValue(50)
+        self.vad_threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.vad_threshold_slider.setTickInterval(10)
+        vad_threshold_layout.addWidget(self.vad_threshold_slider)
+
+        self.vad_threshold_spinbox = QDoubleSpinBox()
+        self.vad_threshold_spinbox.setRange(0.3, 0.8)
+        self.vad_threshold_spinbox.setSingleStep(0.05)
+        self.vad_threshold_spinbox.setValue(0.5)
+        self.vad_threshold_spinbox.setDecimals(2)
+        self.vad_threshold_spinbox.setToolTip("Speech probability threshold (0.3-0.8)")
+        self.vad_threshold_spinbox.setFixedWidth(80)
+        vad_threshold_layout.addWidget(self.vad_threshold_spinbox)
+
+        gate_layout.addWidget(QLabel("VAD Threshold:"), 7, 0)
+        gate_layout.addLayout(vad_threshold_layout, 7, 1, 1, 2)
+
+        # Hold time
+        self.vad_hold_spinbox = QDoubleSpinBox()
+        self.vad_hold_spinbox.setRange(0.0, 500.0)
+        self.vad_hold_spinbox.setSingleStep(10.0)
+        self.vad_hold_spinbox.setValue(200.0)
+        self.vad_hold_spinbox.setSuffix(" ms")
+        self.vad_hold_spinbox.setToolTip("Gate hold time after speech ends (prevents chatter)")
+        gate_layout.addWidget(QLabel("Hold Time:"), 8, 0)
+        gate_layout.addWidget(self.vad_hold_spinbox, 8, 1, 1, 2)
+
+        # VAD confidence meter
+        from .level_meter import ConfidenceMeter
+        self.confidence_meter = ConfidenceMeter()
+        self.confidence_meter.setToolTip("Real-time VAD confidence (red=low, green=high)")
+        self.vad_info_label = QLabel("VAD: N/A")
+        self.vad_info_label.setStyleSheet("color: gray; font-size: 10px;")
+        vad_meter_layout = QVBoxLayout()
+        vad_meter_layout.setContentsMargins(0, 0, 0, 0)
+        vad_meter_layout.setSpacing(2)
+        vad_meter_layout.addWidget(self.confidence_meter)
+        vad_meter_layout.addWidget(self.vad_info_label)
+        gate_layout.addWidget(QLabel("Confidence:"), 9, 0)
+        gate_layout.addLayout(vad_meter_layout, 9, 1, 1, 2)
+
         # Info label
         info_label = QLabel(
             "Gate uses 3dB hysteresis to prevent chattering.\n"
             "IIR envelope follower for smooth transitions."
         )
         info_label.setStyleSheet("color: gray; font-size: 10px;")
-        gate_layout.addWidget(QLabel(""), 4, 0)
-        gate_layout.addWidget(info_label, 4, 1, 1, 2)
+        gate_layout.addWidget(QLabel(""), 10, 0)
+        gate_layout.addWidget(info_label, 10, 1, 1, 2)
 
         layout.addWidget(gate_group)
 
@@ -114,8 +185,15 @@ class GatePanel(QWidget):
         self.attack_spinbox.valueChanged.connect(self._update_gate)
         self.release_spinbox.valueChanged.connect(self._update_gate)
 
+        # VAD control signals
+        self.gate_mode_combo.currentIndexChanged.connect(self._update_vad_mode)
+        self.vad_threshold_slider.valueChanged.connect(self._on_vad_threshold_slider)
+        self.vad_threshold_spinbox.valueChanged.connect(self._on_vad_threshold_spinbox)
+        self.vad_hold_spinbox.valueChanged.connect(self._update_vad_mode)
+
         # Initial update
         self._update_gate()
+        self._update_vad_controls_enabled()
 
     def _on_slider_changed(self, value):
         """Handle threshold slider change."""
@@ -146,6 +224,54 @@ class GatePanel(QWidget):
 
         self._rate_limiter.call(apply)
 
+    def _on_vad_threshold_slider(self, value):
+        """Handle VAD threshold slider change."""
+        threshold = value / 100.0  # Convert 30-80 to 0.3-0.8
+        self.vad_threshold_spinbox.blockSignals(True)
+        self.vad_threshold_spinbox.setValue(threshold)
+        self.vad_threshold_spinbox.blockSignals(False)
+        self._update_vad_mode()
+
+    def _on_vad_threshold_spinbox(self, value):
+        """Handle VAD threshold spinbox change."""
+        self.vad_threshold_slider.blockSignals(True)
+        self.vad_threshold_slider.setValue(int(value * 100))
+        self.vad_threshold_slider.blockSignals(False)
+        self._update_vad_mode()
+
+    def _update_vad_mode(self):
+        """Update VAD mode and settings."""
+        try:
+            mode = self.gate_mode_combo.currentIndex()
+            self.processor.set_gate_mode(mode)
+            self.processor.set_vad_threshold(self.vad_threshold_spinbox.value())
+            self.processor.set_vad_hold_time(self.vad_hold_spinbox.value())
+            self._update_vad_controls_enabled()
+            self.vad_info_label.setText("VAD: Active")
+        except Exception as e:
+            self.vad_info_label.setText(f"VAD error: {e}")
+
+    def _update_vad_controls_enabled(self):
+        """Enable/disable VAD controls based on gate mode."""
+        mode = self.gate_mode_combo.currentIndex()
+        # 0 = Threshold Only, 1 = VAD Assisted, 2 = VAD Only
+        vad_enabled = mode > 0
+        threshold_enabled = mode != 2  # Disabled in VAD Only mode
+
+        # Enable/disable VAD controls
+        self.vad_threshold_slider.setEnabled(vad_enabled)
+        self.vad_threshold_spinbox.setEnabled(vad_enabled)
+        self.vad_hold_spinbox.setEnabled(vad_enabled)
+        self.confidence_meter.setEnabled(vad_enabled)
+
+        # Enable/disable level threshold
+        self.threshold_slider.setEnabled(threshold_enabled)
+        self.threshold_spinbox.setEnabled(threshold_enabled)
+
+    def update_vad_confidence(self, confidence: float):
+        """Update VAD confidence meter (called from main window)."""
+        self.confidence_meter.set_confidence(confidence)
+
     def get_settings(self) -> dict:
         """Get current gate settings as a dictionary."""
         return {
@@ -153,6 +279,9 @@ class GatePanel(QWidget):
             'threshold_db': self.threshold_spinbox.value(),
             'attack_ms': self.attack_spinbox.value(),
             'release_ms': self.release_spinbox.value(),
+            'gate_mode': self.gate_mode_combo.currentIndex(),
+            'vad_threshold': self.vad_threshold_spinbox.value(),
+            'vad_hold_time_ms': self.vad_hold_spinbox.value(),
         }
 
     def set_settings(self, settings: dict) -> None:
@@ -166,4 +295,13 @@ class GatePanel(QWidget):
             self.attack_spinbox.setValue(settings['attack_ms'])
         if 'release_ms' in settings:
             self.release_spinbox.setValue(settings['release_ms'])
+        if 'gate_mode' in settings:
+            self.gate_mode_combo.setCurrentIndex(settings['gate_mode'])
+        if 'vad_threshold' in settings:
+            self.vad_threshold_spinbox.setValue(settings['vad_threshold'])
+            self.vad_threshold_slider.setValue(int(settings['vad_threshold'] * 100))
+        if 'vad_hold_time_ms' in settings:
+            self.vad_hold_spinbox.setValue(settings['vad_hold_time_ms'])
         self._update_gate()
+        self._update_vad_mode()
+        self._update_vad_controls_enabled()

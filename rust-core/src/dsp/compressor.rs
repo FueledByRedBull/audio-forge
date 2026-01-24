@@ -62,6 +62,24 @@ pub struct Compressor {
 
     /// Release smoothing coefficient (100ms hysteresis)
     release_smoothing_coeff: f64,
+
+    /// Loudness meter for auto makeup gain
+    loudness_meter: Option<crate::dsp::loudness::LoudnessMeter>,
+
+    /// Auto makeup gain enabled
+    auto_makeup_enabled: bool,
+
+    /// Target LUFS for auto makeup gain
+    target_lufs: f64,
+
+    /// Smoothed makeup gain (for transitions)
+    smoothed_makeup_gain: f64,
+
+    /// Makeup gain smoothing coefficient (200ms time constant)
+    makeup_smoothing_coeff: f64,
+
+    /// Current measured loudness (for metering)
+    current_lufs: f64,
 }
 
 impl Compressor {
@@ -90,6 +108,17 @@ impl Compressor {
         let rms_coeff = Self::time_constant_to_coeff(10.0, sample_rate);
         // Release smoothing: 100ms time constant for hysteresis
         let release_smoothing_coeff = Self::time_constant_to_coeff(100.0, sample_rate);
+        // Makeup smoothing: 200ms time constant for smooth transitions
+        let makeup_smoothing_coeff = Self::time_constant_to_coeff(200.0, sample_rate);
+
+        // Create loudness meter (will be None if ebur128 feature not enabled)
+        let loudness_meter = match crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32) {
+            Ok(meter) => Some(meter),
+            Err(e) => {
+                eprintln!("Failed to initialize loudness meter: {}", e);
+                None
+            }
+        };
 
         Self {
             threshold_db,
@@ -111,6 +140,12 @@ impl Compressor {
             overage_timer: 0.0,
             target_release_ms: release_ms,
             release_smoothing_coeff,
+            loudness_meter,
+            auto_makeup_enabled: false,
+            target_lufs: -18.0,  // Podcast/streaming standard
+            smoothed_makeup_gain: 0.0,
+            makeup_smoothing_coeff,
+            current_lufs: -100.0,
         }
     }
 

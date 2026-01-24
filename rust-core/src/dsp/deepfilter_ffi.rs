@@ -54,21 +54,15 @@ pub struct DFState {
 }
 
 // FFI function pointers (stored as raw pointers for Send safety)
-type DfCreateFn = unsafe extern "C" fn(
-    path: *const i8,
-    atten_lim: f32,
-    log_level: *const i8,
-) -> *mut DFState;
+type DfCreateFn =
+    unsafe extern "C" fn(path: *const i8, atten_lim: f32, log_level: *const i8) -> *mut DFState;
 
 type DfFreeFn = unsafe extern "C" fn(*mut DFState);
 
 type DfGetFrameLengthFn = unsafe extern "C" fn(*mut DFState) -> usize;
 
-type DfProcessFrameFn = unsafe extern "C" fn(
-    st: *mut DFState,
-    input: *mut f32,
-    output: *mut f32,
-) -> f32;
+type DfProcessFrameFn =
+    unsafe extern "C" fn(st: *mut DFState, input: *mut f32, output: *mut f32) -> f32;
 
 type DfSetAttenLimFn = unsafe extern "C" fn(*mut DFState, f32);
 
@@ -144,10 +138,8 @@ fn find_model_path(model: DeepFilterModel) -> Option<PathBuf> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         if let Ok(home) = env::var("HOME") {
-            let user_model = PathBuf::from(format!(
-                "{}/.local/share/deepfilter/{}",
-                home, filename
-            ));
+            let user_model =
+                PathBuf::from(format!("{}/.local/share/deepfilter/{}", home, filename));
             if user_model.exists() {
                 return Some(user_model);
             }
@@ -247,8 +239,11 @@ impl DeepFilterFFI {
 
         // Convert path to C string
         let model_path_cstr = std::ffi::CString::new(
-            model_path.to_str().ok_or("Model path contains invalid UTF-8")?
-        ).map_err(|e| format!("Failed to create model path CString: {}", e))?;
+            model_path
+                .to_str()
+                .ok_or("Model path contains invalid UTF-8")?,
+        )
+        .map_err(|e| format!("Failed to create model path CString: {}", e))?;
 
         // Default attenuation limit: -80 dB (max suppression)
         let atten_lim = -80.0f32;
@@ -366,7 +361,7 @@ pub struct DeepFilterProcessor {
     smoothed_strength: f32,
     dry_buffer: Vec<f32>,
     load_error: Option<String>, // Store load error for reporting
-    model: DeepFilterModel, // Track which model variant we're using
+    model: DeepFilterModel,     // Track which model variant we're using
 }
 
 impl DeepFilterProcessor {
@@ -383,7 +378,11 @@ impl DeepFilterProcessor {
                         };
                         eprintln!(
                             "DeepFilterNet initialized (C FFI MODE - {} variant, {} latency)",
-                            if matches!(model, DeepFilterModel::LowLatency) { "Low Latency" } else { "Standard" },
+                            if matches!(model, DeepFilterModel::LowLatency) {
+                                "Low Latency"
+                            } else {
+                                "Standard"
+                            },
                             latency_str
                         );
                         (Some(df), Some(lib_arc), None)
@@ -393,22 +392,20 @@ impl DeepFilterProcessor {
                             "DeepFilterNet C FFI initialization failed: {}. Using passthrough fallback.",
                             e
                         );
-                        (None, Some(lib_arc), Some(format!("DeepFilterNet init failed: {}", e)))
+                        (
+                            None,
+                            Some(lib_arc),
+                            Some(format!("DeepFilterNet init failed: {}", e)),
+                        )
                     }
                 }
             }
             None => {
                 eprintln!("DeepFilterNet C library not found. Using passthrough fallback.");
                 eprintln!("NOTE: To use DeepFilterNet, build the C library and place it in:");
-                eprintln!(
-                    "  - Windows: df.dll in PATH or working directory"
-                );
-                eprintln!(
-                    "  - Linux: libdf.so in LD_LIBRARY_PATH or /usr/local/lib"
-                );
-                eprintln!(
-                    "  - macOS: libdf.dylib in DYLD_LIBRARY_PATH or /usr/local/lib"
-                );
+                eprintln!("  - Windows: df.dll in PATH or working directory");
+                eprintln!("  - Linux: libdf.so in LD_LIBRARY_PATH or /usr/local/lib");
+                eprintln!("  - macOS: libdf.dylib in DYLD_LIBRARY_PATH or /usr/local/lib");
                 eprintln!("NOTE: Also ensure DeepFilterNet3 model file is available:");
                 eprintln!("  - Set DEEPFILTER_MODEL_PATH environment variable");
                 eprintln!("  - Or place in ./models/DeepFilterNet3_ll_onnx.tar.gz or DeepFilterNet3_onnx.tar.gz");
@@ -452,10 +449,7 @@ impl DeepFilterProcessor {
                 .extend_from_slice(&self.input_buffer[..DEEPFILTER_FRAME_SIZE]);
 
             // Extract frame
-            let frame: Vec<f32> = self
-                .input_buffer
-                .drain(..DEEPFILTER_FRAME_SIZE)
-                .collect();
+            let frame: Vec<f32> = self.input_buffer.drain(..DEEPFILTER_FRAME_SIZE).collect();
 
             // Process through FFI if available
             if self.enabled {
@@ -485,8 +479,7 @@ impl DeepFilterProcessor {
             // Passthrough (fallback or disabled)
             for (i, &wet) in frame.iter().enumerate() {
                 let dry = self.dry_buffer[i];
-                let mixed =
-                    wet * self.smoothed_strength + dry * (1.0 - self.smoothed_strength);
+                let mixed = wet * self.smoothed_strength + dry * (1.0 - self.smoothed_strength);
                 self.output_buffer.push(mixed);
             }
         }
@@ -518,10 +511,7 @@ impl NoiseSuppressor for DeepFilterProcessor {
         } else {
             // Disabled: passthrough
             while self.input_buffer.len() >= DEEPFILTER_FRAME_SIZE {
-                let frame: Vec<f32> = self
-                    .input_buffer
-                    .drain(..DEEPFILTER_FRAME_SIZE)
-                    .collect();
+                let frame: Vec<f32> = self.input_buffer.drain(..DEEPFILTER_FRAME_SIZE).collect();
                 self.output_buffer.extend_from_slice(&frame);
             }
         }
@@ -589,7 +579,10 @@ impl NoiseSuppressor for DeepFilterProcessor {
 
 impl Default for DeepFilterProcessor {
     fn default() -> Self {
-        Self::new(Arc::new(AtomicU32::new(1.0_f32.to_bits())), DeepFilterModel::LowLatency) // 100% strength default, LL model
+        Self::new(
+            Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            DeepFilterModel::LowLatency,
+        ) // 100% strength default, LL model
     }
 }
 

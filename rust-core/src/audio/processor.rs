@@ -751,7 +751,7 @@ impl AudioProcessor {
             2 => GateMode::VadOnly,
             _ => return Err("Invalid gate mode".to_string()),
         };
-        if let Ok(gate) = self.gate.lock() {
+        if let Ok(mut gate) = self.gate.lock() {
             gate.set_gate_mode(gate_mode);
         }
         Ok(())
@@ -766,7 +766,7 @@ impl AudioProcessor {
     #[cfg(feature = "vad")]
     /// Set VAD probability threshold (0.0-1.0)
     pub fn set_vad_threshold(&self, threshold: f32) {
-        if let Ok(gate) = self.gate.lock() {
+        if let Ok(mut gate) = self.gate.lock() {
             gate.set_vad_threshold(threshold);
         }
     }
@@ -774,7 +774,7 @@ impl AudioProcessor {
     #[cfg(feature = "vad")]
     /// Set VAD hold time in milliseconds
     pub fn set_vad_hold_time(&self, hold_ms: f32) {
-        if let Ok(gate) = self.gate.lock() {
+        if let Ok(mut gate) = self.gate.lock() {
             gate.set_hold_time(hold_ms);
         }
     }

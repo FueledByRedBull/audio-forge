@@ -43,7 +43,7 @@ impl AudioRingBuffer {
             AudioConsumer {
                 consumer: self.consumer,
                 capacity: self.capacity,
-                last_sample: 0.0,  // Start at silence
+                last_sample: 0.0, // Start at silence
             },
         )
     }
@@ -73,7 +73,8 @@ impl AudioProducer {
         let written = self.producer.push_slice(samples);
         let dropped = samples.len() - written;
         if dropped > 0 {
-            self.dropped_count.fetch_add(dropped as u64, Ordering::Relaxed);
+            self.dropped_count
+                .fetch_add(dropped as u64, Ordering::Relaxed);
         }
         written
     }
@@ -113,7 +114,7 @@ impl AudioProducer {
 pub struct AudioConsumer {
     consumer: HeapConsumer<f32>,
     capacity: usize,
-    last_sample: f32,  // Track last sample for interpolation during underrun
+    last_sample: f32, // Track last sample for interpolation during underrun
 }
 
 impl AudioConsumer {

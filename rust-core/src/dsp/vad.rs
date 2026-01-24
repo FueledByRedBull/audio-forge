@@ -203,7 +203,7 @@ impl SileroVAD {
     /// * `Ok(f32)` - Speech probability (0.0-1.0)
     /// * `Err(VadError)` - If processing fails
     pub fn process(&mut self, samples: &[f32]) -> Result<f32, VadError> {
-        self.buffer.extend_from_iter(samples.iter());
+        self.buffer.extend(samples.iter());
 
         // Check if we have enough samples for inference
         if self.buffer.len() < self.window_size() {
@@ -378,6 +378,8 @@ impl VadAutoGate {
             }
         };
 
+        let enabled = vad.is_some();
+
         Self {
             vad,
             noise_floor: -60.0,  // Start with low noise floor
@@ -385,7 +387,7 @@ impl VadAutoGate {
             adaptation_rate: 0.01,  // Slow adaptation
             min_threshold: -50.0,
             max_threshold: -10.0,
-            enabled: vad.is_some(),
+            enabled,
             gate_mode: GateMode::ThresholdOnly,
             vad_threshold: 0.5,
             hold_time_ms: 200.0,

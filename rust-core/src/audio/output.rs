@@ -22,9 +22,7 @@ impl AudioOutput {
     /// Create audio output from default device
     pub fn from_default_device(consumer: AudioConsumer) -> Result<Self, AudioError> {
         let host = cpal::default_host();
-        let device = host
-            .default_output_device()
-            .ok_or(AudioError::NoDevice)?;
+        let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
 
         Self::from_device(device, consumer)
     }
@@ -57,7 +55,9 @@ impl AudioOutput {
                 // Fall back to default config if 48kHz not explicitly supported
                 device.default_output_config().ok()
             })
-            .ok_or_else(|| AudioError::DefaultConfig("No suitable output config found".to_string()))?;
+            .ok_or_else(|| {
+                AudioError::DefaultConfig("No suitable output config found".to_string())
+            })?;
 
         let sample_rate = config.sample_rate().0;
         let channels = config.channels();
@@ -145,7 +145,10 @@ impl AudioOutput {
             )
             .map_err(|e| AudioError::BuildStream(e.to_string()))?;
 
-        Ok(Self { stream, device_info })
+        Ok(Self {
+            stream,
+            device_info,
+        })
     }
 
     /// Start playing audio

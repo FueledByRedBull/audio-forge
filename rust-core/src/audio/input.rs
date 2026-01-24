@@ -58,9 +58,7 @@ impl AudioInput {
     /// Create audio input from default device
     pub fn from_default_device(producer: AudioProducer) -> Result<Self, AudioError> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or(AudioError::NoDevice)?;
+        let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
 
         Self::from_device(device, producer)
     }
@@ -142,8 +140,8 @@ impl AudioInput {
                             } else {
                                 // Convert stereo to mono by averaging
                                 for chunk in data.chunks(num_channels) {
-                                    let mono: f64 =
-                                        chunk.iter().map(|&s| s as f64).sum::<f64>() / num_channels as f64;
+                                    let mono: f64 = chunk.iter().map(|&s| s as f64).sum::<f64>()
+                                        / num_channels as f64;
                                     buffer.push(mono);
                                 }
                             }
@@ -177,7 +175,10 @@ impl AudioInput {
                 )
                 .map_err(|e| AudioError::BuildStream(e.to_string()))?;
 
-            Ok(Self { stream, device_info })
+            Ok(Self {
+                stream,
+                device_info,
+            })
         } else {
             // No resampling needed - direct passthrough
             let producer_clone = Arc::clone(&producer);
@@ -207,7 +208,10 @@ impl AudioInput {
                 )
                 .map_err(|e| AudioError::BuildStream(e.to_string()))?;
 
-            Ok(Self { stream, device_info })
+            Ok(Self {
+                stream,
+                device_info,
+            })
         }
     }
 

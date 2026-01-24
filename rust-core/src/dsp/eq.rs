@@ -46,7 +46,13 @@ impl ParametricEQ {
                 9 => BiquadType::HighShelf,
                 _ => BiquadType::Peaking,
             };
-            Biquad::new(filter_type, DEFAULT_FREQUENCIES[i], 0.0, DEFAULT_Q, sample_rate)
+            Biquad::new(
+                filter_type,
+                DEFAULT_FREQUENCIES[i],
+                0.0,
+                DEFAULT_Q,
+                sample_rate,
+            )
         });
 
         Self {

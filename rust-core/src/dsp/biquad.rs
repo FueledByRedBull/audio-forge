@@ -247,6 +247,10 @@ mod tests {
         }
 
         // With 12 dB boost, output should be significantly higher than 0.1
-        assert!(max_output > 0.2, "Expected boost, got max_output = {}", max_output);
+        assert!(
+            max_output > 0.2,
+            "Expected boost, got max_output = {}",
+            max_output
+        );
     }
 }

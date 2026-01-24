@@ -43,7 +43,6 @@ class CompressorPanel(QWidget):
 
         # === Compressor Group ===
         comp_group = QGroupBox("Compressor")
-        comp_group.setMinimumWidth(300)
         comp_layout = QGridLayout(comp_group)
         comp_layout.setSpacing(SPACING_NORMAL)
         comp_layout.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
@@ -118,6 +117,8 @@ class CompressorPanel(QWidget):
         self.attack_spinbox.setValue(10.0)
         self.attack_spinbox.setSuffix(" ms")
         self.attack_spinbox.setToolTip("How fast the compressor responds to loud signals")
+        self.attack_spinbox.setMaximumWidth(100)
+        self.attack_spinbox.setMinimumWidth(60)
 
         attack_label = QLabel("Attack:")
         attack_label.setStyleSheet(PRIMARY_LABEL_STYLE)
@@ -130,6 +131,8 @@ class CompressorPanel(QWidget):
         self.release_spinbox.setValue(200.0)
         self.release_spinbox.setSuffix(" ms")
         self.release_spinbox.setToolTip("How fast the compressor recovers after loud signals")
+        self.release_spinbox.setMaximumWidth(100)
+        self.release_spinbox.setMinimumWidth(60)
 
         release_label = QLabel("Release:")
         release_label.setStyleSheet(PRIMARY_LABEL_STYLE)
@@ -190,6 +193,8 @@ class CompressorPanel(QWidget):
         self.base_release_spinbox.setSuffix(" ms")
         self.base_release_spinbox.setToolTip("Base release time when adaptive mode is enabled")
         self.base_release_spinbox.setEnabled(False)
+        self.base_release_spinbox.setMaximumWidth(100)
+        self.base_release_spinbox.setMinimumWidth(60)
         advanced_layout.addWidget(QLabel("Base Release:"), 1, 0)
         advanced_layout.addWidget(self.base_release_spinbox, 1, 1)
 
@@ -218,6 +223,8 @@ class CompressorPanel(QWidget):
         self.target_lufs_spinbox.setSuffix(" LUFS")
         self.target_lufs_spinbox.setToolTip("Target loudness level (-24 to -12 LUFS)")
         self.target_lufs_spinbox.setEnabled(False)  # Disabled when auto makeup off
+        self.target_lufs_spinbox.setMaximumWidth(100)
+        self.target_lufs_spinbox.setMinimumWidth(60)
         advanced_layout.addWidget(QLabel("Target LUFS:"), 4, 0)
         advanced_layout.addWidget(self.target_lufs_spinbox, 4, 1)
 
@@ -245,7 +252,6 @@ class CompressorPanel(QWidget):
 
         # === Limiter Group ===
         limiter_group = QGroupBox("Hard Limiter")
-        limiter_group.setMinimumWidth(300)
         limiter_layout = QGridLayout(limiter_group)
         limiter_layout.setSpacing(SPACING_NORMAL)
         limiter_layout.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
@@ -291,6 +297,8 @@ class CompressorPanel(QWidget):
         self.limiter_release_spinbox.setValue(50.0)
         self.limiter_release_spinbox.setSuffix(" ms")
         self.limiter_release_spinbox.setToolTip("How fast the limiter recovers")
+        self.limiter_release_spinbox.setMaximumWidth(100)
+        self.limiter_release_spinbox.setMinimumWidth(60)
         limiter_layout.addWidget(QLabel("Release:"), 2, 0)
         limiter_layout.addWidget(self.limiter_release_spinbox, 2, 1, 1, 2)
 

@@ -245,6 +245,27 @@ impl Compressor {
         self.current_gain_reduction_db
     }
 
+    /// Calculate adaptive release time based on overage duration
+    fn calculate_adaptive_release(&mut self, sample_rate: f64) {
+        if !self.adaptive_release {
+            self.target_release_ms = self.base_release_ms;
+            return;
+        }
+
+        // Scale release from 50ms to 400ms based on overage duration
+        // Linear scaling over 2 seconds of sustained overage
+        let max_overage_duration = 2.0; // seconds
+        let overage_duration_sec = self.overage_timer / sample_rate;
+        let scaling_factor = (overage_duration_sec / max_overage_duration).min(1.0);
+
+        // Release scales from base to 8x base (max 400ms)
+        let min_release = 50.0;
+        let max_release = 400.0;
+        let adaptive_range = max_release - min_release;
+
+        self.target_release_ms = min_release + adaptive_range * scaling_factor;
+    }
+
     /// Calculate gain reduction in dB for a given input level
     /// Implements soft-knee compression
     #[inline]
@@ -295,6 +316,32 @@ impl Compressor {
         };
         self.envelope_db = coeff * self.envelope_db + (1.0 - coeff) * input_db;
 
+        // Track overage duration
+        let input_above_threshold = self.envelope_db > self.threshold_db;
+        if input_above_threshold {
+            // Increment overage timer (per sample)
+            self.overage_timer += 1.0;
+        } else {
+            // Decay overage timer (quick release when below threshold)
+            self.overage_timer = (self.overage_timer - 10.0).max(0.0);
+        }
+
+        // Calculate adaptive release target
+        self.calculate_adaptive_release(self.sample_rate);
+
+        // Smooth release time changes (100ms hysteresis)
+        let release_diff = self.target_release_ms - self.current_release_ms;
+        if release_diff.abs() > 1.0 {
+            // Only smooth if difference > 1ms
+            self.current_release_ms = self.release_smoothing_coeff * self.current_release_ms
+                + (1.0 - self.release_smoothing_coeff) * self.target_release_ms;
+        } else {
+            self.current_release_ms = self.target_release_ms;
+        }
+
+        // Update release coefficient based on current adaptive release
+        self.release_coeff = Self::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
+
         // Calculate gain reduction
         let gain_reduction_db = self.compute_gain_reduction(self.envelope_db);
         self.current_gain_reduction_db = gain_reduction_db;
@@ -322,6 +369,9 @@ impl Compressor {
         self.envelope_db = -120.0;
         self.envelope_squared = 0.0;
         self.current_gain_reduction_db = 0.0;
+        self.overage_timer = 0.0;
+        self.current_release_ms = self.base_release_ms;
+        self.target_release_ms = self.base_release_ms;
     }
 }
 

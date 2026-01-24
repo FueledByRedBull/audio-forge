@@ -47,20 +47,24 @@ class CompressorPanel(QWidget):
         comp_layout = QGridLayout(comp_group)
         comp_layout.setSpacing(SPACING_NORMAL)
         comp_layout.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
+        # Two-column layout: columns 0,1 for left; columns 2,3 for right
         comp_layout.setColumnStretch(0, 0)  # Label column - fixed width
         comp_layout.setColumnStretch(1, 1)  # Control column - stretches
-        comp_layout.setColumnMinimumWidth(0, 85)  # Ensure "Makeup Gain:" fits
+        comp_layout.setColumnStretch(2, 0)  # Label column - fixed width
+        comp_layout.setColumnStretch(3, 1)  # Control column - stretches
+        comp_layout.setColumnMinimumWidth(0, 75)  # Ensure "Threshold:" fits
+        comp_layout.setColumnMinimumWidth(2, 75)  # Ensure "Ratio:" fits
 
-        # Enable checkbox
+        # Row 0: Enable checkbox (span full width)
         self.comp_enabled_checkbox = QCheckBox("Enable Compressor")
         self.comp_enabled_checkbox.setChecked(True)
         self.comp_enabled_checkbox.setToolTip(
             "Reduces dynamic range by attenuating loud signals.\n"
             "Helps maintain consistent volume levels."
         )
-        comp_layout.addWidget(QLabel(""), 0, 0)
-        comp_layout.addWidget(self.comp_enabled_checkbox, 0, 1, 1, 2)
+        comp_layout.addWidget(self.comp_enabled_checkbox, 0, 0, 1, 4)
 
+        # Row 1: Threshold (left) and Ratio (right) with PRIMARY_LABEL_STYLE
         # Threshold slider with spinbox
         threshold_layout = QHBoxLayout()
         self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
@@ -79,8 +83,10 @@ class CompressorPanel(QWidget):
         self.threshold_spinbox.setFixedWidth(80)
         threshold_layout.addWidget(self.threshold_spinbox)
 
-        comp_layout.addWidget(QLabel("Threshold:"), 1, 0)
-        comp_layout.addLayout(threshold_layout, 1, 1, 1, 2)
+        threshold_label = QLabel("Threshold:")
+        threshold_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        comp_layout.addWidget(threshold_label, 1, 0)
+        comp_layout.addLayout(threshold_layout, 1, 1)
 
         # Ratio slider with spinbox
         ratio_layout = QHBoxLayout()
@@ -100,63 +106,37 @@ class CompressorPanel(QWidget):
         self.ratio_spinbox.setFixedWidth(80)
         ratio_layout.addWidget(self.ratio_spinbox)
 
-        comp_layout.addWidget(QLabel("Ratio:"), 2, 0)
-        comp_layout.addLayout(ratio_layout, 2, 1, 1, 2)
+        ratio_label = QLabel("Ratio:")
+        ratio_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        comp_layout.addWidget(ratio_label, 1, 2)
+        comp_layout.addLayout(ratio_layout, 1, 3)
 
-        # Attack time
+        # Row 2: Attack (left) and Release (right) with PRIMARY_LABEL_STYLE
         self.attack_spinbox = QDoubleSpinBox()
         self.attack_spinbox.setRange(0.1, 100.0)
         self.attack_spinbox.setSingleStep(1.0)
         self.attack_spinbox.setValue(10.0)
         self.attack_spinbox.setSuffix(" ms")
         self.attack_spinbox.setToolTip("How fast the compressor responds to loud signals")
-        comp_layout.addWidget(QLabel("Attack:"), 3, 0)
-        comp_layout.addWidget(self.attack_spinbox, 3, 1, 1, 2)
 
-        # Release time
+        attack_label = QLabel("Attack:")
+        attack_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        comp_layout.addWidget(attack_label, 2, 0)
+        comp_layout.addWidget(self.attack_spinbox, 2, 1)
+
         self.release_spinbox = QDoubleSpinBox()
         self.release_spinbox.setRange(10.0, 1000.0)
         self.release_spinbox.setSingleStep(10.0)
         self.release_spinbox.setValue(200.0)
         self.release_spinbox.setSuffix(" ms")
         self.release_spinbox.setToolTip("How fast the compressor recovers after loud signals")
-        comp_layout.addWidget(QLabel("Release:"), 4, 0)
-        comp_layout.addWidget(self.release_spinbox, 4, 1, 1, 2)
 
-        # Separator
-        comp_layout.addWidget(QLabel(""), 5, 0)
-        comp_layout.addWidget(QLabel(""), 5, 1)
+        release_label = QLabel("Release:")
+        release_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        comp_layout.addWidget(release_label, 2, 2)
+        comp_layout.addWidget(self.release_spinbox, 2, 3)
 
-        # Adaptive Release section
-        self.adaptive_release_checkbox = QCheckBox("Adaptive Release")
-        self.adaptive_release_checkbox.setChecked(False)
-        self.adaptive_release_checkbox.setToolTip(
-            "Release time adapts based on signal dynamics.\n"
-            "Scales from 50ms to 400ms based on sustained overage.\n"
-            "Longer release for consistent loud signals, shorter for transients."
-        )
-        comp_layout.addWidget(QLabel(""), 6, 0)
-        comp_layout.addWidget(self.adaptive_release_checkbox, 6, 1, 1, 2)
-
-        # Base release time (when adaptive is enabled)
-        self.base_release_spinbox = QDoubleSpinBox()
-        self.base_release_spinbox.setRange(20.0, 200.0)
-        self.base_release_spinbox.setSingleStep(5.0)
-        self.base_release_spinbox.setValue(50.0)
-        self.base_release_spinbox.setSuffix(" ms")
-        self.base_release_spinbox.setToolTip("Base release time when adaptive mode is enabled")
-        self.base_release_spinbox.setEnabled(False)
-        comp_layout.addWidget(QLabel("Base Release:"), 7, 0)
-        comp_layout.addWidget(self.base_release_spinbox, 7, 1, 1, 2)
-
-        # Current release time display (read-only, for metering)
-        self.current_release_label = QLabel("200 ms")
-        self.current_release_label.setStyleSheet("font-weight: bold; color: #4a90d9;")
-        self.current_release_label.setToolTip("Current release time (adaptive or manual)")
-        comp_layout.addWidget(QLabel("Current Release:"), 8, 0)
-        comp_layout.addWidget(self.current_release_label, 8, 1)
-
-        # Makeup gain slider with spinbox
+        # Row 3: Makeup Gain (span full width) with PRIMARY_LABEL_STYLE
         makeup_layout = QHBoxLayout()
         self.makeup_slider = QSlider(Qt.Orientation.Horizontal)
         self.makeup_slider.setRange(0, 24)
@@ -174,14 +154,53 @@ class CompressorPanel(QWidget):
         self.makeup_spinbox.setFixedWidth(80)
         makeup_layout.addWidget(self.makeup_spinbox)
 
-        comp_layout.addWidget(QLabel("Makeup Gain:"), 9, 0)
-        comp_layout.addLayout(makeup_layout, 9, 1, 1, 2)
+        makeup_label = QLabel("Makeup Gain:")
+        makeup_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        comp_layout.addWidget(makeup_label, 3, 0)
+        comp_layout.addLayout(makeup_layout, 3, 1, 1, 3)
 
-        # Separator before auto makeup section
-        comp_layout.addWidget(QLabel(""), 10, 0)
-        comp_layout.addWidget(QLabel(""), 10, 1)
+        # Row 4: Separator line
+        separator = QLabel("")
+        separator.setFrameStyle(QLabel.Shape.HLine | QLabel.Shadow.Sunken)
+        comp_layout.addWidget(separator, 4, 0, 1, 4)
 
-        # Auto Makeup Gain section
+        # Row 5: Advanced Settings GroupBox
+        advanced_group = QGroupBox("Advanced Settings")
+        advanced_layout = QGridLayout(advanced_group)
+        advanced_layout.setSpacing(SPACING_NORMAL)
+        advanced_layout.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
+        advanced_layout.setColumnStretch(0, 0)
+        advanced_layout.setColumnStretch(1, 1)
+
+        # Adaptive Release checkbox
+        self.adaptive_release_checkbox = QCheckBox("Adaptive Release")
+        self.adaptive_release_checkbox.setChecked(False)
+        self.adaptive_release_checkbox.setToolTip(
+            "Release time adapts based on signal dynamics.\n"
+            "Scales from 50ms to 400ms based on sustained overage.\n"
+            "Longer release for consistent loud signals, shorter for transients."
+        )
+        advanced_layout.addWidget(self.adaptive_release_checkbox, 0, 0, 1, 2)
+
+        # Base release time (when adaptive is enabled)
+        self.base_release_spinbox = QDoubleSpinBox()
+        self.base_release_spinbox.setRange(20.0, 200.0)
+        self.base_release_spinbox.setSingleStep(5.0)
+        self.base_release_spinbox.setValue(50.0)
+        self.base_release_spinbox.setSuffix(" ms")
+        self.base_release_spinbox.setToolTip("Base release time when adaptive mode is enabled")
+        self.base_release_spinbox.setEnabled(False)
+        advanced_layout.addWidget(QLabel("Base Release:"), 1, 0)
+        advanced_layout.addWidget(self.base_release_spinbox, 1, 1)
+
+        # Current release time display (with METER_LABEL_STYLE)
+        self.current_release_label = QLabel("200 ms")
+        self.current_release_label.setStyleSheet(METER_LABEL_STYLE)
+        self.current_release_label.setToolTip("Current release time (adaptive or manual)")
+        advanced_layout.addWidget(QLabel("Current Release:"), 2, 0)
+        advanced_layout.addWidget(self.current_release_label, 2, 1)
+
+        # Auto Makeup Gain checkbox
         self.auto_makeup_checkbox = QCheckBox("Auto Makeup Gain")
         self.auto_makeup_checkbox.setChecked(False)
         self.auto_makeup_checkbox.setToolTip(
@@ -189,8 +208,7 @@ class CompressorPanel(QWidget):
             "Maintains consistent output level relative to target LUFS.\n"
             "Target: -18 LUFS (podcast/streaming standard)"
         )
-        comp_layout.addWidget(QLabel(""), 11, 0)
-        comp_layout.addWidget(self.auto_makeup_checkbox, 11, 1, 1, 2)
+        advanced_layout.addWidget(self.auto_makeup_checkbox, 3, 0, 1, 2)
 
         # Target LUFS spinbox
         self.target_lufs_spinbox = QDoubleSpinBox()
@@ -200,27 +218,28 @@ class CompressorPanel(QWidget):
         self.target_lufs_spinbox.setSuffix(" LUFS")
         self.target_lufs_spinbox.setToolTip("Target loudness level (-24 to -12 LUFS)")
         self.target_lufs_spinbox.setEnabled(False)  # Disabled when auto makeup off
-        comp_layout.addWidget(QLabel("Target LUFS:"), 12, 0)
-        comp_layout.addWidget(self.target_lufs_spinbox, 12, 1, 1, 2)
+        advanced_layout.addWidget(QLabel("Target LUFS:"), 4, 0)
+        advanced_layout.addWidget(self.target_lufs_spinbox, 4, 1)
 
-        # Current LUFS display (read-only, for metering)
+        # Current LUFS display (with METER_LABEL_STYLE)
         self.current_lufs_label = QLabel("-18.0 LUFS")
-        self.current_lufs_label.setStyleSheet("font-weight: bold; color: #4a90d9;")
+        self.current_lufs_label.setStyleSheet(METER_LABEL_STYLE)
         self.current_lufs_label.setToolTip("Current measured loudness (EBU R128 momentary)")
-        comp_layout.addWidget(QLabel("Current LUFS:"), 13, 0)
-        comp_layout.addWidget(self.current_lufs_label, 13, 1)
+        advanced_layout.addWidget(QLabel("Current LUFS:"), 5, 0)
+        advanced_layout.addWidget(self.current_lufs_label, 5, 1)
 
-        # Current makeup gain display (read-only, for metering)
+        # Current makeup gain display (with METER_LABEL_STYLE)
         self.current_makeup_gain_label = QLabel("0.0 dB")
-        self.current_makeup_gain_label.setStyleSheet("font-weight: bold; color: #4a90d9;")
+        self.current_makeup_gain_label.setStyleSheet(METER_LABEL_STYLE)
         self.current_makeup_gain_label.setToolTip("Current auto makeup gain applied")
-        comp_layout.addWidget(QLabel("Auto Gain:"), 14, 0)
-        comp_layout.addWidget(self.current_makeup_gain_label, 14, 1)
+        advanced_layout.addWidget(QLabel("Auto Gain:"), 6, 0)
+        advanced_layout.addWidget(self.current_makeup_gain_label, 6, 1)
 
-        # Gain reduction meter
+        comp_layout.addWidget(advanced_group, 5, 0, 1, 4)
+
+        # Row 6: Gain Reduction Meter
         self.gr_meter = GainReductionMeter()
-        comp_layout.addWidget(QLabel(""), 15, 0)
-        comp_layout.addWidget(self.gr_meter, 15, 1, 1, 2)
+        comp_layout.addWidget(self.gr_meter, 6, 0, 1, 4)
 
         layout.addWidget(comp_group)
 
@@ -280,7 +299,7 @@ class CompressorPanel(QWidget):
             "Limiter uses instant attack (~0.1ms)\n"
             "to catch transients. No lookahead."
         )
-        info_label.setStyleSheet("color: gray; font-size: 10px;")
+        info_label.setStyleSheet(INFO_LABEL_STYLE)
         limiter_layout.addWidget(QLabel(""), 3, 0)
         limiter_layout.addWidget(info_label, 3, 1, 1, 2)
 

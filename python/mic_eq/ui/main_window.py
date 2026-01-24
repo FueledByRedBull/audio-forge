@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QMenu,
     QSlider,
+    QScrollArea,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction
@@ -88,8 +89,8 @@ class MainWindow(QMainWindow):
         self.meter_timer.start(16)  # ~60 FPS
 
         # Set initial window size to fit all content
-        self.resize(1100, 800)
-        self.setMinimumSize(1000, 750)
+        self.resize(1100, 850)
+        self.setMinimumSize(1000, 850)
 
     def _setup_ui(self):
         """Set up the user interface."""
@@ -153,9 +154,15 @@ class MainWindow(QMainWindow):
         left_panels = QVBoxLayout()
         left_panels.setSpacing(SPACING_NORMAL)  # Consistent spacing between left panels
 
-        # Noise Gate panel
+        # Noise Gate panel (wrapped in scroll area for overflow handling)
         self.gate_panel = GatePanel(self.processor)
-        left_panels.addWidget(self.gate_panel)
+        gate_scroll_area = QScrollArea()
+        gate_scroll_area.setWidget(self.gate_panel)
+        gate_scroll_area.setWidgetResizable(True)
+        gate_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        gate_scroll_area.setMinimumHeight(400)
+        gate_scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        left_panels.addWidget(gate_scroll_area)
 
         # RNNoise panel
         rnnoise_group = QGroupBox("RNNoise (ML Noise Suppression)")
@@ -226,9 +233,15 @@ class MainWindow(QMainWindow):
 
         left_panels.addWidget(rnnoise_group)
 
-        # Compressor + Limiter panel
+        # Compressor + Limiter panel (wrapped in scroll area for overflow handling)
         self.compressor_panel = CompressorPanel(self.processor)
-        left_panels.addWidget(self.compressor_panel)
+        compressor_scroll_area = QScrollArea()
+        compressor_scroll_area.setWidget(self.compressor_panel)
+        compressor_scroll_area.setWidgetResizable(True)
+        compressor_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        compressor_scroll_area.setMinimumHeight(350)
+        compressor_scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)  # Optional: cleaner look
+        left_panels.addWidget(compressor_scroll_area)
 
         left_panels.addStretch()
 

@@ -33,6 +33,7 @@ from .gate_panel import GatePanel
 from .eq_panel import EQPanel
 from .compressor_panel import CompressorPanel
 from .level_meter import LevelMeter
+from .layout_constants import SPACING_SECTION, SPACING_NORMAL
 from .. import AudioProcessor, list_input_devices, list_output_devices
 from ..config import (
     Preset,
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(SPACING_SECTION)  # Consistent spacing between major sections
 
         # Warning banner for missing audio devices (hidden by default)
         self.device_warning_banner = QLabel(
@@ -111,6 +113,7 @@ class MainWindow(QMainWindow):
         # Top: Device selection
         device_group = QGroupBox("Audio Devices")
         device_layout = QHBoxLayout(device_group)
+        device_layout.setSpacing(SPACING_NORMAL)  # Consistent spacing for device controls
 
         # Input device
         device_layout.addWidget(QLabel("Input:"))
@@ -133,6 +136,7 @@ class MainWindow(QMainWindow):
 
         # Middle: Control panels in horizontal layout with meters
         middle_layout = QHBoxLayout()
+        middle_layout.setSpacing(SPACING_NORMAL)  # Consistent spacing for control panels
 
         # Input meter (far left)
         input_meter_layout = QVBoxLayout()
@@ -143,9 +147,11 @@ class MainWindow(QMainWindow):
 
         # Control panels
         panels_layout = QHBoxLayout()
+        panels_layout.setSpacing(SPACING_NORMAL)  # Consistent spacing between panel groups
 
         # Left side: Gate + RNNoise + Compressor panels
         left_panels = QVBoxLayout()
+        left_panels.setSpacing(SPACING_NORMAL)  # Consistent spacing between left panels
 
         # Noise Gate panel
         self.gate_panel = GatePanel(self.processor)
@@ -156,7 +162,7 @@ class MainWindow(QMainWindow):
         rnnoise_group.setMinimumHeight(100)
         rnnoise_group.setMinimumWidth(300)
         rnnoise_layout = QVBoxLayout(rnnoise_group)
-        rnnoise_layout.setSpacing(8)
+        rnnoise_layout.setSpacing(SPACING_NORMAL)  # Consistent spacing for RNNoise controls
 
         self.rnnoise_checkbox = QCheckBox("Enable RNNoise")
         self.rnnoise_checkbox.setChecked(True)

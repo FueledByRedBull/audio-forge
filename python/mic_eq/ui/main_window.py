@@ -23,6 +23,8 @@ from PyQt6.QtWidgets import (
     QMenu,
     QSlider,
     QScrollArea,
+    QSizePolicy,
+    QFrame,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction
@@ -150,26 +152,25 @@ class MainWindow(QMainWindow):
         panels_layout = QHBoxLayout()
         panels_layout.setSpacing(SPACING_NORMAL)  # Consistent spacing between panel groups
 
-        # Left side: Gate + RNNoise + Compressor panels
-        left_panels = QVBoxLayout()
-        left_panels.setSpacing(SPACING_NORMAL)  # Consistent spacing between left panels
+        # ============================================================
+        # LEFT SIDE: All panels in a single scrollable container
+        # This prevents overlap issues between Gate, RNNoise, and Compressor
+        # ============================================================
+        
+        # Create a container widget for all left panels
+        left_container = QWidget()
+        left_container_layout = QVBoxLayout(left_container)
+        left_container_layout.setContentsMargins(0, 0, 12, 0)  # 12px right margin for scrollbar
+        left_container_layout.setSpacing(SPACING_NORMAL)
 
-        # Noise Gate panel (wrapped in scroll area for overflow handling)
+        # 1. Noise Gate panel (direct widget, no nested scroll area)
         self.gate_panel = GatePanel(self.processor)
-        gate_scroll_area = QScrollArea()
-        gate_scroll_area.setWidget(self.gate_panel)
-        gate_scroll_area.setWidgetResizable(True)
-        gate_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        gate_scroll_area.setMinimumHeight(400)
-        gate_scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
-        left_panels.addWidget(gate_scroll_area)
+        left_container_layout.addWidget(self.gate_panel)
 
-        # RNNoise panel
+        # 2. RNNoise panel
         rnnoise_group = QGroupBox("RNNoise (ML Noise Suppression)")
-        rnnoise_group.setMinimumHeight(100)
-        rnnoise_group.setMinimumWidth(300)
         rnnoise_layout = QVBoxLayout(rnnoise_group)
-        rnnoise_layout.setSpacing(SPACING_NORMAL)  # Consistent spacing for RNNoise controls
+        rnnoise_layout.setSpacing(SPACING_NORMAL)
 
         self.rnnoise_checkbox = QCheckBox("Enable RNNoise")
         self.rnnoise_checkbox.setChecked(True)
@@ -231,23 +232,34 @@ class MainWindow(QMainWindow):
         self.rnnoise_latency_label.setStyleSheet("color: gray; font-size: 11px;")
         rnnoise_layout.addWidget(self.rnnoise_latency_label)
 
-        left_panels.addWidget(rnnoise_group)
+        left_container_layout.addWidget(rnnoise_group)
 
-        # Compressor + Limiter panel (wrapped in scroll area for overflow handling)
+        # 3. Compressor panel (direct widget, no nested scroll area)
         self.compressor_panel = CompressorPanel(self.processor)
-        compressor_scroll_area = QScrollArea()
-        compressor_scroll_area.setWidget(self.compressor_panel)
-        compressor_scroll_area.setWidgetResizable(True)
-        compressor_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        compressor_scroll_area.setMinimumHeight(350)
-        compressor_scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)  # Optional: cleaner look
-        left_panels.addWidget(compressor_scroll_area)
+        left_container_layout.addWidget(self.compressor_panel)
 
-        left_panels.addStretch()
+        # Add stretch at bottom to push content up when there's extra space
+        left_container_layout.addStretch()
 
-        panels_layout.addLayout(left_panels)
+        # Wrap everything in ONE scroll area - this is the key fix!
+        # Using a single scroll area prevents the overlap issues
+        left_scroll_area = QScrollArea()
+        left_scroll_area.setWidget(left_container)
+        left_scroll_area.setWidgetResizable(True)
+        left_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        left_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        left_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
 
-        # Right side: EQ panel
+        # Fixed width for left panel - doesn't stretch with window
+        # Expanding height - fills available vertical space, scrollbar appears when overflow
+        left_scroll_area.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+        left_scroll_area.setFixedWidth(450)  # Account for ~20px scrollbar width
+
+        panels_layout.addWidget(left_scroll_area)
+
+        # ============================================================
+        # RIGHT SIDE: EQ panel (stretches to fill remaining space)
+        # ============================================================
         self.eq_panel = EQPanel(self.processor)
         panels_layout.addWidget(self.eq_panel, stretch=1)
 
@@ -725,9 +737,6 @@ class MainWindow(QMainWindow):
             output_peak = self.processor.get_output_peak_db()
             gr_db = self.processor.get_compressor_gain_reduction_db()
 
-            # Get VAD probability for confidence meter
-            vad_prob = self.processor.get_vad_probability()
-
             latency_ms = self.processor.get_latency_ms()
 
             # Get DSP performance metrics
@@ -758,10 +767,12 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Auto makeup meter update error: {e}")
 
-            # Update VAD confidence meter
+            # Update VAD confidence meter (if VAD is available)
             try:
+                vad_prob = self.processor.get_vad_probability()
                 self.gate_panel.update_vad_confidence(vad_prob)
-            except Exception:
+            except (AttributeError, Exception):
+                # VAD not available in this build
                 pass
 
             # Update latency display
@@ -864,7 +875,7 @@ class MainWindow(QMainWindow):
         """Reset the dropped samples counter."""
         if self.processor:
             self.processor.reset_dropped_samples()
-            self.statusBar.showMessage("Dropped samples counter reset", 3000)
+            self.status_bar.showMessage("Dropped samples counter reset", 3000)
 
     def _get_current_preset(self) -> Preset:
         """Get current settings as a Preset object."""

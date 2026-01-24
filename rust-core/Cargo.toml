@@ -44,8 +44,18 @@ thiserror = "1.0"
 # EBU R128 loudness measurement (for auto makeup gain)
 ebur128 = "0.1.3"
 
+# VAD dependencies (optional)
+ndarray = { version = "0.15", optional = true }
+ort = { version = "2.0.0-rc.11", default-features = false, optional = true }
+
 [features]
 default = []
+
+# VAD (Voice Activity Detection) for noise gate
+# Enables ML-based speech detection for smarter gating
+# Usage: --features vad
+# Requires: ONNX Runtime model file (see README)
+vad = ["dep:ndarray", "dep:ort"]
 
 # DeepFilterNet integration via C FFI (fallback: passthrough)
 # Uses C API to avoid Rc/Send issues with Rust libDF crate

@@ -150,12 +150,18 @@ impl NoiseSuppressionEngine {
             #[cfg(feature = "deepfilter")]
             NoiseModel::DeepFilterNetLL => {
                 use super::deepfilter_ffi::DeepFilterModel;
-                NoiseSuppressionEngine::DeepFilterLL(super::DeepFilterProcessor::new(strength, DeepFilterModel::LowLatency))
+                NoiseSuppressionEngine::DeepFilterLL(super::DeepFilterProcessor::new(
+                    strength,
+                    DeepFilterModel::LowLatency,
+                ))
             }
             #[cfg(feature = "deepfilter")]
             NoiseModel::DeepFilterNet => {
                 use super::deepfilter_ffi::DeepFilterModel;
-                NoiseSuppressionEngine::DeepFilter(super::DeepFilterProcessor::new(strength, DeepFilterModel::Standard))
+                NoiseSuppressionEngine::DeepFilter(super::DeepFilterProcessor::new(
+                    strength,
+                    DeepFilterModel::Standard,
+                ))
             }
         }
     }

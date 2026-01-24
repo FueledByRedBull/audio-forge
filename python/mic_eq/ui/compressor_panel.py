@@ -117,6 +117,39 @@ class CompressorPanel(QWidget):
         comp_layout.addWidget(QLabel("Release:"), 4, 0)
         comp_layout.addWidget(self.release_spinbox, 4, 1, 1, 2)
 
+        # Separator
+        comp_layout.addWidget(QLabel(""), 5, 0)
+        comp_layout.addWidget(QLabel(""), 5, 1)
+
+        # Adaptive Release section
+        self.adaptive_release_checkbox = QCheckBox("Adaptive Release")
+        self.adaptive_release_checkbox.setChecked(False)
+        self.adaptive_release_checkbox.setToolTip(
+            "Release time adapts based on signal dynamics.\n"
+            "Scales from 50ms to 400ms based on sustained overage.\n"
+            "Longer release for consistent loud signals, shorter for transients."
+        )
+        comp_layout.addWidget(QLabel(""), 6, 0)
+        comp_layout.addWidget(self.adaptive_release_checkbox, 6, 1, 1, 2)
+
+        # Base release time (when adaptive is enabled)
+        self.base_release_spinbox = QDoubleSpinBox()
+        self.base_release_spinbox.setRange(20.0, 200.0)
+        self.base_release_spinbox.setSingleStep(5.0)
+        self.base_release_spinbox.setValue(50.0)
+        self.base_release_spinbox.setSuffix(" ms")
+        self.base_release_spinbox.setToolTip("Base release time when adaptive mode is enabled")
+        self.base_release_spinbox.setEnabled(False)
+        comp_layout.addWidget(QLabel("Base Release:"), 7, 0)
+        comp_layout.addWidget(self.base_release_spinbox, 7, 1, 1, 2)
+
+        # Current release time display (read-only, for metering)
+        self.current_release_label = QLabel("200 ms")
+        self.current_release_label.setStyleSheet("font-weight: bold; color: #4a90d9;")
+        self.current_release_label.setToolTip("Current release time (adaptive or manual)")
+        comp_layout.addWidget(QLabel("Current Release:"), 8, 0)
+        comp_layout.addWidget(self.current_release_label, 8, 1)
+
         # Makeup gain slider with spinbox
         makeup_layout = QHBoxLayout()
         self.makeup_slider = QSlider(Qt.Orientation.Horizontal)
@@ -135,13 +168,13 @@ class CompressorPanel(QWidget):
         self.makeup_spinbox.setFixedWidth(80)
         makeup_layout.addWidget(self.makeup_spinbox)
 
-        comp_layout.addWidget(QLabel("Makeup Gain:"), 5, 0)
-        comp_layout.addLayout(makeup_layout, 5, 1, 1, 2)
+        comp_layout.addWidget(QLabel("Makeup Gain:"), 9, 0)
+        comp_layout.addLayout(makeup_layout, 9, 1, 1, 2)
 
         # Gain reduction meter
         self.gr_meter = GainReductionMeter()
-        comp_layout.addWidget(QLabel(""), 6, 0)
-        comp_layout.addWidget(self.gr_meter, 6, 1, 1, 2)
+        comp_layout.addWidget(QLabel(""), 10, 0)
+        comp_layout.addWidget(self.gr_meter, 10, 1, 1, 2)
 
         layout.addWidget(comp_group)
 
@@ -217,6 +250,8 @@ class CompressorPanel(QWidget):
         self.release_spinbox.valueChanged.connect(self._update_compressor)
         self.makeup_slider.valueChanged.connect(self._on_makeup_slider)
         self.makeup_spinbox.valueChanged.connect(self._on_makeup_spinbox)
+        self.adaptive_release_checkbox.toggled.connect(self._update_adaptive_release)
+        self.base_release_spinbox.valueChanged.connect(self._update_adaptive_release)
         self.threshold_slider.sliderReleased.connect(self._comp_rate_limiter.flush)
         self.ratio_slider.sliderReleased.connect(self._comp_rate_limiter.flush)
         self.makeup_slider.sliderReleased.connect(self._comp_rate_limiter.flush)
@@ -321,6 +356,33 @@ class CompressorPanel(QWidget):
             self.processor.set_limiter_release(release)
 
         self._limiter_rate_limiter.call(apply)
+
+    def _update_adaptive_release(self):
+        """Update adaptive release configuration."""
+        try:
+            adaptive = self.adaptive_release_checkbox.isChecked()
+            base_release = self.base_release_spinbox.value()
+
+            self.processor.set_compressor_adaptive_release(adaptive)
+            self.processor.set_compressor_base_release(base_release)
+
+            # When adaptive is enabled, disable manual release control
+            self.release_spinbox.setEnabled(not adaptive)
+            self.base_release_spinbox.setEnabled(adaptive)
+
+            # Update current release display
+            self._update_current_release()
+
+        except Exception as e:
+            print(f"Adaptive release error: {e}")
+
+    def _update_current_release(self):
+        """Update current release time display from processor."""
+        try:
+            current_release = self.processor.get_compressor_current_release()
+            self.current_release_label.setText(f"{current_release:.0f} ms")
+        except Exception as e:
+            print(f"Current release read error: {e}")
 
     def update_gain_reduction(self, gr_db: float):
         """Update the gain reduction meter (call from timer)."""

@@ -18,6 +18,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from .rate_limiter import RateLimiter
+from .layout_constants import (
+    SPACING_NORMAL, MARGIN_PANEL,
+    PRIMARY_LABEL_STYLE, INFO_LABEL_STYLE
+)
 
 
 class GatePanel(QWidget):
@@ -42,6 +46,8 @@ class GatePanel(QWidget):
         gate_layout.setColumnStretch(0, 0)  # Label column - fixed width
         gate_layout.setColumnStretch(1, 1)  # Control column - stretches
         gate_layout.setColumnMinimumWidth(0, 70)  # Ensure labels fit
+        gate_layout.setSpacing(SPACING_NORMAL)
+        gate_layout.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
 
         # Enable checkbox
         self.enabled_checkbox = QCheckBox("Enable Noise Gate")

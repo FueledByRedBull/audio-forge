@@ -91,6 +91,9 @@ pub struct AudioProcessor {
     /// VAD speech probability (0.0-1.0) for metering
     vad_probability: Arc<AtomicU32>,
 
+    /// Compressor current release time in milliseconds (for metering)
+    compressor_current_release_ms: Arc<AtomicU64>,
+
     /// Processing latency in microseconds (measured from input to output)
     latency_us: Arc<AtomicU64>,
 
@@ -165,6 +168,7 @@ impl AudioProcessor {
             output_rms: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             compressor_gain_reduction: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             vad_probability: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            compressor_current_release_ms: Arc::new(AtomicU64::new(200)), // Default 200ms
             latency_us: Arc::new(AtomicU64::new(0)),
             // Initialize DSP performance metrics
             dsp_time_us: Arc::new(AtomicU64::new(0)),
@@ -275,6 +279,7 @@ impl AudioProcessor {
         let output_rms = Arc::clone(&self.output_rms);
         let compressor_gain_reduction = Arc::clone(&self.compressor_gain_reduction);
         let vad_probability = Arc::clone(&self.vad_probability);
+        let compressor_current_release_ms = Arc::clone(&self.compressor_current_release_ms);
         let latency_us = Arc::clone(&self.latency_us);
         let sample_rate_for_latency = self.sample_rate;
 
@@ -397,6 +402,7 @@ impl AudioProcessor {
                                 );
                                 compressor_gain_reduction
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                compressor_current_release_ms.store(2000, Ordering::Relaxed); // Default 200ms
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
                                 if let Ok(mut prod_guard) = output_producer.lock() {
                                     if let Some(prod) = prod_guard.as_mut() {
@@ -472,10 +478,18 @@ impl AudioProcessor {
                                                             .to_bits(),
                                                         Ordering::Relaxed,
                                                     );
+                                                    // Store current release time for metering
+                                                    let current_release = c.current_release_time();
+                                                    // Convert to u64 (0.1ms resolution = multiply by 10)
+                                                    compressor_current_release_ms.store(
+                                                        (current_release * 10.0) as u64,
+                                                        Ordering::Relaxed,
+                                                    );
                                                 }
                                             } else {
                                                 compressor_gain_reduction
                                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                                compressor_current_release_ms.store(2000, Ordering::Relaxed); // Default 200ms
                                             }
 
                                             // Stage 5: Hard Limiter (LAST - safety ceiling)
@@ -533,10 +547,18 @@ impl AudioProcessor {
                                                 (c.current_gain_reduction() as f32).to_bits(),
                                                 Ordering::Relaxed,
                                             );
+                                            // Store current release time for metering
+                                            let current_release = c.current_release_time();
+                                            // Convert to u64 (0.1ms resolution = multiply by 10)
+                                            compressor_current_release_ms.store(
+                                                (current_release * 10.0) as u64,
+                                                Ordering::Relaxed,
+                                            );
                                         }
                                     } else {
                                         compressor_gain_reduction
                                             .store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                        compressor_current_release_ms.store(2000, Ordering::Relaxed); // Default 200ms
                                     }
 
                                     // Stage 5: Hard Limiter (LAST - safety ceiling)
@@ -1284,11 +1306,8 @@ impl PyAudioProcessor {
 
     /// Get current compressor release time (adaptive or base, in milliseconds)
     fn get_compressor_current_release(&self) -> f64 {
-        if let Ok(comp) = self.processor.compressor.lock() {
-            comp.current_release_time()
-        } else {
-            200.0
-        }
+        let release_raw = self.processor.compressor_current_release_ms.load(Ordering::Relaxed);
+        release_raw as f64 / 10.0 // Convert back from 0.1ms resolution
     }
 
     // === Limiter ===

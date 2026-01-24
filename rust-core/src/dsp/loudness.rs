@@ -5,10 +5,11 @@
 //!
 //! # Usage
 //!
-//! ```rust
+//! ```
 //! use mic_eq_core::dsp::loudness::LoudnessMeter;
 //!
-//! let mut meter = LoudnessMeter::new(48000);
+//! let mut meter = LoudnessMeter::new(48000).unwrap();
+//! let audio_samples = vec![0.0f32; 480]; // 10ms at 48kHz
 //! meter.process(&audio_samples);
 //! let lufs = meter.loudness_momentary();
 //! ```

@@ -258,6 +258,9 @@ impl Compressor {
     pub fn set_makeup_gain(&mut self, makeup_gain_db: f64) {
         self.makeup_gain_db = makeup_gain_db;
         self.makeup_gain_linear = Self::db_to_linear(makeup_gain_db);
+        if !self.auto_makeup_enabled {
+            self.smoothed_makeup_gain = makeup_gain_db;
+        }
     }
 
     /// Get makeup gain in dB
@@ -283,6 +286,40 @@ impl Compressor {
     /// Get current gain reduction in dB (for metering)
     pub fn current_gain_reduction(&self) -> f64 {
         self.current_gain_reduction_db
+    }
+
+    /// Enable or disable auto makeup gain
+    pub fn set_auto_makeup_enabled(&mut self, enabled: bool) {
+        self.auto_makeup_enabled = enabled && self.loudness_meter.is_some();
+        if !enabled {
+            // Reset to manual makeup when disabled
+            self.smoothed_makeup_gain = self.makeup_gain_db;
+        }
+    }
+
+    /// Check if auto makeup is enabled
+    pub fn auto_makeup_enabled(&self) -> bool {
+        self.auto_makeup_enabled
+    }
+
+    /// Set target LUFS for auto makeup gain
+    pub fn set_target_lufs(&mut self, target: f64) {
+        self.target_lufs = target.clamp(-24.0, -12.0);
+    }
+
+    /// Get target LUFS
+    pub fn target_lufs(&self) -> f64 {
+        self.target_lufs
+    }
+
+    /// Get current measured loudness (for metering)
+    pub fn current_lufs(&self) -> f64 {
+        self.current_lufs
+    }
+
+    /// Get current applied makeup gain (for metering)
+    pub fn current_makeup_gain(&self) -> f64 {
+        self.smoothed_makeup_gain
     }
 
     /// Calculate adaptive release time based on overage duration
@@ -440,9 +477,83 @@ impl Compressor {
             return;
         }
 
-        for sample in buffer.iter_mut() {
-            *sample = self.process_sample(*sample);
+        // Update loudness meter for entire block (more efficient)
+        if let Some(meter) = &mut self.loudness_meter {
+            meter.process(buffer);
         }
+
+        // Update auto makeup gain once per block
+        self.update_auto_makeup_gain();
+
+        // Process samples using efficient block processing
+        for sample in buffer.iter_mut() {
+            *sample = self.process_sample_inner(*sample);
+        }
+    }
+
+    /// Inner sample processing without auto makeup gain update
+    /// (Called by process_block_inplace after updating makeup gain once)
+    #[inline]
+    fn process_sample_inner(&mut self, input: f32) -> f32 {
+        if !self.enabled {
+            self.current_gain_reduction_db = 0.0;
+            return input;
+        }
+
+        let input_f64 = input as f64;
+
+        // IIR envelope follower (RMS approximation)
+        let input_squared = input_f64 * input_f64;
+        self.envelope_squared =
+            self.rms_coeff * self.envelope_squared + (1.0 - self.rms_coeff) * input_squared;
+
+        // Calculate RMS level in dB
+        let rms = self.envelope_squared.sqrt();
+        let input_db = Self::linear_to_db(rms);
+
+        // Smooth envelope in dB domain with attack/release
+        let coeff = if input_db > self.envelope_db {
+            self.attack_coeff
+        } else {
+            self.release_coeff
+        };
+        self.envelope_db = coeff * self.envelope_db + (1.0 - coeff) * input_db;
+
+        // Track overage duration
+        let input_above_threshold = self.envelope_db > self.threshold_db;
+        if input_above_threshold {
+            // Increment overage timer (per sample)
+            self.overage_timer += 1.0;
+        } else {
+            // Decay overage timer (quick release when below threshold)
+            self.overage_timer = (self.overage_timer - 10.0).max(0.0);
+        }
+
+        // Calculate adaptive release target
+        self.calculate_adaptive_release(self.sample_rate);
+
+        // Smooth release time changes (100ms hysteresis)
+        let release_diff = self.target_release_ms - self.current_release_ms;
+        if release_diff.abs() > 1.0 {
+            // Only smooth if difference > 1ms
+            self.current_release_ms = self.release_smoothing_coeff * self.current_release_ms
+                + (1.0 - self.release_smoothing_coeff) * self.target_release_ms;
+        } else {
+            self.current_release_ms = self.target_release_ms;
+        }
+
+        // Update release coefficient based on current adaptive release
+        self.release_coeff = Self::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
+
+        // Calculate gain reduction
+        let gain_reduction_db = self.compute_gain_reduction(self.envelope_db);
+        self.current_gain_reduction_db = gain_reduction_db;
+
+        // Apply gain reduction using smoothed makeup gain
+        let output_gain = Self::db_to_linear(-gain_reduction_db)
+            * Self::db_to_linear(self.smoothed_makeup_gain);
+
+        (input_f64 * output_gain) as f32
     }
 
     /// Reset compressor state

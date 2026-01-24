@@ -397,6 +397,8 @@ class CompressorPanel(QWidget):
             'attack_ms': self.attack_spinbox.value(),
             'release_ms': self.release_spinbox.value(),
             'makeup_gain_db': self.makeup_spinbox.value(),
+            'adaptive_release': self.adaptive_release_checkbox.isChecked(),
+            'base_release_ms': self.base_release_spinbox.value(),
         }
 
     def get_limiter_settings(self) -> dict:
@@ -424,7 +426,15 @@ class CompressorPanel(QWidget):
         if 'makeup_gain_db' in settings:
             self.makeup_spinbox.setValue(settings['makeup_gain_db'])
             self.makeup_slider.setValue(int(settings['makeup_gain_db']))
+
+        # Adaptive release settings (v1.2.0+)
+        if 'adaptive_release' in settings:
+            self.adaptive_release_checkbox.setChecked(settings['adaptive_release'])
+        if 'base_release_ms' in settings:
+            self.base_release_spinbox.setValue(settings['base_release_ms'])
+
         self._update_compressor()
+        self._update_adaptive_release()
 
     def set_limiter_settings(self, settings: dict) -> None:
         """Apply limiter settings from a dictionary."""

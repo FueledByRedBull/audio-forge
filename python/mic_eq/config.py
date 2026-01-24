@@ -48,6 +48,10 @@ class GateSettings:
     threshold_db: float = -40.0
     attack_ms: float = 10.0
     release_ms: float = 100.0
+    # VAD settings (v1.2.0+)
+    gate_mode: int = 0  # 0=ThresholdOnly, 1=VadAssisted, 2=VadOnly
+    vad_threshold: float = 0.5  # Speech probability threshold (0.3-0.8)
+    vad_hold_time_ms: float = 200.0  # Hold time in milliseconds (0-500)
 
 
 @dataclass
@@ -97,6 +101,9 @@ VALIDATION_RANGES = {
         'threshold_db': (-80.0, -10.0),
         'attack_ms': (0.1, 100.0),
         'release_ms': (10.0, 1000.0),
+        'gate_mode': (0, 2),  # Integer enum
+        'vad_threshold': (0.3, 0.8),  # Speech probability
+        'vad_hold_time_ms': (0.0, 500.0),  # Milliseconds
     },
     'eq': {
         'band_gain': (-12.0, 12.0),
@@ -209,6 +216,21 @@ class Preset:
                     gate_data.get('release_ms', 100.0),
                     *gate_ranges['release_ms'],
                     'release_ms', 'gate'
+                ),
+                gate_mode=int(_validate_range(  # Convert to int
+                    gate_data.get('gate_mode', 0),  # Default to ThresholdOnly
+                    *gate_ranges['gate_mode'],
+                    'gate_mode', 'gate'
+                )),
+                vad_threshold=_validate_range(
+                    gate_data.get('vad_threshold', 0.5),  # Default 0.5
+                    *gate_ranges['vad_threshold'],
+                    'vad_threshold', 'gate'
+                ),
+                vad_hold_time_ms=_validate_range(
+                    gate_data.get('vad_hold_time_ms', 200.0),  # Default 200ms
+                    *gate_ranges['vad_hold_time_ms'],
+                    'vad_hold_time_ms', 'gate'
                 ),
             )
 
@@ -472,7 +494,8 @@ BUILTIN_PRESETS = {
         name="Voice Clarity",
         description="Optimized for voice communication - cuts low end rumble and boosts presence",
         version="1.2.0",
-        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0),
+        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-3.0, -2.0, 0.0, 1.0, 2.0, 3.0, 2.0, 0.0, -1.0, -2.0],
@@ -484,7 +507,8 @@ BUILTIN_PRESETS = {
         name="Bass Cut",
         description="High-pass effect to remove low frequency rumble and proximity effect",
         version="1.2.0",
-        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0),
+        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-12.0, -6.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -496,7 +520,8 @@ BUILTIN_PRESETS = {
         name="Presence Boost",
         description="Enhances voice presence and intelligibility",
         version="1.2.0",
-        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0),
+        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[0.0, 0.0, 0.0, 0.0, 2.0, 4.0, 3.0, 1.0, 0.0, 0.0],
@@ -508,7 +533,8 @@ BUILTIN_PRESETS = {
         name="Flat",
         description="No EQ processing - flat frequency response",
         version="1.2.0",
-        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0),
+        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[0.0] * 10,
@@ -520,7 +546,8 @@ BUILTIN_PRESETS = {
         name="Minimal Processing",
         description="Gate and RNNoise only - no EQ",
         version="1.2.0",
-        gate=GateSettings(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0),
+        gate=GateSettings(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0,
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
         eq=EQSettings(
             enabled=False,
             band_gains=[0.0] * 10,
@@ -532,7 +559,8 @@ BUILTIN_PRESETS = {
         name="Aggressive Denoise",
         description="Maximum noise reduction with tight gate",
         version="1.2.0",
-        gate=GateSettings(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0),
+        gate=GateSettings(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0,
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-6.0, -3.0, 0.0, 0.0, 1.0, 2.0, 1.0, -1.0, -3.0, -6.0],

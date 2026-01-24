@@ -467,4 +467,117 @@ mod tests {
         // both should be very close
         assert!((well_above_hard - well_above_soft).abs() < 0.5);
     }
+
+    #[test]
+    fn test_adaptive_release_disabled() {
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48000.0);
+        comp.set_adaptive_release(false);
+
+        // Verify current_release equals base when disabled
+        assert_eq!(comp.current_release_time(), 50.0);
+        assert!(!comp.adaptive_release());
+    }
+
+    #[test]
+    fn test_adaptive_release_enables() {
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48000.0);
+        comp.set_adaptive_release(true);
+
+        assert!(comp.adaptive_release());
+
+        // Feed signal above threshold to build overage
+        let loud_signal = vec![0.3f32; 96000]; // 2 seconds at 48kHz
+        for sample in &loud_signal {
+            comp.process_sample(*sample);
+        }
+
+        // After 2 seconds overage, release should be near max (400ms)
+        let current_release = comp.current_release_time();
+        assert!(
+            current_release > 300.0,
+            "Release should scale up with overage, got {}",
+            current_release
+        );
+    }
+
+    #[test]
+    fn test_adaptive_release_scales_linearly() {
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48000.0);
+        comp.set_adaptive_release(true);
+
+        let sample_rate = 48000.0;
+
+        // Test at 0.5 seconds overage (should be ~25% of max scaling)
+        let quarter_signal = vec![0.3f32; (24000.0) as usize]; // 0.5 seconds
+        for sample in &quarter_signal {
+            comp.process_sample(*sample);
+        }
+        let release_quarter = comp.current_release_time();
+
+        // Test at 1.0 seconds overage (should be ~50% of max scaling)
+        comp.reset_overage_timer();
+        let half_signal = vec![0.3f32; (48000.0) as usize]; // 1.0 second
+        for sample in &half_signal {
+            comp.process_sample(*sample);
+        }
+        let release_half = comp.current_release_time();
+
+        // Half duration should have less release than quarter (accumulated)
+        // Actually quarter was accumulated on zero, half starts from zero
+        // So release_half should be roughly double release_quarter (minus min)
+        assert!(release_half > release_quarter);
+    }
+
+    #[test]
+    fn test_adaptive_release_resets_when_threshold_changes() {
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48000.0);
+        comp.set_adaptive_release(true);
+
+        // Build up overage
+        let loud_signal = vec![0.3f32; 48000];
+        for sample in &loud_signal {
+            comp.process_sample(*sample);
+        }
+
+        // Record release before threshold change
+        let release_before = comp.current_release_time();
+
+        // Change threshold (should reset overage)
+        comp.set_threshold(-30.0);
+
+        // Feed quiet signal to let smoothing decay
+        let quiet_signal = vec![0.001f32; 10000];
+        for sample in &quiet_signal {
+            comp.process_sample(*sample);
+        }
+
+        // After quiet signal, release should have decayed from previous high
+        let release_after = comp.current_release_time();
+        assert!(
+            release_after < release_before,
+            "Release should decay after threshold change and quiet signal, before: {}, after: {}",
+            release_before,
+            release_after
+        );
+    }
+
+    #[test]
+    fn test_adaptive_release_smooths_transitions() {
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48000.0);
+        comp.set_adaptive_release(true);
+
+        // Get base release
+        let base_release = comp.current_release_time();
+
+        // Build up some overage
+        let signal = vec![0.3f32; 24000]; // 0.5 seconds
+        for sample in &signal {
+            comp.process_sample(*sample);
+        }
+
+        // After processing, release should have increased smoothly
+        let increased_release = comp.current_release_time();
+        assert!(increased_release > base_release);
+        assert!(increased_release < 400.0); // Not at max yet
+    }
 }

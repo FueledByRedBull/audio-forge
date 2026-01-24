@@ -56,7 +56,7 @@ impl LoudnessMeter {
 
         // Create EBU R128 meter with momentary mode
         // Use mode M (momentary) for real-time control
-        let meter = EbuR128::new(1, Mode::M | Mode::HISTOGRAM, sample_rate)
+        let meter = EbuR128::new(1, sample_rate, Mode::M | Mode::HISTOGRAM)
             .map_err(|e| LoudnessError::InitError(e.to_string()))?;
 
         Ok(Self {
@@ -72,7 +72,7 @@ impl LoudnessMeter {
     /// * `samples` - Audio samples (interleaved mono)
     pub fn process(&mut self, samples: &[f32]) {
         // Process samples through EBU R128 meter
-        if let Err(e) = self.meter.process(&[samples]) {
+        if let Err(e) = self.meter.add_frames_f32(samples) {
             eprintln!("Loudness meter error: {}", e);
             return;
         }
@@ -80,7 +80,7 @@ impl LoudnessMeter {
         // Update momentary loudness (400ms integration)
         match self.meter.loudness_momentary() {
             Ok(lufs) => {
-                self.current_lufs = lufs;
+                self.current_lufs = lufs as f32;
             }
             Err(_) => {
                 // Not enough data yet, keep previous value
@@ -104,7 +104,7 @@ impl LoudnessMeter {
     pub fn reset(&mut self) {
         // Reset the EBU R128 meter
         // Note: ebur128 crate doesn't have explicit reset, so we recreate
-        if let Ok(meter) = EbuR128::new(1, Mode::M | Mode::HISTOGRAM, self.sample_rate) {
+        if let Ok(meter) = EbuR128::new(1, self.sample_rate, Mode::M | Mode::HISTOGRAM) {
             self.meter = meter;
         }
         self.current_lufs = -100.0;

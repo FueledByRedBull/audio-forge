@@ -44,6 +44,24 @@ pub struct Compressor {
 
     /// Whether compressor is enabled
     enabled: bool,
+
+    /// Whether adaptive release is enabled
+    adaptive_release: bool,
+
+    /// Base release time in milliseconds (user-controlled)
+    base_release_ms: f64,
+
+    /// Current release time in milliseconds (adaptive value)
+    current_release_ms: f64,
+
+    /// Overage timer (samples above threshold)
+    overage_timer: f64,
+
+    /// Target release time (for smoothing)
+    target_release_ms: f64,
+
+    /// Release smoothing coefficient (100ms hysteresis)
+    release_smoothing_coeff: f64,
 }
 
 impl Compressor {
@@ -70,6 +88,8 @@ impl Compressor {
         let release_coeff = Self::time_constant_to_coeff(release_ms, sample_rate);
         // RMS smoothing: 10ms time constant for fast response
         let rms_coeff = Self::time_constant_to_coeff(10.0, sample_rate);
+        // Release smoothing: 100ms time constant for hysteresis
+        let release_smoothing_coeff = Self::time_constant_to_coeff(100.0, sample_rate);
 
         Self {
             threshold_db,
@@ -85,18 +105,24 @@ impl Compressor {
             current_gain_reduction_db: 0.0,
             sample_rate,
             enabled: true,
+            adaptive_release: false,
+            base_release_ms: release_ms,
+            current_release_ms: release_ms,
+            overage_timer: 0.0,
+            target_release_ms: release_ms,
+            release_smoothing_coeff,
         }
     }
 
     /// Create with default parameters suitable for voice
     pub fn default_voice(sample_rate: f64) -> Self {
         Self::new(
-            -20.0,  // threshold_db
-            4.0,    // ratio (4:1)
-            10.0,   // attack_ms
-            200.0,  // release_ms
-            0.0,    // makeup_gain_db
-            6.0,    // knee_db (soft knee)
+            -20.0, // threshold_db
+            4.0,   // ratio (4:1)
+            10.0,  // attack_ms
+            200.0, // release_ms
+            0.0,   // makeup_gain_db
+            6.0,   // knee_db (soft knee)
             sample_rate,
         )
     }
@@ -122,6 +148,7 @@ impl Compressor {
     /// Set threshold in dB
     pub fn set_threshold(&mut self, threshold_db: f64) {
         self.threshold_db = threshold_db;
+        self.reset_overage_timer();
     }
 
     /// Get current threshold in dB
@@ -146,7 +173,45 @@ impl Compressor {
 
     /// Set release time in ms
     pub fn set_release_time(&mut self, release_ms: f64) {
+        self.base_release_ms = release_ms;
+        if !self.adaptive_release {
+            self.current_release_ms = release_ms;
+        }
         self.release_coeff = Self::time_constant_to_coeff(release_ms, self.sample_rate);
+    }
+
+    /// Enable or disable adaptive release
+    pub fn set_adaptive_release(&mut self, enabled: bool) {
+        self.adaptive_release = enabled;
+        if !enabled {
+            // Reset to base release when disabled
+            self.current_release_ms = self.base_release_ms;
+            self.target_release_ms = self.base_release_ms;
+            self.overage_timer = 0.0;
+        }
+    }
+
+    /// Check if adaptive release is enabled
+    pub fn adaptive_release(&self) -> bool {
+        self.adaptive_release
+    }
+
+    /// Set base release time
+    pub fn set_base_release_time(&mut self, release_ms: f64) {
+        self.base_release_ms = release_ms;
+        if !self.adaptive_release {
+            self.current_release_ms = release_ms;
+        }
+    }
+
+    /// Get current release time (adaptive or base)
+    pub fn current_release_time(&self) -> f64 {
+        self.current_release_ms
+    }
+
+    /// Reset overage timer (call when threshold changes)
+    pub fn reset_overage_timer(&mut self) {
+        self.overage_timer = 0.0;
     }
 
     /// Set makeup gain in dB
@@ -332,7 +397,10 @@ mod tests {
         let at_minus_18_soft = comp_soft.compute_gain_reduction(-18.0);
 
         // Hard knee at -18 dB should have gain reduction (2 dB above threshold * 0.75 = 1.5 dB)
-        assert!(at_minus_18_hard > 0.0, "Hard knee should compress at -18 dB");
+        assert!(
+            at_minus_18_hard > 0.0,
+            "Hard knee should compress at -18 dB"
+        );
 
         // Soft knee should have less compression than hard knee within the knee region
         assert!(

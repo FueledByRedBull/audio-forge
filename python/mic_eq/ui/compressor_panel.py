@@ -171,10 +171,50 @@ class CompressorPanel(QWidget):
         comp_layout.addWidget(QLabel("Makeup Gain:"), 9, 0)
         comp_layout.addLayout(makeup_layout, 9, 1, 1, 2)
 
+        # Separator before auto makeup section
+        comp_layout.addWidget(QLabel(""), 10, 0)
+        comp_layout.addWidget(QLabel(""), 10, 1)
+
+        # Auto Makeup Gain section
+        self.auto_makeup_checkbox = QCheckBox("Auto Makeup Gain")
+        self.auto_makeup_checkbox.setChecked(False)
+        self.auto_makeup_checkbox.setToolTip(
+            "Automatically adjust makeup gain based on EBU R128 loudness measurement.\n"
+            "Maintains consistent output level relative to target LUFS.\n"
+            "Target: -18 LUFS (podcast/streaming standard)"
+        )
+        comp_layout.addWidget(QLabel(""), 11, 0)
+        comp_layout.addWidget(self.auto_makeup_checkbox, 11, 1, 1, 2)
+
+        # Target LUFS spinbox
+        self.target_lufs_spinbox = QDoubleSpinBox()
+        self.target_lufs_spinbox.setRange(-24.0, -12.0)
+        self.target_lufs_spinbox.setSingleStep(1.0)
+        self.target_lufs_spinbox.setValue(-18.0)
+        self.target_lufs_spinbox.setSuffix(" LUFS")
+        self.target_lufs_spinbox.setToolTip("Target loudness level (-24 to -12 LUFS)")
+        self.target_lufs_spinbox.setEnabled(False)  # Disabled when auto makeup off
+        comp_layout.addWidget(QLabel("Target LUFS:"), 12, 0)
+        comp_layout.addWidget(self.target_lufs_spinbox, 12, 1, 1, 2)
+
+        # Current LUFS display (read-only, for metering)
+        self.current_lufs_label = QLabel("-18.0 LUFS")
+        self.current_lufs_label.setStyleSheet("font-weight: bold; color: #4a90d9;")
+        self.current_lufs_label.setToolTip("Current measured loudness (EBU R128 momentary)")
+        comp_layout.addWidget(QLabel("Current LUFS:"), 13, 0)
+        comp_layout.addWidget(self.current_lufs_label, 13, 1)
+
+        # Current makeup gain display (read-only, for metering)
+        self.current_makeup_gain_label = QLabel("0.0 dB")
+        self.current_makeup_gain_label.setStyleSheet("font-weight: bold; color: #4a90d9;")
+        self.current_makeup_gain_label.setToolTip("Current auto makeup gain applied")
+        comp_layout.addWidget(QLabel("Auto Gain:"), 14, 0)
+        comp_layout.addWidget(self.current_makeup_gain_label, 14, 1)
+
         # Gain reduction meter
         self.gr_meter = GainReductionMeter()
-        comp_layout.addWidget(QLabel(""), 10, 0)
-        comp_layout.addWidget(self.gr_meter, 10, 1, 1, 2)
+        comp_layout.addWidget(QLabel(""), 15, 0)
+        comp_layout.addWidget(self.gr_meter, 15, 1, 1, 2)
 
         layout.addWidget(comp_group)
 
@@ -252,6 +292,9 @@ class CompressorPanel(QWidget):
         self.makeup_spinbox.valueChanged.connect(self._on_makeup_spinbox)
         self.adaptive_release_checkbox.toggled.connect(self._update_adaptive_release)
         self.base_release_spinbox.valueChanged.connect(self._update_adaptive_release)
+        # Auto makeup gain
+        self.auto_makeup_checkbox.toggled.connect(self._update_auto_makeup)
+        self.target_lufs_spinbox.valueChanged.connect(self._update_auto_makeup)
         self.threshold_slider.sliderReleased.connect(self._comp_rate_limiter.flush)
         self.ratio_slider.sliderReleased.connect(self._comp_rate_limiter.flush)
         self.makeup_slider.sliderReleased.connect(self._comp_rate_limiter.flush)
@@ -384,6 +427,28 @@ class CompressorPanel(QWidget):
         except Exception as e:
             print(f"Current release read error: {e}")
 
+    def _update_auto_makeup(self):
+        """Update auto makeup gain configuration."""
+        try:
+            auto_makeup = self.auto_makeup_checkbox.isChecked()
+            target_lufs = self.target_lufs_spinbox.value()
+
+            self.processor.set_compressor_auto_makeup_enabled(auto_makeup)
+            self.processor.set_compressor_target_lufs(target_lufs)
+
+            # Enable/disable target LUFS spinbox based on auto makeup state
+            self.target_lufs_spinbox.setEnabled(auto_makeup)
+            self.makeup_spinbox.setEnabled(not auto_makeup)
+            self.makeup_slider.setEnabled(not auto_makeup)
+
+        except Exception as e:
+            print(f"Auto makeup gain error: {e}")
+
+    def update_auto_makeup_meters(self, current_lufs: float, makeup_gain: float):
+        """Update auto makeup gain metering displays (call from timer)."""
+        self.current_lufs_label.setText(f"{current_lufs:.1f} LUFS")
+        self.current_makeup_gain_label.setText(f"{makeup_gain:.1f} dB")
+
     def update_gain_reduction(self, gr_db: float):
         """Update the gain reduction meter (call from timer)."""
         self.gr_meter.set_gain_reduction(gr_db)
@@ -399,6 +464,8 @@ class CompressorPanel(QWidget):
             'makeup_gain_db': self.makeup_spinbox.value(),
             'adaptive_release': self.adaptive_release_checkbox.isChecked(),
             'base_release_ms': self.base_release_spinbox.value(),
+            'auto_makeup_enabled': self.auto_makeup_checkbox.isChecked(),
+            'target_lufs': self.target_lufs_spinbox.value(),
         }
 
     def get_limiter_settings(self) -> dict:
@@ -433,8 +500,15 @@ class CompressorPanel(QWidget):
         if 'base_release_ms' in settings:
             self.base_release_spinbox.setValue(settings['base_release_ms'])
 
+        # Auto makeup gain settings (v1.3.0+)
+        if 'auto_makeup_enabled' in settings:
+            self.auto_makeup_checkbox.setChecked(settings['auto_makeup_enabled'])
+        if 'target_lufs' in settings:
+            self.target_lufs_spinbox.setValue(settings['target_lufs'])
+
         self._update_compressor()
         self._update_adaptive_release()
+        self._update_auto_makeup()
 
     def set_limiter_settings(self, settings: dict) -> None:
         """Apply limiter settings from a dictionary."""

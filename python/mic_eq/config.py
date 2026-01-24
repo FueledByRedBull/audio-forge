@@ -569,3 +569,70 @@ BUILTIN_PRESETS = {
         rnnoise=RNNoiseSettings(enabled=True, strength=1.0, model='rnnoise'),
     ),
 }
+
+
+# Test functions for VAD preset persistence
+def _test_vad_preset_persistence():
+    """Test VAD settings persist across preset save/load."""
+    from pathlib import Path
+    import tempfile
+
+    # Create temporary directory
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_file = Path(tmpdir) / "test_vad_preset.json"
+
+        # Create preset with VAD settings
+        original = Preset(
+            name="VAD Test",
+            gate=GateSettings(
+                enabled=True,
+                threshold_db=-35.0,
+                attack_ms=5.0,
+                release_ms=50.0,
+                gate_mode=1,  # VAD Assisted
+                vad_threshold=0.6,
+                vad_hold_time_ms=150.0
+            )
+        )
+
+        # Save preset
+        save_preset(original, test_file)
+
+        # Load preset
+        loaded = load_preset(test_file)
+
+        # Verify all fields match
+        assert loaded.gate.gate_mode == 1, f"gate_mode mismatch: {loaded.gate.gate_mode}"
+        assert loaded.gate.vad_threshold == 0.6, f"vad_threshold mismatch: {loaded.gate.vad_threshold}"
+        assert loaded.gate.vad_hold_time_ms == 150.0, f"vad_hold_time_ms mismatch: {loaded.gate.vad_hold_time_ms}"
+
+        print("PASS: VAD preset persistence test passed")
+
+
+def _test_backward_compatibility():
+    """Test old presets load with default VAD values."""
+    old_preset_data = {
+        'name': 'Old Preset',
+        'version': '1.1.0',
+        'gate': {
+            'enabled': True,
+            'threshold_db': -40.0,
+            'attack_ms': 10.0,
+            'release_ms': 100.0,
+            # No gate_mode, vad_threshold, vad_hold_time_ms
+        }
+    }
+
+    loaded = Preset.from_dict(old_preset_data)
+
+    # Verify defaults applied
+    assert loaded.gate.gate_mode == 0, "Default gate_mode should be 0"
+    assert loaded.gate.vad_threshold == 0.5, "Default vad_threshold should be 0.5"
+    assert loaded.gate.vad_hold_time_ms == 200.0, "Default vad_hold_time_ms should be 200.0"
+
+    print("PASS: Backward compatibility test passed")
+
+
+if __name__ == "__main__":
+    _test_vad_preset_persistence()
+    _test_backward_compatibility()

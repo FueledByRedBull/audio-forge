@@ -1038,6 +1038,58 @@ impl AudioProcessor {
         f32::from_bits(self.compressor_gain_reduction.load(Ordering::Relaxed))
     }
 
+    // === Auto Makeup Gain Controls ===
+
+    /// Set compressor auto makeup gain mode
+    pub fn set_compressor_auto_makeup_enabled(&self, enabled: bool) {
+        if let Ok(mut c) = self.compressor.lock() {
+            c.set_auto_makeup_enabled(enabled);
+        }
+    }
+
+    /// Get compressor auto makeup gain mode
+    pub fn get_compressor_auto_makeup_enabled(&self) -> bool {
+        if let Ok(c) = self.compressor.lock() {
+            c.auto_makeup_enabled()
+        } else {
+            false
+        }
+    }
+
+    /// Set compressor target LUFS
+    pub fn set_compressor_target_lufs(&self, target_lufs: f64) {
+        if let Ok(mut c) = self.compressor.lock() {
+            c.set_target_lufs(target_lufs);
+        }
+    }
+
+    /// Get compressor target LUFS
+    pub fn get_compressor_target_lufs(&self) -> f64 {
+        if let Ok(c) = self.compressor.lock() {
+            c.target_lufs()
+        } else {
+            -18.0
+        }
+    }
+
+    /// Get compressor current LUFS
+    pub fn get_compressor_current_lufs(&self) -> f64 {
+        if let Ok(c) = self.compressor.lock() {
+            c.current_lufs()
+        } else {
+            -18.0
+        }
+    }
+
+    /// Get compressor current makeup gain
+    pub fn get_compressor_current_makeup_gain(&self) -> f64 {
+        if let Ok(c) = self.compressor.lock() {
+            c.current_makeup_gain()
+        } else {
+            0.0
+        }
+    }
+
     /// Get current processing latency in milliseconds
     pub fn get_latency_ms(&self) -> f32 {
         let latency_us = self.latency_us.load(Ordering::Relaxed);
@@ -1355,6 +1407,38 @@ impl PyAudioProcessor {
     fn get_compressor_current_release(&self) -> f64 {
         let release_raw = self.processor.compressor_current_release_ms.load(Ordering::Relaxed);
         release_raw as f64 / 10.0 // Convert back from 0.1ms resolution
+    }
+
+    // === Auto Makeup Gain ===
+
+    /// Set compressor auto makeup gain mode
+    fn set_compressor_auto_makeup_enabled(&self, enabled: bool) {
+        self.processor.set_compressor_auto_makeup_enabled(enabled);
+    }
+
+    /// Get compressor auto makeup gain mode
+    fn get_compressor_auto_makeup_enabled(&self) -> bool {
+        self.processor.get_compressor_auto_makeup_enabled()
+    }
+
+    /// Set compressor target LUFS
+    fn set_compressor_target_lufs(&self, target_lufs: f64) {
+        self.processor.set_compressor_target_lufs(target_lufs);
+    }
+
+    /// Get compressor target LUFS
+    fn get_compressor_target_lufs(&self) -> f64 {
+        self.processor.get_compressor_target_lufs()
+    }
+
+    /// Get compressor current LUFS
+    fn get_compressor_current_lufs(&self) -> f64 {
+        self.processor.get_compressor_current_lufs()
+    }
+
+    /// Get compressor current makeup gain
+    fn get_compressor_current_makeup_gain(&self) -> f64 {
+        self.processor.get_compressor_current_makeup_gain()
     }
 
     // === Limiter ===

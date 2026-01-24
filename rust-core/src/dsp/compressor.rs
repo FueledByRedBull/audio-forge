@@ -143,7 +143,7 @@ impl Compressor {
             loudness_meter,
             auto_makeup_enabled: false,
             target_lufs: -18.0,  // Podcast/streaming standard
-            smoothed_makeup_gain: 0.0,
+            smoothed_makeup_gain: makeup_gain_db,  // Start with manual value
             makeup_smoothing_coeff,
             current_lufs: -100.0,
         }
@@ -306,6 +306,43 @@ impl Compressor {
         self.target_release_ms = min_release + adaptive_range * scaling_factor;
     }
 
+    /// Calculate and apply auto makeup gain based on loudness
+    fn update_auto_makeup_gain(&mut self) {
+        if !self.auto_makeup_enabled {
+            // When disabled, smooth back to manual makeup gain
+            let target = self.makeup_gain_db;
+            let diff = target - self.smoothed_makeup_gain;
+            if diff.abs() > 0.1 {
+                self.smoothed_makeup_gain = self.makeup_smoothing_coeff * self.smoothed_makeup_gain
+                    + (1.0 - self.makeup_smoothing_coeff) * target;
+            } else {
+                self.smoothed_makeup_gain = target;
+            }
+            return;
+        }
+
+        // Get current loudness
+        if let Some(meter) = &self.loudness_meter {
+            self.current_lufs = meter.loudness_momentary() as f64;
+
+            // Calculate required gain to reach target
+            // Formula: gain = target_lufs - current_lufs
+            let required_gain = self.target_lufs - self.current_lufs;
+
+            // Clamp to 0-12 dB range (prevent excessive gain)
+            let clamped_gain = required_gain.clamp(0.0, 12.0);
+
+            // Smooth gain changes with 200ms time constant
+            let diff = clamped_gain - self.smoothed_makeup_gain;
+            if diff.abs() > 0.1 {  // Only smooth if difference > 0.1dB
+                self.smoothed_makeup_gain = self.makeup_smoothing_coeff * self.smoothed_makeup_gain
+                    + (1.0 - self.makeup_smoothing_coeff) * clamped_gain;
+            } else {
+                self.smoothed_makeup_gain = clamped_gain;
+            }
+        }
+    }
+
     /// Calculate gain reduction in dB for a given input level
     /// Implements soft-knee compression
     #[inline]
@@ -386,8 +423,12 @@ impl Compressor {
         let gain_reduction_db = self.compute_gain_reduction(self.envelope_db);
         self.current_gain_reduction_db = gain_reduction_db;
 
-        // Apply gain reduction and makeup gain
-        let output_gain = Self::db_to_linear(-gain_reduction_db) * self.makeup_gain_linear;
+        // Update auto makeup gain
+        self.update_auto_makeup_gain();
+
+        // Apply gain reduction using smoothed makeup gain
+        let output_gain = Self::db_to_linear(-gain_reduction_db)
+            * Self::db_to_linear(self.smoothed_makeup_gain);
 
         (input_f64 * output_gain) as f32
     }

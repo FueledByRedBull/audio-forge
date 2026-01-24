@@ -78,7 +78,9 @@ class GatePanel(QWidget):
         self.threshold_spinbox.setFixedWidth(80)
         threshold_layout.addWidget(self.threshold_spinbox)
 
-        gate_layout.addWidget(QLabel("Threshold:"), 1, 0)
+        threshold_label = QLabel("Threshold:")
+        threshold_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        gate_layout.addWidget(threshold_label, 1, 0)
         gate_layout.addLayout(threshold_layout, 1, 1, 1, 2)
 
         # Attack time
@@ -88,7 +90,9 @@ class GatePanel(QWidget):
         self.attack_spinbox.setValue(10.0)
         self.attack_spinbox.setSuffix(" ms")
         self.attack_spinbox.setToolTip("Time for gate to open when signal exceeds threshold")
-        gate_layout.addWidget(QLabel("Attack:"), 2, 0)
+        attack_label = QLabel("Attack:")
+        attack_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        gate_layout.addWidget(attack_label, 2, 0)
         gate_layout.addWidget(self.attack_spinbox, 2, 1, 1, 2)
 
         # Release time
@@ -98,7 +102,9 @@ class GatePanel(QWidget):
         self.release_spinbox.setValue(100.0)
         self.release_spinbox.setSuffix(" ms")
         self.release_spinbox.setToolTip("Time for gate to close when signal drops below threshold")
-        gate_layout.addWidget(QLabel("Release:"), 3, 0)
+        release_label = QLabel("Release:")
+        release_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        gate_layout.addWidget(release_label, 3, 0)
         gate_layout.addWidget(self.release_spinbox, 3, 1, 1, 2)
 
         # Separator
@@ -107,7 +113,7 @@ class GatePanel(QWidget):
 
         # Gate Mode section
         mode_label = QLabel("Gate Mode:")
-        mode_label.setStyleSheet("font-weight: bold;")
+        mode_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         gate_layout.addWidget(mode_label, 5, 0)
 
         # Mode dropdown
@@ -144,7 +150,9 @@ class GatePanel(QWidget):
         self.vad_threshold_spinbox.setFixedWidth(80)
         vad_threshold_layout.addWidget(self.vad_threshold_spinbox)
 
-        gate_layout.addWidget(QLabel("VAD Threshold:"), 7, 0)
+        vad_threshold_label = QLabel("VAD Threshold:")
+        vad_threshold_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        gate_layout.addWidget(vad_threshold_label, 7, 0)
         gate_layout.addLayout(vad_threshold_layout, 7, 1, 1, 2)
 
         # Hold time
@@ -154,7 +162,9 @@ class GatePanel(QWidget):
         self.vad_hold_spinbox.setValue(200.0)
         self.vad_hold_spinbox.setSuffix(" ms")
         self.vad_hold_spinbox.setToolTip("Gate hold time after speech ends (prevents chatter)")
-        gate_layout.addWidget(QLabel("Hold Time:"), 8, 0)
+        hold_time_label = QLabel("Hold Time:")
+        hold_time_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        gate_layout.addWidget(hold_time_label, 8, 0)
         gate_layout.addWidget(self.vad_hold_spinbox, 8, 1, 1, 2)
 
         # VAD confidence meter
@@ -162,13 +172,15 @@ class GatePanel(QWidget):
         self.confidence_meter = ConfidenceMeter()
         self.confidence_meter.setToolTip("Real-time VAD confidence (red=low, green=high)")
         self.vad_info_label = QLabel("VAD: N/A")
-        self.vad_info_label.setStyleSheet("color: gray; font-size: 10px;")
+        self.vad_info_label.setStyleSheet(INFO_LABEL_STYLE)
         vad_meter_layout = QVBoxLayout()
         vad_meter_layout.setContentsMargins(0, 0, 0, 0)
         vad_meter_layout.setSpacing(2)
         vad_meter_layout.addWidget(self.confidence_meter)
         vad_meter_layout.addWidget(self.vad_info_label)
-        gate_layout.addWidget(QLabel("Confidence:"), 9, 0)
+        confidence_label = QLabel("Confidence:")
+        confidence_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        gate_layout.addWidget(confidence_label, 9, 0)
         gate_layout.addLayout(vad_meter_layout, 9, 1, 1, 2)
 
         # Info label
@@ -176,7 +188,7 @@ class GatePanel(QWidget):
             "Gate uses 3dB hysteresis to prevent chattering.\n"
             "IIR envelope follower for smooth transitions."
         )
-        info_label.setStyleSheet("color: gray; font-size: 10px;")
+        info_label.setStyleSheet(INFO_LABEL_STYLE)
         gate_layout.addWidget(QLabel(""), 10, 0)
         gate_layout.addWidget(info_label, 10, 1, 1, 2)
 

@@ -112,3 +112,6 @@ DEEPFILTER_TEST_REPORT.md
 # Build artifacts
 python/mic_eq_core*.pyd
 python/mic_eq_core*.so
+
+# Project docs (development only)
+CLAUDE.md

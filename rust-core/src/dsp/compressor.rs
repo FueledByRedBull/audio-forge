@@ -209,6 +209,11 @@ impl Compressor {
         self.current_release_ms
     }
 
+    /// Get base release time in milliseconds
+    pub fn base_release_ms(&self) -> f64 {
+        self.base_release_ms
+    }
+
     /// Reset overage timer (call when threshold changes)
     pub fn reset_overage_timer(&mut self) {
         self.overage_timer = 0.0;

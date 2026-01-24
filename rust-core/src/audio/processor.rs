@@ -1250,6 +1250,47 @@ impl PyAudioProcessor {
         self.processor.set_compressor_makeup_gain(makeup_gain_db);
     }
 
+    /// Set compressor adaptive release mode
+    fn set_compressor_adaptive_release(&self, enabled: bool) {
+        if let Ok(mut comp) = self.processor.compressor.lock() {
+            comp.set_adaptive_release(enabled);
+        }
+    }
+
+    /// Get compressor adaptive release mode
+    fn get_compressor_adaptive_release(&self) -> bool {
+        if let Ok(comp) = self.processor.compressor.lock() {
+            comp.adaptive_release()
+        } else {
+            false
+        }
+    }
+
+    /// Set compressor base release time (milliseconds)
+    fn set_compressor_base_release(&self, release_ms: f64) {
+        if let Ok(mut comp) = self.processor.compressor.lock() {
+            comp.set_base_release_time(release_ms);
+        }
+    }
+
+    /// Get compressor base release time (milliseconds)
+    fn get_compressor_base_release(&self) -> f64 {
+        if let Ok(comp) = self.processor.compressor.lock() {
+            comp.base_release_ms()
+        } else {
+            200.0
+        }
+    }
+
+    /// Get current compressor release time (adaptive or base, in milliseconds)
+    fn get_compressor_current_release(&self) -> f64 {
+        if let Ok(comp) = self.processor.compressor.lock() {
+            comp.current_release_time()
+        } else {
+            200.0
+        }
+    }
+
     // === Limiter ===
 
     fn set_limiter_enabled(&self, enabled: bool) {

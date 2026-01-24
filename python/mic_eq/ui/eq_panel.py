@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from .eq_curve import EQCurveWidget
 from .rate_limiter import RateLimiter
+from .layout_constants import SPACING_TIGHT, PRIMARY_LABEL_STYLE
 
 
 # Default frequencies for each band
@@ -65,7 +66,7 @@ class EQBandSlider(QWidget):
         """Setup the band UI."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(2)
+        layout.setSpacing(SPACING_TIGHT)  # Use tight spacing for band sliders
 
         # Set size policy to allow horizontal expansion
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -75,7 +76,7 @@ class EQBandSlider(QWidget):
         self.gain_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.gain_label.setMinimumWidth(30)
         self.gain_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.gain_label.setStyleSheet("font-size: 10px; font-weight: bold;")
+        self.gain_label.setStyleSheet(PRIMARY_LABEL_STYLE)  # Use consistent primary label style
         layout.addWidget(self.gain_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Vertical slider (-12 to +12 dB)

@@ -930,9 +930,36 @@ impl AudioProcessor {
     }
 
     /// Set compressor release time in ms
+    ///
+    /// Note: When adaptive release is enabled, this updates the base release time.
+    /// Use set_compressor_adaptive_release(false) to disable adaptive mode and
+    /// use set_compressor_base_release() to set the base release time directly.
     pub fn set_compressor_release(&self, release_ms: f64) {
         if let Ok(mut c) = self.compressor.lock() {
-            c.set_release_time(release_ms);
+            // Update base release time regardless of adaptive mode
+            c.set_base_release_time(release_ms);
+            // Also update current release when not in adaptive mode
+            if !c.adaptive_release() {
+                c.set_release_time(release_ms);
+            }
+        }
+    }
+
+    /// Get compressor release time.
+    ///
+    /// Note: When adaptive release is enabled, this returns the base release time.
+    /// Use get_compressor_current_release() for the actual adaptive release time.
+    pub fn get_compressor_release(&self) -> f64 {
+        if let Ok(c) = self.compressor.lock() {
+            if c.adaptive_release() {
+                // Return base release when adaptive mode is active
+                c.base_release_ms()
+            } else {
+                // Return current release when in manual mode
+                c.current_release_time()
+            }
+        } else {
+            200.0
         }
     }
 
@@ -1266,6 +1293,14 @@ impl PyAudioProcessor {
 
     fn set_compressor_release(&self, release_ms: f64) {
         self.processor.set_compressor_release(release_ms);
+    }
+
+    /// Get compressor release time.
+    ///
+    /// Note: When adaptive release is enabled, this returns the base release time.
+    /// Use get_compressor_current_release() for the actual adaptive release time.
+    fn get_compressor_release(&self) -> f64 {
+        self.processor.get_compressor_release()
     }
 
     fn set_compressor_makeup_gain(&self, makeup_gain_db: f64) {

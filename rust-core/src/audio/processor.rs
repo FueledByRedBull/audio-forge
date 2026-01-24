@@ -135,12 +135,24 @@ impl AudioProcessor {
 
         Self {
             pre_filter,
-            gate: Arc::new(Mutex::new(NoiseGate::new(
-                -40.0,
-                10.0,
-                100.0,
-                sample_rate as f64,
-            ))),
+            gate: {
+                let gate = Arc::new(Mutex::new(NoiseGate::new(
+                    -40.0,
+                    10.0,
+                    100.0,
+                    sample_rate as f64,
+                )));
+
+                #[cfg(feature = "vad")]
+                {
+                    let vad_auto_gate = VadAutoGate::new(sample_rate, 0.5);
+                    if let Ok(mut g) = gate.lock() {
+                        g.set_vad_auto_gate(Some(vad_auto_gate));
+                    }
+                }
+
+                gate
+            },
             gate_enabled: Arc::new(AtomicBool::new(true)),
             suppressor: Arc::new(Mutex::new(suppressor)),
             suppressor_enabled: Arc::new(AtomicBool::new(true)),

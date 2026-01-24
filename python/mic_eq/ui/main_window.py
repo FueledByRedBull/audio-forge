@@ -705,6 +705,10 @@ class MainWindow(QMainWindow):
             output_rms = self.processor.get_output_rms_db()
             output_peak = self.processor.get_output_peak_db()
             gr_db = self.processor.get_compressor_gain_reduction_db()
+
+            # Get VAD probability for confidence meter
+            vad_prob = self.processor.get_vad_probability()
+
             latency_ms = self.processor.get_latency_ms()
 
             # Get DSP performance metrics
@@ -721,6 +725,12 @@ class MainWindow(QMainWindow):
             # Update compressor current release time
             try:
                 self.compressor_panel._update_current_release()
+            except Exception:
+                pass
+
+            # Update VAD confidence meter
+            try:
+                self.gate_panel.update_vad_confidence(vad_prob)
             except Exception:
                 pass
 

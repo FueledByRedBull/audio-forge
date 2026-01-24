@@ -1,0 +1,39 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "mic_eq"
+version = "0.1.0"
+description = "Low-latency microphone audio processor with noise suppression and equalization"
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+]
+dependencies = [
+    "PyQt6>=6.6.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "maturin>=1.4",
+]
+
+[project.scripts]
+mic-eq = "mic_eq.__main__:main"
+
+[tool.maturin]
+python-source = "python"
+module-name = "mic_eq.mic_eq_core"
+features = ["pyo3/extension-module"]
+manifest-path = "rust-core/Cargo.toml"

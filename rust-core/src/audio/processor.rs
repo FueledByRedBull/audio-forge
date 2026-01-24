@@ -1,0 +1,1175 @@
+//! Unified audio processor - DSP chain runs entirely in Rust
+//!
+//! Processing chain: Mic Input → Noise Gate → RNNoise → 10-Band EQ → Output
+//!
+//! Adapted from Spectral Workbench project for MicEq.
+
+use pyo3::prelude::*;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+use thread_priority::{set_current_thread_priority, ThreadPriority};
+
+use std::sync::atomic::AtomicU8;
+
+use super::buffer::{AudioProducer, AudioRingBuffer};
+use super::input::{AudioInput, TARGET_SAMPLE_RATE};
+use super::output::AudioOutput;
+use crate::dsp::{Compressor, Limiter, NoiseGate, ParametricEQ};
+use crate::dsp::biquad::{Biquad, BiquadType};
+use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressionEngine, NoiseSuppressor};
+
+/// Main audio processor combining all DSP stages
+pub struct AudioProcessor {
+    /// Pre-filter (High-pass at 80Hz to remove fan rumble before RNNoise)
+    pre_filter: Arc<Mutex<Biquad>>,
+
+    /// Noise gate
+    gate: Arc<Mutex<NoiseGate>>,
+    gate_enabled: Arc<AtomicBool>,
+
+    /// Noise suppression engine (RNNoise or DeepFilterNet)
+    suppressor: Arc<Mutex<NoiseSuppressionEngine>>,
+    suppressor_enabled: Arc<AtomicBool>,
+    suppressor_strength: Arc<AtomicU32>,  // f32 bits stored as u32
+    current_model: Arc<AtomicU8>,  // NoiseModel as u8
+
+    /// 10-band parametric EQ
+    eq: Arc<Mutex<ParametricEQ>>,
+    eq_enabled: Arc<AtomicBool>,
+
+    /// Compressor
+    compressor: Arc<Mutex<Compressor>>,
+    compressor_enabled: Arc<AtomicBool>,
+
+    /// Hard limiter (brick-wall ceiling)
+    limiter: Arc<Mutex<Limiter>>,
+    limiter_enabled: Arc<AtomicBool>,
+
+    /// Audio input stream
+    audio_input: Option<AudioInput>,
+
+    /// Audio output stream
+    audio_output: Option<AudioOutput>,
+
+    /// Output ring buffer producer (for sending processed audio to output)
+    output_producer: Arc<Mutex<Option<AudioProducer>>>,
+
+    /// Processing thread handle
+    process_thread: Option<std::thread::JoinHandle<()>>,
+
+    /// Running flag
+    running: Arc<AtomicBool>,
+
+    /// Master bypass flag
+    bypass: Arc<AtomicBool>,
+
+    /// Sample rate
+    sample_rate: u32,
+
+    /// Input device name
+    input_device_name: Option<String>,
+
+    /// Output device name
+    output_device_name: Option<String>,
+
+    // === Level Metering (lock-free atomics) ===
+    // Stored as f32 bits via to_bits()/from_bits()
+
+    /// Input peak level (after pre-filter, before processing)
+    input_peak: Arc<AtomicU32>,
+    /// Input RMS level
+    input_rms: Arc<AtomicU32>,
+    /// Output peak level (after all processing)
+    output_peak: Arc<AtomicU32>,
+    /// Output RMS level
+    output_rms: Arc<AtomicU32>,
+    /// Compressor gain reduction in dB
+    compressor_gain_reduction: Arc<AtomicU32>,
+
+    /// Processing latency in microseconds (measured from input to output)
+    latency_us: Arc<AtomicU64>,
+
+    // === DSP Performance Metrics (lock-free atomics) ===
+
+    /// DSP processing time in microseconds (for last processed chunk)
+    dsp_time_us: Arc<AtomicU64>,
+    /// Input ring buffer fill level (samples)
+    input_buffer_len: Arc<AtomicU32>,
+    /// Output ring buffer fill level (samples)
+    output_buffer_len: Arc<AtomicU32>,
+    /// Noise suppressor internal buffer fill level (samples)
+    suppressor_buffer_len: Arc<AtomicU32>,
+
+    /// Dropped samples counter from input ring buffer
+    input_dropped: Arc<AtomicU64>,
+}
+
+impl AudioProcessor {
+    /// Create a new audio processor
+    pub fn new() -> Self {
+        let sample_rate = TARGET_SAMPLE_RATE;
+
+        // Create a HighPass filter at 80Hz to kill fan rumble before RNNoise
+        // Q = 0.707 (Butterworth) for smooth frequency response
+        let pre_filter = Arc::new(Mutex::new(Biquad::new(
+            BiquadType::HighPass,
+            80.0,   // Frequency (Hz) - cuts everything below this
+            0.0,    // Gain (unused for HighPass)
+            0.707,  // Q Factor (Butterworth)
+            sample_rate as f64,
+        )));
+
+        // Create strength Arc BEFORE noise suppressor (share reference)
+        let suppressor_strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+
+        // Create noise suppression engine (default to RNNoise)
+        let suppressor = NoiseSuppressionEngine::new(NoiseModel::RNNoise, suppressor_strength.clone());
+
+        Self {
+            pre_filter,
+            gate: Arc::new(Mutex::new(NoiseGate::new(-40.0, 10.0, 100.0, sample_rate as f64))),
+            gate_enabled: Arc::new(AtomicBool::new(true)),
+            suppressor: Arc::new(Mutex::new(suppressor)),
+            suppressor_enabled: Arc::new(AtomicBool::new(true)),
+            suppressor_strength,  // Store Arc for PyO3 bindings
+            current_model: Arc::new(AtomicU8::new(NoiseModel::RNNoise as u8)),
+            eq: Arc::new(Mutex::new(ParametricEQ::new(sample_rate as f64))),
+            eq_enabled: Arc::new(AtomicBool::new(true)),
+            compressor: Arc::new(Mutex::new(Compressor::default_voice(sample_rate as f64))),
+            compressor_enabled: Arc::new(AtomicBool::new(true)),
+            limiter: Arc::new(Mutex::new(Limiter::default_settings(sample_rate as f64))),
+            limiter_enabled: Arc::new(AtomicBool::new(true)),
+            audio_input: None,
+            audio_output: None,
+            output_producer: Arc::new(Mutex::new(None)),
+            process_thread: None,
+            running: Arc::new(AtomicBool::new(false)),
+            bypass: Arc::new(AtomicBool::new(false)),
+            sample_rate,
+            input_device_name: None,
+            output_device_name: None,
+            // Initialize metering atomics with -infinity (no signal)
+            input_peak: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
+            input_rms: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
+            output_peak: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
+            output_rms: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
+            compressor_gain_reduction: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            latency_us: Arc::new(AtomicU64::new(0)),
+            // Initialize DSP performance metrics
+            dsp_time_us: Arc::new(AtomicU64::new(0)),
+            input_buffer_len: Arc::new(AtomicU32::new(0)),
+            output_buffer_len: Arc::new(AtomicU32::new(0)),
+            suppressor_buffer_len: Arc::new(AtomicU32::new(0)),
+
+            // Initialize dropped samples counter
+            input_dropped: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// Start audio processing
+    ///
+    /// # Arguments
+    /// * `input_device` - Input device name (None for default)
+    /// * `output_device` - Output device name (None for default)
+    pub fn start(
+        &mut self,
+        input_device: Option<&str>,
+        output_device: Option<&str>,
+    ) -> Result<String, String> {
+        if self.running.load(Ordering::SeqCst) {
+            return Err("Already running".to_string());
+        }
+
+        // Create input ring buffer (2 seconds capacity)
+        let input_rb = AudioRingBuffer::new(self.sample_rate as usize * 2);
+        let (input_producer, input_consumer) = input_rb.split();
+
+        // Capture the dropped counter before producer is moved
+        let input_dropped_counter = input_producer.dropped_counter();
+        self.input_dropped = input_dropped_counter;
+
+        // Reset the dropped counter at start
+        self.input_dropped.store(0, Ordering::Relaxed);
+
+        // Create output ring buffer
+        let output_rb = AudioRingBuffer::new(self.sample_rate as usize * 2);
+        let (output_producer, output_consumer) = output_rb.split();
+
+        // PRIME THE BUFFER: Write minimal silence to prevent initial underrun/scratch
+        // 480 samples = 10ms at 48kHz (one RNNoise frame worth)
+        let mut prod = output_producer;
+        let silence = vec![0.0f32; 480]; // 10ms at 48kHz - minimal priming
+        prod.write(&silence);
+        let output_producer = prod;
+        
+        // Store output producer for processing thread
+        if let Ok(mut prod) = self.output_producer.lock() {
+            *prod = Some(output_producer);
+        }
+
+        // Start audio input
+        let input = match input_device {
+            Some(name) => AudioInput::from_device_name(name, input_producer),
+            None => AudioInput::from_default_device(input_producer),
+        }
+        .map_err(|e| format!("Failed to start audio input: {}", e))?;
+
+        let input_device_name = input.device_info().name.clone();
+        self.input_device_name = Some(input_device_name.clone());
+
+        input
+            .start()
+            .map_err(|e| format!("Failed to start input stream: {}", e))?;
+
+        self.audio_input = Some(input);
+
+        // Start audio output
+        let output = match output_device {
+            Some(name) => AudioOutput::from_device_name(name, output_consumer),
+            None => AudioOutput::from_default_device(output_consumer),
+        }
+        .map_err(|e| format!("Failed to start audio output: {}", e))?;
+
+        let output_device_name = output.device_info().name.clone();
+        self.output_device_name = Some(output_device_name.clone());
+
+        output
+            .start()
+            .map_err(|e| format!("Failed to start output stream: {}", e))?;
+
+        self.audio_output = Some(output);
+
+        // Start processing thread
+        self.running.store(true, Ordering::SeqCst);
+
+        let gate = Arc::clone(&self.gate);
+        let gate_enabled = Arc::clone(&self.gate_enabled);
+        let suppressor = Arc::clone(&self.suppressor);
+        let suppressor_enabled = Arc::clone(&self.suppressor_enabled);
+        let eq = Arc::clone(&self.eq);
+        let eq_enabled = Arc::clone(&self.eq_enabled);
+        let compressor = Arc::clone(&self.compressor);
+        let compressor_enabled = Arc::clone(&self.compressor_enabled);
+        let limiter = Arc::clone(&self.limiter);
+        let limiter_enabled = Arc::clone(&self.limiter_enabled);
+        let output_producer = Arc::clone(&self.output_producer);
+        let running = Arc::clone(&self.running);
+        let bypass = Arc::clone(&self.bypass);
+        let pre_filter = Arc::clone(&self.pre_filter);
+
+        // Clone metering atomics
+        let input_peak = Arc::clone(&self.input_peak);
+        let input_rms = Arc::clone(&self.input_rms);
+        let output_peak = Arc::clone(&self.output_peak);
+        let output_rms = Arc::clone(&self.output_rms);
+        let compressor_gain_reduction = Arc::clone(&self.compressor_gain_reduction);
+        let latency_us = Arc::clone(&self.latency_us);
+        let sample_rate_for_latency = self.sample_rate;
+
+        // Clone DSP performance metric atomics
+        let dsp_time_us = Arc::clone(&self.dsp_time_us);
+        let input_buffer_len = Arc::clone(&self.input_buffer_len);
+        let output_buffer_len = Arc::clone(&self.output_buffer_len);
+        let suppressor_buffer_len = Arc::clone(&self.suppressor_buffer_len);
+
+        let handle = std::thread::spawn(move || {
+            // Set high thread priority for real-time audio processing
+            if let Err(e) = set_current_thread_priority(ThreadPriority::Max) {
+                eprintln!("Warning: Could not set audio thread priority: {:?}", e);
+            }
+
+            let mut consumer = input_consumer;
+            let mut temp_buffer = vec![0.0f32; 2048];
+            let mut rnnoise_output = vec![0.0f32; 2048];
+
+            // DC Blocker state variables
+            // This removes electrical DC offset which causes static/clicks
+            let mut dc_x1: f32 = 0.0;
+            let mut dc_y1: f32 = 0.0;
+            const DC_COEFF: f32 = 0.995; // DC blocking coefficient
+
+            // Metering state (IIR smoothing for RMS)
+            let mut input_rms_acc: f32 = 0.0;
+            let mut output_rms_acc: f32 = 0.0;
+            const METER_COEFF: f32 = 0.99; // ~100ms time constant at 48kHz
+
+            // Latency tracking
+            let mut last_latency_update = Instant::now();
+            let latency_update_interval = std::time::Duration::from_millis(100); // Update every 100ms
+
+            // Helper: compute peak and RMS from buffer, update atomics
+            let measure_levels = |buffer: &[f32],
+                                  rms_acc: &mut f32,
+                                  peak_atomic: &AtomicU32,
+                                  rms_atomic: &AtomicU32| {
+                let mut peak: f32 = 0.0;
+                for &sample in buffer.iter() {
+                    let abs = sample.abs();
+                    if abs > peak {
+                        peak = abs;
+                    }
+                    // IIR RMS accumulator
+                    *rms_acc = METER_COEFF * *rms_acc + (1.0 - METER_COEFF) * (sample * sample);
+                }
+                // Convert to dB
+                let peak_db = if peak > 0.0 {
+                    20.0 * peak.log10()
+                } else {
+                    -120.0
+                };
+                let rms_db = if *rms_acc > 0.0 {
+                    10.0 * rms_acc.log10() // RMS is sqrt of mean squared, so 10*log10 not 20
+                } else {
+                    -120.0
+                };
+                peak_atomic.store(peak_db.to_bits(), Ordering::Relaxed);
+                rms_atomic.store(rms_db.to_bits(), Ordering::Relaxed);
+            };
+
+            // Run entire processing loop with denormals flushed to zero
+            // This prevents tiny floating point values from causing CPU stalls and audio artifacts
+            // SAFETY: This only modifies floating point control flags for this thread
+            unsafe {
+                no_denormals::no_denormals(|| {
+                    while running.load(Ordering::SeqCst) {
+                // Record input buffer fill level (samples waiting to be processed)
+                input_buffer_len.store(consumer.len() as u32, Ordering::Relaxed);
+
+                // Read audio samples
+                let n = consumer.read(&mut temp_buffer);
+
+                if n > 0 {
+                    let buffer = &mut temp_buffer[..n];
+
+                    // Start DSP timing
+                    let dsp_start = Instant::now();
+
+                    // Clamp any out-of-range samples to prevent distortion
+                    for sample in buffer.iter_mut() {
+                        if sample.is_nan() || sample.is_infinite() {
+                            *sample = 0.0;
+                        } else if *sample > 1.0 {
+                            *sample = 1.0;
+                        } else if *sample < -1.0 {
+                            *sample = -1.0;
+                        }
+                    }
+
+                    // === PRE-PROCESSING: Clean the input before DSP chain ===
+                    // This removes fan rumble and DC offset that cause RNNoise artifacts
+                    if let Ok(mut pf) = pre_filter.lock() {
+                        for sample in buffer.iter_mut() {
+                            // A. DC Blocker (removes electrical DC offset causing static/clicks)
+                            let input = *sample;
+                            let output = input - dc_x1 + DC_COEFF * dc_y1;
+                            dc_x1 = input;
+                            dc_y1 = output;
+                            *sample = output;
+
+                            // B. High-Pass Filter at 80Hz (kills fan rumble before RNNoise)
+                            *sample = pf.process_sample(*sample);
+                        }
+                    }
+                    // === END PRE-PROCESSING ===
+
+                    // Measure INPUT levels (after pre-filter, before main processing)
+                    measure_levels(buffer, &mut input_rms_acc, &input_peak, &input_rms);
+
+                    if bypass.load(Ordering::SeqCst) {
+                        // Bypass mode: measure output = input, send directly
+                        measure_levels(buffer, &mut output_rms_acc, &output_peak, &output_rms);
+                        compressor_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
+                        suppressor_buffer_len.store(0, Ordering::Relaxed);
+                        if let Ok(mut prod_guard) = output_producer.lock() {
+                            if let Some(prod) = prod_guard.as_mut() {
+                                prod.write(buffer);
+                                // Track output buffer fill level
+                                output_buffer_len.store((prod.capacity() - prod.free_len()) as u32, Ordering::Relaxed);
+                            }
+                        }
+                        // Record DSP processing time
+                        dsp_time_us.store(dsp_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+                    } else {
+                        // Stage 1: Noise Gate
+                        if gate_enabled.load(Ordering::Acquire) {
+                            if let Ok(mut g) = gate.lock() {
+                                g.process_block_inplace(buffer);
+                            }
+                        }
+
+                        // Stage 2: Noise Suppression (RNNoise or DeepFilterNet)
+                        let use_suppressor = suppressor_enabled.load(Ordering::Acquire);
+                        if use_suppressor {
+                            if let Ok(mut s) = suppressor.lock() {
+                                // Push gated samples to suppressor buffer
+                                s.push_samples(buffer);
+                                s.process_frames();
+
+                                // Track suppressor internal buffer fill level
+                                let suppressor_buffered = s.pending_input() + s.available_samples();
+                                suppressor_buffer_len.store(suppressor_buffered as u32, Ordering::Relaxed);
+
+                                // Only output samples that suppressor has actually processed
+                                let available = s.available_samples();
+                                if available > 0 {
+                                    // Get processed samples
+                                    let count = available.min(rnnoise_output.len());
+                                    let processed = s.pop_samples(count);
+
+                                    // Apply remaining stages to processed samples
+                                    let output_slice = &mut rnnoise_output[..processed.len()];
+                                    output_slice.copy_from_slice(&processed);
+
+                                    // Stage 3: EQ
+                                    if eq_enabled.load(Ordering::Acquire) {
+                                        if let Ok(mut e) = eq.lock() {
+                                            e.process_block_inplace(output_slice);
+                                        }
+                                    }
+
+                                    // Stage 4: Compressor
+                                    if compressor_enabled.load(Ordering::Acquire) {
+                                        if let Ok(mut c) = compressor.lock() {
+                                            c.process_block_inplace(output_slice);
+                                            // Store gain reduction for metering
+                                            compressor_gain_reduction.store(
+                                                (c.current_gain_reduction() as f32).to_bits(),
+                                                Ordering::Relaxed
+                                            );
+                                        }
+                                    } else {
+                                        compressor_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                    }
+
+                                    // Stage 5: Hard Limiter (LAST - safety ceiling)
+                                    if limiter_enabled.load(Ordering::Acquire) {
+                                        if let Ok(mut l) = limiter.lock() {
+                                            l.process_block_inplace(output_slice);
+                                        }
+                                    }
+
+                                    // Measure OUTPUT levels
+                                    measure_levels(output_slice, &mut output_rms_acc, &output_peak, &output_rms);
+
+                                    // Send processed samples to output
+                                    if let Ok(mut prod_guard) = output_producer.lock() {
+                                        if let Some(prod) = prod_guard.as_mut() {
+                                            prod.write(output_slice);
+                                            // Track output buffer fill level
+                                            output_buffer_len.store((prod.capacity() - prod.free_len()) as u32, Ordering::Relaxed);
+                                        }
+                                    }
+                                    // Record DSP processing time
+                                    dsp_time_us.store(dsp_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+                                }
+                                // If no samples available yet, don't output anything
+                                // (suppressor is still accumulating samples for a complete frame)
+                            }
+                        } else {
+                            // Suppressor disabled: clear buffer counter
+                            suppressor_buffer_len.store(0, Ordering::Relaxed);
+                            // Suppressor disabled: apply remaining stages directly
+
+                            // Stage 3: EQ
+                            if eq_enabled.load(Ordering::Acquire) {
+                                if let Ok(mut e) = eq.lock() {
+                                    e.process_block_inplace(buffer);
+                                }
+                            }
+
+                            // Stage 4: Compressor
+                            if compressor_enabled.load(Ordering::Acquire) {
+                                if let Ok(mut c) = compressor.lock() {
+                                    c.process_block_inplace(buffer);
+                                    compressor_gain_reduction.store(
+                                        (c.current_gain_reduction() as f32).to_bits(),
+                                        Ordering::Relaxed
+                                    );
+                                }
+                            } else {
+                                compressor_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
+                            }
+
+                            // Stage 5: Hard Limiter (LAST - safety ceiling)
+                            if limiter_enabled.load(Ordering::Acquire) {
+                                if let Ok(mut l) = limiter.lock() {
+                                    l.process_block_inplace(buffer);
+                                }
+                            }
+
+                            // Measure OUTPUT levels
+                            measure_levels(buffer, &mut output_rms_acc, &output_peak, &output_rms);
+
+                            // Send to output
+                            if let Ok(mut prod_guard) = output_producer.lock() {
+                                if let Some(prod) = prod_guard.as_mut() {
+                                    prod.write(buffer);
+                                    // Track output buffer fill level
+                                    output_buffer_len.store((prod.capacity() - prod.free_len()) as u32, Ordering::Relaxed);
+                                }
+                            }
+                            // Record DSP processing time
+                            dsp_time_us.store(dsp_start.elapsed().as_micros() as u64, Ordering::Relaxed);
+                        }
+                    }
+                    // Update latency periodically
+                    if last_latency_update.elapsed() >= latency_update_interval {
+                        last_latency_update = Instant::now();
+
+                        // Calculate total processing latency in samples:
+                        // 1. Output buffer priming: 480 samples (10ms)
+                        let output_buffer_samples: u64 = 480;
+
+                        // 2. Noise suppressor frame buffering (when enabled)
+                        let suppressor_latency_samples = if suppressor_enabled.load(Ordering::Acquire) {
+                            // Suppressor needs a full frame before processing
+                            // Plus any pending samples waiting for the next frame
+                            if let Ok(s) = suppressor.lock() {
+                                s.latency_samples() as u64 + s.pending_input() as u64
+                            } else {
+                                480  // Default assumption
+                            }
+                        } else {
+                            0
+                        };
+
+                        // Total latency in samples
+                        let total_samples = output_buffer_samples + suppressor_latency_samples;
+
+                        // Convert to microseconds: samples / sample_rate * 1_000_000
+                        let latency_microseconds = (total_samples * 1_000_000) / sample_rate_for_latency as u64;
+
+                        latency_us.store(latency_microseconds, Ordering::Relaxed);
+                    }
+                } else {
+                    // No data available, sleep briefly to avoid busy-wait
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                }
+                }
+                }); // End no_denormals block
+            } // End unsafe block
+        });
+
+        self.process_thread = Some(handle);
+
+        Ok(format!(
+            "Started: {} → {}",
+            input_device_name, output_device_name
+        ))
+    }
+
+    /// Stop audio processing
+    pub fn stop(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
+
+        if let Some(handle) = self.process_thread.take() {
+            let _ = handle.join();
+        }
+
+        if let Some(input) = &self.audio_input {
+            let _ = input.pause();
+        }
+
+        if let Some(output) = &self.audio_output {
+            let _ = output.pause();
+        }
+
+        self.audio_input = None;
+        self.audio_output = None;
+
+        if let Ok(mut prod) = self.output_producer.lock() {
+            *prod = None;
+        }
+
+        // Soft reset suppressor to clear stale buffers without model convergence penalty
+        if let Ok(mut s) = self.suppressor.lock() {
+            s.soft_reset();
+        }
+    }
+
+    /// Check if processing is running
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    /// Set master bypass
+    pub fn set_bypass(&self, bypass: bool) {
+        self.bypass.store(bypass, Ordering::SeqCst);
+    }
+
+    /// Get bypass state
+    pub fn is_bypass(&self) -> bool {
+        self.bypass.load(Ordering::SeqCst)
+    }
+
+    /// Get sample rate
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    // === Noise Gate Controls ===
+
+    /// Enable/disable noise gate
+    pub fn set_gate_enabled(&self, enabled: bool) {
+        self.gate_enabled.store(enabled, Ordering::Release);
+        if let Ok(mut g) = self.gate.lock() {
+            g.set_enabled(enabled);
+        }
+    }
+
+    /// Set noise gate threshold
+    pub fn set_gate_threshold(&self, threshold_db: f64) {
+        if let Ok(mut g) = self.gate.lock() {
+            g.set_threshold(threshold_db);
+        }
+    }
+
+    /// Set noise gate attack time
+    pub fn set_gate_attack(&self, attack_ms: f64) {
+        if let Ok(mut g) = self.gate.lock() {
+            g.set_attack_time(attack_ms);
+        }
+    }
+
+    /// Set noise gate release time
+    pub fn set_gate_release(&self, release_ms: f64) {
+        if let Ok(mut g) = self.gate.lock() {
+            g.set_release_time(release_ms);
+        }
+    }
+
+    /// Check if gate is enabled
+    pub fn is_gate_enabled(&self) -> bool {
+        self.gate_enabled.load(Ordering::Acquire)
+    }
+
+    // === Noise Suppression Controls ===
+
+    /// Enable/disable noise suppression
+    pub fn set_rnnoise_enabled(&self, enabled: bool) {
+        // Check if we're transitioning from enabled to disabled
+        let was_enabled = self.suppressor_enabled.load(Ordering::Acquire);
+        self.suppressor_enabled.store(enabled, Ordering::Release);
+
+        if let Ok(mut s) = self.suppressor.lock() {
+            s.set_enabled(enabled);
+            // Flush buffers on disable to prevent stale audio on re-enable
+            // This avoids delayed/duplicated samples when toggling rapidly
+            if was_enabled && !enabled {
+                s.soft_reset();
+            }
+        }
+    }
+
+    /// Check if noise suppression is enabled
+    pub fn is_rnnoise_enabled(&self) -> bool {
+        self.suppressor_enabled.load(Ordering::Acquire)
+    }
+
+    /// Set noise suppression wet/dry mix strength (0.0 = fully dry, 1.0 = fully wet)
+    pub fn set_rnnoise_strength(&self, strength: f32) {
+        let clamped = strength.clamp(0.0, 1.0);
+        let bits = clamped.to_bits();
+        self.suppressor_strength.store(bits, Ordering::Relaxed);
+
+        // Also update suppressor directly for consistency
+        if let Ok(s) = self.suppressor.lock() {
+            s.set_strength(clamped);
+        }
+    }
+
+    /// Get current noise suppression strength
+    pub fn get_rnnoise_strength(&self) -> f32 {
+        f32::from_bits(self.suppressor_strength.load(Ordering::Relaxed))
+    }
+
+    /// Set noise suppression model
+    /// Returns true if successful
+    pub fn set_noise_model(&self, model: NoiseModel) -> bool {
+        // Create new suppressor engine with current strength
+        let strength = Arc::clone(&self.suppressor_strength);
+        let new_engine = NoiseSuppressionEngine::new(model, strength);
+
+        if let Ok(mut s) = self.suppressor.lock() {
+            // Preserve enabled state
+            let was_enabled = s.is_enabled();
+            *s = new_engine;
+            s.set_enabled(was_enabled);
+
+            // Update model indicator
+            self.current_model.store(model as u8, Ordering::Release);
+            return true;
+        }
+        false
+    }
+
+    /// Get current noise suppression model
+    pub fn get_noise_model(&self) -> NoiseModel {
+        let model_u8 = self.current_model.load(Ordering::Acquire);
+        match model_u8 {
+            0 => NoiseModel::RNNoise,
+            #[cfg(feature = "deepfilter")]
+            1 => NoiseModel::DeepFilterNetLL,
+            #[cfg(feature = "deepfilter")]
+            2 => NoiseModel::DeepFilterNet,
+            _ => NoiseModel::RNNoise,
+        }
+    }
+
+    /// Get list of available noise models
+    pub fn list_noise_models(&self) -> Vec<(String, String)> {
+        NoiseModel::available()
+            .iter()
+            .map(|m| (m.id().to_string(), m.display_name().to_string()))
+            .collect()
+    }
+
+    // === EQ Controls ===
+
+    /// Enable/disable EQ
+    pub fn set_eq_enabled(&self, enabled: bool) {
+        self.eq_enabled.store(enabled, Ordering::Release);
+        if let Ok(mut e) = self.eq.lock() {
+            e.set_enabled(enabled);
+        }
+    }
+
+    /// Check if EQ is enabled
+    pub fn is_eq_enabled(&self) -> bool {
+        self.eq_enabled.load(Ordering::Acquire)
+    }
+
+    /// Set EQ band gain
+    pub fn set_eq_band_gain(&self, band: usize, gain_db: f64) {
+        if let Ok(mut e) = self.eq.lock() {
+            e.set_band_gain(band, gain_db);
+        }
+    }
+
+    /// Set EQ band frequency
+    pub fn set_eq_band_frequency(&self, band: usize, frequency: f64) {
+        if let Ok(mut e) = self.eq.lock() {
+            e.set_band_frequency(band, frequency);
+        }
+    }
+
+    /// Set EQ band Q
+    pub fn set_eq_band_q(&self, band: usize, q: f64) {
+        if let Ok(mut e) = self.eq.lock() {
+            e.set_band_q(band, q);
+        }
+    }
+
+    /// Get EQ band parameters (frequency, gain_db, q)
+    pub fn get_eq_band_params(&self, band: usize) -> Option<(f64, f64, f64)> {
+        if let Ok(e) = self.eq.lock() {
+            e.get_band_params(band)
+        } else {
+            None
+        }
+    }
+
+    // === Compressor Controls ===
+
+    /// Enable/disable compressor
+    pub fn set_compressor_enabled(&self, enabled: bool) {
+        self.compressor_enabled.store(enabled, Ordering::Release);
+        if let Ok(mut c) = self.compressor.lock() {
+            c.set_enabled(enabled);
+        }
+    }
+
+    /// Check if compressor is enabled
+    pub fn is_compressor_enabled(&self) -> bool {
+        self.compressor_enabled.load(Ordering::Acquire)
+    }
+
+    /// Set compressor threshold in dB
+    pub fn set_compressor_threshold(&self, threshold_db: f64) {
+        if let Ok(mut c) = self.compressor.lock() {
+            c.set_threshold(threshold_db);
+        }
+    }
+
+    /// Set compressor ratio
+    pub fn set_compressor_ratio(&self, ratio: f64) {
+        if let Ok(mut c) = self.compressor.lock() {
+            c.set_ratio(ratio);
+        }
+    }
+
+    /// Set compressor attack time in ms
+    pub fn set_compressor_attack(&self, attack_ms: f64) {
+        if let Ok(mut c) = self.compressor.lock() {
+            c.set_attack_time(attack_ms);
+        }
+    }
+
+    /// Set compressor release time in ms
+    pub fn set_compressor_release(&self, release_ms: f64) {
+        if let Ok(mut c) = self.compressor.lock() {
+            c.set_release_time(release_ms);
+        }
+    }
+
+    /// Set compressor makeup gain in dB
+    pub fn set_compressor_makeup_gain(&self, makeup_gain_db: f64) {
+        if let Ok(mut c) = self.compressor.lock() {
+            c.set_makeup_gain(makeup_gain_db);
+        }
+    }
+
+    // === Limiter Controls ===
+
+    /// Enable/disable limiter
+    pub fn set_limiter_enabled(&self, enabled: bool) {
+        self.limiter_enabled.store(enabled, Ordering::Release);
+        if let Ok(mut l) = self.limiter.lock() {
+            l.set_enabled(enabled);
+        }
+    }
+
+    /// Check if limiter is enabled
+    pub fn is_limiter_enabled(&self) -> bool {
+        self.limiter_enabled.load(Ordering::Acquire)
+    }
+
+    /// Set limiter ceiling in dB
+    pub fn set_limiter_ceiling(&self, ceiling_db: f64) {
+        if let Ok(mut l) = self.limiter.lock() {
+            l.set_ceiling(ceiling_db);
+        }
+    }
+
+    /// Set limiter release time in ms
+    pub fn set_limiter_release(&self, release_ms: f64) {
+        if let Ok(mut l) = self.limiter.lock() {
+            l.set_release_time(release_ms);
+        }
+    }
+
+    // === Metering ===
+
+    /// Get input peak level in dB
+    pub fn get_input_peak_db(&self) -> f32 {
+        f32::from_bits(self.input_peak.load(Ordering::Relaxed))
+    }
+
+    /// Get input RMS level in dB
+    pub fn get_input_rms_db(&self) -> f32 {
+        f32::from_bits(self.input_rms.load(Ordering::Relaxed))
+    }
+
+    /// Get output peak level in dB
+    pub fn get_output_peak_db(&self) -> f32 {
+        f32::from_bits(self.output_peak.load(Ordering::Relaxed))
+    }
+
+    /// Get output RMS level in dB
+    pub fn get_output_rms_db(&self) -> f32 {
+        f32::from_bits(self.output_rms.load(Ordering::Relaxed))
+    }
+
+    /// Get compressor gain reduction in dB
+    pub fn get_compressor_gain_reduction_db(&self) -> f32 {
+        f32::from_bits(self.compressor_gain_reduction.load(Ordering::Relaxed))
+    }
+
+    /// Get current processing latency in milliseconds
+    pub fn get_latency_ms(&self) -> f32 {
+        let latency_us = self.latency_us.load(Ordering::Relaxed);
+        latency_us as f32 / 1000.0
+    }
+
+    // === DSP Performance Metrics ===
+
+    /// Get DSP processing time in milliseconds
+    pub fn get_dsp_time_ms(&self) -> f32 {
+        let us = self.dsp_time_us.load(Ordering::Relaxed);
+        us as f32 / 1000.0
+    }
+
+    /// Get input buffer fill level in samples
+    pub fn get_input_buffer_samples(&self) -> u32 {
+        self.input_buffer_len.load(Ordering::Relaxed)
+    }
+
+    /// Get output buffer fill level in samples
+    pub fn get_output_buffer_samples(&self) -> u32 {
+        self.output_buffer_len.load(Ordering::Relaxed)
+    }
+
+    /// Get noise suppressor buffer fill level in samples
+    pub fn get_rnnoise_buffer_samples(&self) -> u32 {
+        self.suppressor_buffer_len.load(Ordering::Relaxed)
+    }
+
+    // === Dropped Sample Tracking ===
+
+    /// Get dropped sample count (samples lost due to buffer overflow)
+    pub fn get_dropped_samples(&self) -> u64 {
+        self.input_dropped.load(Ordering::Relaxed)
+    }
+
+    /// Reset dropped sample counter
+    pub fn reset_dropped_samples(&self) {
+        self.input_dropped.store(0, Ordering::Relaxed);
+    }
+}
+
+impl Default for AudioProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for AudioProcessor {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+// === Python Bindings ===
+
+/// Python-exposed audio processor
+#[pyclass(name = "AudioProcessor", unsendable)]
+pub struct PyAudioProcessor {
+    processor: AudioProcessor,
+}
+
+#[pymethods]
+impl PyAudioProcessor {
+    #[new]
+    fn new() -> Self {
+        Self {
+            processor: AudioProcessor::new(),
+        }
+    }
+
+    /// Start audio processing
+    #[pyo3(signature = (input_device=None, output_device=None))]
+    fn start(&mut self, input_device: Option<&str>, output_device: Option<&str>) -> PyResult<String> {
+        self.processor
+            .start(input_device, output_device)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+    }
+
+    /// Stop audio processing
+    fn stop(&mut self) {
+        self.processor.stop();
+    }
+
+    /// Check if running
+    fn is_running(&self) -> bool {
+        self.processor.is_running()
+    }
+
+    /// Get sample rate
+    fn sample_rate(&self) -> u32 {
+        self.processor.sample_rate()
+    }
+
+    /// Set master bypass
+    fn set_bypass(&self, bypass: bool) {
+        self.processor.set_bypass(bypass);
+    }
+
+    /// Get bypass state
+    fn is_bypass(&self) -> bool {
+        self.processor.is_bypass()
+    }
+
+    // === Noise Gate ===
+
+    fn set_gate_enabled(&self, enabled: bool) {
+        self.processor.set_gate_enabled(enabled);
+    }
+
+    fn is_gate_enabled(&self) -> bool {
+        self.processor.is_gate_enabled()
+    }
+
+    fn set_gate_threshold(&self, threshold_db: f64) {
+        self.processor.set_gate_threshold(threshold_db);
+    }
+
+    fn set_gate_attack(&self, attack_ms: f64) {
+        self.processor.set_gate_attack(attack_ms);
+    }
+
+    fn set_gate_release(&self, release_ms: f64) {
+        self.processor.set_gate_release(release_ms);
+    }
+
+    // === RNNoise ===
+
+    fn set_rnnoise_enabled(&self, enabled: bool) {
+        self.processor.set_rnnoise_enabled(enabled);
+    }
+
+    fn is_rnnoise_enabled(&self) -> bool {
+        self.processor.is_rnnoise_enabled()
+    }
+
+    /// Set RNNoise wet/dry mix strength (0.0 = fully dry, 1.0 = fully wet)
+    fn set_rnnoise_strength(&self, strength: f64) {
+        self.processor.set_rnnoise_strength(strength as f32);
+    }
+
+    /// Get current RNNoise strength
+    fn get_rnnoise_strength(&self) -> f64 {
+        self.processor.get_rnnoise_strength() as f64
+    }
+
+    /// Set noise suppression model by name ("rnnoise" or "deepfilter")
+    fn set_noise_model(&self, model: &str) -> bool {
+        match NoiseModel::from_id(model) {
+            Some(m) => self.processor.set_noise_model(m),
+            None => false,
+        }
+    }
+
+    /// Get current noise model name
+    fn get_noise_model(&self) -> String {
+        self.processor.get_noise_model().id().to_string()
+    }
+
+    /// Get current noise model display name
+    fn get_noise_model_display_name(&self) -> String {
+        self.processor.get_noise_model().display_name().to_string()
+    }
+
+    /// List available noise models: [(id, display_name), ...]
+    fn list_noise_models(&self) -> Vec<(String, String)> {
+        self.processor.list_noise_models()
+    }
+
+    // === EQ ===
+
+    fn set_eq_enabled(&self, enabled: bool) {
+        self.processor.set_eq_enabled(enabled);
+    }
+
+    fn is_eq_enabled(&self) -> bool {
+        self.processor.is_eq_enabled()
+    }
+
+    fn set_eq_band_gain(&self, band: usize, gain_db: f64) {
+        self.processor.set_eq_band_gain(band, gain_db);
+    }
+
+    fn set_eq_band_frequency(&self, band: usize, frequency: f64) {
+        self.processor.set_eq_band_frequency(band, frequency);
+    }
+
+    fn set_eq_band_q(&self, band: usize, q: f64) {
+        self.processor.set_eq_band_q(band, q);
+    }
+
+    fn get_eq_band_params(&self, band: usize) -> Option<(f64, f64, f64)> {
+        self.processor.get_eq_band_params(band)
+    }
+
+    // === Compressor ===
+
+    fn set_compressor_enabled(&self, enabled: bool) {
+        self.processor.set_compressor_enabled(enabled);
+    }
+
+    fn is_compressor_enabled(&self) -> bool {
+        self.processor.is_compressor_enabled()
+    }
+
+    fn set_compressor_threshold(&self, threshold_db: f64) {
+        self.processor.set_compressor_threshold(threshold_db);
+    }
+
+    fn set_compressor_ratio(&self, ratio: f64) {
+        self.processor.set_compressor_ratio(ratio);
+    }
+
+    fn set_compressor_attack(&self, attack_ms: f64) {
+        self.processor.set_compressor_attack(attack_ms);
+    }
+
+    fn set_compressor_release(&self, release_ms: f64) {
+        self.processor.set_compressor_release(release_ms);
+    }
+
+    fn set_compressor_makeup_gain(&self, makeup_gain_db: f64) {
+        self.processor.set_compressor_makeup_gain(makeup_gain_db);
+    }
+
+    // === Limiter ===
+
+    fn set_limiter_enabled(&self, enabled: bool) {
+        self.processor.set_limiter_enabled(enabled);
+    }
+
+    fn is_limiter_enabled(&self) -> bool {
+        self.processor.is_limiter_enabled()
+    }
+
+    fn set_limiter_ceiling(&self, ceiling_db: f64) {
+        self.processor.set_limiter_ceiling(ceiling_db);
+    }
+
+    fn set_limiter_release(&self, release_ms: f64) {
+        self.processor.set_limiter_release(release_ms);
+    }
+
+    // === Metering ===
+
+    fn get_input_peak_db(&self) -> f32 {
+        self.processor.get_input_peak_db()
+    }
+
+    fn get_input_rms_db(&self) -> f32 {
+        self.processor.get_input_rms_db()
+    }
+
+    fn get_output_peak_db(&self) -> f32 {
+        self.processor.get_output_peak_db()
+    }
+
+    fn get_output_rms_db(&self) -> f32 {
+        self.processor.get_output_rms_db()
+    }
+
+    fn get_compressor_gain_reduction_db(&self) -> f32 {
+        self.processor.get_compressor_gain_reduction_db()
+    }
+
+    fn get_latency_ms(&self) -> f32 {
+        self.processor.get_latency_ms()
+    }
+
+    // === DSP Performance Metrics ===
+
+    fn get_dsp_time_ms(&self) -> f32 {
+        self.processor.get_dsp_time_ms()
+    }
+
+    fn get_input_buffer_samples(&self) -> u32 {
+        self.processor.get_input_buffer_samples()
+    }
+
+    fn get_output_buffer_samples(&self) -> u32 {
+        self.processor.get_output_buffer_samples()
+    }
+
+    fn get_rnnoise_buffer_samples(&self) -> u32 {
+        self.processor.get_rnnoise_buffer_samples()
+    }
+
+    // === Dropped Sample Tracking ===
+
+    fn get_dropped_samples(&self) -> u64 {
+        self.processor.get_dropped_samples()
+    }
+
+    fn reset_dropped_samples(&self) {
+        self.processor.reset_dropped_samples();
+    }
+}

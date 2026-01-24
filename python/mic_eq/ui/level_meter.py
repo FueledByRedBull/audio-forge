@@ -252,3 +252,48 @@ class GainReductionMeter(QWidget):
         )
 
         painter.end()
+
+
+class ConfidenceMeter(QWidget):
+    """VAD confidence meter showing speech probability (0.0 to 1.0)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(20)
+        self.confidence = 0.0
+        self.setAutoFillBackground(False)
+
+    def set_confidence(self, value: float):
+        """Update confidence value (0.0 to 1.0)."""
+        self.confidence = max(0.0, min(1.0, value))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        rect = self.rect()
+        width = rect.width()
+        height = rect.height()
+
+        # Background (dark gray)
+        painter.fillRect(rect, QColor(40, 40, 40))
+
+        # Fill based on confidence with color gradient
+        fill_width = int(width * self.confidence)
+
+        if fill_width > 0:
+            # Gradient from red (low) -> yellow (medium) -> green (high)
+            gradient = QLinearGradient(0, 0, width, 0)
+            gradient.setColorAt(0.0, QColor(200, 50, 50))    # Red at 0.0
+            gradient.setColorAt(0.5, QColor(200, 200, 50))  # Yellow at 0.5
+            gradient.setColorAt(1.0, QColor(50, 200, 50))    # Green at 1.0
+
+            painter.fillRect(0, 0, fill_width, height, gradient)
+
+        # Threshold marker (default 0.5)
+        threshold_x = int(width * 0.5)
+        painter.setPen(QPen(QColor(255, 255, 255), 2))
+        painter.drawLine(threshold_x, 0, threshold_x, height)
+
+        painter.end()

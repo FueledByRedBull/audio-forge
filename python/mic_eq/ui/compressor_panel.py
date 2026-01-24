@@ -19,6 +19,10 @@ from PyQt6.QtCore import Qt
 
 from .level_meter import GainReductionMeter
 from .rate_limiter import RateLimiter
+from .layout_constants import (
+    SPACING_NORMAL, MARGIN_PANEL,
+    PRIMARY_LABEL_STYLE, METER_LABEL_STYLE, INFO_LABEL_STYLE
+)
 
 
 class CompressorPanel(QWidget):
@@ -41,6 +45,8 @@ class CompressorPanel(QWidget):
         comp_group = QGroupBox("Compressor")
         comp_group.setMinimumWidth(300)
         comp_layout = QGridLayout(comp_group)
+        comp_layout.setSpacing(SPACING_NORMAL)
+        comp_layout.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
         comp_layout.setColumnStretch(0, 0)  # Label column - fixed width
         comp_layout.setColumnStretch(1, 1)  # Control column - stretches
         comp_layout.setColumnMinimumWidth(0, 85)  # Ensure "Makeup Gain:" fits
@@ -222,6 +228,8 @@ class CompressorPanel(QWidget):
         limiter_group = QGroupBox("Hard Limiter")
         limiter_group.setMinimumWidth(300)
         limiter_layout = QGridLayout(limiter_group)
+        limiter_layout.setSpacing(SPACING_NORMAL)
+        limiter_layout.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
         limiter_layout.setColumnStretch(0, 0)  # Label column - fixed width
         limiter_layout.setColumnStretch(1, 1)  # Control column - stretches
         limiter_layout.setColumnMinimumWidth(0, 70)  # Ensure labels fit

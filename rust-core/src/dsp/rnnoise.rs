@@ -37,7 +37,7 @@ impl RNNoiseProcessor {
             output_buffer: Vec::with_capacity(RNNOISE_FRAME_SIZE * 2),
             enabled: true,
             strength,
-            smoothed_strength: 1.0,  // Default: full processing
+            smoothed_strength: 1.0, // Default: full processing
         }
     }
 
@@ -87,7 +87,8 @@ impl RNNoiseProcessor {
             let dry_samples: Vec<f32> = self.input_buffer[..RNNOISE_FRAME_SIZE].to_vec();
 
             // 1. Extract frame and SCALE UP for RNNoise
-            let frame: Vec<f32> = self.input_buffer
+            let frame: Vec<f32> = self
+                .input_buffer
                 .drain(..RNNOISE_FRAME_SIZE)
                 .map(|s| {
                     // Scale to [-32768, 32767] and CLAMP to prevent wrapping clicks

@@ -41,7 +41,6 @@ class GatePanel(QWidget):
 
         # Noise Gate Group
         gate_group = QGroupBox("Noise Gate")
-        gate_group.setMinimumWidth(280)
         gate_layout = QGridLayout(gate_group)
         gate_layout.setColumnStretch(0, 0)  # Label column - fixed width
         gate_layout.setColumnStretch(1, 1)  # Control column - stretches
@@ -90,6 +89,8 @@ class GatePanel(QWidget):
         self.attack_spinbox.setValue(10.0)
         self.attack_spinbox.setSuffix(" ms")
         self.attack_spinbox.setToolTip("Time for gate to open when signal exceeds threshold")
+        self.attack_spinbox.setMaximumWidth(100)
+        self.attack_spinbox.setMinimumWidth(60)
         attack_label = QLabel("Attack:")
         attack_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         gate_layout.addWidget(attack_label, 2, 0)
@@ -102,6 +103,8 @@ class GatePanel(QWidget):
         self.release_spinbox.setValue(100.0)
         self.release_spinbox.setSuffix(" ms")
         self.release_spinbox.setToolTip("Time for gate to close when signal drops below threshold")
+        self.release_spinbox.setMaximumWidth(100)
+        self.release_spinbox.setMinimumWidth(60)
         release_label = QLabel("Release:")
         release_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         gate_layout.addWidget(release_label, 3, 0)
@@ -162,6 +165,8 @@ class GatePanel(QWidget):
         self.vad_hold_spinbox.setValue(200.0)
         self.vad_hold_spinbox.setSuffix(" ms")
         self.vad_hold_spinbox.setToolTip("Gate hold time after speech ends (prevents chatter)")
+        self.vad_hold_spinbox.setMaximumWidth(100)
+        self.vad_hold_spinbox.setMinimumWidth(60)
         hold_time_label = QLabel("Hold Time:")
         hold_time_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         gate_layout.addWidget(hold_time_label, 8, 0)
@@ -173,6 +178,7 @@ class GatePanel(QWidget):
         self.confidence_meter.setToolTip("Real-time VAD confidence (red=low, green=high)")
         self.vad_info_label = QLabel("VAD: N/A")
         self.vad_info_label.setStyleSheet(INFO_LABEL_STYLE)
+        self.vad_info_label.setWordWrap(True)
         vad_meter_layout = QVBoxLayout()
         vad_meter_layout.setContentsMargins(0, 0, 0, 0)
         vad_meter_layout.setSpacing(2)
@@ -266,8 +272,15 @@ class GatePanel(QWidget):
             self.processor.set_vad_hold_time(self.vad_hold_spinbox.value())
             self._update_vad_controls_enabled()
             self.vad_info_label.setText("VAD: Active")
+        except AttributeError as e:
+            # VAD not available - show shorter error message
+            self.vad_info_label.setText("VAD: Not available")
         except Exception as e:
-            self.vad_info_label.setText(f"VAD error: {e}")
+            # Truncate long error messages to prevent layout issues
+            error_msg = str(e)
+            if len(error_msg) > 40:
+                error_msg = error_msg[:37] + "..."
+            self.vad_info_label.setText(f"VAD: {error_msg}")
 
     def _update_vad_controls_enabled(self):
         """Enable/disable VAD controls based on gate mode."""

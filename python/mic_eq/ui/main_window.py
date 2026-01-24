@@ -1137,9 +1137,25 @@ class MainWindow(QMainWindow):
 def run_app():
     """Run the MicEq application."""
     from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtGui import QIcon
+    import sys
+    import os
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+
+    # Set application icon
+    # In bundled exe, icon is in _internal; in dev, it's in project root
+    icon_path = "mic_eq.ico"
+    if getattr(sys, 'frozen', False):
+        # Running as PyInstaller bundle
+        icon_path = os.path.join(sys._MEIPASS, "_internal", "mic_eq.ico")
+
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+    else:
+        # No icon file, skip silently
+        pass
 
     window = MainWindow()
     window.show()

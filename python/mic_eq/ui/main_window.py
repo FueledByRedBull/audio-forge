@@ -718,6 +718,12 @@ class MainWindow(QMainWindow):
             self.output_meter.set_levels(output_rms, output_peak)
             self.compressor_panel.update_gain_reduction(gr_db)
 
+            # Update compressor current release time
+            try:
+                self.compressor_panel._update_current_release()
+            except Exception:
+                pass
+
             # Update latency display
             self.latency_label.setText(f"Latency: {latency_ms:.1f} ms")
 

@@ -37,6 +37,8 @@ const SILERO_WINDOW_SIZE: usize = 512;
 const LSTM_HIDDEN_DIM: usize = 64;
 /// Number of LSTM layers
 const LSTM_NUM_LAYERS: usize = 2;
+/// Combined state dimension (h + c concatenated)
+const LSTM_STATE_DIM: usize = LSTM_HIDDEN_DIM * 2; // 128
 
 /// Errors related to VAD processing
 #[derive(Debug, Error)]
@@ -72,10 +74,9 @@ pub struct SileroVAD {
     resample_ratio: f32,
     /// Internal buffer for accumulating samples
     buffer: Vec<f32>,
-    /// LSTM hidden state h - shape [2, 1, 64]
-    h_state: Array3<f32>,
-    /// LSTM cell state c - shape [2, 1, 64]
-    c_state: Array3<f32>,
+    /// Combined LSTM state (h and c concatenated) - shape [2, 1, 128]
+    /// Silero VAD uses a single combined state instead of separate h/c
+    state: Array3<f32>,
     /// Moving average of speech probability (for smoothing)
     smoothed_prob: f32,
     /// Smoothing factor for probability (0-1)
@@ -155,9 +156,9 @@ impl SileroVAD {
         // Calculate resampling ratio
         let resample_ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
 
-        // Initialize LSTM states to zeros
-        let h_state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_HIDDEN_DIM));
-        let c_state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_HIDDEN_DIM));
+        // Initialize combined LSTM state to zeros - shape [2, 1, 128]
+        // Silero VAD uses a single combined state (h and c concatenated)
+        let state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_STATE_DIM));
 
         Ok(Self {
             session,
@@ -165,8 +166,7 @@ impl SileroVAD {
             threshold: threshold.clamp(0.0, 1.0),
             resample_ratio,
             buffer: Vec::with_capacity(SILERO_WINDOW_SIZE * 4),
-            h_state,
-            c_state,
+            state,
             smoothed_prob: 0.0,
             smoothing: 0.1,
         })
@@ -238,18 +238,16 @@ impl SileroVAD {
     pub fn reset(&mut self) {
         self.buffer.clear();
         self.smoothed_prob = 0.0;
-        // Reset LSTM states to zeros
-        self.h_state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_HIDDEN_DIM));
-        self.c_state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_HIDDEN_DIM));
+        // Reset combined LSTM state to zeros
+        self.state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_STATE_DIM));
     }
 
     /// Run ONNX inference with proper Silero VAD inputs
     fn run_inference(&mut self, audio: &[f32]) -> Result<f32, VadError> {
         // Silero VAD v4/v5 expects these inputs:
-        // - "input": audio tensor, shape [1, 512]
+        // - "input": audio tensor, shape [1, 512] or [batch, samples]
         // - "sr": sample rate tensor, scalar (16000)
-        // - "h": LSTM hidden state, shape [2, 1, 64]
-        // - "c": LSTM cell state, shape [2, 1, 64]
+        // - "state": combined LSTM state, shape [2, 1, 128] (h and c concatenated)
 
         // Create audio input array - shape [1, 512]
         let audio_array = Array2::from_shape_vec((1, SILERO_WINDOW_SIZE), audio.to_vec())
@@ -265,24 +263,21 @@ impl SileroVAD {
         let sr_ref = TensorRef::from_array_view(&sr_array)
             .map_err(|e| VadError::OnnxError(format!("Failed to create sr tensor ref: {}", e)))?;
 
-        let h_ref = TensorRef::from_array_view(&self.h_state)
-            .map_err(|e| VadError::OnnxError(format!("Failed to create h tensor ref: {}", e)))?;
-
-        let c_ref = TensorRef::from_array_view(&self.c_state)
-            .map_err(|e| VadError::OnnxError(format!("Failed to create c tensor ref: {}", e)))?;
+        let state_ref = TensorRef::from_array_view(&self.state)
+            .map_err(|e| VadError::OnnxError(format!("Failed to create state tensor ref: {}", e)))?;
 
         // Run inference with ort 2.0 API
+        // Note: Silero VAD uses "state" not "h"/"c"
         let outputs = self.session
             .run(ort::inputs! {
                 "input" => audio_ref,
                 "sr" => sr_ref,
-                "h" => h_ref,
-                "c" => c_ref
+                "state" => state_ref
             })
             .map_err(|e| VadError::OnnxError(format!("Inference failed: {}", e)))?;
 
-        // Extract probability output - Silero VAD returns: output, hn, cn
-        // In ort 2.0, try_extract_tensor returns (&Shape, &[T])
+        // Extract probability output
+        // Silero VAD returns: "output" (probability), "state_n" (new combined state)
         let prob_output = outputs
             .get("output")
             .ok_or_else(|| VadError::OnnxError("Missing 'output' in model outputs".to_string()))?;
@@ -296,42 +291,21 @@ impl SileroVAD {
             .copied()
             .ok_or_else(|| VadError::OnnxError("Output tensor is empty".to_string()))?;
 
-        // Update hidden states for next call from hn/cn outputs
-        if let Some(hn_output) = outputs.get("hn") {
-            let (_shape, hn_data) = hn_output
+        // Update combined LSTM state from state_n output
+        if let Some(state_n_output) = outputs.get("state_n") {
+            let (_shape, state_n_data) = state_n_output
                 .try_extract_tensor::<f32>()
-                .map_err(|e| VadError::OnnxError(format!("Failed to extract hn tensor: {}", e)))?;
+                .map_err(|e| VadError::OnnxError(format!("Failed to extract state_n tensor: {}", e)))?;
 
-            // Copy data to h_state - reshape from flat array to [2, 1, 64]
-            let total_elements = LSTM_NUM_LAYERS * 1 * LSTM_HIDDEN_DIM;
-            if hn_data.len() >= total_elements {
+            // Copy data to self.state - shape [2, 1, 128]
+            let total_elements = LSTM_NUM_LAYERS * 1 * LSTM_STATE_DIM;
+            if state_n_data.len() >= total_elements {
                 for i in 0..LSTM_NUM_LAYERS {
                     for j in 0..1 {
-                        for k in 0..LSTM_HIDDEN_DIM {
-                            let flat_idx = i * 1 * LSTM_HIDDEN_DIM + j * LSTM_HIDDEN_DIM + k;
-                            if flat_idx < hn_data.len() {
-                                self.h_state[[i, j, k]] = hn_data[flat_idx];
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Some(cn_output) = outputs.get("cn") {
-            let (_shape, cn_data) = cn_output
-                .try_extract_tensor::<f32>()
-                .map_err(|e| VadError::OnnxError(format!("Failed to extract cn tensor: {}", e)))?;
-
-            // Copy data to c_state - reshape from flat array to [2, 1, 64]
-            let total_elements = LSTM_NUM_LAYERS * 1 * LSTM_HIDDEN_DIM;
-            if cn_data.len() >= total_elements {
-                for i in 0..LSTM_NUM_LAYERS {
-                    for j in 0..1 {
-                        for k in 0..LSTM_HIDDEN_DIM {
-                            let flat_idx = i * 1 * LSTM_HIDDEN_DIM + j * LSTM_HIDDEN_DIM + k;
-                            if flat_idx < cn_data.len() {
-                                self.c_state[[i, j, k]] = cn_data[flat_idx];
+                        for k in 0..LSTM_STATE_DIM {
+                            let flat_idx = i * 1 * LSTM_STATE_DIM + j * LSTM_STATE_DIM + k;
+                            if flat_idx < state_n_data.len() {
+                                self.state[[i, j, k]] = state_n_data[flat_idx];
                             }
                         }
                     }

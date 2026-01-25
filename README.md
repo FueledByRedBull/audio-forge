@@ -152,10 +152,12 @@ Or set the `VAD_MODEL_PATH` environment variable to specify a custom location.
 
 ## Architecture
 
+**Processing Chain:**
 ```
-Mic Input → Pre-Filter (80Hz HP) → Noise Gate → DeepFilter → EQ → Compressor → Limiter → Output
-          ~                        ~           ~10-40ms    <1ms    ~       <1ms    ~
+Mic Input → Pre-Filter (DC Block + 80Hz HP) → Noise Gate → AI Noise (RNNoise/DeepFilter) → 10-Band EQ → Compressor → Limiter → Output
 ```
+
+**Note:** DeepFilterNet is experimental. RNNoise is recommended for production use.
 
 **Target Latency:** <30ms total (DeepFilterNet LL), <50ms (Standard)
 

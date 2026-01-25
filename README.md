@@ -47,63 +47,85 @@ Forge your sound in real-time. Built for streamers, content creators, and anyone
 
 ### Installation
 
-**Windows:**
-```powershell
-# Clone the repo
+**1. Clone the repo:**
+```bash
 git clone https://github.com/FueledByRedBull/audio-forge.git
 cd audio-forge
+```
 
-# Build Rust core
+**2. Build the Rust core:**
+
+| Feature | Flag | Description | Required for |
+|---------|------|-------------|--------------|
+| RNNoise | *(default)* | Fast noise suppression | ✅ Basic usage |
+| VAD | `--features vad` | Silero VAD-assisted gate | Smart gate modes |
+| DeepFilterNet | `--features deepfilter` | Advanced noise suppression | DF models |
+
+**Build commands:**
+
+```bash
+# Minimal build (RNNoise only)
 cd rust-core
-maturin develop --release --features deepfilter
+maturin develop --release
 
-# Run
+# Full feature build (VAD + DeepFilterNet)
+maturin develop --release --features vad,deepfilter
+```
+
+**3. Run the application:**
+```bash
 python -m mic_eq
 ```
 
-**Linux/macOS:**
+---
+
+### Optional: DeepFilterNet Support
+
+DeepFilterNet requires both the **C library** and **model file**.
+
+#### Step 1: Build the C library (df.dll)
+
 ```bash
-# Clone the repo
-git clone https://github.com/FueledByRedBull/audio-forge.git
-cd audio-forge
+# Clone DeepFilterNet
+git clone https://github.com/Rikorose/DeepFilterNet.git
+cd DeepFilterNet
 
-# Build Rust core
-cd rust-core
-maturin develop --release --features deepfilter
+# Build the C library
+cargo build --release
 
-# Run
-python -m mic_eq
+# Copy the DLL to AudioForge
+cp target/release/df.dll ../audio-forge/
 ```
 
-### Models (Optional)
-
-For DeepFilterNet support, download the model file:
+#### Step 2: Download the model
 
 ```bash
-# Create models directory
-mkdir models
+# Create models directory in AudioForge
+mkdir audio-forge/models
 
-# Download DF3 LL model (recommended for real-time)
-# Place in: models/DeepFilterNet3_ll_onnx.tar.gz
+# Download DeepFilterNet3 LL model (recommended for real-time)
+# Place in: audio-forge/models/DeepFilterNet3_ll_onnx.tar.gz
 ```
 
-Or set `DEEPFILTER_MODEL_PATH` environment variable.
+Or set `DEEPFILTER_MODEL_PATH` environment variable to point to your model file.
 
-#### Silero VAD (for VAD-assisted noise gate)
+---
 
-For VAD-assisted gate modes, download the Silero VAD model:
+### Optional: Silero VAD (for VAD-assisted gate)
+
+VAD-assisted gate modes require the Silero VAD model:
 
 ```bash
-# Create models directory
-mkdir models
+# Create models directory in AudioForge
+mkdir audio-forge/models
 
 # Download Silero VAD model
 # Visit: https://github.com/snakers4/silero-vad/tree/master/files
 # Download: silero_vad.onnx (v4 or v5)
-# Place in: models/silero_vad.onnx
+# Place in: audio-forge/models/silero_vad.onnx
 ```
 
-Or set the `VAD_MODEL_PATH` environment variable to specify a custom location.
+Or set `VAD_MODEL_PATH` environment variable.
 
 ## Usage
 

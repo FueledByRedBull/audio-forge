@@ -102,10 +102,6 @@ nul
 *.bak
 *.cache
 
-# Documentation drafts
-deepfilter_impl.md
-DEEPFILTER_TEST_REPORT.md
-
 # Claude Code
 .claude/
 

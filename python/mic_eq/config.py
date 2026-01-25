@@ -152,7 +152,7 @@ class Preset:
     """Complete preset with all settings."""
     name: str = "Default"
     description: str = ""
-    version: str = "1.2.0"  # Version field for migration
+    version: str = "1.5.0"  # Version field for migration
     gate: GateSettings = field(default_factory=GateSettings)
     eq: EQSettings = field(default_factory=EQSettings)
     rnnoise: RNNoiseSettings = field(default_factory=RNNoiseSettings)
@@ -226,6 +226,16 @@ class Preset:
 
                 # Update version
                 data['version'] = '1.3.0'
+
+            # Migrate v1.3 presets → v1.4 (no format changes, version bump only)
+            if version < '1.4.0':
+                data['version'] = '1.4.0'
+                version = '1.4.0'
+
+            # Migrate v1.4 presets → v1.5 (no format changes, version bump only)
+            if version < '1.5.0':
+                data['version'] = '1.5.0'
+                version = '1.5.0'
 
             # Extract and validate gate settings
             gate_data = data.get('gate', {})

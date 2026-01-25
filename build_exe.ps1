@@ -23,7 +23,15 @@ $pyinstallerArgs = @(
     "launcher.py"
 )
 
-# Add icon if exists
+# Add df.dll if exists (optional - for DeepFilterNet support)
+if (Test-Path "df.dll") {
+    $pyinstallerArgs += "--add-binary", "df.dll;."
+    Write-Host "DeepFilterNet support: df.dll will be bundled" -ForegroundColor Green
+} else {
+    Write-Host "DeepFilterNet support: df.dll NOT found - RNNoise only" -ForegroundColor Yellow
+}
+
+# Add icon if exists (optional - skips if not found)
 if (Test-Path "mic_eq.ico") {
     $pyinstallerArgs = @("--icon", "mic_eq.ico") + $pyinstallerArgs
     $pyinstallerArgs += "--add-data", "mic_eq.ico;_internal"
@@ -42,14 +50,15 @@ if ($LASTEXITCODE -eq 0) {
 
     # Copy icon to _internal for Qt to use
     if (Test-Path "mic_eq.ico") {
-        Copy-Item -Path "mic_eq.ico" -Destination "dist\MicEq\_internal\mic_eq.ico" -Force
-        Write-Host "Icon copied to dist\MicEq\_internal\" -ForegroundColor Green
+        Copy-Item -Path "mic_eq.ico" -Destination "dist\AudioForge\_internal\mic_eq.ico" -Force
+        Write-Host "Icon copied to dist\AudioForge\_internal\" -ForegroundColor Green
     }
 
     Write-Host ""
-    Write-Host "Executable: dist\MicEq\MicEq.exe"
+    Write-Host "Executable: dist\AudioForge\AudioForge.exe"
     Write-Host ""
-    Write-Host "The entire dist\MicEq folder is self-contained."
+    Write-Host "The entire dist\AudioForge folder is self-contained."
+    Write-Host "NOTE: DeepFilterNet requires df.dll - should now be bundled in the folder."
 } else {
     Write-Host "Build failed!" -ForegroundColor Red
 }

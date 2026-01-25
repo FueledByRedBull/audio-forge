@@ -110,6 +110,9 @@ Audit.md
 # Build artifacts
 python/mic_eq_core*.pyd
 python/mic_eq_core*.so
+df.dll
+libdf.so
+libdf.dylib
 
 # Project docs (development only)
 CLAUDE.md

@@ -1,5 +1,5 @@
 """
-Main window for MicEq application
+Main window for AudioForge application
 
 Adapted from Spectral Workbench project.
 """
@@ -57,11 +57,11 @@ from ..config import (
 
 
 class MainWindow(QMainWindow):
-    """Main application window for MicEq."""
+    """Main application window for AudioForge."""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MicEq - Microphone Audio Processor")
+        self.setWindowTitle("AudioForge - Microphone Audio Processor")
 
         # Create audio processor
         self.processor = AudioProcessor()
@@ -844,16 +844,17 @@ class MainWindow(QMainWindow):
         """Show about dialog."""
         QMessageBox.about(
             self,
-            "About MicEq",
-            "<h2>MicEq v0.2.0</h2>"
+            "About AudioForge",
+            "<h2>AudioForge v1.5.0</h2>"
             "<p>Low-latency microphone audio processor</p>"
             "<p>Inspired by SteelSeries GG Sonar ClearCast AI</p>"
             "<h3>Processing Chain:</h3>"
-            "<p>Mic → Gate → RNNoise → EQ → Compressor → Limiter → Output</p>"
+            "<p>Mic → Pre-Filter → Gate → AI Noise (RNNoise/DeepFilter) → EQ → Comp → Limiter → Output</p>"
             "<h3>Features:</h3>"
             "<ul>"
             "<li>Noise Gate with IIR envelope follower</li>"
-            "<li>RNNoise ML-based noise suppression</li>"
+            "<li>Silero VAD-assisted gate mode</li>"
+            "<li>AI Noise Suppression: RNNoise or DeepFilterNet (experimental)</li>"
             "<li>10-band parametric EQ</li>"
             "<li>Compressor with soft-knee gain reduction</li>"
             "<li>Hard limiter for clipping prevention</li>"

@@ -10,6 +10,7 @@ Write-Host "Found mic_eq_core at: $pydPath" -ForegroundColor Cyan
 # Build arguments list
 $pyinstallerArgs = @(
     "--clean"
+    "-y"
     "--onedir"
     "--noconsole"
     "--name", "MicEq"

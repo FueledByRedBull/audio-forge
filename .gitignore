@@ -104,6 +104,8 @@ nul
 
 # Claude Code
 .claude/
+.planning/
+Audit.md
 
 # Build artifacts
 python/mic_eq_core*.pyd

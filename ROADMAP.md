@@ -25,6 +25,8 @@ Mic Input → Pre-Filter (80Hz HP) → Noise Gate → RNNoise/DeepFilterNet → 
   - Spacing, layout, compressor panel reorganization, visual hierarchy improvements
 - ✅ **v1.4.0 Scrollable Panels** — Phase 15 (completed 2026-01-24)
   - Scroll areas for panels with overflow, increased minimum window height
+- ✅ **v1.5.0 VAD Runtime Fix** — Phase 16 (shipped 2026-01-24)
+  - Fixed ONNX Runtime API integration for Silero VAD
 
 ## Phases
 
@@ -206,7 +208,7 @@ C FFI approach using runtime dynamic loading via libloading. Resolved `Rc/Send` 
 - [x] 16-03-PLAN.md — Add Silero VAD model download instructions
 - [x] 16-04-PLAN.md — Test VAD functionality end-to-end
 
-**Status:** COMPLETE — Fixed VAD ONNX Runtime API integration with ort 2.0. Updated ndarray to 0.17, fixed input shapes [1,512], added LSTM state management with combined state [2,1,128] (not separate h/c), proper tensor extraction with try_extract_tensor(). All 4 plans executed and verified. **Runtime fix applied 2026-01-24**: Changed from separate h/c inputs to combined "state" input to match actual Silero VAD model.
+**Status:** ✅ SHIPPED — Fixed VAD ONNX Runtime API integration with ort 2.0. Updated ndarray to 0.17, fixed input shapes [1,512], added LSTM state management with combined state [2,1,128] (not separate h/c), proper tensor extraction with try_extract_tensor(). All 4 plans executed and verified. **Runtime fix applied 2026-01-24**: Changed from separate h/c inputs to combined "state" input to match actual Silero VAD model.
 
 ## Progress
 
@@ -232,4 +234,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 15. Scrollable Panels | v1.4.0 | 3/3            | Complete | 2026-01-24 |
 | 16. Fix VAD ONNX Runtime API Integration | v1.5.0 | 4/4            | Complete | 2026-01-24 |
 
-**Overall Progress: 43/43 plans complete (100%)**
+**Overall Progress: 47/47 plans complete (100%)**

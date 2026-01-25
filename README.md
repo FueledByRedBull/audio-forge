@@ -50,8 +50,8 @@ Forge your sound in real-time. Built for streamers, content creators, and anyone
 **Windows:**
 ```powershell
 # Clone the repo
-git clone https://github.com/FueledByRedBull/micforge.git
-cd micforge
+git clone https://github.com/FueledByRedBull/audio-forge.git
+cd audio-forge
 
 # Build Rust core
 cd rust-core
@@ -64,8 +64,8 @@ python -m mic_eq
 **Linux/macOS:**
 ```bash
 # Clone the repo
-git clone https://github.com/FueledByRedBull/micforge.git
-cd micforge
+git clone https://github.com/FueledByRedBull/audio-forge.git
+cd audio-forge
 
 # Build Rust core
 cd rust-core
@@ -126,23 +126,25 @@ Or set the `VAD_MODEL_PATH` environment variable to specify a custom location.
 
 ## Roadmap
 
-### v0.2 (Current)
+### v1.5.0 (Current Release)
 - [x] RNNoise integration
-- [x] DeepFilterNet integration (3 models)
+- [x] Silero VAD-assisted noise gate
+- [x] DeepFilterNet integration (experimental, C FFI)
 - [x] 10-band parametric EQ
 - [x] Noise gate, compressor, limiter
 - [x] Real-time level meters
 - [x] DSP performance metrics
 - [x] Preset system
+- [x] Scrollable panels
+- [x] Adaptive release compressor
 
-### v0.3 (Planned)
+### v1.6.0 (Planned)
 - [ ] Linux/macOS builds
 - [ ] Installation script
 - [ ] More EQ presets
-- [ ] APU (audio processing unit) rebroadcast mode
 - [ ] VST plugin format
 
-### v0.4 (Future)
+### v2.0.0 (Future)
 - [ ] WebRTC/NDI support
 - [ ] Multiple input/output profiles
 - [ ] Scene-based preset switching

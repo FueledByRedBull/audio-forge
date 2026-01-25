@@ -35,5 +35,5 @@ mic-eq = "mic_eq.__main__:main"
 [tool.maturin]
 python-source = "python"
 module-name = "mic_eq.mic_eq_core"
-features = ["pyo3/extension-module"]
+features = ["pyo3/extension-module", "vad", "deepfilter"]
 manifest-path = "rust-core/Cargo.toml"

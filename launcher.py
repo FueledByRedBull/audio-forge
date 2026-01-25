@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MicEq launcher script for PyInstaller
+AudioForge launcher script for PyInstaller
 """
 import sys
 import os

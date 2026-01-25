@@ -1,8 +1,8 @@
-# Roadmap: MicEq
+# Roadmap: AudioForge
 
 ## Overview
 
-MicEq is a low-latency real-time microphone audio processor inspired by SteelSeries GG Sonar's ClearCast AI. It provides real-time noise suppression and equalization for voice communication (Discord, etc.).
+AudioForge is a low-latency real-time microphone audio processor inspired by SteelSeries GG Sonar's ClearCast AI. It provides real-time noise suppression and equalization for voice communication (Discord, etc.).
 
 **Processing Chain:**
 ```

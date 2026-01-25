@@ -13,7 +13,7 @@ $pyinstallerArgs = @(
     "-y"
     "--onedir"
     "--noconsole"
-    "--name", "MicEq"
+    "--name", "AudioForge"
     "--add-data", "models;models"
     "--hidden-import", "PyQt6.QtCore"
     "--hidden-import", "PyQt6.QtGui"

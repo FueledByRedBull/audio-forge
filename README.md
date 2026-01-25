@@ -55,21 +55,39 @@ cd audio-forge
 
 **2. Build the Rust core:**
 
-| Feature | Flag | Description | Required for |
-|---------|------|-------------|--------------|
-| RNNoise | *(default)* | Fast noise suppression | ✅ Basic usage |
-| VAD | `--features vad` | Silero VAD-assisted gate | Smart gate modes |
-| DeepFilterNet | `--features deepfilter` | Advanced noise suppression | DF models |
-
-**Build commands:**
+**By default, ALL features are enabled** (RNNoise + VAD + DeepFilterNet):
 
 ```bash
-# Minimal build (RNNoise only)
 cd rust-core
 maturin develop --release
+```
 
-# Full feature build (VAD + DeepFilterNet)
-maturin develop --release --features vad,deepfilter
+**To build with only specific features, edit `pyproject.toml`:**
+
+```toml
+[tool.maturin]
+features = ["pyo3/extension-module"]  # Add "vad", "deepfilter" as needed
+```
+
+| To include this... | Add to features line |
+|---------------------|---------------------|
+| VAD (smart gate) | `vad` |
+| DeepFilterNet | `deepfilter` |
+| Both | `vad`, `deepfilter` |
+
+**Examples:**
+```toml
+# VAD only
+features = ["pyo3/extension-module", "vad"]
+
+# DeepFilterNet only
+features = ["pyo3/extension-module", "deepfilter"]
+
+# Both (same as default)
+features = ["pyo3/extension-module", "vad", "deepfilter"]
+
+# Minimal (RNNoise only)
+features = ["pyo3/extension-module"]
 ```
 
 **3. Run the application:**

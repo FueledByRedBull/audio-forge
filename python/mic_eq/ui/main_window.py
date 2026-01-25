@@ -719,7 +719,7 @@ class MainWindow(QMainWindow):
                 f"Please try:\n"
                 f"1. Restarting the application\n"
                 f"2. Using RNNoise model as fallback\n"
-                f"3. Rebuilding with --features deepfilter if using custom build"
+                f"3. Ensuring df.dll is available (falls back to passthrough if not found)"
             )
             # Revert to RNNoise using find-by-ID loop (NOT hardcoded index)
             for i in range(self.model_combo.count()):

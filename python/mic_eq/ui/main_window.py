@@ -735,7 +735,7 @@ class MainWindow(QMainWindow):
 
             # Get DSP performance metrics
             dsp_time_ms = self.processor.get_dsp_time_smoothed_ms()
-            input_buf = self.processor.get_input_buffer_samples()
+            input_buf = self.processor.get_input_buffer_smoothed_samples()
             output_buf = self.processor.get_output_buffer_samples()
             rnnoise_buf = self.processor.get_buffer_smoothed_samples()
 

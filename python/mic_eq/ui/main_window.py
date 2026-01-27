@@ -303,20 +303,14 @@ class MainWindow(QMainWindow):
             "QLabel { background-color: #333; color: #0f0; padding: 5px 10px; "
             "border-radius: 3px; font-family: monospace; font-size: 12px; }"
         )
-        self.latency_label.setToolTip("Total processing latency (RNNoise buffering + output buffer)")
+        self.latency_label.setToolTip(
+            "Total processing latency (RNNoise buffering + output buffer)\n"
+            "DSP time shows smoothed actual processing time per 10ms chunk"
+        )
         control_layout.addWidget(self.latency_label)
 
         # DSP Time display
-        self.dsp_time_label = QLabel("DSP: -- ms / 10 ms")
-        self.dsp_time_label.setStyleSheet(
-            "QLabel { background-color: #333; color: #0f0; padding: 5px 10px; "
-            "border-radius: 3px; font-family: monospace; font-size: 12px; }"
-        )
-        self.dsp_time_label.setToolTip(
-            "DSP processing time per 10ms chunk.\n"
-            "Green: <5ms (safe), Yellow: 5-8ms (warning), Red: >8ms (danger)"
-        )
-        control_layout.addWidget(self.dsp_time_label)
+        # NOTE: DSP label removed - now combined with latency display
 
         # Buffer Health display
         self.buffer_label = QLabel("Buffer: --")
@@ -740,10 +734,10 @@ class MainWindow(QMainWindow):
             latency_ms = self.processor.get_latency_ms()
 
             # Get DSP performance metrics
-            dsp_time_ms = self.processor.get_dsp_time_ms()
+            dsp_time_ms = self.processor.get_dsp_time_smoothed_ms()
             input_buf = self.processor.get_input_buffer_samples()
             output_buf = self.processor.get_output_buffer_samples()
-            rnnoise_buf = self.processor.get_rnnoise_buffer_samples()
+            rnnoise_buf = self.processor.get_buffer_smoothed_samples()
 
             # Update meters
             self.input_meter.set_levels(input_rms, input_peak)
@@ -775,22 +769,8 @@ class MainWindow(QMainWindow):
                 # VAD not available in this build
                 pass
 
-            # Update latency display
-            self.latency_label.setText(f"Latency: {latency_ms:.1f} ms")
-
-            # Update DSP time display with color coding
-            if dsp_time_ms < 5.0:
-                dsp_color = "#0f0"  # Green - safe
-            elif dsp_time_ms < 8.0:
-                dsp_color = "#ff0"  # Yellow - warning
-            else:
-                dsp_color = "#f00"  # Red - danger (approaching glitch threshold)
-
-            self.dsp_time_label.setStyleSheet(
-                f"QLabel {{ background-color: #333; color: {dsp_color}; padding: 5px 10px; "
-                "border-radius: 3px; font-family: monospace; font-size: 12px; }"
-            )
-            self.dsp_time_label.setText(f"DSP: {dsp_time_ms:.1f} ms / 10 ms")
+            # Update combined latency display
+            self.latency_label.setText(f"Latency: ~{latency_ms:.0f}ms (DSP: {dsp_time_ms:.1f}ms)")
 
             # Update buffer health display (Input + RNNoise only)
             # Healthy: < 960 samples (2 frames), Warning: < 1920 (4 frames), Bad: >= 1920
@@ -824,11 +804,6 @@ class MainWindow(QMainWindow):
             self.dropped_label.setText(f"Dropped: {dropped}")
         else:
             self.latency_label.setText("Latency: -- ms")
-            self.dsp_time_label.setText("DSP: -- ms / 10 ms")
-            self.dsp_time_label.setStyleSheet(
-                "QLabel { background-color: #333; color: #0f0; padding: 5px 10px; "
-                "border-radius: 3px; font-family: monospace; font-size: 12px; }"
-            )
             self.buffer_label.setText("Buffer: --")
             self.buffer_label.setStyleSheet(
                 "QLabel { background-color: #333; color: #0f0; padding: 5px 10px; "

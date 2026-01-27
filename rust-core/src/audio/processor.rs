@@ -109,6 +109,8 @@ pub struct AudioProcessor {
 
     /// Smoothed DSP processing time in microseconds (EMA, 200ms time constant)
     dsp_time_smoothed_us: Arc<AtomicU64>,
+    /// Smoothed input buffer fill level (EMA, 200ms time constant)
+    smoothed_input_buffer_len: Arc<AtomicU32>,
     /// Smoothed suppressor buffer fill level (EMA, 200ms time constant)
     smoothed_buffer_len: Arc<AtomicU32>,
 
@@ -190,6 +192,7 @@ impl AudioProcessor {
             // Initialize DSP performance metrics
             dsp_time_us: Arc::new(AtomicU64::new(0)),
             input_buffer_len: Arc::new(AtomicU32::new(0)),
+            smoothed_input_buffer_len: Arc::new(AtomicU32::new(0)),
             output_buffer_len: Arc::new(AtomicU32::new(0)),
             suppressor_buffer_len: Arc::new(AtomicU32::new(0)),
             dsp_time_smoothed_us: Arc::new(AtomicU64::new(0)),
@@ -305,6 +308,7 @@ impl AudioProcessor {
         // Clone DSP performance metric atomics
         let dsp_time_us = Arc::clone(&self.dsp_time_us);
         let input_buffer_len = Arc::clone(&self.input_buffer_len);
+        let smoothed_input_buffer_len = Arc::clone(&self.smoothed_input_buffer_len);
         let output_buffer_len = Arc::clone(&self.output_buffer_len);
         let suppressor_buffer_len = Arc::clone(&self.suppressor_buffer_len);
         let dsp_time_smoothed_us = Arc::clone(&self.dsp_time_smoothed_us);
@@ -388,7 +392,13 @@ impl AudioProcessor {
                 no_denormals::no_denormals(|| {
                     while running.load(Ordering::SeqCst) {
                         // Record input buffer fill level (samples waiting to be processed)
-                        input_buffer_len.store(consumer.len() as u32, Ordering::Relaxed);
+                        let raw_input_len = consumer.len() as u32;
+                        input_buffer_len.store(raw_input_len, Ordering::Relaxed);
+                        let smoothed_input = smooth_buffer(
+                            raw_input_len,
+                            smoothed_input_buffer_len.load(Ordering::Relaxed),
+                        );
+                        smoothed_input_buffer_len.store(smoothed_input, Ordering::Relaxed);
 
                         // Read audio samples
                         let n = consumer.read(&mut temp_buffer);
@@ -1141,6 +1151,11 @@ impl AudioProcessor {
         self.input_buffer_len.load(Ordering::Relaxed)
     }
 
+    /// Get smoothed input buffer fill level in samples
+    pub fn get_input_buffer_smoothed_samples(&self) -> u32 {
+        self.smoothed_input_buffer_len.load(Ordering::Relaxed)
+    }
+
     /// Get output buffer fill level in samples
     pub fn get_output_buffer_samples(&self) -> u32 {
         self.output_buffer_len.load(Ordering::Relaxed)
@@ -1525,6 +1540,10 @@ impl PyAudioProcessor {
 
     fn get_input_buffer_samples(&self) -> u32 {
         self.processor.get_input_buffer_samples()
+    }
+
+    fn get_input_buffer_smoothed_samples(&self) -> u32 {
+        self.processor.get_input_buffer_smoothed_samples()
     }
 
     fn get_output_buffer_samples(&self) -> u32 {

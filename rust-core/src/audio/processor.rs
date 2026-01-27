@@ -107,6 +107,11 @@ pub struct AudioProcessor {
     /// Noise suppressor internal buffer fill level (samples)
     suppressor_buffer_len: Arc<AtomicU32>,
 
+    /// Smoothed DSP processing time in microseconds (EMA, 200ms time constant)
+    dsp_time_smoothed_us: Arc<AtomicU64>,
+    /// Smoothed suppressor buffer fill level (EMA, 200ms time constant)
+    smoothed_buffer_len: Arc<AtomicU32>,
+
     /// Dropped samples counter from input ring buffer
     input_dropped: Arc<AtomicU64>,
 }
@@ -187,6 +192,8 @@ impl AudioProcessor {
             input_buffer_len: Arc::new(AtomicU32::new(0)),
             output_buffer_len: Arc::new(AtomicU32::new(0)),
             suppressor_buffer_len: Arc::new(AtomicU32::new(0)),
+            dsp_time_smoothed_us: Arc::new(AtomicU64::new(0)),
+            smoothed_buffer_len: Arc::new(AtomicU32::new(0)),
 
             // Initialize dropped samples counter
             input_dropped: Arc::new(AtomicU64::new(0)),
@@ -300,6 +307,8 @@ impl AudioProcessor {
         let input_buffer_len = Arc::clone(&self.input_buffer_len);
         let output_buffer_len = Arc::clone(&self.output_buffer_len);
         let suppressor_buffer_len = Arc::clone(&self.suppressor_buffer_len);
+        let dsp_time_smoothed_us = Arc::clone(&self.dsp_time_smoothed_us);
+        let smoothed_buffer_len = Arc::clone(&self.smoothed_buffer_len);
 
         let handle = std::thread::spawn(move || {
             // Set high thread priority for real-time audio processing
@@ -353,6 +362,23 @@ impl AudioProcessor {
                 };
                 peak_atomic.store(peak_db.to_bits(), Ordering::Relaxed);
                 rms_atomic.store(rms_db.to_bits(), Ordering::Relaxed);
+            };
+
+            // Time-based EMA smoothing for metrics (200ms time constant)
+            const TAU_MS: f32 = 200.0;  // Time constant in milliseconds
+            let dt_ms = 10.0;  // Processing interval (480 samples @ 48kHz)
+            let alpha = 1.0 - (-dt_ms / TAU_MS).exp();  // Smoothing factor
+
+            let smooth_dsp_time = |raw_us: u64, prev_smoothed: u64| -> u64 {
+                let raw_f = raw_us as f32;
+                let prev_f = prev_smoothed as f32;
+                (alpha * raw_f + (1.0 - alpha) * prev_f) as u64
+            };
+
+            let smooth_buffer = |raw: u32, prev_smoothed: u32| -> u32 {
+                let raw_f = raw as f32;
+                let prev_f = prev_smoothed as f32;
+                (alpha * raw_f + (1.0 - alpha) * prev_f) as u32
             };
 
             // Run entire processing loop with denormals flushed to zero
@@ -427,10 +453,11 @@ impl AudioProcessor {
                                     }
                                 }
                                 // Record DSP processing time
-                                dsp_time_us.store(
-                                    dsp_start.elapsed().as_micros() as u64,
-                                    Ordering::Relaxed,
-                                );
+                                let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
+                                let prev_smoothed = dsp_time_smoothed_us.load(Ordering::Relaxed);
+                                let smoothed = smooth_dsp_time(raw_dsp_us, prev_smoothed);
+                                dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
+                                dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
                             } else {
                                 // Stage 1: Noise Gate
                                 if gate_enabled.load(Ordering::Acquire) {
@@ -458,8 +485,11 @@ impl AudioProcessor {
                                         // Track suppressor internal buffer fill level
                                         let suppressor_buffered =
                                             s.pending_input() + s.available_samples();
-                                        suppressor_buffer_len
-                                            .store(suppressor_buffered as u32, Ordering::Relaxed);
+                                        let raw_buffer = suppressor_buffered as u32;
+                                        let prev_smoothed = smoothed_buffer_len.load(Ordering::Relaxed);
+                                        let smoothed = smooth_buffer(raw_buffer, prev_smoothed);
+                                        suppressor_buffer_len.store(raw_buffer, Ordering::Relaxed);
+                                        smoothed_buffer_len.store(smoothed, Ordering::Relaxed);
 
                                         // Only output samples that suppressor has actually processed
                                         let available = s.available_samples();
@@ -531,10 +561,11 @@ impl AudioProcessor {
                                                 }
                                             }
                                             // Record DSP processing time
-                                            dsp_time_us.store(
-                                                dsp_start.elapsed().as_micros() as u64,
-                                                Ordering::Relaxed,
-                                            );
+                                            let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
+                                            let prev_smoothed = dsp_time_smoothed_us.load(Ordering::Relaxed);
+                                            let smoothed = smooth_dsp_time(raw_dsp_us, prev_smoothed);
+                                            dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
+                                            dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
                                         }
                                         // If no samples available yet, don't output anything
                                         // (suppressor is still accumulating samples for a complete frame)
@@ -600,10 +631,11 @@ impl AudioProcessor {
                                         }
                                     }
                                     // Record DSP processing time
-                                    dsp_time_us.store(
-                                        dsp_start.elapsed().as_micros() as u64,
-                                        Ordering::Relaxed,
-                                    );
+                                    let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
+                                    let prev_smoothed = dsp_time_smoothed_us.load(Ordering::Relaxed);
+                                    let smoothed = smooth_dsp_time(raw_dsp_us, prev_smoothed);
+                                    dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
+                                    dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
                                 }
                             }
                             // Update latency periodically
@@ -1501,6 +1533,17 @@ impl PyAudioProcessor {
 
     fn get_rnnoise_buffer_samples(&self) -> u32 {
         self.processor.get_rnnoise_buffer_samples()
+    }
+
+    /// Get smoothed DSP processing time in milliseconds
+    fn get_dsp_time_smoothed_ms(&self) -> f32 {
+        let us = self.processor.dsp_time_smoothed_us.load(Ordering::Relaxed);
+        us as f32 / 1000.0
+    }
+
+    /// Get smoothed suppressor buffer fill level in samples
+    fn get_buffer_smoothed_samples(&self) -> u32 {
+        self.processor.smoothed_buffer_len.load(Ordering::Relaxed)
     }
 
     // === Dropped Sample Tracking ===

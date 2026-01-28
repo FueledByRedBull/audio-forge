@@ -171,7 +171,7 @@ impl SileroVAD {
             buffer: Vec::with_capacity(SILERO_WINDOW_SIZE * 4),
             state,
             smoothed_prob: 0.0,
-            smoothing: 0.1,
+            smoothing: 0.5, // Faster smoothing (less lag)
         })
     }
 
@@ -374,6 +374,12 @@ pub struct VadAutoGate {
     hold_timer: f32,
     /// Whether hold timer is currently active (prevents restarts)
     timer_running: bool,
+    /// Previous raw gate state (for transition detection)
+    prev_gate_open: bool,
+    /// Counter for how long gate has been closed (for debounce)
+    closed_counter_samples: f32,
+    /// Minimum closed time before allowing timer restart (debounce, in ms)
+    debounce_time_ms: f32,
     /// Sample rate for hold time calculation
     sample_rate: u32,
     /// Current VAD probability for metering
@@ -411,6 +417,9 @@ impl VadAutoGate {
             hold_time_ms: 200.0,
             hold_timer: 0.0,
             timer_running: false,
+            prev_gate_open: false,
+            closed_counter_samples: 0.0,
+            debounce_time_ms: 50.0, // 50ms debounce to prevent oscillation
             sample_rate,
             current_probability: 0.0,
         }
@@ -436,6 +445,18 @@ impl VadAutoGate {
         self.current_probability = prob;
 
         let vad_speech_detected = prob > self.vad_threshold;
+
+        // Debug: Log VAD decision
+        if GATE_DEBUG && (prob > 0.0 || prob < 0.01) {
+            // Only log when probability is very low (to see oscillation)
+            static DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count < 50 {  // Only log first 50 times to avoid spam
+                eprintln!("[VAD-DEBUG] prob={:.6}, threshold={:.2}, prob > threshold = {}, vad_speech_detected={}",
+                    prob, self.vad_threshold, prob > self.vad_threshold, vad_speech_detected);
+            }
+        }
+
         let level_above_threshold = self.level_above_threshold(samples);
 
         let gate_open = match self.gate_mode {
@@ -469,6 +490,16 @@ impl VadAutoGate {
 
         let smoothed_gate_open = self.apply_hold_time(gate_open, samples.len());
 
+        // Debug: Log gate decision vs smoothed gate
+        if GATE_DEBUG && gate_open != smoothed_gate_open {
+            static DEBUG_COUNT2: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let count = DEBUG_COUNT2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count < 20 {
+                eprintln!("[VAD-HOLD] gate_open={}, smoothed_gate_open={}, prob={:.4}, timer_running={}",
+                    gate_open, smoothed_gate_open, prob, self.timer_running);
+            }
+        }
+
         // Debug: show final gate state after hold time
         if GATE_DEBUG && smoothed_gate_open != gate_open {
             eprintln!("[GATE] HoldTime ACTIVE: raw_gate={}, held_gate={}",
@@ -486,8 +517,25 @@ impl VadAutoGate {
     }
 
     fn apply_hold_time(&mut self, gate_open: bool, num_samples: usize) -> bool {
-        // Start timer ONLY when gate opens AND timer is not already running
-        if gate_open && !self.timer_running {
+        // Track closed state duration for debounce
+        if gate_open {
+            // Gate is open, reset closed counter
+            self.closed_counter_samples = 0.0;
+        } else {
+            // Gate is closed, increment counter
+            self.closed_counter_samples += num_samples as f32;
+        }
+
+        // Detect transition: closed -> open
+        let opening_edge = gate_open && !self.prev_gate_open;
+        self.prev_gate_open = gate_open;
+
+        // Calculate minimum closed time in samples (debounce period)
+        let debounce_samples = self.debounce_time_ms / 1000.0 * self.sample_rate as f32;
+
+        // Start timer ONLY on transition (rising edge) AND if gate was closed long enough
+        // This prevents rapid oscillation from restarting the timer repeatedly
+        if opening_edge && self.closed_counter_samples >= debounce_samples {
             self.hold_timer = self.hold_time_ms / 1000.0 * self.sample_rate as f32;
             self.timer_running = true;
             if GATE_DEBUG {
@@ -499,8 +547,11 @@ impl VadAutoGate {
         // Always decrement timer while running
         if self.timer_running && self.hold_timer > 0.0 {
             self.hold_timer = (self.hold_timer - num_samples as f32).max(0.0);
-            if GATE_DEBUG && self.hold_timer == 0.0 {
-                eprintln!("[GATE] HoldTimer EXPIRED");
+            // Clear timer_running when timer expires (use <= for float safety)
+            if self.hold_timer <= 0.0 {
+                if GATE_DEBUG {
+                    eprintln!("[GATE] HoldTimer EXPIRED");
+                }
                 self.timer_running = false;
             }
         }
@@ -547,6 +598,8 @@ impl VadAutoGate {
         self.noise_floor = -60.0;
         self.hold_timer = 0.0;
         self.timer_running = false;
+        self.prev_gate_open = false;
+        self.closed_counter_samples = 0.0;
         self.current_probability = 0.0;
         if let Some(vad) = &mut self.vad {
             vad.reset();

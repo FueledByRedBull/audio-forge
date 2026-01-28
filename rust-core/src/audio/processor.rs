@@ -1574,6 +1574,17 @@ impl PyAudioProcessor {
         self.processor.get_eq_band_params(band)
     }
 
+    /// Apply EQ settings for all 10 bands in a single atomic call
+    ///
+    /// Args:
+    ///     bands: List of (frequency_hz, gain_db, q) tuples for each band (must be 10)
+    ///
+    /// Raises:
+    ///     ValueError: If band count is not 10 or parameters are out of range
+    fn apply_eq_settings(&self, bands: Vec<(f64, f64, f64)>) -> PyResult<()> {
+        self.processor.apply_eq_settings(bands)
+    }
+
     // === Compressor ===
 
     fn set_compressor_enabled(&self, enabled: bool) {

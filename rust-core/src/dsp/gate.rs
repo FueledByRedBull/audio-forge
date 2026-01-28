@@ -11,6 +11,9 @@
 #[cfg(feature = "vad")]
 use crate::dsp::vad::{GateMode, VadAutoGate};
 
+/// Enable debug output for gate operations
+const GATE_DEBUG: bool = true;
+
 /// Noise gate processor with IIR envelope follower
 pub struct NoiseGate {
     /// Threshold in dB (e.g., -40.0)
@@ -40,6 +43,19 @@ pub struct NoiseGate {
     /// Whether gate is enabled
     enabled: bool,
 
+    /// Previous gate state (for change detection in debug)
+    was_open: bool,
+
+    /// Sample counter for periodic debug output
+    debug_counter: usize,
+
+    /// Peak level since last debug output
+    peak_level: f64,
+
+    /// Previous VAD gate state (for VAD-specific change detection)
+    #[cfg(feature = "vad")]
+    vad_was_open: bool,
+
     /// Gate operating mode (VAD feature only)
     #[cfg(feature = "vad")]
     gate_mode: GateMode,
@@ -66,6 +82,11 @@ impl NoiseGate {
         // RMS smoothing: 50ms time constant for IIR envelope follower
         let rms_coeff = Self::time_constant_to_coeff(50.0, sample_rate);
 
+        if GATE_DEBUG {
+            eprintln!("[GATE] Initialized: threshold={}dB, attack={}ms, release={}ms",
+                threshold_db, attack_ms, release_ms);
+        }
+
         Self {
             threshold_db,
             attack_coeff,
@@ -76,6 +97,11 @@ impl NoiseGate {
             sample_rate,
             is_open: false,
             enabled: true,
+            was_open: false,
+            debug_counter: 0,
+            peak_level: f64::MIN,
+            #[cfg(feature = "vad")]
+            vad_was_open: false,
             #[cfg(feature = "vad")]
             gate_mode: GateMode::ThresholdOnly,
             #[cfg(feature = "vad")]
@@ -145,6 +171,11 @@ impl NoiseGate {
         // Convert to dB (with small epsilon to avoid log(0))
         let level_db = 20.0 * (rms + 1e-10).log10();
 
+        // Track peak level for debug output
+        if level_db > self.peak_level {
+            self.peak_level = level_db;
+        }
+
         // Determine if gate should be open
         // Use hysteresis: different thresholds for opening and closing
         let hysteresis_db = 3.0; // 3 dB hysteresis
@@ -159,6 +190,18 @@ impl NoiseGate {
             if level_db >= self.threshold_db {
                 self.is_open = true;
             }
+        }
+
+        // Debug output on state change
+        if GATE_DEBUG && self.is_open != self.was_open {
+            if self.is_open {
+                eprintln!("[GATE] OPENED: level={:.1}dB >= threshold={:.1}dB",
+                    level_db, self.threshold_db);
+            } else {
+                eprintln!("[GATE] CLOSED: level={:.1}dB < (threshold-hysteresis)={:.1}dB",
+                    level_db, self.threshold_db - hysteresis_db);
+            }
+            self.was_open = self.is_open;
         }
 
         // Calculate target gain (0.0 when closed, 1.0 when open)
@@ -191,7 +234,36 @@ impl NoiseGate {
                 if let Some(vad) = &mut self.vad_auto_gate {
                     if vad.is_enabled() {
                         // Get VAD gate decision and probability
-                        let (vad_gate_open, _probability) = vad.process(buffer);
+                        let (vad_gate_open, probability) = vad.process(buffer);
+
+                        // Debug VAD probability and decision
+                        if GATE_DEBUG {
+                            self.debug_counter += buffer.len();
+                            // Print VAD status every ~1 second (48000 samples)
+                            if self.debug_counter >= 48000 {
+                                let mode_str = match self.gate_mode {
+                                    GateMode::VadAssisted => "VAD-Assisted",
+                                    GateMode::VadOnly => "VAD-Only",
+                                    GateMode::ThresholdOnly => "Threshold-Only",
+                                };
+                                eprintln!("[GATE] VAD mode={}, probability={:.4}, gate_state={}, threshold={:.2}",
+                                    mode_str, probability, if vad_gate_open { "OPEN" } else { "CLOSED" },
+                                    vad.vad_threshold());
+                                self.debug_counter = 0;
+                            }
+                        }
+
+                        // Check for VAD state change
+                        if GATE_DEBUG && vad_gate_open != self.vad_was_open {
+                            if vad_gate_open {
+                                eprintln!("[GATE] VAD OPENED: probability={:.4} >= threshold={:.2} [DEBUG: was_open={}, gate_open={}]",
+                                    probability, vad.vad_threshold(), self.vad_was_open, vad_gate_open);
+                            } else {
+                                eprintln!("[GATE] VAD CLOSED: probability={:.4} < threshold={:.2} [DEBUG: was_open={}, gate_open={}]",
+                                    probability, vad.vad_threshold(), self.vad_was_open, vad_gate_open);
+                            }
+                            self.vad_was_open = vad_gate_open;
+                        }
 
                         // Override is_open based on VAD decision
                         self.is_open = vad_gate_open;
@@ -218,6 +290,11 @@ impl NoiseGate {
         self.envelope = 0.0;
         self.envelope_squared = 0.0;
         self.is_open = false;
+        self.was_open = false;
+        #[cfg(feature = "vad")]
+        {
+            self.vad_was_open = false;
+        }
     }
 
     /// Get current envelope level (0.0 to 1.0)

@@ -322,14 +322,65 @@ class EQPanel(QWidget):
         """Apply a preset with given gain and Q values."""
         if qs is None:
             qs = [1.41] * len(gains)  # Default Q if not provided
-        for i, gain in enumerate(gains):
+
+        # Build band parameter list
+        bands = []
+        for i in range(min(len(gains), len(self.band_sliders))):
+            freq = BAND_FREQUENCIES_HZ[i]
+            gain = gains[i]
+            q = qs[i] if i < len(qs) else 1.41
+            bands.append((freq, gain, q))
+
+        # Apply to processor atomically using batch method
+        self.processor.apply_eq_settings(bands)
+
+        # Update UI sliders
+        for i, (freq, gain, q) in enumerate(bands):
             if i < len(self.band_sliders):
-                self.band_sliders[i].set_gain(gain)
-                self.processor.set_eq_band_gain(i, gain)
-                if i < len(qs):
-                    self.band_sliders[i].set_q(qs[i])
-                    self.processor.set_eq_band_q(i, qs[i])
-        # Update curve after applying preset
+                slider = self.band_sliders[i]
+                slider.set_gain(gain)
+                slider.set_q(q)
+
+        # Update curve
+        self._update_curve()
+
+    def apply_auto_eq_results(self, bands: list):
+        """
+        Apply auto-EQ analysis results to all EQ bands.
+
+        Updates UI sliders, Q spinboxes, and processor atomically.
+        Uses blockSignals() to prevent feedback loops during update.
+
+        Args:
+            bands: List of 10 (frequency_hz, gain_db, q) tuples
+
+        Raises:
+            ValueError: If bands list does not contain exactly 10 elements
+        """
+        if len(bands) != 10:
+            raise ValueError(f"Expected 10 bands, got {len(bands)}")
+
+        # Update processor atomically using new batch method from plan 20-01
+        self.processor.apply_eq_settings(bands)
+
+        # Update UI sliders without triggering valueChanged signals
+        for i, (freq, gain, q) in enumerate(bands):
+            if i < len(self.band_sliders):
+                slider = self.band_sliders[i]
+
+                # Block signals to prevent feedback loops
+                slider.slider.blockSignals(True)
+                slider.q_spinbox.blockSignals(True)
+
+                # Update slider and spinbox
+                slider.set_gain(gain)
+                slider.set_q(q)
+
+                # Unblock signals
+                slider.slider.blockSignals(False)
+                slider.q_spinbox.blockSignals(False)
+
+        # Update frequency response graph
         self._update_curve()
 
     def get_settings(self) -> dict:

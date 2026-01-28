@@ -20,6 +20,8 @@ class EQCurveWidget(QWidget):
         # Band parameters: (freq, gain_db, q, filter_type)
         # filter_type: 0=lowshelf, 1=peaking, 2=highshelf
         self.bands = []
+        self.overlay_bands = []  # Optional second curve for comparison
+        self.show_overlay = False
         for i in range(10):
             if i == 0:
                 filter_type = 0  # Low shelf
@@ -142,6 +144,46 @@ class EQCurveWidget(QWidget):
         self._update_response()
         self.update()  # Trigger repaint
 
+    def set_overlay_params(self, bands):
+        """
+        Set overlay curve parameters for before/after comparison.
+
+        Args:
+            bands: List of (frequency_hz, gain_db, q) tuples for overlay curve
+        """
+        self.overlay_bands = []
+        for i, (freq, gain_db, q) in enumerate(bands):
+            if i == 0:
+                filter_type = 0  # Low shelf
+            elif i == 9:
+                filter_type = 2  # High shelf
+            else:
+                filter_type = 1  # Peaking
+            self.overlay_bands.append((freq, gain_db, q, filter_type))
+        self.show_overlay = True
+        self._update_overlay_response()
+        self.update()
+
+    def clear_overlay(self):
+        """Remove overlay curve and return to single curve mode."""
+        self.overlay_bands = []
+        self.show_overlay = False
+        self.update()
+
+    def _update_overlay_response(self):
+        """Calculate frequency response for overlay curve."""
+        self.overlay_response_db = [0.0] * len(self.freq_points)
+
+        for freq, gain_db, q, filter_type in self.overlay_bands:
+            if abs(gain_db) < 0.01:
+                continue
+
+            b0, b1, b2, a1, a2 = self._calc_biquad_coefficients(freq, gain_db, q, filter_type)
+
+            for i, f in enumerate(self.freq_points):
+                db = self._biquad_response(f, b0, b1, b2, a1, a2)
+                self.overlay_response_db[i] += db
+
     def paintEvent(self, event):
         """Draw the frequency response curve."""
         painter = QPainter(self)
@@ -228,3 +270,31 @@ class EQCurveWidget(QWidget):
             x1, y1 = points[i]
             x2, y2 = points[i + 1]
             painter.drawLine(x1, y1, x2, y2)
+
+        # Draw overlay curve if enabled
+        if self.show_overlay and self.overlay_bands:
+            overlay_pen = QPen(QColor(255, 140, 0), 2)  # Orange for overlay
+            painter.setPen(overlay_pen)
+
+            overlay_points = []
+            for i, freq in enumerate(self.freq_points):
+                x = freq_to_x(freq)
+                y = db_to_y(self.overlay_response_db[i])
+                overlay_points.append((int(x), int(y)))
+
+            for i in range(len(overlay_points) - 1):
+                x1, y1 = overlay_points[i]
+                x2, y2 = overlay_points[i + 1]
+                painter.drawLine(x1, y1, x2, y2)
+
+            # Add legend when overlay is shown
+            legend_x = width - 120
+            legend_y = 20
+
+            # Main curve label (Current)
+            painter.setPen(QPen(QColor(100, 200, 100), 2))
+            painter.drawText(legend_x, legend_y, "Current")
+
+            # Overlay curve label (New)
+            painter.setPen(QPen(QColor(255, 140, 0), 2))
+            painter.drawText(legend_x, legend_y + 18, "New")

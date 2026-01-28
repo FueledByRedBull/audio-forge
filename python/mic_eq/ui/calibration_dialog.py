@@ -12,9 +12,10 @@ from PyQt6.QtWidgets import (
     QGroupBox, QLabel, QComboBox,
     QPushButton, QTextEdit, QScrollArea, QMessageBox, QProgressBar
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from ..config import TARGET_CURVES
 from .recording_worker import RecordingWorker
+from .analysis_worker import AnalysisWorker
 from .level_meter import LevelMeter
 import numpy as np
 
@@ -30,6 +31,9 @@ RECORDING_DURATION = 10.0  # Seconds
 
 class CalibrationDialog(QDialog):
     """Auto-EQ calibration dialog with target curve selection."""
+
+    # Signal emitted when auto-EQ is applied (emits target curve name)
+    auto_eq_applied = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -177,9 +181,49 @@ class CalibrationDialog(QDialog):
                 "Please record the full 10 seconds for accurate calibration."
             )
         elif self.recording_state == "completed":
-            # Start new recording
-            self._reset_recording_ui()
-            self._start_recording()
+            # Check if analysis was complete and user is applying results
+            if hasattr(self, 'eq_settings') and self.eq_settings is not None:
+                # Apply EQ settings to main window
+                self._apply_eq_settings()
+            else:
+                # Start new recording
+                self._reset_recording_ui()
+                self._start_recording()
+
+    def _apply_eq_settings(self):
+        """Apply auto-EQ settings to main window and close dialog."""
+        if DEBUG:
+            print(f"[CALIBRATION_DLG] Applying EQ settings...")
+
+        # Get parent's EQ panel (MainWindow has it)
+        parent = self.parent()
+        while parent and not hasattr(parent, 'eq_panel'):
+            parent = parent.parent()
+
+        if not parent:
+            QMessageBox.critical(self, "Error", "Could not find EQ panel")
+            return
+
+        # Build band tuples from eq_settings
+        from ..config import BAND_FREQUENCIES_HZ
+        bands = []
+        for i, freq in enumerate(BAND_FREQUENCIES_HZ):
+            gain = self.eq_settings['band_gains'][i]
+            q = self.eq_settings['band_qs'][i] if 'band_qs' in self.eq_settings else 1.41
+            bands.append((freq, gain, q))
+
+        # Apply settings to EQ panel
+        parent.eq_panel.apply_auto_eq_results(bands)
+
+        # Emit signal for main window to handle preset save and undo button
+        target_curve = self.get_selected_curve()
+        self.auto_eq_applied.emit(target_curve)
+
+        if DEBUG:
+            print(f"[CALIBRATION_DLG] EQ settings applied, signal emitted for curve={target_curve}")
+
+        # Close dialog
+        self.accept()
 
     def _start_recording(self):
         """Start non-blocking recording."""
@@ -271,15 +315,92 @@ class CalibrationDialog(QDialog):
         self.warning_label.setText(f"Recording complete! {len(audio_data)} samples captured")
         self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
 
-        # TODO: Phase 19 will pass audio_data to analysis engine
+        # Phase 20 TODO: Analysis engine exists but not integrated yet
+        # Phase 19 built the algorithms, Phase 20 will wire them to this dialog
         if DEBUG:
-            print("[CALIBRATION_DLG] TODO: Phase 19 will analyze this audio")
+            print("[CALIBRATION_DLG] NOTE: Analysis engine built (Phase 19) but not integrated")
+            print("[CALIBRATION_DLG] TODO: Phase 20 will integrate AnalysisWorker here")
+            print("[CALIBRATION_DLG] For now, audio captured but not analyzed")
+
+        # Auto-start analysis (Phase 19-20 bridge integration)
+        # This provides immediate value even before Phase 20 full UI
+        if DEBUG:
+            print("[ANALYSIS] Starting analysis engine (Phase 19 bridge)...")
+        self._start_analysis()
 
     def _on_recording_failed(self, error: str):
         """Handle recording failure."""
         self.warning_label.setText(f"❌ Recording failed: {error}")
         self.warning_label.setStyleSheet("color: red; font-weight: bold; font-size: 11pt;")
         self._reset_recording_ui()
+
+    def _start_analysis(self):
+        """Start analysis worker (Phase 19 bridge integration)."""
+        if self.audio_data is None:
+            if DEBUG:
+                print("[ANALYSIS] No audio data to analyze")
+            return
+
+        # Get parent's processor for sample rate
+        parent = self.parent()
+        while parent and not hasattr(parent, 'processor'):
+            parent = parent.parent()
+
+        if not parent:
+            if DEBUG:
+                print("[ANALYSIS] ERROR: Could not find processor")
+            return
+
+        sample_rate = 48000  # Fixed for now
+        target_preset = self.get_selected_curve()
+
+        if DEBUG:
+            print(f"[ANALYSIS] Creating AnalysisWorker: {len(self.audio_data)} samples, {sample_rate}Hz, target={target_preset}")
+
+        # Create and start analysis worker
+        self.analysis_worker = AnalysisWorker(self.audio_data, sample_rate, target_preset)
+        self.analysis_worker.step_progress.connect(self._on_analysis_step)
+        self.analysis_worker.finished.connect(self._on_analysis_complete)
+        self.analysis_worker.failed.connect(self._on_analysis_failed)
+        self.analysis_worker.start()
+
+        if DEBUG:
+            print("[ANALYSIS] AnalysisWorker started")
+
+    def _on_analysis_step(self, step_name: str, percentage: int):
+        """Handle analysis step progress."""
+        if DEBUG:
+            print(f"[ANALYSIS] Step {percentage}%: {step_name}")
+        self.warning_label.setText(f"Analyzing: {step_name}")
+        self.progress_bar.setValue(percentage)
+
+    def _on_analysis_complete(self, eq_settings: dict):
+        """Handle analysis completion."""
+        if DEBUG:
+            print(f"[ANALYSIS] Analysis complete!")
+            print(f"[ANALYSIS] Band gains: {[round(g, 1) for g in eq_settings['band_gains']]}")
+            max_gain = max(abs(g) for g in eq_settings['band_gains'])
+            print(f"[ANALYSIS] Max correction: {round(max_gain, 1)} dB")
+
+        self.eq_settings = eq_settings
+        self.warning_label.setText(f"✓ Analysis complete! Max correction: {round(max(abs(g) for g in eq_settings['band_gains']), 1)} dB")
+        self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
+        self.progress_bar.setValue(100)
+
+        # Enable apply button (will be part of Phase 20)
+        self.start_button.setText("Apply EQ Settings")
+        self.start_button.setEnabled(True)
+        if DEBUG:
+            print("[ANALYSIS] TODO: Phase 20 will apply these settings to UI")
+
+    def _on_analysis_failed(self, error: str):
+        """Handle analysis failure."""
+        if DEBUG:
+            print(f"[ANALYSIS] Analysis failed: {error}")
+        self.warning_label.setText(f"❌ {error}")
+        self.warning_label.setStyleSheet("color: orange; font-weight: bold; font-size: 11pt;")
+        self.start_button.setText("Record Again")
+        self.start_button.setEnabled(True)
 
     def _on_retake_clicked(self):
         """Discard and re-record."""

@@ -5,7 +5,7 @@
 //! Adapted from Spectral Workbench project for MicEq.
 
 use pyo3::prelude::*;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use thread_priority::{set_current_thread_priority, ThreadPriority};
@@ -116,6 +116,14 @@ pub struct AudioProcessor {
 
     /// Dropped samples counter from input ring buffer
     input_dropped: Arc<AtomicU64>,
+
+    // === RAW AUDIO RECORDING (for calibration) ===
+    /// Raw audio recording buffer (for calibration - captures audio AFTER pre-filter, BEFORE gate)
+    raw_recording_buffer: Arc<Mutex<Option<Vec<f32>>>>,
+    /// Current recording position (samples recorded so far)
+    raw_recording_pos: Arc<AtomicUsize>,
+    /// Target recording length (total samples to record)
+    raw_recording_target: Arc<AtomicUsize>,
 }
 
 impl AudioProcessor {
@@ -200,6 +208,11 @@ impl AudioProcessor {
 
             // Initialize dropped samples counter
             input_dropped: Arc::new(AtomicU64::new(0)),
+
+            // Initialize raw recording buffer
+            raw_recording_buffer: Arc::new(Mutex::new(None)),
+            raw_recording_pos: Arc::new(AtomicUsize::new(0)),
+            raw_recording_target: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -313,6 +326,11 @@ impl AudioProcessor {
         let suppressor_buffer_len = Arc::clone(&self.suppressor_buffer_len);
         let dsp_time_smoothed_us = Arc::clone(&self.dsp_time_smoothed_us);
         let smoothed_buffer_len = Arc::clone(&self.smoothed_buffer_len);
+
+        // Clone raw recording buffer atomics
+        let raw_recording_buffer = Arc::clone(&self.raw_recording_buffer);
+        let raw_recording_pos = Arc::clone(&self.raw_recording_pos);
+        let raw_recording_target = Arc::clone(&self.raw_recording_target);
 
         let handle = std::thread::spawn(move || {
             // Set high thread priority for real-time audio processing
@@ -439,6 +457,32 @@ impl AudioProcessor {
 
                             // Measure INPUT levels (after pre-filter, before main processing)
                             measure_levels(buffer, &mut input_rms_acc, &input_peak, &input_rms);
+
+                            // === RAW AUDIO RECORDING TAP (for calibration) ===
+                            // Capture audio AFTER pre-filter, BEFORE noise gate
+                            // This is the raw microphone response needed for EQ analysis
+                            {
+                                if let Ok(mut buf_guard) = raw_recording_buffer.lock() {
+                                    if let Some(ref mut buffer_rec) = *buf_guard {
+                                        let target = raw_recording_target.load(Ordering::Acquire);
+                                        let mut pos = raw_recording_pos.load(Ordering::Acquire);
+
+                                        if pos < target {
+                                            // Calculate how many samples we can copy
+                                            let remaining = target - pos;
+                                            let to_copy = n.min(remaining);
+
+                                            // Copy samples to recording buffer
+                                            if pos + to_copy <= buffer_rec.len() {
+                                                buffer_rec[pos..pos + to_copy].copy_from_slice(&buffer[..to_copy]);
+                                                pos += to_copy;
+                                                raw_recording_pos.store(pos, Ordering::Release);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            // === END RECORDING TAP ===
 
                             if bypass.load(Ordering::SeqCst) {
                                 // Bypass mode: measure output = input, send directly
@@ -1176,6 +1220,56 @@ impl AudioProcessor {
     /// Reset dropped sample counter
     pub fn reset_dropped_samples(&self) {
         self.input_dropped.store(0, Ordering::Relaxed);
+    }
+
+    // === RAW AUDIO RECORDING (for calibration) ===
+
+    /// Start recording raw audio for calibration
+    /// Taps audio AFTER pre-filter (DC blocker + 80Hz HP) but BEFORE noise gate
+    pub fn start_raw_recording(&mut self, duration_secs: f64) -> Result<(), String> {
+        let num_samples = (duration_secs * self.sample_rate as f64) as usize;
+
+        // Allocate recording buffer
+        let buffer = vec![0.0f32; num_samples];
+
+        // Lock and set recording state
+        if let Ok(mut buf_guard) = self.raw_recording_buffer.lock() {
+            *buf_guard = Some(buffer);
+            self.raw_recording_pos.store(0, Ordering::Release);
+            self.raw_recording_target.store(num_samples, Ordering::Release);
+            Ok(())
+        } else {
+            Err("Failed to lock recording buffer".to_string())
+        }
+    }
+
+    /// Stop recording and return captured audio (truncated to actual length)
+    pub fn stop_raw_recording(&mut self) -> Option<Vec<f32>> {
+        if let Ok(mut buf_guard) = self.raw_recording_buffer.lock() {
+            if let Some(mut buffer) = buf_guard.take() {
+                let pos = self.raw_recording_pos.load(Ordering::Acquire);
+                buffer.truncate(pos);
+                return Some(buffer);
+            }
+        }
+        None
+    }
+
+    /// Check if recording is complete
+    pub fn is_recording_complete(&self) -> bool {
+        let target = self.raw_recording_target.load(Ordering::Acquire);
+        let pos = self.raw_recording_pos.load(Ordering::Acquire);
+        target > 0 && pos >= target
+    }
+
+    /// Get recording progress (0.0 to 1.0)
+    pub fn recording_progress(&self) -> f32 {
+        let target = self.raw_recording_target.load(Ordering::Acquire);
+        if target == 0 {
+            return 0.0;
+        }
+        let pos = self.raw_recording_pos.load(Ordering::Acquire);
+        (pos as f32 / target as f32).min(1.0)
     }
 }
 

@@ -318,6 +318,13 @@ class MainWindow(QMainWindow):
         self.auto_eq_button.clicked.connect(self._on_auto_eq_clicked)
         control_layout.addWidget(self.auto_eq_button)
 
+        # Undo Auto-EQ button (disabled initially)
+        self._undo_auto_eq_button = QPushButton("Undo Auto-EQ")
+        self._undo_auto_eq_button.setEnabled(False)
+        self._undo_auto_eq_button.setToolTip("Restore EQ settings from before last auto-EQ")
+        self._undo_auto_eq_button.clicked.connect(self.undo_auto_eq)
+        control_layout.addWidget(self._undo_auto_eq_button)
+
         control_layout.addStretch()
 
         # Latency display

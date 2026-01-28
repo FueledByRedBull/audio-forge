@@ -490,16 +490,11 @@ impl VadAutoGate {
     }
 
     fn apply_hold_time(&mut self, gate_open: bool, num_samples: usize) -> bool {
-        if GATE_DEBUG {
-            eprintln!("[GATE] apply_hold_time: gate_open={}, prev_gate_open={}, timer={:.0}, samples={}",
-                gate_open, self.previous_gate_open, self.hold_timer, num_samples);
-        }
-
         // Detect CLOSED→OPEN transition
         let just_opened = gate_open && !self.previous_gate_open;
 
-        // Start hold timer on transition (not every time gate is open)
-        if just_opened {
+        // Start hold timer ONLY on transition AND if timer not already running
+        if just_opened && self.hold_timer == 0.0 {
             self.hold_timer = self.hold_time_ms / 1000.0 * self.sample_rate as f32;
             if GATE_DEBUG {
                 eprintln!("[GATE] HoldTimer STARTED: {:.0} samples ({:.0}ms) - transition detected",

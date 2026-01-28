@@ -995,6 +995,58 @@ impl AudioProcessor {
         }
     }
 
+    /// Apply EQ settings for all 10 bands in a single atomic call
+    ///
+    /// # Arguments
+    /// * `bands` - Vector of (frequency_hz, gain_db, q) tuples for each band (must be 10)
+    ///
+    /// # Returns
+    /// * PyResult<()> - Ok(()) on success, Err if validation fails
+    ///
+    /// # Validation
+    /// * bands.len() must equal 10
+    /// * frequency: 20.0 to 20000.0 Hz
+    /// * gain_db: -12.0 to +12.0 dB
+    /// * q: 0.1 to 10.0
+    pub fn apply_eq_settings(&self, bands: Vec<(f64, f64, f64)>) -> PyResult<()> {
+        // Validate band count
+        if bands.len() != 10 {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                format!("Expected 10 bands, got {}", bands.len())
+            ));
+        }
+
+        // Validate each band's parameters
+        for (i, (freq, gain, q)) in bands.iter().enumerate() {
+            if *freq < 20.0 || *freq > 20000.0 {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("Band {}: frequency {} Hz out of range [20, 20000]", i, freq)
+                ));
+            }
+            if *gain < -12.0 || *gain > 12.0 {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("Band {}: gain {} dB out of range [-12, 12]", i, gain)
+                ));
+            }
+            if *q < 0.1 || *q > 10.0 {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                    format!("Band {}: Q {} out of range [0.1, 10.0]", i, q)
+                ));
+            }
+        }
+
+        // All validation passed - apply atomically
+        if let Ok(mut eq) = self.eq.lock() {
+            for (i, (freq, gain, q)) in bands.iter().enumerate() {
+                eq.set_band_frequency(i, *freq);
+                eq.set_band_gain(i, *gain);
+                eq.set_band_q(i, *q);
+            }
+        }
+
+        Ok(())
+    }
+
     // === Compressor Controls ===
 
     /// Enable/disable compressor

@@ -1668,4 +1668,37 @@ impl PyAudioProcessor {
     fn reset_dropped_samples(&self) {
         self.processor.reset_dropped_samples();
     }
+
+    // === RAW AUDIO RECORDING (for calibration) ===
+
+    /// Start recording raw audio for calibration (10 seconds @ 48kHz)
+    fn start_raw_recording(&mut self, duration_secs: f64) -> PyResult<()> {
+        self.processor
+            .start_raw_recording(duration_secs)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+    }
+
+    /// Stop recording and return audio data as NumPy array
+    fn stop_raw_recording(&mut self, py: Python) -> PyResult<PyObject> {
+        if let Some(audio) = self.processor.stop_raw_recording() {
+            // Zero-copy transfer to NumPy
+            use numpy::PyArray1;
+            let array = PyArray1::from_vec(py, audio);
+            Ok(array.into())
+        } else {
+            Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "No recording in progress",
+            ))
+        }
+    }
+
+    /// Check if recording is complete
+    fn is_recording_complete(&mut self) -> PyResult<bool> {
+        Ok(self.processor.is_recording_complete())
+    }
+
+    /// Get recording progress (0.0 to 1.0)
+    fn recording_progress(&mut self) -> PyResult<f32> {
+        Ok(self.processor.recording_progress())
+    }
 }

@@ -6,6 +6,7 @@ for stable spectral estimation of voice recordings.
 """
 import numpy as np
 from scipy import signal
+from scipy.signal import find_peaks
 
 
 def compute_voice_spectrum(audio, fs=48000, nperseg=4096):
@@ -165,3 +166,76 @@ def smooth_spectrum_octave(freqs, spectrum_db, fraction=6):
         smoothed_db = spectrum_db.copy()
 
     return smoothed_db
+
+
+def find_octave_spaced_peaks(spectrum_db, freqs, octave_fraction=3):
+    """
+    Find peaks with TRUE octave spacing using log-frequency transform.
+
+    CRITICAL: Must transform to log-frequency domain first!
+    The naive approach (distance=len(freqs)//15) is mathematically incorrect
+    because FFT bins are linearly spaced, not logarithmically.
+
+    This implementation:
+    1. Transforms to log2(frequency) domain
+    2. Resamples to uniform log-frequency grid
+    3. Applies find_peaks with constant distance
+    4. Maps back to linear frequency
+
+    Args:
+        spectrum_db: Spectrum in dB (from compute_voice_spectrum)
+        freqs: Frequency array in Hz (linear spacing)
+        octave_fraction: Minimum spacing (3 = 1/3 octave, 6 = 1/6 octave)
+
+    Returns:
+        peak_freqs: Frequencies of detected peaks (Hz, linear scale)
+        peak_values: dB values at peak frequencies
+
+    Example:
+        >>> freqs, spectrum_db = compute_voice_spectrum(audio, 48000)
+        >>> peaks_freqs, peaks_db = find_octave_spaced_peaks(spectrum_db, freqs)
+        >>> print(f"Found {len(peaks_freqs)} peaks")
+    """
+    # Remove DC bin (can't take log of 0)
+    valid = freqs > 0
+    log_freqs = np.log2(freqs[valid])
+    spectrum_valid = spectrum_db[valid]
+
+    # Resample to UNIFORM log-frequency grid
+    # This is critical: constant distance in log-freq = constant octave fraction
+    log_freq_uniform = np.linspace(
+        log_freqs.min(),
+        log_freqs.max(),
+        len(log_freqs)
+    )
+    spectrum_resampled = np.interp(
+        log_freq_uniform,
+        log_freqs,
+        spectrum_valid
+    )
+
+    # Calculate total octaves in range
+    total_octaves = log_freqs.max() - log_freqs.min()
+    bins_per_octave = len(log_freq_uniform) / total_octaves
+
+    # Distance for 1/N octave spacing
+    # Example: octave_fraction=3 -> minimum 1/3 octave between peaks
+    min_distance = int(bins_per_octave / octave_fraction)
+
+    # Find peaks in log-frequency domain
+    peaks, properties = find_peaks(
+        spectrum_resampled,
+        distance=min_distance,
+        prominence=3.0  # 3 dB minimum prominence (avoid noise)
+    )
+
+    # Map back to linear frequency
+    peak_freqs = 2 ** log_freq_uniform[peaks]
+    peak_values = spectrum_resampled[peaks]
+
+    # Filter to voice range (80 Hz - 16 kHz)
+    voice_mask = (peak_freqs >= 80) & (peak_freqs <= 16000)
+    peak_freqs = peak_freqs[voice_mask]
+    peak_values = peak_values[voice_mask]
+
+    return peak_freqs, peak_values

@@ -1,6 +1,12 @@
 """
 Calibration dialog for Auto-EQ feature
+
+DEBUG: Added terminal logging for calibration workflow
 """
+
+# Enable debug logging
+DEBUG = True
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QComboBox,
@@ -177,6 +183,9 @@ class CalibrationDialog(QDialog):
 
     def _start_recording(self):
         """Start non-blocking recording."""
+        if DEBUG:
+            print("[CALIBRATION_DLG] Start recording clicked")
+
         # Get parent's processor (MainWindow has it)
         parent = self.parent()
         while parent and not hasattr(parent, 'processor'):
@@ -194,6 +203,8 @@ class CalibrationDialog(QDialog):
         self.curve_combo.setEnabled(False)
 
         # Create and start recording worker
+        if DEBUG:
+            print(f"[CALIBRATION_DLG] Creating RecordingWorker with duration={RECORDING_DURATION}s")
         self.worker = RecordingWorker(parent.processor, duration=RECORDING_DURATION)
         self.worker.progress.connect(self._on_progress_update)
         self.worker.time_remaining.connect(self._on_time_remaining)
@@ -201,6 +212,8 @@ class CalibrationDialog(QDialog):
         self.worker.finished.connect(self._on_recording_complete)
         self.worker.failed.connect(self._on_recording_failed)
         self.worker.start()
+        if DEBUG:
+            print("[CALIBRATION_DLG] RecordingWorker started")
 
         self.warning_label.setText("Recording... Speak clearly into your microphone")
         self.warning_label.setStyleSheet("color: blue; font-weight: bold; font-size: 11pt;")
@@ -235,6 +248,14 @@ class CalibrationDialog(QDialog):
 
     def _on_recording_complete(self, audio_data: np.ndarray):
         """Handle recording completion."""
+        if DEBUG:
+            print(f"[CALIBRATION_DLG] Recording complete: {len(audio_data)} samples")
+            import numpy as np
+            rms = np.mean(audio_data**2)**0.5
+            peak_db = 20 * np.log10(max(np.abs(audio_data).max(), 1e-6))
+            rms_db = 20 * np.log10(max(rms, 1e-6))
+            print(f"[CALIBRATION_DLG] Audio stats - Peak: {peak_db:.1f} dB, RMS: {rms_db:.1f} dB")
+
         self.audio_data = audio_data
         self.recording_state = "completed"
 
@@ -251,6 +272,8 @@ class CalibrationDialog(QDialog):
         self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
 
         # TODO: Phase 19 will pass audio_data to analysis engine
+        if DEBUG:
+            print("[CALIBRATION_DLG] TODO: Phase 19 will analyze this audio")
 
     def _on_recording_failed(self, error: str):
         """Handle recording failure."""

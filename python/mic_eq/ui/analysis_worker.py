@@ -11,7 +11,6 @@ from mic_eq.analysis import (
     compute_voice_spectrum,
     smooth_spectrum_octave,
     get_target_curve,
-    detect_eq_problems,
     calculate_eq_bands,
     validate_analysis
 )
@@ -70,20 +69,11 @@ class AnalysisWorker(QThread):
             self.step_progress.emit("Loading target curve...", 50)
             target_db = get_target_curve(freqs, self.target_preset)
 
-            # Step 4: Detect peaks/valleys
+            # Step 4: Calculate EQ bands
             self.step_progress.emit("Finding frequency problems...", 70)
-            problems = detect_eq_problems(
-                freqs,
-                spectrum_smoothed,
-                target_db,
-                n_bands=10
-            )
+            eq_settings = calculate_eq_bands(freqs, spectrum_smoothed, target_db)
 
-            # Step 5: Calculate EQ bands
-            self.step_progress.emit("Calculating EQ settings...", 90)
-            eq_settings = calculate_eq_bands(problems, freqs)
-
-            # Step 6: Validate results
+            # Step 5: Validate results
             self.step_progress.emit("Validating results...", 95)
             validation = validate_analysis(eq_settings, spectrum_smoothed, freqs)
 

@@ -134,6 +134,13 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
     if flatness > ANALYSIS_MAX_SPECTRAL_FLATNESS:
         failures.append(f"flatness ({flatness:.2f} > {ANALYSIS_MAX_SPECTRAL_FLATNESS})")
 
+    # DEBUG: Log validation results
+    print(f"[VALIDATION] peak_count={peak_count}, dynamic_range={dynamic_range:.1f}dB, snr={snr_db:.1f}dB, flatness={flatness:.2f}")
+    if failures:
+        print(f"[VALIDATION] FAILED: {', '.join(failures)}")
+    else:
+        print(f"[VALIDATION] PASSED")
+
     # Build result
     if failures:
         # Return GENERIC user-facing message (no technical details)

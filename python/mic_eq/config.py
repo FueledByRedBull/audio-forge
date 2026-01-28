@@ -68,6 +68,21 @@ class EQSettings:
     band_qs: list[float] = field(default_factory=lambda: [1.41] * 10)
 
 
+# EQ band frequencies (Hz) - matches 10-band EQ in DSP chain
+# Bands: 80Hz (LS), 160, 320, 640, 1.2k, 2.5k, 5k, 8k, 12k, 16kHz (HS)
+EQ_FREQUENCIES = [80.0, 160.0, 320.0, 640.0, 1250.0, 2500.0, 5000.0, 8000.0, 12500.0, 16000.0]
+
+# Default Q factor for auto-EQ bands (1/3 octave bandwidth)
+# Q = 4.33 gives ~1/3 octave bandwidth for parametric EQ
+AUTO_EQ_DEFAULT_Q = 4.33
+
+# Auto-EQ analysis validation thresholds
+ANALYSIS_MIN_PEAK_COUNT = 3      # Minimum peaks to detect voice
+ANALYSIS_MIN_DYNAMIC_RANGE = 20  # Minimum dB range (peak - floor)
+ANALYSIS_MIN_SNR = 25            # Minimum signal-to-noise ratio (dB)
+ANALYSIS_MAX_SPECTRAL_FLATNESS = 0.8  # Maximum flatness (1.0 = white noise)
+
+
 @dataclass
 class RNNoiseSettings:
     """Noise suppression settings (RNNoise or DeepFilterNet)."""

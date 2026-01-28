@@ -18,6 +18,9 @@ use std::env;
 use std::path::PathBuf;
 use thiserror::Error;
 
+/// Enable debug output for VAD gate operations
+const GATE_DEBUG: bool = true;
+
 /// Gate operating modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateMode {
@@ -371,8 +374,8 @@ pub struct VadAutoGate {
     hold_timer: f32,
     /// Sample rate for hold time calculation
     sample_rate: u32,
-    /// Last gate open/closed state
-    last_gate_state: bool,
+    /// Previous raw gate state (for transition detection)
+    previous_gate_open: bool,
     /// Current VAD probability for metering
     current_probability: f32,
 }
@@ -408,7 +411,7 @@ impl VadAutoGate {
             hold_time_ms: 200.0,
             hold_timer: 0.0,
             sample_rate,
-            last_gate_state: false,
+            previous_gate_open: false,
             current_probability: 0.0,
         }
     }
@@ -416,7 +419,8 @@ impl VadAutoGate {
     /// Process audio and return gate state
     pub fn process(&mut self, samples: &[f32]) -> (bool, f32) {
         if !self.enabled || self.vad.is_none() {
-            return (true, 0.0);
+            // When VAD disabled, gate should be CLOSED (not open!)
+            return (false, 0.0);
         }
 
         let vad = self.vad.as_mut().unwrap();
@@ -425,7 +429,7 @@ impl VadAutoGate {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("VAD processing error: {}", e);
-                return (true, 0.0);
+                return (false, 0.0);
             }
         };
 
@@ -436,11 +440,45 @@ impl VadAutoGate {
 
         let gate_open = match self.gate_mode {
             GateMode::ThresholdOnly => level_above_threshold,
-            GateMode::VadAssisted => level_above_threshold || vad_speech_detected,
-            GateMode::VadOnly => vad_speech_detected,
+            GateMode::VadAssisted => {
+                // In VadAssisted mode, explain WHY gate opened
+                if GATE_DEBUG && (level_above_threshold || vad_speech_detected) {
+                    let level_db = compute_rms_db(samples);
+                    let threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
+                    if level_above_threshold && vad_speech_detected {
+                        eprintln!("[GATE] VAD-Assisted OPEN: BOTH level={:.1}dB>={:.1}dB AND VAD prob={:.2}>={:.2}",
+                            level_db, threshold, prob, self.vad_threshold);
+                    } else if level_above_threshold {
+                        eprintln!("[GATE] VAD-Assisted OPEN: level={:.1}dB>={:.1}dB (VAD prob={:.2}<{:.2} - ignored)",
+                            level_db, threshold, prob, self.vad_threshold);
+                    } else if vad_speech_detected {
+                        eprintln!("[GATE] VAD-Assisted OPEN: VAD prob={:.2}>={:.2} (level={:.1}dB<{:.1}dB - ignored)",
+                            prob, self.vad_threshold, level_db, threshold);
+                    }
+                }
+                level_above_threshold || vad_speech_detected
+            },
+            GateMode::VadOnly => {
+                if GATE_DEBUG && vad_speech_detected {
+                    eprintln!("[GATE] VAD-Only OPEN: VAD prob={:.2}>={:.2}",
+                        prob, self.vad_threshold);
+                } else if GATE_DEBUG && !vad_speech_detected && self.previous_gate_open {
+                    // Only show when transitioning from open to would-close
+                    eprintln!("[GATE] VAD-Only: VAD prob={:.2}<{:.2} (checking hold time...)",
+                        prob, self.vad_threshold);
+                }
+                vad_speech_detected
+            },
         };
 
         let smoothed_gate_open = self.apply_hold_time(gate_open, samples.len());
+
+        // Debug: show final gate state after hold time
+        if GATE_DEBUG && smoothed_gate_open != gate_open {
+            eprintln!("[GATE] HoldTime ACTIVE: raw_gate={}, held_gate={}",
+                if gate_open { "OPEN" } else { "CLOSED" },
+                if smoothed_gate_open { "OPEN" } else { "CLOSED" });
+        }
 
         (smoothed_gate_open, prob)
     }
@@ -452,20 +490,45 @@ impl VadAutoGate {
     }
 
     fn apply_hold_time(&mut self, gate_open: bool, num_samples: usize) -> bool {
-        if gate_open {
-            // Convert hold time from ms to samples
+        if GATE_DEBUG {
+            eprintln!("[GATE] apply_hold_time: gate_open={}, prev_gate_open={}, timer={:.0}, samples={}",
+                gate_open, self.previous_gate_open, self.hold_timer, num_samples);
+        }
+
+        // Detect CLOSED→OPEN transition
+        let just_opened = gate_open && !self.previous_gate_open;
+
+        // Start hold timer on transition (not every time gate is open)
+        if just_opened {
             self.hold_timer = self.hold_time_ms / 1000.0 * self.sample_rate as f32;
-            self.last_gate_state = true;
-            true
-        } else {
-            if self.last_gate_state && self.hold_timer > 0.0 {
-                self.hold_timer -= num_samples as f32;
-                true
-            } else {
-                self.last_gate_state = false;
-                false
+            if GATE_DEBUG {
+                eprintln!("[GATE] HoldTimer STARTED: {:.0} samples ({:.0}ms) - transition detected",
+                    self.hold_timer, self.hold_time_ms);
             }
         }
+
+        // Store current state for next buffer
+        self.previous_gate_open = gate_open;
+
+        // Always decrement timer while running (even if gate is open)
+        if self.hold_timer > 0.0 {
+            self.hold_timer = (self.hold_timer - num_samples as f32).max(0.0);
+            if GATE_DEBUG && self.hold_timer == 0.0 {
+                eprintln!("[GATE] HoldTimer EXPIRED: gate can now close");
+            }
+        }
+
+        // Gate is held open if timer is running OR current gate is open
+        let held_open = gate_open || self.hold_timer > 0.0;
+
+        if GATE_DEBUG && held_open != gate_open {
+            eprintln!("[GATE] HoldTime result: raw_gate={}, timer_running={:.0}, held_gate={}",
+                if gate_open { "OPEN" } else { "CLOSED" },
+                self.hold_timer,
+                if held_open { "OPEN" } else { "CLOSED" });
+        }
+
+        held_open
     }
 
     pub fn is_available(&self) -> bool {
@@ -495,7 +558,7 @@ impl VadAutoGate {
     pub fn reset(&mut self) {
         self.noise_floor = -60.0;
         self.hold_timer = 0.0;
-        self.last_gate_state = false;
+        self.previous_gate_open = false;
         self.current_probability = 0.0;
         if let Some(vad) = &mut self.vad {
             vad.reset();
@@ -504,6 +567,8 @@ impl VadAutoGate {
 
     pub fn set_gate_mode(&mut self, mode: GateMode) {
         self.gate_mode = mode;
+        // Don't reset hold timer state - let it expire naturally
+        // This prevents the timer from being cleared when switching modes
     }
 
     pub fn gate_mode(&self) -> GateMode {

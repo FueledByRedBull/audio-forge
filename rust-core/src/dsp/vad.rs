@@ -372,10 +372,10 @@ pub struct VadAutoGate {
     hold_time_ms: f32,
     /// Remaining hold time in samples
     hold_timer: f32,
+    /// Whether hold timer is currently active (prevents restarts)
+    timer_running: bool,
     /// Sample rate for hold time calculation
     sample_rate: u32,
-    /// Previous raw gate state (for transition detection)
-    previous_gate_open: bool,
     /// Current VAD probability for metering
     current_probability: f32,
 }
@@ -410,8 +410,8 @@ impl VadAutoGate {
             vad_threshold,
             hold_time_ms: 200.0,
             hold_timer: 0.0,
+            timer_running: false,
             sample_rate,
-            previous_gate_open: false,
             current_probability: 0.0,
         }
     }
@@ -462,10 +462,6 @@ impl VadAutoGate {
                 if GATE_DEBUG && vad_speech_detected {
                     eprintln!("[GATE] VAD-Only OPEN: VAD prob={:.2}>={:.2}",
                         prob, self.vad_threshold);
-                } else if GATE_DEBUG && !vad_speech_detected && self.previous_gate_open {
-                    // Only show when transitioning from open to would-close
-                    eprintln!("[GATE] VAD-Only: VAD prob={:.2}<{:.2} (checking hold time...)",
-                        prob, self.vad_threshold);
                 }
                 vad_speech_detected
             },
@@ -490,35 +486,32 @@ impl VadAutoGate {
     }
 
     fn apply_hold_time(&mut self, gate_open: bool, num_samples: usize) -> bool {
-        // Detect CLOSED→OPEN transition
-        let just_opened = gate_open && !self.previous_gate_open;
-
-        // Start hold timer ONLY on transition AND if timer not already running
-        if just_opened && self.hold_timer == 0.0 {
+        // Start timer ONLY when gate opens AND timer is not already running
+        if gate_open && !self.timer_running {
             self.hold_timer = self.hold_time_ms / 1000.0 * self.sample_rate as f32;
+            self.timer_running = true;
             if GATE_DEBUG {
-                eprintln!("[GATE] HoldTimer STARTED: {:.0} samples ({:.0}ms) - transition detected",
+                eprintln!("[GATE] HoldTimer STARTED: {:.0} samples ({:.0}ms)",
                     self.hold_timer, self.hold_time_ms);
             }
         }
 
-        // Store current state for next buffer
-        self.previous_gate_open = gate_open;
-
-        // Always decrement timer while running (even if gate is open)
-        if self.hold_timer > 0.0 {
+        // Always decrement timer while running
+        if self.timer_running && self.hold_timer > 0.0 {
             self.hold_timer = (self.hold_timer - num_samples as f32).max(0.0);
             if GATE_DEBUG && self.hold_timer == 0.0 {
-                eprintln!("[GATE] HoldTimer EXPIRED: gate can now close");
+                eprintln!("[GATE] HoldTimer EXPIRED");
+                self.timer_running = false;
             }
         }
 
         // Gate is held open if timer is running OR current gate is open
-        let held_open = gate_open || self.hold_timer > 0.0;
+        let held_open = gate_open || self.timer_running;
 
         if GATE_DEBUG && held_open != gate_open {
-            eprintln!("[GATE] HoldTime result: raw_gate={}, timer_running={:.0}, held_gate={}",
+            eprintln!("[GATE] HoldTime: raw_gate={}, timer_running={}, timer={:.0}, held_gate={}",
                 if gate_open { "OPEN" } else { "CLOSED" },
+                self.timer_running,
                 self.hold_timer,
                 if held_open { "OPEN" } else { "CLOSED" });
         }
@@ -553,7 +546,7 @@ impl VadAutoGate {
     pub fn reset(&mut self) {
         self.noise_floor = -60.0;
         self.hold_timer = 0.0;
-        self.previous_gate_open = false;
+        self.timer_running = false;
         self.current_probability = 0.0;
         if let Some(vad) = &mut self.vad {
             vad.reset();

@@ -7,6 +7,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig, SupportedStreamConfigRange};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::buffer::AudioConsumer;
@@ -20,15 +21,22 @@ pub struct AudioOutput {
 
 impl AudioOutput {
     /// Create audio output from default device
-    pub fn from_default_device(consumer: AudioConsumer) -> Result<Self, AudioError> {
+    pub fn from_default_device(
+        consumer: AudioConsumer,
+        recording_active: Arc<AtomicBool>,
+    ) -> Result<Self, AudioError> {
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
 
-        Self::from_device(device, consumer)
+        Self::from_device(device, consumer, recording_active)
     }
 
     /// Create audio output from device by name
-    pub fn from_device_name(name: &str, consumer: AudioConsumer) -> Result<Self, AudioError> {
+    pub fn from_device_name(
+        name: &str,
+        consumer: AudioConsumer,
+        recording_active: Arc<AtomicBool>,
+    ) -> Result<Self, AudioError> {
         let host = cpal::default_host();
         let device = host
             .output_devices()
@@ -36,11 +44,15 @@ impl AudioOutput {
             .find(|d| d.name().map(|n| n == name).unwrap_or(false))
             .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))?;
 
-        Self::from_device(device, consumer)
+        Self::from_device(device, consumer, recording_active)
     }
 
     /// Create audio output from specific device
-    pub fn from_device(device: Device, consumer: AudioConsumer) -> Result<Self, AudioError> {
+    pub fn from_device(
+        device: Device,
+        consumer: AudioConsumer,
+        recording_active: Arc<AtomicBool>,
+    ) -> Result<Self, AudioError> {
         let name = device
             .name()
             .map_err(|e| AudioError::DeviceName(e.to_string()))?;
@@ -76,11 +88,21 @@ impl AudioOutput {
 
         // Build audio output stream
         let consumer_clone = Arc::clone(&consumer);
+        let recording_active_clone = Arc::clone(&recording_active);
 
         let stream = device
             .build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    // Check if recording is active - if so, output silence to prevent
+                    // user from hearing themselves while recording
+                    if recording_active_clone.load(Ordering::Relaxed) {
+                        for sample in data.iter_mut() {
+                            *sample = 0.0;
+                        }
+                        return;
+                    }
+
                     match consumer_clone.try_lock() {
                         Ok(mut cons) => {
                             if num_channels == 1 {

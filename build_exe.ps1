@@ -7,6 +7,9 @@ $pydPath = Split-Path -Parent (Get-ChildItem -Path ".venv\Lib\site-packages\mic_
 
 Write-Host "Found mic_eq_core at: $pydPath" -ForegroundColor Cyan
 
+# Get Python standard library path
+$pythonStdlib = python -c "import sys; import os; print(os.path.join(sys.prefix, 'Lib'))"
+
 # Build arguments list
 $pyinstallerArgs = @(
     "--clean"
@@ -15,11 +18,16 @@ $pyinstallerArgs = @(
     "--noconsole"
     "--name", "AudioForge"
     "--add-data", "models;models"
+    "--add-data", "python/mic_eq;mic_eq"
+    "--hidden-import", "json"
     "--hidden-import", "PyQt6.QtCore"
     "--hidden-import", "PyQt6.QtGui"
     "--hidden-import", "PyQt6.QtWidgets"
     "--hidden-import", "mic_eq_core"
+    "--hidden-import", "mic_eq"
+    "--hidden-import", "mic_eq.ui"
     "--paths", $pydPath
+    "--paths", $pythonStdlib
     "launcher.py"
 )
 
@@ -41,17 +49,25 @@ if (Test-Path "mic_eq.ico") {
 # Build
 Write-Host "Building executable..." -ForegroundColor Cyan
 
-pyinstaller @pyinstallerArgs
+# Use venv Python to ensure correct environment
+$venvPython = ".\.venv\Scripts\python.exe"
+& $venvPython -m PyInstaller @pyinstallerArgs
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""
     Write-Host "SUCCESS!" -ForegroundColor Green
     Write-Host ""
 
-    # Copy icon to _internal for Qt to use
-    if (Test-Path "mic_eq.ico") {
-        Copy-Item -Path "mic_eq.ico" -Destination "dist\AudioForge\_internal\mic_eq.ico" -Force
-        Write-Host "Icon copied to dist\AudioForge\_internal\" -ForegroundColor Green
+    # Copy df.dll to exe directory (not _internal) for libloading to find it
+    if (Test-Path "df.dll") {
+        Copy-Item -Path "df.dll" -Destination "dist\AudioForge\df.dll" -Force
+        Write-Host "Copied df.dll to exe directory for DeepFilterNet" -ForegroundColor Green
+    }
+
+    # Copy models directory to exe directory (code looks in ./models/)
+    if (Test-Path "dist\AudioForge\_internal\models") {
+        Copy-Item -Path "dist\AudioForge\_internal\models" -Destination "dist\AudioForge\models" -Recurse -Force
+        Write-Host "Copied models to exe directory for DeepFilterNet" -ForegroundColor Green
     }
 
     Write-Host ""

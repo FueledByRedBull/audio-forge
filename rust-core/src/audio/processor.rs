@@ -124,6 +124,8 @@ pub struct AudioProcessor {
     raw_recording_pos: Arc<AtomicUsize>,
     /// Target recording length (total samples to record)
     raw_recording_target: Arc<AtomicUsize>,
+    /// Flag indicating recording is active (used to mute output to prevent user from hearing themselves)
+    recording_active: Arc<AtomicBool>,
 }
 
 impl AudioProcessor {
@@ -213,6 +215,7 @@ impl AudioProcessor {
             raw_recording_buffer: Arc::new(Mutex::new(None)),
             raw_recording_pos: Arc::new(AtomicUsize::new(0)),
             raw_recording_target: Arc::new(AtomicUsize::new(0)),
+            recording_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -274,9 +277,10 @@ impl AudioProcessor {
         self.audio_input = Some(input);
 
         // Start audio output
+        let recording_active = Arc::clone(&self.recording_active);
         let output = match output_device {
-            Some(name) => AudioOutput::from_device_name(name, output_consumer),
-            None => AudioOutput::from_default_device(output_consumer),
+            Some(name) => AudioOutput::from_device_name(name, output_consumer, recording_active),
+            None => AudioOutput::from_default_device(output_consumer, recording_active),
         }
         .map_err(|e| format!("Failed to start audio output: {}", e))?;
 
@@ -1237,6 +1241,7 @@ impl AudioProcessor {
             *buf_guard = Some(buffer);
             self.raw_recording_pos.store(0, Ordering::Release);
             self.raw_recording_target.store(num_samples, Ordering::Release);
+            self.recording_active.store(true, Ordering::Release);  // Mute output during recording
             Ok(())
         } else {
             Err("Failed to lock recording buffer".to_string())
@@ -1249,6 +1254,7 @@ impl AudioProcessor {
             if let Some(mut buffer) = buf_guard.take() {
                 let pos = self.raw_recording_pos.load(Ordering::Acquire);
                 buffer.truncate(pos);
+                self.recording_active.store(false, Ordering::Release);  // Unmute output after recording
                 return Some(buffer);
             }
         }
@@ -1270,6 +1276,43 @@ impl AudioProcessor {
         }
         let pos = self.raw_recording_pos.load(Ordering::Acquire);
         (pos as f32 / target as f32).min(1.0)
+    }
+
+    /// Get current recording level as RMS in dB (for level meter visualization)
+    /// Returns -inf dB if no recording is active
+    pub fn recording_level_db(&self) -> f32 {
+        if let Ok(buf_guard) = self.raw_recording_buffer.lock() {
+            if let Some(ref buffer) = *buf_guard {
+                let pos = self.raw_recording_pos.load(Ordering::Acquire);
+                if pos == 0 {
+                    return -120.0; // -infinity
+                }
+
+                // Calculate RMS from recorded samples so far
+                let len = pos.min(buffer.len());
+                let slice = &buffer[..len];
+
+                // RMS calculation
+                let sum_sq: f32 = slice.iter().map(|&x| x * x).sum();
+                let rms = (sum_sq / len as f32).sqrt();
+
+                // Convert to dB (with floor at -120 to prevent log(0))
+                if rms > 1e-6 {
+                    20.0 * rms.log10()
+                } else {
+                    -120.0
+                }
+            } else {
+                -120.0
+            }
+        } else {
+            -120.0
+        }
+    }
+
+    /// Manually set output mute state (useful for calibration workflow)
+    pub fn set_output_mute(&self, muted: bool) {
+        self.recording_active.store(muted, Ordering::Release);
     }
 }
 
@@ -1301,10 +1344,15 @@ pub enum PyGateMode {
 }
 
 /// Python-exposed audio processor
-#[pyclass(name = "AudioProcessor", unsendable)]
+#[pyclass(name = "AudioProcessor")]
 pub struct PyAudioProcessor {
     processor: AudioProcessor,
 }
+
+// SAFETY: PyAudioProcessor is safe to send across threads because AudioProcessor
+// only contains Arc<Mutex<...>> fields which are already Send + Sync.
+unsafe impl Send for PyAudioProcessor {}
+unsafe impl Sync for PyAudioProcessor {}
 
 #[pymethods]
 impl PyAudioProcessor {
@@ -1700,5 +1748,16 @@ impl PyAudioProcessor {
     /// Get recording progress (0.0 to 1.0)
     fn recording_progress(&mut self) -> PyResult<f32> {
         Ok(self.processor.recording_progress())
+    }
+
+    /// Get current recording level as RMS in dB (for level meter visualization)
+    fn recording_level_db(&mut self) -> PyResult<f32> {
+        Ok(self.processor.recording_level_db())
+    }
+
+    /// Manually set output mute state (useful for calibration workflow)
+    fn set_output_mute(&mut self, muted: bool) -> PyResult<()> {
+        self.processor.set_output_mute(muted);
+        Ok(())
     }
 }

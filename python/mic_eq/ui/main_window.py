@@ -36,6 +36,7 @@ from .gate_panel import GatePanel
 from .eq_panel import EQPanel
 from .compressor_panel import CompressorPanel
 from .level_meter import LevelMeter
+from .calibration_dialog import CalibrationDialog
 from .layout_constants import SPACING_SECTION, SPACING_NORMAL
 from .. import AudioProcessor, list_input_devices, list_output_devices
 from ..config import (
@@ -294,6 +295,19 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._stop_processing)
         control_layout.addWidget(self.stop_btn)
+
+        # Auto-EQ button
+        self.auto_eq_button = QPushButton("Auto-EQ")
+        self.auto_eq_button.setStyleSheet(
+            "QPushButton { background-color: #2196F3; color: white; "
+            "padding: 10px 20px; font-weight: bold; font-size: 14px; }"
+        )
+        self.auto_eq_button.setToolTip(
+            "Automatically calibrate EQ to your voice and microphone\n"
+            "Select target curve, read passage, and get professional tuning"
+        )
+        self.auto_eq_button.clicked.connect(self._on_auto_eq_clicked)
+        control_layout.addWidget(self.auto_eq_button)
 
         control_layout.addStretch()
 
@@ -653,6 +667,11 @@ class MainWindow(QMainWindow):
         except RuntimeError as e:
             print(f"Stop processing failed: {type(e).__name__}: {e}")
             QMessageBox.critical(self, "Error", f"Failed to stop processing:\n{e}")
+
+    def _on_auto_eq_clicked(self):
+        """Open Auto-EQ calibration dialog."""
+        dialog = CalibrationDialog(self)
+        dialog.exec()  # Modal dialog - blocks until user closes
 
     def _on_bypass_toggled(self, checked):
         """Handle bypass toggle."""

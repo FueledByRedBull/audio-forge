@@ -299,9 +299,35 @@ class CalibrationDialog(QDialog):
         self.curve_combo.setEnabled(True)
 
     def get_recorded_audio(self):
-        """Return recorded audio data (for Phase 19)."""
-        return self.audio_data
+        """
+        Return the recorded audio data.
 
-    def get_selected_curve(self) -> str:
-        """Return the selected target curve key."""
+        Returns:
+            tuple: (audio_data, sample_rate) where audio_data is NumPy array
+                   of samples or None if no recording exists, sample_rate is int (Hz)
+
+        This method is called by Phase 19's analysis engine to retrieve
+        the recorded voice sample for frequency analysis.
+        """
+        if self.audio_data is None:
+            return None, None
+
+        # Get sample rate from processor (via parent window)
+        parent = self.parent()
+        while parent and not hasattr(parent, 'processor'):
+            parent = parent.parent()
+
+        if parent and hasattr(parent, 'processor'):
+            sample_rate = parent.processor.sample_rate()
+            return self.audio_data, sample_rate
+
+        return self.audio_data, 48000  # Fallback to 48kHz
+
+    def get_selected_curve(self):
+        """
+        Return the selected target curve key.
+
+        Returns:
+            str: Target curve key ('broadcast', 'podcast', 'streaming', or 'flat')
+        """
         return self.curve_combo.currentData()

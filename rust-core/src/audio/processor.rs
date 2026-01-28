@@ -869,6 +869,26 @@ impl AudioProcessor {
         }
     }
 
+    #[cfg(feature = "vad")]
+    /// Set VAD pre-gain to boost weak signals for better speech detection
+    /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
+    /// This helps with quiet microphones where VAD can't detect speech.
+    pub fn set_vad_pre_gain(&self, gain: f32) {
+        if let Ok(mut gate) = self.gate.lock() {
+            gate.set_vad_pre_gain(gain);
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Get current VAD pre-gain
+    pub fn vad_pre_gain(&self) -> f32 {
+        if let Ok(gate) = self.gate.lock() {
+            gate.vad_pre_gain()
+        } else {
+            1.0
+        }
+    }
+
     // === Noise Suppression Controls ===
 
     /// Enable/disable noise suppression
@@ -1503,6 +1523,21 @@ impl PyAudioProcessor {
     fn set_vad_hold_time(&self, hold_ms: f32) -> PyResult<()> {
         self.processor.set_vad_hold_time(hold_ms);
         Ok(())
+    }
+
+    /// Set VAD pre-gain to boost weak signals for better speech detection
+    /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
+    /// This helps with quiet microphones where VAD can't detect speech.
+    #[cfg(feature = "vad")]
+    fn set_vad_pre_gain(&self, gain: f32) -> PyResult<()> {
+        self.processor.set_vad_pre_gain(gain);
+        Ok(())
+    }
+
+    /// Get current VAD pre-gain
+    #[cfg(feature = "vad")]
+    fn vad_pre_gain(&self) -> PyResult<f32> {
+        Ok(self.processor.vad_pre_gain())
     }
 
     // === RNNoise ===

@@ -59,63 +59,103 @@ def _predict_eq_response(freqs, gains, qs, center_freqs):
     Returns:
         response_db: Combined EQ response in dB at each frequency
     """
-    response_db = np.zeros_like(freqs, dtype=float)
+    # Initialize response in linear domain (1.0 = unity gain = 0 dB)
+    response_linear = np.ones_like(freqs, dtype=float)
 
     for gain_db, q, fc in zip(gains, qs, center_freqs):
-        # Convert to linear amplitude
-        gain_linear = 10 ** (gain_db / 20.0)
+        # Skip bands with no gain (optimization)
+        if abs(gain_db) < 0.01:
+            continue
 
-        # Calculate bandwidth from Q
-        # BW = fc / Q for parametric EQ
-        bandwidth = fc / q
+        # Convert dB gain to linear amplitude
+        # For biquad filters: A = 10^(dB/40)
+        # gain_db = 0  -> A = 1 (no change)
+        # gain_db = 6  -> A ≈ 1.995 (2x amplitude = 6dB boost)
+        A = 10 ** (gain_db / 40.0)
 
-        # Calculate frequency response of this peaking band
-        # Using standard parametric EQ transfer function
-        # H(f) = 1 + (G * j * f / BW) / (1 + j * f / BW) where G = gain_linear - 1
-        # Simplified: magnitude response of peaking EQ
+        # Compute peaking EQ coefficients (Audio EQ Cookbook)
+        # At center frequency: magnitude response = A^2 = 10^(dB/20)
+        alpha = np.sin(np.log(2) / 2 / q)  # Approximation for bandwidth
+        cos_w0 = np.cos(2 * np.pi * fc / 48000)  # cos(w0) at 48kHz sample rate
 
-        f_ratio = freqs / fc
-        # Peaking EQ magnitude response (simplified)
-        # At fc: response = gain_linear
-        # At fc * Q or fc / Q: response = sqrt(gain_linear)
-        denom = 1 + (q * (f_ratio - 1/f_ratio)) ** 2
-        band_response = gain_linear / np.sqrt(denom)
+        # Biquad coefficients for peaking EQ
+        b0 = 1 + alpha * A
+        b1 = -2 * cos_w0
+        b2 = 1 - alpha * A
+        a0 = 1 + alpha / A
+        a1 = -2 * cos_w0
+        a2 = 1 - alpha / A
 
-        # Convert back to dB and accumulate
-        # Combined response in dB = sum of individual responses in linear domain
-        response_linear = 10 ** (response_db / 20.0)
-        response_linear *= band_response
-        response_db = 20 * np.log10(np.maximum(response_linear, 1e-12))
+        # Evaluate transfer function H(z) at each frequency
+        # H(e^(j*w)) = (b0 + b1*e^(-j*w) + b2*e^(-j*2w)) / (a0 + a1*e^(-j*w) + a2*e^(-j*2w))
+
+        # Normalized frequency: w = 2*pi*f/fs
+        w = 2 * np.pi * freqs / 48000
+        z_inv = np.exp(-1j * w)  # z^(-1)
+        z_inv_2 = z_inv ** 2      # z^(-2)
+
+        # Numerator and denominator of transfer function
+        numerator = b0 + b1 * z_inv + b2 * z_inv_2
+        denominator = a0 + a1 * z_inv + a2 * z_inv_2
+
+        # Magnitude response = |H(e^(j*w))|
+        magnitude = np.abs(numerator / denominator)
+
+        # Accumulate in linear domain (multiply responses)
+        response_linear *= magnitude
+
+    # Convert back to dB
+    response_db = 20 * np.log10(np.maximum(response_linear, 1e-12))
 
     return response_db
 
 
-def _eq_error_function(gains, freqs, measured_db, target_db, qs, center_freqs):
+def _eq_error_function(gains, center_freqs, measured_db_at_centers, target_db, qs, all_freqs):
     """
     Error function for least-squares optimization.
 
-    Calculates the error between target curve and (measured + predicted EQ).
+    Calculates the error between target curve and (measured + predicted EQ)
+    at the EQ band center frequencies only (10 points).
 
     Args:
         gains: Array of 10 gain values (optimization variable)
-        freqs: Frequency array (Hz)
-        measured_db: Measured spectrum (dB)
-        target_db: Target curve (dB)
+        center_freqs: Array of 10 center frequencies
+        measured_db_at_centers: Measured spectrum sampled at center frequencies (10 values)
+        target_db: Target curve at center frequencies (10 values)
         qs: List of 10 Q values (fixed during optimization)
-        center_freqs: List of 10 center frequencies (Hz)
+        all_freqs: Full frequency array (for _predict_eq_response)
 
     Returns:
-        error: Difference between target and (measured + EQ response)
+        error: Difference between target and (measured + EQ response) at center frequencies
     """
-    # Predict EQ response with current gains
-    eq_response = _predict_eq_response(freqs, gains, qs, center_freqs)
+    # Debug: print first call to see what's happening
+    if not hasattr(_eq_error_function, '_called'):
+        _eq_error_function._called = True
+        print(f"[EQ_ERROR] First call with gains: {gains}")
+        print(f"[EQ_ERROR] measured_db_at_centers: {measured_db_at_centers}")
+        print(f"[EQ_ERROR] target_db: {target_db}")
 
-    # Calculate combined response (measured + EQ)
-    combined = measured_db + eq_response
+    # Predict EQ response with current gains (evaluated at all frequencies)
+    eq_response = _predict_eq_response(all_freqs, gains, qs, center_freqs)
 
-    # Error = target - combined
-    # We want combined to match target, so minimize (target - combined)^2
-    error = target_db - combined
+    # Sample EQ response at the center frequencies
+    # Find indices of center frequencies in the frequency array
+    eq_response_at_centers = np.interp(center_freqs, all_freqs, eq_response)
+
+    # Calculate combined response (measured + EQ) at center frequencies
+    combined_at_centers = measured_db_at_centers + eq_response_at_centers
+
+    # Error = target - combined (at center frequencies only)
+    error = target_db - combined_at_centers
+
+    if not hasattr(_eq_error_function, '_printed_error'):
+        # Only print once for the initial call (gains = 0)
+        if np.allclose(gains, 0):
+            _eq_error_function._printed_error = True
+            print(f"[EQ_ERROR] eq_response_at_centers (gains=0): {eq_response_at_centers}")
+            print(f"[EQ_ERROR] combined_at_centers (gains=0): {combined_at_centers}")
+            print(f"[EQ_ERROR] error (gains=0): {error}")
+            print(f"[EQ_ERROR] error magnitude: {np.linalg.norm(error):.2f}")
 
     return error
 
@@ -129,42 +169,95 @@ def calculate_eq_bands(freqs, measured_db, target_db):
 
     Args:
         freqs: Frequency array (Hz)
-        measured_db: Measured spectrum in dB
-        target_db: Target curve in dB
+        measured_db: Measured spectrum in dBFS (dB relative to full scale)
+        target_db: Target curve in dB (relative adjustments)
 
     Returns:
         eq_settings: Dict with 'band_gains' and 'band_qs' (10-element lists)
     """
+    # DEBUG: Log what we're working with
+    print(f"[EQ_CALC] Measured spectrum range: [{measured_db.min():.1f}, {measured_db.max():.1f}] dB")
+    print(f"[EQ_CALC] Target curve range: [{target_db.min():.1f}, {target_db.max():.1f}] dB")
+
+    # CRITICAL FIX: Normalize measured spectrum to relative dB
+    # The measured spectrum is in dBFS (always negative for speech)
+    # The target curve is relative adjustments (0 to +4 dB)
+    # We need to normalize the measured spectrum to compare like-to-like
+    #
+    # Approach: Find the average level in the voice range (100-8000 Hz)
+    # and normalize relative to that average
+    voice_range_mask = (freqs >= 100) & (freqs <= 8000)
+    if np.any(voice_range_mask):
+        voice_avg = np.mean(measured_db[voice_range_mask])
+    else:
+        voice_avg = np.mean(measured_db)
+
+    # Normalize: subtract the average to get relative dB
+    measured_db_normalized = measured_db - voice_avg
+
+    print(f"[EQ_CALC] Voice range average: {voice_avg:.1f} dB")
+    print(f"[EQ_CALC] Normalized measured range: [{measured_db_normalized.min():.1f}, {measured_db_normalized.max():.1f}] dB")
+    print(f"[EQ_CALC] Difference (target - normalized): avg {(target_db - measured_db_normalized).mean():.2f} dB")
+
+    # Use normalized measured spectrum for optimization
+    measured_db = measured_db_normalized
+
     # Fixed parameters
     qs = [AUTO_EQ_DEFAULT_Q] * 10
     center_freqs = EQ_FREQUENCIES
 
-    # Initial guess: flat response (all gains = 0)
-    gains_initial = np.zeros(10)
+    # Sample the measured spectrum at the EQ band center frequencies
+    measured_db_at_centers = np.interp(center_freqs, freqs, measured_db)
+
+    # Sample the target curve at the EQ band center frequencies
+    target_db_at_centers = np.interp(center_freqs, freqs, target_db)
+
+    print(f"[EQ_CALC] Measured at centers: {[round(v, 1) for v in measured_db_at_centers]} dB")
+    print(f"[EQ_CALC] Target at centers: {[round(v, 1) for v in target_db_at_centers]} dB")
+
+    # Calculate the desired gain adjustment (target - measured) at each center frequency
+    # This is what the optimizer should aim for
+    desired_gains = target_db_at_centers - measured_db_at_centers
+    print(f"[EQ_CALC] Desired gains (target - measured): {[round(v, 1) for v in desired_gains]} dB")
+
+    # Initial guess: use desired gains clipped to bounds (better starting point than zeros)
+    gains_initial = np.clip(desired_gains, -12.0, 12.0)
+    print(f"[EQ_CALC] Initial guess (clipped desired): {[round(g, 2) for g in gains_initial]} dB")
 
     # Gain bounds: -12 to +12 dB (EQ hardware limits)
     bounds = (-12.0, 12.0)
 
     # Optimize gains to minimize error
+    # Note: We only evaluate at the 10 center frequencies, not the full spectrum
     result = least_squares(
         _eq_error_function,
         gains_initial,
-        args=(freqs, measured_db, target_db, qs, center_freqs),
+        args=(center_freqs, measured_db_at_centers, target_db_at_centers, qs, freqs),
         bounds=bounds,
         method='trf',  # Trust Region Reflective (good for bounded problems)
-        ftol=1e-6,     # Function tolerance
-        xtol=1e-6,     # Parameter tolerance
-        verbose=0
+        ftol=1e-4,     # Function tolerance (looser than before)
+        xtol=1e-4,     # Parameter tolerance (looser than before)
+        gtol=1e-6,     # Gradient tolerance (explicitly set)
+        max_nfev=100,  # Max function evaluations (prevent infinite loops)
+        verbose=2      # Verbose output for debugging
     )
 
     # Extract optimal gains
     optimal_gains = result.x
+
+    # DEBUG: Log what the optimizer found
+    print(f"[EQ_CALC] Raw optimized gains (before 70%): {[round(g, 2) for g in optimal_gains]}")
+    print(f"[EQ_CALC] Optimization success: {result.success}")
+    if hasattr(result, 'message'):
+        print(f"[EQ_CALC] Optimizer message: {result.message}")
 
     # Apply 70% correction factor (prevents over-compensation)
     optimal_gains = optimal_gains * 0.7
 
     # Clip to hardware limits
     optimal_gains = np.clip(optimal_gains, -12.0, 12.0)
+
+    print(f"[EQ_CALC] Final gains (after 70% correction): {[round(g, 2) for g in optimal_gains]}")
 
     return {
         'band_gains': optimal_gains.tolist(),

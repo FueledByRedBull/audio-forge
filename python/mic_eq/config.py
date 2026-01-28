@@ -634,6 +634,31 @@ BUILTIN_PRESETS = {
 }
 
 
+# Target curves for Auto-EQ calibration
+TARGET_CURVES = {
+    'broadcast': TargetCurve(
+        name="Broadcast Standard",
+        description="ITU-R BS.1770 compliant - professional broadcast voice",
+        band_targets=[-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 2.0, 1.0, 0.0, -1.0]
+    ),
+    'podcast': TargetCurve(
+        name="Podcast / Voice-Over",
+        description="Enhanced presence for intimate vocal recording",
+        band_targets=[0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 3.0, 2.0, 1.0, 0.0]
+    ),
+    'streaming': TargetCurve(
+        name="Streaming / Gaming",
+        description="Cuts through game audio mix with aggressive presence",
+        band_targets=[-1.0, 0.0, 1.0, 2.0, 4.0, 5.0, 4.0, 2.0, 0.0, -2.0]
+    ),
+    'flat': TargetCurve(
+        name="Flat Response",
+        description="No frequency correction - measure mic as-is",
+        band_targets=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    ),
+}
+
+
 # Test functions for VAD preset persistence
 def _test_vad_preset_persistence():
     """Test VAD settings persist across preset save/load."""

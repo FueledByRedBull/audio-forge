@@ -411,6 +411,11 @@ class EQPanel(QWidget):
             params.append((freq, gain, q))
         return params
 
+    def reset_curve_overlay(self):
+        """Clear overlay mode from curve widget after auto-EQ apply."""
+        self.curve_widget.clear_overlay()
+        self._update_curve()
+
     def set_settings(self, settings: dict) -> None:
         """Apply settings from a dictionary."""
         if 'enabled' in settings:

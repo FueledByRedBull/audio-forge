@@ -205,7 +205,7 @@ class CalibrationDialog(QDialog):
             return
 
         # Build band tuples from eq_settings
-        from ..config import BAND_FREQUENCIES_HZ
+        from ..config import EQ_FREQUENCIES as BAND_FREQUENCIES_HZ
         bands = []
         for i, freq in enumerate(BAND_FREQUENCIES_HZ):
             gain = self.eq_settings['band_gains'][i]

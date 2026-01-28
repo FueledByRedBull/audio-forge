@@ -516,6 +516,26 @@ def list_presets() -> list[tuple[str, Path]]:
     return sorted(presets, key=lambda x: x[0].lower())
 
 
+def generate_auto_eq_preset_name(target_curve: str) -> str:
+    """
+    Generate auto-EQ preset name based on target curve.
+
+    Args:
+        target_curve: One of 'broadcast', 'podcast', 'streaming', 'flat'
+
+    Returns:
+        Preset name like "Auto-EQ Broadcast"
+    """
+    curve_display_names = {
+        'broadcast': 'Broadcast',
+        'podcast': 'Podcast',
+        'streaming': 'Streaming',
+        'flat': 'Flat',
+    }
+    curve_name = curve_display_names.get(target_curve.lower(), target_curve.title())
+    return f"Auto-EQ {curve_name}"
+
+
 @dataclass
 class AppConfig:
     """Application configuration (persisted settings)."""

@@ -396,6 +396,21 @@ class EQPanel(QWidget):
             'band_qs': qs,
         }
 
+    def get_current_band_params(self) -> list:
+        """
+        Get current EQ band parameters for auto-EQ comparison.
+
+        Returns:
+            List of (frequency_hz, gain_db, q) tuples for all 10 bands
+        """
+        params = []
+        for i, slider in enumerate(self.band_sliders):
+            freq = BAND_FREQUENCIES_HZ[i]
+            gain = slider.slider.value() / 10.0
+            q = slider.q_spinbox.value()
+            params.append((freq, gain, q))
+        return params
+
     def set_settings(self, settings: dict) -> None:
         """Apply settings from a dictionary."""
         if 'enabled' in settings:

@@ -21,6 +21,7 @@ classifiers = [
 dependencies = [
     "PyQt6>=6.6.0",
     "numpy>=1.24.0",
+    "scipy>=1.10.0",
 ]
 
 [project.optional-dependencies]

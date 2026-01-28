@@ -151,12 +151,17 @@ def smooth_spectrum_octave(freqs, spectrum_db, fraction=6):
     # Interpolate back to original frequency resolution
     # This preserves the FFT frequency grid for downstream processing
     valid = ~np.isnan(smoothed_bands)
-    smoothed_db = np.interp(
-        freqs,
-        f_center[valid],
-        np.array(smoothed_bands)[valid],
-        left=np.nan,
-        right=np.nan
-    )
+    if np.sum(valid) > 1:
+        # Use nearest value extrapolation for frequencies outside band limits
+        smoothed_db = np.interp(
+            freqs,
+            f_center[valid],
+            np.array(smoothed_bands)[valid],
+            left=np.array(smoothed_bands)[valid][0],  # Extrapolate with lowest band value
+            right=np.array(smoothed_bands)[valid][-1]  # Extrapolate with highest band value
+        )
+    else:
+        # Fallback: return original spectrum if smoothing failed
+        smoothed_db = spectrum_db.copy()
 
     return smoothed_db

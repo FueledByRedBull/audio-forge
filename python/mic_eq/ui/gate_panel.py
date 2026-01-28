@@ -172,6 +172,29 @@ class GatePanel(QWidget):
         gate_layout.addWidget(hold_time_label, 8, 0)
         gate_layout.addWidget(self.vad_hold_spinbox, 8, 1, 1, 2)
 
+        # VAD Pre-Gain slider and spinbox (boosts weak signals for better detection)
+        vad_pre_gain_layout = QHBoxLayout()
+        self.vad_pre_gain_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vad_pre_gain_slider.setRange(10, 100)  # 1.0 to 10.0
+        self.vad_pre_gain_slider.setValue(10)  # Default 1.0
+        self.vad_pre_gain_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.vad_pre_gain_slider.setTickInterval(10)
+        vad_pre_gain_layout.addWidget(self.vad_pre_gain_slider)
+
+        self.vad_pre_gain_spinbox = QDoubleSpinBox()
+        self.vad_pre_gain_spinbox.setRange(1.0, 10.0)
+        self.vad_pre_gain_spinbox.setSingleStep(0.5)
+        self.vad_pre_gain_spinbox.setValue(1.0)
+        self.vad_pre_gain_spinbox.setDecimals(1)
+        self.vad_pre_gain_spinbox.setToolTip("Pre-gain to boost weak signals for better VAD detection")
+        self.vad_pre_gain_spinbox.setFixedWidth(80)
+        vad_pre_gain_layout.addWidget(self.vad_pre_gain_spinbox)
+
+        vad_pre_gain_label = QLabel("VAD Pre-Gain:")
+        vad_pre_gain_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        gate_layout.addWidget(vad_pre_gain_label, 9, 0)
+        gate_layout.addLayout(vad_pre_gain_layout, 9, 1, 1, 2)
+
         # VAD confidence meter
         from .level_meter import ConfidenceMeter
         self.confidence_meter = ConfidenceMeter()
@@ -186,8 +209,8 @@ class GatePanel(QWidget):
         vad_meter_layout.addWidget(self.vad_info_label)
         confidence_label = QLabel("Confidence:")
         confidence_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        gate_layout.addWidget(confidence_label, 9, 0)
-        gate_layout.addLayout(vad_meter_layout, 9, 1, 1, 2)
+        gate_layout.addWidget(confidence_label, 10, 0)
+        gate_layout.addLayout(vad_meter_layout, 10, 1, 1, 2)
 
         # Info label
         info_label = QLabel(
@@ -195,8 +218,8 @@ class GatePanel(QWidget):
             "IIR envelope follower for smooth transitions."
         )
         info_label.setStyleSheet(INFO_LABEL_STYLE)
-        gate_layout.addWidget(QLabel(""), 10, 0)
-        gate_layout.addWidget(info_label, 10, 1, 1, 2)
+        gate_layout.addWidget(QLabel(""), 11, 0)
+        gate_layout.addWidget(info_label, 11, 1, 1, 2)
 
         layout.addWidget(gate_group)
 
@@ -214,6 +237,8 @@ class GatePanel(QWidget):
         self.vad_threshold_slider.valueChanged.connect(self._on_vad_threshold_slider)
         self.vad_threshold_spinbox.valueChanged.connect(self._on_vad_threshold_spinbox)
         self.vad_hold_spinbox.valueChanged.connect(self._update_vad_mode)
+        self.vad_pre_gain_slider.valueChanged.connect(self._on_vad_pre_gain_slider)
+        self.vad_pre_gain_spinbox.valueChanged.connect(self._on_vad_pre_gain_spinbox)
 
         # Initial update
         self._update_gate()
@@ -263,6 +288,21 @@ class GatePanel(QWidget):
         self.vad_threshold_slider.blockSignals(False)
         self._update_vad_mode()
 
+    def _on_vad_pre_gain_slider(self, value):
+        """Handle VAD pre-gain slider change."""
+        gain = value / 10.0  # Convert 10-100 to 1.0-10.0
+        self.vad_pre_gain_spinbox.blockSignals(True)
+        self.vad_pre_gain_spinbox.setValue(gain)
+        self.vad_pre_gain_spinbox.blockSignals(False)
+        self._update_vad_mode()
+
+    def _on_vad_pre_gain_spinbox(self, value):
+        """Handle VAD pre-gain spinbox change."""
+        self.vad_pre_gain_slider.blockSignals(True)
+        self.vad_pre_gain_slider.setValue(int(value * 10))
+        self.vad_pre_gain_slider.blockSignals(False)
+        self._update_vad_mode()
+
     def _update_vad_mode(self):
         """Update VAD mode and settings."""
         try:
@@ -270,6 +310,7 @@ class GatePanel(QWidget):
             self.processor.set_gate_mode(mode)
             self.processor.set_vad_threshold(self.vad_threshold_spinbox.value())
             self.processor.set_vad_hold_time(self.vad_hold_spinbox.value())
+            self.processor.set_vad_pre_gain(self.vad_pre_gain_spinbox.value())
             self._update_vad_controls_enabled()
             self.vad_info_label.setText("VAD: Active")
         except AttributeError as e:
@@ -293,6 +334,8 @@ class GatePanel(QWidget):
         self.vad_threshold_slider.setEnabled(vad_enabled)
         self.vad_threshold_spinbox.setEnabled(vad_enabled)
         self.vad_hold_spinbox.setEnabled(vad_enabled)
+        self.vad_pre_gain_slider.setEnabled(vad_enabled)
+        self.vad_pre_gain_spinbox.setEnabled(vad_enabled)
         self.confidence_meter.setEnabled(vad_enabled)
 
         # Enable/disable level threshold
@@ -313,6 +356,7 @@ class GatePanel(QWidget):
             'gate_mode': self.gate_mode_combo.currentIndex(),
             'vad_threshold': self.vad_threshold_spinbox.value(),
             'vad_hold_time_ms': self.vad_hold_spinbox.value(),
+            'vad_pre_gain': self.vad_pre_gain_spinbox.value(),
         }
         return settings
 
@@ -354,6 +398,13 @@ class GatePanel(QWidget):
             self.vad_hold_spinbox.blockSignals(True)
             self.vad_hold_spinbox.setValue(settings['vad_hold_time_ms'])
             self.vad_hold_spinbox.blockSignals(False)
+        if 'vad_pre_gain' in settings:
+            self.vad_pre_gain_spinbox.blockSignals(True)
+            self.vad_pre_gain_slider.blockSignals(True)
+            self.vad_pre_gain_spinbox.setValue(settings['vad_pre_gain'])
+            self.vad_pre_gain_slider.setValue(int(settings['vad_pre_gain'] * 10))
+            self.vad_pre_gain_spinbox.blockSignals(False)
+            self.vad_pre_gain_slider.blockSignals(False)
 
         # Update processor and UI state after all settings applied
         self._update_gate()

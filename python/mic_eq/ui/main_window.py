@@ -770,17 +770,21 @@ class MainWindow(QMainWindow):
                     return  # User cancelled
 
             # Create preset from current settings
-            from ..config import Preset
+            from ..config import Preset, CompressorSettings, LimiterSettings, GateSettings
 
             preset = Preset(
                 name=preset_name,
                 description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
                 version="1.6.0",
-                gate=self.gate_panel.get_settings(),
-                eq=self.eq_panel.get_settings(),
-                rnnoise=self.rnnoise_panel.get_settings(),
-                compressor=self.compressor_panel.get_settings(),
-                limiter=self.limiter_panel.get_settings(),
+                gate=GateSettings(**self.gate_panel.get_settings()),
+                eq=EQSettings(**self.eq_panel.get_settings()),
+                rnnoise=RNNoiseSettings(
+                    enabled=self.rnnoise_checkbox.isChecked(),
+                    strength=self.strength_slider.value() / 100.0,
+                    model=self.model_combo.currentData() or 'rnnoise',
+                ),
+                compressor=CompressorSettings(**self.compressor_panel.get_compressor_settings()),
+                limiter=LimiterSettings(**self.compressor_panel.get_limiter_settings()),
                 bypass=self.bypass_checkbox.isChecked(),
             )
 

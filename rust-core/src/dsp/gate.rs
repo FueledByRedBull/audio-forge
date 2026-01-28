@@ -256,11 +256,12 @@ impl NoiseGate {
                         // Check for VAD state change
                         if GATE_DEBUG && vad_gate_open != self.vad_was_open {
                             if vad_gate_open {
-                                eprintln!("[GATE] VAD OPENED: probability={:.4} >= threshold={:.2} [DEBUG: was_open={}, gate_open={}]",
-                                    probability, vad.vad_threshold(), self.vad_was_open, vad_gate_open);
+                                // FIX: Don't claim prob >= threshold, as it might be RMS or Hold triggered
+                                eprintln!("[GATE] OPENED: probability={:.4}, threshold={:.2} (Triggered by VAD, RMS, or Hold Timer)",
+                                    probability, vad.vad_threshold());
                             } else {
-                                eprintln!("[GATE] VAD CLOSED: probability={:.4} < threshold={:.2} [DEBUG: was_open={}, gate_open={}]",
-                                    probability, vad.vad_threshold(), self.vad_was_open, vad_gate_open);
+                                eprintln!("[GATE] CLOSED: probability={:.4} < threshold={:.2}",
+                                    probability, vad.vad_threshold());
                             }
                             self.vad_was_open = vad_gate_open;
                         }
@@ -308,6 +309,10 @@ impl NoiseGate {
     /// Set gate mode
     pub fn set_gate_mode(&mut self, mode: GateMode) {
         self.gate_mode = mode;
+        // FIX: Propagate the mode change to the inner VAD controller
+        if let Some(vad) = &mut self.vad_auto_gate {
+            vad.set_gate_mode(mode);
+        }
     }
 
     #[cfg(feature = "vad")]
@@ -345,6 +350,25 @@ impl NoiseGate {
     pub fn set_hold_time(&mut self, hold_ms: f32) {
         if let Some(vad) = &mut self.vad_auto_gate {
             vad.set_hold_time(hold_ms);
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Set VAD pre-gain to boost weak signals for better speech detection
+    /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
+    pub fn set_vad_pre_gain(&mut self, gain: f32) {
+        if let Some(vad) = &mut self.vad_auto_gate {
+            vad.set_pre_gain(gain);
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Get current VAD pre-gain
+    pub fn vad_pre_gain(&self) -> f32 {
+        if let Some(vad) = &self.vad_auto_gate {
+            vad.pre_gain()
+        } else {
+            1.0
         }
     }
 }

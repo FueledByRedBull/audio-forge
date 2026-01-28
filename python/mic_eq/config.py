@@ -52,6 +52,7 @@ class GateSettings:
     gate_mode: int = 0  # 0=ThresholdOnly, 1=VadAssisted, 2=VadOnly
     vad_threshold: float = 0.5  # Speech probability threshold (0.3-0.8)
     vad_hold_time_ms: float = 200.0  # Hold time in milliseconds (0-500)
+    vad_pre_gain: float = 1.0  # Pre-gain to boost weak signals for VAD (1.0-10.0)
 
 
 @dataclass
@@ -79,7 +80,7 @@ AUTO_EQ_DEFAULT_Q = 4.33
 # Auto-EQ analysis validation thresholds
 ANALYSIS_MIN_PEAK_COUNT = 3      # Minimum peaks to detect voice
 ANALYSIS_MIN_DYNAMIC_RANGE = 20  # Minimum dB range (peak - floor)
-ANALYSIS_MIN_SNR = 25            # Minimum signal-to-noise ratio (dB)
+ANALYSIS_MIN_SNR = 12            # Minimum signal-to-noise ratio (dB) - lowered for real-world recordings
 ANALYSIS_MAX_SPECTRAL_FLATNESS = 0.8  # Maximum flatness (1.0 = white noise)
 
 
@@ -133,6 +134,7 @@ VALIDATION_RANGES = {
         'gate_mode': (0, 2),  # Integer enum
         'vad_threshold': (0.3, 0.8),  # Speech probability
         'vad_hold_time_ms': (0.0, 500.0),  # Milliseconds
+        'vad_pre_gain': (1.0, 10.0),  # Pre-gain multiplier
     },
     'eq': {
         'band_gain': (-12.0, 12.0),
@@ -296,6 +298,11 @@ class Preset:
                     gate_data.get('vad_hold_time_ms', 200.0),  # Default 200ms
                     *gate_ranges['vad_hold_time_ms'],
                     'vad_hold_time_ms', 'gate'
+                ),
+                vad_pre_gain=_validate_range(
+                    gate_data.get('vad_pre_gain', 1.0),  # Default 1.0 (no gain)
+                    *gate_ranges['vad_pre_gain'],
+                    'vad_pre_gain', 'gate'
                 ),
             )
 
@@ -593,7 +600,7 @@ BUILTIN_PRESETS = {
         description="Optimized for voice communication - cuts low end rumble and boosts presence",
         version="1.2.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-3.0, -2.0, 0.0, 1.0, 2.0, 3.0, 2.0, 0.0, -1.0, -2.0],
@@ -606,7 +613,7 @@ BUILTIN_PRESETS = {
         description="High-pass effect to remove low frequency rumble and proximity effect",
         version="1.2.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-12.0, -6.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -619,7 +626,7 @@ BUILTIN_PRESETS = {
         description="Enhances voice presence and intelligibility",
         version="1.2.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[0.0, 0.0, 0.0, 0.0, 2.0, 4.0, 3.0, 1.0, 0.0, 0.0],
@@ -632,7 +639,7 @@ BUILTIN_PRESETS = {
         description="No EQ processing - flat frequency response",
         version="1.2.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[0.0] * 10,
@@ -645,7 +652,7 @@ BUILTIN_PRESETS = {
         description="Gate and RNNoise only - no EQ",
         version="1.2.0",
         gate=GateSettings(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
         eq=EQSettings(
             enabled=False,
             band_gains=[0.0] * 10,
@@ -658,7 +665,7 @@ BUILTIN_PRESETS = {
         description="Maximum noise reduction with tight gate",
         version="1.2.0",
         gate=GateSettings(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0),
+                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-6.0, -3.0, 0.0, 0.0, 1.0, 2.0, 1.0, -1.0, -3.0, -6.0],
@@ -714,7 +721,8 @@ def _test_vad_preset_persistence():
                 release_ms=50.0,
                 gate_mode=1,  # VAD Assisted
                 vad_threshold=0.6,
-                vad_hold_time_ms=150.0
+                vad_hold_time_ms=150.0,
+                vad_pre_gain=2.5  # Test with non-default gain
             )
         )
 
@@ -728,6 +736,7 @@ def _test_vad_preset_persistence():
         assert loaded.gate.gate_mode == 1, f"gate_mode mismatch: {loaded.gate.gate_mode}"
         assert loaded.gate.vad_threshold == 0.6, f"vad_threshold mismatch: {loaded.gate.vad_threshold}"
         assert loaded.gate.vad_hold_time_ms == 150.0, f"vad_hold_time_ms mismatch: {loaded.gate.vad_hold_time_ms}"
+        assert loaded.gate.vad_pre_gain == 2.5, f"vad_pre_gain mismatch: {loaded.gate.vad_pre_gain}"
 
         print("PASS: VAD preset persistence test passed")
 
@@ -742,7 +751,7 @@ def _test_backward_compatibility():
             'threshold_db': -40.0,
             'attack_ms': 10.0,
             'release_ms': 100.0,
-            # No gate_mode, vad_threshold, vad_hold_time_ms
+            # No gate_mode, vad_threshold, vad_hold_time_ms, vad_pre_gain
         }
     }
 
@@ -752,6 +761,7 @@ def _test_backward_compatibility():
     assert loaded.gate.gate_mode == 0, "Default gate_mode should be 0"
     assert loaded.gate.vad_threshold == 0.5, "Default vad_threshold should be 0.5"
     assert loaded.gate.vad_hold_time_ms == 200.0, "Default vad_hold_time_ms should be 200.0"
+    assert loaded.gate.vad_pre_gain == 1.0, "Default vad_pre_gain should be 1.0"
 
     print("PASS: Backward compatibility test passed")
 

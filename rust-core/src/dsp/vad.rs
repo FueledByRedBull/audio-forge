@@ -84,6 +84,8 @@ pub struct SileroVAD {
     smoothed_prob: f32,
     /// Smoothing factor for probability (0-1)
     smoothing: f32,
+    /// Pre-gain applied to audio before VAD processing (boosts weak signals)
+    pre_gain: f32,
 }
 
 impl SileroVAD {
@@ -172,6 +174,7 @@ impl SileroVAD {
             state,
             smoothed_prob: 0.0,
             smoothing: 0.5, // Faster smoothing (less lag)
+            pre_gain: 1.0,  // Default: no gain boost
         })
     }
 
@@ -237,6 +240,17 @@ impl SileroVAD {
         self.threshold
     }
 
+    /// Set pre-gain for VAD input (boosts weak signals)
+    /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
+    pub fn set_pre_gain(&mut self, gain: f32) {
+        self.pre_gain = gain.max(0.1); // Minimum gain to prevent division by zero
+    }
+
+    /// Get current pre-gain
+    pub fn pre_gain(&self) -> f32 {
+        self.pre_gain
+    }
+
     /// Reset internal state (including LSTM states)
     pub fn reset(&mut self) {
         self.buffer.clear();
@@ -252,8 +266,26 @@ impl SileroVAD {
         // - "sr": sample rate tensor, scalar (16000)
         // - "state": combined LSTM state, shape [2, 1, 128] (h and c concatenated)
 
+        // Apply pre-gain to boost weak signals (helps with quiet microphones)
+        let gain_applied = self.pre_gain != 1.0;
+        let gained_audio: Vec<f32> = if gain_applied {
+            audio.iter().map(|&x| x * self.pre_gain).collect()
+        } else {
+            audio.to_vec()
+        };
+
+        // DEBUG: Log audio statistics to diagnose VAD issue
+        static DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count < 5 {  // Only log first 5 times
+            let max_val = gained_audio.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
+            let mean_val: f32 = gained_audio.iter().map(|&x| x.abs()).sum::<f32>() / gained_audio.len() as f32;
+            eprintln!("[VAD-INPUT] samples={}, gain={:.2}, max={:.6}, mean={:.6}, first_10={:?}",
+                gained_audio.len(), self.pre_gain, max_val, mean_val, &gained_audio[..10.min(gained_audio.len())]);
+        }
+
         // Create audio input array - shape [1, 512]
-        let audio_array = Array2::from_shape_vec((1, SILERO_WINDOW_SIZE), audio.to_vec())
+        let audio_array = Array2::from_shape_vec((1, SILERO_WINDOW_SIZE), gained_audio)
             .map_err(|e| VadError::OnnxError(format!("Failed to create audio array: {}", e)))?;
 
         // Create sample rate array - scalar
@@ -517,57 +549,40 @@ impl VadAutoGate {
     }
 
     fn apply_hold_time(&mut self, gate_open: bool, num_samples: usize) -> bool {
-        // Track closed state duration for debounce
+        // STANDARD GATE BEHAVIOR:
+        // If the raw gate is open, we reset the hold timer to max.
+        // This keeps the gate open for 'hold_time' AFTER the signal drops.
+
         if gate_open {
-            // Gate is open, reset closed counter
+            // Signal is valid (Open) -> Reset timer and keep running
+            self.hold_timer = self.hold_time_ms / 1000.0 * self.sample_rate as f32;
+            self.timer_running = true;
             self.closed_counter_samples = 0.0;
         } else {
-            // Gate is closed, increment counter
+            // Signal is invalid (Closed) -> Increment closed counter
             self.closed_counter_samples += num_samples as f32;
         }
 
-        // Detect transition: closed -> open
-        let opening_edge = gate_open && !self.prev_gate_open;
+        // Decrement timer if it is running
+        if self.timer_running {
+            self.hold_timer -= num_samples as f32;
+
+            // If timer expires, stop holding
+            if self.hold_timer <= 0.0 {
+                self.hold_timer = 0.0;
+                self.timer_running = false;
+                if GATE_DEBUG && self.prev_gate_open {
+                     eprintln!("[GATE] HoldTimer EXPIRED (Closed)");
+                }
+            }
+        }
+
         self.prev_gate_open = gate_open;
 
-        // Calculate minimum closed time in samples (debounce period)
-        let debounce_samples = self.debounce_time_ms / 1000.0 * self.sample_rate as f32;
+        // Gate is open if raw signal is open OR timer is still running
+        let final_gate_open = gate_open || self.timer_running;
 
-        // Start timer ONLY on transition (rising edge) AND if gate was closed long enough
-        // This prevents rapid oscillation from restarting the timer repeatedly
-        if opening_edge && self.closed_counter_samples >= debounce_samples {
-            self.hold_timer = self.hold_time_ms / 1000.0 * self.sample_rate as f32;
-            self.timer_running = true;
-            if GATE_DEBUG {
-                eprintln!("[GATE] HoldTimer STARTED: {:.0} samples ({:.0}ms)",
-                    self.hold_timer, self.hold_time_ms);
-            }
-        }
-
-        // Always decrement timer while running
-        if self.timer_running && self.hold_timer > 0.0 {
-            self.hold_timer = (self.hold_timer - num_samples as f32).max(0.0);
-            // Clear timer_running when timer expires (use <= for float safety)
-            if self.hold_timer <= 0.0 {
-                if GATE_DEBUG {
-                    eprintln!("[GATE] HoldTimer EXPIRED");
-                }
-                self.timer_running = false;
-            }
-        }
-
-        // Gate is held open if timer is running OR current gate is open
-        let held_open = gate_open || self.timer_running;
-
-        if GATE_DEBUG && held_open != gate_open {
-            eprintln!("[GATE] HoldTime: raw_gate={}, timer_running={}, timer={:.0}, held_gate={}",
-                if gate_open { "OPEN" } else { "CLOSED" },
-                self.timer_running,
-                self.hold_timer,
-                if held_open { "OPEN" } else { "CLOSED" });
-        }
-
-        held_open
+        final_gate_open
     }
 
     pub fn is_available(&self) -> bool {
@@ -637,6 +652,24 @@ impl VadAutoGate {
 
     pub fn probability(&self) -> f32 {
         self.current_probability
+    }
+
+    /// Set pre-gain for VAD input (boosts weak signals)
+    /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
+    /// This helps with quiet microphones where VAD can't detect speech.
+    pub fn set_pre_gain(&mut self, gain: f32) {
+        if let Some(vad) = &mut self.vad {
+            vad.set_pre_gain(gain);
+        }
+    }
+
+    /// Get current pre-gain
+    pub fn pre_gain(&self) -> f32 {
+        if let Some(vad) = &self.vad {
+            vad.pre_gain()
+        } else {
+            1.0
+        }
     }
 }
 

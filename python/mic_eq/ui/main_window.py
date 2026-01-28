@@ -711,6 +711,8 @@ class MainWindow(QMainWindow):
         self.capture_pre_auto_eq_state()
 
         dialog = CalibrationDialog(self)
+        # Connect signal to handle auto-EQ completion (preset save, undo button enable)
+        dialog.auto_eq_applied.connect(self.on_auto_eq_applied)
         dialog.exec()  # Modal dialog - blocks until user closes
         if DEBUG:
             print(f"[MAIN] Calibration dialog closed, result={dialog.result()}")

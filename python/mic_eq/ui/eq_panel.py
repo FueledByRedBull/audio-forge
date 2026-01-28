@@ -416,6 +416,41 @@ class EQPanel(QWidget):
         self.curve_widget.clear_overlay()
         self._update_curve()
 
+    def capture_state(self) -> dict:
+        """
+        Capture current EQ state for undo functionality.
+
+        Returns:
+            Dictionary with current band gains, Q values, and enabled state
+        """
+        gains = []
+        qs = []
+        for slider in self.band_sliders:
+            gains.append(slider.slider.value() / 10.0)
+            qs.append(slider.q_spinbox.value())
+        return {
+            'enabled': self.enabled_checkbox.isChecked(),
+            'band_gains': gains,
+            'band_qs': qs,
+        }
+
+    def restore_state(self, state: dict) -> None:
+        """
+        Restore EQ state from captured snapshot.
+
+        Args:
+            state: Dictionary with 'enabled', 'band_gains', and 'band_qs' keys
+        """
+        # Restore enabled state
+        if 'enabled' in state:
+            self.enabled_checkbox.setChecked(state['enabled'])
+
+        # Restore band settings
+        if 'band_gains' in state:
+            gains = state['band_gains']
+            qs = state.get('band_qs', [1.41] * len(gains))
+            self._apply_preset(gains, qs)
+
     def set_settings(self, settings: dict) -> None:
         """Apply settings from a dictionary."""
         if 'enabled' in settings:

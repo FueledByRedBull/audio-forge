@@ -2,7 +2,12 @@
 Main window for AudioForge application
 
 Adapted from Spectral Workbench project.
+
+DEBUG: Added terminal logging for processor state tracking
 """
+
+# Enable debug logging
+DEBUG = True
 
 from PyQt6.QtWidgets import (
     QMainWindow,
@@ -615,18 +620,29 @@ class MainWindow(QMainWindow):
     def _start_processing(self):
         """Start audio processing."""
         if self.processor.is_running():
+            if DEBUG:
+                print("[MAIN] Start processing clicked, but processor already running")
             return
 
         input_device = self.input_combo.currentData()
         output_device = self.output_combo.currentData()
 
+        if DEBUG:
+            print(f"[MAIN] Starting processing - Input: {input_device or '(default)'}, Output: {output_device or '(default)'}")
+
         try:
             result = self.processor.start(input_device, output_device)
+            # Unmute output after starting processing (in case it was muted by calibration)
+            if DEBUG:
+                print("[MAIN] Unmuting output (set_output_mute=False)")
+            self.processor.set_output_mute(False)
             self.status_bar.showMessage(f"Processing: {result}")
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
             self.input_combo.setEnabled(False)
             self.output_combo.setEnabled(False)
+            if DEBUG:
+                print(f"[MAIN] Processing started: {result}")
         except Exception as e:
             print(f"Start processing failed: {type(e).__name__}: {e}")
             error_msg = str(e)
@@ -655,7 +671,12 @@ class MainWindow(QMainWindow):
     def _stop_processing(self):
         """Stop audio processing."""
         if not self.processor.is_running():
+            if DEBUG:
+                print("[MAIN] Stop processing clicked, but processor not running")
             return
+
+        if DEBUG:
+            print("[MAIN] Stopping processing...")
 
         try:
             self.processor.stop()
@@ -664,14 +685,22 @@ class MainWindow(QMainWindow):
             self.stop_btn.setEnabled(False)
             self.input_combo.setEnabled(True)
             self.output_combo.setEnabled(True)
+            if DEBUG:
+                print("[MAIN] Processing stopped")
         except RuntimeError as e:
             print(f"Stop processing failed: {type(e).__name__}: {e}")
             QMessageBox.critical(self, "Error", f"Failed to stop processing:\n{e}")
 
     def _on_auto_eq_clicked(self):
         """Open Auto-EQ calibration dialog."""
+        if DEBUG:
+            print("[MAIN] Auto-EQ button clicked - opening calibration dialog")
         dialog = CalibrationDialog(self)
         dialog.exec()  # Modal dialog - blocks until user closes
+        if DEBUG:
+            print(f"[MAIN] Calibration dialog closed, result={dialog.result()}")
+            is_running = self.processor.is_running()
+            print(f"[MAIN] After calibration - processor running={is_running}")
 
     def _on_bypass_toggled(self, checked):
         """Handle bypass toggle."""

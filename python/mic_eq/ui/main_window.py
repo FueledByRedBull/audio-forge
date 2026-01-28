@@ -76,6 +76,10 @@ class MainWindow(QMainWindow):
         self.config = load_config()
         self.current_preset_path = None
 
+        # Auto-EQ undo state (single-level undo)
+        self._pre_auto_eq_state = None
+        self._undo_auto_eq_button = None
+
         # Set up UI
         self._setup_ui()
         self._setup_menubar()
@@ -695,12 +699,121 @@ class MainWindow(QMainWindow):
         """Open Auto-EQ calibration dialog."""
         if DEBUG:
             print("[MAIN] Auto-EQ button clicked - opening calibration dialog")
+
+        # Capture state before showing dialog
+        self.capture_pre_auto_eq_state()
+
         dialog = CalibrationDialog(self)
         dialog.exec()  # Modal dialog - blocks until user closes
         if DEBUG:
             print(f"[MAIN] Calibration dialog closed, result={dialog.result()}")
             is_running = self.processor.is_running()
             print(f"[MAIN] After calibration - processor running={is_running}")
+
+    def capture_pre_auto_eq_state(self):
+        """Capture current EQ state before auto-EQ application."""
+        self._pre_auto_eq_state = self.eq_panel.capture_state()
+
+    def on_auto_eq_applied(self, target_curve: str):
+        """
+        Handle auto-EQ application completion.
+
+        Shows undo button, prompts for preset save.
+
+        Args:
+            target_curve: The target curve used ('broadcast', 'podcast', etc.)
+        """
+        from ..config import generate_auto_eq_preset_name, save_preset, list_presets
+
+        # Reset curve overlay mode (hide "Current vs New" comparison)
+        self.eq_panel.reset_curve_overlay()
+
+        # Show undo button
+        if self._undo_auto_eq_button:
+            self._undo_auto_eq_button.setEnabled(True)
+
+        # Prompt to save as preset
+        preset_name = generate_auto_eq_preset_name(target_curve)
+
+        reply = QMessageBox.question(
+            self,
+            "Save Auto-EQ as Preset?",
+            f"Save these auto-EQ settings as preset '{preset_name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Check if preset already exists
+            existing_presets = list_presets()
+            existing_names = [name.lower() for name, _ in existing_presets]
+
+            if preset_name.lower() in existing_names:
+                # Confirm overwrite
+                confirm_reply = QMessageBox.question(
+                    self,
+                    "Overwrite Preset?",
+                    f"Preset '{preset_name}' already exists. Overwrite?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No
+                )
+                if confirm_reply != QMessageBox.StandardButton.Yes:
+                    return  # User cancelled
+
+            # Create preset from current settings
+            from ..config import Preset
+
+            preset = Preset(
+                name=preset_name,
+                description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
+                version="1.6.0",
+                gate=self.gate_panel.get_settings(),
+                eq=self.eq_panel.get_settings(),
+                rnnoise=self.rnnoise_panel.get_settings(),
+                compressor=self.compressor_panel.get_settings(),
+                limiter=self.limiter_panel.get_settings(),
+                bypass=self.bypass_checkbox.isChecked(),
+            )
+
+            filepath = save_preset(preset)
+            QMessageBox.information(
+                self,
+                "Preset Saved",
+                f"Preset '{preset_name}' saved successfully."
+            )
+
+    def undo_auto_eq(self):
+        """Undo last auto-EQ application and restore previous state."""
+        if self._pre_auto_eq_state is None:
+            QMessageBox.information(self, "No Undo", "No auto-EQ to undo.")
+            return
+
+        # Restore previous state
+        self.eq_panel.restore_state(self._pre_auto_eq_state)
+
+        # Clear saved state
+        self._pre_auto_eq_state = None
+
+        # Disable undo button
+        if self._undo_auto_eq_button:
+            self._undo_auto_eq_button.setEnabled(False)
+
+        # Show toast message
+        toast = QLabel("Auto-EQ undone")
+        toast.setStyleSheet("""
+            background-color: #333;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 5px;
+        """)
+        toast.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint)
+        toast.show()
+
+        # Position toast near center of window
+        toast.move(self.mapToGlobal(self.rect().center()) - toast.rect().center())
+
+        # Auto-hide toast after 2 seconds
+        QTimer.singleShot(2000, toast.deleteLater)
 
     def _on_bypass_toggled(self, checked):
         """Handle bypass toggle."""

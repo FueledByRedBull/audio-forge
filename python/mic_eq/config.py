@@ -99,6 +99,16 @@ class LimiterSettings:
     release_ms: float = 50.0
 
 
+@dataclass
+class TargetCurve:
+    """Target frequency response curve for Auto-EQ calibration."""
+    name: str  # Display name (e.g., "Broadcast Standard")
+    description: str  # What this curve is for (1-2 sentences)
+    # 10-band frequency targets in dB (-12 to +12)
+    # Bands: 80, 160, 320, 640, 1.2k, 2.5k, 5k, 8k, 12k, 16kHz
+    band_targets: list[float]  # Must be exactly 10 values
+
+
 # Validation ranges for preset parameters
 VALIDATION_RANGES = {
     'gate': {

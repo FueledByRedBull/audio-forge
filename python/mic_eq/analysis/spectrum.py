@@ -109,3 +109,54 @@ def get_octave_frequencies(fraction=6, limits=(20, 20000), ref_freq=1000.0):
             f_upper.append(fm * G ** (1 / (2 * b)))
 
     return np.array(f_center), np.array(f_lower), np.array(f_upper)
+
+
+def smooth_spectrum_octave(freqs, spectrum_db, fraction=6):
+    """
+    Apply fractional octave smoothing to spectrum.
+
+    Reduces spectral variance while preserving formant detail by
+    averaging energy within each fractional octave band. Uses
+    IEC 61260-1 compliant band calculation.
+
+    Args:
+        freqs: Frequency array from FFT (linear spacing, Hz)
+        spectrum_db: Spectrum in dB (same length as freqs)
+        fraction: Octave fraction (6 = 1/6 octave, 3 = 1/3 octave)
+
+    Returns:
+        smoothed_db: Smoothed spectrum at original frequency resolution
+
+    Note:
+        Averages ENERGY in linear domain (NOT arithmetic mean in dB).
+        This is critical for correct power averaging.
+    """
+    # Get octave band frequencies
+    f_center, f_lower, f_upper = get_octave_frequencies(fraction)
+
+    smoothed_bands = []
+    for fc, fl, fu in zip(f_center, f_lower, f_upper):
+        # Find FFT bins within this band
+        mask = (freqs >= fl) & (freqs <= fu)
+        if np.any(mask):
+            # CRITICAL: Energy averaging in LINEAR domain
+            # Convert dB to power (10^(dB/10)), average, convert back
+            linear_power = 10 ** (spectrum_db[mask] / 10)
+            avg_power = np.mean(linear_power)
+            smoothed_bands.append(10 * np.log10(avg_power))
+        else:
+            # No bins in this band (shouldn't happen with proper limits)
+            smoothed_bands.append(np.nan)
+
+    # Interpolate back to original frequency resolution
+    # This preserves the FFT frequency grid for downstream processing
+    valid = ~np.isnan(smoothed_bands)
+    smoothed_db = np.interp(
+        freqs,
+        f_center[valid],
+        np.array(smoothed_bands)[valid],
+        left=np.nan,
+        right=np.nan
+    )
+
+    return smoothed_db

@@ -395,6 +395,8 @@ pub struct VadAutoGate {
     min_threshold: f32,
     /// Maximum gate threshold (dB)
     max_threshold: f32,
+    /// Auto-threshold mode enabled
+    auto_threshold_enabled: bool,
     /// Enabled state
     enabled: bool,
     /// Gate operating mode
@@ -441,9 +443,10 @@ impl VadAutoGate {
             vad,
             noise_floor: -60.0,
             margin: 6.0,
-            adaptation_rate: 0.01,
+            adaptation_rate: 0.001,  // ~15 second time constant at 48kHz/512 samples
             min_threshold: -50.0,
             max_threshold: -10.0,
+            auto_threshold_enabled: false,  // Default to manual mode
             enabled,
             gate_mode: GateMode::ThresholdOnly,
             vad_threshold,
@@ -478,6 +481,15 @@ impl VadAutoGate {
         self.current_probability = prob;
 
         let vad_speech_detected = prob > self.vad_threshold;
+
+        // Update noise floor estimate during non-speech periods
+        if self.auto_threshold_enabled && !vad_speech_detected {
+            let current_rms = compute_rms_db(samples);
+            // Exponential smoothing: new_val = rate * sample + (1 - rate) * old_val
+            self.noise_floor = self.adaptation_rate * current_rms + (1.0 - self.adaptation_rate) * self.noise_floor;
+            // Clamp to valid range
+            self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
+        }
 
         // Debug: Log VAD decision
         if GATE_DEBUG && (prob > 0.0 || prob < 0.01) {
@@ -544,7 +556,13 @@ impl VadAutoGate {
     }
 
     fn level_above_threshold(&self, samples: &[f32]) -> bool {
-        let threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
+        let threshold = if self.auto_threshold_enabled {
+            // Auto mode: noise_floor + margin
+            (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold)
+        } else {
+            // Manual mode: use fixed noise_floor (-60.0) + margin
+            (-60.0 + self.margin).clamp(self.min_threshold, self.max_threshold)
+        };
         let rms_db = compute_rms_db(samples);
         rms_db >= threshold
     }
@@ -608,6 +626,22 @@ impl VadAutoGate {
 
     pub fn noise_floor(&self) -> f32 {
         self.noise_floor
+    }
+
+    /// Enable/disable auto-threshold mode
+    pub fn set_auto_threshold(&mut self, enabled: bool) {
+        self.auto_threshold_enabled = enabled;
+        if enabled {
+            // Initialize noise floor from current RMS if needed
+            if self.noise_floor <= -100.0 {
+                self.noise_floor = -60.0;  // Reset to sensible default
+            }
+        }
+    }
+
+    /// Check if auto-threshold is enabled
+    pub fn auto_threshold_enabled(&self) -> bool {
+        self.auto_threshold_enabled
     }
 
     pub fn reset(&mut self) {

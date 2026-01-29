@@ -152,16 +152,6 @@ class RecordingWorker(QThread):
                     self.progress.emit(100)
                     self.time_remaining.emit(0.0)
                     self.finished.emit(audio)
-
-                    # Stop audio processing if we started it ourselves
-                    # (NOT if it was already running when we began recording)
-                    if self._we_started_processor:
-                        if DEBUG:
-                            print("[CALIBRATION] Stopping audio processor (we started it)")
-                        self.processor.stop()
-                    else:
-                        if DEBUG:
-                            print("[CALIBRATION] Leaving audio processor running (was already running)")
                 else:
                     if DEBUG:
                         print("[CALIBRATION] ERROR: stop_raw_recording returned None")
@@ -171,6 +161,20 @@ class RecordingWorker(QThread):
             if DEBUG:
                 print(f"[CALIBRATION] EXCEPTION: {type(e).__name__}: {e}")
             self.failed.emit(f"Recording error: {str(e)}")
+        finally:
+            # CRITICAL: Always stop processor if we started it
+            # This runs whether success, exception, or user cancellation
+            # Prevents resource leaks (audio thread continues running)
+            if self._we_started_processor:
+                try:
+                    if DEBUG:
+                        print("[CALIBRATION] Finally: Stopping audio processor (cleanup)")
+                    self.processor.stop()
+                except Exception as cleanup_error:
+                    # Ignore cleanup errors - don't raise from finally block
+                    # (would mask the original exception)
+                    if DEBUG:
+                        print(f"[CALIBRATION] Cleanup error (ignored): {cleanup_error}")
 
     def stop(self):
         """Stop recording early."""

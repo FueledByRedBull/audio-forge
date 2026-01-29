@@ -243,6 +243,12 @@ class GatePanel(QWidget):
         # Initial update
         self._update_gate()
         self._update_vad_controls_enabled()
+        # Initialize VAD settings (including pre-gain)
+        try:
+            self._update_vad_mode()
+        except (AttributeError, Exception) as e:
+            # VAD not available or other error - will be handled when user enables VAD
+            pass
 
     def _on_slider_changed(self, value):
         """Handle threshold slider change."""

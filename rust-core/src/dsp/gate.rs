@@ -371,6 +371,30 @@ impl NoiseGate {
             1.0
         }
     }
+
+    #[cfg(feature = "vad")]
+    /// Enable/disable auto-threshold mode
+    pub fn set_auto_threshold(&mut self, enabled: bool) {
+        if let Some(vad) = &mut self.vad_auto_gate {
+            vad.set_auto_threshold(enabled);
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Check if auto-threshold is enabled
+    pub fn auto_threshold_enabled(&self) -> bool {
+        self.vad_auto_gate.as_ref()
+            .map(|v| v.auto_threshold_enabled())
+            .unwrap_or(false)
+    }
+
+    #[cfg(feature = "vad")]
+    /// Get current noise floor estimate (for UI display)
+    pub fn noise_floor(&self) -> f32 {
+        self.vad_auto_gate.as_ref()
+            .map(|v| v.noise_floor())
+            .unwrap_or(-60.0)
+    }
 }
 
 #[cfg(test)]

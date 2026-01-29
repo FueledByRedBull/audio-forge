@@ -1168,7 +1168,7 @@ class MainWindow(QMainWindow):
             preset: Preset object to apply
             preset_key: Optional key for built-in presets (e.g., "voice", "bass_cut")
         """
-        # Apply gate settings (including VAD mode)
+        # Apply gate settings (including VAD mode and auto-threshold)
         self.gate_panel.set_settings({
             'enabled': preset.gate.enabled,
             'threshold_db': preset.gate.threshold_db,
@@ -1178,6 +1178,8 @@ class MainWindow(QMainWindow):
             'vad_threshold': preset.gate.vad_threshold,
             'vad_hold_time_ms': preset.gate.vad_hold_time_ms,
             'vad_pre_gain': preset.gate.vad_pre_gain,
+            'auto_threshold_enabled': preset.gate.auto_threshold_enabled,  # v1.6.0+
+            'gate_margin_db': preset.gate.gate_margin_db,  # v1.6.0+
         })
 
         # Apply EQ settings
@@ -1201,7 +1203,12 @@ class MainWindow(QMainWindow):
         model_found = False
         for i in range(self.model_combo.count()):
             if self.model_combo.itemData(i) == model:
+                # Block signals to prevent duplicate model initialization
+                # setCurrentIndex triggers currentIndexChanged which calls set_noise_model,
+                # so we need to block it here since we'll call it directly below
+                self.model_combo.blockSignals(True)
                 self.model_combo.setCurrentIndex(i)
+                self.model_combo.blockSignals(False)
                 model_found = True
                 # Try to set model, handle errors gracefully
                 try:
@@ -1222,7 +1229,9 @@ class MainWindow(QMainWindow):
                         # Fall back to RNNoise using find-by-ID loop (NOT hardcoded index)
                         for j in range(self.model_combo.count()):
                             if self.model_combo.itemData(j) == "rnnoise":
+                                self.model_combo.blockSignals(True)
                                 self.model_combo.setCurrentIndex(j)
+                                self.model_combo.blockSignals(False)
                                 self.processor.set_noise_model("rnnoise")
                                 self.rnnoise_latency_label.setText("Latency: ~10ms (RNNoise)")
                                 break
@@ -1236,7 +1245,9 @@ class MainWindow(QMainWindow):
                     # Fall back to RNNoise using find-by-ID loop (NOT hardcoded index)
                     for j in range(self.model_combo.count()):
                         if self.model_combo.itemData(j) == "rnnoise":
+                            self.model_combo.blockSignals(True)
                             self.model_combo.setCurrentIndex(j)
+                            self.model_combo.blockSignals(False)
                             self.processor.set_noise_model("rnnoise")
                             self.rnnoise_latency_label.setText("Latency: ~10ms (RNNoise)")
                             break

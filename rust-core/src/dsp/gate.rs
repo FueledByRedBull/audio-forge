@@ -381,6 +381,22 @@ impl NoiseGate {
     }
 
     #[cfg(feature = "vad")]
+    /// Set margin above noise floor for auto-threshold (in dB)
+    pub fn set_margin(&mut self, margin_db: f32) {
+        if let Some(vad) = &mut self.vad_auto_gate {
+            vad.set_margin(margin_db);
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Get current margin above noise floor (in dB)
+    pub fn margin(&self) -> f32 {
+        self.vad_auto_gate.as_ref()
+            .map(|v| v.margin())
+            .unwrap_or(6.0)
+    }
+
+    #[cfg(feature = "vad")]
     /// Check if auto-threshold is enabled
     pub fn auto_threshold_enabled(&self) -> bool {
         self.vad_auto_gate.as_ref()

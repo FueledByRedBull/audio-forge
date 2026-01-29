@@ -889,6 +889,52 @@ impl AudioProcessor {
         }
     }
 
+    #[cfg(feature = "vad")]
+    /// Enable/disable auto-threshold mode (automatically adjusts gate threshold based on noise floor)
+    pub fn set_auto_threshold(&self, enabled: bool) {
+        if let Ok(mut gate) = self.gate.lock() {
+            gate.set_auto_threshold(enabled);
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Set margin above noise floor for auto-threshold (in dB)
+    pub fn set_gate_margin(&self, margin_db: f32) {
+        if let Ok(mut gate) = self.gate.lock() {
+            gate.set_margin(margin_db);
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Get current noise floor estimate (in dB)
+    pub fn get_noise_floor(&self) -> f32 {
+        if let Ok(gate) = self.gate.lock() {
+            gate.noise_floor()
+        } else {
+            -60.0
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Get current gate margin (in dB)
+    pub fn gate_margin(&self) -> f32 {
+        if let Ok(gate) = self.gate.lock() {
+            gate.margin()
+        } else {
+            6.0
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Check if auto-threshold is enabled
+    pub fn auto_threshold_enabled(&self) -> bool {
+        if let Ok(gate) = self.gate.lock() {
+            gate.auto_threshold_enabled()
+        } else {
+            false
+        }
+    }
+
     // === Noise Suppression Controls ===
 
     /// Enable/disable noise suppression
@@ -1532,6 +1578,38 @@ impl PyAudioProcessor {
     fn set_vad_pre_gain(&self, gain: f32) -> PyResult<()> {
         self.processor.set_vad_pre_gain(gain);
         Ok(())
+    }
+
+    /// Enable/disable auto-threshold mode (automatically adjusts gate threshold based on noise floor)
+    #[cfg(feature = "vad")]
+    fn set_auto_threshold(&self, enabled: bool) -> PyResult<()> {
+        self.processor.set_auto_threshold(enabled);
+        Ok(())
+    }
+
+    /// Set margin above noise floor for auto-threshold (in dB)
+    #[cfg(feature = "vad")]
+    fn set_gate_margin(&self, margin_db: f32) -> PyResult<()> {
+        self.processor.set_gate_margin(margin_db);
+        Ok(())
+    }
+
+    /// Get current noise floor estimate (in dB)
+    #[cfg(feature = "vad")]
+    fn get_noise_floor(&self) -> f32 {
+        self.processor.get_noise_floor()
+    }
+
+    /// Get current gate margin (in dB)
+    #[cfg(feature = "vad")]
+    fn gate_margin(&self) -> f32 {
+        self.processor.gate_margin()
+    }
+
+    /// Check if auto-threshold is enabled
+    #[cfg(feature = "vad")]
+    fn auto_threshold_enabled(&self) -> bool {
+        self.processor.auto_threshold_enabled()
     }
 
     /// Get current VAD pre-gain

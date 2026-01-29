@@ -575,6 +575,8 @@ class MainWindow(QMainWindow):
                     if preset_key in BUILTIN_PRESETS:
                         preset = BUILTIN_PRESETS[preset_key]
                         self._apply_preset(preset)
+                        # Re-save config to persist preset for next session
+                        save_config(self.config)
                         restored_count += 1
                     else:
                         self.status_bar.showMessage(
@@ -589,6 +591,8 @@ class MainWindow(QMainWindow):
                         preset = load_preset(preset_path)
                         self._apply_preset(preset)
                         self.current_preset_path = preset_path
+                        # Re-save config to persist preset for next session
+                        save_config(self.config)
                         restored_count += 1
                     else:
                         self.status_bar.showMessage(

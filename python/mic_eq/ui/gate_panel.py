@@ -195,6 +195,49 @@ class GatePanel(QWidget):
         gate_layout.addWidget(vad_pre_gain_label, 9, 0)
         gate_layout.addLayout(vad_pre_gain_layout, 9, 1, 1, 2)
 
+        # Separator
+        gate_layout.addWidget(QLabel(""), 10, 0)
+        gate_layout.addWidget(QLabel(""), 10, 1)
+
+        # Auto Threshold section
+        self.auto_threshold_checkbox = QCheckBox("Auto Threshold")
+        self.auto_threshold_checkbox.setChecked(False)
+        self.auto_threshold_checkbox.setToolTip(
+            "Automatically adjust gate threshold based on estimated noise floor.\n"
+            "Gate threshold = noise_floor + margin"
+        )
+        gate_layout.addWidget(QLabel(""), 11, 0)
+        gate_layout.addWidget(self.auto_threshold_checkbox, 11, 1, 1, 2)
+
+        # Margin slider and spinbox
+        margin_layout = QHBoxLayout()
+        self.margin_slider = QSlider(Qt.Orientation.Horizontal)
+        self.margin_slider.setRange(0, 20)  # 0 to 20 dB
+        self.margin_slider.setValue(6)  # Default 6 dB
+        self.margin_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.margin_slider.setTickInterval(5)
+        margin_layout.addWidget(self.margin_slider)
+
+        self.margin_spinbox = QDoubleSpinBox()
+        self.margin_spinbox.setRange(0.0, 20.0)
+        self.margin_spinbox.setSingleStep(1.0)
+        self.margin_spinbox.setValue(6.0)
+        self.margin_spinbox.setSuffix(" dB")
+        self.margin_spinbox.setToolTip("Margin above noise floor for gate threshold (0-20 dB)")
+        self.margin_spinbox.setFixedWidth(80)
+        margin_layout.addWidget(self.margin_spinbox)
+
+        margin_label = QLabel("Margin:")
+        margin_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        gate_layout.addWidget(margin_label, 12, 0)
+        gate_layout.addLayout(margin_layout, 12, 1, 1, 2)
+
+        # Noise floor display (read-only)
+        self.noise_floor_label = QLabel("Noise Floor: -60 dB")
+        self.noise_floor_label.setStyleSheet(INFO_LABEL_STYLE)
+        gate_layout.addWidget(QLabel(""), 13, 0)
+        gate_layout.addWidget(self.noise_floor_label, 13, 1, 1, 2)
+
         # VAD confidence meter
         from .level_meter import ConfidenceMeter
         self.confidence_meter = ConfidenceMeter()
@@ -209,8 +252,8 @@ class GatePanel(QWidget):
         vad_meter_layout.addWidget(self.vad_info_label)
         confidence_label = QLabel("Confidence:")
         confidence_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        gate_layout.addWidget(confidence_label, 10, 0)
-        gate_layout.addLayout(vad_meter_layout, 10, 1, 1, 2)
+        gate_layout.addWidget(confidence_label, 15, 0)
+        gate_layout.addLayout(vad_meter_layout, 15, 1, 1, 2)
 
         # Info label
         info_label = QLabel(
@@ -218,8 +261,8 @@ class GatePanel(QWidget):
             "IIR envelope follower for smooth transitions."
         )
         info_label.setStyleSheet(INFO_LABEL_STYLE)
-        gate_layout.addWidget(QLabel(""), 11, 0)
-        gate_layout.addWidget(info_label, 11, 1, 1, 2)
+        gate_layout.addWidget(QLabel(""), 16, 0)
+        gate_layout.addWidget(info_label, 16, 1, 1, 2)
 
         layout.addWidget(gate_group)
 
@@ -239,6 +282,11 @@ class GatePanel(QWidget):
         self.vad_hold_spinbox.valueChanged.connect(self._update_vad_mode)
         self.vad_pre_gain_slider.valueChanged.connect(self._on_vad_pre_gain_slider)
         self.vad_pre_gain_spinbox.valueChanged.connect(self._on_vad_pre_gain_spinbox)
+
+        # Auto-threshold control signals
+        self.auto_threshold_checkbox.toggled.connect(self._update_auto_threshold)
+        self.margin_slider.valueChanged.connect(self._on_margin_slider)
+        self.margin_spinbox.valueChanged.connect(self._on_margin_spinbox)
 
         # Initial update
         self._update_gate()
@@ -348,6 +396,43 @@ class GatePanel(QWidget):
         self.threshold_slider.setEnabled(threshold_enabled)
         self.threshold_spinbox.setEnabled(threshold_enabled)
 
+        # Enable/disable auto-threshold controls (only when VAD is active)
+        auto_threshold_enabled = vad_enabled and self.auto_threshold_checkbox.isChecked()
+        self.auto_threshold_checkbox.setEnabled(vad_enabled)
+        self.margin_slider.setEnabled(auto_threshold_enabled)
+        self.margin_spinbox.setEnabled(auto_threshold_enabled)
+
+        # Disable threshold slider when auto-threshold is enabled
+        if vad_enabled and self.auto_threshold_checkbox.isChecked():
+            self.threshold_slider.setEnabled(False)
+            self.threshold_spinbox.setEnabled(False)
+
+    def _on_margin_slider(self, value):
+        """Handle margin slider change."""
+        self.margin_spinbox.blockSignals(True)
+        self.margin_spinbox.setValue(float(value))
+        self.margin_spinbox.blockSignals(False)
+        self._update_auto_threshold()
+
+    def _on_margin_spinbox(self, value):
+        """Handle margin spinbox change."""
+        self.margin_slider.blockSignals(True)
+        self.margin_slider.setValue(int(value))
+        self.margin_slider.blockSignals(False)
+        self._update_auto_threshold()
+
+    def _update_auto_threshold(self):
+        """Update auto-threshold configuration."""
+        try:
+            enabled = self.auto_threshold_checkbox.isChecked()
+            margin = self.margin_spinbox.value()
+            self.processor.set_auto_threshold(enabled)
+            self.processor.set_gate_margin(margin)
+            self._update_vad_controls_enabled()  # Update enable/disable states
+        except AttributeError as e:
+            # Auto-threshold not available yet - will be added in plan 03
+            pass
+
     def update_vad_confidence(self, confidence: float):
         """Update VAD confidence meter (called from main window)."""
         self.confidence_meter.set_confidence(confidence)
@@ -363,6 +448,8 @@ class GatePanel(QWidget):
             'vad_threshold': self.vad_threshold_spinbox.value(),
             'vad_hold_time_ms': self.vad_hold_spinbox.value(),
             'vad_pre_gain': self.vad_pre_gain_spinbox.value(),
+            'auto_threshold_enabled': self.auto_threshold_checkbox.isChecked(),
+            'gate_margin_db': self.margin_spinbox.value(),
         }
         return settings
 
@@ -412,7 +499,21 @@ class GatePanel(QWidget):
             self.vad_pre_gain_spinbox.blockSignals(False)
             self.vad_pre_gain_slider.blockSignals(False)
 
+        # Auto-threshold settings (v1.2.1+)
+        if 'auto_threshold_enabled' in settings:
+            self.auto_threshold_checkbox.blockSignals(True)
+            self.auto_threshold_checkbox.setChecked(settings['auto_threshold_enabled'])
+            self.auto_threshold_checkbox.blockSignals(False)
+        if 'gate_margin_db' in settings:
+            self.margin_spinbox.blockSignals(True)
+            self.margin_slider.blockSignals(True)
+            self.margin_spinbox.setValue(settings['gate_margin_db'])
+            self.margin_slider.setValue(int(settings['gate_margin_db']))
+            self.margin_spinbox.blockSignals(False)
+            self.margin_slider.blockSignals(False)
+
         # Update processor and UI state after all settings applied
         self._update_gate()
         self._update_vad_mode()
         self._update_vad_controls_enabled()
+        self._update_auto_threshold()

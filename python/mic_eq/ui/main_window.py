@@ -1168,12 +1168,16 @@ class MainWindow(QMainWindow):
             preset: Preset object to apply
             preset_key: Optional key for built-in presets (e.g., "voice", "bass_cut")
         """
-        # Apply gate settings
+        # Apply gate settings (including VAD mode)
         self.gate_panel.set_settings({
             'enabled': preset.gate.enabled,
             'threshold_db': preset.gate.threshold_db,
             'attack_ms': preset.gate.attack_ms,
             'release_ms': preset.gate.release_ms,
+            'gate_mode': preset.gate.gate_mode,
+            'vad_threshold': preset.gate.vad_threshold,
+            'vad_hold_time_ms': preset.gate.vad_hold_time_ms,
+            'vad_pre_gain': preset.gate.vad_pre_gain,
         })
 
         # Apply EQ settings

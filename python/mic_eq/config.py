@@ -50,9 +50,12 @@ class GateSettings:
     release_ms: float = 100.0
     # VAD settings (v1.2.0+)
     gate_mode: int = 0  # 0=ThresholdOnly, 1=VadAssisted, 2=VadOnly
-    vad_threshold: float = 0.5  # Speech probability threshold (0.3-0.8)
+    vad_threshold: float = 0.4  # Speech probability threshold (0.3-0.7) - lowered from 0.5 for better soft speech detection
     vad_hold_time_ms: float = 200.0  # Hold time in milliseconds (0-500)
     vad_pre_gain: float = 1.0  # Pre-gain to boost weak signals for VAD (1.0-10.0)
+    # Auto-threshold settings (v1.6.0+)
+    auto_threshold_enabled: bool = False  # Auto-adjust threshold based on noise floor
+    gate_margin_db: float = 10.0  # Margin above noise floor for auto-threshold (0-20 dB) - increased from 6.0 for better noise rejection
 
 
 @dataclass
@@ -132,9 +135,11 @@ VALIDATION_RANGES = {
         'attack_ms': (0.1, 100.0),
         'release_ms': (10.0, 1000.0),
         'gate_mode': (0, 2),  # Integer enum
-        'vad_threshold': (0.3, 0.8),  # Speech probability
+        'vad_threshold': (0.3, 0.7),  # Speech probability (lowered min for better soft speech)
         'vad_hold_time_ms': (0.0, 500.0),  # Milliseconds
         'vad_pre_gain': (1.0, 10.0),  # Pre-gain multiplier
+        'auto_threshold_enabled': (bool, None),  # Boolean flag
+        'gate_margin_db': (0.0, 20.0),  # Margin in dB
     },
     'eq': {
         'band_gain': (-12.0, 12.0),
@@ -179,7 +184,7 @@ class Preset:
     """Complete preset with all settings."""
     name: str = "Default"
     description: str = ""
-    version: str = "1.5.0"  # Version field for migration
+    version: str = "1.6.0"  # Version field for migration (updated to include auto-threshold settings)
     gate: GateSettings = field(default_factory=GateSettings)
     eq: EQSettings = field(default_factory=EQSettings)
     rnnoise: RNNoiseSettings = field(default_factory=RNNoiseSettings)
@@ -264,6 +269,26 @@ class Preset:
                 data['version'] = '1.5.0'
                 version = '1.5.0'
 
+            # Migrate v1.5 presets → v1.6 (add auto-threshold fields and lower vad_threshold)
+            if version < '1.6.0':
+                # Add missing auto-threshold fields to gate settings
+                if 'gate' in data:
+                    data['gate'].setdefault('auto_threshold_enabled', False)
+                    data['gate'].setdefault('gate_margin_db', 10.0)
+                    # Update vad_threshold to 0.4 if still using old 0.5 default
+                    if data['gate'].get('vad_threshold', 0.5) == 0.5:
+                        data['gate']['vad_threshold'] = 0.4
+                else:
+                    data['gate'] = {
+                        'auto_threshold_enabled': False,
+                        'gate_margin_db': 10.0,
+                        'vad_threshold': 0.4,
+                    }
+
+                # Update version
+                data['version'] = '1.6.0'
+                version = '1.6.0'
+
             # Extract and validate gate settings
             gate_data = data.get('gate', {})
             gate_ranges = VALIDATION_RANGES['gate']
@@ -290,7 +315,7 @@ class Preset:
                     'gate_mode', 'gate'
                 )),
                 vad_threshold=_validate_range(
-                    gate_data.get('vad_threshold', 0.5),  # Default 0.5
+                    gate_data.get('vad_threshold', 0.4),  # Default 0.4 (lowered for better soft speech detection)
                     *gate_ranges['vad_threshold'],
                     'vad_threshold', 'gate'
                 ),
@@ -303,6 +328,12 @@ class Preset:
                     gate_data.get('vad_pre_gain', 1.0),  # Default 1.0 (no gain)
                     *gate_ranges['vad_pre_gain'],
                     'vad_pre_gain', 'gate'
+                ),
+                auto_threshold_enabled=gate_data.get('auto_threshold_enabled', False),
+                gate_margin_db=_validate_range(
+                    gate_data.get('gate_margin_db', 10.0),  # Default 10.0 dB
+                    *gate_ranges['gate_margin_db'],
+                    'gate_margin_db', 'gate'
                 ),
             )
 
@@ -601,9 +632,10 @@ BUILTIN_PRESETS = {
     'voice': Preset(
         name="Voice Clarity",
         description="Optimized for voice communication - cuts low end rumble and boosts presence",
-        version="1.2.0",
+        version="1.6.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
+                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                         auto_threshold_enabled=False, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-3.0, -2.0, 0.0, 1.0, 2.0, 3.0, 2.0, 0.0, -1.0, -2.0],
@@ -614,9 +646,10 @@ BUILTIN_PRESETS = {
     'bass_cut': Preset(
         name="Bass Cut",
         description="High-pass effect to remove low frequency rumble and proximity effect",
-        version="1.2.0",
+        version="1.6.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
+                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                         auto_threshold_enabled=False, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-12.0, -6.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -627,9 +660,10 @@ BUILTIN_PRESETS = {
     'presence': Preset(
         name="Presence Boost",
         description="Enhances voice presence and intelligibility",
-        version="1.2.0",
+        version="1.6.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
+                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                         auto_threshold_enabled=False, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[0.0, 0.0, 0.0, 0.0, 2.0, 4.0, 3.0, 1.0, 0.0, 0.0],
@@ -640,9 +674,10 @@ BUILTIN_PRESETS = {
     'flat': Preset(
         name="Flat",
         description="No EQ processing - flat frequency response",
-        version="1.2.0",
+        version="1.6.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
+                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                         auto_threshold_enabled=False, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[0.0] * 10,
@@ -653,9 +688,10 @@ BUILTIN_PRESETS = {
     'minimal': Preset(
         name="Minimal Processing",
         description="Gate and RNNoise only - no EQ",
-        version="1.2.0",
+        version="1.6.0",
         gate=GateSettings(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
+                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                         auto_threshold_enabled=False, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=False,
             band_gains=[0.0] * 10,
@@ -666,9 +702,10 @@ BUILTIN_PRESETS = {
     'aggressive_denoise': Preset(
         name="Aggressive Denoise",
         description="Maximum noise reduction with tight gate",
-        version="1.2.0",
+        version="1.6.0",
         gate=GateSettings(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0,
-                         gate_mode=0, vad_threshold=0.5, vad_hold_time_ms=200.0, vad_pre_gain=1.0),
+                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                         auto_threshold_enabled=False, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-6.0, -3.0, 0.0, 0.0, 1.0, 2.0, 1.0, -1.0, -3.0, -6.0],
@@ -717,15 +754,18 @@ def _test_vad_preset_persistence():
         # Create preset with VAD settings
         original = Preset(
             name="VAD Test",
+            version="1.6.0",
             gate=GateSettings(
                 enabled=True,
                 threshold_db=-35.0,
                 attack_ms=5.0,
                 release_ms=50.0,
                 gate_mode=1,  # VAD Assisted
-                vad_threshold=0.6,
+                vad_threshold=0.4,  # Updated to 0.4
                 vad_hold_time_ms=150.0,
-                vad_pre_gain=2.5  # Test with non-default gain
+                vad_pre_gain=2.5,  # Test with non-default gain
+                auto_threshold_enabled=True,  # Test auto-threshold
+                gate_margin_db=8.0  # Test custom margin
             )
         )
 
@@ -737,9 +777,11 @@ def _test_vad_preset_persistence():
 
         # Verify all fields match
         assert loaded.gate.gate_mode == 1, f"gate_mode mismatch: {loaded.gate.gate_mode}"
-        assert loaded.gate.vad_threshold == 0.6, f"vad_threshold mismatch: {loaded.gate.vad_threshold}"
+        assert loaded.gate.vad_threshold == 0.4, f"vad_threshold mismatch: {loaded.gate.vad_threshold}"
         assert loaded.gate.vad_hold_time_ms == 150.0, f"vad_hold_time_ms mismatch: {loaded.gate.vad_hold_time_ms}"
         assert loaded.gate.vad_pre_gain == 2.5, f"vad_pre_gain mismatch: {loaded.gate.vad_pre_gain}"
+        assert loaded.gate.auto_threshold_enabled == True, f"auto_threshold_enabled mismatch: {loaded.gate.auto_threshold_enabled}"
+        assert loaded.gate.gate_margin_db == 8.0, f"gate_margin_db mismatch: {loaded.gate.gate_margin_db}"
 
         print("PASS: VAD preset persistence test passed")
 
@@ -754,17 +796,19 @@ def _test_backward_compatibility():
             'threshold_db': -40.0,
             'attack_ms': 10.0,
             'release_ms': 100.0,
-            # No gate_mode, vad_threshold, vad_hold_time_ms, vad_pre_gain
+            # No gate_mode, vad_threshold, vad_hold_time_ms, vad_pre_gain, auto_threshold_enabled, gate_margin_db
         }
     }
 
     loaded = Preset.from_dict(old_preset_data)
 
-    # Verify defaults applied
+    # Verify defaults applied (after migration to v1.6.0, vad_threshold becomes 0.4)
     assert loaded.gate.gate_mode == 0, "Default gate_mode should be 0"
-    assert loaded.gate.vad_threshold == 0.5, "Default vad_threshold should be 0.5"
+    assert loaded.gate.vad_threshold == 0.4, "Default vad_threshold should be 0.4 (migrated from 0.5)"
     assert loaded.gate.vad_hold_time_ms == 200.0, "Default vad_hold_time_ms should be 200.0"
     assert loaded.gate.vad_pre_gain == 1.0, "Default vad_pre_gain should be 1.0"
+    assert loaded.gate.auto_threshold_enabled == False, "Default auto_threshold_enabled should be False"
+    assert loaded.gate.gate_margin_db == 10.0, "Default gate_margin_db should be 10.0"
 
     print("PASS: Backward compatibility test passed")
 

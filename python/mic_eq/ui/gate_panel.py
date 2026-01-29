@@ -378,34 +378,32 @@ class GatePanel(QWidget):
             self.vad_info_label.setText(f"VAD: {error_msg}")
 
     def _update_vad_controls_enabled(self):
-        """Enable/disable VAD controls based on gate mode."""
+        """Enable/disable VAD controls based on gate mode and auto-threshold state."""
         mode = self.gate_mode_combo.currentIndex()
         # 0 = Threshold Only, 1 = VAD Assisted, 2 = VAD Only
         vad_enabled = mode > 0
         threshold_enabled = mode != 2  # Disabled in VAD Only mode
+        auto_threshold_enabled = vad_enabled and self.auto_threshold_checkbox.isChecked()
 
         # Enable/disable VAD controls
-        self.vad_threshold_slider.setEnabled(vad_enabled)
-        self.vad_threshold_spinbox.setEnabled(vad_enabled)
+        # VAD threshold is disabled when auto-threshold is active (system sets threshold automatically)
+        self.vad_threshold_slider.setEnabled(vad_enabled and not auto_threshold_enabled)
+        self.vad_threshold_spinbox.setEnabled(vad_enabled and not auto_threshold_enabled)
+        # Hold time remains active in auto-threshold mode (prevents gate chatter)
         self.vad_hold_spinbox.setEnabled(vad_enabled)
+        # Pre-gain remains active (boosts signal for VAD detection)
         self.vad_pre_gain_slider.setEnabled(vad_enabled)
         self.vad_pre_gain_spinbox.setEnabled(vad_enabled)
         self.confidence_meter.setEnabled(vad_enabled)
 
         # Enable/disable level threshold
-        self.threshold_slider.setEnabled(threshold_enabled)
-        self.threshold_spinbox.setEnabled(threshold_enabled)
+        self.threshold_slider.setEnabled(threshold_enabled and not auto_threshold_enabled)
+        self.threshold_spinbox.setEnabled(threshold_enabled and not auto_threshold_enabled)
 
         # Enable/disable auto-threshold controls (only when VAD is active)
-        auto_threshold_enabled = vad_enabled and self.auto_threshold_checkbox.isChecked()
         self.auto_threshold_checkbox.setEnabled(vad_enabled)
         self.margin_slider.setEnabled(auto_threshold_enabled)
         self.margin_spinbox.setEnabled(auto_threshold_enabled)
-
-        # Disable threshold slider when auto-threshold is enabled
-        if vad_enabled and self.auto_threshold_checkbox.isChecked():
-            self.threshold_slider.setEnabled(False)
-            self.threshold_spinbox.setEnabled(False)
 
     def _on_margin_slider(self, value):
         """Handle margin slider change."""

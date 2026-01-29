@@ -483,13 +483,21 @@ impl VadAutoGate {
         let vad_speech_detected = prob > self.vad_threshold;
 
         // Update noise floor estimate during non-speech periods
+        // Uses asymmetric rates: fast attack when noise increases, slow release when decreases
         if self.auto_threshold_enabled && !vad_speech_detected {
             let current_rms = compute_rms_db(samples);
             // Only adapt when there's actual audio activity (not dead silence)
             // Prevents divergence when mic is unplugged or completely silent
             if current_rms > -70.0 {
+                // Asymmetric rates: fast response to noise increases, slow recovery from decreases
+                // This prevents "pumping" when noise fluctuates around the threshold
+                let rate = if current_rms > self.noise_floor {
+                    0.002   // ATTACK: Fast when room gets louder (~7-8 seconds)
+                } else {
+                    0.0002  // RELEASE: 10x slower when room gets quieter (~70-80 seconds)
+                };
                 // Exponential smoothing: new_val = rate * sample + (1 - rate) * old_val
-                self.noise_floor = self.adaptation_rate * current_rms + (1.0 - self.adaptation_rate) * self.noise_floor;
+                self.noise_floor = rate * current_rms + (1.0 - rate) * self.noise_floor;
                 // Clamp to valid range
                 self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
             }

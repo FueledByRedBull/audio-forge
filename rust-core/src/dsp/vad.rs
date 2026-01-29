@@ -442,9 +442,9 @@ impl VadAutoGate {
         Self {
             vad,
             noise_floor: -60.0,
-            margin: 6.0,
+            margin: 10.0,  // Increased from 6.0 to 10.0 dB for better noise rejection
             adaptation_rate: 0.001,  // ~15 second time constant at 48kHz/512 samples
-            min_threshold: -50.0,
+            min_threshold: -80.0,  // Lowered from -50.0 to allow proper adaptation in quiet rooms
             max_threshold: -10.0,
             auto_threshold_enabled: false,  // Default to manual mode
             enabled,
@@ -485,22 +485,54 @@ impl VadAutoGate {
         // Update noise floor estimate during LOW-CONFIDENCE periods (pauses, breaths, background noise)
         // Uses probability threshold instead of binary speech detection to catch more update opportunities
         // Uses asymmetric rates: fast attack when noise increases, slow release when decreases
+
+        // DEBUG: Log why adaptation is NOT happening
+        static ADAPT_DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let adapt_debug_count = ADAPT_DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        if adapt_debug_count < 30 {
+            if !self.auto_threshold_enabled {
+                eprintln!("[ADAPT-DEBUG] Auto-threshold DISABLED - skipping noise floor update");
+            } else if prob >= 0.4 {
+                eprintln!("[ADAPT-DEBUG] prob {:.2} >= 0.4 - skipping (speech detected)", prob);
+            }
+        }
+
         if self.auto_threshold_enabled && prob < 0.4 {  // Low confidence: prob < 0.4 catches pauses, breaths
             let current_rms = compute_rms_db(samples);
+
+            if adapt_debug_count < 30 {
+                eprintln!("[ADAPT-DEBUG] Checking RMS: {:.1} dB (need > -100.0)", current_rms);
+            }
+
             // Only adapt when there's actual audio activity (not dead silence)
             // Lower threshold (-100 dB) accommodates quiet rooms and sensitive mics
             if current_rms > -100.0 {
+                let old_floor = self.noise_floor;
+
                 // Asymmetric rates: fast response to noise increases, slow recovery from decreases
                 // This prevents "pumping" when noise fluctuates around the threshold
                 let rate = if current_rms > self.noise_floor {
-                    0.002   // ATTACK: Fast when room gets louder (~5 seconds)
+                    0.02    // ATTACK: Fast when room gets louder (~0.5 seconds)
                 } else {
-                    0.0005  // RELEASE: 10x slower when room gets quieter (~20 seconds)
+                    0.005   // RELEASE: 4x slower when room gets quieter (~2 seconds)
                 };
                 // Exponential smoothing: new_val = rate * sample + (1 - rate) * old_val
                 self.noise_floor = rate * current_rms + (1.0 - rate) * self.noise_floor;
                 // Clamp to valid range
                 self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
+
+                // Log ALL updates when debugging (not just significant ones)
+                if adapt_debug_count < 30 {
+                    let auto_threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
+                    eprintln!("[AUTO-THRESHOLD] Noise floor: {:.1} -> {:.1} dB (RMS: {:.1} dB, prob={:.2}, threshold={:.1} dB)",
+                        old_floor, self.noise_floor, current_rms, prob, auto_threshold);
+                } else if (self.noise_floor - old_floor).abs() > 0.1 {
+                    // After debug period, only log significant changes
+                    let auto_threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
+                    eprintln!("[AUTO-THRESHOLD] Noise floor: {:.1} -> {:.1} dB (RMS: {:.1} dB, prob={:.2}, threshold={:.1} dB)",
+                        old_floor, self.noise_floor, current_rms, prob, auto_threshold);
+                }
             }
         }
 
@@ -649,6 +681,11 @@ impl VadAutoGate {
             if self.noise_floor <= -100.0 {
                 self.noise_floor = -60.0;  // Reset to sensible default
             }
+            let auto_threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
+            eprintln!("[AUTO-THRESHOLD] ENABLED: Noise floor={:.1} dB, margin={:.1} dB, threshold={:.1} dB",
+                self.noise_floor, self.margin, auto_threshold);
+        } else {
+            eprintln!("[AUTO-THRESHOLD] DISABLED: Returning to manual threshold mode");
         }
     }
 

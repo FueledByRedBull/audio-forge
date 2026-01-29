@@ -549,6 +549,7 @@ class AppConfig:
     last_input_device: str = ""
     last_output_device: str = ""
     last_preset: str = ""
+    startup_preset: str = ""  # Preset to load on startup (empty = last used)
     window_geometry: Optional[dict] = None
 
     def to_dict(self) -> dict:
@@ -557,6 +558,7 @@ class AppConfig:
             'last_input_device': self.last_input_device,
             'last_output_device': self.last_output_device,
             'last_preset': self.last_preset,
+            'startup_preset': self.startup_preset,
             'window_geometry': self.window_geometry,
         }
 
@@ -567,6 +569,7 @@ class AppConfig:
             last_input_device=data.get('last_input_device', ''),
             last_output_device=data.get('last_output_device', ''),
             last_preset=data.get('last_preset', ''),
+            startup_preset=data.get('startup_preset', ''),
             window_geometry=data.get('window_geometry'),
         )
 

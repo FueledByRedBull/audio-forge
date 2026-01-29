@@ -55,6 +55,7 @@ from ..config import (
     save_preset,
     load_preset,
     get_presets_dir,
+    list_presets,
     BUILTIN_PRESETS,
     save_config,
     load_config,
@@ -83,6 +84,7 @@ class MainWindow(QMainWindow):
         # Set up UI
         self._setup_ui()
         self._setup_menubar()
+        self._setup_options_menu()
         self._setup_statusbar()
 
         # Populate device lists
@@ -450,6 +452,83 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(
             f"Sample Rate: {self.processor.sample_rate()} Hz | Status: Ready"
         )
+
+    def _setup_options_menu(self):
+        """Setup Options menu with startup preset selector."""
+        menubar = self.menuBar()
+
+        # Options menu
+        options_menu = menubar.addMenu("&Options")
+
+        # Startup Preset submenu
+        startup_menu = options_menu.addMenu("Startup &Preset...")
+
+        # "Last Used" option (default, checked if startup_preset is empty)
+        last_used_action = QAction("Last Used", self)
+        last_used_action.setCheckable(True)
+        last_used_action.setChecked(self.config.startup_preset == "")
+        last_used_action.triggered.connect(lambda: self._set_startup_preset(""))
+        startup_menu.addAction(last_used_action)
+        self._last_used_action = last_used_action  # Store for updating checked state
+
+        # Separator
+        startup_menu.addSeparator()
+
+        # Built-in presets
+        for key, preset in BUILTIN_PRESETS.items():
+            action = QAction(preset.name, self)
+            action.setCheckable(True)
+            action.setChecked(self.config.startup_preset == preset.name)
+            action.triggered.connect(lambda checked, name=preset.name: self._set_startup_preset(name))
+            startup_menu.addAction(action)
+
+        # Separator
+        startup_menu.addSeparator()
+
+        # Custom presets
+        for name, filepath in list_presets():
+            action = QAction(name, self)
+            action.setCheckable(True)
+            action.setChecked(self.config.startup_preset == name)
+            action.triggered.connect(lambda checked, name=name: self._set_startup_preset(name))
+            startup_menu.addAction(action)
+
+    def _set_startup_preset(self, preset_name: str):
+        """Set the startup preset and update checked states.
+
+        Args:
+            preset_name: Preset name to load on startup (empty string = Last Used)
+        """
+        # Update config
+        self.config.startup_preset = preset_name
+
+        # Save config
+        save_config(self.config)
+
+        # Show status message
+        if preset_name:
+            self.status_bar.showMessage(f"Startup preset set to {preset_name}", 5000)
+        else:
+            self.status_bar.showMessage("Startup preset set to Last Used", 5000)
+
+        # Update checked states of all startup preset actions
+        # Get the Options menu
+        menubar = self.menuBar()
+        for action in menubar.actions():
+            if action.menu() and action.menu().title() == "&Options":
+                options_menu = action.menu()
+                for menu_action in options_menu.actions():
+                    if menu_action.menu() and menu_action.menu().title() == "Startup &Preset...":
+                        startup_menu = menu_action.menu()
+                        # Update checked state for all actions in the startup menu
+                        for preset_action in startup_menu.actions():
+                            if preset_action.isCheckable():
+                                if preset_action.text() == "Last Used":
+                                    preset_action.setChecked(preset_name == "")
+                                else:
+                                    preset_action.setChecked(preset_action.text() == preset_name)
+                        break
+                break
 
     def _refresh_devices(self):
         """Refresh the device lists."""

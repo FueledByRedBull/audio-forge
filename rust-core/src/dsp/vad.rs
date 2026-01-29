@@ -19,7 +19,11 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 /// Enable debug output for VAD gate operations
+#[cfg(debug_assertions)]
 const GATE_DEBUG: bool = true;
+
+#[cfg(not(debug_assertions))]
+const GATE_DEBUG: bool = false;
 
 /// Gate operating modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

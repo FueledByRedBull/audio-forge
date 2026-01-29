@@ -31,21 +31,21 @@ class RecordingWorker(QThread):
     finished = pyqtSignal(object)         # Emits audio data (numpy array)
     failed = pyqtSignal(str)              # Emits error message
 
-    def __init__(self, processor, duration: float = 10.0):
+    def __init__(self, processor, duration: float = 10.0, processor_was_started_by_us: bool = False):
         """
         Initialize recording worker.
 
         Args:
             processor: AudioProcessor instance (from Rust core)
             duration: Recording duration in seconds (default: 10)
+            processor_was_started_by_us: True if dialog started processor for us
         """
         super().__init__()
         self.processor = processor
         self.duration = duration
         self._is_running = True
         self._start_time = None
-        self._was_running_before = False  # Track original state before we started recording
-        self._we_started_processor = False     # Track if we started processing ourselves
+        self._processor_was_started_by_us = processor_was_started_by_us  # Use passed flag
 
     def run(self):
         """
@@ -60,31 +60,16 @@ class RecordingWorker(QThread):
             print(f"[CALIBRATION] RecordingWorker started, duration={self.duration}s")
 
         try:
-            # CRITICAL: Ensure audio processing is running
-            # The recording tap only executes when DSP loop is active
-            self._was_running_before = self.processor.is_running()
+            # CRITICAL: Processor should already be running (started by main thread)
+            # The worker only handles the recording tap, not processor lifecycle
+            if not self.processor.is_running():
+                if DEBUG:
+                    print("[CALIBRATION] ERROR: Processor not running (main thread should have started it)")
+                self.failed.emit("Audio processor not running. Please start processing first.")
+                return
 
             if DEBUG:
-                print(f"[CALIBRATION] Processor was_running_before={self._was_running_before}")
-
-            if not self._was_running_before:
-                # Start audio processing automatically for recording
-                # This activates the DSP loop where the recording tap lives
-                try:
-                    if DEBUG:
-                        print("[CALIBRATION] Starting audio processor for recording...")
-                    self.processor.start(None, None)
-                    self._we_started_processor = True
-                    if DEBUG:
-                        print("[CALIBRATION] Audio processor started successfully")
-                except Exception as e:
-                    if DEBUG:
-                        print(f"[CALIBRATION] ERROR: Failed to start processor: {e}")
-                    self.failed.emit(f"Failed to start audio processing: {str(e)}")
-                    return
-
-            # Small delay to let DSP loop initialize
-            time.sleep(0.1)
+                print(f"[CALIBRATION] Processor verified running (started_by_us={self._processor_was_started_by_us})")
 
             # Start Rust tap (non-blocking, records in DSP thread)
             if DEBUG:
@@ -162,40 +147,19 @@ class RecordingWorker(QThread):
                 print(f"[CALIBRATION] EXCEPTION: {type(e).__name__}: {e}")
             self.failed.emit(f"Recording error: {str(e)}")
         finally:
-            # CRITICAL: Always stop processor if we started it
-            # This runs whether success, exception, or user cancellation
-            # Prevents resource leaks (audio thread continues running)
-            if self._we_started_processor:
-                try:
-                    if DEBUG:
-                        print("[CALIBRATION] Finally: Stopping audio processor (cleanup)")
-                    self.processor.stop()
-                except Exception as cleanup_error:
-                    # Ignore cleanup errors - don't raise from finally block
-                    # (would mask the original exception)
-                    if DEBUG:
-                        print(f"[CALIBRATION] Cleanup error (ignored): {cleanup_error}")
+            # CRITICAL: No cleanup needed here - dialog handles processor lifecycle
+            # We only managed the recording tap, not the audio engine
+            if DEBUG:
+                print("[CALIBRATION] Worker finished (processor lifecycle managed by dialog)")
 
     def stop(self):
         """Stop recording early."""
         if DEBUG:
             print("[CALIBRATION] RecordingWorker.stop() called (user cancelled)")
 
-        was_running = self._is_running
         self._is_running = False
 
-        # If we started the processor ourselves, stop it when user cancels
-        if was_running and self._we_started_processor:
-            try:
-                if DEBUG:
-                    print("[CALIBRATION] Cancelling recording and stopping processor...")
-                self.processor.stop_raw_recording()  # Get whatever audio we captured
-                self.processor.stop()  # Stop audio processing
-            except Exception as e:
-                if DEBUG:
-                    print(f"[CALIBRATION] Error during cancellation: {e}")
-                pass  # Ignore cleanup errors during cancellation
-
-        # Note: If user cancels, we don't emit finished() - just stop quietly
+        # Note: We don't stop processor on cancel - dialog handles cleanup
+        # This prevents race conditions between worker and main thread
         if DEBUG:
-            print("[CALIBRATION] RecordingWorker stopped")
+            print("[CALIBRATION] Recording cancelled, processor cleanup deferred to dialog")

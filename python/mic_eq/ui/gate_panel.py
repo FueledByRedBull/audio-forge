@@ -421,14 +421,16 @@ class GatePanel(QWidget):
 
     def _update_auto_threshold(self):
         """Update auto-threshold configuration."""
+        # Always update UI enable/disable states first (before PyO3 calls)
+        self._update_vad_controls_enabled()
+
         try:
             enabled = self.auto_threshold_checkbox.isChecked()
             margin = self.margin_spinbox.value()
             self.processor.set_auto_threshold(enabled)
             self.processor.set_gate_margin(margin)
-            self._update_vad_controls_enabled()  # Update enable/disable states
         except AttributeError as e:
-            # Auto-threshold not available yet - will be added in plan 03
+            # Auto-threshold PyO3 bindings not available yet - will be added in plan 03
             pass
 
     def update_vad_confidence(self, confidence: float):

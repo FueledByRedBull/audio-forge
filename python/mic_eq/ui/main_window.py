@@ -663,7 +663,7 @@ class MainWindow(QMainWindow):
                     if name == preset_name:
                         try:
                             preset = load_preset(filepath)
-                            self._apply_preset(preset, preset_path=filepath)
+                            self._apply_preset(preset)
                             self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
                             preset_loaded = True
                         except Exception as e:

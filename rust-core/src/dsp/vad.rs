@@ -485,10 +485,14 @@ impl VadAutoGate {
         // Update noise floor estimate during non-speech periods
         if self.auto_threshold_enabled && !vad_speech_detected {
             let current_rms = compute_rms_db(samples);
-            // Exponential smoothing: new_val = rate * sample + (1 - rate) * old_val
-            self.noise_floor = self.adaptation_rate * current_rms + (1.0 - self.adaptation_rate) * self.noise_floor;
-            // Clamp to valid range
-            self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
+            // Only adapt when there's actual audio activity (not dead silence)
+            // Prevents divergence when mic is unplugged or completely silent
+            if current_rms > -70.0 {
+                // Exponential smoothing: new_val = rate * sample + (1 - rate) * old_val
+                self.noise_floor = self.adaptation_rate * current_rms + (1.0 - self.adaptation_rate) * self.noise_floor;
+                // Clamp to valid range
+                self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
+            }
         }
 
         // Debug: Log VAD decision

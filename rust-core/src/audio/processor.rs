@@ -740,7 +740,7 @@ impl AudioProcessor {
         self.process_thread = Some(handle);
 
         Ok(format!(
-            "Started: {} → {}",
+            "Started: {} -> {}",
             input_device_name, output_device_name
         ))
     }

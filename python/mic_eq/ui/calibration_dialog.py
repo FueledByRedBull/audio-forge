@@ -45,6 +45,7 @@ class CalibrationDialog(QDialog):
         self.recording_state = "idle"  # idle, recording, completed
         self.audio_data: np.ndarray | None = None
         self.worker: RecordingWorker | None = None
+        self._started_processor = False  # Track if we started processor ourselves
 
         self._setup_ui()
 
@@ -239,6 +240,37 @@ class CalibrationDialog(QDialog):
             QMessageBox.critical(self, "Error", "Could not find audio processor")
             return
 
+        # CRITICAL: Start processor from MAIN THREAD before spawning worker
+        # The worker must NOT start/stop the processor (threading safety)
+        processor_was_running = parent.processor.is_running()
+
+        if DEBUG:
+            print(f"[CALIBRATION_DLG] Processor was_running={processor_was_running}")
+
+        if not processor_was_running:
+            try:
+                if DEBUG:
+                    print("[CALIBRATION_DLG] Starting audio processor from main thread...")
+                parent.processor.start(None, None)
+                self._started_processor = True  # Track that we started it
+                if DEBUG:
+                    print("[CALIBRATION_DLG] Audio processor started successfully")
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Audio Error",
+                    f"Failed to start audio processing:\n{str(e)}\n\n"
+                    "Check that audio devices are connected and not in use by another application."
+                )
+                return
+        else:
+            self._started_processor = False
+            if DEBUG:
+                print("[CALIBRATION_DLG] Processor already running, reusing existing session")
+
+        # Small delay to let DSP loop initialize
+        import time
+        time.sleep(0.1)
+
         self.recording_state = "recording"
         self.start_button.setText("Recording...")
         self.start_button.setEnabled(False)  # Prevent early stop
@@ -246,10 +278,14 @@ class CalibrationDialog(QDialog):
         # Lock target curve selection during recording
         self.curve_combo.setEnabled(False)
 
-        # Create and start recording worker
+        # Create and start recording worker (processor already running)
         if DEBUG:
             print(f"[CALIBRATION_DLG] Creating RecordingWorker with duration={RECORDING_DURATION}s")
-        self.worker = RecordingWorker(parent.processor, duration=RECORDING_DURATION)
+        self.worker = RecordingWorker(
+            parent.processor,
+            duration=RECORDING_DURATION,
+            processor_was_started_by_us=self._started_processor  # Pass flag
+        )
         self.worker.progress.connect(self._on_progress_update)
         self.worker.time_remaining.connect(self._on_time_remaining)
         self.worker.level_update.connect(self._on_level_update)
@@ -429,6 +465,21 @@ class CalibrationDialog(QDialog):
 
     def _reset_recording_ui(self):
         """Reset UI to initial idle state."""
+        # Stop processor if we started it ourselves
+        if hasattr(self, '_started_processor') and self._started_processor:
+            parent = self.parent()
+            while parent and not hasattr(parent, 'processor'):
+                parent = parent.parent()
+            if parent:
+                try:
+                    if DEBUG:
+                        print("[CALIBRATION_DLG] Stopping audio processor (we started it)")
+                    parent.processor.stop()
+                except Exception as e:
+                    if DEBUG:
+                        print(f"[CALIBRATION_DLG] Error stopping processor: {e}")
+            self._started_processor = False
+
         self.recording_state = "idle"
         self.audio_data = None
         self.progress_bar.setValue(0)

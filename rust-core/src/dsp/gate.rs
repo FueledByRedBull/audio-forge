@@ -12,7 +12,11 @@
 use crate::dsp::vad::{GateMode, VadAutoGate};
 
 /// Enable debug output for gate operations
+#[cfg(debug_assertions)]
 const GATE_DEBUG: bool = true;
+
+#[cfg(not(debug_assertions))]
+const GATE_DEBUG: bool = false;
 
 /// Noise gate processor with IIR envelope follower
 pub struct NoiseGate {

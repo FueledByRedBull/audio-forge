@@ -4,8 +4,8 @@ Calibration dialog for Auto-EQ feature
 DEBUG: Added terminal logging for calibration workflow
 """
 
-# Enable debug logging
-DEBUG = True
+# Enable debug logging (set to False for production)
+DEBUG = False
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,

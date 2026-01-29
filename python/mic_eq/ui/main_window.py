@@ -645,8 +645,37 @@ class MainWindow(QMainWindow):
                 self.config.last_output_device = ""
                 save_config(self.config)
 
-        # Restore preset
-        if self.config.last_preset:
+        # Restore preset (startup preset takes priority over last used)
+        preset_loaded = False
+
+        # Check startup preset first
+        if self.config.startup_preset:
+            preset_name = self.config.startup_preset
+            # Try built-in presets
+            if preset_name in BUILTIN_PRESETS:
+                preset = BUILTIN_PRESETS[preset_name]
+                self._apply_preset(preset, preset_key=preset_name)
+                self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
+                preset_loaded = True
+            # Try custom presets
+            else:
+                for name, filepath in list_presets():
+                    if name == preset_name:
+                        try:
+                            preset = load_preset(filepath)
+                            self._apply_preset(preset, preset_path=filepath)
+                            self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
+                            preset_loaded = True
+                        except Exception as e:
+                            print(f"Failed to load startup preset: {e}")
+                            self.status_bar.showMessage(f"Failed to load startup preset: {preset_name}", 5000)
+                        break
+                if not preset_loaded:
+                    print(f"Startup preset '{preset_name}' not found, falling back to last used")
+                    self.status_bar.showMessage(f"Startup preset '{preset_name}' not found", 5000)
+
+        # Fall back to last_preset if startup_preset not set or not found
+        if not preset_loaded and self.config.last_preset:
             try:
                 # Check if it's a built-in preset
                 if self.config.last_preset.startswith("builtin:"):

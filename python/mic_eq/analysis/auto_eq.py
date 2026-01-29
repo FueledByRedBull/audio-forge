@@ -12,6 +12,7 @@ from mic_eq.config import (
     EQ_FREQUENCIES,
     AUTO_EQ_DEFAULT_Q
 )
+from ..ui.calibration_dialog import DEBUG
 
 
 def get_target_curve(freqs, target_preset='broadcast'):
@@ -229,6 +230,9 @@ def calculate_eq_bands(freqs, measured_db, target_db):
 
     # Optimize gains to minimize error
     # Note: We only evaluate at the 10 center frequencies, not the full spectrum
+    # Verbose output: 2 for debugging, 0 for production
+    verbose_level = 2 if DEBUG else 0
+
     result = least_squares(
         _eq_error_function,
         gains_initial,
@@ -239,7 +243,7 @@ def calculate_eq_bands(freqs, measured_db, target_db):
         xtol=1e-4,     # Parameter tolerance (looser than before)
         gtol=1e-6,     # Gradient tolerance (explicitly set)
         max_nfev=100,  # Max function evaluations (prevent infinite loops)
-        verbose=2      # Verbose output for debugging
+        verbose=verbose_level
     )
 
     # Extract optimal gains

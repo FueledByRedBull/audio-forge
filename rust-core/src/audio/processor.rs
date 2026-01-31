@@ -342,6 +342,12 @@ impl AudioProcessor {
                 eprintln!("Warning: Could not set audio thread priority: {:?}", e);
             }
 
+            // Diagnostic counters for processing thread
+            use std::sync::atomic::AtomicU64;
+            static PROCESSING_ITERATION: AtomicU64 = AtomicU64::new(0);
+            static OUTPUT_LOCK_FAILS: AtomicU64 = AtomicU64::new(0);
+            static BUFFER_FULL_COUNT: AtomicU64 = AtomicU64::new(0);
+
             let mut consumer = input_consumer;
             let mut temp_buffer = vec![0.0f32; 2048];
             let mut rnnoise_output = vec![0.0f32; 2048];
@@ -359,7 +365,9 @@ impl AudioProcessor {
 
             // Latency tracking
             let mut last_latency_update = Instant::now();
+            let mut last_heartbeat = Instant::now();
             let latency_update_interval = std::time::Duration::from_millis(100); // Update every 100ms
+            const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
             // Helper: compute peak and RMS from buffer, update atomics
             let measure_levels = |buffer: &[f32],
@@ -426,6 +434,9 @@ impl AudioProcessor {
                         let n = consumer.read(&mut temp_buffer);
 
                         if n > 0 {
+                            // Increment processing iteration counter
+                            let _iteration = PROCESSING_ITERATION.fetch_add(1, Ordering::Relaxed);
+
                             let buffer = &mut temp_buffer[..n];
 
                             // Start DSP timing
@@ -500,9 +511,24 @@ impl AudioProcessor {
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 compressor_current_release_ms.store(2000, Ordering::Relaxed); // Default 200ms
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
+
+                                // Diagnostic: check if lock is available before writing
+                                if output_producer.try_lock().is_err() {
+                                    let fail_count = OUTPUT_LOCK_FAILS.fetch_add(1, Ordering::Relaxed);
+                                    if fail_count % 100 == 0 {
+                                        eprintln!("[PROCESSING] Bypass: output_producer lock blocked (fail #{})", fail_count + 1);
+                                    }
+                                }
+
                                 if let Ok(mut prod_guard) = output_producer.lock() {
                                     if let Some(prod) = prod_guard.as_mut() {
-                                        prod.write(buffer);
+                                        let expected = buffer.len();
+                                        let written = prod.write(buffer);
+                                        if written < expected {
+                                            let full_count = BUFFER_FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+                                            eprintln!("[PROCESSING] Bypass: output buffer full, written {}/{} (full #{})",
+                                                written, expected, full_count + 1);
+                                        }
                                         // Track output buffer fill level
                                         output_buffer_len.store(
                                             (prod.capacity() - prod.free_len()) as u32,
@@ -536,11 +562,7 @@ impl AudioProcessor {
                                 let use_suppressor = suppressor_enabled.load(Ordering::Acquire);
                                 if use_suppressor {
                                     if let Ok(mut s) = suppressor.lock() {
-                                        // Push gated samples to suppressor buffer
-                                        s.push_samples(buffer);
-                                        s.process_frames();
-
-                                        // Track suppressor internal buffer fill level
+                                        // Track suppressor internal buffer fill level before processing
                                         let suppressor_buffered =
                                             s.pending_input() + s.available_samples();
                                         let raw_buffer = suppressor_buffered as u32;
@@ -549,16 +571,18 @@ impl AudioProcessor {
                                         suppressor_buffer_len.store(raw_buffer, Ordering::Relaxed);
                                         smoothed_buffer_len.store(smoothed, Ordering::Relaxed);
 
-                                        // Only output samples that suppressor has actually processed
-                                        let available = s.available_samples();
-                                        if available > 0 {
-                                            // Get processed samples
+                                        // Check if suppressor has processed output available
+                                        let has_output = s.available_samples() > 0;
+
+                                        if has_output {
+                                            // Suppressor has output: push new samples and use processed audio
+                                            s.push_samples(buffer);
+                                            s.process_frames();
+
+                                            let available = s.available_samples();
                                             let count = available.min(rnnoise_output.len());
                                             let processed = s.pop_samples(count);
-
-                                            // Apply remaining stages to processed samples
-                                            let output_slice =
-                                                &mut rnnoise_output[..processed.len()];
+                                            let output_slice = &mut rnnoise_output[..processed.len()];
                                             output_slice.copy_from_slice(&processed);
 
                                             // Stage 3: EQ
@@ -608,9 +632,23 @@ impl AudioProcessor {
                                             );
 
                                             // Send processed samples to output
+                                            // Diagnostic: check if lock is available before writing
+                                            if output_producer.try_lock().is_err() {
+                                                let fail_count = OUTPUT_LOCK_FAILS.fetch_add(1, Ordering::Relaxed);
+                                                if fail_count % 100 == 0 {
+                                                    eprintln!("[PROCESSING] Suppressor(has_output): output_producer lock blocked (fail #{})", fail_count + 1);
+                                                }
+                                            }
+
                                             if let Ok(mut prod_guard) = output_producer.lock() {
                                                 if let Some(prod) = prod_guard.as_mut() {
-                                                    prod.write(output_slice);
+                                                    let expected = output_slice.len();
+                                                    let written = prod.write(output_slice);
+                                                    if written < expected {
+                                                        let full_count = BUFFER_FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+                                                        eprintln!("[PROCESSING] Suppressor(has_output): output buffer full, written {}/{} (full #{})",
+                                                            written, expected, full_count + 1);
+                                                    }
                                                     // Track output buffer fill level
                                                     output_buffer_len.store(
                                                         (prod.capacity() - prod.free_len()) as u32,
@@ -618,15 +656,93 @@ impl AudioProcessor {
                                                     );
                                                 }
                                             }
-                                            // Record DSP processing time
-                                            let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
-                                            let prev_smoothed = dsp_time_smoothed_us.load(Ordering::Relaxed);
-                                            let smoothed = smooth_dsp_time(raw_dsp_us, prev_smoothed);
-                                            dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
-                                            dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
+                                        } else {
+                                            // Suppressor has no output yet: drain pending and use raw audio
+                                            // This prevents duplicate audio (raw now + processed later)
+                                            let _pending = s.drain_pending_input();
+
+                                            // Use raw gated buffer directly
+                                            let output_slice = buffer;
+
+                                            // Stage 3: EQ
+                                            if eq_enabled.load(Ordering::Acquire) {
+                                                if let Ok(mut e) = eq.lock() {
+                                                    e.process_block_inplace(output_slice);
+                                                }
+                                            }
+
+                                            // Stage 4: Compressor
+                                            if compressor_enabled.load(Ordering::Acquire) {
+                                                if let Ok(mut c) = compressor.lock() {
+                                                    c.process_block_inplace(output_slice);
+                                                    // Store gain reduction for metering
+                                                    compressor_gain_reduction.store(
+                                                        (c.current_gain_reduction() as f32)
+                                                            .to_bits(),
+                                                        Ordering::Relaxed,
+                                                    );
+                                                    // Store current release time for metering
+                                                    let current_release = c.current_release_time();
+                                                    // Convert to u64 (0.1ms resolution = multiply by 10)
+                                                    compressor_current_release_ms.store(
+                                                        (current_release * 10.0) as u64,
+                                                        Ordering::Relaxed,
+                                                    );
+                                                }
+                                            } else {
+                                                compressor_gain_reduction
+                                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                                compressor_current_release_ms.store(2000, Ordering::Relaxed); // Default 200ms
+                                            }
+
+                                            // Stage 5: Hard Limiter (LAST - safety ceiling)
+                                            if limiter_enabled.load(Ordering::Acquire) {
+                                                if let Ok(mut l) = limiter.lock() {
+                                                    l.process_block_inplace(output_slice);
+                                                }
+                                            }
+
+                                            // Measure OUTPUT levels
+                                            measure_levels(
+                                                output_slice,
+                                                &mut output_rms_acc,
+                                                &output_peak,
+                                                &output_rms,
+                                            );
+
+                                            // Send processed samples to output
+                                            // Diagnostic: check if lock is available before writing
+                                            if output_producer.try_lock().is_err() {
+                                                let fail_count = OUTPUT_LOCK_FAILS.fetch_add(1, Ordering::Relaxed);
+                                                if fail_count % 100 == 0 {
+                                                    eprintln!("[PROCESSING] Suppressor(no_output): output_producer lock blocked (fail #{})", fail_count + 1);
+                                                }
+                                            }
+
+                                            if let Ok(mut prod_guard) = output_producer.lock() {
+                                                if let Some(prod) = prod_guard.as_mut() {
+                                                    let expected = output_slice.len();
+                                                    let written = prod.write(output_slice);
+                                                    if written < expected {
+                                                        let full_count = BUFFER_FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+                                                        eprintln!("[PROCESSING] Suppressor(no_output): output buffer full, written {}/{} (full #{})",
+                                                            written, expected, full_count + 1);
+                                                    }
+                                                    // Track output buffer fill level
+                                                    output_buffer_len.store(
+                                                        (prod.capacity() - prod.free_len()) as u32,
+                                                        Ordering::Relaxed,
+                                                    );
+                                                }
+                                            }
                                         }
-                                        // If no samples available yet, don't output anything
-                                        // (suppressor is still accumulating samples for a complete frame)
+
+                                        // Record DSP processing time
+                                        let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
+                                        let prev_smoothed = dsp_time_smoothed_us.load(Ordering::Relaxed);
+                                        let smoothed = smooth_dsp_time(raw_dsp_us, prev_smoothed);
+                                        dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
+                                        dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
                                     }
                                 } else {
                                     // Suppressor disabled: clear buffer counter
@@ -678,9 +794,23 @@ impl AudioProcessor {
                                     );
 
                                     // Send to output
+                                    // Diagnostic: check if lock is available before writing
+                                    if output_producer.try_lock().is_err() {
+                                        let fail_count = OUTPUT_LOCK_FAILS.fetch_add(1, Ordering::Relaxed);
+                                        if fail_count % 100 == 0 {
+                                            eprintln!("[PROCESSING] Suppressor(disabled): output_producer lock blocked (fail #{})", fail_count + 1);
+                                        }
+                                    }
+
                                     if let Ok(mut prod_guard) = output_producer.lock() {
                                         if let Some(prod) = prod_guard.as_mut() {
-                                            prod.write(buffer);
+                                            let expected = buffer.len();
+                                            let written = prod.write(buffer);
+                                            if written < expected {
+                                                let full_count = BUFFER_FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+                                                eprintln!("[PROCESSING] Suppressor(disabled): output buffer full, written {}/{} (full #{})",
+                                                    written, expected, full_count + 1);
+                                            }
                                             // Track output buffer fill level
                                             output_buffer_len.store(
                                                 (prod.capacity() - prod.free_len()) as u32,
@@ -730,6 +860,15 @@ impl AudioProcessor {
                             }
                         } else {
                             // No data available, sleep briefly to avoid busy-wait
+                            // Heartbeat: log every second to show processing thread is alive
+                            if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
+                                last_heartbeat = Instant::now();
+                                let iteration = PROCESSING_ITERATION.load(Ordering::Relaxed);
+                                let lock_fails = OUTPUT_LOCK_FAILS.load(Ordering::Relaxed);
+                                let buf_full = BUFFER_FULL_COUNT.load(Ordering::Relaxed);
+                                eprintln!("[PROCESSING] Heartbeat: iteration={}, input_buf={}, lock_fails={}, buffer_full={}",
+                                    iteration, raw_input_len, lock_fails, buf_full);
+                            }
                             std::thread::sleep(std::time::Duration::from_micros(100));
                         }
                     }

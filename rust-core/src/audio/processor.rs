@@ -106,6 +106,8 @@ pub struct AudioProcessor {
     output_buffer_len: Arc<AtomicU32>,
     /// Noise suppressor internal buffer fill level (samples)
     suppressor_buffer_len: Arc<AtomicU32>,
+    /// Last successful output write time (for detecting stalled processing)
+    last_output_write_time: Arc<AtomicU64>,
 
     /// Smoothed DSP processing time in microseconds (EMA, 200ms time constant)
     dsp_time_smoothed_us: Arc<AtomicU64>,
@@ -205,6 +207,7 @@ impl AudioProcessor {
             smoothed_input_buffer_len: Arc::new(AtomicU32::new(0)),
             output_buffer_len: Arc::new(AtomicU32::new(0)),
             suppressor_buffer_len: Arc::new(AtomicU32::new(0)),
+            last_output_write_time: Arc::new(AtomicU64::new(0)),
             dsp_time_smoothed_us: Arc::new(AtomicU64::new(0)),
             smoothed_buffer_len: Arc::new(AtomicU32::new(0)),
 
@@ -328,6 +331,7 @@ impl AudioProcessor {
         let smoothed_input_buffer_len = Arc::clone(&self.smoothed_input_buffer_len);
         let output_buffer_len = Arc::clone(&self.output_buffer_len);
         let suppressor_buffer_len = Arc::clone(&self.suppressor_buffer_len);
+        let last_output_write_time = Arc::clone(&self.last_output_write_time);
         let dsp_time_smoothed_us = Arc::clone(&self.dsp_time_smoothed_us);
         let smoothed_buffer_len = Arc::clone(&self.smoothed_buffer_len);
 
@@ -368,6 +372,7 @@ impl AudioProcessor {
             let mut last_heartbeat = Instant::now();
             let latency_update_interval = std::time::Duration::from_millis(100); // Update every 100ms
             const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+            const STALL_THRESHOLD_MS: u64 = 3000; // 3 seconds without write = stall
 
             // Helper: compute peak and RMS from buffer, update atomics
             let measure_levels = |buffer: &[f32],
@@ -413,6 +418,15 @@ impl AudioProcessor {
                 let raw_f = raw as f32;
                 let prev_f = prev_smoothed as f32;
                 (alpha * raw_f + (1.0 - alpha) * prev_f) as u32
+            };
+
+            // Helper: update last write time (call after successful output write)
+            let update_write_time = || {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_micros() as u64;
+                last_output_write_time.store(now, Ordering::Relaxed);
             };
 
             // Run entire processing loop with denormals flushed to zero
@@ -528,6 +542,9 @@ impl AudioProcessor {
                                             let full_count = BUFFER_FULL_COUNT.fetch_add(1, Ordering::Relaxed);
                                             eprintln!("[PROCESSING] Bypass: output buffer full, written {}/{} (full #{})",
                                                 written, expected, full_count + 1);
+                                        } else {
+                                            // Successful write - update timestamp
+                                            update_write_time();
                                         }
                                         // Track output buffer fill level
                                         output_buffer_len.store(
@@ -648,6 +665,9 @@ impl AudioProcessor {
                                                         let full_count = BUFFER_FULL_COUNT.fetch_add(1, Ordering::Relaxed);
                                                         eprintln!("[PROCESSING] Suppressor(has_output): output buffer full, written {}/{} (full #{})",
                                                             written, expected, full_count + 1);
+                                                    } else {
+                                                        // Successful write - update timestamp
+                                                        update_write_time();
                                                     }
                                                     // Track output buffer fill level
                                                     output_buffer_len.store(
@@ -727,6 +747,9 @@ impl AudioProcessor {
                                                         let full_count = BUFFER_FULL_COUNT.fetch_add(1, Ordering::Relaxed);
                                                         eprintln!("[PROCESSING] Suppressor(no_output): output buffer full, written {}/{} (full #{})",
                                                             written, expected, full_count + 1);
+                                                    } else {
+                                                        // Successful write - update timestamp
+                                                        update_write_time();
                                                     }
                                                     // Track output buffer fill level
                                                     output_buffer_len.store(
@@ -810,6 +833,9 @@ impl AudioProcessor {
                                                 let full_count = BUFFER_FULL_COUNT.fetch_add(1, Ordering::Relaxed);
                                                 eprintln!("[PROCESSING] Suppressor(disabled): output buffer full, written {}/{} (full #{})",
                                                     written, expected, full_count + 1);
+                                            } else {
+                                                // Successful write - update timestamp
+                                                update_write_time();
                                             }
                                             // Track output buffer fill level
                                             output_buffer_len.store(
@@ -861,13 +887,30 @@ impl AudioProcessor {
                         } else {
                             // No data available, sleep briefly to avoid busy-wait
                             // Heartbeat: log every second to show processing thread is alive
+                            // Also check for output stall (no writes for too long)
                             if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
                                 last_heartbeat = Instant::now();
                                 let iteration = PROCESSING_ITERATION.load(Ordering::Relaxed);
                                 let lock_fails = OUTPUT_LOCK_FAILS.load(Ordering::Relaxed);
                                 let buf_full = BUFFER_FULL_COUNT.load(Ordering::Relaxed);
-                                eprintln!("[PROCESSING] Heartbeat: iteration={}, input_buf={}, lock_fails={}, buffer_full={}",
-                                    iteration, raw_input_len, lock_fails, buf_full);
+
+                                // Check for output stall
+                                let last_write = last_output_write_time.load(Ordering::Relaxed);
+                                let now = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_micros() as u64;
+                                let time_since_write_ms = (now - last_write) / 1000;
+
+                                if last_write > 0 && time_since_write_ms > STALL_THRESHOLD_MS {
+                                    eprintln!("[PROCESSING] WARNING: Output stall detected! No write for {} ms (iteration={})",
+                                        time_since_write_ms, iteration);
+                                    eprintln!("[PROCESSING] Stall diagnostics: input_buf={}, suppressor_enabled={}, lock_fails={}, buffer_full={}",
+                                        raw_input_len, suppressor_enabled.load(Ordering::Acquire), lock_fails, buf_full);
+                                }
+
+                                eprintln!("[PROCESSING] Heartbeat: iteration={}, input_buf={}, lock_fails={}, buffer_full={}, last_write={}ms ago",
+                                    iteration, raw_input_len, lock_fails, buf_full, time_since_write_ms);
                             }
                             std::thread::sleep(std::time::Duration::from_micros(100));
                         }

@@ -2,10 +2,15 @@
 Write-Host "MicEq Executable Builder" -ForegroundColor Green
 Write-Host ""
 
-# Find the Rust extension
-$pydPath = Split-Path -Parent (Get-ChildItem -Path ".venv\Lib\site-packages\mic_eq_core" -Filter "*.pyd" | Select-Object -First 1).FullName
-
-Write-Host "Found mic_eq_core at: $pydPath" -ForegroundColor Cyan
+# Use the locally built Rust extension from source tree.
+# This avoids bundling stale site-packages binaries.
+$localPyd = Get-ChildItem -Path "python\mic_eq" -Filter "mic_eq_core*.pyd" | Select-Object -First 1
+if (-not $localPyd) {
+    Write-Host "ERROR: python\\mic_eq\\mic_eq_core*.pyd not found." -ForegroundColor Red
+    Write-Host "Run: .\\.venv\\Scripts\\python.exe -m maturin develop --release" -ForegroundColor Yellow
+    exit 1
+}
+Write-Host "Using local mic_eq_core: $($localPyd.FullName)" -ForegroundColor Cyan
 
 # Get Python standard library path
 $pythonStdlib = python -c "import sys; import os; print(os.path.join(sys.prefix, 'Lib'))"
@@ -23,10 +28,9 @@ $pyinstallerArgs = @(
     "--hidden-import", "PyQt6.QtCore"
     "--hidden-import", "PyQt6.QtGui"
     "--hidden-import", "PyQt6.QtWidgets"
-    "--hidden-import", "mic_eq_core"
+    "--hidden-import", "mic_eq.mic_eq_core"
     "--hidden-import", "mic_eq"
     "--hidden-import", "mic_eq.ui"
-    "--paths", $pydPath
     "--paths", $pythonStdlib
     "launcher.py"
 )
@@ -42,7 +46,7 @@ if (Test-Path "df.dll") {
 # Add icon if exists (optional - skips if not found)
 if (Test-Path "mic_eq.ico") {
     $pyinstallerArgs = @("--icon", "mic_eq.ico") + $pyinstallerArgs
-    $pyinstallerArgs += "--add-data", "mic_eq.ico;_internal"
+    $pyinstallerArgs += "--add-data", "mic_eq.ico;."
     Write-Host "Using icon: mic_eq.ico" -ForegroundColor Green
 }
 

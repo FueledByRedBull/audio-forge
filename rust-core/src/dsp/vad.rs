@@ -399,6 +399,8 @@ pub struct VadAutoGate {
     min_threshold: f32,
     /// Maximum gate threshold (dB)
     max_threshold: f32,
+    /// Manual gate threshold used when auto-threshold is disabled (dB)
+    manual_threshold_db: f32,
     /// Auto-threshold mode enabled
     auto_threshold_enabled: bool,
     /// Enabled state
@@ -450,6 +452,7 @@ impl VadAutoGate {
             adaptation_rate: 0.001,  // ~15 second time constant at 48kHz/512 samples
             min_threshold: -80.0,  // Lowered from -50.0 to allow proper adaptation in quiet rooms
             max_threshold: -10.0,
+            manual_threshold_db: -40.0,
             auto_threshold_enabled: false,  // Default to manual mode
             enabled,
             gate_mode: GateMode::ThresholdOnly,
@@ -612,8 +615,9 @@ impl VadAutoGate {
             // Auto mode: noise_floor + margin
             (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold)
         } else {
-            // Manual mode: use fixed noise_floor (-60.0) + margin
-            (-60.0 + self.margin).clamp(self.min_threshold, self.max_threshold)
+            // Manual mode: honor the user-configured gate threshold.
+            self.manual_threshold_db
+                .clamp(self.min_threshold, self.max_threshold)
         };
         let rms_db = compute_rms_db(samples);
         rms_db >= threshold
@@ -678,6 +682,16 @@ impl VadAutoGate {
 
     pub fn noise_floor(&self) -> f32 {
         self.noise_floor
+    }
+
+    /// Set manual threshold used when auto-threshold is disabled
+    pub fn set_manual_threshold(&mut self, threshold_db: f32) {
+        self.manual_threshold_db = threshold_db.clamp(self.min_threshold, self.max_threshold);
+    }
+
+    /// Get manual threshold used when auto-threshold is disabled
+    pub fn manual_threshold(&self) -> f32 {
+        self.manual_threshold_db
     }
 
     /// Enable/disable auto-threshold mode

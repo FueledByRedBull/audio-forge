@@ -7,7 +7,7 @@ DEBUG: Added terminal logging for processor state tracking
 """
 
 # Enable debug logging
-DEBUG = True
+DEBUG = False
 
 from PyQt6.QtWidgets import (
     QMainWindow,

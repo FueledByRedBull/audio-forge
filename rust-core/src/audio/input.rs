@@ -183,6 +183,7 @@ impl AudioInput {
             // No resampling needed - direct passthrough
             let producer_clone = Arc::clone(&producer);
             let num_channels = channels as usize;
+            let mut mono_scratch: Vec<f32> = Vec::new();
 
             let stream = device
                 .build_input_stream(
@@ -192,12 +193,21 @@ impl AudioInput {
                             if num_channels == 1 {
                                 prod.write(data);
                             } else {
-                                // Convert stereo to mono
-                                let mono: Vec<f32> = data
-                                    .chunks(num_channels)
-                                    .map(|chunk| chunk.iter().sum::<f32>() / num_channels as f32)
-                                    .collect();
-                                prod.write(&mono);
+                                // Convert interleaved multi-channel input to mono without
+                                // allocating in the callback.
+                                let frames = data.len() / num_channels;
+                                if mono_scratch.len() < frames {
+                                    mono_scratch.resize(frames, 0.0);
+                                }
+
+                                let mut written_frames = 0usize;
+                                for chunk in data.chunks_exact(num_channels) {
+                                    let sum: f32 = chunk.iter().copied().sum();
+                                    mono_scratch[written_frames] = sum / num_channels as f32;
+                                    written_frames += 1;
+                                }
+
+                                prod.write(&mono_scratch[..written_frames]);
                             }
                         }
                     },

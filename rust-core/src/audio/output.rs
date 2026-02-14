@@ -7,7 +7,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig, SupportedStreamConfigRange};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::buffer::AudioConsumer;
@@ -85,30 +85,19 @@ impl AudioOutput {
         // Wrap consumer in Arc<Mutex> for thread-safe access
         let consumer = Arc::new(Mutex::new(consumer));
         let num_channels = channels as usize;
+        let mut stereo_scratch: Vec<f32> = Vec::new();
 
         // Build audio output stream
         let consumer_clone = Arc::clone(&consumer);
         let recording_active_clone = Arc::clone(&recording_active);
 
-        // Diagnostic counters for output callback
-        static OUTPUT_FRAME_COUNTER: AtomicU64 = AtomicU64::new(0);
-        static LOCK_CONTENTION_COUNT: AtomicU64 = AtomicU64::new(0);
-
         let stream = device
             .build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    // Increment frame counter
-                    let frame_count = OUTPUT_FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
-
                     // Check if recording is active - if so, output silence to prevent
                     // user from hearing themselves while recording
                     if recording_active_clone.load(Ordering::Relaxed) {
-                        // Log every second (48kHz / 480 frames per callback ~100 times/sec)
-                        // Use frame_count % 4800 to log once per second
-                        if frame_count % 4800 == 0 {
-                            eprintln!("[OUTPUT] Output muted: recording active (frame {})", frame_count);
-                        }
                         for sample in data.iter_mut() {
                             *sample = 0.0;
                         }
@@ -122,16 +111,8 @@ impl AudioOutput {
                             if num_channels == 1 {
                                 // Mono output - only read if we have enough data to fill the buffer
                                 if available >= data.len() {
-                                    let count = cons.read(data);
-                                    // Log every second when successfully reading
-                                    if frame_count % 4800 == 0 {
-                                        eprintln!("[OUTPUT] Mono: read {} samples, buffer available: {} (frame {})",
-                                            count, available, frame_count);
-                                    }
+                                    cons.read(data);
                                 } else {
-                                    // Buffer underrun - log this
-                                    eprintln!("[OUTPUT] UNDERRUN: Mono had {}, needed {} (frame {})",
-                                        available, data.len(), frame_count);
                                     // Not enough data - interpolate from last sample to zero
                                     // This creates a smooth fadeout instead of abrupt silence
                                     let last = cons.last_sample();
@@ -148,23 +129,29 @@ impl AudioOutput {
 
                                 // Only read if we have enough mono samples
                                 if available >= mono_samples {
-                                    let mut mono_buffer = vec![0.0f32; mono_samples];
-                                    let count = cons.read(&mut mono_buffer);
+                                    if stereo_scratch.len() < mono_samples {
+                                        stereo_scratch.resize(mono_samples, 0.0);
+                                    }
+                                    let count = cons.read(&mut stereo_scratch[..mono_samples]);
 
-                                    for (i, &sample) in mono_buffer.iter().enumerate() {
+                                    for (i, &sample) in stereo_scratch[..count].iter().enumerate() {
                                         for ch in 0..num_channels {
                                             data[i * num_channels + ch] = sample;
                                         }
                                     }
-                                    // Log every second when successfully reading
-                                    if frame_count % 4800 == 0 {
-                                        eprintln!("[OUTPUT] Stereo: read {} mono samples ({} ch), buffer available: {} (frame {})",
-                                            count, num_channels, available, frame_count);
+
+                                    // Defensive fill in case a short read happens unexpectedly.
+                                    if count < mono_samples {
+                                        for frame in data
+                                            .chunks_mut(num_channels)
+                                            .skip(count)
+                                        {
+                                            for ch in frame.iter_mut() {
+                                                *ch = 0.0;
+                                            }
+                                        }
                                     }
                                 } else {
-                                    // Buffer underrun - log this
-                                    eprintln!("[OUTPUT] UNDERRUN: Stereo had {} mono samples, needed {} (frame {})",
-                                        available, mono_samples, frame_count);
                                     // Not enough data - interpolate from last sample to zero
                                     let last = cons.last_sample();
                                     let total_frames = data.len() / num_channels;
@@ -180,12 +167,6 @@ impl AudioOutput {
                             }
                         }
                         Err(_) => {
-                            // Lock contention - increment counter and log every 100 failures
-                            let contention_count = LOCK_CONTENTION_COUNT.fetch_add(1, Ordering::Relaxed);
-                            if contention_count % 100 == 0 {
-                                eprintln!("[OUTPUT] LOCK CONTENTION: {} failures so far (frame {})",
-                                    contention_count + 1, frame_count);
-                            }
                             // Lock contention - output silence to avoid blocking
                             // This is preferable to blocking the audio thread
                             for sample in data.iter_mut() {

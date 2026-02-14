@@ -263,6 +263,8 @@ impl DeepFilterFFI {
             let frame_size = df_get_frame_length(ptr);
 
             if frame_size != DEEPFILTER_FRAME_SIZE {
+                let df_free = lib.df_free;
+                df_free(ptr);
                 return Err(format!(
                     "DeepFilterNet frame size mismatch: expected {}, got {}",
                     DEEPFILTER_FRAME_SIZE, frame_size
@@ -558,6 +560,10 @@ impl NoiseSuppressor for DeepFilterProcessor {
 
     fn pending_input(&self) -> usize {
         self.input_buffer.len()
+    }
+
+    fn drain_pending_input(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.input_buffer)
     }
 
     fn model_type(&self) -> NoiseModel {

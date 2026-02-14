@@ -6,6 +6,16 @@
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
+#[cfg(feature = "deepfilter")]
+fn deepfilter_experimental_enabled() -> bool {
+    std::env::var("AUDIOFORGE_ENABLE_DEEPFILTER")
+        .map(|v| {
+            let normalized = v.trim().to_ascii_lowercase();
+            normalized == "1" || normalized == "true" || normalized == "yes"
+        })
+        .unwrap_or(false)
+}
+
 /// Noise suppression model types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoiseModel {
@@ -71,8 +81,12 @@ impl NoiseModel {
         let mut models = vec![NoiseModel::RNNoise];
         #[cfg(feature = "deepfilter")]
         {
-            models.push(NoiseModel::DeepFilterNetLL);
-            models.push(NoiseModel::DeepFilterNet);
+            // DeepFilter uses upstream C FFI and can hard-crash on some systems.
+            // Keep it opt-in so RNNoise remains the safe default.
+            if deepfilter_experimental_enabled() {
+                models.push(NoiseModel::DeepFilterNetLL);
+                models.push(NoiseModel::DeepFilterNet);
+            }
         }
         models
     }
@@ -120,6 +134,12 @@ pub trait NoiseSuppressor: Send {
 
     /// Get pending input samples count (waiting for frame completion)
     fn pending_input(&self) -> usize;
+
+    /// Drain and return pending input samples without processing
+    ///
+    /// This is used when bypassing the suppressor to output raw audio.
+    /// Returns pending samples that haven't been processed yet.
+    fn drain_pending_input(&mut self) -> Vec<f32>;
 
     /// Get the model type
     fn model_type(&self) -> NoiseModel;
@@ -287,6 +307,16 @@ impl NoiseSuppressor for NoiseSuppressionEngine {
             NoiseSuppressionEngine::DeepFilterLL(d) => d.pending_input(),
             #[cfg(feature = "deepfilter")]
             NoiseSuppressionEngine::DeepFilter(d) => d.pending_input(),
+        }
+    }
+
+    fn drain_pending_input(&mut self) -> Vec<f32> {
+        match self {
+            NoiseSuppressionEngine::RNNoise(r) => r.drain_pending_input(),
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilterLL(d) => d.drain_pending_input(),
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilter(d) => d.drain_pending_input(),
         }
     }
 

@@ -122,6 +122,10 @@ impl NoiseGate {
     /// Update gate parameters
     pub fn set_threshold(&mut self, threshold_db: f64) {
         self.threshold_db = threshold_db;
+        #[cfg(feature = "vad")]
+        if let Some(vad) = &mut self.vad_auto_gate {
+            vad.set_manual_threshold(threshold_db as f32);
+        }
     }
 
     /// Get current threshold in dB
@@ -329,6 +333,19 @@ impl NoiseGate {
     /// Set VAD auto-gate controller
     pub fn set_vad_auto_gate(&mut self, vad: Option<VadAutoGate>) {
         self.vad_auto_gate = vad;
+        if let Some(vad) = &mut self.vad_auto_gate {
+            // Keep VAD-assisted manual threshold aligned with gate threshold UI.
+            vad.set_manual_threshold(self.threshold_db as f32);
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Check if VAD backend is available (model loaded and runtime initialized)
+    pub fn is_vad_available(&self) -> bool {
+        self.vad_auto_gate
+            .as_ref()
+            .map(|v| v.is_available())
+            .unwrap_or(false)
     }
 
     #[cfg(feature = "vad")]

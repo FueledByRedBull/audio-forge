@@ -231,7 +231,8 @@ class MainWindow(QMainWindow):
             self.model_combo.addItem(display_name, model_id)
         self.model_combo.setToolTip(
             "RNNoise: Low latency (~10ms), good quality\n"
-            "DeepFilterNet: Low Latency (~10ms), better quality than RNNoise"
+            "DeepFilterNet LL: Low latency (~10ms), better quality than RNNoise\n"
+            "DeepFilterNet: Best quality (~40ms latency)"
         )
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         model_layout.addWidget(self.model_combo)
@@ -983,6 +984,8 @@ class MainWindow(QMainWindow):
             else:
                 # Update latency display based on model
                 if model_id == "deepfilter":
+                    self.rnnoise_latency_label.setText("Latency: ~40ms (DeepFilterNet)")
+                elif model_id == "deepfilter-ll":
                     self.rnnoise_latency_label.setText("Latency: ~10ms (DeepFilterNet LL)")
                 else:
                     self.rnnoise_latency_label.setText("Latency: ~10ms (RNNoise)")
@@ -1216,6 +1219,8 @@ class MainWindow(QMainWindow):
                     if success:
                         # Update latency label
                         if model == "deepfilter":
+                            self.rnnoise_latency_label.setText("Latency: ~40ms (DeepFilterNet)")
+                        elif model == "deepfilter-ll":
                             self.rnnoise_latency_label.setText("Latency: ~10ms (DeepFilterNet LL)")
                         else:
                             self.rnnoise_latency_label.setText("Latency: ~10ms (RNNoise)")
@@ -1421,18 +1426,21 @@ def run_app():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    # Set application icon
-    # In bundled exe, icon is in _internal; in dev, it's in project root
-    icon_path = "mic_eq.ico"
-    if getattr(sys, 'frozen', False):
-        # Running as PyInstaller bundle
-        icon_path = os.path.join(sys._MEIPASS, "_internal", "mic_eq.ico")
+    # Set application icon (support dev and PyInstaller layouts).
+    icon_candidates = ["mic_eq.ico"]
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS", "")
+        icon_candidates = [
+            os.path.join(base, "mic_eq.ico"),
+            os.path.join(base, "_internal", "mic_eq.ico"),
+            os.path.join(base, "_internal", "_internal", "mic_eq.ico"),
+            os.path.join(os.path.dirname(sys.executable), "mic_eq.ico"),
+        ]
 
-    if os.path.exists(icon_path):
-        app.setWindowIcon(QIcon(icon_path))
-    else:
-        # No icon file, skip silently
-        pass
+    for icon_path in icon_candidates:
+        if os.path.exists(icon_path):
+            app.setWindowIcon(QIcon(icon_path))
+            break
 
     window = MainWindow()
     window.show()

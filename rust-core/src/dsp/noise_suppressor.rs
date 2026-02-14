@@ -196,6 +196,20 @@ impl NoiseSuppressionEngine {
             NoiseSuppressionEngine::DeepFilter(_) => NoiseModel::DeepFilterNet,
         }
     }
+
+    /// Whether the underlying backend is actually operational.
+    ///
+    /// For DeepFilter, construction may fall back to passthrough if df.dll/model
+    /// are unavailable; this returns false in that case.
+    pub fn backend_available(&self) -> bool {
+        match self {
+            NoiseSuppressionEngine::RNNoise(_) => true,
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilterLL(d) => d.is_ffi_available(),
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilter(d) => d.is_ffi_available(),
+        }
+    }
 }
 
 // Implement NoiseSuppressor for the enum by delegating to inner type

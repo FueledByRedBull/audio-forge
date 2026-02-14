@@ -357,16 +357,38 @@ class GatePanel(QWidget):
         self.vad_pre_gain_slider.blockSignals(False)
         self._update_vad_mode()
 
+    def _is_vad_available(self) -> bool:
+        """Return True when Rust VAD backend is available."""
+        try:
+            return bool(self.processor.is_vad_available())
+        except Exception:
+            return False
+
     def _update_vad_mode(self):
         """Update VAD mode and settings."""
         try:
             mode = self.gate_mode_combo.currentIndex()
+            vad_available = self._is_vad_available()
+
+            # Avoid "fake" VAD modes when model/runtime isn't available.
+            if mode > 0 and not vad_available:
+                self.gate_mode_combo.blockSignals(True)
+                self.gate_mode_combo.setCurrentIndex(0)
+                self.gate_mode_combo.blockSignals(False)
+                mode = 0
+
             self.processor.set_gate_mode(mode)
             self.processor.set_vad_threshold(self.vad_threshold_spinbox.value())
             self.processor.set_vad_hold_time(self.vad_hold_spinbox.value())
             self.processor.set_vad_pre_gain(self.vad_pre_gain_spinbox.value())
             self._update_vad_controls_enabled()
-            self.vad_info_label.setText("VAD: Active")
+
+            if mode == 0:
+                self.vad_info_label.setText("VAD: Threshold mode")
+            elif vad_available:
+                self.vad_info_label.setText("VAD: Active")
+            else:
+                self.vad_info_label.setText("VAD: Unavailable")
         except AttributeError as e:
             # VAD not available - show shorter error message
             self.vad_info_label.setText("VAD: Not available")
@@ -380,8 +402,9 @@ class GatePanel(QWidget):
     def _update_vad_controls_enabled(self):
         """Enable/disable VAD controls based on gate mode and auto-threshold state."""
         mode = self.gate_mode_combo.currentIndex()
+        vad_available = self._is_vad_available()
         # 0 = Threshold Only, 1 = VAD Assisted, 2 = VAD Only
-        vad_enabled = mode > 0
+        vad_enabled = mode > 0 and vad_available
         threshold_enabled = mode != 2  # Disabled in VAD Only mode
         auto_threshold_enabled = vad_enabled and self.auto_threshold_checkbox.isChecked()
 
@@ -401,7 +424,7 @@ class GatePanel(QWidget):
         self.threshold_spinbox.setEnabled(threshold_enabled and not auto_threshold_enabled)
 
         # Enable/disable auto-threshold controls (only when VAD is active)
-        self.auto_threshold_checkbox.setEnabled(vad_enabled)
+        self.auto_threshold_checkbox.setEnabled(mode > 0 and vad_available)
         self.margin_slider.setEnabled(auto_threshold_enabled)
         self.margin_spinbox.setEnabled(auto_threshold_enabled)
 

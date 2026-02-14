@@ -906,6 +906,16 @@ impl AudioProcessor {
     }
 
     #[cfg(feature = "vad")]
+    /// Check whether VAD backend is available (model/runtime loaded)
+    pub fn is_vad_available(&self) -> bool {
+        if let Ok(gate) = self.gate.lock() {
+            gate.is_vad_available()
+        } else {
+            false
+        }
+    }
+
+    #[cfg(feature = "vad")]
     /// Set VAD probability threshold (0.0-1.0)
     pub fn set_vad_threshold(&self, threshold: f32) {
         if let Ok(mut gate) = self.gate.lock() {
@@ -1043,6 +1053,17 @@ impl AudioProcessor {
         let strength = Arc::clone(&self.suppressor_strength);
         let new_engine = NoiseSuppressionEngine::new(model, strength);
 
+        #[cfg(feature = "deepfilter")]
+        {
+            if matches!(model, NoiseModel::DeepFilterNetLL | NoiseModel::DeepFilterNet)
+                && !new_engine.backend_available()
+            {
+                // DeepFilter is present in code but runtime backend failed to initialize.
+                // Report failure so UI can revert to RNNoise instead of silent passthrough.
+                return false;
+            }
+        }
+
         if let Ok(mut s) = self.suppressor.lock() {
             // Preserve enabled state
             let was_enabled = s.is_enabled();
@@ -1071,10 +1092,38 @@ impl AudioProcessor {
 
     /// Get list of available noise models
     pub fn list_noise_models(&self) -> Vec<(String, String)> {
-        NoiseModel::available()
-            .iter()
-            .map(|m| (m.id().to_string(), m.display_name().to_string()))
-            .collect()
+        let mut models = vec![(
+            NoiseModel::RNNoise.id().to_string(),
+            NoiseModel::RNNoise.display_name().to_string(),
+        )];
+
+        #[cfg(feature = "deepfilter")]
+        {
+            if Self::deepfilter_experimental_enabled() {
+                let strength = Arc::clone(&self.suppressor_strength);
+
+                let ll = NoiseSuppressionEngine::new(
+                    NoiseModel::DeepFilterNetLL,
+                    Arc::clone(&strength),
+                );
+                if ll.backend_available() {
+                    models.push((
+                        NoiseModel::DeepFilterNetLL.id().to_string(),
+                        NoiseModel::DeepFilterNetLL.display_name().to_string(),
+                    ));
+                }
+
+                let std = NoiseSuppressionEngine::new(NoiseModel::DeepFilterNet, strength);
+                if std.backend_available() {
+                    models.push((
+                        NoiseModel::DeepFilterNet.id().to_string(),
+                        NoiseModel::DeepFilterNet.display_name().to_string(),
+                    ));
+                }
+            }
+        }
+
+        models
     }
 
     // === EQ Controls ===
@@ -1616,6 +1665,12 @@ impl PyAudioProcessor {
     #[cfg(feature = "vad")]
     fn get_vad_probability(&self) -> f32 {
         self.processor.get_vad_probability()
+    }
+
+    /// Check whether VAD backend is available (model/runtime loaded)
+    #[cfg(feature = "vad")]
+    fn is_vad_available(&self) -> bool {
+        self.processor.is_vad_available()
     }
 
     /// Set VAD probability threshold (0.0-1.0)

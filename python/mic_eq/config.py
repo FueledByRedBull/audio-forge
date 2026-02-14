@@ -92,7 +92,7 @@ class RNNoiseSettings:
     """Noise suppression settings (RNNoise or DeepFilterNet)."""
     enabled: bool = True
     strength: float = 1.0  # 0.0 = dry, 1.0 = fully processed
-    model: str = "rnnoise"  # "rnnoise" or "deepfilter"
+    model: str = "rnnoise"  # "rnnoise", "deepfilter-ll", or "deepfilter"
 
 
 @dataclass
@@ -147,7 +147,7 @@ VALIDATION_RANGES = {
     },
     'rnnoise': {
         'strength': (0.0, 1.0),  # 0% to 100%
-        'model': ['rnnoise', 'deepfilter'],  # Valid model choices
+        'model': ['rnnoise', 'deepfilter-ll', 'deepfilter'],  # Valid model choices
     },
     'compressor': {
         'threshold_db': (-60.0, 0.0),
@@ -427,7 +427,7 @@ class Preset:
 
             # Validate model choice
             model = rnnoise_data.get('model', 'rnnoise')
-            valid_models = rnnoise_ranges.get('model', ['rnnoise', 'deepfilter'])
+            valid_models = rnnoise_ranges.get('model', ['rnnoise', 'deepfilter-ll', 'deepfilter'])
             if model not in valid_models:
                 model = 'rnnoise'  # Fallback to default
 

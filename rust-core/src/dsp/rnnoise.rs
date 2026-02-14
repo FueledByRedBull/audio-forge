@@ -193,6 +193,14 @@ impl RNNoiseProcessor {
     pub fn pending_input(&self) -> usize {
         self.input_buffer.len()
     }
+
+    /// Drain and return pending input samples without processing
+    ///
+    /// This is used when we want to bypass RNNoise and output raw audio.
+    /// Returns the pending samples that haven't been processed yet.
+    pub fn drain_pending_input(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.input_buffer)
+    }
 }
 
 impl Default for RNNoiseProcessor {
@@ -249,6 +257,10 @@ impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
 
     fn pending_input(&self) -> usize {
         self.input_buffer.len()
+    }
+
+    fn drain_pending_input(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.input_buffer)
     }
 
     fn model_type(&self) -> super::noise_suppressor::NoiseModel {

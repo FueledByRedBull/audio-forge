@@ -72,6 +72,7 @@ models/
 
 # IDEs
 .vscode/
+.vs/
 .idea/
 *.swp
 *.swo
@@ -93,11 +94,16 @@ desktop.ini
 
 # Test files
 test_*.py
+!python/tests/test_*.py
 test_output.txt
 *.log
 
 # Temporary files
 *.tmp
+.tmp/
+target-local/
+rust-core/target-local/
+pytest-cache-files-*/
 nul
 *.bak
 *.cache

@@ -38,3 +38,16 @@ python-source = "python"
 module-name = "mic_eq.mic_eq_core"
 features = ["pyo3/extension-module", "vad", "deepfilter"]
 manifest-path = "rust-core/Cargo.toml"
+
+[tool.pytest.ini_options]
+norecursedirs = [
+    ".git",
+    ".venv",
+    ".vs",
+    ".tmp",
+    "build",
+    "dist",
+    "target",
+    ".pytest_cache",
+    "pytest-cache-files-*",
+]

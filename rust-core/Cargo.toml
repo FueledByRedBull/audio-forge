@@ -49,7 +49,7 @@ ndarray = { version = "0.17", optional = true }
 ort = { version = "2.0.0-rc.11", optional = true }
 
 [features]
-default = []
+default = ["vad", "deepfilter"]
 
 # VAD (Voice Activity Detection) for noise gate
 # Enables ML-based speech detection for smarter gating

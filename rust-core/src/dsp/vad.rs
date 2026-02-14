@@ -282,7 +282,7 @@ impl SileroVAD {
         // DEBUG: Log audio statistics to diagnose VAD issue
         static DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count < 5 {  // Only log first 5 times
+        if GATE_DEBUG && count < 5 {  // Only log first 5 times
             let max_val = gained_audio.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
             let mean_val: f32 = gained_audio.iter().map(|&x| x.abs()).sum::<f32>() / gained_audio.len() as f32;
             eprintln!("[VAD-INPUT] samples={}, gain={:.2}, max={:.6}, mean={:.6}, first_10={:?}",
@@ -492,9 +492,12 @@ impl VadAutoGate {
 
         // DEBUG: Log why adaptation is NOT happening
         static ADAPT_DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let adapt_debug_count = ADAPT_DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut adapt_debug_count = 0usize;
+        if GATE_DEBUG {
+            adapt_debug_count = ADAPT_DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
 
-        if adapt_debug_count < 30 {
+        if GATE_DEBUG && adapt_debug_count < 30 {
             if !self.auto_threshold_enabled {
                 eprintln!("[ADAPT-DEBUG] Auto-threshold DISABLED - skipping noise floor update");
             } else if prob >= 0.4 {
@@ -505,7 +508,7 @@ impl VadAutoGate {
         if self.auto_threshold_enabled && prob < 0.4 {  // Low confidence: prob < 0.4 catches pauses, breaths
             let current_rms = compute_rms_db(samples);
 
-            if adapt_debug_count < 30 {
+            if GATE_DEBUG && adapt_debug_count < 30 {
                 eprintln!("[ADAPT-DEBUG] Checking RMS: {:.1} dB (need > -100.0)", current_rms);
             }
 
@@ -527,11 +530,11 @@ impl VadAutoGate {
                 self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
 
                 // Log ALL updates when debugging (not just significant ones)
-                if adapt_debug_count < 30 {
+                if GATE_DEBUG && adapt_debug_count < 30 {
                     let auto_threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
                     eprintln!("[AUTO-THRESHOLD] Noise floor: {:.1} -> {:.1} dB (RMS: {:.1} dB, prob={:.2}, threshold={:.1} dB)",
                         old_floor, self.noise_floor, current_rms, prob, auto_threshold);
-                } else if (self.noise_floor - old_floor).abs() > 0.1 {
+                } else if GATE_DEBUG && (self.noise_floor - old_floor).abs() > 0.1 {
                     // After debug period, only log significant changes
                     let auto_threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
                     eprintln!("[AUTO-THRESHOLD] Noise floor: {:.1} -> {:.1} dB (RMS: {:.1} dB, prob={:.2}, threshold={:.1} dB)",

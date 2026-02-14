@@ -459,12 +459,20 @@ class CalibrationDialog(QDialog):
             if reply == QMessageBox.StandardButton.Yes:
                 if self.worker:
                     self.worker.stop()
+                    self.worker.wait(1500)
+                self._cleanup_recording_tap()
                 self.reject()
         else:
+            if self.worker and self.worker.isRunning():
+                self.worker.stop()
+                self.worker.wait(1500)
+            self._cleanup_recording_tap()
             self.reject()
 
     def _reset_recording_ui(self):
         """Reset UI to initial idle state."""
+        self._cleanup_recording_tap()
+
         # Stop processor if we started it ourselves
         if hasattr(self, '_started_processor') and self._started_processor:
             parent = self.parent()
@@ -492,6 +500,33 @@ class CalibrationDialog(QDialog):
         self.start_button.setEnabled(True)
         self.retake_btn.setVisible(False)
         self.curve_combo.setEnabled(True)
+
+    def _cleanup_recording_tap(self):
+        """Best-effort cleanup for tap/mute state across cancel/close paths."""
+        parent = self.parent()
+        while parent and not hasattr(parent, 'processor'):
+            parent = parent.parent()
+
+        if not parent:
+            return
+
+        try:
+            parent.processor.stop_raw_recording()
+        except Exception:
+            pass
+
+        try:
+            parent.processor.set_output_mute(False)
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        """Ensure recording state is cleaned up if dialog is closed directly."""
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.worker.wait(1500)
+        self._cleanup_recording_tap()
+        super().closeEvent(event)
 
     def get_recorded_audio(self):
         """

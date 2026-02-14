@@ -10,7 +10,7 @@ import time
 from PyQt6.QtCore import QThread, pyqtSignal
 
 # Enable debug logging
-DEBUG = True
+DEBUG = False
 
 
 class RecordingWorker(QThread):
@@ -128,11 +128,6 @@ class RecordingWorker(QThread):
                         print(f"[CALIBRATION] Audio range: [{audio_array.min():.3f}, {audio_array.max():.3f}]")
                         print(f"[CALIBRATION] Audio RMS: {(np.mean(audio_array**2)**0.5):.6f}")
 
-                    # Keep output muted after calibration to prevent user from hearing themselves
-                    if DEBUG:
-                        print("[CALIBRATION] Setting output mute=True (keeping muted after calibration)")
-                    self.processor.set_output_mute(True)
-
                     # Final progress signals
                     self.progress.emit(100)
                     self.time_remaining.emit(0.0)
@@ -143,14 +138,29 @@ class RecordingWorker(QThread):
                     self.failed.emit("Recording failed - no audio data")
 
         except Exception as e:
+            self._cleanup_recording_tap()
             if DEBUG:
                 print(f"[CALIBRATION] EXCEPTION: {type(e).__name__}: {e}")
             self.failed.emit(f"Recording error: {str(e)}")
         finally:
-            # CRITICAL: No cleanup needed here - dialog handles processor lifecycle
-            # We only managed the recording tap, not the audio engine
+            if not self._is_running:
+                self._cleanup_recording_tap()
+            # Processor lifecycle remains managed by the dialog/main thread.
             if DEBUG:
                 print("[CALIBRATION] Worker finished (processor lifecycle managed by dialog)")
+
+    def _cleanup_recording_tap(self):
+        """Best-effort cleanup for cancel/error paths."""
+        try:
+            self.processor.stop_raw_recording()
+        except Exception:
+            pass
+
+        try:
+            # Ensure output is unmuted after recording workflow exits.
+            self.processor.set_output_mute(False)
+        except Exception:
+            pass
 
     def stop(self):
         """Stop recording early."""
@@ -158,6 +168,7 @@ class RecordingWorker(QThread):
             print("[CALIBRATION] RecordingWorker.stop() called (user cancelled)")
 
         self._is_running = False
+        self._cleanup_recording_tap()
 
         # Note: We don't stop processor on cancel - dialog handles cleanup
         # This prevents race conditions between worker and main thread

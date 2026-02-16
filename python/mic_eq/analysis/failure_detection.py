@@ -72,9 +72,9 @@ def calculate_snr(freqs, spectrum_db, noise_floor_freq=200.0):
     """
     Estimate signal-to-noise ratio.
 
-    SNR is estimated from band-limited signal/noise powers.
-    - Noise band: <= noise_floor_freq (default 200 Hz)
-    - Signal band: 300 Hz to 8000 Hz
+    SNR is estimated from robust spectral percentiles in the voice band.
+    This avoids penalizing low-pitched voices where 80-200 Hz can contain
+    legitimate speech fundamentals (not just noise).
 
     Args:
         freqs: Frequency array in Hz
@@ -90,26 +90,26 @@ def calculate_snr(freqs, spectrum_db, noise_floor_freq=200.0):
     if freqs.shape != spectrum_db.shape or spectrum_db.size == 0:
         return 0.0
 
-    # Convert dB power to linear power.
-    power = np.maximum(10 ** (spectrum_db / 10.0), 1e-12)
+    # Focus on speech-relevant range.
+    voice_mask = (freqs >= 80.0) & (freqs <= 8000.0)
+    if np.any(voice_mask):
+        spec = spectrum_db[voice_mask]
+        f_voice = freqs[voice_mask]
+    else:
+        spec = spectrum_db
+        f_voice = freqs
 
-    noise_mask = freqs <= float(noise_floor_freq)
-    signal_mask = (freqs >= 300.0) & (freqs <= 8000.0)
+    # Mid-band (300-3400 Hz) carries most intelligibility.
+    mid_mask = (f_voice >= 300.0) & (f_voice <= 3400.0)
+    if np.any(mid_mask):
+        signal_level_db = float(np.percentile(spec[mid_mask], 80))
+    else:
+        signal_level_db = float(np.percentile(spec, 80))
 
-    if not np.any(noise_mask):
-        noise_mask = freqs <= np.percentile(freqs, 10)
-    if not np.any(signal_mask):
-        signal_mask = freqs >= np.percentile(freqs, 40)
+    # Floor estimate from lower percentile of whole voice band.
+    noise_floor_db = float(np.percentile(spec, 20))
 
-    # Robust estimators to reduce outlier sensitivity.
-    noise_power = float(np.percentile(power[noise_mask], 25))
-    signal_power = float(np.percentile(power[signal_mask], 75))
-
-    if noise_power <= 0.0:
-        return 0.0
-
-    snr_db = 10.0 * np.log10(max(signal_power, 1e-12) / max(noise_power, 1e-12))
-    return float(snr_db)
+    return signal_level_db - noise_floor_db
 
 
 def validate_analysis(eq_settings, spectrum_db, freqs):
@@ -163,30 +163,46 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
     clipped_gains = int(np.sum(np.abs(band_gains) >= 11.5)) if band_gains.size else 0
     gain_rms = float(np.sqrt(np.mean(np.square(band_gains)))) if band_gains.size else 0.0
 
-    # Evaluate all criteria
-    failures = []
+    # Evaluate all criteria. Use tiered gating to reduce false rejections.
+    hard_fail_reasons = []
+    soft_failures = []
+
+    if peak_count < max(2, ANALYSIS_MIN_PEAK_COUNT - 1):
+        hard_fail_reasons.append(f"peak_count ({peak_count} too low)")
+
+    if flatness > min(0.92, ANALYSIS_MAX_SPECTRAL_FLATNESS + 0.10):
+        hard_fail_reasons.append(f"flatness ({flatness:.2f} too noise-like)")
+
+    if clipped_gains >= 6:
+        hard_fail_reasons.append(f"clipped_gains ({clipped_gains} >= 6)")
+    if gain_rms > 10.0:
+        hard_fail_reasons.append(f"gain_rms ({gain_rms:.1f} > 10.0 dB)")
 
     if peak_count < ANALYSIS_MIN_PEAK_COUNT:
-        failures.append(f"peak_count ({peak_count} < {ANALYSIS_MIN_PEAK_COUNT})")
-
+        soft_failures.append(f"peak_count ({peak_count} < {ANALYSIS_MIN_PEAK_COUNT})")
     if dynamic_range < ANALYSIS_MIN_DYNAMIC_RANGE:
-        failures.append(f"dynamic_range ({dynamic_range:.1f} < {ANALYSIS_MIN_DYNAMIC_RANGE} dB)")
-
+        soft_failures.append(
+            f"dynamic_range ({dynamic_range:.1f} < {ANALYSIS_MIN_DYNAMIC_RANGE} dB)"
+        )
     if snr_db < ANALYSIS_MIN_SNR:
-        failures.append(f"snr ({snr_db:.1f} < {ANALYSIS_MIN_SNR} dB)")
-
+        soft_failures.append(f"snr ({snr_db:.1f} < {ANALYSIS_MIN_SNR} dB)")
     if flatness > ANALYSIS_MAX_SPECTRAL_FLATNESS:
-        failures.append(f"flatness ({flatness:.2f} > {ANALYSIS_MAX_SPECTRAL_FLATNESS})")
-
+        soft_failures.append(f"flatness ({flatness:.2f} > {ANALYSIS_MAX_SPECTRAL_FLATNESS})")
     if clipped_gains >= 4:
-        failures.append(f"clipped_gains ({clipped_gains} >= 4)")
+        soft_failures.append(f"clipped_gains ({clipped_gains} >= 4)")
     if gain_rms > 8.0:
-        failures.append(f"gain_rms ({gain_rms:.1f} > 8.0 dB)")
+        soft_failures.append(f"gain_rms ({gain_rms:.1f} > 8.0 dB)")
+
+    # Fail only on a hard criterion, or when multiple soft criteria fail together.
+    failures = list(hard_fail_reasons)
+    if not failures and len(soft_failures) >= 2:
+        failures = soft_failures
 
     # DEBUG: Log validation results
     _debug_log(
         f"[VALIDATION] peak_count={peak_count}, dynamic_range={dynamic_range:.1f}dB, "
-        f"snr={snr_db:.1f}dB, flatness={flatness:.2f}, clipped={clipped_gains}, gain_rms={gain_rms:.1f}"
+        f"snr={snr_db:.1f}dB, flatness={flatness:.2f}, clipped={clipped_gains}, "
+        f"gain_rms={gain_rms:.1f}, soft_failures={len(soft_failures)}"
     )
     if failures:
         _debug_log(f"[VALIDATION] FAILED: {', '.join(failures)}")

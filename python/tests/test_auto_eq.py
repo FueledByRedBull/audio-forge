@@ -158,7 +158,8 @@ def test_09_very_quiet_signal():
 
 
 def test_10_predict_eq_response_linearity():
-    freqs = np.array([100.0, 1000.0, 10000.0])
+    center = float(EQ_FREQUENCIES[4])
+    freqs = np.array([100.0, center, 10000.0])
     qs = [1.414] * 10
 
     gains_6db = np.zeros(10)

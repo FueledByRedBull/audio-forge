@@ -18,6 +18,7 @@ from PyQt6.QtCore import Qt
 from .eq_curve import EQCurveWidget
 from .rate_limiter import RateLimiter
 from .layout_constants import SPACING_TIGHT, PRIMARY_LABEL_STYLE
+from ..config import EQ_FREQUENCIES
 
 
 # Default frequencies for each band
@@ -34,8 +35,8 @@ BAND_FREQUENCIES = [
     "16k",    # High shelf
 ]
 
-# Numeric frequencies in Hz for curve calculation
-BAND_FREQUENCIES_HZ = [80, 160, 320, 640, 1280, 2500, 5000, 8000, 12000, 16000]
+# Numeric frequencies in Hz for curve calculation (single source of truth from config)
+BAND_FREQUENCIES_HZ = list(EQ_FREQUENCIES)
 
 BAND_LABELS = [
     "LS",   # Low shelf

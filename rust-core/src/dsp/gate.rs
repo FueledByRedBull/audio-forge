@@ -274,13 +274,20 @@ impl NoiseGate {
                             self.vad_was_open = vad_gate_open;
                         }
 
-                        // Override is_open based on VAD decision
+                        // Override state based on VAD decision.
                         self.is_open = vad_gate_open;
 
-                        // Apply VAD gate state to entire buffer
-                        let gain = if self.is_open { 1.0 } else { 0.0 };
+                        // Smooth transitions in VAD modes using the same attack/release
+                        // envelope as threshold mode to avoid hard 0/1 clicks.
+                        let target_gain = if self.is_open { 1.0 } else { 0.0 };
                         for sample in buffer.iter_mut() {
-                            *sample *= gain as f32;
+                            let coeff = if target_gain > self.envelope {
+                                self.attack_coeff
+                            } else {
+                                self.release_coeff
+                            };
+                            self.envelope = coeff * self.envelope + (1.0 - coeff) * target_gain;
+                            *sample = (*sample as f64 * self.envelope) as f32;
                         }
                         return;
                     }
@@ -309,6 +316,11 @@ impl NoiseGate {
     /// Get current envelope level (0.0 to 1.0)
     pub fn current_envelope(&self) -> f64 {
         self.envelope
+    }
+
+    /// Get current gain applied by the gate.
+    pub fn current_gain(&self) -> f32 {
+        self.envelope as f32
     }
 
     // === VAD Integration Methods ===

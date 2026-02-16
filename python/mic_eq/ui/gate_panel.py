@@ -139,7 +139,7 @@ class GatePanel(QWidget):
         vad_threshold_layout = QHBoxLayout()
         self.vad_threshold_slider = QSlider(Qt.Orientation.Horizontal)
         self.vad_threshold_slider.setRange(30, 80)  # 0.3 to 0.8
-        self.vad_threshold_slider.setValue(50)
+        self.vad_threshold_slider.setValue(40)
         self.vad_threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.vad_threshold_slider.setTickInterval(10)
         vad_threshold_layout.addWidget(self.vad_threshold_slider)
@@ -147,7 +147,7 @@ class GatePanel(QWidget):
         self.vad_threshold_spinbox = QDoubleSpinBox()
         self.vad_threshold_spinbox.setRange(0.3, 0.8)
         self.vad_threshold_spinbox.setSingleStep(0.05)
-        self.vad_threshold_spinbox.setValue(0.5)
+        self.vad_threshold_spinbox.setValue(0.4)
         self.vad_threshold_spinbox.setDecimals(2)
         self.vad_threshold_spinbox.setToolTip("Speech probability threshold (0.3-0.8)")
         self.vad_threshold_spinbox.setFixedWidth(80)
@@ -213,7 +213,7 @@ class GatePanel(QWidget):
         margin_layout = QHBoxLayout()
         self.margin_slider = QSlider(Qt.Orientation.Horizontal)
         self.margin_slider.setRange(0, 20)  # 0 to 20 dB
-        self.margin_slider.setValue(6)  # Default 6 dB
+        self.margin_slider.setValue(10)  # Default 10 dB
         self.margin_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.margin_slider.setTickInterval(5)
         margin_layout.addWidget(self.margin_slider)
@@ -221,7 +221,7 @@ class GatePanel(QWidget):
         self.margin_spinbox = QDoubleSpinBox()
         self.margin_spinbox.setRange(0.0, 20.0)
         self.margin_spinbox.setSingleStep(1.0)
-        self.margin_spinbox.setValue(6.0)
+        self.margin_spinbox.setValue(10.0)
         self.margin_spinbox.setSuffix(" dB")
         self.margin_spinbox.setToolTip("Margin above noise floor for gate threshold (0-20 dB)")
         self.margin_spinbox.setFixedWidth(80)
@@ -296,7 +296,7 @@ class GatePanel(QWidget):
             self._update_vad_mode()
         except (AttributeError, Exception) as e:
             # VAD not available or other error - will be handled when user enables VAD
-            pass
+            print(f"[GATE] Initial VAD setup skipped: {type(e).__name__}: {e}")
 
     def _on_slider_changed(self, value):
         """Handle threshold slider change."""
@@ -361,7 +361,8 @@ class GatePanel(QWidget):
         """Return True when Rust VAD backend is available."""
         try:
             return bool(self.processor.is_vad_available())
-        except Exception:
+        except Exception as e:
+            print(f"[GATE] VAD availability check error: {type(e).__name__}: {e}")
             return False
 
     def _update_vad_mode(self):
@@ -454,7 +455,7 @@ class GatePanel(QWidget):
             self.processor.set_gate_margin(margin)
         except AttributeError as e:
             # Auto-threshold PyO3 bindings not available yet - will be added in plan 03
-            pass
+            print(f"[GATE] Auto-threshold unavailable: {type(e).__name__}: {e}")
 
     def update_vad_confidence(self, confidence: float):
         """Update VAD confidence meter (called from main window)."""

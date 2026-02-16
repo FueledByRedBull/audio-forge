@@ -4,6 +4,8 @@ Auto-EQ calculation using least-squares curve fitting.
 Accounts for parametric EQ band interaction by optimizing gains
 to minimize error between target curve and predicted EQ response.
 """
+import os
+
 import numpy as np
 from scipy.optimize import least_squares
 
@@ -12,7 +14,13 @@ from mic_eq.config import (
     EQ_FREQUENCIES,
     AUTO_EQ_DEFAULT_Q
 )
-from ..ui.calibration_dialog import DEBUG
+DEBUG = os.environ.get("AUDIOFORGE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+SAMPLE_RATE = 48_000.0
+
+
+def _debug_log(message: str) -> None:
+    if DEBUG:
+        print(message)
 
 
 def get_target_curve(freqs, target_preset='broadcast'):
@@ -74,10 +82,11 @@ def _predict_eq_response(freqs, gains, qs, center_freqs):
         # gain_db = 6  -> A ≈ 1.995 (2x amplitude = 6dB boost)
         A = 10 ** (gain_db / 40.0)
 
-        # Compute peaking EQ coefficients (Audio EQ Cookbook)
+        # Compute peaking EQ coefficients (Audio EQ Cookbook, RBJ).
         # At center frequency: magnitude response = A^2 = 10^(dB/20)
-        alpha = np.sin(np.log(2) / 2 / q)  # Approximation for bandwidth
-        cos_w0 = np.cos(2 * np.pi * fc / 48000)  # cos(w0) at 48kHz sample rate
+        w0 = 2 * np.pi * fc / SAMPLE_RATE
+        alpha = np.sin(w0) / (2.0 * q)
+        cos_w0 = np.cos(w0)
 
         # Biquad coefficients for peaking EQ
         b0 = 1 + alpha * A
@@ -91,7 +100,7 @@ def _predict_eq_response(freqs, gains, qs, center_freqs):
         # H(e^(j*w)) = (b0 + b1*e^(-j*w) + b2*e^(-j*2w)) / (a0 + a1*e^(-j*w) + a2*e^(-j*2w))
 
         # Normalized frequency: w = 2*pi*f/fs
-        w = 2 * np.pi * freqs / 48000
+        w = 2 * np.pi * freqs / SAMPLE_RATE
         z_inv = np.exp(-1j * w)  # z^(-1)
         z_inv_2 = z_inv ** 2      # z^(-2)
 
@@ -130,11 +139,11 @@ def _eq_error_function(gains, center_freqs, measured_db_at_centers, target_db, q
         error: Difference between target and (measured + EQ response) at center frequencies
     """
     # Debug: print first call to see what's happening
-    if not hasattr(_eq_error_function, '_called'):
+    if DEBUG and not hasattr(_eq_error_function, '_called'):
         _eq_error_function._called = True
-        print(f"[EQ_ERROR] First call with gains: {gains}")
-        print(f"[EQ_ERROR] measured_db_at_centers: {measured_db_at_centers}")
-        print(f"[EQ_ERROR] target_db: {target_db}")
+        _debug_log(f"[EQ_ERROR] First call with gains: {gains}")
+        _debug_log(f"[EQ_ERROR] measured_db_at_centers: {measured_db_at_centers}")
+        _debug_log(f"[EQ_ERROR] target_db: {target_db}")
 
     # Predict EQ response with current gains (evaluated at all frequencies)
     eq_response = _predict_eq_response(all_freqs, gains, qs, center_freqs)
@@ -149,14 +158,14 @@ def _eq_error_function(gains, center_freqs, measured_db_at_centers, target_db, q
     # Error = target - combined (at center frequencies only)
     error = target_db - combined_at_centers
 
-    if not hasattr(_eq_error_function, '_printed_error'):
+    if DEBUG and not hasattr(_eq_error_function, '_printed_error'):
         # Only print once for the initial call (gains = 0)
         if np.allclose(gains, 0):
             _eq_error_function._printed_error = True
-            print(f"[EQ_ERROR] eq_response_at_centers (gains=0): {eq_response_at_centers}")
-            print(f"[EQ_ERROR] combined_at_centers (gains=0): {combined_at_centers}")
-            print(f"[EQ_ERROR] error (gains=0): {error}")
-            print(f"[EQ_ERROR] error magnitude: {np.linalg.norm(error):.2f}")
+            _debug_log(f"[EQ_ERROR] eq_response_at_centers (gains=0): {eq_response_at_centers}")
+            _debug_log(f"[EQ_ERROR] combined_at_centers (gains=0): {combined_at_centers}")
+            _debug_log(f"[EQ_ERROR] error (gains=0): {error}")
+            _debug_log(f"[EQ_ERROR] error magnitude: {np.linalg.norm(error):.2f}")
 
     return error
 
@@ -177,8 +186,8 @@ def calculate_eq_bands(freqs, measured_db, target_db):
         eq_settings: Dict with 'band_gains' and 'band_qs' (10-element lists)
     """
     # DEBUG: Log what we're working with
-    print(f"[EQ_CALC] Measured spectrum range: [{measured_db.min():.1f}, {measured_db.max():.1f}] dB")
-    print(f"[EQ_CALC] Target curve range: [{target_db.min():.1f}, {target_db.max():.1f}] dB")
+    _debug_log(f"[EQ_CALC] Measured spectrum range: [{measured_db.min():.1f}, {measured_db.max():.1f}] dB")
+    _debug_log(f"[EQ_CALC] Target curve range: [{target_db.min():.1f}, {target_db.max():.1f}] dB")
 
     # CRITICAL FIX: Normalize measured spectrum to relative dB
     # The measured spectrum is in dBFS (always negative for speech)
@@ -196,9 +205,13 @@ def calculate_eq_bands(freqs, measured_db, target_db):
     # Normalize: subtract the average to get relative dB
     measured_db_normalized = measured_db - voice_avg
 
-    print(f"[EQ_CALC] Voice range average: {voice_avg:.1f} dB")
-    print(f"[EQ_CALC] Normalized measured range: [{measured_db_normalized.min():.1f}, {measured_db_normalized.max():.1f}] dB")
-    print(f"[EQ_CALC] Difference (target - normalized): avg {(target_db - measured_db_normalized).mean():.2f} dB")
+    _debug_log(f"[EQ_CALC] Voice range average: {voice_avg:.1f} dB")
+    _debug_log(
+        f"[EQ_CALC] Normalized measured range: [{measured_db_normalized.min():.1f}, {measured_db_normalized.max():.1f}] dB"
+    )
+    _debug_log(
+        f"[EQ_CALC] Difference (target - normalized): avg {(target_db - measured_db_normalized).mean():.2f} dB"
+    )
 
     # Use normalized measured spectrum for optimization
     measured_db = measured_db_normalized
@@ -213,17 +226,17 @@ def calculate_eq_bands(freqs, measured_db, target_db):
     # Sample the target curve at the EQ band center frequencies
     target_db_at_centers = np.interp(center_freqs, freqs, target_db)
 
-    print(f"[EQ_CALC] Measured at centers: {[round(v, 1) for v in measured_db_at_centers]} dB")
-    print(f"[EQ_CALC] Target at centers: {[round(v, 1) for v in target_db_at_centers]} dB")
+    _debug_log(f"[EQ_CALC] Measured at centers: {[round(v, 1) for v in measured_db_at_centers]} dB")
+    _debug_log(f"[EQ_CALC] Target at centers: {[round(v, 1) for v in target_db_at_centers]} dB")
 
     # Calculate the desired gain adjustment (target - measured) at each center frequency
     # This is what the optimizer should aim for
     desired_gains = target_db_at_centers - measured_db_at_centers
-    print(f"[EQ_CALC] Desired gains (target - measured): {[round(v, 1) for v in desired_gains]} dB")
+    _debug_log(f"[EQ_CALC] Desired gains (target - measured): {[round(v, 1) for v in desired_gains]} dB")
 
     # Initial guess: use desired gains clipped to bounds (better starting point than zeros)
     gains_initial = np.clip(desired_gains, -12.0, 12.0)
-    print(f"[EQ_CALC] Initial guess (clipped desired): {[round(g, 2) for g in gains_initial]} dB")
+    _debug_log(f"[EQ_CALC] Initial guess (clipped desired): {[round(g, 2) for g in gains_initial]} dB")
 
     # Gain bounds: -12 to +12 dB (EQ hardware limits)
     bounds = (-12.0, 12.0)
@@ -250,10 +263,10 @@ def calculate_eq_bands(freqs, measured_db, target_db):
     optimal_gains = result.x
 
     # DEBUG: Log what the optimizer found
-    print(f"[EQ_CALC] Raw optimized gains (before 70%): {[round(g, 2) for g in optimal_gains]}")
-    print(f"[EQ_CALC] Optimization success: {result.success}")
+    _debug_log(f"[EQ_CALC] Raw optimized gains (before 70%): {[round(g, 2) for g in optimal_gains]}")
+    _debug_log(f"[EQ_CALC] Optimization success: {result.success}")
     if hasattr(result, 'message'):
-        print(f"[EQ_CALC] Optimizer message: {result.message}")
+        _debug_log(f"[EQ_CALC] Optimizer message: {result.message}")
 
     # Apply 70% correction factor (prevents over-compensation)
     optimal_gains = optimal_gains * 0.7
@@ -261,7 +274,7 @@ def calculate_eq_bands(freqs, measured_db, target_db):
     # Clip to hardware limits
     optimal_gains = np.clip(optimal_gains, -12.0, 12.0)
 
-    print(f"[EQ_CALC] Final gains (after 70% correction): {[round(g, 2) for g in optimal_gains]}")
+    _debug_log(f"[EQ_CALC] Final gains (after 70% correction): {[round(g, 2) for g in optimal_gains]}")
 
     return {
         'band_gains': optimal_gains.tolist(),

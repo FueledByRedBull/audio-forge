@@ -5,6 +5,7 @@ Combines multiple validation checks to detect invalid recordings that
 would produce poor EQ results. Returns generic user-friendly error
 messages without technical details.
 """
+import os
 import numpy as np
 from dataclasses import dataclass
 
@@ -15,6 +16,13 @@ from mic_eq.config import (
     ANALYSIS_MAX_SPECTRAL_FLATNESS
 )
 from .spectrum import find_octave_spaced_peaks
+
+DEBUG = os.environ.get("AUDIOFORGE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_log(message: str) -> None:
+    if DEBUG:
+        print(message)
 
 
 @dataclass
@@ -60,28 +68,48 @@ def calculate_spectral_flatness(spectrum_db):
     return min(flatness, 1.0)  # Clip to [0, 1]
 
 
-def calculate_snr(spectrum_db, noise_floor_freq=200):
+def calculate_snr(freqs, spectrum_db, noise_floor_freq=200.0):
     """
     Estimate signal-to-noise ratio.
 
-    SNR = (mean spectrum above noise_floor_freq) - (min spectrum)
+    SNR is estimated from band-limited signal/noise powers.
+    - Noise band: <= noise_floor_freq (default 200 Hz)
+    - Signal band: 300 Hz to 8000 Hz
 
     Args:
+        freqs: Frequency array in Hz
         spectrum_db: Spectrum in dB
         noise_floor_freq: Frequency below which is considered noise (Hz)
 
     Returns:
         snr_db: Estimated SNR in dB
     """
-    # Find noise floor (minimum in low frequencies)
-    # This is a simple approximation
-    noise_floor = np.min(spectrum_db)
+    freqs = np.asarray(freqs, dtype=float)
+    spectrum_db = np.asarray(spectrum_db, dtype=float)
 
-    # Signal level (mean above noise floor frequency)
-    signal_level = np.mean(spectrum_db[spectrum_db > noise_floor])
+    if freqs.shape != spectrum_db.shape or spectrum_db.size == 0:
+        return 0.0
 
-    snr_db = signal_level - noise_floor
-    return snr_db
+    # Convert dB power to linear power.
+    power = np.maximum(10 ** (spectrum_db / 10.0), 1e-12)
+
+    noise_mask = freqs <= float(noise_floor_freq)
+    signal_mask = (freqs >= 300.0) & (freqs <= 8000.0)
+
+    if not np.any(noise_mask):
+        noise_mask = freqs <= np.percentile(freqs, 10)
+    if not np.any(signal_mask):
+        signal_mask = freqs >= np.percentile(freqs, 40)
+
+    # Robust estimators to reduce outlier sensitivity.
+    noise_power = float(np.percentile(power[noise_mask], 25))
+    signal_power = float(np.percentile(power[signal_mask], 75))
+
+    if noise_power <= 0.0:
+        return 0.0
+
+    snr_db = 10.0 * np.log10(max(signal_power, 1e-12) / max(noise_power, 1e-12))
+    return float(snr_db)
 
 
 def validate_analysis(eq_settings, spectrum_db, freqs):
@@ -110,14 +138,30 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
     )
     peak_count = len(peak_freqs)
 
-    # Check 2: Dynamic range (peak - noise floor)
-    dynamic_range = np.max(spectrum_db) - np.min(spectrum_db)
+    # Focus metrics on voice band to avoid out-of-band skew.
+    voice_mask = (freqs >= 80.0) & (freqs <= 8000.0)
+    if np.any(voice_mask):
+        spectrum_voice = spectrum_db[voice_mask]
+        freqs_voice = freqs[voice_mask]
+    else:
+        spectrum_voice = spectrum_db
+        freqs_voice = freqs
+
+    # Check 2: Dynamic range in voice band (robust percentile spread)
+    dynamic_range = float(
+        np.percentile(spectrum_voice, 95) - np.percentile(spectrum_voice, 5)
+    )
 
     # Check 3: SNR (signal vs noise)
-    snr_db = calculate_snr(spectrum_db)
+    snr_db = calculate_snr(freqs_voice, spectrum_voice)
 
     # Check 4: Spectral flatness (tonal vs noise)
-    flatness = calculate_spectral_flatness(spectrum_db)
+    flatness = calculate_spectral_flatness(spectrum_voice)
+
+    # Check 5: Excessive correction request suggests unreliable capture.
+    band_gains = np.asarray(eq_settings.get("band_gains", []), dtype=float)
+    clipped_gains = int(np.sum(np.abs(band_gains) >= 11.5)) if band_gains.size else 0
+    gain_rms = float(np.sqrt(np.mean(np.square(band_gains)))) if band_gains.size else 0.0
 
     # Evaluate all criteria
     failures = []
@@ -134,12 +178,20 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
     if flatness > ANALYSIS_MAX_SPECTRAL_FLATNESS:
         failures.append(f"flatness ({flatness:.2f} > {ANALYSIS_MAX_SPECTRAL_FLATNESS})")
 
+    if clipped_gains >= 4:
+        failures.append(f"clipped_gains ({clipped_gains} >= 4)")
+    if gain_rms > 8.0:
+        failures.append(f"gain_rms ({gain_rms:.1f} > 8.0 dB)")
+
     # DEBUG: Log validation results
-    print(f"[VALIDATION] peak_count={peak_count}, dynamic_range={dynamic_range:.1f}dB, snr={snr_db:.1f}dB, flatness={flatness:.2f}")
+    _debug_log(
+        f"[VALIDATION] peak_count={peak_count}, dynamic_range={dynamic_range:.1f}dB, "
+        f"snr={snr_db:.1f}dB, flatness={flatness:.2f}, clipped={clipped_gains}, gain_rms={gain_rms:.1f}"
+    )
     if failures:
-        print(f"[VALIDATION] FAILED: {', '.join(failures)}")
+        _debug_log(f"[VALIDATION] FAILED: {', '.join(failures)}")
     else:
-        print(f"[VALIDATION] PASSED")
+        _debug_log("[VALIDATION] PASSED")
 
     # Build result
     if failures:
@@ -152,6 +204,8 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
                 'dynamic_range_db': dynamic_range,
                 'snr_db': snr_db,
                 'flatness': flatness,
+                'clipped_gains': clipped_gains,
+                'gain_rms_db': gain_rms,
                 'failures': failures
             }
         )
@@ -163,6 +217,8 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
                 'peak_count': peak_count,
                 'dynamic_range_db': dynamic_range,
                 'snr_db': snr_db,
-                'flatness': flatness
+                'flatness': flatness,
+                'clipped_gains': clipped_gains,
+                'gain_rms_db': gain_rms,
             }
         )

@@ -16,6 +16,18 @@ class PresetValidationError(Exception):
     pass
 
 
+def _version_tuple(version: str) -> tuple[int, int, int]:
+    """Convert semantic version string to tuple for safe ordering."""
+    parts = str(version).split(".")
+    normalized = []
+    for i in range(3):
+        try:
+            normalized.append(int(parts[i]))
+        except (IndexError, ValueError):
+            normalized.append(0)
+    return tuple(normalized)  # type: ignore[return-value]
+
+
 # Default preset directory
 def get_presets_dir() -> Path:
     """Get the presets directory, creating it if necessary."""
@@ -27,6 +39,13 @@ def get_presets_dir() -> Path:
     presets_dir = base / 'MicEq' / 'presets'
     presets_dir.mkdir(parents=True, exist_ok=True)
     return presets_dir
+
+
+def get_preset_imports_dir() -> Path:
+    """Get the preset imports directory, creating it if necessary."""
+    imports_dir = get_presets_dir().parent / 'imports'
+    imports_dir.mkdir(parents=True, exist_ok=True)
+    return imports_dir
 
 
 def get_config_file() -> Path:
@@ -73,8 +92,8 @@ class EQSettings:
 
 
 # EQ band frequencies (Hz) - matches 10-band EQ in DSP chain
-# Bands: 80Hz (LS), 160, 320, 640, 1.2k, 2.5k, 5k, 8k, 12k, 16kHz (HS)
-EQ_FREQUENCIES = [80.0, 160.0, 320.0, 640.0, 1250.0, 2500.0, 5000.0, 8000.0, 12500.0, 16000.0]
+# Bands: 80Hz (LS), 160, 320, 640, 1.28k, 2.5k, 5k, 8k, 12k, 16kHz (HS)
+EQ_FREQUENCIES = [80.0, 160.0, 320.0, 640.0, 1280.0, 2500.0, 5000.0, 8000.0, 12000.0, 16000.0]
 
 # Default Q factor for auto-EQ bands (1/3 octave bandwidth)
 # Q = 4.33 gives ~1/3 octave bandwidth for parametric EQ
@@ -93,6 +112,21 @@ class RNNoiseSettings:
     enabled: bool = True
     strength: float = 1.0  # 0.0 = dry, 1.0 = fully processed
     model: str = "rnnoise"  # "rnnoise", "deepfilter-ll", or "deepfilter"
+
+
+@dataclass
+class DeEsserSettings:
+    """De-esser settings."""
+    enabled: bool = False
+    auto_enabled: bool = True
+    auto_amount: float = 0.5
+    low_cut_hz: float = 4000.0
+    high_cut_hz: float = 9000.0
+    threshold_db: float = -28.0
+    ratio: float = 4.0
+    attack_ms: float = 2.0
+    release_ms: float = 80.0
+    max_reduction_db: float = 6.0
 
 
 @dataclass
@@ -149,6 +183,16 @@ VALIDATION_RANGES = {
         'strength': (0.0, 1.0),  # 0% to 100%
         'model': ['rnnoise', 'deepfilter-ll', 'deepfilter'],  # Valid model choices
     },
+    'deesser': {
+        'auto_amount': (0.0, 1.0),
+        'low_cut_hz': (2000.0, 12000.0),
+        'high_cut_hz': (2200.0, 16000.0),
+        'threshold_db': (-60.0, -6.0),
+        'ratio': (1.0, 20.0),
+        'attack_ms': (0.1, 50.0),
+        'release_ms': (5.0, 500.0),
+        'max_reduction_db': (0.0, 24.0),
+    },
     'compressor': {
         'threshold_db': (-60.0, 0.0),
         'ratio': (1.0, 20.0),
@@ -184,10 +228,11 @@ class Preset:
     """Complete preset with all settings."""
     name: str = "Default"
     description: str = ""
-    version: str = "1.6.0"  # Version field for migration (updated to include auto-threshold settings)
+    version: str = "1.7.0"  # Version field for migration (includes de-esser settings)
     gate: GateSettings = field(default_factory=GateSettings)
     eq: EQSettings = field(default_factory=EQSettings)
     rnnoise: RNNoiseSettings = field(default_factory=RNNoiseSettings)
+    deesser: DeEsserSettings = field(default_factory=DeEsserSettings)
     compressor: CompressorSettings = field(default_factory=CompressorSettings)
     limiter: LimiterSettings = field(default_factory=LimiterSettings)
     bypass: bool = False
@@ -201,6 +246,7 @@ class Preset:
             'gate': asdict(self.gate),
             'eq': asdict(self.eq),
             'rnnoise': asdict(self.rnnoise),
+            'deesser': asdict(self.deesser),
             'compressor': asdict(self.compressor),
             'limiter': asdict(self.limiter),
             'bypass': self.bypass,
@@ -211,34 +257,28 @@ class Preset:
         """Create preset from dictionary with validation."""
         try:
             # Version-aware migration
-            version = data.get('version', '1.0.0')
+            version_tuple = _version_tuple(data.get('version', '1.0.0'))
 
-            # Migrate v1.0 presets → v1.1
-            if version < '1.1.0':
-                # Add missing strength field to RNNoise settings
+            # Migrate v1.0 presets -> v1.1
+            if version_tuple < _version_tuple('1.1.0'):
                 if 'rnnoise' in data:
-                    data['rnnoise'].setdefault('strength', 1.0)  # Default to full processing
+                    data['rnnoise'].setdefault('strength', 1.0)
                 else:
                     data['rnnoise'] = {'enabled': True, 'strength': 1.0}
-
-                # Update version
                 data['version'] = '1.1.0'
-                version = '1.1.0'
+                version_tuple = _version_tuple('1.1.0')
 
-            # Migrate v1.1 presets → v1.2
-            if version < '1.2.0':
-                # Add missing model field to RNNoise settings
+            # Migrate v1.1 presets -> v1.2
+            if version_tuple < _version_tuple('1.2.0'):
                 if 'rnnoise' in data:
-                    data['rnnoise'].setdefault('model', 'rnnoise')  # Default to RNNoise
+                    data['rnnoise'].setdefault('model', 'rnnoise')
                 else:
                     data['rnnoise'] = {'enabled': True, 'strength': 1.0, 'model': 'rnnoise'}
-
-                # Update version
                 data['version'] = '1.2.0'
+                version_tuple = _version_tuple('1.2.0')
 
-            # Migrate v1.2 presets → v1.3
-            if version < '1.3.0':
-                # Add missing auto makeup gain fields to compressor settings
+            # Migrate v1.2 presets -> v1.3
+            if version_tuple < _version_tuple('1.3.0'):
                 if 'compressor' in data:
                     data['compressor'].setdefault('auto_makeup_enabled', False)
                     data['compressor'].setdefault('target_lufs', -18.0)
@@ -255,27 +295,24 @@ class Preset:
                         'auto_makeup_enabled': False,
                         'target_lufs': -18.0,
                     }
-
-                # Update version
                 data['version'] = '1.3.0'
+                version_tuple = _version_tuple('1.3.0')
 
-            # Migrate v1.3 presets → v1.4 (no format changes, version bump only)
-            if version < '1.4.0':
+            # Migrate v1.3 presets -> v1.4 (no format changes)
+            if version_tuple < _version_tuple('1.4.0'):
                 data['version'] = '1.4.0'
-                version = '1.4.0'
+                version_tuple = _version_tuple('1.4.0')
 
-            # Migrate v1.4 presets → v1.5 (no format changes, version bump only)
-            if version < '1.5.0':
+            # Migrate v1.4 presets -> v1.5 (no format changes)
+            if version_tuple < _version_tuple('1.5.0'):
                 data['version'] = '1.5.0'
-                version = '1.5.0'
+                version_tuple = _version_tuple('1.5.0')
 
-            # Migrate v1.5 presets → v1.6 (add auto-threshold fields and lower vad_threshold)
-            if version < '1.6.0':
-                # Add missing auto-threshold fields to gate settings
+            # Migrate v1.5 presets -> v1.6 (auto-threshold defaults)
+            if version_tuple < _version_tuple('1.6.0'):
                 if 'gate' in data:
                     data['gate'].setdefault('auto_threshold_enabled', False)
                     data['gate'].setdefault('gate_margin_db', 10.0)
-                    # Update vad_threshold to 0.4 if still using old 0.5 default
                     if data['gate'].get('vad_threshold', 0.5) == 0.5:
                         data['gate']['vad_threshold'] = 0.4
                 else:
@@ -284,10 +321,26 @@ class Preset:
                         'gate_margin_db': 10.0,
                         'vad_threshold': 0.4,
                     }
-
-                # Update version
                 data['version'] = '1.6.0'
-                version = '1.6.0'
+                version_tuple = _version_tuple('1.6.0')
+
+            # Migrate v1.6 presets -> v1.7 (de-esser defaults)
+            if version_tuple < _version_tuple('1.7.0'):
+                if 'deesser' in data:
+                    data['deesser'].setdefault('enabled', False)
+                    data['deesser'].setdefault('auto_enabled', True)
+                    data['deesser'].setdefault('auto_amount', 0.5)
+                    data['deesser'].setdefault('low_cut_hz', 4000.0)
+                    data['deesser'].setdefault('high_cut_hz', 9000.0)
+                    data['deesser'].setdefault('threshold_db', -28.0)
+                    data['deesser'].setdefault('ratio', 4.0)
+                    data['deesser'].setdefault('attack_ms', 2.0)
+                    data['deesser'].setdefault('release_ms', 80.0)
+                    data['deesser'].setdefault('max_reduction_db', 6.0)
+                else:
+                    data['deesser'] = asdict(DeEsserSettings())
+                data['version'] = '1.7.0'
+                version_tuple = _version_tuple('1.7.0')
 
             # Extract and validate gate settings
             gate_data = data.get('gate', {})
@@ -309,29 +362,29 @@ class Preset:
                     *gate_ranges['release_ms'],
                     'release_ms', 'gate'
                 ),
-                gate_mode=int(_validate_range(  # Convert to int
-                    gate_data.get('gate_mode', 0),  # Default to ThresholdOnly
+                gate_mode=int(_validate_range(
+                    gate_data.get('gate_mode', 0),
                     *gate_ranges['gate_mode'],
                     'gate_mode', 'gate'
                 )),
                 vad_threshold=_validate_range(
-                    gate_data.get('vad_threshold', 0.4),  # Default 0.4 (lowered for better soft speech detection)
+                    gate_data.get('vad_threshold', 0.4),
                     *gate_ranges['vad_threshold'],
                     'vad_threshold', 'gate'
                 ),
                 vad_hold_time_ms=_validate_range(
-                    gate_data.get('vad_hold_time_ms', 200.0),  # Default 200ms
+                    gate_data.get('vad_hold_time_ms', 200.0),
                     *gate_ranges['vad_hold_time_ms'],
                     'vad_hold_time_ms', 'gate'
                 ),
                 vad_pre_gain=_validate_range(
-                    gate_data.get('vad_pre_gain', 1.0),  # Default 1.0 (no gain)
+                    gate_data.get('vad_pre_gain', 1.0),
                     *gate_ranges['vad_pre_gain'],
                     'vad_pre_gain', 'gate'
                 ),
                 auto_threshold_enabled=gate_data.get('auto_threshold_enabled', False),
                 gate_margin_db=_validate_range(
-                    gate_data.get('gate_margin_db', 10.0),  # Default 10.0 dB
+                    gate_data.get('gate_margin_db', 10.0),
                     *gate_ranges['gate_margin_db'],
                     'gate_margin_db', 'gate'
                 ),
@@ -342,7 +395,19 @@ class Preset:
             band_gains = eq_data.get('band_gains', [0.0] * 10)
             band_qs = eq_data.get('band_qs', [1.41] * 10)
 
-            # Validate each band gain and Q
+            if not isinstance(band_gains, (list, tuple)):
+                raise PresetValidationError("Invalid band_gains in eq: expected list of 10 values")
+            if not isinstance(band_qs, (list, tuple)):
+                raise PresetValidationError("Invalid band_qs in eq: expected list of 10 values")
+            if len(band_gains) != 10:
+                raise PresetValidationError(
+                    f"Invalid band_gains in eq: expected 10 values, got {len(band_gains)}"
+                )
+            if len(band_qs) != 10:
+                raise PresetValidationError(
+                    f"Invalid band_qs in eq: expected 10 values, got {len(band_qs)}"
+                )
+
             eq_ranges = VALIDATION_RANGES['eq']
             validated_gains = [
                 _validate_range(gain, *eq_ranges['band_gain'], f'band_gains[{i}]', 'eq')
@@ -424,12 +489,10 @@ class Preset:
             # Extract and validate RNNoise settings
             rnnoise_data = data.get('rnnoise', {})
             rnnoise_ranges = VALIDATION_RANGES.get('rnnoise', {})
-
-            # Validate model choice
             model = rnnoise_data.get('model', 'rnnoise')
             valid_models = rnnoise_ranges.get('model', ['rnnoise', 'deepfilter-ll', 'deepfilter'])
             if model not in valid_models:
-                model = 'rnnoise'  # Fallback to default
+                model = 'rnnoise'
 
             validated_rnnoise = RNNoiseSettings(
                 enabled=rnnoise_data.get('enabled', True),
@@ -441,23 +504,77 @@ class Preset:
                 model=model,
             )
 
+            # Extract and validate de-esser settings
+            deesser_data = data.get('deesser', {})
+            deesser_ranges = VALIDATION_RANGES['deesser']
+            low_cut_hz = _validate_range(
+                deesser_data.get('low_cut_hz', 4000.0),
+                *deesser_ranges['low_cut_hz'],
+                'low_cut_hz', 'deesser'
+            )
+            high_cut_hz = _validate_range(
+                deesser_data.get('high_cut_hz', 9000.0),
+                *deesser_ranges['high_cut_hz'],
+                'high_cut_hz', 'deesser'
+            )
+            if high_cut_hz <= low_cut_hz + 200.0:
+                high_cut_hz = min(16000.0, low_cut_hz + 200.0)
+                low_cut_hz = min(low_cut_hz, high_cut_hz - 200.0)
+
+            validated_deesser = DeEsserSettings(
+                enabled=deesser_data.get('enabled', False),
+                auto_enabled=bool(deesser_data.get('auto_enabled', True)),
+                auto_amount=_validate_range(
+                    float(deesser_data.get('auto_amount', 0.5)),
+                    *deesser_ranges['auto_amount'],
+                    'auto_amount', 'deesser'
+                ),
+                low_cut_hz=low_cut_hz,
+                high_cut_hz=high_cut_hz,
+                threshold_db=_validate_range(
+                    deesser_data.get('threshold_db', -28.0),
+                    *deesser_ranges['threshold_db'],
+                    'threshold_db', 'deesser'
+                ),
+                ratio=_validate_range(
+                    deesser_data.get('ratio', 4.0),
+                    *deesser_ranges['ratio'],
+                    'ratio', 'deesser'
+                ),
+                attack_ms=_validate_range(
+                    deesser_data.get('attack_ms', 2.0),
+                    *deesser_ranges['attack_ms'],
+                    'attack_ms', 'deesser'
+                ),
+                release_ms=_validate_range(
+                    deesser_data.get('release_ms', 80.0),
+                    *deesser_ranges['release_ms'],
+                    'release_ms', 'deesser'
+                ),
+                max_reduction_db=_validate_range(
+                    deesser_data.get('max_reduction_db', 6.0),
+                    *deesser_ranges['max_reduction_db'],
+                    'max_reduction_db', 'deesser'
+                ),
+            )
+
             return cls(
                 name=data.get('name', 'Unnamed'),
                 description=data.get('description', ''),
-                version=data.get('version', '1.2.0'),
+                version=data.get('version', '1.7.0'),
                 gate=validated_gate,
                 eq=validated_eq,
                 rnnoise=validated_rnnoise,
+                deesser=validated_deesser,
                 compressor=validated_comp,
                 limiter=validated_lim,
                 bypass=data.get('bypass', False),
             )
-        except (KeyError, TypeError, ValueError) as e:
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
             # Convert generic errors to actionable validation errors
             raise PresetValidationError(
                 f"Preset data is invalid or corrupted: {e}"
             )
-
 
 def save_preset(preset: Preset, filepath: Optional[Path] = None) -> Path:
     """
@@ -500,34 +617,44 @@ def load_preset(filepath: Path) -> Preset:
         PresetValidationError: If validation fails or path is unsafe.
         json.JSONDecodeError: If the file is not valid JSON.
     """
-    filepath = Path(filepath)
+    requested_path = Path(filepath)
 
-    # Path traversal protection - check before resolving
-    path_str = str(filepath)
-    if '..' in path_str:
+    if requested_path.suffix.lower() != '.json':
         raise PresetValidationError(
-            f"Invalid preset path: '{filepath.name}' - path traversal not allowed"
+            f"Invalid preset file: '{requested_path.name}' - must be a .json file"
         )
 
-    # Resolve to absolute path
-    filepath = filepath.resolve()
-    path_str = str(filepath)
+    if not requested_path.exists():
+        raise PresetValidationError(f"Preset file not found: '{requested_path.name}'")
 
-    # Block system directories
-    if path_str.startswith('/etc') or path_str.startswith('C:\\Windows'):
+    try:
+        resolved_path = requested_path.resolve(strict=True)
+    except OSError as e:
         raise PresetValidationError(
-            f"Invalid preset path: '{filepath.name}' - system paths not allowed"
+            f"Invalid preset path: '{requested_path.name}' - {e}"
         )
 
-    if not filepath.exists():
-        raise PresetValidationError(f"Preset file not found: '{filepath.name}'")
-
-    if not filepath.suffix.lower() == '.json':
+    if not resolved_path.is_file():
         raise PresetValidationError(
-            f"Invalid preset file: '{filepath.name}' - must be a .json file"
+            f"Invalid preset path: '{requested_path.name}' - not a file"
         )
 
-    with open(filepath, 'r', encoding='utf-8') as f:
+    allowed_roots = [
+        get_presets_dir().resolve(),
+        get_preset_imports_dir().resolve(),
+    ]
+    within_allowed_root = any(
+        root == resolved_path or root in resolved_path.parents
+        for root in allowed_roots
+    )
+    if not within_allowed_root:
+        allowed_display = ", ".join(str(root) for root in allowed_roots)
+        raise PresetValidationError(
+            f"Invalid preset path: '{requested_path.name}' - "
+            f"path must be inside allowed preset roots: {allowed_display}"
+        )
+
+    with open(resolved_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     return Preset.from_dict(data)
@@ -547,7 +674,7 @@ def list_presets() -> list[tuple[str, Path]]:
         try:
             preset = load_preset(filepath)
             presets.append((preset.name, filepath))
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, PresetValidationError, TypeError, ValueError):
             # Skip invalid files
             continue
 
@@ -575,6 +702,31 @@ def generate_auto_eq_preset_name(target_curve: str) -> str:
 
 
 @dataclass
+class LatencyCalibrationProfile:
+    """Measured latency calibration result for one input/output pair."""
+    measured_round_trip_ms: float
+    estimated_one_way_ms: float
+    applied_compensation_ms: float
+    confidence: float
+    sample_rate: int = 48000
+    timestamp_utc: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'LatencyCalibrationProfile':
+        return cls(
+            measured_round_trip_ms=float(data.get('measured_round_trip_ms', 0.0)),
+            estimated_one_way_ms=float(data.get('estimated_one_way_ms', 0.0)),
+            applied_compensation_ms=float(data.get('applied_compensation_ms', 0.0)),
+            confidence=float(data.get('confidence', 0.0)),
+            sample_rate=int(data.get('sample_rate', 48000)),
+            timestamp_utc=str(data.get('timestamp_utc', '')),
+        )
+
+
+@dataclass
 class AppConfig:
     """Application configuration (persisted settings)."""
     last_input_device: str = ""
@@ -582,6 +734,8 @@ class AppConfig:
     last_preset: str = ""
     startup_preset: str = ""  # Preset to load on startup (empty = last used)
     window_geometry: Optional[dict] = None
+    use_measured_latency: bool = True
+    latency_calibration_profiles: dict[str, LatencyCalibrationProfile] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Convert config to dictionary."""
@@ -591,17 +745,34 @@ class AppConfig:
             'last_preset': self.last_preset,
             'startup_preset': self.startup_preset,
             'window_geometry': self.window_geometry,
+            'use_measured_latency': self.use_measured_latency,
+            'latency_calibration_profiles': {
+                key: profile.to_dict()
+                for key, profile in self.latency_calibration_profiles.items()
+            },
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> 'AppConfig':
         """Create config from dictionary."""
+        raw_profiles = data.get('latency_calibration_profiles', {}) or {}
+        parsed_profiles: dict[str, LatencyCalibrationProfile] = {}
+        if isinstance(raw_profiles, dict):
+            for key, value in raw_profiles.items():
+                if isinstance(value, dict):
+                    try:
+                        parsed_profiles[str(key)] = LatencyCalibrationProfile.from_dict(value)
+                    except (TypeError, ValueError):
+                        continue
+
         return cls(
             last_input_device=data.get('last_input_device', ''),
             last_output_device=data.get('last_output_device', ''),
             last_preset=data.get('last_preset', ''),
             startup_preset=data.get('startup_preset', ''),
             window_geometry=data.get('window_geometry'),
+            use_measured_latency=bool(data.get('use_measured_latency', True)),
+            latency_calibration_profiles=parsed_profiles,
         )
 
 
@@ -623,7 +794,7 @@ def load_config() -> AppConfig:
         with open(filepath, 'r', encoding='utf-8') as f:
             data = json.load(f)
         return AppConfig.from_dict(data)
-    except (json.JSONDecodeError, KeyError):
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return AppConfig()
 
 
@@ -632,7 +803,7 @@ BUILTIN_PRESETS = {
     'voice': Preset(
         name="Voice Clarity",
         description="Optimized for voice communication - cuts low end rumble and boosts presence",
-        version="1.6.0",
+        version="1.7.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),
@@ -646,7 +817,7 @@ BUILTIN_PRESETS = {
     'bass_cut': Preset(
         name="Bass Cut",
         description="High-pass effect to remove low frequency rumble and proximity effect",
-        version="1.6.0",
+        version="1.7.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),
@@ -660,7 +831,7 @@ BUILTIN_PRESETS = {
     'presence': Preset(
         name="Presence Boost",
         description="Enhances voice presence and intelligibility",
-        version="1.6.0",
+        version="1.7.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),
@@ -674,7 +845,7 @@ BUILTIN_PRESETS = {
     'flat': Preset(
         name="Flat",
         description="No EQ processing - flat frequency response",
-        version="1.6.0",
+        version="1.7.0",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),
@@ -688,7 +859,7 @@ BUILTIN_PRESETS = {
     'minimal': Preset(
         name="Minimal Processing",
         description="Gate and RNNoise only - no EQ",
-        version="1.6.0",
+        version="1.7.0",
         gate=GateSettings(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),
@@ -702,7 +873,7 @@ BUILTIN_PRESETS = {
     'aggressive_denoise': Preset(
         name="Aggressive Denoise",
         description="Maximum noise reduction with tight gate",
-        version="1.6.0",
+        version="1.7.0",
         gate=GateSettings(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),
@@ -754,7 +925,7 @@ def _test_vad_preset_persistence():
         # Create preset with VAD settings
         original = Preset(
             name="VAD Test",
-            version="1.6.0",
+            version="1.7.0",
             gate=GateSettings(
                 enabled=True,
                 threshold_db=-35.0,

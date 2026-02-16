@@ -461,8 +461,9 @@ impl VadAutoGate {
             hold_timer: 0.0,
             timer_running: false,
             prev_gate_open: false,
-            closed_counter_samples: 0.0,
             debounce_time_ms: 50.0, // 50ms debounce to prevent oscillation
+            // Start "matured" so the first utterance can open immediately.
+            closed_counter_samples: sample_rate as f32 * 0.05,
             sample_rate,
             current_probability: 0.0,
         }
@@ -475,9 +476,7 @@ impl VadAutoGate {
             return (false, 0.0);
         }
 
-        let vad = self.vad.as_mut().unwrap();
-
-        let prob = match vad.process(samples) {
+        let prob = match self.vad.as_mut().unwrap().process(samples) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("VAD processing error: {}", e);
@@ -485,66 +484,85 @@ impl VadAutoGate {
             }
         };
 
-        self.current_probability = prob;
+        self.process_with_probability(samples, prob)
+    }
 
-        let vad_speech_detected = prob > self.vad_threshold;
-
+    fn update_noise_floor_estimate(&mut self, current_rms: f32, prob: f32) {
         // Update noise floor estimate during LOW-CONFIDENCE periods (pauses, breaths, background noise)
-        // Uses probability threshold instead of binary speech detection to catch more update opportunities
-        // Uses asymmetric rates: fast attack when noise increases, slow release when decreases
-
-        // DEBUG: Log why adaptation is NOT happening
-        static ADAPT_DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        // Uses probability threshold instead of binary speech detection to catch more update opportunities.
+        static ADAPT_DEBUG_COUNT: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
         let mut adapt_debug_count = 0usize;
         if GATE_DEBUG {
-            adapt_debug_count = ADAPT_DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            adapt_debug_count =
+                ADAPT_DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         if GATE_DEBUG && adapt_debug_count < 30 {
             if !self.auto_threshold_enabled {
                 eprintln!("[ADAPT-DEBUG] Auto-threshold DISABLED - skipping noise floor update");
             } else if prob >= 0.4 {
-                eprintln!("[ADAPT-DEBUG] prob {:.2} >= 0.4 - skipping (speech detected)", prob);
+                eprintln!(
+                    "[ADAPT-DEBUG] prob {:.2} >= 0.4 - skipping (speech detected)",
+                    prob
+                );
             }
         }
 
-        if self.auto_threshold_enabled && prob < 0.4 {  // Low confidence: prob < 0.4 catches pauses, breaths
-            let current_rms = compute_rms_db(samples);
-
-            if GATE_DEBUG && adapt_debug_count < 30 {
-                eprintln!("[ADAPT-DEBUG] Checking RMS: {:.1} dB (need > -100.0)", current_rms);
-            }
-
-            // Only adapt when there's actual audio activity (not dead silence)
-            // Lower threshold (-100 dB) accommodates quiet rooms and sensitive mics
-            if current_rms > -100.0 {
-                let old_floor = self.noise_floor;
-
-                // Asymmetric rates: fast response to noise increases, slow recovery from decreases
-                // This prevents "pumping" when noise fluctuates around the threshold
-                let rate = if current_rms > self.noise_floor {
-                    0.02    // ATTACK: Fast when room gets louder (~0.5 seconds)
-                } else {
-                    0.005   // RELEASE: 4x slower when room gets quieter (~2 seconds)
-                };
-                // Exponential smoothing: new_val = rate * sample + (1 - rate) * old_val
-                self.noise_floor = rate * current_rms + (1.0 - rate) * self.noise_floor;
-                // Clamp to valid range
-                self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
-
-                // Log ALL updates when debugging (not just significant ones)
-                if GATE_DEBUG && adapt_debug_count < 30 {
-                    let auto_threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
-                    eprintln!("[AUTO-THRESHOLD] Noise floor: {:.1} -> {:.1} dB (RMS: {:.1} dB, prob={:.2}, threshold={:.1} dB)",
-                        old_floor, self.noise_floor, current_rms, prob, auto_threshold);
-                } else if GATE_DEBUG && (self.noise_floor - old_floor).abs() > 0.1 {
-                    // After debug period, only log significant changes
-                    let auto_threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
-                    eprintln!("[AUTO-THRESHOLD] Noise floor: {:.1} -> {:.1} dB (RMS: {:.1} dB, prob={:.2}, threshold={:.1} dB)",
-                        old_floor, self.noise_floor, current_rms, prob, auto_threshold);
-                }
-            }
+        if !(self.auto_threshold_enabled && prob < 0.4) {
+            return;
         }
+
+        if GATE_DEBUG && adapt_debug_count < 30 {
+            eprintln!("[ADAPT-DEBUG] Checking RMS: {:.1} dB (need > -100.0)", current_rms);
+        }
+
+        // Only adapt when there's actual audio activity (not dead silence).
+        if current_rms <= -100.0 {
+            return;
+        }
+
+        let old_floor = self.noise_floor;
+
+        // Use configured adaptation_rate as the base tuning knob, with asymmetry
+        // for faster attack and slower release to reduce pumping.
+        let base_rate = self.adaptation_rate.clamp(0.0001, 0.02);
+        let attack_rate = (base_rate * 20.0).clamp(0.002, 0.2);
+        let release_rate = (base_rate * 5.0).clamp(0.0005, 0.1);
+        let rate = if current_rms > self.noise_floor {
+            attack_rate
+        } else {
+            release_rate
+        };
+
+        // Exponential smoothing: new_val = rate * sample + (1 - rate) * old_val
+        self.noise_floor = rate * current_rms + (1.0 - rate) * self.noise_floor;
+        // Clamp to valid range
+        self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
+
+        // Log ALL updates when debugging (not just significant ones).
+        if GATE_DEBUG && adapt_debug_count < 30 {
+            let auto_threshold =
+                (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
+            eprintln!(
+                "[AUTO-THRESHOLD] Noise floor: {:.1} -> {:.1} dB (RMS: {:.1} dB, prob={:.2}, threshold={:.1} dB)",
+                old_floor, self.noise_floor, current_rms, prob, auto_threshold
+            );
+        } else if GATE_DEBUG && (self.noise_floor - old_floor).abs() > 0.1 {
+            let auto_threshold =
+                (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
+            eprintln!(
+                "[AUTO-THRESHOLD] Noise floor: {:.1} -> {:.1} dB (RMS: {:.1} dB, prob={:.2}, threshold={:.1} dB)",
+                old_floor, self.noise_floor, current_rms, prob, auto_threshold
+            );
+        }
+    }
+
+    fn process_with_probability(&mut self, samples: &[f32], prob: f32) -> (bool, f32) {
+        self.current_probability = prob;
+
+        let vad_speech_detected = prob > self.vad_threshold;
+        self.update_noise_floor_estimate(compute_rms_db(samples), prob);
 
         // Debug: Log VAD decision
         if GATE_DEBUG && (prob > 0.0 || prob < 0.01) {
@@ -627,8 +645,16 @@ impl VadAutoGate {
         // STANDARD GATE BEHAVIOR:
         // If the raw gate is open, we reset the hold timer to max.
         // This keeps the gate open for 'hold_time' AFTER the signal drops.
+        let debounce_samples = self.debounce_time_ms / 1000.0 * self.sample_rate as f32;
+        let rising_edge = gate_open && !self.prev_gate_open;
+        let debounce_ready = self.closed_counter_samples >= debounce_samples;
+        let debounced_gate_open = if rising_edge && !debounce_ready {
+            false
+        } else {
+            gate_open
+        };
 
-        if gate_open {
+        if debounced_gate_open {
             // Signal is valid (Open) -> Reset timer and keep running
             self.hold_timer = self.hold_time_ms / 1000.0 * self.sample_rate as f32;
             self.timer_running = true;
@@ -652,10 +678,10 @@ impl VadAutoGate {
             }
         }
 
-        self.prev_gate_open = gate_open;
+        self.prev_gate_open = debounced_gate_open;
 
         // Gate is open if raw signal is open OR timer is still running
-        let final_gate_open = gate_open || self.timer_running;
+        let final_gate_open = debounced_gate_open || self.timer_running;
 
         final_gate_open
     }
@@ -720,7 +746,7 @@ impl VadAutoGate {
         self.hold_timer = 0.0;
         self.timer_running = false;
         self.prev_gate_open = false;
-        self.closed_counter_samples = 0.0;
+        self.closed_counter_samples = self.debounce_time_ms / 1000.0 * self.sample_rate as f32;
         self.current_probability = 0.0;
         if let Some(vad) = &mut self.vad {
             vad.reset();
@@ -812,5 +838,73 @@ mod tests {
     fn test_gate_mode_enum() {
         assert_ne!(GateMode::ThresholdOnly, GateMode::VadAssisted);
         assert_ne!(GateMode::VadAssisted, GateMode::VadOnly);
+    }
+
+    #[test]
+    fn test_hold_time_persists_gate_after_speech_drop() {
+        let mut gate = VadAutoGate::new(48000, 0.5);
+        gate.set_gate_mode(GateMode::VadOnly);
+        gate.set_hold_time(100.0);
+
+        let frame = vec![0.01f32; 480]; // 10ms at 48kHz
+
+        // Open gate with strong speech probability.
+        let (open, _) = gate.process_with_probability(&frame, 0.9);
+        assert!(open);
+
+        // Hold should keep gate open for ~100ms after raw close.
+        for _ in 0..5 {
+            let (held_open, _) = gate.process_with_probability(&frame, 0.0);
+            assert!(held_open);
+        }
+
+        let mut final_state = true;
+        for _ in 0..6 {
+            let (state, _) = gate.process_with_probability(&frame, 0.0);
+            final_state = state;
+        }
+        assert!(!final_state);
+    }
+
+    #[test]
+    fn test_debounce_blocks_short_reopen_glitch() {
+        let mut gate = VadAutoGate::new(48000, 0.5);
+        gate.set_gate_mode(GateMode::VadOnly);
+        gate.set_hold_time(0.0); // isolate debounce behavior
+
+        let frame = vec![0.01f32; 480]; // 10ms
+
+        // Open, then close.
+        assert!(gate.process_with_probability(&frame, 0.9).0);
+        assert!(!gate.process_with_probability(&frame, 0.0).0);
+
+        // Short reopen should be blocked by 50ms debounce.
+        assert!(!gate.process_with_probability(&frame, 0.9).0);
+
+        // After enough closed time, reopen should be allowed.
+        for _ in 0..5 {
+            let _ = gate.process_with_probability(&frame, 0.0);
+        }
+        assert!(gate.process_with_probability(&frame, 0.9).0);
+    }
+
+    #[test]
+    fn test_auto_threshold_adapts_toward_background_level() {
+        let mut gate = VadAutoGate::new(48000, 0.5);
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_auto_threshold(true);
+
+        let initial_floor = gate.noise_floor();
+
+        // Constant background around -45 dBFS.
+        let amp = 10f32.powf(-45.0 / 20.0);
+        let frame = vec![amp; 480]; // 10ms
+
+        for _ in 0..250 {
+            let _ = gate.process_with_probability(&frame, 0.1);
+        }
+
+        assert!(gate.noise_floor() > initial_floor + 4.0);
+        assert!(gate.noise_floor() < -40.0);
     }
 }

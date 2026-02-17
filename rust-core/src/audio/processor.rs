@@ -657,7 +657,7 @@ impl AudioProcessor {
 
                                             // Stage 3: De-esser
                                             if deesser_enabled.load(Ordering::Acquire) {
-                                                if let Ok(mut d) = deesser.lock() {
+                                                if let Ok(mut d) = deesser.try_lock() {
                                                     d.process_block_inplace(output_slice);
                                                     deesser_gain_reduction.store(
                                                         d.current_gain_reduction_db().to_bits(),
@@ -674,7 +674,7 @@ impl AudioProcessor {
 
                                             // Stage 4: EQ
                                             if eq_enabled.load(Ordering::Acquire) {
-                                                if let Ok(mut e) = eq.lock() {
+                                                if let Ok(mut e) = eq.try_lock() {
                                                     e.process_block_inplace(output_slice);
                                                 } else {
                                                     lock_contention_count
@@ -684,7 +684,7 @@ impl AudioProcessor {
 
                                             // Stage 5: Compressor
                                             if compressor_enabled.load(Ordering::Acquire) {
-                                                if let Ok(mut c) = compressor.lock() {
+                                                if let Ok(mut c) = compressor.try_lock() {
                                                     c.process_block_inplace(output_slice);
                                                     // Store gain reduction for metering
                                                     compressor_gain_reduction.store(
@@ -713,7 +713,7 @@ impl AudioProcessor {
 
                                             // Stage 6: Hard Limiter (LAST - safety ceiling)
                                             if limiter_enabled.load(Ordering::Acquire) {
-                                                if let Ok(mut l) = limiter.lock() {
+                                                if let Ok(mut l) = limiter.try_lock() {
                                                     l.process_block_inplace(output_slice);
                                                 } else {
                                                     lock_contention_count
@@ -763,7 +763,7 @@ impl AudioProcessor {
                                         suppressor_buffer_len.store(0, Ordering::Relaxed);
 
                                         if deesser_enabled.load(Ordering::Acquire) {
-                                            if let Ok(mut d) = deesser.lock() {
+                                            if let Ok(mut d) = deesser.try_lock() {
                                                 d.process_block_inplace(buffer);
                                                 deesser_gain_reduction.store(
                                                     d.current_gain_reduction_db().to_bits(),
@@ -779,7 +779,7 @@ impl AudioProcessor {
                                         }
 
                                         if eq_enabled.load(Ordering::Acquire) {
-                                            if let Ok(mut e) = eq.lock() {
+                                            if let Ok(mut e) = eq.try_lock() {
                                                 e.process_block_inplace(buffer);
                                             } else {
                                                 lock_contention_count
@@ -788,7 +788,7 @@ impl AudioProcessor {
                                         }
 
                                         if compressor_enabled.load(Ordering::Acquire) {
-                                            if let Ok(mut c) = compressor.lock() {
+                                            if let Ok(mut c) = compressor.try_lock() {
                                                 c.process_block_inplace(buffer);
                                                 compressor_gain_reduction.store(
                                                     (c.current_gain_reduction() as f32).to_bits(),
@@ -811,7 +811,7 @@ impl AudioProcessor {
                                         }
 
                                         if limiter_enabled.load(Ordering::Acquire) {
-                                            if let Ok(mut l) = limiter.lock() {
+                                            if let Ok(mut l) = limiter.try_lock() {
                                                 l.process_block_inplace(buffer);
                                             } else {
                                                 lock_contention_count
@@ -856,7 +856,7 @@ impl AudioProcessor {
 
                                     // Stage 3: De-esser
                                     if deesser_enabled.load(Ordering::Acquire) {
-                                        if let Ok(mut d) = deesser.lock() {
+                                        if let Ok(mut d) = deesser.try_lock() {
                                             d.process_block_inplace(buffer);
                                             deesser_gain_reduction.store(
                                                 d.current_gain_reduction_db().to_bits(),
@@ -872,7 +872,7 @@ impl AudioProcessor {
 
                                     // Stage 4: EQ
                                     if eq_enabled.load(Ordering::Acquire) {
-                                        if let Ok(mut e) = eq.lock() {
+                                        if let Ok(mut e) = eq.try_lock() {
                                             e.process_block_inplace(buffer);
                                         } else {
                                             lock_contention_count.fetch_add(1, Ordering::Relaxed);
@@ -881,7 +881,7 @@ impl AudioProcessor {
 
                                     // Stage 5: Compressor
                                     if compressor_enabled.load(Ordering::Acquire) {
-                                        if let Ok(mut c) = compressor.lock() {
+                                        if let Ok(mut c) = compressor.try_lock() {
                                             c.process_block_inplace(buffer);
                                             compressor_gain_reduction.store(
                                                 (c.current_gain_reduction() as f32).to_bits(),
@@ -906,7 +906,7 @@ impl AudioProcessor {
 
                                     // Stage 6: Hard Limiter (LAST - safety ceiling)
                                     if limiter_enabled.load(Ordering::Acquire) {
-                                        if let Ok(mut l) = limiter.lock() {
+                                        if let Ok(mut l) = limiter.try_lock() {
                                             l.process_block_inplace(buffer);
                                         } else {
                                             lock_contention_count.fetch_add(1, Ordering::Relaxed);

@@ -697,8 +697,6 @@ mod tests {
         let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48000.0);
         comp.set_adaptive_release(true);
 
-        let sample_rate = 48000.0;
-
         // Test at 0.5 seconds overage (should be ~25% of max scaling)
         let quarter_signal = vec![0.3f32; (24000.0) as usize]; // 0.5 seconds
         for sample in &quarter_signal {

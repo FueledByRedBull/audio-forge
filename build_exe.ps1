@@ -12,8 +12,11 @@ if (-not $localPyd) {
 }
 Write-Host "Using local mic_eq_core: $($localPyd.FullName)" -ForegroundColor Cyan
 
-# Get Python standard library path
-$pythonStdlib = python -c "import sys; import os; print(os.path.join(sys.prefix, 'Lib'))"
+# Use venv Python to ensure correct environment
+$venvPython = ".\.venv\Scripts\python.exe"
+
+# Get Python standard library path from the same interpreter used for build
+$pythonStdlib = & $venvPython -c "import sys; import os; print(os.path.join(sys.prefix, 'Lib'))"
 
 # Build arguments list
 $pyinstallerArgs = @(
@@ -53,8 +56,6 @@ if (Test-Path "mic_eq.ico") {
 # Build
 Write-Host "Building executable..." -ForegroundColor Cyan
 
-# Use venv Python to ensure correct environment
-$venvPython = ".\.venv\Scripts\python.exe"
 & $venvPython -m PyInstaller @pyinstallerArgs
 
 if ($LASTEXITCODE -eq 0) {

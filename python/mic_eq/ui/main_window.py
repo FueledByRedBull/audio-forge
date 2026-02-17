@@ -43,8 +43,9 @@ from .compressor_panel import CompressorPanel
 from .deesser_panel import DeEsserPanel
 from .level_meter import LevelMeter
 from .calibration_dialog import CalibrationDialog
+from .latency_calibration_dialog import LatencyCalibrationDialog
 from .layout_constants import SPACING_SECTION, SPACING_NORMAL
-from .. import AudioProcessor, list_input_devices, list_output_devices
+from .. import AudioProcessor, __version__, list_input_devices, list_output_devices
 from ..config import (
     Preset,
     GateSettings,
@@ -62,6 +63,7 @@ from ..config import (
     save_config,
     load_config,
     AppConfig,
+    LatencyCalibrationProfile,
 )
 
 
@@ -500,6 +502,18 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda checked, name=name: self._set_startup_preset(name))
             startup_menu.addAction(action)
 
+        options_menu.addSeparator()
+
+        self.use_measured_latency_action = QAction("Use Measured Latency Compensation", self)
+        self.use_measured_latency_action.setCheckable(True)
+        self.use_measured_latency_action.setChecked(self.config.use_measured_latency)
+        self.use_measured_latency_action.toggled.connect(self._on_use_measured_latency_toggled)
+        options_menu.addAction(self.use_measured_latency_action)
+
+        latency_calibration_action = QAction("Run Latency Calibration...", self)
+        latency_calibration_action.triggered.connect(self._on_latency_calibration_clicked)
+        options_menu.addAction(latency_calibration_action)
+
     def _set_startup_preset(self, preset_name: str):
         """Set the startup preset and update checked states.
 
@@ -536,6 +550,61 @@ class MainWindow(QMainWindow):
                                     preset_action.setChecked(preset_action.text() == preset_name)
                         break
                 break
+
+    def _latency_profile_key(self) -> str:
+        input_name = self.input_combo.currentData() or "default-input"
+        output_name = self.output_combo.currentData() or "default-output"
+        return f"{input_name}||{output_name}"
+
+    def _current_latency_profile(self) -> LatencyCalibrationProfile | None:
+        return self.config.latency_calibration_profiles.get(self._latency_profile_key())
+
+    def _apply_latency_compensation_for_current_devices(self):
+        compensation_ms = 0.0
+        profile = self._current_latency_profile()
+
+        if self.config.use_measured_latency and profile is not None:
+            compensation_ms = max(0.0, float(profile.applied_compensation_ms))
+
+        try:
+            self.processor.set_latency_compensation_ms(compensation_ms)
+        except Exception as e:
+            print(f"Failed to apply latency compensation: {type(e).__name__}: {e}")
+
+    def _on_use_measured_latency_toggled(self, enabled: bool):
+        self.config.use_measured_latency = bool(enabled)
+        save_config(self.config)
+        self._apply_latency_compensation_for_current_devices()
+        mode = "enabled" if enabled else "disabled"
+        self.status_bar.showMessage(f"Measured latency compensation {mode}", 4000)
+
+    def _on_latency_calibration_clicked(self):
+        profile = self._current_latency_profile()
+        existing_profile = profile.to_dict() if profile is not None else None
+
+        dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
+        dialog.calibration_saved.connect(self._on_latency_calibration_saved)
+        dialog.calibration_reset.connect(self._on_latency_calibration_reset)
+        dialog.exec()
+
+    def _on_latency_calibration_saved(self, profile_data: dict):
+        profile = LatencyCalibrationProfile.from_dict(profile_data)
+        key = self._latency_profile_key()
+        self.config.latency_calibration_profiles[key] = profile
+        save_config(self.config)
+        self._apply_latency_compensation_for_current_devices()
+        self.status_bar.showMessage(
+            f"Latency calibration saved for current device pair ({profile.applied_compensation_ms:.1f} ms)",
+            5000,
+        )
+
+    def _on_latency_calibration_reset(self):
+        key = self._latency_profile_key()
+        if key in self.config.latency_calibration_profiles:
+            del self.config.latency_calibration_profiles[key]
+            save_config(self.config)
+        self._apply_latency_compensation_for_current_devices()
+        self.status_bar.showMessage("Latency calibration reset for current device pair", 4000)
 
     def _refresh_devices(self):
         """Refresh the device lists."""
@@ -736,9 +805,9 @@ class MainWindow(QMainWindow):
             height = geom.get('height', 750)
             x = geom.get('x', 100)
             y = geom.get('y', 100)
-            self.restoreGeometry(
-                bytes(f"{width}x{height}+{x}+{y}", 'utf-8')
-            )
+            self.setGeometry(int(x), int(y), int(width), int(height))
+
+        self._apply_latency_compensation_for_current_devices()
 
     def _on_device_changed(self):
         """Handle device selection change - save to config."""
@@ -746,6 +815,7 @@ class MainWindow(QMainWindow):
             self.config.last_input_device = self.input_combo.currentData() or ""
             self.config.last_output_device = self.output_combo.currentData() or ""
             save_config(self.config)
+            self._apply_latency_compensation_for_current_devices()
 
     def _start_processing(self):
         """Start audio processing."""
@@ -1125,7 +1195,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About AudioForge",
-            "<h2>AudioForge v1.5.0</h2>"
+            f"<h2>AudioForge v{__version__}</h2>"
             "<p>Low-latency microphone audio processor</p>"
             "<p>Inspired by SteelSeries GG Sonar ClearCast AI</p>"
             "<h3>Processing Chain:</h3>"

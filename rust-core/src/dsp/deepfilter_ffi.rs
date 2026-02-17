@@ -81,12 +81,6 @@ struct DeepFilterLib {
     df_set_post_filter_beta: DfSetPostFilterBetaFn,
 }
 
-// SAFETY: The library owns the function pointers and ensures they remain valid
-// for the lifetime of the library. The wrapper only accesses them through &self.
-// Function pointers are safe to share between threads (they're just addresses).
-unsafe impl Send for DeepFilterLib {}
-unsafe impl Sync for DeepFilterLib {}
-
 /// DeepFilterNet model variant
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeepFilterModel {
@@ -288,21 +282,24 @@ or place {} next to the executable (or in exe-dir/lib or exe-dir/libs).",
 /// through Rust's borrowing rules (&mut self).
 pub struct DeepFilterFFI {
     _lib: Arc<DeepFilterLib>, // Keep library loaded
-    ptr: *mut DFState,
+    // Store opaque C pointer as address-sized integer so the wrapper remains
+    // structurally Send without requiring manual unsafe Send impls.
+    ptr_addr: usize,
     frame_size: usize,
 }
 
-// SAFETY: DeepFilterNet's C API is thread-safe for single-threaded access
-// We enforce this through Rust's &mut self requirement
-unsafe impl Send for DeepFilterFFI {}
-
 impl DeepFilterFFI {
+    #[inline]
+    fn state_ptr(&self) -> *mut DFState {
+        self.ptr_addr as *mut DFState
+    }
+
     /// Create a new DeepFilterNet instance using model from file system
     ///
     /// # Safety
     /// This function calls unsafe FFI functions to create the DeepFilterNet instance.
     /// It validates the returned pointer and returns an error if creation failed.
-    pub fn new(lib: Arc<DeepFilterLib>, model: DeepFilterModel) -> Result<Self, String> {
+    fn new(lib: Arc<DeepFilterLib>, model: DeepFilterModel) -> Result<Self, String> {
         // Find model path
         let model_path = find_model_path(model)
             .ok_or_else(|| {
@@ -345,7 +342,7 @@ impl DeepFilterFFI {
 
             Ok(Self {
                 _lib: lib,
-                ptr,
+                ptr_addr: ptr as usize,
                 frame_size,
             })
         }
@@ -385,9 +382,10 @@ impl DeepFilterFFI {
         unsafe {
             let input_ptr = input_frame.as_mut_ptr();
             let output_ptr = output.as_mut_ptr();
+            let state_ptr = self.state_ptr();
 
             let df_process_frame = self._lib.df_process_frame;
-            let lsnr = df_process_frame(self.ptr, input_ptr, output_ptr);
+            let lsnr = df_process_frame(state_ptr, input_ptr, output_ptr);
 
             if lsnr.is_nan() {
                 return Err("DeepFilterNet processing failed (returned NaN)".to_string());
@@ -401,7 +399,7 @@ impl DeepFilterFFI {
     pub fn set_atten_lim(&mut self, lim_db: f32) {
         unsafe {
             let df_set_atten_lim = self._lib.df_set_atten_lim;
-            df_set_atten_lim(self.ptr, lim_db);
+            df_set_atten_lim(self.state_ptr(), lim_db);
         }
     }
 
@@ -409,7 +407,7 @@ impl DeepFilterFFI {
     pub fn set_post_filter_beta(&mut self, beta: f32) {
         unsafe {
             let df_set_post_filter_beta = self._lib.df_set_post_filter_beta;
-            df_set_post_filter_beta(self.ptr, beta);
+            df_set_post_filter_beta(self.state_ptr(), beta);
         }
     }
 }
@@ -418,7 +416,7 @@ impl Drop for DeepFilterFFI {
     fn drop(&mut self) {
         unsafe {
             let df_free = self._lib.df_free;
-            df_free(self.ptr);
+            df_free(self.state_ptr());
         }
     }
 }
@@ -429,7 +427,7 @@ impl Drop for DeepFilterFFI {
 
 pub struct DeepFilterProcessor {
     df: Option<DeepFilterFFI>, // Option for graceful fallback if FFI fails
-    lib: Option<Arc<DeepFilterLib>>, // Keep library loaded
+    _lib: Option<Arc<DeepFilterLib>>, // Keep library loaded
     input_buffer: Vec<f32>,
     output_buffer: Vec<f32>,
     enabled: bool,
@@ -496,7 +494,7 @@ impl DeepFilterProcessor {
 
         Self {
             df,
-            lib,
+            _lib: lib,
             input_buffer: Vec::with_capacity(DEEPFILTER_FRAME_SIZE * 4),
             output_buffer: Vec::with_capacity(DEEPFILTER_FRAME_SIZE * 4),
             enabled: true,

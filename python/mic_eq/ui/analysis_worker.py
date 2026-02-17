@@ -4,6 +4,7 @@ Non-blocking analysis worker for Auto-EQ calibration.
 Runs audio analysis in background thread with step-by-step progress signals.
 Extends RecordingWorker pattern from Phase 18 for analysis workflow.
 """
+import threading
 import time
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -43,6 +44,14 @@ class AnalysisWorker(QThread):
         self.sample_rate = sample_rate
         self.target_preset = target_preset
         self._start_time = None
+        self._stop_event = threading.Event()
+
+    def stop(self):
+        """Request cooperative cancellation."""
+        self._stop_event.set()
+
+    def _should_stop(self) -> bool:
+        return self._stop_event.is_set()
 
     def run(self):
         """
@@ -54,28 +63,41 @@ class AnalysisWorker(QThread):
         self._start_time = time.time()
 
         try:
+            if self._should_stop():
+                return
+
             # Step 1: FFT analysis
             self.step_progress.emit("Computing FFT...", 10)
             freqs, spectrum_db = compute_voice_spectrum(
                 self.audio_data,
                 self.sample_rate
             )
+            if self._should_stop():
+                return
 
             # Step 2: Smoothing
             self.step_progress.emit("Smoothing spectrum...", 40)
             spectrum_smoothed = smooth_spectrum_octave(freqs, spectrum_db, fraction=6)
+            if self._should_stop():
+                return
 
             # Step 3: Get target curve
             self.step_progress.emit("Loading target curve...", 50)
             target_db = get_target_curve(freqs, self.target_preset)
+            if self._should_stop():
+                return
 
             # Step 4: Calculate EQ bands
             self.step_progress.emit("Finding frequency problems...", 70)
             eq_settings = calculate_eq_bands(freqs, spectrum_smoothed, target_db)
+            if self._should_stop():
+                return
 
             # Step 5: Validate results
             self.step_progress.emit("Validating results...", 95)
             validation = validate_analysis(eq_settings, spectrum_smoothed, freqs)
+            if self._should_stop():
+                return
 
             if not validation.passed:
                 self.failed.emit(validation.reason)

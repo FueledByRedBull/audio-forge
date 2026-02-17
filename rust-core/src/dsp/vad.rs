@@ -201,7 +201,6 @@ impl SileroVAD {
 
         // Extract exactly what we need
         let input_samples: Vec<f32> = self.buffer.drain(..self.window_size()).collect();
-        let original_len = input_samples.len();
 
         // Resample to 16kHz if needed
         let resampled = if self.sample_rate != SILERO_SAMPLE_RATE {
@@ -476,7 +475,12 @@ impl VadAutoGate {
             return (false, 0.0);
         }
 
-        let prob = match self.vad.as_mut().unwrap().process(samples) {
+        let vad = match self.vad.as_mut() {
+            Some(vad) => vad,
+            None => return (false, 0.0),
+        };
+
+        let prob = match vad.process(samples) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("VAD processing error: {}", e);

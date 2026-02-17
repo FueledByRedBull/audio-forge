@@ -86,8 +86,6 @@ def test_app_config_latency_profiles_round_trip():
         last_input_device="Mic A",
         last_output_device="Out B",
         use_measured_latency=True,
-        auto_eq_webrtc_apm_enabled=True,
-        auto_eq_distill_mos_enabled=False,
         latency_calibration_profiles={"Mic A||Out B": profile},
     )
 
@@ -95,8 +93,6 @@ def test_app_config_latency_profiles_round_trip():
     restored = AppConfig.from_dict(raw)
 
     assert restored.use_measured_latency is True
-    assert restored.auto_eq_webrtc_apm_enabled is True
-    assert restored.auto_eq_distill_mos_enabled is False
     assert "Mic A||Out B" in restored.latency_calibration_profiles
     restored_profile = restored.latency_calibration_profiles["Mic A||Out B"]
     assert restored_profile.measured_round_trip_ms == 36.5

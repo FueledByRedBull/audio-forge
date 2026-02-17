@@ -18,6 +18,9 @@ from .recording_worker import RecordingWorker
 from .analysis_worker import AnalysisWorker
 from .level_meter import LevelMeter
 import numpy as np
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Rainbow Passage - standard calibration text from audiometry
 RAINBOW_PASSAGE = """The Rainbow Passage
@@ -45,6 +48,7 @@ class CalibrationDialog(QDialog):
         self.recording_state = "idle"  # idle, recording, completed
         self.audio_data: np.ndarray | None = None
         self.worker: RecordingWorker | None = None
+        self.analysis_worker: AnalysisWorker | None = None
         self._started_processor = False  # Track if we started processor ourselves
 
         self._setup_ui()
@@ -231,6 +235,8 @@ class CalibrationDialog(QDialog):
         if DEBUG:
             print("[CALIBRATION_DLG] Start recording clicked")
 
+        self._stop_analysis_worker()
+
         # Get parent's processor (MainWindow has it)
         parent = self.parent()
         while parent and not hasattr(parent, 'processor'):
@@ -267,16 +273,31 @@ class CalibrationDialog(QDialog):
             if DEBUG:
                 print("[CALIBRATION_DLG] Processor already running, reusing existing session")
 
-        # Small delay to let DSP loop initialize
-        import time
-        time.sleep(0.1)
-
         self.recording_state = "recording"
         self.start_button.setText("Recording...")
         self.start_button.setEnabled(False)  # Prevent early stop
 
         # Lock target curve selection during recording
         self.curve_combo.setEnabled(False)
+
+        # Let DSP loop settle without blocking the UI thread.
+        QTimer.singleShot(100, self._begin_recording_worker)
+
+        self.warning_label.setText("Recording... Speak clearly into your microphone")
+        self.warning_label.setStyleSheet("color: blue; font-weight: bold; font-size: 11pt;")
+
+    def _begin_recording_worker(self):
+        """Create and start recording worker after startup settle delay."""
+        if self.recording_state != "recording":
+            return
+
+        parent = self.parent()
+        while parent and not hasattr(parent, 'processor'):
+            parent = parent.parent()
+
+        if not parent:
+            self._on_recording_failed("Could not find audio processor")
+            return
 
         # Create and start recording worker (processor already running)
         if DEBUG:
@@ -294,9 +315,6 @@ class CalibrationDialog(QDialog):
         self.worker.start()
         if DEBUG:
             print("[CALIBRATION_DLG] RecordingWorker started")
-
-        self.warning_label.setText("Recording... Speak clearly into your microphone")
-        self.warning_label.setStyleSheet("color: blue; font-weight: bold; font-size: 11pt;")
 
     def _on_progress_update(self, value: int):
         """Update progress bar."""
@@ -377,6 +395,8 @@ class CalibrationDialog(QDialog):
                 print("[ANALYSIS] No audio data to analyze")
             return
 
+        self._stop_analysis_worker()
+
         # Get parent's processor for sample rate
         parent = self.parent()
         while parent and not hasattr(parent, 'processor'):
@@ -422,6 +442,7 @@ class CalibrationDialog(QDialog):
         self.warning_label.setText(f"✓ Analysis complete! Max correction: {round(max(abs(g) for g in eq_settings['band_gains']), 1)} dB")
         self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
         self.progress_bar.setValue(100)
+        self.analysis_worker = None
 
         # Enable apply button (will be part of Phase 20)
         self.start_button.setText("Apply EQ Settings")
@@ -437,6 +458,7 @@ class CalibrationDialog(QDialog):
         self.warning_label.setStyleSheet("color: orange; font-weight: bold; font-size: 11pt;")
         self.start_button.setText("Record Again")
         self.start_button.setEnabled(True)
+        self.analysis_worker = None
 
     def _on_retake_clicked(self):
         """Discard and re-record."""
@@ -460,17 +482,20 @@ class CalibrationDialog(QDialog):
                 if self.worker:
                     self.worker.stop()
                     self.worker.wait(1500)
+                self._stop_analysis_worker()
                 self._cleanup_recording_tap()
                 self.reject()
         else:
             if self.worker and self.worker.isRunning():
                 self.worker.stop()
                 self.worker.wait(1500)
+            self._stop_analysis_worker()
             self._cleanup_recording_tap()
             self.reject()
 
     def _reset_recording_ui(self):
         """Reset UI to initial idle state."""
+        self._stop_analysis_worker()
         self._cleanup_recording_tap()
 
         # Stop processor if we started it ourselves
@@ -512,19 +537,26 @@ class CalibrationDialog(QDialog):
 
         try:
             parent.processor.stop_raw_recording()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to stop raw recording during cleanup: %s", e)
 
         try:
             parent.processor.set_output_mute(False)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to unmute output during cleanup: %s", e)
+
+    def _stop_analysis_worker(self):
+        if self.analysis_worker and self.analysis_worker.isRunning():
+            self.analysis_worker.stop()
+            self.analysis_worker.wait(1500)
+        self.analysis_worker = None
 
     def closeEvent(self, event):
         """Ensure recording state is cleaned up if dialog is closed directly."""
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(1500)
+        self._stop_analysis_worker()
         self._cleanup_recording_tap()
         super().closeEvent(event)
 

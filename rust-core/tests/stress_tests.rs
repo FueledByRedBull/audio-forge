@@ -32,7 +32,8 @@ fn test_rapid_parameter_changes() {
     // Perform 1000 random parameter changes
     for i in 0..1000 {
         // Pick random DSP stage
-        let stage = rng.gen_range(0..5); // 0=gate, 1=rnnoise, 2=eq, 3=compressor, 4=limiter
+        let stage =
+            rng.gen_range(0..6); // 0=gate, 1=rnnoise, 2=eq, 3=compressor, 4=limiter, 5=deesser
 
         match stage {
             0 => {
@@ -120,6 +121,38 @@ fn test_rapid_parameter_changes() {
                 let enabled = rng.gen_bool(0.5);
                 processor.set_limiter_enabled(enabled);
             }
+            5 => {
+                // De-esser parameters
+                let enabled = rng.gen_bool(0.5);
+                processor.set_deesser_enabled(enabled);
+
+                let auto_enabled = rng.gen_bool(0.7);
+                processor.set_deesser_auto_enabled(auto_enabled);
+
+                let auto_amount = rng.gen_range(0.0..1.0);
+                processor.set_deesser_auto_amount(auto_amount);
+
+                let low_cut = rng.gen_range(2000.0..12000.0);
+                processor.set_deesser_low_cut_hz(low_cut);
+
+                let high_cut = rng.gen_range((low_cut + 200.0).min(16000.0)..16000.0);
+                processor.set_deesser_high_cut_hz(high_cut);
+
+                let threshold = rng.gen_range(-60.0..-6.0);
+                processor.set_deesser_threshold_db(threshold);
+
+                let ratio = rng.gen_range(1.0..20.0);
+                processor.set_deesser_ratio(ratio);
+
+                let attack = rng.gen_range(0.1..50.0);
+                processor.set_deesser_attack_ms(attack);
+
+                let release = rng.gen_range(5.0..500.0);
+                processor.set_deesser_release_ms(release);
+
+                let max_red = rng.gen_range(0.0..24.0);
+                processor.set_deesser_max_reduction_db(max_red);
+            }
             _ => unreachable!(),
         }
 
@@ -139,6 +172,7 @@ fn test_rapid_parameter_changes() {
     let _ = processor.is_eq_enabled();
     let _ = processor.is_compressor_enabled();
     let _ = processor.is_limiter_enabled();
+    let _ = processor.is_deesser_enabled();
     let _ = processor.get_eq_band_params(0);
 
     println!("✓ Completed 1000 parameter changes without crash");

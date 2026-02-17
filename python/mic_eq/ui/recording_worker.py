@@ -6,6 +6,7 @@ All recording happens in the Rust DSP thread - zero Python GC interference.
 
 DEBUG: Added terminal logging for calibration workflow verification
 """
+import threading
 import time
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -43,7 +44,7 @@ class RecordingWorker(QThread):
         super().__init__()
         self.processor = processor
         self.duration = duration
-        self._is_running = True
+        self._stop_event = threading.Event()
         self._start_time = None
         self._processor_was_started_by_us = processor_was_started_by_us  # Use passed flag
 
@@ -78,7 +79,7 @@ class RecordingWorker(QThread):
 
             # Poll progress until done
             poll_count = 0
-            while self._is_running:
+            while not self._stop_event.is_set():
                 # Check if recording is complete
                 if self.processor.is_recording_complete():
                     if DEBUG:
@@ -115,7 +116,7 @@ class RecordingWorker(QThread):
                 time.sleep(0.1)
 
             # Recording complete - retrieve audio from Rust
-            if self._is_running:
+            if not self._stop_event.is_set():
                 if DEBUG:
                     print("[CALIBRATION] Retrieving recorded audio...")
                 audio = self.processor.stop_raw_recording()
@@ -143,7 +144,7 @@ class RecordingWorker(QThread):
                 print(f"[CALIBRATION] EXCEPTION: {type(e).__name__}: {e}")
             self.failed.emit(f"Recording error: {str(e)}")
         finally:
-            if not self._is_running:
+            if self._stop_event.is_set():
                 self._cleanup_recording_tap()
             # Processor lifecycle remains managed by the dialog/main thread.
             if DEBUG:
@@ -153,21 +154,23 @@ class RecordingWorker(QThread):
         """Best-effort cleanup for cancel/error paths."""
         try:
             self.processor.stop_raw_recording()
-        except Exception:
-            pass
+        except Exception as e:
+            if DEBUG:
+                print(f"[CALIBRATION] stop_raw_recording cleanup error: {type(e).__name__}: {e}")
 
         try:
             # Ensure output is unmuted after recording workflow exits.
             self.processor.set_output_mute(False)
-        except Exception:
-            pass
+        except Exception as e:
+            if DEBUG:
+                print(f"[CALIBRATION] set_output_mute cleanup error: {type(e).__name__}: {e}")
 
     def stop(self):
         """Stop recording early."""
         if DEBUG:
             print("[CALIBRATION] RecordingWorker.stop() called (user cancelled)")
 
-        self._is_running = False
+        self._stop_event.set()
         self._cleanup_recording_tap()
 
         # Note: We don't stop processor on cancel - dialog handles cleanup

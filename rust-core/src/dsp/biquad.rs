@@ -11,6 +11,7 @@ pub enum BiquadType {
     HighShelf,
     Peaking,
     HighPass,
+    LowPass,
 }
 
 /// IIR Biquad filter using Direct Form II Transposed
@@ -113,6 +114,16 @@ impl Biquad {
                 let b0 = (1.0 + cos_omega) / 2.0;
                 let b1 = -(1.0 + cos_omega);
                 let b2 = (1.0 + cos_omega) / 2.0;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_omega;
+                let a2 = 1.0 - alpha;
+                (b0, b1, b2, a0, a1, a2)
+            }
+            BiquadType::LowPass => {
+                // Low-pass filter - cuts frequencies above the cutoff
+                let b0 = (1.0 - cos_omega) / 2.0;
+                let b1 = 1.0 - cos_omega;
+                let b2 = (1.0 - cos_omega) / 2.0;
                 let a0 = 1.0 + alpha;
                 let a1 = -2.0 * cos_omega;
                 let a2 = 1.0 - alpha;

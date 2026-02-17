@@ -1,6 +1,6 @@
 [package]
 name = "mic_eq_core"
-version = "1.5.0"
+version = "1.7.0"
 edition = "2021"
 description = "High-performance DSP engine for MicEq - real-time noise suppression and equalization"
 
@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Audio I/O
-cpal = "0.15"
+cpal = "0.16"
 rubato = "0.14"  # High-quality resampling
 
 # Noise suppression (RNNoise)
@@ -22,8 +22,8 @@ nnnoiseless = "0.5"
 # Build instructions: See rust-core/src/dsp/deepfilter_ffi.rs
 
 # Python bindings
-pyo3 = { version = "0.20", features = ["extension-module"] }
-numpy = "0.20"
+pyo3 = { version = "0.22", features = ["extension-module"] }
+numpy = "0.22"
 
 # Array operations (not needed for FFI mode)
 # ndarray = { version = "0.15", optional = true }

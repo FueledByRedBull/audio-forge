@@ -40,6 +40,7 @@ from pathlib import Path
 from .gate_panel import GatePanel
 from .eq_panel import EQPanel
 from .compressor_panel import CompressorPanel
+from .deesser_panel import DeEsserPanel
 from .level_meter import LevelMeter
 from .calibration_dialog import CalibrationDialog
 from .layout_constants import SPACING_SECTION, SPACING_NORMAL
@@ -49,6 +50,7 @@ from ..config import (
     GateSettings,
     EQSettings,
     RNNoiseSettings,
+    DeEsserSettings,
     CompressorSettings,
     LimiterSettings,
     PresetValidationError,
@@ -247,7 +249,11 @@ class MainWindow(QMainWindow):
 
         left_container_layout.addWidget(rnnoise_group)
 
-        # 3. Compressor panel (direct widget, no nested scroll area)
+        # 3. De-esser panel (direct widget, no nested scroll area)
+        self.deesser_panel = DeEsserPanel(self.processor)
+        left_container_layout.addWidget(self.deesser_panel)
+
+        # 4. Compressor panel (direct widget, no nested scroll area)
         self.compressor_panel = CompressorPanel(self.processor)
         left_container_layout.addWidget(self.compressor_panel)
 
@@ -883,12 +889,18 @@ class MainWindow(QMainWindow):
                     return  # User cancelled
 
             # Create preset from current settings
-            from ..config import Preset, CompressorSettings, LimiterSettings, GateSettings
+            from ..config import (
+                Preset,
+                CompressorSettings,
+                LimiterSettings,
+                GateSettings,
+                DeEsserSettings,
+            )
 
             preset = Preset(
                 name=preset_name,
                 description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
-                version="1.6.0",
+                version="1.7.0",
                 gate=GateSettings(**self.gate_panel.get_settings()),
                 eq=EQSettings(**self.eq_panel.get_settings()),
                 rnnoise=RNNoiseSettings(
@@ -896,6 +908,7 @@ class MainWindow(QMainWindow):
                     strength=self.strength_slider.value() / 100.0,
                     model=self.model_combo.currentData() or 'rnnoise',
                 ),
+                deesser=DeEsserSettings(**self.deesser_panel.get_settings()),
                 compressor=CompressorSettings(**self.compressor_panel.get_compressor_settings()),
                 limiter=LimiterSettings(**self.compressor_panel.get_limiter_settings()),
                 bypass=self.bypass_checkbox.isChecked(),
@@ -1019,6 +1032,7 @@ class MainWindow(QMainWindow):
             output_rms = self.processor.get_output_rms_db()
             output_peak = self.processor.get_output_peak_db()
             gr_db = self.processor.get_compressor_gain_reduction_db()
+            deesser_gr_db = self.processor.get_deesser_gain_reduction_db()
 
             latency_ms = self.processor.get_latency_ms()
 
@@ -1032,6 +1046,8 @@ class MainWindow(QMainWindow):
             self.input_meter.set_levels(input_rms, input_peak)
             self.output_meter.set_levels(output_rms, output_peak)
             self.compressor_panel.update_gain_reduction(gr_db)
+            if hasattr(self, 'deesser_panel'):
+                self.deesser_panel.update_gain_reduction(deesser_gr_db)
 
             # Update compressor current release time
             try:
@@ -1146,6 +1162,7 @@ class MainWindow(QMainWindow):
         """Get current settings as a Preset object."""
         gate_settings = self.gate_panel.get_settings()
         eq_settings = self.eq_panel.get_settings()
+        deesser_settings = self.deesser_panel.get_settings()
         compressor_settings = self.compressor_panel.get_compressor_settings()
         limiter_settings = self.compressor_panel.get_limiter_settings()
 
@@ -1159,6 +1176,7 @@ class MainWindow(QMainWindow):
                 strength=self.strength_slider.value() / 100.0,
                 model=self.model_combo.currentData() or 'rnnoise',
             ),
+            deesser=DeEsserSettings(**deesser_settings),
             compressor=CompressorSettings(**compressor_settings),
             limiter=LimiterSettings(**limiter_settings),
             bypass=self.bypass_checkbox.isChecked(),
@@ -1260,6 +1278,20 @@ class MainWindow(QMainWindow):
 
         if not model_found:
             print(f"Warning: Preset model '{model}' not found in available models")
+
+        # Apply de-esser settings
+        self.deesser_panel.set_settings({
+            'enabled': preset.deesser.enabled,
+            'auto_enabled': preset.deesser.auto_enabled,
+            'auto_amount': preset.deesser.auto_amount,
+            'low_cut_hz': preset.deesser.low_cut_hz,
+            'high_cut_hz': preset.deesser.high_cut_hz,
+            'threshold_db': preset.deesser.threshold_db,
+            'ratio': preset.deesser.ratio,
+            'attack_ms': preset.deesser.attack_ms,
+            'release_ms': preset.deesser.release_ms,
+            'max_reduction_db': preset.deesser.max_reduction_db,
+        })
 
         # Apply compressor settings
         self.compressor_panel.set_compressor_settings({

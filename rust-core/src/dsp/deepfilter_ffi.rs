@@ -16,9 +16,11 @@
 //!
 //! RUNTIME REQUIREMENTS (Optional):
 //! If DeepFilterNet C library is available, it will be loaded at runtime:
-//! - Windows: df.dll in PATH or working directory
-//! - Linux: libdf.so in LD_LIBRARY_PATH or system paths
-//! - macOS: libdf.dylib in DYLD_LIBRARY_PATH or system paths
+//! - Environment variable: DEEPFILTER_LIB_PATH (explicit library file path)
+//! - Executable-local trusted paths:
+//!   - <exe-dir>/{df.dll|libdf.so|libdf.dylib}
+//!   - <exe-dir>/lib/{...}
+//!   - <exe-dir>/libs/{...}
 //!
 //! MODEL FILES (Optional):
 //! DeepFilterNet requires a model tar.gz file. The library will look for:
@@ -35,7 +37,7 @@
 
 use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressor};
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::vec::Vec;
@@ -150,8 +152,88 @@ fn find_model_path(model: DeepFilterModel) -> Option<PathBuf> {
 }
 
 impl DeepFilterLib {
-    /// Try to load the DeepFilterNet library from system paths
-    fn try_load() -> Option<Self> {
+    fn add_canonical_file_path(paths: &mut Vec<PathBuf>, path: PathBuf) {
+        if let Ok(canonical) = path.canonicalize() {
+            if canonical.is_file() && !paths.iter().any(|p| p == &canonical) {
+                paths.push(canonical);
+            }
+        }
+    }
+
+    fn trusted_library_candidates(lib_name: &str) -> Vec<PathBuf> {
+        let mut candidates = Vec::new();
+
+        // Highest-priority explicit override.
+        if let Ok(lib_path) = env::var("DEEPFILTER_LIB_PATH") {
+            Self::add_canonical_file_path(&mut candidates, PathBuf::from(lib_path));
+        }
+
+        // Executable-local paths avoid DLL search-order hijacking from PATH/CWD.
+        if let Ok(exe_path) = env::current_exe() {
+            if let Some(exe_dir) = exe_path.parent() {
+                Self::add_canonical_file_path(&mut candidates, exe_dir.join(lib_name));
+                Self::add_canonical_file_path(&mut candidates, exe_dir.join("lib").join(lib_name));
+                Self::add_canonical_file_path(&mut candidates, exe_dir.join("libs").join(lib_name));
+            }
+        }
+
+        // Dev convenience in debug builds: repo-local copy adjacent to rust-core.
+        #[cfg(debug_assertions)]
+        {
+            let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent();
+            if let Some(root) = repo_root {
+                Self::add_canonical_file_path(&mut candidates, root.join(lib_name));
+            }
+        }
+
+        candidates
+    }
+
+    unsafe fn load_symbols_from_path(path: &Path) -> Result<Self, String> {
+        let library = libloading::Library::new(path)
+            .map_err(|e| format!("{} ({})", path.display(), e))?;
+
+        // Load all required symbols and extract raw pointers.
+        let df_create: libloading::Symbol<DfCreateFn> = library
+            .get(b"df_create")
+            .map_err(|e| format!("{} missing symbol df_create ({})", path.display(), e))?;
+        let df_free: libloading::Symbol<DfFreeFn> = library
+            .get(b"df_free")
+            .map_err(|e| format!("{} missing symbol df_free ({})", path.display(), e))?;
+        let df_get_frame_length: libloading::Symbol<DfGetFrameLengthFn> = library
+            .get(b"df_get_frame_length")
+            .map_err(|e| format!("{} missing symbol df_get_frame_length ({})", path.display(), e))?;
+        let df_process_frame: libloading::Symbol<DfProcessFrameFn> = library
+            .get(b"df_process_frame")
+            .map_err(|e| format!("{} missing symbol df_process_frame ({})", path.display(), e))?;
+        let df_set_atten_lim: libloading::Symbol<DfSetAttenLimFn> = library
+            .get(b"df_set_atten_lim")
+            .map_err(|e| format!("{} missing symbol df_set_atten_lim ({})", path.display(), e))?;
+        let df_set_post_filter_beta: libloading::Symbol<DfSetPostFilterBetaFn> = library
+            .get(b"df_set_post_filter_beta")
+            .map_err(|e| format!("{} missing symbol df_set_post_filter_beta ({})", path.display(), e))?;
+
+        // Convert to raw function pointers.
+        let df_create = *df_create.into_raw();
+        let df_free = *df_free.into_raw();
+        let df_get_frame_length = *df_get_frame_length.into_raw();
+        let df_process_frame = *df_process_frame.into_raw();
+        let df_set_atten_lim = *df_set_atten_lim.into_raw();
+        let df_set_post_filter_beta = *df_set_post_filter_beta.into_raw();
+
+        Ok(DeepFilterLib {
+            _library: library,
+            df_create,
+            df_free,
+            df_get_frame_length,
+            df_process_frame,
+            df_set_atten_lim,
+            df_set_post_filter_beta,
+        })
+    }
+
+    /// Try to load the DeepFilterNet library from trusted explicit paths.
+    fn try_load() -> Result<Self, String> {
         // Library name varies by platform
         #[cfg(target_os = "windows")]
         let lib_name = "df.dll";
@@ -162,39 +244,29 @@ impl DeepFilterLib {
         #[cfg(target_os = "macos")]
         let lib_name = "libdf.dylib";
 
-        unsafe {
-            let library = libloading::Library::new(lib_name).ok()?;
-
-            // Load all required symbols and extract raw pointers
-            let df_create: libloading::Symbol<DfCreateFn> = library.get(b"df_create").ok()?;
-            let df_free: libloading::Symbol<DfFreeFn> = library.get(b"df_free").ok()?;
-            let df_get_frame_length: libloading::Symbol<DfGetFrameLengthFn> =
-                library.get(b"df_get_frame_length").ok()?;
-            let df_process_frame: libloading::Symbol<DfProcessFrameFn> =
-                library.get(b"df_process_frame").ok()?;
-            let df_set_atten_lim: libloading::Symbol<DfSetAttenLimFn> =
-                library.get(b"df_set_atten_lim").ok()?;
-            let df_set_post_filter_beta: libloading::Symbol<DfSetPostFilterBetaFn> =
-                library.get(b"df_set_post_filter_beta").ok()?;
-
-            // Convert to raw function pointers
-            let df_create = *df_create.into_raw();
-            let df_free = *df_free.into_raw();
-            let df_get_frame_length = *df_get_frame_length.into_raw();
-            let df_process_frame = *df_process_frame.into_raw();
-            let df_set_atten_lim = *df_set_atten_lim.into_raw();
-            let df_set_post_filter_beta = *df_set_post_filter_beta.into_raw();
-
-            Some(DeepFilterLib {
-                _library: library,
-                df_create,
-                df_free,
-                df_get_frame_length,
-                df_process_frame,
-                df_set_atten_lim,
-                df_set_post_filter_beta,
-            })
+        let candidates = Self::trusted_library_candidates(lib_name);
+        if candidates.is_empty() {
+            return Err(format!(
+                "No trusted DeepFilter library file found. Set DEEPFILTER_LIB_PATH \
+or place {} next to the executable (or in exe-dir/lib or exe-dir/libs).",
+                lib_name
+            ));
         }
+
+        let mut errors = Vec::new();
+        for path in candidates {
+            unsafe {
+                match Self::load_symbols_from_path(&path) {
+                    Ok(lib) => return Ok(lib),
+                    Err(e) => errors.push(e),
+                }
+            }
+        }
+
+        Err(format!(
+            "Failed to load DeepFilter library from trusted paths: {}",
+            errors.join("; ")
+        ))
     }
 }
 
@@ -305,11 +377,13 @@ impl DeepFilterFFI {
             ));
         }
 
+        // C API expects mutable input pointer; use a local mutable copy to keep Rust aliasing safe.
+        let mut input_frame = input.to_vec();
         let mut output = vec![0.0f32; self.frame_size];
 
         // SAFETY: We've verified buffer sizes and the pointer is valid
         unsafe {
-            let input_ptr = input.as_ptr() as *mut f32;
+            let input_ptr = input_frame.as_mut_ptr();
             let output_ptr = output.as_mut_ptr();
 
             let df_process_frame = self._lib.df_process_frame;
@@ -370,7 +444,7 @@ impl DeepFilterProcessor {
     pub fn new(strength: Arc<AtomicU32>, model: DeepFilterModel) -> Self {
         // Try to load library and initialize FFI
         let (df, lib, load_error) = match DeepFilterLib::try_load() {
-            Some(lib) => {
+            Ok(lib) => {
                 let lib_arc = Arc::new(lib);
                 match DeepFilterFFI::new(lib_arc.clone(), model) {
                     Ok(df) => {
@@ -402,19 +476,20 @@ impl DeepFilterProcessor {
                     }
                 }
             }
-            None => {
-                eprintln!("DeepFilterNet C library not found. Using passthrough fallback.");
-                eprintln!("NOTE: To use DeepFilterNet, build the C library and place it in:");
-                eprintln!("  - Windows: df.dll in PATH or working directory");
-                eprintln!("  - Linux: libdf.so in LD_LIBRARY_PATH or /usr/local/lib");
-                eprintln!("  - macOS: libdf.dylib in DYLD_LIBRARY_PATH or /usr/local/lib");
+            Err(e) => {
+                eprintln!(
+                    "DeepFilterNet C library unavailable ({}). Using passthrough fallback.",
+                    e
+                );
+                eprintln!("NOTE: To use DeepFilterNet, set DEEPFILTER_LIB_PATH to an explicit library file path,");
+                eprintln!("      or place the library next to the executable (or exe-dir/lib, exe-dir/libs).");
                 eprintln!("NOTE: Also ensure DeepFilterNet3 model file is available:");
                 eprintln!("  - Set DEEPFILTER_MODEL_PATH environment variable");
                 eprintln!("  - Or place in ./models/DeepFilterNet3_ll_onnx.tar.gz or DeepFilterNet3_onnx.tar.gz");
                 (
                     None,
                     None,
-                    Some("DeepFilterNet C library not found - using passthrough".to_string()),
+                    Some(format!("DeepFilterNet C library unavailable: {}", e)),
                 )
             }
         };

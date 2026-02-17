@@ -5,6 +5,7 @@ from .main_window import MainWindow, run_app
 from .gate_panel import GatePanel
 from .eq_panel import EQPanel
 from .compressor_panel import CompressorPanel
+from .deesser_panel import DeEsserPanel
 from .level_meter import LevelMeter, StereoLevelMeter, GainReductionMeter
 
 __all__ = [
@@ -13,6 +14,7 @@ __all__ = [
     "GatePanel",
     "EQPanel",
     "CompressorPanel",
+    "DeEsserPanel",
     "LevelMeter",
     "StereoLevelMeter",
     "GainReductionMeter",

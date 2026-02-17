@@ -2,6 +2,7 @@
 
 pub mod biquad;
 pub mod compressor;
+pub mod deesser;
 pub mod eq;
 pub mod gate;
 pub mod limiter;
@@ -17,6 +18,7 @@ pub mod deepfilter_ffi;
 
 pub use biquad::{Biquad, BiquadType};
 pub use compressor::Compressor;
+pub use deesser::DeEsser;
 pub use eq::{ParametricEQ, DEFAULT_FREQUENCIES, DEFAULT_Q, NUM_BANDS};
 pub use gate::NoiseGate;
 pub use limiter::Limiter;

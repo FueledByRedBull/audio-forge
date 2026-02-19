@@ -585,7 +585,17 @@ impl AudioProcessor {
 
                             if out_len < samples.len() {
                                 catchup_scratch.clear();
-                                catchup_scratch.resize(out_len, 0.0);
+                                if catchup_scratch.capacity() < out_len {
+                                    // reserve() grows by "additional over current len".
+                                    // After clear(), len==0, so reserve(out_len) guarantees
+                                    // capacity >= out_len before set_len().
+                                    catchup_scratch.reserve(out_len);
+                                }
+                                // SAFETY: We immediately write every index [0..out_len)
+                                // before any read, so uninitialized elements are never observed.
+                                unsafe {
+                                    catchup_scratch.set_len(out_len);
+                                }
 
                                 let max_src = (samples.len() - 1) as f32;
                                 for (i, out) in catchup_scratch.iter_mut().enumerate() {

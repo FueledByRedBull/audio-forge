@@ -582,11 +582,24 @@ impl AudioProcessor {
                         let max_src = (samples.len() - 1) as f32;
                         for i in 0..out_len {
                             let src_pos = (i as f32 * catchup_ratio).min(max_src);
-                            let idx = src_pos.floor() as usize;
-                            let next = (idx + 1).min(samples.len() - 1);
+                            let idx = src_pos.floor() as isize;
                             let frac = src_pos - idx as f32;
-                            catchup_scratch[i] =
-                                samples[idx] + (samples[next] - samples[idx]) * frac;
+
+                            // 4-point Hermite interpolation with clamped endpoints.
+                            let clamp_idx = |k: isize| -> usize {
+                                k.clamp(0, (samples.len() - 1) as isize) as usize
+                            };
+                            let y0 = samples[clamp_idx(idx - 1)];
+                            let y1 = samples[clamp_idx(idx)];
+                            let y2 = samples[clamp_idx(idx + 1)];
+                            let y3 = samples[clamp_idx(idx + 2)];
+
+                            // Catmull-Rom style cubic Hermite coefficients.
+                            let c0 = y1;
+                            let c1 = 0.5 * (y2 - y0);
+                            let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+                            let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+                            catchup_scratch[i] = ((c3 * frac + c2) * frac + c1) * frac + c0;
                         }
 
                         let skipped = samples.len() - out_len;

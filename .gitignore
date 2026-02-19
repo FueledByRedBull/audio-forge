@@ -107,11 +107,6 @@ nul
 *.bak
 *.cache
 
-# Claude Code
-.claude/
-.planning/
-Audit.md
-
 # Build artifacts
 python/mic_eq_core*.pyd
 python/mic_eq_core*.so
@@ -120,6 +115,5 @@ libdf.so
 libdf.dylib
 
 # Project docs (development only)
-CLAUDE.md
 Considerations.md
 Maybes.md

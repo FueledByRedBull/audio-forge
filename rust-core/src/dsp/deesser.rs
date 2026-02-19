@@ -82,16 +82,6 @@ impl DeEsser {
     }
 
     #[inline]
-    fn db_to_linear(db: f64) -> f64 {
-        util::db_to_linear(db)
-    }
-
-    #[inline]
-    fn linear_to_db(value: f64) -> f64 {
-        util::linear_to_db(value, 1e-10)
-    }
-
-    #[inline]
     fn update_env(&self, prev: f64, input: f64) -> f64 {
         let coeff = if input > prev {
             self.detector_attack_coeff
@@ -223,10 +213,10 @@ impl DeEsser {
         self.sidechain_env = self.update_env(self.sidechain_env, sidechain_level);
         self.broadband_env = self.update_env(self.broadband_env, broadband_level);
 
-        let sidechain_level_db = Self::linear_to_db(self.sidechain_env);
+        let sidechain_level_db = util::linear_to_db(self.sidechain_env, 1e-10);
         // Estimate "voice body" reference by discounting sidechain contribution.
         let voice_reference_level = (self.broadband_env - self.sidechain_env * 0.6).max(1e-8);
-        let voice_reference_db = Self::linear_to_db(voice_reference_level);
+        let voice_reference_db = util::linear_to_db(voice_reference_level, 1e-10);
 
         let target_reduction = if self.auto_enabled {
             let amount = self.auto_amount.clamp(0.0, 1.0);
@@ -270,7 +260,7 @@ impl DeEsser {
         self.current_reduction_db =
             coeff * self.current_reduction_db + (1.0 - coeff) * target_reduction;
 
-        let gain = Self::db_to_linear(-self.current_reduction_db);
+        let gain = util::db_to_linear(-self.current_reduction_db);
         (input as f64 * gain) as f32
     }
 

@@ -1,5 +1,4 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
-#![cfg_attr(clippy, warn(clippy::pedantic, clippy::nursery))]
 
 //! MicEq Core - High-performance DSP engine for real-time audio processing
 //!

@@ -390,68 +390,7 @@ impl Compressor {
     /// Process a single sample
     #[inline]
     pub fn process_sample(&mut self, input: f32) -> f32 {
-        if !self.enabled {
-            self.current_gain_reduction_db = 0.0;
-            return input;
-        }
-
-        let input_f64 = input as f64;
-
-        // IIR envelope follower (RMS approximation)
-        let input_squared = input_f64 * input_f64;
-        self.envelope_squared =
-            self.rms_coeff * self.envelope_squared + (1.0 - self.rms_coeff) * input_squared;
-
-        // Calculate RMS level in dB
-        let rms = self.envelope_squared.sqrt();
-        let input_db = util::linear_to_db(rms, 1e-10);
-
-        // Smooth envelope in dB domain with attack/release
-        let coeff = if input_db > self.envelope_db {
-            self.attack_coeff
-        } else {
-            self.release_coeff
-        };
-        self.envelope_db = coeff * self.envelope_db + (1.0 - coeff) * input_db;
-
-        // Track overage duration
-        let input_above_threshold = self.envelope_db > self.threshold_db;
-        if input_above_threshold {
-            // Increment overage timer (per sample)
-            self.overage_timer += 1.0;
-        } else {
-            // Decay overage timer (quick release when below threshold)
-            self.overage_timer = (self.overage_timer - 10.0).max(0.0);
-        }
-
-        // Calculate adaptive release target
-        self.calculate_adaptive_release(self.sample_rate);
-
-        // Smooth release time changes (100ms hysteresis)
-        let release_diff = self.target_release_ms - self.current_release_ms;
-        if release_diff.abs() > 1.0 {
-            // Only smooth if difference > 1ms
-            self.current_release_ms = self.release_smoothing_coeff * self.current_release_ms
-                + (1.0 - self.release_smoothing_coeff) * self.target_release_ms;
-        } else {
-            self.current_release_ms = self.target_release_ms;
-        }
-
-        // Update release coefficient based on current adaptive release
-        self.release_coeff = util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
-
-        // Calculate gain reduction
-        let gain_reduction_db = self.compute_gain_reduction(self.envelope_db);
-        self.current_gain_reduction_db = gain_reduction_db;
-
-        // Update auto makeup gain
-        self.update_auto_makeup_gain();
-
-        // Apply gain reduction using smoothed makeup gain
-        let output_gain = util::db_to_linear(-gain_reduction_db)
-            * util::db_to_linear(self.smoothed_makeup_gain);
-
-        (input_f64 * output_gain) as f32
+        self.process_sample_impl(input, true)
     }
 
     /// Process a block of samples in-place
@@ -471,14 +410,16 @@ impl Compressor {
 
         // Process samples using efficient block processing
         for sample in buffer.iter_mut() {
-            *sample = self.process_sample_inner(*sample);
+            *sample = self.process_sample_impl(*sample, false);
         }
     }
 
-    /// Inner sample processing without auto makeup gain update
-    /// (Called by process_block_inplace after updating makeup gain once)
+    /// Shared single-sample processing path.
+    ///
+    /// `update_makeup_gain` should be true for direct `process_sample()` calls.
+    /// Block processing updates makeup once per block for efficiency.
     #[inline]
-    fn process_sample_inner(&mut self, input: f32) -> f32 {
+    fn process_sample_impl(&mut self, input: f32, update_makeup_gain: bool) -> f32 {
         if !self.enabled {
             self.current_gain_reduction_db = 0.0;
             return input;
@@ -532,6 +473,10 @@ impl Compressor {
         // Calculate gain reduction
         let gain_reduction_db = self.compute_gain_reduction(self.envelope_db);
         self.current_gain_reduction_db = gain_reduction_db;
+
+        if update_makeup_gain {
+            self.update_auto_makeup_gain();
+        }
 
         // Apply gain reduction using smoothed makeup gain
         let output_gain = util::db_to_linear(-gain_reduction_db)

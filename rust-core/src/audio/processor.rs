@@ -4,6 +4,8 @@
 //!
 //! Adapted from Spectral Workbench project for MicEq.
 
+#![allow(clippy::useless_conversion)] // PyO3 proc-macro wrappers trigger false positives.
+
 use pyo3::prelude::*;
 use rubato::{
     calculate_cutoff, Resampler, SincFixedIn, SincInterpolationParameters,
@@ -571,7 +573,7 @@ impl AudioProcessor {
 
                     if out_len < samples.len() {
                         let max_src = (samples.len() - 1) as f32;
-                        for i in 0..out_len {
+                        for (i, out_sample) in catchup_scratch.iter_mut().enumerate().take(out_len) {
                             let src_pos = (i as f32 * catchup_ratio).min(max_src);
                             let idx = src_pos.floor() as isize;
                             let frac = src_pos - idx as f32;
@@ -590,7 +592,7 @@ impl AudioProcessor {
                             let c1 = 0.5 * (y2 - y0);
                             let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
                             let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-                            catchup_scratch[i] = ((c3 * frac + c2) * frac + c1) * frac + c0;
+                            *out_sample = ((c3 * frac + c2) * frac + c1) * frac + c0;
                         }
 
                         let skipped = samples.len() - out_len;
@@ -707,12 +709,10 @@ impl AudioProcessor {
 
                             // Clamp any out-of-range samples to prevent distortion
                             for sample in buffer.iter_mut() {
-                                if sample.is_nan() || sample.is_infinite() {
+                                if !sample.is_finite() {
                                     *sample = 0.0;
-                                } else if *sample > 1.0 {
-                                    *sample = 1.0;
-                                } else if *sample < -1.0 {
-                                    *sample = -1.0;
+                                } else {
+                                    *sample = (*sample).clamp(-1.0, 1.0);
                                 }
                             }
 
@@ -2155,7 +2155,7 @@ impl PyAudioProcessor {
     ) -> PyResult<String> {
         self.processor
             .start(input_device, output_device)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+            .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
     }
 
     /// Stop audio processing
@@ -2213,7 +2213,7 @@ impl PyAudioProcessor {
     fn set_gate_mode(&self, mode: u8) -> PyResult<()> {
         self.processor
             .set_gate_mode(mode)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e))
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
     }
 
     /// Get VAD speech probability (0.0-1.0)
@@ -2230,39 +2230,34 @@ impl PyAudioProcessor {
 
     /// Set VAD probability threshold (0.0-1.0)
     #[cfg(feature = "vad")]
-    fn set_vad_threshold(&self, threshold: f32) -> PyResult<()> {
+    fn set_vad_threshold(&self, threshold: f32) {
         self.processor.set_vad_threshold(threshold);
-        Ok(())
     }
 
     /// Set VAD hold time in milliseconds
     #[cfg(feature = "vad")]
-    fn set_vad_hold_time(&self, hold_ms: f32) -> PyResult<()> {
+    fn set_vad_hold_time(&self, hold_ms: f32) {
         self.processor.set_vad_hold_time(hold_ms);
-        Ok(())
     }
 
     /// Set VAD pre-gain to boost weak signals for better speech detection
     /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
     /// This helps with quiet microphones where VAD can't detect speech.
     #[cfg(feature = "vad")]
-    fn set_vad_pre_gain(&self, gain: f32) -> PyResult<()> {
+    fn set_vad_pre_gain(&self, gain: f32) {
         self.processor.set_vad_pre_gain(gain);
-        Ok(())
     }
 
     /// Enable/disable auto-threshold mode (automatically adjusts gate threshold based on noise floor)
     #[cfg(feature = "vad")]
-    fn set_auto_threshold(&self, enabled: bool) -> PyResult<()> {
+    fn set_auto_threshold(&self, enabled: bool) {
         self.processor.set_auto_threshold(enabled);
-        Ok(())
     }
 
     /// Set margin above noise floor for auto-threshold (in dB)
     #[cfg(feature = "vad")]
-    fn set_gate_margin(&self, margin_db: f32) -> PyResult<()> {
+    fn set_gate_margin(&self, margin_db: f32) {
         self.processor.set_gate_margin(margin_db);
-        Ok(())
     }
 
     /// Get current noise floor estimate (in dB)
@@ -2285,8 +2280,8 @@ impl PyAudioProcessor {
 
     /// Get current VAD pre-gain
     #[cfg(feature = "vad")]
-    fn vad_pre_gain(&self) -> PyResult<f32> {
-        Ok(self.processor.vad_pre_gain())
+    fn vad_pre_gain(&self) -> f32 {
+        self.processor.vad_pre_gain()
     }
 
     // === RNNoise ===
@@ -2691,7 +2686,7 @@ impl PyAudioProcessor {
     fn start_raw_recording(&mut self, duration_secs: f64) -> PyResult<()> {
         self.processor
             .start_raw_recording(duration_secs)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+            .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
     }
 
     /// Stop recording and return audio data as NumPy array
@@ -2709,23 +2704,22 @@ impl PyAudioProcessor {
     }
 
     /// Check if recording is complete
-    fn is_recording_complete(&mut self) -> PyResult<bool> {
-        Ok(self.processor.is_recording_complete())
+    fn is_recording_complete(&mut self) -> bool {
+        self.processor.is_recording_complete()
     }
 
     /// Get recording progress (0.0 to 1.0)
-    fn recording_progress(&mut self) -> PyResult<f32> {
-        Ok(self.processor.recording_progress())
+    fn recording_progress(&mut self) -> f32 {
+        self.processor.recording_progress()
     }
 
     /// Get current recording level as RMS in dB (for level meter visualization)
-    fn recording_level_db(&mut self) -> PyResult<f32> {
-        Ok(self.processor.recording_level_db())
+    fn recording_level_db(&mut self) -> f32 {
+        self.processor.recording_level_db()
     }
 
     /// Manually set output mute state (useful for calibration workflow)
-    fn set_output_mute(&mut self, muted: bool) -> PyResult<()> {
+    fn set_output_mute(&mut self, muted: bool) {
         self.processor.set_output_mute(muted);
-        Ok(())
     }
 }

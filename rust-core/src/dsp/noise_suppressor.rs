@@ -158,7 +158,7 @@ pub trait NoiseSuppressor: Send {
 /// This allows switching between noise suppression models at runtime
 /// while maintaining a common interface.
 pub enum NoiseSuppressionEngine {
-    RNNoise(super::RNNoiseProcessor),
+    RNNoise(Box<super::RNNoiseProcessor>),
     #[cfg(feature = "deepfilter")]
     DeepFilterLL(super::DeepFilterProcessor),
     #[cfg(feature = "deepfilter")]
@@ -170,7 +170,7 @@ impl NoiseSuppressionEngine {
     pub fn new(model: NoiseModel, strength: Arc<AtomicU32>) -> Self {
         match model {
             NoiseModel::RNNoise => {
-                NoiseSuppressionEngine::RNNoise(super::RNNoiseProcessor::new(strength))
+                NoiseSuppressionEngine::RNNoise(Box::new(super::RNNoiseProcessor::new(strength)))
             }
             #[cfg(feature = "deepfilter")]
             NoiseModel::DeepFilterNetLL => {
@@ -219,7 +219,7 @@ impl NoiseSuppressionEngine {
     #[inline]
     fn as_suppressor(&self) -> &dyn NoiseSuppressor {
         match self {
-            NoiseSuppressionEngine::RNNoise(r) => r,
+            NoiseSuppressionEngine::RNNoise(r) => r.as_ref(),
             #[cfg(feature = "deepfilter")]
             NoiseSuppressionEngine::DeepFilterLL(d) => d,
             #[cfg(feature = "deepfilter")]
@@ -230,7 +230,7 @@ impl NoiseSuppressionEngine {
     #[inline]
     fn as_suppressor_mut(&mut self) -> &mut dyn NoiseSuppressor {
         match self {
-            NoiseSuppressionEngine::RNNoise(r) => r,
+            NoiseSuppressionEngine::RNNoise(r) => r.as_mut(),
             #[cfg(feature = "deepfilter")]
             NoiseSuppressionEngine::DeepFilterLL(d) => d,
             #[cfg(feature = "deepfilter")]

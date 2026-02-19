@@ -1,4 +1,5 @@
 //! Audio device enumeration and selection
+#![allow(clippy::useless_conversion)] // PyO3 proc-macro wrappers trigger false positives.
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use pyo3::prelude::*;
@@ -35,7 +36,7 @@ pub fn list_input_devices() -> PyResult<Vec<DeviceInfo>> {
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?
         .filter_map(|device| {
             device.name().ok().map(|name| {
-                let is_default = default_name.as_ref().map_or(false, |dn| dn == &name);
+                let is_default = default_name.as_ref() == Some(&name);
                 DeviceInfo { name, is_default }
             })
         })
@@ -56,7 +57,7 @@ pub fn list_output_devices() -> PyResult<Vec<DeviceInfo>> {
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?
         .filter_map(|device| {
             device.name().ok().map(|name| {
-                let is_default = default_name.as_ref().map_or(false, |dn| dn == &name);
+                let is_default = default_name.as_ref() == Some(&name);
                 DeviceInfo { name, is_default }
             })
         })

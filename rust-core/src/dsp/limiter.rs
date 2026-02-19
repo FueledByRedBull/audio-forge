@@ -4,6 +4,8 @@
 //! (~0.1ms) and configurable release to catch transients without lookahead.
 //! This keeps latency minimal at the cost of slightly less transparent limiting.
 
+use crate::dsp::util;
+
 /// Hard limiter with brick-wall ceiling
 pub struct Limiter {
     /// Ceiling in dB (e.g., -0.5 dB)
@@ -36,11 +38,11 @@ impl Limiter {
     /// * `release_ms` - Release time in milliseconds
     /// * `sample_rate` - Sample rate in Hz
     pub fn new(ceiling_db: f64, release_ms: f64, sample_rate: f64) -> Self {
-        let release_coeff = Self::time_constant_to_coeff(release_ms, sample_rate);
+        let release_coeff = util::time_constant_to_coeff(release_ms, sample_rate);
 
         Self {
             ceiling_db,
-            ceiling_linear: Self::db_to_linear(ceiling_db),
+            ceiling_linear: util::db_to_linear(ceiling_db),
             release_coeff,
             gain_reduction: 1.0, // No reduction initially
             peak_gain_reduction_db: 0.0,
@@ -54,28 +56,10 @@ impl Limiter {
         Self::new(-0.5, 50.0, sample_rate)
     }
 
-    /// Convert time constant in ms to exponential smoothing coefficient
-    fn time_constant_to_coeff(time_ms: f64, sample_rate: f64) -> f64 {
-        let tau = time_ms / 1000.0;
-        (-1.0 / (tau * sample_rate)).exp()
-    }
-
-    /// Convert dB to linear amplitude
-    #[inline]
-    fn db_to_linear(db: f64) -> f64 {
-        10.0_f64.powf(db / 20.0)
-    }
-
-    /// Convert linear amplitude to dB
-    #[inline]
-    fn linear_to_db(linear: f64) -> f64 {
-        20.0 * (linear + 1e-10).log10()
-    }
-
     /// Set ceiling in dB
     pub fn set_ceiling(&mut self, ceiling_db: f64) {
         self.ceiling_db = ceiling_db.min(0.0); // Can't go above 0 dB
-        self.ceiling_linear = Self::db_to_linear(self.ceiling_db);
+        self.ceiling_linear = util::db_to_linear(self.ceiling_db);
     }
 
     /// Get current ceiling in dB
@@ -85,7 +69,7 @@ impl Limiter {
 
     /// Set release time in ms
     pub fn set_release_time(&mut self, release_ms: f64) {
-        self.release_coeff = Self::time_constant_to_coeff(release_ms, self.sample_rate);
+        self.release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
     }
 
     /// Enable or disable the limiter
@@ -103,7 +87,7 @@ impl Limiter {
         if self.gain_reduction >= 1.0 {
             0.0
         } else {
-            Self::linear_to_db(self.gain_reduction)
+            util::linear_to_db(self.gain_reduction, 1e-10)
         }
     }
 
@@ -144,7 +128,7 @@ impl Limiter {
 
         // Track peak reduction for metering
         let reduction_db = if self.gain_reduction < 1.0 {
-            -Self::linear_to_db(self.gain_reduction)
+            -util::linear_to_db(self.gain_reduction, 1e-10)
         } else {
             0.0
         };

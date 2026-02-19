@@ -1,6 +1,7 @@
 //! Audio input/output and processing module
 
 pub mod buffer;
+pub mod clock;
 pub mod device;
 pub mod input;
 pub mod output;

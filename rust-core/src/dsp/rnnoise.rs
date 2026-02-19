@@ -1,5 +1,6 @@
 //! RNNoise integration with proper scaling and 480-sample frame buffering
 
+use crate::audio::input::TARGET_SAMPLE_RATE;
 use nnnoiseless::DenoiseState;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -18,7 +19,12 @@ const PCM_SCALE: f32 = 32768.0;
 pub struct RNNoiseProcessor {
     denoiser: Box<DenoiseState<'static>>,
     input_buffer: Vec<f32>,
+    input_read_pos: usize,
     output_buffer: Vec<f32>,
+    output_read_pos: usize,
+    dry_scratch: [f32; RNNOISE_FRAME_SIZE],
+    frame_scratch: [f32; RNNOISE_FRAME_SIZE],
+    output_frame: [f32; RNNOISE_FRAME_SIZE],
     enabled: bool,
     /// Strength parameter (f32 bits stored as u32 for atomic access)
     /// 0.0 = fully dry (original), 1.0 = fully wet (processed)
@@ -26,18 +32,29 @@ pub struct RNNoiseProcessor {
     /// Current smoothed strength value (DSP thread only)
     /// Updated via exponential moving average to prevent zipper noise
     smoothed_strength: f32,
+    /// Precomputed smoothing coefficient to avoid per-frame `exp`.
+    smoothing_coeff: f32,
 }
 
 impl RNNoiseProcessor {
     /// Create a new RNNoise processor
     pub fn new(strength: Arc<AtomicU32>) -> Self {
+        let sample_rate = TARGET_SAMPLE_RATE as f32;
+        let smoothing_ms = 15.0_f32;
+        let smoothing_coeff = 1.0 - (-1.0_f32 / (smoothing_ms / 1000.0 * sample_rate)).exp();
         Self {
             denoiser: DenoiseState::new(),
             input_buffer: Vec::with_capacity(RNNOISE_FRAME_SIZE * 2),
+            input_read_pos: 0,
             output_buffer: Vec::with_capacity(RNNOISE_FRAME_SIZE * 2),
+            output_read_pos: 0,
+            dry_scratch: [0.0; RNNOISE_FRAME_SIZE],
+            frame_scratch: [0.0; RNNOISE_FRAME_SIZE],
+            output_frame: [0.0; RNNOISE_FRAME_SIZE],
             enabled: true,
             strength,
             smoothed_strength: 1.0, // Default: full processing
+            smoothing_coeff,
         }
     }
 
@@ -59,11 +76,8 @@ impl RNNoiseProcessor {
     /// Returns the current smoothed value
     fn update_smoothing(&mut self) -> f32 {
         let target = f32::from_bits(self.strength.load(Ordering::Relaxed));
-        let smoothing_ms: f32 = 15.0;
-        let sample_rate: f32 = 48000.0;
-        // EMA coefficient: 1 - exp(-1 / (time_constant * sample_rate))
-        let coeff = 1.0 - (-1.0_f32 / (smoothing_ms / 1000.0 * sample_rate)).exp();
-        self.smoothed_strength = target * coeff + self.smoothed_strength * (1.0 - coeff);
+        self.smoothed_strength =
+            target * self.smoothing_coeff + self.smoothed_strength * (1.0 - self.smoothing_coeff);
         self.smoothed_strength
     }
 
@@ -78,30 +92,34 @@ impl RNNoiseProcessor {
     /// complete 480-sample frames as possible.
     pub fn process_frames(&mut self) {
         if !self.enabled {
-            self.output_buffer.append(&mut self.input_buffer);
+            if self.input_read_pos > 0 {
+                self.output_buffer
+                    .extend_from_slice(&self.input_buffer[self.input_read_pos..]);
+                self.input_buffer.clear();
+                self.input_read_pos = 0;
+            } else {
+                self.output_buffer.append(&mut self.input_buffer);
+            }
             return;
         }
 
-        while self.input_buffer.len() >= RNNOISE_FRAME_SIZE {
-            // Store dry samples BEFORE processing (for wet/dry mix)
-            let dry_samples: Vec<f32> = self.input_buffer[..RNNOISE_FRAME_SIZE].to_vec();
+        while self.input_buffer.len().saturating_sub(self.input_read_pos) >= RNNOISE_FRAME_SIZE {
+            let start = self.input_read_pos;
+            let end = start + RNNOISE_FRAME_SIZE;
+            let input_frame = &self.input_buffer[start..end];
+            self.dry_scratch.copy_from_slice(input_frame);
 
-            // 1. Extract frame and SCALE UP for RNNoise
-            let frame: Vec<f32> = self
-                .input_buffer
-                .drain(..RNNOISE_FRAME_SIZE)
-                .map(|s| {
-                    // Scale to [-32768, 32767] and CLAMP to prevent wrapping clicks
-                    (s * PCM_SCALE).clamp(-32760.0, 32760.0)
-                })
-                .collect();
+            // Scale to RNNoise PCM-like range.
+            for (dst, &src) in self.frame_scratch.iter_mut().zip(input_frame.iter()) {
+                *dst = (src * PCM_SCALE).clamp(-32760.0, 32760.0);
+            }
 
             // 2. Process through RNNoise
-            let mut output_frame = [0.0f32; RNNOISE_FRAME_SIZE];
-            self.denoiser.process_frame(&mut output_frame, &frame);
+            self.denoiser
+                .process_frame(&mut self.output_frame, &self.frame_scratch);
 
             // 3. Scale DOWN back to [-1.0, 1.0]
-            for sample in output_frame.iter_mut() {
+            for sample in &mut self.output_frame {
                 *sample /= PCM_SCALE;
             }
 
@@ -111,37 +129,66 @@ impl RNNoiseProcessor {
             if strength < 1.0 {
                 // Linear interpolation: output = strength * wet + (1.0 - strength) * dry
                 for i in 0..RNNOISE_FRAME_SIZE {
-                    let wet = output_frame[i];
-                    let dry = dry_samples[i];
-                    output_frame[i] = (strength * wet) + ((1.0 - strength) * dry);
+                    let wet = self.output_frame[i];
+                    let dry = self.dry_scratch[i];
+                    self.output_frame[i] = (strength * wet) + ((1.0 - strength) * dry);
                 }
             }
 
-            self.output_buffer.extend_from_slice(&output_frame);
+            self.output_buffer.extend_from_slice(&self.output_frame);
+            self.input_read_pos = end;
+        }
+
+        // Compact occasionally to keep the active window contiguous.
+        if self.input_read_pos >= RNNOISE_FRAME_SIZE
+            && self.input_read_pos.saturating_mul(2) >= self.input_buffer.len()
+        {
+            self.input_buffer.drain(..self.input_read_pos);
+            self.input_read_pos = 0;
         }
     }
 
     /// Get available output samples
     pub fn available_samples(&self) -> usize {
-        self.output_buffer.len()
+        self.output_buffer.len().saturating_sub(self.output_read_pos)
     }
 
     /// Pop samples from the output buffer
     pub fn pop_samples(&mut self, count: usize) -> Vec<f32> {
-        let actual_count = count.min(self.output_buffer.len());
-        self.output_buffer.drain(..actual_count).collect()
+        let actual_count = count.min(self.available_samples());
+        let start = self.output_read_pos;
+        let end = start + actual_count;
+        let out = self.output_buffer[start..end].to_vec();
+        self.output_read_pos = end;
+        if self.output_read_pos >= RNNOISE_FRAME_SIZE
+            && self.output_read_pos.saturating_mul(2) >= self.output_buffer.len()
+        {
+            self.output_buffer.drain(..self.output_read_pos);
+            self.output_read_pos = 0;
+        }
+        out
     }
 
     /// Pop all available samples from the output buffer
     pub fn pop_all_samples(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.output_buffer)
+        let out = self.output_buffer[self.output_read_pos..].to_vec();
+        self.output_buffer.clear();
+        self.output_read_pos = 0;
+        out
     }
 
     /// Read samples into provided buffer, returns actual count read
     pub fn read_samples(&mut self, buffer: &mut [f32]) -> usize {
-        let count = buffer.len().min(self.output_buffer.len());
-        for (i, sample) in self.output_buffer.drain(..count).enumerate() {
-            buffer[i] = sample;
+        let count = buffer.len().min(self.available_samples());
+        let start = self.output_read_pos;
+        let end = start + count;
+        buffer[..count].copy_from_slice(&self.output_buffer[start..end]);
+        self.output_read_pos = end;
+        if self.output_read_pos >= RNNOISE_FRAME_SIZE
+            && self.output_read_pos.saturating_mul(2) >= self.output_buffer.len()
+        {
+            self.output_buffer.drain(..self.output_read_pos);
+            self.output_read_pos = 0;
         }
         count
     }
@@ -168,6 +215,8 @@ impl RNNoiseProcessor {
         self.denoiser = DenoiseState::new();
         self.input_buffer.clear();
         self.output_buffer.clear();
+        self.input_read_pos = 0;
+        self.output_read_pos = 0;
     }
 
     /// Flush internal buffers without resetting DenoiseState
@@ -178,6 +227,8 @@ impl RNNoiseProcessor {
     pub fn flush_buffers(&mut self) {
         self.input_buffer.clear();
         self.output_buffer.clear();
+        self.input_read_pos = 0;
+        self.output_read_pos = 0;
     }
 
     /// Soft reset: clear buffers without resetting model state
@@ -191,7 +242,7 @@ impl RNNoiseProcessor {
 
     /// Get pending input samples count
     pub fn pending_input(&self) -> usize {
-        self.input_buffer.len()
+        self.input_buffer.len().saturating_sub(self.input_read_pos)
     }
 
     /// Drain and return pending input samples without processing
@@ -199,7 +250,10 @@ impl RNNoiseProcessor {
     /// This is used when we want to bypass RNNoise and output raw audio.
     /// Returns the pending samples that haven't been processed yet.
     pub fn drain_pending_input(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.input_buffer)
+        let pending = self.input_buffer[self.input_read_pos..].to_vec();
+        self.input_buffer.clear();
+        self.input_read_pos = 0;
+        pending
     }
 }
 
@@ -212,7 +266,7 @@ impl Default for RNNoiseProcessor {
 // Implement NoiseSuppressor trait for runtime model selection
 impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
     fn push_samples(&mut self, samples: &[f32]) {
-        self.input_buffer.extend_from_slice(samples);
+        RNNoiseProcessor::push_samples(self, samples);
     }
 
     fn process_frames(&mut self) {
@@ -220,12 +274,11 @@ impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
     }
 
     fn available_samples(&self) -> usize {
-        self.output_buffer.len()
+        RNNoiseProcessor::available_samples(self)
     }
 
     fn pop_samples(&mut self, count: usize) -> Vec<f32> {
-        let actual_count = count.min(self.output_buffer.len());
-        self.output_buffer.drain(..actual_count).collect()
+        RNNoiseProcessor::pop_samples(self, count)
     }
 
     fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize {
@@ -233,7 +286,7 @@ impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
     }
 
     fn pop_all_samples(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.output_buffer)
+        RNNoiseProcessor::pop_all_samples(self)
     }
 
     fn set_strength(&self, value: f32) {
@@ -247,24 +300,23 @@ impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
     }
 
     fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+        RNNoiseProcessor::set_enabled(self, enabled);
     }
 
     fn is_enabled(&self) -> bool {
-        self.enabled
+        RNNoiseProcessor::is_enabled(self)
     }
 
     fn soft_reset(&mut self) {
-        self.input_buffer.clear();
-        self.output_buffer.clear();
+        RNNoiseProcessor::soft_reset(self);
     }
 
     fn pending_input(&self) -> usize {
-        self.input_buffer.len()
+        RNNoiseProcessor::pending_input(self)
     }
 
     fn drain_pending_input(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.input_buffer)
+        RNNoiseProcessor::drain_pending_input(self)
     }
 
     fn model_type(&self) -> super::noise_suppressor::NoiseModel {

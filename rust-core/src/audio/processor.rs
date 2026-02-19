@@ -17,6 +17,7 @@ use thread_priority::{set_current_thread_priority, ThreadPriority};
 use std::sync::atomic::AtomicU8;
 
 use super::buffer::AudioRingBuffer;
+use super::clock::now_micros;
 use super::input::{AudioInput, TARGET_SAMPLE_RATE};
 use super::output::AudioOutput;
 use crate::dsp::biquad::{Biquad, BiquadType};
@@ -28,9 +29,6 @@ use crate::dsp::vad::{GateMode, VadAutoGate};
 
 /// Main audio processor combining all DSP stages
 pub struct AudioProcessor {
-    /// Pre-filter (High-pass at 80Hz to remove fan rumble before RNNoise)
-    pre_filter: Arc<Mutex<Biquad>>,
-
     /// Noise gate
     gate: Arc<Mutex<NoiseGate>>,
     gate_enabled: Arc<AtomicBool>,
@@ -171,16 +169,6 @@ impl AudioProcessor {
     pub fn new() -> Self {
         let sample_rate = TARGET_SAMPLE_RATE;
 
-        // Create a HighPass filter at 80Hz to kill fan rumble before RNNoise
-        // Q = 0.707 (Butterworth) for smooth frequency response
-        let pre_filter = Arc::new(Mutex::new(Biquad::new(
-            BiquadType::HighPass,
-            80.0,  // Frequency (Hz) - cuts everything below this
-            0.0,   // Gain (unused for HighPass)
-            0.707, // Q Factor (Butterworth)
-            sample_rate as f64,
-        )));
-
         // Create strength Arc BEFORE noise suppressor (share reference)
         let suppressor_strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
 
@@ -189,7 +177,6 @@ impl AudioProcessor {
             NoiseSuppressionEngine::new(NoiseModel::RNNoise, suppressor_strength.clone());
 
         Self {
-            pre_filter,
             gate: {
                 let gate = Arc::new(Mutex::new(NoiseGate::new(
                     -40.0,
@@ -341,14 +328,14 @@ impl AudioProcessor {
             Some(name) => AudioOutput::from_device_name(
                 name,
                 output_consumer,
-                recording_active,
+                recording_active.clone(),
                 last_output_callback_time_us,
                 output_underrun_streak,
                 output_underrun_total,
             ),
             None => AudioOutput::from_default_device(
                 output_consumer,
-                recording_active,
+                recording_active.clone(),
                 last_output_callback_time_us,
                 output_underrun_streak,
                 output_underrun_total,
@@ -393,7 +380,6 @@ impl AudioProcessor {
         let mut output_producer = output_producer;
         let running = Arc::clone(&self.running);
         let bypass = Arc::clone(&self.bypass);
-        let pre_filter = Arc::clone(&self.pre_filter);
 
         // Clone metering atomics
         let input_peak = Arc::clone(&self.input_peak);
@@ -478,6 +464,15 @@ impl AudioProcessor {
             let mut dc_y1: f32 = 0.0;
             const DC_COEFF: f32 = 0.995; // DC blocking coefficient
 
+            // Pre-filter at 80Hz to remove rumble before gate/suppressor stages.
+            let mut pre_filter = Biquad::new(
+                BiquadType::HighPass,
+                80.0,
+                0.0,
+                0.707,
+                sample_rate_for_latency as f64,
+            );
+
             // Metering state (IIR smoothing for RMS)
             let mut input_rms_acc: f32 = 0.0;
             let mut output_rms_acc: f32 = 0.0;
@@ -538,10 +533,7 @@ impl AudioProcessor {
 
             // Helper: update last write time (call after successful output write)
             let update_write_time = || {
-                if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                {
-                    last_output_write_time.store(now.as_micros() as u64, Ordering::Relaxed);
-                }
+                last_output_write_time.store(now_micros(), Ordering::Relaxed);
             };
 
             // Jitter-buffer write control: keep output queue in a healthy range.
@@ -726,20 +718,16 @@ impl AudioProcessor {
 
                             // === PRE-PROCESSING: Clean the input before DSP chain ===
                             // This removes fan rumble and DC offset that cause RNNoise artifacts
-                            if let Ok(mut pf) = pre_filter.try_lock() {
-                                for sample in buffer.iter_mut() {
-                                    // A. DC Blocker (removes electrical DC offset causing static/clicks)
-                                    let input = *sample;
-                                    let output = input - dc_x1 + DC_COEFF * dc_y1;
-                                    dc_x1 = input;
-                                    dc_y1 = output;
-                                    *sample = output;
+                            for sample in buffer.iter_mut() {
+                                // A. DC Blocker (removes electrical DC offset causing static/clicks)
+                                let input = *sample;
+                                let output = input - dc_x1 + DC_COEFF * dc_y1;
+                                dc_x1 = input;
+                                dc_y1 = output;
+                                *sample = output;
 
-                                    // B. High-Pass Filter at 80Hz (kills fan rumble before RNNoise)
-                                    *sample = pf.process_sample(*sample);
-                                }
-                            } else {
-                                lock_contention_count.fetch_add(1, Ordering::Relaxed);
+                                // B. High-Pass Filter at 80Hz (kills fan rumble before RNNoise)
+                                *sample = pre_filter.process_sample(*sample);
                             }
                             // === END PRE-PROCESSING ===
 
@@ -749,7 +737,7 @@ impl AudioProcessor {
                             // === RAW AUDIO RECORDING TAP (for calibration) ===
                             // Capture audio AFTER pre-filter, BEFORE noise gate
                             // This is the raw microphone response needed for EQ analysis
-                            {
+                            if recording_active.load(Ordering::Relaxed) {
                                 if let Ok(mut buf_guard) = raw_recording_buffer.try_lock() {
                                     if let Some(ref mut buffer_rec) = *buf_guard {
                                         let target = raw_recording_target.load(Ordering::Acquire);
@@ -1146,10 +1134,7 @@ impl AudioProcessor {
 
                                 // Check for output stall
                                 let last_write = last_output_write_time.load(Ordering::Relaxed);
-                                let now = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|dur| dur.as_micros() as u64)
-                                    .unwrap_or(last_write);
+                                let now = now_micros();
                                 let time_since_write_ms = now.saturating_sub(last_write) / 1000;
 
                                 if last_write > 0 && time_since_write_ms > STALL_THRESHOLD_MS {
@@ -1994,10 +1979,7 @@ impl AudioProcessor {
         if last == 0 {
             return u64::MAX;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|dur| dur.as_micros() as u64)
-            .unwrap_or(last);
+        let now = now_micros();
         now.saturating_sub(last) / 1000
     }
 
@@ -2007,10 +1989,7 @@ impl AudioProcessor {
         if last == 0 {
             return u64::MAX;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|dur| dur.as_micros() as u64)
-            .unwrap_or(last);
+        let now = now_micros();
         now.saturating_sub(last) / 1000
     }
 

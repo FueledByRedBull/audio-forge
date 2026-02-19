@@ -10,6 +10,7 @@
 
 #[cfg(feature = "vad")]
 use crate::dsp::vad::{GateMode, VadAutoGate};
+use crate::dsp::util;
 
 /// Enable debug output for gate operations
 #[cfg(debug_assertions)]
@@ -80,11 +81,11 @@ impl NoiseGate {
     pub fn new(threshold_db: f64, attack_ms: f64, release_ms: f64, sample_rate: f64) -> Self {
         // Calculate time constants for exponential smoothing
         // tau = time_ms / 1000, coeff = exp(-1 / (tau * sample_rate))
-        let attack_coeff = Self::time_constant_to_coeff(attack_ms, sample_rate);
-        let release_coeff = Self::time_constant_to_coeff(release_ms, sample_rate);
+        let attack_coeff = util::time_constant_to_coeff(attack_ms, sample_rate);
+        let release_coeff = util::time_constant_to_coeff(release_ms, sample_rate);
 
         // RMS smoothing: 50ms time constant for IIR envelope follower
-        let rms_coeff = Self::time_constant_to_coeff(50.0, sample_rate);
+        let rms_coeff = util::time_constant_to_coeff(50.0, sample_rate);
 
         if GATE_DEBUG {
             eprintln!("[GATE] Initialized: threshold={}dB, attack={}ms, release={}ms",
@@ -113,12 +114,6 @@ impl NoiseGate {
         }
     }
 
-    /// Convert time constant in ms to exponential smoothing coefficient
-    fn time_constant_to_coeff(time_ms: f64, sample_rate: f64) -> f64 {
-        let tau = time_ms / 1000.0; // Convert to seconds
-        (-1.0 / (tau * sample_rate)).exp()
-    }
-
     /// Update gate parameters
     pub fn set_threshold(&mut self, threshold_db: f64) {
         self.threshold_db = threshold_db;
@@ -135,12 +130,12 @@ impl NoiseGate {
 
     /// Set attack time
     pub fn set_attack_time(&mut self, attack_ms: f64) {
-        self.attack_coeff = Self::time_constant_to_coeff(attack_ms, self.sample_rate);
+        self.attack_coeff = util::time_constant_to_coeff(attack_ms, self.sample_rate);
     }
 
     /// Set release time
     pub fn set_release_time(&mut self, release_ms: f64) {
-        self.release_coeff = Self::time_constant_to_coeff(release_ms, self.sample_rate);
+        self.release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
     }
 
     /// Enable or disable the gate

@@ -4,6 +4,8 @@
 //! Uses the same IIR envelope follower pattern as the noise gate for
 //! consistent, low-latency level detection.
 
+use crate::dsp::util;
+
 /// Downward compressor with soft-knee gain reduction
 pub struct Compressor {
     /// Threshold in dB - compression starts above this level
@@ -102,14 +104,14 @@ impl Compressor {
         knee_db: f64,
         sample_rate: f64,
     ) -> Self {
-        let attack_coeff = Self::time_constant_to_coeff(attack_ms, sample_rate);
-        let release_coeff = Self::time_constant_to_coeff(release_ms, sample_rate);
+        let attack_coeff = util::time_constant_to_coeff(attack_ms, sample_rate);
+        let release_coeff = util::time_constant_to_coeff(release_ms, sample_rate);
         // RMS smoothing: 10ms time constant for fast response
-        let rms_coeff = Self::time_constant_to_coeff(10.0, sample_rate);
+        let rms_coeff = util::time_constant_to_coeff(10.0, sample_rate);
         // Release smoothing: 100ms time constant for hysteresis
-        let release_smoothing_coeff = Self::time_constant_to_coeff(100.0, sample_rate);
+        let release_smoothing_coeff = util::time_constant_to_coeff(100.0, sample_rate);
         // Makeup smoothing: 200ms time constant for smooth transitions
-        let makeup_smoothing_coeff = Self::time_constant_to_coeff(200.0, sample_rate);
+        let makeup_smoothing_coeff = util::time_constant_to_coeff(200.0, sample_rate);
 
         // Create loudness meter (will be None if ebur128 feature not enabled)
         let loudness_meter = match crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32) {
@@ -126,7 +128,7 @@ impl Compressor {
             attack_coeff,
             release_coeff,
             makeup_gain_db,
-            makeup_gain_linear: Self::db_to_linear(makeup_gain_db),
+            makeup_gain_linear: util::db_to_linear(makeup_gain_db),
             knee_db: knee_db.max(0.0),
             envelope_db: -120.0,
             envelope_squared: 0.0,
@@ -162,24 +164,6 @@ impl Compressor {
         )
     }
 
-    /// Convert time constant in ms to exponential smoothing coefficient
-    fn time_constant_to_coeff(time_ms: f64, sample_rate: f64) -> f64 {
-        let tau = time_ms / 1000.0;
-        (-1.0 / (tau * sample_rate)).exp()
-    }
-
-    /// Convert dB to linear amplitude
-    #[inline]
-    fn db_to_linear(db: f64) -> f64 {
-        10.0_f64.powf(db / 20.0)
-    }
-
-    /// Convert linear amplitude to dB (with floor)
-    #[inline]
-    fn linear_to_db(linear: f64) -> f64 {
-        20.0 * (linear.abs() + 1e-10).log10()
-    }
-
     /// Set threshold in dB
     pub fn set_threshold(&mut self, threshold_db: f64) {
         self.threshold_db = threshold_db;
@@ -203,7 +187,7 @@ impl Compressor {
 
     /// Set attack time in ms
     pub fn set_attack_time(&mut self, attack_ms: f64) {
-        self.attack_coeff = Self::time_constant_to_coeff(attack_ms, self.sample_rate);
+        self.attack_coeff = util::time_constant_to_coeff(attack_ms, self.sample_rate);
     }
 
     /// Set release time in ms
@@ -212,7 +196,7 @@ impl Compressor {
         if !self.adaptive_release {
             self.current_release_ms = release_ms;
         }
-        self.release_coeff = Self::time_constant_to_coeff(release_ms, self.sample_rate);
+        self.release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
     }
 
     /// Enable or disable adaptive release
@@ -257,7 +241,7 @@ impl Compressor {
     /// Set makeup gain in dB
     pub fn set_makeup_gain(&mut self, makeup_gain_db: f64) {
         self.makeup_gain_db = makeup_gain_db;
-        self.makeup_gain_linear = Self::db_to_linear(makeup_gain_db);
+        self.makeup_gain_linear = util::db_to_linear(makeup_gain_db);
         if !self.auto_makeup_enabled {
             self.smoothed_makeup_gain = makeup_gain_db;
         }
@@ -420,7 +404,7 @@ impl Compressor {
 
         // Calculate RMS level in dB
         let rms = self.envelope_squared.sqrt();
-        let input_db = Self::linear_to_db(rms);
+        let input_db = util::linear_to_db(rms, 1e-10);
 
         // Smooth envelope in dB domain with attack/release
         let coeff = if input_db > self.envelope_db {
@@ -454,7 +438,7 @@ impl Compressor {
         }
 
         // Update release coefficient based on current adaptive release
-        self.release_coeff = Self::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
+        self.release_coeff = util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
 
         // Calculate gain reduction
         let gain_reduction_db = self.compute_gain_reduction(self.envelope_db);
@@ -464,8 +448,8 @@ impl Compressor {
         self.update_auto_makeup_gain();
 
         // Apply gain reduction using smoothed makeup gain
-        let output_gain = Self::db_to_linear(-gain_reduction_db)
-            * Self::db_to_linear(self.smoothed_makeup_gain);
+        let output_gain = util::db_to_linear(-gain_reduction_db)
+            * util::db_to_linear(self.smoothed_makeup_gain);
 
         (input_f64 * output_gain) as f32
     }
@@ -509,7 +493,7 @@ impl Compressor {
 
         // Calculate RMS level in dB
         let rms = self.envelope_squared.sqrt();
-        let input_db = Self::linear_to_db(rms);
+        let input_db = util::linear_to_db(rms, 1e-10);
 
         // Smooth envelope in dB domain with attack/release
         let coeff = if input_db > self.envelope_db {
@@ -543,15 +527,15 @@ impl Compressor {
         }
 
         // Update release coefficient based on current adaptive release
-        self.release_coeff = Self::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
+        self.release_coeff = util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
 
         // Calculate gain reduction
         let gain_reduction_db = self.compute_gain_reduction(self.envelope_db);
         self.current_gain_reduction_db = gain_reduction_db;
 
         // Apply gain reduction using smoothed makeup gain
-        let output_gain = Self::db_to_linear(-gain_reduction_db)
-            * Self::db_to_linear(self.smoothed_makeup_gain);
+        let output_gain = util::db_to_linear(-gain_reduction_db)
+            * util::db_to_linear(self.smoothed_makeup_gain);
 
         (input_f64 * output_gain) as f32
     }

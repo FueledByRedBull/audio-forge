@@ -215,158 +215,90 @@ impl NoiseSuppressionEngine {
             NoiseSuppressionEngine::DeepFilter(d) => d.is_ffi_available(),
         }
     }
+
+    #[inline]
+    fn as_suppressor(&self) -> &dyn NoiseSuppressor {
+        match self {
+            NoiseSuppressionEngine::RNNoise(r) => r,
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilterLL(d) => d,
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilter(d) => d,
+        }
+    }
+
+    #[inline]
+    fn as_suppressor_mut(&mut self) -> &mut dyn NoiseSuppressor {
+        match self {
+            NoiseSuppressionEngine::RNNoise(r) => r,
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilterLL(d) => d,
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilter(d) => d,
+        }
+    }
 }
 
 // Implement NoiseSuppressor for the enum by delegating to inner type
 impl NoiseSuppressor for NoiseSuppressionEngine {
     fn push_samples(&mut self, samples: &[f32]) {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.push_samples(samples),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.push_samples(samples),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.push_samples(samples),
-        }
+        self.as_suppressor_mut().push_samples(samples);
     }
 
     fn process_frames(&mut self) {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.process_frames(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.process_frames(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.process_frames(),
-        }
+        self.as_suppressor_mut().process_frames();
     }
 
     fn available_samples(&self) -> usize {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.available_samples(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.available_samples(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.available_samples(),
-        }
+        self.as_suppressor().available_samples()
     }
 
     fn pop_samples(&mut self, count: usize) -> Vec<f32> {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.pop_samples(count),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.pop_samples(count),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.pop_samples(count),
-        }
+        self.as_suppressor_mut().pop_samples(count)
     }
 
     fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.pop_samples_into(buffer),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.pop_samples_into(buffer),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.pop_samples_into(buffer),
-        }
+        self.as_suppressor_mut().pop_samples_into(buffer)
     }
 
     fn pop_all_samples(&mut self) -> Vec<f32> {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.pop_all_samples(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.pop_all_samples(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.pop_all_samples(),
-        }
+        self.as_suppressor_mut().pop_all_samples()
     }
 
     fn set_strength(&self, value: f32) {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.set_strength(value),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.set_strength(value),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.set_strength(value),
-        }
+        self.as_suppressor().set_strength(value);
     }
 
     fn get_strength(&self) -> f32 {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.get_strength(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.get_strength(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.get_strength(),
-        }
+        self.as_suppressor().get_strength()
     }
 
     fn set_enabled(&mut self, enabled: bool) {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.set_enabled(enabled),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.set_enabled(enabled),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.set_enabled(enabled),
-        }
+        self.as_suppressor_mut().set_enabled(enabled);
     }
 
     fn is_enabled(&self) -> bool {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.is_enabled(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.is_enabled(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.is_enabled(),
-        }
+        self.as_suppressor().is_enabled()
     }
 
     fn soft_reset(&mut self) {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.soft_reset(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.soft_reset(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.soft_reset(),
-        }
+        self.as_suppressor_mut().soft_reset();
     }
 
     fn pending_input(&self) -> usize {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.pending_input(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.pending_input(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.pending_input(),
-        }
+        self.as_suppressor().pending_input()
     }
 
     fn drain_pending_input(&mut self) -> Vec<f32> {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.drain_pending_input(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.drain_pending_input(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.drain_pending_input(),
-        }
+        self.as_suppressor_mut().drain_pending_input()
     }
 
     fn model_type(&self) -> NoiseModel {
-        match self {
-            NoiseSuppressionEngine::RNNoise(_) => NoiseModel::RNNoise,
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(_) => NoiseModel::DeepFilterNetLL,
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(_) => NoiseModel::DeepFilterNet,
-        }
+        self.as_suppressor().model_type()
     }
 
     fn latency_samples(&self) -> usize {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.latency_samples(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.latency_samples(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.latency_samples(),
-        }
+        self.as_suppressor().latency_samples()
     }
 }
 

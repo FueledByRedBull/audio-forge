@@ -86,6 +86,7 @@ impl AudioOutput {
         let consumer = Arc::new(Mutex::new(consumer));
         let num_channels = channels as usize;
         let mut stereo_scratch: Vec<f32> = Vec::new();
+        let mut last_output_sample: f32 = 0.0;
 
         // Build audio output stream
         let consumer_clone = Arc::clone(&consumer);
@@ -109,69 +110,83 @@ impl AudioOutput {
                             let available = cons.len();
 
                             if num_channels == 1 {
-                                // Mono output - only read if we have enough data to fill the buffer
-                                if available >= data.len() {
-                                    cons.read(data);
+                                // Mono output - read whatever is available, then smooth-fill remainder.
+                                let to_read = available.min(data.len());
+                                let read = if to_read > 0 {
+                                    cons.read(&mut data[..to_read])
                                 } else {
-                                    // Not enough data - interpolate from last sample to zero
-                                    // This creates a smooth fadeout instead of abrupt silence
-                                    let last = cons.last_sample();
-                                    let buffer_len = data.len();
-                                    for (i, sample) in data.iter_mut().enumerate() {
-                                        // Linear fade from last_sample to 0.0 over the buffer length
-                                        let t = (i + 1) as f32 / buffer_len as f32;
+                                    0
+                                };
+
+                                if read < data.len() {
+                                    let last = if read > 0 {
+                                        data[read - 1]
+                                    } else {
+                                        cons.last_sample()
+                                    };
+                                    let remain = data.len() - read;
+                                    for (i, sample) in data[read..].iter_mut().enumerate() {
+                                        // Linear fade from last sample to 0.0 over missing region.
+                                        let t = (i + 1) as f32 / remain as f32;
                                         *sample = last * (1.0 - t);
                                     }
+                                }
+
+                                if let Some(last) = data.last().copied() {
+                                    last_output_sample = last;
                                 }
                             } else {
                                 // Stereo output - duplicate mono to both channels
                                 let mono_samples = data.len() / num_channels;
 
-                                // Only read if we have enough mono samples
-                                if available >= mono_samples {
-                                    if stereo_scratch.len() < mono_samples {
-                                        stereo_scratch.resize(mono_samples, 0.0);
-                                    }
-                                    let count = cons.read(&mut stereo_scratch[..mono_samples]);
+                                if stereo_scratch.len() < mono_samples {
+                                    stereo_scratch.resize(mono_samples, 0.0);
+                                }
 
-                                    for (i, &sample) in stereo_scratch[..count].iter().enumerate() {
-                                        for ch in 0..num_channels {
-                                            data[i * num_channels + ch] = sample;
-                                        }
-                                    }
-
-                                    // Defensive fill in case a short read happens unexpectedly.
-                                    if count < mono_samples {
-                                        for frame in data
-                                            .chunks_mut(num_channels)
-                                            .skip(count)
-                                        {
-                                            for ch in frame.iter_mut() {
-                                                *ch = 0.0;
-                                            }
-                                        }
-                                    }
+                                let to_read = available.min(mono_samples);
+                                let count = if to_read > 0 {
+                                    cons.read(&mut stereo_scratch[..to_read])
                                 } else {
-                                    // Not enough data - interpolate from last sample to zero
-                                    let last = cons.last_sample();
-                                    let total_frames = data.len() / num_channels;
-                                    for (i, frame) in data.chunks_mut(num_channels).enumerate() {
-                                        // Linear fade over the number of frames
-                                        let t = (i + 1) as f32 / total_frames as f32;
+                                    0
+                                };
+
+                                for (i, &sample) in stereo_scratch[..count].iter().enumerate() {
+                                    for ch in 0..num_channels {
+                                        data[i * num_channels + ch] = sample;
+                                    }
+                                }
+
+                                let remaining_frames = mono_samples.saturating_sub(count);
+                                if remaining_frames > 0 {
+                                    let last = if count > 0 {
+                                        stereo_scratch[count - 1]
+                                    } else {
+                                        cons.last_sample()
+                                    };
+                                    for (i, frame) in data.chunks_mut(num_channels).skip(count).enumerate() {
+                                        let t = (i + 1) as f32 / remaining_frames as f32;
                                         let value = last * (1.0 - t);
                                         for ch in frame.iter_mut() {
                                             *ch = value;
                                         }
                                     }
                                 }
+
+                                if let Some(last) = data.chunks(num_channels).last() {
+                                    if let Some(&sample) = last.first() {
+                                        last_output_sample = sample;
+                                    }
+                                }
                             }
                         }
                         Err(_) => {
-                            // Lock contention - output silence to avoid blocking
-                            // This is preferable to blocking the audio thread
-                            for sample in data.iter_mut() {
-                                *sample = 0.0;
+                            // Lock contention - avoid hard silence pop by fading from last sample.
+                            let len = data.len().max(1);
+                            for (i, sample) in data.iter_mut().enumerate() {
+                                let t = (i + 1) as f32 / len as f32;
+                                *sample = last_output_sample * (1.0 - t);
                             }
+                            last_output_sample = 0.0;
                         }
                     }
                 },

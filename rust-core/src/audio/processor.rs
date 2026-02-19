@@ -13,7 +13,7 @@ use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 use std::sync::atomic::AtomicU8;
 
-use super::buffer::{AudioProducer, AudioRingBuffer};
+use super::buffer::AudioRingBuffer;
 use super::input::{AudioInput, TARGET_SAMPLE_RATE};
 use super::output::AudioOutput;
 use crate::dsp::biquad::{Biquad, BiquadType};
@@ -59,9 +59,6 @@ pub struct AudioProcessor {
 
     /// Audio output stream
     audio_output: Option<AudioOutput>,
-
-    /// Output ring buffer producer (for sending processed audio to output)
-    output_producer: Arc<Mutex<Option<AudioProducer>>>,
 
     /// Processing thread handle
     process_thread: Option<std::thread::JoinHandle<()>>,
@@ -223,7 +220,6 @@ impl AudioProcessor {
             limiter_enabled: Arc::new(AtomicBool::new(true)),
             audio_input: None,
             audio_output: None,
-            output_producer: Arc::new(Mutex::new(None)),
             process_thread: None,
             running: Arc::new(AtomicBool::new(false)),
             bypass: Arc::new(AtomicBool::new(false)),
@@ -314,11 +310,6 @@ impl AudioProcessor {
         prod.write(&silence);
         let output_producer = prod;
 
-        // Store output producer for processing thread
-        if let Ok(mut prod) = self.output_producer.lock() {
-            *prod = Some(output_producer);
-        }
-
         // Start audio input
         let last_input_callback_time_us = Arc::clone(&self.last_input_callback_time_us);
         let input = match input_device {
@@ -335,9 +326,6 @@ impl AudioProcessor {
         let input_sample_rate_for_thread = input.device_info().sample_rate;
 
         if let Err(e) = input.start() {
-            if let Ok(mut prod) = self.output_producer.lock() {
-                *prod = None;
-            }
             return Err(format!("Failed to start input stream: {}", e));
         }
 
@@ -367,9 +355,6 @@ impl AudioProcessor {
             Ok(output) => output,
             Err(e) => {
                 let _ = input.pause();
-                if let Ok(mut prod) = self.output_producer.lock() {
-                    *prod = None;
-                }
                 return Err(format!("Failed to start audio output: {}", e));
             }
         };
@@ -379,9 +364,6 @@ impl AudioProcessor {
         if let Err(e) = output.start() {
             let _ = input.pause();
             let _ = output.pause();
-            if let Ok(mut prod) = self.output_producer.lock() {
-                *prod = None;
-            }
             return Err(format!("Failed to start output stream: {}", e));
         }
 
@@ -405,7 +387,7 @@ impl AudioProcessor {
         let deesser_enabled = Arc::clone(&self.deesser_enabled);
         let limiter = Arc::clone(&self.limiter);
         let limiter_enabled = Arc::clone(&self.limiter_enabled);
-        let output_producer = Arc::clone(&self.output_producer);
+        let mut output_producer = output_producer;
         let running = Arc::clone(&self.running);
         let bypass = Arc::clone(&self.bypass);
         let pre_filter = Arc::clone(&self.pre_filter);
@@ -453,6 +435,7 @@ impl AudioProcessor {
             let mut temp_buffer = vec![0.0f32; 4096];
             let mut rnnoise_output = vec![0.0f32; 2048];
             let mut resample_input: Vec<f64> = Vec::with_capacity(4096);
+            let mut resample_frame: Vec<f64> = Vec::with_capacity(4096);
             let mut resampler = if input_sample_rate_for_thread != sample_rate_for_latency {
                 eprintln!(
                     "[PROCESSING] Input device sample rate {} Hz; resampling to {} Hz in DSP thread",
@@ -556,80 +539,63 @@ impl AudioProcessor {
             const OUTPUT_HARD_BACKLOG_SAMPLES: usize = 1920; // ~40ms backlog
             const OUTPUT_MAX_CATCHUP_RATIO: f32 = 1.08; // Up to 8% faster in normal backlog.
             const OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO: f32 = 1.20; // Up to 20% in hard backlog.
-            let mut catchup_scratch: Vec<f32> = Vec::with_capacity(4096);
+            const CATCHUP_SCRATCH_CAPACITY: usize = 4096;
+            let mut catchup_scratch: Vec<f32> = vec![0.0; CATCHUP_SCRATCH_CAPACITY];
             let mut write_with_jitter_control = |samples: &[f32]| {
-                if let Ok(mut prod_guard) = output_producer.try_lock() {
-                    if let Some(prod) = prod_guard.as_mut() {
-                        let capacity = prod.capacity();
-                        let free = prod.free_len();
-                        let fill = capacity.saturating_sub(free);
+                let capacity = output_producer.capacity();
+                let free = output_producer.free_len();
+                let fill = capacity.saturating_sub(free);
 
-                        // Pro catch-up: smoothly time-compress this block when backlog is high.
-                        // This avoids discontinuities/pops from hard sample drops.
-                        let mut write_slice = samples;
-                        if fill > OUTPUT_TARGET_HIGH_SAMPLES && !samples.is_empty() {
-                            let excess = fill - OUTPUT_TARGET_HIGH_SAMPLES;
-                            let zone = OUTPUT_HARD_BACKLOG_SAMPLES
-                                .saturating_sub(OUTPUT_TARGET_HIGH_SAMPLES)
-                                .max(1);
-                            let severity = (excess as f32 / zone as f32).clamp(0.0, 1.0);
-                            let max_ratio = if fill >= OUTPUT_HARD_BACKLOG_SAMPLES {
-                                OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO
-                            } else {
-                                OUTPUT_MAX_CATCHUP_RATIO
-                            };
-                            let catchup_ratio = 1.0 + severity * (max_ratio - 1.0);
-                            let out_len = ((samples.len() as f32) / catchup_ratio)
-                                .round()
-                                .max(1.0) as usize;
+                // Pro catch-up: smoothly time-compress this block when backlog is high.
+                // This avoids discontinuities/pops from hard sample drops.
+                let mut write_slice = samples;
+                if fill > OUTPUT_TARGET_HIGH_SAMPLES && !samples.is_empty() {
+                    let excess = fill - OUTPUT_TARGET_HIGH_SAMPLES;
+                    let zone = OUTPUT_HARD_BACKLOG_SAMPLES
+                        .saturating_sub(OUTPUT_TARGET_HIGH_SAMPLES)
+                        .max(1);
+                    let severity = (excess as f32 / zone as f32).clamp(0.0, 1.0);
+                    let max_ratio = if fill >= OUTPUT_HARD_BACKLOG_SAMPLES {
+                        OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO
+                    } else {
+                        OUTPUT_MAX_CATCHUP_RATIO
+                    };
+                    let catchup_ratio = 1.0 + severity * (max_ratio - 1.0);
+                    let out_len = ((samples.len() as f32) / catchup_ratio)
+                        .round()
+                        .max(1.0) as usize;
+                    let out_len = out_len.min(CATCHUP_SCRATCH_CAPACITY);
 
-                            if out_len < samples.len() {
-                                catchup_scratch.clear();
-                                if catchup_scratch.capacity() < out_len {
-                                    // reserve() grows by "additional over current len".
-                                    // After clear(), len==0, so reserve(out_len) guarantees
-                                    // capacity >= out_len before set_len().
-                                    catchup_scratch.reserve(out_len);
-                                }
-                                // SAFETY: We immediately write every index [0..out_len)
-                                // before any read, so uninitialized elements are never observed.
-                                unsafe {
-                                    catchup_scratch.set_len(out_len);
-                                }
-
-                                let max_src = (samples.len() - 1) as f32;
-                                for (i, out) in catchup_scratch.iter_mut().enumerate() {
-                                    let src_pos = (i as f32 * catchup_ratio).min(max_src);
-                                    let idx = src_pos.floor() as usize;
-                                    let next = (idx + 1).min(samples.len() - 1);
-                                    let frac = src_pos - idx as f32;
-                                    *out = samples[idx] + (samples[next] - samples[idx]) * frac;
-                                }
-
-                                let skipped = samples.len() - out_len;
-                                jitter_dropped_samples.fetch_add(skipped as u64, Ordering::Relaxed);
-                                output_recovery_count.fetch_add(1, Ordering::Relaxed);
-                                write_slice = &catchup_scratch;
-                            }
+                    if out_len < samples.len() {
+                        let max_src = (samples.len() - 1) as f32;
+                        for i in 0..out_len {
+                            let src_pos = (i as f32 * catchup_ratio).min(max_src);
+                            let idx = src_pos.floor() as usize;
+                            let next = (idx + 1).min(samples.len() - 1);
+                            let frac = src_pos - idx as f32;
+                            catchup_scratch[i] =
+                                samples[idx] + (samples[next] - samples[idx]) * frac;
                         }
 
-                        // Low watermark currently informational; could be used for adaptive refill.
-                        let _below_low_target = fill < OUTPUT_TARGET_LOW_SAMPLES;
-
-                        if !write_slice.is_empty() {
-                            let written = prod.write(write_slice);
-                            if written > 0 {
-                                update_write_time();
-                            }
-                        }
-
-                        let new_fill = prod.capacity().saturating_sub(prod.free_len());
-                        let _ = OUTPUT_TARGET_LOW_SAMPLES; // Documented target band lower bound.
-                        output_buffer_len.store(new_fill as u32, Ordering::Relaxed);
+                        let skipped = samples.len() - out_len;
+                        jitter_dropped_samples.fetch_add(skipped as u64, Ordering::Relaxed);
+                        output_recovery_count.fetch_add(1, Ordering::Relaxed);
+                        write_slice = &catchup_scratch[..out_len];
                     }
-                } else {
-                    lock_contention_count.fetch_add(1, Ordering::Relaxed);
                 }
+
+                // Low watermark currently informational; could be used for adaptive refill.
+                let _below_low_target = fill < OUTPUT_TARGET_LOW_SAMPLES;
+
+                if !write_slice.is_empty() {
+                    let written = output_producer.write(write_slice);
+                    if written > 0 {
+                        update_write_time();
+                    }
+                }
+
+                let new_fill = output_producer.capacity().saturating_sub(output_producer.free_len());
+                output_buffer_len.store(new_fill as u32, Ordering::Relaxed);
             };
 
             // Run entire processing loop with denormals flushed to zero
@@ -661,9 +627,19 @@ impl AudioProcessor {
                                 while resample_input.len() >= input_frames_needed
                                     && produced < temp_buffer.len()
                                 {
-                                    let input_chunk: Vec<f64> =
-                                        resample_input.drain(..input_frames_needed).collect();
-                                    if let Ok(output) = resampler.process(&[input_chunk], None) {
+                                    if resample_frame.capacity() < input_frames_needed {
+                                        // Grow once outside hot loop size expectations if ever needed.
+                                        resample_frame
+                                            .reserve(input_frames_needed - resample_frame.capacity());
+                                    }
+                                    resample_frame.clear();
+                                    resample_frame
+                                        .extend_from_slice(&resample_input[..input_frames_needed]);
+                                    resample_input.drain(..input_frames_needed);
+
+                                    if let Ok(output) =
+                                        resampler.process(std::slice::from_ref(&resample_frame), None)
+                                    {
                                         if !output.is_empty() && !output[0].is_empty() {
                                             for &sample in output[0].iter() {
                                                 if produced >= temp_buffer.len() {
@@ -1174,10 +1150,6 @@ impl AudioProcessor {
 
         self.audio_input = None;
         self.audio_output = None;
-
-        if let Ok(mut prod) = self.output_producer.lock() {
-            *prod = None;
-        }
 
         // Soft reset suppressor to clear stale buffers without model convergence penalty
         if let Ok(mut s) = self.suppressor.lock() {

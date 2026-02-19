@@ -228,6 +228,10 @@ impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
         self.output_buffer.drain(..actual_count).collect()
     }
 
+    fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize {
+        self.read_samples(buffer)
+    }
+
     fn pop_all_samples(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.output_buffer)
     }

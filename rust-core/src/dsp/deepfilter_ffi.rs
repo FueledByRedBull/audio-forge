@@ -601,6 +601,14 @@ impl NoiseSuppressor for DeepFilterProcessor {
         self.output_buffer.drain(..actual).collect()
     }
 
+    fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize {
+        let count = buffer.len().min(self.output_buffer.len());
+        for (dst, sample) in buffer.iter_mut().zip(self.output_buffer.drain(..count)) {
+            *dst = sample;
+        }
+        count
+    }
+
     fn pop_all_samples(&mut self) -> Vec<f32> {
         self.output_buffer.drain(..).collect()
     }

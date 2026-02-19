@@ -5,7 +5,10 @@
 //! Adapted from Spectral Workbench project for MicEq.
 
 use pyo3::prelude::*;
-use rubato::{FftFixedIn, Resampler};
+use rubato::{
+    calculate_cutoff, Resampler, SincFixedIn, SincInterpolationParameters,
+    SincInterpolationType, WindowFunction,
+};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -435,19 +438,24 @@ impl AudioProcessor {
             let mut temp_buffer = vec![0.0f32; 4096];
             let mut rnnoise_output = vec![0.0f32; 2048];
             let mut resample_input: Vec<f64> = Vec::with_capacity(4096);
-            let mut resample_frame: Vec<f64> = Vec::with_capacity(4096);
+            const RESAMPLER_CHUNK_SIZE: usize = 1024;
+            let mut resampler_input_block: Vec<f64> = vec![0.0; RESAMPLER_CHUNK_SIZE];
             let mut resampler = if input_sample_rate_for_thread != sample_rate_for_latency {
                 eprintln!(
                     "[PROCESSING] Input device sample rate {} Hz; resampling to {} Hz in DSP thread",
                     input_sample_rate_for_thread, sample_rate_for_latency
                 );
-                match FftFixedIn::<f64>::new(
-                    input_sample_rate_for_thread as usize,
-                    sample_rate_for_latency as usize,
-                    1024,
-                    2,
-                    1,
-                ) {
+                let ratio = sample_rate_for_latency as f64 / input_sample_rate_for_thread as f64;
+                let sinc_len = 128;
+                let window = WindowFunction::BlackmanHarris2;
+                let params = SincInterpolationParameters {
+                    sinc_len,
+                    f_cutoff: calculate_cutoff(sinc_len, window),
+                    interpolation: SincInterpolationType::Cubic,
+                    oversampling_factor: 256,
+                    window,
+                };
+                match SincFixedIn::<f64>::new(ratio, 1.2, params, RESAMPLER_CHUNK_SIZE, 1) {
                     Ok(r) => Some(r),
                     Err(e) => {
                         eprintln!(
@@ -460,6 +468,9 @@ impl AudioProcessor {
             } else {
                 None
             };
+            let mut resampler_out = resampler
+                .as_ref()
+                .map(|r| r.output_buffer_allocate(false));
 
             // DC Blocker state variables
             // This removes electrical DC offset which causes static/clicks
@@ -627,21 +638,22 @@ impl AudioProcessor {
                                 while resample_input.len() >= input_frames_needed
                                     && produced < temp_buffer.len()
                                 {
-                                    if resample_frame.capacity() < input_frames_needed {
-                                        // Grow once outside hot loop size expectations if ever needed.
-                                        resample_frame
-                                            .reserve(input_frames_needed - resample_frame.capacity());
+                                    if input_frames_needed > resampler_input_block.len() {
+                                        // Unexpected runtime growth request; skip this cycle instead of
+                                        // allocating in the real-time path.
+                                        break;
                                     }
-                                    resample_frame.clear();
-                                    resample_frame
-                                        .extend_from_slice(&resample_input[..input_frames_needed]);
+                                    resampler_input_block[..input_frames_needed]
+                                        .copy_from_slice(&resample_input[..input_frames_needed]);
                                     resample_input.drain(..input_frames_needed);
 
-                                    if let Ok(output) =
-                                        resampler.process(std::slice::from_ref(&resample_frame), None)
-                                    {
-                                        if !output.is_empty() && !output[0].is_empty() {
-                                            for &sample in output[0].iter() {
+                                    if let Some(outbuf) = resampler_out.as_mut() {
+                                        let in_slices = [&resampler_input_block[..input_frames_needed]];
+                                        if let Ok((_nbr_in, nbr_out)) =
+                                            resampler.process_into_buffer(&in_slices, outbuf, None)
+                                        {
+                                            let channel_out = &outbuf[0];
+                                            for &sample in channel_out.iter().take(nbr_out) {
                                                 if produced >= temp_buffer.len() {
                                                     break;
                                                 }
@@ -805,10 +817,9 @@ impl AudioProcessor {
                                         let available = s.available_samples();
                                         if available > 0 {
                                             let count = available.min(rnnoise_output.len());
-                                            let processed = s.pop_samples(count);
-                                            let output_slice =
-                                                &mut rnnoise_output[..processed.len()];
-                                            output_slice.copy_from_slice(&processed);
+                                            let processed =
+                                                s.pop_samples_into(&mut rnnoise_output[..count]);
+                                            let output_slice = &mut rnnoise_output[..processed];
 
                                             // Stage 3: De-esser
                                             if deesser_enabled.load(Ordering::Acquire) {

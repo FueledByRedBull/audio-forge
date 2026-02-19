@@ -35,6 +35,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction
 import sys
 import json
+import time
 from pathlib import Path
 
 from .gate_panel import GatePanel
@@ -84,6 +85,9 @@ class MainWindow(QMainWindow):
         # Auto-EQ undo state (single-level undo)
         self._pre_auto_eq_state = None
         self._undo_auto_eq_button = None
+        self._calibration_dialog_open = False
+        self._output_stall_started_at = None
+        self._last_output_recovery_at = 0.0
 
         # Set up UI
         self._setup_ui()
@@ -585,7 +589,11 @@ class MainWindow(QMainWindow):
         dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
         dialog.calibration_saved.connect(self._on_latency_calibration_saved)
         dialog.calibration_reset.connect(self._on_latency_calibration_reset)
-        dialog.exec()
+        self._calibration_dialog_open = True
+        try:
+            dialog.exec()
+        finally:
+            self._calibration_dialog_open = False
 
     def _on_latency_calibration_saved(self, profile_data: dict):
         profile = LatencyCalibrationProfile.from_dict(profile_data)
@@ -902,7 +910,11 @@ class MainWindow(QMainWindow):
         dialog = CalibrationDialog(self)
         # Connect signal to handle auto-EQ completion (preset save, undo button enable)
         dialog.auto_eq_applied.connect(self.on_auto_eq_applied)
-        dialog.exec()  # Modal dialog - blocks until user closes
+        self._calibration_dialog_open = True
+        try:
+            dialog.exec()  # Modal dialog - blocks until user closes
+        finally:
+            self._calibration_dialog_open = False
         if DEBUG:
             print(f"[MAIN] Calibration dialog closed, result={dialog.result()}")
             is_running = self.processor.is_running()
@@ -1177,7 +1189,14 @@ class MainWindow(QMainWindow):
                 "border-radius: 3px; font-family: monospace; font-size: 12px; }"
             )
             self.dropped_label.setText(f"Dropped: {dropped}")
+
+            self._maybe_recover_output_stall(
+                input_rms=input_rms,
+                output_rms=output_rms,
+                output_buf=output_buf,
+            )
         else:
+            self._output_stall_started_at = None
             self.latency_label.setText("Latency: -- ms")
             self.buffer_label.setText("Buffer: --")
             self.buffer_label.setStyleSheet(
@@ -1189,6 +1208,71 @@ class MainWindow(QMainWindow):
                 "QLabel { background-color: #333; color: #0f0; padding: 5px 10px; "
                 "border-radius: 3px; font-family: monospace; font-size: 12px; }"
             )
+
+    def _maybe_recover_output_stall(self, input_rms: float, output_rms: float, output_buf: int):
+        """
+        Detect and recover a likely output-path stall.
+
+        Heuristic:
+        - Input signal is active
+        - Output is effectively silent
+        - Output ring buffer is heavily backed up
+        - Persisting for > 1.5s
+        """
+        if self._calibration_dialog_open:
+            self._output_stall_started_at = None
+            return
+
+        now = time.monotonic()
+        cooldown_s = 20.0
+        if now - self._last_output_recovery_at < cooldown_s:
+            return
+
+        suspicious = (
+            input_rms > -50.0
+            and output_rms < -85.0
+            and output_buf > 20000
+        )
+
+        if not suspicious:
+            self._output_stall_started_at = None
+            return
+
+        if self._output_stall_started_at is None:
+            self._output_stall_started_at = now
+            return
+
+        if now - self._output_stall_started_at < 1.5:
+            return
+
+        self._output_stall_started_at = None
+        self._last_output_recovery_at = now
+        self._recover_output_path()
+
+    def _recover_output_path(self):
+        """Best-effort output recovery: unmute + restart with selected devices."""
+        input_device = self.input_combo.currentData()
+        output_device = self.output_combo.currentData()
+
+        try:
+            self.processor.set_output_mute(False)
+            self.processor.stop()
+            result = self.processor.start(input_device, output_device)
+            self.processor.set_output_mute(False)
+            self.status_bar.showMessage(
+                f"Recovered output path automatically: {result}",
+                4000,
+            )
+        except Exception as e:
+            print(f"Auto-recovery failed: {type(e).__name__}: {e}")
+            self.status_bar.showMessage(
+                f"Auto-recovery failed: {e}",
+                5000,
+            )
+            self.start_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.input_combo.setEnabled(True)
+            self.output_combo.setEnabled(True)
 
     def _show_about(self):
         """Show about dialog."""

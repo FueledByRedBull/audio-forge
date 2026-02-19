@@ -7,6 +7,8 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use thiserror::Error;
 
 use super::buffer::AudioProducer;
@@ -51,15 +53,22 @@ pub struct AudioInput {
 
 impl AudioInput {
     /// Create audio input from default device
-    pub fn from_default_device(producer: AudioProducer) -> Result<Self, AudioError> {
+    pub fn from_default_device(
+        producer: AudioProducer,
+        last_callback_time_us: Arc<AtomicU64>,
+    ) -> Result<Self, AudioError> {
         let host = cpal::default_host();
         let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
 
-        Self::from_device(device, producer)
+        Self::from_device(device, producer, last_callback_time_us)
     }
 
     /// Create audio input from device by name
-    pub fn from_device_name(name: &str, producer: AudioProducer) -> Result<Self, AudioError> {
+    pub fn from_device_name(
+        name: &str,
+        producer: AudioProducer,
+        last_callback_time_us: Arc<AtomicU64>,
+    ) -> Result<Self, AudioError> {
         let host = cpal::default_host();
         let device = host
             .input_devices()
@@ -67,11 +76,15 @@ impl AudioInput {
             .find(|d| d.name().map(|n| n == name).unwrap_or(false))
             .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))?;
 
-        Self::from_device(device, producer)
+        Self::from_device(device, producer, last_callback_time_us)
     }
 
     /// Create audio input from specific device
-    pub fn from_device(device: Device, producer: AudioProducer) -> Result<Self, AudioError> {
+    pub fn from_device(
+        device: Device,
+        producer: AudioProducer,
+        last_callback_time_us: Arc<AtomicU64>,
+    ) -> Result<Self, AudioError> {
         let name = device
             .name()
             .map_err(|e| AudioError::DeviceName(e.to_string()))?;
@@ -93,7 +106,9 @@ impl AudioInput {
         let stream_config: StreamConfig = config.into();
         let mut producer = producer;
         let num_channels = channels as usize;
-        let mut mono_scratch: Vec<f32> = Vec::new();
+        // Fixed callback scratch to avoid heap growth in real-time thread.
+        const INPUT_SCRATCH_CAPACITY: usize = 8192;
+        let mut mono_scratch: Vec<f32> = vec![0.0; INPUT_SCRATCH_CAPACITY];
 
         if device_sample_rate != TARGET_SAMPLE_RATE {
             println!(
@@ -106,24 +121,35 @@ impl AudioInput {
             .build_input_stream(
                 &stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    if let Ok(now) = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                    {
+                        last_callback_time_us.store(now.as_micros() as u64, Ordering::Relaxed);
+                    }
+
                     if num_channels == 1 {
                         producer.write(data);
                     } else {
                         // Convert interleaved multi-channel input to mono without
                         // allocating in the callback.
                         let frames = data.len() / num_channels;
-                        if mono_scratch.len() < frames {
-                            mono_scratch.resize(frames, 0.0);
-                        }
+                        let mut frame_idx = 0usize;
+                        while frame_idx < frames {
+                            let chunk_frames = (frames - frame_idx).min(INPUT_SCRATCH_CAPACITY);
+                            let start = frame_idx * num_channels;
+                            let end = start + chunk_frames * num_channels;
+                            let interleaved = &data[start..end];
 
-                        let mut written_frames = 0usize;
-                        for chunk in data.chunks_exact(num_channels) {
-                            let sum: f32 = chunk.iter().copied().sum();
-                            mono_scratch[written_frames] = sum / num_channels as f32;
-                            written_frames += 1;
-                        }
+                            let mut written_frames = 0usize;
+                            for chunk in interleaved.chunks_exact(num_channels) {
+                                let sum: f32 = chunk.iter().copied().sum();
+                                mono_scratch[written_frames] = sum / num_channels as f32;
+                                written_frames += 1;
+                            }
 
-                        producer.write(&mono_scratch[..written_frames]);
+                            producer.write(&mono_scratch[..written_frames]);
+                            frame_idx += chunk_frames;
+                        }
                     }
                 },
                 move |err| {

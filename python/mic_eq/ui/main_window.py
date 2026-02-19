@@ -1188,7 +1188,20 @@ class MainWindow(QMainWindow):
                 f"QLabel {{ background-color: #333; color: {dropped_color}; padding: 5px 10px; "
                 "border-radius: 3px; font-family: monospace; font-size: 12px; }"
             )
-            self.dropped_label.setText(f"Dropped: {dropped}")
+            extra_health = ""
+            try:
+                if hasattr(self.processor, "get_output_underrun_total"):
+                    underruns = self.processor.get_output_underrun_total()
+                    recoveries = (
+                        self.processor.get_output_recovery_count()
+                        if hasattr(self.processor, "get_output_recovery_count")
+                        else 0
+                    )
+                    if underruns > 0 or recoveries > 0:
+                        extra_health = f" | U:{underruns} R:{recoveries}"
+            except Exception:
+                pass
+            self.dropped_label.setText(f"Dropped: {dropped}{extra_health}")
 
             self._maybe_recover_output_stall(
                 input_rms=input_rms,

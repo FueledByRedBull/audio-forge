@@ -119,6 +119,18 @@ pub struct AudioProcessor {
     suppressor_buffer_len: Arc<AtomicU32>,
     /// Last successful output write time (for detecting stalled processing)
     last_output_write_time: Arc<AtomicU64>,
+    /// Last input callback heartbeat timestamp (unix micros)
+    last_input_callback_time_us: Arc<AtomicU64>,
+    /// Last output callback heartbeat timestamp (unix micros)
+    last_output_callback_time_us: Arc<AtomicU64>,
+    /// Consecutive output callback underrun count
+    output_underrun_streak: Arc<AtomicU32>,
+    /// Total output callback underruns since start
+    output_underrun_total: Arc<AtomicU64>,
+    /// Samples dropped by DSP-side jitter buffer control
+    jitter_dropped_samples: Arc<AtomicU64>,
+    /// Number of DSP-side jitter recovery events
+    output_recovery_count: Arc<AtomicU64>,
 
     /// Smoothed DSP processing time in microseconds (EMA, 200ms time constant)
     dsp_time_smoothed_us: Arc<AtomicU64>,
@@ -237,6 +249,12 @@ impl AudioProcessor {
             output_buffer_len: Arc::new(AtomicU32::new(0)),
             suppressor_buffer_len: Arc::new(AtomicU32::new(0)),
             last_output_write_time: Arc::new(AtomicU64::new(0)),
+            last_input_callback_time_us: Arc::new(AtomicU64::new(0)),
+            last_output_callback_time_us: Arc::new(AtomicU64::new(0)),
+            output_underrun_streak: Arc::new(AtomicU32::new(0)),
+            output_underrun_total: Arc::new(AtomicU64::new(0)),
+            jitter_dropped_samples: Arc::new(AtomicU64::new(0)),
+            output_recovery_count: Arc::new(AtomicU64::new(0)),
             dsp_time_smoothed_us: Arc::new(AtomicU64::new(0)),
             smoothed_buffer_len: Arc::new(AtomicU32::new(0)),
 
@@ -278,6 +296,12 @@ impl AudioProcessor {
 
         // Reset the dropped counter at start
         self.input_dropped.store(0, Ordering::Relaxed);
+        self.output_underrun_streak.store(0, Ordering::Relaxed);
+        self.output_underrun_total.store(0, Ordering::Relaxed);
+        self.jitter_dropped_samples.store(0, Ordering::Relaxed);
+        self.output_recovery_count.store(0, Ordering::Relaxed);
+        self.last_input_callback_time_us.store(0, Ordering::Relaxed);
+        self.last_output_callback_time_us.store(0, Ordering::Relaxed);
 
         // Create output ring buffer
         let output_rb = AudioRingBuffer::new(self.sample_rate as usize * 2);
@@ -296,9 +320,14 @@ impl AudioProcessor {
         }
 
         // Start audio input
+        let last_input_callback_time_us = Arc::clone(&self.last_input_callback_time_us);
         let input = match input_device {
-            Some(name) => AudioInput::from_device_name(name, input_producer),
-            None => AudioInput::from_default_device(input_producer),
+            Some(name) => AudioInput::from_device_name(
+                name,
+                input_producer,
+                last_input_callback_time_us,
+            ),
+            None => AudioInput::from_default_device(input_producer, last_input_callback_time_us),
         }
         .map_err(|e| format!("Failed to start audio input: {}", e))?;
 
@@ -314,9 +343,25 @@ impl AudioProcessor {
 
         // Start audio output
         let recording_active = Arc::clone(&self.recording_active);
+        let last_output_callback_time_us = Arc::clone(&self.last_output_callback_time_us);
+        let output_underrun_streak = Arc::clone(&self.output_underrun_streak);
+        let output_underrun_total = Arc::clone(&self.output_underrun_total);
         let output_result = match output_device {
-            Some(name) => AudioOutput::from_device_name(name, output_consumer, recording_active),
-            None => AudioOutput::from_default_device(output_consumer, recording_active),
+            Some(name) => AudioOutput::from_device_name(
+                name,
+                output_consumer,
+                recording_active,
+                last_output_callback_time_us,
+                output_underrun_streak,
+                output_underrun_total,
+            ),
+            None => AudioOutput::from_default_device(
+                output_consumer,
+                recording_active,
+                last_output_callback_time_us,
+                output_underrun_streak,
+                output_underrun_total,
+            ),
         };
         let output = match output_result {
             Ok(output) => output,
@@ -389,6 +434,8 @@ impl AudioProcessor {
         let dsp_time_smoothed_us = Arc::clone(&self.dsp_time_smoothed_us);
         let smoothed_buffer_len = Arc::clone(&self.smoothed_buffer_len);
         let lock_contention_count = Arc::clone(&self.lock_contention_count);
+        let jitter_dropped_samples = Arc::clone(&self.jitter_dropped_samples);
+        let output_recovery_count = Arc::clone(&self.output_recovery_count);
 
         // Clone raw recording buffer atomics
         let raw_recording_buffer = Arc::clone(&self.raw_recording_buffer);
@@ -500,6 +547,50 @@ impl AudioProcessor {
                 if let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 {
                     last_output_write_time.store(now.as_micros() as u64, Ordering::Relaxed);
+                }
+            };
+
+            // Jitter-buffer write control: keep output queue in a healthy range.
+            const OUTPUT_TARGET_LOW_SAMPLES: usize = 480; // ~10ms @ 48k
+            const OUTPUT_TARGET_HIGH_SAMPLES: usize = 960; // ~20ms @ 48k
+            const OUTPUT_HARD_BACKLOG_SAMPLES: usize = 1920; // ~40ms backlog
+            let write_with_jitter_control = |samples: &[f32]| {
+                if let Ok(mut prod_guard) = output_producer.try_lock() {
+                    if let Some(prod) = prod_guard.as_mut() {
+                        let capacity = prod.capacity();
+                        let free = prod.free_len();
+                        let fill = capacity.saturating_sub(free);
+
+                        // If backlog is too large, drop part/all of this block to reduce latency drift.
+                        let mut start_idx = 0usize;
+                        if fill >= OUTPUT_HARD_BACKLOG_SAMPLES {
+                            jitter_dropped_samples
+                                .fetch_add(samples.len() as u64, Ordering::Relaxed);
+                            output_recovery_count.fetch_add(1, Ordering::Relaxed);
+                            output_buffer_len.store(fill as u32, Ordering::Relaxed);
+                            return;
+                        } else if fill > OUTPUT_TARGET_HIGH_SAMPLES {
+                            let drop = (fill - OUTPUT_TARGET_HIGH_SAMPLES).min(samples.len());
+                            if drop > 0 {
+                                start_idx = drop;
+                                jitter_dropped_samples.fetch_add(drop as u64, Ordering::Relaxed);
+                            }
+                        }
+
+                        let to_write = &samples[start_idx..];
+                        if !to_write.is_empty() {
+                            let written = prod.write(to_write);
+                            if written > 0 {
+                                update_write_time();
+                            }
+                        }
+
+                        let new_fill = prod.capacity().saturating_sub(prod.free_len());
+                        let _ = OUTPUT_TARGET_LOW_SAMPLES; // Documented target band lower bound.
+                        output_buffer_len.store(new_fill as u32, Ordering::Relaxed);
+                    }
+                } else {
+                    lock_contention_count.fetch_add(1, Ordering::Relaxed);
                 }
             };
 
@@ -639,21 +730,7 @@ impl AudioProcessor {
                                 compressor_current_release_ms.store(2000, Ordering::Relaxed); // Default 200ms
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
 
-                                if let Ok(mut prod_guard) = output_producer.try_lock() {
-                                    if let Some(prod) = prod_guard.as_mut() {
-                                        let written = prod.write(buffer);
-                                        if written > 0 {
-                                            update_write_time();
-                                        }
-                                        // Track output buffer fill level
-                                        output_buffer_len.store(
-                                            (prod.capacity() - prod.free_len()) as u32,
-                                            Ordering::Relaxed,
-                                        );
-                                    }
-                                } else {
-                                    lock_contention_count.fetch_add(1, Ordering::Relaxed);
-                                }
+                                write_with_jitter_control(buffer);
                                 // Record DSP processing time
                                 let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
                                 let prev_smoothed = dsp_time_smoothed_us.load(Ordering::Relaxed);
@@ -794,22 +871,7 @@ impl AudioProcessor {
                                             );
 
                                             // Send processed samples to output
-                                            if let Ok(mut prod_guard) = output_producer.try_lock() {
-                                                if let Some(prod) = prod_guard.as_mut() {
-                                                    let written = prod.write(output_slice);
-                                                    if written > 0 {
-                                                        update_write_time();
-                                                    }
-                                                    // Track output buffer fill level
-                                                    output_buffer_len.store(
-                                                        (prod.capacity() - prod.free_len()) as u32,
-                                                        Ordering::Relaxed,
-                                                    );
-                                                }
-                                            } else {
-                                                lock_contention_count
-                                                    .fetch_add(1, Ordering::Relaxed);
-                                            }
+                                            write_with_jitter_control(output_slice);
                                         }
 
                                         // Record DSP processing time
@@ -890,21 +952,7 @@ impl AudioProcessor {
                                             &output_rms,
                                         );
 
-                                        if let Ok(mut prod_guard) = output_producer.try_lock() {
-                                            if let Some(prod) = prod_guard.as_mut() {
-                                                let written = prod.write(buffer);
-                                                if written > 0 {
-                                                    update_write_time();
-                                                }
-                                                output_buffer_len.store(
-                                                    (prod.capacity() - prod.free_len()) as u32,
-                                                    Ordering::Relaxed,
-                                                );
-                                            }
-                                        } else {
-                                            lock_contention_count
-                                                .fetch_add(1, Ordering::Relaxed);
-                                        }
+                                        write_with_jitter_control(buffer);
 
                                         let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
                                         let prev_smoothed =
@@ -986,21 +1034,7 @@ impl AudioProcessor {
                                     );
 
                                     // Send to output
-                                    if let Ok(mut prod_guard) = output_producer.try_lock() {
-                                        if let Some(prod) = prod_guard.as_mut() {
-                                            let written = prod.write(buffer);
-                                            if written > 0 {
-                                                update_write_time();
-                                            }
-                                            // Track output buffer fill level
-                                            output_buffer_len.store(
-                                                (prod.capacity() - prod.free_len()) as u32,
-                                                Ordering::Relaxed,
-                                            );
-                                        }
-                                    } else {
-                                        lock_contention_count.fetch_add(1, Ordering::Relaxed);
-                                    }
+                                    write_with_jitter_control(buffer);
                                     // Record DSP processing time
                                     let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
                                     let prev_smoothed =
@@ -1900,6 +1934,52 @@ impl AudioProcessor {
         self.lock_contention_count.store(0, Ordering::Relaxed);
     }
 
+    /// Age of last input callback heartbeat in milliseconds.
+    pub fn get_input_callback_age_ms(&self) -> u64 {
+        let last = self.last_input_callback_time_us.load(Ordering::Relaxed);
+        if last == 0 {
+            return u64::MAX;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|dur| dur.as_micros() as u64)
+            .unwrap_or(last);
+        now.saturating_sub(last) / 1000
+    }
+
+    /// Age of last output callback heartbeat in milliseconds.
+    pub fn get_output_callback_age_ms(&self) -> u64 {
+        let last = self.last_output_callback_time_us.load(Ordering::Relaxed);
+        if last == 0 {
+            return u64::MAX;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|dur| dur.as_micros() as u64)
+            .unwrap_or(last);
+        now.saturating_sub(last) / 1000
+    }
+
+    /// Current consecutive output underrun streak.
+    pub fn get_output_underrun_streak(&self) -> u32 {
+        self.output_underrun_streak.load(Ordering::Relaxed)
+    }
+
+    /// Total output underrun callbacks since start.
+    pub fn get_output_underrun_total(&self) -> u64 {
+        self.output_underrun_total.load(Ordering::Relaxed)
+    }
+
+    /// Samples dropped by DSP-side jitter control.
+    pub fn get_jitter_dropped_samples(&self) -> u64 {
+        self.jitter_dropped_samples.load(Ordering::Relaxed)
+    }
+
+    /// Number of jitter recovery events.
+    pub fn get_output_recovery_count(&self) -> u64 {
+        self.output_recovery_count.load(Ordering::Relaxed)
+    }
+
     // === RAW AUDIO RECORDING (for calibration) ===
 
     /// Start recording raw audio for calibration
@@ -2546,6 +2626,30 @@ impl PyAudioProcessor {
 
     fn reset_lock_contention_count(&self) {
         self.processor.reset_lock_contention_count();
+    }
+
+    fn get_input_callback_age_ms(&self) -> u64 {
+        self.processor.get_input_callback_age_ms()
+    }
+
+    fn get_output_callback_age_ms(&self) -> u64 {
+        self.processor.get_output_callback_age_ms()
+    }
+
+    fn get_output_underrun_streak(&self) -> u32 {
+        self.processor.get_output_underrun_streak()
+    }
+
+    fn get_output_underrun_total(&self) -> u64 {
+        self.processor.get_output_underrun_total()
+    }
+
+    fn get_jitter_dropped_samples(&self) -> u64 {
+        self.processor.get_jitter_dropped_samples()
+    }
+
+    fn get_output_recovery_count(&self) -> u64 {
+        self.processor.get_output_recovery_count()
     }
 
     // === RAW AUDIO RECORDING (for calibration) ===

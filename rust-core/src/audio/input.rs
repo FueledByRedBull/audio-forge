@@ -12,6 +12,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::buffer::AudioProducer;
+use super::clock::now_micros;
 
 /// Target sample rate for internal processing
 pub const TARGET_SAMPLE_RATE: u32 = 48000;
@@ -121,11 +122,7 @@ impl AudioInput {
             .build_input_stream(
                 &stream_config,
                 move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if let Ok(now) = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                    {
-                        last_callback_time_us.store(now.as_micros() as u64, Ordering::Relaxed);
-                    }
+                    last_callback_time_us.store(now_micros(), Ordering::Relaxed);
 
                     if num_channels == 1 {
                         producer.write(data);

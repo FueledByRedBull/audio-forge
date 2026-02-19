@@ -9,6 +9,7 @@ pub mod limiter;
 pub mod loudness;
 pub mod noise_suppressor;
 pub mod rnnoise;
+pub mod util;
 
 #[cfg(feature = "vad")]
 pub mod vad;

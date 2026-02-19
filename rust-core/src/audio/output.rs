@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::buffer::AudioConsumer;
+use super::clock::now_micros;
 use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
 
 /// Audio output stream
@@ -118,11 +119,7 @@ impl AudioOutput {
             .build_output_stream(
                 &stream_config,
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    if let Ok(now) = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                    {
-                        last_callback_time_us.store(now.as_micros() as u64, Ordering::Relaxed);
-                    }
+                    last_callback_time_us.store(now_micros(), Ordering::Relaxed);
 
                     // Check if recording is active - if so, output silence to prevent
                     // user from hearing themselves while recording

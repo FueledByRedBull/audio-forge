@@ -14,6 +14,7 @@
 //! - Wideband gain reduction (MVP-safe implementation)
 
 use super::biquad::{Biquad, BiquadType};
+use crate::dsp::util;
 
 /// Real-time de-esser processor.
 pub struct DeEsser {
@@ -51,10 +52,10 @@ impl DeEsser {
             auto_amount: 0.5,
             threshold_db: -28.0,
             ratio: 4.0,
-            attack_coeff: Self::time_constant_to_coeff(2.0, sample_rate),
-            release_coeff: Self::time_constant_to_coeff(80.0, sample_rate),
-            detector_attack_coeff: Self::time_constant_to_coeff(1.5, sample_rate),
-            detector_release_coeff: Self::time_constant_to_coeff(60.0, sample_rate),
+            attack_coeff: util::time_constant_to_coeff(2.0, sample_rate),
+            release_coeff: util::time_constant_to_coeff(80.0, sample_rate),
+            detector_attack_coeff: util::time_constant_to_coeff(1.5, sample_rate),
+            detector_release_coeff: util::time_constant_to_coeff(60.0, sample_rate),
             max_reduction_db: 6.0,
             current_reduction_db: 0.0,
             sidechain_env: 0.0,
@@ -82,17 +83,12 @@ impl DeEsser {
 
     #[inline]
     fn db_to_linear(db: f64) -> f64 {
-        10.0_f64.powf(db / 20.0)
+        util::db_to_linear(db)
     }
 
     #[inline]
     fn linear_to_db(value: f64) -> f64 {
-        20.0 * value.max(1e-10).log10()
-    }
-
-    fn time_constant_to_coeff(time_ms: f64, sample_rate: f64) -> f64 {
-        let tau = (time_ms.max(0.1)) / 1000.0;
-        (-1.0 / (tau * sample_rate)).exp()
+        util::linear_to_db(value, 1e-10)
     }
 
     #[inline]
@@ -173,13 +169,14 @@ impl DeEsser {
 
     /// Set attack in milliseconds.
     pub fn set_attack_ms(&mut self, attack_ms: f64) {
-        self.attack_coeff = Self::time_constant_to_coeff(attack_ms.clamp(0.1, 50.0), self.sample_rate);
+        self.attack_coeff =
+            util::time_constant_to_coeff(attack_ms.clamp(0.1, 50.0), self.sample_rate);
     }
 
     /// Set release in milliseconds.
     pub fn set_release_ms(&mut self, release_ms: f64) {
         self.release_coeff =
-            Self::time_constant_to_coeff(release_ms.clamp(5.0, 500.0), self.sample_rate);
+            util::time_constant_to_coeff(release_ms.clamp(5.0, 500.0), self.sample_rate);
     }
 
     /// Set max reduction cap in dB.

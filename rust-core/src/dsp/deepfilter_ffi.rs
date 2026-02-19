@@ -33,8 +33,6 @@
 //!
 //! Expected latency: ~10ms with LL variant (no lookahead)
 
-#![cfg(feature = "deepfilter")]
-
 use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressor};
 use std::env;
 use std::path::{Path, PathBuf};

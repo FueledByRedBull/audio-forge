@@ -6,8 +6,6 @@
 //! CRITICAL: Silero VAD is a STATEFUL model requiring hidden state management.
 //! Each inference call requires passing h/c states from the previous call.
 
-#![cfg(feature = "vad")]
-
 use ndarray::{Array1, Array2, Array3};
 use ort::{
     session::builder::GraphOptimizationLevel,
@@ -337,15 +335,13 @@ impl SileroVAD {
                 .map_err(|e| VadError::OnnxError(format!("Failed to extract state_n tensor: {}", e)))?;
 
             // Copy data to self.state - shape [2, 1, 128]
-            let total_elements = LSTM_NUM_LAYERS * 1 * LSTM_STATE_DIM;
+            let total_elements = LSTM_NUM_LAYERS * LSTM_STATE_DIM;
             if state_n_data.len() >= total_elements {
                 for i in 0..LSTM_NUM_LAYERS {
-                    for j in 0..1 {
-                        for k in 0..LSTM_STATE_DIM {
-                            let flat_idx = i * 1 * LSTM_STATE_DIM + j * LSTM_STATE_DIM + k;
-                            if flat_idx < state_n_data.len() {
-                                self.state[[i, j, k]] = state_n_data[flat_idx];
-                            }
+                    for k in 0..LSTM_STATE_DIM {
+                        let flat_idx = i * LSTM_STATE_DIM + k;
+                        if flat_idx < state_n_data.len() {
+                            self.state[[i, 0, k]] = state_n_data[flat_idx];
                         }
                     }
                 }
@@ -545,14 +541,9 @@ impl VadAutoGate {
         self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
 
         // Log ALL updates when debugging (not just significant ones).
-        if GATE_DEBUG && adapt_debug_count < 30 {
-            let auto_threshold =
-                (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
-            eprintln!(
-                "[AUTO-THRESHOLD] Noise floor: {:.1} -> {:.1} dB (RMS: {:.1} dB, prob={:.2}, threshold={:.1} dB)",
-                old_floor, self.noise_floor, current_rms, prob, auto_threshold
-            );
-        } else if GATE_DEBUG && (self.noise_floor - old_floor).abs() > 0.1 {
+        if GATE_DEBUG
+            && (adapt_debug_count < 30 || (self.noise_floor - old_floor).abs() > 0.1)
+        {
             let auto_threshold =
                 (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
             eprintln!(
@@ -685,9 +676,7 @@ impl VadAutoGate {
         self.prev_gate_open = debounced_gate_open;
 
         // Gate is open if raw signal is open OR timer is still running
-        let final_gate_open = debounced_gate_open || self.timer_running;
-
-        final_gate_open
+        debounced_gate_open || self.timer_running
     }
 
     pub fn is_available(&self) -> bool {

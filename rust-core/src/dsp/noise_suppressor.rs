@@ -112,6 +112,11 @@ pub trait NoiseSuppressor: Send {
     /// Pop processed samples from output buffer
     fn pop_samples(&mut self, count: usize) -> Vec<f32>;
 
+    /// Pop processed samples into caller-provided buffer.
+    ///
+    /// Returns the number of samples written into `buffer`.
+    fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize;
+
     /// Pop all available samples from output buffer
     fn pop_all_samples(&mut self) -> Vec<f32>;
 
@@ -251,6 +256,16 @@ impl NoiseSuppressor for NoiseSuppressionEngine {
             NoiseSuppressionEngine::DeepFilterLL(d) => d.pop_samples(count),
             #[cfg(feature = "deepfilter")]
             NoiseSuppressionEngine::DeepFilter(d) => d.pop_samples(count),
+        }
+    }
+
+    fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize {
+        match self {
+            NoiseSuppressionEngine::RNNoise(r) => r.pop_samples_into(buffer),
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilterLL(d) => d.pop_samples_into(buffer),
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilter(d) => d.pop_samples_into(buffer),
         }
     }
 

@@ -437,7 +437,8 @@ impl AudioProcessor {
             let mut input_buffer = vec![0.0f32; 2048];
             let mut temp_buffer = vec![0.0f32; 4096];
             let mut rnnoise_output = vec![0.0f32; 2048];
-            let mut resample_input: Vec<f64> = Vec::with_capacity(4096);
+            let mut resample_input: Vec<f64> = Vec::with_capacity(65536);
+            let mut resample_read_pos: usize = 0;
             const RESAMPLER_CHUNK_SIZE: usize = 1024;
             let mut resampler_input_block: Vec<f64> = vec![0.0; RESAMPLER_CHUNK_SIZE];
             let mut resampler = if input_sample_rate_for_thread != sample_rate_for_latency {
@@ -630,12 +631,28 @@ impl AudioProcessor {
                         if n_raw > 0 {
                             let n = if let Some(resampler) = resampler.as_mut() {
                                 for &sample in input_buffer[..n_raw].iter() {
+                                    if resample_input.len() == resample_input.capacity() {
+                                        // Rare overflow guard: compact unread samples in-place first.
+                                        if resample_read_pos > 0 {
+                                            let unread = resample_input.len() - resample_read_pos;
+                                            resample_input.copy_within(resample_read_pos.., 0);
+                                            resample_input.truncate(unread);
+                                            resample_read_pos = 0;
+                                        } else {
+                                            // If still full with no consumed prefix, drop oldest half.
+                                            let keep = resample_input.len() / 2;
+                                            let drop = resample_input.len() - keep;
+                                            resample_input.copy_within(drop.., 0);
+                                            resample_input.truncate(keep);
+                                        }
+                                    }
                                     resample_input.push(sample as f64);
                                 }
 
                                 let mut produced = 0usize;
                                 let input_frames_needed = resampler.input_frames_next();
-                                while resample_input.len() >= input_frames_needed
+                                while resample_input.len().saturating_sub(resample_read_pos)
+                                    >= input_frames_needed
                                     && produced < temp_buffer.len()
                                 {
                                     if input_frames_needed > resampler_input_block.len() {
@@ -644,8 +661,11 @@ impl AudioProcessor {
                                         break;
                                     }
                                     resampler_input_block[..input_frames_needed]
-                                        .copy_from_slice(&resample_input[..input_frames_needed]);
-                                    resample_input.drain(..input_frames_needed);
+                                        .copy_from_slice(
+                                            &resample_input[resample_read_pos
+                                                ..resample_read_pos + input_frames_needed],
+                                        );
+                                    resample_read_pos += input_frames_needed;
 
                                     if let Some(outbuf) = resampler_out.as_mut() {
                                         let in_slices = [&resampler_input_block[..input_frames_needed]];
@@ -662,6 +682,16 @@ impl AudioProcessor {
                                             }
                                         }
                                     }
+                                }
+
+                                // Compact consumed prefix occasionally (amortized O(n), infrequent).
+                                if resample_read_pos > 16384
+                                    && resample_read_pos * 2 >= resample_input.len()
+                                {
+                                    let unread = resample_input.len() - resample_read_pos;
+                                    resample_input.copy_within(resample_read_pos.., 0);
+                                    resample_input.truncate(unread);
+                                    resample_read_pos = 0;
                                 }
                                 produced
                             } else {

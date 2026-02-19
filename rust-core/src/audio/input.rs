@@ -134,7 +134,7 @@ impl AudioInput {
                     &stream_config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         // Convert to mono if stereo, then accumulate
-                        if let Ok(mut buffer) = input_buffer_clone.lock() {
+                        if let Ok(mut buffer) = input_buffer_clone.try_lock() {
                             if num_channels == 1 {
                                 buffer.extend(data.iter().map(|&s| s as f64));
                             } else {
@@ -147,7 +147,7 @@ impl AudioInput {
                             }
 
                             // Process when we have enough samples
-                            if let Ok(mut resampler) = resampler_clone.lock() {
+                            if let Ok(mut resampler) = resampler_clone.try_lock() {
                                 let input_frames_needed = resampler.input_frames_next();
 
                                 while buffer.len() >= input_frames_needed {
@@ -156,7 +156,7 @@ impl AudioInput {
 
                                     if let Ok(output) = resampler.process(&[input_chunk], None) {
                                         if !output.is_empty() && !output[0].is_empty() {
-                                            if let Ok(mut prod) = producer_clone.lock() {
+                                            if let Ok(mut prod) = producer_clone.try_lock() {
                                                 // Convert f64 back to f32
                                                 let samples: Vec<f32> =
                                                     output[0].iter().map(|&s| s as f32).collect();
@@ -189,7 +189,7 @@ impl AudioInput {
                 .build_input_stream(
                     &stream_config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        if let Ok(mut prod) = producer_clone.lock() {
+                        if let Ok(mut prod) = producer_clone.try_lock() {
                             if num_channels == 1 {
                                 prod.write(data);
                             } else {

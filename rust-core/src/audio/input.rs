@@ -7,8 +7,6 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig};
-use rubato::{FftFixedIn, Resampler};
-use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 use super::buffer::AudioProducer;
@@ -32,9 +30,6 @@ pub enum AudioError {
 
     #[error("Failed to play stream: {0}")]
     PlayStream(String),
-
-    #[error("Failed to create resampler: {0}")]
-    ResamplerError(String),
 
     #[error("Device not found: {0}")]
     DeviceNotFound(String),
@@ -88,141 +83,60 @@ impl AudioInput {
         let device_sample_rate = config.sample_rate().0;
         let channels = config.channels();
 
-        // Report target sample rate (we resample to 48kHz internally)
+        // Report actual device sample rate; conversion (if needed) happens in DSP thread.
         let device_info = AudioDeviceInfo {
             name: name.clone(),
-            sample_rate: TARGET_SAMPLE_RATE,
+            sample_rate: device_sample_rate,
             channels,
         };
 
         let stream_config: StreamConfig = config.into();
+        let mut producer = producer;
+        let num_channels = channels as usize;
+        let mut mono_scratch: Vec<f32> = Vec::new();
 
-        // Wrap producer in Arc<Mutex> for thread-safe access
-        let producer = Arc::new(Mutex::new(producer));
-
-        // Create resampler if device rate differs from target
-        let needs_resampling = device_sample_rate != TARGET_SAMPLE_RATE;
-
-        if needs_resampling {
+        if device_sample_rate != TARGET_SAMPLE_RATE {
             println!(
-                "Device sample rate {} Hz differs from target {} Hz - enabling resampling",
+                "Device sample rate {} Hz differs from target {} Hz - resampling in DSP thread",
                 device_sample_rate, TARGET_SAMPLE_RATE
             );
-
-            // Create FFT-based resampler (high quality, handles any ratio)
-            let chunk_size = 1024;
-            let resampler = FftFixedIn::<f64>::new(
-                device_sample_rate as usize,
-                TARGET_SAMPLE_RATE as usize,
-                chunk_size,
-                2, // sub_chunks for interpolation quality
-                1, // mono
-            )
-            .map_err(|e| AudioError::ResamplerError(e.to_string()))?;
-
-            let resampler = Arc::new(Mutex::new(resampler));
-            let input_buffer: Arc<Mutex<Vec<f64>>> =
-                Arc::new(Mutex::new(Vec::with_capacity(chunk_size * 2)));
-
-            let producer_clone = Arc::clone(&producer);
-            let resampler_clone = Arc::clone(&resampler);
-            let input_buffer_clone = Arc::clone(&input_buffer);
-            let num_channels = channels as usize;
-
-            let stream = device
-                .build_input_stream(
-                    &stream_config,
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        // Convert to mono if stereo, then accumulate
-                        if let Ok(mut buffer) = input_buffer_clone.try_lock() {
-                            if num_channels == 1 {
-                                buffer.extend(data.iter().map(|&s| s as f64));
-                            } else {
-                                // Convert stereo to mono by averaging
-                                for chunk in data.chunks(num_channels) {
-                                    let mono: f64 = chunk.iter().map(|&s| s as f64).sum::<f64>()
-                                        / num_channels as f64;
-                                    buffer.push(mono);
-                                }
-                            }
-
-                            // Process when we have enough samples
-                            if let Ok(mut resampler) = resampler_clone.try_lock() {
-                                let input_frames_needed = resampler.input_frames_next();
-
-                                while buffer.len() >= input_frames_needed {
-                                    let input_chunk: Vec<f64> =
-                                        buffer.drain(..input_frames_needed).collect();
-
-                                    if let Ok(output) = resampler.process(&[input_chunk], None) {
-                                        if !output.is_empty() && !output[0].is_empty() {
-                                            if let Ok(mut prod) = producer_clone.try_lock() {
-                                                // Convert f64 back to f32
-                                                let samples: Vec<f32> =
-                                                    output[0].iter().map(|&s| s as f32).collect();
-                                                prod.write(&samples);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    move |err| {
-                        eprintln!("Audio input error: {}", err);
-                    },
-                    None,
-                )
-                .map_err(|e| AudioError::BuildStream(e.to_string()))?;
-
-            Ok(Self {
-                stream,
-                device_info,
-            })
-        } else {
-            // No resampling needed - direct passthrough
-            let producer_clone = Arc::clone(&producer);
-            let num_channels = channels as usize;
-            let mut mono_scratch: Vec<f32> = Vec::new();
-
-            let stream = device
-                .build_input_stream(
-                    &stream_config,
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        if let Ok(mut prod) = producer_clone.try_lock() {
-                            if num_channels == 1 {
-                                prod.write(data);
-                            } else {
-                                // Convert interleaved multi-channel input to mono without
-                                // allocating in the callback.
-                                let frames = data.len() / num_channels;
-                                if mono_scratch.len() < frames {
-                                    mono_scratch.resize(frames, 0.0);
-                                }
-
-                                let mut written_frames = 0usize;
-                                for chunk in data.chunks_exact(num_channels) {
-                                    let sum: f32 = chunk.iter().copied().sum();
-                                    mono_scratch[written_frames] = sum / num_channels as f32;
-                                    written_frames += 1;
-                                }
-
-                                prod.write(&mono_scratch[..written_frames]);
-                            }
-                        }
-                    },
-                    move |err| {
-                        eprintln!("Audio input error: {}", err);
-                    },
-                    None,
-                )
-                .map_err(|e| AudioError::BuildStream(e.to_string()))?;
-
-            Ok(Self {
-                stream,
-                device_info,
-            })
         }
+
+        let stream = device
+            .build_input_stream(
+                &stream_config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    if num_channels == 1 {
+                        producer.write(data);
+                    } else {
+                        // Convert interleaved multi-channel input to mono without
+                        // allocating in the callback.
+                        let frames = data.len() / num_channels;
+                        if mono_scratch.len() < frames {
+                            mono_scratch.resize(frames, 0.0);
+                        }
+
+                        let mut written_frames = 0usize;
+                        for chunk in data.chunks_exact(num_channels) {
+                            let sum: f32 = chunk.iter().copied().sum();
+                            mono_scratch[written_frames] = sum / num_channels as f32;
+                            written_frames += 1;
+                        }
+
+                        producer.write(&mono_scratch[..written_frames]);
+                    }
+                },
+                move |err| {
+                    eprintln!("Audio input error: {}", err);
+                },
+                None,
+            )
+            .map_err(|e| AudioError::BuildStream(e.to_string()))?;
+
+        Ok(Self {
+            stream,
+            device_info,
+        })
     }
 
     /// Start capturing audio

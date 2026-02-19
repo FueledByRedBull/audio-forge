@@ -5,6 +5,7 @@
 //! Adapted from Spectral Workbench project for MicEq.
 
 use pyo3::prelude::*;
+use rubato::{FftFixedIn, Resampler};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -302,6 +303,7 @@ impl AudioProcessor {
         .map_err(|e| format!("Failed to start audio input: {}", e))?;
 
         let input_device_name = input.device_info().name.clone();
+        let input_sample_rate_for_thread = input.device_info().sample_rate;
 
         if let Err(e) = input.start() {
             if let Ok(mut prod) = self.output_producer.lock() {
@@ -400,8 +402,34 @@ impl AudioProcessor {
             }
 
             let mut consumer = input_consumer;
-            let mut temp_buffer = vec![0.0f32; 2048];
+            let mut input_buffer = vec![0.0f32; 2048];
+            let mut temp_buffer = vec![0.0f32; 4096];
             let mut rnnoise_output = vec![0.0f32; 2048];
+            let mut resample_input: Vec<f64> = Vec::with_capacity(4096);
+            let mut resampler = if input_sample_rate_for_thread != sample_rate_for_latency {
+                eprintln!(
+                    "[PROCESSING] Input device sample rate {} Hz; resampling to {} Hz in DSP thread",
+                    input_sample_rate_for_thread, sample_rate_for_latency
+                );
+                match FftFixedIn::<f64>::new(
+                    input_sample_rate_for_thread as usize,
+                    sample_rate_for_latency as usize,
+                    1024,
+                    2,
+                    1,
+                ) {
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        eprintln!(
+                            "[PROCESSING] WARNING: Failed to init resampler ({}). Processing raw input rate.",
+                            e
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
             // DC Blocker state variables
             // This removes electrical DC offset which causes static/clicks
@@ -491,9 +519,45 @@ impl AudioProcessor {
                         smoothed_input_buffer_len.store(smoothed_input, Ordering::Relaxed);
 
                         // Read audio samples
-                        let n = consumer.read(&mut temp_buffer);
+                        let n_raw = consumer.read(&mut input_buffer);
 
-                        if n > 0 {
+                        if n_raw > 0 {
+                            let n = if let Some(resampler) = resampler.as_mut() {
+                                for &sample in input_buffer[..n_raw].iter() {
+                                    resample_input.push(sample as f64);
+                                }
+
+                                let mut produced = 0usize;
+                                let input_frames_needed = resampler.input_frames_next();
+                                while resample_input.len() >= input_frames_needed
+                                    && produced < temp_buffer.len()
+                                {
+                                    let input_chunk: Vec<f64> =
+                                        resample_input.drain(..input_frames_needed).collect();
+                                    if let Ok(output) = resampler.process(&[input_chunk], None) {
+                                        if !output.is_empty() && !output[0].is_empty() {
+                                            for &sample in output[0].iter() {
+                                                if produced >= temp_buffer.len() {
+                                                    break;
+                                                }
+                                                temp_buffer[produced] = sample as f32;
+                                                produced += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                                produced
+                            } else {
+                                let copy_n = n_raw.min(temp_buffer.len());
+                                temp_buffer[..copy_n].copy_from_slice(&input_buffer[..copy_n]);
+                                copy_n
+                            };
+
+                            if n == 0 {
+                                std::thread::sleep(std::time::Duration::from_micros(100));
+                                continue;
+                            }
+
                             let buffer = &mut temp_buffer[..n];
 
                             // Start DSP timing

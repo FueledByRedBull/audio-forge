@@ -8,7 +8,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig, SupportedStreamConfigRange};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use super::buffer::AudioConsumer;
 use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
@@ -82,14 +82,11 @@ impl AudioOutput {
 
         let stream_config: StreamConfig = config.into();
 
-        // Wrap consumer in Arc<Mutex> for thread-safe access
-        let consumer = Arc::new(Mutex::new(consumer));
+        let mut consumer = consumer;
         let num_channels = channels as usize;
         let mut stereo_scratch: Vec<f32> = Vec::new();
-        let mut last_output_sample: f32 = 0.0;
 
         // Build audio output stream
-        let consumer_clone = Arc::clone(&consumer);
         let recording_active_clone = Arc::clone(&recording_active);
 
         let stream = device
@@ -105,89 +102,68 @@ impl AudioOutput {
                         return;
                     }
 
-                    match consumer_clone.try_lock() {
-                        Ok(mut cons) => {
-                            let available = cons.len();
+                    let available = consumer.len();
 
-                            if num_channels == 1 {
-                                // Mono output - read whatever is available, then smooth-fill remainder.
-                                let to_read = available.min(data.len());
-                                let read = if to_read > 0 {
-                                    cons.read(&mut data[..to_read])
-                                } else {
-                                    0
-                                };
+                    if num_channels == 1 {
+                        // Mono output - read whatever is available, then smooth-fill remainder.
+                        let to_read = available.min(data.len());
+                        let read = if to_read > 0 {
+                            consumer.read(&mut data[..to_read])
+                        } else {
+                            0
+                        };
 
-                                if read < data.len() {
-                                    let last = if read > 0 {
-                                        data[read - 1]
-                                    } else {
-                                        cons.last_sample()
-                                    };
-                                    let remain = data.len() - read;
-                                    for (i, sample) in data[read..].iter_mut().enumerate() {
-                                        // Linear fade from last sample to 0.0 over missing region.
-                                        let t = (i + 1) as f32 / remain as f32;
-                                        *sample = last * (1.0 - t);
-                                    }
-                                }
-
-                                if let Some(last) = data.last().copied() {
-                                    last_output_sample = last;
-                                }
+                        if read < data.len() {
+                            let last = if read > 0 {
+                                data[read - 1]
                             } else {
-                                // Stereo output - duplicate mono to both channels
-                                let mono_samples = data.len() / num_channels;
+                                consumer.last_sample()
+                            };
+                            let remain = data.len() - read;
+                            for (i, sample) in data[read..].iter_mut().enumerate() {
+                                // Linear fade from last sample to 0.0 over missing region.
+                                let t = (i + 1) as f32 / remain as f32;
+                                *sample = last * (1.0 - t);
+                            }
+                        }
 
-                                if stereo_scratch.len() < mono_samples {
-                                    stereo_scratch.resize(mono_samples, 0.0);
-                                }
+                    } else {
+                        // Stereo output - duplicate mono to all channels
+                        let mono_samples = data.len() / num_channels;
 
-                                let to_read = available.min(mono_samples);
-                                let count = if to_read > 0 {
-                                    cons.read(&mut stereo_scratch[..to_read])
-                                } else {
-                                    0
-                                };
+                        if stereo_scratch.len() < mono_samples {
+                            stereo_scratch.resize(mono_samples, 0.0);
+                        }
 
-                                for (i, &sample) in stereo_scratch[..count].iter().enumerate() {
-                                    for ch in 0..num_channels {
-                                        data[i * num_channels + ch] = sample;
-                                    }
-                                }
+                        let to_read = available.min(mono_samples);
+                        let count = if to_read > 0 {
+                            consumer.read(&mut stereo_scratch[..to_read])
+                        } else {
+                            0
+                        };
 
-                                let remaining_frames = mono_samples.saturating_sub(count);
-                                if remaining_frames > 0 {
-                                    let last = if count > 0 {
-                                        stereo_scratch[count - 1]
-                                    } else {
-                                        cons.last_sample()
-                                    };
-                                    for (i, frame) in data.chunks_mut(num_channels).skip(count).enumerate() {
-                                        let t = (i + 1) as f32 / remaining_frames as f32;
-                                        let value = last * (1.0 - t);
-                                        for ch in frame.iter_mut() {
-                                            *ch = value;
-                                        }
-                                    }
-                                }
+                        for (i, &sample) in stereo_scratch[..count].iter().enumerate() {
+                            for ch in 0..num_channels {
+                                data[i * num_channels + ch] = sample;
+                            }
+                        }
 
-                                if let Some(last) = data.chunks(num_channels).last() {
-                                    if let Some(&sample) = last.first() {
-                                        last_output_sample = sample;
-                                    }
+                        let remaining_frames = mono_samples.saturating_sub(count);
+                        if remaining_frames > 0 {
+                            let last = if count > 0 {
+                                stereo_scratch[count - 1]
+                            } else {
+                                consumer.last_sample()
+                            };
+                            for (i, frame) in data.chunks_mut(num_channels).skip(count).enumerate() {
+                                let t = (i + 1) as f32 / remaining_frames as f32;
+                                let value = last * (1.0 - t);
+                                for ch in frame.iter_mut() {
+                                    *ch = value;
                                 }
                             }
                         }
-                        Err(_) => {
-                            // Lock contention - avoid hard silence pop by fading from last sample.
-                            let len = data.len().max(1);
-                            for (i, sample) in data.iter_mut().enumerate() {
-                                let t = (i + 1) as f32 / len as f32;
-                                *sample = last_output_sample * (1.0 - t);
-                            }
-                            last_output_sample = 0.0;
-                        }
+
                     }
                 },
                 move |err| {

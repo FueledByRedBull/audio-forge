@@ -554,32 +554,60 @@ impl AudioProcessor {
             const OUTPUT_TARGET_LOW_SAMPLES: usize = 480; // ~10ms @ 48k
             const OUTPUT_TARGET_HIGH_SAMPLES: usize = 960; // ~20ms @ 48k
             const OUTPUT_HARD_BACKLOG_SAMPLES: usize = 1920; // ~40ms backlog
-            let write_with_jitter_control = |samples: &[f32]| {
+            const OUTPUT_MAX_CATCHUP_RATIO: f32 = 1.08; // Up to 8% faster in normal backlog.
+            const OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO: f32 = 1.20; // Up to 20% in hard backlog.
+            let mut catchup_scratch: Vec<f32> = Vec::with_capacity(4096);
+            let mut write_with_jitter_control = |samples: &[f32]| {
                 if let Ok(mut prod_guard) = output_producer.try_lock() {
                     if let Some(prod) = prod_guard.as_mut() {
                         let capacity = prod.capacity();
                         let free = prod.free_len();
                         let fill = capacity.saturating_sub(free);
 
-                        // If backlog is too large, drop part/all of this block to reduce latency drift.
-                        let mut start_idx = 0usize;
-                        if fill >= OUTPUT_HARD_BACKLOG_SAMPLES {
-                            jitter_dropped_samples
-                                .fetch_add(samples.len() as u64, Ordering::Relaxed);
-                            output_recovery_count.fetch_add(1, Ordering::Relaxed);
-                            output_buffer_len.store(fill as u32, Ordering::Relaxed);
-                            return;
-                        } else if fill > OUTPUT_TARGET_HIGH_SAMPLES {
-                            let drop = (fill - OUTPUT_TARGET_HIGH_SAMPLES).min(samples.len());
-                            if drop > 0 {
-                                start_idx = drop;
-                                jitter_dropped_samples.fetch_add(drop as u64, Ordering::Relaxed);
+                        // Pro catch-up: smoothly time-compress this block when backlog is high.
+                        // This avoids discontinuities/pops from hard sample drops.
+                        let mut write_slice = samples;
+                        if fill > OUTPUT_TARGET_HIGH_SAMPLES && !samples.is_empty() {
+                            let excess = fill - OUTPUT_TARGET_HIGH_SAMPLES;
+                            let zone = OUTPUT_HARD_BACKLOG_SAMPLES
+                                .saturating_sub(OUTPUT_TARGET_HIGH_SAMPLES)
+                                .max(1);
+                            let severity = (excess as f32 / zone as f32).clamp(0.0, 1.0);
+                            let max_ratio = if fill >= OUTPUT_HARD_BACKLOG_SAMPLES {
+                                OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO
+                            } else {
+                                OUTPUT_MAX_CATCHUP_RATIO
+                            };
+                            let catchup_ratio = 1.0 + severity * (max_ratio - 1.0);
+                            let out_len = ((samples.len() as f32) / catchup_ratio)
+                                .round()
+                                .max(1.0) as usize;
+
+                            if out_len < samples.len() {
+                                catchup_scratch.clear();
+                                catchup_scratch.resize(out_len, 0.0);
+
+                                let max_src = (samples.len() - 1) as f32;
+                                for (i, out) in catchup_scratch.iter_mut().enumerate() {
+                                    let src_pos = (i as f32 * catchup_ratio).min(max_src);
+                                    let idx = src_pos.floor() as usize;
+                                    let next = (idx + 1).min(samples.len() - 1);
+                                    let frac = src_pos - idx as f32;
+                                    *out = samples[idx] + (samples[next] - samples[idx]) * frac;
+                                }
+
+                                let skipped = samples.len() - out_len;
+                                jitter_dropped_samples.fetch_add(skipped as u64, Ordering::Relaxed);
+                                output_recovery_count.fetch_add(1, Ordering::Relaxed);
+                                write_slice = &catchup_scratch;
                             }
                         }
 
-                        let to_write = &samples[start_idx..];
-                        if !to_write.is_empty() {
-                            let written = prod.write(to_write);
+                        // Low watermark currently informational; could be used for adaptive refill.
+                        let _below_low_target = fill < OUTPUT_TARGET_LOW_SAMPLES;
+
+                        if !write_slice.is_empty() {
+                            let written = prod.write(write_slice);
                             if written > 0 {
                                 update_write_time();
                             }

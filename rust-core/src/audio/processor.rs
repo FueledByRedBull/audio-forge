@@ -440,7 +440,6 @@ impl AudioProcessor {
             let mut resample_input: Vec<f64> = Vec::with_capacity(65536);
             let mut resample_read_pos: usize = 0;
             const RESAMPLER_CHUNK_SIZE: usize = 1024;
-            let mut resampler_input_block: Vec<f64> = vec![0.0; RESAMPLER_CHUNK_SIZE];
             let mut resampler = if input_sample_rate_for_thread != sample_rate_for_latency {
                 eprintln!(
                     "[PROCESSING] Input device sample rate {} Hz; resampling to {} Hz in DSP thread",
@@ -668,20 +667,9 @@ impl AudioProcessor {
                                     >= input_frames_needed
                                     && produced < temp_buffer.len()
                                 {
-                                    if input_frames_needed > resampler_input_block.len() {
-                                        // Unexpected runtime growth request; skip this cycle instead of
-                                        // allocating in the real-time path.
-                                        break;
-                                    }
-                                    resampler_input_block[..input_frames_needed]
-                                        .copy_from_slice(
-                                            &resample_input[resample_read_pos
-                                                ..resample_read_pos + input_frames_needed],
-                                        );
-                                    resample_read_pos += input_frames_needed;
-
                                     if let Some(outbuf) = resampler_out.as_mut() {
-                                        let in_slices = [&resampler_input_block[..input_frames_needed]];
+                                        let in_slices = [&resample_input
+                                            [resample_read_pos..resample_read_pos + input_frames_needed]];
                                         if let Ok((_nbr_in, nbr_out)) =
                                             resampler.process_into_buffer(&in_slices, outbuf, None)
                                         {
@@ -695,6 +683,8 @@ impl AudioProcessor {
                                             }
                                         }
                                     }
+                                    // Advance by one consumed input block.
+                                    resample_read_pos += input_frames_needed;
                                 }
 
                                 // Compact consumed prefix occasionally (amortized O(n), infrequent).

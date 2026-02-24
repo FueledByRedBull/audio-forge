@@ -34,6 +34,12 @@ def main() -> int:
         help="Max allowed callback age in ms (default 2000).",
     )
     parser.add_argument(
+        "--warmup",
+        type=float,
+        default=5.0,
+        help="Warmup grace in seconds for callbacks to appear (default 5).",
+    )
+    parser.add_argument(
         "--allow-recovery",
         action="store_true",
         help="Allow auto-recovery events without failing.",
@@ -48,6 +54,7 @@ def main() -> int:
         print(f"Started processor: {result}")
 
         start = time.monotonic()
+        warmup_start = start
         last_restart_count = 0
         try:
             last_restart_count = processor.get_stream_restart_count()
@@ -79,17 +86,44 @@ def main() -> int:
                     print("Health check failed: auto-recovery failed.")
                 return 4
 
+            try:
+                current_restart_count = processor.get_stream_restart_count()
+            except Exception:
+                current_restart_count = last_restart_count
+
+            if current_restart_count > last_restart_count:
+                warmup_start = time.monotonic()
+
+            now = time.monotonic()
+            in_warmup = (now - warmup_start) < args.warmup
+            unknown_age_threshold = 1 << 63
+            input_unknown = input_age >= unknown_age_threshold
+            output_unknown = output_age >= unknown_age_threshold
+
+            if in_warmup and (input_unknown or output_unknown):
+                last_restart_count = current_restart_count
+                time.sleep(args.poll)
+                continue
+
+            if not in_warmup and (input_unknown or output_unknown):
+                unknown_parts = []
+                if input_unknown:
+                    unknown_parts.append("input")
+                if output_unknown:
+                    unknown_parts.append("output")
+                missing = "/".join(unknown_parts)
+                print(
+                    "Health check failed: callback never observed "
+                    f"({missing}) after {args.warmup:.1f}s warmup."
+                )
+                return 5
+
             if input_age > args.max_callback_age or output_age > args.max_callback_age:
                 print(
                     "Health check failed: callback age exceeded "
                     f"(input={input_age}ms, output={output_age}ms)."
                 )
                 return 1
-
-            try:
-                current_restart_count = processor.get_stream_restart_count()
-            except Exception:
-                current_restart_count = last_restart_count
 
             if not args.allow_recovery and current_restart_count > last_restart_count:
                 print(

@@ -25,6 +25,7 @@ impl AudioOutput {
     pub fn from_default_device(
         consumer: AudioConsumer,
         recording_active: Arc<AtomicBool>,
+        output_muted: Arc<AtomicBool>,
         last_callback_time_us: Arc<AtomicU64>,
         underrun_streak: Arc<AtomicU32>,
         total_underruns: Arc<AtomicU64>,
@@ -36,6 +37,7 @@ impl AudioOutput {
             device,
             consumer,
             recording_active,
+            output_muted,
             last_callback_time_us,
             underrun_streak,
             total_underruns,
@@ -47,6 +49,7 @@ impl AudioOutput {
         name: &str,
         consumer: AudioConsumer,
         recording_active: Arc<AtomicBool>,
+        output_muted: Arc<AtomicBool>,
         last_callback_time_us: Arc<AtomicU64>,
         underrun_streak: Arc<AtomicU32>,
         total_underruns: Arc<AtomicU64>,
@@ -62,6 +65,7 @@ impl AudioOutput {
             device,
             consumer,
             recording_active,
+            output_muted,
             last_callback_time_us,
             underrun_streak,
             total_underruns,
@@ -73,6 +77,7 @@ impl AudioOutput {
         device: Device,
         consumer: AudioConsumer,
         recording_active: Arc<AtomicBool>,
+        output_muted: Arc<AtomicBool>,
         last_callback_time_us: Arc<AtomicU64>,
         underrun_streak: Arc<AtomicU32>,
         total_underruns: Arc<AtomicU64>,
@@ -114,6 +119,7 @@ impl AudioOutput {
 
         // Build audio output stream
         let recording_active_clone = Arc::clone(&recording_active);
+        let output_muted_clone = Arc::clone(&output_muted);
 
         let stream = device
             .build_output_stream(
@@ -121,9 +127,10 @@ impl AudioOutput {
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     last_callback_time_us.store(now_micros(), Ordering::Relaxed);
 
-                    // Check if recording is active - if so, output silence to prevent
-                    // user from hearing themselves while recording
-                    if recording_active_clone.load(Ordering::Relaxed) {
+                    // Mute output during recording or when explicitly muted.
+                    if recording_active_clone.load(Ordering::Relaxed)
+                        || output_muted_clone.load(Ordering::Relaxed)
+                    {
                         underrun_streak.store(0, Ordering::Relaxed);
                         for sample in data.iter_mut() {
                             *sample = 0.0;

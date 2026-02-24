@@ -2288,13 +2288,15 @@ impl AudioProcessor {
                     return -120.0; // -infinity
                 }
 
-                // Calculate RMS from recorded samples so far
+                // Calculate RMS over a sliding window (default ~100ms).
                 let len = pos.min(buffer.len());
-                let slice = &buffer[..len];
+                let window_len = (self.sample_rate as usize / 10).max(1);
+                let start = len.saturating_sub(window_len);
+                let slice = &buffer[start..len];
 
                 // RMS calculation
                 let sum_sq: f32 = slice.iter().map(|&x| x * x).sum();
-                let rms = (sum_sq / len as f32).sqrt();
+                let rms = (sum_sq / slice.len() as f32).sqrt();
 
                 // Convert to dB (with floor at -120 to prevent log(0))
                 if rms > 1e-6 {

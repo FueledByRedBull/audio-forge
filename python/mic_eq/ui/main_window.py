@@ -1275,6 +1275,40 @@ class MainWindow(QMainWindow):
                     input_cb_age_ms=input_cb_age_ms,
                     output_cb_age_ms=output_cb_age_ms,
                 )
+
+            # Rust supervisor-driven recovery (callback-based).
+            try:
+                recovery_result = self.processor.service_recovery()
+                if recovery_result is not None:
+                    if recovery_result:
+                        reason = ""
+                        try:
+                            reason = self.processor.get_last_restart_reason() or ""
+                        except Exception:
+                            reason = ""
+                        suffix = f" ({reason})" if reason else ""
+                        self.status_bar.showMessage(
+                            f"Recovered audio stream{suffix}",
+                            4000,
+                        )
+                    else:
+                        err_msg = ""
+                        try:
+                            err_msg = self.processor.get_last_stream_error() or ""
+                        except Exception:
+                            err_msg = ""
+                        if err_msg:
+                            self.status_bar.showMessage(
+                                f"Auto-recovery failed: {err_msg}",
+                                6000,
+                            )
+                        else:
+                            self.status_bar.showMessage(
+                                "Auto-recovery failed",
+                                6000,
+                            )
+            except Exception:
+                pass
         else:
             self._output_stall_started_at = None
             self._output_callback_stall_started_at = None

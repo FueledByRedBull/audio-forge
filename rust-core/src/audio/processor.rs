@@ -30,6 +30,22 @@ use crate::dsp::{Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ};
 #[cfg(feature = "vad")]
 use crate::dsp::vad::{GateMode, VadAutoGate};
 
+struct StreamRecoveryState {
+    last_error: Option<String>,
+    last_reason: Option<String>,
+    restart_count: u64,
+}
+
+impl Default for StreamRecoveryState {
+    fn default() -> Self {
+        Self {
+            last_error: None,
+            last_reason: None,
+            restart_count: 0,
+        }
+    }
+}
+
 /// Main audio processor combining all DSP stages
 pub struct AudioProcessor {
     /// Noise gate
@@ -66,6 +82,16 @@ pub struct AudioProcessor {
 
     /// Processing thread handle
     process_thread: Option<std::thread::JoinHandle<()>>,
+
+    /// Supervisor thread for callback-based recovery detection.
+    supervisor_thread: Option<std::thread::JoinHandle<()>>,
+    supervisor_running: Arc<AtomicBool>,
+    restart_requested: Arc<AtomicBool>,
+    recovering: Arc<AtomicBool>,
+    restart_backoff_index: Arc<AtomicU32>,
+    last_restart_attempt_us: Arc<AtomicU64>,
+    last_start_time_us: Arc<AtomicU64>,
+    recovery_state: Arc<Mutex<StreamRecoveryState>>,
 
     /// Running flag
     running: Arc<AtomicBool>,
@@ -214,6 +240,14 @@ impl AudioProcessor {
             audio_input: None,
             audio_output: None,
             process_thread: None,
+            supervisor_thread: None,
+            supervisor_running: Arc::new(AtomicBool::new(false)),
+            restart_requested: Arc::new(AtomicBool::new(false)),
+            recovering: Arc::new(AtomicBool::new(false)),
+            restart_backoff_index: Arc::new(AtomicU32::new(0)),
+            last_restart_attempt_us: Arc::new(AtomicU64::new(0)),
+            last_start_time_us: Arc::new(AtomicU64::new(0)),
+            recovery_state: Arc::new(Mutex::new(StreamRecoveryState::default())),
             running: Arc::new(AtomicBool::new(false)),
             bypass: Arc::new(AtomicBool::new(false)),
             sample_rate,
@@ -261,6 +295,85 @@ impl AudioProcessor {
         }
     }
 
+    fn ensure_supervisor(&mut self) {
+        if self.supervisor_thread.is_some() {
+            return;
+        }
+
+        self.supervisor_running.store(true, Ordering::Release);
+
+        let running = Arc::clone(&self.running);
+        let supervisor_running = Arc::clone(&self.supervisor_running);
+        let restart_requested = Arc::clone(&self.restart_requested);
+        let recovering = Arc::clone(&self.recovering);
+        let last_input_callback_time_us = Arc::clone(&self.last_input_callback_time_us);
+        let last_output_callback_time_us = Arc::clone(&self.last_output_callback_time_us);
+        let last_output_write_time = Arc::clone(&self.last_output_write_time);
+        let last_start_time_us = Arc::clone(&self.last_start_time_us);
+        let recovery_state = Arc::clone(&self.recovery_state);
+
+        self.supervisor_thread = Some(std::thread::spawn(move || {
+            const CHECK_INTERVAL_MS: u64 = 250;
+            const CALLBACK_STALL_MS: u64 = 2500;
+            const WRITE_STALL_MS: u64 = 3000;
+            const STARTUP_GRACE_MS: u64 = 5000;
+
+            while supervisor_running.load(Ordering::Acquire) {
+                std::thread::sleep(std::time::Duration::from_millis(CHECK_INTERVAL_MS));
+
+                if !running.load(Ordering::Acquire) {
+                    continue;
+                }
+
+                if recovering.load(Ordering::Acquire)
+                    || restart_requested.load(Ordering::Acquire)
+                {
+                    continue;
+                }
+
+                let now = now_micros();
+                let last_start = last_start_time_us.load(Ordering::Relaxed);
+                if last_start > 0 && now.saturating_sub(last_start) < STARTUP_GRACE_MS * 1000 {
+                    continue;
+                }
+
+                let last_in = last_input_callback_time_us.load(Ordering::Relaxed);
+                let last_out = last_output_callback_time_us.load(Ordering::Relaxed);
+                let last_write = last_output_write_time.load(Ordering::Relaxed);
+
+                let input_age_ms = if last_in > 0 {
+                    now.saturating_sub(last_in) / 1000
+                } else {
+                    u64::MAX
+                };
+                let output_age_ms = if last_out > 0 {
+                    now.saturating_sub(last_out) / 1000
+                } else {
+                    u64::MAX
+                };
+                let write_age_ms = if last_write > 0 {
+                    now.saturating_sub(last_write) / 1000
+                } else {
+                    u64::MAX
+                };
+
+                if input_age_ms > CALLBACK_STALL_MS
+                    || output_age_ms > CALLBACK_STALL_MS
+                    || write_age_ms > WRITE_STALL_MS
+                {
+                    let reason = format!(
+                        "input_cb_age_ms={}, output_cb_age_ms={}, output_write_age_ms={}",
+                        input_age_ms, output_age_ms, write_age_ms
+                    );
+                    if let Ok(mut state) = recovery_state.lock() {
+                        state.last_reason = Some(reason);
+                    }
+                    restart_requested.store(true, Ordering::Release);
+                }
+            }
+        }));
+    }
+
     /// Start audio processing
     ///
     /// # Arguments
@@ -271,6 +384,12 @@ impl AudioProcessor {
         input_device: Option<&str>,
         output_device: Option<&str>,
     ) -> Result<String, String> {
+        self.ensure_supervisor();
+        self.restart_requested.store(false, Ordering::Release);
+        if !self.recovering.load(Ordering::Acquire) {
+            self.restart_backoff_index.store(0, Ordering::Release);
+        }
+
         if self.running.load(Ordering::SeqCst) {
             return Err("Already running".to_string());
         }
@@ -376,6 +495,7 @@ impl AudioProcessor {
 
         // Start processing thread
         self.running.store(true, Ordering::SeqCst);
+        self.last_start_time_us.store(now_micros(), Ordering::Release);
 
         let gate = Arc::clone(&self.gate);
         let gate_enabled = Arc::clone(&self.gate_enabled);
@@ -1207,6 +1327,9 @@ impl AudioProcessor {
     /// Stop audio processing
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
+        self.restart_requested.store(false, Ordering::Release);
+        self.recovering.store(false, Ordering::Release);
+        self.last_start_time_us.store(0, Ordering::Release);
 
         if let Some(handle) = self.process_thread.take() {
             let _ = handle.join();
@@ -1252,6 +1375,121 @@ impl AudioProcessor {
         if let Ok(mut l) = self.limiter.lock() {
             l.reset();
         }
+    }
+
+    /// Service pending stream recovery requests.
+    ///
+    /// Returns:
+    /// - None: no recovery attempt was made
+    /// - Some(true): recovery succeeded
+    /// - Some(false): recovery attempt failed
+    pub fn service_recovery(&mut self) -> Option<bool> {
+        if !self.restart_requested.load(Ordering::Acquire) {
+            return None;
+        }
+
+        let now = now_micros();
+        let last_attempt = self.last_restart_attempt_us.load(Ordering::Acquire);
+        let backoff_idx = self.restart_backoff_index.load(Ordering::Acquire);
+        let backoff_ms = match backoff_idx {
+            0 => 0,
+            1 => 2000,
+            2 => 5000,
+            _ => 10000,
+        };
+
+        if last_attempt > 0 && now.saturating_sub(last_attempt) < backoff_ms * 1000 {
+            return None;
+        }
+
+        self.restart_requested.store(false, Ordering::Release);
+        self.recovering.store(true, Ordering::Release);
+        self.last_restart_attempt_us.store(now, Ordering::Release);
+
+        let input_name = self.input_device_name.clone();
+        let output_name = self.output_device_name.clone();
+
+        self.stop();
+
+        let mut success = false;
+        let mut last_error: Option<String> = None;
+
+        match self.start(input_name.as_deref(), output_name.as_deref()) {
+            Ok(_) => {
+                success = true;
+            }
+            Err(err) => {
+                last_error = Some(format!(
+                    "Restart failed for selected devices: {}",
+                    err
+                ));
+                match self.start(None, None) {
+                    Ok(_) => {
+                        success = true;
+                    }
+                    Err(fallback_err) => {
+                        last_error = Some(format!(
+                            "Restart failed for selected + default devices: {}",
+                            fallback_err
+                        ));
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut state) = self.recovery_state.lock() {
+            if success {
+                state.last_error = None;
+                state.restart_count = state.restart_count.saturating_add(1);
+            } else {
+                state.last_error = last_error.clone();
+            }
+        }
+
+        if success {
+            self.restart_backoff_index.store(0, Ordering::Release);
+        } else {
+            let next = (backoff_idx + 1).min(3);
+            self.restart_backoff_index.store(next, Ordering::Release);
+            self.restart_requested.store(true, Ordering::Release);
+        }
+
+        self.recovering.store(false, Ordering::Release);
+        Some(success)
+    }
+
+    /// Whether a restart has been requested by the supervisor.
+    pub fn is_recovery_requested(&self) -> bool {
+        self.restart_requested.load(Ordering::Acquire)
+    }
+
+    /// Whether a recovery attempt is in progress.
+    pub fn is_recovering(&self) -> bool {
+        self.recovering.load(Ordering::Acquire)
+    }
+
+    /// Number of successful stream restarts.
+    pub fn get_stream_restart_count(&self) -> u64 {
+        self.recovery_state
+            .lock()
+            .map(|s| s.restart_count)
+            .unwrap_or(0)
+    }
+
+    /// Last recovery error string, if any.
+    pub fn get_last_stream_error(&self) -> Option<String> {
+        self.recovery_state
+            .lock()
+            .ok()
+            .and_then(|s| s.last_error.clone())
+    }
+
+    /// Last recovery trigger reason string, if any.
+    pub fn get_last_restart_reason(&self) -> Option<String> {
+        self.recovery_state
+            .lock()
+            .ok()
+            .and_then(|s| s.last_reason.clone())
     }
 
     /// Check if processing is running
@@ -2181,6 +2419,10 @@ impl Default for AudioProcessor {
 impl Drop for AudioProcessor {
     fn drop(&mut self) {
         self.stop();
+        self.supervisor_running.store(false, Ordering::Release);
+        if let Some(handle) = self.supervisor_thread.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -2746,6 +2988,33 @@ impl PyAudioProcessor {
 
     fn get_output_recovery_count(&self) -> u64 {
         self.processor.get_output_recovery_count()
+    }
+
+    // === Stream Recovery Status ===
+
+    /// Service pending recovery requests (returns None if no attempt).
+    fn service_recovery(&mut self) -> Option<bool> {
+        self.processor.service_recovery()
+    }
+
+    fn is_recovery_requested(&self) -> bool {
+        self.processor.is_recovery_requested()
+    }
+
+    fn is_recovering(&self) -> bool {
+        self.processor.is_recovering()
+    }
+
+    fn get_stream_restart_count(&self) -> u64 {
+        self.processor.get_stream_restart_count()
+    }
+
+    fn get_last_stream_error(&self) -> Option<String> {
+        self.processor.get_last_stream_error()
+    }
+
+    fn get_last_restart_reason(&self) -> Option<String> {
+        self.processor.get_last_restart_reason()
     }
 
     // === RAW AUDIO RECORDING (for calibration) ===

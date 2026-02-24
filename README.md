@@ -7,7 +7,7 @@
 
 Low-latency microphone audio processor with AI noise suppression, smart gating, Auto-EQ, and 10-band parametric EQ.
 
-Current version: `v1.7.0`
+Current version: `v1.7.1`
 
 ## Status
 
@@ -33,6 +33,7 @@ AudioForge is currently focused on Windows desktop use and portable distribution
   - Input/output level meters
   - Buffer and processing health metrics
   - Gate/VAD and gain-reduction indicators
+- Callback-based stream watchdog with auto-recovery and backoff
 - Preset save/load with migration support
 - Latency calibration dialog for per device-pair compensation profiles
 
@@ -85,6 +86,8 @@ DeepFilter runtime library:
 You can also use environment variables:
 
 - `DEEPFILTER_MODEL_PATH`
+- `DEEPFILTER_LIB_PATH`
+- `AUDIOFORGE_ENABLE_DEEPFILTER`
 - `VAD_MODEL_PATH`
 
 ## Build Portable EXE
@@ -104,7 +107,8 @@ Output:
 Create archive:
 
 ```powershell
-Compress-Archive -Path .\dist\AudioForge -DestinationPath .\AudioForge-win64-fresh.zip -CompressionLevel Optimal
+& "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
+  .\AudioForge-win64.7z .\dist\AudioForge\*
 ```
 
 ## Testing
@@ -121,6 +125,13 @@ Python tests:
 ```bash
 cd ..
 .\.venv\Scripts\python.exe -m pytest python/tests -v
+```
+
+Headless health checks:
+
+```bash
+.\.venv\Scripts\python.exe python/tools/health_check.py --duration 1800
+.\.venv\Scripts\python.exe python/tools/self_test.py
 ```
 
 ## License

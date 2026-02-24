@@ -52,7 +52,16 @@ def _configure_frozen_runtime():
 
         ll_model = model_dir / "DeepFilterNet3_ll_onnx.tar.gz"
         std_model = model_dir / "DeepFilterNet3_onnx.tar.gz"
-        if ll_model.exists() and std_model.exists():
+        df_candidates = [
+            exe_dir / "df.dll",
+            (meipass / "df.dll") if meipass else None,
+            (meipass / "_internal" / "df.dll") if meipass else None,
+        ]
+        df_path = _first_existing_path(df_candidates)
+        if df_path:
+            os.environ.setdefault("DEEPFILTER_LIB_PATH", str(df_path))
+
+        if df_path and (ll_model.exists() or std_model.exists()):
             os.environ.setdefault("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
 
 

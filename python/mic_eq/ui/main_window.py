@@ -1746,6 +1746,49 @@ def run_app():
     from PyQt6.QtGui import QIcon
     import sys
     import os
+    from pathlib import Path
+
+    def _configure_deepfilter_env():
+        if "AUDIOFORGE_ENABLE_DEEPFILTER" in os.environ:
+            return
+
+        lib_names = []
+        if os.name == "nt":
+            lib_names = ["df.dll"]
+        elif sys.platform == "darwin":
+            lib_names = ["libdf.dylib"]
+        else:
+            lib_names = ["libdf.so"]
+
+        repo_root = Path(__file__).resolve().parents[3]
+        search_dirs = [Path.cwd(), repo_root]
+        lib_path = None
+        for lib_name in lib_names:
+            for base in search_dirs:
+                candidate = base / lib_name
+                if candidate.exists():
+                    lib_path = candidate
+                    break
+            if lib_path:
+                break
+
+        model_dirs = [
+            Path.cwd() / "models",
+            repo_root / "models",
+        ]
+        model_found = False
+        for model_dir in model_dirs:
+            if not model_dir.exists():
+                continue
+            ll_model = model_dir / "DeepFilterNet3_ll_onnx.tar.gz"
+            std_model = model_dir / "DeepFilterNet3_onnx.tar.gz"
+            if ll_model.exists() or std_model.exists():
+                model_found = True
+                break
+
+        if lib_path and model_found:
+            os.environ.setdefault("DEEPFILTER_LIB_PATH", str(lib_path))
+            os.environ.setdefault("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
@@ -1765,6 +1808,8 @@ def run_app():
         if os.path.exists(icon_path):
             app.setWindowIcon(QIcon(icon_path))
             break
+
+    _configure_deepfilter_env()
 
     window = MainWindow()
     window.show()

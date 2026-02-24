@@ -24,6 +24,7 @@ use super::input::{AudioInput, TARGET_SAMPLE_RATE};
 use super::output::AudioOutput;
 use crate::dsp::biquad::{Biquad, BiquadType};
 use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressionEngine, NoiseSuppressor};
+use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
 use crate::dsp::{Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ};
 
 #[cfg(feature = "vad")]
@@ -274,6 +275,14 @@ impl AudioProcessor {
             return Err("Already running".to_string());
         }
 
+        // Ensure any stale recording/mute state is cleared before starting.
+        self.recording_active.store(false, Ordering::Release);
+        self.raw_recording_pos.store(0, Ordering::Release);
+        self.raw_recording_target.store(0, Ordering::Release);
+        if let Ok(mut buf_guard) = self.raw_recording_buffer.lock() {
+            *buf_guard = None;
+        }
+
         // Create input ring buffer (2 seconds capacity)
         let input_rb = AudioRingBuffer::new(self.sample_rate as usize * 2);
         let (input_producer, input_consumer) = input_rb.split();
@@ -290,6 +299,7 @@ impl AudioProcessor {
         self.output_recovery_count.store(0, Ordering::Relaxed);
         self.last_input_callback_time_us.store(0, Ordering::Relaxed);
         self.last_output_callback_time_us.store(0, Ordering::Relaxed);
+        self.last_output_write_time.store(0, Ordering::Relaxed);
 
         // Create output ring buffer
         let output_rb = AudioRingBuffer::new(self.sample_rate as usize * 2);
@@ -409,6 +419,7 @@ impl AudioProcessor {
         let lock_contention_count = Arc::clone(&self.lock_contention_count);
         let jitter_dropped_samples = Arc::clone(&self.jitter_dropped_samples);
         let output_recovery_count = Arc::clone(&self.output_recovery_count);
+        let recording_active_thread = Arc::clone(&recording_active);
 
         // Clone raw recording buffer atomics
         let raw_recording_buffer = Arc::clone(&self.raw_recording_buffer);
@@ -486,6 +497,10 @@ impl AudioProcessor {
             let latency_update_interval = std::time::Duration::from_millis(100); // Update every 100ms
             const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
             const STALL_THRESHOLD_MS: u64 = 3000; // 3 seconds without write = stall
+            const SUPPRESSOR_STARVATION_MS: u64 = 400; // Reset suppressor if no output this long
+            const SUPPRESSOR_RECOVERY_COOLDOWN_MS: u64 = 2000;
+            let mut last_suppressor_recovery =
+                Instant::now() - std::time::Duration::from_millis(SUPPRESSOR_RECOVERY_COOLDOWN_MS);
 
             // Helper: compute peak and RMS from buffer, update atomics
             let measure_levels = |buffer: &[f32],
@@ -836,6 +851,34 @@ impl AudioProcessor {
                                         smoothed_buffer_len.store(smoothed, Ordering::Relaxed);
 
                                         let available = s.available_samples();
+                                        if available == 0 {
+                                            let pending = s.pending_input();
+                                            if pending >= RNNOISE_FRAME_SIZE
+                                                && !recording_active_thread
+                                                    .load(Ordering::Relaxed)
+                                            {
+                                                let last_write = last_output_write_time
+                                                    .load(Ordering::Relaxed);
+                                                if last_write > 0 {
+                                                    let now = now_micros();
+                                                    let since_write_ms =
+                                                        now.saturating_sub(last_write) / 1000;
+                                                    if since_write_ms > SUPPRESSOR_STARVATION_MS
+                                                        && last_suppressor_recovery
+                                                            .elapsed()
+                                                            .as_millis() as u64
+                                                            > SUPPRESSOR_RECOVERY_COOLDOWN_MS
+                                                    {
+                                                        eprintln!(
+                                                            "[PROCESSING] WARNING: Suppressor starvation detected (pending={}, no output for {} ms). Soft-resetting suppressor.",
+                                                            pending, since_write_ms
+                                                        );
+                                                        s.soft_reset();
+                                                        last_suppressor_recovery = Instant::now();
+                                                    }
+                                                }
+                                            }
+                                        }
                                         if available > 0 {
                                             let count = available.min(rnnoise_output.len());
                                             let processed =
@@ -1180,9 +1223,34 @@ impl AudioProcessor {
         self.audio_input = None;
         self.audio_output = None;
 
+        // Ensure output is unmuted and recording state is cleared.
+        self.recording_active.store(false, Ordering::Release);
+        self.raw_recording_pos.store(0, Ordering::Release);
+        self.raw_recording_target.store(0, Ordering::Release);
+        if let Ok(mut buf_guard) = self.raw_recording_buffer.lock() {
+            *buf_guard = None;
+        }
+
         // Soft reset suppressor to clear stale buffers without model convergence penalty
         if let Ok(mut s) = self.suppressor.lock() {
             s.soft_reset();
+        }
+
+        // Reset DSP state so stop/start can recover from stuck envelopes.
+        if let Ok(mut g) = self.gate.lock() {
+            g.reset();
+        }
+        if let Ok(mut e) = self.eq.lock() {
+            e.reset();
+        }
+        if let Ok(mut c) = self.compressor.lock() {
+            c.reset();
+        }
+        if let Ok(mut d) = self.deesser.lock() {
+            d.reset();
+        }
+        if let Ok(mut l) = self.limiter.lock() {
+            l.reset();
         }
     }
 

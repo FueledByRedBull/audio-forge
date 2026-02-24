@@ -173,8 +173,7 @@ class LatencyCalibrationWorker(QThread):
         except Exception as e:
             self.failed.emit(f"Latency calibration failed: {type(e).__name__}: {e}")
         finally:
-            if self._stop_event.is_set():
-                self._cleanup_recording_tap()
+            self._cleanup_recording_tap()
 
     def stop(self):
         self._stop_event.set()

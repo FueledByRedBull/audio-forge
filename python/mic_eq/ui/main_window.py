@@ -68,6 +68,51 @@ from ..config import (
 )
 
 
+def _update_callback_stall_state(
+    stall_started_at: float | None,
+    now: float,
+    input_cb_age_ms: int,
+    output_cb_age_ms: int,
+    processing_started_at: float | None,
+    last_recovery_at: float,
+    calibration_dialog_open: bool,
+    warmup_s: float = 5.0,
+    cooldown_s: float = 20.0,
+    grace_s: float = 1.5,
+    output_age_threshold_ms: int = 2000,
+    input_age_threshold_ms: int = 1500,
+) -> tuple[float | None, bool]:
+    """
+    State machine for output callback stall detection.
+
+    Returns (new_stall_started_at, should_recover).
+    """
+    if calibration_dialog_open:
+        return None, False
+
+    if processing_started_at is None:
+        return None, False
+
+    if now - processing_started_at < warmup_s:
+        return None, False
+
+    if now - last_recovery_at < cooldown_s:
+        return stall_started_at, False
+
+    suspicious = output_cb_age_ms > output_age_threshold_ms and input_cb_age_ms < input_age_threshold_ms
+
+    if not suspicious:
+        return None, False
+
+    if stall_started_at is None:
+        return now, False
+
+    if now - stall_started_at < grace_s:
+        return stall_started_at, False
+
+    return None, True
+
+
 class MainWindow(QMainWindow):
     """Main application window for AudioForge."""
 
@@ -87,7 +132,9 @@ class MainWindow(QMainWindow):
         self._undo_auto_eq_button = None
         self._calibration_dialog_open = False
         self._output_stall_started_at = None
+        self._output_callback_stall_started_at = None
         self._last_output_recovery_at = 0.0
+        self._processing_started_at = None
 
         # Set up UI
         self._setup_ui()
@@ -849,6 +896,8 @@ class MainWindow(QMainWindow):
             self.stop_btn.setEnabled(True)
             self.input_combo.setEnabled(False)
             self.output_combo.setEnabled(False)
+            self._processing_started_at = time.monotonic()
+            self._output_callback_stall_started_at = None
             if DEBUG:
                 print(f"[MAIN] Processing started: {result}")
         except Exception as e:
@@ -893,6 +942,8 @@ class MainWindow(QMainWindow):
             self.stop_btn.setEnabled(False)
             self.input_combo.setEnabled(True)
             self.output_combo.setEnabled(True)
+            self._processing_started_at = None
+            self._output_callback_stall_started_at = None
             if DEBUG:
                 print("[MAIN] Processing stopped")
         except RuntimeError as e:
@@ -1208,8 +1259,26 @@ class MainWindow(QMainWindow):
                 output_rms=output_rms,
                 output_buf=output_buf,
             )
+            # Callback watchdog: recover if output callback stops while input is alive.
+            input_cb_age_ms = None
+            output_cb_age_ms = None
+            try:
+                if hasattr(self.processor, "get_input_callback_age_ms"):
+                    input_cb_age_ms = self.processor.get_input_callback_age_ms()
+                if hasattr(self.processor, "get_output_callback_age_ms"):
+                    output_cb_age_ms = self.processor.get_output_callback_age_ms()
+            except Exception:
+                input_cb_age_ms = None
+                output_cb_age_ms = None
+            if input_cb_age_ms is not None and output_cb_age_ms is not None:
+                self._maybe_recover_callback_stall(
+                    input_cb_age_ms=input_cb_age_ms,
+                    output_cb_age_ms=output_cb_age_ms,
+                )
         else:
             self._output_stall_started_at = None
+            self._output_callback_stall_started_at = None
+            self._processing_started_at = None
             self.latency_label.setText("Latency: -- ms")
             self.buffer_label.setText("Buffer: --")
             self.buffer_label.setStyleSheet(
@@ -1261,6 +1330,28 @@ class MainWindow(QMainWindow):
         self._output_stall_started_at = None
         self._last_output_recovery_at = now
         self._recover_output_path()
+
+    def _maybe_recover_callback_stall(self, input_cb_age_ms: int, output_cb_age_ms: int):
+        """
+        Recover when output callback stops while input callback is still active.
+
+        This catches cases where DSP is alive but the output stream stops
+        delivering callbacks after long background use.
+        """
+        now = time.monotonic()
+        new_state, should_recover = _update_callback_stall_state(
+            stall_started_at=self._output_callback_stall_started_at,
+            now=now,
+            input_cb_age_ms=input_cb_age_ms,
+            output_cb_age_ms=output_cb_age_ms,
+            processing_started_at=self._processing_started_at,
+            last_recovery_at=self._last_output_recovery_at,
+            calibration_dialog_open=self._calibration_dialog_open,
+        )
+        self._output_callback_stall_started_at = new_state
+        if should_recover:
+            self._last_output_recovery_at = now
+            self._recover_output_path()
 
     def _recover_output_path(self):
         """Best-effort output recovery: unmute + restart with selected devices."""

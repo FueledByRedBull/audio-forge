@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.7.2 - 2026-02-25
+
+- Guarded biquad Q from zero to prevent NaNs.
+
 ## v1.7.1 - 2026-02-25
 
 Note: releases were behind master; this rollup includes changes since v1.5.3.

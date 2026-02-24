@@ -4,6 +4,8 @@
 
 use std::f64::consts::PI;
 
+const MIN_BIQUAD_Q: f64 = 1e-6;
+
 /// Biquad filter types
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BiquadType {
@@ -76,7 +78,8 @@ impl Biquad {
         let omega = 2.0 * PI * self.frequency / self.sample_rate;
         let sin_omega = omega.sin();
         let cos_omega = omega.cos();
-        let alpha = sin_omega / (2.0 * self.q);
+        let q = self.q.max(MIN_BIQUAD_Q);
+        let alpha = sin_omega / (2.0 * q);
         let a = 10.0_f64.powf(self.gain_db / 40.0); // sqrt(10^(dB/20))
 
         let (b0, b1, b2, a0, a1, a2) = match self.filter_type {
@@ -184,7 +187,7 @@ impl Biquad {
 
     /// Set filter Q factor and recalculate coefficients
     pub fn set_q(&mut self, q: f64) {
-        self.q = q;
+        self.q = q.max(MIN_BIQUAD_Q);
         self.calculate_coefficients();
     }
 
@@ -263,5 +266,12 @@ mod tests {
             "Expected boost, got max_output = {}",
             max_output
         );
+    }
+
+    #[test]
+    fn test_biquad_q_zero_guard() {
+        let mut filter = Biquad::new(BiquadType::Peaking, 1000.0, 0.0, 0.0, 48000.0);
+        let output = filter.process_sample(0.25);
+        assert!(output.is_finite());
     }
 }

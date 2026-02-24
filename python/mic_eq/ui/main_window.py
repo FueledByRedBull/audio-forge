@@ -1033,7 +1033,7 @@ class MainWindow(QMainWindow):
             preset = Preset(
                 name=preset_name,
                 description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
-                version="1.7.1",
+                version="1.7.2",
                 gate=GateSettings(**self.gate_panel.get_settings()),
                 eq=EQSettings(**self.eq_panel.get_settings()),
                 rnnoise=RNNoiseSettings(

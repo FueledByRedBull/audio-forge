@@ -7,7 +7,7 @@
 
 Low-latency microphone audio processor with AI noise suppression, smart gating, Auto-EQ, and 10-band parametric EQ.
 
-Current version: `v1.7.1`
+Current version: `v1.7.2`
 
 ## Status
 

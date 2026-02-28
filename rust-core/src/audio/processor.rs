@@ -553,6 +553,7 @@ impl AudioProcessor {
         let jitter_dropped_samples = Arc::clone(&self.jitter_dropped_samples);
         let output_recovery_count = Arc::clone(&self.output_recovery_count);
         let recording_active_thread = Arc::clone(&recording_active);
+        let suppressor_strength_for_thread = Arc::clone(&self.suppressor_strength);
 
         // Clone raw recording buffer atomics
         let raw_recording_buffer = Arc::clone(&self.raw_recording_buffer);
@@ -1084,6 +1085,26 @@ impl AudioProcessor {
                                                 s.pop_samples_into(&mut rnnoise_output[..count]);
                                             let output_slice = &mut rnnoise_output[..processed];
 
+                                            let mut detected_non_finite = false;
+                                            for sample in output_slice.iter_mut() {
+                                                if !sample.is_finite() {
+                                                    *sample = 0.0;
+                                                    detected_non_finite = true;
+                                                }
+                                            }
+                                            if detected_non_finite {
+                                                eprintln!(
+                                                    "[PROCESSING] WARNING: Non-finite suppressor output detected. Reinitializing suppressor state."
+                                                );
+                                                let was_enabled = s.is_enabled();
+                                                let model = s.model_type();
+                                                *s = NoiseSuppressionEngine::new(
+                                                    model,
+                                                    Arc::clone(&suppressor_strength_for_thread),
+                                                );
+                                                s.set_enabled(was_enabled);
+                                            }
+
                                             apply_downstream_chain(output_slice);
 
                                             // Measure OUTPUT levels
@@ -1260,9 +1281,12 @@ impl AudioProcessor {
             *buf_guard = None;
         }
 
-        // Soft reset suppressor to clear stale buffers without model convergence penalty
+        // Reinitialize suppressor state so stop/start can recover from poisoned model state.
         if let Ok(mut s) = self.suppressor.lock() {
-            s.soft_reset();
+            let was_enabled = s.is_enabled();
+            let model = s.model_type();
+            *s = NoiseSuppressionEngine::new(model, Arc::clone(&self.suppressor_strength));
+            s.set_enabled(was_enabled);
         }
 
         // Reset DSP state so stop/start can recover from stuck envelopes.

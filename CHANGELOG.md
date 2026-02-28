@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.3 - 2026-02-28
+
+- Fixed suppressor non-finite output poisoning the DSP/output pipeline after extended silence.
+- Added runtime suppressor output sanitization and automatic suppressor reinitialization on detection.
+- Reworked stop/start suppressor reset path to rebuild suppressor state for reliable in-app recovery.
+
 ## v1.7.2 - 2026-02-25
 
 - Guarded biquad Q from zero to prevent NaNs.

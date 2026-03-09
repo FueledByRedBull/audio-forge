@@ -2,7 +2,6 @@
 Non-blocking analysis worker for Auto-EQ calibration.
 
 Runs audio analysis in background thread with step-by-step progress signals.
-Extends RecordingWorker pattern from Phase 18 for analysis workflow.
 """
 import threading
 import time

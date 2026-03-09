@@ -57,6 +57,7 @@ class SelfTestAttempt:
     round_trip_ms: float
     message: str
     diagnostics: dict
+    playback_delay_ms: float
 
 
 def _run_attempt(
@@ -66,6 +67,9 @@ def _run_attempt(
     delay: float,
     output_sample_rate: int,
     probe_duration_ms: float,
+    expected_latency_min_ms: float,
+    expected_latency_max_ms: float,
+    expected_playback_jitter_ms: float,
 ) -> SelfTestAttempt:
     processor.start_raw_recording(duration)
     start = time.time()
@@ -89,6 +93,7 @@ def _run_attempt(
             round_trip_ms=0.0,
             message="no recording captured",
             diagnostics=processor.get_runtime_diagnostics(),
+            playback_delay_ms=delay * 1000.0,
         )
 
     recording = np.asarray(raw, dtype=np.float32)
@@ -98,12 +103,17 @@ def _run_attempt(
         sample_rate=output_sample_rate,
         min_search_ms=5.0,
         max_search_ms=500.0,
+        expected_playback_start_ms=delay * 1000.0,
+        expected_playback_jitter_ms=expected_playback_jitter_ms,
+        expected_latency_min_ms=expected_latency_min_ms,
+        expected_latency_max_ms=expected_latency_max_ms,
     )
     return SelfTestAttempt(
         confidence=float(analysis.confidence),
         round_trip_ms=float(analysis.measured_round_trip_ms),
         message=analysis.message or ("ok" if analysis.success else "low confidence"),
         diagnostics=processor.get_runtime_diagnostics(),
+        playback_delay_ms=delay * 1000.0,
     )
 
 
@@ -124,13 +134,13 @@ def _format_diagnostics(diagnostics: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="AudioForge self-test (probe capture).")
     parser.add_argument("--duration", type=float, default=3.0, help="Recording duration in seconds.")
-    parser.add_argument("--delay", type=float, default=0.55, help="Probe playback delay in seconds.")
-    parser.add_argument("--warmup", type=float, default=0.2, help="Stream warmup time in seconds.")
-    parser.add_argument("--retries", type=int, default=1, help="Additional retries after the first failed attempt.")
+    parser.add_argument("--delay", type=float, default=0.45, help="Probe playback delay in seconds.")
+    parser.add_argument("--warmup", type=float, default=0.3, help="Stream warmup time in seconds.")
+    parser.add_argument("--retries", type=int, default=7, help="Additional retries after the first failed attempt.")
     parser.add_argument(
         "--probe-duration-ms",
         type=float,
-        default=80.0,
+        default=120.0,
         help="Probe chirp duration in milliseconds.",
     )
     parser.add_argument(
@@ -155,6 +165,8 @@ def main() -> int:
 
         processor.set_recovery_suppressed(True)
         attempts = max(1, args.retries + 1)
+        delay_ladder = [args.delay, args.delay + 0.25, args.delay + 0.50]
+        attempt_delays = [delay_ladder[min(index, len(delay_ladder) - 1)] for index in range(attempts)]
         best_attempt: SelfTestAttempt | None = None
 
         for attempt_index in range(attempts):
@@ -162,24 +174,36 @@ def main() -> int:
                 print(f"Retrying self-test ({attempt_index + 1}/{attempts})...")
                 time.sleep(0.15)
 
+            expected_latency_min_ms = 20.0
+            expected_latency_max_ms = 500.0
+            if best_attempt is not None and best_attempt.round_trip_ms > 0.0:
+                expected_latency_min_ms = max(20.0, best_attempt.round_trip_ms - 120.0)
+                expected_latency_max_ms = min(500.0, best_attempt.round_trip_ms + 120.0)
+
             attempt = _run_attempt(
                 processor,
                 duration=args.duration,
-                delay=args.delay,
+                delay=attempt_delays[attempt_index],
                 output_sample_rate=output_sample_rate,
                 probe_duration_ms=args.probe_duration_ms,
+                expected_latency_min_ms=expected_latency_min_ms,
+                expected_latency_max_ms=expected_latency_max_ms,
+                expected_playback_jitter_ms=150.0,
             )
+            attempt_passed = attempt.confidence >= args.confidence and attempt.round_trip_ms > 0.0
+            attempt_message = "ok" if attempt_passed else attempt.message
             print(
                 f"Attempt {attempt_index + 1}: "
+                f"delay={attempt.playback_delay_ms:.0f}ms "
                 f"rt={attempt.round_trip_ms:.2f}ms "
                 f"confidence={attempt.confidence:.3f} "
-                f"message={attempt.message} "
+                f"message={attempt_message} "
                 f"{_format_diagnostics(attempt.diagnostics)}"
             )
 
             if best_attempt is None or attempt.confidence > best_attempt.confidence:
                 best_attempt = attempt
-            if attempt.confidence >= args.confidence:
+            if attempt_passed:
                 print(
                     "Self-test passed: "
                     f"rt={attempt.round_trip_ms:.2f}ms "

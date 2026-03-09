@@ -48,7 +48,6 @@ def _configure_frozen_runtime():
     model_dirs = [
         (meipass / "_internal" / "models") if meipass else None,
         (meipass / "models") if meipass else None,
-        exe_dir / "models",
     ]
     model_dir = _first_existing_path(model_dirs)
 
@@ -71,7 +70,6 @@ def _configure_frozen_runtime():
         df_candidates = [
             (meipass / "_internal" / "df.dll") if meipass else None,
             (meipass / "df.dll") if meipass else None,
-            exe_dir / "df.dll",
         ]
         df_path = _first_existing_path(df_candidates)
         if df_path:

@@ -14,7 +14,7 @@ def test_vad_preset_persistence(tmp_path):
 
         original = Preset(
             name="VAD Test",
-            version="1.7.6",
+            version="1.7.7",
             gate=GateSettings(
                 enabled=True,
                 threshold_db=-35.0,

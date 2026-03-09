@@ -65,6 +65,122 @@ def test_analyze_latency_low_confidence_for_noise_only():
     assert not result.success
 
 
+def test_analyze_latency_expected_window_handles_noisy_attenuated_probe():
+    sample_rate = 48000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+
+    playback_delay_samples = int(0.55 * sample_rate)
+    actual_latency_samples = int(0.19 * sample_rate)
+    offset_samples = playback_delay_samples + actual_latency_samples
+    rec_len = offset_samples + len(probe) + 4096
+
+    rng = np.random.default_rng(4242)
+    recording = rng.normal(0.0, 0.025, rec_len).astype(np.float32)
+    recording[offset_samples : offset_samples + len(probe)] += probe * 0.35
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        min_search_ms=5.0,
+        max_search_ms=500.0,
+        expected_playback_start_ms=550.0,
+        expected_playback_jitter_ms=120.0,
+        expected_latency_min_ms=20.0,
+        expected_latency_max_ms=450.0,
+    )
+
+    expected_ms = (actual_latency_samples * 1000.0) / sample_rate
+    assert result.success
+    assert abs(result.measured_round_trip_ms - expected_ms) < 2.0
+    assert result.confidence >= 0.25
+
+
+def test_analyze_latency_wrong_expected_window_does_not_false_pass():
+    sample_rate = 48000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+
+    playback_delay_samples = int(0.55 * sample_rate)
+    actual_latency_samples = int(0.18 * sample_rate)
+    offset_samples = playback_delay_samples + actual_latency_samples
+    rec_len = offset_samples + len(probe) + 4096
+
+    rng = np.random.default_rng(7331)
+    recording = rng.normal(0.0, 0.02, rec_len).astype(np.float32)
+    recording[offset_samples : offset_samples + len(probe)] += probe * 0.5
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        min_search_ms=5.0,
+        max_search_ms=500.0,
+        expected_playback_start_ms=100.0,
+        expected_playback_jitter_ms=25.0,
+        expected_latency_min_ms=20.0,
+        expected_latency_max_ms=150.0,
+    )
+
+    assert not result.success
+
+
+def test_analyze_latency_expected_window_handles_attenuated_probe():
+    sample_rate = 48000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+
+    playback_delay_ms = 550.0
+    round_trip_ms = 140.0
+    offset_samples = int(((playback_delay_ms + round_trip_ms) / 1000.0) * sample_rate)
+    rec_len = offset_samples + len(probe) + 4096
+
+    rng = np.random.default_rng(4242)
+    recording = rng.normal(0.0, 0.02, rec_len).astype(np.float32)
+    recording[offset_samples : offset_samples + len(probe)] += probe * 0.18
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        min_search_ms=5.0,
+        max_search_ms=1000.0,
+        expected_playback_start_ms=playback_delay_ms,
+        expected_playback_jitter_ms=120.0,
+        expected_latency_min_ms=20.0,
+        expected_latency_max_ms=250.0,
+    )
+
+    assert result.success
+    assert result.confidence >= 0.25
+    assert abs(result.measured_round_trip_ms - round_trip_ms) < 5.0
+
+
+def test_analyze_latency_expected_window_rejects_wrong_region():
+    sample_rate = 48000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+
+    playback_delay_ms = 550.0
+    round_trip_ms = 140.0
+    offset_samples = int(((playback_delay_ms + round_trip_ms) / 1000.0) * sample_rate)
+    rec_len = offset_samples + len(probe) + 4096
+
+    recording = np.zeros(rec_len, dtype=np.float32)
+    recording[offset_samples : offset_samples + len(probe)] = probe * 0.4
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        min_search_ms=5.0,
+        max_search_ms=1000.0,
+        expected_playback_start_ms=100.0,
+        expected_playback_jitter_ms=25.0,
+        expected_latency_min_ms=20.0,
+        expected_latency_max_ms=120.0,
+    )
+
+    assert not result.success
+
+
 def test_result_to_profile_has_expected_fields():
     result = lat.LatencyCalibrationResult(
         success=True,

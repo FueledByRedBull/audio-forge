@@ -63,6 +63,10 @@ def analyze_latency(
     sample_rate: int = 48_000,
     min_search_ms: float = 5.0,
     max_search_ms: float = 500.0,
+    expected_playback_start_ms: float | None = None,
+    expected_playback_jitter_ms: float | None = None,
+    expected_latency_min_ms: float | None = None,
+    expected_latency_max_ms: float | None = None,
 ) -> LatencyCalibrationResult:
     """Estimate latency by cross-correlating recorded signal against probe."""
     if reference_probe is None or recorded_signal is None:
@@ -99,6 +103,17 @@ def analyze_latency(
 
     min_lag = int((min_search_ms / 1000.0) * sample_rate)
     max_lag = int((max_search_ms / 1000.0) * sample_rate)
+    expected_window_used = expected_playback_start_ms is not None
+    expected_min = expected_latency_min_ms if expected_latency_min_ms is not None else min_search_ms
+    expected_max = expected_latency_max_ms if expected_latency_max_ms is not None else max_search_ms
+    playback_min_ms = 0.0
+    playback_max_ms = 0.0
+    if expected_window_used:
+        playback_jitter_ms = max(0.0, expected_playback_jitter_ms or 0.0)
+        playback_min_ms = max(0.0, expected_playback_start_ms - playback_jitter_ms)
+        playback_max_ms = max(playback_min_ms, expected_playback_start_ms + playback_jitter_ms)
+        min_lag = int(((playback_min_ms + expected_min) / 1000.0) * sample_rate)
+        max_lag = int(((playback_max_ms + expected_max) / 1000.0) * sample_rate)
 
     valid_mask = (lags >= min_lag) & (lags <= max_lag)
     if not np.any(valid_mask):
@@ -116,23 +131,104 @@ def analyze_latency(
     lag_window = lags[valid_mask]
     magnitudes = np.abs(corr_window)
 
-    peak_index = int(np.argmax(magnitudes))
-    peak_value = float(magnitudes[peak_index])
+    valid_overlap = (lag_window >= 0) & ((lag_window + ref.size) <= rec.size)
+    if not np.any(valid_overlap):
+        return LatencyCalibrationResult(
+            success=False,
+            measured_round_trip_ms=0.0,
+            estimated_one_way_ms=0.0,
+            applied_compensation_ms=0.0,
+            confidence=0.0,
+            peak_sample_offset=0,
+            message="Search window does not overlap captured audio.",
+        )
+
+    corr_window = corr_window[valid_overlap]
+    lag_window = lag_window[valid_overlap]
+    magnitudes = magnitudes[valid_overlap]
+
+    ref_energy = float(np.sum(ref * ref) + 1e-12)
+    rec_energy_prefix = np.concatenate(([0.0], np.cumsum(rec * rec)))
+    window_energy = rec_energy_prefix[lag_window + ref.size] - rec_energy_prefix[lag_window]
+    normalized_scores = magnitudes / np.sqrt(np.maximum(window_energy, 1e-12) * ref_energy)
+
+    peak_index = int(np.argmax(normalized_scores))
+    peak_value = float(normalized_scores[peak_index])
     peak_lag_samples = int(lag_window[peak_index])
 
-    # Confidence from peak-vs-background ratio and sidelobe separation.
-    background = float(np.median(magnitudes) + 1e-9)
-    top_two = np.partition(magnitudes, -2)[-2:]
-    second_peak = float(np.min(top_two)) if top_two.size >= 2 else 0.0
-    peak_to_floor = peak_value / background
-    peak_separation = peak_value / (second_peak + 1e-9)
-    confidence = min(1.0, max(0.0, 0.25 * np.log10(peak_to_floor + 1.0) + 0.5 * (peak_separation - 1.0)))
-
     measured_round_trip_ms = (peak_lag_samples * 1000.0) / float(sample_rate)
+    if expected_window_used:
+        measured_round_trip_ms = max(0.0, measured_round_trip_ms - expected_playback_start_ms)
     estimated_one_way_ms = measured_round_trip_ms / 2.0
 
-    success = confidence >= 0.25 and measured_round_trip_ms > 0.0
-    message = "ok" if success else "Low confidence correlation peak."
+    peak_segment_end = peak_lag_samples + ref.size
+    if peak_lag_samples < 0 or peak_segment_end > rec.size:
+        return LatencyCalibrationResult(
+            success=False,
+            measured_round_trip_ms=measured_round_trip_ms,
+            estimated_one_way_ms=estimated_one_way_ms,
+            applied_compensation_ms=estimated_one_way_ms,
+            confidence=0.0,
+            peak_sample_offset=peak_lag_samples,
+            message="Peak segment is outside the captured recording.",
+        )
+
+    exclusion_radius = max(1, ref.size // 4)
+    off_peak_mask = np.ones_like(normalized_scores, dtype=bool)
+    off_peak_mask[max(0, peak_index - exclusion_radius) : peak_index + exclusion_radius + 1] = False
+    off_peak_scores = normalized_scores[off_peak_mask]
+    background = float(np.median(off_peak_scores)) if off_peak_scores.size else 0.0
+    second_peak = float(np.max(off_peak_scores)) if off_peak_scores.size else 0.0
+    peak_percentile = (
+        float(np.percentile(off_peak_scores, 90)) if off_peak_scores.size else background
+    )
+    robust_mad = (
+        float(np.median(np.abs(off_peak_scores - background))) if off_peak_scores.size else 0.0
+    )
+    robust_sigma = max(1e-6, 1.4826 * robust_mad)
+    peak_z = max(0.0, (peak_value - background) / robust_sigma)
+    prominence_ratio = max(0.0, (peak_value - peak_percentile) / (peak_value + 1e-6))
+    margin_ratio = max(0.0, 1.0 - (second_peak / (peak_value + 1e-6)))
+
+    absolute_peak_score = min(1.0, max(0.0, (peak_value - 0.08) / 0.22))
+    peak_score = min(1.0, max(0.0, (peak_z - 3.0) / 5.0))
+    prominence_score = min(1.0, max(0.0, prominence_ratio / 0.5))
+    margin_score = min(1.0, max(0.0, margin_ratio / 0.3))
+    alignment_score = 0.0
+
+    if expected_window_used:
+        expected_center_ms = 0.5 * (
+            playback_min_ms + playback_max_ms + expected_min + expected_max
+        )
+        expected_center_samples = int((expected_center_ms / 1000.0) * sample_rate)
+        half_width_samples = max(1, (max_lag - min_lag) // 2)
+        alignment_score = max(
+            0.0,
+            1.0
+            - (abs(peak_lag_samples - expected_center_samples) / float(half_width_samples)),
+        )
+        confidence = (
+            0.30 * absolute_peak_score
+            + 0.30 * peak_score
+            + 0.20 * prominence_score
+            + 0.10 * margin_score
+            + 0.10 * alignment_score
+        )
+    else:
+        confidence = (
+            0.35 * absolute_peak_score
+            + 0.35 * peak_score
+            + 0.20 * prominence_score
+            + 0.10 * margin_score
+        )
+
+    success = (
+        confidence >= 0.25
+        and measured_round_trip_ms > 0.0
+        and peak_value >= 0.07
+        and margin_ratio >= 0.01
+    )
+    message = "ok" if success else "Low confidence or ambiguous correlation peak."
 
     return LatencyCalibrationResult(
         success=success,

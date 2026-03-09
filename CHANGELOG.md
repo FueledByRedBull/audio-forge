@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.7 - 2026-03-09
+
+- Hardened the headless self-test by using expected playback windows, a normalized correlation score, and a wider retry delay ladder while keeping the `0.25` confidence threshold unchanged.
+- Removed steady-state `try_lock()` use from the downstream DSP chain and raw-recording tap, and mirrored suppressor latency into atomics for lock-free reporting.
+- Deleted the unused legacy `RecordingWorker` path and tightened the packaged build flow around the checked-in spec and bundle-pruning helper.
+
 ## v1.7.6 - 2026-03-09
 
 - Trimmed the packaged Windows app further by dropping the duplicated runtime icon payload and pruning unused Qt translations/PDF binaries after build.

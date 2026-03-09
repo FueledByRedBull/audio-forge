@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.4 - 2026-03-09
+
+- Fixed CPAL stream setup for `f32`, `i16`, and `u16` devices so startup no longer depends on float-native hardware.
+- Added output-side resampling so non-48 kHz playback devices receive correctly timed audio.
+- Removed steady-state per-frame DeepFilterNet allocations from the realtime processing path.
+- Trimmed packaged release size by relying on bundled internal DeepFilter assets instead of duplicating them next to the executable.
+
 ## v1.7.3 - 2026-02-28
 
 - Fixed suppressor non-finite output poisoning the DSP/output pipeline after extended silence.

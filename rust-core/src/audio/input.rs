@@ -6,7 +6,7 @@
 //! Adapted from Spectral Workbench project.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, Stream, StreamConfig};
+use cpal::{Device, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -36,6 +36,9 @@ pub enum AudioError {
 
     #[error("Device not found: {0}")]
     DeviceNotFound(String),
+
+    #[error("Unsupported audio sample format: {0}")]
+    UnsupportedSampleFormat(String),
 }
 
 /// Audio device information
@@ -53,6 +56,88 @@ pub struct AudioInput {
 }
 
 impl AudioInput {
+    fn normalize_input_sample<T>(sample: T) -> f32
+    where
+        T: Sample,
+        f32: FromSample<T>,
+    {
+        f32::from_sample(sample)
+    }
+
+    fn build_stream<T>(
+        device: Device,
+        stream_config: StreamConfig,
+        producer: AudioProducer,
+        last_callback_time_us: Arc<AtomicU64>,
+        device_info: AudioDeviceInfo,
+    ) -> Result<Self, AudioError>
+    where
+        T: SizedSample,
+        f32: FromSample<T>,
+    {
+        let mut producer = producer;
+        let num_channels = device_info.channels as usize;
+
+        const INPUT_SCRATCH_CAPACITY: usize = 8192;
+        let mut mono_scratch: Vec<f32> = vec![0.0; INPUT_SCRATCH_CAPACITY];
+
+        let stream = device
+            .build_input_stream(
+                &stream_config,
+                move |data: &[T], _: &cpal::InputCallbackInfo| {
+                    last_callback_time_us.store(now_micros(), Ordering::Relaxed);
+
+                    if num_channels == 1 {
+                        let mut sample_idx = 0usize;
+                        while sample_idx < data.len() {
+                            let chunk_len = (data.len() - sample_idx).min(INPUT_SCRATCH_CAPACITY);
+                            for (dst, src) in mono_scratch[..chunk_len]
+                                .iter_mut()
+                                .zip(data[sample_idx..sample_idx + chunk_len].iter().copied())
+                            {
+                                *dst = Self::normalize_input_sample(src);
+                            }
+                            producer.write(&mono_scratch[..chunk_len]);
+                            sample_idx += chunk_len;
+                        }
+                    } else {
+                        let frames = data.len() / num_channels;
+                        let mut frame_idx = 0usize;
+                        while frame_idx < frames {
+                            let chunk_frames = (frames - frame_idx).min(INPUT_SCRATCH_CAPACITY);
+                            let start = frame_idx * num_channels;
+                            let end = start + chunk_frames * num_channels;
+                            let interleaved = &data[start..end];
+
+                            let mut written_frames = 0usize;
+                            for chunk in interleaved.chunks_exact(num_channels) {
+                                let sum: f32 = chunk
+                                    .iter()
+                                    .copied()
+                                    .map(Self::normalize_input_sample)
+                                    .sum();
+                                mono_scratch[written_frames] = sum / num_channels as f32;
+                                written_frames += 1;
+                            }
+
+                            producer.write(&mono_scratch[..written_frames]);
+                            frame_idx += chunk_frames;
+                        }
+                    }
+                },
+                move |err| {
+                    eprintln!("Audio input error: {}", err);
+                },
+                None,
+            )
+            .map_err(|e| AudioError::BuildStream(e.to_string()))?;
+
+        Ok(Self {
+            stream,
+            device_info,
+        })
+    }
+
     /// Create audio input from default device
     pub fn from_default_device(
         producer: AudioProducer,
@@ -90,12 +175,13 @@ impl AudioInput {
             .name()
             .map_err(|e| AudioError::DeviceName(e.to_string()))?;
 
-        let config = device
+        let supported_config = device
             .default_input_config()
             .map_err(|e| AudioError::DefaultConfig(e.to_string()))?;
 
-        let device_sample_rate = config.sample_rate().0;
-        let channels = config.channels();
+        let device_sample_rate = supported_config.sample_rate().0;
+        let channels = supported_config.channels();
+        let sample_format = supported_config.sample_format();
 
         // Report actual device sample rate; conversion (if needed) happens in DSP thread.
         let device_info = AudioDeviceInfo {
@@ -104,12 +190,7 @@ impl AudioInput {
             channels,
         };
 
-        let stream_config: StreamConfig = config.into();
-        let mut producer = producer;
-        let num_channels = channels as usize;
-        // Fixed callback scratch to avoid heap growth in real-time thread.
-        const INPUT_SCRATCH_CAPACITY: usize = 8192;
-        let mut mono_scratch: Vec<f32> = vec![0.0; INPUT_SCRATCH_CAPACITY];
+        let stream_config = supported_config.config();
 
         if device_sample_rate != TARGET_SAMPLE_RATE {
             println!(
@@ -118,48 +199,30 @@ impl AudioInput {
             );
         }
 
-        let stream = device
-            .build_input_stream(
-                &stream_config,
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    last_callback_time_us.store(now_micros(), Ordering::Relaxed);
-
-                    if num_channels == 1 {
-                        producer.write(data);
-                    } else {
-                        // Convert interleaved multi-channel input to mono without
-                        // allocating in the callback.
-                        let frames = data.len() / num_channels;
-                        let mut frame_idx = 0usize;
-                        while frame_idx < frames {
-                            let chunk_frames = (frames - frame_idx).min(INPUT_SCRATCH_CAPACITY);
-                            let start = frame_idx * num_channels;
-                            let end = start + chunk_frames * num_channels;
-                            let interleaved = &data[start..end];
-
-                            let mut written_frames = 0usize;
-                            for chunk in interleaved.chunks_exact(num_channels) {
-                                let sum: f32 = chunk.iter().copied().sum();
-                                mono_scratch[written_frames] = sum / num_channels as f32;
-                                written_frames += 1;
-                            }
-
-                            producer.write(&mono_scratch[..written_frames]);
-                            frame_idx += chunk_frames;
-                        }
-                    }
-                },
-                move |err| {
-                    eprintln!("Audio input error: {}", err);
-                },
-                None,
-            )
-            .map_err(|e| AudioError::BuildStream(e.to_string()))?;
-
-        Ok(Self {
-            stream,
-            device_info,
-        })
+        match sample_format {
+            SampleFormat::F32 => Self::build_stream::<f32>(
+                device,
+                stream_config,
+                producer,
+                last_callback_time_us,
+                device_info,
+            ),
+            SampleFormat::I16 => Self::build_stream::<i16>(
+                device,
+                stream_config,
+                producer,
+                last_callback_time_us,
+                device_info,
+            ),
+            SampleFormat::U16 => Self::build_stream::<u16>(
+                device,
+                stream_config,
+                producer,
+                last_callback_time_us,
+                device_info,
+            ),
+            other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
+        }
     }
 
     /// Start capturing audio
@@ -213,5 +276,17 @@ mod tests {
     #[test]
     fn test_list_devices() {
         let _ = list_input_devices();
+    }
+
+    #[test]
+    fn test_normalize_i16_input_sample() {
+        let normalized = AudioInput::normalize_input_sample(i16::MAX);
+        assert!(normalized > 0.99);
+    }
+
+    #[test]
+    fn test_normalize_u16_input_sample() {
+        let normalized = AudioInput::normalize_input_sample(0_u16);
+        assert!(normalized <= -0.99);
     }
 }

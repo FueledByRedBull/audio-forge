@@ -6,7 +6,10 @@
 //! Adapted from Spectral Workbench project.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, Stream, StreamConfig, SupportedStreamConfigRange};
+use cpal::{
+    Device, FromSample, SampleFormat, SizedSample, Stream, StreamConfig, SupportedStreamConfig,
+    SupportedStreamConfigRange,
+};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -20,7 +23,214 @@ pub struct AudioOutput {
     device_info: AudioDeviceInfo,
 }
 
+pub(crate) struct OutputStreamSetup {
+    pub(crate) device: Device,
+    pub(crate) supported_config: SupportedStreamConfig,
+    pub(crate) device_info: AudioDeviceInfo,
+}
+
 impl AudioOutput {
+    fn select_device(device: Device) -> Result<OutputStreamSetup, AudioError> {
+        let name = device
+            .name()
+            .map_err(|e| AudioError::DeviceName(e.to_string()))?;
+
+        let supported_configs = device
+            .supported_output_configs()
+            .map_err(|e| AudioError::DefaultConfig(e.to_string()))?;
+
+        let supported_config = find_48khz_config(supported_configs)
+            .or_else(|| device.default_output_config().ok())
+            .ok_or_else(|| {
+                AudioError::DefaultConfig("No suitable output config found".to_string())
+            })?;
+
+        let device_info = AudioDeviceInfo {
+            name,
+            sample_rate: supported_config.sample_rate().0,
+            channels: supported_config.channels(),
+        };
+
+        Ok(OutputStreamSetup {
+            device,
+            supported_config,
+            device_info,
+        })
+    }
+
+    pub(crate) fn from_default_device_setup() -> Result<OutputStreamSetup, AudioError> {
+        let host = cpal::default_host();
+        let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
+        Self::select_device(device)
+    }
+
+    pub(crate) fn from_named_device_setup(name: &str) -> Result<OutputStreamSetup, AudioError> {
+        let host = cpal::default_host();
+        let device = host
+            .output_devices()
+            .map_err(|e| AudioError::DeviceName(e.to_string()))?
+            .find(|d| d.name().map(|n| n == name).unwrap_or(false))
+            .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))?;
+        Self::select_device(device)
+    }
+
+    fn convert_output_sample<T>(sample: f32) -> T
+    where
+        T: SizedSample + FromSample<f32>,
+    {
+        T::from_sample(sample.clamp(-1.0, 1.0))
+    }
+
+    fn build_stream<T>(
+        device: Device,
+        stream_config: StreamConfig,
+        device_info: AudioDeviceInfo,
+        consumer: AudioConsumer,
+        recording_active: Arc<AtomicBool>,
+        output_muted: Arc<AtomicBool>,
+        last_callback_time_us: Arc<AtomicU64>,
+        underrun_streak: Arc<AtomicU32>,
+        total_underruns: Arc<AtomicU64>,
+    ) -> Result<Self, AudioError>
+    where
+        T: SizedSample + FromSample<f32>,
+    {
+        let mut consumer = consumer;
+        let num_channels = device_info.channels as usize;
+
+        const OUTPUT_SCRATCH_CAPACITY: usize = 8192;
+        let mut mono_scratch: Vec<f32> = vec![0.0; OUTPUT_SCRATCH_CAPACITY];
+
+        let recording_active_clone = Arc::clone(&recording_active);
+        let output_muted_clone = Arc::clone(&output_muted);
+
+        let stream = device
+            .build_output_stream(
+                &stream_config,
+                move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+                    last_callback_time_us.store(now_micros(), Ordering::Relaxed);
+
+                    if recording_active_clone.load(Ordering::Relaxed)
+                        || output_muted_clone.load(Ordering::Relaxed)
+                    {
+                        underrun_streak.store(0, Ordering::Relaxed);
+                        let silence = Self::convert_output_sample::<T>(0.0);
+                        for sample in data.iter_mut() {
+                            *sample = silence;
+                        }
+                        return;
+                    }
+
+                    let available = consumer.len();
+
+                    if num_channels == 1 {
+                        let needed = data.len();
+                        if available < needed {
+                            underrun_streak.fetch_add(1, Ordering::Relaxed);
+                            total_underruns.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            underrun_streak.store(0, Ordering::Relaxed);
+                        }
+
+                        let to_read = available.min(data.len());
+                        let mut copied = 0usize;
+                        let mut last_written_sample = None;
+                        while copied < to_read {
+                            let batch = (to_read - copied).min(OUTPUT_SCRATCH_CAPACITY);
+                            let count = consumer.read(&mut mono_scratch[..batch]);
+                            if count == 0 {
+                                break;
+                            }
+
+                            for (dst, &sample) in data[copied..copied + count]
+                                .iter_mut()
+                                .zip(mono_scratch[..count].iter())
+                            {
+                                *dst = Self::convert_output_sample::<T>(sample);
+                                last_written_sample = Some(sample);
+                            }
+
+                            copied += count;
+                            if count < batch {
+                                break;
+                            }
+                        }
+
+                        if copied < data.len() {
+                            let last =
+                                last_written_sample.unwrap_or_else(|| consumer.last_sample());
+                            let remain = data.len() - copied;
+                            for (i, sample) in data[copied..].iter_mut().enumerate() {
+                                let t = (i + 1) as f32 / remain as f32;
+                                let value = last * (1.0 - t);
+                                *sample = Self::convert_output_sample::<T>(value);
+                            }
+                        }
+                    } else {
+                        let mono_samples = data.len() / num_channels;
+                        if available < mono_samples {
+                            underrun_streak.fetch_add(1, Ordering::Relaxed);
+                            total_underruns.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            underrun_streak.store(0, Ordering::Relaxed);
+                        }
+
+                        let to_read = available.min(mono_samples);
+                        let mut copied_frames = 0usize;
+                        let mut last_written_sample = None;
+                        while copied_frames < to_read {
+                            let batch = (to_read - copied_frames).min(OUTPUT_SCRATCH_CAPACITY);
+                            let count = consumer.read(&mut mono_scratch[..batch]);
+                            if count == 0 {
+                                break;
+                            }
+
+                            for (i, &sample) in mono_scratch[..count].iter().enumerate() {
+                                let frame_idx = copied_frames + i;
+                                let converted = Self::convert_output_sample::<T>(sample);
+                                for channel in 0..num_channels {
+                                    data[frame_idx * num_channels + channel] = converted;
+                                }
+                                last_written_sample = Some(sample);
+                            }
+
+                            copied_frames += count;
+                            if count < batch {
+                                break;
+                            }
+                        }
+
+                        let remaining_frames = mono_samples.saturating_sub(copied_frames);
+                        if remaining_frames > 0 {
+                            let last =
+                                last_written_sample.unwrap_or_else(|| consumer.last_sample());
+                            for (i, frame) in data
+                                .chunks_mut(num_channels)
+                                .skip(copied_frames)
+                                .enumerate()
+                            {
+                                let t = (i + 1) as f32 / remaining_frames as f32;
+                                let value = Self::convert_output_sample::<T>(last * (1.0 - t));
+                                for sample in frame.iter_mut() {
+                                    *sample = value;
+                                }
+                            }
+                        }
+                    }
+                },
+                move |err| {
+                    eprintln!("[OUTPUT] Audio output error: {}", err);
+                },
+                None,
+            )
+            .map_err(|e| AudioError::BuildStream(e.to_string()))?;
+
+        Ok(Self {
+            stream,
+            device_info,
+        })
+    }
+
     /// Create audio output from default device
     pub fn from_default_device(
         consumer: AudioConsumer,
@@ -30,11 +240,9 @@ impl AudioOutput {
         underrun_streak: Arc<AtomicU32>,
         total_underruns: Arc<AtomicU64>,
     ) -> Result<Self, AudioError> {
-        let host = cpal::default_host();
-        let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
-
-        Self::from_device(
-            device,
+        let setup = Self::from_default_device_setup()?;
+        Self::from_setup(
+            setup,
             consumer,
             recording_active,
             output_muted,
@@ -54,15 +262,9 @@ impl AudioOutput {
         underrun_streak: Arc<AtomicU32>,
         total_underruns: Arc<AtomicU64>,
     ) -> Result<Self, AudioError> {
-        let host = cpal::default_host();
-        let device = host
-            .output_devices()
-            .map_err(|e| AudioError::DeviceName(e.to_string()))?
-            .find(|d| d.name().map(|n| n == name).unwrap_or(false))
-            .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))?;
-
-        Self::from_device(
-            device,
+        let setup = Self::from_named_device_setup(name)?;
+        Self::from_setup(
+            setup,
             consumer,
             recording_active,
             output_muted,
@@ -72,9 +274,8 @@ impl AudioOutput {
         )
     }
 
-    /// Create audio output from specific device
-    pub fn from_device(
-        device: Device,
+    pub(crate) fn from_setup(
+        setup: OutputStreamSetup,
         consumer: AudioConsumer,
         recording_active: Arc<AtomicBool>,
         output_muted: Arc<AtomicBool>,
@@ -82,159 +283,45 @@ impl AudioOutput {
         underrun_streak: Arc<AtomicU32>,
         total_underruns: Arc<AtomicU64>,
     ) -> Result<Self, AudioError> {
-        let name = device
-            .name()
-            .map_err(|e| AudioError::DeviceName(e.to_string()))?;
+        let sample_format = setup.supported_config.sample_format();
+        let stream_config = setup.supported_config.config();
 
-        // Try to find a config that supports 48kHz
-        let supported_configs = device
-            .supported_output_configs()
-            .map_err(|e| AudioError::DefaultConfig(e.to_string()))?;
-
-        let config = find_48khz_config(supported_configs)
-            .or_else(|| {
-                // Fall back to default config if 48kHz not explicitly supported
-                device.default_output_config().ok()
-            })
-            .ok_or_else(|| {
-                AudioError::DefaultConfig("No suitable output config found".to_string())
-            })?;
-
-        let sample_rate = config.sample_rate().0;
-        let channels = config.channels();
-
-        let device_info = AudioDeviceInfo {
-            name: name.clone(),
-            sample_rate,
-            channels,
-        };
-
-        let stream_config: StreamConfig = config.into();
-
-        let mut consumer = consumer;
-        let num_channels = channels as usize;
-        // Fixed callback scratch to avoid heap growth in real-time thread.
-        const OUTPUT_SCRATCH_CAPACITY: usize = 8192;
-        let mut stereo_scratch: Vec<f32> = vec![0.0; OUTPUT_SCRATCH_CAPACITY];
-
-        // Build audio output stream
-        let recording_active_clone = Arc::clone(&recording_active);
-        let output_muted_clone = Arc::clone(&output_muted);
-
-        let stream = device
-            .build_output_stream(
-                &stream_config,
-                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                    last_callback_time_us.store(now_micros(), Ordering::Relaxed);
-
-                    // Mute output during recording or when explicitly muted.
-                    if recording_active_clone.load(Ordering::Relaxed)
-                        || output_muted_clone.load(Ordering::Relaxed)
-                    {
-                        underrun_streak.store(0, Ordering::Relaxed);
-                        for sample in data.iter_mut() {
-                            *sample = 0.0;
-                        }
-                        return;
-                    }
-
-                    let available = consumer.len();
-
-                    if num_channels == 1 {
-                        let needed = data.len();
-                        if available < needed {
-                            underrun_streak.fetch_add(1, Ordering::Relaxed);
-                            total_underruns.fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            underrun_streak.store(0, Ordering::Relaxed);
-                        }
-
-                        // Mono output - read whatever is available, then smooth-fill remainder.
-                        let to_read = available.min(data.len());
-                        let read = if to_read > 0 {
-                            consumer.read(&mut data[..to_read])
-                        } else {
-                            0
-                        };
-
-                        if read < data.len() {
-                            let last = if read > 0 {
-                                data[read - 1]
-                            } else {
-                                consumer.last_sample()
-                            };
-                            let remain = data.len() - read;
-                            for (i, sample) in data[read..].iter_mut().enumerate() {
-                                // Linear fade from last sample to 0.0 over missing region.
-                                let t = (i + 1) as f32 / remain as f32;
-                                *sample = last * (1.0 - t);
-                            }
-                        }
-
-                    } else {
-                        // Stereo output - duplicate mono to all channels
-                        let mono_samples = data.len() / num_channels;
-                        if available < mono_samples {
-                            underrun_streak.fetch_add(1, Ordering::Relaxed);
-                            total_underruns.fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            underrun_streak.store(0, Ordering::Relaxed);
-                        }
-
-                        let mut copied_frames = 0usize;
-                        let to_read = available.min(mono_samples);
-                        while copied_frames < to_read {
-                            let batch = (to_read - copied_frames).min(OUTPUT_SCRATCH_CAPACITY);
-                            let count = consumer.read(&mut stereo_scratch[..batch]);
-                            if count == 0 {
-                                break;
-                            }
-
-                            for (i, &sample) in stereo_scratch[..count].iter().enumerate() {
-                                let frame_idx = copied_frames + i;
-                                for ch in 0..num_channels {
-                                    data[frame_idx * num_channels + ch] = sample;
-                                }
-                            }
-                            copied_frames += count;
-                            if count < batch {
-                                break;
-                            }
-                        }
-
-                        let remaining_frames = mono_samples.saturating_sub(copied_frames);
-                        if remaining_frames > 0 {
-                            let last = if copied_frames > 0 {
-                                data[(copied_frames - 1) * num_channels]
-                            } else {
-                                consumer.last_sample()
-                            };
-                            for (i, frame) in data
-                                .chunks_mut(num_channels)
-                                .skip(copied_frames)
-                                .enumerate()
-                            {
-                                let t = (i + 1) as f32 / remaining_frames as f32;
-                                let value = last * (1.0 - t);
-                                for ch in frame.iter_mut() {
-                                    *ch = value;
-                                }
-                            }
-                        }
-
-                    }
-                },
-                move |err| {
-                    eprintln!("[OUTPUT] Audio output error: {}", err);
-                },
-                None,
-            )
-            .map_err(|e| AudioError::BuildStream(e.to_string()))?;
-
-        Ok(Self {
-            stream,
-            device_info,
-        })
+        match sample_format {
+            SampleFormat::F32 => Self::build_stream::<f32>(
+                setup.device,
+                stream_config,
+                setup.device_info,
+                consumer,
+                recording_active,
+                output_muted,
+                last_callback_time_us,
+                underrun_streak,
+                total_underruns,
+            ),
+            SampleFormat::I16 => Self::build_stream::<i16>(
+                setup.device,
+                stream_config,
+                setup.device_info,
+                consumer,
+                recording_active,
+                output_muted,
+                last_callback_time_us,
+                underrun_streak,
+                total_underruns,
+            ),
+            SampleFormat::U16 => Self::build_stream::<u16>(
+                setup.device,
+                stream_config,
+                setup.device_info,
+                consumer,
+                recording_active,
+                output_muted,
+                last_callback_time_us,
+                underrun_streak,
+                total_underruns,
+            ),
+            other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
+        }
     }
 
     /// Start playing audio
@@ -303,5 +390,17 @@ mod tests {
     #[test]
     fn test_list_devices() {
         let _ = list_output_devices();
+    }
+
+    #[test]
+    fn test_convert_output_i16_sample() {
+        let sample = AudioOutput::convert_output_sample::<i16>(1.0);
+        assert_eq!(sample, i16::MAX);
+    }
+
+    #[test]
+    fn test_convert_output_u16_sample() {
+        let sample = AudioOutput::convert_output_sample::<u16>(0.0);
+        assert_eq!(sample, u16::MAX / 2 + 1);
     }
 }

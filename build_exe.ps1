@@ -63,23 +63,11 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "SUCCESS!" -ForegroundColor Green
     Write-Host ""
 
-    # Copy df.dll to exe directory (not _internal) for libloading to find it
-    if (Test-Path "df.dll") {
-        Copy-Item -Path "df.dll" -Destination "dist\AudioForge\df.dll" -Force
-        Write-Host "Copied df.dll to exe directory for DeepFilterNet" -ForegroundColor Green
-    }
-
-    # Copy models directory to exe directory (code looks in ./models/)
-    if (Test-Path "dist\AudioForge\_internal\models") {
-        Copy-Item -Path "dist\AudioForge\_internal\models" -Destination "dist\AudioForge\models" -Recurse -Force
-        Write-Host "Copied models to exe directory for DeepFilterNet" -ForegroundColor Green
-    }
-
     Write-Host ""
     Write-Host "Executable: dist\AudioForge\AudioForge.exe"
     Write-Host ""
     Write-Host "The entire dist\AudioForge folder is self-contained."
-    Write-Host "NOTE: DeepFilterNet requires df.dll - should now be bundled in the folder."
+    Write-Host "NOTE: DeepFilterNet assets stay bundled under the PyInstaller runtime directory."
 } else {
     Write-Host "Build failed!" -ForegroundColor Red
 }

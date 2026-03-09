@@ -8,8 +8,8 @@
 
 use pyo3::prelude::*;
 use rubato::{
-    calculate_cutoff, Resampler, SincFixedIn, SincInterpolationParameters,
-    SincInterpolationType, WindowFunction,
+    calculate_cutoff, Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType,
+    WindowFunction,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -30,11 +30,25 @@ use crate::dsp::{Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ};
 #[cfg(feature = "vad")]
 use crate::dsp::vad::{GateMode, VadAutoGate};
 
-const OUTPUT_PRIME_SAMPLES: usize = 480; // 10ms @ 48kHz
 const RESAMPLE_COMPACT_THRESHOLD: usize = 16384;
 const PROCESS_IDLE_SLEEP_US: u64 = 100;
 const GATE_FALLBACK_APPLY_THRESHOLD: f32 = 0.9999;
 const COMPRESSOR_DEFAULT_RELEASE_TENTH_MS: u64 = 2000; // 200ms * 10
+const OUTPUT_PRIME_MS: u32 = 10;
+const OUTPUT_TARGET_HIGH_MS: u32 = 20;
+const OUTPUT_HARD_BACKLOG_MS: u32 = 40;
+
+fn duration_samples(sample_rate: u32, duration_ms: u32) -> usize {
+    (((sample_rate as u64) * duration_ms as u64 + 500) / 1000).max(1) as usize
+}
+
+fn samples_to_micros(samples: u64, sample_rate: u32) -> u64 {
+    if sample_rate == 0 {
+        0
+    } else {
+        samples.saturating_mul(1_000_000) / sample_rate as u64
+    }
+}
 
 struct StreamRecoveryState {
     last_error: Option<String>,
@@ -334,9 +348,7 @@ impl AudioProcessor {
                     continue;
                 }
 
-                if recovering.load(Ordering::Acquire)
-                    || restart_requested.load(Ordering::Acquire)
-                {
+                if recovering.load(Ordering::Acquire) || restart_requested.load(Ordering::Acquire) {
                     continue;
                 }
 
@@ -427,28 +439,16 @@ impl AudioProcessor {
         self.jitter_dropped_samples.store(0, Ordering::Relaxed);
         self.output_recovery_count.store(0, Ordering::Relaxed);
         self.last_input_callback_time_us.store(0, Ordering::Relaxed);
-        self.last_output_callback_time_us.store(0, Ordering::Relaxed);
+        self.last_output_callback_time_us
+            .store(0, Ordering::Relaxed);
         self.last_output_write_time.store(0, Ordering::Relaxed);
-
-        // Create output ring buffer
-        let output_rb = AudioRingBuffer::new(self.sample_rate as usize * 2);
-        let (output_producer, output_consumer) = output_rb.split();
-
-        // PRIME THE BUFFER: Write minimal silence to prevent initial underrun/scratch
-        // 10ms at 48kHz (one RNNoise frame worth)
-        let mut prod = output_producer;
-        let silence = vec![0.0f32; OUTPUT_PRIME_SAMPLES]; // minimal priming
-        prod.write(&silence);
-        let output_producer = prod;
 
         // Start audio input
         let last_input_callback_time_us = Arc::clone(&self.last_input_callback_time_us);
         let input = match input_device {
-            Some(name) => AudioInput::from_device_name(
-                name,
-                input_producer,
-                last_input_callback_time_us,
-            ),
+            Some(name) => {
+                AudioInput::from_device_name(name, input_producer, last_input_callback_time_us)
+            }
             None => AudioInput::from_default_device(input_producer, last_input_callback_time_us),
         }
         .map_err(|e| format!("Failed to start audio input: {}", e))?;
@@ -460,31 +460,40 @@ impl AudioProcessor {
             return Err(format!("Failed to start input stream: {}", e));
         }
 
+        let output_setup = match output_device {
+            Some(name) => AudioOutput::from_named_device_setup(name),
+            None => AudioOutput::from_default_device_setup(),
+        };
+        let output_setup = match output_setup {
+            Ok(setup) => setup,
+            Err(e) => {
+                let _ = input.pause();
+                return Err(format!("Failed to resolve audio output: {}", e));
+            }
+        };
+
+        let output_device_name = output_setup.device_info.name.clone();
+        let output_sample_rate_for_thread = output_setup.device_info.sample_rate;
+
+        // Create output ring buffer sized for the actual playback device rate.
+        let output_rb = AudioRingBuffer::new(output_sample_rate_for_thread as usize * 2);
+        let (output_producer, output_consumer) = output_rb.split();
+
         // Start audio output
         let recording_active = Arc::clone(&self.recording_active);
         let output_muted = Arc::clone(&self.output_muted);
         let last_output_callback_time_us = Arc::clone(&self.last_output_callback_time_us);
         let output_underrun_streak = Arc::clone(&self.output_underrun_streak);
         let output_underrun_total = Arc::clone(&self.output_underrun_total);
-        let output_result = match output_device {
-            Some(name) => AudioOutput::from_device_name(
-                name,
-                output_consumer,
-                recording_active.clone(),
-                output_muted.clone(),
-                last_output_callback_time_us,
-                output_underrun_streak,
-                output_underrun_total,
-            ),
-            None => AudioOutput::from_default_device(
-                output_consumer,
-                recording_active.clone(),
-                output_muted.clone(),
-                last_output_callback_time_us,
-                output_underrun_streak,
-                output_underrun_total,
-            ),
-        };
+        let output_result = AudioOutput::from_setup(
+            output_setup,
+            output_consumer,
+            recording_active.clone(),
+            output_muted.clone(),
+            last_output_callback_time_us,
+            output_underrun_streak,
+            output_underrun_total,
+        );
         let output = match output_result {
             Ok(output) => output,
             Err(e) => {
@@ -493,7 +502,13 @@ impl AudioProcessor {
             }
         };
 
-        let output_device_name = output.device_info().name.clone();
+        let output_prime_samples = duration_samples(output_sample_rate_for_thread, OUTPUT_PRIME_MS);
+        let mut prod = output_producer;
+        let silence = vec![0.0f32; output_prime_samples];
+        prod.write(&silence);
+        self.output_buffer_len
+            .store(output_prime_samples as u32, Ordering::Relaxed);
+        let output_producer = prod;
 
         if let Err(e) = output.start() {
             let _ = input.pause();
@@ -508,7 +523,8 @@ impl AudioProcessor {
 
         // Start processing thread
         self.running.store(true, Ordering::SeqCst);
-        self.last_start_time_us.store(now_micros(), Ordering::Release);
+        self.last_start_time_us
+            .store(now_micros(), Ordering::Release);
 
         let gate = Arc::clone(&self.gate);
         let gate_enabled = Arc::clone(&self.gate_enabled);
@@ -539,6 +555,7 @@ impl AudioProcessor {
         let latency_us = Arc::clone(&self.latency_us);
         let latency_compensation_us = Arc::clone(&self.latency_compensation_us);
         let sample_rate_for_latency = self.sample_rate;
+        let output_sample_rate_for_latency = output_sample_rate_for_thread;
 
         // Clone DSP performance metric atomics
         let dsp_time_us = Arc::clone(&self.dsp_time_us);
@@ -601,9 +618,42 @@ impl AudioProcessor {
             } else {
                 None
             };
-            let mut resampler_out = resampler
+            let mut resampler_out = resampler.as_ref().map(|r| r.output_buffer_allocate(false));
+            let mut output_resample_input: Vec<f64> = Vec::with_capacity(65536);
+            let mut output_resample_read_pos: usize = 0;
+            let mut output_resampler = if output_sample_rate_for_latency != sample_rate_for_latency
+            {
+                eprintln!(
+                    "[PROCESSING] Output device sample rate {} Hz; resampling from {} Hz in DSP thread",
+                    output_sample_rate_for_latency, sample_rate_for_latency
+                );
+                let ratio = output_sample_rate_for_latency as f64 / sample_rate_for_latency as f64;
+                let sinc_len = 128;
+                let window = WindowFunction::BlackmanHarris2;
+                let params = SincInterpolationParameters {
+                    sinc_len,
+                    f_cutoff: calculate_cutoff(sinc_len, window),
+                    interpolation: SincInterpolationType::Cubic,
+                    oversampling_factor: 256,
+                    window,
+                };
+                match SincFixedIn::<f64>::new(ratio, 1.2, params, RESAMPLER_CHUNK_SIZE, 1) {
+                    Ok(r) => Some(r),
+                    Err(e) => {
+                        eprintln!(
+                            "[PROCESSING] WARNING: Failed to init output resampler ({}). Writing 48kHz output directly.",
+                            e
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let mut output_resampler_out = output_resampler
                 .as_ref()
                 .map(|r| r.output_buffer_allocate(false));
+            let mut output_resampled_scratch: Vec<f32> = Vec::with_capacity(8192);
 
             // DC Blocker state variables
             // This removes electrical DC offset which causes static/clicks
@@ -671,10 +721,8 @@ impl AudioProcessor {
                 if deesser_enabled.load(Ordering::Acquire) {
                     if let Ok(mut d) = deesser.try_lock() {
                         d.process_block_inplace(buffer);
-                        deesser_gain_reduction.store(
-                            d.current_gain_reduction_db().to_bits(),
-                            Ordering::Relaxed,
-                        );
+                        deesser_gain_reduction
+                            .store(d.current_gain_reduction_db().to_bits(), Ordering::Relaxed);
                     } else {
                         lock_contention_count.fetch_add(1, Ordering::Relaxed);
                     }
@@ -701,19 +749,15 @@ impl AudioProcessor {
                         );
                         // Store current release time for metering (0.1ms resolution).
                         let current_release = c.current_release_time();
-                        compressor_current_release_ms.store(
-                            (current_release * 10.0) as u64,
-                            Ordering::Relaxed,
-                        );
+                        compressor_current_release_ms
+                            .store((current_release * 10.0) as u64, Ordering::Relaxed);
                     } else {
                         lock_contention_count.fetch_add(1, Ordering::Relaxed);
                     }
                 } else {
                     compressor_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                    compressor_current_release_ms.store(
-                        COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
-                        Ordering::Relaxed,
-                    );
+                    compressor_current_release_ms
+                        .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
                 }
 
                 // Stage 6: Hard Limiter (LAST - safety ceiling)
@@ -749,53 +793,115 @@ impl AudioProcessor {
             };
 
             // Jitter-buffer write control: keep output queue in a healthy range.
-            const OUTPUT_TARGET_LOW_SAMPLES: usize = OUTPUT_PRIME_SAMPLES; // ~10ms @ 48k
-            const OUTPUT_TARGET_HIGH_SAMPLES: usize = 960; // ~20ms @ 48k
-            const OUTPUT_HARD_BACKLOG_SAMPLES: usize = 1920; // ~40ms backlog
+            let output_target_low_samples =
+                duration_samples(output_sample_rate_for_latency, OUTPUT_PRIME_MS);
+            let output_target_high_samples =
+                duration_samples(output_sample_rate_for_latency, OUTPUT_TARGET_HIGH_MS);
+            let output_hard_backlog_samples =
+                duration_samples(output_sample_rate_for_latency, OUTPUT_HARD_BACKLOG_MS);
             const OUTPUT_MAX_CATCHUP_RATIO: f32 = 1.08; // Up to 8% faster in normal backlog.
             const OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO: f32 = 1.20; // Up to 20% in hard backlog.
             const CATCHUP_SCRATCH_CAPACITY: usize = 4096;
             let mut catchup_scratch: Vec<f32> = vec![0.0; CATCHUP_SCRATCH_CAPACITY];
             let mut write_with_jitter_control = |samples: &[f32]| {
+                let write_source = if let Some(output_resampler) = output_resampler.as_mut() {
+                    output_resampled_scratch.clear();
+
+                    for &sample in samples {
+                        if output_resample_input.len() == output_resample_input.capacity() {
+                            if output_resample_read_pos > 0 {
+                                let unread = output_resample_input.len() - output_resample_read_pos;
+                                output_resample_input.copy_within(output_resample_read_pos.., 0);
+                                output_resample_input.truncate(unread);
+                                output_resample_read_pos = 0;
+                            } else {
+                                let keep = output_resample_input.len() / 2;
+                                let drop = output_resample_input.len() - keep;
+                                output_resample_input.copy_within(drop.., 0);
+                                output_resample_input.truncate(keep);
+                            }
+                        }
+                        output_resample_input.push(sample as f64);
+                    }
+
+                    let input_frames_needed = output_resampler.input_frames_next();
+                    while output_resample_input
+                        .len()
+                        .saturating_sub(output_resample_read_pos)
+                        >= input_frames_needed
+                    {
+                        if let Some(outbuf) = output_resampler_out.as_mut() {
+                            let in_slices = [&output_resample_input[output_resample_read_pos
+                                ..output_resample_read_pos + input_frames_needed]];
+                            if let Ok((_nbr_in, nbr_out)) =
+                                output_resampler.process_into_buffer(&in_slices, outbuf, None)
+                            {
+                                output_resampled_scratch.extend(
+                                    outbuf[0].iter().take(nbr_out).map(|&sample| sample as f32),
+                                );
+                            }
+                        }
+                        output_resample_read_pos += input_frames_needed;
+                    }
+
+                    if output_resample_read_pos > RESAMPLE_COMPACT_THRESHOLD
+                        && output_resample_read_pos * 2 >= output_resample_input.len()
+                    {
+                        let unread = output_resample_input.len() - output_resample_read_pos;
+                        output_resample_input.copy_within(output_resample_read_pos.., 0);
+                        output_resample_input.truncate(unread);
+                        output_resample_read_pos = 0;
+                    }
+
+                    output_resampled_scratch.as_slice()
+                } else {
+                    samples
+                };
+
+                if write_source.is_empty() {
+                    return;
+                }
+
                 let capacity = output_producer.capacity();
                 let free = output_producer.free_len();
                 let fill = capacity.saturating_sub(free);
 
                 // Pro catch-up: smoothly time-compress this block when backlog is high.
                 // This avoids discontinuities/pops from hard sample drops.
-                let mut write_slice = samples;
-                if fill > OUTPUT_TARGET_HIGH_SAMPLES && !samples.is_empty() {
-                    let excess = fill - OUTPUT_TARGET_HIGH_SAMPLES;
-                    let zone = OUTPUT_HARD_BACKLOG_SAMPLES
-                        .saturating_sub(OUTPUT_TARGET_HIGH_SAMPLES)
+                let mut write_slice = write_source;
+                if fill > output_target_high_samples {
+                    let excess = fill - output_target_high_samples;
+                    let zone = output_hard_backlog_samples
+                        .saturating_sub(output_target_high_samples)
                         .max(1);
                     let severity = (excess as f32 / zone as f32).clamp(0.0, 1.0);
-                    let max_ratio = if fill >= OUTPUT_HARD_BACKLOG_SAMPLES {
+                    let max_ratio = if fill >= output_hard_backlog_samples {
                         OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO
                     } else {
                         OUTPUT_MAX_CATCHUP_RATIO
                     };
                     let catchup_ratio = 1.0 + severity * (max_ratio - 1.0);
-                    let out_len = ((samples.len() as f32) / catchup_ratio)
+                    let out_len = ((write_source.len() as f32) / catchup_ratio)
                         .round()
                         .max(1.0) as usize;
                     let out_len = out_len.min(CATCHUP_SCRATCH_CAPACITY);
 
-                    if out_len < samples.len() {
-                        let max_src = (samples.len() - 1) as f32;
-                        for (i, out_sample) in catchup_scratch.iter_mut().enumerate().take(out_len) {
+                    if out_len < write_source.len() {
+                        let max_src = (write_source.len() - 1) as f32;
+                        for (i, out_sample) in catchup_scratch.iter_mut().enumerate().take(out_len)
+                        {
                             let src_pos = (i as f32 * catchup_ratio).min(max_src);
                             let idx = src_pos.floor() as isize;
                             let frac = src_pos - idx as f32;
 
                             // 4-point Hermite interpolation with clamped endpoints.
                             let clamp_idx = |k: isize| -> usize {
-                                k.clamp(0, (samples.len() - 1) as isize) as usize
+                                k.clamp(0, (write_source.len() - 1) as isize) as usize
                             };
-                            let y0 = samples[clamp_idx(idx - 1)];
-                            let y1 = samples[clamp_idx(idx)];
-                            let y2 = samples[clamp_idx(idx + 1)];
-                            let y3 = samples[clamp_idx(idx + 2)];
+                            let y0 = write_source[clamp_idx(idx - 1)];
+                            let y1 = write_source[clamp_idx(idx)];
+                            let y2 = write_source[clamp_idx(idx + 1)];
+                            let y3 = write_source[clamp_idx(idx + 2)];
 
                             // Catmull-Rom style cubic Hermite coefficients.
                             let c0 = y1;
@@ -805,7 +911,7 @@ impl AudioProcessor {
                             *out_sample = ((c3 * frac + c2) * frac + c1) * frac + c0;
                         }
 
-                        let skipped = samples.len() - out_len;
+                        let skipped = write_source.len() - out_len;
                         jitter_dropped_samples.fetch_add(skipped as u64, Ordering::Relaxed);
                         output_recovery_count.fetch_add(1, Ordering::Relaxed);
                         write_slice = &catchup_scratch[..out_len];
@@ -813,7 +919,7 @@ impl AudioProcessor {
                 }
 
                 // Low watermark currently informational; could be used for adaptive refill.
-                let _below_low_target = fill < OUTPUT_TARGET_LOW_SAMPLES;
+                let _below_low_target = fill < output_target_low_samples;
 
                 if !write_slice.is_empty() {
                     let written = output_producer.write(write_slice);
@@ -822,7 +928,9 @@ impl AudioProcessor {
                     }
                 }
 
-                let new_fill = output_producer.capacity().saturating_sub(output_producer.free_len());
+                let new_fill = output_producer
+                    .capacity()
+                    .saturating_sub(output_producer.free_len());
                 output_buffer_len.store(new_fill as u32, Ordering::Relaxed);
             };
 
@@ -872,8 +980,8 @@ impl AudioProcessor {
                                     && produced < temp_buffer.len()
                                 {
                                     if let Some(outbuf) = resampler_out.as_mut() {
-                                        let in_slices = [&resample_input
-                                            [resample_read_pos..resample_read_pos + input_frames_needed]];
+                                        let in_slices = [&resample_input[resample_read_pos
+                                            ..resample_read_pos + input_frames_needed]];
                                         if let Ok((_nbr_in, nbr_out)) =
                                             resampler.process_into_buffer(&in_slices, outbuf, None)
                                         {
@@ -986,10 +1094,8 @@ impl AudioProcessor {
                                 compressor_gain_reduction
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
-                                compressor_current_release_ms.store(
-                                    COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
-                                    Ordering::Relaxed,
-                                ); // Default 200ms
+                                compressor_current_release_ms
+                                    .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed); // Default 200ms
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
 
                                 write_with_jitter_control(buffer);
@@ -1054,11 +1160,10 @@ impl AudioProcessor {
                                         if available == 0 {
                                             let pending = s.pending_input();
                                             if pending >= RNNOISE_FRAME_SIZE
-                                                && !recording_active_thread
-                                                    .load(Ordering::Relaxed)
+                                                && !recording_active_thread.load(Ordering::Relaxed)
                                             {
-                                                let last_write = last_output_write_time
-                                                    .load(Ordering::Relaxed);
+                                                let last_write =
+                                                    last_output_write_time.load(Ordering::Relaxed);
                                                 if last_write > 0 {
                                                     let now = now_micros();
                                                     let since_write_ms =
@@ -1066,7 +1171,8 @@ impl AudioProcessor {
                                                     if since_write_ms > SUPPRESSOR_STARVATION_MS
                                                         && last_suppressor_recovery
                                                             .elapsed()
-                                                            .as_millis() as u64
+                                                            .as_millis()
+                                                            as u64
                                                             > SUPPRESSOR_RECOVERY_COOLDOWN_MS
                                                     {
                                                         eprintln!(
@@ -1181,15 +1287,15 @@ impl AudioProcessor {
                             if last_latency_update.elapsed() >= latency_update_interval {
                                 last_latency_update = Instant::now();
 
-                                // Calculate total processing latency in samples:
-                                // 1. Output buffer priming: 10ms @ 48kHz
-                                let output_buffer_samples: u64 = OUTPUT_PRIME_SAMPLES as u64;
+                                let output_buffer_samples =
+                                    output_buffer_len.load(Ordering::Relaxed) as u64;
+                                let output_latency_us = samples_to_micros(
+                                    output_buffer_samples,
+                                    output_sample_rate_for_latency,
+                                );
 
-                                // 2. Noise suppressor frame buffering (when enabled)
                                 let suppressor_latency_samples =
                                     if suppressor_enabled.load(Ordering::Acquire) {
-                                        // Suppressor needs a full frame before processing
-                                        // Plus any pending samples waiting for the next frame
                                         if let Ok(s) = suppressor.try_lock() {
                                             s.latency_samples() as u64 + s.pending_input() as u64
                                         } else {
@@ -1199,19 +1305,16 @@ impl AudioProcessor {
                                     } else {
                                         0
                                     };
-
-                                // Total latency in samples
-                                let total_samples =
-                                    output_buffer_samples + suppressor_latency_samples;
-
-                                // Convert to microseconds: samples / sample_rate * 1_000_000
-                                let latency_microseconds =
-                                    (total_samples * 1_000_000) / sample_rate_for_latency as u64;
+                                let suppressor_latency_us = samples_to_micros(
+                                    suppressor_latency_samples,
+                                    sample_rate_for_latency,
+                                );
 
                                 let compensation_us =
                                     latency_compensation_us.load(Ordering::Relaxed);
-                                let total_latency =
-                                    latency_microseconds.saturating_add(compensation_us);
+                                let total_latency = output_latency_us
+                                    .saturating_add(suppressor_latency_us)
+                                    .saturating_add(compensation_us);
                                 latency_us.store(total_latency, Ordering::Relaxed);
                             }
                         } else {
@@ -1349,10 +1452,7 @@ impl AudioProcessor {
                 success = true;
             }
             Err(err) => {
-                last_error = Some(format!(
-                    "Restart failed for selected devices: {}",
-                    err
-                ));
+                last_error = Some(format!("Restart failed for selected devices: {}", err));
                 match self.start(None, None) {
                     Ok(_) => {
                         success = true;
@@ -2358,6 +2458,24 @@ impl Drop for AudioProcessor {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_duration_samples_for_44k1_output() {
+        assert_eq!(duration_samples(44_100, OUTPUT_PRIME_MS), 441);
+        assert_eq!(duration_samples(44_100, OUTPUT_TARGET_HIGH_MS), 882);
+        assert_eq!(duration_samples(44_100, OUTPUT_HARD_BACKLOG_MS), 1764);
+    }
+
+    #[test]
+    fn test_samples_to_micros_uses_device_rate() {
+        assert_eq!(samples_to_micros(441, 44_100), 10_000);
+        assert_eq!(samples_to_micros(480, 48_000), 10_000);
+    }
+}
+
 // === Python Bindings ===
 
 /// Gate operating modes
@@ -2641,7 +2759,8 @@ impl PyAudioProcessor {
     }
 
     fn set_deesser_max_reduction_db(&self, max_reduction_db: f64) {
-        self.processor.set_deesser_max_reduction_db(max_reduction_db);
+        self.processor
+            .set_deesser_max_reduction_db(max_reduction_db);
     }
 
     fn set_deesser_auto_enabled(&self, auto_enabled: bool) {

@@ -111,8 +111,12 @@ fn find_model_path(model: DeepFilterModel) -> Option<PathBuf> {
     // 1. Check environment variable
     if let Ok(path) = env::var("DEEPFILTER_MODEL_PATH") {
         let path_buf = PathBuf::from(&path);
-        if path_buf.exists() {
+        if path_buf.is_file() {
             return Some(path_buf);
+        }
+        let candidate = path_buf.join(filename);
+        if candidate.is_file() {
+            return Some(candidate);
         }
     }
 
@@ -182,8 +186,8 @@ impl DeepFilterLib {
     }
 
     unsafe fn load_symbols_from_path(path: &Path) -> Result<Self, String> {
-        let library = libloading::Library::new(path)
-            .map_err(|e| format!("{} ({})", path.display(), e))?;
+        let library =
+            libloading::Library::new(path).map_err(|e| format!("{} ({})", path.display(), e))?;
 
         // Load all required symbols and extract raw pointers.
         let df_create: libloading::Symbol<DfCreateFn> = library
@@ -192,18 +196,28 @@ impl DeepFilterLib {
         let df_free: libloading::Symbol<DfFreeFn> = library
             .get(b"df_free")
             .map_err(|e| format!("{} missing symbol df_free ({})", path.display(), e))?;
-        let df_get_frame_length: libloading::Symbol<DfGetFrameLengthFn> = library
-            .get(b"df_get_frame_length")
-            .map_err(|e| format!("{} missing symbol df_get_frame_length ({})", path.display(), e))?;
+        let df_get_frame_length: libloading::Symbol<DfGetFrameLengthFn> =
+            library.get(b"df_get_frame_length").map_err(|e| {
+                format!(
+                    "{} missing symbol df_get_frame_length ({})",
+                    path.display(),
+                    e
+                )
+            })?;
         let df_process_frame: libloading::Symbol<DfProcessFrameFn> = library
             .get(b"df_process_frame")
             .map_err(|e| format!("{} missing symbol df_process_frame ({})", path.display(), e))?;
         let df_set_atten_lim: libloading::Symbol<DfSetAttenLimFn> = library
             .get(b"df_set_atten_lim")
             .map_err(|e| format!("{} missing symbol df_set_atten_lim ({})", path.display(), e))?;
-        let df_set_post_filter_beta: libloading::Symbol<DfSetPostFilterBetaFn> = library
-            .get(b"df_set_post_filter_beta")
-            .map_err(|e| format!("{} missing symbol df_set_post_filter_beta ({})", path.display(), e))?;
+        let df_set_post_filter_beta: libloading::Symbol<DfSetPostFilterBetaFn> =
+            library.get(b"df_set_post_filter_beta").map_err(|e| {
+                format!(
+                    "{} missing symbol df_set_post_filter_beta ({})",
+                    path.display(),
+                    e
+                )
+            })?;
 
         // Convert to raw function pointers.
         let df_create = *df_create.into_raw();
@@ -363,7 +377,7 @@ impl DeepFilterFFI {
     /// # Safety
     /// This function calls unsafe FFI functions.
     /// It ensures buffers are properly sized and aligned before passing to C.
-    pub fn process(&mut self, input: &[f32]) -> Result<(Vec<f32>, f32), String> {
+    pub fn process_into(&mut self, input: &mut [f32], output: &mut [f32]) -> Result<f32, String> {
         if input.len() != self.frame_size {
             return Err(format!(
                 "Input buffer size mismatch: expected {}, got {}",
@@ -371,14 +385,17 @@ impl DeepFilterFFI {
                 input.len()
             ));
         }
-
-        // C API expects mutable input pointer; use a local mutable copy to keep Rust aliasing safe.
-        let mut input_frame = input.to_vec();
-        let mut output = vec![0.0f32; self.frame_size];
+        if output.len() != self.frame_size {
+            return Err(format!(
+                "Output buffer size mismatch: expected {}, got {}",
+                self.frame_size,
+                output.len()
+            ));
+        }
 
         // SAFETY: We've verified buffer sizes and the pointer is valid
         unsafe {
-            let input_ptr = input_frame.as_mut_ptr();
+            let input_ptr = input.as_mut_ptr();
             let output_ptr = output.as_mut_ptr();
             let state_ptr = self.state_ptr();
 
@@ -389,7 +406,7 @@ impl DeepFilterFFI {
                 return Err("DeepFilterNet processing failed (returned NaN)".to_string());
             }
 
-            Ok((output, lsnr))
+            Ok(lsnr)
         }
     }
 
@@ -427,11 +444,15 @@ pub struct DeepFilterProcessor {
     df: Option<DeepFilterFFI>, // Option for graceful fallback if FFI fails
     _lib: Option<Arc<DeepFilterLib>>, // Keep library loaded
     input_buffer: Vec<f32>,
+    input_read_pos: usize,
     output_buffer: Vec<f32>,
+    output_read_pos: usize,
     enabled: bool,
     strength: Arc<AtomicU32>,
     smoothed_strength: f32,
-    dry_buffer: Vec<f32>,
+    dry_frame: [f32; DEEPFILTER_FRAME_SIZE],
+    frame_scratch: [f32; DEEPFILTER_FRAME_SIZE],
+    output_frame: [f32; DEEPFILTER_FRAME_SIZE],
     load_error: Option<String>, // Store load error for reporting
     model: DeepFilterModel,     // Track which model variant we're using
 }
@@ -494,11 +515,15 @@ impl DeepFilterProcessor {
             df,
             _lib: lib,
             input_buffer: Vec::with_capacity(DEEPFILTER_FRAME_SIZE * 4),
+            input_read_pos: 0,
             output_buffer: Vec::with_capacity(DEEPFILTER_FRAME_SIZE * 4),
+            output_read_pos: 0,
             enabled: true,
             strength,
             smoothed_strength: 1.0,
-            dry_buffer: Vec::with_capacity(DEEPFILTER_FRAME_SIZE),
+            dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
+            frame_scratch: [0.0; DEEPFILTER_FRAME_SIZE],
+            output_frame: [0.0; DEEPFILTER_FRAME_SIZE],
             load_error,
             model,
         }
@@ -515,27 +540,27 @@ impl DeepFilterProcessor {
         self.smoothed_strength += alpha * (target_strength - self.smoothed_strength);
 
         // Process complete frames (480 samples each)
-        while self.input_buffer.len() >= DEEPFILTER_FRAME_SIZE {
-            // Store dry samples for wet/dry mixing
-            self.dry_buffer.clear();
-            self.dry_buffer
-                .extend_from_slice(&self.input_buffer[..DEEPFILTER_FRAME_SIZE]);
-
-            // Extract frame
-            let frame: Vec<f32> = self.input_buffer.drain(..DEEPFILTER_FRAME_SIZE).collect();
+        while self.input_buffer.len().saturating_sub(self.input_read_pos) >= DEEPFILTER_FRAME_SIZE {
+            let start = self.input_read_pos;
+            let end = start + DEEPFILTER_FRAME_SIZE;
+            self.dry_frame
+                .copy_from_slice(&self.input_buffer[start..end]);
+            self.frame_scratch.copy_from_slice(&self.dry_frame);
 
             // Process through FFI if available
             if self.enabled {
                 if let Some(ref mut df) = self.df {
-                    match df.process(&frame) {
-                        Ok((enhanced, _lsnr)) => {
+                    match df.process_into(&mut self.frame_scratch, &mut self.output_frame) {
+                        Ok(_lsnr) => {
                             // Apply wet/dry mix to FFI output
-                            for (i, &wet) in enhanced.iter().enumerate() {
-                                let dry = self.dry_buffer[i];
+                            for i in 0..DEEPFILTER_FRAME_SIZE {
+                                let wet = self.output_frame[i];
+                                let dry = self.dry_frame[i];
                                 let mixed = wet * self.smoothed_strength
                                     + dry * (1.0 - self.smoothed_strength);
                                 self.output_buffer.push(mixed);
                             }
+                            self.input_read_pos = end;
                             continue;
                         }
                         Err(e) => {
@@ -550,11 +575,20 @@ impl DeepFilterProcessor {
             }
 
             // Passthrough (fallback or disabled)
-            for (i, &wet) in frame.iter().enumerate() {
-                let dry = self.dry_buffer[i];
+            for i in 0..DEEPFILTER_FRAME_SIZE {
+                let wet = self.dry_frame[i];
+                let dry = self.dry_frame[i];
                 let mixed = wet * self.smoothed_strength + dry * (1.0 - self.smoothed_strength);
                 self.output_buffer.push(mixed);
             }
+            self.input_read_pos = end;
+        }
+
+        if self.input_read_pos >= DEEPFILTER_FRAME_SIZE
+            && self.input_read_pos.saturating_mul(2) >= self.input_buffer.len()
+        {
+            self.input_buffer.drain(..self.input_read_pos);
+            self.input_read_pos = 0;
         }
     }
 
@@ -583,32 +617,66 @@ impl NoiseSuppressor for DeepFilterProcessor {
             self.process_frames_internal();
         } else {
             // Disabled: passthrough
-            while self.input_buffer.len() >= DEEPFILTER_FRAME_SIZE {
-                let frame: Vec<f32> = self.input_buffer.drain(..DEEPFILTER_FRAME_SIZE).collect();
-                self.output_buffer.extend_from_slice(&frame);
+            while self.input_buffer.len().saturating_sub(self.input_read_pos)
+                >= DEEPFILTER_FRAME_SIZE
+            {
+                let start = self.input_read_pos;
+                let end = start + DEEPFILTER_FRAME_SIZE;
+                self.output_buffer
+                    .extend_from_slice(&self.input_buffer[start..end]);
+                self.input_read_pos = end;
+            }
+
+            if self.input_read_pos >= DEEPFILTER_FRAME_SIZE
+                && self.input_read_pos.saturating_mul(2) >= self.input_buffer.len()
+            {
+                self.input_buffer.drain(..self.input_read_pos);
+                self.input_read_pos = 0;
             }
         }
     }
 
     fn available_samples(&self) -> usize {
-        self.output_buffer.len()
+        self.output_buffer
+            .len()
+            .saturating_sub(self.output_read_pos)
     }
 
     fn pop_samples(&mut self, count: usize) -> Vec<f32> {
-        let actual = count.min(self.output_buffer.len());
-        self.output_buffer.drain(..actual).collect()
+        let actual = count.min(self.available_samples());
+        let start = self.output_read_pos;
+        let end = start + actual;
+        let out = self.output_buffer[start..end].to_vec();
+        self.output_read_pos = end;
+        if self.output_read_pos >= DEEPFILTER_FRAME_SIZE
+            && self.output_read_pos.saturating_mul(2) >= self.output_buffer.len()
+        {
+            self.output_buffer.drain(..self.output_read_pos);
+            self.output_read_pos = 0;
+        }
+        out
     }
 
     fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize {
-        let count = buffer.len().min(self.output_buffer.len());
-        for (dst, sample) in buffer.iter_mut().zip(self.output_buffer.drain(..count)) {
-            *dst = sample;
+        let count = buffer.len().min(self.available_samples());
+        let start = self.output_read_pos;
+        let end = start + count;
+        buffer[..count].copy_from_slice(&self.output_buffer[start..end]);
+        self.output_read_pos = end;
+        if self.output_read_pos >= DEEPFILTER_FRAME_SIZE
+            && self.output_read_pos.saturating_mul(2) >= self.output_buffer.len()
+        {
+            self.output_buffer.drain(..self.output_read_pos);
+            self.output_read_pos = 0;
         }
         count
     }
 
     fn pop_all_samples(&mut self) -> Vec<f32> {
-        self.output_buffer.drain(..).collect()
+        let out = self.output_buffer[self.output_read_pos..].to_vec();
+        self.output_buffer.clear();
+        self.output_read_pos = 0;
+        out
     }
 
     fn set_strength(&self, value: f32) {
@@ -632,17 +700,24 @@ impl NoiseSuppressor for DeepFilterProcessor {
     fn soft_reset(&mut self) {
         // Clear all buffers without resetting the model/state
         self.input_buffer.clear();
+        self.input_read_pos = 0;
         self.output_buffer.clear();
-        self.dry_buffer.clear();
+        self.output_read_pos = 0;
+        self.dry_frame.fill(0.0);
+        self.frame_scratch.fill(0.0);
+        self.output_frame.fill(0.0);
         // Keep smoothed_strength to avoid zipper noise
     }
 
     fn pending_input(&self) -> usize {
-        self.input_buffer.len()
+        self.input_buffer.len().saturating_sub(self.input_read_pos)
     }
 
     fn drain_pending_input(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.input_buffer)
+        let pending = self.input_buffer[self.input_read_pos..].to_vec();
+        self.input_buffer.clear();
+        self.input_read_pos = 0;
+        pending
     }
 
     fn model_type(&self) -> NoiseModel {
@@ -678,6 +753,24 @@ impl Default for DeepFilterProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("audioforge-{}-{}", name, suffix));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
 
     #[test]
     fn test_ffi_availability() {
@@ -759,5 +852,35 @@ mod tests {
 
         // Output should contain complete frames (1000 samples = 2 frames of 480 + 40 remaining)
         assert_eq!(output.len(), 960); // Two complete frames
+    }
+
+    #[test]
+    fn test_find_model_path_accepts_explicit_file() {
+        let _guard = env_lock().lock().unwrap();
+        let temp_dir = temp_test_dir("deepfilter-file");
+        let model_path = temp_dir.join("custom-model.tar.gz");
+        fs::write(&model_path, []).unwrap();
+
+        std::env::set_var("DEEPFILTER_MODEL_PATH", &model_path);
+        let resolved = find_model_path(DeepFilterModel::LowLatency);
+        std::env::remove_var("DEEPFILTER_MODEL_PATH");
+
+        assert_eq!(resolved, Some(model_path));
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_find_model_path_accepts_directory() {
+        let _guard = env_lock().lock().unwrap();
+        let temp_dir = temp_test_dir("deepfilter-dir");
+        let model_path = temp_dir.join(DeepFilterModel::LowLatency.filename());
+        fs::write(&model_path, []).unwrap();
+
+        std::env::set_var("DEEPFILTER_MODEL_PATH", &temp_dir);
+        let resolved = find_model_path(DeepFilterModel::LowLatency);
+        std::env::remove_var("DEEPFILTER_MODEL_PATH");
+
+        assert_eq!(resolved, Some(model_path));
+        let _ = fs::remove_dir_all(temp_dir);
     }
 }

@@ -14,6 +14,13 @@ def _first_existing_path(candidates):
     return None
 
 
+def _has_deepfilter_model(model_dir: Path) -> bool:
+    return (
+        (model_dir / "DeepFilterNet3_ll_onnx.tar.gz").exists()
+        or (model_dir / "DeepFilterNet3_onnx.tar.gz").exists()
+    )
+
+
 def _configure_frozen_runtime():
     """Configure paths/env so bundled models and DLLs are discoverable."""
     if not getattr(sys, "frozen", False):
@@ -49,9 +56,9 @@ def _configure_frozen_runtime():
         vad_model = model_dir / "silero_vad.onnx"
         if vad_model.exists():
             os.environ.setdefault("VAD_MODEL_PATH", str(vad_model))
+        if _has_deepfilter_model(model_dir):
+            os.environ.setdefault("DEEPFILTER_MODEL_PATH", str(model_dir))
 
-        ll_model = model_dir / "DeepFilterNet3_ll_onnx.tar.gz"
-        std_model = model_dir / "DeepFilterNet3_onnx.tar.gz"
         df_candidates = [
             exe_dir / "df.dll",
             (meipass / "df.dll") if meipass else None,
@@ -61,7 +68,7 @@ def _configure_frozen_runtime():
         if df_path:
             os.environ.setdefault("DEEPFILTER_LIB_PATH", str(df_path))
 
-        if df_path and (ll_model.exists() or std_model.exists()):
+        if df_path and _has_deepfilter_model(model_dir):
             os.environ.setdefault("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
 
 

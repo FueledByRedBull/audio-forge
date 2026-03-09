@@ -7,7 +7,7 @@
 
 Low-latency microphone audio processor with AI noise suppression, smart gating, Auto-EQ, and 10-band parametric EQ.
 
-Current version: `v1.7.3`
+Current version: `v1.7.4`
 
 ## Status
 
@@ -85,7 +85,7 @@ DeepFilter runtime library:
 
 You can also use environment variables:
 
-- `DEEPFILTER_MODEL_PATH`
+- `DEEPFILTER_MODEL_PATH` (model file or directory containing the model tarballs)
 - `DEEPFILTER_LIB_PATH`
 - `AUDIOFORGE_ENABLE_DEEPFILTER`
 - `VAD_MODEL_PATH`
@@ -101,14 +101,13 @@ powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 Output:
 
 - `dist\AudioForge\AudioForge.exe`
-- `dist\AudioForge\df.dll` (if present)
-- `dist\AudioForge\models\...`
+- bundled DeepFilter/VAD assets inside `dist\AudioForge\_internal\...`
 
 Create archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-win64.7z .\dist\AudioForge\*
+  .\AudioForge-v1.7.4-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 ## Testing

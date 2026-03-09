@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.7.5 - 2026-03-09
+
+- Hardened DeepFilter runtime loading and surfaced backend availability/error state in the UI.
+- Added runtime diagnostics for suppressor non-finite resets, stream recovery, underruns, and dropped samples.
+- Moved calibration and latency-calibration processor access back to the main Qt thread to avoid `unsendable` PyO3 cross-thread calls.
+- Tuned watchdog recovery suppression for recording/calibration workflows.
+- Switched the Windows package build to the checked-in `AudioForge.spec` and removed the redundant packaged `python/mic_eq` source tree.
+
 ## v1.7.4 - 2026-03-09
 
 - Fixed CPAL stream setup for `f32`, `i16`, and `u16` devices so startup no longer depends on float-native hardware.

@@ -14,7 +14,7 @@ import time
 import wave
 
 import numpy as np
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QGridLayout,
@@ -75,90 +75,33 @@ def _play_probe_blocking(probe: np.ndarray, sample_rate: int) -> None:
 
 
 class LatencyCalibrationWorker(QThread):
-    """Background worker for playback + recording + analysis."""
+    """Background worker for CPU-only latency analysis."""
 
-    progress = pyqtSignal(int)
-    level_update = pyqtSignal(float)
-    status = pyqtSignal(str)
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(
-        self,
-        processor,
-        probe: np.ndarray,
-        sample_rate: int = 48_000,
-        recording_duration_s: float = 2.5,
-        playback_delay_s: float = 0.45,
-    ):
+    def __init__(self, probe: np.ndarray, recording: np.ndarray, sample_rate: int):
         super().__init__()
-        self.processor = processor
         self.probe = probe
+        self.recording = recording
         self.sample_rate = sample_rate
-        self.recording_duration_s = recording_duration_s
-        self.playback_delay_s = playback_delay_s
         self._stop_event = threading.Event()
 
     def run(self):
         try:
-            if not self.processor.is_running():
-                self.failed.emit("Audio processor is not running.")
-                return
-
-            self.status.emit("Starting raw capture...")
-            self.processor.start_raw_recording(self.recording_duration_s)
-
-            started = time.time()
-            played = False
-
-            while not self._stop_event.is_set():
-                elapsed = time.time() - started
-                if elapsed >= self.recording_duration_s:
-                    break
-
-                if (not played) and elapsed >= self.playback_delay_s:
-                    self.status.emit("Playing probe signal...")
-                    _play_probe_blocking(self.probe, self.sample_rate)
-                    played = True
-
-                try:
-                    level_db = float(self.processor.recording_level_db())
-                    self.level_update.emit(level_db)
-                except Exception as e:
-                    if DEBUG:
-                        print(f"[LATENCY_CAL] recording_level_db failed: {type(e).__name__}: {e}")
-
-                pct = int(min(99.0, (elapsed / self.recording_duration_s) * 100.0))
-                self.progress.emit(pct)
-
-                if self.processor.is_recording_complete():
-                    break
-
-                time.sleep(0.05)
-
             if self._stop_event.is_set():
                 return
 
-            if not played:
-                self.failed.emit("Probe signal was not played.")
-                return
-
-            self.status.emit("Analyzing captured signal...")
-            raw = self.processor.stop_raw_recording()
-            if raw is None:
-                self.failed.emit("Failed to capture recording for calibration.")
-                return
-
-            recording = np.asarray(raw, dtype=np.float32)
             analysis = analyze_latency(
                 reference_probe=self.probe,
-                recorded_signal=recording,
+                recorded_signal=self.recording,
                 sample_rate=self.sample_rate,
                 min_search_ms=5.0,
                 max_search_ms=500.0,
             )
 
-            self.progress.emit(100)
+            if self._stop_event.is_set():
+                return
 
             if not analysis.success:
                 self.failed.emit(analysis.message or "Low confidence latency estimate.")
@@ -169,28 +112,11 @@ class LatencyCalibrationWorker(QThread):
                 "profile": result_to_profile(analysis, sample_rate=self.sample_rate),
             }
             self.finished.emit(payload)
-
         except Exception as e:
             self.failed.emit(f"Latency calibration failed: {type(e).__name__}: {e}")
-        finally:
-            self._cleanup_recording_tap()
 
     def stop(self):
         self._stop_event.set()
-        self._cleanup_recording_tap()
-
-    def _cleanup_recording_tap(self):
-        try:
-            self.processor.stop_raw_recording()
-        except Exception as e:
-            if DEBUG:
-                print(f"[LATENCY_CAL] cleanup stop_raw_recording failed: {type(e).__name__}: {e}")
-
-        try:
-            self.processor.set_output_mute(False)
-        except Exception as e:
-            if DEBUG:
-                print(f"[LATENCY_CAL] cleanup set_output_mute failed: {type(e).__name__}: {e}")
 
 
 class LatencyCalibrationDialog(QDialog):
@@ -208,6 +134,17 @@ class LatencyCalibrationDialog(QDialog):
         self.worker: LatencyCalibrationWorker | None = None
         self._started_processor = False
         self._latest_profile: dict | None = existing_profile
+        self._capture_timer = QTimer(self)
+        self._capture_timer.setInterval(50)
+        self._capture_timer.timeout.connect(self._poll_capture)
+        self._probe: np.ndarray | None = None
+        self._capture_started_at = 0.0
+        self._capture_sample_rate = 48_000
+        self._recording_duration_s = 2.5
+        self._playback_delay_s = 0.45
+        self._played_probe = False
+        self._probe_started = False
+        self._probe_finished = threading.Event()
 
         self._setup_ui(existing_profile)
 
@@ -305,14 +242,75 @@ class LatencyCalibrationDialog(QDialog):
         self.progress.setValue(0)
         self.status_label.setText("Preparing probe...")
 
-        probe = generate_probe_signal(sample_rate=48_000, duration_ms=80.0)
-        self.worker = LatencyCalibrationWorker(owner.processor, probe=probe, sample_rate=48_000)
-        self.worker.progress.connect(self.progress.setValue)
-        self.worker.level_update.connect(self._on_level_update)
-        self.worker.status.connect(self.status_label.setText)
-        self.worker.finished.connect(self._on_worker_finished)
-        self.worker.failed.connect(self._on_worker_failed)
-        self.worker.start()
+        try:
+            owner.processor.set_recovery_suppressed(True)
+            self._capture_sample_rate = int(owner.processor.output_sample_rate() or 48_000)
+            self._probe = generate_probe_signal(
+                sample_rate=self._capture_sample_rate,
+                duration_ms=80.0,
+            )
+            owner.processor.start_raw_recording(self._recording_duration_s)
+        except Exception as e:
+            self._on_worker_failed(f"Latency calibration failed: {type(e).__name__}: {e}")
+            return
+
+        self._played_probe = False
+        self._probe_started = False
+        self._probe_finished.clear()
+        self._capture_started_at = time.time()
+        self._capture_timer.start()
+
+    def _poll_capture(self):
+        owner = self._get_processor_owner()
+        if owner is None:
+            self._on_worker_failed("Could not find audio processor.")
+            return
+
+        try:
+            elapsed = time.time() - self._capture_started_at
+            if (not self._probe_started) and elapsed >= self._playback_delay_s:
+                self.status_label.setText("Playing probe signal...")
+                self._probe_started = True
+
+                def _play_probe():
+                    try:
+                        _play_probe_blocking(self._probe, self._capture_sample_rate)
+                    finally:
+                        self._played_probe = True
+                        self._probe_finished.set()
+
+                threading.Thread(target=_play_probe, daemon=True).start()
+
+            self._on_level_update(float(owner.processor.recording_level_db()))
+            progress = int(min(99.0, (elapsed / self._recording_duration_s) * 100.0))
+            self.progress.setValue(progress)
+
+            if elapsed < self._recording_duration_s and not owner.processor.is_recording_complete():
+                return
+
+            self._capture_timer.stop()
+
+            if not self._played_probe:
+                self._on_worker_failed("Probe signal was not played.")
+                return
+
+            self.status_label.setText("Analyzing captured signal...")
+            raw = owner.processor.stop_raw_recording()
+            if raw is None:
+                self._on_worker_failed("Failed to capture recording for calibration.")
+                return
+
+            recording = np.asarray(raw, dtype=np.float32)
+            self.worker = LatencyCalibrationWorker(
+                probe=self._probe,
+                recording=recording,
+                sample_rate=self._capture_sample_rate,
+            )
+            self.worker.finished.connect(self._on_worker_finished)
+            self.worker.failed.connect(self._on_worker_failed)
+            self.worker.start()
+        except Exception as e:
+            self._on_worker_failed(f"Latency calibration failed: {type(e).__name__}: {e}")
 
     def _on_level_update(self, rms_db: float):
         self.level_meter.set_levels(rms_db, rms_db + 6.0)
@@ -324,6 +322,7 @@ class LatencyCalibrationDialog(QDialog):
         self._latest_profile = profile
         self._apply_profile_to_labels(profile)
 
+        self.progress.setValue(100)
         self.status_label.setText("Calibration successful. Review values and Accept.")
         self.run_button.setEnabled(True)
         self.accept_button.setEnabled(True)
@@ -396,14 +395,36 @@ class LatencyCalibrationDialog(QDialog):
         self._started_processor = False
 
     def _teardown_worker(self):
-        if self.worker is None:
-            return
+        self._capture_timer.stop()
+        owner = self._get_processor_owner()
 
-        if self.worker.isRunning():
+        if self.worker is not None and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(1500)
 
         self.worker = None
+        if owner is not None:
+            try:
+                owner.processor.stop_raw_recording()
+            except Exception:
+                pass
+            try:
+                owner.processor.set_output_mute(False)
+            except Exception:
+                pass
+            try:
+                owner.processor.set_recovery_suppressed(False)
+            except Exception:
+                pass
+        self._probe_finished.clear()
+        self._probe_started = False
+        self._played_probe = False
+        owner = self._get_processor_owner()
+        if owner is not None:
+            try:
+                owner.processor.set_recovery_suppressed(False)
+            except Exception:
+                pass
 
     def closeEvent(self, event):
         self._teardown_worker()

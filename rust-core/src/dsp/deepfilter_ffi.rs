@@ -36,6 +36,7 @@
 use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressor};
 use std::env;
 use std::path::{Path, PathBuf};
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::vec::Vec;
@@ -294,16 +295,18 @@ or place {} next to the executable (or in exe-dir/lib or exe-dir/libs).",
 /// through Rust's borrowing rules (&mut self).
 pub struct DeepFilterFFI {
     _lib: Arc<DeepFilterLib>, // Keep library loaded
-    // Store opaque C pointer as address-sized integer so the wrapper remains
-    // structurally Send without requiring manual unsafe Send impls.
-    ptr_addr: usize,
+    state: NonNull<DFState>,
     frame_size: usize,
 }
+
+// SAFETY: Access to the opaque C state remains serialized through `&mut self`,
+// and the owning library handle is kept alive for the lifetime of the state.
+unsafe impl Send for DeepFilterFFI {}
 
 impl DeepFilterFFI {
     #[inline]
     fn state_ptr(&self) -> *mut DFState {
-        self.ptr_addr as *mut DFState
+        self.state.as_ptr()
     }
 
     /// Create a new DeepFilterNet instance using model from file system
@@ -332,20 +335,19 @@ impl DeepFilterFFI {
         unsafe {
             let df_create = lib.df_create;
             let ptr = df_create(model_path_cstr.as_ptr(), atten_lim, std::ptr::null());
-
-            if ptr.is_null() {
-                return Err(format!(
+            let state = NonNull::new(ptr).ok_or_else(|| {
+                format!(
                     "Failed to create DeepFilterNet instance with model: {}",
                     model_path.display()
-                ));
-            }
+                )
+            })?;
 
             let df_get_frame_length = lib.df_get_frame_length;
-            let frame_size = df_get_frame_length(ptr);
+            let frame_size = df_get_frame_length(state.as_ptr());
 
             if frame_size != DEEPFILTER_FRAME_SIZE {
                 let df_free = lib.df_free;
-                df_free(ptr);
+                df_free(state.as_ptr());
                 return Err(format!(
                     "DeepFilterNet frame size mismatch: expected {}, got {}",
                     DEEPFILTER_FRAME_SIZE, frame_size
@@ -354,7 +356,7 @@ impl DeepFilterFFI {
 
             Ok(Self {
                 _lib: lib,
-                ptr_addr: ptr as usize,
+                state,
                 frame_size,
             })
         }
@@ -402,8 +404,12 @@ impl DeepFilterFFI {
             let df_process_frame = self._lib.df_process_frame;
             let lsnr = df_process_frame(state_ptr, input_ptr, output_ptr);
 
-            if lsnr.is_nan() {
+            if !lsnr.is_finite() {
                 return Err("DeepFilterNet processing failed (returned NaN)".to_string());
+            }
+
+            if output.iter().any(|sample| !sample.is_finite()) {
+                return Err("DeepFilterNet processing produced non-finite output".to_string());
             }
 
             Ok(lsnr)
@@ -431,7 +437,7 @@ impl Drop for DeepFilterFFI {
     fn drop(&mut self) {
         unsafe {
             let df_free = self._lib.df_free;
-            df_free(self.state_ptr());
+            df_free(self.state.as_ptr());
         }
     }
 }
@@ -455,6 +461,7 @@ pub struct DeepFilterProcessor {
     output_frame: [f32; DEEPFILTER_FRAME_SIZE],
     load_error: Option<String>, // Store load error for reporting
     model: DeepFilterModel,     // Track which model variant we're using
+    backend_failed: bool,
 }
 
 impl DeepFilterProcessor {
@@ -526,7 +533,17 @@ impl DeepFilterProcessor {
             output_frame: [0.0; DEEPFILTER_FRAME_SIZE],
             load_error,
             model,
+            backend_failed: false,
         }
+    }
+
+    fn disable_backend(&mut self, reason: String) {
+        if self.load_error.is_none() {
+            self.load_error = Some(reason);
+        }
+        self.df = None;
+        self._lib = None;
+        self.backend_failed = true;
     }
 
     /// Process frames through FFI or fallback
@@ -568,7 +585,7 @@ impl DeepFilterProcessor {
                                 "DeepFilterNet FFI processing error: {}, using passthrough",
                                 e
                             );
-                            // Fall through to passthrough
+                            self.disable_backend(format!("DeepFilterNet runtime failure: {}", e));
                         }
                     }
                 }
@@ -600,6 +617,10 @@ impl DeepFilterProcessor {
     /// Get load error if FFI failed to initialize
     pub fn load_error(&self) -> Option<&str> {
         self.load_error.as_deref()
+    }
+
+    pub fn backend_failed(&self) -> bool {
+        self.backend_failed
     }
 }
 

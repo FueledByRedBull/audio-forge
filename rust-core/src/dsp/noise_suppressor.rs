@@ -216,6 +216,39 @@ impl NoiseSuppressionEngine {
         }
     }
 
+    /// Human-readable backend name for diagnostics.
+    pub fn backend_name(&self) -> &'static str {
+        match self {
+            NoiseSuppressionEngine::RNNoise(_) => "RNNoise",
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilterLL(_) => "DeepFilterNet LL",
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilter(_) => "DeepFilterNet",
+        }
+    }
+
+    /// Backend load/runtime error if one is available.
+    pub fn backend_error(&self) -> Option<&str> {
+        match self {
+            NoiseSuppressionEngine::RNNoise(_) => None,
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilterLL(d) => d.load_error(),
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilter(d) => d.load_error(),
+        }
+    }
+
+    /// Whether the backend permanently failed and is in passthrough fallback.
+    pub fn backend_failed(&self) -> bool {
+        match self {
+            NoiseSuppressionEngine::RNNoise(_) => false,
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilterLL(d) => d.backend_failed(),
+            #[cfg(feature = "deepfilter")]
+            NoiseSuppressionEngine::DeepFilter(d) => d.backend_failed(),
+        }
+    }
+
     #[inline]
     fn as_suppressor(&self) -> &dyn NoiseSuppressor {
         match self {

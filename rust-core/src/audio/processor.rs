@@ -121,6 +121,8 @@ pub struct AudioProcessor {
 
     /// Sample rate
     sample_rate: u32,
+    /// Actual active output device sample rate
+    output_sample_rate: Arc<AtomicU32>,
 
     /// Input device name
     input_device_name: Option<String>,
@@ -191,6 +193,8 @@ pub struct AudioProcessor {
 
     /// Total lock contention events in the real-time processing loop.
     lock_contention_count: Arc<AtomicU64>,
+    /// Number of times suppressor output contained non-finite samples.
+    suppressor_non_finite_count: Arc<AtomicU64>,
 
     // === RAW AUDIO RECORDING (for calibration) ===
     /// Raw audio recording buffer (for calibration - captures audio AFTER pre-filter, BEFORE gate)
@@ -203,6 +207,8 @@ pub struct AudioProcessor {
     output_muted: Arc<AtomicBool>,
     /// Flag indicating recording is active (used to mute output to prevent user from hearing themselves)
     recording_active: Arc<AtomicBool>,
+    /// Temporarily disables watchdog-driven recovery during intrusive UI workflows.
+    recovery_suppressed: Arc<AtomicBool>,
 }
 
 impl AudioProcessor {
@@ -273,6 +279,7 @@ impl AudioProcessor {
             running: Arc::new(AtomicBool::new(false)),
             bypass: Arc::new(AtomicBool::new(false)),
             sample_rate,
+            output_sample_rate: Arc::new(AtomicU32::new(sample_rate)),
             input_device_name: None,
             output_device_name: None,
             // Initialize metering atomics with -infinity (no signal)
@@ -308,6 +315,7 @@ impl AudioProcessor {
 
             // Initialize lock contention counter
             lock_contention_count: Arc::new(AtomicU64::new(0)),
+            suppressor_non_finite_count: Arc::new(AtomicU64::new(0)),
 
             // Initialize raw recording buffer
             raw_recording_buffer: Arc::new(Mutex::new(None)),
@@ -315,6 +323,7 @@ impl AudioProcessor {
             raw_recording_target: Arc::new(AtomicUsize::new(0)),
             output_muted: Arc::new(AtomicBool::new(false)),
             recording_active: Arc::new(AtomicBool::new(false)),
+            recovery_suppressed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -334,12 +343,17 @@ impl AudioProcessor {
         let last_output_write_time = Arc::clone(&self.last_output_write_time);
         let last_start_time_us = Arc::clone(&self.last_start_time_us);
         let recovery_state = Arc::clone(&self.recovery_state);
+        let recording_active = Arc::clone(&self.recording_active);
+        let output_muted = Arc::clone(&self.output_muted);
+        let recovery_suppressed = Arc::clone(&self.recovery_suppressed);
 
         self.supervisor_thread = Some(std::thread::spawn(move || {
             const CHECK_INTERVAL_MS: u64 = 250;
             const CALLBACK_STALL_MS: u64 = 2500;
             const WRITE_STALL_MS: u64 = 3000;
             const STARTUP_GRACE_MS: u64 = 5000;
+            const CONSECUTIVE_STALL_CHECKS: u32 = 3;
+            let mut consecutive_stalls = 0u32;
 
             while supervisor_running.load(Ordering::Acquire) {
                 std::thread::sleep(std::time::Duration::from_millis(CHECK_INTERVAL_MS));
@@ -349,12 +363,22 @@ impl AudioProcessor {
                 }
 
                 if recovering.load(Ordering::Acquire) || restart_requested.load(Ordering::Acquire) {
+                    consecutive_stalls = 0;
+                    continue;
+                }
+
+                if recovery_suppressed.load(Ordering::Acquire)
+                    || recording_active.load(Ordering::Acquire)
+                    || output_muted.load(Ordering::Acquire)
+                {
+                    consecutive_stalls = 0;
                     continue;
                 }
 
                 let now = now_micros();
                 let last_start = last_start_time_us.load(Ordering::Relaxed);
                 if last_start > 0 && now.saturating_sub(last_start) < STARTUP_GRACE_MS * 1000 {
+                    consecutive_stalls = 0;
                     continue;
                 }
 
@@ -382,6 +406,10 @@ impl AudioProcessor {
                     || output_age_ms > CALLBACK_STALL_MS
                     || write_age_ms > WRITE_STALL_MS
                 {
+                    consecutive_stalls = consecutive_stalls.saturating_add(1);
+                    if consecutive_stalls < CONSECUTIVE_STALL_CHECKS {
+                        continue;
+                    }
                     let reason = format!(
                         "input_cb_age_ms={}, output_cb_age_ms={}, output_write_age_ms={}",
                         input_age_ms, output_age_ms, write_age_ms
@@ -390,6 +418,9 @@ impl AudioProcessor {
                         state.last_reason = Some(reason);
                     }
                     restart_requested.store(true, Ordering::Release);
+                    consecutive_stalls = 0;
+                } else {
+                    consecutive_stalls = 0;
                 }
             }
         }));
@@ -438,6 +469,7 @@ impl AudioProcessor {
         self.output_underrun_total.store(0, Ordering::Relaxed);
         self.jitter_dropped_samples.store(0, Ordering::Relaxed);
         self.output_recovery_count.store(0, Ordering::Relaxed);
+        self.suppressor_non_finite_count.store(0, Ordering::Relaxed);
         self.last_input_callback_time_us.store(0, Ordering::Relaxed);
         self.last_output_callback_time_us
             .store(0, Ordering::Relaxed);
@@ -474,6 +506,8 @@ impl AudioProcessor {
 
         let output_device_name = output_setup.device_info.name.clone();
         let output_sample_rate_for_thread = output_setup.device_info.sample_rate;
+        self.output_sample_rate
+            .store(output_sample_rate_for_thread, Ordering::Relaxed);
 
         // Create output ring buffer sized for the actual playback device rate.
         let output_rb = AudioRingBuffer::new(output_sample_rate_for_thread as usize * 2);
@@ -569,6 +603,7 @@ impl AudioProcessor {
         let lock_contention_count = Arc::clone(&self.lock_contention_count);
         let jitter_dropped_samples = Arc::clone(&self.jitter_dropped_samples);
         let output_recovery_count = Arc::clone(&self.output_recovery_count);
+        let suppressor_non_finite_count = Arc::clone(&self.suppressor_non_finite_count);
         let recording_active_thread = Arc::clone(&recording_active);
         let suppressor_strength_for_thread = Arc::clone(&self.suppressor_strength);
 
@@ -1199,6 +1234,8 @@ impl AudioProcessor {
                                                 }
                                             }
                                             if detected_non_finite {
+                                                suppressor_non_finite_count
+                                                    .fetch_add(1, Ordering::Relaxed);
                                                 eprintln!(
                                                     "[PROCESSING] WARNING: Non-finite suppressor output detected. Reinitializing suppressor state."
                                                 );
@@ -1417,6 +1454,10 @@ impl AudioProcessor {
     /// - Some(true): recovery succeeded
     /// - Some(false): recovery attempt failed
     pub fn service_recovery(&mut self) -> Option<bool> {
+        if self.recovery_suppressed.load(Ordering::Acquire) {
+            return None;
+        }
+
         if !self.restart_requested.load(Ordering::Acquire) {
             return None;
         }
@@ -2282,6 +2323,11 @@ impl AudioProcessor {
         self.output_buffer_len.load(Ordering::Relaxed)
     }
 
+    /// Get active output device sample rate in Hz.
+    pub fn output_sample_rate(&self) -> u32 {
+        self.output_sample_rate.load(Ordering::Relaxed)
+    }
+
     /// Get noise suppressor buffer fill level in samples
     pub fn get_rnnoise_buffer_samples(&self) -> u32 {
         self.suppressor_buffer_len.load(Ordering::Relaxed)
@@ -2307,6 +2353,10 @@ impl AudioProcessor {
     /// Reset lock contention counter.
     pub fn reset_lock_contention_count(&self) {
         self.lock_contention_count.store(0, Ordering::Relaxed);
+    }
+
+    pub fn get_suppressor_non_finite_count(&self) -> u64 {
+        self.suppressor_non_finite_count.load(Ordering::Relaxed)
     }
 
     /// Age of last input callback heartbeat in milliseconds.
@@ -2347,6 +2397,42 @@ impl AudioProcessor {
     /// Number of jitter recovery events.
     pub fn get_output_recovery_count(&self) -> u64 {
         self.output_recovery_count.load(Ordering::Relaxed)
+    }
+
+    /// Whether the currently selected suppressor backend is operational.
+    pub fn is_noise_backend_available(&self) -> bool {
+        if let Ok(suppressor) = self.suppressor.lock() {
+            suppressor.backend_available()
+        } else {
+            false
+        }
+    }
+
+    /// Whether the suppressor backend has failed after startup.
+    pub fn noise_backend_failed(&self) -> bool {
+        if let Ok(suppressor) = self.suppressor.lock() {
+            suppressor.backend_failed()
+        } else {
+            false
+        }
+    }
+
+    /// Last suppressor backend error, if any.
+    pub fn noise_backend_error(&self) -> Option<String> {
+        self.suppressor
+            .lock()
+            .ok()
+            .and_then(|suppressor| suppressor.backend_error().map(str::to_string))
+    }
+
+    /// Suppress watchdog-driven stream recovery during intrusive UI workflows.
+    pub fn set_recovery_suppressed(&self, suppressed: bool) {
+        self.recovery_suppressed.store(suppressed, Ordering::Release);
+    }
+
+    /// Whether watchdog-driven stream recovery is currently suppressed.
+    pub fn is_recovery_suppressed(&self) -> bool {
+        self.recovery_suppressed.load(Ordering::Acquire)
     }
 
     // === RAW AUDIO RECORDING (for calibration) ===
@@ -2984,6 +3070,10 @@ impl PyAudioProcessor {
         self.processor.get_output_buffer_samples()
     }
 
+    fn output_sample_rate(&self) -> u32 {
+        self.processor.output_sample_rate()
+    }
+
     fn get_rnnoise_buffer_samples(&self) -> u32 {
         self.processor.get_rnnoise_buffer_samples()
     }
@@ -3039,6 +3129,79 @@ impl PyAudioProcessor {
 
     fn get_output_recovery_count(&self) -> u64 {
         self.processor.get_output_recovery_count()
+    }
+
+    fn get_suppressor_non_finite_count(&self) -> u64 {
+        self.processor.get_suppressor_non_finite_count()
+    }
+
+    fn is_noise_backend_available(&self) -> bool {
+        self.processor.is_noise_backend_available()
+    }
+
+    fn noise_backend_failed(&self) -> bool {
+        self.processor.noise_backend_failed()
+    }
+
+    fn noise_backend_error(&self) -> Option<String> {
+        self.processor.noise_backend_error()
+    }
+
+    fn set_recovery_suppressed(&self, suppressed: bool) {
+        self.processor.set_recovery_suppressed(suppressed);
+    }
+
+    fn is_recovery_suppressed(&self) -> bool {
+        self.processor.is_recovery_suppressed()
+    }
+
+    fn get_runtime_diagnostics(&self, py: Python) -> PyResult<PyObject> {
+        let diagnostics = pyo3::types::PyDict::new_bound(py);
+        diagnostics.set_item("noise_model", self.processor.get_noise_model().id())?;
+        diagnostics.set_item(
+            "noise_backend_available",
+            self.processor.is_noise_backend_available(),
+        )?;
+        diagnostics.set_item("noise_backend_failed", self.processor.noise_backend_failed())?;
+        diagnostics.set_item(
+            "noise_backend_error",
+            self.processor.noise_backend_error(),
+        )?;
+        diagnostics.set_item("input_dropped_samples", self.processor.get_dropped_samples())?;
+        diagnostics.set_item(
+            "lock_contention_count",
+            self.processor.get_lock_contention_count(),
+        )?;
+        diagnostics.set_item(
+            "output_underrun_total",
+            self.processor.get_output_underrun_total(),
+        )?;
+        diagnostics.set_item(
+            "jitter_dropped_samples",
+            self.processor.get_jitter_dropped_samples(),
+        )?;
+        diagnostics.set_item(
+            "stream_restart_count",
+            self.processor.get_stream_restart_count(),
+        )?;
+        diagnostics.set_item(
+            "last_restart_reason",
+            self.processor.get_last_restart_reason(),
+        )?;
+        diagnostics.set_item(
+            "last_stream_error",
+            self.processor.get_last_stream_error(),
+        )?;
+        diagnostics.set_item(
+            "suppressor_non_finite_count",
+            self.processor.get_suppressor_non_finite_count(),
+        )?;
+        diagnostics.set_item("output_sample_rate", self.processor.output_sample_rate())?;
+        diagnostics.set_item(
+            "recovery_suppressed",
+            self.processor.is_recovery_suppressed(),
+        )?;
+        Ok(diagnostics.into_any().unbind())
     }
 
     // === Stream Recovery Status ===

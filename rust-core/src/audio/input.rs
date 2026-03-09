@@ -200,7 +200,21 @@ impl AudioInput {
         }
 
         match sample_format {
+            SampleFormat::I8 => Self::build_stream::<i8>(
+                device,
+                stream_config,
+                producer,
+                last_callback_time_us,
+                device_info,
+            ),
             SampleFormat::F32 => Self::build_stream::<f32>(
+                device,
+                stream_config,
+                producer,
+                last_callback_time_us,
+                device_info,
+            ),
+            SampleFormat::F64 => Self::build_stream::<f64>(
                 device,
                 stream_config,
                 producer,
@@ -214,7 +228,42 @@ impl AudioInput {
                 last_callback_time_us,
                 device_info,
             ),
+            SampleFormat::I32 => Self::build_stream::<i32>(
+                device,
+                stream_config,
+                producer,
+                last_callback_time_us,
+                device_info,
+            ),
+            SampleFormat::I64 => Self::build_stream::<i64>(
+                device,
+                stream_config,
+                producer,
+                last_callback_time_us,
+                device_info,
+            ),
+            SampleFormat::U8 => Self::build_stream::<u8>(
+                device,
+                stream_config,
+                producer,
+                last_callback_time_us,
+                device_info,
+            ),
             SampleFormat::U16 => Self::build_stream::<u16>(
+                device,
+                stream_config,
+                producer,
+                last_callback_time_us,
+                device_info,
+            ),
+            SampleFormat::U32 => Self::build_stream::<u32>(
+                device,
+                stream_config,
+                producer,
+                last_callback_time_us,
+                device_info,
+            ),
+            SampleFormat::U64 => Self::build_stream::<u64>(
                 device,
                 stream_config,
                 producer,

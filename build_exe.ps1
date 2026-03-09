@@ -15,48 +15,19 @@ Write-Host "Using local mic_eq_core: $($localPyd.FullName)" -ForegroundColor Cya
 # Use venv Python to ensure correct environment
 $venvPython = ".\.venv\Scripts\python.exe"
 
-# Get Python standard library path from the same interpreter used for build
-$pythonStdlib = & $venvPython -c "import sys; import os; print(os.path.join(sys.prefix, 'Lib'))"
-
-# Build arguments list
-$pyinstallerArgs = @(
-    "--clean"
-    "-y"
-    "--onedir"
-    "--noconsole"
-    "--name", "AudioForge"
-    "--add-data", "models;models"
-    "--add-data", "python/mic_eq;mic_eq"
-    "--hidden-import", "json"
-    "--hidden-import", "PyQt6.QtCore"
-    "--hidden-import", "PyQt6.QtGui"
-    "--hidden-import", "PyQt6.QtWidgets"
-    "--hidden-import", "mic_eq.mic_eq_core"
-    "--hidden-import", "mic_eq"
-    "--hidden-import", "mic_eq.ui"
-    "--paths", $pythonStdlib
-    "launcher.py"
-)
-
-# Add df.dll if exists (optional - for DeepFilterNet support)
 if (Test-Path "df.dll") {
-    $pyinstallerArgs += "--add-binary", "df.dll;."
-    Write-Host "DeepFilterNet support: df.dll will be bundled" -ForegroundColor Green
+    Write-Host "DeepFilterNet support: df.dll will be bundled via AudioForge.spec" -ForegroundColor Green
 } else {
     Write-Host "DeepFilterNet support: df.dll NOT found - RNNoise only" -ForegroundColor Yellow
 }
 
-# Add icon if exists (optional - skips if not found)
 if (Test-Path "mic_eq.ico") {
-    $pyinstallerArgs = @("--icon", "mic_eq.ico") + $pyinstallerArgs
-    $pyinstallerArgs += "--add-data", "mic_eq.ico;."
     Write-Host "Using icon: mic_eq.ico" -ForegroundColor Green
 }
 
-# Build
-Write-Host "Building executable..." -ForegroundColor Cyan
+Write-Host "Building executable from AudioForge.spec..." -ForegroundColor Cyan
 
-& $venvPython -m PyInstaller @pyinstallerArgs
+& $venvPython -m PyInstaller --clean -y .\AudioForge.spec
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host ""

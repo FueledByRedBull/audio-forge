@@ -228,7 +228,7 @@ class Preset:
     """Complete preset with all settings."""
     name: str = "Default"
     description: str = ""
-    version: str = "1.7.4"  # Version field for migration (includes de-esser settings)
+    version: str = "1.7.5"  # Version field for migration (includes diagnostics/runtime hardening)
     gate: GateSettings = field(default_factory=GateSettings)
     eq: EQSettings = field(default_factory=EQSettings)
     rnnoise: RNNoiseSettings = field(default_factory=RNNoiseSettings)
@@ -361,6 +361,11 @@ class Preset:
             if version_tuple < _version_tuple('1.7.4'):
                 data['version'] = '1.7.4'
                 version_tuple = _version_tuple('1.7.4')
+
+            # Migrate v1.7.4 presets -> v1.7.5 (no format changes)
+            if version_tuple < _version_tuple('1.7.5'):
+                data['version'] = '1.7.5'
+                version_tuple = _version_tuple('1.7.5')
 
             # Extract and validate gate settings
             gate_data = data.get('gate', {})
@@ -581,7 +586,7 @@ class Preset:
             return cls(
                 name=data.get('name', 'Unnamed'),
                 description=data.get('description', ''),
-                version=data.get('version', '1.7.4'),
+                version=data.get('version', '1.7.5'),
                 gate=validated_gate,
                 eq=validated_eq,
                 rnnoise=validated_rnnoise,
@@ -823,7 +828,7 @@ BUILTIN_PRESETS = {
     'voice': Preset(
         name="Voice Clarity",
         description="Optimized for voice communication - cuts low end rumble and boosts presence",
-        version="1.7.4",
+        version="1.7.5",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),
@@ -837,7 +842,7 @@ BUILTIN_PRESETS = {
     'bass_cut': Preset(
         name="Bass Cut",
         description="High-pass effect to remove low frequency rumble and proximity effect",
-        version="1.7.4",
+        version="1.7.5",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),
@@ -851,7 +856,7 @@ BUILTIN_PRESETS = {
     'presence': Preset(
         name="Presence Boost",
         description="Enhances voice presence and intelligibility",
-        version="1.7.4",
+        version="1.7.5",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),
@@ -865,7 +870,7 @@ BUILTIN_PRESETS = {
     'flat': Preset(
         name="Flat",
         description="No EQ processing - flat frequency response",
-        version="1.7.4",
+        version="1.7.5",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),
@@ -879,7 +884,7 @@ BUILTIN_PRESETS = {
     'minimal': Preset(
         name="Minimal Processing",
         description="Gate and RNNoise only - no EQ",
-        version="1.7.4",
+        version="1.7.5",
         gate=GateSettings(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),
@@ -893,7 +898,7 @@ BUILTIN_PRESETS = {
     'aggressive_denoise': Preset(
         name="Aggressive Denoise",
         description="Maximum noise reduction with tight gate",
-        version="1.7.4",
+        version="1.7.5",
         gate=GateSettings(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=False, gate_margin_db=10.0),

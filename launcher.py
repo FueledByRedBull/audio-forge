@@ -52,12 +52,21 @@ def _configure_frozen_runtime():
     ]
     model_dir = _first_existing_path(model_dirs)
 
+    allow_external_df = os.environ.get("AUDIOFORGE_ALLOW_EXTERNAL_DF", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
     if model_dir:
         vad_model = model_dir / "silero_vad.onnx"
         if vad_model.exists():
-            os.environ.setdefault("VAD_MODEL_PATH", str(vad_model))
+            os.environ["VAD_MODEL_PATH"] = str(vad_model)
         if _has_deepfilter_model(model_dir):
-            os.environ.setdefault("DEEPFILTER_MODEL_PATH", str(model_dir))
+            if allow_external_df:
+                os.environ.setdefault("DEEPFILTER_MODEL_PATH", str(model_dir))
+            else:
+                os.environ["DEEPFILTER_MODEL_PATH"] = str(model_dir)
 
         df_candidates = [
             exe_dir / "df.dll",
@@ -66,10 +75,13 @@ def _configure_frozen_runtime():
         ]
         df_path = _first_existing_path(df_candidates)
         if df_path:
-            os.environ.setdefault("DEEPFILTER_LIB_PATH", str(df_path))
+            if allow_external_df:
+                os.environ.setdefault("DEEPFILTER_LIB_PATH", str(df_path))
+            else:
+                os.environ["DEEPFILTER_LIB_PATH"] = str(df_path)
 
         if df_path and _has_deepfilter_model(model_dir):
-            os.environ.setdefault("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
+            os.environ["AUDIOFORGE_ENABLE_DEEPFILTER"] = "1"
 
 
 _configure_frozen_runtime()

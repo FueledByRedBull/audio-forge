@@ -12,6 +12,7 @@ import sys
 import tempfile
 import time
 import wave
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -50,10 +51,88 @@ def _play_probe_blocking(probe: np.ndarray, sample_rate: int) -> None:
     time.sleep(len(probe) / float(sample_rate))
 
 
+@dataclass
+class SelfTestAttempt:
+    confidence: float
+    round_trip_ms: float
+    message: str
+    diagnostics: dict
+
+
+def _run_attempt(
+    processor: AudioProcessor,
+    *,
+    duration: float,
+    delay: float,
+    output_sample_rate: int,
+    probe_duration_ms: float,
+) -> SelfTestAttempt:
+    processor.start_raw_recording(duration)
+    start = time.time()
+    played = False
+    probe = generate_probe_signal(sample_rate=output_sample_rate, duration_ms=probe_duration_ms)
+
+    while True:
+        elapsed = time.time() - start
+        if (not played) and elapsed >= delay:
+            print("Playing probe...")
+            _play_probe_blocking(probe, output_sample_rate)
+            played = True
+        if elapsed >= duration:
+            break
+        time.sleep(0.02)
+
+    raw = processor.stop_raw_recording()
+    if raw is None:
+        return SelfTestAttempt(
+            confidence=0.0,
+            round_trip_ms=0.0,
+            message="no recording captured",
+            diagnostics=processor.get_runtime_diagnostics(),
+        )
+
+    recording = np.asarray(raw, dtype=np.float32)
+    analysis = analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=output_sample_rate,
+        min_search_ms=5.0,
+        max_search_ms=500.0,
+    )
+    return SelfTestAttempt(
+        confidence=float(analysis.confidence),
+        round_trip_ms=float(analysis.measured_round_trip_ms),
+        message=analysis.message or ("ok" if analysis.success else "low confidence"),
+        diagnostics=processor.get_runtime_diagnostics(),
+    )
+
+
+def _format_diagnostics(diagnostics: dict) -> str:
+    return (
+        "backend={backend} failed={failed} dropped_in={dropped_in} "
+        "underruns={underruns} restarts={restarts} non_finite={non_finite}".format(
+            backend=diagnostics.get("noise_model", "unknown"),
+            failed=diagnostics.get("noise_backend_failed", False),
+            dropped_in=diagnostics.get("input_dropped_samples", 0),
+            underruns=diagnostics.get("output_underrun_total", 0),
+            restarts=diagnostics.get("stream_restart_count", 0),
+            non_finite=diagnostics.get("suppressor_non_finite_count", 0),
+        )
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="AudioForge self-test (probe capture).")
-    parser.add_argument("--duration", type=float, default=2.5, help="Recording duration in seconds.")
-    parser.add_argument("--delay", type=float, default=0.45, help="Probe playback delay in seconds.")
+    parser.add_argument("--duration", type=float, default=3.0, help="Recording duration in seconds.")
+    parser.add_argument("--delay", type=float, default=0.55, help="Probe playback delay in seconds.")
+    parser.add_argument("--warmup", type=float, default=0.2, help="Stream warmup time in seconds.")
+    parser.add_argument("--retries", type=int, default=1, help="Additional retries after the first failed attempt.")
+    parser.add_argument(
+        "--probe-duration-ms",
+        type=float,
+        default=80.0,
+        help="Probe chirp duration in milliseconds.",
+    )
     parser.add_argument(
         "--confidence",
         type=float,
@@ -68,56 +147,65 @@ def main() -> int:
     try:
         result = processor.start(args.input_device, args.output_device)
         print(f"Started processor: {result}")
+        output_sample_rate = int(processor.output_sample_rate() or 48_000)
+        print(f"Output sample rate: {output_sample_rate} Hz")
+        if args.warmup > 0.0:
+            print(f"Warming up for {args.warmup:.2f}s...")
+            time.sleep(args.warmup)
 
-        processor.start_raw_recording(args.duration)
-        start = time.time()
-        played = False
+        processor.set_recovery_suppressed(True)
+        attempts = max(1, args.retries + 1)
+        best_attempt: SelfTestAttempt | None = None
 
-        probe = generate_probe_signal(sample_rate=48_000, duration_ms=80.0)
+        for attempt_index in range(attempts):
+            if attempt_index > 0:
+                print(f"Retrying self-test ({attempt_index + 1}/{attempts})...")
+                time.sleep(0.15)
 
-        while True:
-            elapsed = time.time() - start
-            if (not played) and elapsed >= args.delay:
-                print("Playing probe...")
-                _play_probe_blocking(probe, 48_000)
-                played = True
-            if elapsed >= args.duration:
-                break
-            time.sleep(0.02)
+            attempt = _run_attempt(
+                processor,
+                duration=args.duration,
+                delay=args.delay,
+                output_sample_rate=output_sample_rate,
+                probe_duration_ms=args.probe_duration_ms,
+            )
+            print(
+                f"Attempt {attempt_index + 1}: "
+                f"rt={attempt.round_trip_ms:.2f}ms "
+                f"confidence={attempt.confidence:.3f} "
+                f"message={attempt.message} "
+                f"{_format_diagnostics(attempt.diagnostics)}"
+            )
 
-        raw = processor.stop_raw_recording()
-        if raw is None:
+            if best_attempt is None or attempt.confidence > best_attempt.confidence:
+                best_attempt = attempt
+            if attempt.confidence >= args.confidence:
+                print(
+                    "Self-test passed: "
+                    f"rt={attempt.round_trip_ms:.2f}ms "
+                    f"confidence={attempt.confidence:.3f}"
+                )
+                return 0
+
+        if best_attempt is None:
             print("Self-test failed: no recording captured.")
             return 2
 
-        recording = np.asarray(raw, dtype=np.float32)
-        analysis = analyze_latency(
-            reference_probe=probe,
-            recorded_signal=recording,
-            sample_rate=48_000,
-            min_search_ms=5.0,
-            max_search_ms=500.0,
-        )
-
-        if not analysis.success or analysis.confidence < args.confidence:
-            print(
-                "Self-test failed: low confidence "
-                f"(confidence={analysis.confidence:.3f})."
-            )
-            return 1
-
         print(
-            "Self-test passed: "
-            f"rt={analysis.measured_round_trip_ms:.2f}ms "
-            f"confidence={analysis.confidence:.3f}"
+            "Self-test failed: low confidence "
+            f"(confidence={best_attempt.confidence:.3f})."
         )
-        return 0
+        return 1
     except Exception as exc:
         print(f"Self-test error: {type(exc).__name__}: {exc}")
         return 3
     finally:
         try:
             processor.set_output_mute(False)
+        except Exception:
+            pass
+        try:
+            processor.set_recovery_suppressed(False)
         except Exception:
             pass
         try:

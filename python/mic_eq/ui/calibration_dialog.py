@@ -14,11 +14,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from ..config import TARGET_CURVES
-from .recording_worker import RecordingWorker
 from .analysis_worker import AnalysisWorker
 from .level_meter import LevelMeter
 import numpy as np
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +47,12 @@ class CalibrationDialog(QDialog):
         # Recording state
         self.recording_state = "idle"  # idle, recording, completed
         self.audio_data: np.ndarray | None = None
-        self.worker: RecordingWorker | None = None
         self.analysis_worker: AnalysisWorker | None = None
         self._started_processor = False  # Track if we started processor ourselves
+        self._recording_started_at = 0.0
+        self.recording_timer = QTimer(self)
+        self.recording_timer.setInterval(100)
+        self.recording_timer.timeout.connect(self._poll_recording_progress)
 
         self._setup_ui()
 
@@ -281,13 +284,13 @@ class CalibrationDialog(QDialog):
         self.curve_combo.setEnabled(False)
 
         # Let DSP loop settle without blocking the UI thread.
-        QTimer.singleShot(100, self._begin_recording_worker)
+        QTimer.singleShot(100, self._begin_recording_capture)
 
         self.warning_label.setText("Recording... Speak clearly into your microphone")
         self.warning_label.setStyleSheet("color: blue; font-weight: bold; font-size: 11pt;")
 
-    def _begin_recording_worker(self):
-        """Create and start recording worker after startup settle delay."""
+    def _begin_recording_capture(self):
+        """Start Rust-side recording and poll progress from the main Qt thread."""
         if self.recording_state != "recording":
             return
 
@@ -299,22 +302,50 @@ class CalibrationDialog(QDialog):
             self._on_recording_failed("Could not find audio processor")
             return
 
-        # Create and start recording worker (processor already running)
+        try:
+            parent.processor.set_recovery_suppressed(True)
+            parent.processor.start_raw_recording(RECORDING_DURATION)
+        except Exception as e:
+            self._on_recording_failed(f"Recording error: {e}")
+            return
+
+        self._recording_started_at = time.time()
+        self.recording_timer.start()
         if DEBUG:
-            print(f"[CALIBRATION_DLG] Creating RecordingWorker with duration={RECORDING_DURATION}s")
-        self.worker = RecordingWorker(
-            parent.processor,
-            duration=RECORDING_DURATION,
-            processor_was_started_by_us=self._started_processor  # Pass flag
-        )
-        self.worker.progress.connect(self._on_progress_update)
-        self.worker.time_remaining.connect(self._on_time_remaining)
-        self.worker.level_update.connect(self._on_level_update)
-        self.worker.finished.connect(self._on_recording_complete)
-        self.worker.failed.connect(self._on_recording_failed)
-        self.worker.start()
-        if DEBUG:
-            print("[CALIBRATION_DLG] RecordingWorker started")
+            print("[CALIBRATION_DLG] Started main-thread recording capture")
+
+    def _poll_recording_progress(self):
+        """Poll recording state from the main Qt thread."""
+        if self.recording_state != "recording":
+            self.recording_timer.stop()
+            return
+
+        parent = self.parent()
+        while parent and not hasattr(parent, 'processor'):
+            parent = parent.parent()
+
+        if not parent:
+            self._on_recording_failed("Could not find audio processor")
+            return
+
+        try:
+            progress_float = float(parent.processor.recording_progress())
+            progress_pct = int(progress_float * 100)
+            self._on_progress_update(progress_pct)
+            self._on_time_remaining(max(0.0, RECORDING_DURATION * (1.0 - progress_float)))
+            self._on_level_update(float(parent.processor.recording_level_db()))
+
+            if progress_pct >= 100 or parent.processor.is_recording_complete():
+                self.recording_timer.stop()
+                audio = parent.processor.stop_raw_recording()
+                if audio is None:
+                    self._on_recording_failed("Recording failed - no audio data")
+                    return
+                audio_array = np.asarray(audio, dtype=np.float32)
+                self._on_recording_complete(audio_array)
+        except Exception as e:
+            self.recording_timer.stop()
+            self._on_recording_failed(f"Recording error: {e}")
 
     def _on_progress_update(self, value: int):
         """Update progress bar."""
@@ -384,6 +415,7 @@ class CalibrationDialog(QDialog):
 
     def _on_recording_failed(self, error: str):
         """Handle recording failure."""
+        self.recording_timer.stop()
         self.warning_label.setText(f"❌ Recording failed: {error}")
         self.warning_label.setStyleSheet("color: red; font-weight: bold; font-size: 11pt;")
         self._reset_recording_ui()
@@ -479,22 +511,19 @@ class CalibrationDialog(QDialog):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             if reply == QMessageBox.StandardButton.Yes:
-                if self.worker:
-                    self.worker.stop()
-                    self.worker.wait(1500)
+                self.recording_timer.stop()
                 self._stop_analysis_worker()
                 self._cleanup_recording_tap()
                 self.reject()
         else:
-            if self.worker and self.worker.isRunning():
-                self.worker.stop()
-                self.worker.wait(1500)
+            self.recording_timer.stop()
             self._stop_analysis_worker()
             self._cleanup_recording_tap()
             self.reject()
 
     def _reset_recording_ui(self):
         """Reset UI to initial idle state."""
+        self.recording_timer.stop()
         self._stop_analysis_worker()
         self._cleanup_recording_tap()
 
@@ -545,6 +574,11 @@ class CalibrationDialog(QDialog):
         except Exception as e:
             logger.warning("Failed to unmute output during cleanup: %s", e)
 
+        try:
+            parent.processor.set_recovery_suppressed(False)
+        except Exception as e:
+            logger.warning("Failed to re-enable recovery after cleanup: %s", e)
+
     def _stop_analysis_worker(self):
         if self.analysis_worker and self.analysis_worker.isRunning():
             self.analysis_worker.stop()
@@ -553,9 +587,7 @@ class CalibrationDialog(QDialog):
 
     def closeEvent(self, event):
         """Ensure recording state is cleaned up if dialog is closed directly."""
-        if self.worker and self.worker.isRunning():
-            self.worker.stop()
-            self.worker.wait(1500)
+        self.recording_timer.stop()
         self._stop_analysis_worker()
         self._cleanup_recording_tap()
         super().closeEvent(event)

@@ -7,7 +7,7 @@
 
 Low-latency microphone audio processor with AI noise suppression, smart gating, Auto-EQ, and 10-band parametric EQ.
 
-Current version: `v1.7.4`
+Current version: `v1.7.5`
 
 ## Status
 
@@ -33,6 +33,7 @@ AudioForge is currently focused on Windows desktop use and portable distribution
   - Input/output level meters
   - Buffer and processing health metrics
   - Gate/VAD and gain-reduction indicators
+- Runtime diagnostics for backend health, underruns, dropped samples, and recovery state
 - Callback-based stream watchdog with auto-recovery and backoff
 - Preset save/load with migration support
 - Latency calibration dialog for per device-pair compensation profiles
@@ -87,6 +88,7 @@ You can also use environment variables:
 
 - `DEEPFILTER_MODEL_PATH` (model file or directory containing the model tarballs)
 - `DEEPFILTER_LIB_PATH`
+- `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` to allow a packaged build to honor an external `DEEPFILTER_LIB_PATH`
 - `AUDIOFORGE_ENABLE_DEEPFILTER`
 - `VAD_MODEL_PATH`
 
@@ -102,12 +104,14 @@ Output:
 
 - `dist\AudioForge\AudioForge.exe`
 - bundled DeepFilter/VAD assets inside `dist\AudioForge\_internal\...`
+- packaged builds prefer the bundled `df.dll`; set `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` only for deliberate override/testing
+- status-bar diagnostics surface backend failures and auto-recovery state
 
 Create archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.7.4-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.7.5-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 ## Testing

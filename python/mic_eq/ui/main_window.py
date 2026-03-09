@@ -135,6 +135,8 @@ class MainWindow(QMainWindow):
         self._output_callback_stall_started_at = None
         self._last_output_recovery_at = 0.0
         self._processing_started_at = None
+        self._last_backend_warning = None
+        self._last_diag_poll = 0.0
 
         # Set up UI
         self._setup_ui()
@@ -512,6 +514,10 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(
             f"Sample Rate: {self.processor.sample_rate()} Hz | Status: Ready"
         )
+        self.backend_diag_label = QLabel("Backend: --")
+        self.recovery_diag_label = QLabel("Recovery: --")
+        self.status_bar.addPermanentWidget(self.backend_diag_label)
+        self.status_bar.addPermanentWidget(self.recovery_diag_label)
 
     def _setup_options_menu(self):
         """Setup Options menu with startup preset selector."""
@@ -1033,7 +1039,7 @@ class MainWindow(QMainWindow):
             preset = Preset(
                 name=preset_name,
                 description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
-                version="1.7.4",
+                version="1.7.5",
                 gate=GateSettings(**self.gate_panel.get_settings()),
                 eq=EQSettings(**self.eq_panel.get_settings()),
                 rnnoise=RNNoiseSettings(
@@ -1159,6 +1165,7 @@ class MainWindow(QMainWindow):
     def _update_meters(self):
         """Update level meters from processor (called by timer)."""
         if self.processor.is_running():
+            diagnostics = self.processor.get_runtime_diagnostics()
             # Get levels from processor
             input_rms = self.processor.get_input_rms_db()
             input_peak = self.processor.get_input_peak_db()
@@ -1230,7 +1237,10 @@ class MainWindow(QMainWindow):
             self.buffer_label.setText(f"Buffer: {buf_status} ({pipeline_buf})")
 
             # Update dropped samples display
-            dropped = self.processor.get_dropped_samples()
+            dropped = diagnostics.get("input_dropped_samples", 0)
+            lock_contention = diagnostics.get("lock_contention_count", 0)
+            non_finite = diagnostics.get("suppressor_non_finite_count", 0)
+            restart_count = diagnostics.get("stream_restart_count", 0)
             if dropped == 0:
                 dropped_color = "#0f0"  # Green - no drops
             else:
@@ -1239,20 +1249,64 @@ class MainWindow(QMainWindow):
                 f"QLabel {{ background-color: #333; color: {dropped_color}; padding: 5px 10px; "
                 "border-radius: 3px; font-family: monospace; font-size: 12px; }"
             )
-            extra_health = ""
-            try:
-                if hasattr(self.processor, "get_output_underrun_total"):
-                    underruns = self.processor.get_output_underrun_total()
-                    recoveries = (
-                        self.processor.get_output_recovery_count()
-                        if hasattr(self.processor, "get_output_recovery_count")
-                        else 0
+            underruns = diagnostics.get("output_underrun_total", 0)
+            recoveries = diagnostics.get("output_recovery_count", 0)
+            self.dropped_label.setText(
+                f"Dropped: {dropped} | U:{underruns} R:{recoveries} | "
+                f"L:{lock_contention} NF:{non_finite} RS:{restart_count}"
+            )
+
+            backend_available = diagnostics.get("noise_backend_available", True)
+            backend_failed = diagnostics.get("noise_backend_failed", False)
+            backend_error = diagnostics.get("noise_backend_error")
+            noise_model = diagnostics.get("noise_model", "rnnoise")
+            if noise_model != "rnnoise" and (backend_failed or not backend_available):
+                warning = backend_error or "Selected DeepFilter backend fell back to passthrough/RNNoise behavior."
+                if warning != self._last_backend_warning:
+                    self.status_bar.showMessage(warning, 6000)
+                    self._last_backend_warning = warning
+            elif backend_available:
+                self._last_backend_warning = None
+
+            now = time.time()
+            if now - self._last_diag_poll >= 0.25:
+                self._last_diag_poll = now
+                try:
+                    diagnostics = self.processor.get_runtime_diagnostics()
+                    noise_model = diagnostics.get("noise_model", "rnnoise")
+                    backend_ok = diagnostics.get("noise_backend_available", True)
+                    backend_failed = diagnostics.get("noise_backend_failed", False)
+                    backend_error = diagnostics.get("noise_backend_error")
+                    restart_count = diagnostics.get("stream_restart_count", 0)
+                    non_finite = diagnostics.get("suppressor_non_finite_count", 0)
+                    suppressed = diagnostics.get("recovery_suppressed", False)
+
+                    backend_bits = [noise_model]
+                    if backend_ok:
+                        backend_bits.append("OK")
+                    elif backend_failed:
+                        backend_bits.append("FAILED")
+                    else:
+                        backend_bits.append("UNAVAILABLE")
+                    if non_finite:
+                        backend_bits.append(f"NF:{non_finite}")
+                    if backend_error:
+                        backend_bits.append("ERR")
+                    self.backend_diag_label.setText(
+                        f"Backend: {' '.join(str(bit) for bit in backend_bits)}"
                     )
-                    if underruns > 0 or recoveries > 0:
-                        extra_health = f" | U:{underruns} R:{recoveries}"
-            except Exception:
-                pass
-            self.dropped_label.setText(f"Dropped: {dropped}{extra_health}")
+
+                    recovery_bits = [f"R:{restart_count}"]
+                    if suppressed:
+                        recovery_bits.append("SUPP")
+                    reason = diagnostics.get("last_restart_reason")
+                    if reason:
+                        recovery_bits.append("RECENT")
+                    self.recovery_diag_label.setText(
+                        f"Recovery: {' '.join(recovery_bits)}"
+                    )
+                except Exception:
+                    pass
 
             self._maybe_recover_output_stall(
                 input_rms=input_rms,
@@ -1313,6 +1367,7 @@ class MainWindow(QMainWindow):
             self._output_stall_started_at = None
             self._output_callback_stall_started_at = None
             self._processing_started_at = None
+            self._last_backend_warning = None
             self.latency_label.setText("Latency: -- ms")
             self.buffer_label.setText("Buffer: --")
             self.buffer_label.setStyleSheet(
@@ -1324,6 +1379,8 @@ class MainWindow(QMainWindow):
                 "QLabel { background-color: #333; color: #0f0; padding: 5px 10px; "
                 "border-radius: 3px; font-family: monospace; font-size: 12px; }"
             )
+            self.backend_diag_label.setText("Backend: --")
+            self.recovery_diag_label.setText("Recovery: --")
 
     def _maybe_recover_output_stall(self, input_rms: float, output_rms: float, output_buf: int):
         """

@@ -46,9 +46,9 @@ def _configure_frozen_runtime():
             pass
 
     model_dirs = [
-        exe_dir / "models",
-        (meipass / "models") if meipass else None,
         (meipass / "_internal" / "models") if meipass else None,
+        (meipass / "models") if meipass else None,
+        exe_dir / "models",
     ]
     model_dir = _first_existing_path(model_dirs)
 
@@ -69,9 +69,9 @@ def _configure_frozen_runtime():
                 os.environ["DEEPFILTER_MODEL_PATH"] = str(model_dir)
 
         df_candidates = [
-            exe_dir / "df.dll",
-            (meipass / "df.dll") if meipass else None,
             (meipass / "_internal" / "df.dll") if meipass else None,
+            (meipass / "df.dll") if meipass else None,
+            exe_dir / "df.dll",
         ]
         df_path = _first_existing_path(df_candidates)
         if df_path:

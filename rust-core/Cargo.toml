@@ -1,6 +1,6 @@
 [package]
 name = "mic_eq_core"
-version = "1.7.5"
+version = "1.7.6"
 edition = "2021"
 description = "High-performance DSP engine for MicEq - real-time noise suppression and equalization"
 

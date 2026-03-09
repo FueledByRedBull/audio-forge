@@ -30,9 +30,11 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QFrame,
+    QFileIconProvider,
 )
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import Qt, QTimer, QFileInfo
+from PyQt6.QtGui import QAction, QIcon
+import os
 import sys
 import json
 import time
@@ -1039,7 +1041,7 @@ class MainWindow(QMainWindow):
             preset = Preset(
                 name=preset_name,
                 description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
-                version="1.7.5",
+                version="1.7.6",
                 gate=GateSettings(**self.gate_panel.get_settings()),
                 eq=EQSettings(**self.eq_panel.get_settings()),
                 rnnoise=RNNoiseSettings(
@@ -1850,21 +1852,15 @@ def run_app():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    # Set application icon (support dev and PyInstaller layouts).
-    icon_candidates = ["mic_eq.ico"]
     if getattr(sys, "frozen", False):
-        base = getattr(sys, "_MEIPASS", "")
-        icon_candidates = [
-            os.path.join(base, "mic_eq.ico"),
-            os.path.join(base, "_internal", "mic_eq.ico"),
-            os.path.join(base, "_internal", "_internal", "mic_eq.ico"),
-            os.path.join(os.path.dirname(sys.executable), "mic_eq.ico"),
-        ]
-
-    for icon_path in icon_candidates:
-        if os.path.exists(icon_path):
-            app.setWindowIcon(QIcon(icon_path))
-            break
+        provider = QFileIconProvider()
+        exe_icon = provider.icon(QFileInfo(sys.executable))
+        if not exe_icon.isNull():
+            app.setWindowIcon(exe_icon)
+    else:
+        icon_path = Path("mic_eq.ico")
+        if icon_path.exists():
+            app.setWindowIcon(QIcon(str(icon_path)))
 
     _configure_deepfilter_env()
 

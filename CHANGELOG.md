@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.6 - 2026-03-09
+
+- Trimmed the packaged Windows app further by dropping the duplicated runtime icon payload and pruning unused Qt translations/PDF binaries after build.
+- Prefer bundled `_internal/models` and `_internal/df.dll` more aggressively in the frozen launcher/runtime path to keep packaged asset lookup canonical.
+- Kept the full-feature release payload intact: RNNoise, VAD, DeepFilter LL, and DeepFilter Standard remain bundled.
+
 ## v1.7.5 - 2026-03-09
 
 - Hardened DeepFilter runtime loading and surfaced backend availability/error state in the UI.

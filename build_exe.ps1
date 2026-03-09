@@ -30,6 +30,23 @@ Write-Host "Building executable from AudioForge.spec..." -ForegroundColor Cyan
 & $venvPython -m PyInstaller --clean -y .\AudioForge.spec
 
 if ($LASTEXITCODE -eq 0) {
+    $qtTranslations = "dist/AudioForge/_internal/PyQt6/Qt6/translations"
+    if (Test-Path $qtTranslations) {
+        Remove-Item -Recurse -Force $qtTranslations
+        Write-Host "Pruned Qt translations from bundled runtime." -ForegroundColor Cyan
+    }
+
+    foreach ($unusedQtPath in @(
+        "dist/AudioForge/_internal/PyQt6/Qt6/bin/Qt6Pdf.dll",
+        "dist/AudioForge/_internal/PyQt6/QtPdf.pyd",
+        "dist/AudioForge/_internal/PyQt6/QtPdfWidgets.pyd"
+    )) {
+        if (Test-Path $unusedQtPath) {
+            Remove-Item -Force $unusedQtPath
+            Write-Host "Removed unused Qt payload: $unusedQtPath" -ForegroundColor Cyan
+        }
+    }
+
     Write-Host ""
     Write-Host "SUCCESS!" -ForegroundColor Green
     Write-Host ""

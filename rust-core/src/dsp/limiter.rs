@@ -235,4 +235,37 @@ mod tests {
         // Gain reduction should have recovered (closer to 1.0)
         assert!(lim.gain_reduction > initial_reduction);
     }
+
+    #[test]
+    fn test_limiter_process_block_inplace_respects_ceiling() {
+        let mut lim = Limiter::new(-3.0, 50.0, 48000.0);
+        let ceiling_linear = 10.0_f64.powf(-3.0 / 20.0) as f32;
+        let mut block = vec![1.2f32; 64];
+
+        lim.process_block_inplace(&mut block);
+
+        assert!(block.iter().all(|sample| sample.abs() <= ceiling_linear + 0.001));
+    }
+
+    #[test]
+    fn test_peak_gain_reduction_and_reset_reports_and_clears_peak() {
+        let mut lim = Limiter::new(-6.0, 50.0, 48000.0);
+
+        for _ in 0..8 {
+            lim.process_sample(0.95);
+        }
+
+        let peak = lim.peak_gain_reduction_and_reset();
+        assert!(peak > 0.0, "limiter should report peak reduction after limiting");
+        assert_eq!(lim.peak_gain_reduction_and_reset(), 0.0);
+    }
+
+    #[test]
+    fn test_set_ceiling_clamps_to_zero_db_max() {
+        let mut lim = Limiter::new(-6.0, 50.0, 48000.0);
+
+        lim.set_ceiling(3.0);
+
+        assert_eq!(lim.ceiling_db(), 0.0);
+    }
 }

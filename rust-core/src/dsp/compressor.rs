@@ -699,4 +699,41 @@ mod tests {
         assert!(increased_release > base_release);
         assert!(increased_release < 400.0); // Not at max yet
     }
+
+    #[test]
+    fn test_attack_time_changes_short_burst_response() {
+        let mut fast = Compressor::new(-20.0, 4.0, 0.1, 200.0, 0.0, 0.0, 48000.0);
+        let mut slow = Compressor::new(-20.0, 4.0, 50.0, 200.0, 0.0, 0.0, 48000.0);
+
+        for _ in 0..240 {
+            fast.process_sample(0.5);
+            slow.process_sample(0.5);
+        }
+
+        assert!(
+            fast.current_gain_reduction() > slow.current_gain_reduction(),
+            "fast attack should build gain reduction sooner"
+        );
+    }
+
+    #[test]
+    fn test_release_time_changes_recovery_speed() {
+        let mut fast = Compressor::new(-20.0, 4.0, 0.1, 20.0, 0.0, 0.0, 48000.0);
+        let mut slow = Compressor::new(-20.0, 4.0, 0.1, 200.0, 0.0, 0.0, 48000.0);
+
+        for _ in 0..4000 {
+            fast.process_sample(0.5);
+            slow.process_sample(0.5);
+        }
+
+        for _ in 0..4800 {
+            fast.process_sample(0.001);
+            slow.process_sample(0.001);
+        }
+
+        assert!(
+            fast.current_gain_reduction() < slow.current_gain_reduction(),
+            "fast release should recover more quickly after a loud passage"
+        );
+    }
 }

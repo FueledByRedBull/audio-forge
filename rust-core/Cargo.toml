@@ -46,7 +46,9 @@ ebur128 = "0.1.3"
 
 # VAD dependencies (optional)
 ndarray = { version = "0.17", optional = true }
-ort = { version = "2.0.0-rc.11", optional = true }
+# ort 2.x is still published on the rc line; pin the exact version until a stable
+# release exists and we intentionally validate an upgrade.
+ort = { version = "=2.0.0-rc.11", optional = true }
 
 [features]
 default = ["vad", "deepfilter"]

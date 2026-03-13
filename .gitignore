@@ -38,6 +38,7 @@ env/
 # PyInstaller
 *.manifest
 *.spec
+!AudioForge.spec
 
 # Unit test / coverage reports
 htmlcov/

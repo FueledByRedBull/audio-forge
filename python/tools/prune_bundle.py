@@ -20,11 +20,15 @@ def prune_bundle(bundle_root: Path) -> None:
         Path("_internal/PyQt6/Qt6/bin/Qt6Pdf.dll"),
         Path("_internal/PyQt6/QtPdf.pyd"),
         Path("_internal/PyQt6/QtPdfWidgets.pyd"),
+        Path("_internal/scipy/optimize/_highspy"),
     ):
         candidate = bundle_root / relative_path
         if candidate.exists():
-            candidate.unlink()
-            print(f"Removed unused Qt payload: {candidate}")
+            if candidate.is_dir():
+                shutil.rmtree(candidate)
+            else:
+                candidate.unlink()
+            print(f"Removed unused bundled payload: {candidate}")
 
 
 def main() -> int:

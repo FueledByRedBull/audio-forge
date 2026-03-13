@@ -13,11 +13,21 @@ use crate::dsp::vad::{GateMode, VadAutoGate};
 use crate::dsp::util;
 
 /// Enable debug output for gate operations
+const GATE_DEBUG: bool = false;
+
 #[cfg(debug_assertions)]
-const GATE_DEBUG: bool = true;
+macro_rules! gate_debug_log {
+    ($($arg:tt)*) => {
+        if GATE_DEBUG {
+            eprintln!($($arg)*);
+        }
+    };
+}
 
 #[cfg(not(debug_assertions))]
-const GATE_DEBUG: bool = false;
+macro_rules! gate_debug_log {
+    ($($arg:tt)*) => {};
+}
 
 /// Noise gate processor with IIR envelope follower
 pub struct NoiseGate {
@@ -88,7 +98,7 @@ impl NoiseGate {
         let rms_coeff = util::time_constant_to_coeff(50.0, sample_rate);
 
         if GATE_DEBUG {
-            eprintln!("[GATE] Initialized: threshold={}dB, attack={}ms, release={}ms",
+            gate_debug_log!("[GATE] Initialized: threshold={}dB, attack={}ms, release={}ms",
                 threshold_db, attack_ms, release_ms);
         }
 
@@ -198,10 +208,10 @@ impl NoiseGate {
         // Debug output on state change
         if GATE_DEBUG && self.is_open != self.was_open {
             if self.is_open {
-                eprintln!("[GATE] OPENED: level={:.1}dB >= threshold={:.1}dB",
+                gate_debug_log!("[GATE] OPENED: level={:.1}dB >= threshold={:.1}dB",
                     level_db, self.threshold_db);
             } else {
-                eprintln!("[GATE] CLOSED: level={:.1}dB < (threshold-hysteresis)={:.1}dB",
+                gate_debug_log!("[GATE] CLOSED: level={:.1}dB < (threshold-hysteresis)={:.1}dB",
                     level_db, self.threshold_db - hysteresis_db);
             }
             self.was_open = self.is_open;
@@ -237,20 +247,20 @@ impl NoiseGate {
                 if let Some(vad) = &mut self.vad_auto_gate {
                     if vad.is_enabled() {
                         // Get VAD gate decision and probability
-                        let (vad_gate_open, probability) = vad.process(buffer);
+                        let (vad_gate_open, _probability) = vad.process(buffer);
 
                         // Debug VAD probability and decision
                         if GATE_DEBUG {
                             self.debug_counter += buffer.len();
                             // Print VAD status every ~1 second (48000 samples)
                             if self.debug_counter >= 48000 {
-                                let mode_str = match self.gate_mode {
+                                let _mode_str = match self.gate_mode {
                                     GateMode::VadAssisted => "VAD-Assisted",
                                     GateMode::VadOnly => "VAD-Only",
                                     GateMode::ThresholdOnly => "Threshold-Only",
                                 };
-                                eprintln!("[GATE] VAD mode={}, probability={:.4}, gate_state={}, threshold={:.2}",
-                                    mode_str, probability, if vad_gate_open { "OPEN" } else { "CLOSED" },
+                                gate_debug_log!("[GATE] VAD mode={}, probability={:.4}, gate_state={}, threshold={:.2}",
+                                    _mode_str, _probability, if vad_gate_open { "OPEN" } else { "CLOSED" },
                                     vad.vad_threshold());
                                 self.debug_counter = 0;
                             }
@@ -260,11 +270,11 @@ impl NoiseGate {
                         if GATE_DEBUG && vad_gate_open != self.vad_was_open {
                             if vad_gate_open {
                                 // FIX: Don't claim prob >= threshold, as it might be RMS or Hold triggered
-                                eprintln!("[GATE] OPENED: probability={:.4}, threshold={:.2} (Triggered by VAD, RMS, or Hold Timer)",
-                                    probability, vad.vad_threshold());
+                                gate_debug_log!("[GATE] OPENED: probability={:.4}, threshold={:.2} (Triggered by VAD, RMS, or Hold Timer)",
+                                    _probability, vad.vad_threshold());
                             } else {
-                                eprintln!("[GATE] CLOSED: probability={:.4} < threshold={:.2}",
-                                    probability, vad.vad_threshold());
+                                gate_debug_log!("[GATE] CLOSED: probability={:.4} < threshold={:.2}",
+                                    _probability, vad.vad_threshold());
                             }
                             self.vad_was_open = vad_gate_open;
                         }

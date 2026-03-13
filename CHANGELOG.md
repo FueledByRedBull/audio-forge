@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.8 - 2026-03-13
+
+- Removed steady-state VAD buffer draining and per-window scratch allocation by switching Silero VAD to reusable cursor-based buffers.
+- Hard-gated audio-adjacent debug logging in the VAD, gate, and processor paths so release builds stop printing from those hot sections.
+- Pruned the unused bundled `scipy.optimize._highspy` payload to trim the Windows package further without dropping features.
+
 ## v1.7.7 - 2026-03-09
 
 - Hardened the headless self-test by using expected playback windows, a normalized correlation score, and a wider retry delay ladder while keeping the `0.25` confidence threshold unchanged.

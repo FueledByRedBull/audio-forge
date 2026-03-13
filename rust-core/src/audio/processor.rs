@@ -40,6 +40,18 @@ const OUTPUT_TARGET_HIGH_MS: u32 = 20;
 const OUTPUT_HARD_BACKLOG_MS: u32 = 40;
 const MAX_RECORDING_SECONDS: usize = 30;
 
+#[cfg(debug_assertions)]
+macro_rules! processor_debug_log {
+    ($($arg:tt)*) => {
+        eprintln!($($arg)*);
+    };
+}
+
+#[cfg(not(debug_assertions))]
+macro_rules! processor_debug_log {
+    ($($arg:tt)*) => {};
+}
+
 fn duration_samples(sample_rate: u32, duration_ms: u32) -> usize {
     (((sample_rate as u64) * duration_ms as u64 + 500) / 1000).max(1) as usize
 }
@@ -789,8 +801,8 @@ impl AudioProcessor {
 
         let handle = std::thread::spawn(move || {
             // Set high thread priority for real-time audio processing
-            if let Err(e) = set_current_thread_priority(ThreadPriority::Max) {
-                eprintln!("Warning: Could not set audio thread priority: {:?}", e);
+            if let Err(_e) = set_current_thread_priority(ThreadPriority::Max) {
+                processor_debug_log!("Warning: Could not set audio thread priority: {:?}", _e);
             }
 
             let mut consumer = input_consumer;
@@ -801,7 +813,7 @@ impl AudioProcessor {
             let mut resample_read_pos: usize = 0;
             const RESAMPLER_CHUNK_SIZE: usize = 1024;
             let mut resampler = if input_sample_rate_for_thread != sample_rate_for_latency {
-                eprintln!(
+                processor_debug_log!(
                     "[PROCESSING] Input device sample rate {} Hz; resampling to {} Hz in DSP thread",
                     input_sample_rate_for_thread, sample_rate_for_latency
                 );
@@ -817,10 +829,10 @@ impl AudioProcessor {
                 };
                 match SincFixedIn::<f64>::new(ratio, 1.2, params, RESAMPLER_CHUNK_SIZE, 1) {
                     Ok(r) => Some(r),
-                    Err(e) => {
-                        eprintln!(
+                    Err(_e) => {
+                        processor_debug_log!(
                             "[PROCESSING] WARNING: Failed to init resampler ({}). Processing raw input rate.",
-                            e
+                            _e
                         );
                         None
                     }
@@ -833,7 +845,7 @@ impl AudioProcessor {
             let mut output_resample_read_pos: usize = 0;
             let mut output_resampler = if output_sample_rate_for_latency != sample_rate_for_latency
             {
-                eprintln!(
+                processor_debug_log!(
                     "[PROCESSING] Output device sample rate {} Hz; resampling from {} Hz in DSP thread",
                     output_sample_rate_for_latency, sample_rate_for_latency
                 );
@@ -849,10 +861,10 @@ impl AudioProcessor {
                 };
                 match SincFixedIn::<f64>::new(ratio, 1.2, params, RESAMPLER_CHUNK_SIZE, 1) {
                     Ok(r) => Some(r),
-                    Err(e) => {
-                        eprintln!(
+                    Err(_e) => {
+                        processor_debug_log!(
                             "[PROCESSING] WARNING: Failed to init output resampler ({}). Writing 48kHz output directly.",
-                            e
+                            _e
                         );
                         None
                     }
@@ -1417,7 +1429,7 @@ impl AudioProcessor {
                                                             as u64
                                                             > SUPPRESSOR_RECOVERY_COOLDOWN_MS
                                                     {
-                                                        eprintln!(
+                                                        processor_debug_log!(
                                                             "[PROCESSING] WARNING: Suppressor starvation detected (pending={}, no output for {} ms). Soft-resetting suppressor.",
                                                             pending, since_write_ms
                                                         );
@@ -1443,7 +1455,7 @@ impl AudioProcessor {
                                             if detected_non_finite {
                                                 suppressor_non_finite_count
                                                     .fetch_add(1, Ordering::Relaxed);
-                                                eprintln!(
+                                                processor_debug_log!(
                                                     "[PROCESSING] WARNING: Non-finite suppressor output detected. Reinitializing suppressor state."
                                                 );
                                                 let was_enabled = s.is_enabled();
@@ -1570,7 +1582,7 @@ impl AudioProcessor {
                                 let time_since_write_ms = now.saturating_sub(last_write) / 1000;
 
                                 if last_write > 0 && time_since_write_ms > STALL_THRESHOLD_MS {
-                                    eprintln!(
+                                    processor_debug_log!(
                                         "[PROCESSING] WARNING: Output stall detected! No write for {} ms (input_buf={}, suppressor_enabled={})",
                                         time_since_write_ms,
                                         raw_input_len,

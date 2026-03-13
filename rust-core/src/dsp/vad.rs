@@ -6,7 +6,7 @@
 //! CRITICAL: Silero VAD is a STATEFUL model requiring hidden state management.
 //! Each inference call requires passing h/c states from the previous call.
 
-use ndarray::{Array1, Array2, Array3};
+use ndarray::{Array3, ArrayView1, ArrayView2};
 use ort::{
     session::builder::GraphOptimizationLevel,
     session::Session,
@@ -17,11 +17,21 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 /// Enable debug output for VAD gate operations
+const GATE_DEBUG: bool = false;
+
 #[cfg(debug_assertions)]
-const GATE_DEBUG: bool = true;
+macro_rules! vad_debug_log {
+    ($($arg:tt)*) => {
+        if GATE_DEBUG {
+            eprintln!($($arg)*);
+        }
+    };
+}
 
 #[cfg(not(debug_assertions))]
-const GATE_DEBUG: bool = false;
+macro_rules! vad_debug_log {
+    ($($arg:tt)*) => {};
+}
 
 /// Gate operating modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,12 +48,14 @@ pub enum GateMode {
 const SILERO_SAMPLE_RATE: u32 = 16000;
 /// Silero VAD window size (512 samples at 16kHz = 32ms)
 const SILERO_WINDOW_SIZE: usize = 512;
+const VAD_INPUT_COMPACT_THRESHOLD: usize = 4096;
 /// LSTM hidden dimension
 const LSTM_HIDDEN_DIM: usize = 64;
 /// Number of LSTM layers
 const LSTM_NUM_LAYERS: usize = 2;
 /// Combined state dimension (h + c concatenated)
 const LSTM_STATE_DIM: usize = LSTM_HIDDEN_DIM * 2; // 128
+const SILERO_SR_TENSOR: [i64; 1] = [SILERO_SAMPLE_RATE as i64];
 
 /// Errors related to VAD processing
 #[derive(Debug, Error)]
@@ -79,6 +91,16 @@ pub struct SileroVAD {
     resample_ratio: f32,
     /// Internal buffer for accumulating samples
     buffer: Vec<f32>,
+    /// Read cursor into the accumulated input buffer
+    buffer_read_pos: usize,
+    /// Reusable input-rate window scratch
+    input_window: Vec<f32>,
+    /// Reusable 16kHz pre-gain scratch
+    gained_audio: Vec<f32>,
+    /// Reusable fixed-size inference window
+    audio_512: Vec<f32>,
+    /// Reusable resample scratch
+    resample_scratch: Vec<f32>,
     /// Combined LSTM state (h and c concatenated) - shape [2, 1, 128]
     /// Silero VAD uses a single combined state instead of separate h/c
     state: Array3<f32>,
@@ -160,8 +182,11 @@ impl SileroVAD {
             .commit_from_file(&model_path)
             .map_err(|e| VadError::ModelLoadError(format!("Failed to load model from {:?}: {}", model_path, e)))?;
 
-        // Calculate resampling ratio
+        // Calculate resampling ratio and preallocate reusable buffers.
         let resample_ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
+        let window_size =
+            ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32) / SILERO_SAMPLE_RATE as f32).ceil()
+                as usize;
 
         // Initialize combined LSTM state to zeros - shape [2, 1, 128]
         // Silero VAD uses a single combined state (h and c concatenated)
@@ -172,7 +197,12 @@ impl SileroVAD {
             sample_rate,
             threshold: threshold.clamp(0.0, 1.0),
             resample_ratio,
-            buffer: Vec::with_capacity(SILERO_WINDOW_SIZE * 4),
+            buffer: Vec::with_capacity(window_size * 4),
+            buffer_read_pos: 0,
+            input_window: Vec::with_capacity(window_size),
+            gained_audio: vec![0.0; SILERO_WINDOW_SIZE],
+            audio_512: vec![0.0; SILERO_WINDOW_SIZE],
+            resample_scratch: Vec::with_capacity(SILERO_WINDOW_SIZE),
             state,
             smoothed_prob: 0.0,
             smoothing: 0.5, // Faster smoothing (less lag)
@@ -190,30 +220,40 @@ impl SileroVAD {
 
     /// Process audio samples and return speech probability
     pub fn process(&mut self, samples: &[f32]) -> Result<f32, VadError> {
-        self.buffer.extend(samples.iter());
+        self.buffer.extend_from_slice(samples);
+        let window_size = self.window_size();
 
         // Check if we have enough samples for inference
-        if self.buffer.len() < self.window_size() {
+        if self.available_samples() < window_size {
             return Ok(self.smoothed_prob);
         }
 
-        // Extract exactly what we need
-        let input_samples: Vec<f32> = self.buffer.drain(..self.window_size()).collect();
+        self.input_window.clear();
+        self.input_window.extend_from_slice(
+            &self.buffer[self.buffer_read_pos..self.buffer_read_pos + window_size],
+        );
+        self.buffer_read_pos += window_size;
+        self.compact_buffer_if_needed();
 
         // Resample to 16kHz if needed
-        let resampled = if self.sample_rate != SILERO_SAMPLE_RATE {
-            self.resample(&input_samples)
+        let inference_input = if self.sample_rate != SILERO_SAMPLE_RATE {
+            linear_resample_into(
+                &self.input_window,
+                self.resample_ratio,
+                &mut self.resample_scratch,
+            );
+            self.resample_scratch.as_slice()
         } else {
-            input_samples
+            self.input_window.as_slice()
         };
 
         // Ensure we have exactly 512 samples
-        let mut audio_512 = vec![0.0f32; SILERO_WINDOW_SIZE];
-        let copy_len = resampled.len().min(SILERO_WINDOW_SIZE);
-        audio_512[..copy_len].copy_from_slice(&resampled[..copy_len]);
+        self.audio_512.fill(0.0);
+        let copy_len = inference_input.len().min(SILERO_WINDOW_SIZE);
+        self.audio_512[..copy_len].copy_from_slice(&inference_input[..copy_len]);
 
         // Run inference
-        let prob = self.run_inference(&audio_512)?;
+        let prob = self.run_inference()?;
 
         // Smooth the probability
         self.smoothed_prob = self.smoothing * prob + (1.0 - self.smoothing) * self.smoothed_prob;
@@ -256,48 +296,61 @@ impl SileroVAD {
     /// Reset internal state (including LSTM states)
     pub fn reset(&mut self) {
         self.buffer.clear();
+        self.buffer_read_pos = 0;
+        self.input_window.clear();
+        self.resample_scratch.clear();
+        self.gained_audio.fill(0.0);
+        self.audio_512.fill(0.0);
         self.smoothed_prob = 0.0;
         // Reset combined LSTM state to zeros
         self.state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_STATE_DIM));
     }
 
+    fn available_samples(&self) -> usize {
+        self.buffer.len().saturating_sub(self.buffer_read_pos)
+    }
+
+    fn compact_buffer_if_needed(&mut self) {
+        if self.buffer_read_pos < VAD_INPUT_COMPACT_THRESHOLD
+            || self.buffer_read_pos * 2 < self.buffer.len()
+        {
+            return;
+        }
+
+        let unread = self.available_samples();
+        self.buffer.copy_within(self.buffer_read_pos.., 0);
+        self.buffer.truncate(unread);
+        self.buffer_read_pos = 0;
+    }
+
     /// Run ONNX inference with proper Silero VAD inputs
-    fn run_inference(&mut self, audio: &[f32]) -> Result<f32, VadError> {
+    fn run_inference(&mut self) -> Result<f32, VadError> {
         // Silero VAD v4/v5 expects these inputs:
         // - "input": audio tensor, shape [1, 512] or [batch, samples]
         // - "sr": sample rate tensor, scalar (16000)
         // - "state": combined LSTM state, shape [2, 1, 128] (h and c concatenated)
 
-        // Apply pre-gain to boost weak signals (helps with quiet microphones)
-        let gain_applied = self.pre_gain != 1.0;
-        let gained_audio: Vec<f32> = if gain_applied {
-            audio.iter().map(|&x| x * self.pre_gain).collect()
+        if self.pre_gain != 1.0 {
+            for (dst, src) in self
+                .gained_audio
+                .iter_mut()
+                .zip(self.audio_512.iter().copied())
+            {
+                *dst = src * self.pre_gain;
+            }
         } else {
-            audio.to_vec()
-        };
-
-        // DEBUG: Log audio statistics to diagnose VAD issue
-        static DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if GATE_DEBUG && count < 5 {  // Only log first 5 times
-            let max_val = gained_audio.iter().fold(0.0f32, |a, &b| a.max(b.abs()));
-            let mean_val: f32 = gained_audio.iter().map(|&x| x.abs()).sum::<f32>() / gained_audio.len() as f32;
-            eprintln!("[VAD-INPUT] samples={}, gain={:.2}, max={:.6}, mean={:.6}, first_10={:?}",
-                gained_audio.len(), self.pre_gain, max_val, mean_val, &gained_audio[..10.min(gained_audio.len())]);
+            self.gained_audio.copy_from_slice(&self.audio_512);
         }
 
-        // Create audio input array - shape [1, 512]
-        let audio_array = Array2::from_shape_vec((1, SILERO_WINDOW_SIZE), gained_audio)
-            .map_err(|e| VadError::OnnxError(format!("Failed to create audio array: {}", e)))?;
-
-        // Create sample rate array - scalar
-        let sr_array = Array1::from_vec(vec![SILERO_SAMPLE_RATE as i64]);
+        let audio_array = ArrayView2::from_shape((1, SILERO_WINDOW_SIZE), &self.gained_audio[..])
+            .map_err(|e| VadError::OnnxError(format!("Failed to create audio view: {}", e)))?;
+        let sr_array = ArrayView1::from(&SILERO_SR_TENSOR);
 
         // Create TensorRefs using ort 2.0 API
-        let audio_ref = TensorRef::from_array_view(&audio_array)
+        let audio_ref = TensorRef::from_array_view(audio_array)
             .map_err(|e| VadError::OnnxError(format!("Failed to create audio tensor ref: {}", e)))?;
 
-        let sr_ref = TensorRef::from_array_view(&sr_array)
+        let sr_ref = TensorRef::from_array_view(sr_array)
             .map_err(|e| VadError::OnnxError(format!("Failed to create sr tensor ref: {}", e)))?;
 
         let state_ref = TensorRef::from_array_view(&self.state)
@@ -350,33 +403,31 @@ impl SileroVAD {
 
         Ok(prob)
     }
+}
 
-    /// Simple linear resampling from sample_rate to 16kHz
-    fn resample(&self, input: &[f32]) -> Vec<f32> {
-        if self.resample_ratio == 1.0 {
-            return input.to_vec();
+fn linear_resample_into(input: &[f32], ratio: f32, output: &mut Vec<f32>) {
+    output.clear();
+    if ratio == 1.0 {
+        output.extend_from_slice(input);
+        return;
+    }
+
+    let output_len = (input.len() as f32 * ratio).ceil() as usize;
+    output.reserve(output_len);
+
+    for i in 0..output_len {
+        let src_pos = i as f32 / ratio;
+        let src_idx = src_pos as usize;
+        let frac = src_pos - src_idx as f32;
+
+        if src_idx + 1 < input.len() {
+            let sample = input[src_idx] * (1.0 - frac) + input[src_idx + 1] * frac;
+            output.push(sample);
+        } else if src_idx < input.len() {
+            output.push(input[src_idx]);
+        } else {
+            output.push(0.0);
         }
-
-        let output_len = (input.len() as f32 * self.resample_ratio).ceil() as usize;
-        let mut output = Vec::with_capacity(output_len);
-
-        for i in 0..output_len {
-            let src_pos = i as f32 / self.resample_ratio;
-            let src_idx = src_pos as usize;
-            let frac = src_pos - src_idx as f32;
-
-            if src_idx + 1 < input.len() {
-                // Linear interpolation
-                let sample = input[src_idx] * (1.0 - frac) + input[src_idx + 1] * frac;
-                output.push(sample);
-            } else if src_idx < input.len() {
-                output.push(input[src_idx]);
-            } else {
-                output.push(0.0);
-            }
-        }
-
-        output
     }
 }
 
@@ -426,16 +477,8 @@ impl VadAutoGate {
     /// Create a new VAD auto-gate controller
     pub fn new(sample_rate: u32, vad_threshold: f32) -> Self {
         let vad = match SileroVAD::new(sample_rate, vad_threshold) {
-            Ok(vad) => {
-                eprintln!("VAD auto-gate enabled (Silero VAD loaded)");
-                Some(vad)
-            }
-            Err(e) => {
-                eprintln!("VAD auto-gate disabled: {}", e);
-                eprintln!("  Download model from: https://github.com/snakers4/silero-vad/tree/master/files");
-                eprintln!("  Place in: ./models/silero_vad.onnx");
-                None
-            }
+            Ok(vad) => Some(vad),
+            Err(_) => None,
         };
 
         let enabled = vad.is_some();
@@ -478,8 +521,7 @@ impl VadAutoGate {
 
         let prob = match vad.process(samples) {
             Ok(p) => p,
-            Err(e) => {
-                eprintln!("VAD processing error: {}", e);
+            Err(_) => {
                 return (false, 0.0);
             }
         };
@@ -500,9 +542,9 @@ impl VadAutoGate {
 
         if GATE_DEBUG && adapt_debug_count < 30 {
             if !self.auto_threshold_enabled {
-                eprintln!("[ADAPT-DEBUG] Auto-threshold DISABLED - skipping noise floor update");
+                vad_debug_log!("[ADAPT-DEBUG] Auto-threshold DISABLED - skipping noise floor update");
             } else if prob >= 0.4 {
-                eprintln!(
+                vad_debug_log!(
                     "[ADAPT-DEBUG] prob {:.2} >= 0.4 - skipping (speech detected)",
                     prob
                 );
@@ -514,7 +556,7 @@ impl VadAutoGate {
         }
 
         if GATE_DEBUG && adapt_debug_count < 30 {
-            eprintln!("[ADAPT-DEBUG] Checking RMS: {:.1} dB (need > -100.0)", current_rms);
+            vad_debug_log!("[ADAPT-DEBUG] Checking RMS: {:.1} dB (need > -100.0)", current_rms);
         }
 
         // Only adapt when there's actual audio activity (not dead silence).
@@ -544,11 +586,11 @@ impl VadAutoGate {
         if GATE_DEBUG
             && (adapt_debug_count < 30 || (self.noise_floor - old_floor).abs() > 0.1)
         {
-            let auto_threshold =
+            let _auto_threshold =
                 (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
-            eprintln!(
+            vad_debug_log!(
                 "[AUTO-THRESHOLD] Noise floor: {:.1} -> {:.1} dB (RMS: {:.1} dB, prob={:.2}, threshold={:.1} dB)",
-                old_floor, self.noise_floor, current_rms, prob, auto_threshold
+                old_floor, self.noise_floor, current_rms, prob, _auto_threshold
             );
         }
     }
@@ -565,7 +607,7 @@ impl VadAutoGate {
             static DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count < 50 {  // Only log first 50 times to avoid spam
-                eprintln!("[VAD-DEBUG] prob={:.6}, threshold={:.2}, prob > threshold = {}, vad_speech_detected={}",
+                vad_debug_log!("[VAD-DEBUG] prob={:.6}, threshold={:.2}, prob > threshold = {}, vad_speech_detected={}",
                     prob, self.vad_threshold, prob > self.vad_threshold, vad_speech_detected);
             }
         }
@@ -577,24 +619,25 @@ impl VadAutoGate {
             GateMode::VadAssisted => {
                 // In VadAssisted mode, explain WHY gate opened
                 if GATE_DEBUG && (level_above_threshold || vad_speech_detected) {
-                    let level_db = compute_rms_db(samples);
-                    let threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
+                    let _level_db = compute_rms_db(samples);
+                    let _threshold =
+                        (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
                     if level_above_threshold && vad_speech_detected {
-                        eprintln!("[GATE] VAD-Assisted OPEN: BOTH level={:.1}dB>={:.1}dB AND VAD prob={:.2}>={:.2}",
-                            level_db, threshold, prob, self.vad_threshold);
+                        vad_debug_log!("[GATE] VAD-Assisted OPEN: BOTH level={:.1}dB>={:.1}dB AND VAD prob={:.2}>={:.2}",
+                            _level_db, _threshold, prob, self.vad_threshold);
                     } else if level_above_threshold {
-                        eprintln!("[GATE] VAD-Assisted OPEN: level={:.1}dB>={:.1}dB (VAD prob={:.2}<{:.2} - ignored)",
-                            level_db, threshold, prob, self.vad_threshold);
+                        vad_debug_log!("[GATE] VAD-Assisted OPEN: level={:.1}dB>={:.1}dB (VAD prob={:.2}<{:.2} - ignored)",
+                            _level_db, _threshold, prob, self.vad_threshold);
                     } else if vad_speech_detected {
-                        eprintln!("[GATE] VAD-Assisted OPEN: VAD prob={:.2}>={:.2} (level={:.1}dB<{:.1}dB - ignored)",
-                            prob, self.vad_threshold, level_db, threshold);
+                        vad_debug_log!("[GATE] VAD-Assisted OPEN: VAD prob={:.2}>={:.2} (level={:.1}dB<{:.1}dB - ignored)",
+                            prob, self.vad_threshold, _level_db, _threshold);
                     }
                 }
                 level_above_threshold || vad_speech_detected
             },
             GateMode::VadOnly => {
                 if GATE_DEBUG && vad_speech_detected {
-                    eprintln!("[GATE] VAD-Only OPEN: VAD prob={:.2}>={:.2}",
+                    vad_debug_log!("[GATE] VAD-Only OPEN: VAD prob={:.2}>={:.2}",
                         prob, self.vad_threshold);
                 }
                 vad_speech_detected
@@ -608,14 +651,14 @@ impl VadAutoGate {
             static DEBUG_COUNT2: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let count = DEBUG_COUNT2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count < 20 {
-                eprintln!("[VAD-HOLD] gate_open={}, smoothed_gate_open={}, prob={:.4}, timer_running={}",
+                vad_debug_log!("[VAD-HOLD] gate_open={}, smoothed_gate_open={}, prob={:.4}, timer_running={}",
                     gate_open, smoothed_gate_open, prob, self.timer_running);
             }
         }
 
         // Debug: show final gate state after hold time
         if GATE_DEBUG && smoothed_gate_open != gate_open {
-            eprintln!("[GATE] HoldTime ACTIVE: raw_gate={}, held_gate={}",
+            vad_debug_log!("[GATE] HoldTime ACTIVE: raw_gate={}, held_gate={}",
                 if gate_open { "OPEN" } else { "CLOSED" },
                 if smoothed_gate_open { "OPEN" } else { "CLOSED" });
         }
@@ -668,7 +711,7 @@ impl VadAutoGate {
                 self.hold_timer = 0.0;
                 self.timer_running = false;
                 if GATE_DEBUG && self.prev_gate_open {
-                     eprintln!("[GATE] HoldTimer EXPIRED (Closed)");
+                    vad_debug_log!("[GATE] HoldTimer EXPIRED (Closed)");
                 }
             }
         }
@@ -721,11 +764,6 @@ impl VadAutoGate {
             if self.noise_floor <= -100.0 {
                 self.noise_floor = -60.0;  // Reset to sensible default
             }
-            let auto_threshold = (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
-            eprintln!("[AUTO-THRESHOLD] ENABLED: Noise floor={:.1} dB, margin={:.1} dB, threshold={:.1} dB",
-                self.noise_floor, self.margin, auto_threshold);
-        } else {
-            eprintln!("[AUTO-THRESHOLD] DISABLED: Returning to manual threshold mode");
         }
     }
 
@@ -899,5 +937,57 @@ mod tests {
 
         assert!(gate.noise_floor() > initial_floor + 4.0);
         assert!(gate.noise_floor() < -40.0);
+    }
+
+    #[test]
+    fn test_linear_resample_into_identity_preserves_samples() {
+        let input = vec![0.0, 0.25, -0.5, 1.0];
+        let mut output = Vec::new();
+
+        linear_resample_into(&input, 1.0, &mut output);
+
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_linear_resample_into_downsamples_to_expected_length() {
+        let input = vec![1.0f32; 1536];
+        let mut output = Vec::new();
+
+        linear_resample_into(&input, SILERO_SAMPLE_RATE as f32 / 48_000.0, &mut output);
+
+        assert_eq!(output.len(), SILERO_WINDOW_SIZE);
+        assert!(output.iter().all(|sample| (*sample - 1.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn test_vad_buffer_compacts_after_threshold() {
+        let mut vad = match SileroVAD::new(48_000, 0.5) {
+            Ok(vad) => vad,
+            Err(_) => return,
+        };
+
+        let frame = vec![0.0f32; 480];
+        for _ in 0..20 {
+            let _ = vad.process(&frame);
+        }
+
+        assert!(vad.buffer_read_pos < VAD_INPUT_COMPACT_THRESHOLD);
+        assert!(vad.buffer.len() >= vad.buffer_read_pos);
+        assert!(vad.buffer.len() < vad.window_size() * 4);
+    }
+
+    #[test]
+    fn test_vad_resampled_path_reuses_fixed_output_window() {
+        let mut vad = match SileroVAD::new(48_000, 0.5) {
+            Ok(vad) => vad,
+            Err(_) => return,
+        };
+
+        let frame = vec![0.0f32; vad.window_size()];
+        let _ = vad.process(&frame);
+
+        assert_eq!(vad.audio_512.len(), SILERO_WINDOW_SIZE);
+        assert_eq!(vad.resample_scratch.len(), SILERO_WINDOW_SIZE);
     }
 }

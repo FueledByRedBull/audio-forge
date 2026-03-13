@@ -2,7 +2,8 @@
 
 //! MicEq Core - High-performance DSP engine for real-time audio processing
 //!
-//! Processing chain: Mic Input → Noise Gate → RNNoise → 10-Band IIR EQ → Output
+//! Processing chain: Mic Input -> Pre-Filter -> Noise Gate -> Noise Suppression
+//! -> De-Esser -> 10-Band EQ -> Compressor -> Limiter -> Output
 
 use pyo3::prelude::*;
 use pyo3::types::PyModule;

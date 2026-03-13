@@ -62,7 +62,7 @@ def test_preset_migration_to_v17_adds_deesser_defaults():
 
     preset = Preset.from_dict(old_data)
 
-    assert preset.version == "1.7.8"
+    assert preset.version == "1.7.9"
     assert preset.deesser.enabled is False
     assert preset.deesser.auto_enabled is True
     assert preset.deesser.auto_amount == 0.5
@@ -85,6 +85,8 @@ def test_app_config_latency_profiles_round_trip():
     cfg = AppConfig(
         last_input_device="Mic A",
         last_output_device="Out B",
+        main_splitter_sizes=[420, 680],
+        main_control_tab_index=1,
         use_measured_latency=True,
         latency_calibration_profiles={"Mic A||Out B": profile},
     )
@@ -93,6 +95,8 @@ def test_app_config_latency_profiles_round_trip():
     restored = AppConfig.from_dict(raw)
 
     assert restored.use_measured_latency is True
+    assert restored.main_splitter_sizes == [420, 680]
+    assert restored.main_control_tab_index == 1
     assert "Mic A||Out B" in restored.latency_calibration_profiles
     restored_profile = restored.latency_calibration_profiles["Mic A||Out B"]
     assert restored_profile.measured_round_trip_ms == 36.5

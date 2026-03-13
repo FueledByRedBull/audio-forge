@@ -7,7 +7,7 @@
 
 Low-latency microphone audio processor with AI noise suppression, smart gating, Auto-EQ, and 10-band parametric EQ.
 
-Current version: `v1.7.8`
+Current version: `v1.7.9`
 
 ## Status
 
@@ -35,6 +35,7 @@ AudioForge is currently focused on Windows desktop use and portable distribution
   - Gate/VAD and gain-reduction indicators
 - Runtime diagnostics for backend health, underruns, dropped samples, and recovery state
 - Lower-overhead VAD runtime path with reusable buffers and less hot-path terminal logging
+- Tabbed main-window controls with persistent splitter sizing and dedicated health chips for latency, buffer state, drops, backend, and recovery
 - Callback-based stream watchdog with auto-recovery and backoff
 - Preset save/load with migration support
 - Latency calibration dialog for per device-pair compensation profiles
@@ -112,7 +113,7 @@ Create archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.7.8-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.7.9-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 ## Testing

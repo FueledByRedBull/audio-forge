@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.9 - 2026-03-13
+
+- Fixed the main-window dark-theme regression by removing the broad forced-light styling and limiting custom styling to explicit action buttons and health chips.
+- Rebalanced the splitter layout for the tabbed control column and EQ pane, with clamped persisted sizes and wider pane floors so labels and EQ controls stop clipping on 1366-wide displays.
+- Polished action-row spacing and tab-page margins to make the reworked `Cleanup` and `Dynamics` views read cleanly without changing DSP behavior.
+
 ## v1.7.8 - 2026-03-13
 
 - Removed steady-state VAD buffer draining and per-window scratch allocation by switching Silero VAD to reusable cursor-based buffers.

@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QFrame,
     QFileIconProvider,
+    QTabWidget,
 )
 from PyQt6.QtCore import Qt, QTimer, QFileInfo
 from PyQt6.QtGui import QAction, QIcon
@@ -47,7 +48,17 @@ from .deesser_panel import DeEsserPanel
 from .level_meter import LevelMeter
 from .calibration_dialog import CalibrationDialog
 from .latency_calibration_dialog import LatencyCalibrationDialog
-from .layout_constants import SPACING_SECTION, SPACING_NORMAL
+from .layout_constants import (
+    SPACING_SECTION,
+    SPACING_NORMAL,
+    MARGIN_PANEL,
+    PRIMARY_ACTION_BUTTON_STYLE,
+    DESTRUCTIVE_ACTION_BUTTON_STYLE,
+    SECONDARY_ACTION_BUTTON_STYLE,
+    SUBDUED_TEXT_STYLE,
+    WARNING_BANNER_STYLE,
+    status_chip_style,
+)
 from .. import AudioProcessor, __version__, list_input_devices, list_output_devices
 from ..config import (
     Preset,
@@ -118,6 +129,9 @@ def _update_callback_stall_state(
 class MainWindow(QMainWindow):
     """Main application window for AudioForge."""
 
+    LEFT_PANE_MIN_WIDTH = 500
+    RIGHT_PANE_MIN_WIDTH = 680
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("AudioForge - Microphone Audio Processor")
@@ -139,6 +153,9 @@ class MainWindow(QMainWindow):
         self._processing_started_at = None
         self._last_backend_warning = None
         self._last_diag_poll = 0.0
+        self._ui_state_timer = QTimer(self)
+        self._ui_state_timer.setSingleShot(True)
+        self._ui_state_timer.timeout.connect(self._save_ui_state)
 
         # Set up UI
         self._setup_ui()
@@ -153,6 +170,10 @@ class MainWindow(QMainWindow):
         self.input_combo.currentIndexChanged.connect(self._on_device_changed)
         self.output_combo.currentIndexChanged.connect(self._on_device_changed)
 
+        # Set default size before any persisted geometry overrides it.
+        self.resize(1280, 850)
+        self.setMinimumSize(1200, 850)
+
         # Restore settings from config
         self._restore_from_config()
 
@@ -161,26 +182,20 @@ class MainWindow(QMainWindow):
         self.meter_timer.timeout.connect(self._update_meters)
         self.meter_timer.start(16)  # ~60 FPS
 
-        # Set initial window size to fit all content
-        self.resize(1100, 850)
-        self.setMinimumSize(1000, 850)
-
     def _setup_ui(self):
         """Set up the user interface."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setSpacing(SPACING_SECTION)  # Consistent spacing between major sections
+        main_layout.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
+        main_layout.setSpacing(SPACING_SECTION)
 
         # Warning banner for missing audio devices (hidden by default)
         self.device_warning_banner = QLabel(
-            "⚠ Warning: No audio devices detected. Check your audio drivers and connections."
+            "Warning: No audio devices detected. Check your audio drivers and connections."
         )
-        self.device_warning_banner.setStyleSheet(
-            "QLabel { background-color: #FFA500; color: black; padding: 10px; "
-            "font-weight: bold; border-radius: 5px; }"
-        )
+        self.device_warning_banner.setStyleSheet(WARNING_BANNER_STYLE)
         self.device_warning_banner.setVisible(False)
         main_layout.addWidget(self.device_warning_banner)
 
@@ -203,145 +218,53 @@ class MainWindow(QMainWindow):
 
         # Refresh button
         refresh_btn = QPushButton("Refresh")
+        refresh_btn.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
         refresh_btn.clicked.connect(self._refresh_devices)
         device_layout.addWidget(refresh_btn)
 
         main_layout.addWidget(device_group)
 
-        # Middle: Control panels in horizontal layout with meters
+        # Middle: meters plus tabbed controls/EQ splitter
         middle_layout = QHBoxLayout()
-        middle_layout.setSpacing(SPACING_NORMAL)  # Consistent spacing for control panels
+        middle_layout.setSpacing(SPACING_NORMAL)
 
-        # Input meter (far left)
         input_meter_layout = QVBoxLayout()
         self.input_meter = LevelMeter("IN", show_scale=True)
         self.input_meter.setFixedWidth(55)
         input_meter_layout.addWidget(self.input_meter)
         middle_layout.addLayout(input_meter_layout)
 
-        # Control panels
-        panels_layout = QHBoxLayout()
-        panels_layout.setSpacing(SPACING_NORMAL)  # Consistent spacing between panel groups
-
-        # ============================================================
-        # LEFT SIDE: All panels in a single scrollable container
-        # This prevents overlap issues between Gate, RNNoise, and Compressor
-        # ============================================================
-        
-        # Create a container widget for all left panels
-        left_container = QWidget()
-        left_container_layout = QVBoxLayout(left_container)
-        left_container_layout.setContentsMargins(0, 0, 12, 0)  # 12px right margin for scrollbar
-        left_container_layout.setSpacing(SPACING_NORMAL)
-
-        # 1. Noise Gate panel (direct widget, no nested scroll area)
         self.gate_panel = GatePanel(self.processor)
-        left_container_layout.addWidget(self.gate_panel)
-
-        # 2. RNNoise panel
-        rnnoise_group = QGroupBox("RNNoise (ML Noise Suppression)")
-        rnnoise_layout = QVBoxLayout(rnnoise_group)
-        rnnoise_layout.setSpacing(SPACING_NORMAL)
-
-        self.rnnoise_checkbox = QCheckBox("Enable RNNoise")
-        self.rnnoise_checkbox.setChecked(True)
-        self.rnnoise_checkbox.setToolTip(
-            "ML-based noise suppression.\n"
-            "Removes background noise while preserving voice."
-        )
-        self.rnnoise_checkbox.toggled.connect(self._on_rnnoise_toggled)
-        rnnoise_layout.addWidget(self.rnnoise_checkbox)
-
-        rnnoise_info = QLabel(
-            "ML-based noise suppression trained on\n"
-            "voice and noise samples."
-        )
-        rnnoise_info.setStyleSheet("color: gray; font-size: 11px;")
-        rnnoise_info.setWordWrap(True)
-        rnnoise_layout.addWidget(rnnoise_info)
-
-        # Strength slider
-        strength_layout = QHBoxLayout()
-
-        self.strength_slider = QSlider(Qt.Orientation.Horizontal)
-        self.strength_slider.setRange(0, 100)  # 0-100 integer steps
-        self.strength_slider.setValue(100)     # Default: 100% (full processing)
-        self.strength_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.strength_slider.setTickInterval(25)  # 0, 25, 50, 75, 100
-        self.strength_slider.setToolTip("RNNoise processing strength (0% = dry, 100% = fully processed)")
-        strength_layout.addWidget(self.strength_slider)
-
-        self.strength_label = QLabel("100%")
-        self.strength_label.setFixedWidth(50)
-        strength_layout.addWidget(self.strength_label)
-
-        rnnoise_layout.addLayout(strength_layout)
-
-        # Connect slider to update handler
-        self.strength_slider.valueChanged.connect(self._on_strength_changed)
-
-        # Model selection dropdown
-        model_layout = QHBoxLayout()
-        model_layout.addWidget(QLabel("AI Model:"))
-
-        self.model_combo = QComboBox()
-        # Populate from processor
-        for model_id, display_name in self.processor.list_noise_models():
-            self.model_combo.addItem(display_name, model_id)
-        self.model_combo.setToolTip(
-            "RNNoise: Low latency (~10ms), good quality\n"
-            "DeepFilterNet LL: Low latency (~10ms), better quality than RNNoise\n"
-            "DeepFilterNet: Best quality (~40ms latency)"
-        )
-        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
-        model_layout.addWidget(self.model_combo)
-        model_layout.addStretch()
-
-        rnnoise_layout.addLayout(model_layout)
-
-        # Latency info label (updates based on model)
-        self.rnnoise_latency_label = QLabel("Latency: ~10ms (RNNoise)")
-        self.rnnoise_latency_label.setStyleSheet("color: gray; font-size: 11px;")
-        rnnoise_layout.addWidget(self.rnnoise_latency_label)
-
-        left_container_layout.addWidget(rnnoise_group)
-
-        # 3. De-esser panel (direct widget, no nested scroll area)
         self.deesser_panel = DeEsserPanel(self.processor)
-        left_container_layout.addWidget(self.deesser_panel)
-
-        # 4. Compressor panel (direct widget, no nested scroll area)
         self.compressor_panel = CompressorPanel(self.processor)
-        left_container_layout.addWidget(self.compressor_panel)
+        self.noise_suppression_group = self._create_noise_suppression_group()
 
-        # Add stretch at bottom to push content up when there's extra space
-        left_container_layout.addStretch()
+        self.control_tabs = QTabWidget()
+        self.control_tabs.setDocumentMode(True)
+        self.control_tabs.setMinimumWidth(self.LEFT_PANE_MIN_WIDTH)
+        self.control_tabs.addTab(
+            self._create_tab_page([self.gate_panel, self.noise_suppression_group]),
+            "Cleanup",
+        )
+        self.control_tabs.addTab(
+            self._create_tab_page([self.deesser_panel, self.compressor_panel]),
+            "Dynamics",
+        )
+        self.control_tabs.currentChanged.connect(self._on_main_control_tab_changed)
 
-        # Wrap everything in ONE scroll area - this is the key fix!
-        # Using a single scroll area prevents the overlap issues
-        left_scroll_area = QScrollArea()
-        left_scroll_area.setWidget(left_container)
-        left_scroll_area.setWidgetResizable(True)
-        left_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        left_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        left_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-
-        # Fixed width for left panel - doesn't stretch with window
-        # Expanding height - fills available vertical space, scrollbar appears when overflow
-        left_scroll_area.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
-        left_scroll_area.setFixedWidth(450)  # Account for ~20px scrollbar width
-
-        panels_layout.addWidget(left_scroll_area)
-
-        # ============================================================
-        # RIGHT SIDE: EQ panel (stretches to fill remaining space)
-        # ============================================================
         self.eq_panel = EQPanel(self.processor)
-        panels_layout.addWidget(self.eq_panel, stretch=1)
+        self.eq_panel.setMinimumWidth(self.RIGHT_PANE_MIN_WIDTH)
 
-        middle_layout.addLayout(panels_layout, stretch=1)
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.addWidget(self.control_tabs)
+        self.main_splitter.addWidget(self.eq_panel)
+        self.main_splitter.setHandleWidth(10)
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.splitterMoved.connect(self._on_splitter_moved)
+        middle_layout.addWidget(self.main_splitter, stretch=1)
 
-        # Output meter (far right)
         output_meter_layout = QVBoxLayout()
         self.output_meter = LevelMeter("OUT", show_scale=True)
         self.output_meter.setFixedWidth(55)
@@ -350,103 +273,224 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(middle_layout, stretch=1)
 
-        # Bottom: Control buttons
-        control_group = QGroupBox("Processing Control")
-        control_layout = QHBoxLayout(control_group)
+        control_group = QGroupBox("Processing")
+        control_stack = QVBoxLayout(control_group)
+        control_stack.setSpacing(SPACING_NORMAL)
+        control_stack.setContentsMargins(MARGIN_PANEL, SPACING_NORMAL, MARGIN_PANEL, MARGIN_PANEL)
 
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(SPACING_NORMAL)
         self.start_btn = QPushButton("Start Processing")
-        self.start_btn.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; "
-            "padding: 10px 20px; font-weight: bold; font-size: 14px; }"
-        )
+        self.start_btn.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
+        self.start_btn.setMinimumWidth(132)
         self.start_btn.clicked.connect(self._start_processing)
-        control_layout.addWidget(self.start_btn)
+        action_layout.addWidget(self.start_btn)
 
         self.stop_btn = QPushButton("Stop Processing")
-        self.stop_btn.setStyleSheet(
-            "QPushButton { background-color: #f44336; color: white; "
-            "padding: 10px 20px; font-weight: bold; font-size: 14px; }"
-        )
+        self.stop_btn.setStyleSheet(DESTRUCTIVE_ACTION_BUTTON_STYLE)
         self.stop_btn.setEnabled(False)
+        self.stop_btn.setMinimumWidth(132)
         self.stop_btn.clicked.connect(self._stop_processing)
-        control_layout.addWidget(self.stop_btn)
+        action_layout.addWidget(self.stop_btn)
 
-        # Auto-EQ button
         self.auto_eq_button = QPushButton("Auto-EQ")
-        self.auto_eq_button.setStyleSheet(
-            "QPushButton { background-color: #2196F3; color: white; "
-            "padding: 10px 20px; font-weight: bold; font-size: 14px; }"
-        )
+        self.auto_eq_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
+        self.auto_eq_button.setMinimumWidth(108)
         self.auto_eq_button.setToolTip(
             "Automatically calibrate EQ to your voice and microphone\n"
             "Select target curve, read passage, and get professional tuning"
         )
         self.auto_eq_button.clicked.connect(self._on_auto_eq_clicked)
-        control_layout.addWidget(self.auto_eq_button)
+        action_layout.addWidget(self.auto_eq_button)
 
-        # Undo Auto-EQ button (disabled initially)
         self._undo_auto_eq_button = QPushButton("Undo Auto-EQ")
+        self._undo_auto_eq_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
         self._undo_auto_eq_button.setEnabled(False)
+        self._undo_auto_eq_button.setMinimumWidth(108)
         self._undo_auto_eq_button.setToolTip("Restore EQ settings from before last auto-EQ")
         self._undo_auto_eq_button.clicked.connect(self.undo_auto_eq)
-        control_layout.addWidget(self._undo_auto_eq_button)
-
-        control_layout.addStretch()
-
-        # Latency display
-        self.latency_label = QLabel("Latency: -- ms")
-        self.latency_label.setStyleSheet(
-            "QLabel { background-color: #333; color: #0f0; padding: 5px 10px; "
-            "border-radius: 3px; font-family: monospace; font-size: 12px; }"
-        )
-        self.latency_label.setToolTip(
-            "Total processing latency (RNNoise buffering + output buffer)\n"
-            "DSP time shows smoothed actual processing time per 10ms chunk"
-        )
-        control_layout.addWidget(self.latency_label)
-
-        # DSP Time display
-        # NOTE: DSP label removed - now combined with latency display
-
-        # Buffer Health display
-        self.buffer_label = QLabel("Buffer: --")
-        self.buffer_label.setStyleSheet(
-            "QLabel { background-color: #333; color: #0f0; padding: 5px 10px; "
-            "border-radius: 3px; font-family: monospace; font-size: 12px; }"
-        )
-        self.buffer_label.setToolTip(
-            "Buffer health indicator\n"
-            "OK: Input + RNNoise buffers are healthy\n"
-            "WARN: Buffers accumulating (may cause drift)\n"
-            "BAD: Significant buffer buildup"
-        )
-        control_layout.addWidget(self.buffer_label)
-
-        # Dropped Samples display
-        self.dropped_label = QLabel("Dropped: 0")
-        self.dropped_label.setStyleSheet(
-            "QLabel { background-color: #333; color: #0f0; padding: 5px 10px; "
-            "border-radius: 3px; font-family: monospace; font-size: 12px; }"
-        )
-        self.dropped_label.setToolTip(
-            "Dropped samples counter\n"
-            "Shows total audio samples dropped due to buffer overflow\n"
-            "Green: 0 dropped (healthy)\n"
-            "Yellow: > 0 dropped (buffer underrun detected)\n"
-            "Right-click to reset counter"
-        )
-        self.dropped_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.dropped_label.customContextMenuRequested.connect(self._on_dropped_context_menu)
-        control_layout.addWidget(self.dropped_label)
-
-        control_layout.addSpacing(20)
+        action_layout.addWidget(self._undo_auto_eq_button)
+        action_layout.addStretch()
+        action_layout.addSpacing(SPACING_NORMAL)
 
         self.bypass_checkbox = QCheckBox("Master Bypass")
         self.bypass_checkbox.setToolTip("Bypass all processing (pass audio through unchanged)")
         self.bypass_checkbox.toggled.connect(self._on_bypass_toggled)
-        control_layout.addWidget(self.bypass_checkbox)
+        action_layout.addWidget(self.bypass_checkbox)
+        action_layout.setAlignment(self.bypass_checkbox, Qt.AlignmentFlag.AlignVCenter)
+        control_stack.addLayout(action_layout)
 
+        health_layout = QHBoxLayout()
+        health_layout.setSpacing(SPACING_NORMAL)
+        health_layout.setContentsMargins(0, 2, 0, 0)
+
+        self.latency_label = QLabel("Latency: --")
+        self.latency_label.setToolTip(
+            "Total processing latency and smoothed DSP time per processing chunk."
+        )
+        health_layout.addWidget(self.latency_label)
+
+        self.buffer_label = QLabel("Buffer: --")
+        self.buffer_label.setToolTip(
+            "Input plus suppression buffer health.\nOK is healthy, WARN indicates buildup, BAD indicates heavy backlog."
+        )
+        health_layout.addWidget(self.buffer_label)
+
+        self.dropped_label = QLabel("Drops: --")
+        self.dropped_label.setToolTip(
+            "Dropped samples and related runtime counters.\nRight-click to reset dropped samples."
+        )
+        self.dropped_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.dropped_label.customContextMenuRequested.connect(self._on_dropped_context_menu)
+        health_layout.addWidget(self.dropped_label)
+
+        self.backend_diag_label = QLabel("Backend: --")
+        self.backend_diag_label.setToolTip("Active suppression backend state and fallback health.")
+        health_layout.addWidget(self.backend_diag_label)
+
+        self.recovery_diag_label = QLabel("Recovery: --")
+        self.recovery_diag_label.setToolTip("Recent stream restart and recovery status.")
+        health_layout.addWidget(self.recovery_diag_label)
+        health_layout.addStretch()
+        control_stack.addLayout(health_layout)
         main_layout.addWidget(control_group)
+
+        self._reset_health_labels()
+
+    def _create_tab_page(self, widgets: list[QWidget]) -> QScrollArea:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(6, 6, 8, 8)
+        layout.setSpacing(SPACING_SECTION)
+        for widget in widgets:
+            layout.addWidget(widget)
+        layout.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setWidget(container)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        return scroll
+
+    def _create_noise_suppression_group(self) -> QGroupBox:
+        group = QGroupBox("Noise Suppression")
+        layout = QVBoxLayout(group)
+        layout.setSpacing(SPACING_NORMAL)
+
+        model_layout = QHBoxLayout()
+        model_layout.addWidget(QLabel("Backend:"))
+        self.model_combo = QComboBox()
+        for model_id, display_name in self.processor.list_noise_models():
+            self.model_combo.addItem(display_name, model_id)
+        self.model_combo.setToolTip(
+            "Choose the suppression backend.\n"
+            "RNNoise: low latency baseline.\n"
+            "DeepFilterNet LL: low latency with stronger cleanup.\n"
+            "DeepFilterNet: highest cleanup quality with higher latency."
+        )
+        self.model_combo.currentIndexChanged.connect(self._on_model_changed)
+        model_layout.addWidget(self.model_combo, stretch=1)
+        layout.addLayout(model_layout)
+
+        self.rnnoise_checkbox = QCheckBox("Enable Noise Suppression")
+        self.rnnoise_checkbox.setChecked(True)
+        self.rnnoise_checkbox.setToolTip(
+            "Enable or disable the selected suppression backend."
+        )
+        self.rnnoise_checkbox.toggled.connect(self._on_rnnoise_toggled)
+        layout.addWidget(self.rnnoise_checkbox)
+
+        strength_layout = QHBoxLayout()
+        strength_layout.addWidget(QLabel("Strength:"))
+        self.strength_slider = QSlider(Qt.Orientation.Horizontal)
+        self.strength_slider.setRange(0, 100)
+        self.strength_slider.setValue(100)
+        self.strength_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.strength_slider.setTickInterval(25)
+        self.strength_slider.setToolTip(
+            "Processing strength for the selected backend (0% dry, 100% fully processed)."
+        )
+        self.strength_slider.valueChanged.connect(self._on_strength_changed)
+        strength_layout.addWidget(self.strength_slider)
+
+        self.strength_label = QLabel("100%")
+        self.strength_label.setMinimumWidth(48)
+        strength_layout.addWidget(self.strength_label)
+        layout.addLayout(strength_layout)
+
+        self.rnnoise_latency_label = QLabel("Latency: ~10ms (RNNoise)")
+        self.rnnoise_latency_label.setStyleSheet(SUBDUED_TEXT_STYLE)
+        layout.addWidget(self.rnnoise_latency_label)
+
+        info_label = QLabel(
+            "Backend choice affects cleanup quality, CPU use, and latency.\n"
+            "Packaged builds prefer bundled DeepFilter assets when available."
+        )
+        info_label.setStyleSheet(SUBDUED_TEXT_STYLE)
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        return group
+
+    def _set_health_chip(self, label: QLabel, text: str, state: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(status_chip_style(state))
+
+    def _reset_health_labels(self) -> None:
+        self._set_health_chip(self.latency_label, "Latency: --", "idle")
+        self._set_health_chip(self.buffer_label, "Buffer: --", "idle")
+        self._set_health_chip(self.dropped_label, "Drops: --", "idle")
+        self._set_health_chip(self.backend_diag_label, "Backend: --", "idle")
+        self._set_health_chip(self.recovery_diag_label, "Recovery: --", "idle")
+
+    def _schedule_ui_state_save(self) -> None:
+        self._ui_state_timer.start(200)
+
+    def _save_ui_state(self) -> None:
+        if hasattr(self, "main_splitter"):
+            self.config.main_splitter_sizes = self._clamp_splitter_sizes(self.main_splitter.sizes())
+        if hasattr(self, "control_tabs"):
+            self.config.main_control_tab_index = int(self.control_tabs.currentIndex())
+        save_config(self.config)
+
+    def _clamp_splitter_sizes(self, sizes: list[int]) -> list[int]:
+        total = max(sum(int(size) for size in sizes), self.width() - 150, 900)
+        default_left = min(max(self.LEFT_PANE_MIN_WIDTH, total // 3), total - self.RIGHT_PANE_MIN_WIDTH)
+        default_right = max(total - default_left, self.RIGHT_PANE_MIN_WIDTH)
+        if len(sizes) != 2:
+            return [default_left, default_right]
+
+        left = int(sizes[0])
+        min_left = self.LEFT_PANE_MIN_WIDTH
+        max_left = max(min_left, total - self.RIGHT_PANE_MIN_WIDTH)
+        left = max(min_left, min(left, max_left))
+        right = max(total - left, self.RIGHT_PANE_MIN_WIDTH)
+        return [left, right]
+
+    def _restore_ui_state(self) -> None:
+        if hasattr(self, "control_tabs"):
+            index = self.config.main_control_tab_index
+            if 0 <= index < self.control_tabs.count():
+                self.control_tabs.setCurrentIndex(index)
+        if hasattr(self, "main_splitter"):
+            self.main_splitter.setSizes(
+                self._clamp_splitter_sizes(self.config.main_splitter_sizes or [])
+            )
+
+    def _on_main_control_tab_changed(self, _: int) -> None:
+        self._schedule_ui_state_save()
+
+    def _on_splitter_moved(self, _: int, __: int) -> None:
+        self._schedule_ui_state_save()
+
+    def _set_noise_suppression_latency_label(self, model_id: str) -> None:
+        if model_id == "deepfilter":
+            self.rnnoise_latency_label.setText("Latency: ~40ms (DeepFilterNet)")
+        elif model_id == "deepfilter-ll":
+            self.rnnoise_latency_label.setText("Latency: ~10ms (DeepFilterNet LL)")
+        else:
+            self.rnnoise_latency_label.setText("Latency: ~10ms (RNNoise)")
 
     def _setup_menubar(self):
         """Setup menu bar."""
@@ -516,10 +560,6 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(
             f"Sample Rate: {self.processor.sample_rate()} Hz | Status: Ready"
         )
-        self.backend_diag_label = QLabel("Backend: --")
-        self.recovery_diag_label = QLabel("Recovery: --")
-        self.status_bar.addPermanentWidget(self.backend_diag_label)
-        self.status_bar.addPermanentWidget(self.recovery_diag_label)
 
     def _setup_options_menu(self):
         """Setup Options menu with startup preset selector."""
@@ -726,17 +766,17 @@ class MainWindow(QMainWindow):
         # Update warning banner visibility and text
         if not input_found and not output_found:
             self.device_warning_banner.setText(
-                "⚠ Warning: No audio devices detected. Check your audio drivers and connections."
+                "Warning: No audio devices detected. Check your audio drivers and connections."
             )
             self.device_warning_banner.setVisible(True)
         elif not input_found:
             self.device_warning_banner.setText(
-                "⚠ Warning: No input devices detected. Check your microphone connections."
+                "Warning: No input devices detected. Check your microphone connections."
             )
             self.device_warning_banner.setVisible(True)
         elif not output_found:
             self.device_warning_banner.setText(
-                "⚠ Warning: No output devices detected. Check your audio output connections."
+                "Warning: No output devices detected. Check your audio output connections."
             )
             self.device_warning_banner.setVisible(True)
         else:
@@ -870,6 +910,7 @@ class MainWindow(QMainWindow):
             y = geom.get('y', 100)
             self.setGeometry(int(x), int(y), int(width), int(height))
 
+        self._restore_ui_state()
         self._apply_latency_compensation_for_current_devices()
 
     def _on_device_changed(self):
@@ -1041,7 +1082,7 @@ class MainWindow(QMainWindow):
             preset = Preset(
                 name=preset_name,
                 description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
-                version="1.7.8",
+                version="1.7.9",
                 gate=GateSettings(**self.gate_panel.get_settings()),
                 eq=EQSettings(**self.eq_panel.get_settings()),
                 rnnoise=RNNoiseSettings(
@@ -1136,13 +1177,7 @@ class MainWindow(QMainWindow):
                         self.model_combo.setCurrentIndex(i)
                         return
             else:
-                # Update latency display based on model
-                if model_id == "deepfilter":
-                    self.rnnoise_latency_label.setText("Latency: ~40ms (DeepFilterNet)")
-                elif model_id == "deepfilter-ll":
-                    self.rnnoise_latency_label.setText("Latency: ~10ms (DeepFilterNet LL)")
-                else:
-                    self.rnnoise_latency_label.setText("Latency: ~10ms (RNNoise)")
+                self._set_noise_suppression_latency_label(model_id)
                 self.status_bar.showMessage(f"Switched to {self.model_combo.currentText()}")
         except Exception as e:
             # Unexpected error - show detailed dialog with guidance
@@ -1216,46 +1251,46 @@ class MainWindow(QMainWindow):
                 # VAD not available in this build
                 pass
 
-            # Update combined latency display
-            self.latency_label.setText(f"Latency: ~{latency_ms:.0f}ms (DSP: {dsp_time_ms:.1f}ms)")
+            self._set_health_chip(
+                self.latency_label,
+                f"Latency: ~{latency_ms:.0f}ms | DSP {dsp_time_ms:.1f}ms",
+                "info",
+            )
 
             # Update buffer health display (Input + RNNoise only)
             # Healthy: < 960 samples (2 frames), Warning: < 1920 (4 frames), Bad: >= 1920
             pipeline_buf = input_buf + rnnoise_buf
             if pipeline_buf < 960:
                 buf_status = "OK"
-                buf_color = "#0f0"  # Green
+                buf_state = "ok"
             elif pipeline_buf < 1920:
                 buf_status = "WARN"
-                buf_color = "#ff0"  # Yellow
+                buf_state = "warn"
             else:
                 buf_status = "BAD"
-                buf_color = "#f00"  # Red
-
-            self.buffer_label.setStyleSheet(
-                f"QLabel {{ background-color: #333; color: {buf_color}; padding: 5px 10px; "
-                "border-radius: 3px; font-family: monospace; font-size: 12px; }"
+                buf_state = "bad"
+            self._set_health_chip(
+                self.buffer_label,
+                f"Buffer: {buf_status} ({pipeline_buf})",
+                buf_state,
             )
-            self.buffer_label.setText(f"Buffer: {buf_status} ({pipeline_buf})")
 
             # Update dropped samples display
             dropped = diagnostics.get("input_dropped_samples", 0)
             lock_contention = diagnostics.get("lock_contention_count", 0)
             non_finite = diagnostics.get("suppressor_non_finite_count", 0)
             restart_count = diagnostics.get("stream_restart_count", 0)
-            if dropped == 0:
-                dropped_color = "#0f0"  # Green - no drops
-            else:
-                dropped_color = "#ff0"  # Yellow - drops detected
-            self.dropped_label.setStyleSheet(
-                f"QLabel {{ background-color: #333; color: {dropped_color}; padding: 5px 10px; "
-                "border-radius: 3px; font-family: monospace; font-size: 12px; }"
-            )
             underruns = diagnostics.get("output_underrun_total", 0)
             recoveries = diagnostics.get("output_recovery_count", 0)
-            self.dropped_label.setText(
-                f"Dropped: {dropped} | U:{underruns} R:{recoveries} | "
-                f"L:{lock_contention} NF:{non_finite} RS:{restart_count}"
+            dropped_state = (
+                "ok"
+                if dropped == 0 and underruns == 0 and recoveries == 0 and lock_contention == 0 and non_finite == 0
+                else "warn"
+            )
+            self._set_health_chip(
+                self.dropped_label,
+                f"Drops: {dropped} | U:{underruns} R:{recoveries} | L:{lock_contention} NF:{non_finite} RS:{restart_count}",
+                dropped_state,
             )
 
             backend_available = diagnostics.get("noise_backend_available", True)
@@ -1294,8 +1329,10 @@ class MainWindow(QMainWindow):
                         backend_bits.append(f"NF:{non_finite}")
                     if backend_error:
                         backend_bits.append("ERR")
-                    self.backend_diag_label.setText(
-                        f"Backend: {' '.join(str(bit) for bit in backend_bits)}"
+                    self._set_health_chip(
+                        self.backend_diag_label,
+                        f"Backend: {' '.join(str(bit) for bit in backend_bits)}",
+                        "ok" if backend_ok else "warn",
                     )
 
                     recovery_bits = [f"R:{restart_count}"]
@@ -1304,8 +1341,10 @@ class MainWindow(QMainWindow):
                     reason = diagnostics.get("last_restart_reason")
                     if reason:
                         recovery_bits.append("RECENT")
-                    self.recovery_diag_label.setText(
-                        f"Recovery: {' '.join(recovery_bits)}"
+                    self._set_health_chip(
+                        self.recovery_diag_label,
+                        f"Recovery: {' '.join(recovery_bits)}",
+                        "warn" if restart_count or reason else ("info" if suppressed else "ok"),
                     )
                 except Exception:
                     pass
@@ -1370,19 +1409,7 @@ class MainWindow(QMainWindow):
             self._output_callback_stall_started_at = None
             self._processing_started_at = None
             self._last_backend_warning = None
-            self.latency_label.setText("Latency: -- ms")
-            self.buffer_label.setText("Buffer: --")
-            self.buffer_label.setStyleSheet(
-                "QLabel { background-color: #333; color: #0f0; padding: 5px 10px; "
-                "border-radius: 3px; font-family: monospace; font-size: 12px; }"
-            )
-            self.dropped_label.setText("Dropped: --")
-            self.dropped_label.setStyleSheet(
-                "QLabel { background-color: #333; color: #0f0; padding: 5px 10px; "
-                "border-radius: 3px; font-family: monospace; font-size: 12px; }"
-            )
-            self.backend_diag_label.setText("Backend: --")
-            self.recovery_diag_label.setText("Recovery: --")
+            self._reset_health_labels()
 
     def _maybe_recover_output_stall(self, input_rms: float, output_rms: float, output_buf: int):
         """
@@ -1586,13 +1613,7 @@ class MainWindow(QMainWindow):
                 try:
                     success = self.processor.set_noise_model(model)
                     if success:
-                        # Update latency label
-                        if model == "deepfilter":
-                            self.rnnoise_latency_label.setText("Latency: ~40ms (DeepFilterNet)")
-                        elif model == "deepfilter-ll":
-                            self.rnnoise_latency_label.setText("Latency: ~10ms (DeepFilterNet LL)")
-                        else:
-                            self.rnnoise_latency_label.setText("Latency: ~10ms (RNNoise)")
+                        self._set_noise_suppression_latency_label(model)
                     else:
                         # Model switch failed - show warning and use RNNoise
                         print(f"Warning: Failed to switch to {model} in preset, using RNNoise")
@@ -1607,7 +1628,7 @@ class MainWindow(QMainWindow):
                                 self.model_combo.setCurrentIndex(j)
                                 self.model_combo.blockSignals(False)
                                 self.processor.set_noise_model("rnnoise")
-                                self.rnnoise_latency_label.setText("Latency: ~10ms (RNNoise)")
+                                self._set_noise_suppression_latency_label("rnnoise")
                                 break
                 except Exception as e:
                     # Unexpected error - log and fall back
@@ -1623,7 +1644,7 @@ class MainWindow(QMainWindow):
                             self.model_combo.setCurrentIndex(j)
                             self.model_combo.blockSignals(False)
                             self.processor.set_noise_model("rnnoise")
-                            self.rnnoise_latency_label.setText("Latency: ~10ms (RNNoise)")
+                            self._set_noise_suppression_latency_label("rnnoise")
                             break
                 break
 
@@ -1782,17 +1803,13 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close."""
-        # Save window geometry to config
-        geometry = {
+        self.config.window_geometry = {
             'x': self.x(),
             'y': self.y(),
             'width': self.width(),
-            'height': self.height()
+            'height': self.height(),
         }
-        self.config.window_geometry = geometry
-
-        # Save config before closing
-        save_config(self.config)
+        self._save_ui_state()
 
         if self.processor.is_running():
             self.processor.stop()

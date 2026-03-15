@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.10 - 2026-03-15
+
+- Fixed the packaged Windows build startup failure caused by excluding and pruning SciPy's `_highspy` runtime payload.
+- Restored the required SciPy optimize module in `AudioForge.spec` and stopped the bundle-pruning step from deleting it.
+- Rebuilt the portable EXE and verified that `AudioForge.exe` starts normally from `dist/AudioForge`.
+
 ## v1.7.9 - 2026-03-13
 
 - Fixed the main-window dark-theme regression by removing the broad forced-light styling and limiting custom styling to explicit action buttons and health chips.

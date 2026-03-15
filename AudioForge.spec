@@ -39,9 +39,7 @@ a = Analysis(
     excludes=[
         "PyQt6.QtPdf",
         "PyQt6.QtPdfWidgets",
-        "highspy",
         "pytest",
-        "scipy.optimize._highspy",
         "setuptools",
         "wheel",
     ],

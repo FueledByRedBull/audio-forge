@@ -28,20 +28,20 @@ Create the distributable archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.7.9-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.7.10-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 Compute the checksum:
 
 ```powershell
-Get-FileHash .\AudioForge-v1.7.9-win64-ultra.7z -Algorithm SHA256
+Get-FileHash .\AudioForge-v1.7.10-win64-ultra.7z -Algorithm SHA256
 ```
 
 Publish:
 
 1. Commit tracked source/doc/version changes.
-2. Create annotated tag `v1.7.9`.
-3. Push `master` and `v1.7.9`.
+2. Create annotated tag `v1.7.10`.
+3. Push `master` and `v1.7.10`.
 4. Create the GitHub release and upload the `7z`.
 
 ## Packaging notes

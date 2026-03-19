@@ -32,6 +32,24 @@ TOO_LOUD_DB = -3.0      # Warn if louder than this (clipping risk)
 RECORDING_DURATION = 10.0  # Seconds
 
 
+def _find_processor_owner(widget):
+    parent = widget
+    while parent and not hasattr(parent, "processor"):
+        parent = parent.parent()
+    return parent
+
+
+def _processor_sample_rate(owner) -> int:
+    if owner is None or not hasattr(owner, "processor"):
+        raise RuntimeError("Could not find audio processor")
+
+    sample_rate = int(owner.processor.sample_rate())
+    if sample_rate <= 0:
+        raise RuntimeError("Processor sample rate is unavailable")
+
+    return sample_rate
+
+
 class CalibrationDialog(QDialog):
     """Auto-EQ calibration dialog with target curve selection."""
 
@@ -241,9 +259,7 @@ class CalibrationDialog(QDialog):
         self._stop_analysis_worker()
 
         # Get parent's processor (MainWindow has it)
-        parent = self.parent()
-        while parent and not hasattr(parent, 'processor'):
-            parent = parent.parent()
+        parent = _find_processor_owner(self.parent())
 
         if not parent:
             QMessageBox.critical(self, "Error", "Could not find audio processor")
@@ -294,9 +310,7 @@ class CalibrationDialog(QDialog):
         if self.recording_state != "recording":
             return
 
-        parent = self.parent()
-        while parent and not hasattr(parent, 'processor'):
-            parent = parent.parent()
+        parent = _find_processor_owner(self.parent())
 
         if not parent:
             self._on_recording_failed("Could not find audio processor")
@@ -439,7 +453,7 @@ class CalibrationDialog(QDialog):
                 print("[ANALYSIS] ERROR: Could not find processor")
             return
 
-        sample_rate = 48000  # Fixed for now
+        sample_rate = _processor_sample_rate(parent)
         target_preset = self.get_selected_curve()
 
         if DEBUG:
@@ -607,15 +621,12 @@ class CalibrationDialog(QDialog):
             return None, None
 
         # Get sample rate from processor (via parent window)
-        parent = self.parent()
-        while parent and not hasattr(parent, 'processor'):
-            parent = parent.parent()
+        parent = _find_processor_owner(self.parent())
 
         if parent and hasattr(parent, 'processor'):
-            sample_rate = parent.processor.sample_rate()
-            return self.audio_data, sample_rate
+            return self.audio_data, _processor_sample_rate(parent)
 
-        return self.audio_data, 48000  # Fallback to 48kHz
+        return self.audio_data, 48000
 
     def get_selected_curve(self):
         """

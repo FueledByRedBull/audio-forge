@@ -81,6 +81,52 @@ impl AudioOutput {
         T::from_sample(sample.clamp(-1.0, 1.0))
     }
 
+    fn fill_underrun_tail<T>(
+        data: &mut [T],
+        copied_frames: usize,
+        num_channels: usize,
+        last_sample: f32,
+    ) where
+        T: SizedSample + FromSample<f32>,
+    {
+        let total_frames = if num_channels == 1 {
+            data.len()
+        } else {
+            data.len() / num_channels
+        };
+        let remaining_frames = total_frames.saturating_sub(copied_frames);
+        if remaining_frames == 0 {
+            return;
+        }
+
+        let fade_frames = remaining_frames.min(64);
+        if num_channels == 1 {
+            for i in 0..remaining_frames {
+                let value = if i < fade_frames {
+                    let t = (i + 1) as f32 / fade_frames as f32;
+                    last_sample * (1.0 - t)
+                } else {
+                    0.0
+                };
+                data[copied_frames + i] = Self::convert_output_sample::<T>(value);
+            }
+        } else {
+            for i in 0..remaining_frames {
+                let value = if i < fade_frames {
+                    let t = (i + 1) as f32 / fade_frames as f32;
+                    last_sample * (1.0 - t)
+                } else {
+                    0.0
+                };
+                let converted = Self::convert_output_sample::<T>(value);
+                let frame_idx = copied_frames + i;
+                for channel in 0..num_channels {
+                    data[frame_idx * num_channels + channel] = converted;
+                }
+            }
+        }
+    }
+
     fn build_stream<T>(
         device: Device,
         stream_config: StreamConfig,
@@ -159,12 +205,7 @@ impl AudioOutput {
                         if copied < data.len() {
                             let last =
                                 last_written_sample.unwrap_or_else(|| consumer.last_sample());
-                            let remain = data.len() - copied;
-                            for (i, sample) in data[copied..].iter_mut().enumerate() {
-                                let t = (i + 1) as f32 / remain as f32;
-                                let value = last * (1.0 - t);
-                                *sample = Self::convert_output_sample::<T>(value);
-                            }
+                            Self::fill_underrun_tail(data, copied, 1, last);
                         }
                     } else {
                         let mono_samples = data.len() / num_channels;
@@ -200,21 +241,10 @@ impl AudioOutput {
                             }
                         }
 
-                        let remaining_frames = mono_samples.saturating_sub(copied_frames);
-                        if remaining_frames > 0 {
+                        if copied_frames < mono_samples {
                             let last =
                                 last_written_sample.unwrap_or_else(|| consumer.last_sample());
-                            for (i, frame) in data
-                                .chunks_mut(num_channels)
-                                .skip(copied_frames)
-                                .enumerate()
-                            {
-                                let t = (i + 1) as f32 / remaining_frames as f32;
-                                let value = Self::convert_output_sample::<T>(last * (1.0 - t));
-                                for sample in frame.iter_mut() {
-                                    *sample = value;
-                                }
-                            }
+                            Self::fill_underrun_tail(data, copied_frames, num_channels, last);
                         }
                     }
                 },
@@ -479,5 +509,24 @@ mod tests {
     fn test_convert_output_u16_sample() {
         let sample = AudioOutput::convert_output_sample::<u16>(0.0);
         assert_eq!(sample, u16::MAX / 2 + 1);
+    }
+
+    #[test]
+    fn test_fill_underrun_tail_fades_then_silences_mono() {
+        let mut data = vec![0_i16; 80];
+        AudioOutput::fill_underrun_tail(&mut data, 0, 1, 1.0);
+        assert_ne!(data[0], 0);
+        assert_eq!(data[63], 0);
+        assert_eq!(data[79], 0);
+    }
+
+    #[test]
+    fn test_fill_underrun_tail_writes_all_channels() {
+        let mut data = vec![0_i16; 12];
+        AudioOutput::fill_underrun_tail(&mut data, 1, 2, 0.5);
+        assert_ne!(data[2], 0);
+        assert_eq!(data[2], data[3]);
+        assert_eq!(data[10], 0);
+        assert_eq!(data[11], 0);
     }
 }

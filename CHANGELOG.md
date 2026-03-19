@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.11 - 2026-03-19
+
+- Preferred native `48 kHz` input configs when available and made required input/output resampler setup fail fast at startup instead of falling through to wrong-rate processing.
+- Reworked the real-time reliability path with proactive input backlog shedding, gentler output catch-up, shorter underrun tails, and deferred gate/suppressor control updates so hot audio blocks stop depending on `try_lock()` fallbacks.
+- Standardized calibration and analysis sample-rate handling around the runtime processor rate and surfaced new backlog, clip, and resampler diagnostics in the main window.
+
 ## v1.7.10 - 2026-03-15
 
 - Fixed the packaged Windows build startup failure caused by excluding and pruning SciPy's `_highspy` runtime payload.

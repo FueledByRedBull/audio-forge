@@ -34,6 +34,17 @@ from .level_meter import LevelMeter
 DEBUG = False
 
 
+def _capture_sample_rate(owner) -> int:
+    if owner is None or not hasattr(owner, "processor"):
+        raise RuntimeError("Could not find audio processor.")
+
+    sample_rate = int(owner.processor.output_sample_rate())
+    if sample_rate <= 0:
+        raise RuntimeError("Output sample rate is unavailable.")
+
+    return sample_rate
+
+
 def _play_probe_blocking(probe: np.ndarray, sample_rate: int) -> None:
     """Play probe signal using platform-available APIs."""
     if os.name == "nt":
@@ -139,7 +150,7 @@ class LatencyCalibrationDialog(QDialog):
         self._capture_timer.timeout.connect(self._poll_capture)
         self._probe: np.ndarray | None = None
         self._capture_started_at = 0.0
-        self._capture_sample_rate = 48_000
+        self._capture_sample_rate = 0
         self._recording_duration_s = 2.5
         self._playback_delay_s = 0.45
         self._played_probe = False
@@ -244,7 +255,7 @@ class LatencyCalibrationDialog(QDialog):
 
         try:
             owner.processor.set_recovery_suppressed(True)
-            self._capture_sample_rate = int(owner.processor.output_sample_rate() or 48_000)
+            self._capture_sample_rate = _capture_sample_rate(owner)
             self._probe = generate_probe_signal(
                 sample_rate=self._capture_sample_rate,
                 duration_ms=80.0,

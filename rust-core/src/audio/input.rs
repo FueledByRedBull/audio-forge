@@ -6,7 +6,10 @@
 //! Adapted from Spectral Workbench project.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig};
+use cpal::{
+    Device, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig,
+    SupportedStreamConfig, SupportedStreamConfigRange,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
@@ -56,6 +59,32 @@ pub struct AudioInput {
 }
 
 impl AudioInput {
+    fn select_device(
+        device: Device,
+    ) -> Result<(Device, SupportedStreamConfig, AudioDeviceInfo), AudioError> {
+        let name = device
+            .name()
+            .map_err(|e| AudioError::DeviceName(e.to_string()))?;
+
+        let supported_configs = device
+            .supported_input_configs()
+            .map_err(|e| AudioError::DefaultConfig(e.to_string()))?;
+
+        let supported_config = find_48khz_config(supported_configs)
+            .or_else(|| device.default_input_config().ok())
+            .ok_or_else(|| {
+                AudioError::DefaultConfig("No suitable input config found".to_string())
+            })?;
+
+        let device_info = AudioDeviceInfo {
+            name,
+            sample_rate: supported_config.sample_rate().0,
+            channels: supported_config.channels(),
+        };
+
+        Ok((device, supported_config, device_info))
+    }
+
     fn normalize_input_sample<T>(sample: T) -> f32
     where
         T: Sample,
@@ -171,25 +200,9 @@ impl AudioInput {
         producer: AudioProducer,
         last_callback_time_us: Arc<AtomicU64>,
     ) -> Result<Self, AudioError> {
-        let name = device
-            .name()
-            .map_err(|e| AudioError::DeviceName(e.to_string()))?;
-
-        let supported_config = device
-            .default_input_config()
-            .map_err(|e| AudioError::DefaultConfig(e.to_string()))?;
-
+        let (device, supported_config, device_info) = Self::select_device(device)?;
         let device_sample_rate = supported_config.sample_rate().0;
-        let channels = supported_config.channels();
         let sample_format = supported_config.sample_format();
-
-        // Report actual device sample rate; conversion (if needed) happens in DSP thread.
-        let device_info = AudioDeviceInfo {
-            name: name.clone(),
-            sample_rate: device_sample_rate,
-            channels,
-        };
-
         let stream_config = supported_config.config();
 
         if device_sample_rate != TARGET_SAMPLE_RATE {
@@ -318,6 +331,36 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
     Ok(devices)
 }
 
+fn preferred_sample_rate_from_ranges(
+    default_rate: u32,
+    ranges: &[(u32, u32)],
+    target_rate: u32,
+) -> u32 {
+    if ranges
+        .iter()
+        .any(|(min_rate, max_rate)| *min_rate <= target_rate && target_rate <= *max_rate)
+    {
+        target_rate
+    } else {
+        default_rate
+    }
+}
+
+fn find_48khz_config(
+    configs: impl Iterator<Item = SupportedStreamConfigRange>,
+) -> Option<SupportedStreamConfig> {
+    for config in configs {
+        let min_rate = config.min_sample_rate().0;
+        let max_rate = config.max_sample_rate().0;
+        if preferred_sample_rate_from_ranges(0, &[(min_rate, max_rate)], TARGET_SAMPLE_RATE)
+            == TARGET_SAMPLE_RATE
+        {
+            return Some(config.with_sample_rate(cpal::SampleRate(TARGET_SAMPLE_RATE)));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +380,17 @@ mod tests {
     fn test_normalize_u16_input_sample() {
         let normalized = AudioInput::normalize_input_sample(0_u16);
         assert!(normalized <= -0.99);
+    }
+
+    #[test]
+    fn test_preferred_sample_rate_uses_target_when_supported() {
+        let chosen = preferred_sample_rate_from_ranges(44_100, &[(44_100, 48_000)], 48_000);
+        assert_eq!(chosen, 48_000);
+    }
+
+    #[test]
+    fn test_preferred_sample_rate_falls_back_to_default_when_target_missing() {
+        let chosen = preferred_sample_rate_from_ranges(44_100, &[(44_100, 44_100)], 48_000);
+        assert_eq!(chosen, 44_100);
     }
 }

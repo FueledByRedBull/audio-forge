@@ -444,6 +444,23 @@ class MainWindow(QMainWindow):
         self._set_health_chip(self.backend_diag_label, "Backend: --", "idle")
         self._set_health_chip(self.recovery_diag_label, "Recovery: --", "idle")
 
+    @staticmethod
+    def _diag_token(label: str, value) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return f"{label}:{'Y' if value else 'N'}"
+        if isinstance(value, float):
+            return f"{label}:{value:.1f}"
+        return f"{label}:{value}"
+
+    @classmethod
+    def _extend_diag_tokens(cls, tokens: list[str], diagnostics: dict, keys: list[tuple[str, str]]) -> None:
+        for key, label in keys:
+            token = cls._diag_token(label, diagnostics.get(key))
+            if token is not None:
+                tokens.append(token)
+
     def _schedule_ui_state_save(self) -> None:
         self._ui_state_timer.start(200)
 
@@ -1082,7 +1099,7 @@ class MainWindow(QMainWindow):
             preset = Preset(
                 name=preset_name,
                 description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
-                version="1.7.10",
+                version="1.7.11",
                 gate=GateSettings(**self.gate_panel.get_settings()),
                 eq=EQSettings(**self.eq_panel.get_settings()),
                 rnnoise=RNNoiseSettings(
@@ -1282,6 +1299,24 @@ class MainWindow(QMainWindow):
             restart_count = diagnostics.get("stream_restart_count", 0)
             underruns = diagnostics.get("output_underrun_total", 0)
             recoveries = diagnostics.get("output_recovery_count", 0)
+            dropped_bits = [
+                f"Drops: {dropped}",
+                f"U:{underruns}",
+                f"R:{recoveries}",
+                f"L:{lock_contention}",
+                f"NF:{non_finite}",
+                f"RS:{restart_count}",
+            ]
+            self._extend_diag_tokens(
+                dropped_bits,
+                diagnostics,
+                [
+                    ("input_backlog_recovery_count", "IBR"),
+                    ("input_backlog_dropped_samples", "IBD"),
+                    ("clip_event_count", "CL"),
+                    ("clip_peak_db", "PK"),
+                ],
+            )
             dropped_state = (
                 "ok"
                 if dropped == 0 and underruns == 0 and recoveries == 0 and lock_contention == 0 and non_finite == 0
@@ -1289,7 +1324,7 @@ class MainWindow(QMainWindow):
             )
             self._set_health_chip(
                 self.dropped_label,
-                f"Drops: {dropped} | U:{underruns} R:{recoveries} | L:{lock_contention} NF:{non_finite} RS:{restart_count}",
+                " | ".join(dropped_bits),
                 dropped_state,
             )
 
@@ -1329,6 +1364,14 @@ class MainWindow(QMainWindow):
                         backend_bits.append(f"NF:{non_finite}")
                     if backend_error:
                         backend_bits.append("ERR")
+                    self._extend_diag_tokens(
+                        backend_bits,
+                        diagnostics,
+                        [
+                            ("input_resampler_active", "IR"),
+                            ("output_resampler_active", "OR"),
+                        ],
+                    )
                     self._set_health_chip(
                         self.backend_diag_label,
                         f"Backend: {' '.join(str(bit) for bit in backend_bits)}",

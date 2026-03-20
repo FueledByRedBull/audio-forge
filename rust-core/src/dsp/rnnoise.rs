@@ -150,7 +150,9 @@ impl RNNoiseProcessor {
 
     /// Get available output samples
     pub fn available_samples(&self) -> usize {
-        self.output_buffer.len().saturating_sub(self.output_read_pos)
+        self.output_buffer
+            .len()
+            .saturating_sub(self.output_read_pos)
     }
 
     /// Pop samples from the output buffer

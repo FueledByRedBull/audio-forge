@@ -7,7 +7,7 @@
 
 Low-latency microphone audio processor with AI noise suppression, smart gating, Auto-EQ, and 10-band parametric EQ.
 
-Current version: `v1.7.11`
+Current version: `v1.7.12`
 
 ## Status
 
@@ -19,16 +19,16 @@ AudioForge is currently focused on Windows desktop use and portable distribution
   - RNNoise (fast baseline)
   - DeepFilterNet LL (low-latency quality mode)
   - DeepFilterNet Standard (highest quality, higher latency)
-- Smart gate modes:
+- Smart expander/gate modes:
   - Threshold-only gate
   - VAD-assisted gate
   - VAD-only gate
 - 10-band parametric EQ with per-band frequency, gain, and Q controls
-- Wideband de-esser with manual controls and auto amount mode
-- Auto-EQ recording/analysis flow with validation and one-click apply/undo
+- Split-band de-esser with manual controls and auto amount mode
+- Auto-EQ recording/analysis flow with validation, two-stage Q refinement, and one-click apply/undo
 - Dynamics:
   - Compressor (soft-knee, adaptive release, auto makeup support)
-  - Hard limiter (final safety ceiling)
+  - Lookahead limiter (~2 ms, final safety ceiling)
 - Real-time metering and DSP telemetry:
   - Input/output level meters
   - Buffer and processing health metrics
@@ -113,7 +113,7 @@ Create archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.7.11-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.7.12-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 ## Testing

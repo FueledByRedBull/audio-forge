@@ -1,8 +1,9 @@
 """
-Auto-EQ calculation using least-squares curve fitting.
+Auto-EQ calculation using constrained least-squares fitting.
 
-Accounts for parametric EQ band interaction by optimizing gains
-to minimize error between target curve and predicted EQ response.
+Uses a two-stage optimization strategy:
+1) optimize gains with fixed Q (stable coarse solve)
+2) refine gains + Q jointly on a dense log-frequency grid with regularization
 """
 import os
 
@@ -16,11 +17,48 @@ from mic_eq.config import (
 )
 DEBUG = os.environ.get("AUDIOFORGE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 SAMPLE_RATE = 48_000.0
+NUM_EQ_BANDS = 10
+GAIN_MIN_DB = -12.0
+GAIN_MAX_DB = 12.0
+Q_PRIOR = AUTO_EQ_DEFAULT_Q
+Q_MIN = 0.3
+Q_MAX = 6.0
+LOW_BAND_Q_MAX = 2.5
+LOW_BAND_Q_MAX_HZ = 250.0
+DENSE_GRID_POINTS = 256
+VOICE_WEIGHT = 2.0
+OUT_OF_BAND_WEIGHT = 0.8
+LAMBDA_Q = 10.0
+LAMBDA_G = 0.35
 
 
 def _debug_log(message: str) -> None:
     if DEBUG:
         print(message)
+
+
+def _build_dense_log_grid(freqs: np.ndarray) -> np.ndarray:
+    freq_min = max(20.0, float(np.min(freqs)))
+    freq_max = min(20_000.0, float(np.max(freqs)))
+    if freq_max <= freq_min:
+        freq_max = max(freq_min * 1.001, freq_min + 1.0)
+    return np.logspace(np.log10(freq_min), np.log10(freq_max), DENSE_GRID_POINTS)
+
+
+def _voice_weights(freqs: np.ndarray) -> np.ndarray:
+    weights = np.full_like(freqs, OUT_OF_BAND_WEIGHT, dtype=float)
+    voice_mask = (freqs >= 100.0) & (freqs <= 8000.0)
+    weights[voice_mask] = VOICE_WEIGHT
+    return weights
+
+
+def _q_bounds(center_freqs: list[float]) -> tuple[np.ndarray, np.ndarray]:
+    q_low = np.full(NUM_EQ_BANDS, Q_MIN, dtype=float)
+    q_high = np.full(NUM_EQ_BANDS, Q_MAX, dtype=float)
+    for i, fc in enumerate(center_freqs):
+        if fc < LOW_BAND_Q_MAX_HZ:
+            q_high[i] = LOW_BAND_Q_MAX
+    return q_low, q_high
 
 
 def get_target_curve(freqs, target_preset='broadcast'):
@@ -120,54 +158,45 @@ def _predict_eq_response(freqs, gains, qs, center_freqs):
     return response_db
 
 
-def _eq_error_function(gains, center_freqs, measured_db_at_centers, target_db, qs, all_freqs):
-    """
-    Error function for least-squares optimization.
+def _gain_only_residuals(
+    gains: np.ndarray,
+    dense_freqs: np.ndarray,
+    measured_dense_db: np.ndarray,
+    target_dense_db: np.ndarray,
+    center_freqs: list[float],
+    fixed_qs: np.ndarray,
+    weights: np.ndarray,
+) -> np.ndarray:
+    eq_response = _predict_eq_response(dense_freqs, gains, fixed_qs, center_freqs)
+    error = target_dense_db - (measured_dense_db + eq_response)
+    return np.sqrt(weights) * error
 
-    Calculates the error between target curve and (measured + predicted EQ)
-    at the EQ band center frequencies only (10 points).
 
-    Args:
-        gains: Array of 10 gain values (optimization variable)
-        center_freqs: Array of 10 center frequencies
-        measured_db_at_centers: Measured spectrum sampled at center frequencies (10 values)
-        target_db: Target curve at center frequencies (10 values)
-        qs: List of 10 Q values (fixed during optimization)
-        all_freqs: Full frequency array (for _predict_eq_response)
+def _joint_gain_q_residuals(
+    params: np.ndarray,
+    dense_freqs: np.ndarray,
+    measured_dense_db: np.ndarray,
+    target_dense_db: np.ndarray,
+    center_freqs: list[float],
+    weights: np.ndarray,
+    q_prior: np.ndarray,
+) -> np.ndarray:
+    gains = params[:NUM_EQ_BANDS]
+    qs = params[NUM_EQ_BANDS:]
 
-    Returns:
-        error: Difference between target and (measured + EQ response) at center frequencies
-    """
-    # Debug: print first call to see what's happening
-    if DEBUG and not hasattr(_eq_error_function, '_called'):
-        _eq_error_function._called = True
-        _debug_log(f"[EQ_ERROR] First call with gains: {gains}")
-        _debug_log(f"[EQ_ERROR] measured_db_at_centers: {measured_db_at_centers}")
-        _debug_log(f"[EQ_ERROR] target_db: {target_db}")
+    eq_response = _predict_eq_response(dense_freqs, gains, qs, center_freqs)
+    error = target_dense_db - (measured_dense_db + eq_response)
 
-    # Predict EQ response with current gains (evaluated at all frequencies)
-    eq_response = _predict_eq_response(all_freqs, gains, qs, center_freqs)
+    q_regularization = np.log(qs / q_prior)
+    gain_ripple = np.diff(gains, n=2)
 
-    # Sample EQ response at the center frequencies
-    # Find indices of center frequencies in the frequency array
-    eq_response_at_centers = np.interp(center_freqs, all_freqs, eq_response)
-
-    # Calculate combined response (measured + EQ) at center frequencies
-    combined_at_centers = measured_db_at_centers + eq_response_at_centers
-
-    # Error = target - combined (at center frequencies only)
-    error = target_db - combined_at_centers
-
-    if DEBUG and not hasattr(_eq_error_function, '_printed_error'):
-        # Only print once for the initial call (gains = 0)
-        if np.allclose(gains, 0):
-            _eq_error_function._printed_error = True
-            _debug_log(f"[EQ_ERROR] eq_response_at_centers (gains=0): {eq_response_at_centers}")
-            _debug_log(f"[EQ_ERROR] combined_at_centers (gains=0): {combined_at_centers}")
-            _debug_log(f"[EQ_ERROR] error (gains=0): {error}")
-            _debug_log(f"[EQ_ERROR] error magnitude: {np.linalg.norm(error):.2f}")
-
-    return error
+    return np.concatenate(
+        [
+            np.sqrt(weights) * error,
+            np.sqrt(LAMBDA_Q) * q_regularization,
+            np.sqrt(LAMBDA_G) * gain_ripple,
+        ]
+    )
 
 
 def calculate_eq_bands(freqs, measured_db, target_db):
@@ -216,69 +245,100 @@ def calculate_eq_bands(freqs, measured_db, target_db):
     # Use normalized measured spectrum for optimization
     measured_db = measured_db_normalized
 
-    # Fixed parameters
-    qs = [AUTO_EQ_DEFAULT_Q] * 10
     center_freqs = EQ_FREQUENCIES
+    qs_stage1 = np.full(NUM_EQ_BANDS, AUTO_EQ_DEFAULT_Q, dtype=float)
 
-    # Sample the measured spectrum at the EQ band center frequencies
-    measured_db_at_centers = np.interp(center_freqs, freqs, measured_db)
+    # Use a dense log-spaced frequency grid for optimization to reduce center-only artifacts.
+    dense_freqs = _build_dense_log_grid(freqs)
+    measured_dense_db = np.interp(dense_freqs, freqs, measured_db)
+    target_dense_db = np.interp(dense_freqs, freqs, target_db)
+    weights = _voice_weights(dense_freqs)
 
-    # Sample the target curve at the EQ band center frequencies
-    target_db_at_centers = np.interp(center_freqs, freqs, target_db)
-
-    _debug_log(f"[EQ_CALC] Measured at centers: {[round(v, 1) for v in measured_db_at_centers]} dB")
-    _debug_log(f"[EQ_CALC] Target at centers: {[round(v, 1) for v in target_db_at_centers]} dB")
-
-    # Calculate the desired gain adjustment (target - measured) at each center frequency
-    # This is what the optimizer should aim for
+    measured_db_at_centers = np.interp(center_freqs, dense_freqs, measured_dense_db)
+    target_db_at_centers = np.interp(center_freqs, dense_freqs, target_dense_db)
     desired_gains = target_db_at_centers - measured_db_at_centers
-    _debug_log(f"[EQ_CALC] Desired gains (target - measured): {[round(v, 1) for v in desired_gains]} dB")
+    gains_initial = np.clip(desired_gains, GAIN_MIN_DB, GAIN_MAX_DB)
 
-    # Initial guess: use desired gains clipped to bounds (better starting point than zeros)
-    gains_initial = np.clip(desired_gains, -12.0, 12.0)
-    _debug_log(f"[EQ_CALC] Initial guess (clipped desired): {[round(g, 2) for g in gains_initial]} dB")
-
-    # Gain bounds: -12 to +12 dB (EQ hardware limits)
-    bounds = (-12.0, 12.0)
-
-    # Optimize gains to minimize error
-    # Note: We only evaluate at the 10 center frequencies, not the full spectrum
-    # Verbose output: 2 for debugging, 0 for production
     verbose_level = 2 if DEBUG else 0
 
-    result = least_squares(
-        _eq_error_function,
+    # Stage 1: stable gain-only solve with fixed Q prior.
+    stage1 = least_squares(
+        _gain_only_residuals,
         gains_initial,
-        args=(center_freqs, measured_db_at_centers, target_db_at_centers, qs, freqs),
-        bounds=bounds,
-        method='trf',  # Trust Region Reflective (good for bounded problems)
-        ftol=1e-4,     # Function tolerance (looser than before)
-        xtol=1e-4,     # Parameter tolerance (looser than before)
-        gtol=1e-6,     # Gradient tolerance (explicitly set)
-        max_nfev=100,  # Max function evaluations (prevent infinite loops)
-        verbose=verbose_level
+        args=(
+            dense_freqs,
+            measured_dense_db,
+            target_dense_db,
+            center_freqs,
+            qs_stage1,
+            weights,
+        ),
+        bounds=(GAIN_MIN_DB, GAIN_MAX_DB),
+        method="trf",
+        ftol=1e-4,
+        xtol=1e-4,
+        gtol=1e-6,
+        max_nfev=120,
+        verbose=verbose_level,
     )
+    gains_stage1 = stage1.x
 
-    # Extract optimal gains
-    optimal_gains = result.x
+    # Stage 2: refine gains + Q with bounded Q and regularization.
+    q_low, q_high = _q_bounds(center_freqs)
+    q_prior = np.clip(np.full(NUM_EQ_BANDS, Q_PRIOR, dtype=float), q_low, q_high)
+    params_initial = np.concatenate([gains_stage1, q_prior])
+    params_lower = np.concatenate(
+        [np.full(NUM_EQ_BANDS, GAIN_MIN_DB, dtype=float), q_low]
+    )
+    params_upper = np.concatenate(
+        [np.full(NUM_EQ_BANDS, GAIN_MAX_DB, dtype=float), q_high]
+    )
+    stage2 = least_squares(
+        _joint_gain_q_residuals,
+        params_initial,
+        args=(
+            dense_freqs,
+            measured_dense_db,
+            target_dense_db,
+            center_freqs,
+            weights,
+            q_prior,
+        ),
+        bounds=(params_lower, params_upper),
+        method="trf",
+        ftol=1e-4,
+        xtol=1e-4,
+        gtol=1e-6,
+        max_nfev=180,
+        verbose=verbose_level,
+    )
+    optimal_gains = stage2.x[:NUM_EQ_BANDS]
+    optimal_qs = stage2.x[NUM_EQ_BANDS:]
 
-    # DEBUG: Log what the optimizer found
-    _debug_log(f"[EQ_CALC] Raw optimized gains (before 70%): {[round(g, 2) for g in optimal_gains]}")
-    _debug_log(f"[EQ_CALC] Optimization success: {result.success}")
-    if hasattr(result, 'message'):
-        _debug_log(f"[EQ_CALC] Optimizer message: {result.message}")
+    _debug_log(
+        f"[EQ_CALC] Stage1 gains: {[round(g, 2) for g in gains_stage1]}"
+    )
+    _debug_log(
+        f"[EQ_CALC] Stage2 gains (raw): {[round(g, 2) for g in optimal_gains]}"
+    )
+    _debug_log(
+        f"[EQ_CALC] Stage2 Qs: {[round(q, 3) for q in optimal_qs]}"
+    )
+    _debug_log(f"[EQ_CALC] Stage2 success: {stage2.success}")
+    if hasattr(stage2, "message"):
+        _debug_log(f"[EQ_CALC] Stage2 message: {stage2.message}")
 
     # Apply 70% correction factor (prevents over-compensation)
     optimal_gains = optimal_gains * 0.7
 
     # Clip to hardware limits
-    optimal_gains = np.clip(optimal_gains, -12.0, 12.0)
+    optimal_gains = np.clip(optimal_gains, GAIN_MIN_DB, GAIN_MAX_DB)
 
     _debug_log(f"[EQ_CALC] Final gains (after 70% correction): {[round(g, 2) for g in optimal_gains]}")
 
     return {
         'band_gains': optimal_gains.tolist(),
-        'band_qs': qs
+        'band_qs': optimal_qs.tolist()
     }
 
 

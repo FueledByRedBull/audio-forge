@@ -1,19 +1,17 @@
-//! Noise gate with IIR envelope detection
+//! Downward expander with optional VAD gating.
 //!
-//! Reduces gain when signal level falls below threshold, useful for
-//! removing background noise during silent periods.
-//!
-//! Uses single-pole IIR filter for RMS approximation instead of sliding window,
-//! reducing memory from ~2400 samples to just 2 state variables.
-//!
-//! Adapted from Spectral Workbench project.
+//! Reduces low-level background noise during pauses while preserving natural
+//! decay. VAD modes can force closure when speech is not detected.
 
+use crate::dsp::util;
 #[cfg(feature = "vad")]
 use crate::dsp::vad::{GateMode, VadAutoGate};
-use crate::dsp::util;
 
 /// Enable debug output for gate operations
 const GATE_DEBUG: bool = false;
+const MIN_LEVEL_LINEAR: f64 = 1e-10;
+const EXPANDER_RATIO: f64 = 4.0;
+const EXPANDER_RANGE_DB: f64 = 36.0;
 
 #[cfg(debug_assertions)]
 macro_rules! gate_debug_log {
@@ -29,86 +27,62 @@ macro_rules! gate_debug_log {
     ($($arg:tt)*) => {};
 }
 
-/// Noise gate processor with IIR envelope follower
+/// Noise gate processor implemented as a downward expander.
 pub struct NoiseGate {
     /// Threshold in dB (e.g., -40.0)
     threshold_db: f64,
-
     /// Attack time constant (exponential smoothing coefficient)
     attack_coeff: f64,
-
     /// Release time constant (exponential smoothing coefficient)
     release_coeff: f64,
-
-    /// Current envelope level (linear amplitude, not dB)
-    envelope: f64,
-
-    /// IIR envelope squared (for RMS approximation)
-    envelope_squared: f64,
-
-    /// RMS smoothing coefficient (single-pole IIR, ~50ms time constant)
-    rms_coeff: f64,
-
+    /// Log-domain peak envelope follower (dBFS).
+    peak_envelope_db: f64,
+    /// Current linear gain applied to the signal.
+    current_gain: f64,
     /// Sample rate
     sample_rate: f64,
-
-    /// Whether gate is currently open (for hysteresis)
+    /// Whether gate is currently open (threshold-only detector state).
     is_open: bool,
-
     /// Whether gate is enabled
     enabled: bool,
-
     /// Previous gate state (for change detection in debug)
     was_open: bool,
-
     /// Sample counter for periodic debug output
     debug_counter: usize,
-
     /// Peak level since last debug output
     peak_level: f64,
-
     /// Previous VAD gate state (for VAD-specific change detection)
     #[cfg(feature = "vad")]
     vad_was_open: bool,
-
     /// Gate operating mode (VAD feature only)
     #[cfg(feature = "vad")]
     gate_mode: GateMode,
-
     /// VAD auto-gate controller (VAD feature only)
     #[cfg(feature = "vad")]
     vad_auto_gate: Option<VadAutoGate>,
 }
 
 impl NoiseGate {
-    /// Create a new noise gate
-    ///
-    /// # Arguments
-    /// * `threshold_db` - Threshold in dB below which gate closes (e.g., -40.0)
-    /// * `attack_ms` - Attack time in milliseconds (e.g., 10.0)
-    /// * `release_ms` - Release time in milliseconds (e.g., 100.0)
-    /// * `sample_rate` - Sample rate in Hz
+    /// Create a new expander-style noise gate.
     pub fn new(threshold_db: f64, attack_ms: f64, release_ms: f64, sample_rate: f64) -> Self {
-        // Calculate time constants for exponential smoothing
-        // tau = time_ms / 1000, coeff = exp(-1 / (tau * sample_rate))
         let attack_coeff = util::time_constant_to_coeff(attack_ms, sample_rate);
         let release_coeff = util::time_constant_to_coeff(release_ms, sample_rate);
 
-        // RMS smoothing: 50ms time constant for IIR envelope follower
-        let rms_coeff = util::time_constant_to_coeff(50.0, sample_rate);
-
         if GATE_DEBUG {
-            gate_debug_log!("[GATE] Initialized: threshold={}dB, attack={}ms, release={}ms",
-                threshold_db, attack_ms, release_ms);
+            gate_debug_log!(
+                "[GATE] Initialized: threshold={}dB, attack={}ms, release={}ms",
+                threshold_db,
+                attack_ms,
+                release_ms
+            );
         }
 
         Self {
             threshold_db,
             attack_coeff,
             release_coeff,
-            envelope: 0.0,
-            envelope_squared: 0.0,
-            rms_coeff,
+            peak_envelope_db: -120.0,
+            current_gain: 0.0,
             sample_rate,
             is_open: false,
             enabled: true,
@@ -158,12 +132,54 @@ impl NoiseGate {
         self.enabled
     }
 
-    /// Check if gate is currently open
+    /// Check if gate is currently open based on detector threshold.
     pub fn is_open(&self) -> bool {
         self.is_open
     }
 
-    /// Process a single sample
+    #[inline]
+    fn update_detector(&mut self, input: f64) {
+        let input_db = util::linear_to_db(input.abs(), MIN_LEVEL_LINEAR);
+        let coeff = if input_db > self.peak_envelope_db {
+            self.attack_coeff
+        } else {
+            self.release_coeff
+        };
+        self.peak_envelope_db = coeff * self.peak_envelope_db + (1.0 - coeff) * input_db;
+        self.is_open = self.peak_envelope_db >= self.threshold_db;
+        if self.peak_envelope_db > self.peak_level {
+            self.peak_level = self.peak_envelope_db;
+        }
+    }
+
+    #[inline]
+    fn compute_target_gr_db(&self, force_close: bool) -> f64 {
+        if force_close {
+            return EXPANDER_RANGE_DB;
+        }
+        if self.peak_envelope_db >= self.threshold_db {
+            return 0.0;
+        }
+
+        // `target_gr_db` is always non-negative and represents gain reduction
+        // magnitude in dB (not a signed gain value).
+        ((self.threshold_db - self.peak_envelope_db) * (1.0 - 1.0 / EXPANDER_RATIO))
+            .clamp(0.0, EXPANDER_RANGE_DB)
+    }
+
+    #[inline]
+    fn apply_gain(&mut self, input: f64, target_gr_db: f64) -> f32 {
+        let target_gain = util::db_to_linear(-target_gr_db);
+        let coeff = if target_gain > self.current_gain {
+            self.attack_coeff
+        } else {
+            self.release_coeff
+        };
+        self.current_gain = coeff * self.current_gain + (1.0 - coeff) * target_gain;
+        (input * self.current_gain) as f32
+    }
+
+    /// Process a single sample in threshold-only mode.
     #[inline]
     pub fn process_sample(&mut self, input: f32) -> f32 {
         if !self.enabled {
@@ -171,70 +187,12 @@ impl NoiseGate {
         }
 
         let input_f64 = input as f64;
-
-        // IIR envelope follower (RMS approximation)
-        // Much more efficient than sliding window: 2 state variables vs ~2400 samples
-        let input_squared = input_f64 * input_f64;
-        self.envelope_squared =
-            self.rms_coeff * self.envelope_squared + (1.0 - self.rms_coeff) * input_squared;
-
-        // Calculate RMS from smoothed squared envelope
-        let rms = self.envelope_squared.sqrt();
-
-        // Convert to dB (with small epsilon to avoid log(0))
-        let level_db = 20.0 * (rms + 1e-10).log10();
-
-        // Track peak level for debug output
-        if level_db > self.peak_level {
-            self.peak_level = level_db;
-        }
-
-        // Determine if gate should be open
-        // Use hysteresis: different thresholds for opening and closing
-        let hysteresis_db = 3.0; // 3 dB hysteresis
-
-        if self.is_open {
-            // Gate is open: close if level drops below (threshold - hysteresis)
-            if level_db < self.threshold_db - hysteresis_db {
-                self.is_open = false;
-            }
-        } else {
-            // Gate is closed: open if level rises above threshold
-            if level_db >= self.threshold_db {
-                self.is_open = true;
-            }
-        }
-
-        // Debug output on state change
-        if GATE_DEBUG && self.is_open != self.was_open {
-            if self.is_open {
-                gate_debug_log!("[GATE] OPENED: level={:.1}dB >= threshold={:.1}dB",
-                    level_db, self.threshold_db);
-            } else {
-                gate_debug_log!("[GATE] CLOSED: level={:.1}dB < (threshold-hysteresis)={:.1}dB",
-                    level_db, self.threshold_db - hysteresis_db);
-            }
-            self.was_open = self.is_open;
-        }
-
-        // Calculate target gain (0.0 when closed, 1.0 when open)
-        let target_gain = if self.is_open { 1.0 } else { 0.0 };
-
-        // Smooth gain transitions with attack/release
-        let coeff = if target_gain > self.envelope {
-            self.attack_coeff // Opening: use attack time
-        } else {
-            self.release_coeff // Closing: use release time
-        };
-
-        // Exponential smoothing: envelope = coeff * envelope + (1 - coeff) * target
-        self.envelope = coeff * self.envelope + (1.0 - coeff) * target_gain;
-
-        // Apply gain
-        (input_f64 * self.envelope) as f32
+        self.update_detector(input_f64);
+        let target_gr_db = self.compute_target_gr_db(false);
+        self.apply_gain(input_f64, target_gr_db)
     }
 
-    /// Process a block of samples in-place
+    /// Process a block of samples in-place.
     pub fn process_block_inplace(&mut self, buffer: &mut [f32]) {
         if !self.enabled {
             return;
@@ -242,57 +200,48 @@ impl NoiseGate {
 
         #[cfg(feature = "vad")]
         {
-            // Check if we should use VAD-based gate decision
             if self.gate_mode != GateMode::ThresholdOnly {
                 if let Some(vad) = &mut self.vad_auto_gate {
                     if vad.is_enabled() {
-                        // Get VAD gate decision and probability
                         let (vad_gate_open, _probability) = vad.process(buffer);
 
-                        // Debug VAD probability and decision
                         if GATE_DEBUG {
                             self.debug_counter += buffer.len();
-                            // Print VAD status every ~1 second (48000 samples)
-                            if self.debug_counter >= 48000 {
+                            if self.debug_counter >= 48_000 {
                                 let _mode_str = match self.gate_mode {
                                     GateMode::VadAssisted => "VAD-Assisted",
                                     GateMode::VadOnly => "VAD-Only",
                                     GateMode::ThresholdOnly => "Threshold-Only",
                                 };
-                                gate_debug_log!("[GATE] VAD mode={}, probability={:.4}, gate_state={}, threshold={:.2}",
-                                    _mode_str, _probability, if vad_gate_open { "OPEN" } else { "CLOSED" },
-                                    vad.vad_threshold());
+                                gate_debug_log!(
+                                    "[GATE] mode={}, prob={:.4}, vad_gate={}",
+                                    _mode_str,
+                                    _probability,
+                                    if vad_gate_open { "OPEN" } else { "CLOSED" }
+                                );
                                 self.debug_counter = 0;
                             }
                         }
 
-                        // Check for VAD state change
                         if GATE_DEBUG && vad_gate_open != self.vad_was_open {
-                            if vad_gate_open {
-                                // FIX: Don't claim prob >= threshold, as it might be RMS or Hold triggered
-                                gate_debug_log!("[GATE] OPENED: probability={:.4}, threshold={:.2} (Triggered by VAD, RMS, or Hold Timer)",
-                                    _probability, vad.vad_threshold());
-                            } else {
-                                gate_debug_log!("[GATE] CLOSED: probability={:.4} < threshold={:.2}",
-                                    _probability, vad.vad_threshold());
-                            }
+                            gate_debug_log!(
+                                "[GATE] VAD transition: {} prob={:.4}",
+                                if vad_gate_open { "OPEN" } else { "CLOSED" },
+                                _probability
+                            );
                             self.vad_was_open = vad_gate_open;
                         }
 
-                        // Override state based on VAD decision.
-                        self.is_open = vad_gate_open;
-
-                        // Smooth transitions in VAD modes using the same attack/release
-                        // envelope as threshold mode to avoid hard 0/1 clicks.
-                        let target_gain = if self.is_open { 1.0 } else { 0.0 };
                         for sample in buffer.iter_mut() {
-                            let coeff = if target_gain > self.envelope {
-                                self.attack_coeff
-                            } else {
-                                self.release_coeff
+                            let input_f64 = *sample as f64;
+                            // Detector tracks continuously even when VAD blocks.
+                            self.update_detector(input_f64);
+                            let force_close = match self.gate_mode {
+                                GateMode::ThresholdOnly => false,
+                                GateMode::VadAssisted | GateMode::VadOnly => !vad_gate_open,
                             };
-                            self.envelope = coeff * self.envelope + (1.0 - coeff) * target_gain;
-                            *sample = (*sample as f64 * self.envelope) as f32;
+                            let target_gr_db = self.compute_target_gr_db(force_close);
+                            *sample = self.apply_gain(input_f64, target_gr_db);
                         }
                         return;
                     }
@@ -300,16 +249,25 @@ impl NoiseGate {
             }
         }
 
-        // Default: use level-based gate
         for sample in buffer.iter_mut() {
             *sample = self.process_sample(*sample);
+        }
+
+        if GATE_DEBUG && self.is_open != self.was_open {
+            gate_debug_log!(
+                "[GATE] {} detector={:.2}dB threshold={:.2}dB",
+                if self.is_open { "OPENED" } else { "CLOSED" },
+                self.peak_envelope_db,
+                self.threshold_db
+            );
+            self.was_open = self.is_open;
         }
     }
 
     /// Reset gate state
     pub fn reset(&mut self) {
-        self.envelope = 0.0;
-        self.envelope_squared = 0.0;
+        self.current_gain = 0.0;
+        self.peak_envelope_db = -120.0;
         self.is_open = false;
         self.was_open = false;
         #[cfg(feature = "vad")]
@@ -320,12 +278,12 @@ impl NoiseGate {
 
     /// Get current envelope level (0.0 to 1.0)
     pub fn current_envelope(&self) -> f64 {
-        self.envelope
+        self.current_gain
     }
 
     /// Get current gain applied by the gate.
     pub fn current_gain(&self) -> f32 {
-        self.envelope as f32
+        self.current_gain as f32
     }
 
     // === VAD Integration Methods ===
@@ -334,7 +292,6 @@ impl NoiseGate {
     /// Set gate mode
     pub fn set_gate_mode(&mut self, mode: GateMode) {
         self.gate_mode = mode;
-        // FIX: Propagate the mode change to the inner VAD controller
         if let Some(vad) = &mut self.vad_auto_gate {
             vad.set_gate_mode(mode);
         }
@@ -351,7 +308,6 @@ impl NoiseGate {
     pub fn set_vad_auto_gate(&mut self, vad: Option<VadAutoGate>) {
         self.vad_auto_gate = vad;
         if let Some(vad) = &mut self.vad_auto_gate {
-            // Keep VAD-assisted manual threshold aligned with gate threshold UI.
             vad.set_manual_threshold(self.threshold_db as f32);
         }
     }
@@ -429,7 +385,8 @@ impl NoiseGate {
     #[cfg(feature = "vad")]
     /// Get current margin above noise floor (in dB)
     pub fn margin(&self) -> f32 {
-        self.vad_auto_gate.as_ref()
+        self.vad_auto_gate
+            .as_ref()
             .map(|v| v.margin())
             .unwrap_or(6.0)
     }
@@ -437,7 +394,8 @@ impl NoiseGate {
     #[cfg(feature = "vad")]
     /// Check if auto-threshold is enabled
     pub fn auto_threshold_enabled(&self) -> bool {
-        self.vad_auto_gate.as_ref()
+        self.vad_auto_gate
+            .as_ref()
             .map(|v| v.auto_threshold_enabled())
             .unwrap_or(false)
     }
@@ -445,7 +403,8 @@ impl NoiseGate {
     #[cfg(feature = "vad")]
     /// Get current noise floor estimate (for UI display)
     pub fn noise_floor(&self) -> f32 {
-        self.vad_auto_gate.as_ref()
+        self.vad_auto_gate
+            .as_ref()
             .map(|v| v.noise_floor())
             .unwrap_or(-60.0)
     }
@@ -457,73 +416,68 @@ mod tests {
 
     #[test]
     fn test_noise_gate_opens_above_threshold() {
-        let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48000.0);
-
-        // Feed strong signal (should open gate)
-        // With IIR envelope follower, need longer signal to build up envelope
-        let strong_signal = vec![0.1f32; 5000]; // About -20 dB, longer for IIR settling
+        let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
+        let strong_signal = vec![0.1f32; 3_000];
         for sample in &strong_signal {
             gate.process_sample(*sample);
         }
-
-        // After processing, envelope should be high
-        assert!(gate.current_envelope() > 0.5);
+        assert!(gate.current_gain() > 0.8);
     }
 
     #[test]
     fn test_noise_gate_closes_below_threshold() {
-        let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48000.0);
-
-        // First open the gate with strong signal (longer for IIR)
-        let strong_signal = vec![0.1f32; 5000];
-        for sample in &strong_signal {
-            gate.process_sample(*sample);
+        let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
+        for _ in 0..3_000 {
+            gate.process_sample(0.1);
         }
-
-        // Then feed weak signal (should close gate)
-        // With IIR, envelope decays exponentially - need more samples
-        let weak_signal = vec![0.0001f32; 20000]; // About -80 dB
-        for sample in &weak_signal {
-            gate.process_sample(*sample);
+        let open_gain = gate.current_gain();
+        for _ in 0..10_000 {
+            gate.process_sample(0.0001);
         }
-
-        // Envelope should be low after sufficient decay time
-        assert!(
-            gate.current_envelope() < 0.5,
-            "Expected envelope < 0.5, got {}",
-            gate.current_envelope()
-        );
+        assert!(gate.current_gain() < open_gain * 0.7);
+        assert!(gate.current_gain() < 0.5);
     }
 
     #[test]
-    fn test_noise_gate_hysteresis() {
-        let mut gate = NoiseGate::new(-40.0, 1.0, 1.0, 48000.0);
-
-        // Gate starts closed
-        assert!(!gate.is_open());
-
-        // Signal well above threshold should open it (longer for IIR settling)
-        let signal_above = vec![0.02f32; 3000]; // About -34 dB, clearly above threshold
-        for sample in &signal_above {
-            gate.process_sample(*sample);
+    fn test_noise_gate_expander_monotonic_gain() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 1.0, 48_000.0);
+        for _ in 0..2_000 {
+            gate.process_sample(0.1);
         }
-        assert!(gate.is_open(), "Gate should be open after strong signal");
+        let high_gain = gate.current_gain();
 
-        // Signal slightly below threshold shouldn't close it immediately (hysteresis)
-        // Need to stay above (threshold - hysteresis) = -43 dB
-        let signal_slightly_below = vec![0.008f32; 1000]; // About -42 dB
-        for sample in &signal_slightly_below {
-            gate.process_sample(*sample);
+        gate.reset();
+        for _ in 0..2_000 {
+            gate.process_sample(0.0005);
         }
-        assert!(
-            gate.is_open(),
-            "Gate should still be open due to hysteresis"
-        );
+        let low_gain = gate.current_gain();
+
+        assert!(high_gain > low_gain);
+    }
+
+    #[test]
+    fn test_noise_gate_range_cap() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 1.0, 48_000.0);
+        for _ in 0..4_000 {
+            gate.process_sample(0.0);
+        }
+        let floor_gain = util::db_to_linear(-EXPANDER_RANGE_DB) as f32;
+        assert!((gate.current_gain() - floor_gain).abs() < 0.02);
+    }
+
+    #[test]
+    fn test_noise_gate_force_close_transitions_are_smoothed() {
+        let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
+        gate.current_gain = 1.0;
+        let floor_gain = util::db_to_linear(-EXPANDER_RANGE_DB);
+
+        let _ = gate.apply_gain(0.5, EXPANDER_RANGE_DB);
+        assert!(gate.current_gain > floor_gain + 1e-3);
     }
 
     #[test]
     fn test_noise_gate_disabled() {
-        let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48000.0);
+        let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
         gate.set_enabled(false);
 
         let input = 0.0001f32;

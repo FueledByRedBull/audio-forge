@@ -27,6 +27,7 @@ _predict_eq_response = auto_eq._predict_eq_response
 calculate_eq_bands = auto_eq.calculate_eq_bands
 get_target_curve = auto_eq.get_target_curve
 EQ_FREQUENCIES = config.EQ_FREQUENCIES
+AUTO_EQ_DEFAULT_Q = config.AUTO_EQ_DEFAULT_Q
 
 
 def _seed_for_response(response_type: str) -> int:
@@ -175,3 +176,30 @@ def test_10_predict_eq_response_linearity():
     ratio = linear_12db / linear_6db
 
     assert 1.8 <= ratio <= 2.2
+
+
+def test_11_q_bounds_respected():
+    freqs = _default_freqs()
+    spectrum_db = generate_test_spectrum(freqs, "extreme")
+    target_db = get_target_curve(freqs, "streaming")
+    eq = calculate_eq_bands(freqs, spectrum_db, target_db)
+    qs = eq["band_qs"]
+
+    assert len(qs) == 10
+    for i, q in enumerate(qs):
+        assert 0.3 <= q <= 6.0
+        if EQ_FREQUENCIES[i] < 250.0:
+            assert q <= 2.5
+
+
+def test_12_q_regularized_near_prior_for_flat_case():
+    freqs = _default_freqs()
+    spectrum_db = generate_test_spectrum(freqs, "flat")
+    target_db = get_target_curve(freqs, "flat")
+    eq = calculate_eq_bands(freqs, spectrum_db, target_db)
+    qs = np.asarray(eq["band_qs"], dtype=float)
+    q_prior = np.full_like(qs, AUTO_EQ_DEFAULT_Q, dtype=float)
+    q_high = np.where(np.asarray(EQ_FREQUENCIES, dtype=float) < 250.0, 2.5, 6.0)
+    q_prior = np.clip(q_prior, 0.3, q_high)
+    max_log_dev = np.max(np.abs(np.log(np.maximum(qs, 1e-9) / q_prior)))
+    assert max_log_dev < 0.25

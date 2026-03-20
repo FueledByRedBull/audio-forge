@@ -155,6 +155,10 @@ mod tests {
 
         // -20 dBFS tone should be around -20 to -25 LUFS
         let lufs = meter.loudness_momentary();
-        assert!(lufs > -30.0 && lufs < -10.0, "Tone loudness out of range: {}", lufs);
+        assert!(
+            lufs > -30.0 && lufs < -10.0,
+            "Tone loudness out of range: {}",
+            lufs
+        );
     }
 }

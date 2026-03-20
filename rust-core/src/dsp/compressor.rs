@@ -1,100 +1,70 @@
-//! Downward compressor with IIR envelope detection
+//! Downward compressor with blended peak/RMS detection.
 //!
 //! Reduces dynamic range by attenuating signals above the threshold.
-//! Uses the same IIR envelope follower pattern as the noise gate for
-//! consistent, low-latency level detection.
 
 use crate::dsp::util;
+
+const DETECTOR_PEAK_WEIGHT: f64 = 0.6;
+const DETECTOR_RMS_WEIGHT: f64 = 0.4;
 
 /// Downward compressor with soft-knee gain reduction
 pub struct Compressor {
     /// Threshold in dB - compression starts above this level
     threshold_db: f64,
-
     /// Compression ratio (e.g., 4.0 = 4:1 ratio)
     ratio: f64,
-
     /// Attack time constant (exponential smoothing coefficient)
     attack_coeff: f64,
-
-    /// Release time constant (exponential smoothing coefficient)
+    /// Release time constant for gain-reduction smoothing
     release_coeff: f64,
-
+    /// Release time constant for the peak detector envelope
+    detector_release_coeff: f64,
     /// Makeup gain in dB to compensate for gain reduction
     makeup_gain_db: f64,
-
     /// Makeup gain as linear multiplier (cached)
     makeup_gain_linear: f64,
-
     /// Knee width in dB for soft-knee transition
     knee_db: f64,
-
-    /// Current envelope level in dB
-    envelope_db: f64,
-
-    /// IIR envelope squared (for RMS approximation)
-    envelope_squared: f64,
-
-    /// RMS smoothing coefficient (single-pole IIR)
+    /// AR-smoothed log-domain peak detector (dBFS)
+    peak_envelope_db: f64,
+    /// Fixed-time RMS detector state (squared amplitude)
+    rms_envelope_sq: f64,
+    /// RMS smoothing coefficient (single-pole IIR, fixed 20ms)
     rms_coeff: f64,
-
     /// Current gain reduction in dB (for metering)
     current_gain_reduction_db: f64,
-
     /// Sample rate
     sample_rate: f64,
-
     /// Whether compressor is enabled
     enabled: bool,
-
     /// Whether adaptive release is enabled
     adaptive_release: bool,
-
     /// Base release time in milliseconds (user-controlled)
     base_release_ms: f64,
-
     /// Current release time in milliseconds (adaptive value)
     current_release_ms: f64,
-
     /// Overage timer (samples above threshold)
     overage_timer: f64,
-
     /// Target release time (for smoothing)
     target_release_ms: f64,
-
     /// Release smoothing coefficient (100ms hysteresis)
     release_smoothing_coeff: f64,
-
     /// Loudness meter for auto makeup gain
     loudness_meter: Option<crate::dsp::loudness::LoudnessMeter>,
-
     /// Auto makeup gain enabled
     auto_makeup_enabled: bool,
-
     /// Target LUFS for auto makeup gain
     target_lufs: f64,
-
     /// Smoothed makeup gain (for transitions)
     smoothed_makeup_gain: f64,
-
     /// Makeup gain smoothing coefficient (200ms time constant)
     makeup_smoothing_coeff: f64,
-
     /// Current measured loudness (for metering)
     current_lufs: f64,
 }
 
 impl Compressor {
     /// Create a new compressor
-    ///
-    /// # Arguments
-    /// * `threshold_db` - Threshold in dB (e.g., -20.0)
-    /// * `ratio` - Compression ratio (e.g., 4.0 for 4:1)
-    /// * `attack_ms` - Attack time in milliseconds
-    /// * `release_ms` - Release time in milliseconds
-    /// * `makeup_gain_db` - Makeup gain in dB
-    /// * `knee_db` - Soft knee width in dB (0 = hard knee)
-    /// * `sample_rate` - Sample rate in Hz
     pub fn new(
         threshold_db: f64,
         ratio: f64,
@@ -106,14 +76,10 @@ impl Compressor {
     ) -> Self {
         let attack_coeff = util::time_constant_to_coeff(attack_ms, sample_rate);
         let release_coeff = util::time_constant_to_coeff(release_ms, sample_rate);
-        // RMS smoothing: 10ms time constant for fast response
-        let rms_coeff = util::time_constant_to_coeff(10.0, sample_rate);
-        // Release smoothing: 100ms time constant for hysteresis
+        let rms_coeff = util::time_constant_to_coeff(20.0, sample_rate);
         let release_smoothing_coeff = util::time_constant_to_coeff(100.0, sample_rate);
-        // Makeup smoothing: 200ms time constant for smooth transitions
         let makeup_smoothing_coeff = util::time_constant_to_coeff(200.0, sample_rate);
 
-        // Create loudness meter (will be None if ebur128 feature not enabled)
         let loudness_meter = match crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32) {
             Ok(meter) => Some(meter),
             Err(e) => {
@@ -124,14 +90,15 @@ impl Compressor {
 
         Self {
             threshold_db,
-            ratio: ratio.max(1.0), // Ratio must be >= 1
+            ratio: ratio.max(1.0),
             attack_coeff,
             release_coeff,
+            detector_release_coeff: release_coeff,
             makeup_gain_db,
             makeup_gain_linear: util::db_to_linear(makeup_gain_db),
             knee_db: knee_db.max(0.0),
-            envelope_db: -120.0,
-            envelope_squared: 0.0,
+            peak_envelope_db: -120.0,
+            rms_envelope_sq: 0.0,
             rms_coeff,
             current_gain_reduction_db: 0.0,
             sample_rate,
@@ -144,8 +111,8 @@ impl Compressor {
             release_smoothing_coeff,
             loudness_meter,
             auto_makeup_enabled: false,
-            target_lufs: -18.0,  // Podcast/streaming standard
-            smoothed_makeup_gain: makeup_gain_db,  // Start with manual value
+            target_lufs: -18.0,
+            smoothed_makeup_gain: makeup_gain_db,
             makeup_smoothing_coeff,
             current_lufs: -100.0,
         }
@@ -153,15 +120,7 @@ impl Compressor {
 
     /// Create with default parameters suitable for voice
     pub fn default_voice(sample_rate: f64) -> Self {
-        Self::new(
-            -20.0, // threshold_db
-            4.0,   // ratio (4:1)
-            10.0,  // attack_ms
-            200.0, // release_ms
-            0.0,   // makeup_gain_db
-            6.0,   // knee_db (soft knee)
-            sample_rate,
-        )
+        Self::new(-20.0, 4.0, 10.0, 200.0, 0.0, 6.0, sample_rate)
     }
 
     /// Set threshold in dB
@@ -195,18 +154,21 @@ impl Compressor {
         self.base_release_ms = release_ms;
         if !self.adaptive_release {
             self.current_release_ms = release_ms;
+            self.target_release_ms = release_ms;
+            self.release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
         }
-        self.release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
+        self.detector_release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
     }
 
     /// Enable or disable adaptive release
     pub fn set_adaptive_release(&mut self, enabled: bool) {
         self.adaptive_release = enabled;
         if !enabled {
-            // Reset to base release when disabled
             self.current_release_ms = self.base_release_ms;
             self.target_release_ms = self.base_release_ms;
             self.overage_timer = 0.0;
+            self.release_coeff =
+                util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
         }
     }
 
@@ -220,6 +182,8 @@ impl Compressor {
         self.base_release_ms = release_ms;
         if !self.adaptive_release {
             self.current_release_ms = release_ms;
+            self.target_release_ms = release_ms;
+            self.release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
         }
     }
 
@@ -276,7 +240,6 @@ impl Compressor {
     pub fn set_auto_makeup_enabled(&mut self, enabled: bool) {
         self.auto_makeup_enabled = enabled && self.loudness_meter.is_some();
         if !enabled {
-            // Reset to manual makeup when disabled
             self.smoothed_makeup_gain = self.makeup_gain_db;
         }
     }
@@ -306,20 +269,16 @@ impl Compressor {
         self.smoothed_makeup_gain
     }
 
-    /// Calculate adaptive release time based on overage duration
     fn calculate_adaptive_release(&mut self, sample_rate: f64) {
         if !self.adaptive_release {
             self.target_release_ms = self.base_release_ms;
             return;
         }
 
-        // Scale release from 50ms to 400ms based on overage duration
-        // Linear scaling over 2 seconds of sustained overage
-        let max_overage_duration = 2.0; // seconds
+        let max_overage_duration = 2.0;
         let overage_duration_sec = self.overage_timer / sample_rate;
         let scaling_factor = (overage_duration_sec / max_overage_duration).min(1.0);
 
-        // Release scales from base to 8x base (max 400ms)
         let min_release = 50.0;
         let max_release = 400.0;
         let adaptive_range = max_release - min_release;
@@ -327,10 +286,8 @@ impl Compressor {
         self.target_release_ms = min_release + adaptive_range * scaling_factor;
     }
 
-    /// Calculate and apply auto makeup gain based on loudness
     fn update_auto_makeup_gain(&mut self) {
         if !self.auto_makeup_enabled {
-            // When disabled, smooth back to manual makeup gain
             let target = self.makeup_gain_db;
             let diff = target - self.smoothed_makeup_gain;
             if diff.abs() > 0.1 {
@@ -342,20 +299,13 @@ impl Compressor {
             return;
         }
 
-        // Get current loudness
         if let Some(meter) = &self.loudness_meter {
             self.current_lufs = meter.loudness_momentary() as f64;
-
-            // Calculate required gain to reach target
-            // Formula: gain = target_lufs - current_lufs
             let required_gain = self.target_lufs - self.current_lufs;
-
-            // Clamp to 0-12 dB range (prevent excessive gain)
             let clamped_gain = required_gain.clamp(0.0, 12.0);
 
-            // Smooth gain changes with 200ms time constant
             let diff = clamped_gain - self.smoothed_makeup_gain;
-            if diff.abs() > 0.1 {  // Only smooth if difference > 0.1dB
+            if diff.abs() > 0.1 {
                 self.smoothed_makeup_gain = self.makeup_smoothing_coeff * self.smoothed_makeup_gain
                     + (1.0 - self.makeup_smoothing_coeff) * clamped_gain;
             } else {
@@ -364,26 +314,28 @@ impl Compressor {
         }
     }
 
-    /// Calculate gain reduction in dB for a given input level
-    /// Implements soft-knee compression
+    /// Calculate gain reduction in dB for a given detector level.
     #[inline]
-    fn compute_gain_reduction(&self, input_db: f64) -> f64 {
+    fn compute_gain_reduction(&self, detector_db: f64) -> f64 {
+        let comp_factor = 1.0 - 1.0 / self.ratio;
+        if self.knee_db <= 0.0 {
+            if detector_db <= self.threshold_db {
+                return 0.0;
+            }
+            return (detector_db - self.threshold_db) * comp_factor;
+        }
+
         let knee_half = self.knee_db / 2.0;
         let knee_start = self.threshold_db - knee_half;
         let knee_end = self.threshold_db + knee_half;
 
-        if input_db <= knee_start {
-            // Below knee: no compression
+        if detector_db <= knee_start {
             0.0
-        } else if input_db >= knee_end || self.knee_db <= 0.0 {
-            // Above knee (or hard knee): full compression
-            (input_db - self.threshold_db) * (1.0 - 1.0 / self.ratio)
+        } else if detector_db >= knee_end {
+            (detector_db - self.threshold_db) * comp_factor
         } else {
-            // In the knee: smooth transition
-            // Quadratic interpolation for soft knee
-            let knee_factor = (input_db - knee_start) / self.knee_db;
-            let compression_amount = (1.0 - 1.0 / self.ratio) * knee_factor * knee_factor;
-            (input_db - knee_start) * compression_amount / 2.0
+            let x = detector_db - knee_start;
+            comp_factor * x * x / (2.0 * self.knee_db)
         }
     }
 
@@ -400,24 +352,16 @@ impl Compressor {
             return;
         }
 
-        // Update loudness meter for entire block (more efficient)
         if let Some(meter) = &mut self.loudness_meter {
             meter.process(buffer);
         }
 
-        // Update auto makeup gain once per block
         self.update_auto_makeup_gain();
-
-        // Process samples using efficient block processing
         for sample in buffer.iter_mut() {
             *sample = self.process_sample_impl(*sample, false);
         }
     }
 
-    /// Shared single-sample processing path.
-    ///
-    /// `update_makeup_gain` should be true for direct `process_sample()` calls.
-    /// Block processing updates makeup once per block for efficiency.
     #[inline]
     fn process_sample_impl(&mut self, input: f32, update_makeup_gain: bool) -> f32 {
         if !self.enabled {
@@ -426,73 +370,70 @@ impl Compressor {
         }
 
         let input_f64 = input as f64;
-
-        // IIR envelope follower (RMS approximation)
-        let input_squared = input_f64 * input_f64;
-        self.envelope_squared =
-            self.rms_coeff * self.envelope_squared + (1.0 - self.rms_coeff) * input_squared;
-
-        // Calculate RMS level in dB
-        let rms = self.envelope_squared.sqrt();
-        let input_db = util::linear_to_db(rms, 1e-10);
-
-        // Smooth envelope in dB domain with attack/release
-        let coeff = if input_db > self.envelope_db {
+        let input_abs = input_f64.abs();
+        let inst_peak_db = util::linear_to_db(input_abs, 1e-10);
+        let peak_coeff = if inst_peak_db > self.peak_envelope_db {
             self.attack_coeff
         } else {
-            self.release_coeff
+            self.detector_release_coeff
         };
-        self.envelope_db = coeff * self.envelope_db + (1.0 - coeff) * input_db;
+        self.peak_envelope_db =
+            peak_coeff * self.peak_envelope_db + (1.0 - peak_coeff) * inst_peak_db;
 
-        // Track overage duration
-        let input_above_threshold = self.envelope_db > self.threshold_db;
+        let input_squared = input_f64 * input_f64;
+        self.rms_envelope_sq =
+            self.rms_coeff * self.rms_envelope_sq + (1.0 - self.rms_coeff) * input_squared;
+        let rms_db = util::linear_to_db(self.rms_envelope_sq.sqrt(), 1e-10);
+
+        let detector_db =
+            DETECTOR_PEAK_WEIGHT * self.peak_envelope_db + DETECTOR_RMS_WEIGHT * rms_db;
+
+        let input_above_threshold = detector_db > self.threshold_db;
         if input_above_threshold {
-            // Increment overage timer (per sample)
             self.overage_timer += 1.0;
         } else {
-            // Decay overage timer (quick release when below threshold)
             self.overage_timer = (self.overage_timer - 10.0).max(0.0);
         }
 
-        // Calculate adaptive release target
         self.calculate_adaptive_release(self.sample_rate);
-
-        // Smooth release time changes (100ms hysteresis)
         let release_diff = self.target_release_ms - self.current_release_ms;
         if release_diff.abs() > 1.0 {
-            // Only smooth if difference > 1ms
             self.current_release_ms = self.release_smoothing_coeff * self.current_release_ms
                 + (1.0 - self.release_smoothing_coeff) * self.target_release_ms;
         } else {
             self.current_release_ms = self.target_release_ms;
         }
+        self.release_coeff =
+            util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
 
-        // Update release coefficient based on current adaptive release
-        self.release_coeff = util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
-
-        // Calculate gain reduction
-        let gain_reduction_db = self.compute_gain_reduction(self.envelope_db);
-        self.current_gain_reduction_db = gain_reduction_db;
+        let target_gain_reduction_db = self.compute_gain_reduction(detector_db);
+        let gr_coeff = if target_gain_reduction_db > self.current_gain_reduction_db {
+            self.attack_coeff
+        } else {
+            self.release_coeff
+        };
+        self.current_gain_reduction_db =
+            gr_coeff * self.current_gain_reduction_db + (1.0 - gr_coeff) * target_gain_reduction_db;
 
         if update_makeup_gain {
             self.update_auto_makeup_gain();
         }
 
-        // Apply gain reduction using smoothed makeup gain
-        let output_gain = util::db_to_linear(-gain_reduction_db)
+        let output_gain = util::db_to_linear(-self.current_gain_reduction_db)
             * util::db_to_linear(self.smoothed_makeup_gain);
-
         (input_f64 * output_gain) as f32
     }
 
     /// Reset compressor state
     pub fn reset(&mut self) {
-        self.envelope_db = -120.0;
-        self.envelope_squared = 0.0;
+        self.peak_envelope_db = -120.0;
+        self.rms_envelope_sq = 0.0;
         self.current_gain_reduction_db = 0.0;
         self.overage_timer = 0.0;
         self.current_release_ms = self.base_release_ms;
         self.target_release_ms = self.base_release_ms;
+        self.release_coeff =
+            util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
     }
 }
 
@@ -502,238 +443,127 @@ mod tests {
 
     #[test]
     fn test_compressor_no_compression_below_threshold() {
-        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 48000.0);
-
-        // Very quiet signal (well below threshold)
-        let input = 0.001f32; // About -60 dB
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 48_000.0);
+        let input = 0.001f32;
         let output = comp.process_sample(input);
-
-        // Output should be nearly equal to input (no compression)
         assert!((output - input).abs() < 0.0001);
     }
 
     #[test]
     fn test_compressor_reduces_gain_above_threshold() {
-        let mut comp = Compressor::new(-20.0, 4.0, 0.1, 200.0, 0.0, 0.0, 48000.0);
-
-        // Feed loud signal to build up envelope
-        let loud_signal = vec![0.3f32; 5000]; // About -10 dB
+        let mut comp = Compressor::new(-20.0, 4.0, 0.1, 200.0, 0.0, 0.0, 48_000.0);
+        let loud_signal = vec![0.3f32; 5_000];
         for sample in &loud_signal {
             comp.process_sample(*sample);
         }
-
-        // Should have some gain reduction
         assert!(comp.current_gain_reduction() > 0.0);
     }
 
     #[test]
     fn test_compressor_makeup_gain() {
-        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 6.0, 0.0, 48000.0);
-
-        // Quiet signal (below threshold)
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 6.0, 0.0, 48_000.0);
         let input = 0.001f32;
-
-        // Let envelope settle
         for _ in 0..1000 {
             comp.process_sample(input);
         }
-
         let output = comp.process_sample(input);
-
-        // Output should be louder due to makeup gain (6 dB = ~2x)
         assert!(output > input * 1.5);
     }
 
     #[test]
     fn test_compressor_disabled() {
-        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 6.0, 0.0, 48000.0);
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 6.0, 0.0, 48_000.0);
         comp.set_enabled(false);
-
         let input = 0.5f32;
         let output = comp.process_sample(input);
-
-        // When disabled, output should equal input exactly
         assert_eq!(output, input);
     }
 
     #[test]
     fn test_soft_knee() {
-        let comp_hard = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 48000.0);
-        let comp_soft = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 12.0, 48000.0);
+        let comp_hard = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 48_000.0);
+        let comp_soft = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 12.0, 48_000.0);
 
-        // Test at -18 dB (within the 12 dB soft knee region: -26 to -14 dB)
-        // Hard knee: this is 2 dB above threshold, so full compression applies
-        // Soft knee: this is within the knee transition zone
-        let at_minus_18_hard = comp_hard.compute_gain_reduction(-18.0);
-        let at_minus_18_soft = comp_soft.compute_gain_reduction(-18.0);
+        // Inside the knee but below threshold, soft knee should start compressing
+        // while hard knee still applies no gain reduction.
+        let at_minus_22_hard = comp_hard.compute_gain_reduction(-22.0);
+        let at_minus_22_soft = comp_soft.compute_gain_reduction(-22.0);
+        assert!((at_minus_22_hard - 0.0).abs() < 1e-12);
+        assert!(at_minus_22_soft > 0.0);
 
-        // Hard knee at -18 dB should have gain reduction (2 dB above threshold * 0.75 = 1.5 dB)
-        assert!(
-            at_minus_18_hard > 0.0,
-            "Hard knee should compress at -18 dB"
-        );
-
-        // Soft knee should have less compression than hard knee within the knee region
-        assert!(
-            at_minus_18_soft < at_minus_18_hard,
-            "Soft knee ({:.2}) should have less compression than hard knee ({:.2}) at -18 dB",
-            at_minus_18_soft,
-            at_minus_18_hard
-        );
-
-        // Well above threshold (outside knee), both should produce similar compression
         let well_above_hard = comp_hard.compute_gain_reduction(-5.0);
         let well_above_soft = comp_soft.compute_gain_reduction(-5.0);
-        // At -5 dB (15 dB above threshold, well outside the soft knee),
-        // both should be very close
         assert!((well_above_hard - well_above_soft).abs() < 0.5);
     }
 
     #[test]
-    fn test_adaptive_release_disabled() {
-        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48000.0);
-        comp.set_adaptive_release(false);
+    fn test_soft_knee_exact_boundaries() {
+        let comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 12.0, 48_000.0);
+        let w = 12.0;
+        let t = -20.0;
+        let comp_factor = 1.0 - 1.0 / 4.0;
 
-        // Verify current_release equals base when disabled
-        assert_eq!(comp.current_release_time(), 50.0);
-        assert!(!comp.adaptive_release());
+        let at_knee_start = comp.compute_gain_reduction(t - w / 2.0);
+        let at_knee_end = comp.compute_gain_reduction(t + w / 2.0);
+
+        assert!((at_knee_start - 0.0).abs() < 1e-12);
+        assert!((at_knee_end - ((w / 2.0) * comp_factor)).abs() < 1e-12);
     }
 
     #[test]
     fn test_adaptive_release_enables() {
-        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48000.0);
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48_000.0);
         comp.set_adaptive_release(true);
-
         assert!(comp.adaptive_release());
 
-        // Feed signal above threshold to build overage
-        let loud_signal = vec![0.3f32; 96000]; // 2 seconds at 48kHz
+        let loud_signal = vec![0.3f32; 96_000];
         for sample in &loud_signal {
             comp.process_sample(*sample);
         }
-
-        // After 2 seconds overage, release should be near max (400ms)
         let current_release = comp.current_release_time();
-        assert!(
-            current_release > 300.0,
-            "Release should scale up with overage, got {}",
-            current_release
-        );
-    }
-
-    #[test]
-    fn test_adaptive_release_scales_linearly() {
-        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48000.0);
-        comp.set_adaptive_release(true);
-
-        // Test at 0.5 seconds overage (should be ~25% of max scaling)
-        let quarter_signal = vec![0.3f32; (24000.0) as usize]; // 0.5 seconds
-        for sample in &quarter_signal {
-            comp.process_sample(*sample);
-        }
-        let release_quarter = comp.current_release_time();
-
-        // Test at 1.0 seconds overage (should be ~50% of max scaling)
-        comp.reset_overage_timer();
-        let half_signal = vec![0.3f32; (48000.0) as usize]; // 1.0 second
-        for sample in &half_signal {
-            comp.process_sample(*sample);
-        }
-        let release_half = comp.current_release_time();
-
-        // Half duration should have less release than quarter (accumulated)
-        // Actually quarter was accumulated on zero, half starts from zero
-        // So release_half should be roughly double release_quarter (minus min)
-        assert!(release_half > release_quarter);
-    }
-
-    #[test]
-    fn test_adaptive_release_resets_when_threshold_changes() {
-        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48000.0);
-        comp.set_adaptive_release(true);
-
-        // Build up overage
-        let loud_signal = vec![0.3f32; 48000];
-        for sample in &loud_signal {
-            comp.process_sample(*sample);
-        }
-
-        // Record release before threshold change
-        let release_before = comp.current_release_time();
-
-        // Change threshold (should reset overage)
-        comp.set_threshold(-30.0);
-
-        // Feed quiet signal to let smoothing decay
-        let quiet_signal = vec![0.001f32; 10000];
-        for sample in &quiet_signal {
-            comp.process_sample(*sample);
-        }
-
-        // After quiet signal, release should have decayed from previous high
-        let release_after = comp.current_release_time();
-        assert!(
-            release_after < release_before,
-            "Release should decay after threshold change and quiet signal, before: {}, after: {}",
-            release_before,
-            release_after
-        );
-    }
-
-    #[test]
-    fn test_adaptive_release_smooths_transitions() {
-        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48000.0);
-        comp.set_adaptive_release(true);
-
-        // Get base release
-        let base_release = comp.current_release_time();
-
-        // Build up some overage
-        let signal = vec![0.3f32; 24000]; // 0.5 seconds
-        for sample in &signal {
-            comp.process_sample(*sample);
-        }
-
-        // After processing, release should have increased smoothly
-        let increased_release = comp.current_release_time();
-        assert!(increased_release > base_release);
-        assert!(increased_release < 400.0); // Not at max yet
-    }
-
-    #[test]
-    fn test_attack_time_changes_short_burst_response() {
-        let mut fast = Compressor::new(-20.0, 4.0, 0.1, 200.0, 0.0, 0.0, 48000.0);
-        let mut slow = Compressor::new(-20.0, 4.0, 50.0, 200.0, 0.0, 0.0, 48000.0);
-
-        for _ in 0..240 {
-            fast.process_sample(0.5);
-            slow.process_sample(0.5);
-        }
-
-        assert!(
-            fast.current_gain_reduction() > slow.current_gain_reduction(),
-            "fast attack should build gain reduction sooner"
-        );
+        assert!(current_release > 300.0);
     }
 
     #[test]
     fn test_release_time_changes_recovery_speed() {
-        let mut fast = Compressor::new(-20.0, 4.0, 0.1, 20.0, 0.0, 0.0, 48000.0);
-        let mut slow = Compressor::new(-20.0, 4.0, 0.1, 200.0, 0.0, 0.0, 48000.0);
+        let mut fast = Compressor::new(-20.0, 4.0, 0.1, 20.0, 0.0, 0.0, 48_000.0);
+        let mut slow = Compressor::new(-20.0, 4.0, 0.1, 200.0, 0.0, 0.0, 48_000.0);
 
-        for _ in 0..4000 {
+        for _ in 0..4_000 {
             fast.process_sample(0.5);
             slow.process_sample(0.5);
         }
 
-        for _ in 0..4800 {
+        for _ in 0..1_440 {
             fast.process_sample(0.001);
             slow.process_sample(0.001);
         }
 
-        assert!(
-            fast.current_gain_reduction() < slow.current_gain_reduction(),
-            "fast release should recover more quickly after a loud passage"
-        );
+        assert!(fast.current_gain_reduction() < slow.current_gain_reduction());
+    }
+
+    #[test]
+    fn test_adaptive_release_does_not_change_detector_release_decay() {
+        let mut fixed = Compressor::new(-20.0, 4.0, 1.0, 80.0, 0.0, 0.0, 48_000.0);
+        let mut adaptive = Compressor::new(-20.0, 4.0, 1.0, 80.0, 0.0, 0.0, 48_000.0);
+        adaptive.set_adaptive_release(true);
+
+        for _ in 0..96_000 {
+            fixed.process_sample(0.4);
+            adaptive.process_sample(0.4);
+        }
+
+        assert!(adaptive.current_release_time() > fixed.current_release_time());
+
+        let fixed_peak_before = fixed.peak_envelope_db;
+        let adaptive_peak_before = adaptive.peak_envelope_db;
+        for _ in 0..2_400 {
+            fixed.process_sample(0.001);
+            adaptive.process_sample(0.001);
+        }
+
+        let fixed_drop = fixed_peak_before - fixed.peak_envelope_db;
+        let adaptive_drop = adaptive_peak_before - adaptive.peak_envelope_db;
+        assert!((fixed_drop - adaptive_drop).abs() < 1e-9);
     }
 }

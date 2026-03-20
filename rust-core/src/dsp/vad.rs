@@ -7,11 +7,7 @@
 //! Each inference call requires passing h/c states from the previous call.
 
 use ndarray::{Array3, ArrayView1, ArrayView2};
-use ort::{
-    session::builder::GraphOptimizationLevel,
-    session::Session,
-    value::TensorRef,
-};
+use ort::{session::builder::GraphOptimizationLevel, session::Session, value::TensorRef};
 use std::env;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -49,6 +45,10 @@ const SILERO_SAMPLE_RATE: u32 = 16000;
 /// Silero VAD window size (512 samples at 16kHz = 32ms)
 const SILERO_WINDOW_SIZE: usize = 512;
 const VAD_INPUT_COMPACT_THRESHOLD: usize = 4096;
+const NOISE_FLOOR_HISTORY_FRAMES: usize = 250;
+const NOISE_FLOOR_ELIGIBLE_PROB_MAX: f32 = 0.3;
+const NOISE_FLOOR_UP_SLEW_DB_PER_FRAME: f32 = 0.5;
+const NOISE_FLOOR_DOWN_SLEW_DB_PER_FRAME: f32 = 0.1;
 /// LSTM hidden dimension
 const LSTM_HIDDEN_DIM: usize = 64;
 /// Number of LSTM layers
@@ -176,17 +176,26 @@ impl SileroVAD {
 
         // Create ONNX Runtime session with ort 2.0 API
         let session = Session::builder()
-            .map_err(|e| VadError::ModelLoadError(format!("Failed to create session builder: {}", e)))?
+            .map_err(|e| {
+                VadError::ModelLoadError(format!("Failed to create session builder: {}", e))
+            })?
             .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(|e| VadError::ModelLoadError(format!("Failed to set optimization level: {}", e)))?
+            .map_err(|e| {
+                VadError::ModelLoadError(format!("Failed to set optimization level: {}", e))
+            })?
             .commit_from_file(&model_path)
-            .map_err(|e| VadError::ModelLoadError(format!("Failed to load model from {:?}: {}", model_path, e)))?;
+            .map_err(|e| {
+                VadError::ModelLoadError(format!(
+                    "Failed to load model from {:?}: {}",
+                    model_path, e
+                ))
+            })?;
 
         // Calculate resampling ratio and preallocate reusable buffers.
         let resample_ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
-        let window_size =
-            ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32) / SILERO_SAMPLE_RATE as f32).ceil()
-                as usize;
+        let window_size = ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32)
+            / SILERO_SAMPLE_RATE as f32)
+            .ceil() as usize;
 
         // Initialize combined LSTM state to zeros - shape [2, 1, 128]
         // Silero VAD uses a single combined state (h and c concatenated)
@@ -342,23 +351,27 @@ impl SileroVAD {
             self.gained_audio.copy_from_slice(&self.audio_512);
         }
 
-        let audio_array = ArrayView2::from_shape((1, SILERO_WINDOW_SIZE), &self.gained_audio[..])
-            .map_err(|e| VadError::OnnxError(format!("Failed to create audio view: {}", e)))?;
+        let audio_array =
+            ArrayView2::from_shape((1, SILERO_WINDOW_SIZE), &self.gained_audio[..])
+                .map_err(|e| VadError::OnnxError(format!("Failed to create audio view: {}", e)))?;
         let sr_array = ArrayView1::from(&SILERO_SR_TENSOR);
 
         // Create TensorRefs using ort 2.0 API
-        let audio_ref = TensorRef::from_array_view(audio_array)
-            .map_err(|e| VadError::OnnxError(format!("Failed to create audio tensor ref: {}", e)))?;
+        let audio_ref = TensorRef::from_array_view(audio_array).map_err(|e| {
+            VadError::OnnxError(format!("Failed to create audio tensor ref: {}", e))
+        })?;
 
         let sr_ref = TensorRef::from_array_view(sr_array)
             .map_err(|e| VadError::OnnxError(format!("Failed to create sr tensor ref: {}", e)))?;
 
-        let state_ref = TensorRef::from_array_view(&self.state)
-            .map_err(|e| VadError::OnnxError(format!("Failed to create state tensor ref: {}", e)))?;
+        let state_ref = TensorRef::from_array_view(&self.state).map_err(|e| {
+            VadError::OnnxError(format!("Failed to create state tensor ref: {}", e))
+        })?;
 
         // Run inference with ort 2.0 API
         // Note: Silero VAD uses "state" not "h"/"c"
-        let outputs = self.session
+        let outputs = self
+            .session
             .run(ort::inputs! {
                 "input" => audio_ref,
                 "sr" => sr_ref,
@@ -383,9 +396,10 @@ impl SileroVAD {
 
         // Update combined LSTM state from state_n output
         if let Some(state_n_output) = outputs.get("state_n") {
-            let (_shape, state_n_data) = state_n_output
-                .try_extract_tensor::<f32>()
-                .map_err(|e| VadError::OnnxError(format!("Failed to extract state_n tensor: {}", e)))?;
+            let (_shape, state_n_data) =
+                state_n_output.try_extract_tensor::<f32>().map_err(|e| {
+                    VadError::OnnxError(format!("Failed to extract state_n tensor: {}", e))
+                })?;
 
             // Copy data to self.state - shape [2, 1, 128]
             let total_elements = LSTM_NUM_LAYERS * LSTM_STATE_DIM;
@@ -439,8 +453,6 @@ pub struct VadAutoGate {
     noise_floor: f32,
     /// Margin above noise floor for gate threshold (dB)
     margin: f32,
-    /// Adaptation rate for noise floor (0-1)
-    adaptation_rate: f32,
     /// Minimum gate threshold (dB)
     min_threshold: f32,
     /// Maximum gate threshold (dB)
@@ -471,27 +483,29 @@ pub struct VadAutoGate {
     sample_rate: u32,
     /// Current VAD probability for metering
     current_probability: f32,
+    /// Circular history buffer of low-confidence frame levels for percentile floor estimation.
+    noise_floor_history: Vec<f32>,
+    /// Next write index into `noise_floor_history` once full.
+    noise_floor_history_cursor: usize,
+    /// Scratch space used to sort a copy for percentile extraction.
+    noise_floor_sort_scratch: Vec<f32>,
 }
 
 impl VadAutoGate {
     /// Create a new VAD auto-gate controller
     pub fn new(sample_rate: u32, vad_threshold: f32) -> Self {
-        let vad = match SileroVAD::new(sample_rate, vad_threshold) {
-            Ok(vad) => Some(vad),
-            Err(_) => None,
-        };
+        let vad = SileroVAD::new(sample_rate, vad_threshold).ok();
 
         let enabled = vad.is_some();
 
         Self {
             vad,
             noise_floor: -60.0,
-            margin: 10.0,  // Increased from 6.0 to 10.0 dB for better noise rejection
-            adaptation_rate: 0.001,  // ~15 second time constant at 48kHz/512 samples
-            min_threshold: -80.0,  // Lowered from -50.0 to allow proper adaptation in quiet rooms
+            margin: 10.0, // Increased from 6.0 to 10.0 dB for better noise rejection
+            min_threshold: -80.0, // Lowered from -50.0 to allow proper adaptation in quiet rooms
             max_threshold: -10.0,
             manual_threshold_db: -40.0,
-            auto_threshold_enabled: false,  // Default to manual mode
+            auto_threshold_enabled: false, // Default to manual mode
             enabled,
             gate_mode: GateMode::ThresholdOnly,
             vad_threshold,
@@ -504,6 +518,9 @@ impl VadAutoGate {
             closed_counter_samples: sample_rate as f32 * 0.05,
             sample_rate,
             current_probability: 0.0,
+            noise_floor_history: Vec::with_capacity(NOISE_FLOOR_HISTORY_FRAMES),
+            noise_floor_history_cursor: 0,
+            noise_floor_sort_scratch: Vec::with_capacity(NOISE_FLOOR_HISTORY_FRAMES),
         }
     }
 
@@ -530,69 +547,64 @@ impl VadAutoGate {
     }
 
     fn update_noise_floor_estimate(&mut self, current_rms: f32, prob: f32) {
-        // Update noise floor estimate during LOW-CONFIDENCE periods (pauses, breaths, background noise)
-        // Uses probability threshold instead of binary speech detection to catch more update opportunities.
-        static ADAPT_DEBUG_COUNT: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
-        let mut adapt_debug_count = 0usize;
-        if GATE_DEBUG {
-            adapt_debug_count =
-                ADAPT_DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-
-        if GATE_DEBUG && adapt_debug_count < 30 {
-            if !self.auto_threshold_enabled {
-                vad_debug_log!("[ADAPT-DEBUG] Auto-threshold DISABLED - skipping noise floor update");
-            } else if prob >= 0.4 {
-                vad_debug_log!(
-                    "[ADAPT-DEBUG] prob {:.2} >= 0.4 - skipping (speech detected)",
-                    prob
-                );
-            }
-        }
-
-        if !(self.auto_threshold_enabled && prob < 0.4) {
+        if !self.auto_threshold_enabled || prob >= NOISE_FLOOR_ELIGIBLE_PROB_MAX {
             return;
         }
-
-        if GATE_DEBUG && adapt_debug_count < 30 {
-            vad_debug_log!("[ADAPT-DEBUG] Checking RMS: {:.1} dB (need > -100.0)", current_rms);
-        }
-
-        // Only adapt when there's actual audio activity (not dead silence).
         if current_rms <= -100.0 {
             return;
         }
 
-        let old_floor = self.noise_floor;
-
-        // Use configured adaptation_rate as the base tuning knob, with asymmetry
-        // for faster attack and slower release to reduce pumping.
-        let base_rate = self.adaptation_rate.clamp(0.0001, 0.02);
-        let attack_rate = (base_rate * 20.0).clamp(0.002, 0.2);
-        let release_rate = (base_rate * 5.0).clamp(0.0005, 0.1);
-        let rate = if current_rms > self.noise_floor {
-            attack_rate
-        } else {
-            release_rate
+        self.push_noise_floor_sample(current_rms);
+        let Some(candidate_floor) = self.percentile_noise_floor() else {
+            return;
         };
 
-        // Exponential smoothing: new_val = rate * sample + (1 - rate) * old_val
-        self.noise_floor = rate * current_rms + (1.0 - rate) * self.noise_floor;
-        // Clamp to valid range
+        let delta = candidate_floor - self.noise_floor;
+        if delta > 0.0 {
+            self.noise_floor += delta.min(NOISE_FLOOR_UP_SLEW_DB_PER_FRAME);
+        } else {
+            self.noise_floor += delta.max(-NOISE_FLOOR_DOWN_SLEW_DB_PER_FRAME);
+        }
         self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
 
-        // Log ALL updates when debugging (not just significant ones).
-        if GATE_DEBUG
-            && (adapt_debug_count < 30 || (self.noise_floor - old_floor).abs() > 0.1)
-        {
+        if GATE_DEBUG {
             let _auto_threshold =
                 (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
             vad_debug_log!(
-                "[AUTO-THRESHOLD] Noise floor: {:.1} -> {:.1} dB (RMS: {:.1} dB, prob={:.2}, threshold={:.1} dB)",
-                old_floor, self.noise_floor, current_rms, prob, _auto_threshold
+                "[AUTO-THRESHOLD] floor={:.1}dB candidate={:.1}dB rms={:.1}dB prob={:.2} threshold={:.1}dB",
+                self.noise_floor,
+                candidate_floor,
+                current_rms,
+                prob,
+                _auto_threshold
             );
         }
+    }
+
+    fn push_noise_floor_sample(&mut self, sample_db: f32) {
+        if self.noise_floor_history.len() < NOISE_FLOOR_HISTORY_FRAMES {
+            self.noise_floor_history.push(sample_db);
+            return;
+        }
+
+        self.noise_floor_history[self.noise_floor_history_cursor] = sample_db;
+        self.noise_floor_history_cursor =
+            (self.noise_floor_history_cursor + 1) % NOISE_FLOOR_HISTORY_FRAMES;
+    }
+
+    fn percentile_noise_floor(&mut self) -> Option<f32> {
+        if self.noise_floor_history.is_empty() {
+            return None;
+        }
+
+        self.noise_floor_sort_scratch.clear();
+        self.noise_floor_sort_scratch
+            .extend_from_slice(&self.noise_floor_history);
+        self.noise_floor_sort_scratch.sort_by(|a, b| a.total_cmp(b));
+
+        let len = self.noise_floor_sort_scratch.len();
+        let idx = ((len as f32 * 0.2).floor() as usize).min(len - 1);
+        self.noise_floor_sort_scratch.get(idx).copied()
     }
 
     fn process_with_probability(&mut self, samples: &[f32], prob: f32) -> (bool, f32) {
@@ -604,9 +616,11 @@ impl VadAutoGate {
         // Debug: Log VAD decision
         if GATE_DEBUG && (prob > 0.0 || prob < 0.01) {
             // Only log when probability is very low (to see oscillation)
-            static DEBUG_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            static DEBUG_COUNT: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
             let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if count < 50 {  // Only log first 50 times to avoid spam
+            if count < 50 {
+                // Only log first 50 times to avoid spam
                 vad_debug_log!("[VAD-DEBUG] prob={:.6}, threshold={:.2}, prob > threshold = {}, vad_speech_detected={}",
                     prob, self.vad_threshold, prob > self.vad_threshold, vad_speech_detected);
             }
@@ -620,8 +634,8 @@ impl VadAutoGate {
                 // In VadAssisted mode, explain WHY gate opened
                 if GATE_DEBUG && (level_above_threshold || vad_speech_detected) {
                     let _level_db = compute_rms_db(samples);
-                    let _threshold =
-                        (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
+                    let _threshold = (self.noise_floor + self.margin)
+                        .clamp(self.min_threshold, self.max_threshold);
                     if level_above_threshold && vad_speech_detected {
                         vad_debug_log!("[GATE] VAD-Assisted OPEN: BOTH level={:.1}dB>={:.1}dB AND VAD prob={:.2}>={:.2}",
                             _level_db, _threshold, prob, self.vad_threshold);
@@ -634,33 +648,44 @@ impl VadAutoGate {
                     }
                 }
                 level_above_threshold || vad_speech_detected
-            },
+            }
             GateMode::VadOnly => {
                 if GATE_DEBUG && vad_speech_detected {
-                    vad_debug_log!("[GATE] VAD-Only OPEN: VAD prob={:.2}>={:.2}",
-                        prob, self.vad_threshold);
+                    vad_debug_log!(
+                        "[GATE] VAD-Only OPEN: VAD prob={:.2}>={:.2}",
+                        prob,
+                        self.vad_threshold
+                    );
                 }
                 vad_speech_detected
-            },
+            }
         };
 
         let smoothed_gate_open = self.apply_hold_time(gate_open, samples.len());
 
         // Debug: Log gate decision vs smoothed gate
         if GATE_DEBUG && gate_open != smoothed_gate_open {
-            static DEBUG_COUNT2: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            static DEBUG_COUNT2: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
             let count = DEBUG_COUNT2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count < 20 {
-                vad_debug_log!("[VAD-HOLD] gate_open={}, smoothed_gate_open={}, prob={:.4}, timer_running={}",
-                    gate_open, smoothed_gate_open, prob, self.timer_running);
+                vad_debug_log!(
+                    "[VAD-HOLD] gate_open={}, smoothed_gate_open={}, prob={:.4}, timer_running={}",
+                    gate_open,
+                    smoothed_gate_open,
+                    prob,
+                    self.timer_running
+                );
             }
         }
 
         // Debug: show final gate state after hold time
         if GATE_DEBUG && smoothed_gate_open != gate_open {
-            vad_debug_log!("[GATE] HoldTime ACTIVE: raw_gate={}, held_gate={}",
+            vad_debug_log!(
+                "[GATE] HoldTime ACTIVE: raw_gate={}, held_gate={}",
                 if gate_open { "OPEN" } else { "CLOSED" },
-                if smoothed_gate_open { "OPEN" } else { "CLOSED" });
+                if smoothed_gate_open { "OPEN" } else { "CLOSED" }
+            );
         }
 
         (smoothed_gate_open, prob)
@@ -762,7 +787,7 @@ impl VadAutoGate {
         if enabled {
             // Initialize noise floor from current RMS if needed
             if self.noise_floor <= -100.0 {
-                self.noise_floor = -60.0;  // Reset to sensible default
+                self.noise_floor = -60.0; // Reset to sensible default
             }
         }
     }
@@ -779,6 +804,9 @@ impl VadAutoGate {
         self.prev_gate_open = false;
         self.closed_counter_samples = self.debounce_time_ms / 1000.0 * self.sample_rate as f32;
         self.current_probability = 0.0;
+        self.noise_floor_history.clear();
+        self.noise_floor_history_cursor = 0;
+        self.noise_floor_sort_scratch.clear();
         if let Some(vad) = &mut self.vad {
             vad.reset();
         }
@@ -937,6 +965,64 @@ mod tests {
 
         assert!(gate.noise_floor() > initial_floor + 4.0);
         assert!(gate.noise_floor() < -40.0);
+    }
+
+    #[test]
+    fn test_auto_threshold_ignores_high_confidence_speech_frames() {
+        let mut gate = VadAutoGate::new(48_000, 0.5);
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_auto_threshold(true);
+        let initial_floor = gate.noise_floor();
+
+        // Loud speech-like frames should be ignored for floor adaptation.
+        let amp = 10f32.powf(-25.0 / 20.0);
+        let frame = vec![amp; 480];
+        for _ in 0..300 {
+            let _ = gate.process_with_probability(&frame, 0.9);
+        }
+
+        assert!(
+            (gate.noise_floor() - initial_floor).abs() < 0.25,
+            "high-confidence speech should not pollute noise floor"
+        );
+    }
+
+    #[test]
+    fn test_auto_threshold_slew_limits_per_frame() {
+        let mut gate = VadAutoGate::new(48_000, 0.5);
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_auto_threshold(true);
+
+        let quiet_amp = 10f32.powf(-70.0 / 20.0);
+        let loud_amp = 10f32.powf(-35.0 / 20.0);
+        let quiet = vec![quiet_amp; 480];
+        let loud = vec![loud_amp; 480];
+
+        // Warm history with quiet non-speech.
+        for _ in 0..NOISE_FLOOR_HISTORY_FRAMES {
+            let _ = gate.process_with_probability(&quiet, 0.1);
+        }
+        let before_rise = gate.noise_floor();
+        let _ = gate.process_with_probability(&loud, 0.1);
+        let after_rise = gate.noise_floor();
+        assert!(
+            after_rise - before_rise <= NOISE_FLOOR_UP_SLEW_DB_PER_FRAME + 1e-6,
+            "rise slew exceeded per-frame limit"
+        );
+
+        // Warm history with louder non-speech, then check downward slew.
+        gate.reset();
+        gate.set_auto_threshold(true);
+        for _ in 0..NOISE_FLOOR_HISTORY_FRAMES {
+            let _ = gate.process_with_probability(&loud, 0.1);
+        }
+        let before_fall = gate.noise_floor();
+        let _ = gate.process_with_probability(&quiet, 0.1);
+        let after_fall = gate.noise_floor();
+        assert!(
+            before_fall - after_fall <= NOISE_FLOOR_DOWN_SLEW_DB_PER_FRAME + 1e-6,
+            "fall slew exceeded per-frame limit"
+        );
     }
 
     #[test]

@@ -4,21 +4,23 @@ Calibration dialog for Auto-EQ feature
 DEBUG: Added terminal logging for calibration workflow
 """
 
-# Enable debug logging (set to False for production)
-DEBUG = False
+import logging
+import time
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
     QGroupBox, QLabel, QComboBox,
-    QPushButton, QTextEdit, QScrollArea, QMessageBox, QProgressBar
+    QPushButton, QTextEdit, QMessageBox, QProgressBar
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+import numpy as np
+
 from ..config import TARGET_CURVES
 from .analysis_worker import AnalysisWorker
 from .level_meter import LevelMeter
-import numpy as np
-import logging
-import time
+
+# Enable debug logging (set to False for production)
+DEBUG = False
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,25 @@ def _processor_sample_rate(owner) -> int:
         raise RuntimeError("Processor sample rate is unavailable")
 
     return sample_rate
+
+
+def _selected_device_pair(owner) -> tuple[str | None, str | None]:
+    if owner is None:
+        return None, None
+
+    input_device = None
+    output_device = None
+
+    if hasattr(owner, "input_combo"):
+        input_device = owner.input_combo.currentData() or None
+    if hasattr(owner, "output_combo"):
+        output_device = owner.output_combo.currentData() or None
+
+    return input_device, output_device
+
+
+def _device_label(device: str | None, default_label: str) -> str:
+    return device if device else default_label
 
 
 class CalibrationDialog(QDialog):
@@ -219,7 +240,7 @@ class CalibrationDialog(QDialog):
     def _apply_eq_settings(self):
         """Apply auto-EQ settings to main window and close dialog."""
         if DEBUG:
-            print(f"[CALIBRATION_DLG] Applying EQ settings...")
+            print("[CALIBRATION_DLG] Applying EQ settings...")
 
         # Get parent's EQ panel (MainWindow has it)
         parent = self.parent()
@@ -265,18 +286,68 @@ class CalibrationDialog(QDialog):
             QMessageBox.critical(self, "Error", "Could not find audio processor")
             return
 
-        # CRITICAL: Start processor from MAIN THREAD before spawning worker
-        # The worker must NOT start/stop the processor (threading safety)
         processor_was_running = parent.processor.is_running()
+        selected_input, selected_output = _selected_device_pair(parent)
 
         if DEBUG:
-            print(f"[CALIBRATION_DLG] Processor was_running={processor_was_running}")
+            print(
+                "[CALIBRATION_DLG] Processor state: "
+                f"running={processor_was_running}, "
+                f"selected_input={selected_input!r}, "
+                f"selected_output={selected_output!r}"
+            )
 
-        if not processor_was_running:
+        if processor_was_running:
+            get_active_input = getattr(parent.processor, "get_active_input_device", None)
+            get_active_output = getattr(parent.processor, "get_active_output_device", None)
+            active_input = get_active_input() if callable(get_active_input) else None
+            active_output = get_active_output() if callable(get_active_output) else None
+            if DEBUG:
+                print(
+                    "[CALIBRATION_DLG] Active stream devices: "
+                    f"input={active_input!r}, output={active_output!r}"
+                )
+
+            if active_input != selected_input or active_output != selected_output:
+                reply = QMessageBox.question(
+                    self,
+                    "Switch Devices for Auto-EQ?",
+                    "Auto-EQ should record from your selected devices.\n\n"
+                    f"Selected input: {_device_label(selected_input, '(Default Input)')}\n"
+                    f"Selected output: {_device_label(selected_output, '(Default Output)')}\n\n"
+                    f"Active input: {_device_label(active_input, '(Default Input)')}\n"
+                    f"Active output: {_device_label(active_output, '(Default Output)')}\n\n"
+                    "Switch now?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    self.warning_label.setText("Calibration canceled: using current stream devices")
+                    self.warning_label.setStyleSheet("color: orange; font-size: 11pt;")
+                    return
+
+                try:
+                    if DEBUG:
+                        print("[CALIBRATION_DLG] Restarting processor on selected devices")
+                    parent.processor.stop()
+                    parent.processor.start(selected_input, selected_output)
+                    parent.processor.set_output_mute(False)
+                    if DEBUG:
+                        print("[CALIBRATION_DLG] Processor restarted on selected devices")
+                except Exception as e:
+                    QMessageBox.critical(
+                        self,
+                        "Audio Error",
+                        f"Failed to switch audio devices for calibration:\n{e}",
+                    )
+                    return
+            self._started_processor = False
+            if DEBUG:
+                print("[CALIBRATION_DLG] Reusing running processor session")
+        else:
             try:
                 if DEBUG:
                     print("[CALIBRATION_DLG] Starting audio processor from main thread...")
-                parent.processor.start(None, None)
+                parent.processor.start(selected_input, selected_output)
                 self._started_processor = True  # Track that we started it
                 if DEBUG:
                     print("[CALIBRATION_DLG] Audio processor started successfully")
@@ -287,10 +358,6 @@ class CalibrationDialog(QDialog):
                     "Check that audio devices are connected and not in use by another application."
                 )
                 return
-        else:
-            self._started_processor = False
-            if DEBUG:
-                print("[CALIBRATION_DLG] Processor already running, reusing existing session")
 
         self.recording_state = "recording"
         self.start_button.setText("Recording...")
@@ -479,7 +546,7 @@ class CalibrationDialog(QDialog):
     def _on_analysis_complete(self, eq_settings: dict):
         """Handle analysis completion."""
         if DEBUG:
-            print(f"[ANALYSIS] Analysis complete!")
+            print("[ANALYSIS] Analysis complete!")
             print(f"[ANALYSIS] Band gains: {[round(g, 1) for g in eq_settings['band_gains']]}")
             max_gain = max(abs(g) for g in eq_settings['band_gains'])
             print(f"[ANALYSIS] Max correction: {round(max_gain, 1)} dB")

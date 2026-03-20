@@ -63,6 +63,30 @@ fn samples_to_micros(samples: u64, sample_rate: u32) -> u64 {
     }
 }
 
+fn total_reported_latency_us(
+    output_buffer_samples: u64,
+    output_sample_rate: u32,
+    suppressor_latency_samples: u64,
+    limiter_lookahead_samples: u64,
+    limiter_enabled: bool,
+    processing_sample_rate: u32,
+    compensation_us: u64,
+) -> u64 {
+    let output_latency_us = samples_to_micros(output_buffer_samples, output_sample_rate);
+    let suppressor_latency_us =
+        samples_to_micros(suppressor_latency_samples, processing_sample_rate);
+    let limiter_latency_us = if limiter_enabled {
+        samples_to_micros(limiter_lookahead_samples, processing_sample_rate)
+    } else {
+        0
+    };
+
+    output_latency_us
+        .saturating_add(suppressor_latency_us)
+        .saturating_add(limiter_latency_us)
+        .saturating_add(compensation_us)
+}
+
 fn build_sinc_resampler(
     input_rate: u32,
     output_rate: u32,
@@ -94,20 +118,11 @@ fn update_backend_diagnostics(
     }
 }
 
+#[derive(Default)]
 struct StreamRecoveryState {
     last_error: Option<String>,
     last_reason: Option<String>,
     restart_count: u64,
-}
-
-impl Default for StreamRecoveryState {
-    fn default() -> Self {
-        Self {
-            last_error: None,
-            last_reason: None,
-            restart_count: 0,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -168,18 +183,109 @@ impl SuppressorControlState {
     }
 }
 
-#[derive(Clone)]
-struct EqControlState {
+#[derive(Clone, Copy)]
+struct EqControlSnapshot {
     enabled: bool,
     bands: [(f64, f64, f64); NUM_BANDS],
 }
 
-impl EqControlState {
+impl EqControlSnapshot {
     fn new() -> Self {
         Self {
             enabled: true,
             bands: std::array::from_fn(|index| (DEFAULT_FREQUENCIES[index], 0.0, DEFAULT_Q)),
         }
+    }
+}
+
+struct EqControlState {
+    seq: AtomicU64,
+    enabled: AtomicBool,
+    frequency_bits: [AtomicU64; NUM_BANDS],
+    gain_bits: [AtomicU64; NUM_BANDS],
+    q_bits: [AtomicU64; NUM_BANDS],
+}
+
+impl EqControlState {
+    fn new() -> Self {
+        let snapshot = EqControlSnapshot::new();
+        Self {
+            seq: AtomicU64::new(0),
+            enabled: AtomicBool::new(snapshot.enabled),
+            frequency_bits: std::array::from_fn(|index| {
+                AtomicU64::new(snapshot.bands[index].0.to_bits())
+            }),
+            gain_bits: std::array::from_fn(|index| {
+                AtomicU64::new(snapshot.bands[index].1.to_bits())
+            }),
+            q_bits: std::array::from_fn(|index| AtomicU64::new(snapshot.bands[index].2.to_bits())),
+        }
+    }
+
+    fn update<F>(&self, apply: F)
+    where
+        F: FnOnce(&Self),
+    {
+        self.seq.fetch_add(1, Ordering::AcqRel);
+        apply(self);
+        self.seq.fetch_add(1, Ordering::Release);
+    }
+
+    fn snapshot(&self) -> EqControlSnapshot {
+        loop {
+            let seq_before = self.seq.load(Ordering::Acquire);
+            if (seq_before & 1) != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+
+            let enabled = self.enabled.load(Ordering::Relaxed);
+            let bands = std::array::from_fn(|index| {
+                let frequency = f64::from_bits(self.frequency_bits[index].load(Ordering::Relaxed));
+                let gain = f64::from_bits(self.gain_bits[index].load(Ordering::Relaxed));
+                let q = f64::from_bits(self.q_bits[index].load(Ordering::Relaxed));
+                (frequency, gain, q)
+            });
+
+            let seq_after = self.seq.load(Ordering::Acquire);
+            if seq_before == seq_after {
+                return EqControlSnapshot { enabled, bands };
+            }
+        }
+    }
+
+    fn set_enabled(&self, enabled: bool) {
+        self.update(|state| {
+            state.enabled.store(enabled, Ordering::Relaxed);
+        });
+    }
+
+    fn set_band_frequency(&self, band: usize, frequency: f64) {
+        self.update(|state| {
+            state.frequency_bits[band].store(frequency.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    fn set_band_gain(&self, band: usize, gain_db: f64) {
+        self.update(|state| {
+            state.gain_bits[band].store(gain_db.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    fn set_band_q(&self, band: usize, q: f64) {
+        self.update(|state| {
+            state.q_bits[band].store(q.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    fn set_bands(&self, bands: &[(f64, f64, f64); NUM_BANDS]) {
+        self.update(|state| {
+            for (index, (frequency, gain, q)) in bands.iter().copied().enumerate() {
+                state.frequency_bits[index].store(frequency.to_bits(), Ordering::Relaxed);
+                state.gain_bits[index].store(gain.to_bits(), Ordering::Relaxed);
+                state.q_bits[index].store(q.to_bits(), Ordering::Relaxed);
+            }
+        });
     }
 }
 
@@ -260,7 +366,7 @@ impl LimiterControlState {
     }
 }
 
-fn apply_eq_control(eq: &mut ParametricEQ, control: &EqControlState) {
+fn apply_eq_control(eq: &mut ParametricEQ, control: &EqControlSnapshot) {
     eq.set_enabled(control.enabled);
     for (index, (frequency, gain_db, q)) in control.bands.iter().copied().enumerate() {
         eq.set_band_frequency(index, frequency);
@@ -346,7 +452,7 @@ pub struct AudioProcessor {
     /// 10-band parametric EQ
     eq: Arc<Mutex<ParametricEQ>>,
     eq_enabled: Arc<AtomicBool>,
-    eq_control: Arc<Mutex<EqControlState>>,
+    eq_control: Arc<EqControlState>,
     eq_dirty: Arc<AtomicBool>,
 
     /// Compressor
@@ -566,7 +672,7 @@ impl AudioProcessor {
             current_model: Arc::new(AtomicU8::new(NoiseModel::RNNoise as u8)),
             eq: Arc::new(Mutex::new(ParametricEQ::new(sample_rate as f64))),
             eq_enabled: Arc::new(AtomicBool::new(true)),
-            eq_control: Arc::new(Mutex::new(EqControlState::new())),
+            eq_control: Arc::new(EqControlState::new()),
             eq_dirty: Arc::new(AtomicBool::new(false)),
             compressor: Arc::new(Mutex::new(Compressor::default_voice(sample_rate as f64))),
             compressor_enabled: Arc::new(AtomicBool::new(true)),
@@ -910,7 +1016,7 @@ impl AudioProcessor {
                     RESAMPLER_CHUNK_SIZE,
                 )
                 .map_err(|e| {
-                    let _ = self.stop();
+                    self.stop();
                     format!(
                         "Failed to initialize input resampler ({} Hz -> {} Hz): {}",
                         input_sample_rate_for_thread, self.sample_rate, e
@@ -928,7 +1034,7 @@ impl AudioProcessor {
                     RESAMPLER_CHUNK_SIZE,
                 )
                 .map_err(|e| {
-                    let _ = self.stop();
+                    self.stop();
                     format!(
                         "Failed to initialize output resampler ({} Hz -> {} Hz): {}",
                         self.sample_rate, output_sample_rate_for_thread, e
@@ -1042,6 +1148,9 @@ impl AudioProcessor {
             let mut compressor_rt = Compressor::default_voice(sample_rate_for_latency as f64);
             let mut deesser_rt = DeEsser::new(sample_rate_for_latency as f64);
             let mut limiter_rt = Limiter::default_settings(sample_rate_for_latency as f64);
+            let limiter_lookahead_samples =
+                Arc::new(AtomicU64::new(limiter_rt.lookahead_samples() as u64));
+            let limiter_lookahead_samples_for_chain = Arc::clone(&limiter_lookahead_samples);
             if let Ok(control) = gate_control.lock() {
                 if let Ok(mut gate_rt) = gate.lock() {
                     apply_gate_control(&mut gate_rt, &control);
@@ -1064,9 +1173,8 @@ impl AudioProcessor {
                     );
                 }
             }
-            if let Ok(control) = eq_control.lock() {
-                apply_eq_control(&mut eq_rt, &control);
-            }
+            let eq_snapshot = eq_control.snapshot();
+            apply_eq_control(&mut eq_rt, &eq_snapshot);
             if let Ok(control) = compressor_control.lock() {
                 apply_compressor_control(&mut compressor_rt, &control);
             }
@@ -1151,9 +1259,8 @@ impl AudioProcessor {
                     }
                 }
                 if eq_dirty.swap(false, Ordering::AcqRel) {
-                    if let Ok(control) = eq_control.lock() {
-                        apply_eq_control(&mut eq_rt, &control);
-                    }
+                    let eq_snapshot = eq_control.snapshot();
+                    apply_eq_control(&mut eq_rt, &eq_snapshot);
                 }
                 if compressor_dirty.swap(false, Ordering::AcqRel) {
                     if let Ok(control) = compressor_control.lock() {
@@ -1163,6 +1270,8 @@ impl AudioProcessor {
                 if limiter_dirty.swap(false, Ordering::AcqRel) {
                     if let Ok(control) = limiter_control.lock() {
                         apply_limiter_control(&mut limiter_rt, &control);
+                        limiter_lookahead_samples_for_chain
+                            .store(limiter_rt.lookahead_samples() as u64, Ordering::Relaxed);
                     }
                 }
 
@@ -1843,10 +1952,6 @@ impl AudioProcessor {
 
                                 let output_buffer_samples =
                                     output_buffer_len.load(Ordering::Relaxed) as u64;
-                                let output_latency_us = samples_to_micros(
-                                    output_buffer_samples,
-                                    output_sample_rate_for_latency,
-                                );
 
                                 let suppressor_latency_samples =
                                     if suppressor_enabled.load(Ordering::Acquire) {
@@ -1854,16 +1959,15 @@ impl AudioProcessor {
                                     } else {
                                         0
                                     };
-                                let suppressor_latency_us = samples_to_micros(
+                                let total_latency = total_reported_latency_us(
+                                    output_buffer_samples,
+                                    output_sample_rate_for_latency,
                                     suppressor_latency_samples,
+                                    limiter_lookahead_samples.load(Ordering::Relaxed),
+                                    limiter_enabled.load(Ordering::Acquire),
                                     sample_rate_for_latency,
+                                    latency_compensation_us.load(Ordering::Relaxed),
                                 );
-
-                                let compensation_us =
-                                    latency_compensation_us.load(Ordering::Relaxed);
-                                let total_latency = output_latency_us
-                                    .saturating_add(suppressor_latency_us)
-                                    .saturating_add(compensation_us);
                                 latency_us.store(total_latency, Ordering::Relaxed);
                             }
                         } else {
@@ -2092,6 +2196,24 @@ impl AudioProcessor {
     /// Check if processing is running
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+
+    /// Get active input device name for the running stream.
+    pub fn active_input_device_name(&self) -> Option<String> {
+        if self.is_running() {
+            self.input_device_name.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Get active output device name for the running stream.
+    pub fn active_output_device_name(&self) -> Option<String> {
+        if self.is_running() {
+            self.output_device_name.clone()
+        } else {
+            None
+        }
     }
 
     /// Set master bypass
@@ -2336,7 +2458,7 @@ impl AudioProcessor {
         self.suppressor_reset_requested
             .store(true, Ordering::Release);
         self.suppressor_dirty.store(true, Ordering::Release);
-        return true;
+        true
     }
 
     /// Get current noise suppression model
@@ -2394,9 +2516,7 @@ impl AudioProcessor {
         if let Ok(mut e) = self.eq.lock() {
             e.set_enabled(enabled);
         }
-        if let Ok(mut control) = self.eq_control.lock() {
-            control.enabled = enabled;
-        }
+        self.eq_control.set_enabled(enabled);
         self.eq_dirty.store(true, Ordering::Release);
     }
 
@@ -2411,9 +2531,7 @@ impl AudioProcessor {
             e.set_band_gain(band, gain_db);
         }
         if band < NUM_BANDS {
-            if let Ok(mut control) = self.eq_control.lock() {
-                control.bands[band].1 = gain_db;
-            }
+            self.eq_control.set_band_gain(band, gain_db);
             self.eq_dirty.store(true, Ordering::Release);
         }
     }
@@ -2424,9 +2542,7 @@ impl AudioProcessor {
             e.set_band_frequency(band, frequency);
         }
         if band < NUM_BANDS {
-            if let Ok(mut control) = self.eq_control.lock() {
-                control.bands[band].0 = frequency;
-            }
+            self.eq_control.set_band_frequency(band, frequency);
             self.eq_dirty.store(true, Ordering::Release);
         }
     }
@@ -2437,9 +2553,7 @@ impl AudioProcessor {
             e.set_band_q(band, q);
         }
         if band < NUM_BANDS {
-            if let Ok(mut control) = self.eq_control.lock() {
-                control.bands[band].2 = q;
-            }
+            self.eq_control.set_band_q(band, q);
             self.eq_dirty.store(true, Ordering::Release);
         }
     }
@@ -2505,11 +2619,8 @@ impl AudioProcessor {
                 eq.set_band_q(i, *q);
             }
         }
-        if let Ok(mut control) = self.eq_control.lock() {
-            for (i, (freq, gain, q)) in bands.iter().copied().enumerate() {
-                control.bands[i] = (freq, gain, q);
-            }
-        }
+        let snapshot_bands = std::array::from_fn(|index| bands[index]);
+        self.eq_control.set_bands(&snapshot_bands);
         self.eq_dirty.store(true, Ordering::Release);
 
         Ok(())
@@ -3222,9 +3333,62 @@ mod tests {
     }
 
     #[test]
+    fn test_total_reported_latency_includes_limiter_lookahead_across_sample_rates() {
+        for (sample_rate, expected_us) in
+            [(44_100_u32, 1_995_u64), (48_000, 2_000), (96_000, 2_000)]
+        {
+            let limiter = Limiter::default_settings(sample_rate as f64);
+            let lookahead_samples = limiter.lookahead_samples() as u64;
+            let total = total_reported_latency_us(
+                0,
+                sample_rate,
+                0,
+                lookahead_samples,
+                true,
+                sample_rate,
+                0,
+            );
+            assert_eq!(total, expected_us);
+        }
+    }
+
+    #[test]
+    fn test_total_reported_latency_respects_output_vs_processing_rates() {
+        let total = total_reported_latency_us(
+            882,    // 20ms @ 44.1kHz output buffer
+            44_100, // output sample rate
+            480,    // 10ms suppressor latency @ 48kHz
+            96,     // 2ms limiter lookahead @ 48kHz
+            true, 48_000, // processing sample rate
+            500,    // fixed compensation
+        );
+        assert_eq!(total, 20_000 + 10_000 + 2_000 + 500);
+    }
+
+    #[test]
     fn test_build_sinc_resampler_for_valid_rates() {
         let resampler = build_sinc_resampler(44_100, 48_000, 1024);
         assert!(resampler.is_ok());
+    }
+
+    #[test]
+    fn test_active_device_names_only_report_when_running() {
+        let mut processor = AudioProcessor::new();
+        processor.input_device_name = Some("Mic A".to_string());
+        processor.output_device_name = Some("Out B".to_string());
+
+        assert_eq!(processor.active_input_device_name(), None);
+        assert_eq!(processor.active_output_device_name(), None);
+
+        processor.running.store(true, Ordering::SeqCst);
+        assert_eq!(
+            processor.active_input_device_name().as_deref(),
+            Some("Mic A")
+        );
+        assert_eq!(
+            processor.active_output_device_name().as_deref(),
+            Some("Out B")
+        );
     }
 }
 
@@ -3278,6 +3442,16 @@ impl PyAudioProcessor {
     /// Check if running
     fn is_running(&self) -> bool {
         self.processor.is_running()
+    }
+
+    /// Get active input device name for the running stream.
+    fn get_active_input_device(&self) -> Option<String> {
+        self.processor.active_input_device_name()
+    }
+
+    /// Get active output device name for the running stream.
+    fn get_active_output_device(&self) -> Option<String> {
+        self.processor.active_output_device_name()
     }
 
     /// Get sample rate

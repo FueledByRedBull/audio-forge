@@ -127,6 +127,7 @@ impl AudioOutput {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_stream<T>(
         device: Device,
         stream_config: StreamConfig,
@@ -452,14 +453,30 @@ impl AudioOutput {
 }
 
 /// Find a config that supports 48kHz
+fn preferred_sample_rate_from_ranges(
+    default_rate: u32,
+    ranges: &[(u32, u32)],
+    target_rate: u32,
+) -> u32 {
+    if ranges
+        .iter()
+        .any(|(min_rate, max_rate)| *min_rate <= target_rate && target_rate <= *max_rate)
+    {
+        target_rate
+    } else {
+        default_rate
+    }
+}
+
 fn find_48khz_config(
     configs: impl Iterator<Item = SupportedStreamConfigRange>,
 ) -> Option<cpal::SupportedStreamConfig> {
     for config in configs {
         let min_rate = config.min_sample_rate().0;
         let max_rate = config.max_sample_rate().0;
-
-        if min_rate <= TARGET_SAMPLE_RATE && TARGET_SAMPLE_RATE <= max_rate {
+        if preferred_sample_rate_from_ranges(0, &[(min_rate, max_rate)], TARGET_SAMPLE_RATE)
+            == TARGET_SAMPLE_RATE
+        {
             return Some(config.with_sample_rate(cpal::SampleRate(TARGET_SAMPLE_RATE)));
         }
     }
@@ -528,5 +545,17 @@ mod tests {
         assert_eq!(data[2], data[3]);
         assert_eq!(data[10], 0);
         assert_eq!(data[11], 0);
+    }
+
+    #[test]
+    fn test_preferred_sample_rate_uses_target_when_supported() {
+        let chosen = preferred_sample_rate_from_ranges(44_100, &[(44_100, 48_000)], 48_000);
+        assert_eq!(chosen, 48_000);
+    }
+
+    #[test]
+    fn test_preferred_sample_rate_falls_back_to_default_when_target_missing() {
+        let chosen = preferred_sample_rate_from_ranges(44_100, &[(44_100, 44_100)], 48_000);
+        assert_eq!(chosen, 44_100);
     }
 }

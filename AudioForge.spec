@@ -5,6 +5,7 @@ from pathlib import Path
 
 repo_root = Path(globals().get("SPECPATH", ".")).resolve()
 python_source = repo_root / "python"
+hook_source = repo_root / "pyinstaller-hooks"
 
 binaries = []
 datas = []
@@ -33,7 +34,7 @@ a = Analysis(
         "mic_eq",
         "mic_eq.ui",
     ],
-    hookspath=[],
+    hookspath=[str(hook_source.resolve())],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[

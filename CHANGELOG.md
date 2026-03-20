@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.12 - 2026-03-20
+
+- Completed DSP redesign updates with canonical compressor knee/detector semantics, sample-rate-aware limiter lookahead latency reporting, split-band de-esser recombination, and percentile-based VAD floor tracking.
+- Fixed limiter lookahead peak planning to include the active output decision window and preserved gate gain smoothing during VAD force-close transitions.
+- Upgraded Auto-EQ to a two-stage dense-grid optimizer (gain-only then gain+Q) with bounded Q regularization and gain-ripple penalties, and made Auto-EQ calibration follow the user-selected UI input/output devices.
+- Added/updated regression coverage across gate/compressor/limiter/VAD/EQ/resampler paths and refreshed release packaging hooks for SciPy hidden-import handling.
+
 ## v1.7.11 - 2026-03-19
 
 - Preferred native `48 kHz` input configs when available and made required input/output resampler setup fail fast at startup instead of falling through to wrong-rate processing.

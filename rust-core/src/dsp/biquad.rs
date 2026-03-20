@@ -5,6 +5,10 @@
 use std::f64::consts::PI;
 
 const MIN_BIQUAD_Q: f64 = 1e-6;
+// Fixed 64-sample coefficient ramp chosen empirically. No sample-rate scaling
+// is needed for this use case; the transition remains inaudible across
+// supported rates.
+const COEFF_RAMP_SAMPLES: usize = 64;
 
 /// Biquad filter types
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -30,6 +34,17 @@ pub struct Biquad {
     b2: f64,
     a1: f64,
     a2: f64,
+    target_b0: f64,
+    target_b1: f64,
+    target_b2: f64,
+    target_a1: f64,
+    target_a2: f64,
+    step_b0: f64,
+    step_b1: f64,
+    step_b2: f64,
+    step_a1: f64,
+    step_a2: f64,
+    ramp_remaining: usize,
 
     // State variables for Direct Form II Transposed
     z1: f64,
@@ -59,6 +74,17 @@ impl Biquad {
             b2: 0.0,
             a1: 0.0,
             a2: 0.0,
+            target_b0: 1.0,
+            target_b1: 0.0,
+            target_b2: 0.0,
+            target_a1: 0.0,
+            target_a2: 0.0,
+            step_b0: 0.0,
+            step_b1: 0.0,
+            step_b2: 0.0,
+            step_a1: 0.0,
+            step_a2: 0.0,
+            ramp_remaining: 0,
             z1: 0.0,
             z2: 0.0,
             filter_type,
@@ -68,13 +94,14 @@ impl Biquad {
             sample_rate,
             enabled: true,
         };
-        filter.calculate_coefficients();
+        let coeffs = filter.calculate_coefficients_values();
+        filter.set_coefficients_immediate(coeffs);
         filter
     }
 
     /// Calculate filter coefficients based on current parameters
     /// Uses Robert Bristow-Johnson's Audio EQ Cookbook formulas
-    fn calculate_coefficients(&mut self) {
+    fn calculate_coefficients_values(&self) -> (f64, f64, f64, f64, f64) {
         let omega = 2.0 * PI * self.frequency / self.sample_rate;
         let sin_omega = omega.sin();
         let cos_omega = omega.cos();
@@ -135,11 +162,66 @@ impl Biquad {
         };
 
         // Normalize coefficients
-        self.b0 = b0 / a0;
-        self.b1 = b1 / a0;
-        self.b2 = b2 / a0;
-        self.a1 = a1 / a0;
-        self.a2 = a2 / a0;
+        (b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
+    }
+
+    fn set_coefficients_immediate(&mut self, coeffs: (f64, f64, f64, f64, f64)) {
+        let (b0, b1, b2, a1, a2) = coeffs;
+        self.b0 = b0;
+        self.b1 = b1;
+        self.b2 = b2;
+        self.a1 = a1;
+        self.a2 = a2;
+        self.target_b0 = b0;
+        self.target_b1 = b1;
+        self.target_b2 = b2;
+        self.target_a1 = a1;
+        self.target_a2 = a2;
+        self.step_b0 = 0.0;
+        self.step_b1 = 0.0;
+        self.step_b2 = 0.0;
+        self.step_a1 = 0.0;
+        self.step_a2 = 0.0;
+        self.ramp_remaining = 0;
+    }
+
+    fn schedule_coefficients_ramp(&mut self, coeffs: (f64, f64, f64, f64, f64)) {
+        let (b0, b1, b2, a1, a2) = coeffs;
+        self.target_b0 = b0;
+        self.target_b1 = b1;
+        self.target_b2 = b2;
+        self.target_a1 = a1;
+        self.target_a2 = a2;
+
+        let steps = COEFF_RAMP_SAMPLES as f64;
+        self.step_b0 = (self.target_b0 - self.b0) / steps;
+        self.step_b1 = (self.target_b1 - self.b1) / steps;
+        self.step_b2 = (self.target_b2 - self.b2) / steps;
+        self.step_a1 = (self.target_a1 - self.a1) / steps;
+        self.step_a2 = (self.target_a2 - self.a2) / steps;
+        self.ramp_remaining = COEFF_RAMP_SAMPLES;
+    }
+
+    #[inline]
+    fn step_coefficients_if_needed(&mut self) {
+        if self.ramp_remaining == 0 {
+            return;
+        }
+
+        self.b0 += self.step_b0;
+        self.b1 += self.step_b1;
+        self.b2 += self.step_b2;
+        self.a1 += self.step_a1;
+        self.a2 += self.step_a2;
+        self.ramp_remaining -= 1;
+
+        if self.ramp_remaining == 0 {
+            self.b0 = self.target_b0;
+            self.b1 = self.target_b1;
+            self.b2 = self.target_b2;
+            self.a1 = self.target_a1;
+            self.a2 = self.target_a2;
+        }
     }
 
     /// Process a single sample using Direct Form II Transposed
@@ -148,6 +230,7 @@ impl Biquad {
         if !self.enabled {
             return input;
         }
+        self.step_coefficients_if_needed();
 
         let input_f64 = input as f64;
         let output = self.b0 * input_f64 + self.z1;
@@ -176,19 +259,19 @@ impl Biquad {
     /// Set filter frequency and recalculate coefficients
     pub fn set_frequency(&mut self, frequency: f64) {
         self.frequency = frequency;
-        self.calculate_coefficients();
+        self.schedule_coefficients_ramp(self.calculate_coefficients_values());
     }
 
     /// Set filter gain and recalculate coefficients
     pub fn set_gain_db(&mut self, gain_db: f64) {
         self.gain_db = gain_db;
-        self.calculate_coefficients();
+        self.schedule_coefficients_ramp(self.calculate_coefficients_values());
     }
 
     /// Set filter Q factor and recalculate coefficients
     pub fn set_q(&mut self, q: f64) {
         self.q = q.max(MIN_BIQUAD_Q);
-        self.calculate_coefficients();
+        self.schedule_coefficients_ramp(self.calculate_coefficients_values());
     }
 
     /// Enable or disable the filter
@@ -273,5 +356,18 @@ mod tests {
         let mut filter = Biquad::new(BiquadType::Peaking, 1000.0, 0.0, 0.0, 48000.0);
         let output = filter.process_sample(0.25);
         assert!(output.is_finite());
+    }
+
+    #[test]
+    fn test_biquad_coefficients_reach_target_after_ramp() {
+        let mut filter = Biquad::new(BiquadType::Peaking, 1000.0, 0.0, 1.0, 48000.0);
+        filter.set_gain_db(12.0);
+        assert_eq!(filter.ramp_remaining, COEFF_RAMP_SAMPLES);
+        for _ in 0..COEFF_RAMP_SAMPLES {
+            let _ = filter.process_sample(0.2);
+        }
+        assert_eq!(filter.ramp_remaining, 0);
+        assert!((filter.b0 - filter.target_b0).abs() < 1e-12);
+        assert!((filter.a2 - filter.target_a2).abs() < 1e-12);
     }
 }

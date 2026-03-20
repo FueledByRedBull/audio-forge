@@ -6,8 +6,8 @@
 //!
 //! These are the "critical tests only" identified in CONCERNS.md.
 
-use mic_eq_core::audio::processor::AudioProcessor;
 use mic_eq_core::audio::input::list_input_devices;
+use mic_eq_core::audio::processor::AudioProcessor;
 use rand::Rng;
 
 /// Test rapid parameter changes to validate thread-safe DSP setters
@@ -24,7 +24,10 @@ fn test_rapid_parameter_changes() {
     let processor = AudioProcessor::new();
 
     // Verify initial state
-    assert!(!processor.is_running(), "Processor should not be running initially");
+    assert!(
+        !processor.is_running(),
+        "Processor should not be running initially"
+    );
 
     // Random number generator for parameter values
     let mut rng = rand::thread_rng();
@@ -32,8 +35,7 @@ fn test_rapid_parameter_changes() {
     // Perform 1000 random parameter changes
     for i in 0..1000 {
         // Pick random DSP stage
-        let stage =
-            rng.gen_range(0..6); // 0=gate, 1=rnnoise, 2=eq, 3=compressor, 4=limiter, 5=deesser
+        let stage = rng.gen_range(0..6); // 0=gate, 1=rnnoise, 2=eq, 3=compressor, 4=limiter, 5=deesser
 
         match stage {
             0 => {
@@ -159,12 +161,18 @@ fn test_rapid_parameter_changes() {
         // Every 100 iterations, verify state is still valid
         if i % 100 == 0 {
             // Processor should still not be running
-            assert!(!processor.is_running(), "Processor should remain not running");
+            assert!(
+                !processor.is_running(),
+                "Processor should remain not running"
+            );
         }
     }
 
     // Final verification - processor should still be in valid state
-    assert!(!processor.is_running(), "Processor should not be running after stress test");
+    assert!(
+        !processor.is_running(),
+        "Processor should not be running after stress test"
+    );
 
     // Verify we can still query all parameters (no locks poisoned)
     let _ = processor.is_gate_enabled();
@@ -226,8 +234,10 @@ fn test_device_hotswap_behavior() {
         // Note: In CI, this may be 0, which is acceptable
         let first_count = device_counts[0];
         let all_same = device_counts.iter().all(|&c| c == first_count);
-        assert!(all_same || device_counts.iter().any(|&c| c > 0),
-                "Device enumeration should be consistent or find devices");
+        assert!(
+            all_same || device_counts.iter().any(|&c| c > 0),
+            "Device enumeration should be consistent or find devices"
+        );
     }
 
     println!("✓ Device enumeration stress test passed (50 iterations)");
@@ -238,7 +248,9 @@ fn test_device_hotswap_behavior() {
     match list_input_devices() {
         Ok(devices) => {
             // Check if fake device is in the list
-            let fake_device_exists = devices.iter().any(|d| d.name.contains("FAKE_DEVICE_DOES_NOT_EXIST"));
+            let fake_device_exists = devices
+                .iter()
+                .any(|d| d.name.contains("FAKE_DEVICE_DOES_NOT_EXIST"));
             assert!(!fake_device_exists, "Fake device should not exist");
 
             println!("✓ Invalid device not found in enumeration (correct)");
@@ -252,7 +264,10 @@ fn test_device_hotswap_behavior() {
     // Test 3: Processor stop/start cycle
     // Create processor, call stop() (even though not started - should be safe)
     let processor = AudioProcessor::new();
-    assert!(!processor.is_running(), "Processor should not be running initially");
+    assert!(
+        !processor.is_running(),
+        "Processor should not be running initially"
+    );
 
     // Calling stop when not running should be safe (no-op)
     // Note: AudioProcessor doesn't expose a public stop() method in the current API
@@ -260,7 +275,10 @@ fn test_device_hotswap_behavior() {
     // This test validates that the processor state remains consistent
 
     // Verify processor is still in valid state after "non-started" lifecycle
-    assert!(!processor.is_running(), "Processor should remain not running");
+    assert!(
+        !processor.is_running(),
+        "Processor should remain not running"
+    );
 
     // Verify we can still set parameters after "stop" (no-op)
     processor.set_gate_threshold(-60.0);

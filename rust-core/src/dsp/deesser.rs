@@ -1,4 +1,4 @@
-//! Wideband de-esser using sidechain sibilance detection.
+//! Split-band de-esser using sidechain sibilance detection.
 //!
 //! Detection path:
 //! - High-pass at low cutoff (default 4kHz)
@@ -11,7 +11,8 @@
 //! - Max reduction clamp
 //!
 //! Apply path:
-//! - Wideband gain reduction (MVP-safe implementation)
+//! - Split-band recombination:
+//!   out = (input - band) + band * gain
 
 use super::biquad::{Biquad, BiquadType};
 use crate::dsp::util;
@@ -242,8 +243,7 @@ impl DeEsser {
             let auto_cap = Self::lerp(3.0, 14.0, amount);
             let cap_db = auto_cap.min(self.max_reduction_db);
 
-            let over_db =
-                (excess_db - self.auto_baseline_excess_db - trigger_offset_db).max(0.0);
+            let over_db = (excess_db - self.auto_baseline_excess_db - trigger_offset_db).max(0.0);
             (over_db * slope).clamp(0.0, cap_db)
         } else if sidechain_level_db > self.threshold_db {
             let over_db = sidechain_level_db - self.threshold_db;
@@ -261,7 +261,9 @@ impl DeEsser {
             coeff * self.current_reduction_db + (1.0 - coeff) * target_reduction;
 
         let gain = util::db_to_linear(-self.current_reduction_db);
-        (input as f64 * gain) as f32
+        let dry_minus_band = input as f64 - sidechain as f64;
+        let wet_band = sidechain as f64 * gain;
+        (dry_minus_band + wet_band) as f32
     }
 
     /// Process a full block in place.
@@ -357,9 +359,8 @@ mod tests {
             for n in 0..24_000 {
                 // Sibilance-heavy synthetic signal: dominant 7kHz + mild low component.
                 let t = n as f64 / sr;
-                let x =
-                    (2.0 * std::f64::consts::PI * 7000.0 * t).sin() as f32 * 0.40
-                        + (2.0 * std::f64::consts::PI * 500.0 * t).sin() as f32 * 0.02;
+                let x = (2.0 * std::f64::consts::PI * 7000.0 * t).sin() as f32 * 0.40
+                    + (2.0 * std::f64::consts::PI * 500.0 * t).sin() as f32 * 0.02;
                 let y = deesser.process_sample(x);
                 sum_out += (y as f64).abs();
             }
@@ -370,7 +371,62 @@ mod tests {
         let (sum_low, gr_low) = render_with_amount(0.2);
         let (sum_high, gr_high) = render_with_amount(1.0);
 
-        assert!(sum_high < sum_low, "Higher auto amount should attenuate more");
+        assert!(
+            sum_high < sum_low,
+            "Higher auto amount should attenuate more"
+        );
         assert!(gr_high > gr_low, "Higher auto amount should report more GR");
+    }
+
+    #[test]
+    fn test_split_band_identity_when_reduction_is_zero() {
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        deesser.set_auto_enabled(false);
+        deesser.set_threshold_db(-6.0);
+        deesser.set_ratio(1.0);
+
+        let mut max_err = 0.0f32;
+        for n in 0..4_800 {
+            let t = n as f64 / 48_000.0;
+            let x = (2.0 * std::f64::consts::PI * 7_000.0 * t).sin() as f32 * 0.35
+                + (2.0 * std::f64::consts::PI * 200.0 * t).sin() as f32 * 0.15;
+            let y = deesser.process_sample(x);
+            max_err = max_err.max((x - y).abs());
+        }
+
+        assert!(
+            max_err < 1e-4,
+            "split-band should be identity with zero reduction"
+        );
+    }
+
+    #[test]
+    fn test_split_band_output_stays_finite() {
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        deesser.set_auto_enabled(false);
+        deesser.set_threshold_db(-45.0);
+        deesser.set_ratio(12.0);
+        deesser.set_max_reduction_db(12.0);
+
+        let mut peak = 0.0f32;
+        for n in 0..10_000 {
+            let t = n as f64 / 48_000.0;
+            let x = (2.0 * std::f64::consts::PI * 7_500.0 * t).sin() as f32 * 0.8
+                + (2.0 * std::f64::consts::PI * 350.0 * t).sin() as f32 * 0.35;
+            let y = deesser.process_sample(x);
+            assert!(
+                y.is_finite(),
+                "split-band de-esser produced non-finite sample"
+            );
+            peak = peak.max(y.abs());
+        }
+
+        assert!(
+            peak < 2.0,
+            "unexpectedly large split-band excursion: {}",
+            peak
+        );
     }
 }

@@ -30,6 +30,19 @@ VOICE_WEIGHT = 2.0
 OUT_OF_BAND_WEIGHT = 0.8
 LAMBDA_Q = 10.0
 LAMBDA_G = 0.35
+LAMBDA_CENTER = 16.0
+LAMBDA_TILT = 0.08
+LAMBDA_COUPLING = 8.0
+CENTER_NUDGE_PCT = 0.15
+LOW_BAND_CENTER_NUDGE_PCT = 0.10
+MAX_ADJ_GAIN_DIFF_DB = 6.0
+TILT_FIT_MIN_HZ = 100.0
+TILT_FIT_MAX_HZ = 8000.0
+TILT_MIN_FIT_R2 = 0.65
+SNR_MIN_DB = 3.0
+SNR_FULL_DB = 18.0
+SNR_LOW_RELIABILITY_WEIGHT = 0.35
+SNR_LOW_RELIABILITY_MAX_BOOST_DB = 3.0
 
 
 def _debug_log(message: str) -> None:
@@ -59,6 +72,115 @@ def _q_bounds(center_freqs: list[float]) -> tuple[np.ndarray, np.ndarray]:
         if fc < LOW_BAND_Q_MAX_HZ:
             q_high[i] = LOW_BAND_Q_MAX
     return q_low, q_high
+
+
+def _center_bounds(base_centers_hz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    center_low = base_centers_hz * (1.0 - CENTER_NUDGE_PCT)
+    center_high = base_centers_hz * (1.0 + CENTER_NUDGE_PCT)
+
+    low_mask = base_centers_hz < LOW_BAND_Q_MAX_HZ
+    center_low[low_mask] = base_centers_hz[low_mask] * (1.0 - LOW_BAND_CENTER_NUDGE_PCT)
+    center_high[low_mask] = base_centers_hz[low_mask] * (1.0 + LOW_BAND_CENTER_NUDGE_PCT)
+    return center_low, center_high
+
+
+def _enforce_adjacent_gain_limit(gains: np.ndarray, max_diff_db: float) -> np.ndarray:
+    bounded = np.asarray(gains, dtype=float).copy()
+    bounded = np.clip(bounded, GAIN_MIN_DB, GAIN_MAX_DB)
+
+    for i in range(1, bounded.size):
+        lo = bounded[i - 1] - max_diff_db
+        hi = bounded[i - 1] + max_diff_db
+        bounded[i] = np.clip(bounded[i], lo, hi)
+
+    for i in range(bounded.size - 2, -1, -1):
+        lo = bounded[i + 1] - max_diff_db
+        hi = bounded[i + 1] + max_diff_db
+        bounded[i] = np.clip(bounded[i], lo, hi)
+
+    return np.clip(bounded, GAIN_MIN_DB, GAIN_MAX_DB)
+
+
+def _remove_spectral_tilt(freqs: np.ndarray, measured_db: np.ndarray) -> tuple[np.ndarray, float]:
+    mask = (freqs >= TILT_FIT_MIN_HZ) & (freqs <= TILT_FIT_MAX_HZ)
+    if np.sum(mask) < 2:
+        return measured_db, 0.0
+
+    x = np.log10(freqs[mask])
+    y = measured_db[mask]
+    x_center = x - np.mean(x)
+    denom = float(np.sum(x_center ** 2))
+    if denom <= 0.0:
+        return measured_db, 0.0
+
+    slope = float(np.dot(x_center, y) / denom)
+    y_center = y - np.mean(y)
+    ss_tot = float(np.sum(y_center ** 2))
+    if ss_tot <= 1e-12:
+        return measured_db, 0.0
+
+    fit_y = slope * x_center
+    ss_res = float(np.sum((y - fit_y) ** 2))
+    fit_r2 = 1.0 - (ss_res / ss_tot)
+    if not np.isfinite(fit_r2) or fit_r2 < TILT_MIN_FIT_R2:
+        return measured_db, 0.0
+
+    all_x_center = np.log10(freqs) - np.mean(x)
+    tilt_component = slope * all_x_center
+    return measured_db - tilt_component, slope
+
+
+def _snr_reliability(snr_db: np.ndarray) -> np.ndarray:
+    reliability = (snr_db - SNR_MIN_DB) / (SNR_FULL_DB - SNR_MIN_DB)
+    return np.clip(reliability, 0.0, 1.0)
+
+
+def _snr_aware_gain_upper_bounds(snr_db: np.ndarray) -> np.ndarray:
+    reliability = _snr_reliability(snr_db)
+    return (
+        SNR_LOW_RELIABILITY_MAX_BOOST_DB
+        + reliability * (GAIN_MAX_DB - SNR_LOW_RELIABILITY_MAX_BOOST_DB)
+    )
+
+
+def _snr_weight_scale_dense(
+    dense_freqs: np.ndarray,
+    band_centers_hz: np.ndarray,
+    band_snr_db: np.ndarray,
+) -> np.ndarray:
+    reliability = _snr_reliability(band_snr_db)
+    band_scale = SNR_LOW_RELIABILITY_WEIGHT + reliability * (1.0 - SNR_LOW_RELIABILITY_WEIGHT)
+    return np.interp(
+        dense_freqs,
+        band_centers_hz,
+        band_scale,
+        left=float(band_scale[0]),
+        right=float(band_scale[-1]),
+    )
+
+
+def _estimate_band_snr_db(
+    dense_freqs: np.ndarray,
+    measured_dense_db: np.ndarray,
+    band_centers_hz: np.ndarray,
+) -> np.ndarray:
+    voice_mask = (dense_freqs >= TILT_FIT_MIN_HZ) & (dense_freqs <= TILT_FIT_MAX_HZ)
+    if np.any(voice_mask):
+        noise_floor_db = float(np.percentile(measured_dense_db[voice_mask], 20.0))
+    else:
+        noise_floor_db = float(np.percentile(measured_dense_db, 20.0))
+
+    band_snr = np.empty(band_centers_hz.size, dtype=float)
+    half_oct = 2 ** (1.0 / 6.0)
+    for i, fc in enumerate(band_centers_hz):
+        band_mask = (dense_freqs >= fc / half_oct) & (dense_freqs <= fc * half_oct)
+        if np.any(band_mask):
+            band_peak_db = float(np.max(measured_dense_db[band_mask]))
+        else:
+            band_peak_db = float(np.interp(fc, dense_freqs, measured_dense_db))
+        band_snr[i] = band_peak_db - noise_floor_db
+
+    return band_snr
 
 
 def get_target_curve(freqs, target_preset='broadcast'):
@@ -177,24 +299,37 @@ def _joint_gain_q_residuals(
     dense_freqs: np.ndarray,
     measured_dense_db: np.ndarray,
     target_dense_db: np.ndarray,
-    center_freqs: list[float],
+    base_centers_hz: np.ndarray,
     weights: np.ndarray,
     q_prior: np.ndarray,
 ) -> np.ndarray:
     gains = params[:NUM_EQ_BANDS]
-    qs = params[NUM_EQ_BANDS:]
+    qs = params[NUM_EQ_BANDS:2 * NUM_EQ_BANDS]
+    centers_hz = params[2 * NUM_EQ_BANDS:]
 
-    eq_response = _predict_eq_response(dense_freqs, gains, qs, center_freqs)
+    eq_response = _predict_eq_response(dense_freqs, gains, qs, centers_hz)
     error = target_dense_db - (measured_dense_db + eq_response)
 
     q_regularization = np.log(qs / q_prior)
     gain_ripple = np.diff(gains, n=2)
+    center_regularization = np.log(centers_hz / base_centers_hz)
+    gain_coupling_excess = np.maximum(
+        0.0, np.abs(np.diff(gains)) - MAX_ADJ_GAIN_DIFF_DB
+    )
+
+    log_centers = np.log10(base_centers_hz)
+    centered_log_centers = log_centers - np.mean(log_centers)
+    denom = float(np.sum(centered_log_centers ** 2))
+    tilt_slope = float(np.dot(centered_log_centers, gains) / denom) if denom > 0.0 else 0.0
 
     return np.concatenate(
         [
             np.sqrt(weights) * error,
             np.sqrt(LAMBDA_Q) * q_regularization,
             np.sqrt(LAMBDA_G) * gain_ripple,
+            np.sqrt(LAMBDA_CENTER) * center_regularization,
+            np.sqrt(LAMBDA_COUPLING) * gain_coupling_excess,
+            np.array([np.sqrt(LAMBDA_TILT) * tilt_slope]),
         ]
     )
 
@@ -242,22 +377,30 @@ def calculate_eq_bands(freqs, measured_db, target_db):
         f"[EQ_CALC] Difference (target - normalized): avg {(target_db - measured_db_normalized).mean():.2f} dB"
     )
 
-    # Use normalized measured spectrum for optimization
+    # Use normalized measured spectrum for optimization.
     measured_db = measured_db_normalized
+    measured_db, tilt_slope = _remove_spectral_tilt(freqs, measured_db)
+    _debug_log(f"[EQ_CALC] Removed tilt slope: {tilt_slope:.3f} dB/log10(Hz)")
 
     center_freqs = EQ_FREQUENCIES
+    base_centers_hz = np.asarray(center_freqs, dtype=float)
     qs_stage1 = np.full(NUM_EQ_BANDS, AUTO_EQ_DEFAULT_Q, dtype=float)
 
     # Use a dense log-spaced frequency grid for optimization to reduce center-only artifacts.
     dense_freqs = _build_dense_log_grid(freqs)
     measured_dense_db = np.interp(dense_freqs, freqs, measured_db)
     target_dense_db = np.interp(dense_freqs, freqs, target_db)
-    weights = _voice_weights(dense_freqs)
+    band_snr_db = _estimate_band_snr_db(dense_freqs, measured_dense_db, base_centers_hz)
+    dynamic_gain_upper = _snr_aware_gain_upper_bounds(band_snr_db)
+    weights = _voice_weights(dense_freqs) * _snr_weight_scale_dense(
+        dense_freqs, base_centers_hz, band_snr_db
+    )
 
     measured_db_at_centers = np.interp(center_freqs, dense_freqs, measured_dense_db)
     target_db_at_centers = np.interp(center_freqs, dense_freqs, target_dense_db)
     desired_gains = target_db_at_centers - measured_db_at_centers
-    gains_initial = np.clip(desired_gains, GAIN_MIN_DB, GAIN_MAX_DB)
+    gain_lower = np.full(NUM_EQ_BANDS, GAIN_MIN_DB, dtype=float)
+    gains_initial = np.clip(desired_gains, gain_lower, dynamic_gain_upper)
 
     verbose_level = 2 if DEBUG else 0
 
@@ -273,7 +416,7 @@ def calculate_eq_bands(freqs, measured_db, target_db):
             qs_stage1,
             weights,
         ),
-        bounds=(GAIN_MIN_DB, GAIN_MAX_DB),
+        bounds=(gain_lower, dynamic_gain_upper),
         method="trf",
         ftol=1e-4,
         xtol=1e-4,
@@ -285,13 +428,14 @@ def calculate_eq_bands(freqs, measured_db, target_db):
 
     # Stage 2: refine gains + Q with bounded Q and regularization.
     q_low, q_high = _q_bounds(center_freqs)
+    center_low, center_high = _center_bounds(base_centers_hz)
     q_prior = np.clip(np.full(NUM_EQ_BANDS, Q_PRIOR, dtype=float), q_low, q_high)
-    params_initial = np.concatenate([gains_stage1, q_prior])
+    params_initial = np.concatenate([gains_stage1, q_prior, base_centers_hz])
     params_lower = np.concatenate(
-        [np.full(NUM_EQ_BANDS, GAIN_MIN_DB, dtype=float), q_low]
+        [gain_lower, q_low, center_low]
     )
     params_upper = np.concatenate(
-        [np.full(NUM_EQ_BANDS, GAIN_MAX_DB, dtype=float), q_high]
+        [dynamic_gain_upper, q_high, center_high]
     )
     stage2 = least_squares(
         _joint_gain_q_residuals,
@@ -300,7 +444,7 @@ def calculate_eq_bands(freqs, measured_db, target_db):
             dense_freqs,
             measured_dense_db,
             target_dense_db,
-            center_freqs,
+            base_centers_hz,
             weights,
             q_prior,
         ),
@@ -313,7 +457,8 @@ def calculate_eq_bands(freqs, measured_db, target_db):
         verbose=verbose_level,
     )
     optimal_gains = stage2.x[:NUM_EQ_BANDS]
-    optimal_qs = stage2.x[NUM_EQ_BANDS:]
+    optimal_qs = stage2.x[NUM_EQ_BANDS:2 * NUM_EQ_BANDS]
+    optimal_centers_hz = stage2.x[2 * NUM_EQ_BANDS:]
 
     _debug_log(
         f"[EQ_CALC] Stage1 gains: {[round(g, 2) for g in gains_stage1]}"
@@ -324,6 +469,15 @@ def calculate_eq_bands(freqs, measured_db, target_db):
     _debug_log(
         f"[EQ_CALC] Stage2 Qs: {[round(q, 3) for q in optimal_qs]}"
     )
+    _debug_log(
+        f"[EQ_CALC] Stage2 centers: {[round(fc, 1) for fc in optimal_centers_hz]}"
+    )
+    _debug_log(
+        f"[EQ_CALC] Band SNR dB: {[round(v, 1) for v in band_snr_db]}"
+    )
+    _debug_log(
+        f"[EQ_CALC] Dynamic max boosts: {[round(v, 2) for v in dynamic_gain_upper]}"
+    )
     _debug_log(f"[EQ_CALC] Stage2 success: {stage2.success}")
     if hasattr(stage2, "message"):
         _debug_log(f"[EQ_CALC] Stage2 message: {stage2.message}")
@@ -331,14 +485,16 @@ def calculate_eq_bands(freqs, measured_db, target_db):
     # Apply 70% correction factor (prevents over-compensation)
     optimal_gains = optimal_gains * 0.7
 
-    # Clip to hardware limits
-    optimal_gains = np.clip(optimal_gains, GAIN_MIN_DB, GAIN_MAX_DB)
+    # Clip to SNR-aware boost limits and enforce adjacent-band coupling.
+    optimal_gains = np.clip(optimal_gains, gain_lower, dynamic_gain_upper)
+    optimal_gains = _enforce_adjacent_gain_limit(optimal_gains, MAX_ADJ_GAIN_DIFF_DB)
 
     _debug_log(f"[EQ_CALC] Final gains (after 70% correction): {[round(g, 2) for g in optimal_gains]}")
 
     return {
         'band_gains': optimal_gains.tolist(),
-        'band_qs': optimal_qs.tolist()
+        'band_qs': optimal_qs.tolist(),
+        'band_freqs': optimal_centers_hz.tolist(),
     }
 
 

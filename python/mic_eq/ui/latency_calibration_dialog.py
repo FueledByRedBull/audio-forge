@@ -91,11 +91,20 @@ class LatencyCalibrationWorker(QThread):
     finished = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, probe: np.ndarray, recording: np.ndarray, sample_rate: int):
+    def __init__(
+        self,
+        probe: np.ndarray,
+        recording: np.ndarray,
+        sample_rate: int,
+        expected_playback_start_ms: float | None = None,
+        expected_playback_jitter_ms: float | None = None,
+    ):
         super().__init__()
         self.probe = probe
         self.recording = recording
         self.sample_rate = sample_rate
+        self.expected_playback_start_ms = expected_playback_start_ms
+        self.expected_playback_jitter_ms = expected_playback_jitter_ms
         self._stop_event = threading.Event()
 
     def run(self):
@@ -109,6 +118,8 @@ class LatencyCalibrationWorker(QThread):
                 sample_rate=self.sample_rate,
                 min_search_ms=5.0,
                 max_search_ms=500.0,
+                expected_playback_start_ms=self.expected_playback_start_ms,
+                expected_playback_jitter_ms=self.expected_playback_jitter_ms,
             )
 
             if self._stop_event.is_set():
@@ -155,6 +166,7 @@ class LatencyCalibrationDialog(QDialog):
         self._playback_delay_s = 0.45
         self._played_probe = False
         self._probe_started = False
+        self._probe_started_at: float | None = None
         self._probe_finished = threading.Event()
 
         self._setup_ui(existing_profile)
@@ -240,7 +252,15 @@ class LatencyCalibrationDialog(QDialog):
 
         try:
             if not owner.processor.is_running():
-                owner.processor.start(None, None)
+                input_device = getattr(owner, "input_combo", None)
+                output_device = getattr(owner, "output_combo", None)
+                selected_input = input_device.currentData() if input_device else None
+                selected_output = output_device.currentData() if output_device else None
+                if not selected_input:
+                    selected_input = None
+                if not selected_output:
+                    selected_output = None
+                owner.processor.start(selected_input, selected_output)
                 self._started_processor = True
             else:
                 self._started_processor = False
@@ -267,6 +287,7 @@ class LatencyCalibrationDialog(QDialog):
 
         self._played_probe = False
         self._probe_started = False
+        self._probe_started_at = None
         self._probe_finished.clear()
         self._capture_started_at = time.time()
         self._capture_timer.start()
@@ -282,6 +303,7 @@ class LatencyCalibrationDialog(QDialog):
             if (not self._probe_started) and elapsed >= self._playback_delay_s:
                 self.status_label.setText("Playing probe signal...")
                 self._probe_started = True
+                self._probe_started_at = time.time()
 
                 def _play_probe():
                     try:
@@ -312,10 +334,19 @@ class LatencyCalibrationDialog(QDialog):
                 return
 
             recording = np.asarray(raw, dtype=np.float32)
+            if self._probe_started_at is not None:
+                expected_start_ms = max(
+                    0.0, (self._probe_started_at - self._capture_started_at) * 1000.0
+                )
+            else:
+                expected_start_ms = self._playback_delay_s * 1000.0
+            expected_jitter_ms = max(50.0, float(self._capture_timer.interval()))
             self.worker = LatencyCalibrationWorker(
                 probe=self._probe,
                 recording=recording,
                 sample_rate=self._capture_sample_rate,
+                expected_playback_start_ms=expected_start_ms,
+                expected_playback_jitter_ms=expected_jitter_ms,
             )
             self.worker.finished.connect(self._on_worker_finished)
             self.worker.failed.connect(self._on_worker_failed)

@@ -8,6 +8,57 @@ import numpy as np
 from scipy import signal
 from scipy.signal import find_peaks
 
+VOICE_FRAME_RMS_GATE_DB = -48.0
+VOICE_FRAME_FLOOR_PERCENTILE = 20.0
+VOICE_FRAME_PEAK_PERCENTILE = 95.0
+VOICE_FRAME_GATE_FRACTION = 0.60
+VOICE_FRAME_MIN_SPREAD_DB = 6.0
+MIN_VOICED_FRAME_RATIO = 0.15
+MIN_VOICED_FRAMES = 3
+
+
+def _select_voiced_samples(audio: np.ndarray, frame_size: int, hop_size: int) -> np.ndarray:
+    if len(audio) < frame_size:
+        return audio
+
+    starts = np.arange(0, len(audio) - frame_size + 1, hop_size, dtype=int)
+    if starts.size == 0:
+        return audio
+
+    frame_rms_db = np.empty(starts.size, dtype=float)
+    for i, start in enumerate(starts):
+        frame = audio[start:start + frame_size]
+        rms = np.sqrt(np.mean(frame * frame) + 1e-12)
+        frame_rms_db[i] = 20.0 * np.log10(rms + 1e-12)
+
+    floor_db = float(np.percentile(frame_rms_db, VOICE_FRAME_FLOOR_PERCENTILE))
+    peak_db = float(np.percentile(frame_rms_db, VOICE_FRAME_PEAK_PERCENTILE))
+    spread_db = peak_db - floor_db
+    if spread_db < VOICE_FRAME_MIN_SPREAD_DB:
+        return audio
+
+    gate_db = max(
+        VOICE_FRAME_RMS_GATE_DB,
+        floor_db + VOICE_FRAME_GATE_FRACTION * spread_db,
+    )
+    voiced_mask = frame_rms_db >= gate_db
+    voiced_count = int(np.sum(voiced_mask))
+
+    if voiced_count < MIN_VOICED_FRAMES:
+        return audio
+    if voiced_count / starts.size < MIN_VOICED_FRAME_RATIO:
+        return audio
+
+    sample_mask = np.zeros(len(audio), dtype=bool)
+    for start, keep in zip(starts, voiced_mask):
+        if keep:
+            sample_mask[start:start + frame_size] = True
+
+    voiced = audio[sample_mask]
+    if len(voiced) < frame_size:
+        return audio
+    return voiced
+
 
 def compute_voice_spectrum(audio, fs=48000, nperseg=4096):
     """
@@ -38,6 +89,14 @@ def compute_voice_spectrum(audio, fs=48000, nperseg=4096):
             f"got {len(audio)} ({len(audio)/fs:.2f} seconds)"
         )
 
+    audio = np.asarray(audio, dtype=float)
+    hop = max(1, nperseg // 2)
+    voiced_audio = _select_voiced_samples(audio, nperseg, hop)
+    if len(voiced_audio) >= nperseg:
+        audio_for_fft = voiced_audio
+    else:
+        audio_for_fft = audio
+
     # Hamming window for voice analysis
     # Optimal trade-off between frequency resolution and sidelobe suppression
     window = np.hamming(nperseg)
@@ -45,7 +104,7 @@ def compute_voice_spectrum(audio, fs=48000, nperseg=4096):
     # Welch's method for stable spectral estimate
     # Averages multiple FFTs with 50% overlap to reduce variance
     freqs, psd = signal.welch(
-        audio,
+        audio_for_fft,
         fs=fs,
         window=window,
         nperseg=nperseg,

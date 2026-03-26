@@ -253,8 +253,11 @@ class CalibrationDialog(QDialog):
 
         # Build band tuples from eq_settings
         from ..config import EQ_FREQUENCIES as BAND_FREQUENCIES_HZ
+        freqs_hz = self.eq_settings.get('band_freqs', BAND_FREQUENCIES_HZ)
+        if len(freqs_hz) != len(BAND_FREQUENCIES_HZ):
+            freqs_hz = BAND_FREQUENCIES_HZ
         bands = []
-        for i, freq in enumerate(BAND_FREQUENCIES_HZ):
+        for i, freq in enumerate(freqs_hz):
             gain = self.eq_settings['band_gains'][i]
             q = self.eq_settings['band_qs'][i] if 'band_qs' in self.eq_settings else 1.41
             bands.append((freq, gain, q))

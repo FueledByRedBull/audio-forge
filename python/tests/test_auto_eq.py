@@ -26,6 +26,8 @@ auto_eq_spec.loader.exec_module(auto_eq)
 _predict_eq_response = auto_eq._predict_eq_response
 calculate_eq_bands = auto_eq.calculate_eq_bands
 get_target_curve = auto_eq.get_target_curve
+_remove_spectral_tilt = auto_eq._remove_spectral_tilt
+_snr_aware_gain_upper_bounds = auto_eq._snr_aware_gain_upper_bounds
 EQ_FREQUENCIES = config.EQ_FREQUENCIES
 AUTO_EQ_DEFAULT_Q = config.AUTO_EQ_DEFAULT_Q
 
@@ -203,3 +205,52 @@ def test_12_q_regularized_near_prior_for_flat_case():
     q_prior = np.clip(q_prior, 0.3, q_high)
     max_log_dev = np.max(np.abs(np.log(np.maximum(qs, 1e-9) / q_prior)))
     assert max_log_dev < 0.25
+
+
+def test_13_center_nudges_stay_within_bounds():
+    freqs = _default_freqs()
+    spectrum_db = generate_test_spectrum(freqs, "extreme")
+    target_db = get_target_curve(freqs, "streaming")
+    eq = calculate_eq_bands(freqs, spectrum_db, target_db)
+    centers = np.asarray(eq["band_freqs"], dtype=float)
+
+    assert len(centers) == 10
+    base = np.asarray(EQ_FREQUENCIES, dtype=float)
+    low = base * 0.85
+    high = base * 1.15
+    low_mask = base < 250.0
+    low[low_mask] = base[low_mask] * 0.90
+    high[low_mask] = base[low_mask] * 1.10
+
+    assert np.all(centers >= low)
+    assert np.all(centers <= high)
+
+
+def test_14_adjacent_gain_coupling_limit():
+    freqs = _default_freqs()
+    spectrum_db = generate_test_spectrum(freqs, "extreme")
+    target_db = get_target_curve(freqs, "flat")
+    gains = np.asarray(calculate_eq_bands(freqs, spectrum_db, target_db)["band_gains"], dtype=float)
+
+    assert np.all(np.abs(np.diff(gains)) <= 6.0 + 1e-9)
+
+
+def test_15_tilt_removal_reduces_linear_log_slope():
+    freqs = _default_freqs()
+    x = np.log10(freqs)
+    measured_db = 4.0 * (x - np.mean(x))
+    detrended, slope = _remove_spectral_tilt(freqs, measured_db)
+
+    x_center = x - np.mean(x)
+    residual_slope = float(np.dot(x_center, detrended) / np.dot(x_center, x_center))
+    assert abs(slope) > 1.0
+    assert abs(residual_slope) < 1e-3
+
+
+def test_16_snr_aware_boost_caps_are_bounded_and_monotonic():
+    snr_db = np.array([-5.0, 0.0, 3.0, 8.0, 12.0, 18.0, 30.0], dtype=float)
+    caps = _snr_aware_gain_upper_bounds(snr_db)
+
+    assert np.all(caps >= 3.0)
+    assert np.all(caps <= 12.0)
+    assert np.all(np.diff(caps) >= -1e-9)

@@ -41,7 +41,9 @@ impl RNNoiseProcessor {
     pub fn new(strength: Arc<AtomicU32>) -> Self {
         let sample_rate = TARGET_SAMPLE_RATE as f32;
         let smoothing_ms = 15.0_f32;
-        let smoothing_coeff = 1.0 - (-1.0_f32 / (smoothing_ms / 1000.0 * sample_rate)).exp();
+        let smoothing_tau_s = smoothing_ms / 1000.0;
+        let frame_dt_s = RNNOISE_FRAME_SIZE as f32 / sample_rate;
+        let smoothing_coeff = 1.0 - (-(frame_dt_s / smoothing_tau_s)).exp();
         Self {
             denoiser: DenoiseState::new(),
             input_buffer: Vec::with_capacity(RNNOISE_FRAME_SIZE * 2),

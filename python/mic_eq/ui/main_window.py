@@ -6,15 +6,11 @@ Adapted from Spectral Workbench project.
 DEBUG: Added terminal logging for processor state tracking
 """
 
-# Enable debug logging
-DEBUG = False
-
 from PyQt6.QtWidgets import (
     QMainWindow,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QGridLayout,
     QGroupBox,
     QLabel,
     QComboBox,
@@ -28,7 +24,6 @@ from PyQt6.QtWidgets import (
     QMenu,
     QSlider,
     QScrollArea,
-    QSizePolicy,
     QFrame,
     QFileIconProvider,
     QTabWidget,
@@ -62,6 +57,7 @@ from .layout_constants import (
 from .. import AudioProcessor, __version__, list_input_devices, list_output_devices
 from ..config import (
     Preset,
+    DeviceIdentity,
     GateSettings,
     EQSettings,
     RNNoiseSettings,
@@ -76,9 +72,14 @@ from ..config import (
     BUILTIN_PRESETS,
     save_config,
     load_config,
-    AppConfig,
+    build_latency_profile_key,
+    coerce_device_identity,
+    legacy_latency_profile_key,
     LatencyCalibrationProfile,
 )
+
+# Enable debug logging
+DEBUG = False
 
 
 def _update_callback_stall_state(
@@ -318,6 +319,14 @@ class MainWindow(QMainWindow):
         self.bypass_checkbox.toggled.connect(self._on_bypass_toggled)
         action_layout.addWidget(self.bypass_checkbox)
         action_layout.setAlignment(self.bypass_checkbox, Qt.AlignmentFlag.AlignVCenter)
+
+        self.raw_monitor_checkbox = QCheckBox("Raw Monitor")
+        self.raw_monitor_checkbox.setToolTip(
+            "Diagnostic path: bypass pre-filter + DSP chain and use clean output write path"
+        )
+        self.raw_monitor_checkbox.toggled.connect(self._on_raw_monitor_toggled)
+        action_layout.addWidget(self.raw_monitor_checkbox)
+        action_layout.setAlignment(self.raw_monitor_checkbox, Qt.AlignmentFlag.AlignVCenter)
         control_stack.addLayout(action_layout)
 
         health_layout = QHBoxLayout()
@@ -509,6 +518,51 @@ class MainWindow(QMainWindow):
         else:
             self.rnnoise_latency_label.setText("Latency: ~10ms (RNNoise)")
 
+    @staticmethod
+    def _combo_device_identity(combo: QComboBox) -> DeviceIdentity | None:
+        return coerce_device_identity(combo.currentData())
+
+    @staticmethod
+    def _device_name_from_identity(identity: DeviceIdentity | None) -> str:
+        return identity.name if identity is not None else ""
+
+    @staticmethod
+    def _find_combo_index_by_identity(combo: QComboBox, identity: DeviceIdentity | None) -> int:
+        if identity is None:
+            return -1
+        for i in range(combo.count()):
+            if combo.itemData(i) == identity:
+                return i
+        return -1
+
+    def _select_combo_identity(
+        self,
+        combo: QComboBox,
+        identity: DeviceIdentity | None,
+    ) -> bool:
+        index = self._find_combo_index_by_identity(combo, identity)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+            return True
+        return False
+
+    @staticmethod
+    def _default_combo_index(combo: QComboBox) -> int:
+        for i in range(combo.count()):
+            item_data = combo.itemData(i)
+            if isinstance(item_data, DeviceIdentity) and item_data.is_default:
+                return i
+        return 0 if combo.count() > 0 else -1
+
+    def _device_selection_to_name(self, combo: QComboBox) -> str:
+        identity = self._combo_device_identity(combo)
+        if identity is not None:
+            return identity.name
+        value = combo.currentData()
+        if isinstance(value, str):
+            return value
+        return ""
+
     def _setup_menubar(self):
         """Setup menu bar."""
         menubar = self.menuBar()
@@ -668,12 +722,41 @@ class MainWindow(QMainWindow):
                 break
 
     def _latency_profile_key(self) -> str:
-        input_name = self.input_combo.currentData() or "default-input"
-        output_name = self.output_combo.currentData() or "default-output"
-        return f"{input_name}||{output_name}"
+        return build_latency_profile_key(
+            self._combo_device_identity(self.input_combo),
+            self._combo_device_identity(self.output_combo),
+        )
+
+    def _legacy_latency_profile_key(self) -> str:
+        input_name = self._device_name_from_identity(self._combo_device_identity(self.input_combo))
+        output_name = self._device_name_from_identity(self._combo_device_identity(self.output_combo))
+        return legacy_latency_profile_key(
+            input_name or "default-input",
+            output_name or "default-output",
+        )
 
     def _current_latency_profile(self) -> LatencyCalibrationProfile | None:
-        return self.config.latency_calibration_profiles.get(self._latency_profile_key())
+        key = self._latency_profile_key()
+        profile = self.config.latency_calibration_profiles.get(key)
+        if profile is not None:
+            return profile
+
+        legacy_key = self._legacy_latency_profile_key()
+        profile = self.config.latency_calibration_profiles.get(legacy_key)
+        if profile is not None:
+            self.config.latency_calibration_profiles[key] = profile
+            if legacy_key != key and legacy_key in self.config.latency_calibration_profiles:
+                del self.config.latency_calibration_profiles[legacy_key]
+            save_config(self.config)
+        return profile
+
+    def _sync_latency_profile_for_current_devices(self, profile: LatencyCalibrationProfile) -> str:
+        key = self._latency_profile_key()
+        legacy_key = self._legacy_latency_profile_key()
+        self.config.latency_calibration_profiles[key] = profile
+        if legacy_key != key and legacy_key in self.config.latency_calibration_profiles:
+            del self.config.latency_calibration_profiles[legacy_key]
+        return key
 
     def _apply_latency_compensation_for_current_devices(self):
         compensation_ms = 0.0
@@ -709,8 +792,7 @@ class MainWindow(QMainWindow):
 
     def _on_latency_calibration_saved(self, profile_data: dict):
         profile = LatencyCalibrationProfile.from_dict(profile_data)
-        key = self._latency_profile_key()
-        self.config.latency_calibration_profiles[key] = profile
+        self._sync_latency_profile_for_current_devices(profile)
         save_config(self.config)
         self._apply_latency_compensation_for_current_devices()
         self.status_bar.showMessage(
@@ -720,14 +802,22 @@ class MainWindow(QMainWindow):
 
     def _on_latency_calibration_reset(self):
         key = self._latency_profile_key()
-        if key in self.config.latency_calibration_profiles:
-            del self.config.latency_calibration_profiles[key]
+        legacy_key = self._legacy_latency_profile_key()
+        removed = False
+        for candidate in {key, legacy_key}:
+            if candidate in self.config.latency_calibration_profiles:
+                del self.config.latency_calibration_profiles[candidate]
+                removed = True
+        if removed:
             save_config(self.config)
         self._apply_latency_compensation_for_current_devices()
         self.status_bar.showMessage("Latency calibration reset for current device pair", 4000)
 
     def _refresh_devices(self):
         """Refresh the device lists."""
+        previous_input = self._combo_device_identity(self.input_combo)
+        previous_output = self._combo_device_identity(self.output_combo)
+
         # Block signals to prevent spurious config saves during refresh
         self.input_combo.blockSignals(True)
         self.output_combo.blockSignals(True)
@@ -737,6 +827,7 @@ class MainWindow(QMainWindow):
 
         input_found = False
         output_found = False
+        missing_selection = False
 
         # Get input devices
         try:
@@ -744,9 +835,23 @@ class MainWindow(QMainWindow):
             input_found = len(input_devices) > 0
             for device in input_devices:
                 label = f"{device.name}" + (" (Default)" if device.is_default else "")
-                self.input_combo.addItem(label, device.name)
-                if device.is_default:
-                    self.input_combo.setCurrentIndex(self.input_combo.count() - 1)
+                self.input_combo.addItem(label, DeviceIdentity(name=device.name, is_default=device.is_default))
+            if previous_input is not None:
+                if not self._select_combo_identity(self.input_combo, previous_input):
+                    fallback_index = self._default_combo_index(self.input_combo)
+                    if fallback_index >= 0:
+                        self.input_combo.setCurrentIndex(fallback_index)
+                    if previous_input.name:
+                        self.config.last_input_device = ""
+                        self.config.last_input_device_identity = None
+                        missing_selection = True
+                        self.status_bar.showMessage(
+                            f"Previous input device '{previous_input.name}' not found, using default"
+                        )
+            elif self.input_combo.count() > 0:
+                fallback_index = self._default_combo_index(self.input_combo)
+                if fallback_index >= 0:
+                    self.input_combo.setCurrentIndex(fallback_index)
         except (RuntimeError, OSError) as e:
             self.input_combo.addItem(f"Error: {e}")
             print(f"Device enumeration failed: {type(e).__name__}: {e}")
@@ -755,26 +860,37 @@ class MainWindow(QMainWindow):
         try:
             output_devices = list_output_devices()
             output_found = len(output_devices) > 0
-            vb_cable_index = -1
-            default_index = -1
-
             for i, device in enumerate(output_devices):
                 label = f"{device.name}" + (" (Default)" if device.is_default else "")
-                self.output_combo.addItem(label, device.name)
-
-                # Highlight VB Audio Cable if found
-                name_lower = device.name.lower()
-                if "cable" in name_lower or "vb-audio" in name_lower or "virtual" in name_lower:
-                    vb_cable_index = i
-
-                if device.is_default:
-                    default_index = i
-
-            # Prefer VB Audio Cable, then default
-            if vb_cable_index >= 0:
-                self.output_combo.setCurrentIndex(vb_cable_index)
-            elif default_index >= 0:
-                self.output_combo.setCurrentIndex(default_index)
+                self.output_combo.addItem(label, DeviceIdentity(name=device.name, is_default=device.is_default))
+            if previous_output is not None:
+                if not self._select_combo_identity(self.output_combo, previous_output):
+                    fallback_index = self._default_combo_index(self.output_combo)
+                    if fallback_index >= 0:
+                        self.output_combo.setCurrentIndex(fallback_index)
+                    if previous_output.name:
+                        self.config.last_output_device = ""
+                        self.config.last_output_device_identity = None
+                        missing_selection = True
+                        self.status_bar.showMessage(
+                            f"Previous output device '{previous_output.name}' not found, using default"
+                        )
+            elif self.output_combo.count() > 0:
+                vb_cable_index = -1
+                default_index = -1
+                for i, device in enumerate(output_devices):
+                    name_lower = device.name.lower()
+                    if "cable" in name_lower or "vb-audio" in name_lower or "virtual" in name_lower:
+                        vb_cable_index = i
+                        break
+                    if device.is_default and default_index < 0:
+                        default_index = i
+                if vb_cable_index >= 0:
+                    self.output_combo.setCurrentIndex(vb_cable_index)
+                elif default_index >= 0:
+                    self.output_combo.setCurrentIndex(default_index)
+                else:
+                    self.output_combo.setCurrentIndex(0)
 
         except (RuntimeError, OSError) as e:
             self.output_combo.addItem(f"Error: {e}")
@@ -803,43 +919,76 @@ class MainWindow(QMainWindow):
         self.input_combo.blockSignals(False)
         self.output_combo.blockSignals(False)
 
+        if missing_selection:
+            save_config(self.config)
+
     def _restore_from_config(self):
         """Restore settings from loaded config."""
         restored_count = 0
+        config_dirty = False
+
+        self.input_combo.blockSignals(True)
+        self.output_combo.blockSignals(True)
 
         # Restore input device
-        if self.config.last_input_device:
+        input_identity = self.config.last_input_device_identity
+        if input_identity is None and self.config.last_input_device:
+            input_identity = coerce_device_identity(self.config.last_input_device)
+        if input_identity is not None:
             found = False
             for i in range(self.input_combo.count()):
-                if self.input_combo.itemData(i) == self.config.last_input_device:
+                item_data = self.input_combo.itemData(i)
+                if item_data == input_identity:
                     self.input_combo.setCurrentIndex(i)
                     found = True
                     restored_count += 1
                     break
+                if isinstance(item_data, DeviceIdentity) and item_data.name == input_identity.name:
+                    self.input_combo.setCurrentIndex(i)
+                    self.config.last_input_device = item_data.name
+                    self.config.last_input_device_identity = item_data
+                    found = True
+                    restored_count += 1
+                    config_dirty = True
+                    break
             if not found:
                 self.status_bar.showMessage(
-                    f"Previous input device '{self.config.last_input_device}' not found, using default"
+                    f"Previous input device '{input_identity.name}' not found, using default"
                 )
                 # Clear missing device from config
                 self.config.last_input_device = ""
-                save_config(self.config)
+                self.config.last_input_device_identity = None
+                config_dirty = True
 
         # Restore output device
-        if self.config.last_output_device:
+        output_identity = self.config.last_output_device_identity
+        if output_identity is None and self.config.last_output_device:
+            output_identity = coerce_device_identity(self.config.last_output_device)
+        if output_identity is not None:
             found = False
             for i in range(self.output_combo.count()):
-                if self.output_combo.itemData(i) == self.config.last_output_device:
+                item_data = self.output_combo.itemData(i)
+                if item_data == output_identity:
                     self.output_combo.setCurrentIndex(i)
                     found = True
                     restored_count += 1
                     break
+                if isinstance(item_data, DeviceIdentity) and item_data.name == output_identity.name:
+                    self.output_combo.setCurrentIndex(i)
+                    self.config.last_output_device = item_data.name
+                    self.config.last_output_device_identity = item_data
+                    found = True
+                    restored_count += 1
+                    config_dirty = True
+                    break
             if not found:
                 self.status_bar.showMessage(
-                    f"Previous output device '{self.config.last_output_device}' not found, using default"
+                    f"Previous output device '{output_identity.name}' not found, using default"
                 )
                 # Clear missing device from config
                 self.config.last_output_device = ""
-                save_config(self.config)
+                self.config.last_output_device_identity = None
+                config_dirty = True
 
         # Restore preset (startup preset takes priority over last used)
         preset_loaded = False
@@ -930,11 +1079,21 @@ class MainWindow(QMainWindow):
         self._restore_ui_state()
         self._apply_latency_compensation_for_current_devices()
 
+        self.input_combo.blockSignals(False)
+        self.output_combo.blockSignals(False)
+
+        if config_dirty:
+            save_config(self.config)
+
     def _on_device_changed(self):
         """Handle device selection change - save to config."""
         if hasattr(self, 'config'):  # Check config is initialized
-            self.config.last_input_device = self.input_combo.currentData() or ""
-            self.config.last_output_device = self.output_combo.currentData() or ""
+            input_identity = self._combo_device_identity(self.input_combo)
+            output_identity = self._combo_device_identity(self.output_combo)
+            self.config.last_input_device_identity = input_identity
+            self.config.last_output_device_identity = output_identity
+            self.config.last_input_device = self._device_name_from_identity(input_identity)
+            self.config.last_output_device = self._device_name_from_identity(output_identity)
             save_config(self.config)
             self._apply_latency_compensation_for_current_devices()
 
@@ -945,8 +1104,8 @@ class MainWindow(QMainWindow):
                 print("[MAIN] Start processing clicked, but processor already running")
             return
 
-        input_device = self.input_combo.currentData()
-        output_device = self.output_combo.currentData()
+        input_device = self._device_selection_to_name(self.input_combo) or None
+        output_device = self._device_selection_to_name(self.output_combo) or None
 
         if DEBUG:
             print(f"[MAIN] Starting processing - Input: {input_device or '(default)'}, Output: {output_device or '(default)'}")
@@ -1113,7 +1272,7 @@ class MainWindow(QMainWindow):
                 bypass=self.bypass_checkbox.isChecked(),
             )
 
-            filepath = save_preset(preset)
+            save_preset(preset)
             QMessageBox.information(
                 self,
                 "Preset Saved",
@@ -1160,6 +1319,14 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Master bypass enabled - audio passing through unchanged")
         else:
             self.status_bar.showMessage("Processing active")
+
+    def _on_raw_monitor_toggled(self, checked):
+        """Handle raw monitor toggle."""
+        self.processor.set_raw_monitor_enabled(checked)
+        if checked:
+            self.status_bar.showMessage("Raw monitor enabled - skipping pre-filter and DSP chain")
+        else:
+            self.status_bar.showMessage("Raw monitor disabled")
 
     def _on_rnnoise_toggled(self, checked):
         """Handle RNNoise toggle."""
@@ -1344,12 +1511,12 @@ class MainWindow(QMainWindow):
             if now - self._last_diag_poll >= 0.25:
                 self._last_diag_poll = now
                 try:
-                    diagnostics = self.processor.get_runtime_diagnostics()
                     noise_model = diagnostics.get("noise_model", "rnnoise")
                     backend_ok = diagnostics.get("noise_backend_available", True)
                     backend_failed = diagnostics.get("noise_backend_failed", False)
                     backend_error = diagnostics.get("noise_backend_error")
                     restart_count = diagnostics.get("stream_restart_count", 0)
+                    output_recovery_count = diagnostics.get("output_recovery_count", 0)
                     non_finite = diagnostics.get("suppressor_non_finite_count", 0)
                     suppressed = diagnostics.get("recovery_suppressed", False)
 
@@ -1379,6 +1546,7 @@ class MainWindow(QMainWindow):
                     )
 
                     recovery_bits = [f"R:{restart_count}"]
+                    recovery_bits.append(f"ORC:{output_recovery_count}")
                     if suppressed:
                         recovery_bits.append("SUPP")
                     reason = diagnostics.get("last_restart_reason")
@@ -1391,7 +1559,6 @@ class MainWindow(QMainWindow):
                     )
                 except Exception:
                     pass
-
             self._maybe_recover_output_stall(
                 input_rms=input_rms,
                 output_rms=output_rms,
@@ -1518,8 +1685,8 @@ class MainWindow(QMainWindow):
 
     def _recover_output_path(self):
         """Best-effort output recovery: unmute + restart with selected devices."""
-        input_device = self.input_combo.currentData()
-        output_device = self.output_combo.currentData()
+        input_device = self._device_selection_to_name(self.input_combo) or None
+        output_device = self._device_selection_to_name(self.output_combo) or None
 
         try:
             self.processor.set_output_mute(False)
@@ -1677,7 +1844,7 @@ class MainWindow(QMainWindow):
                     # Unexpected error - log and fall back
                     print(f"Error switching model in preset: {type(e).__name__}: {e}")
                     self.status_bar.showMessage(
-                        f"Error loading preset model, using RNNoise",
+                        "Error loading preset model, using RNNoise",
                         5000
                     )
                     # Fall back to RNNoise using find-by-ID loop (NOT hardcoded index)
@@ -1835,8 +2002,6 @@ class MainWindow(QMainWindow):
     def _open_presets_folder(self):
         """Open the presets folder in the file explorer."""
         import subprocess
-        import os
-
         presets_dir = get_presets_dir()
 
         if os.name == 'nt':  # Windows
@@ -1862,9 +2027,7 @@ class MainWindow(QMainWindow):
 def run_app():
     """Run the MicEq application."""
     from PyQt6.QtWidgets import QApplication
-    from PyQt6.QtGui import QIcon
     import sys
-    import os
     from pathlib import Path
 
     def _configure_deepfilter_env():

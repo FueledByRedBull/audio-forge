@@ -5,63 +5,76 @@
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)]()
 
-Low-latency microphone audio processor with AI noise suppression, smart gating, Auto-EQ, and 10-band parametric EQ.
+Low-latency Windows microphone processor with AI noise suppression, smart gating, Auto-EQ, latency calibration, and a portable desktop build.
 
 Current version: `v1.7.12`
 
 ## Status
 
-AudioForge is currently focused on Windows desktop use and portable distribution. It is optimized for personal use and small friend-group sharing.
+AudioForge is a Windows-first desktop app with a Python/PyQt UI and a Rust real-time audio core. The repository is set up for local source builds and portable `dist/AudioForge` packaging.
 
 ## Features
 
-- AI noise suppression backends:
-  - RNNoise (fast baseline)
-  - DeepFilterNet LL (low-latency quality mode)
-  - DeepFilterNet Standard (highest quality, higher latency)
-- Smart expander/gate modes:
+- Noise suppression backends:
+  - RNNoise
+  - DeepFilterNet LL
+  - DeepFilterNet Standard
+- Noise gate modes:
   - Threshold-only gate
   - VAD-assisted gate
   - VAD-only gate
-- 10-band parametric EQ with per-band frequency, gain, and Q controls
-- Split-band de-esser with manual controls and auto amount mode
-- Auto-EQ recording/analysis flow with validation, two-stage Q refinement, and one-click apply/undo
-- Dynamics:
-  - Compressor (soft-knee, adaptive release, auto makeup support)
-  - Lookahead limiter (~2 ms, final safety ceiling)
-- Real-time metering and DSP telemetry:
-  - Input/output level meters
-  - Buffer and processing health metrics
-  - Gate/VAD and gain-reduction indicators
-- Runtime diagnostics for backend health, underruns, dropped samples, and recovery state
-- Lower-overhead VAD runtime path with reusable buffers and less hot-path terminal logging
-- Tabbed main-window controls with persistent splitter sizing and dedicated health chips for latency, buffer state, drops, backend, and recovery
-- Callback-based stream watchdog with auto-recovery and backoff
-- Preset save/load with migration support
-- Latency calibration dialog for per device-pair compensation profiles
+- 10-band parametric EQ with per-band frequency, gain, and Q
+- Auto-EQ workflow with recording, spectral analysis, bounded center-frequency nudging, and one-click apply/undo
+- Split-band de-esser with manual and auto amount control
+- Compressor with soft knee, adaptive release, and optional auto makeup
+- Lookahead limiter
+- Raw monitor mode for direct diagnostic monitoring
+- Real-time health and diagnostics:
+  - input/output meters
+  - callback stall detection
+  - dropped-sample counters
+  - backlog and recovery counters
+  - backend status/error reporting
+- Callback watchdog with stream restart/backoff handling
+- Device persistence and refresh that preserves the current selection when possible
+- Per device-pair latency calibration profiles with migration from older saved keys
+- Portable PyInstaller build with bundled Python runtime and model assets
 
 ## DSP Chain
 
-Runtime processing chain:
+Normal processing path:
 
 ```text
 Mic Input -> Pre-Filter (DC block + 80 Hz HP) -> Noise Gate -> Noise Suppression
 -> De-Esser -> 10-Band EQ -> Compressor -> Limiter -> Output
 ```
 
-Note: model latency labels describe suppressor and DSP behavior only. End-to-end round-trip latency also depends on device driver, buffer size, OS mixer path, and routing setup.
+Special paths:
 
-## Quick Start (Windows)
+- `Bypass` keeps the transport path active while skipping the main DSP stages.
+- `Raw Monitor` uses the clean write path and skips the pre-filter and downstream DSP chain for diagnostics.
 
-### Prerequisites
+Latency labels in the UI describe suppressor/DSP behavior, not full round-trip latency. End-to-end latency still depends on the selected devices, driver mode, buffer sizing, and routing path.
 
+## Requirements
+
+- Windows 10/11
 - Python 3.9+
 - Rust 1.70+
 - `maturin`
+- A virtual environment in `.venv` is assumed by the packaging script
 
-### Build and run from source
+## Repository Layout
 
-```bash
+- `python/mic_eq`: PyQt application, analysis code, persistence, packaging entrypoints
+- `rust-core`: Rust audio engine exposed through PyO3
+- `python/tests`: Python test suite
+- `dist/AudioForge`: packaged portable application output
+- `build_exe.ps1`: PyInstaller packaging script
+
+## Build And Run From Source
+
+```powershell
 git clone https://github.com/FueledByRedBull/audio-forge.git
 cd audio-forge
 
@@ -73,68 +86,109 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m mic_eq
 ```
 
-## Optional Runtime Assets
+You can also use the installed console entrypoint:
 
-Create `models/` in repo root for runtime model discovery:
+```powershell
+.\.venv\Scripts\mic-eq.exe
+```
+
+## Runtime Assets
+
+Create `models/` in the repo root if you want local runtime discovery during development:
 
 - `models/DeepFilterNet3_ll_onnx.tar.gz`
-- `models/DeepFilterNet3_onnx.tar.gz` (optional if you only use LL)
-- `models/silero_vad.onnx` (for VAD gate modes)
+- `models/DeepFilterNet3_onnx.tar.gz`
+- `models/silero_vad.onnx`
 
 DeepFilter runtime library:
 
-- `df.dll` in repo root (development)
-- bundled next to `AudioForge.exe` for portable builds
+- `df.dll` in the repo root for development runs
+- bundled under `dist/AudioForge/_internal` for portable builds
 
-You can also use environment variables:
+Environment variables:
 
-- `DEEPFILTER_MODEL_PATH` (model file or directory containing the model tarballs)
+- `DEEPFILTER_MODEL_PATH`
 - `DEEPFILTER_LIB_PATH`
-- `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` to allow a packaged build to honor an external `DEEPFILTER_LIB_PATH`
+- `AUDIOFORGE_ALLOW_EXTERNAL_DF=1`
 - `AUDIOFORGE_ENABLE_DEEPFILTER`
 - `VAD_MODEL_PATH`
 
+Packaged builds prefer bundled DeepFilter assets. `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` should only be used when you intentionally want a packaged build to resolve `df.dll` externally.
+
+## Using The App
+
+1. Select the input and output devices.
+2. Start processing.
+3. Choose a suppressor backend and gate mode.
+4. Tune EQ/dynamics manually or run Auto-EQ from the calibration flow.
+5. If the route needs compensation, run latency calibration for the current device pair.
+
+Operational notes:
+
+- Device refresh keeps the current selection when the same device is still available.
+- Input/output stream setup prefers 48 kHz configs when available.
+- Runtime diagnostics expose input drops, backlog recovery, output recovery, and short-write loss separately.
+- Dropped-sample counters can be reset from the UI.
+
 ## Build Portable EXE
 
-Use the provided packaging script:
+Build the Rust extension first, then package:
 
 ```powershell
+.\.venv\Scripts\python.exe -m maturin develop --release
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
 
-Output:
+Packaging script behavior:
 
-- `dist\AudioForge\AudioForge.exe`
-- bundled DeepFilter/VAD assets inside `dist\AudioForge\_internal\...`
-- packaged builds prefer the bundled `df.dll`; set `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` only for deliberate override/testing
-- status-bar diagnostics surface backend failures and auto-recovery state
+- uses the locally built `python/mic_eq/mic_eq_core*.pyd`
+- bundles the Python runtime with PyInstaller
+- prunes the final bundle with `python/tools/prune_bundle.py`
+- keeps the entire application self-contained in `dist/AudioForge`
 
-Create archive:
+Portable output:
+
+- `dist/AudioForge/AudioForge.exe`
+- bundled assets and runtime files under `dist/AudioForge/_internal`
+
+## Create Release Archive
+
+The portable folder is intended to be archived as a single distributable:
 
 ```powershell
-& "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
+& "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
   .\AudioForge-v1.7.12-win64-ultra.7z .\dist\AudioForge\*
 ```
 
+This uses LZMA2 with max compression and solid mode, which is appropriate for the PyInstaller bundle.
+
 ## Testing
 
-Rust tests:
+Rust:
 
-```bash
+```powershell
 cd rust-core
 cargo test -p mic_eq_core --tests
 ```
 
-Python tests:
+Python:
 
-```bash
+```powershell
 cd ..
 .\.venv\Scripts\python.exe -m pytest python/tests -v
 ```
 
-Headless health checks:
+Targeted checks used frequently during development:
 
-```bash
+```powershell
+.\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests
+.\.venv\Scripts\python.exe -m pytest python/tests/test_auto_eq.py python/tests/test_spectrum.py
+.\.venv\Scripts\python.exe -m pytest python/tests/test_config_v17.py python/tests/test_ui_sample_rate_and_diagnostics.py
+```
+
+Headless checks:
+
+```powershell
 .\.venv\Scripts\python.exe python/tools/health_check.py --duration 1800
 .\.venv\Scripts\python.exe python/tools/self_test.py
 ```

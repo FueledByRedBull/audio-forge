@@ -35,12 +35,27 @@ impl AudioOutput {
             .name()
             .map_err(|e| AudioError::DeviceName(e.to_string()))?;
 
-        let supported_configs = device
+        let supported_configs: Vec<_> = device
             .supported_output_configs()
-            .map_err(|e| AudioError::DefaultConfig(e.to_string()))?;
+            .map_err(|e| AudioError::DefaultConfig(e.to_string()))?
+            .collect();
+        let default_config = device.default_output_config().ok();
 
-        let supported_config = find_48khz_config(supported_configs)
-            .or_else(|| device.default_output_config().ok())
+        let supported_config = default_config
+            .as_ref()
+            .and_then(|default| {
+                find_48khz_config(
+                    supported_configs
+                        .iter()
+                        .filter(|config| {
+                            config.channels() == default.channels()
+                                && config.sample_format() == default.sample_format()
+                        })
+                        .cloned(),
+                )
+            })
+            .or_else(|| find_48khz_config(supported_configs.iter().cloned()))
+            .or(default_config)
             .ok_or_else(|| {
                 AudioError::DefaultConfig("No suitable output config found".to_string())
             })?;
@@ -104,7 +119,8 @@ impl AudioOutput {
             for i in 0..remaining_frames {
                 let value = if i < fade_frames {
                     let t = (i + 1) as f32 / fade_frames as f32;
-                    last_sample * (1.0 - t)
+                    let gain = ((1.0 - t) * std::f32::consts::FRAC_PI_2).sin();
+                    last_sample * gain
                 } else {
                     0.0
                 };
@@ -114,7 +130,8 @@ impl AudioOutput {
             for i in 0..remaining_frames {
                 let value = if i < fade_frames {
                     let t = (i + 1) as f32 / fade_frames as f32;
-                    last_sample * (1.0 - t)
+                    let gain = ((1.0 - t) * std::f32::consts::FRAC_PI_2).sin();
+                    last_sample * gain
                 } else {
                     0.0
                 };
@@ -165,6 +182,7 @@ impl AudioOutput {
                         for sample in data.iter_mut() {
                             *sample = silence;
                         }
+                        consumer.set_last_sample(0.0);
                         return;
                     }
 
@@ -207,6 +225,7 @@ impl AudioOutput {
                             let last =
                                 last_written_sample.unwrap_or_else(|| consumer.last_sample());
                             Self::fill_underrun_tail(data, copied, 1, last);
+                            consumer.set_last_sample(0.0);
                         }
                     } else {
                         let mono_samples = data.len() / num_channels;
@@ -246,6 +265,7 @@ impl AudioOutput {
                             let last =
                                 last_written_sample.unwrap_or_else(|| consumer.last_sample());
                             Self::fill_underrun_tail(data, copied_frames, num_channels, last);
+                            consumer.set_last_sample(0.0);
                         }
                     }
                 },

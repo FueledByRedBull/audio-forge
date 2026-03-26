@@ -66,12 +66,27 @@ impl AudioInput {
             .name()
             .map_err(|e| AudioError::DeviceName(e.to_string()))?;
 
-        let supported_configs = device
+        let supported_configs: Vec<_> = device
             .supported_input_configs()
-            .map_err(|e| AudioError::DefaultConfig(e.to_string()))?;
+            .map_err(|e| AudioError::DefaultConfig(e.to_string()))?
+            .collect();
+        let default_config = device.default_input_config().ok();
 
-        let supported_config = find_48khz_config(supported_configs)
-            .or_else(|| device.default_input_config().ok())
+        let supported_config = default_config
+            .as_ref()
+            .and_then(|default| {
+                find_48khz_config(
+                    supported_configs
+                        .iter()
+                        .filter(|config| {
+                            config.channels() == default.channels()
+                                && config.sample_format() == default.sample_format()
+                        })
+                        .cloned(),
+                )
+            })
+            .or_else(|| find_48khz_config(supported_configs.iter().cloned()))
+            .or(default_config)
             .ok_or_else(|| {
                 AudioError::DefaultConfig("No suitable input config found".to_string())
             })?;
@@ -137,15 +152,25 @@ impl AudioInput {
                             let start = frame_idx * num_channels;
                             let end = start + chunk_frames * num_channels;
                             let interleaved = &data[start..end];
+                            let mut channel_energy = vec![0.0_f32; num_channels];
+
+                            for chunk in interleaved.chunks_exact(num_channels) {
+                                for (channel_idx, sample) in chunk.iter().copied().enumerate() {
+                                    channel_energy[channel_idx] +=
+                                        Self::normalize_input_sample(sample).abs();
+                                }
+                            }
+                            let dominant_channel = channel_energy
+                                .iter()
+                                .enumerate()
+                                .max_by(|(_, left), (_, right)| left.total_cmp(right))
+                                .map(|(index, _)| index)
+                                .unwrap_or(0);
 
                             let mut written_frames = 0usize;
                             for chunk in interleaved.chunks_exact(num_channels) {
-                                let sum: f32 = chunk
-                                    .iter()
-                                    .copied()
-                                    .map(Self::normalize_input_sample)
-                                    .sum();
-                                mono_scratch[written_frames] = sum / num_channels as f32;
+                                mono_scratch[written_frames] =
+                                    Self::normalize_input_sample(chunk[dominant_channel]);
                                 written_frames += 1;
                             }
 

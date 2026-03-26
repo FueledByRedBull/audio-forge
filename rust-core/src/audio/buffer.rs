@@ -157,6 +157,10 @@ impl AudioConsumer {
     pub fn last_sample(&self) -> f32 {
         self.last_sample
     }
+
+    pub fn set_last_sample(&mut self, sample: f32) {
+        self.last_sample = sample;
+    }
 }
 
 #[cfg(test)]

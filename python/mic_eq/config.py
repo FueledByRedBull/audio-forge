@@ -60,6 +60,81 @@ def get_config_file() -> Path:
     return config_dir / 'config.json'
 
 
+@dataclass(slots=True)
+class DeviceIdentity:
+    """Persisted audio device identity used by the UI/config layer."""
+
+    name: str = ""
+    is_default: bool = False
+
+    def to_dict(self) -> dict:
+        return {
+            'name': self.name,
+            'is_default': self.is_default,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict | str | None) -> 'DeviceIdentity | None':
+        if isinstance(data, cls):
+            return data if data.name else None
+        if isinstance(data, str):
+            name = data.strip()
+            return cls(name=name) if name else None
+        if not isinstance(data, dict):
+            return None
+
+        name = str(data.get('name', '')).strip()
+        if not name:
+            return None
+        return cls(name=name, is_default=bool(data.get('is_default', False)))
+
+
+def coerce_device_identity(data: dict | str | DeviceIdentity | None) -> DeviceIdentity | None:
+    """Normalize persisted device identity data from legacy or structured inputs."""
+    return DeviceIdentity.from_dict(data)
+
+
+def legacy_latency_profile_key(input_name: str, output_name: str) -> str:
+    """Legacy latency profile key based on friendly device names."""
+    return f"{input_name}||{output_name}"
+
+
+def build_latency_profile_key(
+    input_device: DeviceIdentity | None,
+    output_device: DeviceIdentity | None,
+) -> str:
+    """Build a deterministic latency profile key from structured device identities."""
+    payload = {
+        'input': input_device.to_dict() if input_device is not None else None,
+        'output': output_device.to_dict() if output_device is not None else None,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(',', ':'))
+
+
+def parse_latency_profile_key(key: str) -> tuple[DeviceIdentity | None, DeviceIdentity | None] | None:
+    """Parse a latency profile key from either the legacy or structured format."""
+    text = str(key)
+    if '||' in text:
+        input_name, output_name = text.split('||', 1)
+        return (
+            coerce_device_identity(input_name),
+            coerce_device_identity(output_name),
+        )
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    return (
+        coerce_device_identity(payload.get('input')),
+        coerce_device_identity(payload.get('output')),
+    )
+
+
 @dataclass
 class GateSettings:
     """Noise gate settings."""
@@ -756,6 +831,8 @@ class AppConfig:
     """Application configuration (persisted settings)."""
     last_input_device: str = ""
     last_output_device: str = ""
+    last_input_device_identity: DeviceIdentity | None = None
+    last_output_device_identity: DeviceIdentity | None = None
     last_preset: str = ""
     startup_preset: str = ""  # Preset to load on startup (empty = last used)
     window_geometry: Optional[dict] = None
@@ -769,6 +846,16 @@ class AppConfig:
         return {
             'last_input_device': self.last_input_device,
             'last_output_device': self.last_output_device,
+            'last_input_device_identity': (
+                self.last_input_device_identity.to_dict()
+                if self.last_input_device_identity is not None
+                else None
+            ),
+            'last_output_device_identity': (
+                self.last_output_device_identity.to_dict()
+                if self.last_output_device_identity is not None
+                else None
+            ),
             'last_preset': self.last_preset,
             'startup_preset': self.startup_preset,
             'window_geometry': self.window_geometry,
@@ -784,19 +871,34 @@ class AppConfig:
     @classmethod
     def from_dict(cls, data: dict) -> 'AppConfig':
         """Create config from dictionary."""
+        input_identity = coerce_device_identity(data.get('last_input_device_identity'))
+        if input_identity is None:
+            input_identity = coerce_device_identity(data.get('last_input_device'))
+
+        output_identity = coerce_device_identity(data.get('last_output_device_identity'))
+        if output_identity is None:
+            output_identity = coerce_device_identity(data.get('last_output_device'))
+
         raw_profiles = data.get('latency_calibration_profiles', {}) or {}
         parsed_profiles: dict[str, LatencyCalibrationProfile] = {}
         if isinstance(raw_profiles, dict):
             for key, value in raw_profiles.items():
                 if isinstance(value, dict):
                     try:
-                        parsed_profiles[str(key)] = LatencyCalibrationProfile.from_dict(value)
+                        profile = LatencyCalibrationProfile.from_dict(value)
                     except (TypeError, ValueError):
                         continue
+                    parsed_key = str(key)
+                    parsed_devices = parse_latency_profile_key(parsed_key)
+                    if parsed_devices is not None:
+                        parsed_key = build_latency_profile_key(*parsed_devices)
+                    parsed_profiles[parsed_key] = profile
 
         return cls(
-            last_input_device=data.get('last_input_device', ''),
-            last_output_device=data.get('last_output_device', ''),
+            last_input_device=str(data.get('last_input_device', '') or (input_identity.name if input_identity else '')),
+            last_output_device=str(data.get('last_output_device', '') or (output_identity.name if output_identity else '')),
+            last_input_device_identity=input_identity,
+            last_output_device_identity=output_identity,
             last_preset=data.get('last_preset', ''),
             startup_preset=data.get('startup_preset', ''),
             window_geometry=data.get('window_geometry'),

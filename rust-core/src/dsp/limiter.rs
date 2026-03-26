@@ -81,6 +81,9 @@ impl Limiter {
 
     /// Enable or disable the limiter
     pub fn set_enabled(&mut self, enabled: bool) {
+        if self.enabled != enabled {
+            self.reset();
+        }
         self.enabled = enabled;
     }
 
@@ -292,5 +295,49 @@ mod tests {
         let mut lim = Limiter::new(-6.0, 50.0, 48_000.0);
         lim.set_ceiling(3.0);
         assert_eq!(lim.ceiling_db(), 0.0);
+    }
+
+    #[test]
+    fn test_limiter_disable_transition_resets_stale_state() {
+        let mut lim = Limiter::new(-6.0, 50.0, 48_000.0);
+
+        let lookahead = lim.lookahead_samples();
+        lim.process_sample(0.95);
+        for _ in 0..lookahead {
+            lim.process_sample(0.0);
+        }
+
+        assert!(lim.current_gain_reduction() < 0.95);
+
+        lim.set_enabled(false);
+        assert_eq!(lim.current_gain_reduction(), 0.0);
+        assert_eq!(lim.peak_gain_reduction_and_reset(), 0.0);
+
+        lim.set_enabled(true);
+        let output = lim.process_sample(0.0);
+        assert_eq!(output, 0.0);
+        assert_eq!(lim.current_gain_reduction(), 0.0);
+    }
+
+    #[test]
+    fn test_limiter_enable_transition_clears_previous_delay_line() {
+        let mut lim = Limiter::new(-6.0, 50.0, 48_000.0);
+
+        let lookahead = lim.lookahead_samples();
+        lim.process_sample(0.9);
+        for _ in 0..(lookahead / 2).max(1) {
+            lim.process_sample(0.0);
+        }
+
+        lim.set_enabled(false);
+        lim.set_enabled(true);
+
+        let mut outputs = Vec::with_capacity(lookahead + 1);
+        for _ in 0..=lookahead {
+            outputs.push(lim.process_sample(0.0));
+        }
+
+        assert!(outputs.iter().all(|sample| sample.abs() < 1e-6));
+        assert_eq!(lim.current_gain_reduction(), 0.0);
     }
 }

@@ -1,10 +1,12 @@
+# ruff: noqa: E402
+
 """
 AudioForge - Low-latency microphone audio processor
 
 Provides real-time noise suppression and equalization for voice communication.
 """
 
-__version__ = "1.7.12"
+__version__ = "1.7.13"
 
 # Import the Rust core module.
 #
@@ -59,6 +61,11 @@ __all__ = [
     "list_input_devices",
     "list_output_devices",
     "CORE_AVAILABLE",
+    "Preset",
+    "save_preset",
+    "load_preset",
+    "list_presets",
+    "BUILTIN_PRESETS",
 ]
 
 # Also export config utilities

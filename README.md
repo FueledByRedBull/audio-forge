@@ -7,7 +7,7 @@
 
 Low-latency Windows microphone processor with AI noise suppression, smart gating, Auto-EQ, latency calibration, and a portable desktop build.
 
-Current version: `v1.7.12`
+Current version: `v1.7.13`
 
 ## Status
 
@@ -157,7 +157,7 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.7.12-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.7.13-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This uses LZMA2 with max compression and solid mode, which is appropriate for the PyInstaller bundle.

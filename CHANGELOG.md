@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.13 - 2026-03-27
+
+- Split the latest work into a release-corrected build: Auto-EQ now applies spectral tilt removal, voiced-frame spectrum selection, SNR-aware boost caps, adjacent-band coupling limits, and bounded center-frequency nudging.
+- Hardened the real-time transport path with safer resampler buffering, output recovery accounting, EQ parameter validation, raw-monitor handling, limiter state resets, and corrected RNNoise frame smoothing.
+- Stabilized persisted device identities and latency-profile migration, refreshed the README/release flow, and repackaged the Windows archive under the new release version.
+
 ## v1.7.12 - 2026-03-20
 
 - Completed DSP redesign updates with canonical compressor knee/detector semantics, sample-rate-aware limiter lookahead latency reporting, split-band de-esser recombination, and percentile-based VAD floor tracking.

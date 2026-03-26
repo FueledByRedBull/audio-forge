@@ -222,6 +222,14 @@ fn retime_audio_block<'a>(
     output.as_slice()
 }
 
+#[inline]
+fn release_ms_to_tenth_ms(release_ms: f64) -> u64 {
+    if !release_ms.is_finite() {
+        return 0;
+    }
+    (release_ms.max(0.0) * 10.0).round() as u64
+}
+
 fn lock_rt<'a, T>(
     mutex: &'a Mutex<T>,
     lock_contention_count: &AtomicU64,
@@ -230,7 +238,7 @@ fn lock_rt<'a, T>(
         Ok(guard) => Some(guard),
         Err(std::sync::TryLockError::WouldBlock) => {
             lock_contention_count.fetch_add(1, Ordering::Relaxed);
-            mutex.lock().ok()
+            None
         }
         Err(std::sync::TryLockError::Poisoned(_)) => None,
     }
@@ -919,7 +927,9 @@ impl AudioProcessor {
             vad_probability: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             gate_noise_floor_db: Arc::new(AtomicU32::new((-60.0_f32).to_bits())),
             vad_available: Arc::new(AtomicBool::new(false)),
-            compressor_current_release_ms: Arc::new(AtomicU64::new(200)), // Default 200ms
+            compressor_current_release_ms: Arc::new(AtomicU64::new(
+                COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
+            )),
             latency_us: Arc::new(AtomicU64::new(0)),
             latency_compensation_us: Arc::new(AtomicU64::new(0)),
             // Initialize DSP performance metrics
@@ -1513,7 +1523,7 @@ impl AudioProcessor {
                         );
                         let current_release = compressor_rt.current_release_time();
                         compressor_current_release_ms
-                            .store((current_release * 10.0) as u64, Ordering::Relaxed);
+                            .store(release_ms_to_tenth_ms(current_release), Ordering::Relaxed);
                     } else {
                         compressor_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
                         compressor_current_release_ms
@@ -3837,11 +3847,19 @@ mod tests {
         });
 
         started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let guard = lock_rt(mutex.as_ref(), contention.as_ref()).unwrap();
-        assert_eq!(*guard, 1);
+        let guard = lock_rt(mutex.as_ref(), contention.as_ref());
+        assert!(guard.is_none());
         assert_eq!(contention.load(Ordering::Relaxed), 1);
-        drop(guard);
         holder.join().unwrap();
+    }
+
+    #[test]
+    fn test_release_ms_to_tenth_ms_rounds_expected_values() {
+        assert_eq!(release_ms_to_tenth_ms(200.0), 2000);
+        assert_eq!(release_ms_to_tenth_ms(12.34), 123);
+        assert_eq!(release_ms_to_tenth_ms(12.35), 124);
+        assert_eq!(release_ms_to_tenth_ms(-5.0), 0);
+        assert_eq!(release_ms_to_tenth_ms(f64::NAN), 0);
     }
 
     #[test]

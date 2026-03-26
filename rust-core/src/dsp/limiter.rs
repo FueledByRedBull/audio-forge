@@ -3,6 +3,7 @@
 //! Uses a fixed lookahead window (~2ms) computed from runtime sample rate.
 
 use crate::dsp::util;
+use std::collections::VecDeque;
 
 /// Hard limiter with lookahead ceiling control
 pub struct Limiter {
@@ -22,6 +23,10 @@ pub struct Limiter {
     lookahead_samples: usize,
     /// Shared future window and delay line storage.
     delay_buffer: Vec<f32>,
+    /// Monotonic max queue for the lookahead window.
+    lookahead_max_queue: VecDeque<(u64, f64)>,
+    /// Absolute sample index for window maintenance.
+    next_input_index: u64,
     /// Ring write index.
     write_idx: usize,
     /// Whether limiter is enabled
@@ -43,6 +48,8 @@ impl Limiter {
             sample_rate,
             lookahead_samples,
             delay_buffer: vec![0.0; lookahead_samples],
+            lookahead_max_queue: VecDeque::with_capacity(lookahead_samples),
+            next_input_index: 0,
             write_idx: 0,
             enabled: true,
         }
@@ -110,14 +117,34 @@ impl Limiter {
 
     #[inline]
     fn lookahead_peak_abs(&self) -> f64 {
-        let mut peak = 0.0_f64;
-        for &sample in &self.delay_buffer {
-            let s = (sample as f64).abs();
-            if s > peak {
-                peak = s;
+        self.lookahead_max_queue
+            .front()
+            .map(|&(_, peak)| peak)
+            .unwrap_or(0.0)
+    }
+
+    #[inline]
+    fn push_lookahead_sample(&mut self, sample_abs: f64) {
+        let sample_index = self.next_input_index;
+        while let Some(&(_, tail_peak)) = self.lookahead_max_queue.back() {
+            if tail_peak > sample_abs {
+                break;
             }
+            self.lookahead_max_queue.pop_back();
         }
-        peak
+        self.lookahead_max_queue
+            .push_back((sample_index, sample_abs));
+
+        self.next_input_index = self.next_input_index.saturating_add(1);
+        let oldest_kept_index = self
+            .next_input_index
+            .saturating_sub(self.lookahead_samples as u64);
+        while let Some(&(front_index, _)) = self.lookahead_max_queue.front() {
+            if front_index >= oldest_kept_index {
+                break;
+            }
+            self.lookahead_max_queue.pop_front();
+        }
     }
 
     #[inline]
@@ -146,6 +173,7 @@ impl Limiter {
 
         // Current sample is then written into the future side of the ring.
         self.delay_buffer[self.write_idx] = input;
+        self.push_lookahead_sample((input as f64).abs());
         self.write_idx = (self.write_idx + 1) % self.lookahead_samples;
         let target_gain = if peak > self.ceiling_linear {
             self.ceiling_linear / peak
@@ -188,8 +216,10 @@ impl Limiter {
     pub fn reset(&mut self) {
         self.gain_reduction = 1.0;
         self.peak_gain_reduction_db = 0.0;
+        self.next_input_index = 0;
         self.write_idx = 0;
         self.delay_buffer.fill(0.0);
+        self.lookahead_max_queue.clear();
     }
 }
 
@@ -339,5 +369,19 @@ mod tests {
 
         assert!(outputs.iter().all(|sample| sample.abs() < 1e-6));
         assert_eq!(lim.current_gain_reduction(), 0.0);
+    }
+
+    #[test]
+    fn test_lookahead_peak_expires_when_sample_leaves_window() {
+        let mut lim = Limiter::new(-6.0, 50.0, 48_000.0);
+
+        lim.process_sample(0.95);
+        assert!(lim.lookahead_peak_abs() > 0.94);
+
+        for _ in 0..lim.lookahead_samples() {
+            lim.process_sample(0.0);
+        }
+
+        assert_eq!(lim.lookahead_peak_abs(), 0.0);
     }
 }

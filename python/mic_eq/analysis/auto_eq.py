@@ -230,6 +230,9 @@ def _predict_eq_response(freqs, gains, qs, center_freqs):
     """
     # Initialize response in linear domain (1.0 = unity gain = 0 dB)
     response_linear = np.ones_like(freqs, dtype=float)
+    w = 2 * np.pi * freqs / SAMPLE_RATE
+    z_inv = np.exp(-1j * w)
+    z_inv_2 = z_inv * z_inv
 
     for gain_db, q, fc in zip(gains, qs, center_freqs):
         # Skip bands with no gain (optimization)
@@ -258,11 +261,6 @@ def _predict_eq_response(freqs, gains, qs, center_freqs):
 
         # Evaluate transfer function H(z) at each frequency
         # H(e^(j*w)) = (b0 + b1*e^(-j*w) + b2*e^(-j*2w)) / (a0 + a1*e^(-j*w) + a2*e^(-j*2w))
-
-        # Normalized frequency: w = 2*pi*f/fs
-        w = 2 * np.pi * freqs / SAMPLE_RATE
-        z_inv = np.exp(-1j * w)  # z^(-1)
-        z_inv_2 = z_inv ** 2      # z^(-2)
 
         # Numerator and denominator of transfer function
         numerator = b0 + b1 * z_inv + b2 * z_inv_2

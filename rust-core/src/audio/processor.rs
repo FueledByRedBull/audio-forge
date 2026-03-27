@@ -75,6 +75,18 @@ fn samples_to_micros(samples: u64, sample_rate: u32) -> u64 {
     }
 }
 
+fn smoothing_coeff_for_time_constant(sample_rate_hz: f32, time_constant_ms: f32) -> f32 {
+    if !sample_rate_hz.is_finite()
+        || sample_rate_hz <= 0.0
+        || !time_constant_ms.is_finite()
+        || time_constant_ms <= 0.0
+    {
+        0.0
+    } else {
+        (-1.0 / (sample_rate_hz * (time_constant_ms / 1000.0))).exp()
+    }
+}
+
 fn total_reported_latency_us(
     output_buffer_samples: u64,
     output_sample_rate: u32,
@@ -1424,7 +1436,8 @@ impl AudioProcessor {
             // Metering state (IIR smoothing for RMS)
             let mut input_rms_acc: f32 = 0.0;
             let mut output_rms_acc: f32 = 0.0;
-            const METER_COEFF: f32 = 0.99; // ~100ms time constant at 48kHz
+            let meter_coeff =
+                smoothing_coeff_for_time_constant(sample_rate_for_latency as f32, 100.0);
 
             // Latency tracking
             let mut last_latency_update = Instant::now();
@@ -1454,7 +1467,7 @@ impl AudioProcessor {
                         peak = abs;
                     }
                     // IIR RMS accumulator
-                    *rms_acc = METER_COEFF * *rms_acc + (1.0 - METER_COEFF) * (sample * sample);
+                    *rms_acc = meter_coeff * *rms_acc + (1.0 - meter_coeff) * (sample * sample);
                 }
                 // Convert to dB
                 let peak_db = if peak > 0.0 {
@@ -3860,6 +3873,15 @@ mod tests {
         assert_eq!(release_ms_to_tenth_ms(12.35), 124);
         assert_eq!(release_ms_to_tenth_ms(-5.0), 0);
         assert_eq!(release_ms_to_tenth_ms(f64::NAN), 0);
+    }
+
+    #[test]
+    fn test_smoothing_coeff_for_time_constant_matches_100ms_meter_target() {
+        let coeff = smoothing_coeff_for_time_constant(48_000.0, 100.0);
+        assert!((coeff - 0.999_791_7).abs() < 1e-6);
+
+        let invalid = smoothing_coeff_for_time_constant(0.0, 100.0);
+        assert_eq!(invalid, 0.0);
     }
 
     #[test]

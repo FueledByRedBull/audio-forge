@@ -25,11 +25,9 @@ def _select_voiced_samples(audio: np.ndarray, frame_size: int, hop_size: int) ->
     if starts.size == 0:
         return audio
 
-    frame_rms_db = np.empty(starts.size, dtype=float)
-    for i, start in enumerate(starts):
-        frame = audio[start:start + frame_size]
-        rms = np.sqrt(np.mean(frame * frame) + 1e-12)
-        frame_rms_db[i] = 20.0 * np.log10(rms + 1e-12)
+    frames = np.lib.stride_tricks.sliding_window_view(audio, frame_size)[::hop_size]
+    frame_power = np.mean(frames * frames, axis=1)
+    frame_rms_db = 10.0 * np.log10(frame_power + 1e-12)
 
     floor_db = float(np.percentile(frame_rms_db, VOICE_FRAME_FLOOR_PERCENTILE))
     peak_db = float(np.percentile(frame_rms_db, VOICE_FRAME_PEAK_PERCENTILE))

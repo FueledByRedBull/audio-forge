@@ -434,6 +434,15 @@ impl Compressor {
         self.target_release_ms = self.base_release_ms;
         self.release_coeff =
             util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
+        if let Some(meter) = &mut self.loudness_meter {
+            if let Err(err) = meter.reset() {
+                eprintln!("Failed to reset loudness meter: {}", err);
+            } else {
+                self.current_lufs = -100.0;
+            }
+        } else {
+            self.current_lufs = -100.0;
+        }
     }
 }
 
@@ -565,5 +574,15 @@ mod tests {
         let fixed_drop = fixed_peak_before - fixed.peak_envelope_db;
         let adaptive_drop = adaptive_peak_before - adaptive.peak_envelope_db;
         assert!((fixed_drop - adaptive_drop).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_reset_clears_reported_loudness() {
+        let mut comp = Compressor::default_voice(48_000.0);
+        comp.current_lufs = -18.0;
+
+        comp.reset();
+
+        assert_eq!(comp.current_lufs(), -100.0);
     }
 }

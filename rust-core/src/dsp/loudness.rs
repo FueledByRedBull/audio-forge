@@ -102,13 +102,14 @@ impl LoudnessMeter {
     }
 
     /// Reset loudness meter state
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self) -> Result<(), LoudnessError> {
         // Reset the EBU R128 meter
         // Note: ebur128 crate doesn't have explicit reset, so we recreate
-        if let Ok(meter) = EbuR128::new(1, self.sample_rate, Mode::M | Mode::HISTOGRAM) {
-            self.meter = meter;
-        }
+        let meter = EbuR128::new(1, self.sample_rate, Mode::M | Mode::HISTOGRAM)
+            .map_err(|e| LoudnessError::InitError(e.to_string()))?;
+        self.meter = meter;
         self.current_lufs = -100.0;
+        Ok(())
     }
 }
 
@@ -160,5 +161,16 @@ mod tests {
             "Tone loudness out of range: {}",
             lufs
         );
+    }
+
+    #[test]
+    fn test_loudness_meter_reset_restores_idle_state() {
+        let mut meter = LoudnessMeter::new(48_000).unwrap();
+        let tone = vec![0.1_f32; 48_000];
+        meter.process(&tone);
+
+        meter.reset().unwrap();
+
+        assert_eq!(meter.loudness_momentary(), -100.0);
     }
 }

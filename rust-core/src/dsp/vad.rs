@@ -106,6 +106,8 @@ pub struct SileroVAD {
     state: Array3<f32>,
     /// Moving average of speech probability (for smoothing)
     smoothed_prob: f32,
+    /// Whether at least one inference result has been produced.
+    has_inference: bool,
     /// Smoothing factor for probability (0-1)
     smoothing: f32,
     /// Pre-gain applied to audio before VAD processing (boosts weak signals)
@@ -214,6 +216,7 @@ impl SileroVAD {
             resample_scratch: Vec::with_capacity(SILERO_WINDOW_SIZE),
             state,
             smoothed_prob: 0.0,
+            has_inference: false,
             smoothing: 0.5, // Faster smoothing (less lag)
             pre_gain: 1.0,  // Default: no gain boost
         })
@@ -234,7 +237,7 @@ impl SileroVAD {
 
         // Check if we have enough samples for inference
         if self.available_samples() < window_size {
-            return Ok(self.smoothed_prob);
+            return Ok(self.current_probability());
         }
 
         self.input_window.clear();
@@ -265,7 +268,13 @@ impl SileroVAD {
         let prob = self.run_inference()?;
 
         // Smooth the probability
-        self.smoothed_prob = self.smoothing * prob + (1.0 - self.smoothing) * self.smoothed_prob;
+        if self.has_inference {
+            self.smoothed_prob =
+                self.smoothing * prob + (1.0 - self.smoothing) * self.smoothed_prob;
+        } else {
+            self.smoothed_prob = prob;
+            self.has_inference = true;
+        }
 
         Ok(self.smoothed_prob)
     }
@@ -278,7 +287,7 @@ impl SileroVAD {
 
     /// Get current speech probability (smoothed)
     pub fn probability(&self) -> f32 {
-        self.smoothed_prob
+        self.current_probability()
     }
 
     /// Set speech detection threshold
@@ -311,8 +320,18 @@ impl SileroVAD {
         self.gained_audio.fill(0.0);
         self.audio_512.fill(0.0);
         self.smoothed_prob = 0.0;
+        self.has_inference = false;
         // Reset combined LSTM state to zeros
         self.state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_STATE_DIM));
+    }
+
+    #[inline]
+    fn current_probability(&self) -> f32 {
+        if self.has_inference {
+            self.smoothed_prob
+        } else {
+            self.threshold
+        }
     }
 
     fn available_samples(&self) -> usize {
@@ -1075,5 +1094,19 @@ mod tests {
 
         assert_eq!(vad.audio_512.len(), SILERO_WINDOW_SIZE);
         assert_eq!(vad.resample_scratch.len(), SILERO_WINDOW_SIZE);
+    }
+
+    #[test]
+    fn test_vad_returns_neutral_probability_before_first_inference() {
+        let mut vad = match SileroVAD::new(48_000, 0.42) {
+            Ok(vad) => vad,
+            Err(_) => return,
+        };
+
+        let partial = vec![0.0_f32; vad.window_size().saturating_sub(1)];
+        let prob = vad.process(&partial).unwrap();
+
+        assert!((prob - 0.42).abs() < 1e-6);
+        assert!((vad.probability() - 0.42).abs() < 1e-6);
     }
 }

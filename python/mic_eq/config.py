@@ -148,7 +148,7 @@ class GateSettings:
     vad_hold_time_ms: float = 200.0  # Hold time in milliseconds (0-500)
     vad_pre_gain: float = 1.0  # Pre-gain to boost weak signals for VAD (1.0-10.0)
     # Auto-threshold settings (v1.6.0+)
-    auto_threshold_enabled: bool = False  # Auto-adjust threshold based on noise floor
+    auto_threshold_enabled: bool = True  # Auto-adjust threshold based on noise floor
     gate_margin_db: float = 10.0  # Margin above noise floor for auto-threshold (0-20 dB) - increased from 6.0 for better noise rejection
 
 
@@ -303,7 +303,7 @@ class Preset:
     """Complete preset with all settings."""
     name: str = "Default"
     description: str = ""
-    version: str = "1.7.13"  # Version field for migration
+    version: str = "1.7.14"  # Version field for migration
     gate: GateSettings = field(default_factory=GateSettings)
     eq: EQSettings = field(default_factory=EQSettings)
     rnnoise: RNNoiseSettings = field(default_factory=RNNoiseSettings)
@@ -386,13 +386,13 @@ class Preset:
             # Migrate v1.5 presets -> v1.6 (auto-threshold defaults)
             if version_tuple < _version_tuple('1.6.0'):
                 if 'gate' in data:
-                    data['gate'].setdefault('auto_threshold_enabled', False)
+                    data['gate'].setdefault('auto_threshold_enabled', True)
                     data['gate'].setdefault('gate_margin_db', 10.0)
                     if data['gate'].get('vad_threshold', 0.5) == 0.5:
                         data['gate']['vad_threshold'] = 0.4
                 else:
                     data['gate'] = {
-                        'auto_threshold_enabled': False,
+                        'auto_threshold_enabled': True,
                         'gate_margin_db': 10.0,
                         'vad_threshold': 0.4,
                     }
@@ -437,10 +437,10 @@ class Preset:
                 data['version'] = '1.7.4'
                 version_tuple = _version_tuple('1.7.4')
 
-            # Migrate v1.7.4 presets -> v1.7.13 (no format changes)
-            if version_tuple < _version_tuple('1.7.13'):
-                data['version'] = '1.7.13'
-                version_tuple = _version_tuple('1.7.13')
+            # Migrate v1.7.4 presets -> v1.7.14 (no format changes)
+            if version_tuple < _version_tuple('1.7.14'):
+                data['version'] = '1.7.14'
+                version_tuple = _version_tuple('1.7.14')
 
             # Extract and validate gate settings
             gate_data = data.get('gate', {})
@@ -482,7 +482,7 @@ class Preset:
                     *gate_ranges['vad_pre_gain'],
                     'vad_pre_gain', 'gate'
                 ),
-                auto_threshold_enabled=gate_data.get('auto_threshold_enabled', False),
+                auto_threshold_enabled=gate_data.get('auto_threshold_enabled', True),
                 gate_margin_db=_validate_range(
                     gate_data.get('gate_margin_db', 10.0),
                     *gate_ranges['gate_margin_db'],
@@ -661,7 +661,7 @@ class Preset:
             return cls(
                 name=data.get('name', 'Unnamed'),
                 description=data.get('description', ''),
-                version=data.get('version', '1.7.13'),
+                version=data.get('version', '1.7.14'),
                 gate=validated_gate,
                 eq=validated_eq,
                 rnnoise=validated_rnnoise,
@@ -940,10 +940,10 @@ BUILTIN_PRESETS = {
     'voice': Preset(
         name="Voice Clarity",
         description="Optimized for voice communication - cuts low end rumble and boosts presence",
-        version="1.7.13",
+        version="1.7.14",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=False, gate_margin_db=10.0),
+                         auto_threshold_enabled=True, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-3.0, -2.0, 0.0, 1.0, 2.0, 3.0, 2.0, 0.0, -1.0, -2.0],
@@ -954,10 +954,10 @@ BUILTIN_PRESETS = {
     'bass_cut': Preset(
         name="Bass Cut",
         description="High-pass effect to remove low frequency rumble and proximity effect",
-        version="1.7.13",
+        version="1.7.14",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=False, gate_margin_db=10.0),
+                         auto_threshold_enabled=True, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-12.0, -6.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -968,10 +968,10 @@ BUILTIN_PRESETS = {
     'presence': Preset(
         name="Presence Boost",
         description="Enhances voice presence and intelligibility",
-        version="1.7.13",
+        version="1.7.14",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=False, gate_margin_db=10.0),
+                         auto_threshold_enabled=True, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[0.0, 0.0, 0.0, 0.0, 2.0, 4.0, 3.0, 1.0, 0.0, 0.0],
@@ -982,10 +982,10 @@ BUILTIN_PRESETS = {
     'flat': Preset(
         name="Flat",
         description="No EQ processing - flat frequency response",
-        version="1.7.13",
+        version="1.7.14",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=False, gate_margin_db=10.0),
+                         auto_threshold_enabled=True, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[0.0] * 10,
@@ -996,10 +996,10 @@ BUILTIN_PRESETS = {
     'minimal': Preset(
         name="Minimal Processing",
         description="Gate and RNNoise only - no EQ",
-        version="1.7.13",
+        version="1.7.14",
         gate=GateSettings(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=False, gate_margin_db=10.0),
+                         auto_threshold_enabled=True, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=False,
             band_gains=[0.0] * 10,
@@ -1010,10 +1010,10 @@ BUILTIN_PRESETS = {
     'aggressive_denoise': Preset(
         name="Aggressive Denoise",
         description="Maximum noise reduction with tight gate",
-        version="1.7.13",
+        version="1.7.14",
         gate=GateSettings(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=False, gate_margin_db=10.0),
+                         auto_threshold_enabled=True, gate_margin_db=10.0),
         eq=EQSettings(
             enabled=True,
             band_gains=[-6.0, -3.0, 0.0, 0.0, 1.0, 2.0, 1.0, -1.0, -3.0, -6.0],

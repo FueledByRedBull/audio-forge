@@ -312,15 +312,15 @@ impl GateControlState {
             #[cfg(feature = "vad")]
             gate_mode: GateMode::ThresholdOnly,
             #[cfg(feature = "vad")]
-            vad_threshold: 0.5,
+            vad_threshold: 0.4,
             #[cfg(feature = "vad")]
-            hold_ms: 150.0,
+            hold_ms: 200.0,
             #[cfg(feature = "vad")]
             pre_gain: 1.0,
             #[cfg(feature = "vad")]
-            auto_threshold: false,
+            auto_threshold: true,
             #[cfg(feature = "vad")]
-            margin_db: 6.0,
+            margin_db: 10.0,
         }
     }
 }
@@ -2728,7 +2728,7 @@ impl AudioProcessor {
         self.gate_control
             .lock()
             .map(|control| control.margin_db)
-            .unwrap_or(6.0)
+            .unwrap_or(10.0)
     }
 
     #[cfg(feature = "vad")]

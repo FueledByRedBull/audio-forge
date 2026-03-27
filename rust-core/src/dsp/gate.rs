@@ -388,7 +388,7 @@ impl NoiseGate {
         self.vad_auto_gate
             .as_ref()
             .map(|v| v.margin())
-            .unwrap_or(6.0)
+            .unwrap_or(10.0)
     }
 
     #[cfg(feature = "vad")]

@@ -63,5 +63,5 @@ def test_backward_compatibility_defaults():
     assert loaded.gate.vad_threshold == 0.4
     assert loaded.gate.vad_hold_time_ms == 200.0
     assert loaded.gate.vad_pre_gain == 1.0
-    assert loaded.gate.auto_threshold_enabled is False
+    assert loaded.gate.auto_threshold_enabled is True
     assert loaded.gate.gate_margin_db == 10.0

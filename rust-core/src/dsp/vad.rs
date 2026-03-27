@@ -524,7 +524,7 @@ impl VadAutoGate {
             min_threshold: -80.0, // Lowered from -50.0 to allow proper adaptation in quiet rooms
             max_threshold: -10.0,
             manual_threshold_db: -40.0,
-            auto_threshold_enabled: false, // Default to manual mode
+            auto_threshold_enabled: true, // Default to noise-floor tracking
             enabled,
             gate_mode: GateMode::ThresholdOnly,
             vad_threshold,

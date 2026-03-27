@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.14 - 2026-03-27
+
+- Fixed the VAD startup path to report a neutral probability before the first inference window instead of forcing an initial false negative, and made compressor loudness reset fail coherently instead of silently leaving stale meter history behind.
+- Switched the VAD gate experience to noise-floor-driven auto threshold by default, aligned the Rust/Python defaults, and surfaced the live noise floor plus effective threshold directly in the gate UI.
+- Kept the VAD probability threshold control active in VAD modes while auto thresholding is on, so speech sensitivity and level thresholding are no longer conflated.
+
 ## v1.7.13 - 2026-03-27
 
 - Split the latest work into a release-corrected build: Auto-EQ now applies spectral tilt removal, voiced-frame spectrum selection, SNR-aware boost caps, adjacent-band coupling limits, and bounded center-frequency nudging.

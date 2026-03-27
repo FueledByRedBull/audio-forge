@@ -7,7 +7,7 @@
 
 Low-latency Windows microphone processor with AI noise suppression, smart gating, Auto-EQ, latency calibration, and a portable desktop build.
 
-Current version: `v1.7.13`
+Current version: `v1.7.14`
 
 ## Status
 
@@ -23,6 +23,7 @@ AudioForge is a Windows-first desktop app with a Python/PyQt UI and a Rust real-
   - Threshold-only gate
   - VAD-assisted gate
   - VAD-only gate
+  - Auto threshold defaults on in VAD modes and tracks the estimated noise floor plus margin
 - 10-band parametric EQ with per-band frequency, gain, and Q
 - Auto-EQ workflow with recording, spectral analysis, bounded center-frequency nudging, and one-click apply/undo
 - Split-band de-esser with manual and auto amount control
@@ -127,6 +128,7 @@ Operational notes:
 
 - Device refresh keeps the current selection when the same device is still available.
 - Input/output stream setup prefers 48 kHz configs when available.
+- In VAD modes, auto gate threshold is the default path; the UI shows the live noise floor and effective threshold while the manual threshold remains available as fallback.
 - Runtime diagnostics expose input drops, backlog recovery, output recovery, and short-write loss separately.
 - Dropped-sample counters can be reset from the UI.
 
@@ -157,7 +159,7 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.7.13-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.7.14-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This uses LZMA2 with max compression and solid mode, which is appropriate for the PyInstaller bundle.

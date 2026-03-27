@@ -28,10 +28,18 @@ from PyQt6.QtWidgets import (
 )
 
 from ..analysis.latency_calibration import analyze_latency, generate_probe_signal, result_to_profile
+from ..config import coerce_device_identity
 from .level_meter import LevelMeter
 
 
 DEBUG = False
+
+
+def _device_name(device: object) -> str | None:
+    identity = coerce_device_identity(device)
+    if identity is not None:
+        return identity.name
+    return device if isinstance(device, str) and device else None
 
 
 def _capture_sample_rate(owner) -> int:
@@ -254,12 +262,8 @@ class LatencyCalibrationDialog(QDialog):
             if not owner.processor.is_running():
                 input_device = getattr(owner, "input_combo", None)
                 output_device = getattr(owner, "output_combo", None)
-                selected_input = input_device.currentData() if input_device else None
-                selected_output = output_device.currentData() if output_device else None
-                if not selected_input:
-                    selected_input = None
-                if not selected_output:
-                    selected_output = None
+                selected_input = _device_name(input_device.currentData()) if input_device else None
+                selected_output = _device_name(output_device.currentData()) if output_device else None
                 owner.processor.start(selected_input, selected_output)
                 self._started_processor = True
             else:

@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 import numpy as np
 
-from ..config import TARGET_CURVES
+from ..config import TARGET_CURVES, coerce_device_identity
 from .analysis_worker import AnalysisWorker
 from .level_meter import LevelMeter
 
@@ -64,7 +64,14 @@ def _selected_device_pair(owner) -> tuple[str | None, str | None]:
     if hasattr(owner, "output_combo"):
         output_device = owner.output_combo.currentData() or None
 
-    return input_device, output_device
+    return _device_name(input_device), _device_name(output_device)
+
+
+def _device_name(device: object) -> str | None:
+    identity = coerce_device_identity(device)
+    if identity is not None:
+        return identity.name
+    return device if isinstance(device, str) and device else None
 
 
 def _device_label(device: str | None, default_label: str) -> str:

@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 from PyQt6.QtWidgets import QWidget
 
-from mic_eq.ui.calibration_dialog import CalibrationDialog
-from mic_eq.ui.latency_calibration_dialog import _capture_sample_rate
+from mic_eq.ui.calibration_dialog import CalibrationDialog, _selected_device_pair
+from mic_eq.ui.latency_calibration_dialog import _capture_sample_rate, _device_name as latency_device_name
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.config import DeviceIdentity, build_latency_profile_key, legacy_latency_profile_key
 
@@ -470,6 +470,20 @@ def test_latency_profile_key_uses_structured_device_identity():
         DeviceIdentity(name="Out B", is_default=False),
     )
     assert key != legacy_latency_profile_key("Mic A", "Out B")
+
+
+def test_calibration_dialog_selected_device_pair_returns_names():
+    owner = type("Owner", (), {})()
+    owner.input_combo = _FakeCombo([("Mic A", DeviceIdentity(name="Mic A", is_default=False))])
+    owner.output_combo = _FakeCombo([("Out B", DeviceIdentity(name="Out B", is_default=True))])
+
+    assert _selected_device_pair(owner) == ("Mic A", "Out B")
+
+
+def test_latency_dialog_device_name_coerces_identity_to_name():
+    assert latency_device_name(DeviceIdentity(name="Mic A", is_default=False)) == "Mic A"
+    assert latency_device_name("Out B") == "Out B"
+    assert latency_device_name(None) is None
 
 
 def test_update_meters_surfaces_output_recovery_and_reuses_diagnostics(qapp):

@@ -1,45 +1,52 @@
 # AudioForge
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)]()
 
-Low-latency Windows microphone processor with AI noise suppression, smart gating, Auto-EQ, latency calibration, and a portable desktop build.
+AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, latency calibration, and dynamics control.
 
 Current version: `v1.7.15`
 
+## Download
+
+The latest portable build is available on the GitHub releases page:
+
+- [AudioForge v1.7.15](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.7.15)
+- Artifact: `AudioForge-v1.7.15-win64-ultra.7z`
+- SHA-256: `73294A82FD9B73F44F629C78E03D7EE44136C38B0CCFB680E17EBBD4E7C7F439`
+
+The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
+
+## What It Does
+
+AudioForge sits between your microphone and your output/virtual routing path. It is built for voice work where reliability matters: streaming, calls, recording chains, monitoring, and calibration-heavy setups.
+
+User-facing tools:
+
+- AI noise suppression with RNNoise and optional DeepFilterNet backends.
+- Smart noise gate with threshold-only, VAD-assisted, and VAD-only modes.
+- Auto thresholding that tracks the live noise floor in VAD modes.
+- 10-band parametric EQ with gain, Q, and per-band center frequencies.
+- Auto-EQ calibration that records your voice, analyzes the spectrum, and applies a bounded correction.
+- Split-band de-esser, compressor, auto makeup gain, and lookahead limiter.
+- Per device-pair latency calibration profiles.
+- Raw monitor and bypass paths for troubleshooting.
+
+Operational tools:
+
+- Input/output meters and runtime diagnostics.
+- Dropped-sample, backlog, callback-stall, and recovery counters.
+- Stream restart/backoff handling.
+- Device refresh that preserves current selections when possible.
+- Portable PyInstaller packaging with bundled runtime assets.
+
 ## Status
 
-AudioForge is a Windows-first desktop app with a Python/PyQt UI and a Rust real-time audio core. The repository is set up for local source builds and portable `dist/AudioForge` packaging.
+AudioForge is Windows-first. The repository supports source builds, local development, and portable `dist/AudioForge` packaging. It is not currently shipped as a signed installer.
 
-## Features
-
-- Noise suppression backends:
-  - RNNoise
-  - DeepFilterNet LL
-  - DeepFilterNet Standard
-- Noise gate modes:
-  - Threshold-only gate
-  - VAD-assisted gate
-  - VAD-only gate
-  - Auto threshold defaults on in VAD modes and tracks the estimated noise floor plus margin
-- 10-band parametric EQ with per-band frequency, gain, and Q
-- Auto-EQ workflow with recording, spectral analysis, bounded center-frequency nudging, and one-click apply/undo
-- Split-band de-esser with manual and auto amount control
-- Compressor with soft knee, adaptive release, and optional auto makeup
-- Lookahead limiter
-- Raw monitor mode for direct diagnostic monitoring
-- Real-time health and diagnostics:
-  - input/output meters
-  - callback stall detection
-  - dropped-sample counters
-  - backlog and recovery counters
-  - backend status/error reporting
-- Callback watchdog with stream restart/backoff handling
-- Device persistence and refresh that preserves the current selection when possible
-- Per device-pair latency calibration profiles with migration from older saved keys
-- Portable PyInstaller build with bundled Python runtime and model assets
+DeepFilterNet support is intentionally opt-in at runtime. Use `AUDIOFORGE_ENABLE_DEEPFILTER=1` when you want to exercise the DeepFilter backend; RNNoise remains the default safe path.
 
 ## DSP Chain
 
@@ -60,20 +67,12 @@ Latency labels in the UI describe suppressor/DSP behavior, not full round-trip l
 ## Requirements
 
 - Windows 10/11
-- Python 3.9+
+- Python 3.10+
 - Rust 1.70+
 - `maturin`
-- A virtual environment in `.venv` is assumed by the packaging script
+- A virtual environment in `.venv` is assumed by the packaging script.
 
-## Repository Layout
-
-- `python/mic_eq`: PyQt application, analysis code, persistence, packaging entrypoints
-- `rust-core`: Rust audio engine exposed through PyO3
-- `python/tests`: Python test suite
-- `dist/AudioForge`: packaged portable application output
-- `build_exe.ps1`: PyInstaller packaging script
-
-## Build And Run From Source
+## Quick Start From Source
 
 ```powershell
 git clone https://github.com/FueledByRedBull/audio-forge.git
@@ -93,7 +92,22 @@ You can also use the installed console entrypoint:
 .\.venv\Scripts\mic-eq.exe
 ```
 
-## Runtime Assets
+## Using The App
+
+1. Select input and output devices.
+2. Start processing.
+3. Choose a suppressor backend and gate mode.
+4. Tune EQ/dynamics manually or run Auto-EQ.
+5. Run latency calibration if the current device route needs compensation.
+
+Useful behavior to know:
+
+- Device refresh keeps the current selection when the same device is still available.
+- Input/output stream setup prefers 48 kHz configs when available.
+- In VAD modes, auto threshold is the default path; the UI shows live noise floor and effective threshold.
+- Diagnostics separate input drops, backlog recovery, output recovery, and short-write loss.
+
+## Development Assets
 
 Create `models/` in the repo root if you want local runtime discovery during development:
 
@@ -103,34 +117,18 @@ Create `models/` in the repo root if you want local runtime discovery during dev
 
 DeepFilter runtime library:
 
-- `df.dll` in the repo root for development runs
-- bundled under `dist/AudioForge/_internal` for portable builds
+- `df.dll` in the repo root for development runs.
+- Bundled under `dist/AudioForge/_internal` for portable builds.
 
 Environment variables:
 
+- `AUDIOFORGE_ENABLE_DEEPFILTER=1`
+- `AUDIOFORGE_ALLOW_EXTERNAL_DF=1`
 - `DEEPFILTER_MODEL_PATH`
 - `DEEPFILTER_LIB_PATH`
-- `AUDIOFORGE_ALLOW_EXTERNAL_DF=1`
-- `AUDIOFORGE_ENABLE_DEEPFILTER`
 - `VAD_MODEL_PATH`
 
 Packaged builds prefer bundled DeepFilter assets. `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` should only be used when you intentionally want a packaged build to resolve `df.dll` externally.
-
-## Using The App
-
-1. Select the input and output devices.
-2. Start processing.
-3. Choose a suppressor backend and gate mode.
-4. Tune EQ/dynamics manually or run Auto-EQ from the calibration flow.
-5. If the route needs compensation, run latency calibration for the current device pair.
-
-Operational notes:
-
-- Device refresh keeps the current selection when the same device is still available.
-- Input/output stream setup prefers 48 kHz configs when available.
-- In VAD modes, auto gate threshold is the default path; the UI shows the live noise floor and effective threshold while the manual threshold remains available as fallback.
-- Runtime diagnostics expose input drops, backlog recovery, output recovery, and short-write loss separately.
-- Dropped-sample counters can be reset from the UI.
 
 ## Build Portable EXE
 
@@ -143,15 +141,16 @@ powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 
 Packaging script behavior:
 
-- uses the locally built `python/mic_eq/mic_eq_core*.pyd`
-- bundles the Python runtime with PyInstaller
-- prunes the final bundle with `python/tools/prune_bundle.py`
-- keeps the entire application self-contained in `dist/AudioForge`
+- Uses the locally built `python/mic_eq/mic_eq_core*.pyd`.
+- Validates required full-feature runtime assets by default.
+- Bundles the Python runtime with PyInstaller.
+- Prunes the final bundle with `python/tools/prune_bundle.py`.
+- Keeps the application self-contained in `dist/AudioForge`.
 
 Portable output:
 
 - `dist/AudioForge/AudioForge.exe`
-- bundled assets and runtime files under `dist/AudioForge/_internal`
+- Bundled assets and runtime files under `dist/AudioForge/_internal`
 
 ## Create Release Archive
 
@@ -166,34 +165,41 @@ This uses LZMA2 with max compression and solid mode, which is appropriate for th
 
 ## Testing
 
-Rust:
+CI-equivalent checks:
 
 ```powershell
-cd rust-core
+.\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
+.\.venv\Scripts\python.exe -m pyright
+.\.venv\Scripts\python.exe -m pytest python/tests -q
+.\.venv\Scripts\python.exe python/tools/check_versions.py
+.\.venv\Scripts\python.exe python/tools/package_smoke.py --source-only
+cargo fmt --check
 cargo test -p mic_eq_core --tests
+cargo clippy -p mic_eq_core --all-targets -- -D warnings
 ```
 
-Python:
+Packaged-build smoke check after `build_exe.ps1`:
 
 ```powershell
-cd ..
-.\.venv\Scripts\python.exe -m pytest python/tests -v
+.\.venv\Scripts\python.exe python/tools/package_smoke.py
 ```
 
-Targeted checks used frequently during development:
-
-```powershell
-.\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests
-.\.venv\Scripts\python.exe -m pytest python/tests/test_auto_eq.py python/tests/test_spectrum.py
-.\.venv\Scripts\python.exe -m pytest python/tests/test_config_v17.py python/tests/test_ui_sample_rate_and_diagnostics.py
-```
-
-Headless checks:
+Headless runtime checks:
 
 ```powershell
 .\.venv\Scripts\python.exe python/tools/health_check.py --duration 1800
 .\.venv\Scripts\python.exe python/tools/self_test.py
 ```
+
+## Repository Layout
+
+- `python/mic_eq`: PyQt application, analysis code, persistence, packaging entrypoints.
+- `rust-core`: Rust audio engine exposed through PyO3.
+- `python/tests`: Python test suite.
+- `python/tools`: health, package, and release validation helpers.
+- `.github/workflows/ci.yml`: Windows CI for Python and Rust checks.
+- `build_exe.ps1`: PyInstaller packaging script.
+- `AudioForge.spec`: canonical portable package definition.
 
 ## License
 

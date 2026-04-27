@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import math
 import os
 import sys
 import tempfile
@@ -10,6 +11,7 @@ from pathlib import Path
 
 CONFIG_PATH = Path(__file__).parent.parent / "mic_eq" / "config.py"
 config_spec = importlib.util.spec_from_file_location("mic_eq.config", CONFIG_PATH)
+assert config_spec is not None and config_spec.loader is not None
 config = importlib.util.module_from_spec(config_spec)
 sys.modules["mic_eq.config"] = config
 config_spec.loader.exec_module(config)
@@ -65,7 +67,7 @@ def test_preset_migration_to_v17_adds_deesser_defaults():
 
     preset = Preset.from_dict(old_data)
 
-    assert preset.version == "1.7.14"
+    assert preset.version == "1.7.15"
     assert preset.deesser.enabled is False
     assert preset.deesser.auto_enabled is True
     assert preset.deesser.auto_amount == 0.5
@@ -187,3 +189,34 @@ def test_load_preset_allows_imports_root():
                 os.environ.pop("APPDATA", None)
             else:
                 os.environ["APPDATA"] = old_appdata
+
+
+def test_preset_rejects_non_finite_numeric_values():
+    data = Preset(name="Bad").to_dict()
+    data["eq"]["band_gains"] = [math.nan] * 10
+
+    try:
+        Preset.from_dict(data)
+        assert False, "Expected non-finite EQ gain to be rejected"
+    except config.PresetValidationError as e:
+        assert "finite number" in str(e)
+
+
+def test_preset_rejects_string_booleans():
+    data = Preset(name="Bad").to_dict()
+    data["eq"]["enabled"] = "false"
+
+    try:
+        Preset.from_dict(data)
+        assert False, "Expected string boolean to be rejected"
+    except config.PresetValidationError as e:
+        assert "must be true or false" in str(e)
+
+
+def test_eq_band_frequencies_round_trip():
+    data = Preset(name="Auto EQ").to_dict()
+    data["eq"]["band_freqs"] = [72.0, 144.0, 300.0, 650.0, 1300.0, 2600.0, 5100.0, 8200.0, 11800.0, 15500.0]
+
+    preset = Preset.from_dict(data)
+
+    assert preset.eq.band_freqs == data["eq"]["band_freqs"]

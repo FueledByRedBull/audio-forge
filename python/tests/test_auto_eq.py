@@ -12,6 +12,7 @@ import numpy as np
 # Load modules directly to avoid importing mic_eq package init side effects.
 CONFIG_PATH = Path(__file__).parent.parent / "mic_eq" / "config.py"
 config_spec = importlib.util.spec_from_file_location("mic_eq.config", CONFIG_PATH)
+assert config_spec is not None and config_spec.loader is not None
 config = importlib.util.module_from_spec(config_spec)
 sys.modules["mic_eq.config"] = config
 config_spec.loader.exec_module(config)
@@ -20,6 +21,7 @@ AUTO_EQ_PATH = Path(__file__).parent.parent / "mic_eq" / "analysis" / "auto_eq.p
 auto_eq_spec = importlib.util.spec_from_file_location(
     "mic_eq.analysis.auto_eq", AUTO_EQ_PATH
 )
+assert auto_eq_spec is not None and auto_eq_spec.loader is not None
 auto_eq = importlib.util.module_from_spec(auto_eq_spec)
 auto_eq_spec.loader.exec_module(auto_eq)
 

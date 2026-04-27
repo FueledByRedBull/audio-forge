@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.15 - 2026-04-27
+
+- Hardened realtime audio against suppressor lock contention, dirty-control update loss, non-finite DSP parameters, post-retime limiter overshoot, and input callback allocations.
+- Tightened preset/config validation for non-finite numbers, strict booleans, atomic writes, external preset imports, Auto-EQ center-frequency persistence, and calibration-owned processor cleanup.
+- Strengthened release quality gates with DirectML packaging, full-feature asset checks, package smoke tests, version checks, Pyright/Ruff/Clippy/pytest CI, and a valid optimized Windows icon.
+
 ## v1.7.14 - 2026-03-27
 
 - Fixed the VAD startup path to report a neutral probability before the first inference window instead of forcing an initial false negative, and made compressor loudness reset fail coherently instead of silently leaving stale meter history behind.

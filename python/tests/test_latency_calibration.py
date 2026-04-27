@@ -9,6 +9,7 @@ import numpy as np
 
 LATENCY_PATH = Path(__file__).parent.parent / "mic_eq" / "analysis" / "latency_calibration.py"
 spec = importlib.util.spec_from_file_location("mic_eq.analysis.latency_calibration", LATENCY_PATH)
+assert spec is not None and spec.loader is not None
 lat = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = lat
 spec.loader.exec_module(lat)

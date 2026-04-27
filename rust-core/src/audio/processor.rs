@@ -50,6 +50,65 @@ const EQ_Q_MIN: f64 = 0.1;
 const EQ_Q_MAX: f64 = 10.0;
 const EQ_FREQ_MIN_HZ: f64 = 20.0;
 const EQ_NYQUIST_MARGIN_HZ: f64 = 1.0;
+const GATE_THRESHOLD_MIN_DB: f64 = -80.0;
+const GATE_THRESHOLD_MAX_DB: f64 = -10.0;
+const GATE_ATTACK_MIN_MS: f64 = 0.1;
+const GATE_ATTACK_MAX_MS: f64 = 100.0;
+const GATE_RELEASE_MIN_MS: f64 = 10.0;
+const GATE_RELEASE_MAX_MS: f64 = 1000.0;
+#[cfg(feature = "vad")]
+const VAD_THRESHOLD_MIN: f32 = 0.3;
+#[cfg(feature = "vad")]
+const VAD_THRESHOLD_MAX: f32 = 0.7;
+#[cfg(feature = "vad")]
+const VAD_HOLD_MIN_MS: f32 = 0.0;
+#[cfg(feature = "vad")]
+const VAD_HOLD_MAX_MS: f32 = 500.0;
+#[cfg(feature = "vad")]
+const VAD_PRE_GAIN_MIN: f32 = 1.0;
+#[cfg(feature = "vad")]
+const VAD_PRE_GAIN_MAX: f32 = 10.0;
+#[cfg(feature = "vad")]
+const GATE_MARGIN_MIN_DB: f32 = 0.0;
+#[cfg(feature = "vad")]
+const GATE_MARGIN_MAX_DB: f32 = 20.0;
+const RNNOISE_STRENGTH_MIN: f32 = 0.0;
+const RNNOISE_STRENGTH_MAX: f32 = 1.0;
+const DEESSER_AUTO_AMOUNT_MIN: f64 = 0.0;
+const DEESSER_AUTO_AMOUNT_MAX: f64 = 1.0;
+const DEESSER_LOW_CUT_MIN_HZ: f64 = 2000.0;
+const DEESSER_LOW_CUT_MAX_HZ: f64 = 12000.0;
+const DEESSER_HIGH_CUT_MIN_HZ: f64 = 2200.0;
+const DEESSER_HIGH_CUT_MAX_HZ: f64 = 16000.0;
+const DEESSER_MIN_BANDWIDTH_HZ: f64 = 200.0;
+const DEESSER_THRESHOLD_MIN_DB: f64 = -60.0;
+const DEESSER_THRESHOLD_MAX_DB: f64 = -6.0;
+const DEESSER_RATIO_MIN: f64 = 1.0;
+const DEESSER_RATIO_MAX: f64 = 20.0;
+const DEESSER_ATTACK_MIN_MS: f64 = 0.1;
+const DEESSER_ATTACK_MAX_MS: f64 = 50.0;
+const DEESSER_RELEASE_MIN_MS: f64 = 5.0;
+const DEESSER_RELEASE_MAX_MS: f64 = 500.0;
+const DEESSER_MAX_REDUCTION_MIN_DB: f64 = 0.0;
+const DEESSER_MAX_REDUCTION_MAX_DB: f64 = 24.0;
+const COMPRESSOR_THRESHOLD_MIN_DB: f64 = -60.0;
+const COMPRESSOR_THRESHOLD_MAX_DB: f64 = 0.0;
+const COMPRESSOR_RATIO_MIN: f64 = 1.0;
+const COMPRESSOR_RATIO_MAX: f64 = 20.0;
+const COMPRESSOR_ATTACK_MIN_MS: f64 = 0.1;
+const COMPRESSOR_ATTACK_MAX_MS: f64 = 100.0;
+const COMPRESSOR_RELEASE_MIN_MS: f64 = 10.0;
+const COMPRESSOR_RELEASE_MAX_MS: f64 = 1000.0;
+const COMPRESSOR_BASE_RELEASE_MIN_MS: f64 = 20.0;
+const COMPRESSOR_BASE_RELEASE_MAX_MS: f64 = 200.0;
+const COMPRESSOR_MAKEUP_MIN_DB: f64 = 0.0;
+const COMPRESSOR_MAKEUP_MAX_DB: f64 = 24.0;
+const COMPRESSOR_TARGET_LUFS_MIN: f64 = -24.0;
+const COMPRESSOR_TARGET_LUFS_MAX: f64 = -12.0;
+const LIMITER_CEILING_MIN_DB: f64 = -12.0;
+const LIMITER_CEILING_MAX_DB: f64 = 0.0;
+const LIMITER_RELEASE_MIN_MS: f64 = 10.0;
+const LIMITER_RELEASE_MAX_MS: f64 = 500.0;
 
 #[cfg(debug_assertions)]
 macro_rules! processor_debug_log {
@@ -150,6 +209,18 @@ fn sanitize_non_finite_inplace(buffer: &mut [f32]) {
 }
 
 #[inline]
+fn sanitize_and_clamp_output_inplace(buffer: &mut [f32], ceiling_linear: f32) {
+    let ceiling = ceiling_linear.clamp(0.0, 1.0);
+    for sample in buffer.iter_mut() {
+        if !sample.is_finite() {
+            *sample = 0.0;
+        } else {
+            *sample = sample.clamp(-ceiling, ceiling);
+        }
+    }
+}
+
+#[inline]
 fn sanitize_and_clamp_input_inplace(
     buffer: &mut [f32],
     clip_event_count: &AtomicU64,
@@ -240,6 +311,16 @@ fn release_ms_to_tenth_ms(release_ms: f64) -> u64 {
         return 0;
     }
     (release_ms.max(0.0) * 10.0).round() as u64
+}
+
+#[inline]
+fn clamp_control_value(value: f64, min_value: f64, max_value: f64) -> Option<f64> {
+    value.is_finite().then(|| value.clamp(min_value, max_value))
+}
+
+#[inline]
+fn clamp_control_value_f32(value: f32, min_value: f32, max_value: f32) -> Option<f32> {
+    value.is_finite().then(|| value.clamp(min_value, max_value))
 }
 
 fn lock_rt<'a, T>(
@@ -1383,6 +1464,8 @@ impl AudioProcessor {
             let mut compressor_rt = Compressor::default_voice(sample_rate_for_latency as f64);
             let mut deesser_rt = DeEsser::new(sample_rate_for_latency as f64);
             let mut limiter_rt = Limiter::default_settings(sample_rate_for_latency as f64);
+            let output_ceiling_linear =
+                Cell::new(10.0_f32.powf(limiter_rt.ceiling_db() as f32 / 20.0));
             let limiter_lookahead_samples =
                 Arc::new(AtomicU64::new(limiter_rt.lookahead_samples() as u64));
             let limiter_lookahead_samples_for_chain = Arc::clone(&limiter_lookahead_samples);
@@ -1418,6 +1501,7 @@ impl AudioProcessor {
             }
             if let Ok(control) = limiter_control.lock() {
                 apply_limiter_control(&mut limiter_rt, &control);
+                output_ceiling_linear.set(10.0_f32.powf(limiter_rt.ceiling_db() as f32 / 20.0));
             }
             let mut output_resampled_scratch: Vec<f32> = Vec::with_capacity(8192);
             let mut output_queue_control_scratch: Vec<f32> = Vec::with_capacity(8192);
@@ -1486,31 +1570,37 @@ impl AudioProcessor {
 
             macro_rules! apply_downstream_chain_rt {
                 ($buffer:expr) => {{
-                    if deesser_dirty.swap(false, Ordering::AcqRel) {
+                    if deesser_dirty.load(Ordering::Acquire) {
                         if let Some(control) =
                             lock_rt(deesser_control.as_ref(), &lock_contention_count)
                         {
                             apply_deesser_control(&mut deesser_rt, &control);
+                            deesser_dirty.store(false, Ordering::Release);
                         }
                     }
-                    if eq_dirty.swap(false, Ordering::AcqRel) {
+                    if eq_dirty.load(Ordering::Acquire) {
                         let eq_snapshot = eq_control.snapshot();
                         apply_eq_control(&mut eq_rt, &eq_snapshot);
+                        eq_dirty.store(false, Ordering::Release);
                     }
-                    if compressor_dirty.swap(false, Ordering::AcqRel) {
+                    if compressor_dirty.load(Ordering::Acquire) {
                         if let Some(control) =
                             lock_rt(compressor_control.as_ref(), &lock_contention_count)
                         {
                             apply_compressor_control(&mut compressor_rt, &control);
+                            compressor_dirty.store(false, Ordering::Release);
                         }
                     }
-                    if limiter_dirty.swap(false, Ordering::AcqRel) {
+                    if limiter_dirty.load(Ordering::Acquire) {
                         if let Some(control) =
                             lock_rt(limiter_control.as_ref(), &lock_contention_count)
                         {
                             apply_limiter_control(&mut limiter_rt, &control);
+                            output_ceiling_linear
+                                .set(10.0_f32.powf(limiter_rt.ceiling_db() as f32 / 20.0));
                             limiter_lookahead_samples_for_chain
                                 .store(limiter_rt.lookahead_samples() as u64, Ordering::Relaxed);
+                            limiter_dirty.store(false, Ordering::Release);
                         }
                     }
 
@@ -1588,6 +1678,7 @@ impl AudioProcessor {
                 duration_samples(output_sample_rate_for_latency, 6).max(1);
             let discontinuity_fade_remaining = Cell::new(0usize);
             let mut discontinuity_fade_scratch: Vec<f32> = Vec::with_capacity(8192);
+            let mut output_safety_scratch: Vec<f32> = Vec::with_capacity(8192);
             let mut output_drift_error_ema = 0.0_f32;
             let mut write_output = |samples: &[f32], clean_path: bool| {
                 let write_source = if let Some(output_resampler) = output_resampler.as_mut() {
@@ -1708,7 +1799,16 @@ impl AudioProcessor {
                     let _below_low_target = fill < output_target_low_samples;
                 }
 
-                let mut pending_slice = write_slice;
+                output_safety_scratch.clear();
+                output_safety_scratch.extend_from_slice(write_slice);
+                let output_ceiling = if limiter_enabled.load(Ordering::Acquire) {
+                    output_ceiling_linear.get()
+                } else {
+                    1.0
+                };
+                sanitize_and_clamp_output_inplace(&mut output_safety_scratch, output_ceiling);
+
+                let mut pending_slice = output_safety_scratch.as_slice();
                 if pending_slice.len() > free {
                     let dropped = pending_slice.len() - free;
                     output_short_write_dropped_samples.fetch_add(dropped as u64, Ordering::Relaxed);
@@ -2040,7 +2140,7 @@ impl AudioProcessor {
                             } else {
                                 // Stage 1: Noise Gate
                                 if gate_enabled.load(Ordering::Acquire) {
-                                    if gate_dirty.swap(false, Ordering::AcqRel) {
+                                    if gate_dirty.load(Ordering::Acquire) {
                                         if let Some(control) =
                                             lock_rt(gate_control.as_ref(), &lock_contention_count)
                                         {
@@ -2048,6 +2148,7 @@ impl AudioProcessor {
                                                 lock_rt(gate.as_ref(), &lock_contention_count)
                                             {
                                                 apply_gate_control(&mut g, &control);
+                                                gate_dirty.store(false, Ordering::Release);
                                             }
                                         }
                                     }
@@ -2077,7 +2178,7 @@ impl AudioProcessor {
                                 // Stage 2: Noise Suppression (RNNoise or DeepFilterNet)
                                 let use_suppressor = suppressor_enabled.load(Ordering::Acquire);
                                 if use_suppressor {
-                                    if suppressor_dirty.swap(false, Ordering::AcqRel) {
+                                    if suppressor_dirty.load(Ordering::Acquire) {
                                         if let Some(control) = lock_rt(
                                             suppressor_control.as_ref(),
                                             &lock_contention_count,
@@ -2098,6 +2199,7 @@ impl AudioProcessor {
                                                     noise_backend_error.as_ref(),
                                                     &s,
                                                 );
+                                                suppressor_dirty.store(false, Ordering::Release);
                                             }
                                         }
                                     }
@@ -2260,6 +2362,28 @@ impl AudioProcessor {
                                         }
 
                                         // Record DSP processing time
+                                        let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
+                                        let prev_smoothed =
+                                            dsp_time_smoothed_us.load(Ordering::Relaxed);
+                                        let smoothed = smooth_dsp_time(raw_dsp_us, prev_smoothed);
+                                        dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
+                                        dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
+                                    } else {
+                                        suppressor_buffer_len.store(0, Ordering::Relaxed);
+                                        suppressor_latency_samples.store(0, Ordering::Relaxed);
+                                        smoothed_buffer_len.store(0, Ordering::Relaxed);
+
+                                        apply_downstream_chain_rt!(buffer);
+
+                                        measure_levels(
+                                            buffer,
+                                            &mut output_rms_acc,
+                                            &output_peak,
+                                            &output_rms,
+                                        );
+
+                                        write_output(buffer, false);
+
                                         let raw_dsp_us = dsp_start.elapsed().as_micros() as u64;
                                         let prev_smoothed =
                                             dsp_time_smoothed_us.load(Ordering::Relaxed);
@@ -2616,6 +2740,11 @@ impl AudioProcessor {
 
     /// Set noise gate threshold
     pub fn set_gate_threshold(&self, threshold_db: f64) {
+        let Some(threshold_db) =
+            clamp_control_value(threshold_db, GATE_THRESHOLD_MIN_DB, GATE_THRESHOLD_MAX_DB)
+        else {
+            return;
+        };
         if let Ok(mut control) = self.gate_control.lock() {
             control.threshold_db = threshold_db;
         }
@@ -2624,6 +2753,11 @@ impl AudioProcessor {
 
     /// Set noise gate attack time
     pub fn set_gate_attack(&self, attack_ms: f64) {
+        let Some(attack_ms) =
+            clamp_control_value(attack_ms, GATE_ATTACK_MIN_MS, GATE_ATTACK_MAX_MS)
+        else {
+            return;
+        };
         if let Ok(mut control) = self.gate_control.lock() {
             control.attack_ms = attack_ms;
         }
@@ -2632,6 +2766,11 @@ impl AudioProcessor {
 
     /// Set noise gate release time
     pub fn set_gate_release(&self, release_ms: f64) {
+        let Some(release_ms) =
+            clamp_control_value(release_ms, GATE_RELEASE_MIN_MS, GATE_RELEASE_MAX_MS)
+        else {
+            return;
+        };
         if let Ok(mut control) = self.gate_control.lock() {
             control.release_ms = release_ms;
         }
@@ -2676,6 +2815,11 @@ impl AudioProcessor {
     #[cfg(feature = "vad")]
     /// Set VAD probability threshold (0.0-1.0)
     pub fn set_vad_threshold(&self, threshold: f32) {
+        let Some(threshold) =
+            clamp_control_value_f32(threshold, VAD_THRESHOLD_MIN, VAD_THRESHOLD_MAX)
+        else {
+            return;
+        };
         if let Ok(mut control) = self.gate_control.lock() {
             control.vad_threshold = threshold;
         }
@@ -2685,6 +2829,10 @@ impl AudioProcessor {
     #[cfg(feature = "vad")]
     /// Set VAD hold time in milliseconds
     pub fn set_vad_hold_time(&self, hold_ms: f32) {
+        let Some(hold_ms) = clamp_control_value_f32(hold_ms, VAD_HOLD_MIN_MS, VAD_HOLD_MAX_MS)
+        else {
+            return;
+        };
         if let Ok(mut control) = self.gate_control.lock() {
             control.hold_ms = hold_ms;
         }
@@ -2696,6 +2844,9 @@ impl AudioProcessor {
     /// Default is 1.0 (no gain). Values > 1.0 boost the signal.
     /// This helps with quiet microphones where VAD can't detect speech.
     pub fn set_vad_pre_gain(&self, gain: f32) {
+        let Some(gain) = clamp_control_value_f32(gain, VAD_PRE_GAIN_MIN, VAD_PRE_GAIN_MAX) else {
+            return;
+        };
         if let Ok(mut control) = self.gate_control.lock() {
             control.pre_gain = gain;
         }
@@ -2723,6 +2874,11 @@ impl AudioProcessor {
     #[cfg(feature = "vad")]
     /// Set margin above noise floor for auto-threshold (in dB)
     pub fn set_gate_margin(&self, margin_db: f32) {
+        let Some(margin_db) =
+            clamp_control_value_f32(margin_db, GATE_MARGIN_MIN_DB, GATE_MARGIN_MAX_DB)
+        else {
+            return;
+        };
         if let Ok(mut control) = self.gate_control.lock() {
             control.margin_db = margin_db;
         }
@@ -2775,7 +2931,11 @@ impl AudioProcessor {
 
     /// Set noise suppression wet/dry mix strength (0.0 = fully dry, 1.0 = fully wet)
     pub fn set_rnnoise_strength(&self, strength: f32) {
-        let clamped = strength.clamp(0.0, 1.0);
+        let Some(clamped) =
+            clamp_control_value_f32(strength, RNNOISE_STRENGTH_MIN, RNNOISE_STRENGTH_MAX)
+        else {
+            return;
+        };
         let bits = clamped.to_bits();
         self.suppressor_strength.store(bits, Ordering::Relaxed);
     }
@@ -3010,6 +3170,19 @@ impl AudioProcessor {
     }
 
     pub fn set_deesser_low_cut_hz(&self, hz: f64) {
+        let Some(mut hz) = clamp_control_value(hz, DEESSER_LOW_CUT_MIN_HZ, DEESSER_LOW_CUT_MAX_HZ)
+        else {
+            return;
+        };
+        let high_cut_hz = self
+            .deesser_control
+            .lock()
+            .map(|control| control.high_cut_hz)
+            .unwrap_or(9000.0);
+        if high_cut_hz <= hz + DEESSER_MIN_BANDWIDTH_HZ {
+            hz = (high_cut_hz - DEESSER_MIN_BANDWIDTH_HZ)
+                .clamp(DEESSER_LOW_CUT_MIN_HZ, DEESSER_LOW_CUT_MAX_HZ);
+        }
         if let Ok(mut d) = self.deesser.lock() {
             d.set_low_cut_hz(hz);
         }
@@ -3020,6 +3193,20 @@ impl AudioProcessor {
     }
 
     pub fn set_deesser_high_cut_hz(&self, hz: f64) {
+        let Some(mut hz) =
+            clamp_control_value(hz, DEESSER_HIGH_CUT_MIN_HZ, DEESSER_HIGH_CUT_MAX_HZ)
+        else {
+            return;
+        };
+        let low_cut_hz = self
+            .deesser_control
+            .lock()
+            .map(|control| control.low_cut_hz)
+            .unwrap_or(4000.0);
+        if hz <= low_cut_hz + DEESSER_MIN_BANDWIDTH_HZ {
+            hz = (low_cut_hz + DEESSER_MIN_BANDWIDTH_HZ)
+                .clamp(DEESSER_HIGH_CUT_MIN_HZ, DEESSER_HIGH_CUT_MAX_HZ);
+        }
         if let Ok(mut d) = self.deesser.lock() {
             d.set_high_cut_hz(hz);
         }
@@ -3030,6 +3217,13 @@ impl AudioProcessor {
     }
 
     pub fn set_deesser_threshold_db(&self, threshold_db: f64) {
+        let Some(threshold_db) = clamp_control_value(
+            threshold_db,
+            DEESSER_THRESHOLD_MIN_DB,
+            DEESSER_THRESHOLD_MAX_DB,
+        ) else {
+            return;
+        };
         if let Ok(mut d) = self.deesser.lock() {
             d.set_threshold_db(threshold_db);
         }
@@ -3040,6 +3234,9 @@ impl AudioProcessor {
     }
 
     pub fn set_deesser_ratio(&self, ratio: f64) {
+        let Some(ratio) = clamp_control_value(ratio, DEESSER_RATIO_MIN, DEESSER_RATIO_MAX) else {
+            return;
+        };
         if let Ok(mut d) = self.deesser.lock() {
             d.set_ratio(ratio);
         }
@@ -3050,6 +3247,11 @@ impl AudioProcessor {
     }
 
     pub fn set_deesser_attack_ms(&self, attack_ms: f64) {
+        let Some(attack_ms) =
+            clamp_control_value(attack_ms, DEESSER_ATTACK_MIN_MS, DEESSER_ATTACK_MAX_MS)
+        else {
+            return;
+        };
         if let Ok(mut d) = self.deesser.lock() {
             d.set_attack_ms(attack_ms);
         }
@@ -3060,6 +3262,11 @@ impl AudioProcessor {
     }
 
     pub fn set_deesser_release_ms(&self, release_ms: f64) {
+        let Some(release_ms) =
+            clamp_control_value(release_ms, DEESSER_RELEASE_MIN_MS, DEESSER_RELEASE_MAX_MS)
+        else {
+            return;
+        };
         if let Ok(mut d) = self.deesser.lock() {
             d.set_release_ms(release_ms);
         }
@@ -3070,6 +3277,13 @@ impl AudioProcessor {
     }
 
     pub fn set_deesser_max_reduction_db(&self, max_reduction_db: f64) {
+        let Some(max_reduction_db) = clamp_control_value(
+            max_reduction_db,
+            DEESSER_MAX_REDUCTION_MIN_DB,
+            DEESSER_MAX_REDUCTION_MAX_DB,
+        ) else {
+            return;
+        };
         if let Ok(mut d) = self.deesser.lock() {
             d.set_max_reduction_db(max_reduction_db);
         }
@@ -3098,6 +3312,11 @@ impl AudioProcessor {
     }
 
     pub fn set_deesser_auto_amount(&self, amount: f64) {
+        let Some(amount) =
+            clamp_control_value(amount, DEESSER_AUTO_AMOUNT_MIN, DEESSER_AUTO_AMOUNT_MAX)
+        else {
+            return;
+        };
         if let Ok(mut d) = self.deesser.lock() {
             d.set_auto_amount(amount);
         }
@@ -3180,6 +3399,13 @@ impl AudioProcessor {
 
     /// Set compressor threshold in dB
     pub fn set_compressor_threshold(&self, threshold_db: f64) {
+        let Some(threshold_db) = clamp_control_value(
+            threshold_db,
+            COMPRESSOR_THRESHOLD_MIN_DB,
+            COMPRESSOR_THRESHOLD_MAX_DB,
+        ) else {
+            return;
+        };
         if let Ok(mut c) = self.compressor.lock() {
             c.set_threshold(threshold_db);
         }
@@ -3191,6 +3417,10 @@ impl AudioProcessor {
 
     /// Set compressor ratio
     pub fn set_compressor_ratio(&self, ratio: f64) {
+        let Some(ratio) = clamp_control_value(ratio, COMPRESSOR_RATIO_MIN, COMPRESSOR_RATIO_MAX)
+        else {
+            return;
+        };
         if let Ok(mut c) = self.compressor.lock() {
             c.set_ratio(ratio);
         }
@@ -3202,6 +3432,13 @@ impl AudioProcessor {
 
     /// Set compressor attack time in ms
     pub fn set_compressor_attack(&self, attack_ms: f64) {
+        let Some(attack_ms) = clamp_control_value(
+            attack_ms,
+            COMPRESSOR_ATTACK_MIN_MS,
+            COMPRESSOR_ATTACK_MAX_MS,
+        ) else {
+            return;
+        };
         if let Ok(mut c) = self.compressor.lock() {
             c.set_attack_time(attack_ms);
         }
@@ -3217,6 +3454,13 @@ impl AudioProcessor {
     /// Use set_compressor_adaptive_release(false) to disable adaptive mode and
     /// use set_compressor_base_release() to set the base release time directly.
     pub fn set_compressor_release(&self, release_ms: f64) {
+        let Some(release_ms) = clamp_control_value(
+            release_ms,
+            COMPRESSOR_RELEASE_MIN_MS,
+            COMPRESSOR_RELEASE_MAX_MS,
+        ) else {
+            return;
+        };
         if let Ok(mut c) = self.compressor.lock() {
             // Update base release time regardless of adaptive mode
             c.set_base_release_time(release_ms);
@@ -3251,6 +3495,13 @@ impl AudioProcessor {
 
     /// Set compressor makeup gain in dB
     pub fn set_compressor_makeup_gain(&self, makeup_gain_db: f64) {
+        let Some(makeup_gain_db) = clamp_control_value(
+            makeup_gain_db,
+            COMPRESSOR_MAKEUP_MIN_DB,
+            COMPRESSOR_MAKEUP_MAX_DB,
+        ) else {
+            return;
+        };
         if let Ok(mut c) = self.compressor.lock() {
             c.set_makeup_gain(makeup_gain_db);
         }
@@ -3279,6 +3530,13 @@ impl AudioProcessor {
     }
 
     pub fn set_compressor_base_release(&self, release_ms: f64) {
+        let Some(release_ms) = clamp_control_value(
+            release_ms,
+            COMPRESSOR_BASE_RELEASE_MIN_MS,
+            COMPRESSOR_BASE_RELEASE_MAX_MS,
+        ) else {
+            return;
+        };
         if let Ok(mut c) = self.compressor.lock() {
             c.set_base_release_time(release_ms);
         }
@@ -3317,6 +3575,11 @@ impl AudioProcessor {
 
     /// Set limiter ceiling in dB
     pub fn set_limiter_ceiling(&self, ceiling_db: f64) {
+        let Some(ceiling_db) =
+            clamp_control_value(ceiling_db, LIMITER_CEILING_MIN_DB, LIMITER_CEILING_MAX_DB)
+        else {
+            return;
+        };
         if let Ok(mut l) = self.limiter.lock() {
             l.set_ceiling(ceiling_db);
         }
@@ -3328,6 +3591,11 @@ impl AudioProcessor {
 
     /// Set limiter release time in ms
     pub fn set_limiter_release(&self, release_ms: f64) {
+        let Some(release_ms) =
+            clamp_control_value(release_ms, LIMITER_RELEASE_MIN_MS, LIMITER_RELEASE_MAX_MS)
+        else {
+            return;
+        };
         if let Ok(mut l) = self.limiter.lock() {
             l.set_release_time(release_ms);
         }
@@ -3388,6 +3656,13 @@ impl AudioProcessor {
 
     /// Set compressor target LUFS
     pub fn set_compressor_target_lufs(&self, target_lufs: f64) {
+        let Some(target_lufs) = clamp_control_value(
+            target_lufs,
+            COMPRESSOR_TARGET_LUFS_MIN,
+            COMPRESSOR_TARGET_LUFS_MAX,
+        ) else {
+            return;
+        };
         if let Ok(mut c) = self.compressor.lock() {
             c.set_target_lufs(target_lufs);
         }
@@ -3813,6 +4088,13 @@ mod tests {
     }
 
     #[test]
+    fn test_final_output_sanitizer_rejects_non_finite_and_limits_ceiling() {
+        let mut buffer = vec![f32::NAN, f32::INFINITY, -f32::INFINITY, 0.75, -0.75];
+        sanitize_and_clamp_output_inplace(&mut buffer, 0.5);
+        assert_eq!(buffer, vec![0.0, 0.0, 0.0, 0.5, -0.5]);
+    }
+
+    #[test]
     fn test_retime_audio_block_can_expand_and_compress() {
         let input = [0.0_f32, 0.25, 0.5, 0.75, 1.0, 0.5];
         let mut scratch = Vec::new();
@@ -3833,6 +4115,88 @@ mod tests {
         assert!(processor.set_eq_band_frequency(0, 50_000.0).is_err());
         assert!(processor.set_eq_band_q(0, 0.01).is_err());
         assert_eq!(processor.get_eq_band_params(0).unwrap(), original);
+    }
+
+    #[test]
+    fn test_gate_control_validation_rejects_non_finite_and_clamps_ranges() {
+        let processor = AudioProcessor::new();
+        processor.set_gate_threshold(f64::NAN);
+        processor.set_gate_attack(f64::INFINITY);
+        processor.set_gate_release(f64::NEG_INFINITY);
+
+        {
+            let control = processor.gate_control.lock().unwrap();
+            assert_eq!(control.threshold_db, -40.0);
+            assert_eq!(control.attack_ms, 10.0);
+            assert_eq!(control.release_ms, 100.0);
+        }
+
+        processor.set_gate_threshold(-120.0);
+        processor.set_gate_attack(0.01);
+        processor.set_gate_release(5000.0);
+
+        let control = processor.gate_control.lock().unwrap();
+        assert_eq!(control.threshold_db, GATE_THRESHOLD_MIN_DB);
+        assert_eq!(control.attack_ms, GATE_ATTACK_MIN_MS);
+        assert_eq!(control.release_ms, GATE_RELEASE_MAX_MS);
+    }
+
+    #[test]
+    fn test_rnnoise_strength_validation_rejects_non_finite_and_clamps_ranges() {
+        let processor = AudioProcessor::new();
+        let original = processor.get_rnnoise_strength();
+
+        processor.set_rnnoise_strength(f32::NAN);
+        assert_eq!(processor.get_rnnoise_strength(), original);
+
+        processor.set_rnnoise_strength(2.0);
+        assert_eq!(processor.get_rnnoise_strength(), RNNOISE_STRENGTH_MAX);
+
+        processor.set_rnnoise_strength(-1.0);
+        assert_eq!(processor.get_rnnoise_strength(), RNNOISE_STRENGTH_MIN);
+    }
+
+    #[test]
+    fn test_deesser_control_validation_rejects_non_finite_and_clamps_ranges() {
+        let processor = AudioProcessor::new();
+
+        processor.set_deesser_low_cut_hz(f64::NAN);
+        processor.set_deesser_high_cut_hz(f64::INFINITY);
+        processor.set_deesser_threshold_db(f64::NEG_INFINITY);
+        processor.set_deesser_ratio(f64::NAN);
+        processor.set_deesser_attack_ms(f64::NAN);
+        processor.set_deesser_release_ms(f64::NAN);
+        processor.set_deesser_max_reduction_db(f64::NAN);
+        processor.set_deesser_auto_amount(f64::NAN);
+
+        assert_eq!(processor.get_deesser_low_cut_hz(), 4000.0);
+        assert_eq!(processor.get_deesser_high_cut_hz(), 9000.0);
+        assert_eq!(processor.get_deesser_threshold_db(), -28.0);
+        assert_eq!(processor.get_deesser_ratio(), 4.0);
+        assert_eq!(processor.get_deesser_max_reduction_db(), 6.0);
+        assert_eq!(processor.get_deesser_auto_amount(), 0.5);
+
+        processor.set_deesser_low_cut_hz(100.0);
+        processor.set_deesser_high_cut_hz(80_000.0);
+        processor.set_deesser_threshold_db(-100.0);
+        processor.set_deesser_ratio(100.0);
+        processor.set_deesser_attack_ms(0.01);
+        processor.set_deesser_release_ms(10_000.0);
+        processor.set_deesser_max_reduction_db(100.0);
+        processor.set_deesser_auto_amount(2.0);
+
+        assert_eq!(processor.get_deesser_low_cut_hz(), DEESSER_LOW_CUT_MIN_HZ);
+        assert_eq!(processor.get_deesser_high_cut_hz(), DEESSER_HIGH_CUT_MAX_HZ);
+        assert_eq!(
+            processor.get_deesser_threshold_db(),
+            DEESSER_THRESHOLD_MIN_DB
+        );
+        assert_eq!(processor.get_deesser_ratio(), DEESSER_RATIO_MAX);
+        assert_eq!(
+            processor.get_deesser_max_reduction_db(),
+            DEESSER_MAX_REDUCTION_MAX_DB
+        );
+        assert_eq!(processor.get_deesser_auto_amount(), DEESSER_AUTO_AMOUNT_MAX);
     }
 
     #[test]

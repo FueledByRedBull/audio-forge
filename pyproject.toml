@@ -4,14 +4,13 @@ build-backend = "maturin"
 
 [project]
 name = "mic_eq"
-version = "1.7.14"
+version = "1.7.15"
 description = "Low-latency microphone audio processor with noise suppression and equalization"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -27,7 +26,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
+    "ruff>=0.4",
+    "pyright>=1.1",
     "maturin>=1.4",
+    "pyinstaller>=6.0",
 ]
 
 [project.scripts]
@@ -51,3 +53,14 @@ norecursedirs = [
     ".pytest_cache",
     "pytest-cache-files-*",
 ]
+
+[tool.pyright]
+include = ["python/mic_eq", "python/tests"]
+exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "target",
+]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"

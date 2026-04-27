@@ -124,6 +124,7 @@ impl AudioInput {
 
         const INPUT_SCRATCH_CAPACITY: usize = 8192;
         let mut mono_scratch: Vec<f32> = vec![0.0; INPUT_SCRATCH_CAPACITY];
+        let mut channel_energy: Vec<f32> = vec![0.0; num_channels];
 
         let stream = device
             .build_input_stream(
@@ -152,7 +153,7 @@ impl AudioInput {
                             let start = frame_idx * num_channels;
                             let end = start + chunk_frames * num_channels;
                             let interleaved = &data[start..end];
-                            let mut channel_energy = vec![0.0_f32; num_channels];
+                            channel_energy.fill(0.0);
 
                             for chunk in interleaved.chunks_exact(num_channels) {
                                 for (channel_idx, sample) in chunk.iter().copied().enumerate() {

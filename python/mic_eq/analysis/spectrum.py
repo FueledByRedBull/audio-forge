@@ -97,14 +97,12 @@ def compute_voice_spectrum(audio, fs=48000, nperseg=4096):
 
     # Hamming window for voice analysis
     # Optimal trade-off between frequency resolution and sidelobe suppression
-    window = np.hamming(nperseg)
-
     # Welch's method for stable spectral estimate
     # Averages multiple FFTs with 50% overlap to reduce variance
     freqs, psd = signal.welch(
         audio_for_fft,
         fs=fs,
-        window=window,
+        window="hamming",
         nperseg=nperseg,
         noverlap=nperseg // 2  # 50% overlap
     )
@@ -253,10 +251,19 @@ def find_octave_spaced_peaks(spectrum_db, freqs, octave_fraction=3):
         >>> peaks_freqs, peaks_db = find_octave_spaced_peaks(spectrum_db, freqs)
         >>> print(f"Found {len(peaks_freqs)} peaks")
     """
+    if len(spectrum_db) != len(freqs):
+        raise ValueError("spectrum_db and freqs must have the same length")
+
     # Remove DC bin (can't take log of 0)
     valid = freqs > 0
+    if np.count_nonzero(valid) < 2:
+        return np.array([]), np.array([])
+
     log_freqs = np.log2(freqs[valid])
     spectrum_valid = spectrum_db[valid]
+    total_octaves = log_freqs.max() - log_freqs.min()
+    if not np.isfinite(total_octaves) or total_octaves <= 0:
+        return np.array([]), np.array([])
 
     # Resample to UNIFORM log-frequency grid
     # This is critical: constant distance in log-freq = constant octave fraction
@@ -271,13 +278,11 @@ def find_octave_spaced_peaks(spectrum_db, freqs, octave_fraction=3):
         spectrum_valid
     )
 
-    # Calculate total octaves in range
-    total_octaves = log_freqs.max() - log_freqs.min()
     bins_per_octave = len(log_freq_uniform) / total_octaves
 
     # Distance for 1/N octave spacing
     # Example: octave_fraction=3 -> minimum 1/3 octave between peaks
-    min_distance = int(bins_per_octave / octave_fraction)
+    min_distance = max(1, int(bins_per_octave / octave_fraction))
 
     # Find peaks in log-frequency domain
     peaks, properties = find_peaks(

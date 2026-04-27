@@ -44,6 +44,15 @@ use std::vec::Vec;
 /// DeepFilterNet frame size (same as RNNoise: 10ms at 48kHz)
 pub const DEEPFILTER_FRAME_SIZE: usize = 480;
 
+fn deepfilter_runtime_enabled() -> bool {
+    env::var("AUDIOFORGE_ENABLE_DEEPFILTER")
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            normalized == "1" || normalized == "true" || normalized == "yes"
+        })
+        .unwrap_or(false)
+}
+
 // ============================================================================
 // C FFI BINDINGS (Runtime dynamic loading)
 // ============================================================================
@@ -466,6 +475,29 @@ pub struct DeepFilterProcessor {
 
 impl DeepFilterProcessor {
     pub fn new(strength: Arc<AtomicU32>, model: DeepFilterModel) -> Self {
+        if !deepfilter_runtime_enabled() {
+            return Self {
+                df: None,
+                _lib: None,
+                input_buffer: Vec::with_capacity(DEEPFILTER_FRAME_SIZE * 2),
+                input_read_pos: 0,
+                output_buffer: Vec::with_capacity(DEEPFILTER_FRAME_SIZE * 2),
+                output_read_pos: 0,
+                enabled: true,
+                strength,
+                smoothed_strength: 1.0,
+                dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
+                frame_scratch: [0.0; DEEPFILTER_FRAME_SIZE],
+                output_frame: [0.0; DEEPFILTER_FRAME_SIZE],
+                load_error: Some(
+                    "DeepFilterNet disabled; set AUDIOFORGE_ENABLE_DEEPFILTER=1 to enable"
+                        .to_string(),
+                ),
+                model,
+                backend_failed: false,
+            };
+        }
+
         // Try to load library and initialize FFI
         let (df, lib, load_error) = match DeepFilterLib::try_load() {
             Ok(lib) => {

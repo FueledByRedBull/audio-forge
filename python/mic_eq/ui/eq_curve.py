@@ -6,7 +6,6 @@ import math
 import cmath
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPainter, QPen, QColor
-from PyQt6.QtCore import Qt
 
 
 class EQCurveWidget(QWidget):

@@ -181,6 +181,7 @@ class EQPanel(QWidget):
         super().__init__()
         self.processor = processor
         self.band_sliders = []
+        self.band_freqs_hz = list(BAND_FREQUENCIES_HZ)
         self._setup_ui()
 
     def _setup_ui(self):
@@ -287,7 +288,7 @@ class EQPanel(QWidget):
         """Update frequency response curve based on current band parameters."""
         bands = []
         for i, slider in enumerate(self.band_sliders):
-            freq = BAND_FREQUENCIES_HZ[i]
+            freq = self.band_freqs_hz[i]
             gain = slider.slider.value() / 10.0
             q = slider.q_spinbox.value()
             bands.append((freq, gain, q))
@@ -319,21 +320,25 @@ class EQPanel(QWidget):
         qs = [0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707]
         self._apply_preset(gains, qs)
 
-    def _apply_preset(self, gains: list, qs: list = None):
+    def _apply_preset(self, gains: list, qs: list | None = None, freqs: list | None = None):
         """Apply a preset with given gain and Q values."""
         if qs is None:
             qs = [1.41] * len(gains)  # Default Q if not provided
+        if freqs is None:
+            freqs = list(BAND_FREQUENCIES_HZ)
 
         # Build band parameter list
         bands = []
         for i in range(min(len(gains), len(self.band_sliders))):
-            freq = BAND_FREQUENCIES_HZ[i]
+            freq = freqs[i] if i < len(freqs) else BAND_FREQUENCIES_HZ[i]
             gain = gains[i]
             q = qs[i] if i < len(qs) else 1.41
             bands.append((freq, gain, q))
 
         # Apply to processor atomically using batch method
         self.processor.apply_eq_settings(bands)
+        if len(bands) == len(self.band_freqs_hz):
+            self.band_freqs_hz = [freq for freq, _gain, _q in bands]
 
         # Update UI sliders
         for i, (freq, gain, q) in enumerate(bands):
@@ -363,6 +368,7 @@ class EQPanel(QWidget):
 
         # Update processor atomically using new batch method from plan 20-01
         self.processor.apply_eq_settings(bands)
+        self.band_freqs_hz = [float(freq) for freq, _gain, _q in bands]
 
         # Update UI sliders without triggering valueChanged signals
         for i, (freq, gain, q) in enumerate(bands):
@@ -388,11 +394,14 @@ class EQPanel(QWidget):
         """Get current EQ settings as a dictionary."""
         gains = []
         qs = []
-        for slider in self.band_sliders:
+        freqs = []
+        for i, slider in enumerate(self.band_sliders):
+            freqs.append(self.band_freqs_hz[i])
             gains.append(slider.slider.value() / 10.0)
             qs.append(slider.q_spinbox.value())
         return {
             'enabled': self.enabled_checkbox.isChecked(),
+            'band_freqs': freqs,
             'band_gains': gains,
             'band_qs': qs,
         }
@@ -406,7 +415,7 @@ class EQPanel(QWidget):
         """
         params = []
         for i, slider in enumerate(self.band_sliders):
-            freq = BAND_FREQUENCIES_HZ[i]
+            freq = self.band_freqs_hz[i]
             gain = slider.slider.value() / 10.0
             q = slider.q_spinbox.value()
             params.append((freq, gain, q))
@@ -426,11 +435,14 @@ class EQPanel(QWidget):
         """
         gains = []
         qs = []
-        for slider in self.band_sliders:
+        freqs = []
+        for i, slider in enumerate(self.band_sliders):
+            freqs.append(self.band_freqs_hz[i])
             gains.append(slider.slider.value() / 10.0)
             qs.append(slider.q_spinbox.value())
         return {
             'enabled': self.enabled_checkbox.isChecked(),
+            'band_freqs': freqs,
             'band_gains': gains,
             'band_qs': qs,
         }
@@ -450,7 +462,8 @@ class EQPanel(QWidget):
         if 'band_gains' in state:
             gains = state['band_gains']
             qs = state.get('band_qs', [1.41] * len(gains))
-            self._apply_preset(gains, qs)
+            freqs = state.get('band_freqs', BAND_FREQUENCIES_HZ)
+            self._apply_preset(gains, qs, freqs)
 
     def set_settings(self, settings: dict) -> None:
         """Apply settings from a dictionary."""
@@ -460,4 +473,5 @@ class EQPanel(QWidget):
             gains = settings['band_gains']
             # Default to 1.41 Q for backwards compatibility with old presets
             qs = settings.get('band_qs', [1.41] * len(gains))
-            self._apply_preset(gains, qs)
+            freqs = settings.get('band_freqs', BAND_FREQUENCIES_HZ)
+            self._apply_preset(gains, qs, freqs)

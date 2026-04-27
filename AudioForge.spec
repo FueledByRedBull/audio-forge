@@ -14,6 +14,10 @@ df_dll = repo_root / "df.dll"
 if df_dll.exists():
     binaries.append((str(df_dll), "."))
 
+directml_dll = repo_root / "target" / "release" / "DirectML.dll"
+if directml_dll.exists():
+    binaries.append((str(directml_dll), "."))
+
 models_dir = repo_root / "models"
 if models_dir.exists():
     datas.append((str(models_dir), "models"))
@@ -59,7 +63,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
@@ -74,7 +78,7 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name="AudioForge",
 )

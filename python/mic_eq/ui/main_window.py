@@ -33,6 +33,7 @@ from PyQt6.QtGui import QAction, QIcon
 import os
 import sys
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -68,6 +69,7 @@ from ..config import (
     save_preset,
     load_preset,
     get_presets_dir,
+    get_preset_imports_dir,
     list_presets,
     BUILTIN_PRESETS,
     save_config,
@@ -566,9 +568,11 @@ class MainWindow(QMainWindow):
     def _setup_menubar(self):
         """Setup menu bar."""
         menubar = self.menuBar()
+        assert menubar is not None
 
         # File menu
         file_menu = menubar.addMenu("&File")
+        assert file_menu is not None
 
         start_action = QAction("&Start Processing", self)
         start_action.setShortcut("Ctrl+Return")
@@ -589,6 +593,7 @@ class MainWindow(QMainWindow):
 
         # Presets menu
         presets_menu = menubar.addMenu("&Presets")
+        assert presets_menu is not None
 
         save_preset_action = QAction("&Save Preset...", self)
         save_preset_action.setShortcut("Ctrl+S")
@@ -604,6 +609,7 @@ class MainWindow(QMainWindow):
 
         # Built-in presets submenu
         builtin_menu = presets_menu.addMenu("&Built-in Presets")
+        assert builtin_menu is not None
         for key, preset in BUILTIN_PRESETS.items():
             action = QAction(preset.name, self)
             action.setToolTip(preset.description)
@@ -619,6 +625,7 @@ class MainWindow(QMainWindow):
 
         # Help menu
         help_menu = menubar.addMenu("&Help")
+        assert help_menu is not None
 
         about_action = QAction("&About", self)
         about_action.triggered.connect(self._show_about)
@@ -635,12 +642,15 @@ class MainWindow(QMainWindow):
     def _setup_options_menu(self):
         """Setup Options menu with startup preset selector."""
         menubar = self.menuBar()
+        assert menubar is not None
 
         # Options menu
         options_menu = menubar.addMenu("&Options")
+        assert options_menu is not None
 
         # Startup Preset submenu
         startup_menu = options_menu.addMenu("Startup &Preset...")
+        assert startup_menu is not None
 
         # "Last Used" option (default, checked if startup_preset is empty)
         last_used_action = QAction("Last Used", self)
@@ -705,12 +715,13 @@ class MainWindow(QMainWindow):
         # Update checked states of all startup preset actions
         # Get the Options menu
         menubar = self.menuBar()
+        assert menubar is not None
         for action in menubar.actions():
-            if action.menu() and action.menu().title() == "&Options":
-                options_menu = action.menu()
+            options_menu = action.menu()
+            if options_menu is not None and options_menu.title() == "&Options":
                 for menu_action in options_menu.actions():
-                    if menu_action.menu() and menu_action.menu().title() == "Startup &Preset...":
-                        startup_menu = menu_action.menu()
+                    startup_menu = menu_action.menu()
+                    if startup_menu is not None and startup_menu.title() == "Startup &Preset...":
                         # Update checked state for all actions in the startup menu
                         for preset_action in startup_menu.actions():
                             if preset_action.isCheckable():
@@ -1258,7 +1269,7 @@ class MainWindow(QMainWindow):
             preset = Preset(
                 name=preset_name,
                 description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
-                version="1.7.14",
+                version="1.7.15",
                 gate=GateSettings(**self.gate_panel.get_settings()),
                 eq=EQSettings(**self.eq_panel.get_settings()),
                 rnnoise=RNNoiseSettings(
@@ -1770,7 +1781,7 @@ class MainWindow(QMainWindow):
             bypass=self.bypass_checkbox.isChecked(),
         )
 
-    def _apply_preset(self, preset: Preset, preset_key: str = None):
+    def _apply_preset(self, preset: Preset, preset_key: str | None = None):
         """Apply a preset to the UI and processor.
 
         Args:
@@ -1794,6 +1805,7 @@ class MainWindow(QMainWindow):
         # Apply EQ settings
         self.eq_panel.set_settings({
             'enabled': preset.eq.enabled,
+            'band_freqs': preset.eq.band_freqs,
             'band_gains': preset.eq.band_gains,
             'band_qs': preset.eq.band_qs,
         })
@@ -1961,11 +1973,21 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            preset = load_preset(Path(filepath))
+            requested_path = Path(filepath)
+            try:
+                preset = load_preset(requested_path)
+                preset_path = requested_path
+            except PresetValidationError:
+                imports_dir = get_preset_imports_dir()
+                imported_path = imports_dir / requested_path.name
+                if requested_path.resolve(strict=True) != imported_path.resolve(strict=False):
+                    shutil.copy2(requested_path, imported_path)
+                preset = load_preset(imported_path)
+                preset_path = imported_path
             self._apply_preset(preset)
             # Save to config for persistence
-            self.current_preset_path = Path(filepath)
-            self.config.last_preset = str(filepath)
+            self.current_preset_path = preset_path
+            self.config.last_preset = str(preset_path)
             save_config(self.config)
         except PresetValidationError as e:
             # Actionable error for validation failures

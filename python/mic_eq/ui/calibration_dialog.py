@@ -6,6 +6,7 @@ DEBUG: Added terminal logging for calibration workflow
 
 import logging
 import time
+from typing import Any
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
@@ -34,14 +35,21 @@ TOO_LOUD_DB = -3.0      # Warn if louder than this (clipping risk)
 RECORDING_DURATION = 10.0  # Seconds
 
 
-def _find_processor_owner(widget):
-    parent = widget
+def _find_processor_owner(widget: object) -> Any | None:
+    parent: Any = widget
     while parent and not hasattr(parent, "processor"):
         parent = parent.parent()
     return parent
 
 
-def _processor_sample_rate(owner) -> int:
+def _find_eq_panel_owner(widget: object) -> Any | None:
+    parent: Any = widget
+    while parent and not hasattr(parent, "eq_panel"):
+        parent = parent.parent()
+    return parent
+
+
+def _processor_sample_rate(owner: Any) -> int:
     if owner is None or not hasattr(owner, "processor"):
         raise RuntimeError("Could not find audio processor")
 
@@ -52,7 +60,7 @@ def _processor_sample_rate(owner) -> int:
     return sample_rate
 
 
-def _selected_device_pair(owner) -> tuple[str | None, str | None]:
+def _selected_device_pair(owner: Any) -> tuple[str | None, str | None]:
     if owner is None:
         return None, None
 
@@ -250,9 +258,7 @@ class CalibrationDialog(QDialog):
             print("[CALIBRATION_DLG] Applying EQ settings...")
 
         # Get parent's EQ panel (MainWindow has it)
-        parent = self.parent()
-        while parent and not hasattr(parent, 'eq_panel'):
-            parent = parent.parent()
+        parent = _find_eq_panel_owner(self.parent())
 
         if not parent:
             QMessageBox.critical(self, "Error", "Could not find EQ panel")
@@ -310,8 +316,8 @@ class CalibrationDialog(QDialog):
         if processor_was_running:
             get_active_input = getattr(parent.processor, "get_active_input_device", None)
             get_active_output = getattr(parent.processor, "get_active_output_device", None)
-            active_input = get_active_input() if callable(get_active_input) else None
-            active_output = get_active_output() if callable(get_active_output) else None
+            active_input = _device_name(get_active_input() if callable(get_active_input) else None)
+            active_output = _device_name(get_active_output() if callable(get_active_output) else None)
             if DEBUG:
                 print(
                     "[CALIBRATION_DLG] Active stream devices: "
@@ -411,9 +417,7 @@ class CalibrationDialog(QDialog):
             self.recording_timer.stop()
             return
 
-        parent = self.parent()
-        while parent and not hasattr(parent, 'processor'):
-            parent = parent.parent()
+        parent = _find_processor_owner(self.parent())
 
         if not parent:
             self._on_recording_failed("Could not find audio processor")
@@ -491,17 +495,11 @@ class CalibrationDialog(QDialog):
         self.warning_label.setText(f"Recording complete! {len(audio_data)} samples captured")
         self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
 
-        # Phase 20 TODO: Analysis engine exists but not integrated yet
-        # Phase 19 built the algorithms, Phase 20 will wire them to this dialog
         if DEBUG:
-            print("[CALIBRATION_DLG] NOTE: Analysis engine built (Phase 19) but not integrated")
-            print("[CALIBRATION_DLG] TODO: Phase 20 will integrate AnalysisWorker here")
-            print("[CALIBRATION_DLG] For now, audio captured but not analyzed")
+            print("[CALIBRATION_DLG] Audio captured; starting analysis")
 
-        # Auto-start analysis (Phase 19-20 bridge integration)
-        # This provides immediate value even before Phase 20 full UI
         if DEBUG:
-            print("[ANALYSIS] Starting analysis engine (Phase 19 bridge)...")
+            print("[ANALYSIS] Starting analysis worker")
         self._start_analysis()
 
     def _on_recording_failed(self, error: str):
@@ -512,7 +510,7 @@ class CalibrationDialog(QDialog):
         self._reset_recording_ui()
 
     def _start_analysis(self):
-        """Start analysis worker (Phase 19 bridge integration)."""
+        """Start analysis worker."""
         if self.audio_data is None:
             if DEBUG:
                 print("[ANALYSIS] No audio data to analyze")
@@ -521,9 +519,7 @@ class CalibrationDialog(QDialog):
         self._stop_analysis_worker()
 
         # Get parent's processor for sample rate
-        parent = self.parent()
-        while parent and not hasattr(parent, 'processor'):
-            parent = parent.parent()
+        parent = _find_processor_owner(self.parent())
 
         if not parent:
             if DEBUG:
@@ -567,11 +563,10 @@ class CalibrationDialog(QDialog):
         self.progress_bar.setValue(100)
         self.analysis_worker = None
 
-        # Enable apply button (will be part of Phase 20)
         self.start_button.setText("Apply EQ Settings")
         self.start_button.setEnabled(True)
         if DEBUG:
-            print("[ANALYSIS] TODO: Phase 20 will apply these settings to UI")
+            print("[ANALYSIS] EQ settings ready to apply")
 
     def _on_analysis_failed(self, error: str):
         """Handle analysis failure."""
@@ -619,19 +614,7 @@ class CalibrationDialog(QDialog):
         self._cleanup_recording_tap()
 
         # Stop processor if we started it ourselves
-        if hasattr(self, '_started_processor') and self._started_processor:
-            parent = self.parent()
-            while parent and not hasattr(parent, 'processor'):
-                parent = parent.parent()
-            if parent:
-                try:
-                    if DEBUG:
-                        print("[CALIBRATION_DLG] Stopping audio processor (we started it)")
-                    parent.processor.stop()
-                except Exception as e:
-                    if DEBUG:
-                        print(f"[CALIBRATION_DLG] Error stopping processor: {e}")
-            self._started_processor = False
+        self._stop_owned_processor()
 
         self.recording_state = "idle"
         self.audio_data = None
@@ -646,11 +629,25 @@ class CalibrationDialog(QDialog):
         self.retake_btn.setVisible(False)
         self.curve_combo.setEnabled(True)
 
+    def _stop_owned_processor(self):
+        """Stop the processor only if this dialog started it."""
+        if not getattr(self, '_started_processor', False):
+            return
+
+        parent = _find_processor_owner(self.parent())
+        if parent:
+            try:
+                if DEBUG:
+                    print("[CALIBRATION_DLG] Stopping audio processor (we started it)")
+                parent.processor.stop()
+            except Exception as e:
+                if DEBUG:
+                    print(f"[CALIBRATION_DLG] Error stopping processor: {e}")
+        self._started_processor = False
+
     def _cleanup_recording_tap(self):
         """Best-effort cleanup for tap/mute state across cancel/close paths."""
-        parent = self.parent()
-        while parent and not hasattr(parent, 'processor'):
-            parent = parent.parent()
+        parent = _find_processor_owner(self.parent())
 
         if not parent:
             return
@@ -681,7 +678,22 @@ class CalibrationDialog(QDialog):
         self.recording_timer.stop()
         self._stop_analysis_worker()
         self._cleanup_recording_tap()
+        self._stop_owned_processor()
         super().closeEvent(event)
+
+    def accept(self):
+        self.recording_timer.stop()
+        self._stop_analysis_worker()
+        self._cleanup_recording_tap()
+        self._stop_owned_processor()
+        super().accept()
+
+    def reject(self):
+        self.recording_timer.stop()
+        self._stop_analysis_worker()
+        self._cleanup_recording_tap()
+        self._stop_owned_processor()
+        super().reject()
 
     def get_recorded_audio(self):
         """
@@ -691,8 +703,7 @@ class CalibrationDialog(QDialog):
             tuple: (audio_data, sample_rate) where audio_data is NumPy array
                    of samples or None if no recording exists, sample_rate is int (Hz)
 
-        This method is called by Phase 19's analysis engine to retrieve
-        the recorded voice sample for frequency analysis.
+        This method returns the recorded voice sample for frequency analysis.
         """
         if self.audio_data is None:
             return None, None

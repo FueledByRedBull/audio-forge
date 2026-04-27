@@ -1,3 +1,4 @@
+# pyright: reportAttributeAccessIssue=false, reportArgumentType=false
 """Tests for UI sample-rate propagation and diagnostics formatting."""
 
 from __future__ import annotations

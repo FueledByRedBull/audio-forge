@@ -6,7 +6,7 @@ AudioForge - Low-latency microphone audio processor
 Provides real-time noise suppression and equalization for voice communication.
 """
 
-__version__ = "1.7.14"
+__version__ = "1.7.15"
 
 # Import the Rust core module.
 #
@@ -24,7 +24,7 @@ try:
 except ImportError:
     try:
         # Fallback for environments that install the extension as top-level module.
-        from mic_eq_core import (
+        from mic_eq_core import (  # type: ignore[reportMissingImports]
             AudioProcessor,
             DeviceInfo,
             list_input_devices,

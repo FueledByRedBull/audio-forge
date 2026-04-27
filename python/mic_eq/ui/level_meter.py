@@ -5,7 +5,7 @@ Shows RMS level as a filled bar with peak hold indicator.
 Color gradient: green → yellow → red
 """
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel, QHBoxLayout
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
 from PyQt6.QtCore import Qt, QTimer, QRectF
 from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QPen, QFont
 

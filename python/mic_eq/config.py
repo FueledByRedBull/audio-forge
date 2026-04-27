@@ -4,8 +4,12 @@ Configuration and preset management for MicEq
 Handles saving and loading of presets (JSON format).
 """
 
+from __future__ import annotations
+
 import json
+import math
 import os
+import tempfile
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Optional
@@ -14,6 +18,10 @@ from typing import Optional
 class PresetValidationError(Exception):
     """Raised when preset validation fails with actionable message."""
     pass
+
+
+def _reject_json_constant(value: str) -> None:
+    raise PresetValidationError(f"Invalid JSON constant in preset/config: {value}")
 
 
 def _version_tuple(version: str) -> tuple[int, int, int]:
@@ -74,7 +82,7 @@ class DeviceIdentity:
         }
 
     @classmethod
-    def from_dict(cls, data: dict | str | None) -> 'DeviceIdentity | None':
+    def from_dict(cls, data: dict | str | DeviceIdentity | None) -> DeviceIdentity | None:
         if isinstance(data, cls):
             return data if data.name else None
         if isinstance(data, str):
@@ -89,9 +97,11 @@ class DeviceIdentity:
         return cls(name=name, is_default=bool(data.get('is_default', False)))
 
 
-def coerce_device_identity(data: dict | str | DeviceIdentity | None) -> DeviceIdentity | None:
+def coerce_device_identity(data: object) -> DeviceIdentity | None:
     """Normalize persisted device identity data from legacy or structured inputs."""
-    return DeviceIdentity.from_dict(data)
+    if isinstance(data, (DeviceIdentity, dict, str)) or data is None:
+        return DeviceIdentity.from_dict(data)
+    return None
 
 
 def legacy_latency_profile_key(input_name: str, output_name: str) -> str:
@@ -156,6 +166,8 @@ class GateSettings:
 class EQSettings:
     """10-band parametric EQ settings."""
     enabled: bool = True
+    # Center frequency for each band in Hz.
+    band_freqs: list[float] = field(default_factory=lambda: list(EQ_FREQUENCIES))
     # Gains for each band in dB (-12 to +12)
     # Bands: 80Hz (LS), 160, 320, 640, 1.2k, 2.5k, 5k, 8k, 12k, 16kHz (HS)
     band_gains: list[float] = field(default_factory=lambda: [0.0] * 10)
@@ -251,6 +263,7 @@ VALIDATION_RANGES = {
         'gate_margin_db': (0.0, 20.0),  # Margin in dB
     },
     'eq': {
+        'band_freq': (20.0, 20000.0),
         'band_gain': (-12.0, 12.0),
         'band_q': (0.1, 10.0),
     },
@@ -285,17 +298,81 @@ VALIDATION_RANGES = {
 }
 
 
-def _validate_range(value: float, min_val: float, max_val: float, param_name: str, section: str) -> float:
+def _validate_bool(value: object, param_name: str, section: str) -> bool:
+    """Validate a JSON boolean field without accepting truthy strings."""
+    if isinstance(value, bool):
+        return value
+    raise PresetValidationError(
+        f"Invalid {param_name} in {section}: {value!r} (must be true or false)"
+    )
+
+
+def _parse_range_args(args: tuple[object, ...]) -> tuple[float, float, str, str]:
+    if len(args) != 4:
+        raise PresetValidationError("Invalid validation range definition")
+    min_val, max_val, param_name, section = args
+    if not isinstance(param_name, str) or not isinstance(section, str):
+        raise PresetValidationError("Invalid validation range definition")
+    if not isinstance(min_val, (int, float)) or not isinstance(max_val, (int, float)):
+        raise PresetValidationError("Invalid validation range definition")
+    return float(min_val), float(max_val), param_name, section
+
+
+def _validate_range(value: object, *args: object) -> float:
     """Validate and clamp a value to a range, raising error if way out of bounds."""
+    min_val, max_val, param_name, section = _parse_range_args(args)
+    if isinstance(value, bool):
+        raise PresetValidationError(
+            f"Invalid {param_name} in {section}: {value!r} "
+            f"(must be a finite number between {min_val} and {max_val})"
+        )
+    if not isinstance(value, (int, float, str)):
+        raise PresetValidationError(
+            f"Invalid {param_name} in {section}: {value!r} "
+            f"(must be a finite number between {min_val} and {max_val})"
+        )
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError) as e:
+        raise PresetValidationError(
+            f"Invalid {param_name} in {section}: {value!r} "
+            f"(must be a finite number between {min_val} and {max_val})"
+        ) from e
+    if not math.isfinite(numeric_value):
+        raise PresetValidationError(
+            f"Invalid {param_name} in {section}: {value!r} "
+            f"(must be a finite number between {min_val} and {max_val})"
+        )
+
     # Allow small tolerance (10%) beyond range before rejecting
     tolerance = (max_val - min_val) * 0.1
-    if value < min_val - tolerance or value > max_val + tolerance:
+    if numeric_value < min_val - tolerance or numeric_value > max_val + tolerance:
         raise PresetValidationError(
-            f"Invalid {param_name} in {section}: {value} "
+            f"Invalid {param_name} in {section}: {numeric_value} "
             f"(must be between {min_val} and {max_val})"
         )
     # Clamp to exact range
-    return max(min_val, min(max_val, value))
+    return max(min_val, min(max_val, numeric_value))
+
+
+def _validate_fixed_float_list(
+    values: object,
+    expected_len: int,
+    *args: object,
+) -> list[float]:
+    min_val, max_val, param_name, section = _parse_range_args(args)
+    if not isinstance(values, (list, tuple)):
+        raise PresetValidationError(
+            f"Invalid {param_name} in {section}: expected list of {expected_len} values"
+        )
+    if len(values) != expected_len:
+        raise PresetValidationError(
+            f"Invalid {param_name} in {section}: expected {expected_len} values, got {len(values)}"
+        )
+    return [
+        _validate_range(value, min_val, max_val, f'{param_name}[{i}]', section)
+        for i, value in enumerate(values)
+    ]
 
 
 @dataclass
@@ -303,7 +380,7 @@ class Preset:
     """Complete preset with all settings."""
     name: str = "Default"
     description: str = ""
-    version: str = "1.7.14"  # Version field for migration
+    version: str = "1.7.15"  # Version field for migration
     gate: GateSettings = field(default_factory=GateSettings)
     eq: EQSettings = field(default_factory=EQSettings)
     rnnoise: RNNoiseSettings = field(default_factory=RNNoiseSettings)
@@ -437,16 +514,16 @@ class Preset:
                 data['version'] = '1.7.4'
                 version_tuple = _version_tuple('1.7.4')
 
-            # Migrate v1.7.4 presets -> v1.7.14 (no format changes)
-            if version_tuple < _version_tuple('1.7.14'):
-                data['version'] = '1.7.14'
-                version_tuple = _version_tuple('1.7.14')
+            # Migrate v1.7.4 presets -> v1.7.15 (no format changes)
+            if version_tuple < _version_tuple('1.7.15'):
+                data['version'] = '1.7.15'
+                version_tuple = _version_tuple('1.7.15')
 
             # Extract and validate gate settings
             gate_data = data.get('gate', {})
             gate_ranges = VALIDATION_RANGES['gate']
             validated_gate = GateSettings(
-                enabled=gate_data.get('enabled', True),
+                enabled=_validate_bool(gate_data.get('enabled', True), 'enabled', 'gate'),
                 threshold_db=_validate_range(
                     gate_data.get('threshold_db', -40.0),
                     *gate_ranges['threshold_db'],
@@ -482,7 +559,11 @@ class Preset:
                     *gate_ranges['vad_pre_gain'],
                     'vad_pre_gain', 'gate'
                 ),
-                auto_threshold_enabled=gate_data.get('auto_threshold_enabled', True),
+                auto_threshold_enabled=_validate_bool(
+                    gate_data.get('auto_threshold_enabled', True),
+                    'auto_threshold_enabled',
+                    'gate',
+                ),
                 gate_margin_db=_validate_range(
                     gate_data.get('gate_margin_db', 10.0),
                     *gate_ranges['gate_margin_db'],
@@ -492,34 +573,36 @@ class Preset:
 
             # Extract and validate EQ settings
             eq_data = data.get('eq', {})
+            band_freqs = eq_data.get('band_freqs', list(EQ_FREQUENCIES))
             band_gains = eq_data.get('band_gains', [0.0] * 10)
             band_qs = eq_data.get('band_qs', [1.41] * 10)
 
-            if not isinstance(band_gains, (list, tuple)):
-                raise PresetValidationError("Invalid band_gains in eq: expected list of 10 values")
-            if not isinstance(band_qs, (list, tuple)):
-                raise PresetValidationError("Invalid band_qs in eq: expected list of 10 values")
-            if len(band_gains) != 10:
-                raise PresetValidationError(
-                    f"Invalid band_gains in eq: expected 10 values, got {len(band_gains)}"
-                )
-            if len(band_qs) != 10:
-                raise PresetValidationError(
-                    f"Invalid band_qs in eq: expected 10 values, got {len(band_qs)}"
-                )
-
             eq_ranges = VALIDATION_RANGES['eq']
-            validated_gains = [
-                _validate_range(gain, *eq_ranges['band_gain'], f'band_gains[{i}]', 'eq')
-                for i, gain in enumerate(band_gains)
-            ]
-            validated_qs = [
-                _validate_range(q, *eq_ranges['band_q'], f'band_qs[{i}]', 'eq')
-                for i, q in enumerate(band_qs)
-            ]
+            validated_freqs = _validate_fixed_float_list(
+                band_freqs,
+                10,
+                *eq_ranges['band_freq'],
+                'band_freqs',
+                'eq',
+            )
+            validated_gains = _validate_fixed_float_list(
+                band_gains,
+                10,
+                *eq_ranges['band_gain'],
+                'band_gains',
+                'eq',
+            )
+            validated_qs = _validate_fixed_float_list(
+                band_qs,
+                10,
+                *eq_ranges['band_q'],
+                'band_qs',
+                'eq',
+            )
 
             validated_eq = EQSettings(
-                enabled=eq_data.get('enabled', True),
+                enabled=_validate_bool(eq_data.get('enabled', True), 'enabled', 'eq'),
+                band_freqs=validated_freqs,
                 band_gains=validated_gains,
                 band_qs=validated_qs,
             )
@@ -528,7 +611,7 @@ class Preset:
             comp_data = data.get('compressor', {})
             comp_ranges = VALIDATION_RANGES['compressor']
             validated_comp = CompressorSettings(
-                enabled=comp_data.get('enabled', True),
+                enabled=_validate_bool(comp_data.get('enabled', True), 'enabled', 'compressor'),
                 threshold_db=_validate_range(
                     comp_data.get('threshold_db', -20.0),
                     *comp_ranges['threshold_db'],
@@ -554,14 +637,22 @@ class Preset:
                     *comp_ranges['makeup_gain_db'],
                     'makeup_gain_db', 'compressor'
                 ),
-                adaptive_release=comp_data.get('adaptive_release', False),
+                adaptive_release=_validate_bool(
+                    comp_data.get('adaptive_release', False),
+                    'adaptive_release',
+                    'compressor',
+                ),
                 base_release_ms=_validate_range(
                     comp_data.get('base_release_ms', 50.0),
                     20.0,
                     200.0,
                     'base_release_ms', 'compressor'
                 ),
-                auto_makeup_enabled=comp_data.get('auto_makeup_enabled', False),
+                auto_makeup_enabled=_validate_bool(
+                    comp_data.get('auto_makeup_enabled', False),
+                    'auto_makeup_enabled',
+                    'compressor',
+                ),
                 target_lufs=_validate_range(
                     comp_data.get('target_lufs', -18.0),
                     *comp_ranges['target_lufs'],
@@ -573,7 +664,7 @@ class Preset:
             lim_data = data.get('limiter', {})
             lim_ranges = VALIDATION_RANGES['limiter']
             validated_lim = LimiterSettings(
-                enabled=lim_data.get('enabled', True),
+                enabled=_validate_bool(lim_data.get('enabled', True), 'enabled', 'limiter'),
                 ceiling_db=_validate_range(
                     lim_data.get('ceiling_db', -0.5),
                     *lim_ranges['ceiling_db'],
@@ -595,7 +686,7 @@ class Preset:
                 model = 'rnnoise'
 
             validated_rnnoise = RNNoiseSettings(
-                enabled=rnnoise_data.get('enabled', True),
+                enabled=_validate_bool(rnnoise_data.get('enabled', True), 'enabled', 'rnnoise'),
                 strength=_validate_range(
                     rnnoise_data.get('strength', 1.0),
                     *rnnoise_ranges.get('strength', (0.0, 1.0)),
@@ -622,10 +713,14 @@ class Preset:
                 low_cut_hz = min(low_cut_hz, high_cut_hz - 200.0)
 
             validated_deesser = DeEsserSettings(
-                enabled=deesser_data.get('enabled', False),
-                auto_enabled=bool(deesser_data.get('auto_enabled', True)),
+                enabled=_validate_bool(deesser_data.get('enabled', False), 'enabled', 'deesser'),
+                auto_enabled=_validate_bool(
+                    deesser_data.get('auto_enabled', True),
+                    'auto_enabled',
+                    'deesser',
+                ),
                 auto_amount=_validate_range(
-                    float(deesser_data.get('auto_amount', 0.5)),
+                    deesser_data.get('auto_amount', 0.5),
                     *deesser_ranges['auto_amount'],
                     'auto_amount', 'deesser'
                 ),
@@ -661,14 +756,14 @@ class Preset:
             return cls(
                 name=data.get('name', 'Unnamed'),
                 description=data.get('description', ''),
-                version=data.get('version', '1.7.14'),
+                version=data.get('version', '1.7.15'),
                 gate=validated_gate,
                 eq=validated_eq,
                 rnnoise=validated_rnnoise,
                 deesser=validated_deesser,
                 compressor=validated_comp,
                 limiter=validated_lim,
-                bypass=data.get('bypass', False),
+                bypass=_validate_bool(data.get('bypass', False), 'bypass', 'preset'),
             )
         except (KeyError, TypeError, ValueError, AttributeError) as e:
             # Convert generic errors to actionable validation errors
@@ -755,7 +850,7 @@ def load_preset(filepath: Path) -> Preset:
         )
 
     with open(resolved_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
+        data = json.load(f, parse_constant=_reject_json_constant)
 
     return Preset.from_dict(data)
 
@@ -916,8 +1011,25 @@ class AppConfig:
 def save_config(config: AppConfig) -> None:
     """Save application configuration."""
     filepath = get_config_file()
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(config.to_dict(), f, indent=2)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f'.{filepath.name}.',
+        suffix='.tmp',
+        dir=filepath.parent,
+        text=True,
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(config.to_dict(), f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, filepath)
+    except Exception:
+        try:
+            temp_path.unlink(missing_ok=True)
+        finally:
+            raise
 
 
 def load_config() -> AppConfig:
@@ -929,9 +1041,9 @@ def load_config() -> AppConfig:
 
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+            data = json.load(f, parse_constant=_reject_json_constant)
         return AppConfig.from_dict(data)
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError, PresetValidationError):
         return AppConfig()
 
 
@@ -940,7 +1052,7 @@ BUILTIN_PRESETS = {
     'voice': Preset(
         name="Voice Clarity",
         description="Optimized for voice communication - cuts low end rumble and boosts presence",
-        version="1.7.14",
+        version="1.7.15",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -954,7 +1066,7 @@ BUILTIN_PRESETS = {
     'bass_cut': Preset(
         name="Bass Cut",
         description="High-pass effect to remove low frequency rumble and proximity effect",
-        version="1.7.14",
+        version="1.7.15",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -968,7 +1080,7 @@ BUILTIN_PRESETS = {
     'presence': Preset(
         name="Presence Boost",
         description="Enhances voice presence and intelligibility",
-        version="1.7.14",
+        version="1.7.15",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -982,7 +1094,7 @@ BUILTIN_PRESETS = {
     'flat': Preset(
         name="Flat",
         description="No EQ processing - flat frequency response",
-        version="1.7.14",
+        version="1.7.15",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -996,7 +1108,7 @@ BUILTIN_PRESETS = {
     'minimal': Preset(
         name="Minimal Processing",
         description="Gate and RNNoise only - no EQ",
-        version="1.7.14",
+        version="1.7.15",
         gate=GateSettings(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -1010,7 +1122,7 @@ BUILTIN_PRESETS = {
     'aggressive_denoise': Preset(
         name="Aggressive Denoise",
         description="Maximum noise reduction with tight gate",
-        version="1.7.14",
+        version="1.7.15",
         gate=GateSettings(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),

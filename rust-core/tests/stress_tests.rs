@@ -69,15 +69,21 @@ fn test_rapid_parameter_changes() {
 
                 // Gain: -12 to +12 dB
                 let gain = rng.gen_range(-12.0..12.0);
-                processor.set_eq_band_gain(band, gain);
+                processor
+                    .set_eq_band_gain(band, gain)
+                    .expect("random gain should be valid");
 
                 // Frequency: 20 Hz to 20 kHz
                 let freq = rng.gen_range(20.0..20000.0);
-                processor.set_eq_band_frequency(band, freq);
+                processor
+                    .set_eq_band_frequency(band, freq)
+                    .expect("random frequency should be valid");
 
                 // Q: 0.1 to 10.0
                 let q = rng.gen_range(0.1..10.0);
-                processor.set_eq_band_q(band, q);
+                processor
+                    .set_eq_band_q(band, q)
+                    .expect("random Q should be valid");
 
                 // Randomly toggle enable
                 let enabled = rng.gen_bool(0.5);
@@ -282,7 +288,9 @@ fn test_device_hotswap_behavior() {
 
     // Verify we can still set parameters after "stop" (no-op)
     processor.set_gate_threshold(-60.0);
-    processor.set_eq_band_gain(0, 6.0);
+    processor
+        .set_eq_band_gain(0, 6.0)
+        .expect("test gain should be valid");
     processor.set_compressor_threshold(-20.0);
 
     // Verify parameters were set correctly

@@ -10,10 +10,12 @@ SPECTRUM_PATH = Path(__file__).parent.parent / "mic_eq" / "analysis" / "spectrum
 spectrum_spec = importlib.util.spec_from_file_location(
     "mic_eq.analysis.spectrum", SPECTRUM_PATH
 )
+assert spectrum_spec is not None and spectrum_spec.loader is not None
 spectrum = importlib.util.module_from_spec(spectrum_spec)
 spectrum_spec.loader.exec_module(spectrum)
 
 compute_voice_spectrum = spectrum.compute_voice_spectrum
+find_octave_spaced_peaks = spectrum.find_octave_spaced_peaks
 
 
 def test_voiced_frame_selection_reduces_background_hum_bias():
@@ -44,3 +46,14 @@ def test_compute_voice_spectrum_keeps_valid_output_when_voiced_mask_is_sparse():
     freqs, spectrum_db = compute_voice_spectrum(audio, fs=fs, nperseg=nperseg)
     assert freqs.shape == spectrum_db.shape
     assert len(freqs) > 0
+
+
+def test_find_octave_spaced_peaks_handles_degenerate_frequency_grids():
+    for freqs in (
+        np.array([0.0]),
+        np.array([100.0]),
+        np.array([100.0, 100.0]),
+    ):
+        peak_freqs, peak_values = find_octave_spaced_peaks(np.zeros(len(freqs)), freqs)
+        assert peak_freqs.size == 0
+        assert peak_values.size == 0

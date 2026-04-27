@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import wave
+from typing import Any
 
 import numpy as np
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal
@@ -42,7 +43,7 @@ def _device_name(device: object) -> str | None:
     return device if isinstance(device, str) and device else None
 
 
-def _capture_sample_rate(owner) -> int:
+def _capture_sample_rate(owner: Any) -> int:
     if owner is None or not hasattr(owner, "processor"):
         raise RuntimeError("Could not find audio processor.")
 
@@ -246,8 +247,8 @@ class LatencyCalibrationDialog(QDialog):
         if existing_profile:
             self._apply_profile_to_labels(existing_profile)
 
-    def _get_processor_owner(self):
-        parent = self.parent()
+    def _get_processor_owner(self) -> Any | None:
+        parent: Any = self.parent()
         while parent and not hasattr(parent, "processor"):
             parent = parent.parent()
         return parent
@@ -310,8 +311,12 @@ class LatencyCalibrationDialog(QDialog):
                 self._probe_started_at = time.time()
 
                 def _play_probe():
+                    probe = self._probe
+                    if probe is None:
+                        self._on_worker_failed("Probe signal is unavailable.")
+                        return
                     try:
-                        _play_probe_blocking(self._probe, self._capture_sample_rate)
+                        _play_probe_blocking(probe, self._capture_sample_rate)
                     finally:
                         self._played_probe = True
                         self._probe_finished.set()
@@ -345,6 +350,9 @@ class LatencyCalibrationDialog(QDialog):
             else:
                 expected_start_ms = self._playback_delay_s * 1000.0
             expected_jitter_ms = max(50.0, float(self._capture_timer.interval()))
+            if self._probe is None:
+                self._on_worker_failed("Probe signal is unavailable.")
+                return
             self.worker = LatencyCalibrationWorker(
                 probe=self._probe,
                 recording=recording,
@@ -481,3 +489,8 @@ class LatencyCalibrationDialog(QDialog):
         self._teardown_worker()
         self._stop_owned_processor()
         super().reject()
+
+    def accept(self):
+        self._teardown_worker()
+        self._stop_owned_processor()
+        super().accept()

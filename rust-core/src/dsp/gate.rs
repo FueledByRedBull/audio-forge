@@ -12,6 +12,9 @@ const GATE_DEBUG: bool = false;
 const MIN_LEVEL_LINEAR: f64 = 1e-10;
 const EXPANDER_RATIO: f64 = 4.0;
 const EXPANDER_RANGE_DB: f64 = 36.0;
+const DETECTOR_RMS_MS: f64 = 8.0;
+const DETECTOR_HYSTERESIS_DB: f64 = 4.0;
+const DETECTOR_HOLD_MS: f64 = 50.0;
 
 #[cfg(debug_assertions)]
 macro_rules! gate_debug_log {
@@ -35,8 +38,14 @@ pub struct NoiseGate {
     attack_coeff: f64,
     /// Release time constant (exponential smoothing coefficient)
     release_coeff: f64,
-    /// Log-domain peak envelope follower (dBFS).
-    peak_envelope_db: f64,
+    /// Short RMS detector envelope (squared amplitude).
+    rms_envelope_sq: f64,
+    /// RMS detector time constant.
+    rms_coeff: f64,
+    /// Current detector level (dBFS) used for expander decisions.
+    detector_level_db: f64,
+    /// Remaining hold time after the detector drops below threshold.
+    hold_remaining_samples: usize,
     /// Current linear gain applied to the signal.
     current_gain: f64,
     /// Sample rate
@@ -67,6 +76,7 @@ impl NoiseGate {
     pub fn new(threshold_db: f64, attack_ms: f64, release_ms: f64, sample_rate: f64) -> Self {
         let attack_coeff = util::time_constant_to_coeff(attack_ms, sample_rate);
         let release_coeff = util::time_constant_to_coeff(release_ms, sample_rate);
+        let rms_coeff = util::time_constant_to_coeff(DETECTOR_RMS_MS, sample_rate);
 
         if GATE_DEBUG {
             gate_debug_log!(
@@ -81,7 +91,10 @@ impl NoiseGate {
             threshold_db,
             attack_coeff,
             release_coeff,
-            peak_envelope_db: -120.0,
+            rms_envelope_sq: 0.0,
+            rms_coeff,
+            detector_level_db: -120.0,
+            hold_remaining_samples: 0,
             current_gain: 0.0,
             sample_rate,
             is_open: false,
@@ -139,16 +152,33 @@ impl NoiseGate {
 
     #[inline]
     fn update_detector(&mut self, input: f64) {
-        let input_db = util::linear_to_db(input.abs(), MIN_LEVEL_LINEAR);
-        let coeff = if input_db > self.peak_envelope_db {
-            self.attack_coeff
+        self.rms_envelope_sq =
+            self.rms_coeff * self.rms_envelope_sq + (1.0 - self.rms_coeff) * input * input;
+        self.detector_level_db = util::linear_to_db(self.rms_envelope_sq.sqrt(), MIN_LEVEL_LINEAR);
+
+        if self.detector_level_db >= self.threshold_db {
+            self.is_open = true;
+            self.hold_remaining_samples =
+                (self.sample_rate * DETECTOR_HOLD_MS / 1000.0).round() as usize;
+        } else if self.hold_remaining_samples > 0 {
+            self.hold_remaining_samples -= 1;
+            self.is_open = true;
+        } else if self.detector_level_db <= self.threshold_db - DETECTOR_HYSTERESIS_DB {
+            self.is_open = false;
+        }
+
+        if self.detector_level_db > self.peak_level {
+            self.peak_level = self.detector_level_db;
+        }
+    }
+
+    #[inline]
+    fn detector_gain_reduction_db(&self) -> f64 {
+        if self.is_open {
+            0.0
         } else {
-            self.release_coeff
-        };
-        self.peak_envelope_db = coeff * self.peak_envelope_db + (1.0 - coeff) * input_db;
-        self.is_open = self.peak_envelope_db >= self.threshold_db;
-        if self.peak_envelope_db > self.peak_level {
-            self.peak_level = self.peak_envelope_db;
+            ((self.threshold_db - self.detector_level_db) * (1.0 - 1.0 / EXPANDER_RATIO))
+                .clamp(0.0, EXPANDER_RANGE_DB)
         }
     }
 
@@ -157,14 +187,7 @@ impl NoiseGate {
         if force_close {
             return EXPANDER_RANGE_DB;
         }
-        if self.peak_envelope_db >= self.threshold_db {
-            return 0.0;
-        }
-
-        // `target_gr_db` is always non-negative and represents gain reduction
-        // magnitude in dB (not a signed gain value).
-        ((self.threshold_db - self.peak_envelope_db) * (1.0 - 1.0 / EXPANDER_RATIO))
-            .clamp(0.0, EXPANDER_RANGE_DB)
+        self.detector_gain_reduction_db()
     }
 
     #[inline]
@@ -257,7 +280,7 @@ impl NoiseGate {
             gate_debug_log!(
                 "[GATE] {} detector={:.2}dB threshold={:.2}dB",
                 if self.is_open { "OPENED" } else { "CLOSED" },
-                self.peak_envelope_db,
+                self.detector_level_db,
                 self.threshold_db
             );
             self.was_open = self.is_open;
@@ -267,7 +290,9 @@ impl NoiseGate {
     /// Reset gate state
     pub fn reset(&mut self) {
         self.current_gain = 0.0;
-        self.peak_envelope_db = -120.0;
+        self.rms_envelope_sq = 0.0;
+        self.detector_level_db = -120.0;
+        self.hold_remaining_samples = 0;
         self.is_open = false;
         self.was_open = false;
         #[cfg(feature = "vad")]
@@ -473,6 +498,35 @@ mod tests {
 
         let _ = gate.apply_gain(0.5, EXPANDER_RANGE_DB);
         assert!(gate.current_gain > floor_gain + 1e-3);
+    }
+
+    #[test]
+    fn test_noise_gate_rms_detector_rejects_short_click() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+
+        gate.process_sample(0.1);
+
+        assert!(!gate.is_open());
+    }
+
+    #[test]
+    fn test_noise_gate_hold_prevents_immediate_close() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+
+        for _ in 0..2_000 {
+            gate.process_sample(0.1);
+        }
+        assert!(gate.is_open());
+
+        for _ in 0..1_000 {
+            gate.process_sample(0.0);
+        }
+        assert!(gate.is_open());
+
+        for _ in 0..4_000 {
+            gate.process_sample(0.0);
+        }
+        assert!(!gate.is_open());
     }
 
     #[test]

@@ -5,10 +5,10 @@
 use std::f64::consts::PI;
 
 const MIN_BIQUAD_Q: f64 = 1e-6;
-// Fixed 64-sample coefficient ramp chosen empirically. No sample-rate scaling
+// Fixed 64-sample output crossfade chosen empirically. No sample-rate scaling
 // is needed for this use case; the transition remains inaudible across
 // supported rates.
-const COEFF_RAMP_SAMPLES: usize = 64;
+const COEFF_CROSSFADE_SAMPLES: usize = 64;
 
 /// Biquad filter types
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -34,17 +34,14 @@ pub struct Biquad {
     b2: f64,
     a1: f64,
     a2: f64,
-    target_b0: f64,
-    target_b1: f64,
-    target_b2: f64,
-    target_a1: f64,
-    target_a2: f64,
-    step_b0: f64,
-    step_b1: f64,
-    step_b2: f64,
-    step_a1: f64,
-    step_a2: f64,
-    ramp_remaining: usize,
+    pending_b0: f64,
+    pending_b1: f64,
+    pending_b2: f64,
+    pending_a1: f64,
+    pending_a2: f64,
+    pending_z1: f64,
+    pending_z2: f64,
+    crossfade_remaining: usize,
 
     // State variables for Direct Form II Transposed
     z1: f64,
@@ -74,17 +71,14 @@ impl Biquad {
             b2: 0.0,
             a1: 0.0,
             a2: 0.0,
-            target_b0: 1.0,
-            target_b1: 0.0,
-            target_b2: 0.0,
-            target_a1: 0.0,
-            target_a2: 0.0,
-            step_b0: 0.0,
-            step_b1: 0.0,
-            step_b2: 0.0,
-            step_a1: 0.0,
-            step_a2: 0.0,
-            ramp_remaining: 0,
+            pending_b0: 1.0,
+            pending_b1: 0.0,
+            pending_b2: 0.0,
+            pending_a1: 0.0,
+            pending_a2: 0.0,
+            pending_z1: 0.0,
+            pending_z2: 0.0,
+            crossfade_remaining: 0,
             z1: 0.0,
             z2: 0.0,
             filter_type,
@@ -172,56 +166,51 @@ impl Biquad {
         self.b2 = b2;
         self.a1 = a1;
         self.a2 = a2;
-        self.target_b0 = b0;
-        self.target_b1 = b1;
-        self.target_b2 = b2;
-        self.target_a1 = a1;
-        self.target_a2 = a2;
-        self.step_b0 = 0.0;
-        self.step_b1 = 0.0;
-        self.step_b2 = 0.0;
-        self.step_a1 = 0.0;
-        self.step_a2 = 0.0;
-        self.ramp_remaining = 0;
+        self.pending_b0 = b0;
+        self.pending_b1 = b1;
+        self.pending_b2 = b2;
+        self.pending_a1 = a1;
+        self.pending_a2 = a2;
+        self.pending_z1 = 0.0;
+        self.pending_z2 = 0.0;
+        self.crossfade_remaining = 0;
     }
 
-    fn schedule_coefficients_ramp(&mut self, coeffs: (f64, f64, f64, f64, f64)) {
+    fn schedule_coefficients_crossfade(&mut self, coeffs: (f64, f64, f64, f64, f64)) {
         let (b0, b1, b2, a1, a2) = coeffs;
-        self.target_b0 = b0;
-        self.target_b1 = b1;
-        self.target_b2 = b2;
-        self.target_a1 = a1;
-        self.target_a2 = a2;
-
-        let steps = COEFF_RAMP_SAMPLES as f64;
-        self.step_b0 = (self.target_b0 - self.b0) / steps;
-        self.step_b1 = (self.target_b1 - self.b1) / steps;
-        self.step_b2 = (self.target_b2 - self.b2) / steps;
-        self.step_a1 = (self.target_a1 - self.a1) / steps;
-        self.step_a2 = (self.target_a2 - self.a2) / steps;
-        self.ramp_remaining = COEFF_RAMP_SAMPLES;
+        self.pending_b0 = b0;
+        self.pending_b1 = b1;
+        self.pending_b2 = b2;
+        self.pending_a1 = a1;
+        self.pending_a2 = a2;
+        self.pending_z1 = self.z1;
+        self.pending_z2 = self.z2;
+        self.crossfade_remaining = COEFF_CROSSFADE_SAMPLES;
     }
 
     #[inline]
-    fn step_coefficients_if_needed(&mut self) {
-        if self.ramp_remaining == 0 {
-            return;
-        }
+    fn process_direct(
+        input: f64,
+        coeffs: (f64, f64, f64, f64, f64),
+        z1: &mut f64,
+        z2: &mut f64,
+    ) -> f64 {
+        let (b0, b1, b2, a1, a2) = coeffs;
+        let output = b0 * input + *z1;
+        *z1 = b1 * input - a1 * output + *z2;
+        *z2 = b2 * input - a2 * output;
+        output
+    }
 
-        self.b0 += self.step_b0;
-        self.b1 += self.step_b1;
-        self.b2 += self.step_b2;
-        self.a1 += self.step_a1;
-        self.a2 += self.step_a2;
-        self.ramp_remaining -= 1;
-
-        if self.ramp_remaining == 0 {
-            self.b0 = self.target_b0;
-            self.b1 = self.target_b1;
-            self.b2 = self.target_b2;
-            self.a1 = self.target_a1;
-            self.a2 = self.target_a2;
-        }
+    fn promote_pending_coefficients(&mut self) {
+        self.b0 = self.pending_b0;
+        self.b1 = self.pending_b1;
+        self.b2 = self.pending_b2;
+        self.a1 = self.pending_a1;
+        self.a2 = self.pending_a2;
+        self.z1 = self.pending_z1;
+        self.z2 = self.pending_z2;
+        self.crossfade_remaining = 0;
     }
 
     /// Process a single sample using Direct Form II Transposed
@@ -230,12 +219,38 @@ impl Biquad {
         if !self.enabled {
             return input;
         }
-        self.step_coefficients_if_needed();
 
         let input_f64 = input as f64;
-        let output = self.b0 * input_f64 + self.z1;
-        self.z1 = self.b1 * input_f64 - self.a1 * output + self.z2;
-        self.z2 = self.b2 * input_f64 - self.a2 * output;
+        let active_output = Self::process_direct(
+            input_f64,
+            (self.b0, self.b1, self.b2, self.a1, self.a2),
+            &mut self.z1,
+            &mut self.z2,
+        );
+
+        if self.crossfade_remaining == 0 {
+            return active_output as f32;
+        }
+
+        let pending_output = Self::process_direct(
+            input_f64,
+            (
+                self.pending_b0,
+                self.pending_b1,
+                self.pending_b2,
+                self.pending_a1,
+                self.pending_a2,
+            ),
+            &mut self.pending_z1,
+            &mut self.pending_z2,
+        );
+        let fade_pos = COEFF_CROSSFADE_SAMPLES - self.crossfade_remaining + 1;
+        let fade = fade_pos as f64 / COEFF_CROSSFADE_SAMPLES as f64;
+        let output = active_output * (1.0 - fade) + pending_output * fade;
+        self.crossfade_remaining -= 1;
+        if self.crossfade_remaining == 0 {
+            self.promote_pending_coefficients();
+        }
         output as f32
     }
 
@@ -254,24 +269,36 @@ impl Biquad {
     pub fn reset(&mut self) {
         self.z1 = 0.0;
         self.z2 = 0.0;
+        self.pending_z1 = 0.0;
+        self.pending_z2 = 0.0;
+        self.crossfade_remaining = 0;
     }
 
     /// Set filter frequency and recalculate coefficients
     pub fn set_frequency(&mut self, frequency: f64) {
         self.frequency = frequency;
-        self.schedule_coefficients_ramp(self.calculate_coefficients_values());
+        self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
     }
 
     /// Set filter gain and recalculate coefficients
     pub fn set_gain_db(&mut self, gain_db: f64) {
         self.gain_db = gain_db;
-        self.schedule_coefficients_ramp(self.calculate_coefficients_values());
+        self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
+    }
+
+    /// Set filter gain immediately.
+    ///
+    /// This is intended for already-smoothed modulation sources. UI parameter
+    /// changes should use `set_gain_db` so they crossfade the audio output.
+    pub fn set_gain_db_immediate(&mut self, gain_db: f64) {
+        self.gain_db = gain_db;
+        self.set_coefficients_immediate(self.calculate_coefficients_values());
     }
 
     /// Set filter Q factor and recalculate coefficients
     pub fn set_q(&mut self, q: f64) {
         self.q = q.max(MIN_BIQUAD_Q);
-        self.schedule_coefficients_ramp(self.calculate_coefficients_values());
+        self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
     }
 
     /// Enable or disable the filter
@@ -359,15 +386,39 @@ mod tests {
     }
 
     #[test]
-    fn test_biquad_coefficients_reach_target_after_ramp() {
+    fn test_biquad_crossfade_promotes_pending_coefficients() {
         let mut filter = Biquad::new(BiquadType::Peaking, 1000.0, 0.0, 1.0, 48000.0);
         filter.set_gain_db(12.0);
-        assert_eq!(filter.ramp_remaining, COEFF_RAMP_SAMPLES);
-        for _ in 0..COEFF_RAMP_SAMPLES {
+        let expected = filter.calculate_coefficients_values();
+        assert_eq!(filter.crossfade_remaining, COEFF_CROSSFADE_SAMPLES);
+        for _ in 0..COEFF_CROSSFADE_SAMPLES {
             let _ = filter.process_sample(0.2);
         }
-        assert_eq!(filter.ramp_remaining, 0);
-        assert!((filter.b0 - filter.target_b0).abs() < 1e-12);
-        assert!((filter.a2 - filter.target_a2).abs() < 1e-12);
+        assert_eq!(filter.crossfade_remaining, 0);
+        assert!((filter.b0 - expected.0).abs() < 1e-12);
+        assert!((filter.a2 - expected.4).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_biquad_crossfade_keeps_silence_silent() {
+        let mut filter = Biquad::new(BiquadType::Peaking, 1000.0, 0.0, 8.0, 48000.0);
+        filter.set_gain_db(12.0);
+        filter.set_frequency(80.0);
+
+        for _ in 0..(COEFF_CROSSFADE_SAMPLES * 2) {
+            let output = filter.process_sample(0.0);
+            assert!(output.abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_biquad_reset_clears_pending_crossfade() {
+        let mut filter = Biquad::new(BiquadType::Peaking, 1000.0, 0.0, 1.0, 48000.0);
+        filter.set_gain_db(12.0);
+        assert!(filter.crossfade_remaining > 0);
+
+        filter.reset();
+
+        assert_eq!(filter.crossfade_remaining, 0);
     }
 }

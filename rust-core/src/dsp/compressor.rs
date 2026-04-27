@@ -6,6 +6,10 @@ use crate::dsp::util;
 
 const DETECTOR_PEAK_WEIGHT: f64 = 0.6;
 const DETECTOR_RMS_WEIGHT: f64 = 0.4;
+const ADAPTIVE_FAST_RELEASE_MS: f64 = 50.0;
+const ADAPTIVE_SLOW_CHARGE_MS: f64 = 250.0;
+const ADAPTIVE_SLOW_RELEASE_MS: f64 = 400.0;
+const SLOW_RELEASE_TRIGGER_DB: f64 = 3.0;
 
 /// Downward compressor with soft-knee gain reduction
 pub struct Compressor {
@@ -43,12 +47,14 @@ pub struct Compressor {
     base_release_ms: f64,
     /// Current release time in milliseconds (adaptive value)
     current_release_ms: f64,
-    /// Overage timer (samples above threshold)
-    overage_timer: f64,
     /// Target release time (for smoothing)
     target_release_ms: f64,
     /// Release smoothing coefficient (100ms hysteresis)
     release_smoothing_coeff: f64,
+    /// Fast adaptive release envelope in dB.
+    fast_release_env_db: f64,
+    /// Slow adaptive release envelope in dB.
+    slow_release_env_db: f64,
     /// Loudness meter for auto makeup gain
     loudness_meter: Option<crate::dsp::loudness::LoudnessMeter>,
     /// Auto makeup gain enabled
@@ -106,9 +112,10 @@ impl Compressor {
             adaptive_release: false,
             base_release_ms: release_ms,
             current_release_ms: release_ms,
-            overage_timer: 0.0,
             target_release_ms: release_ms,
             release_smoothing_coeff,
+            fast_release_env_db: 0.0,
+            slow_release_env_db: 0.0,
             loudness_meter,
             auto_makeup_enabled: false,
             target_lufs: -18.0,
@@ -126,7 +133,7 @@ impl Compressor {
     /// Set threshold in dB
     pub fn set_threshold(&mut self, threshold_db: f64) {
         self.threshold_db = threshold_db;
-        self.reset_overage_timer();
+        self.reset_adaptive_release_state();
     }
 
     /// Get current threshold in dB
@@ -166,9 +173,13 @@ impl Compressor {
         if !enabled {
             self.current_release_ms = self.base_release_ms;
             self.target_release_ms = self.base_release_ms;
-            self.overage_timer = 0.0;
+            self.fast_release_env_db = self.current_gain_reduction_db;
+            self.slow_release_env_db = 0.0;
             self.release_coeff =
                 util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
+        } else {
+            self.fast_release_env_db = self.current_gain_reduction_db;
+            self.slow_release_env_db = 0.0;
         }
     }
 
@@ -197,9 +208,10 @@ impl Compressor {
         self.base_release_ms
     }
 
-    /// Reset overage timer (call when threshold changes)
-    pub fn reset_overage_timer(&mut self) {
-        self.overage_timer = 0.0;
+    /// Reset adaptive release state (call when threshold changes)
+    pub fn reset_adaptive_release_state(&mut self) {
+        self.fast_release_env_db = self.current_gain_reduction_db;
+        self.slow_release_env_db = 0.0;
     }
 
     /// Set makeup gain in dB
@@ -269,21 +281,56 @@ impl Compressor {
         self.smoothed_makeup_gain
     }
 
-    fn calculate_adaptive_release(&mut self, sample_rate: f64) {
+    fn update_adaptive_release_time_meter(&mut self) {
         if !self.adaptive_release {
             self.target_release_ms = self.base_release_ms;
             return;
         }
 
-        let max_overage_duration = 2.0;
-        let overage_duration_sec = self.overage_timer / sample_rate;
-        let scaling_factor = (overage_duration_sec / max_overage_duration).min(1.0);
+        self.target_release_ms = if self.slow_release_env_db > SLOW_RELEASE_TRIGGER_DB {
+            ADAPTIVE_SLOW_RELEASE_MS
+        } else {
+            ADAPTIVE_FAST_RELEASE_MS
+        };
+    }
 
-        let min_release = 50.0;
-        let max_release = 400.0;
-        let adaptive_range = max_release - min_release;
+    fn smooth_gain_reduction(&mut self, target_gain_reduction_db: f64) {
+        if !self.adaptive_release {
+            let gr_coeff = if target_gain_reduction_db > self.current_gain_reduction_db {
+                self.attack_coeff
+            } else {
+                self.release_coeff
+            };
+            self.current_gain_reduction_db = gr_coeff * self.current_gain_reduction_db
+                + (1.0 - gr_coeff) * target_gain_reduction_db;
+            self.fast_release_env_db = self.current_gain_reduction_db;
+            self.slow_release_env_db = 0.0;
+            return;
+        }
 
-        self.target_release_ms = min_release + adaptive_range * scaling_factor;
+        let fast_release_coeff =
+            util::time_constant_to_coeff(ADAPTIVE_FAST_RELEASE_MS, self.sample_rate);
+        let slow_charge_coeff =
+            util::time_constant_to_coeff(ADAPTIVE_SLOW_CHARGE_MS, self.sample_rate);
+        let slow_release_coeff =
+            util::time_constant_to_coeff(ADAPTIVE_SLOW_RELEASE_MS, self.sample_rate);
+
+        if target_gain_reduction_db > self.current_gain_reduction_db {
+            self.fast_release_env_db = self.attack_coeff * self.current_gain_reduction_db
+                + (1.0 - self.attack_coeff) * target_gain_reduction_db;
+        } else {
+            self.fast_release_env_db = fast_release_coeff * self.fast_release_env_db
+                + (1.0 - fast_release_coeff) * target_gain_reduction_db;
+        }
+
+        if target_gain_reduction_db > SLOW_RELEASE_TRIGGER_DB {
+            self.slow_release_env_db = slow_charge_coeff * self.slow_release_env_db
+                + (1.0 - slow_charge_coeff) * target_gain_reduction_db;
+        } else {
+            self.slow_release_env_db *= slow_release_coeff;
+        }
+
+        self.current_gain_reduction_db = self.fast_release_env_db.max(self.slow_release_env_db);
     }
 
     fn update_auto_makeup_gain(&mut self) {
@@ -339,6 +386,14 @@ impl Compressor {
         }
     }
 
+    #[inline]
+    fn blended_detector_db(peak_db: f64, rms_db: f64) -> f64 {
+        let peak_lin = util::db_to_linear(peak_db);
+        let rms_lin = util::db_to_linear(rms_db);
+        let blended = DETECTOR_PEAK_WEIGHT * peak_lin + DETECTOR_RMS_WEIGHT * rms_lin;
+        util::linear_to_db(blended, 1e-10)
+    }
+
     /// Process a single sample
     #[inline]
     pub fn process_sample(&mut self, input: f32) -> f32 {
@@ -385,17 +440,9 @@ impl Compressor {
             self.rms_coeff * self.rms_envelope_sq + (1.0 - self.rms_coeff) * input_squared;
         let rms_db = util::linear_to_db(self.rms_envelope_sq.sqrt(), 1e-10);
 
-        let detector_db =
-            DETECTOR_PEAK_WEIGHT * self.peak_envelope_db + DETECTOR_RMS_WEIGHT * rms_db;
+        let detector_db = Self::blended_detector_db(self.peak_envelope_db, rms_db);
 
-        let input_above_threshold = detector_db > self.threshold_db;
-        if input_above_threshold {
-            self.overage_timer += 1.0;
-        } else {
-            self.overage_timer = (self.overage_timer - 10.0).max(0.0);
-        }
-
-        self.calculate_adaptive_release(self.sample_rate);
+        self.update_adaptive_release_time_meter();
         let release_diff = self.target_release_ms - self.current_release_ms;
         if release_diff.abs() > 1.0 {
             self.current_release_ms = self.release_smoothing_coeff * self.current_release_ms
@@ -407,13 +454,7 @@ impl Compressor {
             util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
 
         let target_gain_reduction_db = self.compute_gain_reduction(detector_db);
-        let gr_coeff = if target_gain_reduction_db > self.current_gain_reduction_db {
-            self.attack_coeff
-        } else {
-            self.release_coeff
-        };
-        self.current_gain_reduction_db =
-            gr_coeff * self.current_gain_reduction_db + (1.0 - gr_coeff) * target_gain_reduction_db;
+        self.smooth_gain_reduction(target_gain_reduction_db);
 
         if update_makeup_gain {
             self.update_auto_makeup_gain();
@@ -429,7 +470,8 @@ impl Compressor {
         self.peak_envelope_db = -120.0;
         self.rms_envelope_sq = 0.0;
         self.current_gain_reduction_db = 0.0;
-        self.overage_timer = 0.0;
+        self.fast_release_env_db = 0.0;
+        self.slow_release_env_db = 0.0;
         self.current_release_ms = self.base_release_ms;
         self.target_release_ms = self.base_release_ms;
         self.release_coeff =
@@ -520,6 +562,16 @@ mod tests {
     }
 
     #[test]
+    fn test_detector_blend_uses_linear_domain() {
+        let detector = Compressor::blended_detector_db(-6.0, -18.0);
+
+        assert!(detector < -6.0);
+        assert!(detector > -18.0);
+        assert!((Compressor::blended_detector_db(-12.0, -12.0) + 12.0).abs() < 1e-9);
+        assert!(Compressor::blended_detector_db(-160.0, -160.0).is_finite());
+    }
+
+    #[test]
     fn test_adaptive_release_enables() {
         let mut comp = Compressor::new(-20.0, 4.0, 10.0, 50.0, 0.0, 0.0, 48_000.0);
         comp.set_adaptive_release(true);
@@ -574,6 +626,39 @@ mod tests {
         let fixed_drop = fixed_peak_before - fixed.peak_envelope_db;
         let adaptive_drop = adaptive_peak_before - adaptive.peak_envelope_db;
         assert!((fixed_drop - adaptive_drop).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_adaptive_release_slow_envelope_ignores_light_compression() {
+        let mut comp = Compressor::new(-20.0, 4.0, 1.0, 80.0, 0.0, 0.0, 48_000.0);
+        comp.set_adaptive_release(true);
+
+        for _ in 0..4_800 {
+            comp.smooth_gain_reduction(SLOW_RELEASE_TRIGGER_DB - 0.5);
+        }
+
+        assert!(comp.slow_release_env_db < 0.1);
+        assert!(comp.current_gain_reduction() > 0.0);
+    }
+
+    #[test]
+    fn test_adaptive_release_slow_envelope_charges_on_deep_compression() {
+        let mut comp = Compressor::new(-20.0, 4.0, 1.0, 80.0, 0.0, 0.0, 48_000.0);
+        comp.set_adaptive_release(true);
+
+        for _ in 0..24_000 {
+            comp.smooth_gain_reduction(SLOW_RELEASE_TRIGGER_DB + 4.0);
+        }
+
+        assert!(comp.slow_release_env_db > SLOW_RELEASE_TRIGGER_DB);
+
+        let held = comp.current_gain_reduction();
+        for _ in 0..2_400 {
+            comp.smooth_gain_reduction(0.0);
+        }
+
+        assert!(comp.current_gain_reduction() > 0.0);
+        assert!(comp.current_gain_reduction() < held);
     }
 
     #[test]

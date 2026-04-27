@@ -1,4 +1,4 @@
-//! Split-band de-esser using sidechain sibilance detection.
+//! Dynamic-EQ de-esser using sidechain sibilance detection.
 //!
 //! Detection path:
 //! - High-pass at low cutoff (default 4kHz)
@@ -11,11 +11,15 @@
 //! - Max reduction clamp
 //!
 //! Apply path:
-//! - Split-band recombination:
-//!   out = (input - band) + band * gain
+//! - Detector drives a dynamic peaking EQ in the sibilance region.
 
 use super::biquad::{Biquad, BiquadType};
 use crate::dsp::util;
+
+const VOICE_REFERENCE_SIDECHAIN_DISCOUNT: f64 = 0.6;
+const AUTO_BASELINE_FALL_MS: f64 = 13.88;
+const AUTO_BASELINE_RISE_MS: f64 = 34.72;
+const AUTO_BASELINE_INACTIVE_DECAY_MS: f64 = 20.82;
 
 /// Real-time de-esser processor.
 pub struct DeEsser {
@@ -38,6 +42,7 @@ pub struct DeEsser {
     sample_rate: f64,
     detector_hp: Biquad,
     detector_lp: Biquad,
+    dynamic_eq: Biquad,
 }
 
 impl DeEsser {
@@ -46,6 +51,9 @@ impl DeEsser {
         let low_cut_hz = 4000.0;
         let high_cut_hz = 9000.0;
         let detector_q = 0.707;
+
+        let center_hz = Self::dynamic_eq_center_hz(low_cut_hz, high_cut_hz);
+        let dynamic_q = Self::dynamic_eq_q(low_cut_hz, high_cut_hz);
 
         Self {
             enabled: false,
@@ -79,6 +87,7 @@ impl DeEsser {
                 detector_q,
                 sample_rate,
             ),
+            dynamic_eq: Biquad::new(BiquadType::Peaking, center_hz, 0.0, dynamic_q, sample_rate),
         }
     }
 
@@ -100,6 +109,42 @@ impl DeEsser {
     fn rebuild_detector_filters(&mut self) {
         self.detector_hp.set_frequency(self.low_cut_hz);
         self.detector_lp.set_frequency(self.high_cut_hz);
+        self.rebuild_dynamic_eq_shape();
+    }
+
+    #[inline]
+    fn dynamic_eq_center_hz(low_cut_hz: f64, high_cut_hz: f64) -> f64 {
+        (low_cut_hz * high_cut_hz).sqrt()
+    }
+
+    #[inline]
+    fn dynamic_eq_q(low_cut_hz: f64, high_cut_hz: f64) -> f64 {
+        let bandwidth = (high_cut_hz - low_cut_hz).max(200.0);
+        (Self::dynamic_eq_center_hz(low_cut_hz, high_cut_hz) / bandwidth).clamp(0.5, 6.0)
+    }
+
+    fn rebuild_dynamic_eq_shape(&mut self) {
+        self.dynamic_eq.set_frequency(Self::dynamic_eq_center_hz(
+            self.low_cut_hz,
+            self.high_cut_hz,
+        ));
+        self.dynamic_eq
+            .set_q(Self::dynamic_eq_q(self.low_cut_hz, self.high_cut_hz));
+    }
+
+    #[inline]
+    fn auto_baseline_fall_coeff(&self) -> f64 {
+        util::time_constant_to_coeff(AUTO_BASELINE_FALL_MS, self.sample_rate)
+    }
+
+    #[inline]
+    fn auto_baseline_rise_coeff(&self) -> f64 {
+        util::time_constant_to_coeff(AUTO_BASELINE_RISE_MS, self.sample_rate)
+    }
+
+    #[inline]
+    fn auto_baseline_inactive_decay_coeff(&self) -> f64 {
+        util::time_constant_to_coeff(AUTO_BASELINE_INACTIVE_DECAY_MS, self.sample_rate)
     }
 
     /// Enable or disable de-essing.
@@ -216,7 +261,9 @@ impl DeEsser {
 
         let sidechain_level_db = util::linear_to_db(self.sidechain_env, 1e-10);
         // Estimate "voice body" reference by discounting sidechain contribution.
-        let voice_reference_level = (self.broadband_env - self.sidechain_env * 0.6).max(1e-8);
+        let voice_reference_level = (self.broadband_env
+            - self.sidechain_env * VOICE_REFERENCE_SIDECHAIN_DISCOUNT)
+            .max(1e-8);
         let voice_reference_db = util::linear_to_db(voice_reference_level, 1e-10);
 
         let target_reduction = if self.auto_enabled {
@@ -228,14 +275,14 @@ impl DeEsser {
                 let baseline_target = excess_db.clamp(0.0, 24.0);
                 // Learn baseline slowly; decay faster than rise to stay responsive.
                 let baseline_coeff = if baseline_target < self.auto_baseline_excess_db {
-                    0.9985
+                    self.auto_baseline_fall_coeff()
                 } else {
-                    0.9994
+                    self.auto_baseline_rise_coeff()
                 };
                 self.auto_baseline_excess_db = baseline_coeff * self.auto_baseline_excess_db
                     + (1.0 - baseline_coeff) * baseline_target;
             } else {
-                self.auto_baseline_excess_db *= 0.999;
+                self.auto_baseline_excess_db *= self.auto_baseline_inactive_decay_coeff();
             }
 
             let trigger_offset_db = Self::lerp(3.5, 0.8, amount);
@@ -260,10 +307,11 @@ impl DeEsser {
         self.current_reduction_db =
             coeff * self.current_reduction_db + (1.0 - coeff) * target_reduction;
 
-        let gain = util::db_to_linear(-self.current_reduction_db);
-        let dry_minus_band = input as f64 - sidechain as f64;
-        let wet_band = sidechain as f64 * gain;
-        (dry_minus_band + wet_band) as f32
+        let dynamic_gain_db = -self.current_reduction_db;
+        if (self.dynamic_eq.gain_db() - dynamic_gain_db).abs() > 0.001 {
+            self.dynamic_eq.set_gain_db_immediate(dynamic_gain_db);
+        }
+        self.dynamic_eq.process_sample(input)
     }
 
     /// Process a full block in place.
@@ -286,6 +334,8 @@ impl DeEsser {
         self.auto_baseline_excess_db = 0.0;
         self.detector_hp.reset();
         self.detector_lp.reset();
+        self.dynamic_eq.reset();
+        self.dynamic_eq.set_gain_db_immediate(0.0);
     }
 }
 
@@ -379,7 +429,22 @@ mod tests {
     }
 
     #[test]
-    fn test_split_band_identity_when_reduction_is_zero() {
+    fn test_auto_baseline_coefficients_are_sample_rate_aware() {
+        let deesser_44 = DeEsser::new(44_100.0);
+        let deesser_96 = DeEsser::new(96_000.0);
+
+        let one_second_44 = deesser_44
+            .auto_baseline_rise_coeff()
+            .powf(deesser_44.sample_rate);
+        let one_second_96 = deesser_96
+            .auto_baseline_rise_coeff()
+            .powf(deesser_96.sample_rate);
+
+        assert!((one_second_44 - one_second_96).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_dynamic_eq_identity_when_reduction_is_zero() {
         let mut deesser = DeEsser::new(48_000.0);
         deesser.set_enabled(true);
         deesser.set_auto_enabled(false);
@@ -397,12 +462,12 @@ mod tests {
 
         assert!(
             max_err < 1e-4,
-            "split-band should be identity with zero reduction"
+            "dynamic EQ should be identity with zero reduction"
         );
     }
 
     #[test]
-    fn test_split_band_output_stays_finite() {
+    fn test_dynamic_eq_output_stays_finite() {
         let mut deesser = DeEsser::new(48_000.0);
         deesser.set_enabled(true);
         deesser.set_auto_enabled(false);
@@ -418,15 +483,39 @@ mod tests {
             let y = deesser.process_sample(x);
             assert!(
                 y.is_finite(),
-                "split-band de-esser produced non-finite sample"
+                "dynamic-EQ de-esser produced non-finite sample"
             );
             peak = peak.max(y.abs());
         }
 
         assert!(
             peak < 2.0,
-            "unexpectedly large split-band excursion: {}",
+            "unexpectedly large dynamic-EQ excursion: {}",
             peak
         );
+    }
+
+    #[test]
+    fn test_dynamic_eq_preserves_low_frequency_when_deessing() {
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        deesser.set_auto_enabled(false);
+        deesser.set_threshold_db(-45.0);
+        deesser.set_ratio(12.0);
+        deesser.set_max_reduction_db(12.0);
+
+        let sr = 48_000.0f64;
+        let mut low_sum_in = 0.0f64;
+        let mut low_sum_out = 0.0f64;
+        for n in 0..12_000 {
+            let t = n as f64 / sr;
+            let low = (2.0 * std::f64::consts::PI * 250.0 * t).sin() as f32 * 0.25;
+            let sib = (2.0 * std::f64::consts::PI * 7_000.0 * t).sin() as f32 * 0.35;
+            let y = deesser.process_sample(low + sib);
+            low_sum_in += low.abs() as f64;
+            low_sum_out += (y as f64).abs();
+        }
+
+        assert!(low_sum_out > low_sum_in * 0.5);
     }
 }

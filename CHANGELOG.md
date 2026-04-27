@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.16 - 2026-04-27
+
+- Reworked the DSP safety path with transparent limiter clamping and non-overshooting linear drift retiming.
+- Replaced raw EQ coefficient interpolation with dual-filter output crossfades so live EQ changes avoid unstable intermediate IIR states.
+- Updated dynamics behavior with RMS gate detection plus hold/hysteresis, linear-domain compressor peak/RMS detection, depth-aware adaptive compressor release, and dynamic-EQ de-essing that avoids phase-shifted sidechain subtraction.
+
 ## v1.7.15 - 2026-04-27
 
 - Hardened realtime audio against suppressor lock contention, dirty-control update loss, non-finite DSP parameters, post-retime limiter overshoot, and input callback allocations.

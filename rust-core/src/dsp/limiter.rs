@@ -1,4 +1,4 @@
-//! Lookahead hard limiter with gentle post safety clipping.
+//! Lookahead hard limiter with transparent post safety clamping.
 //!
 //! Uses a fixed lookahead window (~2ms) computed from runtime sample rate.
 
@@ -148,15 +148,8 @@ impl Limiter {
     }
 
     #[inline]
-    fn apply_soft_clip(&self, sample: f64) -> f64 {
-        if self.ceiling_linear <= 0.0 {
-            return 0.0;
-        }
-        if sample.abs() <= self.ceiling_linear {
-            return sample;
-        }
-        let normalized = sample / self.ceiling_linear;
-        normalized.tanh() * self.ceiling_linear
+    fn apply_ceiling(&self, sample: f64) -> f64 {
+        sample.clamp(-self.ceiling_linear, self.ceiling_linear)
     }
 
     /// Process a single sample
@@ -198,7 +191,7 @@ impl Limiter {
         }
 
         let limited = delayed * self.gain_reduction;
-        self.apply_soft_clip(limited) as f32
+        self.apply_ceiling(limited) as f32
     }
 
     /// Process a block of samples in-place
@@ -294,6 +287,29 @@ mod tests {
         for sample in block.iter().skip(lim.lookahead_samples()) {
             assert!(sample.abs() <= ceiling_linear + 0.002);
         }
+    }
+
+    #[test]
+    fn test_limiter_ceiling_clamp_is_transparent_below_ceiling() {
+        let lim = Limiter::new(-6.0, 50.0, 48_000.0);
+        let sample = lim.ceiling_linear * 0.5;
+
+        assert_eq!(lim.apply_ceiling(sample), sample);
+        assert_eq!(lim.apply_ceiling(-sample), -sample);
+    }
+
+    #[test]
+    fn test_limiter_ceiling_clamp_caps_both_polarities() {
+        let lim = Limiter::new(-6.0, 50.0, 48_000.0);
+
+        assert_eq!(
+            lim.apply_ceiling(lim.ceiling_linear * 2.0),
+            lim.ceiling_linear
+        );
+        assert_eq!(
+            lim.apply_ceiling(-lim.ceiling_linear * 2.0),
+            -lim.ceiling_linear
+        );
     }
 
     #[test]

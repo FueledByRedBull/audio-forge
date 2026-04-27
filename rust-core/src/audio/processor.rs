@@ -287,19 +287,12 @@ fn retime_audio_block<'a>(
         } else {
             (i as f32 * clamped_ratio).min(max_src)
         };
-        let idx = src_pos.floor() as isize;
-        let frac = src_pos - idx as f32;
-        let clamp_idx = |k: isize| -> usize { k.clamp(0, (input.len() - 1) as isize) as usize };
-        let y0 = input[clamp_idx(idx - 1)];
-        let y1 = input[clamp_idx(idx)];
-        let y2 = input[clamp_idx(idx + 1)];
-        let y3 = input[clamp_idx(idx + 2)];
-
-        let c0 = y1;
-        let c1 = 0.5 * (y2 - y0);
-        let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-        let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-        *out_sample = ((c3 * frac + c2) * frac + c1) * frac + c0;
+        let idx0 = src_pos.floor() as usize;
+        let idx1 = (idx0 + 1).min(input.len() - 1);
+        let frac = src_pos - idx0 as f32;
+        let y0 = input[idx0];
+        let y1 = input[idx1];
+        *out_sample = y0 + (y1 - y0) * frac;
     }
 
     output.as_slice()
@@ -4104,6 +4097,18 @@ mod tests {
 
         let compressed = retime_audio_block(&input, 2.0, 32, &mut scratch);
         assert!(compressed.len() < input.len());
+    }
+
+    #[test]
+    fn test_retime_audio_block_linear_interpolation_does_not_overshoot_neighbors() {
+        let input = [0.0_f32, 0.5, 1.0, 0.5, 0.0];
+        let mut scratch = Vec::new();
+
+        let expanded = retime_audio_block(&input, 0.7, 32, &mut scratch);
+
+        for sample in expanded {
+            assert!((*sample >= 0.0) && (*sample <= 1.0));
+        }
     }
 
     #[test]

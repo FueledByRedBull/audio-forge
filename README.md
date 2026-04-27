@@ -7,15 +7,15 @@
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, latency calibration, and dynamics control.
 
-Current version: `v1.7.15`
+Current version: `v1.7.16`
 
 ## Download
 
 The latest portable build is available on the GitHub releases page:
 
-- [AudioForge v1.7.15](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.7.15)
-- Artifact: `AudioForge-v1.7.15-win64-ultra.7z`
-- SHA-256: `73294A82FD9B73F44F629C78E03D7EE44136C38B0CCFB680E17EBBD4E7C7F439`
+- [AudioForge v1.7.16](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.7.16)
+- Artifact: `AudioForge-v1.7.16-win64-ultra.7z`
+- SHA-256: `DF69074902194495096E2C764CECEAA630245F8F6C8F1158DBB70552401A36A3`
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
 
@@ -30,7 +30,7 @@ User-facing tools:
 - Auto thresholding that tracks the live noise floor in VAD modes.
 - 10-band parametric EQ with gain, Q, and per-band center frequencies.
 - Auto-EQ calibration that records your voice, analyzes the spectrum, and applies a bounded correction.
-- Split-band de-esser, compressor, auto makeup gain, and lookahead limiter.
+- Dynamic-EQ de-esser, compressor, auto makeup gain, and lookahead limiter.
 - Per device-pair latency calibration profiles.
 - Raw monitor and bypass paths for troubleshooting.
 
@@ -158,7 +158,7 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.7.15-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.7.16-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This uses LZMA2 with max compression and solid mode, which is appropriate for the PyInstaller bundle.

@@ -502,6 +502,10 @@ pub struct VadAutoGate {
     sample_rate: u32,
     /// Current VAD probability for metering
     current_probability: f32,
+    /// Whether probability is supplied by an external non-realtime worker.
+    uses_external_probability: bool,
+    /// Whether the external worker has a fresh probability.
+    external_probability_available: bool,
     /// Circular history buffer of low-confidence frame levels for percentile floor estimation.
     noise_floor_history: Vec<f32>,
     /// Next write index into `noise_floor_history` once full.
@@ -537,6 +541,37 @@ impl VadAutoGate {
             closed_counter_samples: sample_rate as f32 * 0.05,
             sample_rate,
             current_probability: 0.0,
+            uses_external_probability: false,
+            external_probability_available: false,
+            noise_floor_history: Vec::with_capacity(NOISE_FLOOR_HISTORY_FRAMES),
+            noise_floor_history_cursor: 0,
+            noise_floor_sort_scratch: Vec::with_capacity(NOISE_FLOOR_HISTORY_FRAMES),
+        }
+    }
+
+    /// Create VAD gate logic that consumes probabilities from a non-realtime worker.
+    pub fn without_backend(sample_rate: u32, vad_threshold: f32) -> Self {
+        Self {
+            vad: None,
+            noise_floor: -60.0,
+            margin: 10.0,
+            min_threshold: -80.0,
+            max_threshold: -10.0,
+            manual_threshold_db: -40.0,
+            auto_threshold_enabled: true,
+            enabled: true,
+            gate_mode: GateMode::ThresholdOnly,
+            vad_threshold,
+            hold_time_ms: 200.0,
+            hold_timer: 0.0,
+            timer_running: false,
+            prev_gate_open: false,
+            debounce_time_ms: 50.0,
+            closed_counter_samples: sample_rate as f32 * 0.05,
+            sample_rate,
+            current_probability: 0.0,
+            uses_external_probability: true,
+            external_probability_available: false,
             noise_floor_history: Vec::with_capacity(NOISE_FLOOR_HISTORY_FRAMES),
             noise_floor_history_cursor: 0,
             noise_floor_sort_scratch: Vec::with_capacity(NOISE_FLOOR_HISTORY_FRAMES),
@@ -562,6 +597,20 @@ impl VadAutoGate {
             }
         };
 
+        self.process_with_probability(samples, prob)
+    }
+
+    pub fn process_with_external_probability(
+        &mut self,
+        samples: &[f32],
+        probability: Option<f32>,
+    ) -> (bool, f32) {
+        if !self.enabled || !self.uses_external_probability {
+            return (false, 0.0);
+        }
+
+        self.external_probability_available = probability.is_some();
+        let prob = probability.unwrap_or(0.0).clamp(0.0, 1.0);
         self.process_with_probability(samples, prob)
     }
 
@@ -767,11 +816,15 @@ impl VadAutoGate {
     }
 
     pub fn is_available(&self) -> bool {
-        self.vad.is_some()
+        if self.uses_external_probability {
+            self.external_probability_available
+        } else {
+            self.vad.is_some()
+        }
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled && self.vad.is_some();
+        self.enabled = enabled && (self.vad.is_some() || self.uses_external_probability);
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -1066,10 +1119,9 @@ mod tests {
     }
 
     #[test]
-    fn test_vad_buffer_compacts_after_threshold() {
-        let mut vad = match SileroVAD::new(48_000, 0.5) {
-            Ok(vad) => vad,
-            Err(_) => return,
+    fn test_model_optional_vad_buffer_compacts_after_threshold() {
+        let Some(mut vad) = optional_silero_vad(48_000, 0.5) else {
+            return;
         };
 
         let frame = vec![0.0f32; 480];
@@ -1083,10 +1135,9 @@ mod tests {
     }
 
     #[test]
-    fn test_vad_resampled_path_reuses_fixed_output_window() {
-        let mut vad = match SileroVAD::new(48_000, 0.5) {
-            Ok(vad) => vad,
-            Err(_) => return,
+    fn test_model_optional_vad_resampled_path_reuses_fixed_output_window() {
+        let Some(mut vad) = optional_silero_vad(48_000, 0.5) else {
+            return;
         };
 
         let frame = vec![0.0f32; vad.window_size()];
@@ -1097,10 +1148,9 @@ mod tests {
     }
 
     #[test]
-    fn test_vad_returns_neutral_probability_before_first_inference() {
-        let mut vad = match SileroVAD::new(48_000, 0.42) {
-            Ok(vad) => vad,
-            Err(_) => return,
+    fn test_model_optional_vad_returns_neutral_probability_before_first_inference() {
+        let Some(mut vad) = optional_silero_vad(48_000, 0.42) else {
+            return;
         };
 
         let partial = vec![0.0_f32; vad.window_size().saturating_sub(1)];
@@ -1108,5 +1158,15 @@ mod tests {
 
         assert!((prob - 0.42).abs() < 1e-6);
         assert!((vad.probability() - 0.42).abs() < 1e-6);
+    }
+
+    fn optional_silero_vad(sample_rate: u32, threshold: f32) -> Option<SileroVAD> {
+        match SileroVAD::new(sample_rate, threshold) {
+            Ok(vad) => Some(vad),
+            Err(error) => {
+                eprintln!("Skipping model-optional Silero VAD coverage: {error}");
+                None
+            }
+        }
     }
 }

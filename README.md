@@ -7,15 +7,15 @@
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, latency calibration, and dynamics control.
 
-Current version: `v1.7.16`
+Current version: `v1.7.17`
 
 ## Download
 
 The latest portable build is available on the GitHub releases page:
 
-- [AudioForge v1.7.16](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.7.16)
-- Artifact: `AudioForge-v1.7.16-win64-ultra.7z`
-- SHA-256: `DF69074902194495096E2C764CECEAA630245F8F6C8F1158DBB70552401A36A3`
+- [AudioForge v1.7.17](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.7.17)
+- Artifact: `AudioForge-v1.7.17-win64-ultra.7z`
+- SHA-256: `D182F4A4177EACD99416BBC183C55D8E627E7063576124653ACDDFFB6DCAA38D`
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
 
@@ -47,6 +47,7 @@ Operational tools:
 AudioForge is Windows-first. The repository supports source builds, local development, and portable `dist/AudioForge` packaging. It is not currently shipped as a signed installer.
 
 DeepFilterNet support is intentionally opt-in at runtime. Use `AUDIOFORGE_ENABLE_DEEPFILTER=1` when you want to exercise the DeepFilter backend; RNNoise remains the default safe path.
+DeepFilter model/DLL initialization and Silero VAD inference are prepared off the realtime DSP loop; the audio path only swaps ready suppressor state and consumes cached VAD probabilities.
 
 ## DSP Chain
 
@@ -109,7 +110,13 @@ Useful behavior to know:
 
 ## Development Assets
 
-Create `models/` in the repo root if you want local runtime discovery during development:
+Full-feature development and release builds use the tracked `release-assets.json` manifest. Obtain each listed asset from the documented source, place it at the manifest `path`, and verify before packaging:
+
+```powershell
+.\.venv\Scripts\python.exe python/tools/verify_release_assets.py
+```
+
+Create `models/` in the repo root for local runtime discovery:
 
 - `models/DeepFilterNet3_ll_onnx.tar.gz`
 - `models/DeepFilterNet3_onnx.tar.gz`
@@ -118,6 +125,7 @@ Create `models/` in the repo root if you want local runtime discovery during dev
 DeepFilter runtime library:
 
 - `df.dll` in the repo root for development runs.
+- `target/release/DirectML.dll` from the pinned DirectML redistributable package for full-feature packaging.
 - Bundled under `dist/AudioForge/_internal` for portable builds.
 
 Environment variables:
@@ -142,9 +150,10 @@ powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 Packaging script behavior:
 
 - Uses the locally built `python/mic_eq/mic_eq_core*.pyd`.
-- Validates required full-feature runtime assets by default.
+- Fails if the local native extension is older than Rust sources.
+- Validates required full-feature runtime assets against `release-assets.json`.
 - Bundles the Python runtime with PyInstaller.
-- Prunes the final bundle with `python/tools/prune_bundle.py`.
+- Prunes unused Qt payload with `python/tools/prune_bundle.py` while retaining dependency metadata and licenses.
 - Keeps the application self-contained in `dist/AudioForge`.
 
 Portable output:
@@ -158,7 +167,7 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.7.16-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.7.17-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This uses LZMA2 with max compression and solid mode, which is appropriate for the PyInstaller bundle.
@@ -174,13 +183,14 @@ CI-equivalent checks:
 .\.venv\Scripts\python.exe python/tools/check_versions.py
 .\.venv\Scripts\python.exe python/tools/package_smoke.py --source-only
 cargo fmt --check
-cargo test -p mic_eq_core --tests
+cargo test -p mic_eq_core
 cargo clippy -p mic_eq_core --all-targets -- -D warnings
 ```
 
 Packaged-build smoke check after `build_exe.ps1`:
 
 ```powershell
+.\.venv\Scripts\python.exe python/tools/verify_release_assets.py
 .\.venv\Scripts\python.exe python/tools/package_smoke.py
 ```
 

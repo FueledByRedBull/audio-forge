@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.7.17 - 2026-04-30
+
+- Moved DeepFilter backend construction and VAD inference out of realtime processing paths; VAD modes now consume cached worker probabilities and degrade deterministically when unavailable.
+- Fixed muted/recording output draining, raw-recording duration validation, startup preset restore IDs, full compressor preset loading, calibration-owned processor cleanup, and corrupt config boolean/geometry handling.
+- Added release asset hash verification, exact bundle smoke checks, dependency metadata retention, native-extension staleness checks, and tighter version/package test coverage.
+
 ## v1.7.16 - 2026-04-27
 
 - Reworked the DSP safety path with transparent limiter clamping and non-overshooting linear drift retiming.

@@ -307,6 +307,33 @@ def _validate_bool(value: object, param_name: str, section: str) -> bool:
     )
 
 
+def _coerce_config_bool(value: object, default: bool) -> bool:
+    """Accept only JSON booleans for app config flags; corrupt values use defaults."""
+    if isinstance(value, bool):
+        return value
+    return default
+
+
+def _coerce_window_geometry(value: object) -> dict[str, int] | None:
+    """Validate persisted window geometry before Qt restore code consumes it."""
+    if not isinstance(value, dict):
+        return None
+
+    coerced: dict[str, int] = {}
+    for key in ("x", "y", "width", "height"):
+        raw = value.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return None
+        numeric = float(raw)
+        if not math.isfinite(numeric):
+            return None
+        coerced[key] = int(round(numeric))
+
+    coerced["width"] = max(640, coerced["width"])
+    coerced["height"] = max(480, coerced["height"])
+    return coerced
+
+
 def _parse_range_args(args: tuple[object, ...]) -> tuple[float, float, str, str]:
     if len(args) != 4:
         raise PresetValidationError("Invalid validation range definition")
@@ -380,7 +407,7 @@ class Preset:
     """Complete preset with all settings."""
     name: str = "Default"
     description: str = ""
-    version: str = "1.7.16"  # Version field for migration
+    version: str = "1.7.17"  # Version field for migration
     gate: GateSettings = field(default_factory=GateSettings)
     eq: EQSettings = field(default_factory=EQSettings)
     rnnoise: RNNoiseSettings = field(default_factory=RNNoiseSettings)
@@ -514,10 +541,10 @@ class Preset:
                 data['version'] = '1.7.4'
                 version_tuple = _version_tuple('1.7.4')
 
-            # Migrate v1.7.4 presets -> v1.7.16 (no format changes)
-            if version_tuple < _version_tuple('1.7.16'):
-                data['version'] = '1.7.16'
-                version_tuple = _version_tuple('1.7.16')
+            # Migrate v1.7.4 presets -> v1.7.17 (no format changes)
+            if version_tuple < _version_tuple('1.7.17'):
+                data['version'] = '1.7.17'
+                version_tuple = _version_tuple('1.7.17')
 
             # Extract and validate gate settings
             gate_data = data.get('gate', {})
@@ -756,7 +783,7 @@ class Preset:
             return cls(
                 name=data.get('name', 'Unnamed'),
                 description=data.get('description', ''),
-                version=data.get('version', '1.7.16'),
+                version=data.get('version', '1.7.17'),
                 gate=validated_gate,
                 eq=validated_eq,
                 rnnoise=validated_rnnoise,
@@ -996,14 +1023,14 @@ class AppConfig:
             last_output_device_identity=output_identity,
             last_preset=data.get('last_preset', ''),
             startup_preset=data.get('startup_preset', ''),
-            window_geometry=data.get('window_geometry'),
+            window_geometry=_coerce_window_geometry(data.get('window_geometry')),
             main_splitter_sizes=[
                 int(size)
                 for size in (data.get('main_splitter_sizes') or [])
                 if isinstance(size, (int, float))
             ] or None,
             main_control_tab_index=int(data.get('main_control_tab_index', 0) or 0),
-            use_measured_latency=bool(data.get('use_measured_latency', True)),
+            use_measured_latency=_coerce_config_bool(data.get('use_measured_latency', True), True),
             latency_calibration_profiles=parsed_profiles,
         )
 
@@ -1052,7 +1079,7 @@ BUILTIN_PRESETS = {
     'voice': Preset(
         name="Voice Clarity",
         description="Optimized for voice communication - cuts low end rumble and boosts presence",
-        version="1.7.16",
+        version="1.7.17",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -1066,7 +1093,7 @@ BUILTIN_PRESETS = {
     'bass_cut': Preset(
         name="Bass Cut",
         description="High-pass effect to remove low frequency rumble and proximity effect",
-        version="1.7.16",
+        version="1.7.17",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -1080,7 +1107,7 @@ BUILTIN_PRESETS = {
     'presence': Preset(
         name="Presence Boost",
         description="Enhances voice presence and intelligibility",
-        version="1.7.16",
+        version="1.7.17",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -1094,7 +1121,7 @@ BUILTIN_PRESETS = {
     'flat': Preset(
         name="Flat",
         description="No EQ processing - flat frequency response",
-        version="1.7.16",
+        version="1.7.17",
         gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -1108,7 +1135,7 @@ BUILTIN_PRESETS = {
     'minimal': Preset(
         name="Minimal Processing",
         description="Gate and RNNoise only - no EQ",
-        version="1.7.16",
+        version="1.7.17",
         gate=GateSettings(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -1122,7 +1149,7 @@ BUILTIN_PRESETS = {
     'aggressive_denoise': Preset(
         name="Aggressive Denoise",
         description="Maximum noise reduction with tight gate",
-        version="1.7.16",
+        version="1.7.17",
         gate=GateSettings(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0,
                          gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                          auto_threshold_enabled=True, gate_margin_db=10.0),

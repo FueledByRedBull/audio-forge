@@ -1,8 +1,8 @@
-//! Stress tests for MicEq DSP parameter changes and device hotswap
+//! Stress tests for MicEq DSP parameter changes and device-enumeration smoke coverage
 //!
 //! These tests validate that the system can handle:
 //! - Rapid UI interaction (slider spam, preset switching)
-//! - Device disconnection without crashing
+//! - Device enumeration without crashing
 //!
 //! These are the "critical tests only" identified in CONCERNS.md.
 
@@ -192,17 +192,17 @@ fn test_rapid_parameter_changes() {
     println!("✓ Completed 1000 parameter changes without crash");
 }
 
-/// Test device hotswap behavior and error handling
+/// Smoke-test device enumeration and lifecycle-adjacent error handling
 ///
-/// This test validates device hotswap behavior:
+/// This test validates the unit-testable parts of device handling:
 /// 1. Device enumeration recovery (rapid successive calls)
 /// 2. Invalid device handling (returns error, not panic)
-/// 3. Processor stop/start cycle safety
+/// 3. Processor non-started lifecycle safety
 ///
-/// Note: This test cannot truly simulate USB unplug (requires hardware).
-/// It documents expected behavior for manual validation.
+/// This does not simulate USB unplug or WASAPI invalid-device callbacks; those
+/// remain manual or hardware-controlled integration coverage.
 #[test]
-fn test_device_hotswap_behavior() {
+fn test_device_enumeration_and_lifecycle_smoke() {
     // DEVICE HOTSWAP BEHAVIOR (Windows/WASAPI):
     // - When USB device is unplugged mid-stream, cpal's error callback fires
     // - Current implementation logs to stderr: "Audio input error: ..."
@@ -267,7 +267,7 @@ fn test_device_hotswap_behavior() {
         }
     }
 
-    // Test 3: Processor stop/start cycle
+    // Test 3: Processor non-started lifecycle
     // Create processor, call stop() (even though not started - should be safe)
     let processor = AudioProcessor::new();
     assert!(
@@ -299,6 +299,6 @@ fn test_device_hotswap_behavior() {
     let (_freq, gain, _q) = params.unwrap();
     assert_eq!(gain, 6.0, "EQ gain should be updated");
 
-    println!("✓ Processor stop/start cycle safety validated");
-    println!("✓ Device hotswap behavior test passed");
+    println!("Processor non-started lifecycle safety validated");
+    println!("✓ Device enumeration and lifecycle smoke test passed");
 }

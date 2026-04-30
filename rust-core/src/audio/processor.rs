@@ -30,7 +30,7 @@ use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
 use crate::dsp::{Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ};
 
 #[cfg(feature = "vad")]
-use crate::dsp::vad::{GateMode, VadAutoGate};
+use crate::dsp::vad::{GateMode, SileroVAD, VadAutoGate};
 
 const RESAMPLE_COMPACT_THRESHOLD: usize = 16384;
 const PROCESS_IDLE_SLEEP_US: u64 = 100;
@@ -68,6 +68,10 @@ const VAD_HOLD_MAX_MS: f32 = 500.0;
 const VAD_PRE_GAIN_MIN: f32 = 1.0;
 #[cfg(feature = "vad")]
 const VAD_PRE_GAIN_MAX: f32 = 10.0;
+#[cfg(feature = "vad")]
+const VAD_WORKER_MAX_BUFFER_SAMPLES: usize = 48_000;
+#[cfg(feature = "vad")]
+const VAD_PROBABILITY_STALE_US: u64 = 500_000;
 #[cfg(feature = "vad")]
 const GATE_MARGIN_MIN_DB: f32 = 0.0;
 #[cfg(feature = "vad")]
@@ -641,6 +645,28 @@ fn apply_suppressor_control(
     suppressor.set_enabled(control.enabled);
 }
 
+fn swap_pending_suppressor_if_ready(
+    suppressor: &mut NoiseSuppressionEngine,
+    control: &SuppressorControlState,
+    pending: &mut Option<NoiseSuppressionEngine>,
+) -> bool {
+    if suppressor.model_type() == control.model {
+        return true;
+    }
+
+    let Some(candidate) = pending.as_ref() else {
+        return false;
+    };
+    if candidate.model_type() != control.model {
+        return false;
+    }
+
+    *suppressor = pending
+        .take()
+        .expect("pending suppressor was checked above");
+    true
+}
+
 fn apply_deesser_control(deesser: &mut DeEsser, control: &DeesserControlState) {
     deesser.set_enabled(control.enabled);
     deesser.set_auto_enabled(control.auto_enabled);
@@ -689,6 +715,7 @@ pub struct AudioProcessor {
     suppressor_control: Arc<Mutex<SuppressorControlState>>,
     suppressor_dirty: Arc<AtomicBool>,
     suppressor_reset_requested: Arc<AtomicBool>,
+    pending_suppressor: Arc<Mutex<Option<NoiseSuppressionEngine>>>,
     suppressor_strength: Arc<AtomicU32>, // f32 bits stored as u32
     current_model: Arc<AtomicU8>,        // NoiseModel as u8
 
@@ -776,6 +803,18 @@ pub struct AudioProcessor {
     gate_noise_floor_db: Arc<AtomicU32>,
     /// Whether the current VAD backend is available.
     vad_available: Arc<AtomicBool>,
+    #[cfg(feature = "vad")]
+    /// Audio copied from the DSP loop for non-realtime VAD inference.
+    vad_worker_buffer: Arc<Mutex<Vec<f32>>>,
+    #[cfg(feature = "vad")]
+    /// Non-realtime VAD worker thread handle.
+    vad_worker_thread: Option<std::thread::JoinHandle<()>>,
+    #[cfg(feature = "vad")]
+    /// Non-realtime VAD worker running flag.
+    vad_worker_running: Arc<AtomicBool>,
+    #[cfg(feature = "vad")]
+    /// Last successful non-realtime VAD inference timestamp.
+    vad_last_update_us: Arc<AtomicU64>,
 
     /// Compressor current release time in milliseconds (for metering)
     compressor_current_release_ms: Arc<AtomicU64>,
@@ -949,7 +988,7 @@ impl AudioProcessor {
 
                 #[cfg(feature = "vad")]
                 {
-                    let vad_auto_gate = VadAutoGate::new(sample_rate, 0.5);
+                    let vad_auto_gate = VadAutoGate::without_backend(sample_rate, 0.5);
                     if let Ok(mut g) = gate.lock() {
                         g.set_vad_auto_gate(Some(vad_auto_gate));
                         apply_gate_control(&mut g, &gate_control_state);
@@ -966,6 +1005,7 @@ impl AudioProcessor {
             suppressor_control: Arc::new(Mutex::new(suppressor_control_state)),
             suppressor_dirty: Arc::new(AtomicBool::new(false)),
             suppressor_reset_requested: Arc::new(AtomicBool::new(false)),
+            pending_suppressor: Arc::new(Mutex::new(None)),
             suppressor_strength, // Store Arc for PyO3 bindings
             current_model: Arc::new(AtomicU8::new(NoiseModel::RNNoise as u8)),
             eq: Arc::new(Mutex::new(ParametricEQ::new(sample_rate as f64))),
@@ -1013,6 +1053,16 @@ impl AudioProcessor {
             vad_probability: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             gate_noise_floor_db: Arc::new(AtomicU32::new((-60.0_f32).to_bits())),
             vad_available: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "vad")]
+            vad_worker_buffer: Arc::new(Mutex::new(Vec::with_capacity(
+                VAD_WORKER_MAX_BUFFER_SAMPLES,
+            ))),
+            #[cfg(feature = "vad")]
+            vad_worker_thread: None,
+            #[cfg(feature = "vad")]
+            vad_worker_running: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "vad")]
+            vad_last_update_us: Arc::new(AtomicU64::new(0)),
             compressor_current_release_ms: Arc::new(AtomicU64::new(
                 COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
             )),
@@ -1160,6 +1210,82 @@ impl AudioProcessor {
                 }
             }
         }));
+    }
+
+    #[cfg(feature = "vad")]
+    fn ensure_vad_worker(&mut self) {
+        if self.vad_worker_thread.is_some() {
+            return;
+        }
+
+        self.vad_worker_running.store(true, Ordering::Release);
+        let running = Arc::clone(&self.vad_worker_running);
+        let worker_buffer = Arc::clone(&self.vad_worker_buffer);
+        let probability = Arc::clone(&self.vad_probability);
+        let available = Arc::clone(&self.vad_available);
+        let last_update_us = Arc::clone(&self.vad_last_update_us);
+        let sample_rate = self.sample_rate;
+        let threshold = self
+            .gate_control
+            .lock()
+            .map(|control| control.vad_threshold)
+            .unwrap_or(0.5);
+
+        self.vad_worker_thread = Some(std::thread::spawn(move || {
+            let mut vad = match SileroVAD::new(sample_rate, threshold) {
+                Ok(vad) => {
+                    available.store(true, Ordering::Release);
+                    vad
+                }
+                Err(_) => {
+                    available.store(false, Ordering::Release);
+                    while running.load(Ordering::Acquire) {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    return;
+                }
+            };
+
+            let mut local = Vec::with_capacity(VAD_WORKER_MAX_BUFFER_SAMPLES);
+            while running.load(Ordering::Acquire) {
+                let mut has_audio = false;
+                if let Ok(mut shared) = worker_buffer.lock() {
+                    if !shared.is_empty() {
+                        std::mem::swap(&mut local, &mut *shared);
+                        has_audio = true;
+                    }
+                }
+
+                if has_audio {
+                    match vad.process(&local) {
+                        Ok(prob) => {
+                            probability.store(prob.clamp(0.0, 1.0).to_bits(), Ordering::Release);
+                            last_update_us.store(now_micros(), Ordering::Release);
+                            available.store(true, Ordering::Release);
+                        }
+                        Err(_) => {
+                            available.store(false, Ordering::Release);
+                        }
+                    }
+                    local.clear();
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }));
+    }
+
+    #[cfg(feature = "vad")]
+    fn stop_vad_worker(&mut self) {
+        self.vad_worker_running.store(false, Ordering::Release);
+        if let Some(handle) = self.vad_worker_thread.take() {
+            let _ = handle.join();
+        }
+        self.vad_available.store(false, Ordering::Release);
+        self.vad_last_update_us.store(0, Ordering::Release);
+        if let Ok(mut buffer) = self.vad_worker_buffer.lock() {
+            buffer.clear();
+        }
     }
 
     /// Start audio processing
@@ -1355,6 +1481,8 @@ impl AudioProcessor {
             .store(output_resampler.is_some(), Ordering::Relaxed);
 
         // Start processing thread
+        #[cfg(feature = "vad")]
+        self.ensure_vad_worker();
         self.running.store(true, Ordering::SeqCst);
         self.last_start_time_us
             .store(now_micros(), Ordering::Release);
@@ -1368,6 +1496,7 @@ impl AudioProcessor {
         let suppressor_control = Arc::clone(&self.suppressor_control);
         let suppressor_dirty = Arc::clone(&self.suppressor_dirty);
         let suppressor_reset_requested = Arc::clone(&self.suppressor_reset_requested);
+        let pending_suppressor = Arc::clone(&self.pending_suppressor);
         let eq_enabled = Arc::clone(&self.eq_enabled);
         let eq_control = Arc::clone(&self.eq_control);
         let eq_dirty = Arc::clone(&self.eq_dirty);
@@ -1396,6 +1525,10 @@ impl AudioProcessor {
         let vad_probability = Arc::clone(&self.vad_probability);
         let gate_noise_floor_db = Arc::clone(&self.gate_noise_floor_db);
         let vad_available = Arc::clone(&self.vad_available);
+        #[cfg(feature = "vad")]
+        let vad_worker_buffer = Arc::clone(&self.vad_worker_buffer);
+        #[cfg(feature = "vad")]
+        let vad_last_update_us = Arc::clone(&self.vad_last_update_us);
         let compressor_current_release_ms = Arc::clone(&self.compressor_current_release_ms);
         let latency_us = Arc::clone(&self.latency_us);
         let latency_compensation_us = Arc::clone(&self.latency_compensation_us);
@@ -1426,7 +1559,6 @@ impl AudioProcessor {
         let noise_backend_failed = Arc::clone(&self.noise_backend_failed);
         let noise_backend_error = Arc::clone(&self.noise_backend_error);
         let recording_active_thread = Arc::clone(&recording_active);
-        let suppressor_strength_for_thread = Arc::clone(&self.suppressor_strength);
 
         // Clone raw recording buffer atomics
         let raw_recording_pos = Arc::clone(&self.raw_recording_pos);
@@ -2148,6 +2280,34 @@ impl AudioProcessor {
                                     if let Some(mut g) =
                                         lock_rt(gate.as_ref(), &lock_contention_count)
                                     {
+                                        #[cfg(feature = "vad")]
+                                        {
+                                            if let Ok(mut vad_input) = vad_worker_buffer.try_lock()
+                                            {
+                                                let remaining = VAD_WORKER_MAX_BUFFER_SAMPLES
+                                                    .saturating_sub(vad_input.len());
+                                                let to_copy = remaining.min(buffer.len());
+                                                vad_input.extend_from_slice(&buffer[..to_copy]);
+                                            } else {
+                                                lock_contention_count
+                                                    .fetch_add(1, Ordering::Relaxed);
+                                            }
+
+                                            let latest_prob = f32::from_bits(
+                                                vad_probability.load(Ordering::Acquire),
+                                            );
+                                            let last_update =
+                                                vad_last_update_us.load(Ordering::Acquire);
+                                            let fresh = last_update > 0
+                                                && now_micros().saturating_sub(last_update)
+                                                    <= VAD_PROBABILITY_STALE_US;
+                                            let worker_available =
+                                                vad_available.load(Ordering::Acquire) && fresh;
+                                            g.set_external_vad_probability(
+                                                latest_prob,
+                                                worker_available,
+                                            );
+                                        }
                                         g.process_block_inplace(buffer);
                                         gate_gain_meter.store(
                                             g.current_gain().clamp(0.0, 1.0).to_bits(),
@@ -2162,8 +2322,15 @@ impl AudioProcessor {
                                                 g.noise_floor().to_bits(),
                                                 Ordering::Relaxed,
                                             );
-                                            vad_available
-                                                .store(g.is_vad_available(), Ordering::Relaxed);
+                                            let last_update =
+                                                vad_last_update_us.load(Ordering::Acquire);
+                                            let fresh = last_update > 0
+                                                && now_micros().saturating_sub(last_update)
+                                                    <= VAD_PROBABILITY_STALE_US;
+                                            vad_available.store(
+                                                g.is_vad_available() && fresh,
+                                                Ordering::Relaxed,
+                                            );
                                         }
                                     }
                                 }
@@ -2179,20 +2346,35 @@ impl AudioProcessor {
                                             if let Some(mut s) =
                                                 lock_rt(suppressor.as_ref(), &lock_contention_count)
                                             {
-                                                if s.model_type() != control.model {
-                                                    *s = NoiseSuppressionEngine::new(
-                                                        control.model,
-                                                        Arc::clone(&suppressor_strength_for_thread),
+                                                let model_ready = if s.model_type() != control.model
+                                                {
+                                                    if let Some(mut pending) = lock_rt(
+                                                        pending_suppressor.as_ref(),
+                                                        &lock_contention_count,
+                                                    ) {
+                                                        swap_pending_suppressor_if_ready(
+                                                            &mut s,
+                                                            &control,
+                                                            &mut pending,
+                                                        )
+                                                    } else {
+                                                        false
+                                                    }
+                                                } else {
+                                                    true
+                                                };
+
+                                                if model_ready {
+                                                    apply_suppressor_control(&mut s, &control);
+                                                    update_backend_diagnostics(
+                                                        &noise_backend_available,
+                                                        &noise_backend_failed,
+                                                        noise_backend_error.as_ref(),
+                                                        &s,
                                                     );
+                                                    suppressor_dirty
+                                                        .store(false, Ordering::Release);
                                                 }
-                                                apply_suppressor_control(&mut s, &control);
-                                                update_backend_diagnostics(
-                                                    &noise_backend_available,
-                                                    &noise_backend_failed,
-                                                    noise_backend_error.as_ref(),
-                                                    &s,
-                                                );
-                                                suppressor_dirty.store(false, Ordering::Release);
                                             }
                                         }
                                     }
@@ -2250,20 +2432,7 @@ impl AudioProcessor {
                                                             > SUPPRESSOR_RECOVERY_COOLDOWN_MS
                                                     {
                                                         if suppressor_soft_reset_pending {
-                                                            let model = s.model_type();
-                                                            *s = NoiseSuppressionEngine::new(
-                                                                model,
-                                                                Arc::clone(
-                                                                    &suppressor_strength_for_thread,
-                                                                ),
-                                                            );
-                                                            apply_suppressor_control(
-                                                                &mut s,
-                                                                &SuppressorControlState {
-                                                                    enabled: use_suppressor,
-                                                                    model,
-                                                                },
-                                                            );
+                                                            s.soft_reset();
                                                             suppressor_soft_reset_pending = false;
                                                         } else {
                                                             processor_debug_log!(
@@ -2317,18 +2486,7 @@ impl AudioProcessor {
                                                 if non_finite_window_count
                                                     >= NON_FINITE_REBUILD_THRESHOLD
                                                 {
-                                                    let model = s.model_type();
-                                                    *s = NoiseSuppressionEngine::new(
-                                                        model,
-                                                        Arc::clone(&suppressor_strength_for_thread),
-                                                    );
-                                                    apply_suppressor_control(
-                                                        &mut s,
-                                                        &SuppressorControlState {
-                                                            enabled: use_suppressor,
-                                                            model,
-                                                        },
-                                                    );
+                                                    s.soft_reset();
                                                     non_finite_window_started_at = None;
                                                     non_finite_window_count = 0;
                                                 }
@@ -2495,6 +2653,8 @@ impl AudioProcessor {
         if let Some(handle) = self.process_thread.take() {
             let _ = handle.join();
         }
+        #[cfg(feature = "vad")]
+        self.stop_vad_worker();
 
         if let Some(input) = &self.audio_input {
             let _ = input.pause();
@@ -2519,6 +2679,9 @@ impl AudioProcessor {
         self.output_resampler_active.store(false, Ordering::Relaxed);
         if let Ok(mut consumer_guard) = self.raw_recording_consumer.lock() {
             *consumer_guard = None;
+        }
+        if let Ok(mut pending) = self.pending_suppressor.lock() {
+            *pending = None;
         }
 
         // Reinitialize suppressor state so stop/start can recover from poisoned model state.
@@ -2965,6 +3128,12 @@ impl AudioProcessor {
             {
                 // DeepFilter is present in code but runtime backend failed to initialize.
                 // Report failure so UI can revert to RNNoise instead of silent passthrough.
+                update_backend_diagnostics(
+                    &self.noise_backend_available,
+                    &self.noise_backend_failed,
+                    self.noise_backend_error.as_ref(),
+                    &new_engine,
+                );
                 return false;
             }
         }
@@ -2975,6 +3144,12 @@ impl AudioProcessor {
             self.noise_backend_error.as_ref(),
             &new_engine,
         );
+
+        if let Ok(mut pending) = self.pending_suppressor.lock() {
+            *pending = Some(new_engine);
+        } else {
+            return false;
+        }
 
         if let Ok(mut control) = self.suppressor_control.lock() {
             control.model = model;
@@ -3845,7 +4020,16 @@ impl AudioProcessor {
     /// Start recording raw audio for calibration
     /// Taps audio AFTER pre-filter (DC blocker + 80Hz HP) but BEFORE noise gate
     pub fn start_raw_recording(&mut self, duration_secs: f64) -> Result<(), String> {
-        let num_samples = (duration_secs * self.sample_rate as f64) as usize;
+        if !duration_secs.is_finite() || duration_secs <= 0.0 {
+            return Err("Recording duration must be a finite positive value".to_string());
+        }
+
+        let num_samples_f = duration_secs * self.sample_rate as f64;
+        if !num_samples_f.is_finite() || num_samples_f < 1.0 {
+            return Err("Recording duration is too short".to_string());
+        }
+
+        let num_samples = num_samples_f.round() as usize;
         let max_samples = self.sample_rate as usize * MAX_RECORDING_SECONDS;
         if num_samples > max_samples {
             return Err(format!(
@@ -4035,6 +4219,87 @@ mod tests {
         assert!(processor.is_raw_monitor_enabled());
         processor.set_raw_monitor_enabled(false);
         assert!(!processor.is_raw_monitor_enabled());
+    }
+
+    fn install_raw_recording_consumer(processor: &AudioProcessor) {
+        let rb = crate::audio::AudioRingBuffer::new(processor.sample_rate as usize);
+        let (_producer, consumer) = rb.split();
+        *processor.raw_recording_consumer.lock().unwrap() = Some(consumer);
+    }
+
+    #[test]
+    fn test_raw_recording_rejects_invalid_durations_without_activating() {
+        for duration in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut processor = AudioProcessor::new();
+            install_raw_recording_consumer(&processor);
+
+            let err = processor.start_raw_recording(duration).unwrap_err();
+
+            assert!(err.contains("finite positive"));
+            assert!(!processor.recording_active.load(Ordering::Acquire));
+            assert_eq!(processor.raw_recording_target.load(Ordering::Acquire), 0);
+        }
+    }
+
+    #[test]
+    fn test_raw_recording_rejects_too_short_duration_without_activating() {
+        let mut processor = AudioProcessor::new();
+        install_raw_recording_consumer(&processor);
+
+        let err = processor.start_raw_recording(0.25 / processor.sample_rate as f64);
+
+        assert_eq!(err.unwrap_err(), "Recording duration is too short");
+        assert!(!processor.recording_active.load(Ordering::Acquire));
+        assert_eq!(processor.raw_recording_target.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn test_raw_recording_accepts_valid_duration_with_nonzero_target() {
+        let mut processor = AudioProcessor::new();
+        install_raw_recording_consumer(&processor);
+
+        processor.start_raw_recording(0.01).unwrap();
+
+        assert!(processor.recording_active.load(Ordering::Acquire));
+        assert!(processor.raw_recording_target.load(Ordering::Acquire) > 0);
+    }
+
+    #[test]
+    fn test_pending_suppressor_swap_keeps_current_when_model_already_matches() {
+        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let mut current = NoiseSuppressionEngine::new(NoiseModel::RNNoise, Arc::clone(&strength));
+        let mut pending = Some(NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength));
+        let control = SuppressorControlState {
+            enabled: true,
+            model: NoiseModel::RNNoise,
+        };
+
+        assert!(swap_pending_suppressor_if_ready(
+            &mut current,
+            &control,
+            &mut pending
+        ));
+        assert_eq!(current.model_type(), NoiseModel::RNNoise);
+        assert!(pending.is_some());
+    }
+
+    #[cfg(feature = "deepfilter")]
+    #[test]
+    fn test_pending_suppressor_swap_without_candidate_leaves_current_backend() {
+        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let mut current = NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength);
+        let mut pending = None;
+        let control = SuppressorControlState {
+            enabled: true,
+            model: NoiseModel::DeepFilterNetLL,
+        };
+
+        assert!(!swap_pending_suppressor_if_ready(
+            &mut current,
+            &control,
+            &mut pending
+        ));
+        assert_eq!(current.model_type(), NoiseModel::RNNoise);
     }
 
     #[test]

@@ -67,7 +67,7 @@ def test_preset_migration_to_v17_adds_deesser_defaults():
 
     preset = Preset.from_dict(old_data)
 
-    assert preset.version == "1.7.16"
+    assert preset.version == "1.7.17"
     assert preset.deesser.enabled is False
     assert preset.deesser.auto_enabled is True
     assert preset.deesser.auto_amount == 0.5
@@ -115,6 +115,33 @@ def test_app_config_latency_profiles_round_trip():
     assert restored_profile.estimated_one_way_ms == 18.25
     assert restored_profile.applied_compensation_ms == 18.25
     assert restored_profile.confidence == 0.92
+
+
+def test_app_config_restores_false_boolean_without_truthy_coercion():
+    restored = AppConfig.from_dict({"use_measured_latency": False})
+
+    assert restored.use_measured_latency is False
+
+
+def test_app_config_rejects_corrupt_boolean_to_default():
+    restored = AppConfig.from_dict({"use_measured_latency": "false"})
+
+    assert restored.use_measured_latency is True
+
+
+def test_app_config_ignores_invalid_window_geometry_values():
+    for value in (["not", "a", "dict"], "invalid", {"x": 1, "y": 2}, {"x": 1, "y": 2, "width": math.inf, "height": 700}):
+        restored = AppConfig.from_dict({"window_geometry": value})
+
+        assert restored.window_geometry is None
+
+
+def test_app_config_accepts_and_clamps_valid_window_geometry():
+    restored = AppConfig.from_dict(
+        {"window_geometry": {"x": 10.2, "y": 20.7, "width": 300.0, "height": 200.0}}
+    )
+
+    assert restored.window_geometry == {"x": 10, "y": 21, "width": 640, "height": 480}
 
 
 def test_app_config_migrates_legacy_device_names_and_profile_keys():

@@ -144,6 +144,30 @@ impl AudioOutput {
         }
     }
 
+    fn drain_muted_consumer(
+        consumer: &mut AudioConsumer,
+        frames_needed: usize,
+        scratch: &mut [f32],
+    ) -> usize {
+        let mut drained = 0usize;
+        while drained < frames_needed {
+            let batch = (frames_needed - drained).min(scratch.len());
+            if batch == 0 {
+                break;
+            }
+            let count = consumer.read(&mut scratch[..batch]);
+            if count == 0 {
+                break;
+            }
+            drained += count;
+            if count < batch {
+                break;
+            }
+        }
+        consumer.set_last_sample(0.0);
+        drained
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build_stream<T>(
         device: Device,
@@ -177,12 +201,17 @@ impl AudioOutput {
                     if recording_active_clone.load(Ordering::Relaxed)
                         || output_muted_clone.load(Ordering::Relaxed)
                     {
+                        let frames_needed = if num_channels == 1 {
+                            data.len()
+                        } else {
+                            data.len() / num_channels
+                        };
+                        Self::drain_muted_consumer(&mut consumer, frames_needed, &mut mono_scratch);
                         underrun_streak.store(0, Ordering::Relaxed);
                         let silence = Self::convert_output_sample::<T>(0.0);
                         for sample in data.iter_mut() {
                             *sample = silence;
                         }
-                        consumer.set_last_sample(0.0);
                         return;
                     }
 
@@ -565,6 +594,24 @@ mod tests {
         assert_eq!(data[2], data[3]);
         assert_eq!(data[10], 0);
         assert_eq!(data[11], 0);
+    }
+
+    #[test]
+    fn test_muted_output_drain_discards_stale_samples() {
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (mut producer, mut consumer) = rb.split();
+        assert_eq!(producer.write(&[0.1, 0.2, 0.3, 0.4, 0.5]), 5);
+
+        let mut scratch = vec![0.0_f32; 4];
+        let drained = AudioOutput::drain_muted_consumer(&mut consumer, 3, &mut scratch);
+
+        assert_eq!(drained, 3);
+        assert_eq!(consumer.len(), 2);
+        assert_eq!(consumer.last_sample(), 0.0);
+
+        let mut remaining = vec![0.0_f32; 2];
+        assert_eq!(consumer.read(&mut remaining), 2);
+        assert_eq!(remaining, vec![0.4, 0.5]);
     }
 
     #[test]

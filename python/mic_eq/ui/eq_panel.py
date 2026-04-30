@@ -38,6 +38,14 @@ BAND_FREQUENCIES = [
 # Numeric frequencies in Hz for curve calculation (single source of truth from config)
 BAND_FREQUENCIES_HZ = list(EQ_FREQUENCIES)
 
+
+def _format_frequency_label(freq_hz: float) -> str:
+    if freq_hz >= 1000.0:
+        value = f"{freq_hz / 1000.0:.1f}".rstrip("0").rstrip(".")
+        return f"{value}k"
+    return f"{freq_hz:.0f}"
+
+
 BAND_LABELS = [
     "LS",   # Low shelf
     "160",
@@ -93,10 +101,10 @@ class EQBandSlider(QWidget):
         layout.addWidget(self.slider, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Frequency label
-        freq_label = QLabel(label)
-        freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        freq_label.setStyleSheet("font-size: 9px;")
-        layout.addWidget(freq_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.freq_label = QLabel(label)
+        self.freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.freq_label.setStyleSheet("font-size: 9px;")
+        layout.addWidget(self.freq_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Q factor spinbox
         q_layout = QHBoxLayout()
@@ -165,6 +173,10 @@ class EQBandSlider(QWidget):
         self.q_spinbox.blockSignals(True)
         self.q_spinbox.setValue(q)
         self.q_spinbox.blockSignals(False)
+
+    def set_frequency_label(self, frequency_hz: float) -> None:
+        """Set displayed center frequency."""
+        self.freq_label.setText(_format_frequency_label(frequency_hz))
 
     def reset(self):
         """Reset to 0 dB and default Q."""
@@ -346,6 +358,7 @@ class EQPanel(QWidget):
                 slider = self.band_sliders[i]
                 slider.set_gain(gain)
                 slider.set_q(q)
+                slider.set_frequency_label(float(freq))
 
         # Update curve
         self._update_curve()
@@ -382,6 +395,7 @@ class EQPanel(QWidget):
                 # Update slider and spinbox
                 slider.set_gain(gain)
                 slider.set_q(q)
+                slider.set_frequency_label(float(freq))
 
                 # Unblock signals
                 slider.slider.blockSignals(False)

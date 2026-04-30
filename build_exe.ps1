@@ -27,6 +27,25 @@ if (-not $localPyd) {
 }
 Write-Host "Using local mic_eq_core: $($localPyd.FullName)" -ForegroundColor Cyan
 
+$rustInputs = @(
+    Get-ChildItem -Path (Join-Path $ProjectRoot "rust-core\src") -Recurse -File -Include *.rs
+    Get-Item (Join-Path $ProjectRoot "rust-core\Cargo.toml")
+    Get-Item (Join-Path $ProjectRoot "Cargo.lock")
+)
+$newestRustInput = $rustInputs | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+if ($newestRustInput -and $localPyd.LastWriteTimeUtc -lt $newestRustInput.LastWriteTimeUtc) {
+    Write-Host "ERROR: local mic_eq_core extension is older than Rust sources." -ForegroundColor Red
+    Write-Host "Newest input: $($newestRustInput.FullName)" -ForegroundColor Red
+    Write-Host "Run: .\\.venv\\Scripts\\python.exe -m maturin develop --release" -ForegroundColor Yellow
+    exit 1
+}
+
+& $venvPython (Join-Path $ProjectRoot "python\tools\verify_release_assets.py")
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Release asset verification failed. Packaging will not use stale dist/ contents as source assets." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
 if (Test-Path "df.dll") {
     Write-Host "DeepFilterNet support: df.dll will be bundled via AudioForge.spec" -ForegroundColor Green
 } else {

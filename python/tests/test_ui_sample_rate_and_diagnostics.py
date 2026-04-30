@@ -7,9 +7,24 @@ import numpy as np
 from PyQt6.QtWidgets import QWidget
 
 from mic_eq.ui.calibration_dialog import CalibrationDialog, _selected_device_pair
-from mic_eq.ui.latency_calibration_dialog import _capture_sample_rate, _device_name as latency_device_name
-from mic_eq.ui.main_window import MainWindow
-from mic_eq.config import DeviceIdentity, build_latency_profile_key, legacy_latency_profile_key
+from mic_eq.ui.latency_calibration_dialog import (
+    LatencyCalibrationDialog,
+    _capture_sample_rate,
+    _device_name as latency_device_name,
+)
+from mic_eq.ui.main_window import (
+    MainWindow,
+    _normalize_startup_preset_id,
+    _startup_builtin_id,
+    _startup_custom_id,
+)
+from mic_eq.config import (
+    CompressorSettings,
+    DeviceIdentity,
+    Preset,
+    build_latency_profile_key,
+    legacy_latency_profile_key,
+)
 
 
 class _SignalStub:
@@ -100,6 +115,20 @@ class _FakeCombo:
         return self._items[index][1]
 
 
+class _FakeControl:
+    def __init__(self, value=None):
+        self.value = value
+
+    def setChecked(self, value):
+        self.value = bool(value)
+
+    def isChecked(self):
+        return bool(self.value)
+
+    def setValue(self, value):
+        self.value = value
+
+
 class _FakeLabel:
     def __init__(self):
         self.text = ""
@@ -122,6 +151,40 @@ class _FakeStatusBar:
 
     def showMessage(self, message: str, timeout: int | None = None):
         self.messages.append((message, timeout))
+
+
+class _PresetProcessor:
+    def __init__(self):
+        self.calls: list[tuple[str, object]] = []
+
+    def set_rnnoise_enabled(self, value):
+        self.calls.append(("rnnoise_enabled", value))
+
+    def set_rnnoise_strength(self, value):
+        self.calls.append(("rnnoise_strength", value))
+
+    def set_noise_model(self, value):
+        self.calls.append(("noise_model", value))
+        return True
+
+    def set_bypass(self, value):
+        self.calls.append(("bypass", value))
+
+
+class _PresetPanel:
+    def __init__(self):
+        self.settings = None
+        self.compressor_settings = None
+        self.limiter_settings = None
+
+    def set_settings(self, settings):
+        self.settings = settings
+
+    def set_compressor_settings(self, settings):
+        self.compressor_settings = settings
+
+    def set_limiter_settings(self, settings):
+        self.limiter_settings = settings
 
 
 class _FakeMeter:
@@ -496,3 +559,115 @@ def test_update_meters_surfaces_output_recovery_and_reuses_diagnostics(qapp):
     assert "ORC:4" in window.recovery_diag_label.text
     assert "R:2" in window.recovery_diag_label.text
     assert not window.status_bar.messages
+
+
+def test_startup_preset_ids_normalize_builtin_and_custom_legacy_names():
+    assert _normalize_startup_preset_id("Voice Clarity") == _startup_builtin_id("voice")
+    assert _normalize_startup_preset_id("voice") == _startup_builtin_id("voice")
+    assert _normalize_startup_preset_id("Custom Voice", ("Custom Voice",)) == _startup_custom_id("Custom Voice")
+    assert _normalize_startup_preset_id(_startup_builtin_id("flat")) == _startup_builtin_id("flat")
+
+
+def test_apply_preset_passes_advanced_compressor_fields(qapp):
+    window = MainWindow.__new__(MainWindow)
+    window.gate_panel = _PresetPanel()
+    window.eq_panel = _PresetPanel()
+    window.deesser_panel = _PresetPanel()
+    window.compressor_panel = _PresetPanel()
+    window.rnnoise_checkbox = _FakeControl()
+    window.strength_slider = _FakeControl()
+    window.model_combo = _FakeCombo([])
+    window.bypass_checkbox = _FakeControl()
+    window.processor = _PresetProcessor()
+    window.status_bar = _FakeStatusBar()
+
+    preset = Preset(
+        name="Compressor Advanced",
+        compressor=CompressorSettings(
+            enabled=True,
+            threshold_db=-18.0,
+            ratio=3.0,
+            attack_ms=8.0,
+            release_ms=150.0,
+            makeup_gain_db=2.0,
+            adaptive_release=True,
+            base_release_ms=75.0,
+            auto_makeup_enabled=True,
+            target_lufs=-16.0,
+        ),
+    )
+
+    MainWindow._apply_preset(window, preset)
+
+    assert window.compressor_panel.compressor_settings["adaptive_release"] is True
+    assert window.compressor_panel.compressor_settings["base_release_ms"] == 75.0
+    assert window.compressor_panel.compressor_settings["auto_makeup_enabled"] is True
+    assert window.compressor_panel.compressor_settings["target_lufs"] == -16.0
+
+
+class _LatencyProcessor:
+    def __init__(self, running: bool, fail_recording: bool = True):
+        self.running = running
+        self.fail_recording = fail_recording
+        self.started = 0
+        self.stopped = 0
+        self.recovery_suppressed: list[bool] = []
+
+    def is_running(self):
+        return self.running
+
+    def start(self, _input_device=None, _output_device=None):
+        self.running = True
+        self.started += 1
+
+    def stop(self):
+        self.running = False
+        self.stopped += 1
+
+    def output_sample_rate(self):
+        return 48_000
+
+    def set_recovery_suppressed(self, value):
+        self.recovery_suppressed.append(bool(value))
+
+    def start_raw_recording(self, _duration):
+        if self.fail_recording:
+            raise RuntimeError("recording setup failed")
+
+    def stop_raw_recording(self):
+        return None
+
+    def set_output_mute(self, _muted):
+        return None
+
+
+class _LatencyOwner(QWidget):
+    def __init__(self, processor):
+        super().__init__()
+        self.processor = processor
+        self.input_combo = _FakeCombo([("Mic", DeviceIdentity(name="Mic", is_default=False))])
+        self.output_combo = _FakeCombo([("Out", DeviceIdentity(name="Out", is_default=False))])
+
+
+def test_latency_calibration_failure_stops_owned_processor(qapp):
+    processor = _LatencyProcessor(running=False)
+    owner = _LatencyOwner(processor)
+    dialog = LatencyCalibrationDialog(owner)
+
+    dialog._on_run_clicked()
+
+    assert processor.started == 1
+    assert processor.stopped == 1
+    assert not processor.running
+
+
+def test_latency_calibration_failure_does_not_stop_preexisting_processor(qapp):
+    processor = _LatencyProcessor(running=True)
+    owner = _LatencyOwner(processor)
+    dialog = LatencyCalibrationDialog(owner)
+
+    dialog._on_run_clicked()
+
+    assert processor.started == 0
+    assert processor.stopped == 0
+    assert processor.running

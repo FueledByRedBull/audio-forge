@@ -39,6 +39,21 @@ def main() -> int:
             r"Current version:\s*`v([^`]+)`",
             "readme",
         ),
+        "python/mic_eq/config.py Preset.version": _single_match(
+            "python/mic_eq/config.py",
+            r'version:\s*str\s*=\s*"([^"]+)"',
+            "preset default",
+        ),
+        "python/mic_eq/config.py built-ins": _single_match(
+            "python/mic_eq/config.py",
+            r'version="([^"]+)"',
+            "built-in preset default",
+        ),
+        "python/mic_eq/ui/main_window.py auto-eq preset": _single_match(
+            "python/mic_eq/ui/main_window.py",
+            r'version="([^"]+)"',
+            "auto-eq preset default",
+        ),
     }
 
     release_versions = set(re.findall(r"AudioForge-v([0-9]+\.[0-9]+\.[0-9]+)", _read("RELEASING.md")))

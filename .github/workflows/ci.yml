@@ -37,6 +37,6 @@ jobs:
       - name: Rust format
         run: cargo fmt --check
       - name: Rust tests
-        run: cargo test -p mic_eq_core --tests
+        run: cargo test -p mic_eq_core
       - name: Clippy
         run: cargo clippy -p mic_eq_core --all-targets -- -D warnings

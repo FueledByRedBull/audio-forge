@@ -1,0 +1,40 @@
+{
+  "assets": [
+    {
+      "path": "df.dll",
+      "size": 16614912,
+      "sha256": "270d14b92143c18c5f7e14e9eba3192d7843ec52fb9d1ade2fd9173d03a71656",
+      "source": "DeepFilterNet C runtime built or obtained for the release; do not copy from dist/",
+      "license": "DeepFilterNet runtime license must be retained with release dependency notices"
+    },
+    {
+      "path": "target/release/DirectML.dll",
+      "bundle_path": "DirectML.dll",
+      "size": 18527776,
+      "sha256": "9c9e6d822561c6c41b90e6994b3e8857cf1d66dbfb1e0c4c799c7c89b4e92da1",
+      "source": "Microsoft DirectML redistributable from the pinned Microsoft.AI.DirectML package; do not copy from dist/",
+      "license": "Microsoft DirectML redistribution terms apply"
+    },
+    {
+      "path": "models/DeepFilterNet3_ll_onnx.tar.gz",
+      "size": 36359660,
+      "sha256": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
+      "source": "DeepFilterNet3 low-latency ONNX model artifact pinned for this release",
+      "license": "DeepFilterNet model license must be retained with release dependency notices"
+    },
+    {
+      "path": "models/DeepFilterNet3_onnx.tar.gz",
+      "size": 7983136,
+      "sha256": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+      "source": "DeepFilterNet3 standard ONNX model artifact pinned for this release",
+      "license": "DeepFilterNet model license must be retained with release dependency notices"
+    },
+    {
+      "path": "models/silero_vad.onnx",
+      "size": 2327524,
+      "sha256": "2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f",
+      "source": "Silero VAD ONNX model artifact pinned for this release",
+      "license": "Silero VAD model license must be retained with release dependency notices"
+    }
+  ]
+}

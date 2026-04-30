@@ -69,6 +69,12 @@ pub struct NoiseGate {
     /// VAD auto-gate controller (VAD feature only)
     #[cfg(feature = "vad")]
     vad_auto_gate: Option<VadAutoGate>,
+    /// Latest non-realtime VAD probability published by processor worker.
+    #[cfg(feature = "vad")]
+    vad_external_probability: f32,
+    /// Whether latest non-realtime VAD probability is fresh enough to use.
+    #[cfg(feature = "vad")]
+    vad_external_available: bool,
 }
 
 impl NoiseGate {
@@ -108,6 +114,10 @@ impl NoiseGate {
             gate_mode: GateMode::ThresholdOnly,
             #[cfg(feature = "vad")]
             vad_auto_gate: None,
+            #[cfg(feature = "vad")]
+            vad_external_probability: 0.0,
+            #[cfg(feature = "vad")]
+            vad_external_available: false,
         }
     }
 
@@ -226,7 +236,11 @@ impl NoiseGate {
             if self.gate_mode != GateMode::ThresholdOnly {
                 if let Some(vad) = &mut self.vad_auto_gate {
                     if vad.is_enabled() {
-                        let (vad_gate_open, _probability) = vad.process(buffer);
+                        let (vad_gate_open, _probability) = vad.process_with_external_probability(
+                            buffer,
+                            self.vad_external_available
+                                .then_some(self.vad_external_probability),
+                        );
 
                         if GATE_DEBUG {
                             self.debug_counter += buffer.len();
@@ -298,6 +312,8 @@ impl NoiseGate {
         #[cfg(feature = "vad")]
         {
             self.vad_was_open = false;
+            self.vad_external_probability = 0.0;
+            self.vad_external_available = false;
         }
     }
 
@@ -335,6 +351,13 @@ impl NoiseGate {
         if let Some(vad) = &mut self.vad_auto_gate {
             vad.set_manual_threshold(self.threshold_db as f32);
         }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Publish a probability computed by the non-realtime VAD worker.
+    pub fn set_external_vad_probability(&mut self, probability: f32, available: bool) {
+        self.vad_external_probability = probability.clamp(0.0, 1.0);
+        self.vad_external_available = available;
     }
 
     #[cfg(feature = "vad")]
@@ -538,5 +561,35 @@ mod tests {
         let output = gate.process_sample(input);
 
         assert_eq!(output, input);
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_assisted_uses_level_when_external_probability_unavailable() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.5)));
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_external_vad_probability(0.0, false);
+
+        let mut buffer = vec![0.1_f32; 3_000];
+        gate.process_block_inplace(&mut buffer);
+
+        assert!(gate.current_gain() > 0.5);
+        assert!(!gate.is_vad_available());
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_only_closes_when_external_probability_unavailable() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.5)));
+        gate.set_gate_mode(GateMode::VadOnly);
+        gate.set_external_vad_probability(0.0, false);
+
+        let mut buffer = vec![0.1_f32; 3_000];
+        gate.process_block_inplace(&mut buffer);
+
+        assert!(gate.current_gain() < 0.2);
+        assert!(!gate.is_vad_available());
     }
 }

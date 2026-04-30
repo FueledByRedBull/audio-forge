@@ -9,6 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
+$script:PythonExe = $null
 
 function Write-Header {
     param([string]$Message)
@@ -43,18 +44,25 @@ function Assert-Prerequisites {
         Write-Host "  [OK] $cargoVersion" -ForegroundColor Green
     }
 
-    if (-not (Test-Command "python")) {
+    $pythonCommand = Get-Command -Name "python" -ErrorAction SilentlyContinue
+    if (-not $pythonCommand) {
         $missing += "Python - Install from https://python.org"
     } else {
-        $pythonVersion = python --version
+        $script:PythonExe = $pythonCommand.Source
+        $pythonVersion = & $script:PythonExe --version
         Write-Host "  [OK] $pythonVersion" -ForegroundColor Green
     }
 
-    if (-not (Test-Command "maturin")) {
-        Write-Host "  [WARN] maturin not found - will attempt to install" -ForegroundColor Yellow
+    if ($script:PythonExe) {
+        & $script:PythonExe -m maturin --version *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  [WARN] maturin not found in selected Python - will attempt to install" -ForegroundColor Yellow
+        } else {
+            $maturinVersion = & $script:PythonExe -m maturin --version
+            Write-Host "  [OK] $maturinVersion" -ForegroundColor Green
+        }
     } else {
-        $maturinVersion = maturin --version
-        Write-Host "  [OK] $maturinVersion" -ForegroundColor Green
+        Write-Host "  [WARN] maturin check skipped because Python is missing" -ForegroundColor Yellow
     }
 
     if ($missing.Count -gt 0) {
@@ -68,9 +76,10 @@ function Assert-Prerequisites {
 }
 
 function Install-Maturin {
-    if (-not (Test-Command "maturin")) {
+    & $script:PythonExe -m maturin --version *> $null
+    if ($LASTEXITCODE -ne 0) {
         Write-Host "Installing maturin..." -ForegroundColor Yellow
-        pip install maturin
+        & $script:PythonExe -m pip install maturin
         if ($LASTEXITCODE -ne 0) {
             Write-Host "Failed to install maturin" -ForegroundColor Red
             exit 1
@@ -86,7 +95,7 @@ function Build-Develop {
     Push-Location $ProjectRoot
     try {
         Write-Host "Building Rust core with Python bindings (debug)..." -ForegroundColor Yellow
-        maturin develop
+        & $script:PythonExe -m maturin develop
         if ($LASTEXITCODE -ne 0) {
             throw "maturin develop failed"
         }
@@ -105,7 +114,7 @@ function Build-Release {
     Push-Location $ProjectRoot
     try {
         Write-Host "Building Rust core with Python bindings (release)..." -ForegroundColor Yellow
-        maturin develop --release
+        & $script:PythonExe -m maturin develop --release
         if ($LASTEXITCODE -ne 0) {
             throw "maturin develop --release failed"
         }
@@ -124,7 +133,7 @@ function Build-Wheel {
     Push-Location $ProjectRoot
     try {
         Write-Host "Building release wheel..." -ForegroundColor Yellow
-        maturin build --release
+        & $script:PythonExe -m maturin build --release
         if ($LASTEXITCODE -ne 0) {
             throw "maturin build --release failed"
         }
@@ -166,7 +175,7 @@ function Run-Tests {
         if (Test-Path $pythonTests) {
             Write-Host ""
             Write-Host "Running Python tests..." -ForegroundColor Yellow
-            python -m pytest $pythonTests -v
+            & $script:PythonExe -m pytest $pythonTests -v
             if ($LASTEXITCODE -ne 0) {
                 throw "Python tests failed"
             }

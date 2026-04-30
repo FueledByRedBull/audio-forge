@@ -83,6 +83,44 @@ from ..config import (
 # Enable debug logging
 DEBUG = False
 
+STARTUP_BUILTIN_PREFIX = "builtin:"
+STARTUP_CUSTOM_PREFIX = "custom:"
+
+
+def _startup_builtin_id(preset_key: str) -> str:
+    return f"{STARTUP_BUILTIN_PREFIX}{preset_key}"
+
+
+def _startup_custom_id(preset_name: str) -> str:
+    return f"{STARTUP_CUSTOM_PREFIX}{preset_name}"
+
+
+def _normalize_startup_preset_id(value: str, custom_names: tuple[str, ...] = ()) -> str:
+    """Return the stable startup preset ID, accepting legacy stored display names."""
+    preset_id = str(value or "")
+    if not preset_id:
+        return ""
+    if preset_id.startswith((STARTUP_BUILTIN_PREFIX, STARTUP_CUSTOM_PREFIX)):
+        return preset_id
+    if preset_id in BUILTIN_PRESETS:
+        return _startup_builtin_id(preset_id)
+    for key, preset in BUILTIN_PRESETS.items():
+        if preset.name == preset_id:
+            return _startup_builtin_id(key)
+    if preset_id in custom_names:
+        return _startup_custom_id(preset_id)
+    return preset_id
+
+
+def _startup_preset_display_name(preset_id: str) -> str:
+    if preset_id.startswith(STARTUP_BUILTIN_PREFIX):
+        preset_key = preset_id[len(STARTUP_BUILTIN_PREFIX):]
+        if preset_key in BUILTIN_PRESETS:
+            return BUILTIN_PRESETS[preset_key].name
+    if preset_id.startswith(STARTUP_CUSTOM_PREFIX):
+        return preset_id[len(STARTUP_CUSTOM_PREFIX):]
+    return preset_id
+
 
 def _update_callback_stall_state(
     stall_started_at: float | None,
@@ -651,11 +689,15 @@ class MainWindow(QMainWindow):
         # Startup Preset submenu
         startup_menu = options_menu.addMenu("Startup &Preset...")
         assert startup_menu is not None
+        custom_presets = list_presets()
+        custom_names = tuple(name for name, _filepath in custom_presets)
+        startup_preset_id = _normalize_startup_preset_id(self.config.startup_preset, custom_names)
 
         # "Last Used" option (default, checked if startup_preset is empty)
         last_used_action = QAction("Last Used", self)
         last_used_action.setCheckable(True)
-        last_used_action.setChecked(self.config.startup_preset == "")
+        last_used_action.setData("")
+        last_used_action.setChecked(startup_preset_id == "")
         last_used_action.triggered.connect(lambda: self._set_startup_preset(""))
         startup_menu.addAction(last_used_action)
         self._last_used_action = last_used_action  # Store for updating checked state
@@ -667,19 +709,23 @@ class MainWindow(QMainWindow):
         for key, preset in BUILTIN_PRESETS.items():
             action = QAction(preset.name, self)
             action.setCheckable(True)
-            action.setChecked(self.config.startup_preset == preset.name)
-            action.triggered.connect(lambda checked, name=preset.name: self._set_startup_preset(name))
+            preset_id = _startup_builtin_id(key)
+            action.setData(preset_id)
+            action.setChecked(startup_preset_id == preset_id)
+            action.triggered.connect(lambda checked, item_id=preset_id: self._set_startup_preset(item_id))
             startup_menu.addAction(action)
 
         # Separator
         startup_menu.addSeparator()
 
         # Custom presets
-        for name, filepath in list_presets():
+        for name, filepath in custom_presets:
             action = QAction(name, self)
             action.setCheckable(True)
-            action.setChecked(self.config.startup_preset == name)
-            action.triggered.connect(lambda checked, name=name: self._set_startup_preset(name))
+            preset_id = _startup_custom_id(name)
+            action.setData(preset_id)
+            action.setChecked(startup_preset_id == preset_id)
+            action.triggered.connect(lambda checked, item_id=preset_id: self._set_startup_preset(item_id))
             startup_menu.addAction(action)
 
         options_menu.addSeparator()
@@ -694,20 +740,21 @@ class MainWindow(QMainWindow):
         latency_calibration_action.triggered.connect(self._on_latency_calibration_clicked)
         options_menu.addAction(latency_calibration_action)
 
-    def _set_startup_preset(self, preset_name: str):
+    def _set_startup_preset(self, preset_id: str):
         """Set the startup preset and update checked states.
 
         Args:
-            preset_name: Preset name to load on startup (empty string = Last Used)
+            preset_id: Stable preset ID to load on startup (empty string = Last Used)
         """
         # Update config
-        self.config.startup_preset = preset_name
+        self.config.startup_preset = preset_id
 
         # Save config
         save_config(self.config)
 
         # Show status message
-        if preset_name:
+        if preset_id:
+            preset_name = _startup_preset_display_name(preset_id)
             self.status_bar.showMessage(f"Startup preset set to {preset_name}", 5000)
         else:
             self.status_bar.showMessage("Startup preset set to Last Used", 5000)
@@ -725,10 +772,7 @@ class MainWindow(QMainWindow):
                         # Update checked state for all actions in the startup menu
                         for preset_action in startup_menu.actions():
                             if preset_action.isCheckable():
-                                if preset_action.text() == "Last Used":
-                                    preset_action.setChecked(preset_name == "")
-                                else:
-                                    preset_action.setChecked(preset_action.text() == preset_name)
+                                preset_action.setChecked(str(preset_action.data() or "") == preset_id)
                         break
                 break
 
@@ -1006,17 +1050,28 @@ class MainWindow(QMainWindow):
 
         # Check startup preset first
         if self.config.startup_preset:
-            preset_name = self.config.startup_preset
+            custom_presets = list_presets()
+            preset_id = _normalize_startup_preset_id(
+                self.config.startup_preset,
+                tuple(name for name, _filepath in custom_presets),
+            )
+            if preset_id != self.config.startup_preset:
+                self.config.startup_preset = preset_id
+                config_dirty = True
+            preset_name = _startup_preset_display_name(preset_id)
             # Try built-in presets
-            if preset_name in BUILTIN_PRESETS:
-                preset = BUILTIN_PRESETS[preset_name]
-                self._apply_preset(preset, preset_key=preset_name)
-                self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
-                preset_loaded = True
+            if preset_id.startswith(STARTUP_BUILTIN_PREFIX):
+                preset_key = preset_id[len(STARTUP_BUILTIN_PREFIX):]
+                if preset_key in BUILTIN_PRESETS:
+                    preset = BUILTIN_PRESETS[preset_key]
+                    self._apply_preset(preset, preset_key=preset_key)
+                    self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
+                    preset_loaded = True
             # Try custom presets
-            else:
-                for name, filepath in list_presets():
-                    if name == preset_name:
+            elif preset_id.startswith(STARTUP_CUSTOM_PREFIX):
+                custom_name = preset_id[len(STARTUP_CUSTOM_PREFIX):]
+                for name, filepath in custom_presets:
+                    if name == custom_name:
                         try:
                             preset = load_preset(filepath)
                             self._apply_preset(preset)
@@ -1026,9 +1081,22 @@ class MainWindow(QMainWindow):
                             print(f"Failed to load startup preset: {e}")
                             self.status_bar.showMessage(f"Failed to load startup preset: {preset_name}", 5000)
                         break
-                if not preset_loaded:
-                    print(f"Startup preset '{preset_name}' not found, falling back to last used")
-                    self.status_bar.showMessage(f"Startup preset '{preset_name}' not found", 5000)
+            # Try legacy unresolved custom display name.
+            else:
+                for name, filepath in custom_presets:
+                    if name == preset_id:
+                        try:
+                            preset = load_preset(filepath)
+                            self._apply_preset(preset)
+                            self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
+                            preset_loaded = True
+                        except Exception as e:
+                            print(f"Failed to load startup preset: {e}")
+                            self.status_bar.showMessage(f"Failed to load startup preset: {preset_name}", 5000)
+                        break
+            if not preset_loaded:
+                print(f"Startup preset '{preset_name}' not found, falling back to last used")
+                self.status_bar.showMessage(f"Startup preset '{preset_name}' not found", 5000)
 
         # Fall back to last_preset if startup_preset not set or not found
         if not preset_loaded and self.config.last_preset:
@@ -1269,7 +1337,7 @@ class MainWindow(QMainWindow):
             preset = Preset(
                 name=preset_name,
                 description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
-                version="1.7.16",
+                version="1.7.17",
                 gate=GateSettings(**self.gate_panel.get_settings()),
                 eq=EQSettings(**self.eq_panel.get_settings()),
                 rnnoise=RNNoiseSettings(
@@ -1895,6 +1963,10 @@ class MainWindow(QMainWindow):
             'attack_ms': preset.compressor.attack_ms,
             'release_ms': preset.compressor.release_ms,
             'makeup_gain_db': preset.compressor.makeup_gain_db,
+            'adaptive_release': preset.compressor.adaptive_release,
+            'base_release_ms': preset.compressor.base_release_ms,
+            'auto_makeup_enabled': preset.compressor.auto_makeup_enabled,
+            'target_lufs': preset.compressor.target_lufs,
         })
 
         # Apply limiter settings

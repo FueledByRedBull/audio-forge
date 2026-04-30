@@ -11,11 +11,6 @@ def prune_bundle(bundle_root: Path) -> None:
         shutil.rmtree(translations_dir)
         print(f"Pruned Qt translations: {translations_dir}")
 
-    for dist_info_dir in (bundle_root / "_internal").glob("*.dist-info"):
-        if dist_info_dir.is_dir():
-            shutil.rmtree(dist_info_dir)
-            print(f"Removed wheel metadata: {dist_info_dir}")
-
     for relative_path in (
         Path("_internal/PyQt6/Qt6/bin/Qt6Pdf.dll"),
         Path("_internal/PyQt6/QtPdf.pyd"),

@@ -399,6 +399,7 @@ class LatencyCalibrationDialog(QDialog):
         self.accept_button.setEnabled(self._latest_profile is not None)
 
         self._teardown_worker()
+        self._stop_owned_processor()
 
     def _apply_profile_to_labels(self, profile: dict | None):
         if not profile:

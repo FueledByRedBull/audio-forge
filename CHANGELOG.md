@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.7.18 - 2026-05-06
+
+- Replaced fixed-grid Auto EQ placement with dynamic spectrum-driven center frequencies while preserving the existing 10-band preset/DSP shape.
+- Added editable per-band EQ frequency controls and graph markers so manually tuned and Auto EQ-computed band positions are visible and adjustable in the UI.
+- Split Auto EQ, config catalogs, app startup helpers, and large Rust processor/VAD/DeepFilter test/API sections into focused modules while preserving public imports and runtime behavior.
+- Fixed packaged startup for split config catalog modules under PyInstaller, rebuilt the portable archive, and published the `v1.7.18` release asset.
+
 ## v1.7.17 - 2026-04-30
 
 - Moved DeepFilter backend construction and VAD inference out of realtime processing paths; VAD modes now consume cached worker probabilities and degrade deterministically when unavailable.

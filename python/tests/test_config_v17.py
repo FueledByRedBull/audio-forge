@@ -67,7 +67,7 @@ def test_preset_migration_to_v17_adds_deesser_defaults():
 
     preset = Preset.from_dict(old_data)
 
-    assert preset.version == "1.7.17"
+    assert preset.version == "1.7.18"
     assert preset.deesser.enabled is False
     assert preset.deesser.auto_enabled is True
     assert preset.deesser.auto_amount == 0.5

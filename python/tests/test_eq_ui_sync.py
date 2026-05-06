@@ -29,13 +29,17 @@ def test_ui_synchronization(qapp):
     panel.apply_auto_eq_results(auto_eq_bands)
     qapp.processEvents()
 
+    assert panel.curve_widget.band_markers == [freq for freq, _gain, _q in auto_eq_bands]
+
     # Verify UI sliders updated.
     for i, (expected_freq, expected_gain, expected_q) in enumerate(auto_eq_bands):
         slider = panel.band_sliders[i]
         actual_gain = slider.slider.value() / 10.0
         actual_q = slider.q_spinbox.value()
+        actual_freq = slider.frequency_spinbox.value()
         assert abs(actual_gain - expected_gain) <= 0.1
         assert abs(actual_q - expected_q) <= 0.1
+        assert abs(actual_freq - expected_freq) <= 0.1
         assert panel.band_freqs_hz[i] == expected_freq
         assert slider.freq_label.text()
 
@@ -46,6 +50,19 @@ def test_ui_synchronization(qapp):
         assert abs(freq - expected_freq) <= 0.1
         assert abs(gain - expected_gain) <= 0.1
         assert abs(q - expected_q) <= 0.1
+
+    # Manual frequency edits should move the active band and marker too.
+    panel.band_sliders[5].frequency_spinbox.setValue(2310.0)
+    panel.band_sliders[5]._frequency_rate_limiter.flush()
+    qapp.processEvents()
+
+    freq, gain, q = processor.get_eq_band_params(5)
+    assert abs(freq - 2310.0) <= 0.1
+    assert abs(gain - auto_eq_bands[5][1]) <= 0.1
+    assert abs(q - auto_eq_bands[5][2]) <= 0.1
+    assert abs(panel.band_freqs_hz[5] - 2310.0) <= 0.1
+    assert abs(panel.get_settings()["band_freqs"][5] - 2310.0) <= 0.1
+    assert abs(panel.curve_widget.band_markers[5] - 2310.0) <= 0.1
 
     # Cleanup to avoid Qt/native teardown crashes across tests.
     try:

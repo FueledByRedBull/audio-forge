@@ -63,15 +63,26 @@ BAND_LABELS = [
 class EQBandSlider(QWidget):
     """Single EQ band with vertical slider."""
 
-    def __init__(self, band_index: int, label: str, processor, curve_callback=None, parent=None):
+    def __init__(
+        self,
+        band_index: int,
+        label: str,
+        frequency_hz: float,
+        processor,
+        curve_callback=None,
+        frequency_callback=None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.band_index = band_index
         self.processor = processor
         self.curve_callback = curve_callback
+        self.frequency_callback = frequency_callback
         self._rate_limiter = RateLimiter(interval_ms=33)  # ~30Hz
-        self._setup_ui(label)
+        self._frequency_rate_limiter = RateLimiter(interval_ms=33)
+        self._setup_ui(label, frequency_hz)
 
-    def _setup_ui(self, label: str):
+    def _setup_ui(self, label: str, frequency_hz: float):
         """Setup the band UI."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
@@ -101,10 +112,35 @@ class EQBandSlider(QWidget):
         layout.addWidget(self.slider, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Frequency label
-        self.freq_label = QLabel(label)
+        self.freq_label = QLabel(_format_frequency_label(frequency_hz))
         self.freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.freq_label.setStyleSheet("font-size: 9px;")
+        self.freq_label.setToolTip(f"{label} band center frequency")
         layout.addWidget(self.freq_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Editable frequency control
+        freq_layout = QHBoxLayout()
+        freq_layout.setContentsMargins(0, 0, 0, 0)
+        freq_layout.setSpacing(2)
+
+        freq_label = QLabel("Hz:")
+        freq_label.setStyleSheet("font-size: 8px;")
+        freq_layout.addWidget(freq_label)
+
+        self.frequency_spinbox = QDoubleSpinBox()
+        self.frequency_spinbox.setRange(20.0, 20000.0)
+        self.frequency_spinbox.setSingleStep(10.0)
+        self.frequency_spinbox.setDecimals(0)
+        self.frequency_spinbox.setValue(frequency_hz)
+        self.frequency_spinbox.setMaximumWidth(100)
+        self.frequency_spinbox.setMinimumWidth(60)
+        self.frequency_spinbox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.frequency_spinbox.setStyleSheet("font-size: 8px;")
+        self.frequency_spinbox.setToolTip("Center frequency in Hz")
+        self.frequency_spinbox.valueChanged.connect(self._on_frequency_changed)
+        freq_layout.addWidget(self.frequency_spinbox)
+
+        layout.addLayout(freq_layout)
 
         # Q factor spinbox
         q_layout = QHBoxLayout()
@@ -161,6 +197,22 @@ class EQBandSlider(QWidget):
         if self.curve_callback:
             self.curve_callback()
 
+    def _on_frequency_changed(self, value):
+        """Handle frequency spinbox changes."""
+        self.set_frequency_label(value)
+        self._frequency_rate_limiter.call(
+            lambda freq=value: self._update_frequency(freq)
+        )
+
+    def _update_frequency(self, frequency_hz: float):
+        """Update processor, stored band frequency, and curve."""
+        self.processor.set_eq_band_frequency(self.band_index, frequency_hz)
+        self.set_frequency_label(frequency_hz)
+        if self.frequency_callback:
+            self.frequency_callback(self.band_index, frequency_hz)
+        elif self.curve_callback:
+            self.curve_callback()
+
     def set_gain(self, gain_db: float):
         """Set gain value programmatically."""
         self.slider.blockSignals(True)
@@ -174,16 +226,29 @@ class EQBandSlider(QWidget):
         self.q_spinbox.setValue(q)
         self.q_spinbox.blockSignals(False)
 
+    def set_frequency(self, frequency_hz: float):
+        """Set center frequency programmatically."""
+        self.frequency_spinbox.blockSignals(True)
+        self.frequency_spinbox.setValue(frequency_hz)
+        self.frequency_spinbox.blockSignals(False)
+        self.set_frequency_label(frequency_hz)
+
     def set_frequency_label(self, frequency_hz: float) -> None:
         """Set displayed center frequency."""
         self.freq_label.setText(_format_frequency_label(frequency_hz))
 
-    def reset(self):
-        """Reset to 0 dB and default Q."""
+    def frequency_hz(self) -> float:
+        """Return current center frequency."""
+        return float(self.frequency_spinbox.value())
+
+    def reset(self, frequency_hz: float):
+        """Reset to 0 dB, default Q, and default frequency."""
         self.set_gain(0.0)
         self.set_q(1.41)
+        self.set_frequency(frequency_hz)
         self.processor.set_eq_band_gain(self.band_index, 0.0)
         self.processor.set_eq_band_q(self.band_index, 1.41)
+        self.processor.set_eq_band_frequency(self.band_index, frequency_hz)
 
 
 class EQPanel(QWidget):
@@ -245,7 +310,14 @@ class EQPanel(QWidget):
         sliders_layout.setSpacing(5)
 
         for i, label in enumerate(BAND_LABELS):
-            band_slider = EQBandSlider(i, label, self.processor, curve_callback=self._update_curve)
+            band_slider = EQBandSlider(
+                i,
+                label,
+                BAND_FREQUENCIES_HZ[i],
+                self.processor,
+                curve_callback=self._update_curve,
+                frequency_callback=self._on_band_frequency_changed,
+            )
             self.band_sliders.append(band_slider)
             sliders_layout.addWidget(band_slider, stretch=1)
 
@@ -292,15 +364,25 @@ class EQPanel(QWidget):
 
     def _reset_all(self):
         """Reset all bands to 0 dB."""
-        for slider in self.band_sliders:
-            slider.reset()
+        for i, slider in enumerate(self.band_sliders):
+            slider.reset(BAND_FREQUENCIES_HZ[i])
+        self.curve_widget.clear_band_markers()
         self._update_curve()
+
+    def _on_band_frequency_changed(self, band_index: int, frequency_hz: float) -> None:
+        """Synchronize manual frequency edits with panel state."""
+        if 0 <= band_index < len(self.band_freqs_hz):
+            self.band_freqs_hz[band_index] = float(frequency_hz)
+        self._update_curve()
+        if self.curve_widget.band_markers:
+            self.curve_widget.set_band_markers(self.band_freqs_hz)
 
     def _update_curve(self):
         """Update frequency response curve based on current band parameters."""
         bands = []
         for i, slider in enumerate(self.band_sliders):
-            freq = self.band_freqs_hz[i]
+            freq = slider.frequency_hz()
+            self.band_freqs_hz[i] = freq
             gain = slider.slider.value() / 10.0
             q = slider.q_spinbox.value()
             bands.append((freq, gain, q))
@@ -332,7 +414,13 @@ class EQPanel(QWidget):
         qs = [0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707]
         self._apply_preset(gains, qs)
 
-    def _apply_preset(self, gains: list, qs: list | None = None, freqs: list | None = None):
+    def _apply_preset(
+        self,
+        gains: list,
+        qs: list | None = None,
+        freqs: list | None = None,
+        show_markers: bool = False,
+    ):
         """Apply a preset with given gain and Q values."""
         if qs is None:
             qs = [1.41] * len(gains)  # Default Q if not provided
@@ -358,10 +446,14 @@ class EQPanel(QWidget):
                 slider = self.band_sliders[i]
                 slider.set_gain(gain)
                 slider.set_q(q)
-                slider.set_frequency_label(float(freq))
+                slider.set_frequency(float(freq))
 
         # Update curve
         self._update_curve()
+        if show_markers:
+            self.curve_widget.set_band_markers(self.band_freqs_hz)
+        else:
+            self.curve_widget.clear_band_markers()
 
     def apply_auto_eq_results(self, bands: list):
         """
@@ -391,26 +483,29 @@ class EQPanel(QWidget):
                 # Block signals to prevent feedback loops
                 slider.slider.blockSignals(True)
                 slider.q_spinbox.blockSignals(True)
+                slider.frequency_spinbox.blockSignals(True)
 
                 # Update slider and spinbox
                 slider.set_gain(gain)
                 slider.set_q(q)
-                slider.set_frequency_label(float(freq))
+                slider.set_frequency(float(freq))
 
                 # Unblock signals
                 slider.slider.blockSignals(False)
                 slider.q_spinbox.blockSignals(False)
+                slider.frequency_spinbox.blockSignals(False)
 
         # Update frequency response graph
         self._update_curve()
+        self.curve_widget.set_band_markers(self.band_freqs_hz)
 
     def get_settings(self) -> dict:
         """Get current EQ settings as a dictionary."""
         gains = []
         qs = []
         freqs = []
-        for i, slider in enumerate(self.band_sliders):
-            freqs.append(self.band_freqs_hz[i])
+        for slider in self.band_sliders:
+            freqs.append(slider.frequency_hz())
             gains.append(slider.slider.value() / 10.0)
             qs.append(slider.q_spinbox.value())
         return {
@@ -428,8 +523,8 @@ class EQPanel(QWidget):
             List of (frequency_hz, gain_db, q) tuples for all 10 bands
         """
         params = []
-        for i, slider in enumerate(self.band_sliders):
-            freq = self.band_freqs_hz[i]
+        for slider in self.band_sliders:
+            freq = slider.frequency_hz()
             gain = slider.slider.value() / 10.0
             q = slider.q_spinbox.value()
             params.append((freq, gain, q))
@@ -450,8 +545,8 @@ class EQPanel(QWidget):
         gains = []
         qs = []
         freqs = []
-        for i, slider in enumerate(self.band_sliders):
-            freqs.append(self.band_freqs_hz[i])
+        for slider in self.band_sliders:
+            freqs.append(slider.frequency_hz())
             gains.append(slider.slider.value() / 10.0)
             qs.append(slider.q_spinbox.value())
         return {
@@ -488,4 +583,8 @@ class EQPanel(QWidget):
             # Default to 1.41 Q for backwards compatibility with old presets
             qs = settings.get('band_qs', [1.41] * len(gains))
             freqs = settings.get('band_freqs', BAND_FREQUENCIES_HZ)
-            self._apply_preset(gains, qs, freqs)
+            show_markers = any(
+                abs(float(freq) - float(default_freq)) > 1e-6
+                for freq, default_freq in zip(freqs, BAND_FREQUENCIES_HZ)
+            )
+            self._apply_preset(gains, qs, freqs, show_markers=show_markers)

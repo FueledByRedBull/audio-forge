@@ -247,3 +247,27 @@ def test_eq_band_frequencies_round_trip():
     preset = Preset.from_dict(data)
 
     assert preset.eq.band_freqs == data["eq"]["band_freqs"]
+
+
+def test_saved_auto_eq_preset_round_trips_dynamic_band_frequencies():
+    with tempfile.TemporaryDirectory() as appdata_dir:
+        old_appdata = os.environ.get("APPDATA")
+        os.environ["APPDATA"] = appdata_dir
+        try:
+            dynamic_freqs = [83.0, 205.0, 310.0, 490.0, 760.0, 2300.0, 3650.0, 5800.0, 8400.0, 15600.0]
+            preset = Preset(name="Auto EQ Dynamic")
+            preset.eq.band_freqs = dynamic_freqs
+            preset.eq.band_gains = [-1.0, 0.0, 0.5, -0.3, 1.0, 2.4, -1.2, 0.7, -0.4, 1.1]
+            preset.eq.band_qs = [1.0, 1.4, 1.6, 1.8, 2.1, 4.8, 2.4, 1.9, 1.3, 0.8]
+
+            path = config.save_preset(preset, config.get_presets_dir() / "auto_eq_dynamic.json")
+            loaded = config.load_preset(path)
+
+            assert loaded.eq.band_freqs == dynamic_freqs
+            assert loaded.eq.band_gains == preset.eq.band_gains
+            assert loaded.eq.band_qs == preset.eq.band_qs
+        finally:
+            if old_appdata is None:
+                os.environ.pop("APPDATA", None)
+            else:
+                os.environ["APPDATA"] = old_appdata

@@ -44,8 +44,8 @@ def main() -> int:
             r'version:\s*str\s*=\s*"([^"]+)"',
             "preset default",
         ),
-        "python/mic_eq/config.py built-ins": _single_match(
-            "python/mic_eq/config.py",
+        "python/mic_eq/config_parts/catalogs.py built-ins": _single_match(
+            "python/mic_eq/config_parts/catalogs.py",
             r'version="([^"]+)"',
             "built-in preset default",
         ),

@@ -25,11 +25,10 @@ from PyQt6.QtWidgets import (
     QSlider,
     QScrollArea,
     QFrame,
-    QFileIconProvider,
     QTabWidget,
 )
-from PyQt6.QtCore import Qt, QTimer, QFileInfo
-from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QAction
 import os
 import sys
 import json
@@ -44,6 +43,7 @@ from .deesser_panel import DeEsserPanel
 from .level_meter import LevelMeter
 from .calibration_dialog import CalibrationDialog
 from .latency_calibration_dialog import LatencyCalibrationDialog
+from .app_bootstrap import run_qt_app
 from .layout_constants import (
     SPACING_SECTION,
     SPACING_NORMAL,
@@ -54,6 +54,14 @@ from .layout_constants import (
     SUBDUED_TEXT_STYLE,
     WARNING_BANNER_STYLE,
     status_chip_style,
+)
+from .startup_presets import (
+    STARTUP_BUILTIN_PREFIX,
+    STARTUP_CUSTOM_PREFIX,
+    normalize_startup_preset_id as _normalize_startup_preset_id,
+    startup_builtin_id as _startup_builtin_id,
+    startup_custom_id as _startup_custom_id,
+    startup_preset_display_name as _startup_preset_display_name,
 )
 from .. import AudioProcessor, __version__, list_input_devices, list_output_devices
 from ..config import (
@@ -82,45 +90,6 @@ from ..config import (
 
 # Enable debug logging
 DEBUG = False
-
-STARTUP_BUILTIN_PREFIX = "builtin:"
-STARTUP_CUSTOM_PREFIX = "custom:"
-
-
-def _startup_builtin_id(preset_key: str) -> str:
-    return f"{STARTUP_BUILTIN_PREFIX}{preset_key}"
-
-
-def _startup_custom_id(preset_name: str) -> str:
-    return f"{STARTUP_CUSTOM_PREFIX}{preset_name}"
-
-
-def _normalize_startup_preset_id(value: str, custom_names: tuple[str, ...] = ()) -> str:
-    """Return the stable startup preset ID, accepting legacy stored display names."""
-    preset_id = str(value or "")
-    if not preset_id:
-        return ""
-    if preset_id.startswith((STARTUP_BUILTIN_PREFIX, STARTUP_CUSTOM_PREFIX)):
-        return preset_id
-    if preset_id in BUILTIN_PRESETS:
-        return _startup_builtin_id(preset_id)
-    for key, preset in BUILTIN_PRESETS.items():
-        if preset.name == preset_id:
-            return _startup_builtin_id(key)
-    if preset_id in custom_names:
-        return _startup_custom_id(preset_id)
-    return preset_id
-
-
-def _startup_preset_display_name(preset_id: str) -> str:
-    if preset_id.startswith(STARTUP_BUILTIN_PREFIX):
-        preset_key = preset_id[len(STARTUP_BUILTIN_PREFIX):]
-        if preset_key in BUILTIN_PRESETS:
-            return BUILTIN_PRESETS[preset_key].name
-    if preset_id.startswith(STARTUP_CUSTOM_PREFIX):
-        return preset_id[len(STARTUP_CUSTOM_PREFIX):]
-    return preset_id
-
 
 def _update_callback_stall_state(
     stall_started_at: float | None,
@@ -2120,71 +2089,7 @@ class MainWindow(QMainWindow):
 
 def run_app():
     """Run the MicEq application."""
-    from PyQt6.QtWidgets import QApplication
-    import sys
-    from pathlib import Path
-
-    def _configure_deepfilter_env():
-        if "AUDIOFORGE_ENABLE_DEEPFILTER" in os.environ:
-            return
-
-        lib_names = []
-        if os.name == "nt":
-            lib_names = ["df.dll"]
-        elif sys.platform == "darwin":
-            lib_names = ["libdf.dylib"]
-        else:
-            lib_names = ["libdf.so"]
-
-        repo_root = Path(__file__).resolve().parents[3]
-        search_dirs = [Path.cwd(), repo_root]
-        lib_path = None
-        for lib_name in lib_names:
-            for base in search_dirs:
-                candidate = base / lib_name
-                if candidate.exists():
-                    lib_path = candidate
-                    break
-            if lib_path:
-                break
-
-        model_dirs = [
-            Path.cwd() / "models",
-            repo_root / "models",
-        ]
-        model_found = False
-        for model_dir in model_dirs:
-            if not model_dir.exists():
-                continue
-            ll_model = model_dir / "DeepFilterNet3_ll_onnx.tar.gz"
-            std_model = model_dir / "DeepFilterNet3_onnx.tar.gz"
-            if ll_model.exists() or std_model.exists():
-                model_found = True
-                break
-
-        if lib_path and model_found:
-            os.environ.setdefault("DEEPFILTER_LIB_PATH", str(lib_path))
-            os.environ.setdefault("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
-
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-
-    if getattr(sys, "frozen", False):
-        provider = QFileIconProvider()
-        exe_icon = provider.icon(QFileInfo(sys.executable))
-        if not exe_icon.isNull():
-            app.setWindowIcon(exe_icon)
-    else:
-        icon_path = Path("mic_eq.ico")
-        if icon_path.exists():
-            app.setWindowIcon(QIcon(str(icon_path)))
-
-    _configure_deepfilter_env()
-
-    window = MainWindow()
-    window.show()
-
-    return app.exec()
+    return run_qt_app(MainWindow)
 
 
 if __name__ == "__main__":

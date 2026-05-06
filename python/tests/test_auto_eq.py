@@ -188,11 +188,12 @@ def test_11_q_bounds_respected():
     target_db = get_target_curve(freqs, "streaming")
     eq = calculate_eq_bands(freqs, spectrum_db, target_db)
     qs = eq["band_qs"]
+    centers = np.asarray(eq["band_freqs"], dtype=float)
 
     assert len(qs) == 10
     for i, q in enumerate(qs):
         assert 0.3 <= q <= 6.0
-        if EQ_FREQUENCIES[i] < 250.0:
+        if centers[i] < 250.0:
             assert q <= 2.5
 
 
@@ -209,7 +210,7 @@ def test_12_q_regularized_near_prior_for_flat_case():
     assert max_log_dev < 0.25
 
 
-def test_13_center_nudges_stay_within_bounds():
+def test_13_dynamic_centers_are_sorted_and_valid_for_eq_roles():
     freqs = _default_freqs()
     spectrum_db = generate_test_spectrum(freqs, "extreme")
     target_db = get_target_curve(freqs, "streaming")
@@ -217,15 +218,11 @@ def test_13_center_nudges_stay_within_bounds():
     centers = np.asarray(eq["band_freqs"], dtype=float)
 
     assert len(centers) == 10
-    base = np.asarray(EQ_FREQUENCIES, dtype=float)
-    low = base * 0.85
-    high = base * 1.15
-    low_mask = base < 250.0
-    low[low_mask] = base[low_mask] * 0.90
-    high[low_mask] = base[low_mask] * 1.10
-
-    assert np.all(centers >= low)
-    assert np.all(centers <= high)
+    assert np.all(np.isfinite(centers))
+    assert np.all(np.diff(centers) > 0.0)
+    assert 55.0 <= centers[0] <= 180.0
+    assert np.all((centers[1:9] >= 200.0) & (centers[1:9] <= 9000.0))
+    assert 9500.0 <= centers[9] <= 18000.0
 
 
 def test_14_adjacent_gain_coupling_limit():
@@ -256,3 +253,49 @@ def test_16_snr_aware_boost_caps_are_bounded_and_monotonic():
     assert np.all(caps >= 3.0)
     assert np.all(caps <= 12.0)
     assert np.all(np.diff(caps) >= -1e-9)
+
+
+def test_17_dynamic_center_tracks_non_default_problem_frequency():
+    freqs = _default_freqs()
+    log_freqs = np.log10(freqs)
+    spectrum_db = np.full_like(freqs, -70.0)
+    spectrum_db -= 8.0 * np.exp(
+        -((log_freqs - np.log10(2300.0)) ** 2) / (2 * 0.045**2)
+    )
+    target_db = get_target_curve(freqs, "flat")
+
+    eq = calculate_eq_bands(freqs, spectrum_db, target_db)
+    centers = np.asarray(eq["band_freqs"], dtype=float)
+    gains = np.asarray(eq["band_gains"], dtype=float)
+    nearest = int(np.argmin(np.abs(centers - 2300.0)))
+
+    assert abs(centers[nearest] - 2300.0) < 180.0
+    assert abs(centers[nearest] - 2500.0) > 120.0
+    assert gains[nearest] > 1.0
+
+
+def test_18_q_is_narrower_for_narrower_spectral_issue():
+    freqs = _default_freqs()
+    log_freqs = np.log10(freqs)
+    target_db = get_target_curve(freqs, "flat")
+
+    narrow = np.full_like(freqs, -70.0) - 8.0 * np.exp(
+        -((log_freqs - np.log10(2300.0)) ** 2) / (2 * 0.025**2)
+    )
+    broad = np.full_like(freqs, -70.0) - 8.0 * np.exp(
+        -((log_freqs - np.log10(2300.0)) ** 2) / (2 * 0.12**2)
+    )
+
+    narrow_eq = calculate_eq_bands(freqs, narrow, target_db)
+    broad_eq = calculate_eq_bands(freqs, broad, target_db)
+    narrow_centers = np.asarray(narrow_eq["band_freqs"], dtype=float)
+    broad_centers = np.asarray(broad_eq["band_freqs"], dtype=float)
+    narrow_qs = np.asarray(narrow_eq["band_qs"], dtype=float)
+    broad_qs = np.asarray(broad_eq["band_qs"], dtype=float)
+
+    narrow_idx = int(np.argmin(np.abs(narrow_centers - 2300.0)))
+    broad_idx = int(np.argmin(np.abs(broad_centers - 2300.0)))
+
+    assert abs(narrow_centers[narrow_idx] - 2300.0) < 220.0
+    assert abs(broad_centers[broad_idx] - 2300.0) < 450.0
+    assert narrow_qs[narrow_idx] > broad_qs[broad_idx] + 0.75

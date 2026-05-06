@@ -6,9 +6,11 @@ Handles saving and loading of presets (JSON format).
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 import os
+import sys
 import tempfile
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
@@ -1074,117 +1076,33 @@ def load_config() -> AppConfig:
         return AppConfig()
 
 
+def _load_catalog_builders():
+    """Load catalog builders in packages, with a direct-test file fallback."""
+    if 'mic_eq' in sys.modules:
+        from .config_parts.catalogs import build_builtin_presets, build_target_curves
+
+        return build_builtin_presets, build_target_curves
+
+    module_path = Path(__file__).with_name('config_parts') / 'catalogs.py'
+    spec = importlib.util.spec_from_file_location('mic_eq_config_catalogs', module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load config catalog builders")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build_builtin_presets, module.build_target_curves
+
+
+_build_builtin_presets, _build_target_curves = _load_catalog_builders()
+
+
 # Built-in presets
-BUILTIN_PRESETS = {
-    'voice': Preset(
-        name="Voice Clarity",
-        description="Optimized for voice communication - cuts low end rumble and boosts presence",
-        version="1.7.17",
-        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=True, gate_margin_db=10.0),
-        eq=EQSettings(
-            enabled=True,
-            band_gains=[-3.0, -2.0, 0.0, 1.0, 2.0, 3.0, 2.0, 0.0, -1.0, -2.0],
-            band_qs=[0.7, 1.0, 1.2, 1.4, 1.6, 2.0, 1.8, 1.2, 0.9, 0.7]  # Wide cuts, focused boosts
-        ),
-        rnnoise=RNNoiseSettings(enabled=True, strength=1.0, model='rnnoise'),
-    ),
-    'bass_cut': Preset(
-        name="Bass Cut",
-        description="High-pass effect to remove low frequency rumble and proximity effect",
-        version="1.7.17",
-        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=True, gate_margin_db=10.0),
-        eq=EQSettings(
-            enabled=True,
-            band_gains=[-12.0, -6.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            band_qs=[0.5, 0.7, 0.9, 1.41, 1.41, 1.41, 1.41, 1.41, 1.41, 1.41]  # Wide rolloff on low end
-        ),
-        rnnoise=RNNoiseSettings(enabled=True, strength=1.0, model='rnnoise'),
-    ),
-    'presence': Preset(
-        name="Presence Boost",
-        description="Enhances voice presence and intelligibility",
-        version="1.7.17",
-        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=True, gate_margin_db=10.0),
-        eq=EQSettings(
-            enabled=True,
-            band_gains=[0.0, 0.0, 0.0, 0.0, 2.0, 4.0, 3.0, 1.0, 0.0, 0.0],
-            band_qs=[1.41, 1.41, 1.41, 1.41, 2.0, 2.5, 2.0, 1.5, 1.41, 1.41]  # Narrow focus on presence frequencies
-        ),
-        rnnoise=RNNoiseSettings(enabled=True, strength=1.0, model='rnnoise'),
-    ),
-    'flat': Preset(
-        name="Flat",
-        description="No EQ processing - flat frequency response",
-        version="1.7.17",
-        gate=GateSettings(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=True, gate_margin_db=10.0),
-        eq=EQSettings(
-            enabled=True,
-            band_gains=[0.0] * 10,
-            band_qs=[1.41] * 10  # Default Q
-        ),
-        rnnoise=RNNoiseSettings(enabled=True, strength=1.0, model='rnnoise'),
-    ),
-    'minimal': Preset(
-        name="Minimal Processing",
-        description="Gate and RNNoise only - no EQ",
-        version="1.7.17",
-        gate=GateSettings(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0,
-                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=True, gate_margin_db=10.0),
-        eq=EQSettings(
-            enabled=False,
-            band_gains=[0.0] * 10,
-            band_qs=[1.41] * 10  # Default Q
-        ),
-        rnnoise=RNNoiseSettings(enabled=True, strength=1.0, model='rnnoise'),
-    ),
-    'aggressive_denoise': Preset(
-        name="Aggressive Denoise",
-        description="Maximum noise reduction with tight gate",
-        version="1.7.17",
-        gate=GateSettings(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0,
-                         gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
-                         auto_threshold_enabled=True, gate_margin_db=10.0),
-        eq=EQSettings(
-            enabled=True,
-            band_gains=[-6.0, -3.0, 0.0, 0.0, 1.0, 2.0, 1.0, -1.0, -3.0, -6.0],
-            band_qs=[0.6, 0.8, 1.2, 1.4, 1.8, 2.0, 1.6, 1.2, 0.8, 0.6]  # Varied Q for targeted corrections
-        ),
-        rnnoise=RNNoiseSettings(enabled=True, strength=1.0, model='rnnoise'),
-    ),
-}
+BUILTIN_PRESETS = _build_builtin_presets(
+    Preset,
+    GateSettings,
+    EQSettings,
+    RNNoiseSettings,
+)
 
 
 # Target curves for Auto-EQ calibration
-TARGET_CURVES = {
-    'broadcast': TargetCurve(
-        name="Broadcast Standard",
-        description="ITU-R BS.1770 compliant - professional broadcast voice",
-        band_targets=[-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 2.0, 1.0, 0.0, -1.0]
-    ),
-    'podcast': TargetCurve(
-        name="Podcast / Voice-Over",
-        description="Enhanced presence for intimate vocal recording",
-        band_targets=[0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 3.0, 2.0, 1.0, 0.0]
-    ),
-    'streaming': TargetCurve(
-        name="Streaming / Gaming",
-        description="Cuts through game audio mix with aggressive presence",
-        band_targets=[-1.0, 0.0, 1.0, 2.0, 4.0, 5.0, 4.0, 2.0, 0.0, -2.0]
-    ),
-    'flat': TargetCurve(
-        name="Flat Response",
-        description="No frequency correction - measure mic as-is",
-        band_targets=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-    ),
-}
-
-
+TARGET_CURVES = _build_target_curves(TargetCurve)

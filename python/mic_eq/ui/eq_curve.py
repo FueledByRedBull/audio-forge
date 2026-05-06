@@ -6,6 +6,7 @@ import math
 import cmath
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPainter, QPen, QColor
+from PyQt6.QtCore import Qt
 
 
 class EQCurveWidget(QWidget):
@@ -20,6 +21,7 @@ class EQCurveWidget(QWidget):
         # filter_type: 0=lowshelf, 1=peaking, 2=highshelf
         self.bands = []
         self.overlay_bands = []  # Optional second curve for comparison
+        self.band_markers = []
         self.show_overlay = False
         for i in range(10):
             if i == 0:
@@ -169,6 +171,16 @@ class EQCurveWidget(QWidget):
         self.show_overlay = False
         self.update()
 
+    def set_band_markers(self, frequencies_hz):
+        """Show markers for dynamically placed EQ bands."""
+        self.band_markers = [float(freq) for freq in frequencies_hz]
+        self.update()
+
+    def clear_band_markers(self):
+        """Hide dynamic band markers."""
+        self.band_markers = []
+        self.update()
+
     def _update_overlay_response(self):
         """Calculate frequency response for overlay curve."""
         self.overlay_response_db = [0.0] * len(self.freq_points)
@@ -269,6 +281,25 @@ class EQCurveWidget(QWidget):
             x1, y1 = points[i]
             x2, y2 = points[i + 1]
             painter.drawLine(x1, y1, x2, y2)
+
+        if self.band_markers:
+            marker_pen = QPen(QColor(255, 212, 64, 150), 1, Qt.PenStyle.DashLine)
+            marker_fill = QColor(255, 212, 64)
+            for freq in self.band_markers:
+                if freq < 20.0 or freq > 20_000.0:
+                    continue
+                x = int(freq_to_x(freq))
+                nearest_idx = min(
+                    range(len(self.freq_points)),
+                    key=lambda idx: abs(self.freq_points[idx] - freq),
+                )
+                y = int(db_to_y(self.response_db[nearest_idx]))
+                painter.setPen(marker_pen)
+                painter.drawLine(x, margin_top, x, height - margin_bottom)
+                painter.setBrush(marker_fill)
+                painter.setPen(QPen(marker_fill, 1))
+                painter.drawEllipse(x - 3, y - 3, 6, 6)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
 
         # Draw overlay curve if enabled
         if self.show_overlay and self.overlay_bands:

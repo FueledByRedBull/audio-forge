@@ -375,6 +375,43 @@ def test_calibration_recorded_audio_reports_processor_rate(qapp):
     owner.close()
 
 
+def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
+    owner = _FakeOwner(_FakeProcessor(sample_rate=44_100))
+    dialog = CalibrationDialog(parent=owner)
+    eq_settings = {
+        "band_freqs": [
+            80.0,
+            160.0,
+            320.0,
+            640.0,
+            1280.0,
+            2500.0,
+            5000.0,
+            8000.0,
+            12000.0,
+            16000.0,
+        ],
+        "band_gains": [0.0] * 10,
+        "band_qs": [1.41] * 10,
+        "analysis_confidence": 0.76,
+        "validation_before_error_db": 5.0,
+        "validation_after_error_db": 2.5,
+        "validation_gain_scale": 0.9,
+        "target_profile": "broadcast:adaptive",
+    }
+
+    dialog._on_analysis_complete(eq_settings)
+
+    assert not dialog.diagnostics_group.isHidden()
+    assert dialog.confidence_label.text() == "Confidence: 76%"
+    assert dialog.error_label.text() == "Target error: 5.0 dB -> 2.5 dB"
+    assert dialog.gain_scale_label.text() == "Gain scale: 90%"
+    assert dialog.target_profile_label.text() == "Target profile: broadcast:adaptive"
+
+    dialog.close()
+    owner.close()
+
+
 def test_latency_calibration_uses_processor_output_sample_rate(qapp):
     owner = _FakeOwner(_FakeProcessor(output_sample_rate=44_100))
     assert _capture_sample_rate(owner) == 44_100

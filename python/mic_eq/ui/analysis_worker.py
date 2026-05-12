@@ -7,13 +7,7 @@ import threading
 import time
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from mic_eq.analysis import (
-    compute_voice_spectrum,
-    smooth_spectrum_octave,
-    get_target_curve,
-    calculate_eq_bands,
-    validate_analysis
-)
+from mic_eq.analysis import analyze_auto_eq
 
 
 class AnalysisWorker(QThread):
@@ -65,42 +59,20 @@ class AnalysisWorker(QThread):
             if self._should_stop():
                 return
 
-            # Step 1: FFT analysis
-            self.step_progress.emit("Computing FFT...", 10)
-            freqs, spectrum_db = compute_voice_spectrum(
+            self.step_progress.emit("Analyzing voice spectrum...", 10)
+            eq_settings, validation = analyze_auto_eq(
                 self.audio_data,
-                self.sample_rate
+                self.sample_rate,
+                self.target_preset,
             )
-            if self._should_stop():
-                return
-
-            # Step 2: Smoothing
-            self.step_progress.emit("Smoothing spectrum...", 40)
-            spectrum_smoothed = smooth_spectrum_octave(freqs, spectrum_db, fraction=6)
-            if self._should_stop():
-                return
-
-            # Step 3: Get target curve
-            self.step_progress.emit("Loading target curve...", 50)
-            target_db = get_target_curve(freqs, self.target_preset)
-            if self._should_stop():
-                return
-
-            # Step 4: Calculate EQ bands
-            self.step_progress.emit("Finding frequency problems...", 70)
-            eq_settings = calculate_eq_bands(freqs, spectrum_smoothed, target_db)
-            if self._should_stop():
-                return
-
-            # Step 5: Validate results
-            self.step_progress.emit("Validating results...", 95)
-            validation = validate_analysis(eq_settings, spectrum_smoothed, freqs)
             if self._should_stop():
                 return
 
             if not validation.passed:
                 self.failed.emit(validation.reason)
                 return
+
+            self.step_progress.emit("Validating correction...", 95)
 
             # Complete
             elapsed = time.time() - self._start_time

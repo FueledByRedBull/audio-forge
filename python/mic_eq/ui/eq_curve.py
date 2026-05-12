@@ -8,6 +8,8 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPainter, QPen, QColor
 from PyQt6.QtCore import Qt
 
+from mic_eq.analysis.eq_quality import evaluate_eq_quality
+
 
 class EQCurveWidget(QWidget):
     """Widget that displays frequency response curve for 10-band EQ."""
@@ -22,6 +24,7 @@ class EQCurveWidget(QWidget):
         self.bands = []
         self.overlay_bands = []  # Optional second curve for comparison
         self.band_markers = []
+        self.interaction_warnings = []
         self.show_overlay = False
         for i in range(10):
             if i == 0:
@@ -123,6 +126,12 @@ class EQCurveWidget(QWidget):
             for i, f in enumerate(self.freq_points):
                 db = self._biquad_response(f, b0, b1, b2, a1, a2)
                 self.response_db[i] += db
+        freqs = [band[0] for band in self.bands]
+        gains = [band[1] for band in self.bands]
+        qs = [band[2] for band in self.bands]
+        self.interaction_warnings = list(
+            evaluate_eq_quality(freqs, gains, qs, self.sample_rate).warnings
+        )
 
     def set_band_params(self, band_index, freq, gain_db, q):
         """Update parameters for a single band and redraw."""
@@ -299,6 +308,20 @@ class EQCurveWidget(QWidget):
                 painter.setBrush(marker_fill)
                 painter.setPen(QPen(marker_fill, 1))
                 painter.drawEllipse(x - 3, y - 3, 6, 6)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        if self.interaction_warnings:
+            warning_pen = QPen(QColor(255, 183, 77, 180), 2)
+            warning_fill = QColor(255, 183, 77, 80)
+            painter.setPen(warning_pen)
+            painter.setBrush(warning_fill)
+            for warning in self.interaction_warnings[:6]:
+                freq = warning.frequency_hz
+                if freq < 20.0 or freq > 20_000.0:
+                    continue
+                x = int(freq_to_x(freq))
+                marker_height = max(8, int(10 + warning.severity * 12))
+                painter.drawRect(x - 2, margin_top, 4, marker_height)
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
         # Draw overlay curve if enabled

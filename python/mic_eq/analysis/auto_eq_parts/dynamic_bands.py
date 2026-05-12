@@ -316,7 +316,7 @@ def _remove_spectral_tilt(freqs: np.ndarray, measured_db: np.ndarray) -> tuple[n
     if not np.isfinite(fit_r2) or fit_r2 < TILT_MIN_FIT_R2:
         return measured_db, 0.0
 
-    all_x_center = np.log10(freqs) - np.mean(x)
+    all_x_center = np.log10(np.clip(freqs, 1e-6, None)) - np.mean(x)
     tilt_component = slope * all_x_center
     return measured_db - tilt_component, slope
 

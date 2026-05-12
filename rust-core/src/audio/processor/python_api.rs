@@ -120,6 +120,12 @@ impl PyAudioProcessor {
         self.processor.get_vad_probability()
     }
 
+    /// Get fused gate open score (0.0-1.0)
+    #[cfg(feature = "vad")]
+    fn get_gate_fused_score(&self) -> f32 {
+        self.processor.get_gate_fused_score()
+    }
+
     /// Check whether VAD backend is available (model/runtime loaded)
     #[cfg(feature = "vad")]
     fn is_vad_available(&self) -> bool {
@@ -693,6 +699,8 @@ impl PyAudioProcessor {
             "raw_monitor_enabled",
             self.processor.is_raw_monitor_enabled(),
         )?;
+        #[cfg(feature = "vad")]
+        diagnostics.set_item("gate_fused_score", self.processor.get_gate_fused_score())?;
         Ok(diagnostics.into_any().unbind())
     }
 

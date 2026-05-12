@@ -26,7 +26,7 @@ verify_release_assets = _load_tool("verify_release_assets")
 
 
 def _write_bundle_file(bundle: Path, relative_path: str) -> None:
-    path = bundle / "_internal" / relative_path
+    path = bundle / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"x")
 
@@ -35,9 +35,9 @@ def test_package_smoke_rejects_empty_models_directory(tmp_path):
     bundle = tmp_path / "AudioForge"
     (bundle / "_internal" / "models").mkdir(parents=True)
     (bundle / "AudioForge.exe").write_bytes(b"x")
-    _write_bundle_file(bundle, "df.dll")
-    _write_bundle_file(bundle, "DirectML.dll")
-    _write_bundle_file(bundle, "mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, "_internal/df.dll")
+    _write_bundle_file(bundle, "_internal/DirectML.dll")
+    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
     (bundle / "_internal" / "example.dist-info").mkdir()
 
     errors = package_smoke.check_dist_bundle(bundle)
@@ -53,10 +53,27 @@ def test_package_smoke_accepts_required_assets_and_metadata(tmp_path):
     (bundle / "AudioForge.exe").write_bytes(b"x")
     for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
         _write_bundle_file(bundle, relative_path)
-    _write_bundle_file(bundle, "mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
     (bundle / "_internal" / "example.dist-info").mkdir()
 
     assert package_smoke.check_dist_bundle(bundle) == []
+
+
+def test_package_smoke_rejects_misplaced_decoy_assets(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
+    (bundle / "AudioForge.exe").write_bytes(b"x")
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        decoy_path = bundle / "_internal" / "decoys" / Path(relative_path).name
+        decoy_path.parent.mkdir(parents=True, exist_ok=True)
+        decoy_path.write_bytes(b"x")
+    _write_bundle_file(bundle, "_internal/decoys/mic_eq_core.cp312-win_amd64.pyd")
+    (bundle / "_internal" / "example.dist-info").mkdir()
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert any("_internal/df.dll" in error for error in errors)
+    assert any("_internal/mic_eq/mic_eq_core*.pyd" in error for error in errors)
 
 
 def test_package_smoke_rejects_bundle_without_license_metadata(tmp_path):
@@ -65,7 +82,7 @@ def test_package_smoke_rejects_bundle_without_license_metadata(tmp_path):
     (bundle / "AudioForge.exe").write_bytes(b"x")
     for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
         _write_bundle_file(bundle, relative_path)
-    _write_bundle_file(bundle, "mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
 
     errors = package_smoke.check_dist_bundle(bundle)
 

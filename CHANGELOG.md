@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.8.0 - 2026-05-12
+
+- Completed the EQ quality pass with confidence-weighted Auto-EQ solving, post-solve validation, target-error metrics, and visible calibration diagnostics.
+- Added live EQ interaction quality checks for overlapping bands, shelf/peak stacking, narrow boosts, combined boost, and response ripple.
+- Tuned dynamics behavior for a fuller EQ chain with speech-aware auto makeup, smoother adaptive compressor release, additional gate diagnostics, and DSP regression coverage.
+- Hardened DeepFilter bootstrap so automatic runtime discovery only trusts application-owned paths and no longer accepts `df.dll` from the process current working directory.
+- Tightened portable bundle smoke checks to require exact PyInstaller `_internal` runtime asset locations and reject misplaced decoy DLL/model/native-extension files.
+- Rebuilt and republished the Windows portable bundle as `v1.8.0`.
+
 ## v1.7.18 - 2026-05-06
 
 - Replaced fixed-grid Auto EQ placement with dynamic spectrum-driven center frequencies while preserving the existing 10-band preset/DSP shape.

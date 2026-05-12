@@ -15,6 +15,10 @@ const EXPANDER_RANGE_DB: f64 = 36.0;
 const DETECTOR_RMS_MS: f64 = 8.0;
 const DETECTOR_HYSTERESIS_DB: f64 = 4.0;
 const DETECTOR_HOLD_MS: f64 = 50.0;
+#[cfg(feature = "vad")]
+const FUSED_GATE_OPEN_SCORE: f32 = 0.55;
+#[cfg(feature = "vad")]
+const FUSED_GATE_CLOSE_SCORE: f32 = 0.35;
 
 #[cfg(debug_assertions)]
 macro_rules! gate_debug_log {
@@ -75,6 +79,12 @@ pub struct NoiseGate {
     /// Whether latest non-realtime VAD probability is fresh enough to use.
     #[cfg(feature = "vad")]
     vad_external_available: bool,
+    /// Fused level/VAD open score exposed for diagnostics.
+    #[cfg(feature = "vad")]
+    fused_gate_score: f32,
+    /// Hysteretic fused open state.
+    #[cfg(feature = "vad")]
+    fused_gate_open: bool,
 }
 
 impl NoiseGate {
@@ -118,6 +128,10 @@ impl NoiseGate {
             vad_external_probability: 0.0,
             #[cfg(feature = "vad")]
             vad_external_available: false,
+            #[cfg(feature = "vad")]
+            fused_gate_score: 0.0,
+            #[cfg(feature = "vad")]
+            fused_gate_open: false,
         }
     }
 
@@ -192,6 +206,67 @@ impl NoiseGate {
         }
     }
 
+    #[cfg(feature = "vad")]
+    #[inline]
+    fn level_open_score(&self) -> f32 {
+        let closed_db = self.threshold_db - DETECTOR_HYSTERESIS_DB;
+        let score = (self.detector_level_db - closed_db) / (self.threshold_db - closed_db);
+        score.clamp(0.0, 1.0) as f32
+    }
+
+    #[cfg(feature = "vad")]
+    #[inline]
+    fn update_fused_gate_score(
+        &mut self,
+        mode: GateMode,
+        vad_probability: f32,
+        vad_available: bool,
+        vad_held_open: bool,
+    ) -> bool {
+        let level_score = self.level_open_score();
+        let vad_score = vad_probability.clamp(0.0, 1.0);
+        let recent_score = if self.fused_gate_open || self.current_gain > 0.35 {
+            1.0
+        } else {
+            0.0
+        };
+
+        self.fused_gate_score = match mode {
+            GateMode::ThresholdOnly => level_score,
+            GateMode::VadAssisted => {
+                if vad_available {
+                    let blended_score =
+                        (0.55 * level_score + 0.45 * vad_score + 0.10 * recent_score)
+                            .clamp(0.0, 1.0);
+                    level_score.max(vad_score).max(blended_score)
+                } else {
+                    0.85 * level_score + 0.15 * recent_score
+                }
+            }
+            GateMode::VadOnly => {
+                if vad_available {
+                    if vad_held_open {
+                        vad_score.max(FUSED_GATE_OPEN_SCORE)
+                    } else {
+                        vad_score
+                    }
+                } else if vad_held_open {
+                    FUSED_GATE_OPEN_SCORE
+                } else {
+                    0.0
+                }
+            }
+        };
+
+        if self.fused_gate_score >= FUSED_GATE_OPEN_SCORE {
+            self.fused_gate_open = true;
+        } else if self.fused_gate_score <= FUSED_GATE_CLOSE_SCORE {
+            self.fused_gate_open = false;
+        }
+
+        self.fused_gate_open
+    }
+
     #[inline]
     fn compute_target_gr_db(&self, force_close: bool) -> f64 {
         if force_close {
@@ -241,6 +316,7 @@ impl NoiseGate {
                             self.vad_external_available
                                 .then_some(self.vad_external_probability),
                         );
+                        let vad_probability_available = self.vad_external_available;
 
                         if GATE_DEBUG {
                             self.debug_counter += buffer.len();
@@ -273,9 +349,16 @@ impl NoiseGate {
                             let input_f64 = *sample as f64;
                             // Detector tracks continuously even when VAD blocks.
                             self.update_detector(input_f64);
+                            let fused_open = self.update_fused_gate_score(
+                                self.gate_mode,
+                                _probability,
+                                vad_probability_available,
+                                vad_gate_open,
+                            );
                             let force_close = match self.gate_mode {
                                 GateMode::ThresholdOnly => false,
-                                GateMode::VadAssisted | GateMode::VadOnly => !vad_gate_open,
+                                GateMode::VadAssisted => !(vad_gate_open || fused_open),
+                                GateMode::VadOnly => !vad_gate_open,
                             };
                             let target_gr_db = self.compute_target_gr_db(force_close);
                             *sample = self.apply_gain(input_f64, target_gr_db);
@@ -314,6 +397,8 @@ impl NoiseGate {
             self.vad_was_open = false;
             self.vad_external_probability = 0.0;
             self.vad_external_available = false;
+            self.fused_gate_score = 0.0;
+            self.fused_gate_open = false;
         }
     }
 
@@ -377,6 +462,12 @@ impl NoiseGate {
         } else {
             0.0
         }
+    }
+
+    #[cfg(feature = "vad")]
+    /// Get fused gate open score (0.0-1.0) for diagnostics.
+    pub fn fused_gate_score(&self) -> f32 {
+        self.fused_gate_score
     }
 
     #[cfg(feature = "vad")]
@@ -591,5 +682,64 @@ mod tests {
 
         assert!(gate.current_gain() < 0.2);
         assert!(!gate.is_vad_available());
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_assisted_fused_score_opens_for_strong_evidence() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.5)));
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_external_vad_probability(0.9, true);
+
+        let mut buffer = vec![0.1_f32; 3_000];
+        gate.process_block_inplace(&mut buffer);
+
+        assert!(gate.fused_gate_score() >= FUSED_GATE_OPEN_SCORE);
+        assert!(gate.current_gain() > 0.5);
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_assisted_uses_vad_open_decision_below_level_threshold() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.4)));
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_external_vad_probability(0.45, true);
+
+        let amp = 10f32.powf(-42.0 / 20.0);
+        let mut buffer = vec![amp; 3_000];
+        gate.process_block_inplace(&mut buffer);
+
+        assert!(gate.current_gain() > 0.35);
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_only_honors_configured_vad_threshold() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.4)));
+        gate.set_gate_mode(GateMode::VadOnly);
+        gate.set_external_vad_probability(0.45, true);
+
+        let mut buffer = vec![0.1_f32; 3_000];
+        gate.process_block_inplace(&mut buffer);
+
+        assert!(gate.current_gain() > 0.5);
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_assisted_fused_score_resists_weak_noise() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.5)));
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_external_vad_probability(0.1, true);
+
+        let mut buffer = vec![0.0005_f32; 3_000];
+        gate.process_block_inplace(&mut buffer);
+
+        assert!(gate.fused_gate_score() <= FUSED_GATE_CLOSE_SCORE);
+        assert!(gate.current_gain() < 0.3);
     }
 }

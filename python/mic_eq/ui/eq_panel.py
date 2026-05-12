@@ -2,6 +2,8 @@
 10-Band Parametric EQ control panel
 """
 
+from typing import Any
+
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -17,7 +19,11 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from .eq_curve import EQCurveWidget
 from .rate_limiter import RateLimiter
-from .layout_constants import SPACING_TIGHT, PRIMARY_LABEL_STYLE
+from .layout_constants import (
+    SPACING_TIGHT,
+    PRIMARY_LABEL_STYLE,
+    status_chip_style,
+)
 from ..config import EQ_FREQUENCIES
 
 
@@ -58,6 +64,59 @@ BAND_LABELS = [
     "12k",
     "HS",   # High shelf
 ]
+
+
+def _percent(value: Any) -> str:
+    try:
+        return f"{float(value) * 100.0:.0f}%"
+    except (TypeError, ValueError):
+        return "--"
+
+
+def _db_value(value: Any) -> str:
+    try:
+        return f"{float(value):.1f} dB"
+    except (TypeError, ValueError):
+        return "--"
+
+
+def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str]:
+    if not diagnostics:
+        return "Auto-EQ: no calibration diagnostics", "idle", ""
+
+    confidence = float(diagnostics.get("analysis_confidence", 0.0) or 0.0)
+    before = diagnostics.get("validation_before_error_db")
+    after = diagnostics.get("validation_after_error_db")
+    scale = diagnostics.get("validation_gain_scale")
+    band_confidences = diagnostics.get("band_confidences") or []
+    low_confidence = 0
+    if isinstance(band_confidences, list):
+        low_confidence = sum(1 for value in band_confidences if float(value) < 0.45)
+
+    if confidence >= 0.72:
+        state = "ok"
+    elif confidence >= 0.45:
+        state = "warn"
+    else:
+        state = "bad"
+
+    text = (
+        f"Auto-EQ: confidence {_percent(confidence)} | "
+        f"target error {_db_value(before)} -> {_db_value(after)} | "
+        f"gain scale {_percent(scale)}"
+    )
+    if low_confidence:
+        text += f" | low-confidence bands {low_confidence}"
+
+    tooltip = (
+        "Auto-EQ calibration diagnostics\n"
+        f"Analysis confidence: {_percent(confidence)}\n"
+        f"Weighted target error before: {_db_value(before)}\n"
+        f"Weighted target error after: {_db_value(after)}\n"
+        f"Validation gain scale: {_percent(scale)}\n"
+        f"Target profile: {diagnostics.get('target_profile', '--')}"
+    )
+    return text, state, tooltip
 
 
 class EQBandSlider(QWidget):
@@ -259,6 +318,7 @@ class EQPanel(QWidget):
         self.processor = processor
         self.band_sliders = []
         self.band_freqs_hz = list(BAND_FREQUENCIES_HZ)
+        self._auto_eq_diagnostics: dict | None = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -295,6 +355,11 @@ class EQPanel(QWidget):
         self.curve_widget.setFixedHeight(100)
         self.curve_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         eq_layout.addWidget(self.curve_widget)
+
+        self.auto_eq_diag_label = QLabel("Auto-EQ: no calibration diagnostics")
+        self.auto_eq_diag_label.setStyleSheet(status_chip_style("idle"))
+        self.auto_eq_diag_label.setToolTip("Auto-EQ diagnostics appear after calibration.")
+        eq_layout.addWidget(self.auto_eq_diag_label)
 
         # dB scale labels
         scale_layout = QHBoxLayout()
@@ -367,6 +432,7 @@ class EQPanel(QWidget):
         for i, slider in enumerate(self.band_sliders):
             slider.reset(BAND_FREQUENCIES_HZ[i])
         self.curve_widget.clear_band_markers()
+        self.set_auto_eq_diagnostics(None)
         self._update_curve()
 
     def _on_band_frequency_changed(self, band_index: int, frequency_hz: float) -> None:
@@ -454,8 +520,9 @@ class EQPanel(QWidget):
             self.curve_widget.set_band_markers(self.band_freqs_hz)
         else:
             self.curve_widget.clear_band_markers()
+        self.set_auto_eq_diagnostics(None)
 
-    def apply_auto_eq_results(self, bands: list):
+    def apply_auto_eq_results(self, bands: list, diagnostics: dict | None = None):
         """
         Apply auto-EQ analysis results to all EQ bands.
 
@@ -498,6 +565,15 @@ class EQPanel(QWidget):
         # Update frequency response graph
         self._update_curve()
         self.curve_widget.set_band_markers(self.band_freqs_hz)
+        self.set_auto_eq_diagnostics(diagnostics)
+
+    def set_auto_eq_diagnostics(self, diagnostics: dict | None) -> None:
+        """Show the last Auto-EQ confidence and validation diagnostics."""
+        self._auto_eq_diagnostics = dict(diagnostics) if diagnostics else None
+        text, state, tooltip = _format_auto_eq_diagnostics(self._auto_eq_diagnostics)
+        self.auto_eq_diag_label.setText(text)
+        self.auto_eq_diag_label.setStyleSheet(status_chip_style(state))
+        self.auto_eq_diag_label.setToolTip(tooltip or "Auto-EQ diagnostics appear after calibration.")
 
     def get_settings(self) -> dict:
         """Get current EQ settings as a dictionary."""
@@ -588,3 +664,5 @@ class EQPanel(QWidget):
                 for freq, default_freq in zip(freqs, BAND_FREQUENCIES_HZ)
             )
             self._apply_preset(gains, qs, freqs, show_markers=show_markers)
+        else:
+            self.set_auto_eq_diagnostics(None)

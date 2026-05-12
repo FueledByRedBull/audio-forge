@@ -2,34 +2,18 @@
 Comprehensive pytest suite for Auto-EQ behavior.
 """
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import numpy as np
 
-
-# Load modules directly to avoid importing mic_eq package init side effects.
-CONFIG_PATH = Path(__file__).parent.parent / "mic_eq" / "config.py"
-config_spec = importlib.util.spec_from_file_location("mic_eq.config", CONFIG_PATH)
-assert config_spec is not None and config_spec.loader is not None
-config = importlib.util.module_from_spec(config_spec)
-sys.modules["mic_eq.config"] = config
-config_spec.loader.exec_module(config)
-
-AUTO_EQ_PATH = Path(__file__).parent.parent / "mic_eq" / "analysis" / "auto_eq.py"
-auto_eq_spec = importlib.util.spec_from_file_location(
-    "mic_eq.analysis.auto_eq", AUTO_EQ_PATH
-)
-assert auto_eq_spec is not None and auto_eq_spec.loader is not None
-auto_eq = importlib.util.module_from_spec(auto_eq_spec)
-auto_eq_spec.loader.exec_module(auto_eq)
+from mic_eq import config
+from mic_eq.analysis import auto_eq
 
 _predict_eq_response = auto_eq._predict_eq_response
 calculate_eq_bands = auto_eq.calculate_eq_bands
+analyze_auto_eq = auto_eq.analyze_auto_eq
 get_target_curve = auto_eq.get_target_curve
 _remove_spectral_tilt = auto_eq._remove_spectral_tilt
 _snr_aware_gain_upper_bounds = auto_eq._snr_aware_gain_upper_bounds
+evaluate_eq_quality = auto_eq.evaluate_eq_quality
 EQ_FREQUENCIES = config.EQ_FREQUENCIES
 AUTO_EQ_DEFAULT_Q = config.AUTO_EQ_DEFAULT_Q
 
@@ -299,3 +283,75 @@ def test_18_q_is_narrower_for_narrower_spectral_issue():
     assert abs(narrow_centers[narrow_idx] - 2300.0) < 220.0
     assert abs(broad_centers[broad_idx] - 2300.0) < 450.0
     assert narrow_qs[narrow_idx] > broad_qs[broad_idx] + 0.75
+
+
+def test_19_diagnostics_and_validation_are_present_and_valid():
+    freqs = _default_freqs()
+    spectrum_db = generate_test_spectrum(freqs, "harsh")
+    target_db = get_target_curve(freqs, "podcast", measured_db=spectrum_db)
+
+    eq = calculate_eq_bands(freqs, spectrum_db, target_db)
+
+    assert len(eq["band_confidences"]) == 10
+    assert 0.0 <= eq["analysis_confidence"] <= 1.0
+    assert eq["validation_after_error_db"] <= eq["validation_before_error_db"] * 1.05
+    assert 0.0 < eq["validation_gain_scale"] <= 1.0
+    assert eq["target_profile"]
+
+
+def test_20_low_confidence_boosts_are_capped_aggressively():
+    freqs = _default_freqs()
+    spectrum_db = np.full_like(freqs, -70.0)
+    log_freqs = np.log10(freqs)
+    spectrum_db -= 12.0 * np.exp(
+        -((log_freqs - np.log10(3000.0)) ** 2) / (2 * 0.04**2)
+    )
+    target_db = get_target_curve(freqs, "flat")
+    repeatability = np.full_like(freqs, 0.05)
+
+    eq = calculate_eq_bands(
+        freqs,
+        spectrum_db,
+        target_db,
+        spectral_repeatability=repeatability,
+        voiced_window_ratio=0.10,
+        analysis_confidence=0.15,
+    )
+
+    gains = np.asarray(eq["band_gains"], dtype=float)
+    assert np.max(gains) <= 2.0
+    assert eq["analysis_confidence"] <= 0.15
+
+
+def test_21_eq_quality_detects_risky_overlap_and_flat_is_safe():
+    risky = evaluate_eq_quality(
+        [80.0, 160.0, 300.0, 340.0, 1280.0, 2500.0, 5000.0, 8000.0, 12000.0, 16000.0],
+        [0.0, 0.0, 6.0, 6.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [1.0, 1.0, 4.5, 4.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+    )
+    safe = evaluate_eq_quality(EQ_FREQUENCIES, [0.0] * 10, [1.41] * 10)
+
+    assert risky.overlapping_adjacent_bands >= 1
+    assert risky.warnings
+    assert not safe.warnings
+
+
+def test_22_stable_speech_like_capture_has_useful_confidence():
+    sample_rate = 48_000
+    duration_s = 10
+    rng = np.random.default_rng(4201)
+    t = np.arange(sample_rate * duration_s, dtype=float) / sample_rate
+    f0 = 135.0 + 14.0 * np.sin(2.0 * np.pi * 0.55 * t)
+    phase = np.cumsum(2.0 * np.pi * f0 / sample_rate)
+    harmonic_voice = np.zeros_like(t)
+    for harmonic in range(1, 20):
+        harmonic_voice += np.sin(harmonic * phase) / harmonic
+    syllables = 0.55 + 0.30 * np.maximum(0.0, np.sin(2.0 * np.pi * 2.1 * t))
+    audio = 0.045 * harmonic_voice * syllables + rng.normal(0.0, 0.001, t.size)
+
+    eq, validation = analyze_auto_eq(audio.astype(np.float32), sample_rate, "broadcast")
+    low_confidence_bands = sum(value < 0.45 for value in eq["band_confidences"])
+
+    assert validation.passed
+    assert eq["analysis_confidence"] >= 0.65
+    assert low_confidence_bands <= 3

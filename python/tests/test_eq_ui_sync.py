@@ -72,3 +72,81 @@ def test_ui_synchronization(qapp):
     panel.close()
     panel.deleteLater()
     qapp.processEvents()
+
+
+def test_eq_curve_interaction_warnings(qapp):
+    processor = AudioProcessor()
+    panel = EQPanel(processor)
+    panel.show()
+    qapp.processEvents()
+
+    panel._apply_preset([0.0] * 10, [1.41] * 10)
+    qapp.processEvents()
+    assert panel.curve_widget.interaction_warnings == []
+
+    risky_bands = [
+        (80.0, 0.0, 1.0),
+        (160.0, 0.0, 1.0),
+        (300.0, 6.0, 4.5),
+        (340.0, 6.0, 4.5),
+        (1280.0, 0.0, 1.0),
+        (2500.0, 0.0, 1.0),
+        (5000.0, 0.0, 1.0),
+        (8000.0, 0.0, 1.0),
+        (12000.0, 0.0, 1.0),
+        (16000.0, 0.0, 1.0),
+    ]
+    panel.apply_auto_eq_results(risky_bands)
+    qapp.processEvents()
+
+    assert panel.curve_widget.interaction_warnings
+
+    try:
+        processor.stop()
+    except Exception:
+        pass
+    panel.close()
+    panel.deleteLater()
+    qapp.processEvents()
+
+
+def test_auto_eq_diagnostics_are_shown_in_eq_panel(qapp):
+    processor = AudioProcessor()
+    panel = EQPanel(processor)
+    panel.show()
+    qapp.processEvents()
+
+    bands = [
+        (80.0, 0.0, 1.0),
+        (160.0, 0.0, 1.0),
+        (320.0, 0.0, 1.0),
+        (640.0, 0.0, 1.0),
+        (1280.0, 0.0, 1.0),
+        (2500.0, 0.0, 1.0),
+        (5000.0, 0.0, 1.0),
+        (8000.0, 0.0, 1.0),
+        (12000.0, 0.0, 1.0),
+        (16000.0, 0.0, 1.0),
+    ]
+    diagnostics = {
+        "analysis_confidence": 0.82,
+        "validation_before_error_db": 4.2,
+        "validation_after_error_db": 2.1,
+        "validation_gain_scale": 0.85,
+        "target_profile": "broadcast:adaptive",
+        "band_confidences": [0.8] * 10,
+    }
+
+    panel.apply_auto_eq_results(bands, diagnostics=diagnostics)
+    qapp.processEvents()
+
+    assert "confidence 82%" in panel.auto_eq_diag_label.text()
+    assert "4.2 dB -> 2.1 dB" in panel.auto_eq_diag_label.text()
+
+    try:
+        processor.stop()
+    except Exception:
+        pass
+    panel.close()
+    panel.deleteLater()
+    qapp.processEvents()

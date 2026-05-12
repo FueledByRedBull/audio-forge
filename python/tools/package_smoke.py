@@ -11,6 +11,13 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_BUNDLE_FILES = (
     "AudioForge.exe",
+    "_internal/df.dll",
+    "_internal/DirectML.dll",
+    "_internal/models/DeepFilterNet3_ll_onnx.tar.gz",
+    "_internal/models/DeepFilterNet3_onnx.tar.gz",
+    "_internal/models/silero_vad.onnx",
+)
+REQUIRED_MANIFEST_ASSETS = (
     "df.dll",
     "DirectML.dll",
     "models/DeepFilterNet3_ll_onnx.tar.gz",
@@ -61,7 +68,7 @@ def _load_asset_manifest() -> tuple[list[dict[str, object]], list[str]]:
         if not isinstance(license_note, str) or not license_note:
             errors.append(f"release-assets.json asset {path} must document license")
 
-    for required in REQUIRED_BUNDLE_FILES[1:]:
+    for required in REQUIRED_MANIFEST_ASSETS:
         if required not in seen_paths:
             errors.append(f"release-assets.json is missing required asset {required}")
 
@@ -102,12 +109,14 @@ def check_source_packaging() -> list[str]:
 
 
 def _has_bundle_file(dist: Path, relative_path: str) -> bool:
-    normalized = Path(relative_path)
-    if (dist / normalized).is_file():
-        return True
+    return (dist / Path(relative_path)).is_file()
+
+
+def _has_native_extension(dist: Path) -> bool:
+    extension_dir = dist / "_internal" / "mic_eq"
     return any(
-        candidate.is_file() and candidate.as_posix().endswith(relative_path)
-        for candidate in dist.rglob(normalized.name)
+        path.is_file() and path.name.startswith("mic_eq_core") and path.suffix == ".pyd"
+        for path in extension_dir.glob("mic_eq_core*.pyd")
     )
 
 
@@ -134,8 +143,8 @@ def check_dist_bundle(dist: Path | None = None) -> list[str]:
         if not _has_bundle_file(dist, relative_path):
             errors.append(f"{dist} does not contain {relative_path}")
 
-    if not any(path.name.startswith("mic_eq_core") and path.suffix == ".pyd" for path in dist.rglob("*.pyd")):
-        errors.append(f"{dist} does not contain mic_eq_core*.pyd")
+    if not _has_native_extension(dist):
+        errors.append(f"{dist} does not contain _internal/mic_eq/mic_eq_core*.pyd")
 
     if not _has_dependency_license_metadata(dist):
         errors.append(f"{dist} does not contain dependency dist-info or collected licenses")

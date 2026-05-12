@@ -411,4 +411,30 @@ mod tests {
             );
         });
     }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_runtime_diagnostics_include_gate_fused_score() {
+        let wrapper = PyAudioProcessor {
+            processor: AudioProcessor::new(),
+        };
+        wrapper
+            .processor
+            .gate_fused_score
+            .store(0.42_f32.to_bits(), Ordering::Relaxed);
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
+            let diagnostics = diagnostics.bind(py);
+            let diagnostics = diagnostics.downcast::<PyDict>().unwrap();
+            let score = diagnostics
+                .get_item("gate_fused_score")
+                .unwrap()
+                .unwrap()
+                .extract::<f32>()
+                .unwrap();
+            assert!((score - 0.42).abs() < 1e-6);
+        });
+    }
 }

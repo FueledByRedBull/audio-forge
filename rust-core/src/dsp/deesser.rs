@@ -293,8 +293,16 @@ impl DeEsser {
             let over_db = (excess_db - self.auto_baseline_excess_db - trigger_offset_db).max(0.0);
             (over_db * slope).clamp(0.0, cap_db)
         } else if sidechain_level_db > self.threshold_db {
-            let over_db = sidechain_level_db - self.threshold_db;
-            ((1.0 - (1.0 / self.ratio)) * over_db).clamp(0.0, self.max_reduction_db)
+            let excess_db = (sidechain_level_db - voice_reference_db).max(0.0);
+            let ratio_threshold_db = ((self.threshold_db + 60.0) * 0.10).clamp(0.0, 6.0);
+            let level_over_db = sidechain_level_db - self.threshold_db;
+            let ratio_over_db = excess_db - ratio_threshold_db;
+            if ratio_over_db > 0.0 {
+                let over_db = level_over_db.min(ratio_over_db);
+                ((1.0 - (1.0 / self.ratio)) * over_db).clamp(0.0, self.max_reduction_db)
+            } else {
+                0.0
+            }
         } else {
             0.0
         };
@@ -517,5 +525,39 @@ mod tests {
         }
 
         assert!(low_sum_out > low_sum_in * 0.5);
+    }
+
+    #[test]
+    fn test_ratio_detector_avoids_broadband_bright_over_reduction() {
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        deesser.set_auto_enabled(true);
+        deesser.set_auto_amount(1.0);
+        deesser.set_max_reduction_db(12.0);
+
+        let sr = 48_000.0f64;
+        for n in 0..24_000 {
+            let t = n as f64 / sr;
+            let x = (2.0 * std::f64::consts::PI * 500.0 * t).sin() as f32 * 0.12
+                + (2.0 * std::f64::consts::PI * 7_000.0 * t).sin() as f32 * 0.06;
+            deesser.process_sample(x);
+        }
+
+        let broadband_reduction = deesser.current_gain_reduction_db();
+
+        deesser.reset();
+        for n in 0..12_000 {
+            let t = n as f64 / sr;
+            let x = (2.0 * std::f64::consts::PI * 500.0 * t).sin() as f32 * 0.08;
+            deesser.process_sample(x);
+        }
+        for n in 0..4_800 {
+            let t = n as f64 / sr;
+            let x = (2.0 * std::f64::consts::PI * 500.0 * t).sin() as f32 * 0.04
+                + (2.0 * std::f64::consts::PI * 7_000.0 * t).sin() as f32 * 0.35;
+            deesser.process_sample(x);
+        }
+
+        assert!(deesser.current_gain_reduction_db() > broadband_reduction + 0.5);
     }
 }

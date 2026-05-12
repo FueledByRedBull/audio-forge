@@ -18,6 +18,7 @@ import numpy as np
 
 from ..config import TARGET_CURVES, coerce_device_identity
 from .analysis_worker import AnalysisWorker
+from .layout_constants import SUBDUED_TEXT_STYLE, status_chip_style
 from .level_meter import LevelMeter
 
 # Enable debug logging (set to False for production)
@@ -84,6 +85,28 @@ def _device_name(device: object) -> str | None:
 
 def _device_label(device: str | None, default_label: str) -> str:
     return device if device else default_label
+
+
+def _format_percent(value: Any) -> str:
+    try:
+        return f"{float(value) * 100.0:.0f}%"
+    except (TypeError, ValueError):
+        return "--"
+
+
+def _format_db(value: Any) -> str:
+    try:
+        return f"{float(value):.1f} dB"
+    except (TypeError, ValueError):
+        return "--"
+
+
+def _diagnostic_state(confidence: float) -> str:
+    if confidence >= 0.72:
+        return "ok"
+    if confidence >= 0.45:
+        return "warn"
+    return "bad"
 
 
 class CalibrationDialog(QDialog):
@@ -193,6 +216,30 @@ class CalibrationDialog(QDialog):
         self.warning_label.setStyleSheet("color: gray; font-size: 11pt;")
         recording_layout.addWidget(self.warning_label)
 
+        self.diagnostics_group = QGroupBox("Analysis Diagnostics")
+        diagnostics_layout = QVBoxLayout(self.diagnostics_group)
+        self.confidence_label = QLabel("Confidence: --")
+        self.error_label = QLabel("Target error: --")
+        self.gain_scale_label = QLabel("Gain scale: --")
+        self.target_profile_label = QLabel("Target profile: --")
+        for label in (
+            self.confidence_label,
+            self.error_label,
+            self.gain_scale_label,
+            self.target_profile_label,
+        ):
+            label.setStyleSheet(status_chip_style("idle"))
+            diagnostics_layout.addWidget(label)
+        hint_label = QLabel(
+            "Diagnostics are computed from recording clarity, repeatability, "
+            "and post-solve validation."
+        )
+        hint_label.setWordWrap(True)
+        hint_label.setStyleSheet(SUBDUED_TEXT_STYLE)
+        diagnostics_layout.addWidget(hint_label)
+        self.diagnostics_group.setVisible(False)
+        recording_layout.addWidget(self.diagnostics_group)
+
         # Recording controls
         control_layout = QHBoxLayout()
 
@@ -276,7 +323,7 @@ class CalibrationDialog(QDialog):
             bands.append((freq, gain, q))
 
         # Apply settings to EQ panel
-        parent.eq_panel.apply_auto_eq_results(bands)
+        parent.eq_panel.apply_auto_eq_results(bands, diagnostics=self.eq_settings)
 
         # Emit signal for main window to handle preset save and undo button
         target_curve = self.get_selected_curve()
@@ -561,6 +608,7 @@ class CalibrationDialog(QDialog):
         self.warning_label.setText(f"✓ Analysis complete! Max correction: {round(max(abs(g) for g in eq_settings['band_gains']), 1)} dB")
         self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
         self.progress_bar.setValue(100)
+        self._show_analysis_diagnostics(eq_settings)
         self.analysis_worker = None
 
         self.start_button.setText("Apply EQ Settings")
@@ -568,12 +616,32 @@ class CalibrationDialog(QDialog):
         if DEBUG:
             print("[ANALYSIS] EQ settings ready to apply")
 
+    def _show_analysis_diagnostics(self, eq_settings: dict) -> None:
+        """Show Auto-EQ confidence and validation details before applying."""
+        confidence = float(eq_settings.get("analysis_confidence", 0.0) or 0.0)
+        state = _diagnostic_state(confidence)
+        before = eq_settings.get("validation_before_error_db")
+        after = eq_settings.get("validation_after_error_db")
+        scale = eq_settings.get("validation_gain_scale")
+        target_profile = eq_settings.get("target_profile", "--")
+
+        self.confidence_label.setText(f"Confidence: {_format_percent(confidence)}")
+        self.confidence_label.setStyleSheet(status_chip_style(state))
+        self.error_label.setText(f"Target error: {_format_db(before)} -> {_format_db(after)}")
+        self.error_label.setStyleSheet(status_chip_style("ok" if after is not None else "idle"))
+        self.gain_scale_label.setText(f"Gain scale: {_format_percent(scale)}")
+        self.gain_scale_label.setStyleSheet(status_chip_style("info"))
+        self.target_profile_label.setText(f"Target profile: {target_profile}")
+        self.target_profile_label.setStyleSheet(status_chip_style("info"))
+        self.diagnostics_group.setVisible(True)
+
     def _on_analysis_failed(self, error: str):
         """Handle analysis failure."""
         if DEBUG:
             print(f"[ANALYSIS] Analysis failed: {error}")
         self.warning_label.setText(f"❌ {error}")
         self.warning_label.setStyleSheet("color: orange; font-weight: bold; font-size: 11pt;")
+        self.diagnostics_group.setVisible(False)
         self.start_button.setText("Record Again")
         self.start_button.setEnabled(True)
         self.analysis_worker = None
@@ -624,6 +692,7 @@ class CalibrationDialog(QDialog):
         self.level_meter.set_levels(-120.0, -120.0)
         self.warning_label.setText("Ready to record")
         self.warning_label.setStyleSheet("color: gray; font-size: 11pt;")
+        self.diagnostics_group.setVisible(False)
         self.start_button.setText("Start Calibration")
         self.start_button.setEnabled(True)
         self.retake_btn.setVisible(False)

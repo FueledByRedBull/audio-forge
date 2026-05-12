@@ -1,20 +1,12 @@
 """Tests for preset/config v1.7 migration and latency profile persistence."""
 
-import importlib.util
 import json
 import math
 import os
-import sys
 import tempfile
 from pathlib import Path
 
-
-CONFIG_PATH = Path(__file__).parent.parent / "mic_eq" / "config.py"
-config_spec = importlib.util.spec_from_file_location("mic_eq.config", CONFIG_PATH)
-assert config_spec is not None and config_spec.loader is not None
-config = importlib.util.module_from_spec(config_spec)
-sys.modules["mic_eq.config"] = config
-config_spec.loader.exec_module(config)
+from mic_eq import config
 
 
 Preset = config.Preset
@@ -67,7 +59,7 @@ def test_preset_migration_to_v17_adds_deesser_defaults():
 
     preset = Preset.from_dict(old_data)
 
-    assert preset.version == "1.7.18"
+    assert preset.version == "1.8.0"
     assert preset.deesser.enabled is False
     assert preset.deesser.auto_enabled is True
     assert preset.deesser.auto_amount == 0.5

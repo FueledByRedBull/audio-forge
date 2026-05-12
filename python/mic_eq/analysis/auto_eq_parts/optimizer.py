@@ -5,6 +5,7 @@ from scipy.optimize import least_squares
 
 from .constants import (
     DEBUG,
+    GAIN_MAX_DB,
     GAIN_MIN_DB,
     LAMBDA_CENTER,
     LAMBDA_COUPLING,
@@ -28,6 +29,7 @@ from .dynamic_bands import (
     _voice_weights,
 )
 from .response import _predict_eq_response
+from ..eq_quality import evaluate_eq_quality, weighted_target_error
 
 def _gain_only_residuals(
     gains: np.ndarray,
@@ -83,7 +85,166 @@ def _joint_gain_q_residuals(
     )
 
 
-def calculate_eq_bands(freqs, measured_db, target_db):
+def _band_confidence(
+    dense_freqs: np.ndarray,
+    centers_hz: np.ndarray,
+    residual_db: np.ndarray,
+    band_snr_db: np.ndarray,
+    voiced_window_ratio: float,
+    repeatability_dense: np.ndarray | None,
+) -> np.ndarray:
+    snr_reliability = np.clip((band_snr_db - 3.0) / 15.0, 0.0, 1.0)
+    residual_at_centers = np.abs(np.interp(centers_hz, dense_freqs, residual_db))
+    residual_reliability = np.clip(residual_at_centers / 4.0, 0.15, 1.0)
+    residual_reliability = np.where(residual_at_centers < 0.25, 1.0, residual_reliability)
+    if repeatability_dense is None:
+        repeatability = np.full_like(centers_hz, 0.90, dtype=float)
+        snr_reliability = np.maximum(snr_reliability, 0.75)
+    else:
+        repeatability = np.interp(
+            centers_hz,
+            dense_freqs,
+            repeatability_dense,
+            left=float(repeatability_dense[0]),
+            right=float(repeatability_dense[-1]),
+        )
+    coverage = np.clip(voiced_window_ratio / 0.55, 0.0, 1.0)
+    confidence = (
+        0.35 * snr_reliability
+        + 0.30 * repeatability
+        + 0.20 * residual_reliability
+        + 0.15 * coverage
+    )
+    return np.clip(confidence, 0.0, 1.0)
+
+
+def _regularize_q_for_confidence(
+    qs: np.ndarray,
+    gains: np.ndarray,
+    centers_hz: np.ndarray,
+    confidence: np.ndarray,
+) -> np.ndarray:
+    q_low, q_high = _q_bounds(centers_hz.tolist())
+    bounded = np.clip(qs, q_low, q_high)
+    for i, gain in enumerate(gains):
+        conf = float(confidence[i])
+        if abs(gain) < 0.25:
+            continue
+        if conf < 0.65:
+            bounded[i] = min(bounded[i], 1.0 + conf * 2.0)
+        if gain > 0.0:
+            bounded[i] = min(bounded[i], 4.2 if conf > 0.75 else 2.8)
+        if centers_hz[i] < 250.0:
+            bounded[i] = min(bounded[i], 1.8 if gain > 0.0 else 2.2)
+
+    for i in range(1, bounded.size):
+        if gains[i - 1] > 2.0 and gains[i] > 2.0:
+            octave_gap = abs(float(np.log2(centers_hz[i] / centers_hz[i - 1])))
+            if octave_gap < 0.45:
+                bounded[i - 1] = min(bounded[i - 1], 2.5)
+                bounded[i] = min(bounded[i], 2.5)
+    return np.clip(bounded, q_low, q_high)
+
+
+def _apply_confidence_gain_scaling(
+    gains: np.ndarray,
+    confidence: np.ndarray,
+) -> np.ndarray:
+    scaled = gains.copy()
+    for i, gain in enumerate(scaled):
+        conf = float(confidence[i])
+        if gain > 0.0:
+            max_boost = 0.35 + conf * conf * 7.65
+            scaled[i] = min(gain * (0.35 + 0.65 * conf), max_boost)
+        else:
+            scaled[i] = gain * (0.55 + 0.45 * conf)
+        if conf < 0.20:
+            scaled[i] *= 0.15
+    return scaled
+
+
+def _validate_and_attenuate_solution(
+    dense_freqs: np.ndarray,
+    measured_dense_db: np.ndarray,
+    target_dense_db: np.ndarray,
+    gains: np.ndarray,
+    qs: np.ndarray,
+    centers_hz: np.ndarray,
+    confidence: np.ndarray,
+    weights: np.ndarray,
+) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
+    before_error = weighted_target_error(
+        dense_freqs,
+        measured_dense_db,
+        target_dense_db,
+        np.zeros_like(gains),
+        qs,
+        centers_hz,
+        weights,
+    )
+    best_gains = gains.copy()
+    best_error = float("inf")
+    best_scale = 1.0
+    best_metrics = evaluate_eq_quality(centers_hz, best_gains, qs).to_dict()
+
+    for scale in (1.0, 0.85, 0.70, 0.55, 0.40, 0.25):
+        candidate = gains * scale
+        metrics = evaluate_eq_quality(centers_hz, candidate, qs)
+        after_error = weighted_target_error(
+            dense_freqs,
+            measured_dense_db,
+            target_dense_db,
+            candidate,
+            qs,
+            centers_hz,
+            weights,
+        )
+        if after_error < best_error and metrics.risk_score < 1.8:
+            best_error = after_error
+            best_gains = candidate
+            best_scale = scale
+            best_metrics = metrics.to_dict()
+        if after_error <= before_error * 0.98 and metrics.risk_score < 1.0:
+            return candidate, before_error, after_error, scale, metrics.to_dict()
+
+    if best_error > before_error:
+        candidate = best_gains.copy()
+        harmful_order = np.argsort(confidence)
+        for idx in harmful_order[:3]:
+            if candidate[idx] > 0.0:
+                candidate[idx] = 0.0
+                candidate_error = weighted_target_error(
+                    dense_freqs,
+                    measured_dense_db,
+                    target_dense_db,
+                    candidate,
+                    qs,
+                    centers_hz,
+                    weights,
+                )
+                candidate_metrics = evaluate_eq_quality(centers_hz, candidate, qs)
+                if candidate_error <= before_error and candidate_metrics.risk_score < 1.5:
+                    return (
+                        candidate,
+                        before_error,
+                        candidate_error,
+                        best_scale,
+                        candidate_metrics.to_dict(),
+                    )
+
+    return best_gains, before_error, best_error, best_scale, best_metrics
+
+
+def calculate_eq_bands(
+    freqs,
+    measured_db,
+    target_db,
+    *,
+    spectral_repeatability=None,
+    voiced_window_ratio=1.0,
+    analysis_confidence=None,
+    target_profile="static",
+):
     """
     Calculate optimal 10-band EQ settings using least-squares optimization.
 
@@ -135,6 +296,15 @@ def calculate_eq_bands(freqs, measured_db, target_db):
     dense_freqs = _build_dense_log_grid(freqs)
     measured_dense_db = np.interp(dense_freqs, freqs, measured_db)
     target_dense_db = np.interp(dense_freqs, freqs, target_db)
+    repeatability_dense = None
+    if spectral_repeatability is not None:
+        repeatability_arr = np.asarray(spectral_repeatability, dtype=float)
+        if repeatability_arr.shape == np.asarray(freqs).shape:
+            repeatability_dense = np.interp(
+                dense_freqs,
+                freqs,
+                np.clip(repeatability_arr, 0.0, 1.0),
+            )
     center_selection_weights = _voice_weights(dense_freqs)
     base_centers_hz, q_initial = _select_dynamic_band_layout(
         dense_freqs,
@@ -145,10 +315,24 @@ def calculate_eq_bands(freqs, measured_db, target_db):
     qs_stage1 = q_initial
 
     band_snr_db = _estimate_band_snr_db(dense_freqs, measured_dense_db, base_centers_hz)
+    preliminary_confidence = _band_confidence(
+        dense_freqs,
+        base_centers_hz,
+        target_dense_db - measured_dense_db,
+        band_snr_db,
+        float(voiced_window_ratio),
+        repeatability_dense,
+    )
     dynamic_gain_upper = _snr_aware_gain_upper_bounds(band_snr_db)
+    dynamic_gain_upper = np.minimum(
+        dynamic_gain_upper,
+        0.35 + preliminary_confidence * preliminary_confidence * (GAIN_MAX_DB - 0.35),
+    )
     weights = _voice_weights(dense_freqs) * _snr_weight_scale_dense(
         dense_freqs, base_centers_hz, band_snr_db
     )
+    if repeatability_dense is not None:
+        weights = weights * (0.35 + 0.65 * repeatability_dense)
 
     measured_db_at_centers = np.interp(center_freqs, dense_freqs, measured_dense_db)
     target_db_at_centers = np.interp(center_freqs, dense_freqs, target_dense_db)
@@ -213,6 +397,14 @@ def calculate_eq_bands(freqs, measured_db, target_db):
     optimal_gains = stage2.x[:NUM_EQ_BANDS]
     optimal_qs = stage2.x[NUM_EQ_BANDS:2 * NUM_EQ_BANDS]
     optimal_centers_hz = stage2.x[2 * NUM_EQ_BANDS:]
+    band_confidences = _band_confidence(
+        dense_freqs,
+        optimal_centers_hz,
+        target_dense_db - measured_dense_db,
+        band_snr_db,
+        float(voiced_window_ratio),
+        repeatability_dense,
+    )
 
     debug_log(
         f"[EQ_CALC] Dynamic base centers: {[round(fc, 1) for fc in base_centers_hz]}"
@@ -242,17 +434,51 @@ def calculate_eq_bands(freqs, measured_db, target_db):
     if hasattr(stage2, "message"):
         debug_log(f"[EQ_CALC] Stage2 message: {stage2.message}")
 
-    # Apply 70% correction factor (prevents over-compensation)
-    optimal_gains = optimal_gains * 0.7
+    # Apply conservative correction and confidence scaling.
+    optimal_gains = _apply_confidence_gain_scaling(optimal_gains * 0.75, band_confidences)
+    optimal_qs = _regularize_q_for_confidence(
+        optimal_qs,
+        optimal_gains,
+        optimal_centers_hz,
+        band_confidences,
+    )
 
     # Clip to SNR-aware boost limits and enforce adjacent-band coupling.
     optimal_gains = np.clip(optimal_gains, gain_lower, dynamic_gain_upper)
     optimal_gains = _enforce_adjacent_gain_limit(optimal_gains, MAX_ADJ_GAIN_DIFF_DB)
+    (
+        optimal_gains,
+        before_error,
+        after_error,
+        validation_gain_scale,
+        quality_metrics,
+    ) = _validate_and_attenuate_solution(
+        dense_freqs,
+        measured_dense_db,
+        target_dense_db,
+        optimal_gains,
+        optimal_qs,
+        optimal_centers_hz,
+        band_confidences,
+        weights,
+    )
 
     debug_log(f"[EQ_CALC] Final gains (after 70% correction): {[round(g, 2) for g in optimal_gains]}")
+    overall_confidence = float(
+        analysis_confidence
+        if analysis_confidence is not None
+        else np.mean(band_confidences)
+    )
 
     return {
         'band_gains': optimal_gains.tolist(),
         'band_qs': optimal_qs.tolist(),
         'band_freqs': optimal_centers_hz.tolist(),
+        'band_confidences': band_confidences.tolist(),
+        'analysis_confidence': overall_confidence,
+        'validation_before_error_db': before_error,
+        'validation_after_error_db': after_error,
+        'validation_gain_scale': validation_gain_scale,
+        'target_profile': target_profile,
+        'eq_quality': quality_metrics,
     }

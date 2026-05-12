@@ -228,6 +228,8 @@ pub struct AudioProcessor {
     vad_probability: Arc<AtomicU32>,
     /// Latest gate noise-floor estimate in dB.
     gate_noise_floor_db: Arc<AtomicU32>,
+    /// Latest fused gate open score (0.0-1.0) for diagnostics.
+    gate_fused_score: Arc<AtomicU32>,
     /// Whether the current VAD backend is available.
     vad_available: Arc<AtomicBool>,
     #[cfg(feature = "vad")]
@@ -479,6 +481,7 @@ impl AudioProcessor {
             gate_gain_meter: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             vad_probability: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             gate_noise_floor_db: Arc::new(AtomicU32::new((-60.0_f32).to_bits())),
+            gate_fused_score: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             vad_available: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "vad")]
             vad_worker_buffer: Arc::new(Mutex::new(Vec::with_capacity(
@@ -951,6 +954,7 @@ impl AudioProcessor {
         let gate_gain_meter = Arc::clone(&self.gate_gain_meter);
         let vad_probability = Arc::clone(&self.vad_probability);
         let gate_noise_floor_db = Arc::clone(&self.gate_noise_floor_db);
+        let gate_fused_score = Arc::clone(&self.gate_fused_score);
         let vad_available = Arc::clone(&self.vad_available);
         #[cfg(feature = "vad")]
         let vad_worker_buffer = Arc::clone(&self.vad_worker_buffer);
@@ -1749,6 +1753,10 @@ impl AudioProcessor {
                                                 g.noise_floor().to_bits(),
                                                 Ordering::Relaxed,
                                             );
+                                            gate_fused_score.store(
+                                                g.fused_gate_score().to_bits(),
+                                                Ordering::Relaxed,
+                                            );
                                             let last_update =
                                                 vad_last_update_us.load(Ordering::Acquire);
                                             let fresh = last_update > 0
@@ -2387,6 +2395,12 @@ impl AudioProcessor {
     /// Get VAD speech probability (0.0-1.0)
     pub fn get_vad_probability(&self) -> f32 {
         f32::from_bits(self.vad_probability.load(Ordering::Relaxed))
+    }
+
+    #[cfg(feature = "vad")]
+    /// Get fused gate open score (0.0-1.0)
+    pub fn get_gate_fused_score(&self) -> f32 {
+        f32::from_bits(self.gate_fused_score.load(Ordering::Relaxed))
     }
 
     #[cfg(feature = "vad")]

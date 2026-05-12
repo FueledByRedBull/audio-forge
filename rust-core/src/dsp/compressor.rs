@@ -10,6 +10,9 @@ const ADAPTIVE_FAST_RELEASE_MS: f64 = 50.0;
 const ADAPTIVE_SLOW_CHARGE_MS: f64 = 250.0;
 const ADAPTIVE_SLOW_RELEASE_MS: f64 = 400.0;
 const SLOW_RELEASE_TRIGGER_DB: f64 = 3.0;
+const SPEECH_ACTIVE_RMS_MIN_DB: f64 = -55.0;
+const SPEECH_ACTIVE_RMS_MAX_DB: f64 = -6.0;
+const MAKEUP_SILENCE_RELAX_MS: f64 = 1500.0;
 
 /// Downward compressor with soft-knee gain reduction
 pub struct Compressor {
@@ -67,6 +70,10 @@ pub struct Compressor {
     makeup_smoothing_coeff: f64,
     /// Current measured loudness (for metering)
     current_lufs: f64,
+    /// Smoothed speech activity score for auto makeup.
+    speech_activity_score: f64,
+    /// Slow relaxation coefficient used when auto makeup sees silence/noise.
+    makeup_silence_relax_coeff: f64,
 }
 
 impl Compressor {
@@ -122,6 +129,11 @@ impl Compressor {
             smoothed_makeup_gain: makeup_gain_db,
             makeup_smoothing_coeff,
             current_lufs: -100.0,
+            speech_activity_score: 0.0,
+            makeup_silence_relax_coeff: util::time_constant_to_coeff(
+                MAKEUP_SILENCE_RELAX_MS,
+                sample_rate,
+            ),
         }
     }
 
@@ -287,11 +299,14 @@ impl Compressor {
             return;
         }
 
-        self.target_release_ms = if self.slow_release_env_db > SLOW_RELEASE_TRIGGER_DB {
-            ADAPTIVE_SLOW_RELEASE_MS
-        } else {
-            ADAPTIVE_FAST_RELEASE_MS
-        };
+        let sustained =
+            (self.slow_release_env_db / (SLOW_RELEASE_TRIGGER_DB + 3.0)).clamp(0.0, 1.0);
+        let transient_bias = ((self.fast_release_env_db - self.slow_release_env_db)
+            / (SLOW_RELEASE_TRIGGER_DB + 4.0))
+            .clamp(0.0, 1.0);
+        let syllabic = (sustained * sustained * (1.0 - 0.35 * transient_bias)).clamp(0.0, 1.0);
+        self.target_release_ms = ADAPTIVE_FAST_RELEASE_MS
+            + syllabic * (ADAPTIVE_SLOW_RELEASE_MS - ADAPTIVE_FAST_RELEASE_MS);
     }
 
     fn smooth_gain_reduction(&mut self, target_gain_reduction_db: f64) {
@@ -333,7 +348,31 @@ impl Compressor {
         self.current_gain_reduction_db = self.fast_release_env_db.max(self.slow_release_env_db);
     }
 
-    fn update_auto_makeup_gain(&mut self) {
+    fn speech_activity_from_rms_db(rms_db: f64) -> f64 {
+        if !(SPEECH_ACTIVE_RMS_MIN_DB..=SPEECH_ACTIVE_RMS_MAX_DB).contains(&rms_db) {
+            return 0.0;
+        }
+        let onset = ((rms_db - SPEECH_ACTIVE_RMS_MIN_DB) / 12.0).clamp(0.0, 1.0);
+        let overload = ((SPEECH_ACTIVE_RMS_MAX_DB - rms_db) / 6.0).clamp(0.0, 1.0);
+        onset.min(overload)
+    }
+
+    fn block_rms_db(buffer: &[f32]) -> f64 {
+        if buffer.is_empty() {
+            return -120.0;
+        }
+        let power = buffer
+            .iter()
+            .map(|sample| {
+                let sample = *sample as f64;
+                sample * sample
+            })
+            .sum::<f64>()
+            / buffer.len() as f64;
+        util::linear_to_db(power.sqrt(), 1e-10)
+    }
+
+    fn update_auto_makeup_gain(&mut self, speech_activity: f64) {
         if !self.auto_makeup_enabled {
             let target = self.makeup_gain_db;
             let diff = target - self.smoothed_makeup_gain;
@@ -348,13 +387,22 @@ impl Compressor {
 
         if let Some(meter) = &self.loudness_meter {
             self.current_lufs = meter.loudness_momentary() as f64;
+            self.speech_activity_score =
+                0.95 * self.speech_activity_score + 0.05 * speech_activity.clamp(0.0, 1.0);
+            if self.speech_activity_score < 0.20 {
+                self.smoothed_makeup_gain = self.makeup_silence_relax_coeff
+                    * self.smoothed_makeup_gain
+                    + (1.0 - self.makeup_silence_relax_coeff) * self.makeup_gain_db;
+                return;
+            }
             let required_gain = self.target_lufs - self.current_lufs;
             let clamped_gain = required_gain.clamp(0.0, 12.0);
 
             let diff = clamped_gain - self.smoothed_makeup_gain;
             if diff.abs() > 0.1 {
-                self.smoothed_makeup_gain = self.makeup_smoothing_coeff * self.smoothed_makeup_gain
-                    + (1.0 - self.makeup_smoothing_coeff) * clamped_gain;
+                let makeup_coeff = 0.90;
+                self.smoothed_makeup_gain =
+                    makeup_coeff * self.smoothed_makeup_gain + (1.0 - makeup_coeff) * clamped_gain;
             } else {
                 self.smoothed_makeup_gain = clamped_gain;
             }
@@ -407,11 +455,14 @@ impl Compressor {
             return;
         }
 
-        if let Some(meter) = &mut self.loudness_meter {
-            meter.process(buffer);
+        let speech_activity = Self::speech_activity_from_rms_db(Self::block_rms_db(buffer));
+        if speech_activity > 0.20 {
+            if let Some(meter) = &mut self.loudness_meter {
+                meter.process(buffer);
+            }
         }
 
-        self.update_auto_makeup_gain();
+        self.update_auto_makeup_gain(speech_activity);
         for sample in buffer.iter_mut() {
             *sample = self.process_sample_impl(*sample, false);
         }
@@ -457,7 +508,8 @@ impl Compressor {
         self.smooth_gain_reduction(target_gain_reduction_db);
 
         if update_makeup_gain {
-            self.update_auto_makeup_gain();
+            let speech_activity = Self::speech_activity_from_rms_db(detector_db);
+            self.update_auto_makeup_gain(speech_activity);
         }
 
         let output_gain = util::db_to_linear(-self.current_gain_reduction_db)
@@ -659,6 +711,52 @@ mod tests {
 
         assert!(comp.current_gain_reduction() > 0.0);
         assert!(comp.current_gain_reduction() < held);
+    }
+
+    #[test]
+    fn test_continuous_adaptive_release_maps_transient_faster_than_sustained() {
+        let mut transient = Compressor::new(-20.0, 4.0, 1.0, 80.0, 0.0, 0.0, 48_000.0);
+        transient.set_adaptive_release(true);
+        transient.fast_release_env_db = 6.0;
+        transient.slow_release_env_db = 0.5;
+        transient.update_adaptive_release_time_meter();
+
+        let mut sustained = Compressor::new(-20.0, 4.0, 1.0, 80.0, 0.0, 0.0, 48_000.0);
+        sustained.set_adaptive_release(true);
+        sustained.fast_release_env_db = 6.0;
+        sustained.slow_release_env_db = 6.0;
+        sustained.update_adaptive_release_time_meter();
+
+        assert!(transient.target_release_ms < sustained.target_release_ms);
+        assert!(sustained.target_release_ms > ADAPTIVE_FAST_RELEASE_MS);
+    }
+
+    #[test]
+    fn test_auto_makeup_does_not_rise_during_silence() {
+        let mut comp = Compressor::default_voice(48_000.0);
+        comp.set_auto_makeup_enabled(true);
+        comp.set_target_lufs(-12.0);
+
+        let mut silence = vec![0.0_f32; 48_000];
+        for _ in 0..4 {
+            comp.process_block_inplace(&mut silence);
+        }
+
+        assert!(comp.current_makeup_gain() < 0.5);
+    }
+
+    #[test]
+    fn test_auto_makeup_follows_speech_like_blocks() {
+        let mut comp = Compressor::default_voice(48_000.0);
+        comp.set_auto_makeup_enabled(true);
+        comp.set_target_lufs(-12.0);
+
+        let mut speech_like = vec![0.04_f32; 48_000];
+        for _ in 0..10 {
+            comp.process_block_inplace(&mut speech_like);
+        }
+
+        assert!(comp.current_makeup_gain() > 0.1);
     }
 
     #[test]

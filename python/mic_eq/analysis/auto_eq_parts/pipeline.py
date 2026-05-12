@@ -27,23 +27,50 @@ def analyze_auto_eq(audio_data, sample_rate, target_preset='broadcast'):
     Raises:
         ValueError: If validation fails (with generic user message)
     """
-    from ..spectrum import compute_voice_spectrum, smooth_spectrum_octave
+    from ..spectrum import analyze_voice_spectrum, smooth_spectrum_perceptual
     from ..failure_detection import validate_analysis
 
-    # Step 1: Compute spectrum
-    freqs, spectrum_db = compute_voice_spectrum(audio_data, sample_rate)
+    # Step 1: Compute repeatability-aware voiced spectrum.
+    spectrum_result = analyze_voice_spectrum(audio_data, sample_rate)
+    freqs = spectrum_result.freqs
+    spectrum_db = spectrum_result.median_spectrum_db
 
-    # Step 2: Apply smoothing
-    spectrum_smoothed = smooth_spectrum_octave(freqs, spectrum_db, fraction=6)
+    # Step 2: Apply perceptual smoothing.
+    spectrum_smoothed = smooth_spectrum_perceptual(freqs, spectrum_db)
 
-    # Step 3: Get target curve
-    target_db = get_target_curve(freqs, target_preset)
+    # Step 3: Get voice-aware bounded target curve.
+    target_profile = (
+        f"{target_preset}:adaptive"
+        if not spectrum_result.used_single_spectrum_fallback
+        else f"{target_preset}:fallback"
+    )
+    target_db = get_target_curve(freqs, target_preset, measured_db=spectrum_smoothed)
 
     # Step 4: Calculate optimal EQ bands using least-squares
-    eq_settings = calculate_eq_bands(freqs, spectrum_smoothed, target_db)
+    eq_settings = calculate_eq_bands(
+        freqs,
+        spectrum_smoothed,
+        target_db,
+        spectral_repeatability=spectrum_result.spectral_repeatability,
+        voiced_window_ratio=spectrum_result.voiced_window_ratio,
+        analysis_confidence=spectrum_result.residual_confidence,
+        target_profile=target_profile,
+    )
 
     # Step 5: Validate results
     validation = validate_analysis(eq_settings, spectrum_smoothed, freqs)
+    validation.details.update(
+        {
+            "voiced_window_ratio": spectrum_result.voiced_window_ratio,
+            "spectrum_snr_db": spectrum_result.snr_db,
+            "spectral_tilt_db_per_octave": spectrum_result.spectral_tilt_db_per_octave,
+            "used_single_spectrum_fallback": spectrum_result.used_single_spectrum_fallback,
+            "analysis_confidence": spectrum_result.residual_confidence,
+            "validation_before_error_db": eq_settings.get("validation_before_error_db"),
+            "validation_after_error_db": eq_settings.get("validation_after_error_db"),
+            "validation_gain_scale": eq_settings.get("validation_gain_scale"),
+        }
+    )
 
     if not validation.passed:
         # Raise with generic user message (not technical details)

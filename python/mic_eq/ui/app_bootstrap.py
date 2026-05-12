@@ -10,6 +10,28 @@ from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QFileIconProvider, QMainWindow
 
 
+def _application_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[3]
+
+
+def _trusted_runtime_roots() -> list[Path]:
+    app_root = _application_root()
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", app_root)).resolve()
+        roots = [meipass, app_root]
+    else:
+        roots = [app_root]
+
+    trusted_roots: list[Path] = []
+    for root in roots:
+        resolved = root.resolve()
+        if resolved not in trusted_roots:
+            trusted_roots.append(resolved)
+    return trusted_roots
+
+
 def configure_deepfilter_env() -> None:
     """Enable local DeepFilter runtime when local assets are present."""
     if "AUDIOFORGE_ENABLE_DEEPFILTER" in os.environ:
@@ -22,29 +44,25 @@ def configure_deepfilter_env() -> None:
     else:
         lib_names = ["libdf.so"]
 
-    repo_root = Path(__file__).resolve().parents[3]
-    search_dirs = [Path.cwd(), repo_root]
+    search_dirs = _trusted_runtime_roots()
     lib_path = None
     for lib_name in lib_names:
         for base in search_dirs:
             candidate = base / lib_name
-            if candidate.exists():
+            if candidate.is_file():
                 lib_path = candidate
                 break
         if lib_path:
             break
 
-    model_dirs = [
-        Path.cwd() / "models",
-        repo_root / "models",
-    ]
+    model_dirs = [root / "models" for root in search_dirs]
     model_found = False
     for model_dir in model_dirs:
-        if not model_dir.exists():
+        if not model_dir.is_dir():
             continue
         ll_model = model_dir / "DeepFilterNet3_ll_onnx.tar.gz"
         std_model = model_dir / "DeepFilterNet3_onnx.tar.gz"
-        if ll_model.exists() or std_model.exists():
+        if ll_model.is_file() or std_model.is_file():
             model_found = True
             break
 

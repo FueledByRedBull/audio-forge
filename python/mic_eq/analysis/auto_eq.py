@@ -25,6 +25,7 @@ from .auto_eq_parts.optimizer import calculate_eq_bands
 from .auto_eq_parts.pipeline import analyze_auto_eq
 from .auto_eq_parts.response import _predict_eq_response
 from .auto_eq_parts.target import get_target_curve
+from .eq_quality import evaluate_eq_quality, weighted_target_error
 
 __all__ = [
     "GAIN_MAX_DB",
@@ -44,5 +45,7 @@ __all__ = [
     "_voice_weights",
     "analyze_auto_eq",
     "calculate_eq_bands",
+    "evaluate_eq_quality",
     "get_target_curve",
+    "weighted_target_error",
 ]

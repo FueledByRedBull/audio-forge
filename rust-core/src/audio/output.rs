@@ -16,6 +16,7 @@ use std::sync::Arc;
 use super::buffer::AudioConsumer;
 use super::clock::now_micros;
 use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
+use super::rt::{store_rt_error, RtErrorCode};
 
 /// Audio output stream
 pub struct AudioOutput {
@@ -179,6 +180,8 @@ impl AudioOutput {
         last_callback_time_us: Arc<AtomicU64>,
         underrun_streak: Arc<AtomicU32>,
         total_underruns: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
     ) -> Result<Self, AudioError>
     where
         T: SizedSample + FromSample<f32>,
@@ -196,6 +199,7 @@ impl AudioOutput {
             .build_output_stream(
                 &stream_config,
                 move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+                    // RT_REGION_START: cpal_output_callback
                     last_callback_time_us.store(now_micros(), Ordering::Relaxed);
 
                     if recording_active_clone.load(Ordering::Relaxed)
@@ -297,9 +301,12 @@ impl AudioOutput {
                             consumer.set_last_sample(0.0);
                         }
                     }
+                    // RT_REGION_END: cpal_output_callback
                 },
                 move |err| {
-                    eprintln!("[OUTPUT] Audio output error: {}", err);
+                    let _ = err;
+                    error_count.fetch_add(1, Ordering::Relaxed);
+                    store_rt_error(rt_error_code.as_ref(), RtErrorCode::OutputStreamError);
                 },
                 None,
             )
@@ -312,6 +319,7 @@ impl AudioOutput {
     }
 
     /// Create audio output from default device
+    #[allow(clippy::too_many_arguments)]
     pub fn from_default_device(
         consumer: AudioConsumer,
         recording_active: Arc<AtomicBool>,
@@ -319,6 +327,8 @@ impl AudioOutput {
         last_callback_time_us: Arc<AtomicU64>,
         underrun_streak: Arc<AtomicU32>,
         total_underruns: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
     ) -> Result<Self, AudioError> {
         let setup = Self::from_default_device_setup()?;
         Self::from_setup(
@@ -329,10 +339,13 @@ impl AudioOutput {
             last_callback_time_us,
             underrun_streak,
             total_underruns,
+            error_count,
+            rt_error_code,
         )
     }
 
     /// Create audio output from device by name
+    #[allow(clippy::too_many_arguments)]
     pub fn from_device_name(
         name: &str,
         consumer: AudioConsumer,
@@ -341,6 +354,8 @@ impl AudioOutput {
         last_callback_time_us: Arc<AtomicU64>,
         underrun_streak: Arc<AtomicU32>,
         total_underruns: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
     ) -> Result<Self, AudioError> {
         let setup = Self::from_named_device_setup(name)?;
         Self::from_setup(
@@ -351,9 +366,12 @@ impl AudioOutput {
             last_callback_time_us,
             underrun_streak,
             total_underruns,
+            error_count,
+            rt_error_code,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_setup(
         setup: OutputStreamSetup,
         consumer: AudioConsumer,
@@ -362,6 +380,8 @@ impl AudioOutput {
         last_callback_time_us: Arc<AtomicU64>,
         underrun_streak: Arc<AtomicU32>,
         total_underruns: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
     ) -> Result<Self, AudioError> {
         let sample_format = setup.supported_config.sample_format();
         let stream_config = setup.supported_config.config();
@@ -377,6 +397,8 @@ impl AudioOutput {
                 last_callback_time_us,
                 underrun_streak,
                 total_underruns,
+                error_count,
+                rt_error_code,
             ),
             SampleFormat::F32 => Self::build_stream::<f32>(
                 setup.device,
@@ -388,6 +410,8 @@ impl AudioOutput {
                 last_callback_time_us,
                 underrun_streak,
                 total_underruns,
+                error_count,
+                rt_error_code,
             ),
             SampleFormat::F64 => Self::build_stream::<f64>(
                 setup.device,
@@ -399,6 +423,8 @@ impl AudioOutput {
                 last_callback_time_us,
                 underrun_streak,
                 total_underruns,
+                error_count,
+                rt_error_code,
             ),
             SampleFormat::I16 => Self::build_stream::<i16>(
                 setup.device,
@@ -410,6 +436,8 @@ impl AudioOutput {
                 last_callback_time_us,
                 underrun_streak,
                 total_underruns,
+                error_count,
+                rt_error_code,
             ),
             SampleFormat::I32 => Self::build_stream::<i32>(
                 setup.device,
@@ -421,6 +449,8 @@ impl AudioOutput {
                 last_callback_time_us,
                 underrun_streak,
                 total_underruns,
+                error_count,
+                rt_error_code,
             ),
             SampleFormat::I64 => Self::build_stream::<i64>(
                 setup.device,
@@ -432,6 +462,8 @@ impl AudioOutput {
                 last_callback_time_us,
                 underrun_streak,
                 total_underruns,
+                error_count,
+                rt_error_code,
             ),
             SampleFormat::U8 => Self::build_stream::<u8>(
                 setup.device,
@@ -443,6 +475,8 @@ impl AudioOutput {
                 last_callback_time_us,
                 underrun_streak,
                 total_underruns,
+                error_count,
+                rt_error_code,
             ),
             SampleFormat::U16 => Self::build_stream::<u16>(
                 setup.device,
@@ -454,6 +488,8 @@ impl AudioOutput {
                 last_callback_time_us,
                 underrun_streak,
                 total_underruns,
+                error_count,
+                rt_error_code,
             ),
             SampleFormat::U32 => Self::build_stream::<u32>(
                 setup.device,
@@ -465,6 +501,8 @@ impl AudioOutput {
                 last_callback_time_us,
                 underrun_streak,
                 total_underruns,
+                error_count,
+                rt_error_code,
             ),
             SampleFormat::U64 => Self::build_stream::<u64>(
                 setup.device,
@@ -476,6 +514,8 @@ impl AudioOutput {
                 last_callback_time_us,
                 underrun_streak,
                 total_underruns,
+                error_count,
+                rt_error_code,
             ),
             other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
         }

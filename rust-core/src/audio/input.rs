@@ -10,12 +10,13 @@ use cpal::{
     Device, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig,
     SupportedStreamConfig, SupportedStreamConfigRange,
 };
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 
 use super::buffer::AudioProducer;
 use super::clock::now_micros;
+use super::rt::{store_rt_error, RtErrorCode};
 
 /// Target sample rate for internal processing
 pub const TARGET_SAMPLE_RATE: u32 = 48000;
@@ -113,6 +114,8 @@ impl AudioInput {
         stream_config: StreamConfig,
         producer: AudioProducer,
         last_callback_time_us: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
         device_info: AudioDeviceInfo,
     ) -> Result<Self, AudioError>
     where
@@ -130,6 +133,7 @@ impl AudioInput {
             .build_input_stream(
                 &stream_config,
                 move |data: &[T], _: &cpal::InputCallbackInfo| {
+                    // RT_REGION_START: cpal_input_callback
                     last_callback_time_us.store(now_micros(), Ordering::Relaxed);
 
                     if num_channels == 1 {
@@ -179,9 +183,12 @@ impl AudioInput {
                             frame_idx += chunk_frames;
                         }
                     }
+                    // RT_REGION_END: cpal_input_callback
                 },
                 move |err| {
-                    eprintln!("Audio input error: {}", err);
+                    let _ = err;
+                    error_count.fetch_add(1, Ordering::Relaxed);
+                    store_rt_error(rt_error_code.as_ref(), RtErrorCode::InputStreamError);
                 },
                 None,
             )
@@ -197,11 +204,19 @@ impl AudioInput {
     pub fn from_default_device(
         producer: AudioProducer,
         last_callback_time_us: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
     ) -> Result<Self, AudioError> {
         let host = cpal::default_host();
         let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
 
-        Self::from_device(device, producer, last_callback_time_us)
+        Self::from_device(
+            device,
+            producer,
+            last_callback_time_us,
+            error_count,
+            rt_error_code,
+        )
     }
 
     /// Create audio input from device by name
@@ -209,6 +224,8 @@ impl AudioInput {
         name: &str,
         producer: AudioProducer,
         last_callback_time_us: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
     ) -> Result<Self, AudioError> {
         let host = cpal::default_host();
         let device = host
@@ -217,7 +234,13 @@ impl AudioInput {
             .find(|d| d.name().map(|n| n == name).unwrap_or(false))
             .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))?;
 
-        Self::from_device(device, producer, last_callback_time_us)
+        Self::from_device(
+            device,
+            producer,
+            last_callback_time_us,
+            error_count,
+            rt_error_code,
+        )
     }
 
     /// Create audio input from specific device
@@ -225,6 +248,8 @@ impl AudioInput {
         device: Device,
         producer: AudioProducer,
         last_callback_time_us: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
     ) -> Result<Self, AudioError> {
         let (device, supported_config, device_info) = Self::select_device(device)?;
         let device_sample_rate = supported_config.sample_rate().0;
@@ -244,6 +269,8 @@ impl AudioInput {
                 stream_config,
                 producer,
                 last_callback_time_us,
+                error_count,
+                rt_error_code,
                 device_info,
             ),
             SampleFormat::F32 => Self::build_stream::<f32>(
@@ -251,6 +278,8 @@ impl AudioInput {
                 stream_config,
                 producer,
                 last_callback_time_us,
+                error_count,
+                rt_error_code,
                 device_info,
             ),
             SampleFormat::F64 => Self::build_stream::<f64>(
@@ -258,6 +287,8 @@ impl AudioInput {
                 stream_config,
                 producer,
                 last_callback_time_us,
+                error_count,
+                rt_error_code,
                 device_info,
             ),
             SampleFormat::I16 => Self::build_stream::<i16>(
@@ -265,6 +296,8 @@ impl AudioInput {
                 stream_config,
                 producer,
                 last_callback_time_us,
+                error_count,
+                rt_error_code,
                 device_info,
             ),
             SampleFormat::I32 => Self::build_stream::<i32>(
@@ -272,6 +305,8 @@ impl AudioInput {
                 stream_config,
                 producer,
                 last_callback_time_us,
+                error_count,
+                rt_error_code,
                 device_info,
             ),
             SampleFormat::I64 => Self::build_stream::<i64>(
@@ -279,6 +314,8 @@ impl AudioInput {
                 stream_config,
                 producer,
                 last_callback_time_us,
+                error_count,
+                rt_error_code,
                 device_info,
             ),
             SampleFormat::U8 => Self::build_stream::<u8>(
@@ -286,6 +323,8 @@ impl AudioInput {
                 stream_config,
                 producer,
                 last_callback_time_us,
+                error_count,
+                rt_error_code,
                 device_info,
             ),
             SampleFormat::U16 => Self::build_stream::<u16>(
@@ -293,6 +332,8 @@ impl AudioInput {
                 stream_config,
                 producer,
                 last_callback_time_us,
+                error_count,
+                rt_error_code,
                 device_info,
             ),
             SampleFormat::U32 => Self::build_stream::<u32>(
@@ -300,6 +341,8 @@ impl AudioInput {
                 stream_config,
                 producer,
                 last_callback_time_us,
+                error_count,
+                rt_error_code,
                 device_info,
             ),
             SampleFormat::U64 => Self::build_stream::<u64>(
@@ -307,6 +350,8 @@ impl AudioInput {
                 stream_config,
                 producer,
                 last_callback_time_us,
+                error_count,
+                rt_error_code,
                 device_info,
             ),
             other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),

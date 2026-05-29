@@ -3,8 +3,6 @@ mod tests {
     use super::*;
     use pyo3::types::PyDict;
     use pyo3::Python;
-    use std::sync::mpsc;
-    use std::time::Duration;
 
     #[test]
     fn test_duration_samples_for_44k1_output() {
@@ -222,7 +220,7 @@ mod tests {
     #[test]
     fn test_retime_audio_block_can_expand_and_compress() {
         let input = [0.0_f32, 0.25, 0.5, 0.75, 1.0, 0.5];
-        let mut scratch = Vec::new();
+        let mut scratch = FixedAudioBuffer::<f32, 32>::new();
 
         let expanded = retime_audio_block(&input, 0.5, 32, &mut scratch);
         assert!(expanded.len() > input.len());
@@ -234,12 +232,123 @@ mod tests {
     #[test]
     fn test_retime_audio_block_linear_interpolation_does_not_overshoot_neighbors() {
         let input = [0.0_f32, 0.5, 1.0, 0.5, 0.0];
-        let mut scratch = Vec::new();
+        let mut scratch = FixedAudioBuffer::<f32, 32>::new();
 
         let expanded = retime_audio_block(&input, 0.7, 32, &mut scratch);
 
         for sample in expanded {
             assert!((*sample >= 0.0) && (*sample <= 1.0));
+        }
+    }
+
+    fn fill_probe_block(buffer: &mut [f32]) {
+        for (index, sample) in buffer.iter_mut().enumerate() {
+            let phase = index as f32 * 0.037;
+            *sample = (phase.sin() * 0.35).clamp(-0.8, 0.8);
+        }
+    }
+
+    #[test]
+    fn test_steady_state_dsp_blocks_do_not_allocate() {
+        let mut block = [0.0_f32; 512];
+        fill_probe_block(&mut block);
+
+        let mut biquad = Biquad::new(
+            BiquadType::Peaking,
+            1_000.0,
+            3.0,
+            DEFAULT_Q,
+            TARGET_SAMPLE_RATE as f64,
+        );
+        biquad.process_block_inplace(&mut block);
+        crate::test_alloc::assert_no_allocations("biquad block", || {
+            biquad.process_block_inplace(&mut block);
+        });
+
+        let mut eq = ParametricEQ::new(TARGET_SAMPLE_RATE as f64);
+        eq.set_band_gain(4, 3.0);
+        eq.process_block_inplace(&mut block);
+        crate::test_alloc::assert_no_allocations("eq block", || {
+            eq.process_block_inplace(&mut block);
+        });
+
+        let mut gate = NoiseGate::new(-45.0, 5.0, 80.0, TARGET_SAMPLE_RATE as f64);
+        gate.process_block_inplace(&mut block);
+        crate::test_alloc::assert_no_allocations("gate block", || {
+            gate.process_block_inplace(&mut block);
+        });
+
+        let mut compressor = Compressor::default_voice(TARGET_SAMPLE_RATE as f64);
+        compressor.process_block_inplace(&mut block);
+        crate::test_alloc::assert_no_allocations("compressor block", || {
+            compressor.process_block_inplace(&mut block);
+        });
+
+        let mut deesser = DeEsser::new(TARGET_SAMPLE_RATE as f64);
+        deesser.set_enabled(true);
+        deesser.process_block_inplace(&mut block);
+        crate::test_alloc::assert_no_allocations("deesser block", || {
+            deesser.process_block_inplace(&mut block);
+        });
+
+        let mut limiter = Limiter::default_settings(TARGET_SAMPLE_RATE as f64);
+        limiter.process_block_inplace(&mut block);
+        crate::test_alloc::assert_no_allocations("limiter block", || {
+            limiter.process_block_inplace(&mut block);
+        });
+
+        let mut scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let retime_input = [0.1_f32; 256];
+        let _ = retime_audio_block(&retime_input, 0.98, 512, &mut scratch);
+        crate::test_alloc::assert_no_allocations("retime block", || {
+            let output = retime_audio_block(&retime_input, 0.98, 512, &mut scratch);
+            assert!(!output.is_empty());
+        });
+
+        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let mut suppressor = NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength);
+        let rnnoise_frame = [0.0_f32; RNNOISE_FRAME_SIZE];
+        let mut suppressor_output = [0.0_f32; RNNOISE_FRAME_SIZE];
+        suppressor.push_samples(&rnnoise_frame);
+        suppressor.process_frames();
+        assert_eq!(
+            suppressor.pop_samples_into(&mut suppressor_output),
+            RNNOISE_FRAME_SIZE
+        );
+        crate::test_alloc::assert_no_allocations("rnnoise wrapper block", || {
+            suppressor.push_samples(&rnnoise_frame);
+            suppressor.process_frames();
+            assert_eq!(
+                suppressor.pop_samples_into(&mut suppressor_output),
+                RNNOISE_FRAME_SIZE
+            );
+        });
+
+        #[cfg(feature = "deepfilter")]
+        {
+            use crate::dsp::deepfilter_ffi::{
+                DeepFilterModel, DeepFilterProcessor, DEEPFILTER_FRAME_SIZE,
+            };
+
+            let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+            let mut deepfilter = DeepFilterProcessor::new(strength, DeepFilterModel::LowLatency);
+            deepfilter.set_enabled(false);
+            let deepfilter_frame = [0.0_f32; DEEPFILTER_FRAME_SIZE];
+            let mut deepfilter_output = [0.0_f32; DEEPFILTER_FRAME_SIZE];
+            deepfilter.push_samples(&deepfilter_frame);
+            deepfilter.process_frames();
+            assert_eq!(
+                deepfilter.pop_samples_into(&mut deepfilter_output),
+                DEEPFILTER_FRAME_SIZE
+            );
+            crate::test_alloc::assert_no_allocations("deepfilter passthrough block", || {
+                deepfilter.push_samples(&deepfilter_frame);
+                deepfilter.process_frames();
+                assert_eq!(
+                    deepfilter.pop_samples_into(&mut deepfilter_output),
+                    DEEPFILTER_FRAME_SIZE
+                );
+            });
         }
     }
 
@@ -261,18 +370,16 @@ mod tests {
         processor.set_gate_attack(f64::INFINITY);
         processor.set_gate_release(f64::NEG_INFINITY);
 
-        {
-            let control = processor.gate_control.lock().unwrap();
-            assert_eq!(control.threshold_db, -40.0);
-            assert_eq!(control.attack_ms, 10.0);
-            assert_eq!(control.release_ms, 100.0);
-        }
+        let control = processor.gate_rt_control.snapshot();
+        assert_eq!(control.threshold_db, -40.0);
+        assert_eq!(control.attack_ms, 10.0);
+        assert_eq!(control.release_ms, 100.0);
 
         processor.set_gate_threshold(-120.0);
         processor.set_gate_attack(0.01);
         processor.set_gate_release(5000.0);
 
-        let control = processor.gate_control.lock().unwrap();
+        let control = processor.gate_rt_control.snapshot();
         assert_eq!(control.threshold_db, GATE_THRESHOLD_MIN_DB);
         assert_eq!(control.attack_ms, GATE_ATTACK_MIN_MS);
         assert_eq!(control.release_ms, GATE_RELEASE_MAX_MS);
@@ -348,26 +455,6 @@ mod tests {
     }
 
     #[test]
-    fn test_lock_rt_counts_contention() {
-        let mutex = Arc::new(Mutex::new(1_u32));
-        let contention = Arc::new(AtomicU64::new(0));
-        let (started_tx, started_rx) = mpsc::channel();
-        let mutex_for_thread = Arc::clone(&mutex);
-
-        let holder = std::thread::spawn(move || {
-            let _guard = mutex_for_thread.lock().unwrap();
-            started_tx.send(()).unwrap();
-            std::thread::sleep(Duration::from_millis(30));
-        });
-
-        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let guard = lock_rt(mutex.as_ref(), contention.as_ref());
-        assert!(guard.is_none());
-        assert_eq!(contention.load(Ordering::Relaxed), 1);
-        holder.join().unwrap();
-    }
-
-    #[test]
     fn test_release_ms_to_tenth_ms_rounds_expected_values() {
         assert_eq!(release_ms_to_tenth_ms(200.0), 2000);
         assert_eq!(release_ms_to_tenth_ms(12.34), 123);
@@ -383,6 +470,82 @@ mod tests {
 
         let invalid = smoothing_coeff_for_time_constant(0.0, 100.0);
         assert_eq!(invalid, 0.0);
+    }
+
+    fn marked_region<'a>(source: &'a str, name: &str) -> &'a str {
+        let start_marker = format!("RT_REGION_START: {name}");
+        let end_marker = format!("RT_REGION_END: {name}");
+        let start = source
+            .find(&start_marker)
+            .unwrap_or_else(|| panic!("missing {start_marker}"));
+        let body_start = source[start..]
+            .find('\n')
+            .map(|offset| start + offset + 1)
+            .unwrap_or(start);
+        let end = source[body_start..]
+            .find(&end_marker)
+            .map(|offset| body_start + offset)
+            .unwrap_or_else(|| panic!("missing {end_marker}"));
+        &source[body_start..end]
+    }
+
+    #[test]
+    fn test_marked_rt_regions_reject_blocking_or_allocating_apis() {
+        let files = [
+            (
+                "processor.rs",
+                include_str!("../processor.rs"),
+                &["dsp_processing_loop"][..],
+            ),
+            (
+                "input.rs",
+                include_str!("../input.rs"),
+                &["cpal_input_callback"][..],
+            ),
+            (
+                "output.rs",
+                include_str!("../output.rs"),
+                &["cpal_output_callback"][..],
+            ),
+        ];
+        let forbidden = [
+            ".lock()",
+            ".try_lock()",
+            "try_lock",
+            ".reserve(",
+            ".resize(",
+            ".to_vec(",
+            ".drain(",
+            "format!",
+            "println!",
+            "eprintln!",
+            "processor_debug_log!",
+        ];
+
+        for (file, source, regions) in files {
+            for region_name in regions {
+                let region = marked_region(source, region_name);
+                for pattern in forbidden {
+                    assert!(
+                        !region.contains(pattern),
+                        "{file}:{region_name} contains forbidden RT pattern {pattern}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_dsp_loop_uses_caller_provided_suppressor_output_buffers() {
+        let source = include_str!("../processor.rs");
+        let region = marked_region(source, "dsp_processing_loop");
+        for pattern in ["pop_samples(", "pop_all_samples(", "drain_pending_input("] {
+            assert!(
+                !region.contains(pattern),
+                "DSP RT loop must not call Vec-returning suppressor API {pattern}"
+            );
+        }
+        assert!(region.contains("pop_samples_into("));
     }
 
     #[test]

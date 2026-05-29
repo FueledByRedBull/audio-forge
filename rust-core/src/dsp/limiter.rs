@@ -3,7 +3,70 @@
 //! Uses a fixed lookahead window (~2ms) computed from runtime sample rate.
 
 use crate::dsp::util;
-use std::collections::VecDeque;
+
+const MAX_LIMITER_LOOKAHEAD_SAMPLES: usize = 384;
+
+struct FixedMonoQueue {
+    data: [(u64, f64); MAX_LIMITER_LOOKAHEAD_SAMPLES],
+    head: usize,
+    len: usize,
+}
+
+impl FixedMonoQueue {
+    fn new() -> Self {
+        Self {
+            data: [(0, 0.0); MAX_LIMITER_LOOKAHEAD_SAMPLES],
+            head: 0,
+            len: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.head = 0;
+        self.len = 0;
+    }
+
+    fn front(&self) -> Option<(u64, f64)> {
+        (self.len > 0).then_some(self.data[self.head])
+    }
+
+    fn back(&self) -> Option<(u64, f64)> {
+        if self.len == 0 {
+            None
+        } else {
+            let idx = (self.head + self.len - 1) % MAX_LIMITER_LOOKAHEAD_SAMPLES;
+            Some(self.data[idx])
+        }
+    }
+
+    fn pop_front(&mut self) {
+        if self.len > 0 {
+            self.head = (self.head + 1) % MAX_LIMITER_LOOKAHEAD_SAMPLES;
+            self.len -= 1;
+            if self.len == 0 {
+                self.head = 0;
+            }
+        }
+    }
+
+    fn pop_back(&mut self) {
+        if self.len > 0 {
+            self.len -= 1;
+            if self.len == 0 {
+                self.head = 0;
+            }
+        }
+    }
+
+    fn push_back(&mut self, value: (u64, f64)) {
+        if self.len == MAX_LIMITER_LOOKAHEAD_SAMPLES {
+            self.pop_front();
+        }
+        let idx = (self.head + self.len) % MAX_LIMITER_LOOKAHEAD_SAMPLES;
+        self.data[idx] = value;
+        self.len += 1;
+    }
+}
 
 /// Hard limiter with lookahead ceiling control
 pub struct Limiter {
@@ -24,7 +87,7 @@ pub struct Limiter {
     /// Shared future window and delay line storage.
     delay_buffer: Vec<f32>,
     /// Monotonic max queue for the lookahead window.
-    lookahead_max_queue: VecDeque<(u64, f64)>,
+    lookahead_max_queue: FixedMonoQueue,
     /// Absolute sample index for window maintenance.
     next_input_index: u64,
     /// Ring write index.
@@ -37,7 +100,8 @@ impl Limiter {
     /// Create a new limiter
     pub fn new(ceiling_db: f64, release_ms: f64, sample_rate: f64) -> Self {
         let release_coeff = util::time_constant_to_coeff(release_ms, sample_rate);
-        let lookahead_samples = ((0.002 * sample_rate).round() as usize).max(1);
+        let lookahead_samples =
+            ((0.002 * sample_rate).round() as usize).clamp(1, MAX_LIMITER_LOOKAHEAD_SAMPLES);
 
         Self {
             ceiling_db,
@@ -48,7 +112,7 @@ impl Limiter {
             sample_rate,
             lookahead_samples,
             delay_buffer: vec![0.0; lookahead_samples],
-            lookahead_max_queue: VecDeque::with_capacity(lookahead_samples),
+            lookahead_max_queue: FixedMonoQueue::new(),
             next_input_index: 0,
             write_idx: 0,
             enabled: true,
@@ -119,14 +183,14 @@ impl Limiter {
     fn lookahead_peak_abs(&self) -> f64 {
         self.lookahead_max_queue
             .front()
-            .map(|&(_, peak)| peak)
+            .map(|(_, peak)| peak)
             .unwrap_or(0.0)
     }
 
     #[inline]
     fn push_lookahead_sample(&mut self, sample_abs: f64) {
         let sample_index = self.next_input_index;
-        while let Some(&(_, tail_peak)) = self.lookahead_max_queue.back() {
+        while let Some((_, tail_peak)) = self.lookahead_max_queue.back() {
             if tail_peak > sample_abs {
                 break;
             }
@@ -139,7 +203,7 @@ impl Limiter {
         let oldest_kept_index = self
             .next_input_index
             .saturating_sub(self.lookahead_samples as u64);
-        while let Some(&(front_index, _)) = self.lookahead_max_queue.front() {
+        while let Some((front_index, _)) = self.lookahead_max_queue.front() {
             if front_index >= oldest_kept_index {
                 break;
             }

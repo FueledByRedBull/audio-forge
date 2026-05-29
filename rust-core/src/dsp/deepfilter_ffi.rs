@@ -33,6 +33,7 @@
 //!
 //! Expected latency: ~10ms with LL variant (no lookahead)
 
+use crate::audio::rt::FixedAudioRing;
 use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressor};
 use std::env;
 use std::path::{Path, PathBuf};
@@ -43,6 +44,7 @@ use std::vec::Vec;
 
 /// DeepFilterNet frame size (same as RNNoise: 10ms at 48kHz)
 pub const DEEPFILTER_FRAME_SIZE: usize = 480;
+const DEEPFILTER_BUFFER_CAPACITY: usize = DEEPFILTER_FRAME_SIZE * 8;
 
 fn deepfilter_runtime_enabled() -> bool {
     env::var("AUDIOFORGE_ENABLE_DEEPFILTER")
@@ -458,10 +460,8 @@ impl Drop for DeepFilterFFI {
 pub struct DeepFilterProcessor {
     df: Option<DeepFilterFFI>, // Option for graceful fallback if FFI fails
     _lib: Option<Arc<DeepFilterLib>>, // Keep library loaded
-    input_buffer: Vec<f32>,
-    input_read_pos: usize,
-    output_buffer: Vec<f32>,
-    output_read_pos: usize,
+    input_buffer: FixedAudioRing<f32, DEEPFILTER_BUFFER_CAPACITY>,
+    output_buffer: FixedAudioRing<f32, DEEPFILTER_BUFFER_CAPACITY>,
     enabled: bool,
     strength: Arc<AtomicU32>,
     smoothed_strength: f32,
@@ -479,10 +479,8 @@ impl DeepFilterProcessor {
             return Self {
                 df: None,
                 _lib: None,
-                input_buffer: Vec::with_capacity(DEEPFILTER_FRAME_SIZE * 2),
-                input_read_pos: 0,
-                output_buffer: Vec::with_capacity(DEEPFILTER_FRAME_SIZE * 2),
-                output_read_pos: 0,
+                input_buffer: FixedAudioRing::new(),
+                output_buffer: FixedAudioRing::new(),
                 enabled: true,
                 strength,
                 smoothed_strength: 1.0,
@@ -553,10 +551,8 @@ impl DeepFilterProcessor {
         Self {
             df,
             _lib: lib,
-            input_buffer: Vec::with_capacity(DEEPFILTER_FRAME_SIZE * 4),
-            input_read_pos: 0,
-            output_buffer: Vec::with_capacity(DEEPFILTER_FRAME_SIZE * 4),
-            output_read_pos: 0,
+            input_buffer: FixedAudioRing::new(),
+            output_buffer: FixedAudioRing::new(),
             enabled: true,
             strength,
             smoothed_strength: 1.0,
@@ -569,10 +565,7 @@ impl DeepFilterProcessor {
         }
     }
 
-    fn disable_backend(&mut self, reason: String) {
-        if self.load_error.is_none() {
-            self.load_error = Some(reason);
-        }
+    fn disable_backend_rt(&mut self) {
         self.df = None;
         self._lib = None;
         self.backend_failed = true;
@@ -589,11 +582,13 @@ impl DeepFilterProcessor {
         self.smoothed_strength += alpha * (target_strength - self.smoothed_strength);
 
         // Process complete frames (480 samples each)
-        while self.input_buffer.len().saturating_sub(self.input_read_pos) >= DEEPFILTER_FRAME_SIZE {
-            let start = self.input_read_pos;
-            let end = start + DEEPFILTER_FRAME_SIZE;
-            self.dry_frame
-                .copy_from_slice(&self.input_buffer[start..end]);
+        while self.input_buffer.len() >= DEEPFILTER_FRAME_SIZE
+            && self.output_buffer.remaining() >= DEEPFILTER_FRAME_SIZE
+        {
+            let read = self.input_buffer.pop_into(&mut self.dry_frame);
+            if read != DEEPFILTER_FRAME_SIZE {
+                break;
+            }
             self.frame_scratch.copy_from_slice(&self.dry_frame);
 
             // Process through FFI if available
@@ -605,19 +600,15 @@ impl DeepFilterProcessor {
                             for i in 0..DEEPFILTER_FRAME_SIZE {
                                 let wet = self.output_frame[i];
                                 let dry = self.dry_frame[i];
-                                let mixed = wet * self.smoothed_strength
+                                self.output_frame[i] = wet * self.smoothed_strength
                                     + dry * (1.0 - self.smoothed_strength);
-                                self.output_buffer.push(mixed);
                             }
-                            self.input_read_pos = end;
+                            self.output_buffer.push_slice(&self.output_frame);
                             continue;
                         }
                         Err(e) => {
-                            eprintln!(
-                                "DeepFilterNet FFI processing error: {}, using passthrough",
-                                e
-                            );
-                            self.disable_backend(format!("DeepFilterNet runtime failure: {}", e));
+                            let _ = e;
+                            self.disable_backend_rt();
                         }
                     }
                 }
@@ -627,17 +618,10 @@ impl DeepFilterProcessor {
             for i in 0..DEEPFILTER_FRAME_SIZE {
                 let wet = self.dry_frame[i];
                 let dry = self.dry_frame[i];
-                let mixed = wet * self.smoothed_strength + dry * (1.0 - self.smoothed_strength);
-                self.output_buffer.push(mixed);
+                self.output_frame[i] =
+                    wet * self.smoothed_strength + dry * (1.0 - self.smoothed_strength);
             }
-            self.input_read_pos = end;
-        }
-
-        if self.input_read_pos >= DEEPFILTER_FRAME_SIZE
-            && self.input_read_pos.saturating_mul(2) >= self.input_buffer.len()
-        {
-            self.input_buffer.drain(..self.input_read_pos);
-            self.input_read_pos = 0;
+            self.output_buffer.push_slice(&self.output_frame);
         }
     }
 
@@ -662,7 +646,7 @@ impl DeepFilterProcessor {
 
 impl NoiseSuppressor for DeepFilterProcessor {
     fn push_samples(&mut self, samples: &[f32]) {
-        self.input_buffer.extend_from_slice(samples);
+        self.input_buffer.push_slice(samples);
     }
 
     fn process_frames(&mut self) {
@@ -670,66 +654,36 @@ impl NoiseSuppressor for DeepFilterProcessor {
             self.process_frames_internal();
         } else {
             // Disabled: passthrough
-            while self.input_buffer.len().saturating_sub(self.input_read_pos)
-                >= DEEPFILTER_FRAME_SIZE
+            while self.input_buffer.len() >= DEEPFILTER_FRAME_SIZE
+                && self.output_buffer.remaining() >= DEEPFILTER_FRAME_SIZE
             {
-                let start = self.input_read_pos;
-                let end = start + DEEPFILTER_FRAME_SIZE;
-                self.output_buffer
-                    .extend_from_slice(&self.input_buffer[start..end]);
-                self.input_read_pos = end;
-            }
-
-            if self.input_read_pos >= DEEPFILTER_FRAME_SIZE
-                && self.input_read_pos.saturating_mul(2) >= self.input_buffer.len()
-            {
-                self.input_buffer.drain(..self.input_read_pos);
-                self.input_read_pos = 0;
+                let read = self.input_buffer.pop_into(&mut self.dry_frame);
+                if read != DEEPFILTER_FRAME_SIZE {
+                    break;
+                }
+                self.output_buffer.push_slice(&self.dry_frame);
             }
         }
     }
 
     fn available_samples(&self) -> usize {
-        self.output_buffer
-            .len()
-            .saturating_sub(self.output_read_pos)
+        self.output_buffer.len()
     }
 
     fn pop_samples(&mut self, count: usize) -> Vec<f32> {
         let actual = count.min(self.available_samples());
-        let start = self.output_read_pos;
-        let end = start + actual;
-        let out = self.output_buffer[start..end].to_vec();
-        self.output_read_pos = end;
-        if self.output_read_pos >= DEEPFILTER_FRAME_SIZE
-            && self.output_read_pos.saturating_mul(2) >= self.output_buffer.len()
-        {
-            self.output_buffer.drain(..self.output_read_pos);
-            self.output_read_pos = 0;
-        }
+        let mut out = vec![0.0; actual];
+        self.output_buffer.pop_into(&mut out);
         out
     }
 
     fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize {
         let count = buffer.len().min(self.available_samples());
-        let start = self.output_read_pos;
-        let end = start + count;
-        buffer[..count].copy_from_slice(&self.output_buffer[start..end]);
-        self.output_read_pos = end;
-        if self.output_read_pos >= DEEPFILTER_FRAME_SIZE
-            && self.output_read_pos.saturating_mul(2) >= self.output_buffer.len()
-        {
-            self.output_buffer.drain(..self.output_read_pos);
-            self.output_read_pos = 0;
-        }
-        count
+        self.output_buffer.pop_into(&mut buffer[..count])
     }
 
     fn pop_all_samples(&mut self) -> Vec<f32> {
-        let out = self.output_buffer[self.output_read_pos..].to_vec();
-        self.output_buffer.clear();
-        self.output_read_pos = 0;
-        out
+        self.output_buffer.pop_all_vec()
     }
 
     fn set_strength(&self, value: f32) {
@@ -753,9 +707,7 @@ impl NoiseSuppressor for DeepFilterProcessor {
     fn soft_reset(&mut self) {
         // Clear all buffers without resetting the model/state
         self.input_buffer.clear();
-        self.input_read_pos = 0;
         self.output_buffer.clear();
-        self.output_read_pos = 0;
         self.dry_frame.fill(0.0);
         self.frame_scratch.fill(0.0);
         self.output_frame.fill(0.0);
@@ -763,14 +715,11 @@ impl NoiseSuppressor for DeepFilterProcessor {
     }
 
     fn pending_input(&self) -> usize {
-        self.input_buffer.len().saturating_sub(self.input_read_pos)
+        self.input_buffer.len()
     }
 
     fn drain_pending_input(&mut self) -> Vec<f32> {
-        let pending = self.input_buffer[self.input_read_pos..].to_vec();
-        self.input_buffer.clear();
-        self.input_read_pos = 0;
-        pending
+        self.input_buffer.pop_all_vec()
     }
 
     fn model_type(&self) -> NoiseModel {

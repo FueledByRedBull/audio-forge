@@ -587,6 +587,26 @@ impl PyAudioProcessor {
         self.processor.get_suppressor_non_finite_count()
     }
 
+    fn get_rt_error_code(&self) -> u32 {
+        self.processor.get_rt_error_code()
+    }
+
+    fn get_rt_error_name(&self) -> &'static str {
+        self.processor.get_rt_error_name()
+    }
+
+    fn get_input_callback_error_count(&self) -> u64 {
+        self.processor.get_input_callback_error_count()
+    }
+
+    fn get_output_callback_error_count(&self) -> u64 {
+        self.processor.get_output_callback_error_count()
+    }
+
+    fn get_rt_buffer_overflow_count(&self) -> u64 {
+        self.processor.get_rt_buffer_overflow_count()
+    }
+
     fn is_noise_backend_available(&self) -> bool {
         self.processor.is_noise_backend_available()
     }
@@ -669,6 +689,20 @@ impl PyAudioProcessor {
         diagnostics.set_item(
             "suppressor_non_finite_count",
             self.processor.get_suppressor_non_finite_count(),
+        )?;
+        diagnostics.set_item("rt_error_code", self.processor.get_rt_error_code())?;
+        diagnostics.set_item("rt_error_name", self.processor.get_rt_error_name())?;
+        diagnostics.set_item(
+            "input_callback_error_count",
+            self.processor.get_input_callback_error_count(),
+        )?;
+        diagnostics.set_item(
+            "output_callback_error_count",
+            self.processor.get_output_callback_error_count(),
+        )?;
+        diagnostics.set_item(
+            "rt_buffer_overflow_count",
+            self.processor.get_rt_buffer_overflow_count(),
         )?;
         diagnostics.set_item(
             "clip_event_count",

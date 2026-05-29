@@ -64,3 +64,11 @@ Publish:
 - `python/tools/package_smoke.py` verifies exact bundled DLL/model/native-extension presence and dependency license or `.dist-info` metadata.
 - `python/tools/prune_bundle.py` must not remove dependency `.dist-info` directories; license/metadata retention is part of the release gate.
 - Obtain `DirectML.dll` from the pinned Microsoft DirectML redistributable package, `df.dll` from the pinned DeepFilter runtime build/artifact, and model files from the pinned model artifacts documented in `release-assets.json`.
+
+## Strict realtime regression gates
+
+- The CPAL input callback, CPAL output callback, and post-initialization DSP loop are strict RT regions. They must not use blocking locks, `try_lock`, formatting/logging, vector growth APIs, or Vec-returning suppressor convenience APIs.
+- Keep the RT source-scan tests passing whenever code inside a marked `RT_REGION_*` block changes.
+- Keep control changes flowing through atomic snapshots or bounded queues; model loading and suppressor construction must remain outside the RT loop.
+- Release validation must include fixed-buffer overflow/drop diagnostics checks and a model-discovery smoke pass proving bundled DeepFilter and Silero assets are preferred over CWD/user-directory assets unless an explicit override is set.
+- `release-assets.json` paths and bundle paths must stay repository-relative and must not contain `..` traversal.

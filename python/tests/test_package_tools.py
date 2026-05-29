@@ -117,3 +117,38 @@ def test_verify_release_assets_reports_missing_and_hash_mismatch(tmp_path, monke
 
     assert any("sha256 mismatch" in error for error in errors)
     assert any("missing.bin: missing" in error for error in errors)
+
+
+def test_verify_release_assets_rejects_absolute_and_traversal_paths(
+    tmp_path, monkeypatch
+):
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "assets": [
+                    {
+                        "path": str(tmp_path / "asset.bin"),
+                        "sha256": "0" * 64,
+                    },
+                    {
+                        "path": "../asset.bin",
+                        "sha256": "0" * 64,
+                    },
+                    {
+                        "path": "asset.bin",
+                        "bundle_path": "../bundle.bin",
+                        "sha256": "0" * 64,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify_release_assets, "REPO_ROOT", tmp_path)
+
+    errors = verify_release_assets.verify_assets(manifest)
+
+    assert any("absolute path" in error for error in errors)
+    assert any("'..' traversal" in error for error in errors)
+    assert any("bundle_path" in error and "'..' traversal" in error for error in errors)

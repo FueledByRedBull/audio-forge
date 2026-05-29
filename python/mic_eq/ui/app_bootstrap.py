@@ -32,9 +32,15 @@ def _trusted_runtime_roots() -> list[Path]:
     return trusted_roots
 
 
+def _truthy_env(name: str) -> bool:
+    value = os.environ.get(name)
+    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def configure_deepfilter_env() -> None:
     """Enable local DeepFilter runtime when local assets are present."""
-    if "AUDIOFORGE_ENABLE_DEEPFILTER" in os.environ:
+    allow_external = _truthy_env("AUDIOFORGE_ALLOW_EXTERNAL_DF")
+    if allow_external and "AUDIOFORGE_ENABLE_DEEPFILTER" in os.environ:
         return
 
     if os.name == "nt":
@@ -67,8 +73,23 @@ def configure_deepfilter_env() -> None:
             break
 
     if lib_path and model_found:
-        os.environ.setdefault("DEEPFILTER_LIB_PATH", str(lib_path))
+        if allow_external:
+            os.environ.setdefault("DEEPFILTER_LIB_PATH", str(lib_path))
+        else:
+            os.environ["DEEPFILTER_LIB_PATH"] = str(lib_path)
         os.environ.setdefault("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
+
+
+def configure_vad_env() -> None:
+    """Point VAD at a bundled app-owned model when one is present."""
+    if "VAD_MODEL_PATH" in os.environ:
+        return
+
+    for root in _trusted_runtime_roots():
+        candidate = root / "models" / "silero_vad.onnx"
+        if candidate.is_file():
+            os.environ["VAD_MODEL_PATH"] = str(candidate)
+            return
 
 
 def run_qt_app(window_cls: Type[QMainWindow]) -> int:
@@ -87,6 +108,7 @@ def run_qt_app(window_cls: Type[QMainWindow]) -> int:
             app.setWindowIcon(QIcon(str(icon_path)))
 
     configure_deepfilter_env()
+    configure_vad_env()
 
     window = window_cls()
     window.show()

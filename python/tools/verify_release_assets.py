@@ -30,6 +30,15 @@ def _load_manifest(path: Path = MANIFEST_PATH) -> list[dict[str, Any]]:
     return assets
 
 
+def _validate_manifest_path(raw_path: str, field_name: str) -> str | None:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return f"{field_name} must be repository-relative, got absolute path {raw_path}"
+    if ".." in path.parts:
+        return f"{field_name} must not contain '..' traversal, got {raw_path}"
+    return None
+
+
 def verify_assets(manifest_path: Path = MANIFEST_PATH) -> list[str]:
     errors: list[str] = []
     for asset in _load_manifest(manifest_path):
@@ -40,6 +49,14 @@ def verify_assets(manifest_path: Path = MANIFEST_PATH) -> list[str]:
         if not isinstance(raw_path, str) or not raw_path:
             errors.append("asset entry missing path")
             continue
+        if path_error := _validate_manifest_path(raw_path, "asset path"):
+            errors.append(path_error)
+            continue
+
+        raw_bundle_path = asset.get("bundle_path")
+        if isinstance(raw_bundle_path, str) and raw_bundle_path:
+            if path_error := _validate_manifest_path(raw_bundle_path, "asset bundle_path"):
+                errors.append(path_error)
 
         path = REPO_ROOT / raw_path
         if not path.is_file():

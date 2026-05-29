@@ -46,6 +46,9 @@ const SILERO_SAMPLE_RATE: u32 = 16000;
 const SILERO_WINDOW_SIZE: usize = 512;
 const VAD_INPUT_COMPACT_THRESHOLD: usize = 4096;
 const NOISE_FLOOR_HISTORY_FRAMES: usize = 250;
+const NOISE_FLOOR_BIN_COUNT: usize = 61;
+const NOISE_FLOOR_BIN_MIN_DB: f32 = -80.0;
+const NOISE_FLOOR_BIN_STEP_DB: f32 = 1.0;
 const NOISE_FLOOR_ELIGIBLE_PROB_MAX: f32 = 0.3;
 const NOISE_FLOOR_UP_SLEW_DB_PER_FRAME: f32 = 0.5;
 const NOISE_FLOOR_DOWN_SLEW_DB_PER_FRAME: f32 = 0.1;
@@ -507,11 +510,13 @@ pub struct VadAutoGate {
     /// Whether the external worker has a fresh probability.
     external_probability_available: bool,
     /// Circular history buffer of low-confidence frame levels for percentile floor estimation.
-    noise_floor_history: Vec<f32>,
+    noise_floor_history: [f32; NOISE_FLOOR_HISTORY_FRAMES],
+    /// Number of valid entries currently in `noise_floor_history`.
+    noise_floor_history_len: usize,
     /// Next write index into `noise_floor_history` once full.
     noise_floor_history_cursor: usize,
-    /// Scratch space used to sort a copy for percentile extraction.
-    noise_floor_sort_scratch: Vec<f32>,
+    /// Incremental 1 dB histogram for bounded percentile extraction.
+    noise_floor_bins: [u16; NOISE_FLOOR_BIN_COUNT],
 }
 
 impl VadAutoGate {
@@ -543,9 +548,10 @@ impl VadAutoGate {
             current_probability: 0.0,
             uses_external_probability: false,
             external_probability_available: false,
-            noise_floor_history: Vec::with_capacity(NOISE_FLOOR_HISTORY_FRAMES),
+            noise_floor_history: [0.0; NOISE_FLOOR_HISTORY_FRAMES],
+            noise_floor_history_len: 0,
             noise_floor_history_cursor: 0,
-            noise_floor_sort_scratch: Vec::with_capacity(NOISE_FLOOR_HISTORY_FRAMES),
+            noise_floor_bins: [0; NOISE_FLOOR_BIN_COUNT],
         }
     }
 
@@ -572,9 +578,10 @@ impl VadAutoGate {
             current_probability: 0.0,
             uses_external_probability: true,
             external_probability_available: false,
-            noise_floor_history: Vec::with_capacity(NOISE_FLOOR_HISTORY_FRAMES),
+            noise_floor_history: [0.0; NOISE_FLOOR_HISTORY_FRAMES],
+            noise_floor_history_len: 0,
             noise_floor_history_cursor: 0,
-            noise_floor_sort_scratch: Vec::with_capacity(NOISE_FLOOR_HISTORY_FRAMES),
+            noise_floor_bins: [0; NOISE_FLOOR_BIN_COUNT],
         }
     }
 
@@ -650,29 +657,44 @@ impl VadAutoGate {
     }
 
     fn push_noise_floor_sample(&mut self, sample_db: f32) {
-        if self.noise_floor_history.len() < NOISE_FLOOR_HISTORY_FRAMES {
-            self.noise_floor_history.push(sample_db);
+        let bin = Self::noise_floor_bin(sample_db);
+        if self.noise_floor_history_len < NOISE_FLOOR_HISTORY_FRAMES {
+            let index = self.noise_floor_history_len;
+            self.noise_floor_history[index] = sample_db;
+            self.noise_floor_history_len += 1;
+            self.noise_floor_bins[bin] = self.noise_floor_bins[bin].saturating_add(1);
             return;
         }
 
+        let old_bin =
+            Self::noise_floor_bin(self.noise_floor_history[self.noise_floor_history_cursor]);
+        self.noise_floor_bins[old_bin] = self.noise_floor_bins[old_bin].saturating_sub(1);
         self.noise_floor_history[self.noise_floor_history_cursor] = sample_db;
+        self.noise_floor_bins[bin] = self.noise_floor_bins[bin].saturating_add(1);
         self.noise_floor_history_cursor =
             (self.noise_floor_history_cursor + 1) % NOISE_FLOOR_HISTORY_FRAMES;
     }
 
     fn percentile_noise_floor(&mut self) -> Option<f32> {
-        if self.noise_floor_history.is_empty() {
+        if self.noise_floor_history_len == 0 {
             return None;
         }
 
-        self.noise_floor_sort_scratch.clear();
-        self.noise_floor_sort_scratch
-            .extend_from_slice(&self.noise_floor_history);
-        self.noise_floor_sort_scratch.sort_by(|a, b| a.total_cmp(b));
+        let target = ((self.noise_floor_history_len as f32 * 0.2).floor() as usize)
+            .min(self.noise_floor_history_len - 1);
+        let mut cumulative = 0usize;
+        for (bin, count) in self.noise_floor_bins.iter().copied().enumerate() {
+            cumulative += count as usize;
+            if cumulative > target {
+                return Some(NOISE_FLOOR_BIN_MIN_DB + bin as f32 * NOISE_FLOOR_BIN_STEP_DB);
+            }
+        }
+        Some(self.noise_floor)
+    }
 
-        let len = self.noise_floor_sort_scratch.len();
-        let idx = ((len as f32 * 0.2).floor() as usize).min(len - 1);
-        self.noise_floor_sort_scratch.get(idx).copied()
+    fn noise_floor_bin(sample_db: f32) -> usize {
+        let raw = ((sample_db - NOISE_FLOOR_BIN_MIN_DB) / NOISE_FLOOR_BIN_STEP_DB).round();
+        raw.clamp(0.0, (NOISE_FLOOR_BIN_COUNT - 1) as f32) as usize
     }
 
     fn process_with_probability(&mut self, samples: &[f32], prob: f32) -> (bool, f32) {
@@ -876,9 +898,10 @@ impl VadAutoGate {
         self.prev_gate_open = false;
         self.closed_counter_samples = self.debounce_time_ms / 1000.0 * self.sample_rate as f32;
         self.current_probability = 0.0;
-        self.noise_floor_history.clear();
+        self.noise_floor_history = [0.0; NOISE_FLOOR_HISTORY_FRAMES];
+        self.noise_floor_history_len = 0;
         self.noise_floor_history_cursor = 0;
-        self.noise_floor_sort_scratch.clear();
+        self.noise_floor_bins = [0; NOISE_FLOOR_BIN_COUNT];
         if let Some(vad) = &mut self.vad {
             vad.reset();
         }

@@ -109,7 +109,10 @@ pub trait NoiseSuppressor: Send {
     /// Get available output samples count
     fn available_samples(&self) -> usize;
 
-    /// Pop processed samples from output buffer
+    /// Pop processed samples from output buffer.
+    ///
+    /// Non-RT convenience API: this allocates the returned `Vec`. CPAL
+    /// callbacks and the DSP processing loop must use `pop_samples_into`.
     fn pop_samples(&mut self, count: usize) -> Vec<f32>;
 
     /// Pop processed samples into caller-provided buffer.
@@ -117,7 +120,10 @@ pub trait NoiseSuppressor: Send {
     /// Returns the number of samples written into `buffer`.
     fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize;
 
-    /// Pop all available samples from output buffer
+    /// Pop all available samples from output buffer.
+    ///
+    /// Non-RT convenience API: this allocates the returned `Vec`. CPAL
+    /// callbacks and the DSP processing loop must use caller-provided buffers.
     fn pop_all_samples(&mut self) -> Vec<f32>;
 
     /// Set wet/dry mix strength (0.0 = dry/original, 1.0 = wet/processed)
@@ -140,10 +146,12 @@ pub trait NoiseSuppressor: Send {
     /// Get pending input samples count (waiting for frame completion)
     fn pending_input(&self) -> usize;
 
-    /// Drain and return pending input samples without processing
+    /// Drain and return pending input samples without processing.
     ///
     /// This is used when bypassing the suppressor to output raw audio.
     /// Returns pending samples that haven't been processed yet.
+    ///
+    /// Non-RT convenience API: this allocates the returned `Vec`.
     fn drain_pending_input(&mut self) -> Vec<f32>;
 
     /// Get the model type

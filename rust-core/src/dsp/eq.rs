@@ -194,8 +194,73 @@ mod tests {
         let input = 0.5f32;
         let output = eq.process_sample(input);
 
-        // Allow for small numerical accumulation from 10 filters
-        assert!((output - input).abs() < 0.05);
+        assert!((output - input).abs() < 1e-5);
+    }
+
+    fn sine_gain_db(eq: &mut ParametricEQ, freq_hz: f64) -> f64 {
+        let sample_rate = 48_000.0;
+        let samples = 16_384;
+        let settle = 4096;
+        let mut in_sum = 0.0_f64;
+        let mut out_sum = 0.0_f64;
+        for n in 0..samples {
+            let t = n as f64 / sample_rate;
+            let input = (2.0 * std::f64::consts::PI * freq_hz * t).sin() as f32 * 0.25;
+            let output = eq.process_sample(input);
+            if n >= settle {
+                in_sum += (input as f64) * (input as f64);
+                out_sum += (output as f64) * (output as f64);
+            }
+        }
+        let input_rms = (in_sum / (samples - settle) as f64).sqrt();
+        let output_rms = (out_sum / (samples - settle) as f64).sqrt();
+        20.0 * (output_rms / input_rms).log10()
+    }
+
+    #[test]
+    fn test_eq_peaking_band_reaches_center_gain() {
+        let mut eq = ParametricEQ::new(48_000.0);
+        eq.set_band_frequency(4, 1000.0);
+        eq.set_band_q(4, 2.0);
+        eq.set_band_gain(4, 6.0);
+
+        let gain = sine_gain_db(&mut eq, 1000.0);
+
+        assert!((gain - 6.0).abs() < 0.8, "center gain was {gain:.2} dB");
+    }
+
+    #[test]
+    fn test_eq_shelves_affect_expected_probe_frequencies() {
+        let mut low = ParametricEQ::new(48_000.0);
+        low.set_band_gain(0, 6.0);
+        let low_probe = sine_gain_db(&mut low, 80.0);
+        let high_probe_after_low_shelf = sine_gain_db(&mut low, 5000.0);
+        assert!(low_probe > high_probe_after_low_shelf + 2.0);
+
+        let mut high = ParametricEQ::new(48_000.0);
+        high.set_band_gain(9, 6.0);
+        let high_probe = sine_gain_db(&mut high, 20_000.0);
+        let low_probe_after_high_shelf = sine_gain_db(&mut high, 1000.0);
+        assert!(
+            high_probe > low_probe_after_high_shelf + 2.0,
+            "high shelf probe was {high_probe:.2} dB vs low probe {low_probe_after_high_shelf:.2} dB"
+        );
+    }
+
+    #[test]
+    fn test_eq_extreme_valid_settings_remain_finite() {
+        let mut eq = ParametricEQ::new(48_000.0);
+        for band in 0..NUM_BANDS {
+            eq.set_band_gain(band, if band % 2 == 0 { 12.0 } else { -12.0 });
+            eq.set_band_q(band, if band % 2 == 0 { 0.1 } else { 10.0 });
+        }
+
+        for n in 0..4096 {
+            let input = if n % 2 == 0 { 0.9 } else { -0.9 };
+            let output = eq.process_sample(input);
+            assert!(output.is_finite());
+            assert!(output.abs() < 64.0);
+        }
     }
 
     #[test]

@@ -135,11 +135,11 @@ fn apply_input_pre_filter(
     }
 }
 
-fn retime_audio_block<'a>(
+fn retime_audio_block<'a, const N: usize>(
     input: &'a [f32],
     speed_ratio: f32,
     max_output_len: usize,
-    output: &'a mut Vec<f32>,
+    output: &'a mut FixedAudioBuffer<f32, N>,
 ) -> &'a [f32] {
     if input.is_empty() || max_output_len == 0 {
         output.clear();
@@ -148,16 +148,18 @@ fn retime_audio_block<'a>(
 
     let clamped_ratio = speed_ratio.max(0.5);
     let desired_len = ((input.len() as f32) / clamped_ratio).round().max(1.0) as usize;
-    let out_len = desired_len.min(max_output_len);
+    let out_len = desired_len.min(max_output_len).min(output.capacity());
     if out_len == input.len() {
         return input;
     }
 
     output.clear();
-    output.resize(out_len, 0.0);
+    if !output.set_len_zeroed(out_len) {
+        return output.as_slice();
+    }
 
     let max_src = (input.len() - 1) as f32;
-    for (i, out_sample) in output.iter_mut().enumerate() {
+    for (i, out_sample) in output.as_mut_slice().iter_mut().enumerate() {
         let src_pos = if out_len == 1 {
             0.0
         } else {
@@ -192,20 +194,6 @@ fn clamp_control_value_f32(value: f32, min_value: f32, max_value: f32) -> Option
     value.is_finite().then(|| value.clamp(min_value, max_value))
 }
 
-fn lock_rt<'a, T>(
-    mutex: &'a Mutex<T>,
-    lock_contention_count: &AtomicU64,
-) -> Option<std::sync::MutexGuard<'a, T>> {
-    match mutex.try_lock() {
-        Ok(guard) => Some(guard),
-        Err(std::sync::TryLockError::WouldBlock) => {
-            lock_contention_count.fetch_add(1, Ordering::Relaxed);
-            None
-        }
-        Err(std::sync::TryLockError::Poisoned(_)) => None,
-    }
-}
-
 fn build_sinc_resampler(
     input_rate: u32,
     output_rate: u32,
@@ -234,6 +222,22 @@ fn update_backend_diagnostics(
     failed.store(suppressor.backend_failed(), Ordering::Relaxed);
     if let Ok(mut guard) = error.lock() {
         *guard = suppressor.backend_error().map(str::to_string);
+    }
+}
+
+fn update_backend_status_rt(
+    available: &AtomicBool,
+    failed: &AtomicBool,
+    rt_error_code: &AtomicU32,
+    suppressor: &NoiseSuppressionEngine,
+) {
+    available.store(suppressor.backend_available(), Ordering::Relaxed);
+    failed.store(suppressor.backend_failed(), Ordering::Relaxed);
+    if suppressor.backend_failed() || suppressor.backend_error().is_some() {
+        crate::audio::rt::store_rt_error(
+            rt_error_code,
+            crate::audio::rt::RtErrorCode::SuppressorBackendFailed,
+        );
     }
 }
 
@@ -287,6 +291,170 @@ impl GateControlState {
     }
 }
 
+struct AtomicGateControlState {
+    seq: AtomicU64,
+    enabled: AtomicBool,
+    threshold_db_bits: AtomicU64,
+    attack_ms_bits: AtomicU64,
+    release_ms_bits: AtomicU64,
+    #[cfg(feature = "vad")]
+    gate_mode: AtomicU8,
+    #[cfg(feature = "vad")]
+    vad_threshold_bits: AtomicU32,
+    #[cfg(feature = "vad")]
+    hold_ms_bits: AtomicU32,
+    #[cfg(feature = "vad")]
+    pre_gain_bits: AtomicU32,
+    #[cfg(feature = "vad")]
+    auto_threshold: AtomicBool,
+    #[cfg(feature = "vad")]
+    margin_db_bits: AtomicU32,
+}
+
+impl AtomicGateControlState {
+    fn new() -> Self {
+        let state = GateControlState::new();
+        Self {
+            seq: AtomicU64::new(0),
+            enabled: AtomicBool::new(state.enabled),
+            threshold_db_bits: AtomicU64::new(state.threshold_db.to_bits()),
+            attack_ms_bits: AtomicU64::new(state.attack_ms.to_bits()),
+            release_ms_bits: AtomicU64::new(state.release_ms.to_bits()),
+            #[cfg(feature = "vad")]
+            gate_mode: AtomicU8::new(state.gate_mode as u8),
+            #[cfg(feature = "vad")]
+            vad_threshold_bits: AtomicU32::new(state.vad_threshold.to_bits()),
+            #[cfg(feature = "vad")]
+            hold_ms_bits: AtomicU32::new(state.hold_ms.to_bits()),
+            #[cfg(feature = "vad")]
+            pre_gain_bits: AtomicU32::new(state.pre_gain.to_bits()),
+            #[cfg(feature = "vad")]
+            auto_threshold: AtomicBool::new(state.auto_threshold),
+            #[cfg(feature = "vad")]
+            margin_db_bits: AtomicU32::new(state.margin_db.to_bits()),
+        }
+    }
+
+    fn update<F>(&self, apply: F)
+    where
+        F: FnOnce(&Self),
+    {
+        self.seq.fetch_add(1, Ordering::AcqRel);
+        apply(self);
+        self.seq.fetch_add(1, Ordering::Release);
+    }
+
+    fn snapshot(&self) -> GateControlState {
+        loop {
+            let seq_before = self.seq.load(Ordering::Acquire);
+            if (seq_before & 1) != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let state = GateControlState {
+                enabled: self.enabled.load(Ordering::Relaxed),
+                threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
+                attack_ms: f64::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
+                release_ms: f64::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
+                #[cfg(feature = "vad")]
+                gate_mode: match self.gate_mode.load(Ordering::Relaxed) {
+                    1 => GateMode::VadAssisted,
+                    2 => GateMode::VadOnly,
+                    _ => GateMode::ThresholdOnly,
+                },
+                #[cfg(feature = "vad")]
+                vad_threshold: f32::from_bits(self.vad_threshold_bits.load(Ordering::Relaxed)),
+                #[cfg(feature = "vad")]
+                hold_ms: f32::from_bits(self.hold_ms_bits.load(Ordering::Relaxed)),
+                #[cfg(feature = "vad")]
+                pre_gain: f32::from_bits(self.pre_gain_bits.load(Ordering::Relaxed)),
+                #[cfg(feature = "vad")]
+                auto_threshold: self.auto_threshold.load(Ordering::Relaxed),
+                #[cfg(feature = "vad")]
+                margin_db: f32::from_bits(self.margin_db_bits.load(Ordering::Relaxed)),
+            };
+            let seq_after = self.seq.load(Ordering::Acquire);
+            if seq_before == seq_after {
+                return state;
+            }
+        }
+    }
+
+    fn set_enabled(&self, enabled: bool) {
+        self.update(|state| state.enabled.store(enabled, Ordering::Relaxed));
+    }
+
+    fn set_threshold_db(&self, threshold_db: f64) {
+        self.update(|state| {
+            state
+                .threshold_db_bits
+                .store(threshold_db.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    fn set_attack_ms(&self, attack_ms: f64) {
+        self.update(|state| {
+            state
+                .attack_ms_bits
+                .store(attack_ms.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    fn set_release_ms(&self, release_ms: f64) {
+        self.update(|state| {
+            state
+                .release_ms_bits
+                .store(release_ms.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    #[cfg(feature = "vad")]
+    fn set_gate_mode(&self, gate_mode: GateMode) {
+        self.update(|state| state.gate_mode.store(gate_mode as u8, Ordering::Relaxed));
+    }
+
+    #[cfg(feature = "vad")]
+    fn set_vad_threshold(&self, threshold: f32) {
+        self.update(|state| {
+            state
+                .vad_threshold_bits
+                .store(threshold.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    #[cfg(feature = "vad")]
+    fn set_hold_ms(&self, hold_ms: f32) {
+        self.update(|state| {
+            state
+                .hold_ms_bits
+                .store(hold_ms.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    #[cfg(feature = "vad")]
+    fn set_pre_gain(&self, pre_gain: f32) {
+        self.update(|state| {
+            state
+                .pre_gain_bits
+                .store(pre_gain.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    #[cfg(feature = "vad")]
+    fn set_auto_threshold(&self, enabled: bool) {
+        self.update(|state| state.auto_threshold.store(enabled, Ordering::Relaxed));
+    }
+
+    #[cfg(feature = "vad")]
+    fn set_margin_db(&self, margin_db: f32) {
+        self.update(|state| {
+            state
+                .margin_db_bits
+                .store(margin_db.to_bits(), Ordering::Relaxed);
+        });
+    }
+}
+
 #[derive(Clone)]
 struct SuppressorControlState {
     enabled: bool,
@@ -299,6 +467,68 @@ impl SuppressorControlState {
             enabled: true,
             model: NoiseModel::RNNoise,
         }
+    }
+}
+
+fn noise_model_from_u8(value: u8) -> NoiseModel {
+    match value {
+        #[cfg(feature = "deepfilter")]
+        1 => NoiseModel::DeepFilterNetLL,
+        #[cfg(feature = "deepfilter")]
+        2 => NoiseModel::DeepFilterNet,
+        _ => NoiseModel::RNNoise,
+    }
+}
+
+struct AtomicSuppressorControlState {
+    seq: AtomicU64,
+    enabled: AtomicBool,
+    model: AtomicU8,
+}
+
+impl AtomicSuppressorControlState {
+    fn new() -> Self {
+        let state = SuppressorControlState::new();
+        Self {
+            seq: AtomicU64::new(0),
+            enabled: AtomicBool::new(state.enabled),
+            model: AtomicU8::new(state.model as u8),
+        }
+    }
+
+    fn update<F>(&self, apply: F)
+    where
+        F: FnOnce(&Self),
+    {
+        self.seq.fetch_add(1, Ordering::AcqRel);
+        apply(self);
+        self.seq.fetch_add(1, Ordering::Release);
+    }
+
+    fn snapshot(&self) -> SuppressorControlState {
+        loop {
+            let seq_before = self.seq.load(Ordering::Acquire);
+            if (seq_before & 1) != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let state = SuppressorControlState {
+                enabled: self.enabled.load(Ordering::Relaxed),
+                model: noise_model_from_u8(self.model.load(Ordering::Relaxed)),
+            };
+            let seq_after = self.seq.load(Ordering::Acquire);
+            if seq_before == seq_after {
+                return state;
+            }
+        }
+    }
+
+    fn set_enabled(&self, enabled: bool) {
+        self.update(|state| state.enabled.store(enabled, Ordering::Relaxed));
+    }
+
+    fn set_model(&self, model: NoiseModel) {
+        self.update(|state| state.model.store(model as u8, Ordering::Relaxed));
     }
 }
 
@@ -439,6 +669,120 @@ impl DeesserControlState {
     }
 }
 
+struct AtomicDeesserControlState {
+    seq: AtomicU64,
+    enabled: AtomicBool,
+    auto_enabled: AtomicBool,
+    auto_amount_bits: AtomicU64,
+    low_cut_hz_bits: AtomicU64,
+    high_cut_hz_bits: AtomicU64,
+    threshold_db_bits: AtomicU64,
+    ratio_bits: AtomicU64,
+    attack_ms_bits: AtomicU64,
+    release_ms_bits: AtomicU64,
+    max_reduction_db_bits: AtomicU64,
+}
+
+impl AtomicDeesserControlState {
+    fn new() -> Self {
+        let state = DeesserControlState::new();
+        Self {
+            seq: AtomicU64::new(0),
+            enabled: AtomicBool::new(state.enabled),
+            auto_enabled: AtomicBool::new(state.auto_enabled),
+            auto_amount_bits: AtomicU64::new(state.auto_amount.to_bits()),
+            low_cut_hz_bits: AtomicU64::new(state.low_cut_hz.to_bits()),
+            high_cut_hz_bits: AtomicU64::new(state.high_cut_hz.to_bits()),
+            threshold_db_bits: AtomicU64::new(state.threshold_db.to_bits()),
+            ratio_bits: AtomicU64::new(state.ratio.to_bits()),
+            attack_ms_bits: AtomicU64::new(state.attack_ms.to_bits()),
+            release_ms_bits: AtomicU64::new(state.release_ms.to_bits()),
+            max_reduction_db_bits: AtomicU64::new(state.max_reduction_db.to_bits()),
+        }
+    }
+
+    fn update<F>(&self, apply: F)
+    where
+        F: FnOnce(&Self),
+    {
+        self.seq.fetch_add(1, Ordering::AcqRel);
+        apply(self);
+        self.seq.fetch_add(1, Ordering::Release);
+    }
+
+    fn snapshot(&self) -> DeesserControlState {
+        loop {
+            let seq_before = self.seq.load(Ordering::Acquire);
+            if (seq_before & 1) != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let state = DeesserControlState {
+                enabled: self.enabled.load(Ordering::Relaxed),
+                auto_enabled: self.auto_enabled.load(Ordering::Relaxed),
+                auto_amount: f64::from_bits(self.auto_amount_bits.load(Ordering::Relaxed)),
+                low_cut_hz: f64::from_bits(self.low_cut_hz_bits.load(Ordering::Relaxed)),
+                high_cut_hz: f64::from_bits(self.high_cut_hz_bits.load(Ordering::Relaxed)),
+                threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
+                ratio: f64::from_bits(self.ratio_bits.load(Ordering::Relaxed)),
+                attack_ms: f64::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
+                release_ms: f64::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
+                max_reduction_db: f64::from_bits(
+                    self.max_reduction_db_bits.load(Ordering::Relaxed),
+                ),
+            };
+            let seq_after = self.seq.load(Ordering::Acquire);
+            if seq_before == seq_after {
+                return state;
+            }
+        }
+    }
+
+    fn set_enabled(&self, enabled: bool) {
+        self.update(|state| state.enabled.store(enabled, Ordering::Relaxed));
+    }
+
+    fn set_auto_enabled(&self, enabled: bool) {
+        self.update(|state| state.auto_enabled.store(enabled, Ordering::Relaxed));
+    }
+
+    fn set_auto_amount(&self, value: f64) {
+        self.update(|state| state.auto_amount_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_low_cut_hz(&self, value: f64) {
+        self.update(|state| state.low_cut_hz_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_high_cut_hz(&self, value: f64) {
+        self.update(|state| state.high_cut_hz_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_threshold_db(&self, value: f64) {
+        self.update(|state| state.threshold_db_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_ratio(&self, value: f64) {
+        self.update(|state| state.ratio_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_attack_ms(&self, value: f64) {
+        self.update(|state| state.attack_ms_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_release_ms(&self, value: f64) {
+        self.update(|state| state.release_ms_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_max_reduction_db(&self, value: f64) {
+        self.update(|state| {
+            state
+                .max_reduction_db_bits
+                .store(value.to_bits(), Ordering::Relaxed);
+        });
+    }
+}
+
 #[derive(Clone)]
 struct CompressorControlState {
     enabled: bool,
@@ -468,6 +812,119 @@ impl CompressorControlState {
     }
 }
 
+struct AtomicCompressorControlState {
+    seq: AtomicU64,
+    enabled: AtomicBool,
+    threshold_db_bits: AtomicU64,
+    ratio_bits: AtomicU64,
+    attack_ms_bits: AtomicU64,
+    base_release_ms_bits: AtomicU64,
+    makeup_gain_db_bits: AtomicU64,
+    adaptive_release: AtomicBool,
+    auto_makeup_enabled: AtomicBool,
+    target_lufs_bits: AtomicU64,
+}
+
+impl AtomicCompressorControlState {
+    fn new() -> Self {
+        let state = CompressorControlState::new();
+        Self {
+            seq: AtomicU64::new(0),
+            enabled: AtomicBool::new(state.enabled),
+            threshold_db_bits: AtomicU64::new(state.threshold_db.to_bits()),
+            ratio_bits: AtomicU64::new(state.ratio.to_bits()),
+            attack_ms_bits: AtomicU64::new(state.attack_ms.to_bits()),
+            base_release_ms_bits: AtomicU64::new(state.base_release_ms.to_bits()),
+            makeup_gain_db_bits: AtomicU64::new(state.makeup_gain_db.to_bits()),
+            adaptive_release: AtomicBool::new(state.adaptive_release),
+            auto_makeup_enabled: AtomicBool::new(state.auto_makeup_enabled),
+            target_lufs_bits: AtomicU64::new(state.target_lufs.to_bits()),
+        }
+    }
+
+    fn update<F>(&self, apply: F)
+    where
+        F: FnOnce(&Self),
+    {
+        self.seq.fetch_add(1, Ordering::AcqRel);
+        apply(self);
+        self.seq.fetch_add(1, Ordering::Release);
+    }
+
+    fn snapshot(&self) -> CompressorControlState {
+        loop {
+            let seq_before = self.seq.load(Ordering::Acquire);
+            if (seq_before & 1) != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let state = CompressorControlState {
+                enabled: self.enabled.load(Ordering::Relaxed),
+                threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
+                ratio: f64::from_bits(self.ratio_bits.load(Ordering::Relaxed)),
+                attack_ms: f64::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
+                base_release_ms: f64::from_bits(
+                    self.base_release_ms_bits.load(Ordering::Relaxed),
+                ),
+                makeup_gain_db: f64::from_bits(
+                    self.makeup_gain_db_bits.load(Ordering::Relaxed),
+                ),
+                adaptive_release: self.adaptive_release.load(Ordering::Relaxed),
+                auto_makeup_enabled: self.auto_makeup_enabled.load(Ordering::Relaxed),
+                target_lufs: f64::from_bits(self.target_lufs_bits.load(Ordering::Relaxed)),
+            };
+            let seq_after = self.seq.load(Ordering::Acquire);
+            if seq_before == seq_after {
+                return state;
+            }
+        }
+    }
+
+    fn set_enabled(&self, enabled: bool) {
+        self.update(|state| state.enabled.store(enabled, Ordering::Relaxed));
+    }
+
+    fn set_threshold_db(&self, value: f64) {
+        self.update(|state| state.threshold_db_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_ratio(&self, value: f64) {
+        self.update(|state| state.ratio_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_attack_ms(&self, value: f64) {
+        self.update(|state| state.attack_ms_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_base_release_ms(&self, value: f64) {
+        self.update(|state| {
+            state
+                .base_release_ms_bits
+                .store(value.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    fn set_makeup_gain_db(&self, value: f64) {
+        self.update(|state| {
+            state
+                .makeup_gain_db_bits
+                .store(value.to_bits(), Ordering::Relaxed);
+        });
+    }
+
+    fn set_adaptive_release(&self, enabled: bool) {
+        self.update(|state| state.adaptive_release.store(enabled, Ordering::Relaxed));
+    }
+
+    fn set_auto_makeup_enabled(&self, enabled: bool) {
+        self.update(|state| state.auto_makeup_enabled.store(enabled, Ordering::Relaxed));
+    }
+
+    fn set_target_lufs(&self, value: f64) {
+        self.update(|state| state.target_lufs_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+}
+
 #[derive(Clone)]
 struct LimiterControlState {
     enabled: bool,
@@ -482,6 +939,65 @@ impl LimiterControlState {
             ceiling_db: -0.5,
             release_ms: 50.0,
         }
+    }
+}
+
+struct AtomicLimiterControlState {
+    seq: AtomicU64,
+    enabled: AtomicBool,
+    ceiling_db_bits: AtomicU64,
+    release_ms_bits: AtomicU64,
+}
+
+impl AtomicLimiterControlState {
+    fn new() -> Self {
+        let state = LimiterControlState::new();
+        Self {
+            seq: AtomicU64::new(0),
+            enabled: AtomicBool::new(state.enabled),
+            ceiling_db_bits: AtomicU64::new(state.ceiling_db.to_bits()),
+            release_ms_bits: AtomicU64::new(state.release_ms.to_bits()),
+        }
+    }
+
+    fn update<F>(&self, apply: F)
+    where
+        F: FnOnce(&Self),
+    {
+        self.seq.fetch_add(1, Ordering::AcqRel);
+        apply(self);
+        self.seq.fetch_add(1, Ordering::Release);
+    }
+
+    fn snapshot(&self) -> LimiterControlState {
+        loop {
+            let seq_before = self.seq.load(Ordering::Acquire);
+            if (seq_before & 1) != 0 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let state = LimiterControlState {
+                enabled: self.enabled.load(Ordering::Relaxed),
+                ceiling_db: f64::from_bits(self.ceiling_db_bits.load(Ordering::Relaxed)),
+                release_ms: f64::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
+            };
+            let seq_after = self.seq.load(Ordering::Acquire);
+            if seq_before == seq_after {
+                return state;
+            }
+        }
+    }
+
+    fn set_enabled(&self, enabled: bool) {
+        self.update(|state| state.enabled.store(enabled, Ordering::Relaxed));
+    }
+
+    fn set_ceiling_db(&self, value: f64) {
+        self.update(|state| state.ceiling_db_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_release_ms(&self, value: f64) {
+        self.update(|state| state.release_ms_bits.store(value.to_bits(), Ordering::Relaxed));
     }
 }
 
@@ -517,6 +1033,7 @@ fn apply_suppressor_control(
     suppressor.set_enabled(control.enabled);
 }
 
+#[cfg(test)]
 fn swap_pending_suppressor_if_ready(
     suppressor: &mut NoiseSuppressionEngine,
     control: &SuppressorControlState,

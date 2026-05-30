@@ -256,6 +256,10 @@ pub struct AudioProcessor {
 
     /// Compressor current release time in milliseconds (for metering)
     compressor_current_release_ms: Arc<AtomicU64>,
+    /// Compressor current measured loudness in LUFS (f64 bits).
+    compressor_current_lufs: Arc<AtomicU64>,
+    /// Compressor current applied makeup gain in dB (f64 bits).
+    compressor_current_makeup_gain: Arc<AtomicU64>,
 
     /// Processing latency in microseconds (measured from input to output)
     latency_us: Arc<AtomicU64>,
@@ -515,6 +519,8 @@ impl AudioProcessor {
             compressor_current_release_ms: Arc::new(AtomicU64::new(
                 COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
             )),
+            compressor_current_lufs: Arc::new(AtomicU64::new((-100.0_f64).to_bits())),
+            compressor_current_makeup_gain: Arc::new(AtomicU64::new(0.0_f64.to_bits())),
             latency_us: Arc::new(AtomicU64::new(0)),
             latency_compensation_us: Arc::new(AtomicU64::new(0)),
             // Initialize DSP performance metrics
@@ -1004,6 +1010,8 @@ impl AudioProcessor {
         #[cfg(feature = "vad")]
         let vad_last_update_us = Arc::clone(&self.vad_last_update_us);
         let compressor_current_release_ms = Arc::clone(&self.compressor_current_release_ms);
+        let compressor_current_lufs = Arc::clone(&self.compressor_current_lufs);
+        let compressor_current_makeup_gain = Arc::clone(&self.compressor_current_makeup_gain);
         let latency_us = Arc::clone(&self.latency_us);
         let latency_compensation_us = Arc::clone(&self.latency_compensation_us);
         let sample_rate_for_latency = self.sample_rate;
@@ -1228,10 +1236,18 @@ impl AudioProcessor {
                         let current_release = compressor_rt.current_release_time();
                         compressor_current_release_ms
                             .store(release_ms_to_tenth_ms(current_release), Ordering::Relaxed);
+                        compressor_current_lufs
+                            .store(compressor_rt.current_lufs().to_bits(), Ordering::Relaxed);
+                        compressor_current_makeup_gain.store(
+                            compressor_rt.current_makeup_gain().to_bits(),
+                            Ordering::Relaxed,
+                        );
                     } else {
                         compressor_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
                         compressor_current_release_ms
                             .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
+                        compressor_current_lufs.store((-100.0_f64).to_bits(), Ordering::Relaxed);
+                        compressor_current_makeup_gain.store(0.0_f64.to_bits(), Ordering::Relaxed);
                     }
 
                     if limiter_enabled.load(Ordering::Acquire) {
@@ -1589,6 +1605,10 @@ impl AudioProcessor {
                                 deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 compressor_current_release_ms
                                     .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
+                                compressor_current_lufs
+                                    .store((-100.0_f64).to_bits(), Ordering::Relaxed);
+                                compressor_current_makeup_gain
+                                    .store(0.0_f64.to_bits(), Ordering::Relaxed);
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
                                 suppressor_latency_samples.store(0, Ordering::Relaxed);
                                 smoothed_buffer_len.store(0, Ordering::Relaxed);
@@ -1661,6 +1681,10 @@ impl AudioProcessor {
                                 gate_gain_meter.store(1.0_f32.to_bits(), Ordering::Relaxed);
                                 compressor_current_release_ms
                                     .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
+                                compressor_current_lufs
+                                    .store((-100.0_f64).to_bits(), Ordering::Relaxed);
+                                compressor_current_makeup_gain
+                                    .store(0.0_f64.to_bits(), Ordering::Relaxed);
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
                                 suppressor_latency_samples.store(0, Ordering::Relaxed);
                                 smoothed_buffer_len.store(0, Ordering::Relaxed);
@@ -1731,6 +1755,10 @@ impl AudioProcessor {
                                 deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 compressor_current_release_ms
                                     .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed); // Default 200ms
+                                compressor_current_lufs
+                                    .store((-100.0_f64).to_bits(), Ordering::Relaxed);
+                                compressor_current_makeup_gain
+                                    .store(0.0_f64.to_bits(), Ordering::Relaxed);
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
 
                                 write_output(buffer, uses_clean_write_path(processing_path));
@@ -1833,6 +1861,12 @@ impl AudioProcessor {
                                         // Always feed suppressor first so frame accumulation is correct.
                                         suppressor_rt.push_samples(buffer);
                                         suppressor_rt.process_frames();
+                                        update_backend_status_rt(
+                                            &noise_backend_available,
+                                            &noise_backend_failed,
+                                            rt_error_code.as_ref(),
+                                            &suppressor_rt,
+                                        );
 
                                         // Track suppressor internal buffer fill level after processing.
                                         let suppressor_buffered = suppressor_rt.pending_input()
@@ -3126,6 +3160,8 @@ impl AudioProcessor {
         }
         self.compressor_rt_control
             .set_makeup_gain_db(makeup_gain_db);
+        self.compressor_current_makeup_gain
+            .store(makeup_gain_db.to_bits(), Ordering::Relaxed);
         self.compressor_dirty.store(true, Ordering::Release);
     }
 
@@ -3308,20 +3344,12 @@ impl AudioProcessor {
 
     /// Get compressor current LUFS
     pub fn get_compressor_current_lufs(&self) -> f64 {
-        if let Ok(c) = self.compressor.lock() {
-            c.current_lufs()
-        } else {
-            -18.0
-        }
+        f64::from_bits(self.compressor_current_lufs.load(Ordering::Relaxed))
     }
 
     /// Get compressor current makeup gain
     pub fn get_compressor_current_makeup_gain(&self) -> f64 {
-        if let Ok(c) = self.compressor.lock() {
-            c.current_makeup_gain()
-        } else {
-            0.0
-        }
+        f64::from_bits(self.compressor_current_makeup_gain.load(Ordering::Relaxed))
     }
 
     /// Get current processing latency in milliseconds

@@ -529,11 +529,8 @@ impl Compressor {
         self.release_coeff =
             util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
         if let Some(meter) = &mut self.loudness_meter {
-            if let Err(err) = meter.reset() {
-                eprintln!("Failed to reset loudness meter: {}", err);
-            } else {
-                self.current_lufs = -100.0;
-            }
+            let _ = meter.reset();
+            self.current_lufs = -100.0;
         } else {
             self.current_lufs = -100.0;
         }

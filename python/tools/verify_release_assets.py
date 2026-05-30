@@ -6,7 +6,7 @@ import argparse
 import hashlib
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -31,10 +31,18 @@ def _load_manifest(path: Path = MANIFEST_PATH) -> list[dict[str, Any]]:
 
 
 def _validate_manifest_path(raw_path: str, field_name: str) -> str | None:
-    path = Path(raw_path)
-    if path.is_absolute():
+    local_path = Path(raw_path)
+    posix_path = PurePosixPath(raw_path.replace("\\", "/"))
+    windows_path = PureWindowsPath(raw_path)
+    if (
+        local_path.is_absolute()
+        or posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or bool(windows_path.drive)
+        or bool(windows_path.root)
+    ):
         return f"{field_name} must be repository-relative, got absolute path {raw_path}"
-    if ".." in path.parts:
+    if ".." in posix_path.parts or ".." in windows_path.parts:
         return f"{field_name} must not contain '..' traversal, got {raw_path}"
     return None
 
@@ -58,7 +66,7 @@ def verify_assets(manifest_path: Path = MANIFEST_PATH) -> list[str]:
             if path_error := _validate_manifest_path(raw_bundle_path, "asset bundle_path"):
                 errors.append(path_error)
 
-        path = REPO_ROOT / raw_path
+        path = REPO_ROOT / raw_path.replace("\\", "/")
         if not path.is_file():
             errors.append(f"{raw_path}: missing")
             continue

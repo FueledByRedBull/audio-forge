@@ -444,6 +444,24 @@ mod tests {
     }
 
     #[test]
+    fn test_compressor_runtime_meter_getters_read_rt_atomically() {
+        let processor = AudioProcessor::new();
+
+        processor
+            .compressor_current_lufs
+            .store((-23.5_f64).to_bits(), Ordering::Relaxed);
+        processor
+            .compressor_current_makeup_gain
+            .store(4.25_f64.to_bits(), Ordering::Relaxed);
+
+        assert_eq!(processor.get_compressor_current_lufs(), -23.5);
+        assert_eq!(processor.get_compressor_current_makeup_gain(), 4.25);
+
+        processor.set_compressor_makeup_gain(6.0);
+        assert_eq!(processor.get_compressor_current_makeup_gain(), 6.0);
+    }
+
+    #[test]
     fn test_apply_eq_settings_rejects_above_nyquist() {
         let processor = AudioProcessor::new();
         let mut bands = vec![(100.0, 0.0, 1.0); NUM_BANDS];

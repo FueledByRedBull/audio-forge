@@ -140,6 +140,19 @@ def test_verify_release_assets_rejects_absolute_and_traversal_paths(
                         "bundle_path": "../bundle.bin",
                         "sha256": "0" * 64,
                     },
+                    {
+                        "path": r"C:\tmp\asset.bin",
+                        "sha256": "0" * 64,
+                    },
+                    {
+                        "path": r"models\..\asset.bin",
+                        "sha256": "0" * 64,
+                    },
+                    {
+                        "path": "asset.bin",
+                        "bundle_path": r"models\..\bundle.bin",
+                        "sha256": "0" * 64,
+                    },
                 ]
             }
         ),
@@ -152,3 +165,6 @@ def test_verify_release_assets_rejects_absolute_and_traversal_paths(
     assert any("absolute path" in error for error in errors)
     assert any("'..' traversal" in error for error in errors)
     assert any("bundle_path" in error and "'..' traversal" in error for error in errors)
+    assert any(r"C:\tmp\asset.bin" in error and "absolute path" in error for error in errors)
+    assert any(r"models\..\asset.bin" in error for error in errors)
+    assert any(r"models\..\bundle.bin" in error for error in errors)

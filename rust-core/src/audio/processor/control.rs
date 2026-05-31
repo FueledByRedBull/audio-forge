@@ -1044,29 +1044,6 @@ fn apply_suppressor_control(
     suppressor.set_enabled(control.enabled);
 }
 
-#[cfg(test)]
-fn swap_pending_suppressor_if_ready(
-    suppressor: &mut NoiseSuppressionEngine,
-    control: &SuppressorControlState,
-    pending: &mut Option<NoiseSuppressionEngine>,
-) -> bool {
-    if suppressor.model_type() == control.model {
-        return true;
-    }
-
-    let Some(candidate) = pending.as_ref() else {
-        return false;
-    };
-    if candidate.model_type() != control.model {
-        return false;
-    }
-
-    *suppressor = pending
-        .take()
-        .expect("pending suppressor was checked above");
-    true
-}
-
 fn apply_deesser_control(deesser: &mut DeEsser, control: &DeesserControlState) {
     deesser.set_enabled(control.enabled);
     deesser.set_auto_enabled(control.auto_enabled);

@@ -130,44 +130,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pending_suppressor_swap_keeps_current_when_model_already_matches() {
-        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
-        let mut current = NoiseSuppressionEngine::new(NoiseModel::RNNoise, Arc::clone(&strength));
-        let mut pending = Some(NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength));
-        let control = SuppressorControlState {
-            enabled: true,
-            model: NoiseModel::RNNoise,
-        };
-
-        assert!(swap_pending_suppressor_if_ready(
-            &mut current,
-            &control,
-            &mut pending
-        ));
-        assert_eq!(current.model_type(), NoiseModel::RNNoise);
-        assert!(pending.is_some());
-    }
-
-    #[cfg(feature = "deepfilter")]
-    #[test]
-    fn test_pending_suppressor_swap_without_candidate_leaves_current_backend() {
-        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
-        let mut current = NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength);
-        let mut pending = None;
-        let control = SuppressorControlState {
-            enabled: true,
-            model: NoiseModel::DeepFilterNetLL,
-        };
-
-        assert!(!swap_pending_suppressor_if_ready(
-            &mut current,
-            &control,
-            &mut pending
-        ));
-        assert_eq!(current.model_type(), NoiseModel::RNNoise);
-    }
-
-    #[test]
     fn test_raw_monitor_path_selection_and_clean_write_mode() {
         let raw = select_processing_path(true, false);
         let bypass = select_processing_path(false, true);

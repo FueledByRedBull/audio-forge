@@ -150,7 +150,6 @@ pub struct AudioProcessor {
     suppressor_rt_control: Arc<AtomicSuppressorControlState>,
     suppressor_dirty: Arc<AtomicBool>,
     suppressor_reset_requested: Arc<AtomicBool>,
-    pending_suppressor: Arc<Mutex<Option<NoiseSuppressionEngine>>>,
     pending_suppressor_tx: Arc<Mutex<Option<ringbuf::HeapProducer<NoiseSuppressionEngine>>>>,
     suppressor_strength: Arc<AtomicU32>, // f32 bits stored as u32
     current_model: Arc<AtomicU8>,        // NoiseModel as u8
@@ -457,7 +456,6 @@ impl AudioProcessor {
             suppressor_rt_control: Arc::new(AtomicSuppressorControlState::new()),
             suppressor_dirty: Arc::new(AtomicBool::new(false)),
             suppressor_reset_requested: Arc::new(AtomicBool::new(false)),
-            pending_suppressor: Arc::new(Mutex::new(None)),
             pending_suppressor_tx: Arc::new(Mutex::new(None)),
             suppressor_strength, // Store Arc for PyO3 bindings
             current_model: Arc::new(AtomicU8::new(NoiseModel::RNNoise as u8)),
@@ -2154,9 +2152,6 @@ impl AudioProcessor {
         if let Ok(mut consumer_guard) = self.raw_recording_consumer.lock() {
             *consumer_guard = None;
         }
-        if let Ok(mut pending) = self.pending_suppressor.lock() {
-            *pending = None;
-        }
         if let Ok(mut tx) = self.pending_suppressor_tx.lock() {
             *tx = None;
         }
@@ -2639,21 +2634,20 @@ impl AudioProcessor {
             &new_engine,
         );
 
-        let queued = if let Ok(mut tx_guard) = self.pending_suppressor_tx.lock() {
-            if let Some(tx) = tx_guard.as_mut() {
-                tx.push(new_engine).is_ok()
-            } else if let Ok(mut pending) = self.pending_suppressor.lock() {
-                *pending = Some(new_engine);
-                true
+        if self.running.load(Ordering::Acquire) {
+            let queued = if let Ok(mut tx_guard) = self.pending_suppressor_tx.lock() {
+                if let Some(tx) = tx_guard.as_mut() {
+                    tx.push(new_engine).is_ok()
+                } else {
+                    false
+                }
             } else {
                 false
-            }
-        } else {
-            false
-        };
+            };
 
-        if !queued {
-            return false;
+            if !queued {
+                return false;
+            }
         }
 
         if let Ok(mut control) = self.suppressor_control.lock() {

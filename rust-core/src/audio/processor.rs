@@ -37,7 +37,7 @@ const RT_INPUT_CHUNK_CAPACITY: usize = 8192;
 const RT_PROCESS_BUFFER_CAPACITY: usize = 8192;
 const RT_RESAMPLE_QUEUE_CAPACITY: usize = 65_536;
 const RT_OUTPUT_SCRATCH_CAPACITY: usize = 8192;
-const RT_SUPPRESSOR_OUTPUT_CAPACITY: usize = 8192;
+const RT_SUPPRESSOR_OUTPUT_CAPACITY: usize = RT_PROCESS_BUFFER_CAPACITY + RNNOISE_FRAME_SIZE;
 const RT_SUPPRESSOR_COMMAND_CAPACITY: usize = 2;
 const PROCESS_IDLE_SLEEP_US: u64 = 100;
 const COMPRESSOR_DEFAULT_RELEASE_TENTH_MS: u64 = 2000; // 200ms * 10
@@ -1057,14 +1057,14 @@ impl AudioProcessor {
                 crate::audio::rt::FixedAudioRing::<f64, RT_RESAMPLE_QUEUE_CAPACITY>::new();
             let mut resampler_input_frame = [0.0f64; RESAMPLER_CHUNK_SIZE];
             let mut resampler = input_resampler;
-            let mut resampler_out = resampler.as_ref().map(|r| r.output_buffer_allocate(false));
+            let mut resampler_out = resampler.as_ref().map(|r| r.output_buffer_allocate(true));
             let mut output_resample_input =
                 crate::audio::rt::FixedAudioRing::<f64, RT_RESAMPLE_QUEUE_CAPACITY>::new();
             let mut output_resampler_input_frame = [0.0f64; RESAMPLER_CHUNK_SIZE];
             let mut output_resampler = output_resampler;
             let mut output_resampler_out = output_resampler
                 .as_ref()
-                .map(|r| r.output_buffer_allocate(false));
+                .map(|r| r.output_buffer_allocate(true));
             let mut output_resampled_scratch =
                 FixedAudioBuffer::<f32, RT_OUTPUT_SCRATCH_CAPACITY>::new();
             let mut output_queue_control_scratch =
@@ -1296,9 +1296,144 @@ impl AudioProcessor {
             let discontinuity_fade_remaining = Cell::new(0usize);
             let mut output_drift_error_ema = 0.0_f32;
             let mut write_output = |samples: &[f32], clean_path: bool| {
-                let write_source = if let Some(output_resampler) = output_resampler.as_mut() {
-                    output_resampled_scratch.clear();
+                macro_rules! write_output_chunk {
+                    ($write_source:expr) => {{
+                        let write_source = $write_source;
+                        if write_source.is_empty() {
+                            false
+                        } else {
+                            let capacity = output_producer.capacity();
+                            let free = output_producer.free_len();
+                            let fill = capacity.saturating_sub(free);
 
+                            let mut write_slice = write_source;
+                            if !clean_path {
+                                let error = fill as f32 - output_target_center_samples as f32;
+                                output_drift_error_ema =
+                                    output_drift_error_ema * 0.85 + error * 0.15;
+                                let positive_zone = output_hard_backlog_samples
+                                    .saturating_sub(output_target_center_samples)
+                                    .max(1) as f32;
+                                let negative_zone = output_target_center_samples.max(1) as f32;
+                                let normalized_error = if output_drift_error_ema >= 0.0 {
+                                    (output_drift_error_ema / positive_zone).clamp(0.0, 1.0)
+                                } else {
+                                    (output_drift_error_ema / negative_zone).clamp(-1.0, 0.0)
+                                };
+                                let mut queue_speed_ratio =
+                                    (1.0 + normalized_error * OUTPUT_DRIFT_MAX_RATIO_ADJUST).clamp(
+                                        OUTPUT_DRIFT_MAX_EXPANSION_RATIO,
+                                        OUTPUT_MAX_CATCHUP_RATIO,
+                                    );
+                                if fill >= output_hard_backlog_samples {
+                                    queue_speed_ratio = OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO;
+                                }
+
+                                let adjusted_slice = retime_audio_block(
+                                    write_source,
+                                    queue_speed_ratio,
+                                    capacity.max(1).min(output_queue_control_scratch.capacity()),
+                                    &mut output_queue_control_scratch,
+                                );
+                                if adjusted_slice.len() != write_source.len() {
+                                    let delta = write_source.len().abs_diff(adjusted_slice.len());
+                                    if adjusted_slice.len() < write_source.len() {
+                                        jitter_dropped_samples
+                                            .fetch_add(delta as u64, Ordering::Relaxed);
+                                    }
+                                    output_recovery_count.fetch_add(1, Ordering::Relaxed);
+                                }
+                                write_slice = adjusted_slice;
+
+                                let fade_remaining = discontinuity_fade_remaining.get();
+                                if fade_remaining > 0 && !write_slice.is_empty() {
+                                    discontinuity_fade_scratch.clear();
+                                    let written =
+                                        discontinuity_fade_scratch.extend_from_slice(write_slice);
+                                    if written < write_slice.len() {
+                                        rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
+                                        store_rt_error(
+                                            rt_error_code.as_ref(),
+                                            RtErrorCode::FixedBufferOverflow,
+                                        );
+                                    }
+                                    let fade_count =
+                                        fade_remaining.min(discontinuity_fade_scratch.len());
+                                    let elapsed =
+                                        discontinuity_fade_samples.saturating_sub(fade_remaining);
+                                    let fade_total = discontinuity_fade_samples as f32;
+                                    for (i, sample) in discontinuity_fade_scratch
+                                        .as_mut_slice()
+                                        .iter_mut()
+                                        .enumerate()
+                                        .take(fade_count)
+                                    {
+                                        let progress =
+                                            ((elapsed + i + 1) as f32 / fade_total).clamp(0.0, 1.0);
+                                        *sample *= progress;
+                                    }
+                                    discontinuity_fade_remaining
+                                        .set(fade_remaining.saturating_sub(fade_count));
+                                    write_slice = discontinuity_fade_scratch.as_slice();
+                                }
+
+                                let _below_low_target = fill < output_target_low_samples;
+                            }
+
+                            output_safety_scratch.clear();
+                            let safety_written =
+                                output_safety_scratch.extend_from_slice(write_slice);
+                            if safety_written < write_slice.len() {
+                                rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
+                                store_rt_error(
+                                    rt_error_code.as_ref(),
+                                    RtErrorCode::FixedBufferOverflow,
+                                );
+                            }
+                            let output_ceiling = if limiter_enabled.load(Ordering::Acquire) {
+                                output_ceiling_linear.get()
+                            } else {
+                                1.0
+                            };
+                            sanitize_and_clamp_output_inplace(
+                                output_safety_scratch.as_mut_slice(),
+                                output_ceiling,
+                            );
+
+                            let mut pending_slice = output_safety_scratch.as_slice();
+                            if pending_slice.len() > free {
+                                let dropped = pending_slice.len() - free;
+                                output_short_write_dropped_samples
+                                    .fetch_add(dropped as u64, Ordering::Relaxed);
+                                output_recovery_count.fetch_add(1, Ordering::Relaxed);
+                                discontinuity_fade_remaining.set(discontinuity_fade_samples);
+                                pending_slice = &pending_slice[..free];
+                            }
+
+                            if !pending_slice.is_empty() {
+                                let written = output_producer.write(pending_slice);
+                                if written > 0 {
+                                    update_write_time();
+                                }
+                                if written < pending_slice.len() {
+                                    let dropped = pending_slice.len() - written;
+                                    output_short_write_dropped_samples
+                                        .fetch_add(dropped as u64, Ordering::Relaxed);
+                                    output_recovery_count.fetch_add(1, Ordering::Relaxed);
+                                    discontinuity_fade_remaining.set(discontinuity_fade_samples);
+                                }
+                            }
+
+                            let new_fill = output_producer
+                                .capacity()
+                                .saturating_sub(output_producer.free_len());
+                            output_buffer_len.store(new_fill as u32, Ordering::Relaxed);
+                            true
+                        }
+                    }};
+                }
+
+                if let Some(output_resampler) = output_resampler.as_mut() {
                     for &sample in samples {
                         if !output_resample_input.push(sample as f64) {
                             rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
@@ -1310,16 +1445,23 @@ impl AudioProcessor {
                         }
                     }
 
-                    let input_frames_needed = output_resampler.input_frames_next();
-                    while output_resample_input.len() >= input_frames_needed
-                        && input_frames_needed <= output_resampler_input_frame.len()
-                    {
-                        let read = output_resample_input
-                            .pop_into(&mut output_resampler_input_frame[..input_frames_needed]);
-                        if read != input_frames_needed {
-                            break;
-                        }
-                        if let Some(outbuf) = output_resampler_out.as_mut() {
+                    loop {
+                        output_resampled_scratch.clear();
+                        let input_frames_needed = output_resampler.input_frames_next();
+                        while output_resample_input.len() >= input_frames_needed
+                            && input_frames_needed <= output_resampler_input_frame.len()
+                        {
+                            let Some(outbuf) = output_resampler_out.as_mut() else {
+                                break;
+                            };
+                            if !has_resampler_output_capacity(&output_resampled_scratch, outbuf) {
+                                break;
+                            }
+                            let read = output_resample_input
+                                .pop_into(&mut output_resampler_input_frame[..input_frames_needed]);
+                            if read != input_frames_needed {
+                                break;
+                            }
                             let in_slices = [&output_resampler_input_frame[..input_frames_needed]];
                             if let Ok((_nbr_in, nbr_out)) =
                                 output_resampler.process_into_buffer(&in_slices, outbuf, None)
@@ -1336,130 +1478,17 @@ impl AudioProcessor {
                                 }
                             }
                         }
-                    }
 
-                    output_resampled_scratch.as_slice()
+                        if !write_output_chunk!(output_resampled_scratch.as_slice()) {
+                            break;
+                        }
+                        if output_resample_input.len() < input_frames_needed {
+                            break;
+                        }
+                    }
                 } else {
-                    samples
-                };
-
-                if write_source.is_empty() {
-                    return;
+                    write_output_chunk!(samples);
                 }
-
-                let capacity = output_producer.capacity();
-                let free = output_producer.free_len();
-                let fill = capacity.saturating_sub(free);
-
-                let mut write_slice = write_source;
-                if !clean_path {
-                    let error = fill as f32 - output_target_center_samples as f32;
-                    output_drift_error_ema = output_drift_error_ema * 0.85 + error * 0.15;
-                    let positive_zone = output_hard_backlog_samples
-                        .saturating_sub(output_target_center_samples)
-                        .max(1) as f32;
-                    let negative_zone = output_target_center_samples.max(1) as f32;
-                    let normalized_error = if output_drift_error_ema >= 0.0 {
-                        (output_drift_error_ema / positive_zone).clamp(0.0, 1.0)
-                    } else {
-                        (output_drift_error_ema / negative_zone).clamp(-1.0, 0.0)
-                    };
-                    let mut queue_speed_ratio = (1.0
-                        + normalized_error * OUTPUT_DRIFT_MAX_RATIO_ADJUST)
-                        .clamp(OUTPUT_DRIFT_MAX_EXPANSION_RATIO, OUTPUT_MAX_CATCHUP_RATIO);
-                    if fill >= output_hard_backlog_samples {
-                        queue_speed_ratio = OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO;
-                    }
-
-                    let adjusted_slice = retime_audio_block(
-                        write_source,
-                        queue_speed_ratio,
-                        capacity.max(1).min(output_queue_control_scratch.capacity()),
-                        &mut output_queue_control_scratch,
-                    );
-                    if adjusted_slice.len() != write_source.len() {
-                        let delta = write_source.len().abs_diff(adjusted_slice.len());
-                        if adjusted_slice.len() < write_source.len() {
-                            jitter_dropped_samples.fetch_add(delta as u64, Ordering::Relaxed);
-                        }
-                        output_recovery_count.fetch_add(1, Ordering::Relaxed);
-                    }
-                    write_slice = adjusted_slice;
-
-                    let fade_remaining = discontinuity_fade_remaining.get();
-                    if fade_remaining > 0 && !write_slice.is_empty() {
-                        discontinuity_fade_scratch.clear();
-                        let written = discontinuity_fade_scratch.extend_from_slice(write_slice);
-                        if written < write_slice.len() {
-                            rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
-                            store_rt_error(
-                                rt_error_code.as_ref(),
-                                RtErrorCode::FixedBufferOverflow,
-                            );
-                        }
-                        let fade_count = fade_remaining.min(discontinuity_fade_scratch.len());
-                        let elapsed = discontinuity_fade_samples.saturating_sub(fade_remaining);
-                        let fade_total = discontinuity_fade_samples as f32;
-                        for (i, sample) in discontinuity_fade_scratch
-                            .as_mut_slice()
-                            .iter_mut()
-                            .enumerate()
-                            .take(fade_count)
-                        {
-                            let progress = ((elapsed + i + 1) as f32 / fade_total).clamp(0.0, 1.0);
-                            *sample *= progress;
-                        }
-                        discontinuity_fade_remaining.set(fade_remaining.saturating_sub(fade_count));
-                        write_slice = discontinuity_fade_scratch.as_slice();
-                    }
-
-                    // Low watermark currently informational; could be used for adaptive refill.
-                    let _below_low_target = fill < output_target_low_samples;
-                }
-
-                output_safety_scratch.clear();
-                let safety_written = output_safety_scratch.extend_from_slice(write_slice);
-                if safety_written < write_slice.len() {
-                    rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
-                    store_rt_error(rt_error_code.as_ref(), RtErrorCode::FixedBufferOverflow);
-                }
-                let output_ceiling = if limiter_enabled.load(Ordering::Acquire) {
-                    output_ceiling_linear.get()
-                } else {
-                    1.0
-                };
-                sanitize_and_clamp_output_inplace(
-                    output_safety_scratch.as_mut_slice(),
-                    output_ceiling,
-                );
-
-                let mut pending_slice = output_safety_scratch.as_slice();
-                if pending_slice.len() > free {
-                    let dropped = pending_slice.len() - free;
-                    output_short_write_dropped_samples.fetch_add(dropped as u64, Ordering::Relaxed);
-                    output_recovery_count.fetch_add(1, Ordering::Relaxed);
-                    discontinuity_fade_remaining.set(discontinuity_fade_samples);
-                    pending_slice = &pending_slice[..free];
-                }
-
-                if !pending_slice.is_empty() {
-                    let written = output_producer.write(pending_slice);
-                    if written > 0 {
-                        update_write_time();
-                    }
-                    if written < pending_slice.len() {
-                        let dropped = pending_slice.len() - written;
-                        output_short_write_dropped_samples
-                            .fetch_add(dropped as u64, Ordering::Relaxed);
-                        output_recovery_count.fetch_add(1, Ordering::Relaxed);
-                        discontinuity_fade_remaining.set(discontinuity_fade_samples);
-                    }
-                }
-
-                let new_fill = output_producer
-                    .capacity()
-                    .saturating_sub(output_producer.free_len());
-                output_buffer_len.store(new_fill as u32, Ordering::Relaxed);
             };
             let mut previous_processing_path = select_processing_path(
                 raw_monitor_enabled.load(Ordering::Acquire),
@@ -1537,29 +1566,32 @@ impl AudioProcessor {
                                 while resample_input.len() >= input_frames_needed
                                     && input_frames_needed <= resampler_input_frame.len()
                                 {
+                                    let Some(outbuf) = resampler_out.as_mut() else {
+                                        break;
+                                    };
+                                    if !has_resampler_output_capacity(&temp_buffer, outbuf) {
+                                        break;
+                                    }
                                     let read = resample_input.pop_into(
                                         &mut resampler_input_frame[..input_frames_needed],
                                     );
                                     if read != input_frames_needed {
                                         break;
                                     }
-                                    if let Some(outbuf) = resampler_out.as_mut() {
-                                        let in_slices =
-                                            [&resampler_input_frame[..input_frames_needed]];
-                                        if let Ok((_nbr_in, nbr_out)) =
-                                            resampler.process_into_buffer(&in_slices, outbuf, None)
-                                        {
-                                            let channel_out = &outbuf[0];
-                                            for &sample in channel_out.iter().take(nbr_out) {
-                                                if !temp_buffer.push(sample as f32) {
-                                                    rt_buffer_overflow_count
-                                                        .fetch_add(1, Ordering::Relaxed);
-                                                    store_rt_error(
-                                                        rt_error_code.as_ref(),
-                                                        RtErrorCode::FixedBufferOverflow,
-                                                    );
-                                                    break;
-                                                }
+                                    let in_slices = [&resampler_input_frame[..input_frames_needed]];
+                                    if let Ok((_nbr_in, nbr_out)) =
+                                        resampler.process_into_buffer(&in_slices, outbuf, None)
+                                    {
+                                        let channel_out = &outbuf[0];
+                                        for &sample in channel_out.iter().take(nbr_out) {
+                                            if !temp_buffer.push(sample as f32) {
+                                                rt_buffer_overflow_count
+                                                    .fetch_add(1, Ordering::Relaxed);
+                                                store_rt_error(
+                                                    rt_error_code.as_ref(),
+                                                    RtErrorCode::FixedBufferOverflow,
+                                                );
+                                                break;
                                             }
                                         }
                                     }
@@ -1859,7 +1891,15 @@ impl AudioProcessor {
                                     }
                                     {
                                         // Always feed suppressor first so frame accumulation is correct.
-                                        suppressor_rt.push_samples(buffer);
+                                        let accepted = suppressor_rt.push_samples(buffer);
+                                        if accepted < buffer.len() {
+                                            rt_buffer_overflow_count
+                                                .fetch_add(1, Ordering::Relaxed);
+                                            store_rt_error(
+                                                rt_error_code.as_ref(),
+                                                RtErrorCode::FixedBufferOverflow,
+                                            );
+                                        }
                                         suppressor_rt.process_frames();
                                         update_backend_status_rt(
                                             &noise_backend_available,

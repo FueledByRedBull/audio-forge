@@ -97,8 +97,10 @@ impl NoiseModel {
 /// Both RNNoise and DeepFilterNet implement this trait, allowing
 /// runtime model selection through the `NoiseSuppressionEngine` enum.
 pub trait NoiseSuppressor: Send {
-    /// Push input samples into the processor's input buffer
-    fn push_samples(&mut self, samples: &[f32]);
+    /// Push input samples into the processor's input buffer.
+    ///
+    /// Returns the number of samples accepted by the fixed input buffer.
+    fn push_samples(&mut self, samples: &[f32]) -> usize;
 
     /// Process accumulated frames
     ///
@@ -282,8 +284,8 @@ impl NoiseSuppressionEngine {
 
 // Implement NoiseSuppressor for the enum by delegating to inner type
 impl NoiseSuppressor for NoiseSuppressionEngine {
-    fn push_samples(&mut self, samples: &[f32]) {
-        self.as_suppressor_mut().push_samples(samples);
+    fn push_samples(&mut self, samples: &[f32]) -> usize {
+        self.as_suppressor_mut().push_samples(samples)
     }
 
     fn process_frames(&mut self) {

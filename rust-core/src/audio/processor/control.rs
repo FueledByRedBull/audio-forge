@@ -212,6 +212,17 @@ fn build_sinc_resampler(
     SincFixedIn::<f64>::new(ratio, 1.2, params, chunk_size, 1).map_err(|e| e.to_string())
 }
 
+#[inline]
+fn has_resampler_output_capacity<const N: usize>(
+    scratch: &FixedAudioBuffer<f32, N>,
+    outbuf: &[Vec<f64>],
+) -> bool {
+    outbuf
+        .first()
+        .map(|channel| scratch.remaining() >= channel.len())
+        .unwrap_or(false)
+}
+
 fn update_backend_diagnostics(
     available: &AtomicBool,
     failed: &AtomicBool,

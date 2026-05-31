@@ -353,6 +353,151 @@ mod tests {
     }
 
     #[test]
+    fn test_rnnoise_accepts_full_rt_block_without_short_write() {
+        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let mut suppressor = NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength);
+        let input = [0.0_f32; RT_PROCESS_BUFFER_CAPACITY];
+        let accepted = suppressor.push_samples(&input);
+
+        assert_eq!(accepted, input.len());
+
+        suppressor.process_frames();
+        let expected_frames = input.len() / RNNOISE_FRAME_SIZE;
+        let expected_processed = expected_frames * RNNOISE_FRAME_SIZE;
+        assert_eq!(suppressor.available_samples(), expected_processed);
+        assert_eq!(suppressor.pending_input(), input.len() - expected_processed);
+
+        let mut output = [0.0_f32; RT_SUPPRESSOR_OUTPUT_CAPACITY];
+        assert_eq!(
+            suppressor.pop_samples_into(&mut output[..expected_processed]),
+            expected_processed
+        );
+    }
+
+    #[test]
+    fn test_disabled_rnnoise_accepts_full_rt_block_without_short_write() {
+        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let mut suppressor = NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength);
+        suppressor.set_enabled(false);
+        let input = [0.0_f32; RT_PROCESS_BUFFER_CAPACITY];
+        let accepted = suppressor.push_samples(&input);
+
+        assert_eq!(accepted, input.len());
+
+        suppressor.process_frames();
+        assert_eq!(suppressor.available_samples(), input.len());
+        assert_eq!(suppressor.pending_input(), 0);
+    }
+
+    #[cfg(feature = "deepfilter")]
+    #[test]
+    fn test_deepfilter_accepts_full_rt_block_without_short_write() {
+        use crate::dsp::deepfilter_ffi::{DeepFilterModel, DeepFilterProcessor, DEEPFILTER_FRAME_SIZE};
+
+        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let mut suppressor = DeepFilterProcessor::new(strength, DeepFilterModel::LowLatency);
+        suppressor.set_enabled(false);
+        let input = [0.0_f32; RT_PROCESS_BUFFER_CAPACITY];
+        let accepted = suppressor.push_samples(&input);
+
+        assert_eq!(accepted, input.len());
+
+        suppressor.process_frames();
+        let expected_frames = input.len() / DEEPFILTER_FRAME_SIZE;
+        let expected_processed = expected_frames * DEEPFILTER_FRAME_SIZE;
+        assert_eq!(suppressor.available_samples(), expected_processed);
+        assert_eq!(suppressor.pending_input(), input.len() - expected_processed);
+    }
+
+    #[test]
+    fn test_input_resampler_keeps_pending_input_when_output_scratch_fills() {
+        let mut resampler = build_sinc_resampler(44_100, TARGET_SAMPLE_RATE, 1024).unwrap();
+        let mut resample_input =
+            crate::audio::rt::FixedAudioRing::<f64, RT_RESAMPLE_QUEUE_CAPACITY>::new();
+        let mut input_frame = [0.0_f64; 1024];
+        let mut outbuf = resampler.output_buffer_allocate(true);
+        let mut scratch = FixedAudioBuffer::<f32, 2048>::new();
+
+        for i in 0..RT_PROCESS_BUFFER_CAPACITY {
+            assert!(resample_input.push((i as f64 * 0.001).sin()));
+        }
+
+        let input_frames_needed = resampler.input_frames_next();
+        while resample_input.len() >= input_frames_needed && input_frames_needed <= input_frame.len()
+        {
+            if !has_resampler_output_capacity(&scratch, &outbuf) {
+                break;
+            }
+            assert_eq!(
+                resample_input.pop_into(&mut input_frame[..input_frames_needed]),
+                input_frames_needed
+            );
+            let in_slices = [&input_frame[..input_frames_needed]];
+            let (_nbr_in, nbr_out) = resampler
+                .process_into_buffer(&in_slices, &mut outbuf, None)
+                .unwrap();
+            for &sample in outbuf[0].iter().take(nbr_out) {
+                assert!(scratch.push(sample as f32));
+            }
+        }
+
+        assert!(scratch.remaining() < outbuf[0].len());
+        assert!(resample_input.len() >= input_frames_needed);
+    }
+
+    #[test]
+    fn test_output_resampler_drains_large_block_in_bounded_chunks() {
+        let mut resampler = build_sinc_resampler(TARGET_SAMPLE_RATE, 96_000, 1024).unwrap();
+        let mut resample_input =
+            crate::audio::rt::FixedAudioRing::<f64, RT_RESAMPLE_QUEUE_CAPACITY>::new();
+        let mut input_frame = [0.0_f64; 1024];
+        let mut outbuf = resampler.output_buffer_allocate(true);
+        let mut scratch = FixedAudioBuffer::<f32, RT_OUTPUT_SCRATCH_CAPACITY>::new();
+
+        for i in 0..RT_PROCESS_BUFFER_CAPACITY {
+            assert!(resample_input.push((i as f64 * 0.001).sin()));
+        }
+
+        let mut chunks = 0usize;
+        let mut total_generated = 0usize;
+        loop {
+            scratch.clear();
+            let input_frames_needed = resampler.input_frames_next();
+            while resample_input.len() >= input_frames_needed
+                && input_frames_needed <= input_frame.len()
+            {
+                if !has_resampler_output_capacity(&scratch, &outbuf) {
+                    break;
+                }
+                assert_eq!(
+                    resample_input.pop_into(&mut input_frame[..input_frames_needed]),
+                    input_frames_needed
+                );
+                let in_slices = [&input_frame[..input_frames_needed]];
+                let (_nbr_in, nbr_out) = resampler
+                    .process_into_buffer(&in_slices, &mut outbuf, None)
+                    .unwrap();
+                for &sample in outbuf[0].iter().take(nbr_out) {
+                    assert!(scratch.push(sample as f32));
+                }
+            }
+
+            if scratch.is_empty() {
+                break;
+            }
+            chunks += 1;
+            total_generated += scratch.len();
+            if resample_input.len() < input_frames_needed {
+                break;
+            }
+        }
+
+        assert!(chunks > 1);
+        assert!(total_generated > RT_OUTPUT_SCRATCH_CAPACITY);
+        assert!(resample_input.len() < resampler.input_frames_next());
+    }
+
+    #[test]
     fn test_eq_single_band_validation_rejects_invalid_values_and_preserves_state() {
         let processor = AudioProcessor::new();
         let original = processor.get_eq_band_params(0).unwrap();
@@ -564,6 +709,16 @@ mod tests {
             );
         }
         assert!(region.contains("pop_samples_into("));
+    }
+
+    #[test]
+    fn test_dsp_loop_diagnoses_suppressor_short_writes() {
+        let source = include_str!("../processor.rs");
+        let region = marked_region(source, "dsp_processing_loop");
+
+        assert!(region.contains("let accepted = suppressor_rt.push_samples(buffer);"));
+        assert!(region.contains("if accepted < buffer.len()"));
+        assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
     }
 
     #[test]

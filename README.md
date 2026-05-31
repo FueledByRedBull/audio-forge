@@ -136,7 +136,7 @@ Environment variables:
 - `DEEPFILTER_LIB_PATH`
 - `VAD_MODEL_PATH`
 
-Packaged builds prefer bundled DeepFilter assets. `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` should only be used when you intentionally want a packaged build to resolve `df.dll` externally.
+Packaged builds prefer bundled DeepFilter assets. By default, bundled `df.dll` and the bundled DeepFilter model override external environment paths. Set `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` only when you intentionally want a packaged build to honor external `DEEPFILTER_LIB_PATH` and/or `DEEPFILTER_MODEL_PATH`; any missing path still defaults to the bundled asset.
 
 ## Build Portable EXE
 

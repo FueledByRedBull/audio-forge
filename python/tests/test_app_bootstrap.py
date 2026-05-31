@@ -13,11 +13,12 @@ def _deepfilter_lib_name() -> str:
     return "libdf.so"
 
 
-def _write_deepfilter_assets(root: Path) -> None:
+def _write_deepfilter_assets(root: Path, *, low_latency: bool = True) -> None:
     (root / _deepfilter_lib_name()).write_bytes(b"x")
     models = root / "models"
     models.mkdir(parents=True, exist_ok=True)
-    (models / "DeepFilterNet3_ll_onnx.tar.gz").write_bytes(b"x")
+    name = "DeepFilterNet3_ll_onnx.tar.gz" if low_latency else "DeepFilterNet3_onnx.tar.gz"
+    (models / name).write_bytes(b"x")
 
 
 def _write_vad_asset(root: Path) -> None:
@@ -35,12 +36,14 @@ def test_deepfilter_bootstrap_ignores_cwd_assets(tmp_path, monkeypatch):
     monkeypatch.chdir(cwd)
     monkeypatch.delenv("AUDIOFORGE_ENABLE_DEEPFILTER", raising=False)
     monkeypatch.delenv("DEEPFILTER_LIB_PATH", raising=False)
+    monkeypatch.delenv("DEEPFILTER_MODEL_PATH", raising=False)
     monkeypatch.setattr(app_bootstrap, "_trusted_runtime_roots", lambda: [trusted])
 
     app_bootstrap.configure_deepfilter_env()
 
     assert "AUDIOFORGE_ENABLE_DEEPFILTER" not in app_bootstrap.os.environ
     assert "DEEPFILTER_LIB_PATH" not in app_bootstrap.os.environ
+    assert "DEEPFILTER_MODEL_PATH" not in app_bootstrap.os.environ
 
 
 def test_deepfilter_bootstrap_uses_trusted_runtime_root(tmp_path, monkeypatch):
@@ -53,6 +56,7 @@ def test_deepfilter_bootstrap_uses_trusted_runtime_root(tmp_path, monkeypatch):
     monkeypatch.chdir(cwd)
     monkeypatch.delenv("AUDIOFORGE_ENABLE_DEEPFILTER", raising=False)
     monkeypatch.delenv("DEEPFILTER_LIB_PATH", raising=False)
+    monkeypatch.delenv("DEEPFILTER_MODEL_PATH", raising=False)
     monkeypatch.setattr(app_bootstrap, "_trusted_runtime_roots", lambda: [trusted])
 
     app_bootstrap.configure_deepfilter_env()
@@ -61,6 +65,9 @@ def test_deepfilter_bootstrap_uses_trusted_runtime_root(tmp_path, monkeypatch):
     assert app_bootstrap.os.environ["DEEPFILTER_LIB_PATH"] == str(
         trusted / _deepfilter_lib_name()
     )
+    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(
+        trusted / "models" / "DeepFilterNet3_ll_onnx.tar.gz"
+    )
 
 
 def test_deepfilter_bootstrap_prefers_bundled_assets_over_external_env(
@@ -68,12 +75,15 @@ def test_deepfilter_bootstrap_prefers_bundled_assets_over_external_env(
 ):
     trusted = tmp_path / "trusted"
     external = tmp_path / "external" / _deepfilter_lib_name()
+    external_model = tmp_path / "external" / "DeepFilterNet3_ll_onnx.tar.gz"
     trusted.mkdir()
     external.parent.mkdir()
     external.write_bytes(b"x")
+    external_model.write_bytes(b"x")
     _write_deepfilter_assets(trusted)
     monkeypatch.setenv("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
     monkeypatch.setenv("DEEPFILTER_LIB_PATH", str(external))
+    monkeypatch.setenv("DEEPFILTER_MODEL_PATH", str(external_model))
     monkeypatch.delenv("AUDIOFORGE_ALLOW_EXTERNAL_DF", raising=False)
     monkeypatch.setattr(app_bootstrap, "_trusted_runtime_roots", lambda: [trusted])
 
@@ -82,23 +92,69 @@ def test_deepfilter_bootstrap_prefers_bundled_assets_over_external_env(
     assert app_bootstrap.os.environ["DEEPFILTER_LIB_PATH"] == str(
         trusted / _deepfilter_lib_name()
     )
+    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(
+        trusted / "models" / "DeepFilterNet3_ll_onnx.tar.gz"
+    )
 
 
 def test_deepfilter_bootstrap_allows_explicit_external_override(tmp_path, monkeypatch):
     trusted = tmp_path / "trusted"
     external = tmp_path / "external" / _deepfilter_lib_name()
+    external_model = tmp_path / "external" / "DeepFilterNet3_ll_onnx.tar.gz"
     trusted.mkdir()
     external.parent.mkdir()
     external.write_bytes(b"x")
+    external_model.write_bytes(b"x")
     _write_deepfilter_assets(trusted)
     monkeypatch.setenv("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
     monkeypatch.setenv("AUDIOFORGE_ALLOW_EXTERNAL_DF", "1")
     monkeypatch.setenv("DEEPFILTER_LIB_PATH", str(external))
+    monkeypatch.setenv("DEEPFILTER_MODEL_PATH", str(external_model))
     monkeypatch.setattr(app_bootstrap, "_trusted_runtime_roots", lambda: [trusted])
 
     app_bootstrap.configure_deepfilter_env()
 
     assert app_bootstrap.os.environ["DEEPFILTER_LIB_PATH"] == str(external)
+    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(external_model)
+
+
+def test_deepfilter_bootstrap_external_override_gets_missing_bundled_defaults(
+    tmp_path, monkeypatch
+):
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    _write_deepfilter_assets(trusted)
+    monkeypatch.setenv("AUDIOFORGE_ALLOW_EXTERNAL_DF", "1")
+    monkeypatch.delenv("AUDIOFORGE_ENABLE_DEEPFILTER", raising=False)
+    monkeypatch.delenv("DEEPFILTER_LIB_PATH", raising=False)
+    monkeypatch.delenv("DEEPFILTER_MODEL_PATH", raising=False)
+    monkeypatch.setattr(app_bootstrap, "_trusted_runtime_roots", lambda: [trusted])
+
+    app_bootstrap.configure_deepfilter_env()
+
+    assert app_bootstrap.os.environ["AUDIOFORGE_ENABLE_DEEPFILTER"] == "1"
+    assert app_bootstrap.os.environ["DEEPFILTER_LIB_PATH"] == str(
+        trusted / _deepfilter_lib_name()
+    )
+    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(
+        trusted / "models" / "DeepFilterNet3_ll_onnx.tar.gz"
+    )
+
+
+def test_deepfilter_bootstrap_uses_standard_model_when_ll_absent(tmp_path, monkeypatch):
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    _write_deepfilter_assets(trusted, low_latency=False)
+    monkeypatch.delenv("AUDIOFORGE_ENABLE_DEEPFILTER", raising=False)
+    monkeypatch.delenv("DEEPFILTER_LIB_PATH", raising=False)
+    monkeypatch.delenv("DEEPFILTER_MODEL_PATH", raising=False)
+    monkeypatch.setattr(app_bootstrap, "_trusted_runtime_roots", lambda: [trusted])
+
+    app_bootstrap.configure_deepfilter_env()
+
+    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(
+        trusted / "models" / "DeepFilterNet3_onnx.tar.gz"
+    )
 
 
 def test_vad_bootstrap_uses_trusted_runtime_model(tmp_path, monkeypatch):

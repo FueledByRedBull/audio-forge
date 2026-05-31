@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 /// RNNoise frame size (10ms at 48kHz)
 pub const RNNOISE_FRAME_SIZE: usize = 480;
-const RNNOISE_BUFFER_CAPACITY: usize = RNNOISE_FRAME_SIZE * 8;
+const RNNOISE_BUFFER_CAPACITY: usize = 8192 + RNNOISE_FRAME_SIZE;
 
 /// Scaling factor to map [-1.0, 1.0] to 16-bit range for RNNoise
 /// RNNoise expects audio in the range of ~[-32768, 32767]
@@ -82,8 +82,8 @@ impl RNNoiseProcessor {
     }
 
     /// Push samples into the input buffer
-    pub fn push_samples(&mut self, samples: &[f32]) {
-        self.input_buffer.push_slice(samples);
+    pub fn push_samples(&mut self, samples: &[f32]) -> usize {
+        self.input_buffer.push_slice(samples)
     }
 
     /// Process any complete frames in the input buffer
@@ -223,8 +223,8 @@ impl Default for RNNoiseProcessor {
 
 // Implement NoiseSuppressor trait for runtime model selection
 impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
-    fn push_samples(&mut self, samples: &[f32]) {
-        RNNoiseProcessor::push_samples(self, samples);
+    fn push_samples(&mut self, samples: &[f32]) -> usize {
+        RNNoiseProcessor::push_samples(self, samples)
     }
 
     fn process_frames(&mut self) {

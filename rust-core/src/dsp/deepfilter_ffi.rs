@@ -44,7 +44,7 @@ use std::vec::Vec;
 
 /// DeepFilterNet frame size (same as RNNoise: 10ms at 48kHz)
 pub const DEEPFILTER_FRAME_SIZE: usize = 480;
-const DEEPFILTER_BUFFER_CAPACITY: usize = DEEPFILTER_FRAME_SIZE * 8;
+const DEEPFILTER_BUFFER_CAPACITY: usize = 8192 + DEEPFILTER_FRAME_SIZE;
 
 fn deepfilter_runtime_enabled() -> bool {
     env::var("AUDIOFORGE_ENABLE_DEEPFILTER")
@@ -645,8 +645,8 @@ impl DeepFilterProcessor {
 // ============================================================================
 
 impl NoiseSuppressor for DeepFilterProcessor {
-    fn push_samples(&mut self, samples: &[f32]) {
-        self.input_buffer.push_slice(samples);
+    fn push_samples(&mut self, samples: &[f32]) -> usize {
+        self.input_buffer.push_slice(samples)
     }
 
     fn process_frames(&mut self) {

@@ -61,6 +61,7 @@ pub struct NoiseGate {
     /// Previous gate state (for change detection in debug)
     was_open: bool,
     /// Sample counter for periodic debug output
+    #[cfg(feature = "vad")]
     debug_counter: usize,
     /// Peak level since last debug output
     peak_level: f64,
@@ -116,6 +117,7 @@ impl NoiseGate {
             is_open: false,
             enabled: true,
             was_open: false,
+            #[cfg(feature = "vad")]
             debug_counter: 0,
             peak_level: f64::MIN,
             #[cfg(feature = "vad")]

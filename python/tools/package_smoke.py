@@ -94,8 +94,19 @@ def check_source_packaging() -> list[str]:
         ("build_exe.ps1", "verify_release_assets.py"),
         ("build_exe.ps1", "prune_bundle.py"),
     ]
+    runtime_expectations = [
+        (
+            "python/mic_eq/ui/app_bootstrap.py",
+            'os.environ["DEEPFILTER_MODEL_PATH"] = str(model_dir_with_model)',
+        ),
+        (
+            "python/mic_eq/ui/app_bootstrap.py",
+            'os.environ.setdefault("DEEPFILTER_MODEL_PATH", str(model_dir_with_model))',
+        ),
+        ("launcher.py", 'os.environ.setdefault("VAD_MODEL_PATH", str(vad_model))'),
+    ]
 
-    for path, needle in [*spec_expectations, *script_expectations]:
+    for path, needle in [*spec_expectations, *script_expectations, *runtime_expectations]:
         if not _contains(path, needle):
             errors.append(f"{path}: missing expected packaging reference {needle!r}")
 

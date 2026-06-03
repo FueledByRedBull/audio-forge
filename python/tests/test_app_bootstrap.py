@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import runpy
+import sys
 from pathlib import Path
 
 from mic_eq.ui import app_bootstrap
@@ -65,9 +67,7 @@ def test_deepfilter_bootstrap_uses_trusted_runtime_root(tmp_path, monkeypatch):
     assert app_bootstrap.os.environ["DEEPFILTER_LIB_PATH"] == str(
         trusted / _deepfilter_lib_name()
     )
-    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(
-        trusted / "models" / "DeepFilterNet3_ll_onnx.tar.gz"
-    )
+    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(trusted / "models")
 
 
 def test_deepfilter_bootstrap_prefers_bundled_assets_over_external_env(
@@ -92,9 +92,7 @@ def test_deepfilter_bootstrap_prefers_bundled_assets_over_external_env(
     assert app_bootstrap.os.environ["DEEPFILTER_LIB_PATH"] == str(
         trusted / _deepfilter_lib_name()
     )
-    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(
-        trusted / "models" / "DeepFilterNet3_ll_onnx.tar.gz"
-    )
+    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(trusted / "models")
 
 
 def test_deepfilter_bootstrap_allows_explicit_external_override(tmp_path, monkeypatch):
@@ -136,9 +134,7 @@ def test_deepfilter_bootstrap_external_override_gets_missing_bundled_defaults(
     assert app_bootstrap.os.environ["DEEPFILTER_LIB_PATH"] == str(
         trusted / _deepfilter_lib_name()
     )
-    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(
-        trusted / "models" / "DeepFilterNet3_ll_onnx.tar.gz"
-    )
+    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(trusted / "models")
 
 
 def test_deepfilter_bootstrap_uses_standard_model_when_ll_absent(tmp_path, monkeypatch):
@@ -152,9 +148,7 @@ def test_deepfilter_bootstrap_uses_standard_model_when_ll_absent(tmp_path, monke
 
     app_bootstrap.configure_deepfilter_env()
 
-    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(
-        trusted / "models" / "DeepFilterNet3_onnx.tar.gz"
-    )
+    assert app_bootstrap.os.environ["DEEPFILTER_MODEL_PATH"] == str(trusted / "models")
 
 
 def test_vad_bootstrap_uses_trusted_runtime_model(tmp_path, monkeypatch):
@@ -186,5 +180,24 @@ def test_vad_bootstrap_preserves_explicit_override(tmp_path, monkeypatch):
     monkeypatch.setattr(app_bootstrap, "_trusted_runtime_roots", lambda: [trusted])
 
     app_bootstrap.configure_vad_env()
+
+    assert app_bootstrap.os.environ["VAD_MODEL_PATH"] == str(external)
+
+
+def test_launcher_preserves_explicit_vad_override_in_frozen_bundle(tmp_path, monkeypatch):
+    exe_dir = tmp_path / "dist" / "AudioForge"
+    meipass = tmp_path / "meipass"
+    external = tmp_path / "external" / "silero_vad.onnx"
+    exe_dir.mkdir(parents=True)
+    external.parent.mkdir()
+    external.write_bytes(b"x")
+    _write_vad_asset(meipass / "_internal")
+    monkeypatch.setenv("VAD_MODEL_PATH", str(external))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe_dir / "AudioForge.exe"))
+
+    launcher_path = Path(__file__).resolve().parents[2] / "launcher.py"
+    runpy.run_path(str(launcher_path))
 
     assert app_bootstrap.os.environ["VAD_MODEL_PATH"] == str(external)

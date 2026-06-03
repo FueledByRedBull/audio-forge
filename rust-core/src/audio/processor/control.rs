@@ -46,6 +46,42 @@ fn total_reported_latency_us(
         .saturating_add(compensation_us)
 }
 
+const CONTROL_SNAPSHOT_MAX_RETRIES: usize = 32;
+
+fn locked_control_update<F>(writer: &Mutex<()>, seq: &AtomicU64, apply: F)
+where
+    F: FnOnce(),
+{
+    let _writer = writer
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    seq.fetch_add(1, Ordering::AcqRel);
+    apply();
+    seq.fetch_add(1, Ordering::Release);
+}
+
+fn stable_control_snapshot<T, F>(seq: &AtomicU64, mut read: F) -> T
+where
+    F: FnMut() -> T,
+{
+    for _ in 0..CONTROL_SNAPSHOT_MAX_RETRIES {
+        let seq_before = seq.load(Ordering::Acquire);
+        if (seq_before & 1) != 0 {
+            std::hint::spin_loop();
+            continue;
+        }
+
+        let state = read();
+        let seq_after = seq.load(Ordering::Acquire);
+        if seq_before == seq_after {
+            return state;
+        }
+        std::hint::spin_loop();
+    }
+
+    read()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProcessingPath {
     RawMonitor,
@@ -303,6 +339,7 @@ impl GateControlState {
 }
 
 struct AtomicGateControlState {
+    writer: Mutex<()>,
     seq: AtomicU64,
     enabled: AtomicBool,
     threshold_db_bits: AtomicU64,
@@ -326,6 +363,7 @@ impl AtomicGateControlState {
     fn new() -> Self {
         let state = GateControlState::new();
         Self {
+            writer: Mutex::new(()),
             seq: AtomicU64::new(0),
             enabled: AtomicBool::new(state.enabled),
             threshold_db_bits: AtomicU64::new(state.threshold_db.to_bits()),
@@ -350,19 +388,11 @@ impl AtomicGateControlState {
     where
         F: FnOnce(&Self),
     {
-        self.seq.fetch_add(1, Ordering::AcqRel);
-        apply(self);
-        self.seq.fetch_add(1, Ordering::Release);
+        locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
     fn snapshot(&self) -> GateControlState {
-        loop {
-            let seq_before = self.seq.load(Ordering::Acquire);
-            if (seq_before & 1) != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let state = GateControlState {
+        stable_control_snapshot(&self.seq, || GateControlState {
                 enabled: self.enabled.load(Ordering::Relaxed),
                 threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
                 attack_ms: f64::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
@@ -383,12 +413,7 @@ impl AtomicGateControlState {
                 auto_threshold: self.auto_threshold.load(Ordering::Relaxed),
                 #[cfg(feature = "vad")]
                 margin_db: f32::from_bits(self.margin_db_bits.load(Ordering::Relaxed)),
-            };
-            let seq_after = self.seq.load(Ordering::Acquire);
-            if seq_before == seq_after {
-                return state;
-            }
-        }
+            })
     }
 
     fn set_enabled(&self, enabled: bool) {
@@ -492,6 +517,7 @@ fn noise_model_from_u8(value: u8) -> NoiseModel {
 }
 
 struct AtomicSuppressorControlState {
+    writer: Mutex<()>,
     seq: AtomicU64,
     enabled: AtomicBool,
     model: AtomicU8,
@@ -501,6 +527,7 @@ impl AtomicSuppressorControlState {
     fn new() -> Self {
         let state = SuppressorControlState::new();
         Self {
+            writer: Mutex::new(()),
             seq: AtomicU64::new(0),
             enabled: AtomicBool::new(state.enabled),
             model: AtomicU8::new(state.model as u8),
@@ -511,27 +538,14 @@ impl AtomicSuppressorControlState {
     where
         F: FnOnce(&Self),
     {
-        self.seq.fetch_add(1, Ordering::AcqRel);
-        apply(self);
-        self.seq.fetch_add(1, Ordering::Release);
+        locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
     fn snapshot(&self) -> SuppressorControlState {
-        loop {
-            let seq_before = self.seq.load(Ordering::Acquire);
-            if (seq_before & 1) != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let state = SuppressorControlState {
+        stable_control_snapshot(&self.seq, || SuppressorControlState {
                 enabled: self.enabled.load(Ordering::Relaxed),
                 model: noise_model_from_u8(self.model.load(Ordering::Relaxed)),
-            };
-            let seq_after = self.seq.load(Ordering::Acquire);
-            if seq_before == seq_after {
-                return state;
-            }
-        }
+            })
     }
 
     fn set_enabled(&self, enabled: bool) {
@@ -559,6 +573,7 @@ impl EqControlSnapshot {
 }
 
 struct EqControlState {
+    writer: Mutex<()>,
     seq: AtomicU64,
     enabled: AtomicBool,
     frequency_bits: [AtomicU64; NUM_BANDS],
@@ -570,6 +585,7 @@ impl EqControlState {
     fn new() -> Self {
         let snapshot = EqControlSnapshot::new();
         Self {
+            writer: Mutex::new(()),
             seq: AtomicU64::new(0),
             enabled: AtomicBool::new(snapshot.enabled),
             frequency_bits: std::array::from_fn(|index| {
@@ -586,19 +602,11 @@ impl EqControlState {
     where
         F: FnOnce(&Self),
     {
-        self.seq.fetch_add(1, Ordering::AcqRel);
-        apply(self);
-        self.seq.fetch_add(1, Ordering::Release);
+        locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
     fn snapshot(&self) -> EqControlSnapshot {
-        loop {
-            let seq_before = self.seq.load(Ordering::Acquire);
-            if (seq_before & 1) != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-
+        stable_control_snapshot(&self.seq, || {
             let enabled = self.enabled.load(Ordering::Relaxed);
             let bands = std::array::from_fn(|index| {
                 let frequency = f64::from_bits(self.frequency_bits[index].load(Ordering::Relaxed));
@@ -607,11 +615,8 @@ impl EqControlState {
                 (frequency, gain, q)
             });
 
-            let seq_after = self.seq.load(Ordering::Acquire);
-            if seq_before == seq_after {
-                return EqControlSnapshot { enabled, bands };
-            }
-        }
+            EqControlSnapshot { enabled, bands }
+        })
     }
 
     fn set_enabled(&self, enabled: bool) {
@@ -681,6 +686,7 @@ impl DeesserControlState {
 }
 
 struct AtomicDeesserControlState {
+    writer: Mutex<()>,
     seq: AtomicU64,
     enabled: AtomicBool,
     auto_enabled: AtomicBool,
@@ -698,6 +704,7 @@ impl AtomicDeesserControlState {
     fn new() -> Self {
         let state = DeesserControlState::new();
         Self {
+            writer: Mutex::new(()),
             seq: AtomicU64::new(0),
             enabled: AtomicBool::new(state.enabled),
             auto_enabled: AtomicBool::new(state.auto_enabled),
@@ -716,19 +723,11 @@ impl AtomicDeesserControlState {
     where
         F: FnOnce(&Self),
     {
-        self.seq.fetch_add(1, Ordering::AcqRel);
-        apply(self);
-        self.seq.fetch_add(1, Ordering::Release);
+        locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
     fn snapshot(&self) -> DeesserControlState {
-        loop {
-            let seq_before = self.seq.load(Ordering::Acquire);
-            if (seq_before & 1) != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let state = DeesserControlState {
+        stable_control_snapshot(&self.seq, || DeesserControlState {
                 enabled: self.enabled.load(Ordering::Relaxed),
                 auto_enabled: self.auto_enabled.load(Ordering::Relaxed),
                 auto_amount: f64::from_bits(self.auto_amount_bits.load(Ordering::Relaxed)),
@@ -741,12 +740,7 @@ impl AtomicDeesserControlState {
                 max_reduction_db: f64::from_bits(
                     self.max_reduction_db_bits.load(Ordering::Relaxed),
                 ),
-            };
-            let seq_after = self.seq.load(Ordering::Acquire);
-            if seq_before == seq_after {
-                return state;
-            }
-        }
+            })
     }
 
     fn set_enabled(&self, enabled: bool) {
@@ -824,6 +818,7 @@ impl CompressorControlState {
 }
 
 struct AtomicCompressorControlState {
+    writer: Mutex<()>,
     seq: AtomicU64,
     enabled: AtomicBool,
     threshold_db_bits: AtomicU64,
@@ -840,6 +835,7 @@ impl AtomicCompressorControlState {
     fn new() -> Self {
         let state = CompressorControlState::new();
         Self {
+            writer: Mutex::new(()),
             seq: AtomicU64::new(0),
             enabled: AtomicBool::new(state.enabled),
             threshold_db_bits: AtomicU64::new(state.threshold_db.to_bits()),
@@ -857,19 +853,11 @@ impl AtomicCompressorControlState {
     where
         F: FnOnce(&Self),
     {
-        self.seq.fetch_add(1, Ordering::AcqRel);
-        apply(self);
-        self.seq.fetch_add(1, Ordering::Release);
+        locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
     fn snapshot(&self) -> CompressorControlState {
-        loop {
-            let seq_before = self.seq.load(Ordering::Acquire);
-            if (seq_before & 1) != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let state = CompressorControlState {
+        stable_control_snapshot(&self.seq, || CompressorControlState {
                 enabled: self.enabled.load(Ordering::Relaxed),
                 threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
                 ratio: f64::from_bits(self.ratio_bits.load(Ordering::Relaxed)),
@@ -883,12 +871,7 @@ impl AtomicCompressorControlState {
                 adaptive_release: self.adaptive_release.load(Ordering::Relaxed),
                 auto_makeup_enabled: self.auto_makeup_enabled.load(Ordering::Relaxed),
                 target_lufs: f64::from_bits(self.target_lufs_bits.load(Ordering::Relaxed)),
-            };
-            let seq_after = self.seq.load(Ordering::Acquire);
-            if seq_before == seq_after {
-                return state;
-            }
-        }
+            })
     }
 
     fn set_enabled(&self, enabled: bool) {
@@ -954,6 +937,7 @@ impl LimiterControlState {
 }
 
 struct AtomicLimiterControlState {
+    writer: Mutex<()>,
     seq: AtomicU64,
     enabled: AtomicBool,
     ceiling_db_bits: AtomicU64,
@@ -964,6 +948,7 @@ impl AtomicLimiterControlState {
     fn new() -> Self {
         let state = LimiterControlState::new();
         Self {
+            writer: Mutex::new(()),
             seq: AtomicU64::new(0),
             enabled: AtomicBool::new(state.enabled),
             ceiling_db_bits: AtomicU64::new(state.ceiling_db.to_bits()),
@@ -975,28 +960,15 @@ impl AtomicLimiterControlState {
     where
         F: FnOnce(&Self),
     {
-        self.seq.fetch_add(1, Ordering::AcqRel);
-        apply(self);
-        self.seq.fetch_add(1, Ordering::Release);
+        locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
     fn snapshot(&self) -> LimiterControlState {
-        loop {
-            let seq_before = self.seq.load(Ordering::Acquire);
-            if (seq_before & 1) != 0 {
-                std::hint::spin_loop();
-                continue;
-            }
-            let state = LimiterControlState {
+        stable_control_snapshot(&self.seq, || LimiterControlState {
                 enabled: self.enabled.load(Ordering::Relaxed),
                 ceiling_db: f64::from_bits(self.ceiling_db_bits.load(Ordering::Relaxed)),
                 release_ms: f64::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
-            };
-            let seq_after = self.seq.load(Ordering::Acquire);
-            if seq_before == seq_after {
-                return state;
-            }
-        }
+            })
     }
 
     fn set_enabled(&self, enabled: bool) {

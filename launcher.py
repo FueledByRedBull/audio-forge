@@ -60,7 +60,7 @@ def _configure_frozen_runtime():
     if model_dir:
         vad_model = model_dir / "silero_vad.onnx"
         if vad_model.exists():
-            os.environ["VAD_MODEL_PATH"] = str(vad_model)
+            os.environ.setdefault("VAD_MODEL_PATH", str(vad_model))
         if _has_deepfilter_model(model_dir):
             if allow_external_df:
                 os.environ.setdefault("DEEPFILTER_MODEL_PATH", str(model_dir))

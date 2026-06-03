@@ -60,26 +60,23 @@ def configure_deepfilter_env() -> None:
             break
 
     model_dirs = [root / "models" for root in search_dirs]
-    model_path = None
+    model_dir_with_model = None
     for model_dir in model_dirs:
         if not model_dir.is_dir():
             continue
         ll_model = model_dir / "DeepFilterNet3_ll_onnx.tar.gz"
         std_model = model_dir / "DeepFilterNet3_onnx.tar.gz"
-        if ll_model.is_file():
-            model_path = ll_model
-            break
-        if std_model.is_file():
-            model_path = std_model
+        if ll_model.is_file() or std_model.is_file():
+            model_dir_with_model = model_dir
             break
 
-    if lib_path and model_path:
+    if lib_path and model_dir_with_model:
         if allow_external:
             os.environ.setdefault("DEEPFILTER_LIB_PATH", str(lib_path))
-            os.environ.setdefault("DEEPFILTER_MODEL_PATH", str(model_path))
+            os.environ.setdefault("DEEPFILTER_MODEL_PATH", str(model_dir_with_model))
         else:
             os.environ["DEEPFILTER_LIB_PATH"] = str(lib_path)
-            os.environ["DEEPFILTER_MODEL_PATH"] = str(model_path)
+            os.environ["DEEPFILTER_MODEL_PATH"] = str(model_dir_with_model)
         os.environ.setdefault("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
 
 

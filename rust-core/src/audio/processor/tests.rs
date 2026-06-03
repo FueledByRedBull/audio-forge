@@ -100,6 +100,39 @@ mod tests {
             .unwrap_or(false));
     }
 
+    #[cfg(feature = "deepfilter")]
+    #[test]
+    fn test_failed_running_noise_model_queue_preserves_backend_diagnostics() {
+        let processor = AudioProcessor::new();
+        processor.running.store(true, Ordering::SeqCst);
+        processor
+            .current_model
+            .store(NoiseModel::DeepFilterNetLL as u8, Ordering::Release);
+        processor
+            .noise_backend_available
+            .store(false, Ordering::Relaxed);
+        processor.noise_backend_failed.store(true, Ordering::Relaxed);
+        *processor.noise_backend_error.lock().unwrap() = Some("previous backend".to_string());
+
+        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+        let (mut tx, _rx) = queue.split();
+        let queued_engine = NoiseSuppressionEngine::new(
+            NoiseModel::RNNoise,
+            Arc::clone(&processor.suppressor_strength),
+        );
+        assert!(tx.push(queued_engine).is_ok());
+        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
+
+        assert!(!processor.set_noise_model(NoiseModel::RNNoise));
+        assert_eq!(processor.get_noise_model(), NoiseModel::DeepFilterNetLL);
+        assert!(!processor.is_noise_backend_available());
+        assert!(processor.noise_backend_failed());
+        assert_eq!(
+            processor.noise_backend_error().as_deref(),
+            Some("previous backend")
+        );
+    }
+
     #[test]
     fn test_control_snapshot_does_not_spin_forever_on_odd_sequence() {
         let control = AtomicSuppressorControlState::new();

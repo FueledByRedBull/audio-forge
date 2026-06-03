@@ -529,8 +529,9 @@ impl Compressor {
         self.release_coeff =
             util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
         if let Some(meter) = &mut self.loudness_meter {
-            let _ = meter.reset();
-            self.current_lufs = -100.0;
+            if meter.reset().is_ok() {
+                self.current_lufs = -100.0;
+            }
         } else {
             self.current_lufs = -100.0;
         }
@@ -759,6 +760,17 @@ mod tests {
     #[test]
     fn test_reset_clears_reported_loudness() {
         let mut comp = Compressor::default_voice(48_000.0);
+        comp.current_lufs = -18.0;
+
+        comp.reset();
+
+        assert_eq!(comp.current_lufs(), -100.0);
+    }
+
+    #[test]
+    fn test_reset_clears_reported_loudness_without_meter() {
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 12_345.0);
+        assert!(comp.loudness_meter.is_none());
         comp.current_lufs = -18.0;
 
         comp.reset();

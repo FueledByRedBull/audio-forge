@@ -86,6 +86,31 @@ mod tests {
         assert!(!processor.is_raw_monitor_enabled());
     }
 
+    #[test]
+    fn test_same_noise_model_selection_is_noop_while_running() {
+        let processor = AudioProcessor::new();
+        processor.running.store(true, Ordering::SeqCst);
+
+        assert!(processor.set_noise_model(NoiseModel::RNNoise));
+        assert_eq!(processor.get_noise_model(), NoiseModel::RNNoise);
+        assert!(processor
+            .pending_suppressor_tx
+            .lock()
+            .map(|tx| tx.is_none())
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn test_control_snapshot_does_not_spin_forever_on_odd_sequence() {
+        let control = AtomicSuppressorControlState::new();
+        control.seq.store(1, Ordering::Release);
+
+        let snapshot = control.snapshot();
+
+        assert_eq!(snapshot.model, NoiseModel::RNNoise);
+        assert!(snapshot.enabled);
+    }
+
     fn install_raw_recording_consumer(processor: &AudioProcessor) {
         let rb = crate::audio::AudioRingBuffer::new(processor.sample_rate as usize);
         let (_producer, consumer) = rb.split();
@@ -334,6 +359,12 @@ mod tests {
             suppressor.pop_samples_into(&mut output[..expected_processed]),
             expected_processed
         );
+    }
+
+    #[test]
+    fn test_output_scratch_covers_max_suppressor_output() {
+        let scratch = FixedAudioBuffer::<f32, RT_OUTPUT_SCRATCH_CAPACITY>::new();
+        assert!(scratch.capacity() >= RT_SUPPRESSOR_OUTPUT_CAPACITY);
     }
 
     #[test]
@@ -614,6 +645,42 @@ mod tests {
         &source[body_start..end]
     }
 
+    fn source_between<'a>(source: &'a str, start_marker: &str, end_marker: &str) -> &'a str {
+        let start = source
+            .find(start_marker)
+            .unwrap_or_else(|| panic!("missing {start_marker}"));
+        let end = source[start..]
+            .find(end_marker)
+            .map(|offset| start + offset)
+            .unwrap_or_else(|| panic!("missing {end_marker}"));
+        &source[start..end]
+    }
+
+    fn assert_no_forbidden_rt_patterns(label: &str, region: &str) {
+        let forbidden = [
+            ".lock()",
+            ".try_lock()",
+            "try_lock",
+            ".reserve(",
+            ".resize(",
+            ".to_vec(",
+            ".drain(",
+            "drop(",
+            "format!",
+            "println!",
+            "eprintln!",
+            "processor_debug_log!",
+            "std::mem::forget",
+        ];
+
+        for pattern in forbidden {
+            assert!(
+                !region.contains(pattern),
+                "{label} contains forbidden RT pattern {pattern}"
+            );
+        }
+    }
+
     #[test]
     fn test_marked_rt_regions_reject_blocking_or_allocating_apis() {
         let files = [
@@ -633,31 +700,25 @@ mod tests {
                 &["cpal_output_callback"][..],
             ),
         ];
-        let forbidden = [
-            ".lock()",
-            ".try_lock()",
-            "try_lock",
-            ".reserve(",
-            ".resize(",
-            ".to_vec(",
-            ".drain(",
-            "format!",
-            "println!",
-            "eprintln!",
-            "processor_debug_log!",
-        ];
 
         for (file, source, regions) in files {
             for region_name in regions {
                 let region = marked_region(source, region_name);
-                for pattern in forbidden {
-                    assert!(
-                        !region.contains(pattern),
-                        "{file}:{region_name} contains forbidden RT pattern {pattern}"
-                    );
-                }
+                assert_no_forbidden_rt_patterns(&format!("{file}:{region_name}"), region);
             }
         }
+    }
+
+    #[test]
+    fn test_downstream_rt_macro_rejects_blocking_or_allocating_apis() {
+        let source = include_str!("../processor.rs");
+        let region = source_between(
+            source,
+            "macro_rules! apply_downstream_chain_rt",
+            "// Time-based EMA smoothing",
+        );
+
+        assert_no_forbidden_rt_patterns("processor.rs:apply_downstream_chain_rt", region);
     }
 
     #[test]
@@ -681,6 +742,40 @@ mod tests {
         assert!(region.contains("let accepted = suppressor_rt.push_samples(buffer);"));
         assert!(region.contains("if accepted < buffer.len()"));
         assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
+    }
+
+    #[test]
+    fn test_dsp_loop_uses_swap_dirty_flags_to_preserve_racing_updates() {
+        let source = include_str!("../processor.rs");
+
+        for dirty_flag in [
+            "gate_dirty",
+            "suppressor_dirty",
+            "eq_dirty",
+            "deesser_dirty",
+            "compressor_dirty",
+            "limiter_dirty",
+        ] {
+            assert!(
+                source.contains(&format!("{dirty_flag}.swap(false, Ordering::AcqRel)")),
+                "{dirty_flag} must be consumed with swap(false) in the RT loop"
+            );
+            assert!(
+                !source.contains(&format!("{dirty_flag}.load(Ordering::Acquire)")),
+                "{dirty_flag} must not use load/apply/store(false) in the RT loop"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dsp_loop_defers_suppressor_drops_out_of_rt_region() {
+        let source = include_str!("../processor.rs");
+        let region = marked_region(source, "dsp_processing_loop");
+
+        assert!(region.contains("retired_suppressor_tx"));
+        assert!(region.contains("deferred_suppressor_retire"));
+        assert!(!region.contains("suppressor_rt = candidate"));
+        assert!(!region.contains("std::mem::forget"));
     }
 
     #[cfg(feature = "vad")]

@@ -31,6 +31,10 @@ def _write_bundle_file(bundle: Path, relative_path: str) -> None:
     path.write_bytes(b"x")
 
 
+def test_package_smoke_source_packaging_checks_pass():
+    assert package_smoke.check_source_packaging() == []
+
+
 def test_package_smoke_rejects_empty_models_directory(tmp_path):
     bundle = tmp_path / "AudioForge"
     (bundle / "_internal" / "models").mkdir(parents=True)

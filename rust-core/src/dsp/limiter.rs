@@ -4,7 +4,7 @@
 
 use crate::dsp::util;
 
-const MAX_LIMITER_LOOKAHEAD_SAMPLES: usize = 384;
+const MAX_LIMITER_LOOKAHEAD_SAMPLES: usize = 1024;
 
 struct FixedMonoQueue {
     data: [(u64, f64); MAX_LIMITER_LOOKAHEAD_SAMPLES],
@@ -289,10 +289,14 @@ mod tests {
         let lim_44 = Limiter::new(-0.5, 50.0, 44_100.0);
         let lim_48 = Limiter::new(-0.5, 50.0, 48_000.0);
         let lim_96 = Limiter::new(-0.5, 50.0, 96_000.0);
+        let lim_192 = Limiter::new(-0.5, 50.0, 192_000.0);
+        let lim_384 = Limiter::new(-0.5, 50.0, 384_000.0);
 
         assert_eq!(lim_44.lookahead_samples(), 88);
         assert_eq!(lim_48.lookahead_samples(), 96);
         assert_eq!(lim_96.lookahead_samples(), 192);
+        assert_eq!(lim_192.lookahead_samples(), 384);
+        assert_eq!(lim_384.lookahead_samples(), 768);
     }
 
     #[test]

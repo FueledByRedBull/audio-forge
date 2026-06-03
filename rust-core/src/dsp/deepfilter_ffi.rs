@@ -565,9 +565,7 @@ impl DeepFilterProcessor {
         }
     }
 
-    fn disable_backend_rt(&mut self) {
-        self.df = None;
-        self._lib = None;
+    fn mark_backend_failed_rt(&mut self) {
         self.backend_failed = true;
     }
 
@@ -592,7 +590,7 @@ impl DeepFilterProcessor {
             self.frame_scratch.copy_from_slice(&self.dry_frame);
 
             // Process through FFI if available
-            if self.enabled {
+            if self.enabled && !self.backend_failed {
                 if let Some(ref mut df) = self.df {
                     match df.process_into(&mut self.frame_scratch, &mut self.output_frame) {
                         Ok(_lsnr) => {
@@ -608,7 +606,7 @@ impl DeepFilterProcessor {
                         }
                         Err(e) => {
                             let _ = e;
-                            self.disable_backend_rt();
+                            self.mark_backend_failed_rt();
                         }
                     }
                 }
@@ -627,7 +625,7 @@ impl DeepFilterProcessor {
 
     /// Check if FFI is available (not in passthrough fallback mode)
     pub fn is_ffi_available(&self) -> bool {
-        self.df.is_some()
+        self.df.is_some() && !self.backend_failed
     }
 
     /// Get load error if FFI failed to initialize

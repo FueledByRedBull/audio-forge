@@ -1813,6 +1813,10 @@ impl AudioProcessor {
                                         if written < buffer.len() {
                                             rt_buffer_overflow_count
                                                 .fetch_add(1, Ordering::Relaxed);
+                                            store_rt_error(
+                                                rt_error_code.as_ref(),
+                                                RtErrorCode::FixedBufferOverflow,
+                                            );
                                         }
                                         let latest_prob =
                                             f32::from_bits(vad_probability.load(Ordering::Acquire));

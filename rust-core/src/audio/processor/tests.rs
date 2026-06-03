@@ -683,6 +683,18 @@ mod tests {
         assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
     }
 
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_dsp_loop_diagnoses_vad_worker_short_writes() {
+        let source = include_str!("../processor.rs");
+        let region = marked_region(source, "dsp_processing_loop");
+
+        assert!(region.contains("let written = vad_worker_producer.write(buffer);"));
+        assert!(region.contains("if written < buffer.len()"));
+        assert!(region.contains("store_rt_error("));
+        assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
+    }
+
     #[test]
     fn test_runtime_diagnostics_include_output_recovery_count() {
         let wrapper = PyAudioProcessor {

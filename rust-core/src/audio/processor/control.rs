@@ -259,17 +259,45 @@ fn has_resampler_output_capacity<const N: usize>(
         .unwrap_or(false)
 }
 
+struct NoiseBackendDiagnostics {
+    available: bool,
+    failed: bool,
+    error: Option<String>,
+}
+
+fn noise_backend_diagnostics(suppressor: &NoiseSuppressionEngine) -> NoiseBackendDiagnostics {
+    NoiseBackendDiagnostics {
+        available: suppressor.backend_available(),
+        failed: suppressor.backend_failed(),
+        error: suppressor.backend_error().map(str::to_string),
+    }
+}
+
+fn store_backend_diagnostics(
+    available: &AtomicBool,
+    failed: &AtomicBool,
+    error: &Mutex<Option<String>>,
+    diagnostics: NoiseBackendDiagnostics,
+) {
+    available.store(diagnostics.available, Ordering::Relaxed);
+    failed.store(diagnostics.failed, Ordering::Relaxed);
+    if let Ok(mut guard) = error.lock() {
+        *guard = diagnostics.error;
+    }
+}
+
 fn update_backend_diagnostics(
     available: &AtomicBool,
     failed: &AtomicBool,
     error: &Mutex<Option<String>>,
     suppressor: &NoiseSuppressionEngine,
 ) {
-    available.store(suppressor.backend_available(), Ordering::Relaxed);
-    failed.store(suppressor.backend_failed(), Ordering::Relaxed);
-    if let Ok(mut guard) = error.lock() {
-        *guard = suppressor.backend_error().map(str::to_string);
-    }
+    store_backend_diagnostics(
+        available,
+        failed,
+        error,
+        noise_backend_diagnostics(suppressor),
+    );
 }
 
 fn update_backend_status_rt(

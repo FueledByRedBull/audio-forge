@@ -2,6 +2,30 @@
 
 ## Windows release flow
 
+### Automated workflow
+
+The preferred release path is the `Release package` workflow.
+
+Because runtime binaries and models are intentionally not stored in Git, make these assets available on a GitHub Release first:
+
+- `df.dll`
+- `DirectML.dll`
+- `DeepFilterNet3_ll_onnx.tar.gz`
+- `DeepFilterNet3_onnx.tar.gz`
+- `silero_vad.onnx`
+
+Raw assets are preferred. If the asset-source release only has an existing `AudioForge-*-win64-ultra.7z`, the workflow can extract those same runtime assets from that archive and still verifies them against `release-assets.json` before packaging.
+
+Then run the workflow with:
+
+- `release_tag`: the target tag, for example `v1.8.0`.
+- `asset_source_tag`: the release tag containing the raw assets. Leave blank to use the repository variable `AUDIOFORGE_ASSET_SOURCE_TAG`, or the target release when that variable is unset.
+- `upload_to_release`: enabled when running manually and the generated archive should be uploaded to the GitHub Release.
+
+On `v*` tag pushes, the workflow builds the Windows package, uploads the `.7z` plus `.sha256` as workflow artifacts, and uploads them to the matching GitHub Release. Set `AUDIOFORGE_ASSET_SOURCE_TAG` when tag-push builds should pull raw assets or an existing package archive from a standing asset-source release. The workflow still verifies all downloaded/extracted assets against `release-assets.json` before packaging.
+
+### Local fallback
+
 Build the Rust extension with all configured features:
 
 ```powershell
@@ -48,12 +72,12 @@ Compute the checksum:
 Get-FileHash .\AudioForge-v1.8.0-win64-ultra.7z -Algorithm SHA256
 ```
 
-Publish:
+Manual publish:
 
 1. Commit tracked source/doc/version changes.
 2. Create annotated tag `v1.8.0`.
-3. Push `master` and `v1.8.0`.
-4. Create the GitHub release and upload the `7z`.
+3. Upload the raw runtime assets listed above to the GitHub Release or to the configured `asset_source_tag` release. An existing verified `AudioForge-*-win64-ultra.7z` on that release can also be used as the asset source.
+4. Push `master` and `v1.8.0`, or run the `Release package` workflow manually with `upload_to_release` enabled.
 
 ## Packaging notes
 

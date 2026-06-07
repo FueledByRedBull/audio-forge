@@ -1514,6 +1514,11 @@ class MainWindow(QMainWindow):
             restart_count = diagnostics.get("stream_restart_count", 0)
             underruns = diagnostics.get("output_underrun_total", 0)
             recoveries = diagnostics.get("output_recovery_count", 0)
+            rt_overflows = diagnostics.get("rt_buffer_overflow_count", 0)
+            input_callback_errors = diagnostics.get("input_callback_error_count", 0)
+            output_callback_errors = diagnostics.get("output_callback_error_count", 0)
+            rt_error_name = diagnostics.get("rt_error_name")
+            rt_error_active = bool(rt_error_name and rt_error_name != "none")
             dropped_bits = [
                 f"Drops: {dropped}",
                 f"U:{underruns}",
@@ -1528,13 +1533,28 @@ class MainWindow(QMainWindow):
                 [
                     ("input_backlog_recovery_count", "IBR"),
                     ("input_backlog_dropped_samples", "IBD"),
+                    ("rt_buffer_overflow_count", "RTO"),
+                    ("input_callback_error_count", "ICE"),
+                    ("output_callback_error_count", "OCE"),
                     ("clip_event_count", "CL"),
                     ("clip_peak_db", "PK"),
                 ],
             )
+            if rt_error_active:
+                dropped_bits.append(f"RT:{rt_error_name}")
             dropped_state = (
                 "ok"
-                if dropped == 0 and underruns == 0 and recoveries == 0 and lock_contention == 0 and non_finite == 0
+                if (
+                    dropped == 0
+                    and underruns == 0
+                    and recoveries == 0
+                    and lock_contention == 0
+                    and non_finite == 0
+                    and rt_overflows == 0
+                    and input_callback_errors == 0
+                    and output_callback_errors == 0
+                    and not rt_error_active
+                )
                 else "warn"
             )
             self._set_health_chip(

@@ -134,11 +134,20 @@ mod tests {
     }
 
     #[test]
-    fn test_control_snapshot_does_not_spin_forever_on_odd_sequence() {
+    fn test_control_snapshot_reports_unstable_odd_sequence() {
         let control = AtomicSuppressorControlState::new();
         control.seq.store(1, Ordering::Release);
 
         let snapshot = control.snapshot();
+
+        assert!(snapshot.is_none());
+    }
+
+    #[test]
+    fn test_control_snapshot_reads_stable_sequence() {
+        let control = AtomicSuppressorControlState::new();
+
+        let snapshot = control.snapshot().expect("stable snapshot");
 
         assert_eq!(snapshot.model, NoiseModel::RNNoise);
         assert!(snapshot.enabled);
@@ -541,7 +550,7 @@ mod tests {
         processor.set_gate_attack(f64::INFINITY);
         processor.set_gate_release(f64::NEG_INFINITY);
 
-        let control = processor.gate_rt_control.snapshot();
+        let control = processor.gate_rt_control.snapshot().expect("stable gate state");
         assert_eq!(control.threshold_db, -40.0);
         assert_eq!(control.attack_ms, 10.0);
         assert_eq!(control.release_ms, 100.0);
@@ -550,7 +559,7 @@ mod tests {
         processor.set_gate_attack(0.01);
         processor.set_gate_release(5000.0);
 
-        let control = processor.gate_rt_control.snapshot();
+        let control = processor.gate_rt_control.snapshot().expect("stable gate state");
         assert_eq!(control.threshold_db, GATE_THRESHOLD_MIN_DB);
         assert_eq!(control.attack_ms, GATE_ATTACK_MIN_MS);
         assert_eq!(control.release_ms, GATE_RELEASE_MAX_MS);
@@ -796,6 +805,46 @@ mod tests {
             assert!(
                 !source.contains(&format!("{dirty_flag}.load(Ordering::Acquire)")),
                 "{dirty_flag} must not use load/apply/store(false) in the RT loop"
+            );
+        }
+    }
+
+    #[test]
+    fn test_dsp_loop_rearms_dirty_flags_on_unstable_snapshots() {
+        let source = include_str!("../processor.rs");
+
+        for dirty_flag in [
+            "gate_dirty",
+            "suppressor_dirty",
+            "eq_dirty",
+            "deesser_dirty",
+            "compressor_dirty",
+            "limiter_dirty",
+        ] {
+            assert!(
+                source.contains(&format!("{dirty_flag}.store(true, Ordering::Release)")),
+                "{dirty_flag} must be re-armed when a control snapshot is unstable"
+            );
+        }
+    }
+
+    #[cfg(feature = "deepfilter")]
+    #[test]
+    fn test_deepfilter_rt_failure_path_does_not_allocate_error_strings() {
+        let source = include_str!("../../dsp/deepfilter_ffi.rs");
+        let start = source
+            .find("fn process_into(")
+            .expect("DeepFilter process_into must exist");
+        let end = source[start..]
+            .find("    /// Set attenuation")
+            .map(|offset| start + offset)
+            .expect("DeepFilter process_into end marker must exist");
+        let region = &source[start..end];
+
+        for pattern in ["format!", ".to_string()", "String"] {
+            assert!(
+                !region.contains(pattern),
+                "DeepFilter RT process error path must not allocate via {pattern}"
             );
         }
     }

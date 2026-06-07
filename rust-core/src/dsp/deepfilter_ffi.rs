@@ -80,6 +80,25 @@ type DfSetAttenLimFn = unsafe extern "C" fn(*mut DFState, f32);
 
 type DfSetPostFilterBetaFn = unsafe extern "C" fn(*mut DFState, f32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeepFilterProcessError {
+    InputSizeMismatch,
+    OutputSizeMismatch,
+    NonFiniteSnr,
+    NonFiniteOutput,
+}
+
+impl DeepFilterProcessError {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InputSizeMismatch => "DeepFilterNet input buffer size mismatch",
+            Self::OutputSizeMismatch => "DeepFilterNet output buffer size mismatch",
+            Self::NonFiniteSnr => "DeepFilterNet processing failed with non-finite SNR",
+            Self::NonFiniteOutput => "DeepFilterNet processing produced non-finite output",
+        }
+    }
+}
+
 /// Dynamically loaded DeepFilterNet library symbols
 struct DeepFilterLib {
     _library: libloading::Library,
@@ -384,26 +403,21 @@ impl DeepFilterFFI {
     /// * `input` - Input slice (must be exactly frame_size samples)
     ///
     /// # Returns
-    /// * Vector of processed samples (frame_size length)
     /// * Local SNR estimate in dB (for quality metering)
     ///
     /// # Safety
     /// This function calls unsafe FFI functions.
     /// It ensures buffers are properly sized and aligned before passing to C.
-    pub fn process_into(&mut self, input: &mut [f32], output: &mut [f32]) -> Result<f32, String> {
+    fn process_into(
+        &mut self,
+        input: &mut [f32],
+        output: &mut [f32],
+    ) -> Result<f32, DeepFilterProcessError> {
         if input.len() != self.frame_size {
-            return Err(format!(
-                "Input buffer size mismatch: expected {}, got {}",
-                self.frame_size,
-                input.len()
-            ));
+            return Err(DeepFilterProcessError::InputSizeMismatch);
         }
         if output.len() != self.frame_size {
-            return Err(format!(
-                "Output buffer size mismatch: expected {}, got {}",
-                self.frame_size,
-                output.len()
-            ));
+            return Err(DeepFilterProcessError::OutputSizeMismatch);
         }
 
         // SAFETY: We've verified buffer sizes and the pointer is valid
@@ -416,11 +430,11 @@ impl DeepFilterFFI {
             let lsnr = df_process_frame(state_ptr, input_ptr, output_ptr);
 
             if !lsnr.is_finite() {
-                return Err("DeepFilterNet processing failed (returned NaN)".to_string());
+                return Err(DeepFilterProcessError::NonFiniteSnr);
             }
 
             if output.iter().any(|sample| !sample.is_finite()) {
-                return Err("DeepFilterNet processing produced non-finite output".to_string());
+                return Err(DeepFilterProcessError::NonFiniteOutput);
             }
 
             Ok(lsnr)
@@ -471,6 +485,7 @@ pub struct DeepFilterProcessor {
     load_error: Option<String>, // Store load error for reporting
     model: DeepFilterModel,     // Track which model variant we're using
     backend_failed: bool,
+    runtime_error: Option<DeepFilterProcessError>,
 }
 
 impl DeepFilterProcessor {
@@ -493,6 +508,7 @@ impl DeepFilterProcessor {
                 ),
                 model,
                 backend_failed: false,
+                runtime_error: None,
             };
         }
 
@@ -562,11 +578,13 @@ impl DeepFilterProcessor {
             load_error,
             model,
             backend_failed: false,
+            runtime_error: None,
         }
     }
 
-    fn mark_backend_failed_rt(&mut self) {
+    fn mark_backend_failed_rt(&mut self, error: DeepFilterProcessError) {
         self.backend_failed = true;
+        self.runtime_error = Some(error);
     }
 
     /// Process frames through FFI or fallback
@@ -604,9 +622,8 @@ impl DeepFilterProcessor {
                             self.output_buffer.push_slice(&self.output_frame);
                             continue;
                         }
-                        Err(e) => {
-                            let _ = e;
-                            self.mark_backend_failed_rt();
+                        Err(error) => {
+                            self.mark_backend_failed_rt(error);
                         }
                     }
                 }
@@ -628,9 +645,11 @@ impl DeepFilterProcessor {
         self.df.is_some() && !self.backend_failed
     }
 
-    /// Get load error if FFI failed to initialize
-    pub fn load_error(&self) -> Option<&str> {
-        self.load_error.as_deref()
+    /// Get load/runtime error if the backend is unavailable.
+    pub fn backend_error(&self) -> Option<&str> {
+        self.load_error
+            .as_deref()
+            .or_else(|| self.runtime_error.map(DeepFilterProcessError::as_str))
     }
 
     pub fn backend_failed(&self) -> bool {

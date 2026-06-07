@@ -60,7 +60,7 @@ where
     seq.fetch_add(1, Ordering::Release);
 }
 
-fn stable_control_snapshot<T, F>(seq: &AtomicU64, mut read: F) -> T
+fn stable_control_snapshot<T, F>(seq: &AtomicU64, mut read: F) -> Option<T>
 where
     F: FnMut() -> T,
 {
@@ -74,12 +74,12 @@ where
         let state = read();
         let seq_after = seq.load(Ordering::Acquire);
         if seq_before == seq_after {
-            return state;
+            return Some(state);
         }
         std::hint::spin_loop();
     }
 
-    read()
+    None
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -419,7 +419,7 @@ impl AtomicGateControlState {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> GateControlState {
+    fn snapshot(&self) -> Option<GateControlState> {
         stable_control_snapshot(&self.seq, || GateControlState {
                 enabled: self.enabled.load(Ordering::Relaxed),
                 threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
@@ -569,7 +569,7 @@ impl AtomicSuppressorControlState {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> SuppressorControlState {
+    fn snapshot(&self) -> Option<SuppressorControlState> {
         stable_control_snapshot(&self.seq, || SuppressorControlState {
                 enabled: self.enabled.load(Ordering::Relaxed),
                 model: noise_model_from_u8(self.model.load(Ordering::Relaxed)),
@@ -633,7 +633,7 @@ impl EqControlState {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> EqControlSnapshot {
+    fn snapshot(&self) -> Option<EqControlSnapshot> {
         stable_control_snapshot(&self.seq, || {
             let enabled = self.enabled.load(Ordering::Relaxed);
             let bands = std::array::from_fn(|index| {
@@ -754,7 +754,7 @@ impl AtomicDeesserControlState {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> DeesserControlState {
+    fn snapshot(&self) -> Option<DeesserControlState> {
         stable_control_snapshot(&self.seq, || DeesserControlState {
                 enabled: self.enabled.load(Ordering::Relaxed),
                 auto_enabled: self.auto_enabled.load(Ordering::Relaxed),
@@ -884,7 +884,7 @@ impl AtomicCompressorControlState {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> CompressorControlState {
+    fn snapshot(&self) -> Option<CompressorControlState> {
         stable_control_snapshot(&self.seq, || CompressorControlState {
                 enabled: self.enabled.load(Ordering::Relaxed),
                 threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
@@ -991,7 +991,7 @@ impl AtomicLimiterControlState {
         locked_control_update(&self.writer, &self.seq, || apply(self));
     }
 
-    fn snapshot(&self) -> LimiterControlState {
+    fn snapshot(&self) -> Option<LimiterControlState> {
         stable_control_snapshot(&self.seq, || LimiterControlState {
                 enabled: self.enabled.load(Ordering::Relaxed),
                 ceiling_db: f64::from_bits(self.ceiling_db_bits.load(Ordering::Relaxed)),

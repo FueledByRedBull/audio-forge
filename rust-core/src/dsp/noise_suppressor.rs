@@ -242,9 +242,9 @@ impl NoiseSuppressionEngine {
         match self {
             NoiseSuppressionEngine::RNNoise(_) => None,
             #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.load_error(),
+            NoiseSuppressionEngine::DeepFilterLL(d) => d.backend_error(),
             #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.load_error(),
+            NoiseSuppressionEngine::DeepFilter(d) => d.backend_error(),
         }
     }
 

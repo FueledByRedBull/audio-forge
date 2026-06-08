@@ -225,6 +225,10 @@ class _MeterProcessor:
             "stream_restart_count": 2,
             "output_underrun_total": 3,
             "output_recovery_count": 4,
+            "rt_buffer_overflow_count": 8,
+            "input_callback_error_count": 9,
+            "output_callback_error_count": 10,
+            "rt_error_name": "fixed real-time buffer overflow",
             "input_backlog_recovery_count": 5,
             "input_backlog_dropped_samples": 6,
             "clip_event_count": 7,
@@ -426,6 +430,10 @@ def test_main_window_diagnostics_include_new_metrics():
         "stream_restart_count": 2,
         "output_underrun_total": 3,
         "output_recovery_count": 4,
+        "rt_buffer_overflow_count": 8,
+        "input_callback_error_count": 9,
+        "output_callback_error_count": 10,
+        "rt_error_name": "fixed real-time buffer overflow",
         "input_backlog_recovery_count": 5,
         "input_backlog_dropped_samples": 6,
         "clip_event_count": 7,
@@ -441,6 +449,9 @@ def test_main_window_diagnostics_include_new_metrics():
         [
             ("input_backlog_recovery_count", "IBR"),
             ("input_backlog_dropped_samples", "IBD"),
+            ("rt_buffer_overflow_count", "RTO"),
+            ("input_callback_error_count", "ICE"),
+            ("output_callback_error_count", "OCE"),
             ("clip_event_count", "CL"),
             ("clip_peak_db", "PK"),
         ],
@@ -457,6 +468,9 @@ def test_main_window_diagnostics_include_new_metrics():
 
     assert "IBR:5" in dropped_bits
     assert "IBD:6" in dropped_bits
+    assert "RTO:8" in dropped_bits
+    assert "ICE:9" in dropped_bits
+    assert "OCE:10" in dropped_bits
     assert "CL:7" in dropped_bits
     assert "PK:-1.2" in dropped_bits
     assert "IR:Y" in backend_bits
@@ -595,6 +609,10 @@ def test_update_meters_surfaces_output_recovery_and_reuses_diagnostics(qapp):
     assert window.processor.diagnostics_calls == 1
     assert "ORC:4" in window.recovery_diag_label.text
     assert "R:2" in window.recovery_diag_label.text
+    assert "RTO:8" in window.dropped_label.text
+    assert "ICE:9" in window.dropped_label.text
+    assert "OCE:10" in window.dropped_label.text
+    assert "RT:fixed real-time buffer overflow" in window.dropped_label.text
     assert not window.status_bar.messages
 
 

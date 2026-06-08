@@ -211,13 +211,22 @@ jobs:
           ARCHIVE: ${{ steps.package.outputs.archive }}
           CHECKSUM: ${{ steps.package.outputs.checksum }}
         run: |
+          $notesFile = "release-notes/release-notes-v$env:VERSION.md"
           gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -ne 0) {
-            gh release create $env:RELEASE_TAG `
-              --repo $env:GITHUB_REPOSITORY `
-              --verify-tag `
-              --title "AudioForge $env:VERSION" `
-              --notes "Automated AudioForge Windows release package."
+            if (Test-Path -LiteralPath $notesFile) {
+              gh release create $env:RELEASE_TAG `
+                --repo $env:GITHUB_REPOSITORY `
+                --verify-tag `
+                --title "AudioForge $env:VERSION" `
+                --notes-file $notesFile
+            } else {
+              gh release create $env:RELEASE_TAG `
+                --repo $env:GITHUB_REPOSITORY `
+                --verify-tag `
+                --title "AudioForge $env:VERSION" `
+                --notes "Automated AudioForge Windows release package."
+            }
             if ($LASTEXITCODE -ne 0) {
               throw "Failed to create GitHub Release '$env:RELEASE_TAG'."
             }

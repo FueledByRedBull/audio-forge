@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.8.1 - 2026-06-08
+
+- Completed the strict realtime migration hardening pass with bounded atomic control snapshots, dirty-flag re-arming for unstable snapshots, and regression coverage for the RT update path.
+- Removed DeepFilter runtime error string allocation from the realtime failure path while preserving backend failure diagnostics.
+- Surfaced fixed RT buffer overflows, callback errors, and active RT error names in the UI health strip.
+- Added the Windows release packaging workflow that builds the portable archive, publishes the `.7z` and checksum, and can reuse verified runtime assets from an existing release archive.
+
 ## v1.8.0 - 2026-05-12
 
 - Completed the EQ quality pass with confidence-weighted Auto-EQ solving, post-solve validation, target-error metrics, and visible calibration diagnostics.

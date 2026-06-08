@@ -7,15 +7,15 @@
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, latency calibration, and dynamics control.
 
-Current version: `v1.8.0`
+Current version: `v1.8.1`
 
 ## Download
 
 The latest portable build is available on the GitHub releases page:
 
-- [AudioForge v1.8.0](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.8.0)
-- Artifact: `AudioForge-v1.8.0-win64-ultra.7z`
-- SHA-256: `92938ED4CFBB747EB47AF0435C210EDFBC635DA896C520086B949CFF3B97A7F2`
+- [AudioForge v1.8.1](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.8.1)
+- Artifact: `AudioForge-v1.8.1-win64-ultra.7z`
+- SHA-256: published alongside the archive as `AudioForge-v1.8.1-win64-ultra.7z.sha256`
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
 
@@ -167,7 +167,7 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.8.0-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.8.1-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This uses LZMA2 with max compression and solid mode, which is appropriate for the PyInstaller bundle.

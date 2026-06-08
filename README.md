@@ -15,7 +15,7 @@ The latest portable build is available on the GitHub releases page:
 
 - [AudioForge v1.8.1](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.8.1)
 - Artifact: `AudioForge-v1.8.1-win64-ultra.7z`
-- SHA-256: published alongside the archive as `AudioForge-v1.8.1-win64-ultra.7z.sha256`
+- SHA-256: `BB38A9FC92057C1C2395352A34ED34C117D7DD845844F3657A97BB5DA35CF9BF`
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
 
@@ -152,6 +152,7 @@ Packaging script behavior:
 - Uses the locally built `python/mic_eq/mic_eq_core*.pyd`.
 - Fails if the local native extension is older than Rust sources.
 - Validates required full-feature runtime assets against `release-assets.json`.
+- Reuses PyInstaller's analysis cache by default; pass `-Clean` for a cold PyInstaller rebuild.
 - Bundles the Python runtime with PyInstaller.
 - Prunes unused Qt payload with `python/tools/prune_bundle.py` while retaining dependency metadata and licenses.
 - Keeps the application self-contained in `dist/AudioForge`.

@@ -59,10 +59,23 @@ jobs:
             ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}-
             ${{ runner.os }}-cargo-release-
 
+      - name: Create virtual environment
+        run: python -m venv .venv
+
       - name: Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install --prefer-binary -e .[dev]
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          @'
+          import subprocess
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as project_file:
+              project = tomllib.load(project_file)["project"]
+
+          deps = project["dependencies"] + project["optional-dependencies"]["dev"]
+          subprocess.check_call([sys.executable, "-m", "pip", "install", "--prefer-binary", *deps])
+          '@ | .\.venv\Scripts\python.exe -
 
       - name: Resolve release metadata
         id: meta
@@ -73,7 +86,7 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: |
-          $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          $version = .\.venv\Scripts\python.exe -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
           $expectedTag = "v$version"
           $releaseTag = $env:INPUT_RELEASE_TAG
           if ([string]::IsNullOrWhiteSpace($releaseTag)) {
@@ -206,16 +219,16 @@ jobs:
           }
 
       - name: Build Rust extension
-        run: python -m maturin develop --release
+        run: .\.venv\Scripts\python.exe -m maturin develop --release
 
       - name: Verify release assets
-        run: python python/tools/verify_release_assets.py
+        run: .\.venv\Scripts\python.exe python/tools/verify_release_assets.py
 
       - name: Build executable
         run: powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 
       - name: Package smoke
-        run: python python/tools/package_smoke.py
+        run: .\.venv\Scripts\python.exe python/tools/package_smoke.py
 
       - name: Create release archive
         id: package

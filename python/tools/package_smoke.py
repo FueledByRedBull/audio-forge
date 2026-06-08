@@ -106,10 +106,10 @@ def check_source_packaging() -> list[str]:
         ("launcher.py", 'os.environ.setdefault("VAD_MODEL_PATH", str(vad_model))'),
     ]
     workflow_expectations = [
-        (".github/workflows/release-package.yml", "python -m maturin develop --release"),
-        (".github/workflows/release-package.yml", "python python/tools/verify_release_assets.py"),
+        (".github/workflows/release-package.yml", "maturin develop --release"),
+        (".github/workflows/release-package.yml", "python/tools/verify_release_assets.py"),
         (".github/workflows/release-package.yml", "powershell -ExecutionPolicy Bypass -File .\\build_exe.ps1"),
-        (".github/workflows/release-package.yml", "python python/tools/package_smoke.py"),
+        (".github/workflows/release-package.yml", "python/tools/package_smoke.py"),
         (".github/workflows/release-package.yml", "actions/upload-artifact@v4"),
         (".github/workflows/release-package.yml", "AudioForge-*-win64-ultra.7z"),
         (".github/workflows/release-package.yml", "gh release upload"),

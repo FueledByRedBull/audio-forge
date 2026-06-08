@@ -5,6 +5,15 @@ on:
     branches: ["master"]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -C debuginfo=0
+
 jobs:
   python:
     runs-on: windows-latest
@@ -13,11 +22,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-python-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-python-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-python-
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+          python -m pip install --prefer-binary -e .[dev]
       - name: Ruff
         run: python -m ruff check python/mic_eq python/tests python/tools
       - name: Pyright
@@ -34,6 +55,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-rust-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-rust-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-rust-
       - name: Rust format
         run: cargo fmt --check
       - name: Rust tests

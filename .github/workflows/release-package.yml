@@ -20,12 +20,20 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: release-package-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   package-windows:
     name: Build Windows release package
     runs-on: windows-latest
     permissions:
       contents: write
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -C debuginfo=0
     defaults:
       run:
         shell: pwsh
@@ -35,13 +43,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}-
+            ${{ runner.os }}-cargo-release-
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+          python -m pip install --prefer-binary -e .[dev]
 
       - name: Resolve release metadata
         id: meta
@@ -96,6 +117,19 @@ jobs:
 
           $packageArchive = $null
           $archiveExtracted = $false
+          $releaseAssetNames = @{}
+          $releaseAssets = gh release view $env:ASSET_SOURCE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --json assets `
+            --jq ".assets[].name"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to inspect release assets from '$env:ASSET_SOURCE_TAG'."
+          }
+          foreach ($releaseAssetName in $releaseAssets) {
+            if (-not [string]::IsNullOrWhiteSpace($releaseAssetName)) {
+              $releaseAssetNames[$releaseAssetName] = $true
+            }
+          }
 
           $assets = @(
             @{ Name = "df.dll"; Destination = "df.dll"; ArchivePath = "_internal/df.dll" },
@@ -107,11 +141,18 @@ jobs:
 
           function Resolve-AssetFromArchive($asset) {
             if (-not $script:packageArchive) {
+              $archiveAssetName = $releaseAssetNames.Keys |
+                Where-Object { $_ -like "AudioForge-*-win64-ultra.7z" } |
+                Select-Object -First 1
+              if ([string]::IsNullOrWhiteSpace($archiveAssetName)) {
+                throw "No AudioForge release archive fallback was found in '$env:ASSET_SOURCE_TAG'."
+              }
+
               gh release download $env:ASSET_SOURCE_TAG `
                 --repo $env:GITHUB_REPOSITORY `
-                --pattern "AudioForge-*-win64-ultra.7z" `
+                --pattern $archiveAssetName `
                 --dir $assetDir `
-                --clobber
+                --clobber *> $null
               if ($LASTEXITCODE -ne 0) {
                 throw "Failed to download a release archive fallback from '$env:ASSET_SOURCE_TAG'."
               }
@@ -126,7 +167,7 @@ jobs:
 
             if (-not $script:archiveExtracted) {
               New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-              & $sevenZip x $script:packageArchive.FullName -o"$extractDir" -y
+              & $sevenZip x $script:packageArchive.FullName -o"$extractDir" -y *> $null
               if ($LASTEXITCODE -ne 0) {
                 throw "Failed to extract release archive '$($script:packageArchive.FullName)'."
               }
@@ -141,11 +182,16 @@ jobs:
           }
 
           foreach ($asset in $assets) {
-            gh release download $env:ASSET_SOURCE_TAG `
-              --repo $env:GITHUB_REPOSITORY `
-              --pattern $asset.Name `
-              --dir $assetDir `
-              --clobber *> $null
+            if ($releaseAssetNames.ContainsKey($asset.Name)) {
+              gh release download $env:ASSET_SOURCE_TAG `
+                --repo $env:GITHUB_REPOSITORY `
+                --pattern $asset.Name `
+                --dir $assetDir `
+                --clobber *> $null
+              if ($LASTEXITCODE -ne 0) {
+                throw "Failed to download raw release asset '$($asset.Name)' from '$env:ASSET_SOURCE_TAG'."
+              }
+            }
 
             $source = Join-Path $assetDir $asset.Name
             if (-not (Test-Path -LiteralPath $source)) {

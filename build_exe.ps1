@@ -1,5 +1,6 @@
 param(
-    [switch]$AllowMissingModels
+    [switch]$AllowMissingModels,
+    [switch]$Clean
 )
 
 # Final working build script
@@ -85,7 +86,12 @@ if (Test-Path "mic_eq.ico") {
 
 Write-Host "Building executable from AudioForge.spec..." -ForegroundColor Cyan
 
-& $venvPython -m PyInstaller --clean -y (Join-Path $ProjectRoot "AudioForge.spec")
+$pyinstallerArgs = @("-y")
+if ($Clean) {
+    $pyinstallerArgs += "--clean"
+}
+$pyinstallerArgs += (Join-Path $ProjectRoot "AudioForge.spec")
+& $venvPython -m PyInstaller @pyinstallerArgs
 
 if ($LASTEXITCODE -eq 0) {
     & $venvPython (Join-Path $ProjectRoot "python\tools\prune_bundle.py") (Join-Path $ProjectRoot "dist\AudioForge")

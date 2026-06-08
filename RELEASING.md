@@ -44,6 +44,8 @@ Build the portable application from the checked-in PyInstaller spec:
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
 
+This reuses PyInstaller's analysis cache for faster repeat builds. Add `-Clean` only when you need a cold PyInstaller rebuild.
+
 Run the release validation checks:
 
 ```powershell

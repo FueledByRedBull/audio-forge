@@ -1,13 +1,16 @@
 """Application bootstrap helpers for the AudioForge UI."""
 
+import ctypes
 import os
 import sys
 from pathlib import Path
 from typing import Type
 
-from PyQt6.QtCore import QFileInfo
 from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QApplication, QFileIconProvider, QMainWindow
+from PyQt6.QtWidgets import QApplication, QMainWindow
+
+
+WINDOWS_APP_USER_MODEL_ID = "FueledByRedBull.AudioForge"
 
 
 def _application_root() -> Path:
@@ -92,25 +95,119 @@ def configure_vad_env() -> None:
             return
 
 
+def configure_windows_app_id() -> None:
+    """Give Windows a stable taskbar identity for the app."""
+    if os.name != "nt":
+        return
+
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            WINDOWS_APP_USER_MODEL_ID
+        )
+    except Exception:
+        pass
+
+
+def _application_icon() -> QIcon:
+    if getattr(sys, "frozen", False):
+        icon = QIcon(str(Path(sys.executable).resolve()))
+        if not icon.isNull():
+            return icon
+
+    for root in _trusted_runtime_roots():
+        icon_path = root / "mic_eq.ico"
+        if icon_path.is_file():
+            icon = QIcon(str(icon_path))
+            if not icon.isNull():
+                return icon
+
+    return QIcon()
+
+
+def apply_windows_window_icon(window: QMainWindow) -> None:
+    """Set native small/large window icons from the frozen executable resource."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return
+
+    hicon_large = ctypes.c_void_p()
+    hicon_small = ctypes.c_void_p()
+    extracted = ctypes.windll.shell32.ExtractIconExW(
+        str(Path(sys.executable).resolve()),
+        0,
+        ctypes.byref(hicon_large),
+        ctypes.byref(hicon_small),
+        1,
+    )
+    if extracted <= 0:
+        return
+
+    hwnd = int(window.winId())
+    user32 = ctypes.windll.user32
+    wm_seticon = 0x0080
+    icon_small = 0
+    icon_big = 1
+
+    if hicon_small.value:
+        user32.SendMessageW(hwnd, wm_seticon, icon_small, hicon_small.value)
+    if hicon_large.value:
+        user32.SendMessageW(hwnd, wm_seticon, icon_big, hicon_large.value)
+
+    window._audioforge_native_icons = (hicon_large, hicon_small)
+
+
+def apply_windows_taskbar_properties(window: QMainWindow) -> None:
+    """Set Explorer taskbar relaunch metadata for the top-level window."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return
+
+    try:
+        from win32com.propsys import propsys, pscon
+
+        exe_path = str(Path(sys.executable).resolve())
+        store = propsys.SHGetPropertyStoreForWindow(
+            int(window.winId()),
+            propsys.IID_IPropertyStore,
+        )
+        store.SetValue(
+            pscon.PKEY_AppUserModel_ID,
+            propsys.PROPVARIANTType(WINDOWS_APP_USER_MODEL_ID),
+        )
+        store.SetValue(
+            pscon.PKEY_AppUserModel_RelaunchCommand,
+            propsys.PROPVARIANTType(exe_path),
+        )
+        store.SetValue(
+            pscon.PKEY_AppUserModel_RelaunchDisplayNameResource,
+            propsys.PROPVARIANTType("AudioForge"),
+        )
+        store.SetValue(
+            pscon.PKEY_AppUserModel_RelaunchIconResource,
+            propsys.PROPVARIANTType(f"{exe_path},0"),
+        )
+        store.Commit()
+    except Exception:
+        pass
+
+
 def run_qt_app(window_cls: Type[QMainWindow]) -> int:
     """Run the Qt application for the provided main window class."""
+    configure_windows_app_id()
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    if getattr(sys, "frozen", False):
-        provider = QFileIconProvider()
-        exe_icon = provider.icon(QFileInfo(sys.executable))
-        if not exe_icon.isNull():
-            app.setWindowIcon(exe_icon)
-    else:
-        icon_path = Path("mic_eq.ico")
-        if icon_path.exists():
-            app.setWindowIcon(QIcon(str(icon_path)))
+    app_icon = _application_icon()
+    if not app_icon.isNull():
+        app.setWindowIcon(app_icon)
 
     configure_deepfilter_env()
     configure_vad_env()
 
     window = window_cls()
+    if not app_icon.isNull():
+        window.setWindowIcon(app_icon)
+    apply_windows_window_icon(window)
+    apply_windows_taskbar_properties(window)
     window.show()
 
     return app.exec()

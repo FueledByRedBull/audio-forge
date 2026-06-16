@@ -100,6 +100,43 @@ mod tests {
             .unwrap_or(false));
     }
 
+    #[test]
+    fn test_start_publishes_processing_thread_before_starting_streams() {
+        let source = include_str!("../processor.rs");
+        let start_fn = source_between(source, "    pub fn start(", "    /// Stop audio processing");
+        let process_thread_published = start_fn
+            .find("self.process_thread = Some(handle);")
+            .expect("start must publish the processing thread handle");
+        let before_thread_publish = &start_fn[..process_thread_published];
+
+        assert!(
+            !before_thread_publish.contains(".start()"),
+            "audio streams must not be started before the DSP thread handle is published"
+        );
+
+        let ready_wait = start_fn[process_thread_published..]
+            .find("dsp_ready_rx.recv_timeout")
+            .map(|offset| process_thread_published + offset)
+            .expect("start must wait for the DSP thread to finish initialization");
+        let output_start = start_fn[process_thread_published..]
+            .find("output.start()")
+            .map(|offset| process_thread_published + offset)
+            .expect("start must start the output stream after publishing the DSP thread");
+        let input_start = start_fn[process_thread_published..]
+            .find("input.start()")
+            .map(|offset| process_thread_published + offset)
+            .expect("start must start the input stream after publishing the DSP thread");
+
+        assert!(
+            ready_wait < output_start,
+            "audio streams must not start before DSP pre-loop initialization is complete"
+        );
+        assert!(
+            output_start < input_start,
+            "input stream must start last to avoid accumulating startup backlog"
+        );
+    }
+
     #[cfg(feature = "deepfilter")]
     #[test]
     fn test_failed_running_noise_model_queue_preserves_backend_diagnostics() {

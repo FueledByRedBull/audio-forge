@@ -13,8 +13,9 @@ use rubato::{
 };
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 use std::sync::atomic::AtomicU8;
@@ -47,6 +48,7 @@ const OUTPUT_TARGET_HIGH_MS: u32 = 30;
 const OUTPUT_HARD_BACKLOG_MS: u32 = 60;
 const OUTPUT_DRIFT_MAX_RATIO_ADJUST: f32 = 0.008;
 const OUTPUT_DRIFT_MAX_EXPANSION_RATIO: f32 = 0.96;
+const DSP_THREAD_READY_TIMEOUT_MS: u64 = 5_000;
 const MAX_RECORDING_SECONDS: usize = 30;
 const INPUT_DC_BLOCK_COEFF: f32 = 0.995;
 const INPUT_PREFILTER_HZ: f64 = 80.0;
@@ -857,10 +859,6 @@ impl AudioProcessor {
         let input_device_name = input.device_info().name.clone();
         let input_sample_rate_for_thread = input.device_info().sample_rate;
 
-        if let Err(e) = input.start() {
-            return Err(format!("Failed to start input stream: {}", e));
-        }
-
         let output_setup = match output_device {
             Some(name) => AudioOutput::from_named_device_setup(name),
             None => AudioOutput::from_default_device_setup(),
@@ -868,7 +866,6 @@ impl AudioProcessor {
         let output_setup = match output_setup {
             Ok(setup) => setup,
             Err(e) => {
-                let _ = input.pause();
                 return Err(format!("Failed to resolve audio output: {}", e));
             }
         };
@@ -904,7 +901,6 @@ impl AudioProcessor {
         let output = match output_result {
             Ok(output) => output,
             Err(e) => {
-                let _ = input.pause();
                 return Err(format!("Failed to start audio output: {}", e));
             }
         };
@@ -916,12 +912,6 @@ impl AudioProcessor {
         self.output_buffer_len
             .store(output_prime_samples as u32, Ordering::Relaxed);
         let output_producer = prod;
-
-        if let Err(e) = output.start() {
-            let _ = input.pause();
-            let _ = output.pause();
-            return Err(format!("Failed to start output stream: {}", e));
-        }
 
         self.input_device_name = Some(input_device_name.clone());
         self.output_device_name = Some(output_device_name.clone());
@@ -1075,6 +1065,7 @@ impl AudioProcessor {
         let raw_recording_target = Arc::clone(&self.raw_recording_target);
         let recording_level_db = Arc::clone(&self.recording_level_db);
 
+        let (dsp_ready_tx, dsp_ready_rx) = mpsc::channel();
         let handle = std::thread::spawn(move || {
             let mut consumer = input_consumer;
             let mut input_buffer = FixedAudioBuffer::<f32, RT_INPUT_CHUNK_CAPACITY>::new();
@@ -1542,6 +1533,7 @@ impl AudioProcessor {
                 raw_monitor_enabled.load(Ordering::Acquire),
                 bypass.load(Ordering::SeqCst),
             );
+            let _ = dsp_ready_tx.send(());
 
             // Run entire processing loop with denormals flushed to zero
             // This prevents tiny floating point values from causing CPU stalls and audio artifacts
@@ -2221,6 +2213,26 @@ impl AudioProcessor {
         });
 
         self.process_thread = Some(handle);
+        if let Err(e) =
+            dsp_ready_rx.recv_timeout(Duration::from_millis(DSP_THREAD_READY_TIMEOUT_MS))
+        {
+            self.stop();
+            return Err(format!("DSP thread failed to become ready: {}", e));
+        }
+
+        if let Some(output) = self.audio_output.as_ref() {
+            if let Err(e) = output.start() {
+                self.stop();
+                return Err(format!("Failed to start output stream: {}", e));
+            }
+        }
+
+        if let Some(input) = self.audio_input.as_ref() {
+            if let Err(e) = input.start() {
+                self.stop();
+                return Err(format!("Failed to start input stream: {}", e));
+            }
+        }
 
         Ok(format!(
             "Started: {} -> {}",

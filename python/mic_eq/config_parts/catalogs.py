@@ -2,6 +2,8 @@
 
 from typing import Any
 
+from .shared import CURRENT_VERSION
+
 
 def build_builtin_presets(
     preset_cls: type,
@@ -14,7 +16,7 @@ def build_builtin_presets(
         'voice': preset_cls(
             name="Voice Clarity",
             description="Optimized for voice communication - cuts low end rumble and boosts presence",
-            version="1.8.2",
+            version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                                    gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -28,7 +30,7 @@ def build_builtin_presets(
         'bass_cut': preset_cls(
             name="Bass Cut",
             description="High-pass effect to remove low frequency rumble and proximity effect",
-            version="1.8.2",
+            version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                                    gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -42,7 +44,7 @@ def build_builtin_presets(
         'presence': preset_cls(
             name="Presence Boost",
             description="Enhances voice presence and intelligibility",
-            version="1.8.2",
+            version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                                    gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -56,7 +58,7 @@ def build_builtin_presets(
         'flat': preset_cls(
             name="Flat",
             description="No EQ processing - flat frequency response",
-            version="1.8.2",
+            version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
                                    gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -70,7 +72,7 @@ def build_builtin_presets(
         'minimal': preset_cls(
             name="Minimal Processing",
             description="Gate and RNNoise only - no EQ",
-            version="1.8.2",
+            version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0,
                                    gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),
@@ -84,7 +86,7 @@ def build_builtin_presets(
         'aggressive_denoise': preset_cls(
             name="Aggressive Denoise",
             description="Maximum noise reduction with tight gate",
-            version="1.8.2",
+            version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0,
                                    gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),

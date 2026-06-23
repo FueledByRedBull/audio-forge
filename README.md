@@ -118,6 +118,12 @@ Full-feature development and release builds use the tracked `release-assets.json
 .\.venv\Scripts\python.exe python/tools/verify_release_assets.py
 ```
 
+For a cleaner fresh-clone setup, you can hydrate those assets from the matching GitHub release:
+
+```powershell
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.2
+```
+
 Create `models/` in the repo root for local runtime discovery:
 
 - `models/DeepFilterNet3_ll_onnx.tar.gz`
@@ -145,6 +151,7 @@ Packaged builds prefer bundled DeepFilter assets. By default, bundled `df.dll` a
 Build the Rust extension first, then package:
 
 ```powershell
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.2
 .\.venv\Scripts\python.exe -m maturin develop --release
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```

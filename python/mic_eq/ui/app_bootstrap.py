@@ -1,6 +1,7 @@
 """Application bootstrap helpers for the AudioForge UI."""
 
 import ctypes
+import importlib
 import os
 import sys
 from pathlib import Path
@@ -161,7 +162,8 @@ def apply_windows_taskbar_properties(window: QMainWindow) -> None:
         return
 
     try:
-        from win32com.propsys import propsys, pscon
+        propsys = importlib.import_module("win32com.propsys.propsys")
+        pscon = importlib.import_module("win32com.propsys.pscon")
 
         exe_path = str(Path(sys.executable).resolve())
         store = propsys.SHGetPropertyStoreForWindow(

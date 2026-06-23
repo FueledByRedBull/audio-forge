@@ -1303,7 +1303,7 @@ class MainWindow(QMainWindow):
         preset = self._get_current_preset()
         preset.name = preset_name
         preset.description = description
-        preset.version = "1.8.2"
+        preset.version = __version__
         save_preset(preset)
         QMessageBox.information(
             self,

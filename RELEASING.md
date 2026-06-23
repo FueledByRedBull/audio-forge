@@ -16,6 +16,12 @@ Because runtime binaries and models are intentionally not stored in Git, make th
 
 Raw assets are preferred. If the asset-source release only has an existing `AudioForge-*-win64-ultra.7z`, the workflow can extract those same runtime assets from that archive and still verifies them against `release-assets.json` before packaging.
 
+For local release prep from a clean clone, you can mirror that behavior with:
+
+```powershell
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.2
+```
+
 Then run the workflow with:
 
 - `release_tag`: the target tag, for example `v1.8.2`.

@@ -152,7 +152,7 @@ def apply_windows_window_icon(window: QMainWindow) -> None:
     if hicon_large.value:
         user32.SendMessageW(hwnd, wm_seticon, icon_big, hicon_large.value)
 
-    window._audioforge_native_icons = (hicon_large, hicon_small)
+    setattr(window, "_audioforge_native_icons", (hicon_large, hicon_small))
 
 
 def apply_windows_taskbar_properties(window: QMainWindow) -> None:

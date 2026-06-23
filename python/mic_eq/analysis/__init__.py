@@ -19,6 +19,7 @@ from .failure_detection import (
     validate_analysis,
     ValidationResult
 )
+from .voice_setup import analyze_voice_setup
 
 __all__ = [
     # Spectrum analysis
@@ -30,6 +31,7 @@ __all__ = [
     'get_target_curve',
     'calculate_eq_bands',
     'analyze_auto_eq',
+    'analyze_voice_setup',
     # Validation
     'validate_analysis',
     'ValidationResult'

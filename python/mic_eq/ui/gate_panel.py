@@ -32,6 +32,7 @@ class GatePanel(QWidget):
         self.processor = processor
         self._rate_limiter = RateLimiter(interval_ms=33)
         self._latest_noise_floor_db = -60.0
+        self._preserve_unavailable_vad_mode = False
         self._setup_ui()
         self._connect_signals()
 
@@ -401,7 +402,11 @@ class GatePanel(QWidget):
             vad_available = self._is_vad_available()
 
             # Avoid "fake" VAD modes when model/runtime isn't available.
-            if mode > 0 and not vad_available:
+            if (
+                mode > 0
+                and not vad_available
+                and not self._preserve_unavailable_vad_mode
+            ):
                 self.gate_mode_combo.blockSignals(True)
                 self.gate_mode_combo.setCurrentIndex(0)
                 self.gate_mode_combo.blockSignals(False)
@@ -575,8 +580,13 @@ class GatePanel(QWidget):
             self.margin_spinbox.blockSignals(False)
             self.margin_slider.blockSignals(False)
 
-        # Update processor and UI state after all settings applied
-        self._update_gate()
-        self._update_vad_mode()
-        self._update_vad_controls_enabled()
-        self._update_auto_threshold()
+        # Preserve stored VAD modes during preset restore even if the backend
+        # has not reported availability yet. Interactive changes still fall back.
+        self._preserve_unavailable_vad_mode = True
+        try:
+            self._update_gate()
+            self._update_vad_mode()
+            self._update_vad_controls_enabled()
+            self._update_auto_threshold()
+        finally:
+            self._preserve_unavailable_vad_mode = False

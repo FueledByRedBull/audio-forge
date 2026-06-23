@@ -51,7 +51,7 @@ def main() -> int:
         ),
         "python/mic_eq/ui/main_window.py auto-eq preset": _single_match(
             "python/mic_eq/ui/main_window.py",
-            r'version="([^"]+)"',
+            r'version\s*=\s*"([^"]+)"',
             "auto-eq preset default",
         ),
     }

@@ -43,6 +43,7 @@ from .deesser_panel import DeEsserPanel
 from .level_meter import LevelMeter
 from .calibration_dialog import CalibrationDialog
 from .latency_calibration_dialog import LatencyCalibrationDialog
+from .voice_setup_dialog import VoiceSetupDialog
 from .app_bootstrap import run_qt_app
 from .layout_constants import (
     SPACING_SECTION,
@@ -312,6 +313,16 @@ class MainWindow(QMainWindow):
         )
         self.auto_eq_button.clicked.connect(self._on_auto_eq_clicked)
         action_layout.addWidget(self.auto_eq_button)
+
+        self.auto_voice_setup_button = QPushButton("Auto Voice Setup")
+        self.auto_voice_setup_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
+        self.auto_voice_setup_button.setMinimumWidth(148)
+        self.auto_voice_setup_button.setToolTip(
+            "Record room noise and speech, then calibrate EQ, gate/VAD,\n"
+            "de-esser, and compressor in one pass"
+        )
+        self.auto_voice_setup_button.clicked.connect(self._on_auto_voice_setup_clicked)
+        action_layout.addWidget(self.auto_voice_setup_button)
 
         self._undo_auto_eq_button = QPushButton("Undo Auto-EQ")
         self._undo_auto_eq_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
@@ -1244,9 +1255,61 @@ class MainWindow(QMainWindow):
             is_running = self.processor.is_running()
             print(f"[MAIN] After calibration - processor running={is_running}")
 
+    def _on_auto_voice_setup_clicked(self):
+        """Open the multi-stage voice setup wizard."""
+        dialog = VoiceSetupDialog(self)
+        dialog.setup_applied.connect(self.on_voice_setup_applied)
+        self._calibration_dialog_open = True
+        try:
+            dialog.exec()
+        finally:
+            self._calibration_dialog_open = False
+
     def capture_pre_auto_eq_state(self):
         """Capture current EQ state before auto-EQ application."""
         self._pre_auto_eq_state = self.eq_panel.capture_state()
+
+    def _prompt_save_current_preset(
+        self,
+        *,
+        title: str,
+        question: str,
+        preset_name: str,
+        description: str,
+    ) -> None:
+        reply = QMessageBox.question(
+            self,
+            title,
+            question,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        existing_presets = list_presets()
+        existing_names = [name.lower() for name, _ in existing_presets]
+        if preset_name.lower() in existing_names:
+            confirm_reply = QMessageBox.question(
+                self,
+                "Overwrite Preset?",
+                f"Preset '{preset_name}' already exists. Overwrite?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm_reply != QMessageBox.StandardButton.Yes:
+                return
+
+        preset = self._get_current_preset()
+        preset.name = preset_name
+        preset.description = description
+        preset.version = "1.8.2"
+        save_preset(preset)
+        QMessageBox.information(
+            self,
+            "Preset Saved",
+            f"Preset '{preset_name}' saved successfully.",
+        )
 
     def on_auto_eq_applied(self, target_curve: str):
         """
@@ -1257,7 +1320,7 @@ class MainWindow(QMainWindow):
         Args:
             target_curve: The target curve used ('broadcast', 'podcast', etc.)
         """
-        from ..config import generate_auto_eq_preset_name, save_preset, list_presets
+        from ..config import generate_auto_eq_preset_name
 
         # Reset curve overlay mode (hide "Current vs New" comparison)
         self.eq_panel.reset_curve_overlay()
@@ -1266,66 +1329,26 @@ class MainWindow(QMainWindow):
         if self._undo_auto_eq_button:
             self._undo_auto_eq_button.setEnabled(True)
 
-        # Prompt to save as preset
         preset_name = generate_auto_eq_preset_name(target_curve)
-
-        reply = QMessageBox.question(
-            self,
-            "Save Auto-EQ as Preset?",
-            f"Save these auto-EQ settings as preset '{preset_name}'?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes
+        self._prompt_save_current_preset(
+            title="Save Auto-EQ as Preset?",
+            question=f"Save these auto-EQ settings as preset '{preset_name}'?",
+            preset_name=preset_name,
+            description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
         )
 
-        if reply == QMessageBox.StandardButton.Yes:
-            # Check if preset already exists
-            existing_presets = list_presets()
-            existing_names = [name.lower() for name, _ in existing_presets]
-
-            if preset_name.lower() in existing_names:
-                # Confirm overwrite
-                confirm_reply = QMessageBox.question(
-                    self,
-                    "Overwrite Preset?",
-                    f"Preset '{preset_name}' already exists. Overwrite?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No
-                )
-                if confirm_reply != QMessageBox.StandardButton.Yes:
-                    return  # User cancelled
-
-            # Create preset from current settings
-            from ..config import (
-                Preset,
-                CompressorSettings,
-                LimiterSettings,
-                GateSettings,
-                DeEsserSettings,
-            )
-
-            preset = Preset(
-                name=preset_name,
-                description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
-                version="1.8.2",
-                gate=GateSettings(**self.gate_panel.get_settings()),
-                eq=EQSettings(**self.eq_panel.get_settings()),
-                rnnoise=RNNoiseSettings(
-                    enabled=self.rnnoise_checkbox.isChecked(),
-                    strength=self.strength_slider.value() / 100.0,
-                    model=self.model_combo.currentData() or 'rnnoise',
-                ),
-                deesser=DeEsserSettings(**self.deesser_panel.get_settings()),
-                compressor=CompressorSettings(**self.compressor_panel.get_compressor_settings()),
-                limiter=LimiterSettings(**self.compressor_panel.get_limiter_settings()),
-                bypass=self.bypass_checkbox.isChecked(),
-            )
-
-            save_preset(preset)
-            QMessageBox.information(
-                self,
-                "Preset Saved",
-                f"Preset '{preset_name}' saved successfully."
-            )
+    def on_voice_setup_applied(self, target_curve: str):
+        """Offer to save the applied voice-setup chain as a preset."""
+        preset_name = f"Voice Setup {target_curve.title()}"
+        self._prompt_save_current_preset(
+            title="Save Voice Setup as Preset?",
+            question=f"Save these calibrated voice-chain settings as preset '{preset_name}'?",
+            preset_name=preset_name,
+            description=(
+                "Auto-generated voice chain with EQ, gate/VAD, de-esser, "
+                f"and compressor tuned for the {target_curve.title()} target"
+            ),
+        )
 
     def undo_auto_eq(self):
         """Undo last auto-EQ application and restore previous state."""

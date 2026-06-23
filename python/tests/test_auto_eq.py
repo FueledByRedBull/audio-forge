@@ -6,6 +6,8 @@ import numpy as np
 
 from mic_eq import config
 from mic_eq.analysis import auto_eq
+from mic_eq.analysis.failure_detection import validate_analysis
+from mic_eq.analysis.spectrum import analyze_voice_spectrum, smooth_spectrum_perceptual
 
 _predict_eq_response = auto_eq._predict_eq_response
 calculate_eq_bands = auto_eq.calculate_eq_bands
@@ -294,6 +296,10 @@ def test_19_diagnostics_and_validation_are_present_and_valid():
 
     assert len(eq["band_confidences"]) == 10
     assert 0.0 <= eq["analysis_confidence"] <= 1.0
+    assert 0.0 <= eq["eq_confidence"] <= 1.0
+    assert 0.0 <= eq["capture_confidence"] <= 1.0
+    assert 0.0 <= eq["validation_confidence"] <= 1.0
+    assert eq["low_confidence_active_bands"] <= eq["active_band_count"] <= 10
     assert eq["validation_after_error_db"] <= eq["validation_before_error_db"] * 1.05
     assert 0.0 < eq["validation_gain_scale"] <= 1.0
     assert eq["target_profile"]
@@ -320,7 +326,8 @@ def test_20_low_confidence_boosts_are_capped_aggressively():
 
     gains = np.asarray(eq["band_gains"], dtype=float)
     assert np.max(gains) <= 2.0
-    assert eq["analysis_confidence"] <= 0.15
+    assert eq["capture_confidence"] <= 0.15
+    assert eq["analysis_confidence"] >= eq["capture_confidence"]
 
 
 def test_21_eq_quality_detects_risky_overlap_and_flat_is_safe():
@@ -350,8 +357,57 @@ def test_22_stable_speech_like_capture_has_useful_confidence():
     audio = 0.045 * harmonic_voice * syllables + rng.normal(0.0, 0.001, t.size)
 
     eq, validation = analyze_auto_eq(audio.astype(np.float32), sample_rate, "broadcast")
-    low_confidence_bands = sum(value < 0.45 for value in eq["band_confidences"])
+    low_confidence_bands = eq["low_confidence_active_bands"]
 
     assert validation.passed
     assert eq["analysis_confidence"] >= 0.65
+    assert eq["eq_confidence"] >= 0.60
+    assert eq["capture_confidence"] >= 0.65
     assert low_confidence_bands <= 3
+
+
+def test_23_predict_eq_response_uses_shelves_for_edge_bands():
+    freqs = np.array([80.0, 1000.0, 16000.0, 20000.0], dtype=float)
+    qs = [1.414] * 10
+
+    low_gains = np.zeros(10)
+    low_gains[0] = 6.0
+    low_response = _predict_eq_response(freqs, low_gains, qs, EQ_FREQUENCIES)
+    assert low_response[0] > low_response[1] + 2.0
+
+    high_gains = np.zeros(10)
+    high_gains[9] = 6.0
+    high_response = _predict_eq_response(freqs, high_gains, qs, EQ_FREQUENCIES)
+    assert high_response[3] > high_response[1] + 2.0
+
+
+def test_24_fallback_analysis_reports_explicit_fallback_diagnostics():
+    sample_rate = 48_000
+    duration_s = 10
+    t = np.arange(sample_rate * duration_s, dtype=float) / sample_rate
+    audio = np.zeros_like(t)
+    for start_s in (1.0, 4.0, 7.0):
+        start = int(start_s * sample_rate)
+        stop = start + int(0.18 * sample_rate)
+        audio[start:stop] = 0.04 * np.sin(2.0 * np.pi * 180.0 * t[: stop - start])
+
+    spectrum_result = analyze_voice_spectrum(audio.astype(np.float32), sample_rate)
+    freqs = spectrum_result.freqs
+    spectrum_smoothed = smooth_spectrum_perceptual(freqs, spectrum_result.median_spectrum_db)
+    target_db = get_target_curve(freqs, "broadcast", measured_db=spectrum_smoothed)
+    eq = calculate_eq_bands(
+        freqs,
+        spectrum_smoothed,
+        target_db,
+        spectral_repeatability=spectrum_result.spectral_repeatability,
+        voiced_window_ratio=spectrum_result.voiced_window_ratio,
+        analysis_confidence=spectrum_result.residual_confidence,
+        global_snr_db=spectrum_result.snr_db,
+        target_profile="broadcast:fallback",
+        used_spectrum_fallback=spectrum_result.used_single_spectrum_fallback,
+    )
+    validation = validate_analysis(eq, spectrum_smoothed, freqs)
+
+    assert not validation.passed
+    assert eq["used_spectrum_fallback"]
+    assert eq["target_profile"].endswith(":fallback")

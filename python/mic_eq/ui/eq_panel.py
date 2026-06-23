@@ -85,13 +85,27 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
         return "Auto-EQ: no calibration diagnostics", "idle", ""
 
     confidence = float(diagnostics.get("analysis_confidence", 0.0) or 0.0)
+    eq_confidence = float(diagnostics.get("eq_confidence", confidence) or 0.0)
+    capture_confidence = float(diagnostics.get("capture_confidence", confidence) or 0.0)
+    validation_confidence = float(diagnostics.get("validation_confidence", 0.0) or 0.0)
     before = diagnostics.get("validation_before_error_db")
     after = diagnostics.get("validation_after_error_db")
     scale = diagnostics.get("validation_gain_scale")
+    used_fallback = bool(diagnostics.get("used_spectrum_fallback", False))
     band_confidences = diagnostics.get("band_confidences") or []
-    low_confidence = 0
+    band_gains = diagnostics.get("band_gains") or []
+    low_confidence = diagnostics.get("low_confidence_active_bands")
     if isinstance(band_confidences, list):
-        low_confidence = sum(1 for value in band_confidences if float(value) < 0.45)
+        if low_confidence is None and isinstance(band_gains, list) and len(band_gains) == len(band_confidences):
+            low_confidence = sum(
+                1
+                for gain, value in zip(band_gains, band_confidences)
+                if abs(float(gain)) >= 0.25 and float(value) < 0.45
+            )
+        elif low_confidence is None:
+            low_confidence = sum(1 for value in band_confidences if float(value) < 0.45)
+    if low_confidence is None:
+        low_confidence = 0
 
     if confidence >= 0.72:
         state = "ok"
@@ -101,20 +115,29 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
         state = "bad"
 
     text = (
-        f"Auto-EQ: confidence {_percent(confidence)} | "
+        f"Auto-EQ: overall {_percent(confidence)} | "
+        f"EQ {_percent(eq_confidence)} | "
+        f"capture {_percent(capture_confidence)} | "
+        f"validation {_percent(validation_confidence)} | "
         f"target error {_db_value(before)} -> {_db_value(after)} | "
         f"gain scale {_percent(scale)}"
     )
+    if used_fallback:
+        text += " | fallback spectrum"
     if low_confidence:
-        text += f" | low-confidence bands {low_confidence}"
+        text += f" | active low-confidence bands {low_confidence}"
 
     tooltip = (
         "Auto-EQ calibration diagnostics\n"
-        f"Analysis confidence: {_percent(confidence)}\n"
+        f"Overall confidence: {_percent(confidence)}\n"
+        f"EQ confidence: {_percent(eq_confidence)}\n"
+        f"Capture confidence: {_percent(capture_confidence)}\n"
+        f"Validation confidence: {_percent(validation_confidence)}\n"
         f"Weighted target error before: {_db_value(before)}\n"
         f"Weighted target error after: {_db_value(after)}\n"
         f"Validation gain scale: {_percent(scale)}\n"
-        f"Target profile: {diagnostics.get('target_profile', '--')}"
+        f"Target profile: {diagnostics.get('target_profile', '--')}\n"
+        f"Fallback analysis: {'yes' if used_fallback else 'no'}"
     )
     return text, state, tooltip
 

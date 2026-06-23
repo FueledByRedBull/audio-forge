@@ -92,11 +92,19 @@ def _band_confidence(
     band_snr_db: np.ndarray,
     voiced_window_ratio: float,
     repeatability_dense: np.ndarray | None,
+    active_gains: np.ndarray | None = None,
 ) -> np.ndarray:
-    snr_reliability = np.clip((band_snr_db - 3.0) / 15.0, 0.0, 1.0)
+    snr_reliability = np.clip((band_snr_db - 3.0) / 10.0, 0.0, 1.0)
     residual_at_centers = np.abs(np.interp(centers_hz, dense_freqs, residual_db))
-    residual_reliability = np.clip(residual_at_centers / 4.0, 0.15, 1.0)
-    residual_reliability = np.where(residual_at_centers < 0.25, 1.0, residual_reliability)
+    if active_gains is None:
+        active_mask = residual_at_centers >= 0.75
+    else:
+        active_mask = np.abs(active_gains) >= 0.25
+    correction_support = np.where(
+        active_mask,
+        np.clip(residual_at_centers / 2.0, 0.55, 1.0),
+        0.85,
+    )
     if repeatability_dense is None:
         repeatability = np.full_like(centers_hz, 0.90, dtype=float)
         snr_reliability = np.maximum(snr_reliability, 0.75)
@@ -110,9 +118,9 @@ def _band_confidence(
         )
     coverage = np.clip(voiced_window_ratio / 0.55, 0.0, 1.0)
     confidence = (
-        0.35 * snr_reliability
-        + 0.30 * repeatability
-        + 0.20 * residual_reliability
+        0.25 * snr_reliability
+        + 0.35 * repeatability
+        + 0.25 * correction_support
         + 0.15 * coverage
     )
     return np.clip(confidence, 0.0, 1.0)
@@ -161,6 +169,47 @@ def _apply_confidence_gain_scaling(
         if conf < 0.20:
             scaled[i] *= 0.15
     return scaled
+
+
+def _validation_confidence(
+    before_error: float,
+    after_error: float,
+    validation_gain_scale: float,
+) -> float:
+    if before_error <= 1e-9:
+        improvement_score = 1.0
+    else:
+        improvement_ratio = max(0.0, (before_error - after_error) / before_error)
+        improvement_score = np.clip(improvement_ratio / 0.20, 0.0, 1.0)
+    return float(
+        np.clip(
+            0.35 + 0.35 * improvement_score + 0.30 * float(validation_gain_scale),
+            0.0,
+            1.0,
+        )
+    )
+
+
+def _overall_confidence(
+    band_confidences: np.ndarray,
+    gains: np.ndarray,
+    capture_confidence: float | None,
+    validation_confidence: float,
+) -> tuple[float, float, float]:
+    active_mask = np.abs(gains) >= 0.25
+    if np.any(active_mask):
+        eq_confidence = float(np.mean(band_confidences[active_mask]))
+    else:
+        eq_confidence = float(np.mean(band_confidences))
+    capture_score = float(capture_confidence) if capture_confidence is not None else 1.0
+    overall = float(
+        np.clip(
+            0.55 * eq_confidence + 0.25 * capture_score + 0.20 * validation_confidence,
+            0.0,
+            1.0,
+        )
+    )
+    return overall, eq_confidence, capture_score
 
 
 def _validate_and_attenuate_solution(
@@ -243,7 +292,9 @@ def calculate_eq_bands(
     spectral_repeatability=None,
     voiced_window_ratio=1.0,
     analysis_confidence=None,
+    global_snr_db=None,
     target_profile="static",
+    used_spectrum_fallback=False,
 ):
     """
     Calculate optimal 10-band EQ settings using least-squares optimization.
@@ -315,6 +366,8 @@ def calculate_eq_bands(
     qs_stage1 = q_initial
 
     band_snr_db = _estimate_band_snr_db(dense_freqs, measured_dense_db, base_centers_hz)
+    if global_snr_db is not None:
+        band_snr_db = np.maximum(band_snr_db, float(global_snr_db) - 6.0)
     preliminary_confidence = _band_confidence(
         dense_freqs,
         base_centers_hz,
@@ -404,6 +457,7 @@ def calculate_eq_bands(
         band_snr_db,
         float(voiced_window_ratio),
         repeatability_dense,
+        active_gains=optimal_gains,
     )
 
     debug_log(
@@ -434,8 +488,8 @@ def calculate_eq_bands(
     if hasattr(stage2, "message"):
         debug_log(f"[EQ_CALC] Stage2 message: {stage2.message}")
 
-    # Apply conservative correction and confidence scaling.
-    optimal_gains = _apply_confidence_gain_scaling(optimal_gains * 0.75, band_confidences)
+    # Apply confidence scaling once and let validation decide whether more attenuation is needed.
+    optimal_gains = _apply_confidence_gain_scaling(optimal_gains, band_confidences)
     optimal_qs = _regularize_q_for_confidence(
         optimal_qs,
         optimal_gains,
@@ -462,13 +516,34 @@ def calculate_eq_bands(
         band_confidences,
         weights,
     )
+    inactive_mask = np.abs(optimal_gains) < 0.25
+    if np.any(inactive_mask):
+        optimal_gains = optimal_gains.copy()
+        optimal_gains[inactive_mask] = 0.0
+        band_confidences = band_confidences.copy()
+        band_confidences[inactive_mask] = np.maximum(band_confidences[inactive_mask], 0.75)
+        after_error = weighted_target_error(
+            dense_freqs,
+            measured_dense_db,
+            target_dense_db,
+            optimal_gains,
+            optimal_qs,
+            optimal_centers_hz,
+            weights,
+        )
 
-    debug_log(f"[EQ_CALC] Final gains (after 70% correction): {[round(g, 2) for g in optimal_gains]}")
-    overall_confidence = float(
-        analysis_confidence
-        if analysis_confidence is not None
-        else np.mean(band_confidences)
+    validation_conf = _validation_confidence(before_error, after_error, validation_gain_scale)
+    overall_confidence, eq_confidence, capture_confidence = _overall_confidence(
+        band_confidences,
+        optimal_gains,
+        analysis_confidence,
+        validation_conf,
     )
+    low_confidence_active_bands = int(
+        np.sum((np.abs(optimal_gains) >= 0.25) & (band_confidences < 0.45))
+    )
+
+    debug_log(f"[EQ_CALC] Final gains: {[round(g, 2) for g in optimal_gains]}")
 
     return {
         'band_gains': optimal_gains.tolist(),
@@ -476,9 +551,15 @@ def calculate_eq_bands(
         'band_freqs': optimal_centers_hz.tolist(),
         'band_confidences': band_confidences.tolist(),
         'analysis_confidence': overall_confidence,
+        'eq_confidence': eq_confidence,
+        'capture_confidence': capture_confidence,
+        'validation_confidence': validation_conf,
+        'low_confidence_active_bands': low_confidence_active_bands,
+        'active_band_count': int(np.sum(np.abs(optimal_gains) >= 0.25)),
         'validation_before_error_db': before_error,
         'validation_after_error_db': after_error,
         'validation_gain_scale': validation_gain_scale,
         'target_profile': target_profile,
+        'used_spectrum_fallback': bool(used_spectrum_fallback),
         'eq_quality': quality_metrics,
     }

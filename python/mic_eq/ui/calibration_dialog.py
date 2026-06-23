@@ -619,19 +619,33 @@ class CalibrationDialog(QDialog):
     def _show_analysis_diagnostics(self, eq_settings: dict) -> None:
         """Show Auto-EQ confidence and validation details before applying."""
         confidence = float(eq_settings.get("analysis_confidence", 0.0) or 0.0)
+        eq_confidence = float(eq_settings.get("eq_confidence", confidence) or 0.0)
+        capture_confidence = float(eq_settings.get("capture_confidence", confidence) or 0.0)
+        validation_confidence = float(eq_settings.get("validation_confidence", 0.0) or 0.0)
         state = _diagnostic_state(confidence)
         before = eq_settings.get("validation_before_error_db")
         after = eq_settings.get("validation_after_error_db")
         scale = eq_settings.get("validation_gain_scale")
         target_profile = eq_settings.get("target_profile", "--")
+        used_fallback = bool(eq_settings.get("used_spectrum_fallback", False))
 
-        self.confidence_label.setText(f"Confidence: {_format_percent(confidence)}")
+        self.confidence_label.setText(
+            "Confidence: "
+            f"overall {_format_percent(confidence)} | "
+            f"EQ {_format_percent(eq_confidence)} | "
+            f"capture {_format_percent(capture_confidence)}"
+        )
         self.confidence_label.setStyleSheet(status_chip_style(state))
         self.error_label.setText(f"Target error: {_format_db(before)} -> {_format_db(after)}")
         self.error_label.setStyleSheet(status_chip_style("ok" if after is not None else "idle"))
-        self.gain_scale_label.setText(f"Gain scale: {_format_percent(scale)}")
+        self.gain_scale_label.setText(
+            f"Validation: {_format_percent(validation_confidence)} | gain scale {_format_percent(scale)}"
+        )
         self.gain_scale_label.setStyleSheet(status_chip_style("info"))
-        self.target_profile_label.setText(f"Target profile: {target_profile}")
+        self.target_profile_label.setText(
+            f"Target profile: {target_profile}"
+            + (" | fallback spectrum" if used_fallback else "")
+        )
         self.target_profile_label.setStyleSheet(status_chip_style("info"))
         self.diagnostics_group.setVisible(True)
 

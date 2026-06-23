@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "mic_eq_core"
-version = "1.8.1"
+version = "1.8.2"
 dependencies = [
  "approx",
  "cpal",

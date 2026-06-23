@@ -398,6 +398,9 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
         "band_gains": [0.0] * 10,
         "band_qs": [1.41] * 10,
         "analysis_confidence": 0.76,
+        "eq_confidence": 0.74,
+        "capture_confidence": 0.81,
+        "validation_confidence": 0.78,
         "validation_before_error_db": 5.0,
         "validation_after_error_db": 2.5,
         "validation_gain_scale": 0.9,
@@ -407,9 +410,9 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
     dialog._on_analysis_complete(eq_settings)
 
     assert not dialog.diagnostics_group.isHidden()
-    assert dialog.confidence_label.text() == "Confidence: 76%"
+    assert dialog.confidence_label.text() == "Confidence: overall 76% | EQ 74% | capture 81%"
     assert dialog.error_label.text() == "Target error: 5.0 dB -> 2.5 dB"
-    assert dialog.gain_scale_label.text() == "Gain scale: 90%"
+    assert dialog.gain_scale_label.text() == "Validation: 78% | gain scale 90%"
     assert dialog.target_profile_label.text() == "Target profile: broadcast:adaptive"
 
     dialog.close()

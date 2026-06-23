@@ -255,10 +255,11 @@ def analyze_voice_spectrum(audio, fs=48000, nperseg=4096) -> VoiceSpectrumResult
         if np.any(voice_mask)
         else float(np.median(repeatability))
     )
+    coverage = float(np.clip(voiced_ratio / 0.55, 0.0, 1.0))
     residual_confidence = float(
         np.clip(
             0.50 * repeatability_score
-            + 0.30 * voiced_ratio
+            + 0.30 * coverage
             + 0.20 * snr_confidence,
             0.0,
             1.0,

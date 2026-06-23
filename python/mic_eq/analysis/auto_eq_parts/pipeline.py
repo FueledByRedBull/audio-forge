@@ -54,7 +54,9 @@ def analyze_auto_eq(audio_data, sample_rate, target_preset='broadcast'):
         spectral_repeatability=spectrum_result.spectral_repeatability,
         voiced_window_ratio=spectrum_result.voiced_window_ratio,
         analysis_confidence=spectrum_result.residual_confidence,
+        global_snr_db=spectrum_result.snr_db,
         target_profile=target_profile,
+        used_spectrum_fallback=spectrum_result.used_single_spectrum_fallback,
     )
 
     # Step 5: Validate results
@@ -66,6 +68,9 @@ def analyze_auto_eq(audio_data, sample_rate, target_preset='broadcast'):
             "spectral_tilt_db_per_octave": spectrum_result.spectral_tilt_db_per_octave,
             "used_single_spectrum_fallback": spectrum_result.used_single_spectrum_fallback,
             "analysis_confidence": spectrum_result.residual_confidence,
+            "capture_confidence": eq_settings.get("capture_confidence"),
+            "eq_confidence": eq_settings.get("eq_confidence"),
+            "validation_confidence": eq_settings.get("validation_confidence"),
             "validation_before_error_db": eq_settings.get("validation_before_error_db"),
             "validation_after_error_db": eq_settings.get("validation_after_error_db"),
             "validation_gain_scale": eq_settings.get("validation_gain_scale"),

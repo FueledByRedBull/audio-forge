@@ -130,6 +130,9 @@ def test_auto_eq_diagnostics_are_shown_in_eq_panel(qapp):
     ]
     diagnostics = {
         "analysis_confidence": 0.82,
+        "eq_confidence": 0.76,
+        "capture_confidence": 0.88,
+        "validation_confidence": 0.79,
         "validation_before_error_db": 4.2,
         "validation_after_error_db": 2.1,
         "validation_gain_scale": 0.85,
@@ -140,7 +143,8 @@ def test_auto_eq_diagnostics_are_shown_in_eq_panel(qapp):
     panel.apply_auto_eq_results(bands, diagnostics=diagnostics)
     qapp.processEvents()
 
-    assert "confidence 82%" in panel.auto_eq_diag_label.text()
+    assert "overall 82%" in panel.auto_eq_diag_label.text()
+    assert "EQ 76%" in panel.auto_eq_diag_label.text()
     assert "4.2 dB -> 2.1 dB" in panel.auto_eq_diag_label.text()
 
     try:

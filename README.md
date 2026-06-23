@@ -5,7 +5,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)]()
 
-AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, latency calibration, and dynamics control.
+AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
 
 Current version: `v1.8.2`
 
@@ -30,6 +30,7 @@ User-facing tools:
 - Auto thresholding that tracks the live noise floor in VAD modes.
 - 10-band parametric EQ with gain, Q, and per-band center frequencies.
 - Auto-EQ calibration that records your voice, analyzes the spectrum, and applies a bounded correction.
+- Auto Voice Setup wizard that records room noise plus speech and recommends EQ, gate/VAD, de-esser, and compressor settings in one pass.
 - Dynamic-EQ de-esser, compressor, auto makeup gain, and lookahead limiter.
 - Per device-pair latency calibration profiles.
 - Raw monitor and bypass paths for troubleshooting.
@@ -98,7 +99,7 @@ You can also use the installed console entrypoint:
 1. Select input and output devices.
 2. Start processing.
 3. Choose a suppressor backend and gate mode.
-4. Tune EQ/dynamics manually or run Auto-EQ.
+4. Tune EQ/dynamics manually, run Auto-EQ, or run Auto Voice Setup for a broader voice-chain calibration.
 5. Run latency calibration if the current device route needs compensation.
 
 Useful behavior to know:
@@ -106,6 +107,7 @@ Useful behavior to know:
 - Device refresh keeps the current selection when the same device is still available.
 - Input/output stream setup prefers 48 kHz configs when available.
 - In VAD modes, auto threshold is the default path; the UI shows live noise floor and effective threshold.
+- Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
 - Diagnostics separate input drops, backlog recovery, output recovery, and short-write loss.
 
 ## Development Assets

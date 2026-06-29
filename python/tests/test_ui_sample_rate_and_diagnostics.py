@@ -12,12 +12,18 @@ from mic_eq.ui.latency_calibration_dialog import (
     _capture_sample_rate,
     _device_name as latency_device_name,
 )
+from mic_eq.ui.device_selection import (
+    default_device_index,
+    find_identity_index,
+    preferred_output_index,
+)
 from mic_eq.ui.main_window import (
     MainWindow,
     _normalize_startup_preset_id,
     _startup_builtin_id,
     _startup_custom_id,
 )
+from mic_eq.ui.stream_recovery import StreamRecoveryManager
 from mic_eq.config import (
     CompressorSettings,
     DeviceIdentity,
@@ -319,19 +325,12 @@ class _RecoveryWindow:
         self.backend_diag_label = _FakeLabel()
         self.recovery_diag_label = _FakeLabel()
         self.status_bar = _FakeStatusBar()
-        self._last_diag_poll = -1.0
         self._last_backend_warning = None
         self._calibration_dialog_open = False
-        self._output_stall_started_at = None
-        self._output_callback_stall_started_at = None
-        self._processing_started_at = 0.0
-        self._last_output_recovery_at = 0.0
+        self._stream_recovery = StreamRecoveryManager(processing_started_at=0.0)
 
-    def _maybe_recover_output_stall(self, *args, **kwargs):
-        return None
-
-    def _maybe_recover_callback_stall(self, *args, **kwargs):
-        return None
+    def _recover_output_path(self):
+        self.status_bar.showMessage("Recovered output path automatically: test")
 
     def _reset_health_labels(self):
         return None
@@ -346,6 +345,12 @@ class _RecoveryWindow:
 
     def _set_health_chip(self, label: _FakeLabel, text: str, state: str) -> None:
         label.setText(text)
+
+    def _update_diagnostic_labels(self, **kwargs) -> None:
+        MainWindow._update_diagnostic_labels(self, **kwargs)
+
+    def _service_stream_recovery(self, **kwargs) -> None:
+        MainWindow._service_stream_recovery(self, **kwargs)
 
 
 def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
@@ -480,6 +485,27 @@ def test_main_window_diagnostics_include_new_metrics():
     assert "OR:N" in backend_bits
 
 
+def test_device_selection_policy_matches_exact_then_name():
+    identities = [
+        DeviceIdentity(name="Mic A", is_default=False),
+        DeviceIdentity(name="Mic B", is_default=True),
+    ]
+
+    assert find_identity_index(identities, DeviceIdentity(name="Mic B", is_default=True)) == 1
+    assert find_identity_index(identities, DeviceIdentity(name="Mic B", is_default=False)) == 1
+    assert find_identity_index(identities, DeviceIdentity(name="Missing", is_default=False)) == -1
+
+
+def test_device_selection_policy_prefers_default_and_virtual_output():
+    identities = [
+        DeviceIdentity(name="Speakers", is_default=True),
+        DeviceIdentity(name="VB-Audio Cable", is_default=False),
+    ]
+
+    assert default_device_index(identities) == 0
+    assert preferred_output_index(identities) == 1
+
+
 def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.input_combo = _FakeCombo(
@@ -604,10 +630,10 @@ def test_latency_dialog_device_name_coerces_identity_to_name():
     assert latency_device_name(None) is None
 
 
-def test_update_meters_surfaces_output_recovery_and_reuses_diagnostics(qapp):
+def test_update_diagnostics_surfaces_output_recovery_and_reuses_diagnostics(qapp):
     window = _RecoveryWindow()
 
-    MainWindow._update_meters(window)
+    MainWindow._update_diagnostics(window)
 
     assert window.processor.diagnostics_calls == 1
     assert "ORC:4" in window.recovery_diag_label.text

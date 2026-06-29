@@ -1,5 +1,5 @@
 """
-MicEq entry point
+AudioForge source/development entry point
 
 Run with: python -m mic_eq
 """
@@ -8,7 +8,7 @@ import sys
 
 
 def main():
-    """Main entry point for MicEq application."""
+    """Main entry point for the AudioForge application."""
     try:
         from .ui import run_app
         return run_app()

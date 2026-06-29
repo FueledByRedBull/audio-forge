@@ -21,7 +21,7 @@ if directml_dll.exists():
 models_dir = repo_root / "models"
 if models_dir.exists():
     datas.append((str(models_dir), "models"))
-icon_file = repo_root / "mic_eq.ico"
+icon_file = repo_root / "AudioForge.ico"
 
 
 a = Analysis(

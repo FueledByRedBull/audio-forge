@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import runpy
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from mic_eq.app_logging import configure_app_logging, get_log_file
 from mic_eq.ui import app_bootstrap
 
 
@@ -182,6 +185,32 @@ def test_vad_bootstrap_preserves_explicit_override(tmp_path, monkeypatch):
     app_bootstrap.configure_vad_env()
 
     assert app_bootstrap.os.environ["VAD_MODEL_PATH"] == str(external)
+
+
+def test_app_logging_uses_audioforge_rotating_log(tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    log_file = get_log_file()
+
+    configured = configure_app_logging()
+
+    try:
+        assert configured == log_file
+        assert log_file == tmp_path / "AudioForge" / "logs" / "app.log"
+        assert log_file.parent.is_dir()
+        assert any(
+            isinstance(handler, RotatingFileHandler)
+            and Path(handler.baseFilename) == log_file
+            for handler in logging.getLogger().handlers
+        )
+    finally:
+        root_logger = logging.getLogger()
+        for handler in list(root_logger.handlers):
+            if (
+                isinstance(handler, RotatingFileHandler)
+                and Path(handler.baseFilename) == log_file
+            ):
+                root_logger.removeHandler(handler)
+                handler.close()
 
 
 def test_launcher_preserves_explicit_vad_override_in_frozen_bundle(tmp_path, monkeypatch):

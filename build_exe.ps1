@@ -8,7 +8,7 @@ $ProjectRoot = $PSScriptRoot
 Push-Location $ProjectRoot
 
 try {
-Write-Host "MicEq Executable Builder" -ForegroundColor Green
+Write-Host "AudioForge Executable Builder" -ForegroundColor Green
 Write-Host ""
 
 # Use the locally built Rust extension from source tree.
@@ -80,8 +80,8 @@ if (Test-Path "target\release\DirectML.dll") {
     exit 1
 }
 
-if (Test-Path "mic_eq.ico") {
-    Write-Host "Using icon: mic_eq.ico" -ForegroundColor Green
+if (Test-Path "AudioForge.ico") {
+    Write-Host "Using icon: AudioForge.ico" -ForegroundColor Green
 }
 
 Write-Host "Building executable from AudioForge.spec..." -ForegroundColor Cyan

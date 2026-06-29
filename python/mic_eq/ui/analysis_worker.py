@@ -3,11 +3,15 @@ Non-blocking analysis worker for Auto-EQ calibration.
 
 Runs audio analysis in background thread with step-by-step progress signals.
 """
+import logging
 import threading
 import time
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from mic_eq.analysis import analyze_auto_eq
+
+
+logger = logging.getLogger(__name__)
 
 
 class AnalysisWorker(QThread):
@@ -80,7 +84,7 @@ class AnalysisWorker(QThread):
 
             # Log duration for debugging (optional)
             if elapsed > 0.5:
-                print(f"Analysis took {elapsed:.2f}s (should be <500ms)")
+                logger.info("Analysis took %.2fs (target <500ms)", elapsed)
 
             self.finished.emit(eq_settings)
 

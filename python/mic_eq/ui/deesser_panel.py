@@ -4,6 +4,8 @@ De-esser control panel.
 Controls sibilance reduction stage placed between noise suppression and EQ.
 """
 
+import logging
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -20,6 +22,9 @@ from PyQt6.QtWidgets import (
 from .level_meter import GainReductionMeter
 from .layout_constants import INFO_LABEL_STYLE, MARGIN_PANEL, PRIMARY_LABEL_STYLE, SPACING_NORMAL
 from .rate_limiter import RateLimiter
+
+
+logger = logging.getLogger(__name__)
 
 
 class DeEsserPanel(QWidget):
@@ -395,8 +400,8 @@ class DeEsserPanel(QWidget):
 
         try:
             self._rate_limiter.call(apply)
-        except Exception as e:
-            print(f"De-esser update error: {type(e).__name__}: {e}")
+        except Exception:
+            logger.debug("De-esser update failed", exc_info=True)
 
     def update_gain_reduction(self, gr_db: float):
         self.gr_meter.set_gain_reduction(gr_db)

@@ -302,7 +302,7 @@ class CalibrationDialog(QDialog):
     def _apply_eq_settings(self):
         """Apply auto-EQ settings to main window and close dialog."""
         if DEBUG:
-            print("[CALIBRATION_DLG] Applying EQ settings...")
+            logger.debug("Applying EQ settings")
 
         # Get parent's EQ panel (MainWindow has it)
         parent = _find_eq_panel_owner(self.parent())
@@ -330,7 +330,7 @@ class CalibrationDialog(QDialog):
         self.auto_eq_applied.emit(target_curve)
 
         if DEBUG:
-            print(f"[CALIBRATION_DLG] EQ settings applied, signal emitted for curve={target_curve}")
+            logger.debug("EQ settings applied, signal emitted for curve=%s", target_curve)
 
         # Close dialog
         self.accept()
@@ -338,7 +338,7 @@ class CalibrationDialog(QDialog):
     def _start_recording(self):
         """Start non-blocking recording."""
         if DEBUG:
-            print("[CALIBRATION_DLG] Start recording clicked")
+            logger.debug("Start recording clicked")
 
         self._stop_analysis_worker()
 
@@ -353,11 +353,11 @@ class CalibrationDialog(QDialog):
         selected_input, selected_output = _selected_device_pair(parent)
 
         if DEBUG:
-            print(
-                "[CALIBRATION_DLG] Processor state: "
-                f"running={processor_was_running}, "
-                f"selected_input={selected_input!r}, "
-                f"selected_output={selected_output!r}"
+            logger.debug(
+                "Processor state: running=%s, selected_input=%r, selected_output=%r",
+                processor_was_running,
+                selected_input,
+                selected_output,
             )
 
         if processor_was_running:
@@ -366,10 +366,7 @@ class CalibrationDialog(QDialog):
             active_input = _device_name(get_active_input() if callable(get_active_input) else None)
             active_output = _device_name(get_active_output() if callable(get_active_output) else None)
             if DEBUG:
-                print(
-                    "[CALIBRATION_DLG] Active stream devices: "
-                    f"input={active_input!r}, output={active_output!r}"
-                )
+                logger.debug("Active stream devices: input=%r, output=%r", active_input, active_output)
 
             if active_input != selected_input or active_output != selected_output:
                 reply = QMessageBox.question(
@@ -390,12 +387,12 @@ class CalibrationDialog(QDialog):
 
                 try:
                     if DEBUG:
-                        print("[CALIBRATION_DLG] Restarting processor on selected devices")
+                        logger.debug("Restarting processor on selected devices")
                     parent.processor.stop()
                     parent.processor.start(selected_input, selected_output)
                     parent.processor.set_output_mute(False)
                     if DEBUG:
-                        print("[CALIBRATION_DLG] Processor restarted on selected devices")
+                        logger.debug("Processor restarted on selected devices")
                 except Exception as e:
                     QMessageBox.critical(
                         self,
@@ -405,15 +402,15 @@ class CalibrationDialog(QDialog):
                     return
             self._started_processor = False
             if DEBUG:
-                print("[CALIBRATION_DLG] Reusing running processor session")
+                logger.debug("Reusing running processor session")
         else:
             try:
                 if DEBUG:
-                    print("[CALIBRATION_DLG] Starting audio processor from main thread...")
+                    logger.debug("Starting audio processor from main thread")
                 parent.processor.start(selected_input, selected_output)
                 self._started_processor = True  # Track that we started it
                 if DEBUG:
-                    print("[CALIBRATION_DLG] Audio processor started successfully")
+                    logger.debug("Audio processor started successfully")
             except Exception as e:
                 QMessageBox.critical(
                     self, "Audio Error",
@@ -456,7 +453,7 @@ class CalibrationDialog(QDialog):
         self._recording_started_at = time.time()
         self.recording_timer.start()
         if DEBUG:
-            print("[CALIBRATION_DLG] Started main-thread recording capture")
+            logger.debug("Started main-thread recording capture")
 
     def _poll_recording_progress(self):
         """Poll recording state from the main Qt thread."""
@@ -520,12 +517,12 @@ class CalibrationDialog(QDialog):
     def _on_recording_complete(self, audio_data: np.ndarray):
         """Handle recording completion."""
         if DEBUG:
-            print(f"[CALIBRATION_DLG] Recording complete: {len(audio_data)} samples")
+            logger.debug("Recording complete: %d samples", len(audio_data))
             import numpy as np
             rms = np.mean(audio_data**2)**0.5
             peak_db = 20 * np.log10(max(np.abs(audio_data).max(), 1e-6))
             rms_db = 20 * np.log10(max(rms, 1e-6))
-            print(f"[CALIBRATION_DLG] Audio stats - Peak: {peak_db:.1f} dB, RMS: {rms_db:.1f} dB")
+            logger.debug("Audio stats - Peak: %.1f dB, RMS: %.1f dB", peak_db, rms_db)
 
         self.audio_data = audio_data
         self.recording_state = "completed"
@@ -543,10 +540,10 @@ class CalibrationDialog(QDialog):
         self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
 
         if DEBUG:
-            print("[CALIBRATION_DLG] Audio captured; starting analysis")
+            logger.debug("Audio captured; starting analysis")
 
         if DEBUG:
-            print("[ANALYSIS] Starting analysis worker")
+            logger.debug("Starting analysis worker")
         self._start_analysis()
 
     def _on_recording_failed(self, error: str):
@@ -560,7 +557,7 @@ class CalibrationDialog(QDialog):
         """Start analysis worker."""
         if self.audio_data is None:
             if DEBUG:
-                print("[ANALYSIS] No audio data to analyze")
+                logger.debug("No audio data to analyze")
             return
 
         self._stop_analysis_worker()
@@ -570,14 +567,19 @@ class CalibrationDialog(QDialog):
 
         if not parent:
             if DEBUG:
-                print("[ANALYSIS] ERROR: Could not find processor")
+                logger.debug("Could not find processor")
             return
 
         sample_rate = _processor_sample_rate(parent)
         target_preset = self.get_selected_curve()
 
         if DEBUG:
-            print(f"[ANALYSIS] Creating AnalysisWorker: {len(self.audio_data)} samples, {sample_rate}Hz, target={target_preset}")
+            logger.debug(
+                "Creating AnalysisWorker: %d samples, %sHz, target=%s",
+                len(self.audio_data),
+                sample_rate,
+                target_preset,
+            )
 
         # Create and start analysis worker
         self.analysis_worker = AnalysisWorker(self.audio_data, sample_rate, target_preset)
@@ -587,22 +589,22 @@ class CalibrationDialog(QDialog):
         self.analysis_worker.start()
 
         if DEBUG:
-            print("[ANALYSIS] AnalysisWorker started")
+            logger.debug("AnalysisWorker started")
 
     def _on_analysis_step(self, step_name: str, percentage: int):
         """Handle analysis step progress."""
         if DEBUG:
-            print(f"[ANALYSIS] Step {percentage}%: {step_name}")
+            logger.debug("Analysis step %s%%: %s", percentage, step_name)
         self.warning_label.setText(f"Analyzing: {step_name}")
         self.progress_bar.setValue(percentage)
 
     def _on_analysis_complete(self, eq_settings: dict):
         """Handle analysis completion."""
         if DEBUG:
-            print("[ANALYSIS] Analysis complete!")
-            print(f"[ANALYSIS] Band gains: {[round(g, 1) for g in eq_settings['band_gains']]}")
+            logger.debug("Analysis complete")
+            logger.debug("Band gains: %s", [round(g, 1) for g in eq_settings['band_gains']])
             max_gain = max(abs(g) for g in eq_settings['band_gains'])
-            print(f"[ANALYSIS] Max correction: {round(max_gain, 1)} dB")
+            logger.debug("Max correction: %.1f dB", round(max_gain, 1))
 
         self.eq_settings = eq_settings
         self.warning_label.setText(f"✓ Analysis complete! Max correction: {round(max(abs(g) for g in eq_settings['band_gains']), 1)} dB")
@@ -614,7 +616,7 @@ class CalibrationDialog(QDialog):
         self.start_button.setText("Apply EQ Settings")
         self.start_button.setEnabled(True)
         if DEBUG:
-            print("[ANALYSIS] EQ settings ready to apply")
+            logger.debug("EQ settings ready to apply")
 
     def _show_analysis_diagnostics(self, eq_settings: dict) -> None:
         """Show Auto-EQ confidence and validation details before applying."""
@@ -652,7 +654,7 @@ class CalibrationDialog(QDialog):
     def _on_analysis_failed(self, error: str):
         """Handle analysis failure."""
         if DEBUG:
-            print(f"[ANALYSIS] Analysis failed: {error}")
+            logger.debug("Analysis failed: %s", error)
         self.warning_label.setText(f"❌ {error}")
         self.warning_label.setStyleSheet("color: orange; font-weight: bold; font-size: 11pt;")
         self.diagnostics_group.setVisible(False)
@@ -721,11 +723,11 @@ class CalibrationDialog(QDialog):
         if parent:
             try:
                 if DEBUG:
-                    print("[CALIBRATION_DLG] Stopping audio processor (we started it)")
+                    logger.debug("Stopping audio processor owned by calibration dialog")
                 parent.processor.stop()
-            except Exception as e:
+            except Exception:
                 if DEBUG:
-                    print(f"[CALIBRATION_DLG] Error stopping processor: {e}")
+                    logger.debug("Error stopping processor", exc_info=True)
         self._started_processor = False
 
     def _cleanup_recording_tap(self):

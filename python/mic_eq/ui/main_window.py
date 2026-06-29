@@ -32,8 +32,8 @@ from PyQt6.QtGui import QAction
 import os
 import sys
 import json
+import logging
 import shutil
-import time
 from pathlib import Path
 
 from .gate_panel import GatePanel
@@ -45,6 +45,8 @@ from .calibration_dialog import CalibrationDialog
 from .latency_calibration_dialog import LatencyCalibrationDialog
 from .voice_setup_dialog import VoiceSetupDialog
 from .app_bootstrap import run_qt_app
+from .device_selection import default_device_index, find_identity_index, preferred_output_index
+from .stream_recovery import StreamRecoveryManager
 from .layout_constants import (
     SPACING_SECTION,
     SPACING_NORMAL,
@@ -91,50 +93,7 @@ from ..config import (
 
 # Enable debug logging
 DEBUG = False
-
-def _update_callback_stall_state(
-    stall_started_at: float | None,
-    now: float,
-    input_cb_age_ms: int,
-    output_cb_age_ms: int,
-    processing_started_at: float | None,
-    last_recovery_at: float,
-    calibration_dialog_open: bool,
-    warmup_s: float = 5.0,
-    cooldown_s: float = 20.0,
-    grace_s: float = 1.5,
-    output_age_threshold_ms: int = 2000,
-    input_age_threshold_ms: int = 1500,
-) -> tuple[float | None, bool]:
-    """
-    State machine for output callback stall detection.
-
-    Returns (new_stall_started_at, should_recover).
-    """
-    if calibration_dialog_open:
-        return None, False
-
-    if processing_started_at is None:
-        return None, False
-
-    if now - processing_started_at < warmup_s:
-        return None, False
-
-    if now - last_recovery_at < cooldown_s:
-        return stall_started_at, False
-
-    suspicious = output_cb_age_ms > output_age_threshold_ms and input_cb_age_ms < input_age_threshold_ms
-
-    if not suspicious:
-        return None, False
-
-    if stall_started_at is None:
-        return now, False
-
-    if now - stall_started_at < grace_s:
-        return stall_started_at, False
-
-    return None, True
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -158,12 +117,8 @@ class MainWindow(QMainWindow):
         self._pre_auto_eq_state = None
         self._undo_auto_eq_button = None
         self._calibration_dialog_open = False
-        self._output_stall_started_at = None
-        self._output_callback_stall_started_at = None
-        self._last_output_recovery_at = 0.0
-        self._processing_started_at = None
+        self._stream_recovery = StreamRecoveryManager()
         self._last_backend_warning = None
-        self._last_diag_poll = 0.0
         self._ui_state_timer = QTimer(self)
         self._ui_state_timer.setSingleShot(True)
         self._ui_state_timer.timeout.connect(self._save_ui_state)
@@ -192,6 +147,11 @@ class MainWindow(QMainWindow):
         self.meter_timer = QTimer(self)
         self.meter_timer.timeout.connect(self._update_meters)
         self.meter_timer.start(16)  # ~60 FPS
+
+        # Slower diagnostics/recovery service timer.
+        self.diagnostics_timer = QTimer(self)
+        self.diagnostics_timer.timeout.connect(self._update_diagnostics)
+        self.diagnostics_timer.start(250)
 
     def _setup_ui(self):
         """Set up the user interface."""
@@ -548,12 +508,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _find_combo_index_by_identity(combo: QComboBox, identity: DeviceIdentity | None) -> int:
-        if identity is None:
-            return -1
-        for i in range(combo.count()):
-            if combo.itemData(i) == identity:
-                return i
-        return -1
+        return find_identity_index(MainWindow._combo_identities(combo), identity)
 
     def _select_combo_identity(
         self,
@@ -568,11 +523,15 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _default_combo_index(combo: QComboBox) -> int:
-        for i in range(combo.count()):
-            item_data = combo.itemData(i)
-            if isinstance(item_data, DeviceIdentity) and item_data.is_default:
-                return i
-        return 0 if combo.count() > 0 else -1
+        return default_device_index(MainWindow._combo_identities(combo))
+
+    @staticmethod
+    def _preferred_output_combo_index(combo: QComboBox) -> int:
+        return preferred_output_index(MainWindow._combo_identities(combo))
+
+    @staticmethod
+    def _combo_identities(combo: QComboBox) -> list[DeviceIdentity | None]:
+        return [coerce_device_identity(combo.itemData(i)) for i in range(combo.count())]
 
     def _device_selection_to_name(self, combo: QComboBox) -> str:
         identity = self._combo_device_identity(combo)
@@ -802,8 +761,8 @@ class MainWindow(QMainWindow):
 
         try:
             self.processor.set_latency_compensation_ms(compensation_ms)
-        except Exception as e:
-            print(f"Failed to apply latency compensation: {type(e).__name__}: {e}")
+        except Exception:
+            logger.exception("Failed to apply latency compensation")
 
     def _on_use_measured_latency_toggled(self, enabled: bool):
         self.config.use_measured_latency = bool(enabled)
@@ -889,7 +848,7 @@ class MainWindow(QMainWindow):
                     self.input_combo.setCurrentIndex(fallback_index)
         except (RuntimeError, OSError) as e:
             self.input_combo.addItem(f"Error: {e}")
-            print(f"Device enumeration failed: {type(e).__name__}: {e}")
+            logger.warning("Input device enumeration failed", exc_info=True)
 
         # Get output devices
         try:
@@ -911,25 +870,13 @@ class MainWindow(QMainWindow):
                             f"Previous output device '{previous_output.name}' not found, using default"
                         )
             elif self.output_combo.count() > 0:
-                vb_cable_index = -1
-                default_index = -1
-                for i, device in enumerate(output_devices):
-                    name_lower = device.name.lower()
-                    if "cable" in name_lower or "vb-audio" in name_lower or "virtual" in name_lower:
-                        vb_cable_index = i
-                        break
-                    if device.is_default and default_index < 0:
-                        default_index = i
-                if vb_cable_index >= 0:
-                    self.output_combo.setCurrentIndex(vb_cable_index)
-                elif default_index >= 0:
-                    self.output_combo.setCurrentIndex(default_index)
-                else:
-                    self.output_combo.setCurrentIndex(0)
+                preferred_index = self._preferred_output_combo_index(self.output_combo)
+                if preferred_index >= 0:
+                    self.output_combo.setCurrentIndex(preferred_index)
 
         except (RuntimeError, OSError) as e:
             self.output_combo.addItem(f"Error: {e}")
-            print(f"Device enumeration failed: {type(e).__name__}: {e}")
+            logger.warning("Output device enumeration failed", exc_info=True)
 
         # Update warning banner visibility and text
         if not input_found and not output_found:
@@ -1057,8 +1004,8 @@ class MainWindow(QMainWindow):
                             self._apply_preset(preset)
                             self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
                             preset_loaded = True
-                        except Exception as e:
-                            print(f"Failed to load startup preset: {e}")
+                        except Exception:
+                            logger.warning("Failed to load startup preset %s", preset_name, exc_info=True)
                             self.status_bar.showMessage(f"Failed to load startup preset: {preset_name}", 5000)
                         break
             # Try legacy unresolved custom display name.
@@ -1070,12 +1017,12 @@ class MainWindow(QMainWindow):
                             self._apply_preset(preset)
                             self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
                             preset_loaded = True
-                        except Exception as e:
-                            print(f"Failed to load startup preset: {e}")
+                        except Exception:
+                            logger.warning("Failed to load startup preset %s", preset_name, exc_info=True)
                             self.status_bar.showMessage(f"Failed to load startup preset: {preset_name}", 5000)
                         break
             if not preset_loaded:
-                print(f"Startup preset '{preset_name}' not found, falling back to last used")
+                logger.warning("Startup preset %r not found; falling back to last used", preset_name)
                 self.status_bar.showMessage(f"Startup preset '{preset_name}' not found", 5000)
 
         # Fall back to last_preset if startup_preset not set or not found
@@ -1113,7 +1060,7 @@ class MainWindow(QMainWindow):
                         self.config.last_preset = ""
                         save_config(self.config)
             except (IOError, OSError, ValueError, json.JSONDecodeError) as e:
-                print(f"Preset restore failed: {type(e).__name__}: {e}")
+                logger.warning("Preset restore failed", exc_info=True)
                 self.status_bar.showMessage(f"Failed to restore preset: {e}")
                 self.config.last_preset = ""
                 save_config(self.config)
@@ -1160,32 +1107,35 @@ class MainWindow(QMainWindow):
         """Start audio processing."""
         if self.processor.is_running():
             if DEBUG:
-                print("[MAIN] Start processing clicked, but processor already running")
+                logger.debug("Start processing clicked, but processor already running")
             return
 
         input_device = self._device_selection_to_name(self.input_combo) or None
         output_device = self._device_selection_to_name(self.output_combo) or None
 
         if DEBUG:
-            print(f"[MAIN] Starting processing - Input: {input_device or '(default)'}, Output: {output_device or '(default)'}")
+            logger.debug(
+                "Starting processing - Input: %s, Output: %s",
+                input_device or "(default)",
+                output_device or "(default)",
+            )
 
         try:
             result = self.processor.start(input_device, output_device)
             # Unmute output after starting processing (in case it was muted by calibration)
             if DEBUG:
-                print("[MAIN] Unmuting output (set_output_mute=False)")
+                logger.debug("Unmuting output after processing start")
             self.processor.set_output_mute(False)
             self.status_bar.showMessage(f"Processing: {result}")
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
             self.input_combo.setEnabled(False)
             self.output_combo.setEnabled(False)
-            self._processing_started_at = time.monotonic()
-            self._output_callback_stall_started_at = None
+            self._stream_recovery.mark_processing_started()
             if DEBUG:
-                print(f"[MAIN] Processing started: {result}")
+                logger.debug("Processing started: %s", result)
         except Exception as e:
-            print(f"Start processing failed: {type(e).__name__}: {e}")
+            logger.exception("Start processing failed")
             error_msg = str(e)
             # Provide actionable guidance based on error type
             if "device" in error_msg.lower() or "audio" in error_msg.lower():
@@ -1213,11 +1163,11 @@ class MainWindow(QMainWindow):
         """Stop audio processing."""
         if not self.processor.is_running():
             if DEBUG:
-                print("[MAIN] Stop processing clicked, but processor not running")
+                logger.debug("Stop processing clicked, but processor is not running")
             return
 
         if DEBUG:
-            print("[MAIN] Stopping processing...")
+            logger.debug("Stopping processing")
 
         try:
             self.processor.stop()
@@ -1226,18 +1176,17 @@ class MainWindow(QMainWindow):
             self.stop_btn.setEnabled(False)
             self.input_combo.setEnabled(True)
             self.output_combo.setEnabled(True)
-            self._processing_started_at = None
-            self._output_callback_stall_started_at = None
+            self._stream_recovery.mark_processing_stopped()
             if DEBUG:
-                print("[MAIN] Processing stopped")
+                logger.debug("Processing stopped")
         except RuntimeError as e:
-            print(f"Stop processing failed: {type(e).__name__}: {e}")
+            logger.exception("Stop processing failed")
             QMessageBox.critical(self, "Error", f"Failed to stop processing:\n{e}")
 
     def _on_auto_eq_clicked(self):
         """Open Auto-EQ calibration dialog."""
         if DEBUG:
-            print("[MAIN] Auto-EQ button clicked - opening calibration dialog")
+            logger.debug("Auto-EQ button clicked; opening calibration dialog")
 
         # Capture state before showing dialog
         self.capture_pre_auto_eq_state()
@@ -1251,9 +1200,9 @@ class MainWindow(QMainWindow):
         finally:
             self._calibration_dialog_open = False
         if DEBUG:
-            print(f"[MAIN] Calibration dialog closed, result={dialog.result()}")
+            logger.debug("Calibration dialog closed, result=%s", dialog.result())
             is_running = self.processor.is_running()
-            print(f"[MAIN] After calibration - processor running={is_running}")
+            logger.debug("After calibration - processor running=%s", is_running)
 
     def _on_auto_voice_setup_clicked(self):
         """Open the multi-stage voice setup wizard."""
@@ -1436,7 +1385,7 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage(f"Switched to {self.model_combo.currentText()}")
         except Exception as e:
             # Unexpected error - show detailed dialog with guidance
-            print(f"Model switch error: {type(e).__name__}: {e}")
+            logger.exception("Model switch error")
             QMessageBox.critical(
                 self,
                 "Error Switching Model",
@@ -1457,22 +1406,12 @@ class MainWindow(QMainWindow):
     def _update_meters(self):
         """Update level meters from processor (called by timer)."""
         if self.processor.is_running():
-            diagnostics = self.processor.get_runtime_diagnostics()
-            # Get levels from processor
             input_rms = self.processor.get_input_rms_db()
             input_peak = self.processor.get_input_peak_db()
             output_rms = self.processor.get_output_rms_db()
             output_peak = self.processor.get_output_peak_db()
             gr_db = self.processor.get_compressor_gain_reduction_db()
             deesser_gr_db = self.processor.get_deesser_gain_reduction_db()
-
-            latency_ms = self.processor.get_latency_ms()
-
-            # Get DSP performance metrics
-            dsp_time_ms = self.processor.get_dsp_time_smoothed_ms()
-            input_buf = self.processor.get_input_buffer_smoothed_samples()
-            output_buf = self.processor.get_output_buffer_samples()
-            rnnoise_buf = self.processor.get_buffer_smoothed_samples()
 
             # Update meters
             self.input_meter.set_levels(input_rms, input_peak)
@@ -1495,8 +1434,8 @@ class MainWindow(QMainWindow):
                         current_lufs = self.processor.get_compressor_current_lufs()
                         makeup_gain = self.processor.get_compressor_current_makeup_gain()
                         self.compressor_panel.update_auto_makeup_meters(current_lufs, makeup_gain)
-            except Exception as e:
-                print(f"Auto makeup meter update error: {e}")
+            except Exception:
+                logger.debug("Auto makeup meter update error", exc_info=True)
 
             # Update VAD confidence meter (if VAD is available)
             try:
@@ -1506,273 +1445,259 @@ class MainWindow(QMainWindow):
                 # VAD not available in this build
                 pass
 
-            self._set_health_chip(
-                self.latency_label,
-                f"Latency: ~{latency_ms:.0f}ms | DSP {dsp_time_ms:.1f}ms",
-                "info",
-            )
-
-            # Update buffer health display (Input + RNNoise only)
-            # Healthy: < 960 samples (2 frames), Warning: < 1920 (4 frames), Bad: >= 1920
-            pipeline_buf = input_buf + rnnoise_buf
-            if pipeline_buf < 960:
-                buf_status = "OK"
-                buf_state = "ok"
-            elif pipeline_buf < 1920:
-                buf_status = "WARN"
-                buf_state = "warn"
-            else:
-                buf_status = "BAD"
-                buf_state = "bad"
-            self._set_health_chip(
-                self.buffer_label,
-                f"Buffer: {buf_status} ({pipeline_buf})",
-                buf_state,
-            )
-
-            # Update dropped samples display
-            dropped = diagnostics.get("input_dropped_samples", 0)
-            lock_contention = diagnostics.get("lock_contention_count", 0)
-            non_finite = diagnostics.get("suppressor_non_finite_count", 0)
-            restart_count = diagnostics.get("stream_restart_count", 0)
-            underruns = diagnostics.get("output_underrun_total", 0)
-            recoveries = diagnostics.get("output_recovery_count", 0)
-            rt_overflows = diagnostics.get("rt_buffer_overflow_count", 0)
-            input_callback_errors = diagnostics.get("input_callback_error_count", 0)
-            output_callback_errors = diagnostics.get("output_callback_error_count", 0)
-            rt_error_name = diagnostics.get("rt_error_name")
-            rt_error_active = bool(rt_error_name and rt_error_name != "none")
-            dropped_bits = [
-                f"Drops: {dropped}",
-                f"U:{underruns}",
-                f"R:{recoveries}",
-                f"L:{lock_contention}",
-                f"NF:{non_finite}",
-                f"RS:{restart_count}",
-            ]
-            self._extend_diag_tokens(
-                dropped_bits,
-                diagnostics,
-                [
-                    ("input_backlog_recovery_count", "IBR"),
-                    ("input_backlog_dropped_samples", "IBD"),
-                    ("rt_buffer_overflow_count", "RTO"),
-                    ("input_callback_error_count", "ICE"),
-                    ("output_callback_error_count", "OCE"),
-                    ("clip_event_count", "CL"),
-                    ("clip_peak_db", "PK"),
-                ],
-            )
-            if rt_error_active:
-                dropped_bits.append(f"RT:{rt_error_name}")
-            dropped_state = (
-                "ok"
-                if (
-                    dropped == 0
-                    and underruns == 0
-                    and recoveries == 0
-                    and lock_contention == 0
-                    and non_finite == 0
-                    and rt_overflows == 0
-                    and input_callback_errors == 0
-                    and output_callback_errors == 0
-                    and not rt_error_active
-                )
-                else "warn"
-            )
-            self._set_health_chip(
-                self.dropped_label,
-                " | ".join(dropped_bits),
-                dropped_state,
-            )
-
-            backend_available = diagnostics.get("noise_backend_available", True)
-            backend_failed = diagnostics.get("noise_backend_failed", False)
-            backend_error = diagnostics.get("noise_backend_error")
-            noise_model = diagnostics.get("noise_model", "rnnoise")
-            if noise_model != "rnnoise" and (backend_failed or not backend_available):
-                warning = backend_error or "Selected DeepFilter backend fell back to passthrough/RNNoise behavior."
-                if warning != self._last_backend_warning:
-                    self.status_bar.showMessage(warning, 6000)
-                    self._last_backend_warning = warning
-            elif backend_available:
-                self._last_backend_warning = None
-
-            now = time.time()
-            if now - self._last_diag_poll >= 0.25:
-                self._last_diag_poll = now
-                try:
-                    noise_model = diagnostics.get("noise_model", "rnnoise")
-                    backend_ok = diagnostics.get("noise_backend_available", True)
-                    backend_failed = diagnostics.get("noise_backend_failed", False)
-                    backend_error = diagnostics.get("noise_backend_error")
-                    restart_count = diagnostics.get("stream_restart_count", 0)
-                    output_recovery_count = diagnostics.get("output_recovery_count", 0)
-                    non_finite = diagnostics.get("suppressor_non_finite_count", 0)
-                    suppressed = diagnostics.get("recovery_suppressed", False)
-
-                    backend_bits = [noise_model]
-                    if backend_ok:
-                        backend_bits.append("OK")
-                    elif backend_failed:
-                        backend_bits.append("FAILED")
-                    else:
-                        backend_bits.append("UNAVAILABLE")
-                    if non_finite:
-                        backend_bits.append(f"NF:{non_finite}")
-                    if backend_error:
-                        backend_bits.append("ERR")
-                    self._extend_diag_tokens(
-                        backend_bits,
-                        diagnostics,
-                        [
-                            ("input_resampler_active", "IR"),
-                            ("output_resampler_active", "OR"),
-                        ],
-                    )
-                    self._set_health_chip(
-                        self.backend_diag_label,
-                        f"Backend: {' '.join(str(bit) for bit in backend_bits)}",
-                        "ok" if backend_ok else "warn",
-                    )
-
-                    recovery_bits = [f"R:{restart_count}"]
-                    recovery_bits.append(f"ORC:{output_recovery_count}")
-                    if suppressed:
-                        recovery_bits.append("SUPP")
-                    reason = diagnostics.get("last_restart_reason")
-                    if reason:
-                        recovery_bits.append("RECENT")
-                    self._set_health_chip(
-                        self.recovery_diag_label,
-                        f"Recovery: {' '.join(recovery_bits)}",
-                        "warn" if restart_count or reason else ("info" if suppressed else "ok"),
-                    )
-                except Exception:
-                    pass
-            self._maybe_recover_output_stall(
-                input_rms=input_rms,
-                output_rms=output_rms,
-                output_buf=output_buf,
-            )
-            # Callback watchdog: recover if output callback stops while input is alive.
-            input_cb_age_ms = None
-            output_cb_age_ms = None
-            try:
-                if hasattr(self.processor, "get_input_callback_age_ms"):
-                    input_cb_age_ms = self.processor.get_input_callback_age_ms()
-                if hasattr(self.processor, "get_output_callback_age_ms"):
-                    output_cb_age_ms = self.processor.get_output_callback_age_ms()
-            except Exception:
-                input_cb_age_ms = None
-                output_cb_age_ms = None
-            if input_cb_age_ms is not None and output_cb_age_ms is not None:
-                self._maybe_recover_callback_stall(
-                    input_cb_age_ms=input_cb_age_ms,
-                    output_cb_age_ms=output_cb_age_ms,
-                )
-
-            # Rust supervisor-driven recovery (callback-based).
-            try:
-                recovery_result = self.processor.service_recovery()
-                if recovery_result is not None:
-                    if recovery_result:
-                        reason = ""
-                        try:
-                            reason = self.processor.get_last_restart_reason() or ""
-                        except Exception:
-                            reason = ""
-                        suffix = f" ({reason})" if reason else ""
-                        self.status_bar.showMessage(
-                            f"Recovered audio stream{suffix}",
-                            4000,
-                        )
-                    else:
-                        err_msg = ""
-                        try:
-                            err_msg = self.processor.get_last_stream_error() or ""
-                        except Exception:
-                            err_msg = ""
-                        if err_msg:
-                            self.status_bar.showMessage(
-                                f"Auto-recovery failed: {err_msg}",
-                                6000,
-                            )
-                        else:
-                            self.status_bar.showMessage(
-                                "Auto-recovery failed",
-                                6000,
-                            )
-            except Exception:
-                pass
         else:
-            self._output_stall_started_at = None
-            self._output_callback_stall_started_at = None
-            self._processing_started_at = None
             self._last_backend_warning = None
             self._reset_health_labels()
 
-    def _maybe_recover_output_stall(self, input_rms: float, output_rms: float, output_buf: int):
-        """
-        Detect and recover a likely output-path stall.
-
-        Heuristic:
-        - Input signal is active
-        - Output is effectively silent
-        - Output ring buffer is heavily backed up
-        - Persisting for > 1.5s
-        """
-        if self._calibration_dialog_open:
-            self._output_stall_started_at = None
+    def _update_diagnostics(self):
+        """Update slower diagnostics and service recovery."""
+        if not self.processor.is_running():
+            self._stream_recovery.mark_processing_stopped()
+            self._last_backend_warning = None
+            self._reset_health_labels()
             return
 
-        now = time.monotonic()
-        cooldown_s = 20.0
-        if now - self._last_output_recovery_at < cooldown_s:
-            return
+        diagnostics = self.processor.get_runtime_diagnostics()
+        input_rms = self.processor.get_input_rms_db()
+        output_rms = self.processor.get_output_rms_db()
+        output_buf = self.processor.get_output_buffer_samples()
+        latency_ms = self.processor.get_latency_ms()
+        dsp_time_ms = self.processor.get_dsp_time_smoothed_ms()
+        input_buf = self.processor.get_input_buffer_smoothed_samples()
+        rnnoise_buf = self.processor.get_buffer_smoothed_samples()
 
-        suspicious = (
-            input_rms > -50.0
-            and output_rms < -85.0
-            and output_buf > 20000
+        self._update_diagnostic_labels(
+            diagnostics=diagnostics,
+            latency_ms=latency_ms,
+            dsp_time_ms=dsp_time_ms,
+            input_buf=input_buf,
+            output_buf=output_buf,
+            rnnoise_buf=rnnoise_buf,
+        )
+        self._service_stream_recovery(
+            diagnostics=diagnostics,
+            input_rms=input_rms,
+            output_rms=output_rms,
+            output_buf=output_buf,
         )
 
-        if not suspicious:
-            self._output_stall_started_at = None
-            return
+    def _update_diagnostic_labels(
+        self,
+        *,
+        diagnostics: dict,
+        latency_ms: float,
+        dsp_time_ms: float,
+        input_buf: int,
+        output_buf: int,
+        rnnoise_buf: int,
+    ) -> None:
+        """Update diagnostic status labels from a runtime diagnostic snapshot."""
+        self._set_health_chip(
+            self.latency_label,
+            f"Latency: ~{latency_ms:.0f}ms | DSP {dsp_time_ms:.1f}ms",
+            "info",
+        )
 
-        if self._output_stall_started_at is None:
-            self._output_stall_started_at = now
-            return
+        pipeline_buf = input_buf + rnnoise_buf
+        if pipeline_buf < 960:
+            buf_status = "OK"
+            buf_state = "ok"
+        elif pipeline_buf < 1920:
+            buf_status = "WARN"
+            buf_state = "warn"
+        else:
+            buf_status = "BAD"
+            buf_state = "bad"
+        self._set_health_chip(
+            self.buffer_label,
+            f"Buffer: {buf_status} ({pipeline_buf})",
+            buf_state,
+        )
 
-        if now - self._output_stall_started_at < 1.5:
-            return
+        dropped = diagnostics.get("input_dropped_samples", 0)
+        lock_contention = diagnostics.get("lock_contention_count", 0)
+        non_finite = diagnostics.get("suppressor_non_finite_count", 0)
+        restart_count = diagnostics.get("stream_restart_count", 0)
+        underruns = diagnostics.get("output_underrun_total", 0)
+        recoveries = diagnostics.get("output_recovery_count", 0)
+        rt_overflows = diagnostics.get("rt_buffer_overflow_count", 0)
+        input_callback_errors = diagnostics.get("input_callback_error_count", 0)
+        output_callback_errors = diagnostics.get("output_callback_error_count", 0)
+        rt_error_name = diagnostics.get("rt_error_name")
+        rt_error_active = bool(rt_error_name and rt_error_name != "none")
+        dropped_bits = [
+            f"Drops: {dropped}",
+            f"U:{underruns}",
+            f"R:{recoveries}",
+            f"L:{lock_contention}",
+            f"NF:{non_finite}",
+            f"RS:{restart_count}",
+        ]
+        self._extend_diag_tokens(
+            dropped_bits,
+            diagnostics,
+            [
+                ("input_backlog_recovery_count", "IBR"),
+                ("input_backlog_dropped_samples", "IBD"),
+                ("rt_buffer_overflow_count", "RTO"),
+                ("input_callback_error_count", "ICE"),
+                ("output_callback_error_count", "OCE"),
+                ("clip_event_count", "CL"),
+                ("clip_peak_db", "PK"),
+            ],
+        )
+        if rt_error_active:
+            dropped_bits.append(f"RT:{rt_error_name}")
+        dropped_state = (
+            "ok"
+            if (
+                dropped == 0
+                and underruns == 0
+                and recoveries == 0
+                and lock_contention == 0
+                and non_finite == 0
+                and rt_overflows == 0
+                and input_callback_errors == 0
+                and output_callback_errors == 0
+                and not rt_error_active
+            )
+            else "warn"
+        )
+        self._set_health_chip(
+            self.dropped_label,
+            " | ".join(dropped_bits),
+            dropped_state,
+        )
 
-        self._output_stall_started_at = None
-        self._last_output_recovery_at = now
-        self._recover_output_path()
+        backend_available = diagnostics.get("noise_backend_available", True)
+        backend_failed = diagnostics.get("noise_backend_failed", False)
+        backend_error = diagnostics.get("noise_backend_error")
+        noise_model = diagnostics.get("noise_model", "rnnoise")
+        if noise_model != "rnnoise" and (backend_failed or not backend_available):
+            warning = backend_error or "Selected DeepFilter backend fell back to passthrough/RNNoise behavior."
+            if warning != self._last_backend_warning:
+                self.status_bar.showMessage(warning, 6000)
+                self._last_backend_warning = warning
+        elif backend_available:
+            self._last_backend_warning = None
 
-    def _maybe_recover_callback_stall(self, input_cb_age_ms: int, output_cb_age_ms: int):
-        """
-        Recover when output callback stops while input callback is still active.
+        try:
+            noise_model = diagnostics.get("noise_model", "rnnoise")
+            backend_ok = diagnostics.get("noise_backend_available", True)
+            backend_failed = diagnostics.get("noise_backend_failed", False)
+            backend_error = diagnostics.get("noise_backend_error")
+            restart_count = diagnostics.get("stream_restart_count", 0)
+            output_recovery_count = diagnostics.get("output_recovery_count", 0)
+            non_finite = diagnostics.get("suppressor_non_finite_count", 0)
+            suppressed = diagnostics.get("recovery_suppressed", False)
 
-        This catches cases where DSP is alive but the output stream stops
-        delivering callbacks after long background use.
-        """
-        now = time.monotonic()
-        new_state, should_recover = _update_callback_stall_state(
-            stall_started_at=self._output_callback_stall_started_at,
-            now=now,
-            input_cb_age_ms=input_cb_age_ms,
-            output_cb_age_ms=output_cb_age_ms,
-            processing_started_at=self._processing_started_at,
-            last_recovery_at=self._last_output_recovery_at,
+            backend_bits = [noise_model]
+            if backend_ok:
+                backend_bits.append("OK")
+            elif backend_failed:
+                backend_bits.append("FAILED")
+            else:
+                backend_bits.append("UNAVAILABLE")
+            if non_finite:
+                backend_bits.append(f"NF:{non_finite}")
+            if backend_error:
+                backend_bits.append("ERR")
+            self._extend_diag_tokens(
+                backend_bits,
+                diagnostics,
+                [
+                    ("input_resampler_active", "IR"),
+                    ("output_resampler_active", "OR"),
+                ],
+            )
+            self._set_health_chip(
+                self.backend_diag_label,
+                f"Backend: {' '.join(str(bit) for bit in backend_bits)}",
+                "ok" if backend_ok else "warn",
+            )
+
+            recovery_bits = [f"R:{restart_count}"]
+            recovery_bits.append(f"ORC:{output_recovery_count}")
+            if suppressed:
+                recovery_bits.append("SUPP")
+            reason = diagnostics.get("last_restart_reason")
+            if reason:
+                recovery_bits.append("RECENT")
+            self._set_health_chip(
+                self.recovery_diag_label,
+                f"Recovery: {' '.join(recovery_bits)}",
+                "warn" if restart_count or reason else ("info" if suppressed else "ok"),
+            )
+        except Exception:
+            logger.debug("Diagnostic label update failed", exc_info=True)
+
+    def _service_stream_recovery(
+        self,
+        *,
+        diagnostics: dict,
+        input_rms: float,
+        output_rms: float,
+        output_buf: int,
+    ) -> None:
+        """Service UI-side and Rust-side stream recovery."""
+        if self._stream_recovery.maybe_recover_output_stall(
+            input_rms=input_rms,
+            output_rms=output_rms,
+            output_buf=output_buf,
             calibration_dialog_open=self._calibration_dialog_open,
-        )
-        self._output_callback_stall_started_at = new_state
-        if should_recover:
-            self._last_output_recovery_at = now
+        ):
             self._recover_output_path()
+
+        input_cb_age_ms = None
+        output_cb_age_ms = None
+        try:
+            if hasattr(self.processor, "get_input_callback_age_ms"):
+                input_cb_age_ms = self.processor.get_input_callback_age_ms()
+            if hasattr(self.processor, "get_output_callback_age_ms"):
+                output_cb_age_ms = self.processor.get_output_callback_age_ms()
+        except Exception:
+            input_cb_age_ms = None
+            output_cb_age_ms = None
+        if input_cb_age_ms is not None and output_cb_age_ms is not None:
+            if self._stream_recovery.maybe_recover_callback_stall(
+                input_cb_age_ms=input_cb_age_ms,
+                output_cb_age_ms=output_cb_age_ms,
+                calibration_dialog_open=self._calibration_dialog_open,
+            ):
+                self._recover_output_path()
+
+        try:
+            recovery_result = self.processor.service_recovery()
+            if recovery_result is not None:
+                if recovery_result:
+                    reason = ""
+                    try:
+                        reason = self.processor.get_last_restart_reason() or ""
+                    except Exception:
+                        reason = ""
+                    suffix = f" ({reason})" if reason else ""
+                    self.status_bar.showMessage(
+                        f"Recovered audio stream{suffix}",
+                        4000,
+                    )
+                else:
+                    err_msg = ""
+                    try:
+                        err_msg = self.processor.get_last_stream_error() or ""
+                    except Exception:
+                        err_msg = ""
+                    if err_msg:
+                        self.status_bar.showMessage(
+                            f"Auto-recovery failed: {err_msg}",
+                            6000,
+                        )
+                    else:
+                        self.status_bar.showMessage(
+                            "Auto-recovery failed",
+                            6000,
+                        )
+        except Exception:
+            logger.debug("Rust recovery service failed", exc_info=True)
 
     def _recover_output_path(self):
         """Best-effort output recovery: unmute + restart with selected devices."""
@@ -1789,7 +1714,7 @@ class MainWindow(QMainWindow):
                 4000,
             )
         except Exception as e:
-            print(f"Auto-recovery failed: {type(e).__name__}: {e}")
+            logger.exception("Auto-recovery failed")
             self.status_bar.showMessage(
                 f"Auto-recovery failed: {e}",
                 5000,
@@ -1918,7 +1843,7 @@ class MainWindow(QMainWindow):
                         self._set_noise_suppression_latency_label(model)
                     else:
                         # Model switch failed - show warning and use RNNoise
-                        print(f"Warning: Failed to switch to {model} in preset, using RNNoise")
+                        logger.warning("Failed to switch to %s from preset; using RNNoise", model)
                         self.status_bar.showMessage(
                             f"Note: Preset specifies {model} but not available, using RNNoise",
                             5000
@@ -1932,9 +1857,9 @@ class MainWindow(QMainWindow):
                                 self.processor.set_noise_model("rnnoise")
                                 self._set_noise_suppression_latency_label("rnnoise")
                                 break
-                except Exception as e:
+                except Exception:
                     # Unexpected error - log and fall back
-                    print(f"Error switching model in preset: {type(e).__name__}: {e}")
+                    logger.exception("Error switching model in preset")
                     self.status_bar.showMessage(
                         "Error loading preset model, using RNNoise",
                         5000
@@ -1951,7 +1876,7 @@ class MainWindow(QMainWindow):
                 break
 
         if not model_found:
-            print(f"Warning: Preset model '{model}' not found in available models")
+            logger.warning("Preset model %r not found in available models", model)
 
         # Apply de-esser settings
         self.deesser_panel.set_settings({
@@ -2035,7 +1960,7 @@ class MainWindow(QMainWindow):
                 f"Preset '{name}' saved to:\n{filepath}"
             )
         except (IOError, OSError, ValueError) as e:
-            print(f"Preset save failed: {type(e).__name__}: {e}")
+            logger.warning("Preset save failed", exc_info=True)
             QMessageBox.critical(
                 self,
                 "Error",
@@ -2075,7 +2000,7 @@ class MainWindow(QMainWindow):
             save_config(self.config)
         except PresetValidationError as e:
             # Actionable error for validation failures
-            print(f"Preset load failed: {type(e).__name__}: {e}")
+            logger.warning("Preset validation failed", exc_info=True)
             QMessageBox.warning(
                 self,
                 "Invalid Preset",
@@ -2084,7 +2009,7 @@ class MainWindow(QMainWindow):
             )
         except json.JSONDecodeError as e:
             # Actionable error for malformed JSON
-            print(f"Preset load failed: {type(e).__name__}: {e}")
+            logger.warning("Preset JSON decode failed", exc_info=True)
             QMessageBox.warning(
                 self,
                 "Invalid Preset File",
@@ -2094,14 +2019,14 @@ class MainWindow(QMainWindow):
             )
         except Exception as e:
             # Fallback for unexpected errors with actionable guidance
-            print(f"Preset load failed: {type(e).__name__}: {e}")
+            logger.exception("Preset load failed")
             QMessageBox.critical(
                 self,
                 "Error Loading Preset",
                 f"Failed to load preset:\n\n{type(e).__name__}: {e}\n\n"
                 "If this problem persists, try:\n"
                 "1. Check that the file exists and is readable\n"
-                "2. Verify the file is a valid MicEq preset\n"
+                "2. Verify the file is a valid AudioForge preset\n"
                 "3. Try loading a different preset"
             )
 
@@ -2131,7 +2056,7 @@ class MainWindow(QMainWindow):
 
 
 def run_app():
-    """Run the MicEq application."""
+    """Run the AudioForge application."""
     return run_qt_app(MainWindow)
 
 

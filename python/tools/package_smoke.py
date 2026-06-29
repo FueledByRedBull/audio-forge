@@ -82,7 +82,7 @@ def check_source_packaging() -> list[str]:
         ("AudioForge.spec", "DirectML.dll"),
         ("AudioForge.spec", "df.dll"),
         ("AudioForge.spec", "models"),
-        ("AudioForge.spec", "mic_eq.ico"),
+        ("AudioForge.spec", "AudioForge.ico"),
     ]
     script_expectations = [
         ("build_exe.ps1", "$PSScriptRoot"),

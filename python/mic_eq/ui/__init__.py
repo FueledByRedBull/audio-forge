@@ -1,4 +1,4 @@
-"""MicEq UI components"""
+"""AudioForge UI components."""
 
 from .layout_constants import (
     DESTRUCTIVE_ACTION_BUTTON_STYLE,

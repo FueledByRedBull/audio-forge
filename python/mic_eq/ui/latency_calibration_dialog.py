@@ -8,6 +8,7 @@ cross-correlation.
 from __future__ import annotations
 
 import os
+import logging
 import tempfile
 import threading
 import time
@@ -31,6 +32,9 @@ from PyQt6.QtWidgets import (
 from ..analysis.latency_calibration import analyze_latency, generate_probe_signal, result_to_profile
 from ..config import coerce_device_identity
 from .level_meter import LevelMeter
+
+
+logger = logging.getLogger(__name__)
 
 
 DEBUG = False
@@ -79,9 +83,9 @@ def _play_probe_blocking(probe: np.ndarray, sample_rate: int) -> None:
         finally:
             try:
                 os.remove(wav_path)
-            except OSError as e:
+            except OSError:
                 if DEBUG:
-                    print(f"[LATENCY_CAL] Failed to remove temporary probe file: {e}")
+                    logger.debug("Failed to remove temporary probe file", exc_info=True)
         return
 
     # Best-effort fallback for non-Windows hosts.
@@ -382,13 +386,11 @@ class LatencyCalibrationDialog(QDialog):
         self.accept_button.setEnabled(True)
 
         if analysis is not None and DEBUG:
-            print(
-                "[LATENCY_CAL] success rt=%.2fms one_way=%.2fms conf=%.2f"
-                % (
-                    analysis.measured_round_trip_ms,
-                    analysis.estimated_one_way_ms,
-                    analysis.confidence,
-                )
+            logger.debug(
+                "Latency calibration success rt=%.2fms one_way=%.2fms conf=%.2f",
+                analysis.measured_round_trip_ms,
+                analysis.estimated_one_way_ms,
+                analysis.confidence,
             )
 
         self._teardown_worker()
@@ -443,9 +445,9 @@ class LatencyCalibrationDialog(QDialog):
         try:
             if owner.processor.is_running():
                 owner.processor.stop()
-        except Exception as e:
+        except Exception:
             if DEBUG:
-                print(f"[LATENCY_CAL] stop processor failed: {type(e).__name__}: {e}")
+                logger.debug("Stop processor failed", exc_info=True)
 
         self._started_processor = False
 

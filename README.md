@@ -45,7 +45,7 @@ Operational tools:
 
 ## Status
 
-AudioForge is Windows-first. The repository supports source builds, local development, and portable `dist/AudioForge` packaging. It is not currently shipped as a signed installer.
+AudioForge currently supports Windows 10/11 only. Source builds, CI, portable `dist/AudioForge` packaging, runtime assets, device recovery behavior, and desktop identity integration are validated on Windows. Linux and macOS builds are not supported today, even though parts of the Rust audio stack use cross-platform libraries.
 
 DeepFilterNet support is intentionally opt-in at runtime. Use `AUDIOFORGE_ENABLE_DEEPFILTER=1` when you want to exercise the DeepFilter backend; RNNoise remains the default safe path.
 DeepFilter model/DLL initialization and Silero VAD inference are prepared off the realtime DSP loop; the audio path only swaps ready suppressor state and consumes cached VAD probabilities.
@@ -93,6 +93,12 @@ You can also use the installed console entrypoint:
 ```powershell
 .\.venv\Scripts\mic-eq.exe
 ```
+
+## Configuration
+
+RNNoise is the default safe noise-suppression backend. DeepFilterNet is opt-in for source and development runs; set `AUDIOFORGE_ENABLE_DEEPFILTER=1` when you want to use the DeepFilter backend with local `df.dll` and model assets. Packaged builds auto-enable DeepFilterNet when the bundled DeepFilter DLL and model assets are present.
+
+See [Development Assets](#development-assets) for the full runtime asset and environment-variable list.
 
 ## Using The App
 
@@ -213,13 +219,14 @@ Headless runtime checks:
 
 ## Repository Layout
 
-- `python/mic_eq`: PyQt application, analysis code, persistence, packaging entrypoints.
+- `python/mic_eq`: PyQt application, analysis code, persistence, and source/development entrypoints.
 - `rust-core`: Rust audio engine exposed through PyO3.
 - `python/tests`: Python test suite.
 - `python/tools`: health, package, and release validation helpers.
 - `.github/workflows/ci.yml`: Windows CI for Python and Rust checks.
 - `build_exe.ps1`: PyInstaller packaging script.
 - `AudioForge.spec`: canonical portable package definition.
+- `launcher.py`: PyInstaller/frozen-app launcher used by `AudioForge.spec`; source/development runs use `python -m mic_eq` or the `mic-eq` console entrypoint.
 
 ## License
 

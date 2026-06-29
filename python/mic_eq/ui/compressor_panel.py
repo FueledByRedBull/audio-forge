@@ -4,6 +4,8 @@ Compressor and Limiter control panel
 Controls for dynamics processing: threshold, ratio, attack, release, makeup gain.
 """
 
+import logging
+
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -23,6 +25,9 @@ from .layout_constants import (
     SPACING_NORMAL, MARGIN_PANEL,
     PRIMARY_LABEL_STYLE, METER_LABEL_STYLE, INFO_LABEL_STYLE
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class CompressorPanel(QWidget):
@@ -451,16 +456,16 @@ class CompressorPanel(QWidget):
             # Update current release display
             self._update_current_release()
 
-        except Exception as e:
-            print(f"Adaptive release error: {e}")
+        except Exception:
+            logger.debug("Adaptive release update failed", exc_info=True)
 
     def _update_current_release(self):
         """Update current release time display from processor."""
         try:
             current_release = self.processor.get_compressor_current_release()
             self.current_release_label.setText(f"{current_release:.0f} ms")
-        except Exception as e:
-            print(f"Current release read error: {e}")
+        except Exception:
+            logger.debug("Current release read failed", exc_info=True)
 
     def _update_auto_makeup(self):
         """Update auto makeup gain configuration."""
@@ -476,8 +481,8 @@ class CompressorPanel(QWidget):
             self.makeup_spinbox.setEnabled(not auto_makeup)
             self.makeup_slider.setEnabled(not auto_makeup)
 
-        except Exception as e:
-            print(f"Auto makeup gain error: {e}")
+        except Exception:
+            logger.debug("Auto makeup gain update failed", exc_info=True)
 
     def update_auto_makeup_meters(self, current_lufs: float, makeup_gain: float):
         """Update auto makeup gain metering displays (call from timer)."""

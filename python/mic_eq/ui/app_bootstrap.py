@@ -10,6 +10,8 @@ from typing import Type
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMainWindow
 
+from ..app_logging import configure_app_logging
+
 
 WINDOWS_APP_USER_MODEL_ID = "FueledByRedBull.AudioForge"
 
@@ -116,7 +118,7 @@ def _application_icon() -> QIcon:
             return icon
 
     for root in _trusted_runtime_roots():
-        icon_path = root / "mic_eq.ico"
+        icon_path = root / "AudioForge.ico"
         if icon_path.is_file():
             icon = QIcon(str(icon_path))
             if not icon.isNull():
@@ -193,6 +195,7 @@ def apply_windows_taskbar_properties(window: QMainWindow) -> None:
 
 def run_qt_app(window_cls: Type[QMainWindow]) -> int:
     """Run the Qt application for the provided main window class."""
+    configure_app_logging()
     configure_windows_app_id()
 
     app = QApplication(sys.argv)

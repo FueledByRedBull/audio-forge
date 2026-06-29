@@ -4,6 +4,8 @@ Noise Gate control panel
 Adapted from Spectral Workbench project.
 """
 
+import logging
+
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -22,6 +24,9 @@ from .layout_constants import (
     SPACING_NORMAL, MARGIN_PANEL,
     PRIMARY_LABEL_STYLE, INFO_LABEL_STYLE
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class GatePanel(QWidget):
@@ -301,9 +306,9 @@ class GatePanel(QWidget):
         # Initialize VAD settings (including pre-gain)
         try:
             self._update_vad_mode()
-        except (AttributeError, Exception) as e:
+        except (AttributeError, Exception):
             # VAD not available or other error - will be handled when user enables VAD
-            print(f"[GATE] Initial VAD setup skipped: {type(e).__name__}: {e}")
+            logger.debug("Initial VAD setup skipped", exc_info=True)
         self._update_auto_threshold()
         self._refresh_threshold_summary()
 
@@ -370,8 +375,8 @@ class GatePanel(QWidget):
         """Return True when Rust VAD backend is available."""
         try:
             return bool(self.processor.is_vad_available())
-        except Exception as e:
-            print(f"[GATE] VAD availability check error: {type(e).__name__}: {e}")
+        except Exception:
+            logger.debug("VAD availability check error", exc_info=True)
             return False
 
     def _is_auto_threshold_active(self) -> bool:
@@ -492,9 +497,8 @@ class GatePanel(QWidget):
             self.processor.set_auto_threshold(enabled)
             self.processor.set_gate_margin(margin)
             self._refresh_threshold_summary()
-        except AttributeError as e:
-            # Auto-threshold PyO3 bindings not available yet - will be added in plan 03
-            print(f"[GATE] Auto-threshold unavailable: {type(e).__name__}: {e}")
+        except AttributeError:
+            logger.debug("Auto-threshold controls unavailable", exc_info=True)
 
     def update_vad_confidence(self, confidence: float):
         """Update VAD confidence meter (called from main window)."""

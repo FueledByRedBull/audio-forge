@@ -65,3 +65,19 @@ def test_backward_compatibility_defaults():
     assert loaded.gate.vad_pre_gain == 1.0
     assert loaded.gate.auto_threshold_enabled is True
     assert loaded.gate.gate_margin_db == 10.0
+
+
+def test_audioforge_appdata_migrates_legacy_miceq_dir(tmp_path, monkeypatch):
+    appdata_dir = tmp_path / "appdata"
+    legacy_dir = appdata_dir / config.LEGACY_APPDATA_DIR_NAME
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text('{"version":"1.8.2"}', encoding="utf-8")
+
+    monkeypatch.setenv("APPDATA", str(appdata_dir))
+
+    config_file = config.get_config_file()
+
+    assert config_file == appdata_dir / config.APPDATA_DIR_NAME / "config.json"
+    assert config.APPDATA_DIR_NAME == "AudioForge"
+    assert config.LEGACY_APPDATA_DIR_NAME == "MicEq"
+    assert config_file.read_text(encoding="utf-8") == '{"version":"1.8.2"}'

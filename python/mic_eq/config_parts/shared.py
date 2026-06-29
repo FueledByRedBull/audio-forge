@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
 
 CURRENT_VERSION = "1.8.2"
-APPDATA_DIR_NAME = "MicEq"
+APPDATA_DIR_NAME = "AudioForge"
+LEGACY_APPDATA_DIR_NAME = "MicEq"
 
 
 class PresetValidationError(Exception):
@@ -38,9 +40,22 @@ def _config_base_dir() -> Path:
     return Path.home() / ".config"
 
 
+def _config_dir() -> Path:
+    base_dir = _config_base_dir()
+    config_dir = base_dir / APPDATA_DIR_NAME
+    legacy_dir = base_dir / LEGACY_APPDATA_DIR_NAME
+    if not config_dir.exists() and legacy_dir.exists():
+        try:
+            shutil.copytree(legacy_dir, config_dir)
+        except OSError:
+            pass
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir
+
+
 def get_presets_dir() -> Path:
     """Get the presets directory, creating it if necessary."""
-    presets_dir = _config_base_dir() / APPDATA_DIR_NAME / "presets"
+    presets_dir = _config_dir() / "presets"
     presets_dir.mkdir(parents=True, exist_ok=True)
     return presets_dir
 
@@ -54,9 +69,7 @@ def get_preset_imports_dir() -> Path:
 
 def get_config_file() -> Path:
     """Get the main config file path."""
-    config_dir = _config_base_dir() / APPDATA_DIR_NAME
-    config_dir.mkdir(parents=True, exist_ok=True)
-    return config_dir / "config.json"
+    return _config_dir() / "config.json"
 
 
 @dataclass(slots=True)
@@ -142,6 +155,7 @@ __all__ = [
     "APPDATA_DIR_NAME",
     "CURRENT_VERSION",
     "DeviceIdentity",
+    "LEGACY_APPDATA_DIR_NAME",
     "PresetValidationError",
     "_reject_json_constant",
     "_version_tuple",

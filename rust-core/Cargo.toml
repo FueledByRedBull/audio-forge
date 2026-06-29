@@ -2,7 +2,7 @@
 name = "mic_eq_core"
 version = "1.8.2"
 edition = "2021"
-description = "High-performance DSP engine for MicEq - real-time noise suppression and equalization"
+description = "High-performance DSP engine for AudioForge - real-time noise suppression and equalization"
 
 [lib]
 name = "mic_eq_core"

@@ -51,6 +51,21 @@ mod tests {
     }
 
     #[test]
+    fn test_next_process_idle_sleep_stays_fast_when_input_is_recent() {
+        assert_eq!(next_process_idle_sleep_us(0, 500), PROCESS_IDLE_SLEEP_US);
+        assert_eq!(next_process_idle_sleep_us(8, 1_500), PROCESS_IDLE_SLEEP_US);
+    }
+
+    #[test]
+    fn test_next_process_idle_sleep_uses_bounded_backoff_when_idle() {
+        assert_eq!(next_process_idle_sleep_us(0, u64::MAX), 100);
+        assert_eq!(next_process_idle_sleep_us(1, u64::MAX), 200);
+        assert_eq!(next_process_idle_sleep_us(2, u64::MAX), 400);
+        assert_eq!(next_process_idle_sleep_us(3, u64::MAX), 800);
+        assert_eq!(next_process_idle_sleep_us(10, u64::MAX), PROCESS_IDLE_MAX_SLEEP_US);
+    }
+
+    #[test]
     fn test_build_sinc_resampler_for_valid_rates() {
         let resampler = build_sinc_resampler(44_100, 48_000, 1024);
         assert!(resampler.is_ok());
@@ -305,6 +320,506 @@ mod tests {
         for sample in expanded {
             assert!((*sample >= 0.0) && (*sample <= 1.0));
         }
+    }
+
+    fn generate_sine(sample_rate: f32, frequency_hz: f32, len: usize) -> Vec<f32> {
+        (0..len)
+            .map(|index| {
+                let phase =
+                    2.0 * std::f32::consts::PI * frequency_hz * index as f32 / sample_rate;
+                0.8 * phase.sin()
+            })
+            .collect()
+    }
+
+    fn tone_components(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> (f64, f64) {
+        let omega = 2.0 * std::f64::consts::PI * frequency_hz as f64 / sample_rate as f64;
+        let mut cos_sum = 0.0_f64;
+        let mut sin_sum = 0.0_f64;
+        for (index, sample) in signal.iter().copied().enumerate() {
+            let phase = omega * index as f64;
+            cos_sum += sample as f64 * phase.cos();
+            sin_sum += sample as f64 * phase.sin();
+        }
+        let scale = 2.0 / signal.len().max(1) as f64;
+        (cos_sum * scale, sin_sum * scale)
+    }
+
+    fn tone_amplitude(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> f32 {
+        let (cos_coeff, sin_coeff) = tone_components(signal, sample_rate, frequency_hz);
+        (cos_coeff.hypot(sin_coeff)) as f32
+    }
+
+    fn max_harmonic_db(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> f32 {
+        let nyquist = sample_rate / 2.0;
+        let mut max_harmonic = 0.0_f32;
+        for harmonic in 2..=5 {
+            let harmonic_hz = frequency_hz * harmonic as f32;
+            if harmonic_hz >= nyquist {
+                break;
+            }
+            max_harmonic = max_harmonic.max(tone_amplitude(signal, sample_rate, harmonic_hz));
+        }
+        dbfs(max_harmonic)
+    }
+
+    fn subtract_fitted_fundamental(signal: &[f32], sample_rate: f32, frequency_hz: f32) -> Vec<f32> {
+        let (cos_coeff, sin_coeff) = tone_components(signal, sample_rate, frequency_hz);
+        let omega = 2.0 * std::f64::consts::PI * frequency_hz as f64 / sample_rate as f64;
+        signal
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, sample)| {
+                let phase = omega * index as f64;
+                let fitted = cos_coeff * phase.cos() + sin_coeff * phase.sin();
+                sample - fitted as f32
+            })
+            .collect()
+    }
+
+    fn rms_db(signal: &[f32]) -> f32 {
+        if signal.is_empty() {
+            return -120.0;
+        }
+        let power = signal
+            .iter()
+            .map(|sample| {
+                let sample = *sample as f64;
+                sample * sample
+            })
+            .sum::<f64>()
+            / signal.len() as f64;
+        dbfs(power.sqrt() as f32)
+    }
+
+    fn dbfs(value: f32) -> f32 {
+        (value.max(1e-12)).log10() * 20.0
+    }
+
+    fn rms_error_db(left: &[f32], right: &[f32]) -> f32 {
+        let len = left.len().min(right.len());
+        if len == 0 {
+            return -120.0;
+        }
+        let power = left
+            .iter()
+            .zip(right.iter())
+            .take(len)
+            .map(|(l, r)| {
+                let diff = *l as f64 - *r as f64;
+                diff * diff
+            })
+            .sum::<f64>()
+            / len as f64;
+        dbfs(power.sqrt() as f32)
+    }
+
+    fn sinc_reference_retime(input: &[f32], speed_ratio: f32) -> Vec<f32> {
+        let params = SincInterpolationParameters {
+            sinc_len: 128,
+            f_cutoff: calculate_cutoff(128, WindowFunction::BlackmanHarris2),
+            interpolation: SincInterpolationType::Cubic,
+            oversampling_factor: 256,
+            window: WindowFunction::BlackmanHarris2,
+        };
+        let mut resampler =
+            SincFixedIn::<f64>::new(1.0 / speed_ratio as f64, 1.2, params, input.len(), 1)
+                .unwrap();
+        let input_f64: Vec<f64> = input.iter().map(|sample| *sample as f64).collect();
+        let in_slices = [&input_f64[..]];
+        let mut outbuf = resampler.output_buffer_allocate(true);
+        let (_nbr_in, nbr_out) = resampler
+            .process_into_buffer(&in_slices, &mut outbuf, None)
+            .unwrap();
+        outbuf[0]
+            .iter()
+            .take(nbr_out)
+            .map(|sample| *sample as f32)
+            .collect()
+    }
+
+    #[test]
+    fn test_retime_audio_block_quality_stays_within_measured_reference_bounds() {
+        let sample_rate = TARGET_SAMPLE_RATE as f32;
+        let input = generate_sine(sample_rate, 10_000.0, TARGET_SAMPLE_RATE as usize);
+        let cases = [
+            (0.995_f32, -20.0_f32, 1.5_f32),
+            (1.003_f32, -20.0_f32, 1.5_f32),
+            (1.03_f32, -16.0_f32, 2.0_f32),
+            (1.06_f32, -12.0_f32, 2.5_f32),
+        ];
+        let mut scratch = FixedAudioBuffer::<f32, 96_000>::new();
+
+        for (speed_ratio, max_error_db, max_fundamental_delta_db) in cases {
+            let linear = retime_audio_block(&input, speed_ratio, 96_000, &mut scratch).to_vec();
+            let reference = sinc_reference_retime(&input, speed_ratio);
+            let compare_len = linear.len().min(reference.len());
+            let linear = &linear[..compare_len];
+            let reference = &reference[..compare_len];
+            let expected_fundamental_hz = 10_000.0 * speed_ratio;
+            let linear_fundamental_db =
+                dbfs(tone_amplitude(linear, sample_rate, expected_fundamental_hz));
+            let reference_fundamental_db =
+                dbfs(tone_amplitude(reference, sample_rate, expected_fundamental_hz));
+            let linear_harmonic_db =
+                max_harmonic_db(linear, sample_rate, expected_fundamental_hz);
+            let linear_residual_db = rms_db(&subtract_fitted_fundamental(
+                linear,
+                sample_rate,
+                expected_fundamental_hz,
+            ));
+            let reference_residual_db = rms_db(&subtract_fitted_fundamental(
+                reference,
+                sample_rate,
+                expected_fundamental_hz,
+            ));
+            let error_db = rms_error_db(linear, reference);
+
+            assert!(
+                (linear_fundamental_db - reference_fundamental_db).abs()
+                    <= max_fundamental_delta_db,
+                "ratio={speed_ratio} linear_fundamental_db={linear_fundamental_db} reference_fundamental_db={reference_fundamental_db}",
+            );
+            assert!(
+                error_db <= max_error_db,
+                "ratio={speed_ratio} error_db={error_db} max_error_db={max_error_db}",
+            );
+            assert!(
+                linear_harmonic_db <= linear_fundamental_db - 12.0,
+                "ratio={speed_ratio} linear_harmonic_db={linear_harmonic_db} linear_fundamental_db={linear_fundamental_db}",
+            );
+            assert!(
+                linear_residual_db <= reference_residual_db + 40.0,
+                "ratio={speed_ratio} linear_residual_db={linear_residual_db} reference_residual_db={reference_residual_db}",
+            );
+        }
+    }
+
+    fn test_output_writer_limits(
+        output_target_center_samples: usize,
+        output_hard_backlog_samples: usize,
+        discontinuity_fade_samples: usize,
+    ) -> OutputWriteLimits {
+        OutputWriteLimits {
+            output_target_center_samples,
+            output_hard_backlog_samples,
+            discontinuity_fade_samples,
+            max_catchup_ratio: 1.03,
+            max_emergency_catchup_ratio: 1.06,
+        }
+    }
+
+    fn output_writer_counters<'a>(
+        jitter_dropped_samples: &'a AtomicU64,
+        output_recovery_count: &'a AtomicU64,
+        output_short_write_dropped_samples: &'a AtomicU64,
+        rt_buffer_overflow_count: &'a AtomicU64,
+        rt_error_code: &'a AtomicU32,
+        output_buffer_len: &'a AtomicU32,
+        last_output_write_time: &'a AtomicU64,
+    ) -> OutputWriteCounters<'a> {
+        OutputWriteCounters {
+            jitter_dropped_samples,
+            output_recovery_count,
+            output_short_write_dropped_samples,
+            rt_buffer_overflow_count,
+            rt_error_code,
+            output_buffer_len,
+            last_output_write_time,
+        }
+    }
+
+    #[test]
+    fn test_output_writer_noop_write_returns_false() {
+        let rb = AudioRingBuffer::new(32);
+        let (mut producer, consumer) = rb.split();
+        let mut control_scratch = FixedAudioBuffer::<f32, 64>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
+        let mut drift_error_ema = 0.0_f32;
+        let fade_remaining = Cell::new(0usize);
+        let limiter_enabled = AtomicBool::new(true);
+        let output_ceiling_linear = Cell::new(1.0_f32);
+        let jitter_dropped_samples = AtomicU64::new(0);
+        let output_recovery_count = AtomicU64::new(0);
+        let output_short_write_dropped_samples = AtomicU64::new(0);
+        let rt_buffer_overflow_count = AtomicU64::new(0);
+        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+        let output_buffer_len = AtomicU32::new(0);
+        let last_output_write_time = AtomicU64::new(0);
+
+        let mut writer = OutputWriteContext {
+            output_producer: &mut producer,
+            output_queue_control_scratch: &mut control_scratch,
+            discontinuity_fade_scratch: &mut fade_scratch,
+            output_safety_scratch: &mut safety_scratch,
+            drift_error_ema: &mut drift_error_ema,
+            discontinuity_fade_remaining: &fade_remaining,
+            limiter_enabled: &limiter_enabled,
+            output_ceiling_linear: &output_ceiling_linear,
+            counters: output_writer_counters(
+                &jitter_dropped_samples,
+                &output_recovery_count,
+                &output_short_write_dropped_samples,
+                &rt_buffer_overflow_count,
+                &rt_error_code,
+                &output_buffer_len,
+                &last_output_write_time,
+            ),
+            limits: test_output_writer_limits(8, 16, 4),
+        };
+
+        assert!(!writer.write_chunk(&[], false));
+        assert!(consumer.is_empty());
+        assert_eq!(output_buffer_len.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_output_writer_accounts_for_queue_full_short_write() {
+        let rb = AudioRingBuffer::new(4);
+        let (mut producer, mut consumer) = rb.split();
+        producer.write(&[0.0, 0.0, 0.0]);
+        let mut control_scratch = FixedAudioBuffer::<f32, 64>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
+        let mut drift_error_ema = 0.0_f32;
+        let fade_remaining = Cell::new(0usize);
+        let limiter_enabled = AtomicBool::new(true);
+        let output_ceiling_linear = Cell::new(1.0_f32);
+        let jitter_dropped_samples = AtomicU64::new(0);
+        let output_recovery_count = AtomicU64::new(0);
+        let output_short_write_dropped_samples = AtomicU64::new(0);
+        let rt_buffer_overflow_count = AtomicU64::new(0);
+        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+        let output_buffer_len = AtomicU32::new(3);
+        let last_output_write_time = AtomicU64::new(0);
+
+        let mut writer = OutputWriteContext {
+            output_producer: &mut producer,
+            output_queue_control_scratch: &mut control_scratch,
+            discontinuity_fade_scratch: &mut fade_scratch,
+            output_safety_scratch: &mut safety_scratch,
+            drift_error_ema: &mut drift_error_ema,
+            discontinuity_fade_remaining: &fade_remaining,
+            limiter_enabled: &limiter_enabled,
+            output_ceiling_linear: &output_ceiling_linear,
+            counters: output_writer_counters(
+                &jitter_dropped_samples,
+                &output_recovery_count,
+                &output_short_write_dropped_samples,
+                &rt_buffer_overflow_count,
+                &rt_error_code,
+                &output_buffer_len,
+                &last_output_write_time,
+            ),
+            limits: test_output_writer_limits(2, 4, 4),
+        };
+
+        assert!(writer.write_chunk(&[0.1, 0.2, 0.3, 0.4], false));
+
+        assert_eq!(
+            output_short_write_dropped_samples.load(Ordering::Relaxed),
+            3
+        );
+        assert_eq!(output_recovery_count.load(Ordering::Relaxed), 1);
+        assert_eq!(fade_remaining.get(), 4);
+        assert_eq!(output_buffer_len.load(Ordering::Relaxed), 4);
+
+        let mut drained = [0.0_f32; 4];
+        assert_eq!(consumer.read(&mut drained), 4);
+    }
+
+    #[test]
+    fn test_output_writer_retime_can_expand_and_compress_output() {
+        let input: Vec<f32> = (0..256).map(|i| i as f32 / 255.0).collect();
+
+        let expand_rb = AudioRingBuffer::new(1024);
+        let (mut expand_producer, mut expand_consumer) = expand_rb.split();
+        let mut expand_control_scratch = FixedAudioBuffer::<f32, 512>::new();
+        let mut expand_fade_scratch = FixedAudioBuffer::<f32, 512>::new();
+        let mut expand_safety_scratch = FixedAudioBuffer::<f32, 512>::new();
+        let mut expand_drift_error_ema = -10_000.0_f32;
+        let expand_fade_remaining = Cell::new(0usize);
+        let limiter_enabled = AtomicBool::new(false);
+        let output_ceiling_linear = Cell::new(1.0_f32);
+        let expand_jitter_dropped_samples = AtomicU64::new(0);
+        let expand_output_recovery_count = AtomicU64::new(0);
+        let expand_output_short_write_dropped_samples = AtomicU64::new(0);
+        let expand_rt_buffer_overflow_count = AtomicU64::new(0);
+        let expand_rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+        let expand_output_buffer_len = AtomicU32::new(0);
+        let expand_last_output_write_time = AtomicU64::new(0);
+        let mut expand_writer = OutputWriteContext {
+            output_producer: &mut expand_producer,
+            output_queue_control_scratch: &mut expand_control_scratch,
+            discontinuity_fade_scratch: &mut expand_fade_scratch,
+            output_safety_scratch: &mut expand_safety_scratch,
+            drift_error_ema: &mut expand_drift_error_ema,
+            discontinuity_fade_remaining: &expand_fade_remaining,
+            limiter_enabled: &limiter_enabled,
+            output_ceiling_linear: &output_ceiling_linear,
+            counters: output_writer_counters(
+                &expand_jitter_dropped_samples,
+                &expand_output_recovery_count,
+                &expand_output_short_write_dropped_samples,
+                &expand_rt_buffer_overflow_count,
+                &expand_rt_error_code,
+                &expand_output_buffer_len,
+                &expand_last_output_write_time,
+            ),
+            limits: test_output_writer_limits(128, 256, 4),
+        };
+
+        assert!(expand_writer.write_chunk(&input, false));
+        let mut expanded = vec![0.0_f32; 512];
+        let expanded_len = expand_consumer.read(&mut expanded);
+        assert!(expanded_len > input.len());
+        assert_eq!(expand_output_recovery_count.load(Ordering::Relaxed), 1);
+
+        let compress_rb = AudioRingBuffer::new(1024);
+        let (mut compress_producer, mut compress_consumer) = compress_rb.split();
+        compress_producer.write(&vec![0.0_f32; 256]);
+        let mut compress_control_scratch = FixedAudioBuffer::<f32, 512>::new();
+        let mut compress_fade_scratch = FixedAudioBuffer::<f32, 512>::new();
+        let mut compress_safety_scratch = FixedAudioBuffer::<f32, 512>::new();
+        let mut compress_drift_error_ema = 10_000.0_f32;
+        let compress_fade_remaining = Cell::new(0usize);
+        let compress_jitter_dropped_samples = AtomicU64::new(0);
+        let compress_output_recovery_count = AtomicU64::new(0);
+        let compress_output_short_write_dropped_samples = AtomicU64::new(0);
+        let compress_rt_buffer_overflow_count = AtomicU64::new(0);
+        let compress_rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+        let compress_output_buffer_len = AtomicU32::new(256);
+        let compress_last_output_write_time = AtomicU64::new(0);
+        let mut compress_writer = OutputWriteContext {
+            output_producer: &mut compress_producer,
+            output_queue_control_scratch: &mut compress_control_scratch,
+            discontinuity_fade_scratch: &mut compress_fade_scratch,
+            output_safety_scratch: &mut compress_safety_scratch,
+            drift_error_ema: &mut compress_drift_error_ema,
+            discontinuity_fade_remaining: &compress_fade_remaining,
+            limiter_enabled: &limiter_enabled,
+            output_ceiling_linear: &output_ceiling_linear,
+            counters: output_writer_counters(
+                &compress_jitter_dropped_samples,
+                &compress_output_recovery_count,
+                &compress_output_short_write_dropped_samples,
+                &compress_rt_buffer_overflow_count,
+                &compress_rt_error_code,
+                &compress_output_buffer_len,
+                &compress_last_output_write_time,
+            ),
+            limits: test_output_writer_limits(128, 256, 4),
+        };
+
+        assert!(compress_writer.write_chunk(&input, false));
+        let mut compressed = vec![0.0_f32; 1024];
+        let compressed_len = compress_consumer.read(&mut compressed);
+        assert!(compressed_len < input.len() + 256);
+        assert!(compressed_len > 256);
+        assert!(compress_jitter_dropped_samples.load(Ordering::Relaxed) > 0);
+        assert_eq!(compress_output_recovery_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn test_output_writer_applies_discontinuity_fade_after_short_write_drop() {
+        let rb = AudioRingBuffer::new(8);
+        let (mut producer, mut consumer) = rb.split();
+        producer.write(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let mut control_scratch = FixedAudioBuffer::<f32, 64>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
+        let mut drift_error_ema = 0.0_f32;
+        let fade_remaining = Cell::new(0usize);
+        let limiter_enabled = AtomicBool::new(false);
+        let output_ceiling_linear = Cell::new(1.0_f32);
+        let jitter_dropped_samples = AtomicU64::new(0);
+        let output_recovery_count = AtomicU64::new(0);
+        let output_short_write_dropped_samples = AtomicU64::new(0);
+        let rt_buffer_overflow_count = AtomicU64::new(0);
+        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+        let output_buffer_len = AtomicU32::new(6);
+        let last_output_write_time = AtomicU64::new(0);
+        let mut writer = OutputWriteContext {
+            output_producer: &mut producer,
+            output_queue_control_scratch: &mut control_scratch,
+            discontinuity_fade_scratch: &mut fade_scratch,
+            output_safety_scratch: &mut safety_scratch,
+            drift_error_ema: &mut drift_error_ema,
+            discontinuity_fade_remaining: &fade_remaining,
+            limiter_enabled: &limiter_enabled,
+            output_ceiling_linear: &output_ceiling_linear,
+            counters: output_writer_counters(
+                &jitter_dropped_samples,
+                &output_recovery_count,
+                &output_short_write_dropped_samples,
+                &rt_buffer_overflow_count,
+                &rt_error_code,
+                &output_buffer_len,
+                &last_output_write_time,
+            ),
+            limits: test_output_writer_limits(4, 8, 4),
+        };
+
+        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], false));
+        let mut first_drain = [0.0_f32; 8];
+        assert_eq!(consumer.read(&mut first_drain), 8);
+        assert_eq!(fade_remaining.get(), 4);
+
+        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], false));
+        let mut faded = [0.0_f32; 4];
+        assert_eq!(consumer.read(&mut faded), 4);
+        assert!(faded[0] > 0.0);
+        assert!(faded[0] < faded[1]);
+        assert!(faded[1] < faded[2]);
+        assert!(faded[2] < faded[3]);
+        assert!((faded[3] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_output_writer_still_applies_limiter_ceiling_clamp() {
+        let rb = AudioRingBuffer::new(8);
+        let (mut producer, mut consumer) = rb.split();
+        let mut control_scratch = FixedAudioBuffer::<f32, 32>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 32>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 32>::new();
+        let mut drift_error_ema = 0.0_f32;
+        let fade_remaining = Cell::new(0usize);
+        let limiter_enabled = AtomicBool::new(true);
+        let output_ceiling_linear = Cell::new(0.5_f32);
+        let jitter_dropped_samples = AtomicU64::new(0);
+        let output_recovery_count = AtomicU64::new(0);
+        let output_short_write_dropped_samples = AtomicU64::new(0);
+        let rt_buffer_overflow_count = AtomicU64::new(0);
+        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+        let output_buffer_len = AtomicU32::new(0);
+        let last_output_write_time = AtomicU64::new(0);
+        let mut writer = OutputWriteContext {
+            output_producer: &mut producer,
+            output_queue_control_scratch: &mut control_scratch,
+            discontinuity_fade_scratch: &mut fade_scratch,
+            output_safety_scratch: &mut safety_scratch,
+            drift_error_ema: &mut drift_error_ema,
+            discontinuity_fade_remaining: &fade_remaining,
+            limiter_enabled: &limiter_enabled,
+            output_ceiling_linear: &output_ceiling_linear,
+            counters: output_writer_counters(
+                &jitter_dropped_samples,
+                &output_recovery_count,
+                &output_short_write_dropped_samples,
+                &rt_buffer_overflow_count,
+                &rt_error_code,
+                &output_buffer_len,
+                &last_output_write_time,
+            ),
+            limits: test_output_writer_limits(4, 8, 4),
+        };
+
+        assert!(writer.write_chunk(&[2.0, -2.0, 0.5], true));
+        let mut limited = [0.0_f32; 3];
+        assert_eq!(consumer.read(&mut limited), 3);
+        assert_eq!(limited, [0.5, -0.5, 0.5]);
     }
 
     fn fill_probe_block(buffer: &mut [f32]) {
@@ -918,6 +1433,10 @@ mod tests {
             .processor
             .output_recovery_count
             .store(7, Ordering::Relaxed);
+        wrapper
+            .processor
+            .output_underrun_streak
+            .store(3, Ordering::Relaxed);
 
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
@@ -932,6 +1451,15 @@ mod tests {
                     .extract::<u64>()
                     .unwrap(),
                 7
+            );
+            assert_eq!(
+                diagnostics
+                    .get_item("output_underrun_streak")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u32>()
+                    .unwrap(),
+                3
             );
         });
     }

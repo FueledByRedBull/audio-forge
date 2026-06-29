@@ -44,6 +44,7 @@ def test_watchdog_cooldown_blocks_recovery():
         last_recovery_at=90.0,
         calibration_dialog_open=False,
     )
+    assert state is None
     assert recover is False
 
 
@@ -141,4 +142,79 @@ def test_output_stall_ignores_calibration_and_cooldown():
         now=100.0,
     )
     assert recover is False
-    assert manager.output_stall_started_at == 99.0
+    assert manager.output_stall_started_at is None
+
+
+def test_watchdog_requires_fresh_grace_window_after_cooldown():
+    state, recover = update_callback_stall_state(
+        stall_started_at=10.0,
+        now=110.0,
+        input_cb_age_ms=100,
+        output_cb_age_ms=3000,
+        processing_started_at=0.0,
+        last_recovery_at=100.0,
+        calibration_dialog_open=False,
+    )
+    assert state is None
+    assert recover is False
+
+    state, recover = update_callback_stall_state(
+        stall_started_at=state,
+        now=121.0,
+        input_cb_age_ms=100,
+        output_cb_age_ms=3000,
+        processing_started_at=0.0,
+        last_recovery_at=100.0,
+        calibration_dialog_open=False,
+    )
+    assert state == 121.0
+    assert recover is False
+
+    state, recover = update_callback_stall_state(
+        stall_started_at=state,
+        now=122.6,
+        input_cb_age_ms=100,
+        output_cb_age_ms=3000,
+        processing_started_at=0.0,
+        last_recovery_at=100.0,
+        calibration_dialog_open=False,
+    )
+    assert state is None
+    assert recover is True
+
+
+def test_output_stall_requires_fresh_grace_window_after_cooldown():
+    manager = StreamRecoveryManager(
+        output_stall_started_at=10.0,
+        last_output_recovery_at=100.0,
+        processing_started_at=0.0,
+    )
+
+    recover = manager.maybe_recover_output_stall(
+        input_rms=-20.0,
+        output_rms=-90.0,
+        output_buf=30000,
+        calibration_dialog_open=False,
+        now=110.0,
+    )
+    assert recover is False
+    assert manager.output_stall_started_at is None
+
+    recover = manager.maybe_recover_output_stall(
+        input_rms=-20.0,
+        output_rms=-90.0,
+        output_buf=30000,
+        calibration_dialog_open=False,
+        now=121.0,
+    )
+    assert recover is False
+    assert manager.output_stall_started_at == 121.0
+
+    recover = manager.maybe_recover_output_stall(
+        input_rms=-20.0,
+        output_rms=-90.0,
+        output_buf=30000,
+        calibration_dialog_open=False,
+        now=122.6,
+    )
+    assert recover is True

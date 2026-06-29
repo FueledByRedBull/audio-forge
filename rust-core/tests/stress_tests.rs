@@ -1,4 +1,4 @@
-//! Stress tests for MicEq DSP parameter changes and device-enumeration smoke coverage
+//! Stress tests for AudioForge DSP parameter changes and device-enumeration smoke coverage
 //!
 //! These tests validate that the system can handle:
 //! - Rapid UI interaction (slider spam, preset switching)

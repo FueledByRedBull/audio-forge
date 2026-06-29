@@ -232,6 +232,54 @@ def test_15_tilt_removal_reduces_linear_log_slope():
     assert abs(residual_slope) < 1e-3
 
 
+def test_15a_tilt_removal_accepts_perfect_nonzero_intercept():
+    freqs = _default_freqs()
+    x = np.log10(freqs)
+    measured_db = 4.0 * (x - np.mean(x)) + 10.0
+    detrended, slope = _remove_spectral_tilt(freqs, measured_db)
+
+    x_center = x - np.mean(x)
+    residual_slope = float(np.dot(x_center, detrended) / np.dot(x_center, x_center))
+    assert abs(slope - 4.0) < 1e-6
+    assert abs(residual_slope) < 1e-6
+    assert np.allclose(detrended, np.full_like(detrended, detrended[0]))
+
+
+def test_15b_tilt_removal_rejects_flat_response():
+    freqs = _default_freqs()
+    measured_db = np.full_like(freqs, 6.0)
+
+    detrended, slope = _remove_spectral_tilt(freqs, measured_db)
+
+    assert slope == 0.0
+    assert np.allclose(detrended, measured_db)
+
+
+def test_15c_tilt_removal_accepts_noisy_tilt_above_fit_threshold():
+    freqs = _default_freqs()
+    x = np.log10(freqs)
+    x_center = x - np.mean(x)
+    rng = np.random.default_rng(1503)
+    measured_db = 3.0 * x_center + 2.0 + rng.normal(0.0, 0.12, size=freqs.size)
+
+    detrended, slope = _remove_spectral_tilt(freqs, measured_db)
+    residual_slope = float(np.dot(x_center, detrended) / np.dot(x_center, x_center))
+
+    assert abs(slope) > 2.0
+    assert abs(residual_slope) < 0.2
+
+
+def test_15d_tilt_removal_rejects_random_response_below_fit_threshold():
+    freqs = _default_freqs()
+    rng = np.random.default_rng(1504)
+    measured_db = rng.normal(0.0, 4.0, size=freqs.size)
+
+    detrended, slope = _remove_spectral_tilt(freqs, measured_db)
+
+    assert slope == 0.0
+    assert np.allclose(detrended, measured_db)
+
+
 def test_16_snr_aware_boost_caps_are_bounded_and_monotonic():
     snr_db = np.array([-5.0, 0.0, 3.0, 8.0, 12.0, 18.0, 30.0], dtype=float)
     caps = _snr_aware_gain_upper_bounds(snr_db)
@@ -341,6 +389,34 @@ def test_21_eq_quality_detects_risky_overlap_and_flat_is_safe():
     assert risky.overlapping_adjacent_bands >= 1
     assert risky.warnings
     assert not safe.warnings
+
+
+def test_21a_eq_quality_reports_positive_boost_and_cut_excursions_separately():
+    boost_gains = [0.0] * 10
+    boost_gains[4] = 6.0
+    cut_gains = [0.0] * 10
+    cut_gains[4] = -6.0
+    mixed_gains = [0.0] * 10
+    mixed_gains[3] = 6.0
+    mixed_gains[6] = -6.0
+
+    boost_only = evaluate_eq_quality(EQ_FREQUENCIES, boost_gains, [1.41] * 10)
+    cut_only = evaluate_eq_quality(EQ_FREQUENCIES, cut_gains, [1.41] * 10)
+    mixed = evaluate_eq_quality(
+        EQ_FREQUENCIES,
+        mixed_gains,
+        [1.41] * 10,
+    )
+    flat = evaluate_eq_quality(EQ_FREQUENCIES, [0.0] * 10, [1.41] * 10)
+
+    assert boost_only.max_boost_db > 0.0
+    assert boost_only.max_cut_db <= 1e-6
+    assert cut_only.max_boost_db <= 1e-6
+    assert cut_only.max_cut_db > 0.0
+    assert mixed.max_boost_db > 0.0
+    assert mixed.max_cut_db > 0.0
+    assert flat.max_boost_db == 0.0
+    assert flat.max_cut_db == 0.0
 
 
 def test_22_stable_speech_like_capture_has_useful_confidence():

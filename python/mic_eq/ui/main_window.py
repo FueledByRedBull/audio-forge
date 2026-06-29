@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
         self._calibration_dialog_open = False
         self._stream_recovery = StreamRecoveryManager()
         self._last_backend_warning = None
+        self._last_output_underrun_total = 0
         self._ui_state_timer = QTimer(self)
         self._ui_state_timer.setSingleShot(True)
         self._ui_state_timer.timeout.connect(self._save_ui_state)
@@ -1518,8 +1519,17 @@ class MainWindow(QMainWindow):
         lock_contention = diagnostics.get("lock_contention_count", 0)
         non_finite = diagnostics.get("suppressor_non_finite_count", 0)
         restart_count = diagnostics.get("stream_restart_count", 0)
-        underruns = diagnostics.get("output_underrun_total", 0)
+        underruns = int(diagnostics.get("output_underrun_total", 0) or 0)
+        underrun_streak = int(diagnostics.get("output_underrun_streak", 0) or 0)
+        previous_underruns = int(
+            getattr(self, "_last_output_underrun_total", underruns) or 0
+        )
+        new_underruns_observed = underruns > previous_underruns
+        self._last_output_underrun_total = underruns
         recoveries = diagnostics.get("output_recovery_count", 0)
+        output_short_write_dropped = int(
+            diagnostics.get("output_short_write_dropped_samples", 0) or 0
+        )
         rt_overflows = diagnostics.get("rt_buffer_overflow_count", 0)
         input_callback_errors = diagnostics.get("input_callback_error_count", 0)
         output_callback_errors = diagnostics.get("output_callback_error_count", 0)
@@ -1533,12 +1543,15 @@ class MainWindow(QMainWindow):
             f"NF:{non_finite}",
             f"RS:{restart_count}",
         ]
+        if underrun_streak:
+            dropped_bits.append(f"US:{underrun_streak}")
         self._extend_diag_tokens(
             dropped_bits,
             diagnostics,
             [
                 ("input_backlog_recovery_count", "IBR"),
                 ("input_backlog_dropped_samples", "IBD"),
+                ("output_short_write_dropped_samples", "OSW"),
                 ("rt_buffer_overflow_count", "RTO"),
                 ("input_callback_error_count", "ICE"),
                 ("output_callback_error_count", "OCE"),
@@ -1552,10 +1565,11 @@ class MainWindow(QMainWindow):
             "ok"
             if (
                 dropped == 0
-                and underruns == 0
-                and recoveries == 0
+                and underrun_streak == 0
+                and not new_underruns_observed
                 and lock_contention == 0
                 and non_finite == 0
+                and output_short_write_dropped == 0
                 and rt_overflows == 0
                 and input_callback_errors == 0
                 and output_callback_errors == 0

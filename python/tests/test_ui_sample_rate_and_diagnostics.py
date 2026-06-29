@@ -140,6 +140,7 @@ class _FakeLabel:
         self.text = ""
         self.stylesheet = ""
         self.visible = True
+        self.state = ""
 
     def setText(self, text: str):
         self.text = text
@@ -230,7 +231,9 @@ class _MeterProcessor:
             "suppressor_non_finite_count": 0,
             "stream_restart_count": 2,
             "output_underrun_total": 3,
+            "output_underrun_streak": 0,
             "output_recovery_count": 4,
+            "output_short_write_dropped_samples": 0,
             "rt_buffer_overflow_count": 8,
             "input_callback_error_count": 9,
             "output_callback_error_count": 10,
@@ -345,6 +348,7 @@ class _RecoveryWindow:
 
     def _set_health_chip(self, label: _FakeLabel, text: str, state: str) -> None:
         label.setText(text)
+        label.state = state
 
     def _update_diagnostic_labels(self, **kwargs) -> None:
         MainWindow._update_diagnostic_labels(self, **kwargs)
@@ -437,7 +441,9 @@ def test_main_window_diagnostics_include_new_metrics():
         "suppressor_non_finite_count": 0,
         "stream_restart_count": 2,
         "output_underrun_total": 3,
+        "output_underrun_streak": 2,
         "output_recovery_count": 4,
+        "output_short_write_dropped_samples": 11,
         "rt_buffer_overflow_count": 8,
         "input_callback_error_count": 9,
         "output_callback_error_count": 10,
@@ -454,12 +460,13 @@ def test_main_window_diagnostics_include_new_metrics():
     MainWindow._extend_diag_tokens(
         dropped_bits,
         diagnostics,
-        [
-            ("input_backlog_recovery_count", "IBR"),
-            ("input_backlog_dropped_samples", "IBD"),
-            ("rt_buffer_overflow_count", "RTO"),
-            ("input_callback_error_count", "ICE"),
-            ("output_callback_error_count", "OCE"),
+            [
+                ("input_backlog_recovery_count", "IBR"),
+                ("input_backlog_dropped_samples", "IBD"),
+                ("output_short_write_dropped_samples", "OSW"),
+                ("rt_buffer_overflow_count", "RTO"),
+                ("input_callback_error_count", "ICE"),
+                ("output_callback_error_count", "OCE"),
             ("clip_event_count", "CL"),
             ("clip_peak_db", "PK"),
         ],
@@ -476,6 +483,7 @@ def test_main_window_diagnostics_include_new_metrics():
 
     assert "IBR:5" in dropped_bits
     assert "IBD:6" in dropped_bits
+    assert "OSW:11" in dropped_bits
     assert "RTO:8" in dropped_bits
     assert "ICE:9" in dropped_bits
     assert "OCE:10" in dropped_bits
@@ -643,6 +651,98 @@ def test_update_diagnostics_surfaces_output_recovery_and_reuses_diagnostics(qapp
     assert "OCE:10" in window.dropped_label.text
     assert "RT:fixed real-time buffer overflow" in window.dropped_label.text
     assert not window.status_bar.messages
+
+
+def test_stale_output_underrun_and_recovery_totals_do_not_warn():
+    window = _RecoveryWindow()
+    diagnostics = {
+        "input_dropped_samples": 0,
+        "lock_contention_count": 0,
+        "suppressor_non_finite_count": 0,
+        "stream_restart_count": 0,
+        "output_underrun_total": 4,
+        "output_underrun_streak": 0,
+        "output_recovery_count": 606,
+        "output_short_write_dropped_samples": 0,
+        "rt_buffer_overflow_count": 0,
+        "input_callback_error_count": 0,
+        "output_callback_error_count": 0,
+        "rt_error_name": "none",
+        "input_backlog_recovery_count": 0,
+        "input_backlog_dropped_samples": 0,
+        "clip_event_count": 0,
+        "clip_peak_db": -120.0,
+        "input_resampler_active": False,
+        "output_resampler_active": False,
+        "noise_model": "deepfilter",
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "noise_backend_error": None,
+        "recovery_suppressed": False,
+        "last_restart_reason": None,
+    }
+    window._last_output_underrun_total = 4
+
+    window._update_diagnostic_labels(
+        diagnostics=diagnostics,
+        latency_ms=64.0,
+        dsp_time_ms=0.6,
+        input_buf=512,
+        output_buf=512,
+        rnnoise_buf=0,
+    )
+
+    assert "U:4" in window.dropped_label.text
+    assert "R:606" in window.dropped_label.text
+    assert window.dropped_label.state == "ok"
+    assert window.recovery_diag_label.state == "ok"
+
+
+def test_new_output_underrun_total_warns_once():
+    window = _RecoveryWindow()
+    diagnostics = {
+        "input_dropped_samples": 0,
+        "lock_contention_count": 0,
+        "suppressor_non_finite_count": 0,
+        "stream_restart_count": 0,
+        "output_underrun_total": 5,
+        "output_underrun_streak": 0,
+        "output_recovery_count": 0,
+        "output_short_write_dropped_samples": 0,
+        "rt_buffer_overflow_count": 0,
+        "input_callback_error_count": 0,
+        "output_callback_error_count": 0,
+        "rt_error_name": "none",
+        "noise_model": "rnnoise",
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "noise_backend_error": None,
+        "recovery_suppressed": False,
+        "last_restart_reason": None,
+    }
+    window._last_output_underrun_total = 4
+
+    window._update_diagnostic_labels(
+        diagnostics=diagnostics,
+        latency_ms=64.0,
+        dsp_time_ms=0.6,
+        input_buf=512,
+        output_buf=512,
+        rnnoise_buf=0,
+    )
+
+    assert window.dropped_label.state == "warn"
+
+    window._update_diagnostic_labels(
+        diagnostics=diagnostics,
+        latency_ms=64.0,
+        dsp_time_ms=0.6,
+        input_buf=512,
+        output_buf=512,
+        rnnoise_buf=0,
+    )
+
+    assert window.dropped_label.state == "ok"
 
 
 def test_startup_preset_ids_normalize_builtin_and_custom_legacy_names():

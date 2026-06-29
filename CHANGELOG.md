@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.8.4 - 2026-06-29
+
+- Hardened config and startup recovery against valid-but-wrong persisted JSON, malformed `last_preset` values, and stale recovery cooldown timers.
+- Fixed DSP and analysis correctness issues: compressor auto makeup now meters post-compression output, EQ quality boost/cut diagnostics use signed excursions correctly, and spectral-tilt fitting handles nonzero-intercept responses.
+- Replaced dominant-channel multichannel input selection with deterministic mixdown to avoid channel switching on stereo and multi-input interfaces.
+- Extracted output queue writing into an explicit output writer with tests for drift retiming, discontinuity fades, limiter clamping, no-op writes, and queue-full short writes.
+- Added drift-retime spectral regression coverage and idle-DSP wakeup diagnostics with bounded idle backoff.
+- Split more processor helpers into focused routing, resampling, diagnostics, and output-writer modules while keeping public APIs stable.
+- Preserved documented MicEq compatibility boundaries while removing stale direct-test config import fallback code and obsolete source comments.
+- Refined runtime diagnostics so historical output underrun/recovery totals stay visible without making the Drops chip warn forever; active/new underruns and real output short-write loss remain warning signals.
+- Reduced the packaged `dist/AudioForge` footprint by pruning the duplicate top-level `mic_eq_core` native extension and making package smoke reject that duplicate.
+
 ## v1.8.3 - 2026-06-29
 
 - Finished the public AudioForge identity cleanup by removing the superseded root build helper, renaming the icon asset, and updating stale MicEq-facing package strings.

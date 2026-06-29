@@ -305,12 +305,13 @@ def _remove_spectral_tilt(freqs: np.ndarray, measured_db: np.ndarray) -> tuple[n
         return measured_db, 0.0
 
     slope = float(np.dot(x_center, y) / denom)
-    y_center = y - np.mean(y)
+    intercept = float(np.mean(y))
+    y_center = y - intercept
     ss_tot = float(np.sum(y_center ** 2))
     if ss_tot <= 1e-12:
         return measured_db, 0.0
 
-    fit_y = slope * x_center
+    fit_y = slope * x_center + intercept
     ss_res = float(np.sum((y - fit_y) ** 2))
     fit_r2 = 1.0 - (ss_res / ss_tot)
     if not np.isfinite(fit_r2) or fit_r2 < TILT_MIN_FIT_R2:

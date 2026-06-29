@@ -383,6 +383,17 @@ class GatePanel(QWidget):
         mode = self.gate_mode_combo.currentIndex()
         return mode > 0 and self._is_vad_available() and self.auto_threshold_checkbox.isChecked()
 
+    def _set_vad_status_text(self, mode: int, vad_available: bool) -> None:
+        if mode == 0:
+            self.vad_info_label.setText("VAD: Threshold mode")
+        elif vad_available:
+            if self.auto_threshold_checkbox.isChecked():
+                self.vad_info_label.setText("VAD: Active | Auto threshold on")
+            else:
+                self.vad_info_label.setText("VAD: Active | Manual threshold")
+        else:
+            self.vad_info_label.setText("VAD: Unavailable")
+
     def _refresh_threshold_summary(self):
         manual_threshold = self.threshold_spinbox.value()
         self.noise_floor_label.setText(f"Noise Floor: {self._latest_noise_floor_db:.1f} dB")
@@ -399,6 +410,13 @@ class GatePanel(QWidget):
             self.threshold_status_label.setText(
                 f"Effective Threshold: {manual_threshold:.1f} dB (manual)"
             )
+
+    def refresh_vad_status(self) -> None:
+        """Refresh VAD-dependent UI after backend availability changes."""
+        mode = self.gate_mode_combo.currentIndex()
+        vad_available = self._is_vad_available()
+        self._update_vad_controls_enabled()
+        self._set_vad_status_text(mode, vad_available)
 
     def _update_vad_mode(self):
         """Update VAD mode and settings."""
@@ -421,18 +439,7 @@ class GatePanel(QWidget):
             self.processor.set_vad_threshold(self.vad_threshold_spinbox.value())
             self.processor.set_vad_hold_time(self.vad_hold_spinbox.value())
             self.processor.set_vad_pre_gain(self.vad_pre_gain_spinbox.value())
-            self._update_vad_controls_enabled()
-            self._refresh_threshold_summary()
-
-            if mode == 0:
-                self.vad_info_label.setText("VAD: Threshold mode")
-            elif vad_available:
-                if self.auto_threshold_checkbox.isChecked():
-                    self.vad_info_label.setText("VAD: Active | Auto threshold on")
-                else:
-                    self.vad_info_label.setText("VAD: Active | Manual threshold")
-            else:
-                self.vad_info_label.setText("VAD: Unavailable")
+            self.refresh_vad_status()
         except AttributeError:
             # VAD not available - show shorter error message
             self.vad_info_label.setText("VAD: Not available")
@@ -507,7 +514,7 @@ class GatePanel(QWidget):
             self._latest_noise_floor_db = float(self.processor.get_noise_floor())
         except Exception:
             self._latest_noise_floor_db = -60.0
-        self._refresh_threshold_summary()
+        self.refresh_vad_status()
 
     def get_settings(self) -> dict:
         """Get current gate settings as a dictionary."""

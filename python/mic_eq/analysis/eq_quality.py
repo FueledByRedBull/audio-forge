@@ -94,8 +94,8 @@ def evaluate_eq_quality(
     voice_mask = (grid >= 80.0) & (grid <= 12_000.0)
     voice_response = response[voice_mask] if np.any(voice_mask) else response
 
-    max_boost_db = float(np.max(response))
-    max_cut_db = float(abs(np.min(response)))
+    max_boost_db = float(max(0.0, np.max(response)))
+    max_cut_db = float(max(0.0, -np.min(response)))
     ripple_db = float(np.percentile(voice_response, 95.0) - np.percentile(voice_response, 5.0))
 
     warnings: list[EqInteractionWarning] = []

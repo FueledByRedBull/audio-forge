@@ -19,12 +19,12 @@ Raw assets are preferred. If the asset-source release only has an existing `Audi
 For local release prep from a clean clone, you can mirror that behavior with:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.3
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.4
 ```
 
 Then run the workflow with:
 
-- `release_tag`: the target tag, for example `v1.8.3`.
+- `release_tag`: the target tag, for example `v1.8.4`.
 - `asset_source_tag`: the release tag containing the raw assets. Leave blank to use the repository variable `AUDIOFORGE_ASSET_SOURCE_TAG`, or the target release when that variable is unset.
 - `upload_to_release`: enabled when running manually and the generated archive should be uploaded to the GitHub Release.
 
@@ -71,21 +71,21 @@ Create the distributable archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.8.3-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.8.4-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 Compute the checksum:
 
 ```powershell
-Get-FileHash .\AudioForge-v1.8.3-win64-ultra.7z -Algorithm SHA256
+Get-FileHash .\AudioForge-v1.8.4-win64-ultra.7z -Algorithm SHA256
 ```
 
 Manual publish:
 
 1. Commit tracked source/doc/version changes.
-2. Create annotated tag `v1.8.3`.
+2. Create annotated tag `v1.8.4`.
 3. Upload the raw runtime assets listed above to the GitHub Release or to the configured `asset_source_tag` release. An existing verified `AudioForge-*-win64-ultra.7z` on that release can also be used as the asset source.
-4. Push `master` and `v1.8.3`, or run the `Release package` workflow manually with `upload_to_release` enabled.
+4. Push `master` and `v1.8.4`, or run the `Release package` workflow manually with `upload_to_release` enabled.
 
 ## Packaging notes
 
@@ -93,8 +93,8 @@ Manual publish:
 - Packaged builds prefer the bundled `df.dll`; set `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` only for deliberate override/testing.
 - Keep `release-assets.json` current with the required `df.dll`, `target/release/DirectML.dll`, both DeepFilter model tarballs, and `models/silero_vad.onnx`.
 - `build_exe.ps1` fails before PyInstaller if a required asset is missing, hash mismatched, or the local `mic_eq_core*.pyd` is older than Rust sources.
-- `python/tools/package_smoke.py` verifies exact bundled DLL/model/native-extension presence and dependency license or `.dist-info` metadata.
-- `python/tools/prune_bundle.py` must not remove dependency `.dist-info` directories; license/metadata retention is part of the release gate.
+- `python/tools/package_smoke.py` verifies exact bundled DLL/model/native-extension presence, rejects duplicate top-level native-extension payloads, and checks dependency license or `.dist-info` metadata.
+- `python/tools/prune_bundle.py` must not remove dependency `.dist-info` directories; license/metadata retention is part of the release gate. It may remove duplicate native-extension payloads only when the canonical `_internal/mic_eq/mic_eq_core*.pyd` copy is present.
 - Obtain `DirectML.dll` from the pinned Microsoft DirectML redistributable package, `df.dll` from the pinned DeepFilter runtime build/artifact, and model files from the pinned model artifacts documented in `release-assets.json`.
 
 ## Strict realtime regression gates

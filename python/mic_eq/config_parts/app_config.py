@@ -64,7 +64,10 @@ class AppConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "AppConfig":
+    def from_dict(cls, data: object) -> "AppConfig":
+        if not isinstance(data, dict):
+            return cls()
+
         input_identity = coerce_device_identity(data.get("last_input_device_identity"))
         if input_identity is None:
             input_identity = coerce_device_identity(data.get("last_input_device"))
@@ -94,7 +97,7 @@ class AppConfig:
             last_output_device=str(data.get("last_output_device", "") or (output_identity.name if output_identity else "")),
             last_input_device_identity=input_identity,
             last_output_device_identity=output_identity,
-            last_preset=data.get("last_preset", ""),
+            last_preset=data.get("last_preset", "") if isinstance(data.get("last_preset", ""), str) else "",
             startup_preset=data.get("startup_preset", ""),
             window_geometry=_coerce_window_geometry(data.get("window_geometry")),
             main_splitter_sizes=[

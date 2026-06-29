@@ -6,7 +6,10 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from mic_eq import config
+from mic_eq.config_parts import app_config as app_config_module
 
 
 Preset = config.Preset
@@ -109,6 +112,13 @@ def test_app_config_latency_profiles_round_trip():
     assert restored_profile.confidence == 0.92
 
 
+@pytest.mark.parametrize("payload", [[], "bad", 123, True, None])
+def test_app_config_non_object_payload_returns_defaults(payload):
+    restored = AppConfig.from_dict(payload)
+
+    assert restored == AppConfig()
+
+
 def test_app_config_restores_false_boolean_without_truthy_coercion():
     restored = AppConfig.from_dict({"use_measured_latency": False})
 
@@ -121,11 +131,38 @@ def test_app_config_rejects_corrupt_boolean_to_default():
     assert restored.use_measured_latency is True
 
 
+@pytest.mark.parametrize("payload", [[], "bad", 123, True, None])
+def test_load_config_falls_back_to_defaults_for_non_object_json(payload, monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    with open(config_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+
+    monkeypatch.setattr(app_config_module, "get_config_file", lambda: config_path)
+
+    restored = app_config_module.load_config()
+
+    assert restored == AppConfig()
+
+
 def test_app_config_ignores_invalid_window_geometry_values():
     for value in (["not", "a", "dict"], "invalid", {"x": 1, "y": 2}, {"x": 1, "y": 2, "width": math.inf, "height": 700}):
         restored = AppConfig.from_dict({"window_geometry": value})
 
         assert restored.window_geometry is None
+
+
+@pytest.mark.parametrize("value", [123, ["builtin:voice"], {"preset": "voice"}, True, None])
+def test_app_config_normalizes_invalid_last_preset_values_to_safe_string(value):
+    restored = AppConfig.from_dict({"last_preset": value})
+
+    assert restored.last_preset == ""
+    assert isinstance(restored.last_preset, str)
+
+
+def test_app_config_preserves_valid_last_preset_string():
+    restored = AppConfig.from_dict({"last_preset": "builtin:voice"})
+
+    assert restored.last_preset == "builtin:voice"
 
 
 def test_app_config_accepts_and_clamps_valid_window_geometry():

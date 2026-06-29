@@ -664,6 +664,10 @@ impl PyAudioProcessor {
             self.processor.get_output_underrun_total(),
         )?;
         diagnostics.set_item(
+            "output_underrun_streak",
+            self.processor.get_output_underrun_streak(),
+        )?;
+        diagnostics.set_item(
             "jitter_dropped_samples",
             self.processor.get_jitter_dropped_samples(),
         )?;
@@ -671,6 +675,11 @@ impl PyAudioProcessor {
             "output_recovery_count",
             self.processor.get_output_recovery_count(),
         )?;
+        diagnostics.set_item(
+            "dsp_idle_wakeup_count",
+            self.processor.get_dsp_idle_wakeup_count(),
+        )?;
+        diagnostics.set_item("dsp_idle_sleep_us", self.processor.get_dsp_idle_sleep_us())?;
         diagnostics.set_item(
             "output_short_write_dropped_samples",
             self.processor

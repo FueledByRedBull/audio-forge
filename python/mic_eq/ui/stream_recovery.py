@@ -31,7 +31,7 @@ def update_callback_stall_state(
         return None, False
 
     if now - last_recovery_at < cooldown_s:
-        return stall_started_at, False
+        return None, False
 
     suspicious = output_cb_age_ms > output_age_threshold_ms and input_cb_age_ms < input_age_threshold_ms
     if not suspicious:
@@ -83,6 +83,7 @@ class StreamRecoveryManager:
 
         current_time = time.monotonic() if now is None else now
         if current_time - self.last_output_recovery_at < cooldown_s:
+            self.output_stall_started_at = None
             return False
 
         suspicious = input_rms > -50.0 and output_rms < -85.0 and output_buf > 20000

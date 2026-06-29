@@ -145,6 +145,14 @@ def _has_native_extension(dist: Path) -> bool:
     )
 
 
+def _has_duplicate_native_extension(dist: Path) -> bool:
+    duplicate_dir = dist / "_internal" / "mic_eq_core"
+    return any(
+        path.is_file() and path.name.startswith("mic_eq_core") and path.suffix == ".pyd"
+        for path in duplicate_dir.glob("mic_eq_core*.pyd")
+    )
+
+
 def _has_dependency_license_metadata(dist: Path) -> bool:
     internal = dist / "_internal"
     if any(path.is_dir() for path in internal.glob("*.dist-info")):
@@ -170,6 +178,9 @@ def check_dist_bundle(dist: Path | None = None) -> list[str]:
 
     if not _has_native_extension(dist):
         errors.append(f"{dist} does not contain _internal/mic_eq/mic_eq_core*.pyd")
+
+    if _has_duplicate_native_extension(dist):
+        errors.append(f"{dist} contains duplicate _internal/mic_eq_core/mic_eq_core*.pyd")
 
     if not _has_dependency_license_metadata(dist):
         errors.append(f"{dist} does not contain dependency dist-info or collected licenses")

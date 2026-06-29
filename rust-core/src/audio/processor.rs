@@ -2,7 +2,7 @@
 //!
 //! Processing chain: Mic Input → Noise Gate → RNNoise → 10-Band EQ → Output
 //!
-//! Adapted from Spectral Workbench project for MicEq.
+//! Adapted from Spectral Workbench for AudioForge.
 
 #![allow(clippy::useless_conversion)] // PyO3 proc-macro wrappers trigger false positives.
 
@@ -20,7 +20,7 @@ use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 use std::sync::atomic::AtomicU8;
 
-use super::buffer::AudioRingBuffer;
+use super::buffer::{AudioProducer, AudioRingBuffer};
 use super::clock::now_micros;
 use super::input::{AudioInput, TARGET_SAMPLE_RATE};
 use super::output::AudioOutput;
@@ -42,6 +42,8 @@ const RT_OUTPUT_SCRATCH_CAPACITY: usize = RT_SUPPRESSOR_OUTPUT_CAPACITY;
 const RT_SUPPRESSOR_COMMAND_CAPACITY: usize = 2;
 const RT_SUPPRESSOR_RETIRE_CAPACITY: usize = 8;
 const PROCESS_IDLE_SLEEP_US: u64 = 100;
+const PROCESS_IDLE_MAX_SLEEP_US: u64 = 1_600;
+const PROCESS_IDLE_RECENT_INPUT_WINDOW_US: u64 = 2_000;
 const COMPRESSOR_DEFAULT_RELEASE_TENTH_MS: u64 = 2000; // 200ms * 10
 const OUTPUT_PRIME_MS: u32 = 20;
 const OUTPUT_TARGET_HIGH_MS: u32 = 30;
@@ -136,6 +138,7 @@ macro_rules! processor_debug_log {
 }
 
 include!("processor/control.rs");
+include!("processor/output_writer.rs");
 
 /// Main audio processor combining all DSP stages
 pub struct AudioProcessor {
@@ -300,6 +303,10 @@ pub struct AudioProcessor {
     output_recovery_count: Arc<AtomicU64>,
     /// Samples discarded because the output ring buffer could not accept the full write.
     output_short_write_dropped_samples: Arc<AtomicU64>,
+    /// Number of times the DSP loop entered its idle sleep path.
+    dsp_idle_wakeup_count: Arc<AtomicU64>,
+    /// Last idle sleep duration selected by the DSP loop.
+    dsp_idle_sleep_us: Arc<AtomicU64>,
 
     /// Smoothed DSP processing time in microseconds (EMA, 200ms time constant)
     dsp_time_smoothed_us: Arc<AtomicU64>,
@@ -545,6 +552,8 @@ impl AudioProcessor {
             jitter_dropped_samples: Arc::new(AtomicU64::new(0)),
             output_recovery_count: Arc::new(AtomicU64::new(0)),
             output_short_write_dropped_samples: Arc::new(AtomicU64::new(0)),
+            dsp_idle_wakeup_count: Arc::new(AtomicU64::new(0)),
+            dsp_idle_sleep_us: Arc::new(AtomicU64::new(PROCESS_IDLE_SLEEP_US)),
             dsp_time_smoothed_us: Arc::new(AtomicU64::new(0)),
             smoothed_buffer_len: Arc::new(AtomicU32::new(0)),
 
@@ -816,6 +825,9 @@ impl AudioProcessor {
         self.output_recovery_count.store(0, Ordering::Relaxed);
         self.output_short_write_dropped_samples
             .store(0, Ordering::Relaxed);
+        self.dsp_idle_wakeup_count.store(0, Ordering::Relaxed);
+        self.dsp_idle_sleep_us
+            .store(PROCESS_IDLE_SLEEP_US, Ordering::Relaxed);
         self.lock_contention_count.store(0, Ordering::Relaxed);
         self.suppressor_non_finite_count.store(0, Ordering::Relaxed);
         self.input_backlog_recovery_count
@@ -1042,12 +1054,15 @@ impl AudioProcessor {
         let suppressor_buffer_len = Arc::clone(&self.suppressor_buffer_len);
         let suppressor_latency_samples = Arc::clone(&self.suppressor_latency_samples);
         let last_output_write_time = Arc::clone(&self.last_output_write_time);
+        let last_input_callback_time_us_for_dsp = Arc::clone(&self.last_input_callback_time_us);
         let dsp_time_smoothed_us = Arc::clone(&self.dsp_time_smoothed_us);
         let smoothed_buffer_len = Arc::clone(&self.smoothed_buffer_len);
         let jitter_dropped_samples = Arc::clone(&self.jitter_dropped_samples);
         let output_recovery_count = Arc::clone(&self.output_recovery_count);
         let output_short_write_dropped_samples =
             Arc::clone(&self.output_short_write_dropped_samples);
+        let dsp_idle_wakeup_count = Arc::clone(&self.dsp_idle_wakeup_count);
+        let dsp_idle_sleep_us = Arc::clone(&self.dsp_idle_sleep_us);
         let suppressor_non_finite_count = Arc::clone(&self.suppressor_non_finite_count);
         let input_backlog_recovery_count = Arc::clone(&self.input_backlog_recovery_count);
         let input_backlog_dropped_samples = Arc::clone(&self.input_backlog_dropped_samples);
@@ -1312,11 +1327,6 @@ impl AudioProcessor {
                 (alpha * raw_f + (1.0 - alpha) * prev_f) as u32
             };
 
-            // Helper: update last write time (call after successful output write)
-            let update_write_time = || {
-                last_output_write_time.store(now_micros(), Ordering::Relaxed);
-            };
-
             // Jitter-buffer write control: keep output queue in a healthy range.
             let output_target_low_samples =
                 duration_samples(output_sample_rate_for_latency, OUTPUT_PRIME_MS);
@@ -1334,144 +1344,33 @@ impl AudioProcessor {
                 duration_samples(output_sample_rate_for_latency, 6).max(1);
             let discontinuity_fade_remaining = Cell::new(0usize);
             let mut output_drift_error_ema = 0.0_f32;
+            let mut output_writer = OutputWriteContext {
+                output_producer: &mut output_producer,
+                output_queue_control_scratch: &mut output_queue_control_scratch,
+                discontinuity_fade_scratch: &mut discontinuity_fade_scratch,
+                output_safety_scratch: &mut output_safety_scratch,
+                drift_error_ema: &mut output_drift_error_ema,
+                discontinuity_fade_remaining: &discontinuity_fade_remaining,
+                limiter_enabled: limiter_enabled.as_ref(),
+                output_ceiling_linear: &output_ceiling_linear,
+                counters: OutputWriteCounters {
+                    jitter_dropped_samples: jitter_dropped_samples.as_ref(),
+                    output_recovery_count: output_recovery_count.as_ref(),
+                    output_short_write_dropped_samples: output_short_write_dropped_samples.as_ref(),
+                    rt_buffer_overflow_count: rt_buffer_overflow_count.as_ref(),
+                    rt_error_code: rt_error_code.as_ref(),
+                    output_buffer_len: output_buffer_len.as_ref(),
+                    last_output_write_time: last_output_write_time.as_ref(),
+                },
+                limits: OutputWriteLimits {
+                    output_target_center_samples,
+                    output_hard_backlog_samples,
+                    discontinuity_fade_samples,
+                    max_catchup_ratio: OUTPUT_MAX_CATCHUP_RATIO,
+                    max_emergency_catchup_ratio: OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO,
+                },
+            };
             let mut write_output = |samples: &[f32], clean_path: bool| {
-                macro_rules! write_output_chunk {
-                    ($write_source:expr) => {{
-                        let write_source = $write_source;
-                        if write_source.is_empty() {
-                            false
-                        } else {
-                            let capacity = output_producer.capacity();
-                            let free = output_producer.free_len();
-                            let fill = capacity.saturating_sub(free);
-
-                            let mut write_slice = write_source;
-                            if !clean_path {
-                                let error = fill as f32 - output_target_center_samples as f32;
-                                output_drift_error_ema =
-                                    output_drift_error_ema * 0.85 + error * 0.15;
-                                let positive_zone = output_hard_backlog_samples
-                                    .saturating_sub(output_target_center_samples)
-                                    .max(1) as f32;
-                                let negative_zone = output_target_center_samples.max(1) as f32;
-                                let normalized_error = if output_drift_error_ema >= 0.0 {
-                                    (output_drift_error_ema / positive_zone).clamp(0.0, 1.0)
-                                } else {
-                                    (output_drift_error_ema / negative_zone).clamp(-1.0, 0.0)
-                                };
-                                let mut queue_speed_ratio =
-                                    (1.0 + normalized_error * OUTPUT_DRIFT_MAX_RATIO_ADJUST).clamp(
-                                        OUTPUT_DRIFT_MAX_EXPANSION_RATIO,
-                                        OUTPUT_MAX_CATCHUP_RATIO,
-                                    );
-                                if fill >= output_hard_backlog_samples {
-                                    queue_speed_ratio = OUTPUT_MAX_EMERGENCY_CATCHUP_RATIO;
-                                }
-
-                                let adjusted_slice = retime_audio_block(
-                                    write_source,
-                                    queue_speed_ratio,
-                                    capacity.max(1).min(output_queue_control_scratch.capacity()),
-                                    &mut output_queue_control_scratch,
-                                );
-                                if adjusted_slice.len() != write_source.len() {
-                                    let delta = write_source.len().abs_diff(adjusted_slice.len());
-                                    if adjusted_slice.len() < write_source.len() {
-                                        jitter_dropped_samples
-                                            .fetch_add(delta as u64, Ordering::Relaxed);
-                                    }
-                                    output_recovery_count.fetch_add(1, Ordering::Relaxed);
-                                }
-                                write_slice = adjusted_slice;
-
-                                let fade_remaining = discontinuity_fade_remaining.get();
-                                if fade_remaining > 0 && !write_slice.is_empty() {
-                                    discontinuity_fade_scratch.clear();
-                                    let written =
-                                        discontinuity_fade_scratch.extend_from_slice(write_slice);
-                                    if written < write_slice.len() {
-                                        rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
-                                        store_rt_error(
-                                            rt_error_code.as_ref(),
-                                            RtErrorCode::FixedBufferOverflow,
-                                        );
-                                    }
-                                    let fade_count =
-                                        fade_remaining.min(discontinuity_fade_scratch.len());
-                                    let elapsed =
-                                        discontinuity_fade_samples.saturating_sub(fade_remaining);
-                                    let fade_total = discontinuity_fade_samples as f32;
-                                    for (i, sample) in discontinuity_fade_scratch
-                                        .as_mut_slice()
-                                        .iter_mut()
-                                        .enumerate()
-                                        .take(fade_count)
-                                    {
-                                        let progress =
-                                            ((elapsed + i + 1) as f32 / fade_total).clamp(0.0, 1.0);
-                                        *sample *= progress;
-                                    }
-                                    discontinuity_fade_remaining
-                                        .set(fade_remaining.saturating_sub(fade_count));
-                                    write_slice = discontinuity_fade_scratch.as_slice();
-                                }
-
-                                let _below_low_target = fill < output_target_low_samples;
-                            }
-
-                            output_safety_scratch.clear();
-                            let safety_written =
-                                output_safety_scratch.extend_from_slice(write_slice);
-                            if safety_written < write_slice.len() {
-                                rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
-                                store_rt_error(
-                                    rt_error_code.as_ref(),
-                                    RtErrorCode::FixedBufferOverflow,
-                                );
-                            }
-                            let output_ceiling = if limiter_enabled.load(Ordering::Acquire) {
-                                output_ceiling_linear.get()
-                            } else {
-                                1.0
-                            };
-                            sanitize_and_clamp_output_inplace(
-                                output_safety_scratch.as_mut_slice(),
-                                output_ceiling,
-                            );
-
-                            let mut pending_slice = output_safety_scratch.as_slice();
-                            if pending_slice.len() > free {
-                                let dropped = pending_slice.len() - free;
-                                output_short_write_dropped_samples
-                                    .fetch_add(dropped as u64, Ordering::Relaxed);
-                                output_recovery_count.fetch_add(1, Ordering::Relaxed);
-                                discontinuity_fade_remaining.set(discontinuity_fade_samples);
-                                pending_slice = &pending_slice[..free];
-                            }
-
-                            if !pending_slice.is_empty() {
-                                let written = output_producer.write(pending_slice);
-                                if written > 0 {
-                                    update_write_time();
-                                }
-                                if written < pending_slice.len() {
-                                    let dropped = pending_slice.len() - written;
-                                    output_short_write_dropped_samples
-                                        .fetch_add(dropped as u64, Ordering::Relaxed);
-                                    output_recovery_count.fetch_add(1, Ordering::Relaxed);
-                                    discontinuity_fade_remaining.set(discontinuity_fade_samples);
-                                }
-                            }
-
-                            let new_fill = output_producer
-                                .capacity()
-                                .saturating_sub(output_producer.free_len());
-                            output_buffer_len.store(new_fill as u32, Ordering::Relaxed);
-                            true
-                        }
-                    }};
-                }
-
                 if let Some(output_resampler) = output_resampler.as_mut() {
                     for &sample in samples {
                         if !output_resample_input.push(sample as f64) {
@@ -1518,7 +1417,9 @@ impl AudioProcessor {
                             }
                         }
 
-                        if !write_output_chunk!(output_resampled_scratch.as_slice()) {
+                        if !output_writer
+                            .write_chunk(output_resampled_scratch.as_slice(), clean_path)
+                        {
                             break;
                         }
                         if output_resample_input.len() < input_frames_needed {
@@ -1526,13 +1427,14 @@ impl AudioProcessor {
                         }
                     }
                 } else {
-                    write_output_chunk!(samples);
+                    let _ = output_writer.write_chunk(samples, clean_path);
                 }
             };
             let mut previous_processing_path = select_processing_path(
                 raw_monitor_enabled.load(Ordering::Acquire),
                 bypass.load(Ordering::SeqCst),
             );
+            let mut consecutive_idle_wakeups = 0u32;
             let _ = dsp_ready_tx.send(());
 
             // Run entire processing loop with denormals flushed to zero
@@ -1653,11 +1555,25 @@ impl AudioProcessor {
                             };
 
                             if n == 0 {
-                                std::thread::sleep(std::time::Duration::from_micros(
-                                    PROCESS_IDLE_SLEEP_US,
-                                ));
+                                consecutive_idle_wakeups =
+                                    consecutive_idle_wakeups.saturating_add(1);
+                                let last_input_callback =
+                                    last_input_callback_time_us_for_dsp.load(Ordering::Relaxed);
+                                let input_callback_age_us = if last_input_callback == 0 {
+                                    u64::MAX
+                                } else {
+                                    now_micros().saturating_sub(last_input_callback)
+                                };
+                                let idle_sleep_us = next_process_idle_sleep_us(
+                                    consecutive_idle_wakeups,
+                                    input_callback_age_us,
+                                );
+                                dsp_idle_wakeup_count.fetch_add(1, Ordering::Relaxed);
+                                dsp_idle_sleep_us.store(idle_sleep_us, Ordering::Relaxed);
+                                std::thread::sleep(std::time::Duration::from_micros(idle_sleep_us));
                                 continue;
                             }
+                            consecutive_idle_wakeups = 0;
 
                             let buffer = temp_buffer.as_mut_slice();
 
@@ -2202,9 +2118,21 @@ impl AudioProcessor {
                             if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
                                 last_heartbeat = Instant::now();
                             }
-                            std::thread::sleep(std::time::Duration::from_micros(
-                                PROCESS_IDLE_SLEEP_US,
-                            ));
+                            consecutive_idle_wakeups = consecutive_idle_wakeups.saturating_add(1);
+                            let last_input_callback =
+                                last_input_callback_time_us_for_dsp.load(Ordering::Relaxed);
+                            let input_callback_age_us = if last_input_callback == 0 {
+                                u64::MAX
+                            } else {
+                                now_micros().saturating_sub(last_input_callback)
+                            };
+                            let idle_sleep_us = next_process_idle_sleep_us(
+                                consecutive_idle_wakeups,
+                                input_callback_age_us,
+                            );
+                            dsp_idle_wakeup_count.fetch_add(1, Ordering::Relaxed);
+                            dsp_idle_sleep_us.store(idle_sleep_us, Ordering::Relaxed);
+                            std::thread::sleep(std::time::Duration::from_micros(idle_sleep_us));
                         }
                     }
                     // RT_REGION_END: dsp_processing_loop
@@ -3661,6 +3589,14 @@ impl AudioProcessor {
     /// Number of jitter recovery events.
     pub fn get_output_recovery_count(&self) -> u64 {
         self.output_recovery_count.load(Ordering::Relaxed)
+    }
+
+    pub fn get_dsp_idle_wakeup_count(&self) -> u64 {
+        self.dsp_idle_wakeup_count.load(Ordering::Relaxed)
+    }
+
+    pub fn get_dsp_idle_sleep_us(&self) -> u64 {
+        self.dsp_idle_sleep_us.load(Ordering::Relaxed)
     }
 
     /// Whether the currently selected suppressor backend is operational.

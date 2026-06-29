@@ -456,16 +456,15 @@ impl Compressor {
         }
 
         let speech_activity = Self::speech_activity_from_rms_db(Self::block_rms_db(buffer));
+        for sample in buffer.iter_mut() {
+            *sample = self.process_sample_impl(*sample, false);
+        }
         if speech_activity > 0.20 {
             if let Some(meter) = &mut self.loudness_meter {
                 meter.process(buffer);
             }
         }
-
         self.update_auto_makeup_gain(speech_activity);
-        for sample in buffer.iter_mut() {
-            *sample = self.process_sample_impl(*sample, false);
-        }
     }
 
     #[inline]
@@ -755,6 +754,43 @@ mod tests {
         }
 
         assert!(comp.current_makeup_gain() > 0.1);
+    }
+
+    #[test]
+    fn test_auto_makeup_targets_post_compression_output_level() {
+        let mut compressed = Compressor::new(-36.0, 20.0, 0.1, 200.0, 0.0, 0.0, 48_000.0);
+        compressed.set_auto_makeup_enabled(true);
+        compressed.set_target_lufs(-12.0);
+
+        let mut uncompressed = Compressor::new(0.0, 1.0, 0.1, 200.0, 0.0, 0.0, 48_000.0);
+        uncompressed.set_auto_makeup_enabled(true);
+        uncompressed.set_target_lufs(-12.0);
+
+        let speech_like = vec![0.04_f32; 48_000];
+        for _ in 0..10 {
+            let mut compressed_block = speech_like.clone();
+            compressed.process_block_inplace(&mut compressed_block);
+            let mut uncompressed_block = speech_like.clone();
+            uncompressed.process_block_inplace(&mut uncompressed_block);
+        }
+
+        assert!(compressed.current_gain_reduction() > 1.0);
+        assert!(compressed.current_makeup_gain() >= uncompressed.current_makeup_gain());
+    }
+
+    #[test]
+    fn test_manual_makeup_gain_stays_fixed_when_auto_makeup_disabled_for_blocks() {
+        let mut comp = Compressor::default_voice(48_000.0);
+        comp.set_makeup_gain(6.0);
+        comp.set_auto_makeup_enabled(false);
+
+        let mut block = vec![0.04_f32; 48_000];
+        for _ in 0..4 {
+            comp.process_block_inplace(&mut block);
+            block.fill(0.04);
+        }
+
+        assert!((comp.current_makeup_gain() - 6.0).abs() < 1e-9);
     }
 
     #[test]

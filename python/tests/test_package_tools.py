@@ -22,6 +22,7 @@ def _load_tool(name: str):
 
 
 package_smoke = _load_tool("package_smoke")
+prune_bundle = _load_tool("prune_bundle")
 verify_release_assets = _load_tool("verify_release_assets")
 
 
@@ -61,6 +62,41 @@ def test_package_smoke_accepts_required_assets_and_metadata(tmp_path):
     (bundle / "_internal" / "example.dist-info").mkdir()
 
     assert package_smoke.check_dist_bundle(bundle) == []
+
+
+def test_package_smoke_rejects_duplicate_native_extension(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
+    (bundle / "AudioForge.exe").write_bytes(b"x")
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        _write_bundle_file(bundle, relative_path)
+    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, "_internal/mic_eq_core/mic_eq_core.cp312-win_amd64.pyd")
+    (bundle / "_internal" / "example.dist-info").mkdir()
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert any("_internal/mic_eq_core/mic_eq_core*.pyd" in error for error in errors)
+
+
+def test_prune_bundle_removes_duplicate_native_extension_only_when_packaged_copy_exists(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, "_internal/mic_eq_core/mic_eq_core.cp312-win_amd64.pyd")
+
+    prune_bundle.prune_bundle(bundle)
+
+    assert (bundle / "_internal" / "mic_eq" / "mic_eq_core.cp312-win_amd64.pyd").is_file()
+    assert not (bundle / "_internal" / "mic_eq_core").exists()
+
+
+def test_prune_bundle_keeps_top_level_native_extension_without_packaged_copy(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    _write_bundle_file(bundle, "_internal/mic_eq_core/mic_eq_core.cp312-win_amd64.pyd")
+
+    prune_bundle.prune_bundle(bundle)
+
+    assert (bundle / "_internal" / "mic_eq_core" / "mic_eq_core.cp312-win_amd64.pyd").is_file()
 
 
 def test_package_smoke_rejects_misplaced_decoy_assets(tmp_path):

@@ -109,6 +109,32 @@ impl AudioInput {
         f32::from_sample(sample)
     }
 
+    fn mix_interleaved_to_mono<T>(interleaved: &[T], num_channels: usize, mono: &mut [f32]) -> usize
+    where
+        T: Sample + Copy,
+        f32: FromSample<T>,
+    {
+        if num_channels == 0 || mono.is_empty() {
+            return 0;
+        }
+
+        let frame_count = (interleaved.len() / num_channels).min(mono.len());
+        let inv_channel_count = 1.0 / num_channels as f32;
+        for (frame_idx, chunk) in interleaved
+            .chunks_exact(num_channels)
+            .take(frame_count)
+            .enumerate()
+        {
+            let mut sum = 0.0_f32;
+            for sample in chunk.iter().copied() {
+                sum += Self::normalize_input_sample(sample);
+            }
+            mono[frame_idx] = sum * inv_channel_count;
+        }
+
+        frame_count
+    }
+
     fn build_stream<T>(
         device: Device,
         stream_config: StreamConfig,
@@ -127,7 +153,6 @@ impl AudioInput {
 
         const INPUT_SCRATCH_CAPACITY: usize = 8192;
         let mut mono_scratch: Vec<f32> = vec![0.0; INPUT_SCRATCH_CAPACITY];
-        let mut channel_energy: Vec<f32> = vec![0.0; num_channels];
 
         let stream = device
             .build_input_stream(
@@ -157,27 +182,11 @@ impl AudioInput {
                             let start = frame_idx * num_channels;
                             let end = start + chunk_frames * num_channels;
                             let interleaved = &data[start..end];
-                            channel_energy.fill(0.0);
-
-                            for chunk in interleaved.chunks_exact(num_channels) {
-                                for (channel_idx, sample) in chunk.iter().copied().enumerate() {
-                                    channel_energy[channel_idx] +=
-                                        Self::normalize_input_sample(sample).abs();
-                                }
-                            }
-                            let dominant_channel = channel_energy
-                                .iter()
-                                .enumerate()
-                                .max_by(|(_, left), (_, right)| left.total_cmp(right))
-                                .map(|(index, _)| index)
-                                .unwrap_or(0);
-
-                            let mut written_frames = 0usize;
-                            for chunk in interleaved.chunks_exact(num_channels) {
-                                mono_scratch[written_frames] =
-                                    Self::normalize_input_sample(chunk[dominant_channel]);
-                                written_frames += 1;
-                            }
+                            let written_frames = Self::mix_interleaved_to_mono(
+                                interleaved,
+                                num_channels,
+                                &mut mono_scratch,
+                            );
 
                             producer.write(&mono_scratch[..written_frames]);
                             frame_idx += chunk_frames;
@@ -463,5 +472,54 @@ mod tests {
     fn test_preferred_sample_rate_falls_back_to_default_when_target_missing() {
         let chosen = preferred_sample_rate_from_ranges(44_100, &[(44_100, 44_100)], 48_000);
         assert_eq!(chosen, 44_100);
+    }
+
+    #[test]
+    fn test_mix_interleaved_stereo_input_to_mono_average() {
+        let interleaved = [1.0_f32, 1.0, 0.25, 0.75];
+        let mut mono = [0.0_f32; 4];
+
+        let written = AudioInput::mix_interleaved_to_mono(&interleaved, 2, &mut mono);
+
+        assert_eq!(written, 2);
+        assert!((mono[0] - 1.0).abs() < 1e-6);
+        assert!((mono[1] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_mix_interleaved_stereo_input_preserves_phase_cancellation() {
+        let interleaved = [1.0_f32, -1.0, 0.5, -0.5];
+        let mut mono = [1.0_f32; 4];
+
+        let written = AudioInput::mix_interleaved_to_mono(&interleaved, 2, &mut mono);
+
+        assert_eq!(written, 2);
+        assert!(mono[..written].iter().all(|sample| sample.abs() < 1e-6));
+    }
+
+    #[test]
+    fn test_mix_interleaved_multichannel_input_does_not_switch_with_alternating_loudness() {
+        let interleaved = [1.0_f32, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0];
+        let mut mono = [0.0_f32; 4];
+
+        let written = AudioInput::mix_interleaved_to_mono(&interleaved, 2, &mut mono);
+
+        assert_eq!(written, 4);
+        assert!(mono[..written]
+            .iter()
+            .all(|sample| (*sample - 0.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn test_mix_interleaved_multichannel_input_is_stable_and_bounded() {
+        let interleaved = [1.0_f32, 0.5, -0.5, -1.0, -0.5, 0.5];
+        let mut mono = [0.0_f32; 4];
+
+        let written = AudioInput::mix_interleaved_to_mono(&interleaved, 3, &mut mono);
+
+        assert_eq!(written, 2);
+        assert!((mono[0] - (1.0 / 3.0)).abs() < 1e-6);
+        assert!((mono[1] + (1.0 / 3.0)).abs() < 1e-6);
+        assert!(mono[..written].iter().all(|sample| sample.abs() <= 1.0));
     }
 }

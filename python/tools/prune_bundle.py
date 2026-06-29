@@ -11,6 +11,13 @@ def prune_bundle(bundle_root: Path) -> None:
         shutil.rmtree(translations_dir)
         print(f"Pruned Qt translations: {translations_dir}")
 
+    packaged_extension_dir = bundle_root / "_internal" / "mic_eq"
+    duplicate_extension_dir = bundle_root / "_internal" / "mic_eq_core"
+    has_packaged_extension = any(packaged_extension_dir.glob("mic_eq_core*.pyd"))
+    if has_packaged_extension and duplicate_extension_dir.exists():
+        shutil.rmtree(duplicate_extension_dir)
+        print(f"Removed duplicate native extension payload: {duplicate_extension_dir}")
+
     for relative_path in (
         Path("_internal/PyQt6/Qt6/bin/Qt6Pdf.dll"),
         Path("_internal/PyQt6/QtPdf.pyd"),

@@ -1,6 +1,6 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
-//! MicEq Core - High-performance DSP engine for real-time audio processing
+//! AudioForge core - high-performance DSP for real-time audio processing
 //!
 //! Processing chain: Mic Input -> Pre-Filter -> Noise Gate -> Noise Suppression
 //! -> De-Esser -> 10-Band EQ -> Compressor -> Limiter -> Output

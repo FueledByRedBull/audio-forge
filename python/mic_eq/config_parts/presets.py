@@ -142,7 +142,7 @@ class Preset:
                 data["version"] = "1.7.0"
                 version_tuple = _version_tuple("1.7.0")
 
-            for version in ("1.7.1", "1.7.2", "1.7.3", "1.7.4", "1.8.0", "1.8.1", "1.8.2"):
+            for version in ("1.7.1", "1.7.2", "1.7.3", "1.7.4", "1.8.0", "1.8.1", "1.8.2", "1.8.3"):
                 if version_tuple < _version_tuple(version):
                     data["version"] = version
                     version_tuple = _version_tuple(version)

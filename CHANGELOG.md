@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.8.3 - 2026-06-29
+
+- Finished the public AudioForge identity cleanup by removing the superseded root build helper, renaming the icon asset, and updating stale MicEq-facing package strings.
+- Made Windows-only support and DeepFilterNet activation clearer in the README, including the launcher role and release/build workflow split.
+- Added desktop rotating-file logging under the AudioForge app data directory and replaced UI runtime `print()` calls with named loggers.
+- Split stream recovery and device-selection handling out of the main window, and separated fast meter polling from slower diagnostics/recovery polling.
+
 ## v1.8.1 - 2026-06-08
 
 - Completed the strict realtime migration hardening pass with bounded atomic control snapshots, dirty-flag re-arming for unstable snapshots, and regression coverage for the RT update path.

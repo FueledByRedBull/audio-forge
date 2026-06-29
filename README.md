@@ -15,7 +15,7 @@ The latest portable build is available on the GitHub releases page:
 
 - [AudioForge v1.8.3](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.8.3)
 - Artifact: `AudioForge-v1.8.3-win64-ultra.7z`
-- SHA-256: published as `AudioForge-v1.8.3-win64-ultra.7z.sha256`
+- SHA-256: `98A11B2DEF8F3A830793D6A72EDADBC5D7972EDC55987B329B4DDD016F48E807`
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
 

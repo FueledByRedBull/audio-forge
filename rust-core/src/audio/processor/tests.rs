@@ -299,6 +299,49 @@ mod tests {
     }
 
     #[test]
+    fn test_final_output_sanitizer_records_clip_events() {
+        let output_clip_event_count = AtomicU64::new(0);
+        let output_clip_peak_db = AtomicU32::new((-120.0_f32).to_bits());
+        let mut buffer = vec![0.25, 0.75, -0.8, f32::NAN];
+
+        sanitize_and_clamp_output_inplace_with_metrics(
+            &mut buffer,
+            0.5,
+            &output_clip_event_count,
+            &output_clip_peak_db,
+        );
+
+        assert_eq!(buffer, vec![0.25, 0.5, -0.5, 0.0]);
+        assert_eq!(output_clip_event_count.load(Ordering::Relaxed), 2);
+        let peak_db = f32::from_bits(output_clip_peak_db.load(Ordering::Relaxed));
+        assert!((peak_db - (20.0_f32 * 0.8_f32.log10())).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_careful_output_mode_lowers_effective_limiter_ceiling() {
+        let processor = AudioProcessor::new();
+
+        assert!(processor.is_limiter_careful_output_enabled());
+        assert_eq!(
+            processor.limiter_effective_ceiling_db(),
+            CAREFUL_OUTPUT_CEILING_DB
+        );
+
+        processor.set_limiter_ceiling(-0.25);
+        assert_eq!(
+            processor.limiter_effective_ceiling_db(),
+            CAREFUL_OUTPUT_CEILING_DB
+        );
+
+        processor.set_limiter_careful_output_enabled(false);
+        assert_eq!(processor.limiter_effective_ceiling_db(), -0.25);
+
+        processor.set_limiter_ceiling(-3.0);
+        processor.set_limiter_careful_output_enabled(true);
+        assert_eq!(processor.limiter_effective_ceiling_db(), -3.0);
+    }
+
+    #[test]
     fn test_retime_audio_block_can_expand_and_compress() {
         let input = [0.0_f32, 0.25, 0.5, 0.75, 1.0, 0.5];
         let mut scratch = FixedAudioBuffer::<f32, 32>::new();
@@ -518,6 +561,10 @@ mod tests {
         output_buffer_len: &'a AtomicU32,
         last_output_write_time: &'a AtomicU64,
     ) -> OutputWriteCounters<'a> {
+        static OUTPUT_CLIP_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+        static OUTPUT_CLIP_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
+        static OUTPUT_TRUE_PEAK_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+        static OUTPUT_TRUE_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
         let (
             jitter_dropped_samples,
             output_retime_adjustment_count,
@@ -532,6 +579,10 @@ mod tests {
             rt_error_code,
             output_buffer_len,
             last_output_write_time,
+            output_clip_event_count: &OUTPUT_CLIP_EVENT_COUNT,
+            output_clip_peak_db: &OUTPUT_CLIP_PEAK_DB,
+            output_true_peak_event_count: &OUTPUT_TRUE_PEAK_EVENT_COUNT,
+            output_true_peak_db: &OUTPUT_TRUE_PEAK_DB,
         }
     }
 
@@ -554,12 +605,14 @@ mod tests {
         let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
         let output_buffer_len = AtomicU32::new(0);
         let last_output_write_time = AtomicU64::new(0);
+        let mut true_peak_detector = TruePeakDetector::new();
 
         let mut writer = OutputWriteContext {
             output_producer: &mut producer,
             output_queue_control_scratch: &mut control_scratch,
             discontinuity_fade_scratch: &mut fade_scratch,
             output_safety_scratch: &mut safety_scratch,
+            true_peak_detector: &mut true_peak_detector,
             drift_error_ema: &mut drift_error_ema,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -604,12 +657,14 @@ mod tests {
         let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
         let output_buffer_len = AtomicU32::new(3);
         let last_output_write_time = AtomicU64::new(0);
+        let mut true_peak_detector = TruePeakDetector::new();
 
         let mut writer = OutputWriteContext {
             output_producer: &mut producer,
             output_queue_control_scratch: &mut control_scratch,
             discontinuity_fade_scratch: &mut fade_scratch,
             output_safety_scratch: &mut safety_scratch,
+            true_peak_detector: &mut true_peak_detector,
             drift_error_ema: &mut drift_error_ema,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -665,11 +720,13 @@ mod tests {
         let expand_rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
         let expand_output_buffer_len = AtomicU32::new(0);
         let expand_last_output_write_time = AtomicU64::new(0);
+        let mut expand_true_peak_detector = TruePeakDetector::new();
         let mut expand_writer = OutputWriteContext {
             output_producer: &mut expand_producer,
             output_queue_control_scratch: &mut expand_control_scratch,
             discontinuity_fade_scratch: &mut expand_fade_scratch,
             output_safety_scratch: &mut expand_safety_scratch,
+            true_peak_detector: &mut expand_true_peak_detector,
             drift_error_ema: &mut expand_drift_error_ema,
             discontinuity_fade_remaining: &expand_fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -718,11 +775,13 @@ mod tests {
         let compress_rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
         let compress_output_buffer_len = AtomicU32::new(256);
         let compress_last_output_write_time = AtomicU64::new(0);
+        let mut compress_true_peak_detector = TruePeakDetector::new();
         let mut compress_writer = OutputWriteContext {
             output_producer: &mut compress_producer,
             output_queue_control_scratch: &mut compress_control_scratch,
             discontinuity_fade_scratch: &mut compress_fade_scratch,
             output_safety_scratch: &mut compress_safety_scratch,
+            true_peak_detector: &mut compress_true_peak_detector,
             drift_error_ema: &mut compress_drift_error_ema,
             discontinuity_fade_remaining: &compress_fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -778,11 +837,13 @@ mod tests {
         let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
         let output_buffer_len = AtomicU32::new(6);
         let last_output_write_time = AtomicU64::new(0);
+        let mut true_peak_detector = TruePeakDetector::new();
         let mut writer = OutputWriteContext {
             output_producer: &mut producer,
             output_queue_control_scratch: &mut control_scratch,
             discontinuity_fade_scratch: &mut fade_scratch,
             output_safety_scratch: &mut safety_scratch,
+            true_peak_detector: &mut true_peak_detector,
             drift_error_ema: &mut drift_error_ema,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -836,11 +897,13 @@ mod tests {
         let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
         let output_buffer_len = AtomicU32::new(0);
         let last_output_write_time = AtomicU64::new(0);
+        let mut true_peak_detector = TruePeakDetector::new();
         let mut writer = OutputWriteContext {
             output_producer: &mut producer,
             output_queue_control_scratch: &mut control_scratch,
             discontinuity_fade_scratch: &mut fade_scratch,
             output_safety_scratch: &mut safety_scratch,
+            true_peak_detector: &mut true_peak_detector,
             drift_error_ema: &mut drift_error_ema,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -864,6 +927,64 @@ mod tests {
         let mut limited = [0.0_f32; 3];
         assert_eq!(consumer.read(&mut limited), 3);
         assert_eq!(limited, [0.5, -0.5, 0.5]);
+    }
+
+    #[test]
+    fn test_output_writer_records_true_peak_warning_without_sample_clip() {
+        let rb = AudioRingBuffer::new(16);
+        let (mut producer, _consumer) = rb.split();
+        let mut control_scratch = FixedAudioBuffer::<f32, 32>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 32>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 32>::new();
+        let mut true_peak_detector = TruePeakDetector::new();
+        let mut drift_error_ema = 0.0_f32;
+        let fade_remaining = Cell::new(0usize);
+        let limiter_enabled = AtomicBool::new(true);
+        let output_ceiling_linear = Cell::new(1.0_f32);
+        let jitter_dropped_samples = AtomicU64::new(0);
+        let output_retime_adjustment_count = AtomicU64::new(0);
+        let output_recovery_event_count = AtomicU64::new(0);
+        let output_short_write_dropped_samples = AtomicU64::new(0);
+        let rt_buffer_overflow_count = AtomicU64::new(0);
+        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+        let output_buffer_len = AtomicU32::new(0);
+        let last_output_write_time = AtomicU64::new(0);
+        let output_clip_event_count = AtomicU64::new(0);
+        let output_clip_peak_db = AtomicU32::new((-120.0_f32).to_bits());
+        let output_true_peak_event_count = AtomicU64::new(0);
+        let output_true_peak_db = AtomicU32::new((-120.0_f32).to_bits());
+        let mut writer = OutputWriteContext {
+            output_producer: &mut producer,
+            output_queue_control_scratch: &mut control_scratch,
+            discontinuity_fade_scratch: &mut fade_scratch,
+            output_safety_scratch: &mut safety_scratch,
+            true_peak_detector: &mut true_peak_detector,
+            drift_error_ema: &mut drift_error_ema,
+            discontinuity_fade_remaining: &fade_remaining,
+            limiter_enabled: &limiter_enabled,
+            output_ceiling_linear: &output_ceiling_linear,
+            counters: OutputWriteCounters {
+                jitter_dropped_samples: &jitter_dropped_samples,
+                output_retime_adjustment_count: &output_retime_adjustment_count,
+                output_recovery_event_count: &output_recovery_event_count,
+                output_short_write_dropped_samples: &output_short_write_dropped_samples,
+                rt_buffer_overflow_count: &rt_buffer_overflow_count,
+                rt_error_code: &rt_error_code,
+                output_buffer_len: &output_buffer_len,
+                last_output_write_time: &last_output_write_time,
+                output_clip_event_count: &output_clip_event_count,
+                output_clip_peak_db: &output_clip_peak_db,
+                output_true_peak_event_count: &output_true_peak_event_count,
+                output_true_peak_db: &output_true_peak_db,
+            },
+            limits: test_output_writer_limits(4, 8, 4),
+        };
+
+        assert!(writer.write_chunk(&[0.0, 1.0, 1.0, 0.0, 0.0], true));
+
+        assert_eq!(output_clip_event_count.load(Ordering::Relaxed), 0);
+        assert_eq!(output_true_peak_event_count.load(Ordering::Relaxed), 1);
+        assert!(f32::from_bits(output_true_peak_db.load(Ordering::Relaxed)) > 0.0);
     }
 
     fn fill_probe_block(buffer: &mut [f32]) {
@@ -1241,6 +1362,12 @@ mod tests {
     fn test_compressor_runtime_meter_getters_read_rt_atomically() {
         let processor = AudioProcessor::new();
 
+        assert!(processor.get_compressor_sidechain_highpass_enabled());
+        processor.set_compressor_sidechain_highpass_enabled(false);
+        assert!(!processor.get_compressor_sidechain_highpass_enabled());
+        processor.set_compressor_sidechain_highpass_enabled(true);
+        assert!(processor.get_compressor_sidechain_highpass_enabled());
+
         processor
             .compressor_current_lufs
             .store((-23.5_f64).to_bits(), Ordering::Relaxed);
@@ -1503,6 +1630,34 @@ mod tests {
             .processor
             .output_underrun_streak
             .store(3, Ordering::Relaxed);
+        wrapper
+            .processor
+            .output_clip_event_count
+            .store(2, Ordering::Relaxed);
+        wrapper
+            .processor
+            .output_clip_peak_db
+            .store((-0.75_f32).to_bits(), Ordering::Relaxed);
+        wrapper
+            .processor
+            .output_true_peak_event_count
+            .store(3, Ordering::Relaxed);
+        wrapper
+            .processor
+            .output_true_peak_db
+            .store(0.5_f32.to_bits(), Ordering::Relaxed);
+        wrapper
+            .processor
+            .gate_chatter_event_count
+            .store(4, Ordering::Relaxed);
+        wrapper
+            .processor
+            .deesser_detector_confidence
+            .store(0.62_f32.to_bits(), Ordering::Relaxed);
+        wrapper
+            .processor
+            .set_limiter_careful_output_enabled(false);
+        wrapper.processor.set_limiter_ceiling(-0.25);
 
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
@@ -1544,6 +1699,85 @@ mod tests {
                     .extract::<u32>()
                     .unwrap(),
                 3
+            );
+            assert_eq!(
+                diagnostics
+                    .get_item("output_clip_event_count")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                2
+            );
+            assert!(
+                (diagnostics
+                    .get_item("output_clip_peak_db")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<f32>()
+                    .unwrap()
+                    + 0.75)
+                    .abs()
+                    < 1e-6
+            );
+            assert_eq!(
+                diagnostics
+                    .get_item("output_true_peak_event_count")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                3
+            );
+            assert!(
+                (diagnostics
+                    .get_item("output_true_peak_db")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<f32>()
+                    .unwrap()
+                    - 0.5)
+                    .abs()
+                    < 1e-6
+            );
+            assert!(
+                !diagnostics
+                    .get_item("limiter_careful_output_enabled")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
+            assert!(
+                (diagnostics
+                    .get_item("limiter_effective_ceiling_db")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<f64>()
+                    .unwrap()
+                    + 0.25)
+                    .abs()
+                    < 1e-6
+            );
+            assert_eq!(
+                diagnostics
+                    .get_item("gate_chatter_event_count")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                4
+            );
+            assert!(
+                (diagnostics
+                    .get_item("deesser_detector_confidence")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<f32>()
+                    .unwrap()
+                    - 0.62)
+                    .abs()
+                    < 1e-6
             );
         });
     }

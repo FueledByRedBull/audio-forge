@@ -388,13 +388,15 @@ def smooth_spectrum_octave(freqs, spectrum_db, fraction=6):
     return smoothed_db
 
 
-def smooth_spectrum_perceptual(freqs, spectrum_db):
+def smooth_spectrum_perceptual(freqs, spectrum_db, strength="balanced"):
     """Apply voice-aware smoothing that varies by frequency region."""
     freqs = np.asarray(freqs, dtype=float)
     spectrum_db = np.asarray(spectrum_db, dtype=float)
+    strength = str(strength or "balanced").lower()
     wide = smooth_spectrum_octave(freqs, spectrum_db, fraction=3)
     medium = smooth_spectrum_octave(freqs, spectrum_db, fraction=6)
     fine = smooth_spectrum_octave(freqs, spectrum_db, fraction=12)
+    very_wide = smooth_spectrum_octave(freqs, spectrum_db, fraction=2)
 
     smoothed = medium.copy()
     low_mask = freqs < 180.0
@@ -405,6 +407,12 @@ def smooth_spectrum_perceptual(freqs, spectrum_db):
     smoothed[mid_mask] = medium[mid_mask]
     smoothed[sibilance_mask] = fine[sibilance_mask]
     smoothed[high_mask] = wide[high_mask]
+    if strength == "conservative":
+        smoothed[mid_mask] = 0.65 * medium[mid_mask] + 0.35 * wide[mid_mask]
+        smoothed[sibilance_mask] = 0.60 * fine[sibilance_mask] + 0.40 * medium[sibilance_mask]
+        smoothed = 0.85 * smoothed + 0.15 * very_wide
+    elif strength == "broad":
+        smoothed = 0.50 * smoothed + 0.50 * very_wide
     return smoothed
 
 

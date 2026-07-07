@@ -58,6 +58,11 @@ impl AudioProcessor {
         self.gate_enabled.load(Ordering::Acquire)
     }
 
+    /// Number of rapid gate open/close chatter events since processing start.
+    pub fn get_gate_chatter_event_count(&self) -> u64 {
+        self.gate_chatter_event_count.load(Ordering::Relaxed)
+    }
+
     // === VAD Gate Controls (VAD feature only) ===
 
     #[cfg(feature = "vad")]

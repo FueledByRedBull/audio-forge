@@ -238,6 +238,10 @@ impl AudioProcessor {
         f32::from_bits(self.deesser_gain_reduction.load(Ordering::Relaxed))
     }
 
+    pub fn get_deesser_detector_confidence(&self) -> f32 {
+        f32::from_bits(self.deesser_detector_confidence.load(Ordering::Relaxed))
+    }
+
     // === Compressor Controls ===
 
     /// Enable/disable compressor
@@ -425,6 +429,28 @@ impl AudioProcessor {
         }
     }
 
+    /// Enable or disable the detector sidechain high-pass.
+    pub fn set_compressor_sidechain_highpass_enabled(&self, enabled: bool) {
+        if let Ok(mut c) = self.compressor.lock() {
+            c.set_sidechain_highpass_enabled(enabled);
+        }
+        if let Ok(mut control) = self.compressor_control.lock() {
+            control.sidechain_highpass_enabled = enabled;
+        }
+        self.compressor_rt_control
+            .set_sidechain_highpass_enabled(enabled);
+        self.compressor_dirty.store(true, Ordering::Release);
+    }
+
+    /// Check whether the detector sidechain high-pass is enabled.
+    pub fn get_compressor_sidechain_highpass_enabled(&self) -> bool {
+        if let Ok(c) = self.compressor.lock() {
+            c.sidechain_highpass_enabled()
+        } else {
+            true
+        }
+    }
+
     // === Limiter Controls ===
 
     /// Enable/disable limiter
@@ -452,14 +478,49 @@ impl AudioProcessor {
         else {
             return;
         };
+        let careful_output_enabled = self.is_limiter_careful_output_enabled();
+        let effective_ceiling_db =
+            effective_limiter_ceiling_db(ceiling_db, careful_output_enabled);
         if let Ok(mut l) = self.limiter.lock() {
-            l.set_ceiling(ceiling_db);
+            l.set_ceiling(effective_ceiling_db);
         }
         if let Ok(mut control) = self.limiter_control.lock() {
             control.ceiling_db = ceiling_db;
         }
         self.limiter_rt_control.set_ceiling_db(ceiling_db);
         self.limiter_dirty.store(true, Ordering::Release);
+    }
+
+    /// Enable or disable conservative limiter headroom.
+    pub fn set_limiter_careful_output_enabled(&self, enabled: bool) {
+        let mut requested_ceiling_db = -0.5;
+        if let Ok(mut control) = self.limiter_control.lock() {
+            control.careful_output_enabled = enabled;
+            requested_ceiling_db = control.ceiling_db;
+        }
+        let effective_ceiling_db = effective_limiter_ceiling_db(requested_ceiling_db, enabled);
+        if let Ok(mut l) = self.limiter.lock() {
+            l.set_ceiling(effective_ceiling_db);
+        }
+        self.limiter_rt_control
+            .set_careful_output_enabled(enabled);
+        self.limiter_dirty.store(true, Ordering::Release);
+    }
+
+    /// Check whether conservative limiter headroom is enabled.
+    pub fn is_limiter_careful_output_enabled(&self) -> bool {
+        self.limiter_rt_control
+            .careful_output_enabled
+            .load(Ordering::Acquire)
+    }
+
+    /// Effective runtime limiter ceiling after careful-output headroom.
+    pub fn limiter_effective_ceiling_db(&self) -> f64 {
+        if let Ok(control) = self.limiter_control.lock() {
+            effective_limiter_ceiling_db(control.ceiling_db, control.careful_output_enabled)
+        } else {
+            effective_limiter_ceiling_db(-0.5, self.is_limiter_careful_output_enabled())
+        }
     }
 
     /// Set limiter release time in ms

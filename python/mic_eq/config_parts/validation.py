@@ -47,6 +47,7 @@ VALIDATION_RANGES = {
         "adaptive_release": (bool, None),
         "auto_makeup_enabled": (bool, None),
         "target_lufs": (-24.0, -12.0),
+        "sidechain_highpass_enabled": (bool, None),
     },
     "limiter": {
         "ceiling_db": (-12.0, 0.0),

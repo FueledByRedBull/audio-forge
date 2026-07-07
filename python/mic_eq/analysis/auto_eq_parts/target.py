@@ -59,19 +59,24 @@ def _adaptive_voice_offsets(
     return np.clip(offsets, -2.0, 2.0)
 
 
-def get_target_curve(freqs, target_preset='broadcast', measured_db=None):
+def get_target_curve(freqs, target_preset='broadcast', measured_db=None, target_mode="adaptive"):
     """
     Get target curve values at specified frequencies.
 
     Args:
         freqs: Frequency array (Hz)
         target_preset: Target curve name ('broadcast', 'podcast', 'streaming', 'flat')
+        target_mode: 'adaptive' applies voice-aware bounded offsets;
+            'static' uses the catalog curve exactly.
 
     Returns:
         target_db: Target dB values at each frequency
     """
     if target_preset not in TARGET_CURVES:
         raise ValueError(f"Unknown target preset: {target_preset}")
+    target_mode = str(target_mode or "adaptive").strip().lower()
+    if target_mode not in {"adaptive", "static"}:
+        raise ValueError(f"Unknown target mode: {target_mode}")
 
     target_curve = TARGET_CURVES[target_preset]
 
@@ -84,7 +89,7 @@ def get_target_curve(freqs, target_preset='broadcast', measured_db=None):
         left=target_curve.band_targets[0],
         right=target_curve.band_targets[-1]
     )
-    if measured_db is not None:
+    if target_mode == "adaptive" and measured_db is not None:
         measured_arr = np.asarray(measured_db, dtype=float)
         if measured_arr.shape == freqs.shape:
             target_db = target_db + _adaptive_voice_offsets(

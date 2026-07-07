@@ -36,6 +36,7 @@ fn sanitize_non_finite_inplace(buffer: &mut [f32]) {
     }
 }
 
+#[cfg(test)]
 #[inline]
 fn sanitize_and_clamp_output_inplace(buffer: &mut [f32], ceiling_linear: f32) {
     let ceiling = ceiling_linear.clamp(0.0, 1.0);
@@ -44,6 +45,40 @@ fn sanitize_and_clamp_output_inplace(buffer: &mut [f32], ceiling_linear: f32) {
             *sample = 0.0;
         } else {
             *sample = sample.clamp(-ceiling, ceiling);
+        }
+    }
+}
+
+#[inline]
+fn sanitize_and_clamp_output_inplace_with_metrics(
+    buffer: &mut [f32],
+    ceiling_linear: f32,
+    output_clip_event_count: &AtomicU64,
+    output_clip_peak_db: &AtomicU32,
+) {
+    let ceiling = ceiling_linear.clamp(0.0, 1.0);
+    let mut clipped_samples = 0_u64;
+    let mut max_clipped_amplitude = 0.0_f32;
+
+    for sample in buffer.iter_mut() {
+        if !sample.is_finite() {
+            *sample = 0.0;
+            continue;
+        }
+        let amplitude = sample.abs();
+        if amplitude > ceiling {
+            clipped_samples = clipped_samples.saturating_add(1);
+            max_clipped_amplitude = max_clipped_amplitude.max(amplitude);
+        }
+        *sample = sample.clamp(-ceiling, ceiling);
+    }
+
+    if clipped_samples > 0 {
+        output_clip_event_count.fetch_add(clipped_samples, Ordering::Relaxed);
+        let peak_db = 20.0 * max_clipped_amplitude.log10();
+        let current_peak = f32::from_bits(output_clip_peak_db.load(Ordering::Relaxed));
+        if peak_db > current_peak {
+            output_clip_peak_db.store(peak_db.to_bits(), Ordering::Relaxed);
         }
     }
 }

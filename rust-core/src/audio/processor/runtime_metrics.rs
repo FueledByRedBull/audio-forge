@@ -21,6 +21,16 @@ impl AudioProcessor {
         f32::from_bits(self.output_rms.load(Ordering::Relaxed))
     }
 
+    /// Latest stereo input correlation (-1.0 to +1.0).
+    pub fn get_input_stereo_correlation(&self) -> f32 {
+        f32::from_bits(self.input_stereo_correlation.load(Ordering::Relaxed))
+    }
+
+    /// Number of stereo input blocks with strong negative correlation.
+    pub fn get_input_phase_warning_count(&self) -> u64 {
+        self.input_phase_warning_count.load(Ordering::Relaxed)
+    }
+
     /// Get compressor gain reduction in dB
     pub fn get_compressor_gain_reduction_db(&self) -> f32 {
         f32::from_bits(self.compressor_gain_reduction.load(Ordering::Relaxed))

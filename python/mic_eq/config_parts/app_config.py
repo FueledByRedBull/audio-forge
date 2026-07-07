@@ -20,6 +20,14 @@ from .shared import (
 )
 from .validation import _coerce_config_bool, _coerce_window_geometry
 
+INPUT_CHANNEL_MODES = frozenset(
+    {"average", "left", "right", "max_rms", "phase_safe_mono"}
+)
+
+
+def _coerce_input_channel_mode(value: object) -> str:
+    return value if isinstance(value, str) and value in INPUT_CHANNEL_MODES else "average"
+
 
 @dataclass
 class AppConfig:
@@ -29,6 +37,7 @@ class AppConfig:
     last_output_device: str = ""
     last_input_device_identity: DeviceIdentity | None = None
     last_output_device_identity: DeviceIdentity | None = None
+    input_channel_mode: str = "average"
     last_preset: str = ""
     startup_preset: str = ""
     window_geometry: dict | None = None
@@ -51,6 +60,7 @@ class AppConfig:
                 if self.last_output_device_identity is not None
                 else None
             ),
+            "input_channel_mode": self.input_channel_mode,
             "last_preset": self.last_preset,
             "startup_preset": self.startup_preset,
             "window_geometry": self.window_geometry,
@@ -97,6 +107,7 @@ class AppConfig:
             last_output_device=str(data.get("last_output_device", "") or (output_identity.name if output_identity else "")),
             last_input_device_identity=input_identity,
             last_output_device_identity=output_identity,
+            input_channel_mode=_coerce_input_channel_mode(data.get("input_channel_mode")),
             last_preset=data.get("last_preset", "") if isinstance(data.get("last_preset", ""), str) else "",
             startup_preset=data.get("startup_preset", ""),
             window_geometry=_coerce_window_geometry(data.get("window_geometry")),
@@ -147,4 +158,4 @@ def load_config() -> AppConfig:
         return AppConfig()
 
 
-__all__ = ["AppConfig", "load_config", "save_config"]
+__all__ = ["AppConfig", "INPUT_CHANNEL_MODES", "load_config", "save_config"]

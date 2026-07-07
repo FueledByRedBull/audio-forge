@@ -22,14 +22,14 @@ use std::sync::atomic::AtomicU8;
 
 use super::buffer::{AudioProducer, AudioRingBuffer};
 use super::clock::now_micros;
-use super::input::{AudioInput, TARGET_SAMPLE_RATE};
+use super::input::{AudioInput, InputChannelMode, InputStreamOptions, TARGET_SAMPLE_RATE};
 use super::output::AudioOutput;
 use super::rt::{store_rt_error, FixedAudioBuffer, RtCommandQueue, RtErrorCode};
 use crate::dsp::biquad::{Biquad, BiquadType};
 use crate::dsp::eq::{DEFAULT_FREQUENCIES, DEFAULT_Q, NUM_BANDS};
 use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressionEngine, NoiseSuppressor};
 use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
-use crate::dsp::{Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ};
+use crate::dsp::{Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, TruePeakDetector};
 
 #[cfg(feature = "vad")]
 use crate::dsp::vad::{GateMode, SileroVAD, VadAutoGate};
@@ -215,11 +215,17 @@ pub struct AudioProcessor {
     bypass: Arc<AtomicBool>,
     /// True raw monitor path: bypasses pre-filter/DSP and uses minimal output write path.
     raw_monitor_enabled: Arc<AtomicBool>,
+    /// Input channel mixdown mode consumed by the CPAL input callback.
+    input_channel_mode: Arc<AtomicU8>,
 
     /// Sample rate
     sample_rate: u32,
     /// Actual active output device sample rate
     output_sample_rate: Arc<AtomicU32>,
+    /// Latest stereo input correlation reported by the input callback.
+    input_stereo_correlation: Arc<AtomicU32>,
+    /// Number of stereo input blocks with strong negative correlation.
+    input_phase_warning_count: Arc<AtomicU64>,
 
     /// Input device name
     input_device_name: Option<String>,
@@ -241,6 +247,8 @@ pub struct AudioProcessor {
     compressor_gain_reduction: Arc<AtomicU32>,
     /// De-esser gain reduction in dB
     deesser_gain_reduction: Arc<AtomicU32>,
+    /// De-esser detector confidence (0.0-1.0)
+    deesser_detector_confidence: Arc<AtomicU32>,
     /// Last known gate gain (0.0-1.0) for metering.
     gate_gain_meter: Arc<AtomicU32>,
     /// VAD speech probability (0.0-1.0) for metering
@@ -252,6 +260,8 @@ pub struct AudioProcessor {
     /// Latest fused gate open score (0.0-1.0) for diagnostics.
     #[cfg_attr(not(feature = "vad"), allow(dead_code))]
     gate_fused_score: Arc<AtomicU32>,
+    /// Lifetime count of detected rapid gate open/close chatter.
+    gate_chatter_event_count: Arc<AtomicU64>,
     /// Whether the current VAD backend is available.
     #[cfg_attr(not(feature = "vad"), allow(dead_code))]
     vad_available: Arc<AtomicBool>,
@@ -333,6 +343,14 @@ pub struct AudioProcessor {
     clip_event_count: Arc<AtomicU64>,
     /// Peak pre-clamp level in dBFS.
     clip_peak_db: Arc<AtomicU32>,
+    /// Number of final output samples clamped by output protection.
+    output_clip_event_count: Arc<AtomicU64>,
+    /// Peak final pre-clamp output level in dBFS.
+    output_clip_peak_db: Arc<AtomicU32>,
+    /// Number of output blocks with estimated true peak above the active ceiling.
+    output_true_peak_event_count: Arc<AtomicU64>,
+    /// Peak estimated true-peak level in dBFS.
+    output_true_peak_db: Arc<AtomicU32>,
     /// Whether input resampling is active.
     input_resampler_active: Arc<AtomicBool>,
     /// Whether output resampling is active.
@@ -436,6 +454,7 @@ impl AudioProcessor {
         let sample_rate = TARGET_SAMPLE_RATE;
         let gate_control_state = GateControlState::new();
         let suppressor_control_state = SuppressorControlState::new();
+        let compressor_control_state = CompressorControlState::new();
 
         // Create strength Arc BEFORE noise suppressor (share reference)
         let suppressor_strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
@@ -482,9 +501,13 @@ impl AudioProcessor {
             eq_enabled: Arc::new(AtomicBool::new(true)),
             eq_control: Arc::new(EqControlState::new()),
             eq_dirty: Arc::new(AtomicBool::new(false)),
-            compressor: Arc::new(Mutex::new(Compressor::default_voice(sample_rate as f64))),
+            compressor: {
+                let mut compressor = Compressor::default_voice(sample_rate as f64);
+                apply_compressor_control(&mut compressor, &compressor_control_state);
+                Arc::new(Mutex::new(compressor))
+            },
             compressor_enabled: Arc::new(AtomicBool::new(true)),
-            compressor_control: Arc::new(Mutex::new(CompressorControlState::new())),
+            compressor_control: Arc::new(Mutex::new(compressor_control_state)),
             compressor_rt_control: Arc::new(AtomicCompressorControlState::new()),
             compressor_dirty: Arc::new(AtomicBool::new(false)),
             deesser: Arc::new(Mutex::new(DeEsser::new(sample_rate as f64))),
@@ -492,7 +515,11 @@ impl AudioProcessor {
             deesser_control: Arc::new(Mutex::new(DeesserControlState::new())),
             deesser_rt_control: Arc::new(AtomicDeesserControlState::new()),
             deesser_dirty: Arc::new(AtomicBool::new(false)),
-            limiter: Arc::new(Mutex::new(Limiter::default_settings(sample_rate as f64))),
+            limiter: Arc::new(Mutex::new(Limiter::new(
+                CAREFUL_OUTPUT_CEILING_DB,
+                50.0,
+                sample_rate as f64,
+            ))),
             limiter_enabled: Arc::new(AtomicBool::new(true)),
             limiter_control: Arc::new(Mutex::new(LimiterControlState::new())),
             limiter_rt_control: Arc::new(AtomicLimiterControlState::new()),
@@ -511,8 +538,11 @@ impl AudioProcessor {
             running: Arc::new(AtomicBool::new(false)),
             bypass: Arc::new(AtomicBool::new(false)),
             raw_monitor_enabled: Arc::new(AtomicBool::new(false)),
+            input_channel_mode: Arc::new(AtomicU8::new(InputChannelMode::Average as u8)),
             sample_rate,
             output_sample_rate: Arc::new(AtomicU32::new(sample_rate)),
+            input_stereo_correlation: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            input_phase_warning_count: Arc::new(AtomicU64::new(0)),
             input_device_name: None,
             output_device_name: None,
             // Initialize metering atomics with -infinity (no signal)
@@ -522,10 +552,12 @@ impl AudioProcessor {
             output_rms: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             compressor_gain_reduction: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             deesser_gain_reduction: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            deesser_detector_confidence: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             gate_gain_meter: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             vad_probability: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             gate_noise_floor_db: Arc::new(AtomicU32::new((-60.0_f32).to_bits())),
             gate_fused_score: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            gate_chatter_event_count: Arc::new(AtomicU64::new(0)),
             vad_available: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "vad")]
             vad_worker_thread: None,
@@ -571,6 +603,10 @@ impl AudioProcessor {
             suppressor_non_finite_count: Arc::new(AtomicU64::new(0)),
             clip_event_count: Arc::new(AtomicU64::new(0)),
             clip_peak_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
+            output_clip_event_count: Arc::new(AtomicU64::new(0)),
+            output_clip_peak_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
+            output_true_peak_event_count: Arc::new(AtomicU64::new(0)),
+            output_true_peak_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             input_resampler_active: Arc::new(AtomicBool::new(false)),
             output_resampler_active: Arc::new(AtomicBool::new(false)),
             noise_backend_available: Arc::new(AtomicBool::new(true)),

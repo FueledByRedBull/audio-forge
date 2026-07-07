@@ -13,6 +13,10 @@ const RNNOISE_BUFFER_CAPACITY: usize = 8192 + RNNOISE_FRAME_SIZE;
 /// Scaling factor to map [-1.0, 1.0] to 16-bit range for RNNoise
 /// RNNoise expects audio in the range of ~[-32768, 32767]
 const PCM_SCALE: f32 = 32768.0;
+const PCM_MODEL_LIMIT: f32 = 32760.0;
+const PCM_MODEL_LIMIT_UNIT: f32 = PCM_MODEL_LIMIT / PCM_SCALE;
+const MODEL_SOFT_CLIP_THRESHOLD: f32 = 0.98;
+const MODEL_SOFT_CLIP_KNEE: f32 = 1.0 - MODEL_SOFT_CLIP_THRESHOLD;
 
 /// RNNoise processor with frame buffering and wet/dry mix control
 ///
@@ -81,6 +85,31 @@ impl RNNoiseProcessor {
         self.smoothed_strength
     }
 
+    #[inline]
+    fn soft_clip_model_input_sample(sample: f32) -> f32 {
+        if !sample.is_finite() {
+            return 0.0;
+        }
+
+        let sign = sample.signum();
+        let magnitude = sample.abs();
+        if magnitude <= MODEL_SOFT_CLIP_THRESHOLD {
+            return sample;
+        }
+
+        let over = magnitude - MODEL_SOFT_CLIP_THRESHOLD;
+        let compressed = over / (over + MODEL_SOFT_CLIP_KNEE);
+        let softened = MODEL_SOFT_CLIP_THRESHOLD
+            + (PCM_MODEL_LIMIT_UNIT - MODEL_SOFT_CLIP_THRESHOLD) * compressed;
+        sign * softened.min(PCM_MODEL_LIMIT_UNIT)
+    }
+
+    #[inline]
+    fn scale_sample_for_model(sample: f32) -> f32 {
+        (Self::soft_clip_model_input_sample(sample) * PCM_SCALE)
+            .clamp(-PCM_MODEL_LIMIT, PCM_MODEL_LIMIT)
+    }
+
     /// Push samples into the input buffer
     pub fn push_samples(&mut self, samples: &[f32]) -> usize {
         self.input_buffer.push_slice(samples)
@@ -106,7 +135,7 @@ impl RNNoiseProcessor {
 
             // Scale to RNNoise PCM-like range.
             for (dst, &src) in self.frame_scratch.iter_mut().zip(self.dry_scratch.iter()) {
-                *dst = (src * PCM_SCALE).clamp(-32760.0, 32760.0);
+                *dst = Self::scale_sample_for_model(src);
             }
 
             // 2. Process through RNNoise
@@ -291,6 +320,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_rnnoise_model_input_soft_clip_transfer() {
+        let below = RNNoiseProcessor::scale_sample_for_model(0.5);
+        assert!((below - 0.5 * PCM_SCALE).abs() < 1e-3);
+
+        let near_full_scale = RNNoiseProcessor::scale_sample_for_model(1.0);
+        assert!(near_full_scale > MODEL_SOFT_CLIP_THRESHOLD * PCM_SCALE);
+        assert!(near_full_scale < PCM_MODEL_LIMIT);
+
+        let louder = RNNoiseProcessor::scale_sample_for_model(1.5);
+        assert!(louder > near_full_scale);
+        assert!(louder <= PCM_MODEL_LIMIT);
+
+        let negative = RNNoiseProcessor::scale_sample_for_model(-1.0);
+        assert!((negative + near_full_scale).abs() < 1e-3);
+
+        let non_finite = RNNoiseProcessor::scale_sample_for_model(f32::NAN);
+        assert_eq!(non_finite, 0.0);
+    }
+
+    #[test]
     fn test_rnnoise_frame_buffering() {
         let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
         let mut processor = RNNoiseProcessor::new(strength);
@@ -319,6 +368,21 @@ mod tests {
 
         // Should pass through immediately when disabled
         assert_eq!(processor.available_samples(), 100);
+    }
+
+    #[test]
+    fn test_disabled_rnnoise_preserves_hot_input_samples() {
+        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let mut processor = RNNoiseProcessor::new(strength);
+        processor.set_enabled(false);
+
+        let input = [1.25, -1.5, 0.25, -0.75];
+        processor.push_samples(&input);
+        processor.process_frames();
+
+        let mut output = [0.0; 4];
+        assert_eq!(processor.read_samples(&mut output), input.len());
+        assert_eq!(output, input);
     }
 
     #[test]
@@ -352,5 +416,24 @@ mod tests {
 
         // Should have 480 samples available (processed with mix)
         assert_eq!(processor.available_samples(), 480);
+    }
+
+    #[test]
+    fn test_rnnoise_output_stays_finite_for_clipped_input() {
+        let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
+        let mut processor = RNNoiseProcessor::new(strength);
+
+        for n in 0..RNNOISE_FRAME_SIZE {
+            let sample = if n % 2 == 0 { 1.0 } else { -1.0 };
+            processor.push_samples(&[sample]);
+        }
+        processor.process_frames();
+
+        let mut output = [0.0; RNNOISE_FRAME_SIZE];
+        assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+        for sample in output {
+            assert!(sample.is_finite());
+            assert!(sample.abs() <= 2.0);
+        }
     }
 }

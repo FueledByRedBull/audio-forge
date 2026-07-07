@@ -560,6 +560,7 @@ struct CompressorControlState {
     adaptive_release: bool,
     auto_makeup_enabled: bool,
     target_lufs: f64,
+    sidechain_highpass_enabled: bool,
 }
 
 impl CompressorControlState {
@@ -574,6 +575,7 @@ impl CompressorControlState {
             adaptive_release: false,
             auto_makeup_enabled: false,
             target_lufs: -18.0,
+            sidechain_highpass_enabled: true,
         }
     }
 }
@@ -590,6 +592,7 @@ struct AtomicCompressorControlState {
     adaptive_release: AtomicBool,
     auto_makeup_enabled: AtomicBool,
     target_lufs_bits: AtomicU64,
+    sidechain_highpass_enabled: AtomicBool,
 }
 
 impl AtomicCompressorControlState {
@@ -607,6 +610,7 @@ impl AtomicCompressorControlState {
             adaptive_release: AtomicBool::new(state.adaptive_release),
             auto_makeup_enabled: AtomicBool::new(state.auto_makeup_enabled),
             target_lufs_bits: AtomicU64::new(state.target_lufs.to_bits()),
+            sidechain_highpass_enabled: AtomicBool::new(state.sidechain_highpass_enabled),
         }
     }
 
@@ -632,6 +636,9 @@ impl AtomicCompressorControlState {
                 adaptive_release: self.adaptive_release.load(Ordering::Relaxed),
                 auto_makeup_enabled: self.auto_makeup_enabled.load(Ordering::Relaxed),
                 target_lufs: f64::from_bits(self.target_lufs_bits.load(Ordering::Relaxed)),
+                sidechain_highpass_enabled: self
+                    .sidechain_highpass_enabled
+                    .load(Ordering::Relaxed),
             })
     }
 
@@ -678,6 +685,14 @@ impl AtomicCompressorControlState {
     fn set_target_lufs(&self, value: f64) {
         self.update(|state| state.target_lufs_bits.store(value.to_bits(), Ordering::Relaxed));
     }
+
+    fn set_sidechain_highpass_enabled(&self, enabled: bool) {
+        self.update(|state| {
+            state
+                .sidechain_highpass_enabled
+                .store(enabled, Ordering::Relaxed);
+        });
+    }
 }
 
 #[derive(Clone)]
@@ -685,7 +700,10 @@ struct LimiterControlState {
     enabled: bool,
     ceiling_db: f64,
     release_ms: f64,
+    careful_output_enabled: bool,
 }
+
+const CAREFUL_OUTPUT_CEILING_DB: f64 = -1.5;
 
 impl LimiterControlState {
     fn new() -> Self {
@@ -693,6 +711,7 @@ impl LimiterControlState {
             enabled: true,
             ceiling_db: -0.5,
             release_ms: 50.0,
+            careful_output_enabled: true,
         }
     }
 }
@@ -703,6 +722,7 @@ struct AtomicLimiterControlState {
     enabled: AtomicBool,
     ceiling_db_bits: AtomicU64,
     release_ms_bits: AtomicU64,
+    careful_output_enabled: AtomicBool,
 }
 
 impl AtomicLimiterControlState {
@@ -714,6 +734,7 @@ impl AtomicLimiterControlState {
             enabled: AtomicBool::new(state.enabled),
             ceiling_db_bits: AtomicU64::new(state.ceiling_db.to_bits()),
             release_ms_bits: AtomicU64::new(state.release_ms.to_bits()),
+            careful_output_enabled: AtomicBool::new(state.careful_output_enabled),
         }
     }
 
@@ -726,10 +747,11 @@ impl AtomicLimiterControlState {
 
     fn snapshot(&self) -> Option<LimiterControlState> {
         stable_control_snapshot(&self.seq, || LimiterControlState {
-                enabled: self.enabled.load(Ordering::Relaxed),
-                ceiling_db: f64::from_bits(self.ceiling_db_bits.load(Ordering::Relaxed)),
-                release_ms: f64::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
-            })
+            enabled: self.enabled.load(Ordering::Relaxed),
+            ceiling_db: f64::from_bits(self.ceiling_db_bits.load(Ordering::Relaxed)),
+            release_ms: f64::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
+            careful_output_enabled: self.careful_output_enabled.load(Ordering::Relaxed),
+        })
     }
 
     fn set_enabled(&self, enabled: bool) {
@@ -742,6 +764,14 @@ impl AtomicLimiterControlState {
 
     fn set_release_ms(&self, value: f64) {
         self.update(|state| state.release_ms_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_careful_output_enabled(&self, enabled: bool) {
+        self.update(|state| {
+            state
+                .careful_output_enabled
+                .store(enabled, Ordering::Relaxed);
+        });
     }
 }
 
@@ -803,10 +833,22 @@ fn apply_compressor_control(compressor: &mut Compressor, control: &CompressorCon
     compressor.set_adaptive_release(control.adaptive_release);
     compressor.set_auto_makeup_enabled(control.auto_makeup_enabled);
     compressor.set_target_lufs(control.target_lufs);
+    compressor.set_sidechain_highpass_enabled(control.sidechain_highpass_enabled);
+}
+
+fn effective_limiter_ceiling_db(ceiling_db: f64, careful_output_enabled: bool) -> f64 {
+    if careful_output_enabled {
+        ceiling_db.min(CAREFUL_OUTPUT_CEILING_DB)
+    } else {
+        ceiling_db
+    }
 }
 
 fn apply_limiter_control(limiter: &mut Limiter, control: &LimiterControlState) {
-    limiter.set_ceiling(control.ceiling_db);
+    limiter.set_ceiling(effective_limiter_ceiling_db(
+        control.ceiling_db,
+        control.careful_output_enabled,
+    ));
     limiter.set_release_time(control.release_ms);
     limiter.set_enabled(control.enabled);
 }

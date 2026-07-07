@@ -10,7 +10,7 @@ use cpal::{
     Device, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig,
     SupportedStreamConfig, SupportedStreamConfigRange,
 };
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -20,6 +20,100 @@ use super::rt::{store_rt_error, RtErrorCode};
 
 /// Target sample rate for internal processing
 pub const TARGET_SAMPLE_RATE: u32 = 48000;
+pub const INPUT_PHASE_WARNING_CORRELATION: f32 = -0.75;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputChannelMode {
+    Average = 0,
+    Left = 1,
+    Right = 2,
+    MaxRms = 3,
+    PhaseSafeMono = 4,
+}
+
+impl InputChannelMode {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Average),
+            1 => Some(Self::Left),
+            2 => Some(Self::Right),
+            3 => Some(Self::MaxRms),
+            4 => Some(Self::PhaseSafeMono),
+            _ => None,
+        }
+    }
+
+    pub fn from_id(value: &str) -> Option<Self> {
+        match value {
+            "average" => Some(Self::Average),
+            "left" => Some(Self::Left),
+            "right" => Some(Self::Right),
+            "max_rms" => Some(Self::MaxRms),
+            "phase_safe_mono" => Some(Self::PhaseSafeMono),
+            _ => None,
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Average => "average",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::MaxRms => "max_rms",
+            Self::PhaseSafeMono => "phase_safe_mono",
+        }
+    }
+}
+
+pub struct InputStreamOptions {
+    pub channel_mode: Arc<AtomicU8>,
+    pub stereo_correlation: Arc<AtomicU32>,
+    pub phase_warning_count: Arc<AtomicU64>,
+}
+
+impl InputStreamOptions {
+    pub fn new(
+        channel_mode: Arc<AtomicU8>,
+        stereo_correlation: Arc<AtomicU32>,
+        phase_warning_count: Arc<AtomicU64>,
+    ) -> Self {
+        Self {
+            channel_mode,
+            stereo_correlation,
+            phase_warning_count,
+        }
+    }
+}
+
+impl Default for InputStreamOptions {
+    fn default() -> Self {
+        Self {
+            channel_mode: Arc::new(AtomicU8::new(InputChannelMode::Average as u8)),
+            stereo_correlation: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            phase_warning_count: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+struct InputCallbackMetrics {
+    last_callback_time_us: Arc<AtomicU64>,
+    error_count: Arc<AtomicU64>,
+    rt_error_code: Arc<AtomicU32>,
+}
+
+impl InputCallbackMetrics {
+    fn new(
+        last_callback_time_us: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
+    ) -> Self {
+        Self {
+            last_callback_time_us,
+            error_count,
+            rt_error_code,
+        }
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum AudioError {
@@ -109,40 +203,159 @@ impl AudioInput {
         f32::from_sample(sample)
     }
 
-    fn mix_interleaved_to_mono<T>(interleaved: &[T], num_channels: usize, mono: &mut [f32]) -> usize
+    fn strongest_channel_index<T>(
+        interleaved: &[T],
+        num_channels: usize,
+        frame_count: usize,
+    ) -> usize
+    where
+        T: Sample + Copy,
+        f32: FromSample<T>,
+    {
+        let mut best_channel = 0usize;
+        let mut best_energy = f32::NEG_INFINITY;
+        for channel in 0..num_channels {
+            let mut energy = 0.0_f32;
+            for frame_idx in 0..frame_count {
+                let sample =
+                    Self::normalize_input_sample(interleaved[frame_idx * num_channels + channel]);
+                energy += sample * sample;
+            }
+            if energy > best_energy {
+                best_energy = energy;
+                best_channel = channel;
+            }
+        }
+        best_channel
+    }
+
+    fn stereo_correlation<T>(interleaved: &[T], frame_count: usize) -> Option<f32>
+    where
+        T: Sample + Copy,
+        f32: FromSample<T>,
+    {
+        if frame_count == 0 {
+            return None;
+        }
+
+        let mut sum_lr = 0.0_f32;
+        let mut sum_l2 = 0.0_f32;
+        let mut sum_r2 = 0.0_f32;
+        for frame in interleaved.chunks_exact(2).take(frame_count) {
+            let left = Self::normalize_input_sample(frame[0]);
+            let right = Self::normalize_input_sample(frame[1]);
+            sum_lr += left * right;
+            sum_l2 += left * left;
+            sum_r2 += right * right;
+        }
+
+        let denom = (sum_l2 * sum_r2).sqrt();
+        if denom <= f32::EPSILON {
+            None
+        } else {
+            Some((sum_lr / denom).clamp(-1.0, 1.0))
+        }
+    }
+
+    fn mix_interleaved_to_mono_with_mode<T>(
+        interleaved: &[T],
+        num_channels: usize,
+        mode: InputChannelMode,
+        mono: &mut [f32],
+    ) -> (usize, Option<f32>)
     where
         T: Sample + Copy,
         f32: FromSample<T>,
     {
         if num_channels == 0 || mono.is_empty() {
-            return 0;
+            return (0, None);
         }
 
         let frame_count = (interleaved.len() / num_channels).min(mono.len());
-        let inv_channel_count = 1.0 / num_channels as f32;
-        for (frame_idx, chunk) in interleaved
-            .chunks_exact(num_channels)
-            .take(frame_count)
-            .enumerate()
+        let stereo_correlation = (num_channels == 2)
+            .then(|| Self::stereo_correlation(interleaved, frame_count))
+            .flatten();
+
+        let selected_mode = if mode == InputChannelMode::PhaseSafeMono
+            && num_channels == 2
+            && stereo_correlation.unwrap_or(1.0) < INPUT_PHASE_WARNING_CORRELATION
         {
-            let mut sum = 0.0_f32;
-            for sample in chunk.iter().copied() {
-                sum += Self::normalize_input_sample(sample);
+            InputChannelMode::MaxRms
+        } else {
+            mode
+        };
+
+        match selected_mode {
+            InputChannelMode::Left => {
+                for (frame_idx, chunk) in interleaved
+                    .chunks_exact(num_channels)
+                    .take(frame_count)
+                    .enumerate()
+                {
+                    mono[frame_idx] = Self::normalize_input_sample(chunk[0]);
+                }
             }
-            mono[frame_idx] = sum * inv_channel_count;
+            InputChannelMode::Right => {
+                let channel = if num_channels > 1 { 1 } else { 0 };
+                for (frame_idx, chunk) in interleaved
+                    .chunks_exact(num_channels)
+                    .take(frame_count)
+                    .enumerate()
+                {
+                    mono[frame_idx] = Self::normalize_input_sample(chunk[channel]);
+                }
+            }
+            InputChannelMode::MaxRms => {
+                let channel = Self::strongest_channel_index(interleaved, num_channels, frame_count);
+                for (frame_idx, chunk) in interleaved
+                    .chunks_exact(num_channels)
+                    .take(frame_count)
+                    .enumerate()
+                {
+                    mono[frame_idx] = Self::normalize_input_sample(chunk[channel]);
+                }
+            }
+            InputChannelMode::Average | InputChannelMode::PhaseSafeMono => {
+                let inv_channel_count = 1.0 / num_channels as f32;
+                for (frame_idx, chunk) in interleaved
+                    .chunks_exact(num_channels)
+                    .take(frame_count)
+                    .enumerate()
+                {
+                    let mut sum = 0.0_f32;
+                    for sample in chunk.iter().copied() {
+                        sum += Self::normalize_input_sample(sample);
+                    }
+                    mono[frame_idx] = sum * inv_channel_count;
+                }
+            }
         }
 
-        frame_count
+        (frame_count, stereo_correlation)
+    }
+
+    #[cfg(test)]
+    fn mix_interleaved_to_mono<T>(interleaved: &[T], num_channels: usize, mono: &mut [f32]) -> usize
+    where
+        T: Sample + Copy,
+        f32: FromSample<T>,
+    {
+        Self::mix_interleaved_to_mono_with_mode(
+            interleaved,
+            num_channels,
+            InputChannelMode::Average,
+            mono,
+        )
+        .0
     }
 
     fn build_stream<T>(
         device: Device,
         stream_config: StreamConfig,
         producer: AudioProducer,
-        last_callback_time_us: Arc<AtomicU64>,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
+        metrics: InputCallbackMetrics,
         device_info: AudioDeviceInfo,
+        options: InputStreamOptions,
     ) -> Result<Self, AudioError>
     where
         T: SizedSample,
@@ -150,6 +363,12 @@ impl AudioInput {
     {
         let mut producer = producer;
         let num_channels = device_info.channels as usize;
+        let channel_mode = options.channel_mode;
+        let stereo_correlation = options.stereo_correlation;
+        let phase_warning_count = options.phase_warning_count;
+        let last_callback_time_us = metrics.last_callback_time_us;
+        let error_count = metrics.error_count;
+        let rt_error_code = metrics.rt_error_code;
 
         const INPUT_SCRATCH_CAPACITY: usize = 8192;
         let mut mono_scratch: Vec<f32> = vec![0.0; INPUT_SCRATCH_CAPACITY];
@@ -182,11 +401,22 @@ impl AudioInput {
                             let start = frame_idx * num_channels;
                             let end = start + chunk_frames * num_channels;
                             let interleaved = &data[start..end];
-                            let written_frames = Self::mix_interleaved_to_mono(
-                                interleaved,
-                                num_channels,
-                                &mut mono_scratch,
-                            );
+                            let mode =
+                                InputChannelMode::from_u8(channel_mode.load(Ordering::Relaxed))
+                                    .unwrap_or(InputChannelMode::Average);
+                            let (written_frames, correlation) =
+                                Self::mix_interleaved_to_mono_with_mode(
+                                    interleaved,
+                                    num_channels,
+                                    mode,
+                                    &mut mono_scratch,
+                                );
+                            if let Some(correlation) = correlation {
+                                stereo_correlation.store(correlation.to_bits(), Ordering::Relaxed);
+                                if correlation < INPUT_PHASE_WARNING_CORRELATION {
+                                    phase_warning_count.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
 
                             producer.write(&mono_scratch[..written_frames]);
                             frame_idx += chunk_frames;
@@ -228,6 +458,26 @@ impl AudioInput {
         )
     }
 
+    pub fn from_default_device_with_options(
+        producer: AudioProducer,
+        last_callback_time_us: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
+        options: InputStreamOptions,
+    ) -> Result<Self, AudioError> {
+        let host = cpal::default_host();
+        let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
+
+        Self::from_device_with_options(
+            device,
+            producer,
+            last_callback_time_us,
+            error_count,
+            rt_error_code,
+            options,
+        )
+    }
+
     /// Create audio input from device by name
     pub fn from_device_name(
         name: &str,
@@ -252,6 +502,31 @@ impl AudioInput {
         )
     }
 
+    pub fn from_device_name_with_options(
+        name: &str,
+        producer: AudioProducer,
+        last_callback_time_us: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
+        options: InputStreamOptions,
+    ) -> Result<Self, AudioError> {
+        let host = cpal::default_host();
+        let device = host
+            .input_devices()
+            .map_err(|e| AudioError::DeviceName(e.to_string()))?
+            .find(|d| d.name().map(|n| n == name).unwrap_or(false))
+            .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))?;
+
+        Self::from_device_with_options(
+            device,
+            producer,
+            last_callback_time_us,
+            error_count,
+            rt_error_code,
+            options,
+        )
+    }
+
     /// Create audio input from specific device
     pub fn from_device(
         device: Device,
@@ -260,10 +535,30 @@ impl AudioInput {
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
     ) -> Result<Self, AudioError> {
+        Self::from_device_with_options(
+            device,
+            producer,
+            last_callback_time_us,
+            error_count,
+            rt_error_code,
+            InputStreamOptions::default(),
+        )
+    }
+
+    pub fn from_device_with_options(
+        device: Device,
+        producer: AudioProducer,
+        last_callback_time_us: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
+        options: InputStreamOptions,
+    ) -> Result<Self, AudioError> {
         let (device, supported_config, device_info) = Self::select_device(device)?;
         let device_sample_rate = supported_config.sample_rate().0;
         let sample_format = supported_config.sample_format();
         let stream_config = supported_config.config();
+        let callback_metrics =
+            InputCallbackMetrics::new(last_callback_time_us, error_count, rt_error_code);
 
         if device_sample_rate != TARGET_SAMPLE_RATE {
             println!(
@@ -277,91 +572,81 @@ impl AudioInput {
                 device,
                 stream_config,
                 producer,
-                last_callback_time_us,
-                error_count,
-                rt_error_code,
+                callback_metrics,
                 device_info,
+                options,
             ),
             SampleFormat::F32 => Self::build_stream::<f32>(
                 device,
                 stream_config,
                 producer,
-                last_callback_time_us,
-                error_count,
-                rt_error_code,
+                callback_metrics,
                 device_info,
+                options,
             ),
             SampleFormat::F64 => Self::build_stream::<f64>(
                 device,
                 stream_config,
                 producer,
-                last_callback_time_us,
-                error_count,
-                rt_error_code,
+                callback_metrics,
                 device_info,
+                options,
             ),
             SampleFormat::I16 => Self::build_stream::<i16>(
                 device,
                 stream_config,
                 producer,
-                last_callback_time_us,
-                error_count,
-                rt_error_code,
+                callback_metrics,
                 device_info,
+                options,
             ),
             SampleFormat::I32 => Self::build_stream::<i32>(
                 device,
                 stream_config,
                 producer,
-                last_callback_time_us,
-                error_count,
-                rt_error_code,
+                callback_metrics,
                 device_info,
+                options,
             ),
             SampleFormat::I64 => Self::build_stream::<i64>(
                 device,
                 stream_config,
                 producer,
-                last_callback_time_us,
-                error_count,
-                rt_error_code,
+                callback_metrics,
                 device_info,
+                options,
             ),
             SampleFormat::U8 => Self::build_stream::<u8>(
                 device,
                 stream_config,
                 producer,
-                last_callback_time_us,
-                error_count,
-                rt_error_code,
+                callback_metrics,
                 device_info,
+                options,
             ),
             SampleFormat::U16 => Self::build_stream::<u16>(
                 device,
                 stream_config,
                 producer,
-                last_callback_time_us,
-                error_count,
-                rt_error_code,
+                callback_metrics,
                 device_info,
+                options,
             ),
             SampleFormat::U32 => Self::build_stream::<u32>(
                 device,
                 stream_config,
                 producer,
-                last_callback_time_us,
-                error_count,
-                rt_error_code,
+                callback_metrics,
                 device_info,
+                options,
             ),
             SampleFormat::U64 => Self::build_stream::<u64>(
                 device,
                 stream_config,
                 producer,
-                last_callback_time_us,
-                error_count,
-                rt_error_code,
+                callback_metrics,
                 device_info,
+                options,
             ),
             other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
         }
@@ -521,5 +806,78 @@ mod tests {
         assert!((mono[0] - (1.0 / 3.0)).abs() < 1e-6);
         assert!((mono[1] + (1.0 / 3.0)).abs() < 1e-6);
         assert!(mono[..written].iter().all(|sample| sample.abs() <= 1.0));
+    }
+
+    #[test]
+    fn test_mix_interleaved_left_and_right_modes_select_channels() {
+        let interleaved = [0.75_f32, -0.25, 0.5, -0.5];
+        let mut mono = [0.0_f32; 2];
+
+        let (written, _) = AudioInput::mix_interleaved_to_mono_with_mode(
+            &interleaved,
+            2,
+            InputChannelMode::Left,
+            &mut mono,
+        );
+        assert_eq!(written, 2);
+        assert_eq!(mono, [0.75, 0.5]);
+
+        let (written, _) = AudioInput::mix_interleaved_to_mono_with_mode(
+            &interleaved,
+            2,
+            InputChannelMode::Right,
+            &mut mono,
+        );
+        assert_eq!(written, 2);
+        assert_eq!(mono, [-0.25, -0.5]);
+    }
+
+    #[test]
+    fn test_mix_interleaved_max_rms_selects_one_channel_for_whole_block() {
+        let interleaved = [0.1_f32, 0.9, 0.8, 0.2, 0.1, -0.9, 0.8, -0.2];
+        let mut mono = [0.0_f32; 4];
+
+        let (written, _) = AudioInput::mix_interleaved_to_mono_with_mode(
+            &interleaved,
+            2,
+            InputChannelMode::MaxRms,
+            &mut mono,
+        );
+
+        assert_eq!(written, 4);
+        assert_eq!(mono, [0.9, 0.2, -0.9, -0.2]);
+    }
+
+    #[test]
+    fn test_mix_interleaved_reports_negative_stereo_correlation() {
+        let interleaved = [1.0_f32, -1.0, 0.5, -0.5, -0.25, 0.25];
+        let mut mono = [0.0_f32; 3];
+
+        let (written, correlation) = AudioInput::mix_interleaved_to_mono_with_mode(
+            &interleaved,
+            2,
+            InputChannelMode::Average,
+            &mut mono,
+        );
+
+        assert_eq!(written, 3);
+        assert!(correlation.unwrap() < INPUT_PHASE_WARNING_CORRELATION);
+    }
+
+    #[test]
+    fn test_phase_safe_mono_uses_stronger_channel_when_stereo_is_anti_phase() {
+        let interleaved = [0.5_f32, -1.0, 0.25, -0.5, -0.5, 1.0];
+        let mut mono = [0.0_f32; 3];
+
+        let (written, correlation) = AudioInput::mix_interleaved_to_mono_with_mode(
+            &interleaved,
+            2,
+            InputChannelMode::PhaseSafeMono,
+            &mut mono,
+        );
+
+        assert_eq!(written, 3);
+        assert!(correlation.unwrap() < INPUT_PHASE_WARNING_CORRELATION);
+        assert_eq!(mono, [-1.0, -0.5, 1.0]);
     }
 }

@@ -42,10 +42,19 @@ impl AudioProcessor {
         self.raw_monitor_enabled.load(Ordering::Acquire)
     }
 
+    /// Set input channel mixdown mode.
+    pub fn set_input_channel_mode(&self, mode: InputChannelMode) {
+        self.input_channel_mode.store(mode as u8, Ordering::Release);
+    }
+
+    /// Get input channel mixdown mode.
+    pub fn input_channel_mode(&self) -> InputChannelMode {
+        InputChannelMode::from_u8(self.input_channel_mode.load(Ordering::Acquire))
+            .unwrap_or(InputChannelMode::Average)
+    }
+
     /// Get sample rate
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
-
-
 }

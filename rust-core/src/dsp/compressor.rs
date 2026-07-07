@@ -13,6 +13,7 @@ const SLOW_RELEASE_TRIGGER_DB: f64 = 3.0;
 const SPEECH_ACTIVE_RMS_MIN_DB: f64 = -55.0;
 const SPEECH_ACTIVE_RMS_MAX_DB: f64 = -6.0;
 const MAKEUP_SILENCE_RELAX_MS: f64 = 1500.0;
+const SIDECHAIN_HIGHPASS_DEFAULT_HZ: f64 = 120.0;
 
 /// Downward compressor with soft-knee gain reduction
 pub struct Compressor {
@@ -74,6 +75,14 @@ pub struct Compressor {
     speech_activity_score: f64,
     /// Slow relaxation coefficient used when auto makeup sees silence/noise.
     makeup_silence_relax_coeff: f64,
+    /// Whether the detector sidechain ignores most plosive/rumble energy.
+    sidechain_highpass_enabled: bool,
+    /// Sidechain high-pass coefficient.
+    sidechain_highpass_coeff: f64,
+    /// Previous sidechain high-pass input sample.
+    sidechain_highpass_prev_input: f64,
+    /// Previous sidechain high-pass output sample.
+    sidechain_highpass_prev_output: f64,
 }
 
 impl Compressor {
@@ -134,6 +143,13 @@ impl Compressor {
                 MAKEUP_SILENCE_RELAX_MS,
                 sample_rate,
             ),
+            sidechain_highpass_enabled: false,
+            sidechain_highpass_coeff: Self::sidechain_highpass_coeff(
+                SIDECHAIN_HIGHPASS_DEFAULT_HZ,
+                sample_rate,
+            ),
+            sidechain_highpass_prev_input: 0.0,
+            sidechain_highpass_prev_output: 0.0,
         }
     }
 
@@ -291,6 +307,45 @@ impl Compressor {
     /// Get current applied makeup gain (for metering)
     pub fn current_makeup_gain(&self) -> f64 {
         self.smoothed_makeup_gain
+    }
+
+    /// Enable or disable the detector sidechain high-pass.
+    pub fn set_sidechain_highpass_enabled(&mut self, enabled: bool) {
+        if self.sidechain_highpass_enabled != enabled {
+            self.reset_sidechain_highpass_state();
+        }
+        self.sidechain_highpass_enabled = enabled;
+    }
+
+    /// Check whether the detector sidechain high-pass is enabled.
+    pub fn sidechain_highpass_enabled(&self) -> bool {
+        self.sidechain_highpass_enabled
+    }
+
+    #[inline]
+    fn sidechain_highpass_coeff(cutoff_hz: f64, sample_rate: f64) -> f64 {
+        let cutoff_hz = cutoff_hz.clamp(20.0, sample_rate * 0.45);
+        let omega = 2.0 * std::f64::consts::PI * cutoff_hz / sample_rate.max(1.0);
+        1.0 / (1.0 + omega)
+    }
+
+    #[inline]
+    fn reset_sidechain_highpass_state(&mut self) {
+        self.sidechain_highpass_prev_input = 0.0;
+        self.sidechain_highpass_prev_output = 0.0;
+    }
+
+    #[inline]
+    fn process_sidechain_sample(&mut self, input: f64) -> f64 {
+        if !self.sidechain_highpass_enabled {
+            return input;
+        }
+
+        let output = self.sidechain_highpass_coeff
+            * (self.sidechain_highpass_prev_output + input - self.sidechain_highpass_prev_input);
+        self.sidechain_highpass_prev_input = input;
+        self.sidechain_highpass_prev_output = output;
+        output
     }
 
     fn update_adaptive_release_time_meter(&mut self) {
@@ -475,8 +530,9 @@ impl Compressor {
         }
 
         let input_f64 = input as f64;
-        let input_abs = input_f64.abs();
-        let inst_peak_db = util::linear_to_db(input_abs, 1e-10);
+        let detector_input = self.process_sidechain_sample(input_f64);
+        let detector_abs = detector_input.abs();
+        let inst_peak_db = util::linear_to_db(detector_abs, 1e-10);
         let peak_coeff = if inst_peak_db > self.peak_envelope_db {
             self.attack_coeff
         } else {
@@ -485,7 +541,7 @@ impl Compressor {
         self.peak_envelope_db =
             peak_coeff * self.peak_envelope_db + (1.0 - peak_coeff) * inst_peak_db;
 
-        let input_squared = input_f64 * input_f64;
+        let input_squared = detector_input * detector_input;
         self.rms_envelope_sq =
             self.rms_coeff * self.rms_envelope_sq + (1.0 - self.rms_coeff) * input_squared;
         let rms_db = util::linear_to_db(self.rms_envelope_sq.sqrt(), 1e-10);
@@ -527,6 +583,7 @@ impl Compressor {
         self.target_release_ms = self.base_release_ms;
         self.release_coeff =
             util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
+        self.reset_sidechain_highpass_state();
         if let Some(meter) = &mut self.loudness_meter {
             if meter.reset().is_ok() {
                 self.current_lufs = -100.0;
@@ -618,6 +675,73 @@ mod tests {
         assert!(detector > -18.0);
         assert!((Compressor::blended_detector_db(-12.0, -12.0) + 12.0).abs() < 1e-9);
         assert!(Compressor::blended_detector_db(-160.0, -160.0).is_finite());
+    }
+
+    fn process_sine(
+        compressor: &mut Compressor,
+        frequency_hz: f64,
+        amplitude: f32,
+        samples: usize,
+    ) {
+        for index in 0..samples {
+            let phase = 2.0 * std::f64::consts::PI * frequency_hz * index as f64 / 48_000.0;
+            compressor.process_sample((phase.sin() as f32) * amplitude);
+        }
+    }
+
+    #[test]
+    fn test_sidechain_highpass_disabled_preserves_existing_detection() {
+        let mut default_off = Compressor::new(-28.0, 6.0, 0.1, 120.0, 0.0, 0.0, 48_000.0);
+        let mut explicitly_off = Compressor::new(-28.0, 6.0, 0.1, 120.0, 0.0, 0.0, 48_000.0);
+        explicitly_off.set_sidechain_highpass_enabled(false);
+
+        for index in 0..24_000 {
+            let phase = 2.0 * std::f64::consts::PI * 55.0 * index as f64 / 48_000.0;
+            let sample = (phase.sin() as f32) * 0.65;
+            let default_output = default_off.process_sample(sample);
+            let explicit_output = explicitly_off.process_sample(sample);
+            assert!((default_output - explicit_output).abs() < 1e-12);
+        }
+
+        assert!(
+            (default_off.current_gain_reduction() - explicitly_off.current_gain_reduction()).abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn test_sidechain_highpass_reduces_plosive_driven_gain_reduction() {
+        let mut full_band = Compressor::new(-30.0, 8.0, 0.1, 180.0, 0.0, 0.0, 48_000.0);
+        let mut highpassed = Compressor::new(-30.0, 8.0, 0.1, 180.0, 0.0, 0.0, 48_000.0);
+        highpassed.set_sidechain_highpass_enabled(true);
+
+        process_sine(&mut full_band, 55.0, 0.7, 48_000);
+        process_sine(&mut highpassed, 55.0, 0.7, 48_000);
+
+        assert!(
+            highpassed.current_gain_reduction() + 2.0 < full_band.current_gain_reduction(),
+            "highpassed={} full_band={}",
+            highpassed.current_gain_reduction(),
+            full_band.current_gain_reduction()
+        );
+    }
+
+    #[test]
+    fn test_sidechain_highpass_preserves_speech_band_compression() {
+        let mut full_band = Compressor::new(-30.0, 8.0, 0.1, 180.0, 0.0, 0.0, 48_000.0);
+        let mut highpassed = Compressor::new(-30.0, 8.0, 0.1, 180.0, 0.0, 0.0, 48_000.0);
+        highpassed.set_sidechain_highpass_enabled(true);
+
+        process_sine(&mut full_band, 1_000.0, 0.3, 48_000);
+        process_sine(&mut highpassed, 1_000.0, 0.3, 48_000);
+
+        assert!(highpassed.current_gain_reduction() > 1.0);
+        assert!(
+            highpassed.current_gain_reduction() > full_band.current_gain_reduction() * 0.8,
+            "highpassed={} full_band={}",
+            highpassed.current_gain_reduction(),
+            full_band.current_gain_reduction()
+        );
     }
 
     #[test]

@@ -152,6 +152,29 @@ class CalibrationDialog(QDialog):
         curve_input_layout.addWidget(self.curve_combo)
         curve_layout.addLayout(curve_input_layout)
 
+        target_mode_layout = QHBoxLayout()
+        target_mode_layout.addWidget(QLabel("Target Mode:"))
+        self.target_mode_combo = QComboBox()
+        self.target_mode_combo.addItem("Adaptive voice-aware", "adaptive")
+        self.target_mode_combo.addItem("Static catalog curve", "static")
+        self.target_mode_combo.setToolTip(
+            "Adaptive mode applies bounded voice-aware target offsets. Static mode uses the selected curve exactly."
+        )
+        target_mode_layout.addWidget(self.target_mode_combo)
+        curve_layout.addLayout(target_mode_layout)
+
+        smoothing_layout = QHBoxLayout()
+        smoothing_layout.addWidget(QLabel("Smoothing:"))
+        self.smoothing_combo = QComboBox()
+        self.smoothing_combo.addItem("Conservative", "conservative")
+        self.smoothing_combo.addItem("Balanced", "balanced")
+        self.smoothing_combo.addItem("Broad", "broad")
+        self.smoothing_combo.setToolTip(
+            "Conservative smoothing resists narrow measurement artifacts. Broad is safest but less detailed."
+        )
+        smoothing_layout.addWidget(self.smoothing_combo)
+        curve_layout.addLayout(smoothing_layout)
+
         # Curve description (updates when selection changes)
         self.curve_description = QLabel()
         self.curve_description.setWordWrap(True)
@@ -423,8 +446,10 @@ class CalibrationDialog(QDialog):
         self.start_button.setText("Recording...")
         self.start_button.setEnabled(False)  # Prevent early stop
 
-        # Lock target curve selection during recording
+        # Lock Auto-EQ target controls during recording
         self.curve_combo.setEnabled(False)
+        self.target_mode_combo.setEnabled(False)
+        self.smoothing_combo.setEnabled(False)
 
         # Let DSP loop settle without blocking the UI thread.
         QTimer.singleShot(100, self._begin_recording_capture)
@@ -534,6 +559,8 @@ class CalibrationDialog(QDialog):
 
         # Re-enable curve selection
         self.curve_combo.setEnabled(True)
+        self.target_mode_combo.setEnabled(True)
+        self.smoothing_combo.setEnabled(True)
 
         # Show completion message
         self.warning_label.setText(f"Recording complete! {len(audio_data)} samples captured")
@@ -572,17 +599,27 @@ class CalibrationDialog(QDialog):
 
         sample_rate = _processor_sample_rate(parent)
         target_preset = self.get_selected_curve()
+        target_mode = self.get_selected_target_mode()
+        smoothing_strength = self.get_selected_smoothing_strength()
 
         if DEBUG:
             logger.debug(
-                "Creating AnalysisWorker: %d samples, %sHz, target=%s",
+                "Creating AnalysisWorker: %d samples, %sHz, target=%s, mode=%s, smoothing=%s",
                 len(self.audio_data),
                 sample_rate,
                 target_preset,
+                target_mode,
+                smoothing_strength,
             )
 
         # Create and start analysis worker
-        self.analysis_worker = AnalysisWorker(self.audio_data, sample_rate, target_preset)
+        self.analysis_worker = AnalysisWorker(
+            self.audio_data,
+            sample_rate,
+            target_preset,
+            target_mode=target_mode,
+            smoothing_strength=smoothing_strength,
+        )
         self.analysis_worker.step_progress.connect(self._on_analysis_step)
         self.analysis_worker.finished.connect(self._on_analysis_complete)
         self.analysis_worker.failed.connect(self._on_analysis_failed)
@@ -629,6 +666,7 @@ class CalibrationDialog(QDialog):
         after = eq_settings.get("validation_after_error_db")
         scale = eq_settings.get("validation_gain_scale")
         target_profile = eq_settings.get("target_profile", "--")
+        residual = eq_settings.get("residual_regularization") or {}
         used_fallback = bool(eq_settings.get("used_spectrum_fallback", False))
 
         self.confidence_label.setText(
@@ -644,6 +682,13 @@ class CalibrationDialog(QDialog):
             f"Validation: {_format_percent(validation_confidence)} | gain scale {_format_percent(scale)}"
         )
         self.gain_scale_label.setStyleSheet(status_chip_style("info"))
+        if isinstance(residual, dict) and "max_regularized_correction_db" in residual:
+            requested = _format_db(residual.get("max_requested_correction_db"))
+            regularized = _format_db(residual.get("max_regularized_correction_db"))
+            narrow = _format_db(residual.get("max_narrow_residual_db"))
+            self.gain_scale_label.setText(
+                f"{self.gain_scale_label.text()} | correction {requested}->{regularized} | narrow {narrow}"
+            )
         self.target_profile_label.setText(
             f"Target profile: {target_profile}"
             + (" | fallback spectrum" if used_fallback else "")
@@ -713,6 +758,8 @@ class CalibrationDialog(QDialog):
         self.start_button.setEnabled(True)
         self.retake_btn.setVisible(False)
         self.curve_combo.setEnabled(True)
+        self.target_mode_combo.setEnabled(True)
+        self.smoothing_combo.setEnabled(True)
 
     def _stop_owned_processor(self):
         """Stop the processor only if this dialog started it."""
@@ -809,3 +856,11 @@ class CalibrationDialog(QDialog):
             str: Target curve key ('broadcast', 'podcast', 'streaming', or 'flat')
         """
         return self.curve_combo.currentData()
+
+    def get_selected_target_mode(self):
+        """Return the selected target behavior."""
+        return self.target_mode_combo.currentData()
+
+    def get_selected_smoothing_strength(self):
+        """Return the selected Auto-EQ smoothing strength."""
+        return self.smoothing_combo.currentData()

@@ -18,6 +18,7 @@ from mic_eq.ui.device_selection import (
     preferred_output_index,
 )
 from mic_eq.ui.main_window import (
+    INPUT_CHANNEL_MODE_OPTIONS,
     MainWindow,
     _normalize_startup_preset_id,
     _startup_builtin_id,
@@ -27,6 +28,7 @@ from mic_eq.ui.stream_recovery import StreamRecoveryManager
 from mic_eq.config import (
     CompressorSettings,
     DeviceIdentity,
+    LimiterSettings,
     Preset,
     build_latency_profile_key,
     legacy_latency_profile_key,
@@ -41,14 +43,25 @@ class _SignalStub:
 class _CaptureWorkerStub:
     last_init: dict | None = None
 
-    def __init__(self, audio_data, sample_rate, target_preset):
+    def __init__(
+        self,
+        audio_data,
+        sample_rate,
+        target_preset,
+        target_mode="adaptive",
+        smoothing_strength="conservative",
+    ):
         self.audio_data = audio_data
         self.sample_rate = sample_rate
         self.target_preset = target_preset
+        self.target_mode = target_mode
+        self.smoothing_strength = smoothing_strength
         _CaptureWorkerStub.last_init = {
             "audio_len": len(audio_data),
             "sample_rate": sample_rate,
             "target_preset": target_preset,
+            "target_mode": target_mode,
+            "smoothing_strength": smoothing_strength,
         }
         self.step_progress = _SignalStub()
         self.finished = _SignalStub()
@@ -244,6 +257,16 @@ class _MeterProcessor:
             "input_backlog_dropped_samples": 6,
             "clip_event_count": 7,
             "clip_peak_db": -1.25,
+            "output_clip_event_count": 2,
+            "output_clip_peak_db": -0.75,
+            "output_true_peak_event_count": 1,
+            "output_true_peak_db": 0.4,
+            "limiter_careful_output_enabled": True,
+            "limiter_effective_ceiling_db": -1.5,
+            "gate_chatter_event_count": 3,
+            "input_channel_mode": "average",
+            "input_stereo_correlation": 1.0,
+            "input_phase_warning_count": 0,
             "input_resampler_active": True,
             "output_resampler_active": False,
             "noise_model": "rnnoise",
@@ -324,6 +347,11 @@ class _RecoveryWindow:
         self.compressor_panel = _FakePanel()
         self.deesser_panel = _FakePanel()
         self.gate_panel = _FakePanel()
+        self.input_health_label = _FakeLabel()
+        self.output_health_label = _FakeLabel()
+        self.gate_health_label = _FakeLabel()
+        self.callback_health_label = _FakeLabel()
+        self.underrun_health_label = _FakeLabel()
         self.latency_label = _FakeLabel()
         self.buffer_label = _FakeLabel()
         self.dropped_label = _FakeLabel()
@@ -331,6 +359,12 @@ class _RecoveryWindow:
         self.recovery_diag_label = _FakeLabel()
         self.status_bar = _FakeStatusBar()
         self._last_backend_warning = None
+        self._last_output_underrun_total = 0
+        self._last_input_clip_event_count = 0
+        self._last_output_clip_event_count = 0
+        self._last_output_true_peak_event_count = 0
+        self._last_input_phase_warning_count = 0
+        self._last_gate_chatter_event_count = 0
         self._calibration_dialog_open = False
         self._stream_recovery = StreamRecoveryManager(processing_started_at=0.0)
 
@@ -359,6 +393,41 @@ class _RecoveryWindow:
         MainWindow._service_stream_recovery(self, **kwargs)
 
 
+def _healthy_runtime_diagnostics(**overrides):
+    diagnostics = {
+        "input_dropped_samples": 0,
+        "lock_contention_count": 0,
+        "suppressor_non_finite_count": 0,
+        "stream_restart_count": 0,
+        "output_underrun_total": 0,
+        "output_underrun_streak": 0,
+        "output_retime_adjustment_count": 0,
+        "output_recovery_event_count": 0,
+        "output_recovery_count": 0,
+        "output_short_write_dropped_samples": 0,
+        "rt_buffer_overflow_count": 0,
+        "input_callback_error_count": 0,
+        "output_callback_error_count": 0,
+        "rt_error_name": "none",
+        "clip_event_count": 0,
+        "clip_peak_db": -120.0,
+        "output_clip_event_count": 0,
+        "output_clip_peak_db": -120.0,
+        "output_true_peak_event_count": 0,
+        "output_true_peak_db": -120.0,
+        "gate_chatter_event_count": 0,
+        "deesser_detector_confidence": 0.0,
+        "noise_model": "rnnoise",
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "noise_backend_error": None,
+        "recovery_suppressed": False,
+        "last_restart_reason": None,
+    }
+    diagnostics.update(overrides)
+    return diagnostics
+
+
 def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
     owner = _FakeOwner(_FakeProcessor(sample_rate=44_100))
     dialog = CalibrationDialog(parent=owner)
@@ -369,6 +438,8 @@ def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
 
     assert _CaptureWorkerStub.last_init is not None
     assert _CaptureWorkerStub.last_init["sample_rate"] == 44_100
+    assert _CaptureWorkerStub.last_init["target_mode"] == "adaptive"
+    assert _CaptureWorkerStub.last_init["smoothing_strength"] == "conservative"
     assert dialog.analysis_worker is not None
     assert dialog.analysis_worker.sample_rate == 44_100
 
@@ -416,6 +487,12 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
         "validation_after_error_db": 2.5,
         "validation_gain_scale": 0.9,
         "target_profile": "broadcast:adaptive",
+        "smoothing_strength": "conservative",
+        "residual_regularization": {
+            "max_requested_correction_db": 6.0,
+            "max_regularized_correction_db": 4.0,
+            "max_narrow_residual_db": 2.0,
+        },
     }
 
     dialog._on_analysis_complete(eq_settings)
@@ -423,7 +500,9 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
     assert not dialog.diagnostics_group.isHidden()
     assert dialog.confidence_label.text() == "Confidence: overall 76% | EQ 74% | capture 81%"
     assert dialog.error_label.text() == "Target error: 5.0 dB -> 2.5 dB"
-    assert dialog.gain_scale_label.text() == "Validation: 78% | gain scale 90%"
+    assert "Validation: 78% | gain scale 90%" in dialog.gain_scale_label.text()
+    assert "correction 6.0 dB->4.0 dB" in dialog.gain_scale_label.text()
+    assert "narrow 2.0 dB" in dialog.gain_scale_label.text()
     assert dialog.target_profile_label.text() == "Target profile: broadcast:adaptive"
 
     dialog.close()
@@ -456,6 +535,16 @@ def test_main_window_diagnostics_include_new_metrics():
         "input_backlog_dropped_samples": 6,
         "clip_event_count": 7,
         "clip_peak_db": -1.25,
+        "output_clip_event_count": 2,
+        "output_clip_peak_db": -0.75,
+        "output_true_peak_event_count": 1,
+        "output_true_peak_db": 0.4,
+        "limiter_effective_ceiling_db": -1.5,
+        "gate_chatter_event_count": 3,
+        "deesser_detector_confidence": 0.64,
+        "input_channel_mode": "average",
+        "input_stereo_correlation": -0.9,
+        "input_phase_warning_count": 3,
         "input_resampler_active": True,
         "output_resampler_active": False,
     }
@@ -464,15 +553,22 @@ def test_main_window_diagnostics_include_new_metrics():
     MainWindow._extend_diag_tokens(
         dropped_bits,
         diagnostics,
-            [
-                ("input_backlog_recovery_count", "IBR"),
-                ("input_backlog_dropped_samples", "IBD"),
-                ("output_short_write_dropped_samples", "OSW"),
-                ("rt_buffer_overflow_count", "RTO"),
-                ("input_callback_error_count", "ICE"),
-                ("output_callback_error_count", "OCE"),
+        [
+            ("input_backlog_recovery_count", "IBR"),
+            ("input_backlog_dropped_samples", "IBD"),
+            ("output_short_write_dropped_samples", "OSW"),
+            ("rt_buffer_overflow_count", "RTO"),
+            ("input_callback_error_count", "ICE"),
+            ("output_callback_error_count", "OCE"),
             ("clip_event_count", "CL"),
             ("clip_peak_db", "PK"),
+            ("output_clip_event_count", "OCL"),
+            ("output_clip_peak_db", "OPK"),
+            ("output_true_peak_event_count", "OTP"),
+            ("output_true_peak_db", "TPK"),
+            ("limiter_effective_ceiling_db", "LIM"),
+            ("gate_chatter_event_count", "GCH"),
+            ("deesser_detector_confidence", "DSC"),
         ],
     )
     backend_bits = ["rnnoise"]
@@ -493,8 +589,149 @@ def test_main_window_diagnostics_include_new_metrics():
     assert "OCE:10" in dropped_bits
     assert "CL:7" in dropped_bits
     assert "PK:-1.2" in dropped_bits
+    assert "OCL:2" in dropped_bits
+    assert "OPK:-0.8" in dropped_bits
+    assert "OTP:1" in dropped_bits
+    assert "TPK:0.4" in dropped_bits
+    assert "LIM:-1.5" in dropped_bits
+    assert "GCH:3" in dropped_bits
+    assert "DSC:0.6" in dropped_bits
     assert "IR:Y" in backend_bits
     assert "OR:N" in backend_bits
+
+
+def test_health_panel_reports_input_output_and_callback_states():
+    window = _RecoveryWindow()
+
+    window._update_diagnostic_labels(
+        diagnostics=_healthy_runtime_diagnostics(),
+        latency_ms=24.0,
+        dsp_time_ms=0.5,
+        input_buf=128,
+        output_buf=256,
+        rnnoise_buf=0,
+        input_rms_db=-72.0,
+        output_rms_db=-18.0,
+        input_callback_age_ms=12,
+        output_callback_age_ms=14,
+    )
+
+    assert "Input: LOW" in window.input_health_label.text
+    assert window.input_health_label.state == "warn"
+    assert "Output: OK" in window.output_health_label.text
+    assert window.output_health_label.state == "ok"
+    assert "Callbacks: I:12ms O:14ms" == window.callback_health_label.text
+    assert window.callback_health_label.state == "ok"
+
+    window._update_diagnostic_labels(
+        diagnostics=_healthy_runtime_diagnostics(
+            clip_event_count=1,
+            output_clip_event_count=1,
+        ),
+        latency_ms=24.0,
+        dsp_time_ms=0.5,
+        input_buf=128,
+        output_buf=256,
+        rnnoise_buf=0,
+        input_rms_db=-12.0,
+        output_rms_db=-0.5,
+        input_callback_age_ms=300,
+        output_callback_age_ms=20,
+    )
+
+    assert "Input: CLIPPING" in window.input_health_label.text
+    assert window.input_health_label.state == "bad"
+    assert "Output: CLIP" in window.output_health_label.text
+    assert window.output_health_label.state == "bad"
+    assert window.callback_health_label.state == "warn"
+
+
+def test_health_panel_reports_gate_chatter_and_underruns():
+    window = _RecoveryWindow()
+
+    window._update_diagnostic_labels(
+        diagnostics=_healthy_runtime_diagnostics(
+            gate_chatter_event_count=1,
+            output_underrun_total=2,
+        ),
+        latency_ms=24.0,
+        dsp_time_ms=0.5,
+        input_buf=128,
+        output_buf=256,
+        rnnoise_buf=0,
+        input_rms_db=-18.0,
+        output_rms_db=-18.0,
+        input_callback_age_ms=10,
+        output_callback_age_ms=10,
+    )
+
+    assert "Gate: CHATTER" in window.gate_health_label.text
+    assert window.gate_health_label.state == "warn"
+    assert window.underrun_health_label.text == "Underruns: 2"
+    assert window.underrun_health_label.state == "warn"
+
+
+def test_input_channel_mode_change_persists_and_applies(monkeypatch):
+    class _Processor:
+        def __init__(self):
+            self.modes: list[str] = []
+
+        def set_input_channel_mode(self, mode: str):
+            self.modes.append(mode)
+
+    saved = []
+    window = MainWindow.__new__(MainWindow)
+    window.processor = _Processor()
+    window.config = type("Cfg", (), {"input_channel_mode": "average"})()
+    window.input_channel_mode_combo = _FakeCombo(list(INPUT_CHANNEL_MODE_OPTIONS))
+    window.input_channel_mode_combo.setCurrentIndex(4)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda cfg: saved.append(cfg))
+
+    window._on_input_channel_mode_changed()
+
+    assert window.config.input_channel_mode == "phase_safe_mono"
+    assert window.processor.modes == ["phase_safe_mono"]
+    assert saved == [window.config]
+
+
+def test_input_phase_warning_marks_diagnostics_warn():
+    window = _RecoveryWindow()
+    diagnostics = {
+        "input_dropped_samples": 0,
+        "lock_contention_count": 0,
+        "suppressor_non_finite_count": 0,
+        "stream_restart_count": 0,
+        "output_underrun_total": 0,
+        "output_underrun_streak": 0,
+        "output_recovery_event_count": 0,
+        "output_recovery_count": 0,
+        "output_short_write_dropped_samples": 0,
+        "rt_buffer_overflow_count": 0,
+        "input_callback_error_count": 0,
+        "output_callback_error_count": 0,
+        "rt_error_name": "none",
+        "input_phase_warning_count": 1,
+        "input_stereo_correlation": -0.91,
+        "noise_model": "rnnoise",
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "noise_backend_error": None,
+        "recovery_suppressed": False,
+        "last_restart_reason": None,
+    }
+
+    window._update_diagnostic_labels(
+        diagnostics=diagnostics,
+        latency_ms=24.0,
+        dsp_time_ms=0.5,
+        input_buf=128,
+        output_buf=512,
+        rnnoise_buf=0,
+    )
+
+    assert "PH:1" in window.dropped_label.text
+    assert "COR:-0.91" in window.dropped_label.text
+    assert window.dropped_label.state == "warn"
 
 
 def test_device_selection_policy_matches_exact_then_name():
@@ -754,6 +991,177 @@ def test_new_output_underrun_total_warns_once():
     assert window.dropped_label.state == "ok"
 
 
+def test_new_output_clip_event_warns_once():
+    window = _RecoveryWindow()
+    diagnostics = {
+        "input_dropped_samples": 0,
+        "lock_contention_count": 0,
+        "suppressor_non_finite_count": 0,
+        "stream_restart_count": 0,
+        "output_underrun_total": 0,
+        "output_underrun_streak": 0,
+        "output_retime_adjustment_count": 0,
+        "output_recovery_event_count": 0,
+        "output_recovery_count": 0,
+        "output_short_write_dropped_samples": 0,
+        "rt_buffer_overflow_count": 0,
+        "input_callback_error_count": 0,
+        "output_callback_error_count": 0,
+        "rt_error_name": "none",
+        "clip_event_count": 0,
+        "clip_peak_db": -120.0,
+        "output_clip_event_count": 1,
+        "output_clip_peak_db": -0.25,
+        "limiter_effective_ceiling_db": -1.5,
+        "noise_model": "rnnoise",
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "noise_backend_error": None,
+        "recovery_suppressed": False,
+        "last_restart_reason": None,
+    }
+
+    window._update_diagnostic_labels(
+        diagnostics=diagnostics,
+        latency_ms=32.0,
+        dsp_time_ms=0.4,
+        input_buf=256,
+        output_buf=256,
+        rnnoise_buf=0,
+    )
+
+    assert "OCL:1" in window.dropped_label.text
+    assert "OPK:-0.2" in window.dropped_label.text
+    assert "LIM:-1.5" in window.dropped_label.text
+    assert window.dropped_label.state == "warn"
+
+    window._update_diagnostic_labels(
+        diagnostics=diagnostics,
+        latency_ms=32.0,
+        dsp_time_ms=0.4,
+        input_buf=256,
+        output_buf=256,
+        rnnoise_buf=0,
+    )
+
+    assert window.dropped_label.state == "ok"
+
+
+def test_new_output_true_peak_event_warns_once():
+    window = _RecoveryWindow()
+    diagnostics = {
+        "input_dropped_samples": 0,
+        "lock_contention_count": 0,
+        "suppressor_non_finite_count": 0,
+        "stream_restart_count": 0,
+        "output_underrun_total": 0,
+        "output_underrun_streak": 0,
+        "output_retime_adjustment_count": 0,
+        "output_recovery_event_count": 0,
+        "output_recovery_count": 0,
+        "output_short_write_dropped_samples": 0,
+        "rt_buffer_overflow_count": 0,
+        "input_callback_error_count": 0,
+        "output_callback_error_count": 0,
+        "rt_error_name": "none",
+        "clip_event_count": 0,
+        "clip_peak_db": -120.0,
+        "output_clip_event_count": 0,
+        "output_clip_peak_db": -120.0,
+        "output_true_peak_event_count": 1,
+        "output_true_peak_db": 0.4,
+        "limiter_effective_ceiling_db": -1.5,
+        "noise_model": "rnnoise",
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "noise_backend_error": None,
+        "recovery_suppressed": False,
+        "last_restart_reason": None,
+    }
+
+    window._update_diagnostic_labels(
+        diagnostics=diagnostics,
+        latency_ms=32.0,
+        dsp_time_ms=0.4,
+        input_buf=256,
+        output_buf=256,
+        rnnoise_buf=0,
+    )
+
+    assert "Output: TRUE PEAK" in window.output_health_label.text
+    assert window.output_health_label.state == "warn"
+    assert "OTP:1" in window.dropped_label.text
+    assert "TPK:0.4" in window.dropped_label.text
+    assert window.dropped_label.state == "warn"
+
+    window._update_diagnostic_labels(
+        diagnostics=diagnostics,
+        latency_ms=32.0,
+        dsp_time_ms=0.4,
+        input_buf=256,
+        output_buf=256,
+        rnnoise_buf=0,
+        output_rms_db=-18.0,
+    )
+
+    assert "Output: OK" in window.output_health_label.text
+    assert window.dropped_label.state == "ok"
+
+
+def test_new_gate_chatter_event_warns_once():
+    window = _RecoveryWindow()
+    diagnostics = {
+        "input_dropped_samples": 0,
+        "lock_contention_count": 0,
+        "suppressor_non_finite_count": 0,
+        "stream_restart_count": 0,
+        "output_underrun_total": 0,
+        "output_underrun_streak": 0,
+        "output_retime_adjustment_count": 0,
+        "output_recovery_event_count": 0,
+        "output_recovery_count": 0,
+        "output_short_write_dropped_samples": 0,
+        "rt_buffer_overflow_count": 0,
+        "input_callback_error_count": 0,
+        "output_callback_error_count": 0,
+        "rt_error_name": "none",
+        "clip_event_count": 0,
+        "clip_peak_db": -120.0,
+        "output_clip_event_count": 0,
+        "output_clip_peak_db": -120.0,
+        "gate_chatter_event_count": 1,
+        "noise_model": "rnnoise",
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "noise_backend_error": None,
+        "recovery_suppressed": False,
+        "last_restart_reason": None,
+    }
+
+    window._update_diagnostic_labels(
+        diagnostics=diagnostics,
+        latency_ms=32.0,
+        dsp_time_ms=0.4,
+        input_buf=256,
+        output_buf=256,
+        rnnoise_buf=0,
+    )
+
+    assert "GCH:1" in window.dropped_label.text
+    assert window.dropped_label.state == "warn"
+
+    window._update_diagnostic_labels(
+        diagnostics=diagnostics,
+        latency_ms=32.0,
+        dsp_time_ms=0.4,
+        input_buf=256,
+        output_buf=256,
+        rnnoise_buf=0,
+    )
+
+    assert window.dropped_label.state == "ok"
+
+
 def test_startup_preset_ids_normalize_builtin_and_custom_legacy_names():
     assert _normalize_startup_preset_id("Voice Clarity") == _startup_builtin_id("voice")
     assert _normalize_startup_preset_id("voice") == _startup_builtin_id("voice")
@@ -787,7 +1195,9 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
             base_release_ms=75.0,
             auto_makeup_enabled=True,
             target_lufs=-16.0,
+            sidechain_highpass_enabled=False,
         ),
+        limiter=LimiterSettings(careful_output_enabled=False),
     )
 
     MainWindow._apply_preset(window, preset)
@@ -796,6 +1206,8 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
     assert window.compressor_panel.compressor_settings["base_release_ms"] == 75.0
     assert window.compressor_panel.compressor_settings["auto_makeup_enabled"] is True
     assert window.compressor_panel.compressor_settings["target_lufs"] == -16.0
+    assert window.compressor_panel.compressor_settings["sidechain_highpass_enabled"] is False
+    assert window.compressor_panel.limiter_settings["careful_output_enabled"] is False
 
 
 class _LatencyProcessor:

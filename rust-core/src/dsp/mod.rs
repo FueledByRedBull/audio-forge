@@ -9,6 +9,7 @@ pub mod limiter;
 pub mod loudness;
 pub mod noise_suppressor;
 pub mod rnnoise;
+pub mod true_peak;
 pub mod util;
 
 #[cfg(feature = "vad")]
@@ -26,6 +27,7 @@ pub use limiter::Limiter;
 pub use loudness::{LoudnessError, LoudnessMeter};
 pub use noise_suppressor::{NoiseModel, NoiseSuppressionEngine, NoiseSuppressor};
 pub use rnnoise::{RNNoiseProcessor, RNNOISE_FRAME_SIZE};
+pub use true_peak::TruePeakDetector;
 
 #[cfg(feature = "vad")]
 pub use vad::{GateMode, VadAutoGate};

@@ -210,6 +210,13 @@ class CompressorPanel(QWidget):
         advanced_layout.addWidget(QLabel("Current Release:"), 2, 0)
         advanced_layout.addWidget(self.current_release_label, 2, 1)
 
+        self.sidechain_highpass_checkbox = QCheckBox("Sidechain high-pass")
+        self.sidechain_highpass_checkbox.setChecked(True)
+        self.sidechain_highpass_checkbox.setToolTip(
+            "Ignores low-frequency plosives and rumble in the compressor detector without filtering the audio."
+        )
+        advanced_layout.addWidget(self.sidechain_highpass_checkbox, 3, 0, 1, 2)
+
         # Auto Makeup Gain checkbox
         self.auto_makeup_checkbox = QCheckBox("Auto Makeup Gain")
         self.auto_makeup_checkbox.setChecked(False)
@@ -218,7 +225,7 @@ class CompressorPanel(QWidget):
             "Maintains post-compressor output level relative to target LUFS.\n"
             "Target: -18 LUFS (podcast/streaming standard)"
         )
-        advanced_layout.addWidget(self.auto_makeup_checkbox, 3, 0, 1, 2)
+        advanced_layout.addWidget(self.auto_makeup_checkbox, 4, 0, 1, 2)
 
         # Target LUFS spinbox
         self.target_lufs_spinbox = QDoubleSpinBox()
@@ -230,22 +237,22 @@ class CompressorPanel(QWidget):
         self.target_lufs_spinbox.setEnabled(False)  # Disabled when auto makeup off
         self.target_lufs_spinbox.setMaximumWidth(100)
         self.target_lufs_spinbox.setMinimumWidth(60)
-        advanced_layout.addWidget(QLabel("Target LUFS:"), 4, 0)
-        advanced_layout.addWidget(self.target_lufs_spinbox, 4, 1)
+        advanced_layout.addWidget(QLabel("Target LUFS:"), 5, 0)
+        advanced_layout.addWidget(self.target_lufs_spinbox, 5, 1)
 
         # Current LUFS display (with METER_LABEL_STYLE)
         self.current_lufs_label = QLabel("-18.0 LUFS")
         self.current_lufs_label.setStyleSheet(METER_LABEL_STYLE)
         self.current_lufs_label.setToolTip("Current measured loudness (EBU R128 momentary)")
-        advanced_layout.addWidget(QLabel("Current LUFS:"), 5, 0)
-        advanced_layout.addWidget(self.current_lufs_label, 5, 1)
+        advanced_layout.addWidget(QLabel("Current LUFS:"), 6, 0)
+        advanced_layout.addWidget(self.current_lufs_label, 6, 1)
 
         # Current makeup gain display (with METER_LABEL_STYLE)
         self.current_makeup_gain_label = QLabel("0.0 dB")
         self.current_makeup_gain_label.setStyleSheet(METER_LABEL_STYLE)
         self.current_makeup_gain_label.setToolTip("Current auto makeup gain applied")
-        advanced_layout.addWidget(QLabel("Auto Gain:"), 6, 0)
-        advanced_layout.addWidget(self.current_makeup_gain_label, 6, 1)
+        advanced_layout.addWidget(QLabel("Auto Gain:"), 7, 0)
+        advanced_layout.addWidget(self.current_makeup_gain_label, 7, 1)
 
         comp_layout.addWidget(advanced_group, 5, 0, 1, 4)
 
@@ -274,6 +281,14 @@ class CompressorPanel(QWidget):
         limiter_layout.addWidget(QLabel(""), 0, 0)
         limiter_layout.addWidget(self.limiter_enabled_checkbox, 0, 1, 1, 2)
 
+        self.careful_output_checkbox = QCheckBox("Careful output mode")
+        self.careful_output_checkbox.setChecked(True)
+        self.careful_output_checkbox.setToolTip(
+            "Adds conservative output headroom by limiting the effective ceiling to -1.5 dB."
+        )
+        limiter_layout.addWidget(QLabel(""), 1, 0)
+        limiter_layout.addWidget(self.careful_output_checkbox, 1, 1, 1, 2)
+
         # Ceiling slider with spinbox
         ceiling_layout = QHBoxLayout()
         self.ceiling_slider = QSlider(Qt.Orientation.Horizontal)
@@ -292,8 +307,8 @@ class CompressorPanel(QWidget):
         self.ceiling_spinbox.setFixedWidth(80)
         ceiling_layout.addWidget(self.ceiling_spinbox)
 
-        limiter_layout.addWidget(QLabel("Ceiling:"), 1, 0)
-        limiter_layout.addLayout(ceiling_layout, 1, 1, 1, 2)
+        limiter_layout.addWidget(QLabel("Ceiling:"), 2, 0)
+        limiter_layout.addLayout(ceiling_layout, 2, 1, 1, 2)
 
         # Release time
         self.limiter_release_spinbox = QDoubleSpinBox()
@@ -304,17 +319,17 @@ class CompressorPanel(QWidget):
         self.limiter_release_spinbox.setToolTip("How fast the limiter recovers")
         self.limiter_release_spinbox.setMaximumWidth(100)
         self.limiter_release_spinbox.setMinimumWidth(60)
-        limiter_layout.addWidget(QLabel("Release:"), 2, 0)
-        limiter_layout.addWidget(self.limiter_release_spinbox, 2, 1, 1, 2)
+        limiter_layout.addWidget(QLabel("Release:"), 3, 0)
+        limiter_layout.addWidget(self.limiter_release_spinbox, 3, 1, 1, 2)
 
         # Info label
         info_label = QLabel(
-            "Limiter uses instant attack (~0.1ms)\n"
-            "to catch transients. No lookahead."
+            "Limiter uses lookahead and instant gain reduction\n"
+            "to catch transients before final output."
         )
         info_label.setStyleSheet(INFO_LABEL_STYLE)
-        limiter_layout.addWidget(QLabel(""), 3, 0)
-        limiter_layout.addWidget(info_label, 3, 1, 1, 2)
+        limiter_layout.addWidget(QLabel(""), 4, 0)
+        limiter_layout.addWidget(info_label, 4, 1, 1, 2)
 
         layout.addWidget(limiter_group)
 
@@ -332,6 +347,7 @@ class CompressorPanel(QWidget):
         self.makeup_spinbox.valueChanged.connect(self._on_makeup_spinbox)
         self.adaptive_release_checkbox.toggled.connect(self._update_adaptive_release)
         self.base_release_spinbox.valueChanged.connect(self._update_adaptive_release)
+        self.sidechain_highpass_checkbox.toggled.connect(self._update_compressor)
         # Auto makeup gain
         self.auto_makeup_checkbox.toggled.connect(self._update_auto_makeup)
         self.target_lufs_spinbox.valueChanged.connect(self._update_auto_makeup)
@@ -341,6 +357,7 @@ class CompressorPanel(QWidget):
 
         # Limiter
         self.limiter_enabled_checkbox.toggled.connect(self._update_limiter)
+        self.careful_output_checkbox.toggled.connect(self._update_limiter)
         self.ceiling_slider.valueChanged.connect(self._on_ceiling_slider)
         self.ceiling_spinbox.valueChanged.connect(self._on_ceiling_spinbox)
         self.limiter_release_spinbox.valueChanged.connect(self._update_limiter)
@@ -416,6 +433,7 @@ class CompressorPanel(QWidget):
         attack = self.attack_spinbox.value()
         release = self.release_spinbox.value()
         makeup = self.makeup_spinbox.value()
+        sidechain_highpass = self.sidechain_highpass_checkbox.isChecked()
 
         def apply():
             self.processor.set_compressor_enabled(enabled)
@@ -424,17 +442,22 @@ class CompressorPanel(QWidget):
             self.processor.set_compressor_attack(attack)
             self.processor.set_compressor_release(release)
             self.processor.set_compressor_makeup_gain(makeup)
+            if hasattr(self.processor, "set_compressor_sidechain_highpass_enabled"):
+                self.processor.set_compressor_sidechain_highpass_enabled(sidechain_highpass)
 
         self._comp_rate_limiter.call(apply)
 
     def _update_limiter(self):
         """Update limiter configuration."""
         enabled = self.limiter_enabled_checkbox.isChecked()
+        careful_output = self.careful_output_checkbox.isChecked()
         ceiling = self.ceiling_spinbox.value()
         release = self.limiter_release_spinbox.value()
 
         def apply():
             self.processor.set_limiter_enabled(enabled)
+            if hasattr(self.processor, "set_limiter_careful_output_enabled"):
+                self.processor.set_limiter_careful_output_enabled(careful_output)
             self.processor.set_limiter_ceiling(ceiling)
             self.processor.set_limiter_release(release)
 
@@ -506,6 +529,7 @@ class CompressorPanel(QWidget):
             'base_release_ms': self.base_release_spinbox.value(),
             'auto_makeup_enabled': self.auto_makeup_checkbox.isChecked(),
             'target_lufs': self.target_lufs_spinbox.value(),
+            'sidechain_highpass_enabled': self.sidechain_highpass_checkbox.isChecked(),
         }
 
     def get_limiter_settings(self) -> dict:
@@ -514,6 +538,7 @@ class CompressorPanel(QWidget):
             'enabled': self.limiter_enabled_checkbox.isChecked(),
             'ceiling_db': self.ceiling_spinbox.value(),
             'release_ms': self.limiter_release_spinbox.value(),
+            'careful_output_enabled': self.careful_output_checkbox.isChecked(),
         }
 
     def set_compressor_settings(self, settings: dict) -> None:
@@ -545,6 +570,8 @@ class CompressorPanel(QWidget):
             self.auto_makeup_checkbox.setChecked(settings['auto_makeup_enabled'])
         if 'target_lufs' in settings:
             self.target_lufs_spinbox.setValue(settings['target_lufs'])
+        if 'sidechain_highpass_enabled' in settings:
+            self.sidechain_highpass_checkbox.setChecked(settings['sidechain_highpass_enabled'])
 
         self._update_compressor()
         self._update_adaptive_release()
@@ -554,6 +581,8 @@ class CompressorPanel(QWidget):
         """Apply limiter settings from a dictionary."""
         if 'enabled' in settings:
             self.limiter_enabled_checkbox.setChecked(settings['enabled'])
+        if 'careful_output_enabled' in settings:
+            self.careful_output_checkbox.setChecked(settings['careful_output_enabled'])
         if 'ceiling_db' in settings:
             self.ceiling_spinbox.setValue(settings['ceiling_db'])
             self.ceiling_slider.setValue(int(settings['ceiling_db'] * 10))

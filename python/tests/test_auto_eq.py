@@ -335,6 +335,54 @@ def test_18_q_is_narrower_for_narrower_spectral_issue():
     assert narrow_qs[narrow_idx] > broad_qs[broad_idx] + 0.75
 
 
+def test_18a_conservative_smoothing_limits_narrow_artifact_correction():
+    freqs = _default_freqs()
+    log_freqs = np.log10(freqs)
+    target_db = get_target_curve(freqs, "flat")
+    base = np.full_like(freqs, -70.0)
+    narrow_notch = base - 10.0 * np.exp(
+        -((log_freqs - np.log10(2300.0)) ** 2) / (2 * 0.015**2)
+    )
+    narrow_peak = base + 10.0 * np.exp(
+        -((log_freqs - np.log10(2300.0)) ** 2) / (2 * 0.015**2)
+    )
+
+    notch_eq = calculate_eq_bands(freqs, narrow_notch, target_db, smoothing_strength="conservative")
+    peak_eq = calculate_eq_bands(freqs, narrow_peak, target_db, smoothing_strength="conservative")
+    notch_gains = np.asarray(notch_eq["band_gains"], dtype=float)
+    peak_gains = np.asarray(peak_eq["band_gains"], dtype=float)
+
+    assert np.max(np.abs(notch_gains)) <= 3.0
+    assert np.max(np.abs(peak_gains)) <= 3.0
+    assert (
+        notch_eq["residual_regularization"]["max_regularized_correction_db"]
+        < notch_eq["residual_regularization"]["max_requested_correction_db"] * 0.55
+    )
+    assert notch_eq["residual_regularization"]["max_narrow_residual_db"] > 6.0
+
+
+def test_18b_target_modes_are_explicit_and_bounded():
+    freqs = _default_freqs()
+    measured = generate_test_spectrum(freqs, "bassy")
+    static_target = get_target_curve(
+        freqs,
+        "podcast",
+        measured_db=measured,
+        target_mode="static",
+    )
+    catalog_target = get_target_curve(freqs, "podcast", target_mode="static")
+    adaptive_target = get_target_curve(
+        freqs,
+        "podcast",
+        measured_db=measured,
+        target_mode="adaptive",
+    )
+
+    assert np.allclose(static_target, catalog_target)
+    assert np.max(np.abs(adaptive_target - static_target)) <= 2.0 + 1e-9
+    assert np.max(np.abs(adaptive_target - static_target)) > 0.25
+
+
 def test_19_diagnostics_and_validation_are_present_and_valid():
     freqs = _default_freqs()
     spectrum_db = generate_test_spectrum(freqs, "harsh")
@@ -351,6 +399,8 @@ def test_19_diagnostics_and_validation_are_present_and_valid():
     assert eq["validation_after_error_db"] <= eq["validation_before_error_db"] * 1.05
     assert 0.0 < eq["validation_gain_scale"] <= 1.0
     assert eq["target_profile"]
+    assert eq["smoothing_strength"] == "conservative"
+    assert "max_regularized_correction_db" in eq["residual_regularization"]
 
 
 def test_20_low_confidence_boosts_are_capped_aggressively():

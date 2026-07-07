@@ -79,6 +79,7 @@ class CompressorSettings:
     base_release_ms: float = 50.0
     auto_makeup_enabled: bool = False
     target_lufs: float = -18.0
+    sidechain_highpass_enabled: bool = True
 
 
 @dataclass
@@ -88,6 +89,7 @@ class LimiterSettings:
     enabled: bool = True
     ceiling_db: float = -0.5
     release_ms: float = 50.0
+    careful_output_enabled: bool = True
 
 
 @dataclass

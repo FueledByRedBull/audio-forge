@@ -7,6 +7,10 @@ struct OutputWriteCounters<'a> {
     rt_error_code: &'a AtomicU32,
     output_buffer_len: &'a AtomicU32,
     last_output_write_time: &'a AtomicU64,
+    output_clip_event_count: &'a AtomicU64,
+    output_clip_peak_db: &'a AtomicU32,
+    output_true_peak_event_count: &'a AtomicU64,
+    output_true_peak_db: &'a AtomicU32,
 }
 
 #[derive(Clone, Copy)]
@@ -28,6 +32,7 @@ struct OutputWriteContext<
     output_queue_control_scratch: &'a mut FixedAudioBuffer<f32, OUTPUT_QUEUE_CONTROL_CAPACITY>,
     discontinuity_fade_scratch: &'a mut FixedAudioBuffer<f32, DISCONTINUITY_FADE_CAPACITY>,
     output_safety_scratch: &'a mut FixedAudioBuffer<f32, OUTPUT_SAFETY_CAPACITY>,
+    true_peak_detector: &'a mut TruePeakDetector,
     drift_error_ema: &'a mut f32,
     discontinuity_fade_remaining: &'a Cell<usize>,
     limiter_enabled: &'a AtomicBool,
@@ -81,6 +86,7 @@ impl<
         let pending_slice = Self::sanitize_and_limit(
             write_slice,
             self.output_safety_scratch,
+            self.true_peak_detector,
             self.limiter_enabled,
             self.output_ceiling_linear,
             &self.counters,
@@ -182,6 +188,7 @@ impl<
     fn sanitize_and_limit<'b>(
         write_slice: &[f32],
         output_safety_scratch: &'b mut FixedAudioBuffer<f32, OUTPUT_SAFETY_CAPACITY>,
+        true_peak_detector: &mut TruePeakDetector,
         limiter_enabled: &AtomicBool,
         output_ceiling_linear: &Cell<f32>,
         counters: &OutputWriteCounters<'_>,
@@ -196,8 +203,42 @@ impl<
         } else {
             1.0
         };
-        sanitize_and_clamp_output_inplace(output_safety_scratch.as_mut_slice(), output_ceiling);
+        sanitize_and_clamp_output_inplace_with_metrics(
+            output_safety_scratch.as_mut_slice(),
+            output_ceiling,
+            counters.output_clip_event_count,
+            counters.output_clip_peak_db,
+        );
+        Self::record_true_peak(
+            true_peak_detector,
+            output_safety_scratch.as_slice(),
+            output_ceiling,
+            counters,
+        );
         output_safety_scratch.as_slice()
+    }
+
+    fn record_true_peak(
+        true_peak_detector: &mut TruePeakDetector,
+        samples: &[f32],
+        output_ceiling: f32,
+        counters: &OutputWriteCounters<'_>,
+    ) {
+        let true_peak = true_peak_detector.process_block(samples);
+        if true_peak <= output_ceiling {
+            return;
+        }
+
+        counters
+            .output_true_peak_event_count
+            .fetch_add(1, Ordering::Relaxed);
+        let peak_db = 20.0 * true_peak.max(1e-10).log10();
+        let current_peak = f32::from_bits(counters.output_true_peak_db.load(Ordering::Relaxed));
+        if peak_db > current_peak {
+            counters
+                .output_true_peak_db
+                .store(peak_db.to_bits(), Ordering::Relaxed);
+        }
     }
 
     fn write_to_output_queue(

@@ -95,6 +95,15 @@ from ..config import (
 DEBUG = False
 logger = logging.getLogger(__name__)
 
+INPUT_CHANNEL_MODE_OPTIONS = (
+    ("Average", "average"),
+    ("Left", "left"),
+    ("Right", "right"),
+    ("Max RMS", "max_rms"),
+    ("Phase-safe mono", "phase_safe_mono"),
+)
+INPUT_PHASE_WARNING_CORRELATION = -0.75
+
 
 class MainWindow(QMainWindow):
     """Main application window for AudioForge."""
@@ -120,6 +129,11 @@ class MainWindow(QMainWindow):
         self._stream_recovery = StreamRecoveryManager()
         self._last_backend_warning = None
         self._last_output_underrun_total = 0
+        self._last_input_clip_event_count = 0
+        self._last_output_clip_event_count = 0
+        self._last_output_true_peak_event_count = 0
+        self._last_input_phase_warning_count = 0
+        self._last_gate_chatter_event_count = 0
         self._ui_state_timer = QTimer(self)
         self._ui_state_timer.setSingleShot(True)
         self._ui_state_timer.timeout.connect(self._save_ui_state)
@@ -136,6 +150,9 @@ class MainWindow(QMainWindow):
         # Connect device change signals for persistence
         self.input_combo.currentIndexChanged.connect(self._on_device_changed)
         self.output_combo.currentIndexChanged.connect(self._on_device_changed)
+        self.input_channel_mode_combo.currentIndexChanged.connect(
+            self._on_input_channel_mode_changed
+        )
 
         # Set default size before any persisted geometry overrides it.
         self.resize(1280, 850)
@@ -187,6 +204,16 @@ class MainWindow(QMainWindow):
         self.output_combo = QComboBox()
         self.output_combo.setMinimumWidth(150)
         device_layout.addWidget(self.output_combo, stretch=1)
+
+        device_layout.addWidget(QLabel("Input Mode:"))
+        self.input_channel_mode_combo = QComboBox()
+        for label, mode in INPUT_CHANNEL_MODE_OPTIONS:
+            self.input_channel_mode_combo.addItem(label, mode)
+        self.input_channel_mode_combo.setMinimumWidth(130)
+        self.input_channel_mode_combo.setToolTip(
+            "How multichannel input is converted to mono. Use Left/Right or Phase-safe mono if stereo channels cancel."
+        )
+        device_layout.addWidget(self.input_channel_mode_combo)
 
         # Refresh button
         refresh_btn = QPushButton("Refresh")
@@ -310,6 +337,47 @@ class MainWindow(QMainWindow):
         action_layout.setAlignment(self.raw_monitor_checkbox, Qt.AlignmentFlag.AlignVCenter)
         control_stack.addLayout(action_layout)
 
+        health_decision_layout = QHBoxLayout()
+        health_decision_layout.setSpacing(SPACING_NORMAL)
+        health_decision_layout.setContentsMargins(0, 2, 0, 0)
+
+        self.input_health_label = QLabel("Input: --")
+        self.input_health_label.setToolTip(
+            "Input level decision from the current meter and clipping counter."
+        )
+        health_decision_layout.addWidget(self.input_health_label)
+
+        self.output_health_label = QLabel("Output: --")
+        self.output_health_label.setToolTip(
+            "Final output protection state. Warns on recent output clipping."
+        )
+        health_decision_layout.addWidget(self.output_health_label)
+
+        self.gate_health_label = QLabel("Gate: --")
+        self.gate_health_label.setToolTip(
+            "Gate stability state. Warns when rapid open/close chatter is detected."
+        )
+        health_decision_layout.addWidget(self.gate_health_label)
+
+        self.backend_diag_label = QLabel("Backend: --")
+        self.backend_diag_label.setToolTip("Active suppression backend state and fallback health.")
+        health_decision_layout.addWidget(self.backend_diag_label)
+
+        self.callback_health_label = QLabel("Callbacks: --")
+        self.callback_health_label.setToolTip(
+            "Input/output callback heartbeat age. Warns when callbacks look stale."
+        )
+        health_decision_layout.addWidget(self.callback_health_label)
+
+        self.underrun_health_label = QLabel("Underruns: --")
+        self.underrun_health_label.setToolTip(
+            "Output underrun health. Warns on recent or consecutive underruns."
+        )
+        health_decision_layout.addWidget(self.underrun_health_label)
+
+        health_decision_layout.addStretch()
+        control_stack.addLayout(health_decision_layout)
+
         health_layout = QHBoxLayout()
         health_layout.setSpacing(SPACING_NORMAL)
         health_layout.setContentsMargins(0, 2, 0, 0)
@@ -334,10 +402,6 @@ class MainWindow(QMainWindow):
         self.dropped_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.dropped_label.customContextMenuRequested.connect(self._on_dropped_context_menu)
         health_layout.addWidget(self.dropped_label)
-
-        self.backend_diag_label = QLabel("Backend: --")
-        self.backend_diag_label.setToolTip("Active suppression backend state and fallback health.")
-        health_layout.addWidget(self.backend_diag_label)
 
         self.recovery_diag_label = QLabel("Recovery: --")
         self.recovery_diag_label.setToolTip(
@@ -432,6 +496,11 @@ class MainWindow(QMainWindow):
         label.setStyleSheet(status_chip_style(state))
 
     def _reset_health_labels(self) -> None:
+        self._set_health_chip(self.input_health_label, "Input: --", "idle")
+        self._set_health_chip(self.output_health_label, "Output: --", "idle")
+        self._set_health_chip(self.gate_health_label, "Gate: --", "idle")
+        self._set_health_chip(self.callback_health_label, "Callbacks: --", "idle")
+        self._set_health_chip(self.underrun_health_label, "Underruns: --", "idle")
         self._set_health_chip(self.latency_label, "Latency: --", "idle")
         self._set_health_chip(self.buffer_label, "Buffer: --", "idle")
         self._set_health_chip(self.dropped_label, "Drops: --", "idle")
@@ -454,6 +523,28 @@ class MainWindow(QMainWindow):
             token = cls._diag_token(label, diagnostics.get(key))
             if token is not None:
                 tokens.append(token)
+
+    @staticmethod
+    def _is_valid_input_channel_mode(mode: object) -> bool:
+        return isinstance(mode, str) and any(
+            mode == option_mode for _label, option_mode in INPUT_CHANNEL_MODE_OPTIONS
+        )
+
+    def _select_input_channel_mode(self, mode: str) -> None:
+        target = mode if self._is_valid_input_channel_mode(mode) else "average"
+        for index in range(self.input_channel_mode_combo.count()):
+            if self.input_channel_mode_combo.itemData(index) == target:
+                self.input_channel_mode_combo.setCurrentIndex(index)
+                return
+        self.input_channel_mode_combo.setCurrentIndex(0)
+
+    def _apply_input_channel_mode(self, mode: str) -> None:
+        target = mode if self._is_valid_input_channel_mode(mode) else "average"
+        try:
+            if hasattr(self.processor, "set_input_channel_mode"):
+                self.processor.set_input_channel_mode(target)
+        except Exception:
+            logger.debug("Failed to apply input channel mode", exc_info=True)
 
     def _schedule_ui_state_save(self) -> None:
         self._ui_state_timer.start(200)
@@ -820,6 +911,8 @@ class MainWindow(QMainWindow):
         # Block signals to prevent spurious config saves during refresh
         self.input_combo.blockSignals(True)
         self.output_combo.blockSignals(True)
+        if "input_channel_mode_combo" in self.__dict__:
+            self.input_channel_mode_combo.blockSignals(True)
 
         self.input_combo.clear()
         self.output_combo.clear()
@@ -1089,9 +1182,15 @@ class MainWindow(QMainWindow):
 
         self._restore_ui_state()
         self._apply_latency_compensation_for_current_devices()
+        if "input_channel_mode_combo" in self.__dict__:
+            input_channel_mode = getattr(self.config, "input_channel_mode", "average")
+            self._select_input_channel_mode(input_channel_mode)
+            self._apply_input_channel_mode(input_channel_mode)
 
         self.input_combo.blockSignals(False)
         self.output_combo.blockSignals(False)
+        if "input_channel_mode_combo" in self.__dict__:
+            self.input_channel_mode_combo.blockSignals(False)
 
         if config_dirty:
             save_config(self.config)
@@ -1108,6 +1207,17 @@ class MainWindow(QMainWindow):
             save_config(self.config)
             self._apply_latency_compensation_for_current_devices()
 
+    def _on_input_channel_mode_changed(self):
+        """Persist and apply the selected input channel mixdown mode."""
+        if not hasattr(self, "config"):
+            return
+        mode = self.input_channel_mode_combo.currentData()
+        if not self._is_valid_input_channel_mode(mode):
+            mode = "average"
+        self.config.input_channel_mode = mode
+        self._apply_input_channel_mode(mode)
+        save_config(self.config)
+
     def _start_processing(self):
         """Start audio processing."""
         if self.processor.is_running():
@@ -1117,6 +1227,7 @@ class MainWindow(QMainWindow):
 
         input_device = self._device_selection_to_name(self.input_combo) or None
         output_device = self._device_selection_to_name(self.output_combo) or None
+        self._apply_input_channel_mode(getattr(self.config, "input_channel_mode", "average"))
 
         if DEBUG:
             logger.debug(
@@ -1470,6 +1581,8 @@ class MainWindow(QMainWindow):
         dsp_time_ms = self.processor.get_dsp_time_smoothed_ms()
         input_buf = self.processor.get_input_buffer_smoothed_samples()
         rnnoise_buf = self.processor.get_buffer_smoothed_samples()
+        input_callback_age_ms = self.processor.get_input_callback_age_ms()
+        output_callback_age_ms = self.processor.get_output_callback_age_ms()
 
         self._update_diagnostic_labels(
             diagnostics=diagnostics,
@@ -1478,6 +1591,10 @@ class MainWindow(QMainWindow):
             input_buf=input_buf,
             output_buf=output_buf,
             rnnoise_buf=rnnoise_buf,
+            input_rms_db=input_rms,
+            output_rms_db=output_rms,
+            input_callback_age_ms=input_callback_age_ms,
+            output_callback_age_ms=output_callback_age_ms,
         )
         self._service_stream_recovery(
             diagnostics=diagnostics,
@@ -1495,6 +1612,10 @@ class MainWindow(QMainWindow):
         input_buf: int,
         output_buf: int,
         rnnoise_buf: int,
+        input_rms_db: float | None = None,
+        output_rms_db: float | None = None,
+        input_callback_age_ms: int | None = None,
+        output_callback_age_ms: int | None = None,
     ) -> None:
         """Update diagnostic status labels from a runtime diagnostic snapshot."""
         self._set_health_chip(
@@ -1530,6 +1651,24 @@ class MainWindow(QMainWindow):
         )
         new_underruns_observed = underruns > previous_underruns
         self._last_output_underrun_total = underruns
+        phase_warning_count = int(diagnostics.get("input_phase_warning_count", 0) or 0)
+        previous_phase_warnings = int(
+            getattr(self, "_last_input_phase_warning_count", phase_warning_count) or 0
+        )
+        new_phase_warning_observed = phase_warning_count > previous_phase_warnings
+        self._last_input_phase_warning_count = phase_warning_count
+        raw_input_stereo_correlation = diagnostics.get("input_stereo_correlation")
+        if raw_input_stereo_correlation is None:
+            input_stereo_correlation = None
+        else:
+            try:
+                input_stereo_correlation = float(raw_input_stereo_correlation)
+            except (TypeError, ValueError):
+                input_stereo_correlation = None
+        current_phase_warning = (
+            input_stereo_correlation is not None
+            and input_stereo_correlation < INPUT_PHASE_WARNING_CORRELATION
+        )
         output_recovery_events = int(
             diagnostics.get(
                 "output_recovery_event_count",
@@ -1540,11 +1679,121 @@ class MainWindow(QMainWindow):
         output_short_write_dropped = int(
             diagnostics.get("output_short_write_dropped_samples", 0) or 0
         )
+        input_clip_count = int(diagnostics.get("clip_event_count", 0) or 0)
+        previous_input_clip_count = int(
+            getattr(self, "_last_input_clip_event_count", input_clip_count) or 0
+        )
+        new_input_clip_observed = input_clip_count > previous_input_clip_count
+        self._last_input_clip_event_count = input_clip_count
+        output_clip_count = int(diagnostics.get("output_clip_event_count", 0) or 0)
+        previous_output_clip_count = int(
+            getattr(self, "_last_output_clip_event_count", output_clip_count) or 0
+        )
+        new_output_clip_observed = output_clip_count > previous_output_clip_count
+        self._last_output_clip_event_count = output_clip_count
+        output_true_peak_count = int(diagnostics.get("output_true_peak_event_count", 0) or 0)
+        previous_output_true_peak_count = int(
+            getattr(self, "_last_output_true_peak_event_count", output_true_peak_count) or 0
+        )
+        new_output_true_peak_observed = output_true_peak_count > previous_output_true_peak_count
+        self._last_output_true_peak_event_count = output_true_peak_count
+        gate_chatter_count = int(diagnostics.get("gate_chatter_event_count", 0) or 0)
+        previous_gate_chatter_count = int(
+            getattr(self, "_last_gate_chatter_event_count", gate_chatter_count) or 0
+        )
+        new_gate_chatter_observed = gate_chatter_count > previous_gate_chatter_count
+        self._last_gate_chatter_event_count = gate_chatter_count
         rt_overflows = diagnostics.get("rt_buffer_overflow_count", 0)
         input_callback_errors = diagnostics.get("input_callback_error_count", 0)
         output_callback_errors = diagnostics.get("output_callback_error_count", 0)
         rt_error_name = diagnostics.get("rt_error_name")
         rt_error_active = bool(rt_error_name and rt_error_name != "none")
+
+        if new_input_clip_observed:
+            input_health_text = f"Input: CLIPPING (CL:{input_clip_count})"
+            input_health_state = "bad"
+        elif input_rms_db is None:
+            input_health_text = "Input: --"
+            input_health_state = "idle"
+        elif input_rms_db < -65.0:
+            input_health_text = f"Input: LOW ({input_rms_db:.0f}dB)"
+            input_health_state = "warn"
+        elif input_rms_db > -3.0:
+            input_health_text = f"Input: HOT ({input_rms_db:.0f}dB)"
+            input_health_state = "warn"
+        else:
+            input_health_text = f"Input: OK ({input_rms_db:.0f}dB)"
+            input_health_state = "ok"
+        self._set_health_chip(
+            self.input_health_label,
+            input_health_text,
+            input_health_state,
+        )
+
+        if new_output_clip_observed:
+            output_health_text = f"Output: CLIP (OCL:{output_clip_count})"
+            output_health_state = "bad"
+        elif new_output_true_peak_observed:
+            output_health_text = f"Output: TRUE PEAK (OTP:{output_true_peak_count})"
+            output_health_state = "warn"
+        elif output_rms_db is None:
+            output_health_text = "Output: --"
+            output_health_state = "idle"
+        elif output_rms_db > -1.0:
+            output_health_text = f"Output: HOT ({output_rms_db:.0f}dB)"
+            output_health_state = "warn"
+        else:
+            output_health_text = f"Output: OK ({output_rms_db:.0f}dB)"
+            output_health_state = "ok"
+        self._set_health_chip(
+            self.output_health_label,
+            output_health_text,
+            output_health_state,
+        )
+
+        gate_health_text = (
+            f"Gate: CHATTER (GCH:{gate_chatter_count})"
+            if new_gate_chatter_observed
+            else "Gate: OK"
+        )
+        self._set_health_chip(
+            self.gate_health_label,
+            gate_health_text,
+            "warn" if new_gate_chatter_observed else "ok",
+        )
+
+        callback_ages = [
+            age
+            for age in (input_callback_age_ms, output_callback_age_ms)
+            if age is not None and age >= 0
+        ]
+        if callback_ages:
+            max_callback_age = max(callback_ages)
+            callback_state = (
+                "bad" if max_callback_age > 1000 else "warn" if max_callback_age > 250 else "ok"
+            )
+            callback_health_text = (
+                f"Callbacks: I:{input_callback_age_ms}ms O:{output_callback_age_ms}ms"
+            )
+        else:
+            callback_health_text = "Callbacks: --"
+            callback_state = "idle"
+        self._set_health_chip(
+            self.callback_health_label,
+            callback_health_text,
+            callback_state,
+        )
+
+        underrun_state = "warn" if underrun_streak or new_underruns_observed else "ok"
+        underrun_text = f"Underruns: {underruns}"
+        if underrun_streak:
+            underrun_text += f" streak:{underrun_streak}"
+        self._set_health_chip(
+            self.underrun_health_label,
+            underrun_text,
+            underrun_state,
+        )
+
         dropped_bits = [
             f"Drops: {dropped}",
             f"U:{underruns}",
@@ -1554,6 +1803,10 @@ class MainWindow(QMainWindow):
         ]
         if underrun_streak:
             dropped_bits.append(f"US:{underrun_streak}")
+        if phase_warning_count:
+            dropped_bits.append(f"PH:{phase_warning_count}")
+        if input_stereo_correlation is not None:
+            dropped_bits.append(f"COR:{input_stereo_correlation:.2f}")
         self._extend_diag_tokens(
             dropped_bits,
             diagnostics,
@@ -1566,6 +1819,13 @@ class MainWindow(QMainWindow):
                 ("output_callback_error_count", "OCE"),
                 ("clip_event_count", "CL"),
                 ("clip_peak_db", "PK"),
+                ("output_clip_event_count", "OCL"),
+                ("output_clip_peak_db", "OPK"),
+                ("output_true_peak_event_count", "OTP"),
+                ("output_true_peak_db", "TPK"),
+                ("limiter_effective_ceiling_db", "LIM"),
+                ("gate_chatter_event_count", "GCH"),
+                ("deesser_detector_confidence", "DSC"),
             ],
         )
         if rt_error_active:
@@ -1583,6 +1843,12 @@ class MainWindow(QMainWindow):
                 and input_callback_errors == 0
                 and output_callback_errors == 0
                 and not rt_error_active
+                and not new_input_clip_observed
+                and not new_output_clip_observed
+                and not new_output_true_peak_observed
+                and not new_gate_chatter_observed
+                and not current_phase_warning
+                and not new_phase_warning_observed
             )
             else "warn"
         )
@@ -1929,6 +2195,7 @@ class MainWindow(QMainWindow):
             'base_release_ms': preset.compressor.base_release_ms,
             'auto_makeup_enabled': preset.compressor.auto_makeup_enabled,
             'target_lufs': preset.compressor.target_lufs,
+            'sidechain_highpass_enabled': preset.compressor.sidechain_highpass_enabled,
         })
 
         # Apply limiter settings
@@ -1936,6 +2203,7 @@ class MainWindow(QMainWindow):
             'enabled': preset.limiter.enabled,
             'ceiling_db': preset.limiter.ceiling_db,
             'release_ms': preset.limiter.release_ms,
+            'careful_output_enabled': preset.limiter.careful_output_enabled,
         })
 
         # Apply bypass

@@ -17,6 +17,12 @@ use super::biquad::{Biquad, BiquadType};
 use crate::dsp::util;
 
 const VOICE_REFERENCE_SIDECHAIN_DISCOUNT: f64 = 0.6;
+const DETECTOR_RATIO_GATE_DB: f64 = 1.5;
+const DETECTOR_RATIO_FULL_DB: f64 = 10.0;
+const DETECTOR_LEVEL_GATE_DB: f64 = -62.0;
+const DETECTOR_LEVEL_FULL_DB: f64 = -24.0;
+const DETECTOR_VOICE_GATE_DB: f64 = -58.0;
+const DETECTOR_VOICE_FULL_DB: f64 = -34.0;
 const AUTO_BASELINE_FALL_MS: f64 = 13.88;
 const AUTO_BASELINE_RISE_MS: f64 = 34.72;
 const AUTO_BASELINE_INACTIVE_DECAY_MS: f64 = 20.82;
@@ -36,6 +42,7 @@ pub struct DeEsser {
     current_reduction_db: f64,
     sidechain_env: f64,
     broadband_env: f64,
+    detector_confidence: f64,
     auto_baseline_excess_db: f64,
     low_cut_hz: f64,
     high_cut_hz: f64,
@@ -69,6 +76,7 @@ impl DeEsser {
             current_reduction_db: 0.0,
             sidechain_env: 0.0,
             broadband_env: 0.0,
+            detector_confidence: 0.0,
             auto_baseline_excess_db: 0.0,
             low_cut_hz,
             high_cut_hz,
@@ -104,6 +112,60 @@ impl DeEsser {
     #[inline]
     fn lerp(a: f64, b: f64, t: f64) -> f64 {
         a + (b - a) * t
+    }
+
+    #[inline]
+    fn normalize_range(value: f64, start: f64, end: f64) -> f64 {
+        ((value - start) / (end - start)).clamp(0.0, 1.0)
+    }
+
+    #[inline]
+    fn confidence_reduction_gain(confidence: f64, floor: f64) -> f64 {
+        Self::normalize_range(confidence, floor.clamp(0.0, 0.95), 1.0)
+    }
+
+    #[inline]
+    fn update_detector_confidence(
+        &mut self,
+        sidechain_level_db: f64,
+        voice_reference_db: f64,
+    ) -> f64 {
+        let spectral_ratio_db = (sidechain_level_db - voice_reference_db).max(0.0);
+        let ratio_conf = Self::normalize_range(
+            spectral_ratio_db,
+            DETECTOR_RATIO_GATE_DB,
+            DETECTOR_RATIO_FULL_DB,
+        );
+        let level_conf = Self::normalize_range(
+            sidechain_level_db,
+            DETECTOR_LEVEL_GATE_DB,
+            DETECTOR_LEVEL_FULL_DB,
+        );
+        let voice_conf = Self::normalize_range(
+            voice_reference_db,
+            DETECTOR_VOICE_GATE_DB,
+            DETECTOR_VOICE_FULL_DB,
+        );
+
+        // Strong narrow-band sibilance should still be detected when the voice body is brief.
+        let narrow_sibilance_support = if spectral_ratio_db > 6.0 && sidechain_level_db > -45.0 {
+            0.75
+        } else {
+            0.0
+        };
+        let voice_support = voice_conf.max(narrow_sibilance_support);
+        let balance_conf = if ratio_conf > 0.12 {
+            ratio_conf.max(voice_support * 0.65)
+        } else {
+            ratio_conf
+        };
+        let broadband_penalty = Self::lerp(0.35, 1.0, balance_conf);
+
+        let confidence_target =
+            (0.62 * ratio_conf + 0.18 * level_conf + 0.20 * voice_support) * broadband_penalty;
+        self.detector_confidence =
+            self.update_env(self.detector_confidence, confidence_target.clamp(0.0, 1.0));
+        spectral_ratio_db
     }
 
     fn rebuild_detector_filters(&mut self) {
@@ -245,10 +307,16 @@ impl DeEsser {
         self.current_reduction_db as f32
     }
 
+    /// Smoothed detector confidence (0.0-1.0) for diagnostics.
+    pub fn detector_confidence(&self) -> f32 {
+        self.detector_confidence as f32
+    }
+
     #[inline]
     pub fn process_sample(&mut self, input: f32) -> f32 {
         if !self.enabled {
             self.current_reduction_db = 0.0;
+            self.detector_confidence = 0.0;
             return input;
         }
 
@@ -265,10 +333,12 @@ impl DeEsser {
             - self.sidechain_env * VOICE_REFERENCE_SIDECHAIN_DISCOUNT)
             .max(1e-8);
         let voice_reference_db = util::linear_to_db(voice_reference_level, 1e-10);
+        let spectral_ratio_db =
+            self.update_detector_confidence(sidechain_level_db, voice_reference_db);
 
         let target_reduction = if self.auto_enabled {
             let amount = self.auto_amount.clamp(0.0, 1.0);
-            let excess_db = (sidechain_level_db - voice_reference_db).max(0.0);
+            let excess_db = spectral_ratio_db;
             let voice_active = voice_reference_db > -55.0 || sidechain_level_db > -55.0;
 
             if voice_active {
@@ -289,17 +359,23 @@ impl DeEsser {
             let slope = Self::lerp(0.55, 1.75, amount);
             let auto_cap = Self::lerp(3.0, 14.0, amount);
             let cap_db = auto_cap.min(self.max_reduction_db);
+            let confidence_floor = Self::lerp(0.28, 0.06, amount);
+            let confidence_gain =
+                Self::confidence_reduction_gain(self.detector_confidence, confidence_floor);
 
             let over_db = (excess_db - self.auto_baseline_excess_db - trigger_offset_db).max(0.0);
-            (over_db * slope).clamp(0.0, cap_db)
+            (over_db * slope * confidence_gain).clamp(0.0, cap_db)
         } else if sidechain_level_db > self.threshold_db {
-            let excess_db = (sidechain_level_db - voice_reference_db).max(0.0);
+            let excess_db = spectral_ratio_db;
             let ratio_threshold_db = ((self.threshold_db + 60.0) * 0.10).clamp(0.0, 6.0);
             let level_over_db = sidechain_level_db - self.threshold_db;
             let ratio_over_db = excess_db - ratio_threshold_db;
             if ratio_over_db > 0.0 {
                 let over_db = level_over_db.min(ratio_over_db);
-                ((1.0 - (1.0 / self.ratio)) * over_db).clamp(0.0, self.max_reduction_db)
+                let confidence_gain =
+                    Self::confidence_reduction_gain(self.detector_confidence, 0.22);
+                ((1.0 - (1.0 / self.ratio)) * over_db * confidence_gain)
+                    .clamp(0.0, self.max_reduction_db)
             } else {
                 0.0
             }
@@ -326,6 +402,7 @@ impl DeEsser {
     pub fn process_block_inplace(&mut self, buffer: &mut [f32]) {
         if !self.enabled {
             self.current_reduction_db = 0.0;
+            self.detector_confidence = 0.0;
             return;
         }
 
@@ -339,6 +416,7 @@ impl DeEsser {
         self.current_reduction_db = 0.0;
         self.sidechain_env = 0.0;
         self.broadband_env = 0.0;
+        self.detector_confidence = 0.0;
         self.auto_baseline_excess_db = 0.0;
         self.detector_hp.reset();
         self.detector_lp.reset();
@@ -544,6 +622,7 @@ mod tests {
         }
 
         let broadband_reduction = deesser.current_gain_reduction_db();
+        let broadband_confidence = deesser.detector_confidence();
 
         deesser.reset();
         for n in 0..12_000 {
@@ -558,6 +637,80 @@ mod tests {
             deesser.process_sample(x);
         }
 
+        let sibilance_confidence = deesser.detector_confidence();
         assert!(deesser.current_gain_reduction_db() > broadband_reduction + 0.5);
+        assert!(
+            sibilance_confidence > broadband_confidence + 0.15,
+            "sibilance confidence ({sibilance_confidence}) should exceed broadband confidence ({broadband_confidence})"
+        );
+    }
+
+    #[test]
+    fn test_voice_supported_sibilance_is_not_suppressed_by_confidence() {
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        deesser.set_auto_enabled(true);
+        deesser.set_auto_amount(0.85);
+        deesser.set_max_reduction_db(10.0);
+
+        let sr = 48_000.0f64;
+        for n in 0..12_000 {
+            let t = n as f64 / sr;
+            let voice_body = (2.0 * std::f64::consts::PI * 450.0 * t).sin() as f32 * 0.10;
+            deesser.process_sample(voice_body);
+        }
+        for n in 0..6_000 {
+            let t = n as f64 / sr;
+            let voice_body = (2.0 * std::f64::consts::PI * 450.0 * t).sin() as f32 * 0.05;
+            let sibilance = (2.0 * std::f64::consts::PI * 7_200.0 * t).sin() as f32 * 0.32;
+            deesser.process_sample(voice_body + sibilance);
+        }
+
+        assert!(
+            deesser.detector_confidence() > 0.25,
+            "voice-supported sibilance should retain useful detector confidence"
+        );
+        assert!(
+            deesser.current_gain_reduction_db() > 0.25,
+            "voice-supported sibilance should still trigger de-essing"
+        );
+    }
+
+    #[test]
+    fn test_detector_confidence_and_reduction_stay_finite_at_extreme_settings() {
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        deesser.set_auto_enabled(true);
+        deesser.set_auto_amount(1.0);
+        deesser.set_low_cut_hz(12_000.0);
+        deesser.set_high_cut_hz(12_050.0);
+        deesser.set_attack_ms(0.1);
+        deesser.set_release_ms(5.0);
+        deesser.set_max_reduction_db(24.0);
+
+        let sr = 48_000.0f64;
+        for n in 0..20_000 {
+            let t = n as f64 / sr;
+            let x = (2.0 * std::f64::consts::PI * 11_900.0 * t).sin() as f32 * 0.95
+                + (2.0 * std::f64::consts::PI * 300.0 * t).sin() as f32 * 0.30;
+            let y = deesser.process_sample(x);
+            assert!(y.is_finite(), "de-esser output should remain finite");
+            assert!(
+                deesser.current_gain_reduction_db().is_finite(),
+                "gain reduction should remain finite"
+            );
+            assert!(
+                deesser.detector_confidence().is_finite(),
+                "detector confidence should remain finite"
+            );
+            assert!(
+                (0.0..=1.0).contains(&deesser.detector_confidence()),
+                "detector confidence should stay normalized"
+            );
+            assert!(
+                deesser.current_gain_reduction_db() <= 24.1,
+                "gain reduction should honor the configured cap"
+            );
+        }
     }
 }

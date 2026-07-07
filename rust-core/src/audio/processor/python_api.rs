@@ -81,6 +81,20 @@ impl PyAudioProcessor {
         self.processor.is_raw_monitor_enabled()
     }
 
+    fn set_input_channel_mode(&self, mode: &str) -> PyResult<()> {
+        let mode = InputChannelMode::from_id(mode).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Invalid input channel mode: {mode}"
+            ))
+        })?;
+        self.processor.set_input_channel_mode(mode);
+        Ok(())
+    }
+
+    fn get_input_channel_mode(&self) -> String {
+        self.processor.input_channel_mode().id().to_string()
+    }
+
     // === Noise Gate ===
 
     fn set_gate_enabled(&self, enabled: bool) {
@@ -89,6 +103,10 @@ impl PyAudioProcessor {
 
     fn is_gate_enabled(&self) -> bool {
         self.processor.is_gate_enabled()
+    }
+
+    fn get_gate_chatter_event_count(&self) -> u64 {
+        self.processor.get_gate_chatter_event_count()
     }
 
     fn set_gate_threshold(&self, threshold_db: f64) {
@@ -353,6 +371,10 @@ impl PyAudioProcessor {
         self.processor.get_deesser_gain_reduction_db()
     }
 
+    fn get_deesser_detector_confidence(&self) -> f32 {
+        self.processor.get_deesser_detector_confidence()
+    }
+
     // === Compressor ===
 
     fn set_compressor_enabled(&self, enabled: bool) {
@@ -409,6 +431,17 @@ impl PyAudioProcessor {
     /// Get compressor base release time (milliseconds)
     fn get_compressor_base_release(&self) -> f64 {
         self.processor.get_compressor_base_release()
+    }
+
+    /// Set compressor detector sidechain high-pass mode
+    fn set_compressor_sidechain_highpass_enabled(&self, enabled: bool) {
+        self.processor
+            .set_compressor_sidechain_highpass_enabled(enabled);
+    }
+
+    /// Get compressor detector sidechain high-pass mode
+    fn get_compressor_sidechain_highpass_enabled(&self) -> bool {
+        self.processor.get_compressor_sidechain_highpass_enabled()
     }
 
     /// Get current compressor release time (adaptive or base, in milliseconds)
@@ -470,6 +503,19 @@ impl PyAudioProcessor {
         self.processor.set_limiter_release(release_ms);
     }
 
+    fn set_limiter_careful_output_enabled(&self, enabled: bool) {
+        self.processor
+            .set_limiter_careful_output_enabled(enabled);
+    }
+
+    fn is_limiter_careful_output_enabled(&self) -> bool {
+        self.processor.is_limiter_careful_output_enabled()
+    }
+
+    fn get_limiter_effective_ceiling_db(&self) -> f64 {
+        self.processor.limiter_effective_ceiling_db()
+    }
+
     // === Metering ===
 
     fn get_input_peak_db(&self) -> f32 {
@@ -486,6 +532,14 @@ impl PyAudioProcessor {
 
     fn get_output_rms_db(&self) -> f32 {
         self.processor.get_output_rms_db()
+    }
+
+    fn get_input_stereo_correlation(&self) -> f32 {
+        self.processor.get_input_stereo_correlation()
+    }
+
+    fn get_input_phase_warning_count(&self) -> u64 {
+        self.processor.get_input_phase_warning_count()
     }
 
     fn get_compressor_gain_reduction_db(&self) -> f32 {
@@ -703,6 +757,18 @@ impl PyAudioProcessor {
                 .load(Ordering::Relaxed),
         )?;
         diagnostics.set_item(
+            "input_channel_mode",
+            self.processor.input_channel_mode().id(),
+        )?;
+        diagnostics.set_item(
+            "input_stereo_correlation",
+            self.processor.get_input_stereo_correlation(),
+        )?;
+        diagnostics.set_item(
+            "input_phase_warning_count",
+            self.processor.get_input_phase_warning_count(),
+        )?;
+        diagnostics.set_item(
             "stream_restart_count",
             self.processor.get_stream_restart_count(),
         )?;
@@ -736,6 +802,50 @@ impl PyAudioProcessor {
         diagnostics.set_item(
             "clip_peak_db",
             f32::from_bits(self.processor.clip_peak_db.load(Ordering::Relaxed)),
+        )?;
+        diagnostics.set_item(
+            "output_clip_event_count",
+            self.processor
+                .output_clip_event_count
+                .load(Ordering::Relaxed),
+        )?;
+        diagnostics.set_item(
+            "output_clip_peak_db",
+            f32::from_bits(
+                self.processor
+                    .output_clip_peak_db
+                    .load(Ordering::Relaxed),
+            ),
+        )?;
+        diagnostics.set_item(
+            "output_true_peak_event_count",
+            self.processor
+                .output_true_peak_event_count
+                .load(Ordering::Relaxed),
+        )?;
+        diagnostics.set_item(
+            "output_true_peak_db",
+            f32::from_bits(
+                self.processor
+                    .output_true_peak_db
+                    .load(Ordering::Relaxed),
+            ),
+        )?;
+        diagnostics.set_item(
+            "limiter_careful_output_enabled",
+            self.processor.is_limiter_careful_output_enabled(),
+        )?;
+        diagnostics.set_item(
+            "limiter_effective_ceiling_db",
+            self.processor.limiter_effective_ceiling_db(),
+        )?;
+        diagnostics.set_item(
+            "gate_chatter_event_count",
+            self.processor.get_gate_chatter_event_count(),
+        )?;
+        diagnostics.set_item(
+            "deesser_detector_confidence",
+            self.processor.get_deesser_detector_confidence(),
         )?;
         diagnostics.set_item(
             "input_resampler_active",

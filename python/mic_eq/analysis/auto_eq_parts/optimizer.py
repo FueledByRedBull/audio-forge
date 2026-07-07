@@ -190,6 +190,61 @@ def _validation_confidence(
     )
 
 
+def _smooth_log_frequency_values(
+    freqs: np.ndarray,
+    values: np.ndarray,
+    width_octaves: float,
+) -> np.ndarray:
+    safe_freqs = np.clip(np.asarray(freqs, dtype=float), 20.0, None)
+    values = np.asarray(values, dtype=float)
+    log_freqs = np.log2(safe_freqs)
+    smoothed = np.empty_like(values)
+    width = max(float(width_octaves), 1e-3)
+    for index, center in enumerate(log_freqs):
+        distance = (log_freqs - center) / width
+        weights = np.exp(-0.5 * distance * distance)
+        weight_sum = float(np.sum(weights))
+        if weight_sum <= 0.0:
+            smoothed[index] = values[index]
+        else:
+            smoothed[index] = float(np.dot(weights, values) / weight_sum)
+    return smoothed
+
+
+def _regularize_correction_residual(
+    dense_freqs: np.ndarray,
+    residual_db: np.ndarray,
+    smoothing_strength: str,
+) -> tuple[np.ndarray, dict[str, float | str]]:
+    strength = str(smoothing_strength or "conservative").strip().lower()
+    if strength not in {"off", "balanced", "conservative", "broad"}:
+        strength = "conservative"
+    residual_db = np.asarray(residual_db, dtype=float)
+    if strength == "off":
+        return residual_db.copy(), {
+            "smoothing_strength": "off",
+            "max_requested_correction_db": float(np.max(np.abs(residual_db))),
+            "max_regularized_correction_db": float(np.max(np.abs(residual_db))),
+            "max_narrow_residual_db": 0.0,
+        }
+
+    medium = _smooth_log_frequency_values(dense_freqs, residual_db, 0.16)
+    broad_width = 0.40 if strength == "conservative" else 0.55 if strength == "broad" else 0.28
+    broad = _smooth_log_frequency_values(dense_freqs, residual_db, broad_width)
+    max_local_excursion = 3.0 if strength == "conservative" else 2.0 if strength == "broad" else 5.0
+    broad_blend = 0.35 if strength == "conservative" else 0.55 if strength == "broad" else 0.18
+
+    local = np.clip(residual_db - medium, -max_local_excursion, max_local_excursion)
+    clamped = medium + local
+    regularized = (1.0 - broad_blend) * clamped + broad_blend * broad
+    return regularized, {
+        "smoothing_strength": strength,
+        "max_requested_correction_db": float(np.max(np.abs(residual_db))),
+        "max_regularized_correction_db": float(np.max(np.abs(regularized))),
+        "max_narrow_residual_db": float(np.max(np.abs(residual_db - broad))),
+    }
+
+
 def _overall_confidence(
     band_confidences: np.ndarray,
     gains: np.ndarray,
@@ -295,6 +350,7 @@ def calculate_eq_bands(
     global_snr_db=None,
     target_profile="static",
     used_spectrum_fallback=False,
+    smoothing_strength="conservative",
 ):
     """
     Calculate optimal 10-band EQ settings using least-squares optimization.
@@ -347,6 +403,13 @@ def calculate_eq_bands(
     dense_freqs = _build_dense_log_grid(freqs)
     measured_dense_db = np.interp(dense_freqs, freqs, measured_db)
     target_dense_db = np.interp(dense_freqs, freqs, target_db)
+    target_residual_dense = target_dense_db - measured_dense_db
+    target_residual_dense, residual_regularization = _regularize_correction_residual(
+        dense_freqs,
+        target_residual_dense,
+        smoothing_strength,
+    )
+    target_dense_db = measured_dense_db + target_residual_dense
     repeatability_dense = None
     if spectral_repeatability is not None:
         repeatability_arr = np.asarray(spectral_repeatability, dtype=float)
@@ -560,6 +623,8 @@ def calculate_eq_bands(
         'validation_after_error_db': after_error,
         'validation_gain_scale': validation_gain_scale,
         'target_profile': target_profile,
+        'smoothing_strength': residual_regularization["smoothing_strength"],
+        'residual_regularization': residual_regularization,
         'used_spectrum_fallback': bool(used_spectrum_fallback),
         'eq_quality': quality_metrics,
     }

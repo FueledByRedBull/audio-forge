@@ -15,6 +15,9 @@ const EXPANDER_RANGE_DB: f64 = 36.0;
 const DETECTOR_RMS_MS: f64 = 8.0;
 const DETECTOR_HYSTERESIS_DB: f64 = 4.0;
 const DETECTOR_HOLD_MS: f64 = 50.0;
+const CHATTER_WINDOW_MS: f64 = 500.0;
+const CHATTER_COOLDOWN_MS: f64 = 1_000.0;
+const CHATTER_TRANSITION_THRESHOLD: u32 = 4;
 #[cfg(feature = "vad")]
 const FUSED_GATE_OPEN_SCORE: f32 = 0.55;
 #[cfg(feature = "vad")]
@@ -68,6 +71,18 @@ pub struct NoiseGate {
     /// Previous VAD gate state (for VAD-specific change detection)
     #[cfg(feature = "vad")]
     vad_was_open: bool,
+    /// Last final gate-open state used for chatter detection.
+    effective_gate_open: bool,
+    /// Whether `effective_gate_open` has been initialized.
+    has_effective_gate_state: bool,
+    /// Remaining samples in the current chatter transition window.
+    chatter_window_remaining_samples: usize,
+    /// Gate state transitions seen inside the current chatter window.
+    chatter_transition_count: u32,
+    /// Cooldown before another chatter event is counted.
+    chatter_cooldown_samples: usize,
+    /// Lifetime count of detected gate chatter events.
+    chatter_event_count: u64,
     /// Gate operating mode (VAD feature only)
     #[cfg(feature = "vad")]
     gate_mode: GateMode,
@@ -122,6 +137,12 @@ impl NoiseGate {
             peak_level: f64::MIN,
             #[cfg(feature = "vad")]
             vad_was_open: false,
+            effective_gate_open: false,
+            has_effective_gate_state: false,
+            chatter_window_remaining_samples: 0,
+            chatter_transition_count: 0,
+            chatter_cooldown_samples: 0,
+            chatter_event_count: 0,
             #[cfg(feature = "vad")]
             gate_mode: GateMode::ThresholdOnly,
             #[cfg(feature = "vad")]
@@ -278,6 +299,60 @@ impl NoiseGate {
     }
 
     #[inline]
+    fn chatter_window_samples(&self) -> usize {
+        (self.sample_rate * CHATTER_WINDOW_MS / 1000.0).round() as usize
+    }
+
+    #[inline]
+    fn chatter_cooldown_samples(&self) -> usize {
+        (self.sample_rate * CHATTER_COOLDOWN_MS / 1000.0).round() as usize
+    }
+
+    #[inline]
+    fn advance_chatter_timers(&mut self) {
+        if self.chatter_window_remaining_samples > 0 {
+            self.chatter_window_remaining_samples -= 1;
+            if self.chatter_window_remaining_samples == 0 {
+                self.chatter_transition_count = 0;
+            }
+        }
+        if self.chatter_cooldown_samples > 0 {
+            self.chatter_cooldown_samples -= 1;
+        }
+    }
+
+    #[inline]
+    fn track_gate_transition(&mut self, effective_open: bool) {
+        if !self.has_effective_gate_state {
+            self.effective_gate_open = effective_open;
+            self.has_effective_gate_state = true;
+            self.advance_chatter_timers();
+            return;
+        }
+
+        if effective_open != self.effective_gate_open {
+            self.effective_gate_open = effective_open;
+            if self.chatter_window_remaining_samples == 0 {
+                self.chatter_window_remaining_samples = self.chatter_window_samples();
+                self.chatter_transition_count = 1;
+            } else {
+                self.chatter_transition_count = self.chatter_transition_count.saturating_add(1);
+            }
+
+            if self.chatter_transition_count >= CHATTER_TRANSITION_THRESHOLD
+                && self.chatter_cooldown_samples == 0
+            {
+                self.chatter_event_count = self.chatter_event_count.saturating_add(1);
+                self.chatter_cooldown_samples = self.chatter_cooldown_samples();
+                self.chatter_window_remaining_samples = 0;
+                self.chatter_transition_count = 0;
+            }
+        }
+
+        self.advance_chatter_timers();
+    }
+
+    #[inline]
     fn apply_gain(&mut self, input: f64, target_gr_db: f64) -> f32 {
         let target_gain = util::db_to_linear(-target_gr_db);
         let coeff = if target_gain > self.current_gain {
@@ -299,6 +374,7 @@ impl NoiseGate {
         let input_f64 = input as f64;
         self.update_detector(input_f64);
         let target_gr_db = self.compute_target_gr_db(false);
+        self.track_gate_transition(self.is_open);
         self.apply_gain(input_f64, target_gr_db)
     }
 
@@ -363,6 +439,9 @@ impl NoiseGate {
                                 GateMode::VadOnly => !vad_gate_open,
                             };
                             let target_gr_db = self.compute_target_gr_db(force_close);
+                            let effective_open =
+                                !force_close && (self.is_open || fused_open || vad_gate_open);
+                            self.track_gate_transition(effective_open);
                             *sample = self.apply_gain(input_f64, target_gr_db);
                         }
                         return;
@@ -394,6 +473,12 @@ impl NoiseGate {
         self.hold_remaining_samples = 0;
         self.is_open = false;
         self.was_open = false;
+        self.effective_gate_open = false;
+        self.has_effective_gate_state = false;
+        self.chatter_window_remaining_samples = 0;
+        self.chatter_transition_count = 0;
+        self.chatter_cooldown_samples = 0;
+        self.chatter_event_count = 0;
         #[cfg(feature = "vad")]
         {
             self.vad_was_open = false;
@@ -412,6 +497,11 @@ impl NoiseGate {
     /// Get current gain applied by the gate.
     pub fn current_gain(&self) -> f32 {
         self.current_gain as f32
+    }
+
+    /// Lifetime count of detected rapid gate open/close chatter events.
+    pub fn chatter_event_count(&self) -> u64 {
+        self.chatter_event_count
     }
 
     // === VAD Integration Methods ===
@@ -643,6 +733,56 @@ mod tests {
             gate.process_sample(0.0);
         }
         assert!(!gate.is_open());
+    }
+
+    #[test]
+    fn test_noise_gate_detects_rapid_chatter() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 10.0, 48_000.0);
+
+        for _ in 0..5 {
+            for _ in 0..2_000 {
+                gate.process_sample(0.1);
+            }
+            for _ in 0..4_500 {
+                gate.process_sample(0.0);
+            }
+        }
+
+        assert!(
+            gate.chatter_event_count() > 0,
+            "events={} transitions={} window={} open={} detector={:.1}",
+            gate.chatter_event_count(),
+            gate.chatter_transition_count,
+            gate.chatter_window_remaining_samples,
+            gate.is_open(),
+            gate.detector_level_db
+        );
+    }
+
+    #[test]
+    fn test_noise_gate_reset_clears_chatter_detection() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 10.0, 48_000.0);
+
+        for _ in 0..5 {
+            for _ in 0..2_000 {
+                gate.process_sample(0.1);
+            }
+            for _ in 0..4_500 {
+                gate.process_sample(0.0);
+            }
+        }
+
+        assert!(
+            gate.chatter_event_count() > 0,
+            "events={} transitions={} window={} open={} detector={:.1}",
+            gate.chatter_event_count(),
+            gate.chatter_transition_count,
+            gate.chatter_window_remaining_samples,
+            gate.is_open(),
+            gate.detector_level_db
+        );
+        gate.reset();
+        assert_eq!(gate.chatter_event_count(), 0);
     }
 
     #[test]

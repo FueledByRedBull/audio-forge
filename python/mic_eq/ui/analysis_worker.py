@@ -27,7 +27,14 @@ class AnalysisWorker(QThread):
     finished = pyqtSignal(dict)            # Emits eq_settings dict
     failed = pyqtSignal(str)               # Emits error message (generic)
 
-    def __init__(self, audio_data, sample_rate, target_preset='broadcast'):
+    def __init__(
+        self,
+        audio_data,
+        sample_rate,
+        target_preset='broadcast',
+        target_mode="adaptive",
+        smoothing_strength="conservative",
+    ):
         """
         Initialize analysis worker.
 
@@ -35,11 +42,15 @@ class AnalysisWorker(QThread):
             audio_data: Recorded audio samples (float32 NumPy array)
             sample_rate: Sample rate in Hz from the active processor
             target_preset: Target curve name ('broadcast', 'podcast', 'streaming', 'flat')
+            target_mode: Target behavior ('adaptive' or 'static')
+            smoothing_strength: Auto-EQ smoothing strength
         """
         super().__init__()
         self.audio_data = audio_data
         self.sample_rate = sample_rate
         self.target_preset = target_preset
+        self.target_mode = target_mode
+        self.smoothing_strength = smoothing_strength
         self._start_time = None
         self._stop_event = threading.Event()
 
@@ -68,6 +79,8 @@ class AnalysisWorker(QThread):
                 self.audio_data,
                 self.sample_rate,
                 self.target_preset,
+                target_mode=self.target_mode,
+                smoothing_strength=self.smoothing_strength,
             )
             if self._should_stop():
                 return

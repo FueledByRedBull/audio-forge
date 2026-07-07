@@ -77,11 +77,22 @@ impl AudioProcessor {
         self.clip_event_count.store(0, Ordering::Relaxed);
         self.clip_peak_db
             .store((-120.0_f32).to_bits(), Ordering::Relaxed);
+        self.output_clip_event_count.store(0, Ordering::Relaxed);
+        self.output_clip_peak_db
+            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
+        self.output_true_peak_event_count
+            .store(0, Ordering::Relaxed);
+        self.output_true_peak_db
+            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
         self.rt_error_code
             .store(RtErrorCode::None as u32, Ordering::Relaxed);
         self.input_callback_error_count.store(0, Ordering::Relaxed);
         self.output_callback_error_count.store(0, Ordering::Relaxed);
         self.rt_buffer_overflow_count.store(0, Ordering::Relaxed);
+        self.input_stereo_correlation
+            .store(1.0_f32.to_bits(), Ordering::Relaxed);
+        self.input_phase_warning_count.store(0, Ordering::Relaxed);
+        self.gate_chatter_event_count.store(0, Ordering::Relaxed);
         self.last_input_callback_time_us.store(0, Ordering::Relaxed);
         self.last_output_callback_time_us
             .store(0, Ordering::Relaxed);
@@ -91,19 +102,26 @@ impl AudioProcessor {
         let last_input_callback_time_us = Arc::clone(&self.last_input_callback_time_us);
         let input_callback_error_count = Arc::clone(&self.input_callback_error_count);
         let rt_error_code_for_input = Arc::clone(&self.rt_error_code);
+        let input_options = InputStreamOptions::new(
+            Arc::clone(&self.input_channel_mode),
+            Arc::clone(&self.input_stereo_correlation),
+            Arc::clone(&self.input_phase_warning_count),
+        );
         let input = match input_device {
-            Some(name) => AudioInput::from_device_name(
+            Some(name) => AudioInput::from_device_name_with_options(
                 name,
                 input_producer,
                 last_input_callback_time_us,
                 input_callback_error_count,
                 rt_error_code_for_input,
+                input_options,
             ),
-            None => AudioInput::from_default_device(
+            None => AudioInput::from_default_device_with_options(
                 input_producer,
                 last_input_callback_time_us,
                 input_callback_error_count,
                 rt_error_code_for_input,
+                input_options,
             ),
         }
         .map_err(|e| format!("Failed to start audio input: {}", e))?;
@@ -267,6 +285,7 @@ impl AudioProcessor {
         let output_rms = Arc::clone(&self.output_rms);
         let compressor_gain_reduction = Arc::clone(&self.compressor_gain_reduction);
         let deesser_gain_reduction = Arc::clone(&self.deesser_gain_reduction);
+        let deesser_detector_confidence = Arc::clone(&self.deesser_detector_confidence);
         let gate_gain_meter = Arc::clone(&self.gate_gain_meter);
         #[cfg(feature = "vad")]
         let vad_probability = Arc::clone(&self.vad_probability);
@@ -274,6 +293,7 @@ impl AudioProcessor {
         let gate_noise_floor_db = Arc::clone(&self.gate_noise_floor_db);
         #[cfg(feature = "vad")]
         let gate_fused_score = Arc::clone(&self.gate_fused_score);
+        let gate_chatter_event_count = Arc::clone(&self.gate_chatter_event_count);
         #[cfg(feature = "vad")]
         let vad_available = Arc::clone(&self.vad_available);
         #[cfg(feature = "vad")]
@@ -309,6 +329,10 @@ impl AudioProcessor {
         let input_backlog_dropped_samples = Arc::clone(&self.input_backlog_dropped_samples);
         let clip_event_count = Arc::clone(&self.clip_event_count);
         let clip_peak_db = Arc::clone(&self.clip_peak_db);
+        let output_clip_event_count = Arc::clone(&self.output_clip_event_count);
+        let output_clip_peak_db = Arc::clone(&self.output_clip_peak_db);
+        let output_true_peak_event_count = Arc::clone(&self.output_true_peak_event_count);
+        let output_true_peak_db = Arc::clone(&self.output_true_peak_db);
         let noise_backend_available = Arc::clone(&self.noise_backend_available);
         let noise_backend_failed = Arc::clone(&self.noise_backend_failed);
         let rt_error_code = Arc::clone(&self.rt_error_code);
@@ -514,8 +538,13 @@ impl AudioProcessor {
                             deesser_rt.current_gain_reduction_db().to_bits(),
                             Ordering::Relaxed,
                         );
+                        deesser_detector_confidence.store(
+                            deesser_rt.detector_confidence().to_bits(),
+                            Ordering::Relaxed,
+                        );
                     } else {
                         deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
+                        deesser_detector_confidence.store(0.0_f32.to_bits(), Ordering::Relaxed);
                     }
 
                     if eq_enabled.load(Ordering::Acquire) {
@@ -584,12 +613,14 @@ impl AudioProcessor {
             let discontinuity_fade_samples =
                 duration_samples(output_sample_rate_for_latency, 6).max(1);
             let discontinuity_fade_remaining = Cell::new(0usize);
+            let mut output_true_peak_detector = TruePeakDetector::new();
             let mut output_drift_error_ema = 0.0_f32;
             let mut output_writer = OutputWriteContext {
                 output_producer: &mut output_producer,
                 output_queue_control_scratch: &mut output_queue_control_scratch,
                 discontinuity_fade_scratch: &mut discontinuity_fade_scratch,
                 output_safety_scratch: &mut output_safety_scratch,
+                true_peak_detector: &mut output_true_peak_detector,
                 drift_error_ema: &mut output_drift_error_ema,
                 discontinuity_fade_remaining: &discontinuity_fade_remaining,
                 limiter_enabled: limiter_enabled.as_ref(),
@@ -603,6 +634,10 @@ impl AudioProcessor {
                     rt_error_code: rt_error_code.as_ref(),
                     output_buffer_len: output_buffer_len.as_ref(),
                     last_output_write_time: last_output_write_time.as_ref(),
+                    output_clip_event_count: output_clip_event_count.as_ref(),
+                    output_clip_peak_db: output_clip_peak_db.as_ref(),
+                    output_true_peak_event_count: output_true_peak_event_count.as_ref(),
+                    output_true_peak_db: output_true_peak_db.as_ref(),
                 },
                 limits: OutputWriteLimits {
                     output_target_center_samples,
@@ -833,6 +868,8 @@ impl AudioProcessor {
                                 compressor_gain_reduction
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                deesser_detector_confidence
+                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 compressor_current_release_ms
                                     .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
                                 compressor_current_lufs
@@ -911,6 +948,8 @@ impl AudioProcessor {
                                 compressor_gain_reduction
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                deesser_detector_confidence
+                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 gate_gain_meter.store(1.0_f32.to_bits(), Ordering::Relaxed);
                                 compressor_current_release_ms
                                     .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
@@ -986,6 +1025,8 @@ impl AudioProcessor {
                                 compressor_gain_reduction
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                deesser_detector_confidence
+                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 compressor_current_release_ms
                                     .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed); // Default 200ms
                                 compressor_current_lufs
@@ -1040,6 +1081,10 @@ impl AudioProcessor {
                                     gate_rt.process_block_inplace(buffer);
                                     gate_gain_meter.store(
                                         gate_rt.current_gain().clamp(0.0, 1.0).to_bits(),
+                                        Ordering::Relaxed,
+                                    );
+                                    gate_chatter_event_count.store(
+                                        gate_rt.chatter_event_count(),
                                         Ordering::Relaxed,
                                     );
                                     #[cfg(feature = "vad")]

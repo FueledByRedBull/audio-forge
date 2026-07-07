@@ -70,6 +70,8 @@ def test_preset_migration_to_v17_adds_deesser_defaults():
     assert preset.deesser.high_cut_hz == 9000.0
     assert preset.deesser.threshold_db == -28.0
     assert preset.deesser.max_reduction_db == 6.0
+    assert preset.compressor.sidechain_highpass_enabled is True
+    assert preset.limiter.careful_output_enabled is True
 
 
 def test_app_config_latency_profiles_round_trip():
@@ -90,6 +92,7 @@ def test_app_config_latency_profiles_round_trip():
         last_output_device="Out B",
         last_input_device_identity=input_identity,
         last_output_device_identity=output_identity,
+        input_channel_mode="phase_safe_mono",
         main_splitter_sizes=[420, 680],
         main_control_tab_index=1,
         use_measured_latency=True,
@@ -102,6 +105,7 @@ def test_app_config_latency_profiles_round_trip():
     assert restored.use_measured_latency is True
     assert restored.main_splitter_sizes == [420, 680]
     assert restored.main_control_tab_index == 1
+    assert restored.input_channel_mode == "phase_safe_mono"
     assert key in restored.latency_calibration_profiles
     assert restored.last_input_device_identity == input_identity
     assert restored.last_output_device_identity == output_identity
@@ -129,6 +133,20 @@ def test_app_config_rejects_corrupt_boolean_to_default():
     restored = AppConfig.from_dict({"use_measured_latency": "false"})
 
     assert restored.use_measured_latency is True
+
+
+@pytest.mark.parametrize("value", ["bad", "", 1, True, None, ["left"]])
+def test_app_config_normalizes_invalid_input_channel_mode(value):
+    restored = AppConfig.from_dict({"input_channel_mode": value})
+
+    assert restored.input_channel_mode == "average"
+
+
+@pytest.mark.parametrize("value", ["average", "left", "right", "max_rms", "phase_safe_mono"])
+def test_app_config_preserves_valid_input_channel_mode(value):
+    restored = AppConfig.from_dict({"input_channel_mode": value})
+
+    assert restored.input_channel_mode == value
 
 
 @pytest.mark.parametrize("payload", [[], "bad", 123, True, None])

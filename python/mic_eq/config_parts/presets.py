@@ -86,6 +86,7 @@ class Preset:
                 if "compressor" in data:
                     data["compressor"].setdefault("auto_makeup_enabled", False)
                     data["compressor"].setdefault("target_lufs", -18.0)
+                    data["compressor"].setdefault("sidechain_highpass_enabled", True)
                 else:
                     data["compressor"] = {
                         "enabled": True,
@@ -98,6 +99,7 @@ class Preset:
                         "base_release_ms": 50.0,
                         "auto_makeup_enabled": False,
                         "target_lufs": -18.0,
+                        "sidechain_highpass_enabled": True,
                     }
                 data["version"] = "1.3.0"
                 version_tuple = _version_tuple("1.3.0")
@@ -142,7 +144,18 @@ class Preset:
                 data["version"] = "1.7.0"
                 version_tuple = _version_tuple("1.7.0")
 
-            for version in ("1.7.1", "1.7.2", "1.7.3", "1.7.4", "1.8.0", "1.8.1", "1.8.2", "1.8.3", "1.8.4"):
+            for version in (
+                "1.7.1",
+                "1.7.2",
+                "1.7.3",
+                "1.7.4",
+                "1.8.0",
+                "1.8.1",
+                "1.8.2",
+                "1.8.3",
+                "1.8.4",
+                "1.8.5",
+            ):
                 if version_tuple < _version_tuple(version):
                     data["version"] = version
                     version_tuple = _version_tuple(version)
@@ -292,6 +305,11 @@ class Preset:
                     "target_lufs",
                     "compressor",
                 ),
+                sidechain_highpass_enabled=_validate_bool(
+                    comp_data.get("sidechain_highpass_enabled", True),
+                    "sidechain_highpass_enabled",
+                    "compressor",
+                ),
             )
 
             lim_data = data.get("limiter", {})
@@ -308,6 +326,11 @@ class Preset:
                     lim_data.get("release_ms", 50.0),
                     *lim_ranges["release_ms"],
                     "release_ms",
+                    "limiter",
+                ),
+                careful_output_enabled=_validate_bool(
+                    lim_data.get("careful_output_enabled", True),
+                    "careful_output_enabled",
                     "limiter",
                 ),
             )

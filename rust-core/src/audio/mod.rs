@@ -12,7 +12,9 @@ pub use buffer::{AudioConsumer, AudioProducer, AudioRingBuffer};
 pub use device::{list_input_devices, list_output_devices, DeviceInfo};
 pub use input::{AudioDeviceInfo, AudioError, AudioInput, TARGET_SAMPLE_RATE};
 pub use output::AudioOutput;
-pub use processor::{AudioProcessor, PyAudioProcessor};
+pub use processor::{
+    AudioBlockProcessor, AudioProcessor, OfflineDspBlockProcessor, PyAudioProcessor,
+};
 pub use rt::{FixedAudioBuffer, RtCommandQueue, RtErrorCode};
 
 #[cfg(feature = "vad")]

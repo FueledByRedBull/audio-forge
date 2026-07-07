@@ -579,6 +579,14 @@ impl PyAudioProcessor {
         self.processor.get_jitter_dropped_samples()
     }
 
+    fn get_output_retime_adjustment_count(&self) -> u64 {
+        self.processor.get_output_retime_adjustment_count()
+    }
+
+    fn get_output_recovery_event_count(&self) -> u64 {
+        self.processor.get_output_recovery_event_count()
+    }
+
     fn get_output_recovery_count(&self) -> u64 {
         self.processor.get_output_recovery_count()
     }
@@ -672,8 +680,16 @@ impl PyAudioProcessor {
             self.processor.get_jitter_dropped_samples(),
         )?;
         diagnostics.set_item(
+            "output_retime_adjustment_count",
+            self.processor.get_output_retime_adjustment_count(),
+        )?;
+        diagnostics.set_item(
+            "output_recovery_event_count",
+            self.processor.get_output_recovery_event_count(),
+        )?;
+        diagnostics.set_item(
             "output_recovery_count",
-            self.processor.get_output_recovery_count(),
+            self.processor.get_output_recovery_event_count(),
         )?;
         diagnostics.set_item(
             "dsp_idle_wakeup_count",

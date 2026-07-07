@@ -232,6 +232,8 @@ class _MeterProcessor:
             "stream_restart_count": 2,
             "output_underrun_total": 3,
             "output_underrun_streak": 0,
+            "output_retime_adjustment_count": 606,
+            "output_recovery_event_count": 4,
             "output_recovery_count": 4,
             "output_short_write_dropped_samples": 0,
             "rt_buffer_overflow_count": 8,
@@ -442,6 +444,8 @@ def test_main_window_diagnostics_include_new_metrics():
         "stream_restart_count": 2,
         "output_underrun_total": 3,
         "output_underrun_streak": 2,
+        "output_retime_adjustment_count": 606,
+        "output_recovery_event_count": 4,
         "output_recovery_count": 4,
         "output_short_write_dropped_samples": 11,
         "rt_buffer_overflow_count": 8,
@@ -644,8 +648,9 @@ def test_update_diagnostics_surfaces_output_recovery_and_reuses_diagnostics(qapp
     MainWindow._update_diagnostics(window)
 
     assert window.processor.diagnostics_calls == 1
-    assert "ORC:4" in window.recovery_diag_label.text
+    assert "ORE:4" in window.recovery_diag_label.text
     assert "R:2" in window.recovery_diag_label.text
+    assert "R:4" not in window.dropped_label.text
     assert "RTO:8" in window.dropped_label.text
     assert "ICE:9" in window.dropped_label.text
     assert "OCE:10" in window.dropped_label.text
@@ -662,7 +667,9 @@ def test_stale_output_underrun_and_recovery_totals_do_not_warn():
         "stream_restart_count": 0,
         "output_underrun_total": 4,
         "output_underrun_streak": 0,
-        "output_recovery_count": 606,
+        "output_retime_adjustment_count": 606,
+        "output_recovery_event_count": 0,
+        "output_recovery_count": 0,
         "output_short_write_dropped_samples": 0,
         "rt_buffer_overflow_count": 0,
         "input_callback_error_count": 0,
@@ -693,7 +700,7 @@ def test_stale_output_underrun_and_recovery_totals_do_not_warn():
     )
 
     assert "U:4" in window.dropped_label.text
-    assert "R:606" in window.dropped_label.text
+    assert "R:606" not in window.dropped_label.text
     assert window.dropped_label.state == "ok"
     assert window.recovery_diag_label.state == "ok"
 
@@ -707,6 +714,8 @@ def test_new_output_underrun_total_warns_once():
         "stream_restart_count": 0,
         "output_underrun_total": 5,
         "output_underrun_streak": 0,
+        "output_retime_adjustment_count": 0,
+        "output_recovery_event_count": 0,
         "output_recovery_count": 0,
         "output_short_write_dropped_samples": 0,
         "rt_buffer_overflow_count": 0,

@@ -1,6 +1,7 @@
 struct OutputWriteCounters<'a> {
     jitter_dropped_samples: &'a AtomicU64,
-    output_recovery_count: &'a AtomicU64,
+    output_retime_adjustment_count: &'a AtomicU64,
+    output_recovery_event_count: &'a AtomicU64,
     output_short_write_dropped_samples: &'a AtomicU64,
     rt_buffer_overflow_count: &'a AtomicU64,
     rt_error_code: &'a AtomicU32,
@@ -139,7 +140,7 @@ impl<
                     .fetch_add(delta as u64, Ordering::Relaxed);
             }
             counters
-                .output_recovery_count
+                .output_retime_adjustment_count
                 .fetch_add(1, Ordering::Relaxed);
         }
         adjusted_slice
@@ -214,7 +215,7 @@ impl<
                 .output_short_write_dropped_samples
                 .fetch_add(dropped as u64, Ordering::Relaxed);
             counters
-                .output_recovery_count
+                .output_recovery_event_count
                 .fetch_add(1, Ordering::Relaxed);
             discontinuity_fade_remaining.set(discontinuity_fade_samples);
             pending_slice = &pending_slice[..free];
@@ -236,7 +237,7 @@ impl<
                 .output_short_write_dropped_samples
                 .fetch_add(dropped as u64, Ordering::Relaxed);
             counters
-                .output_recovery_count
+                .output_recovery_event_count
                 .fetch_add(1, Ordering::Relaxed);
             discontinuity_fade_remaining.set(discontinuity_fade_samples);
         }

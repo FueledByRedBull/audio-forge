@@ -328,7 +328,8 @@ class MainWindow(QMainWindow):
 
         self.dropped_label = QLabel("Drops: --")
         self.dropped_label.setToolTip(
-            "Dropped samples and related runtime counters.\nRight-click to reset dropped samples."
+            "Dropped samples and warning-signaling runtime counters.\n"
+            "Right-click to reset dropped samples."
         )
         self.dropped_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.dropped_label.customContextMenuRequested.connect(self._on_dropped_context_menu)
@@ -339,7 +340,10 @@ class MainWindow(QMainWindow):
         health_layout.addWidget(self.backend_diag_label)
 
         self.recovery_diag_label = QLabel("Recovery: --")
-        self.recovery_diag_label.setToolTip("Recent stream restart and recovery status.")
+        self.recovery_diag_label.setToolTip(
+            "Stream restarts and true output recovery events.\n"
+            "Normal drift-retime adjustments are informational and do not warn."
+        )
         health_layout.addWidget(self.recovery_diag_label)
         health_layout.addStretch()
         control_stack.addLayout(health_layout)
@@ -1526,7 +1530,13 @@ class MainWindow(QMainWindow):
         )
         new_underruns_observed = underruns > previous_underruns
         self._last_output_underrun_total = underruns
-        recoveries = diagnostics.get("output_recovery_count", 0)
+        output_recovery_events = int(
+            diagnostics.get(
+                "output_recovery_event_count",
+                diagnostics.get("output_recovery_count", 0),
+            )
+            or 0
+        )
         output_short_write_dropped = int(
             diagnostics.get("output_short_write_dropped_samples", 0) or 0
         )
@@ -1538,7 +1548,6 @@ class MainWindow(QMainWindow):
         dropped_bits = [
             f"Drops: {dropped}",
             f"U:{underruns}",
-            f"R:{recoveries}",
             f"L:{lock_contention}",
             f"NF:{non_finite}",
             f"RS:{restart_count}",
@@ -1601,7 +1610,7 @@ class MainWindow(QMainWindow):
             backend_failed = diagnostics.get("noise_backend_failed", False)
             backend_error = diagnostics.get("noise_backend_error")
             restart_count = diagnostics.get("stream_restart_count", 0)
-            output_recovery_count = diagnostics.get("output_recovery_count", 0)
+            output_recovery_count = output_recovery_events
             non_finite = diagnostics.get("suppressor_non_finite_count", 0)
             suppressed = diagnostics.get("recovery_suppressed", False)
 
@@ -1631,7 +1640,7 @@ class MainWindow(QMainWindow):
             )
 
             recovery_bits = [f"R:{restart_count}"]
-            recovery_bits.append(f"ORC:{output_recovery_count}")
+            recovery_bits.append(f"ORE:{output_recovery_count}")
             if suppressed:
                 recovery_bits.append("SUPP")
             reason = diagnostics.get("last_restart_reason")
@@ -1640,7 +1649,9 @@ class MainWindow(QMainWindow):
             self._set_health_chip(
                 self.recovery_diag_label,
                 f"Recovery: {' '.join(recovery_bits)}",
-                "warn" if restart_count or reason else ("info" if suppressed else "ok"),
+                "warn"
+                if restart_count or output_recovery_count or reason
+                else ("info" if suppressed else "ok"),
             )
         except Exception:
             logger.debug("Diagnostic label update failed", exc_info=True)

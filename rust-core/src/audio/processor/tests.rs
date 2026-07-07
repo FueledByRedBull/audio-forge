@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn test_start_publishes_processing_thread_before_starting_streams() {
-        let source = include_str!("../processor.rs");
+        let source = include_str!("dsp_loop.rs");
         let start_fn = source_between(source, "    pub fn start(", "    /// Stop audio processing");
         let process_thread_published = start_fn
             .find("self.process_thread = Some(handle);")
@@ -511,17 +511,22 @@ mod tests {
     }
 
     fn output_writer_counters<'a>(
-        jitter_dropped_samples: &'a AtomicU64,
-        output_recovery_count: &'a AtomicU64,
+        output_counts: (&'a AtomicU64, &'a AtomicU64, &'a AtomicU64),
         output_short_write_dropped_samples: &'a AtomicU64,
         rt_buffer_overflow_count: &'a AtomicU64,
         rt_error_code: &'a AtomicU32,
         output_buffer_len: &'a AtomicU32,
         last_output_write_time: &'a AtomicU64,
     ) -> OutputWriteCounters<'a> {
+        let (
+            jitter_dropped_samples,
+            output_retime_adjustment_count,
+            output_recovery_event_count,
+        ) = output_counts;
         OutputWriteCounters {
             jitter_dropped_samples,
-            output_recovery_count,
+            output_retime_adjustment_count,
+            output_recovery_event_count,
             output_short_write_dropped_samples,
             rt_buffer_overflow_count,
             rt_error_code,
@@ -542,7 +547,8 @@ mod tests {
         let limiter_enabled = AtomicBool::new(true);
         let output_ceiling_linear = Cell::new(1.0_f32);
         let jitter_dropped_samples = AtomicU64::new(0);
-        let output_recovery_count = AtomicU64::new(0);
+        let output_retime_adjustment_count = AtomicU64::new(0);
+        let output_recovery_event_count = AtomicU64::new(0);
         let output_short_write_dropped_samples = AtomicU64::new(0);
         let rt_buffer_overflow_count = AtomicU64::new(0);
         let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
@@ -559,8 +565,11 @@ mod tests {
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
-                &jitter_dropped_samples,
-                &output_recovery_count,
+                (
+                    &jitter_dropped_samples,
+                    &output_retime_adjustment_count,
+                    &output_recovery_event_count,
+                ),
                 &output_short_write_dropped_samples,
                 &rt_buffer_overflow_count,
                 &rt_error_code,
@@ -588,7 +597,8 @@ mod tests {
         let limiter_enabled = AtomicBool::new(true);
         let output_ceiling_linear = Cell::new(1.0_f32);
         let jitter_dropped_samples = AtomicU64::new(0);
-        let output_recovery_count = AtomicU64::new(0);
+        let output_retime_adjustment_count = AtomicU64::new(0);
+        let output_recovery_event_count = AtomicU64::new(0);
         let output_short_write_dropped_samples = AtomicU64::new(0);
         let rt_buffer_overflow_count = AtomicU64::new(0);
         let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
@@ -605,8 +615,11 @@ mod tests {
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
-                &jitter_dropped_samples,
-                &output_recovery_count,
+                (
+                    &jitter_dropped_samples,
+                    &output_retime_adjustment_count,
+                    &output_recovery_event_count,
+                ),
                 &output_short_write_dropped_samples,
                 &rt_buffer_overflow_count,
                 &rt_error_code,
@@ -622,7 +635,8 @@ mod tests {
             output_short_write_dropped_samples.load(Ordering::Relaxed),
             3
         );
-        assert_eq!(output_recovery_count.load(Ordering::Relaxed), 1);
+        assert_eq!(output_retime_adjustment_count.load(Ordering::Relaxed), 0);
+        assert_eq!(output_recovery_event_count.load(Ordering::Relaxed), 1);
         assert_eq!(fade_remaining.get(), 4);
         assert_eq!(output_buffer_len.load(Ordering::Relaxed), 4);
 
@@ -644,7 +658,8 @@ mod tests {
         let limiter_enabled = AtomicBool::new(false);
         let output_ceiling_linear = Cell::new(1.0_f32);
         let expand_jitter_dropped_samples = AtomicU64::new(0);
-        let expand_output_recovery_count = AtomicU64::new(0);
+        let expand_output_retime_adjustment_count = AtomicU64::new(0);
+        let expand_output_recovery_event_count = AtomicU64::new(0);
         let expand_output_short_write_dropped_samples = AtomicU64::new(0);
         let expand_rt_buffer_overflow_count = AtomicU64::new(0);
         let expand_rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
@@ -660,8 +675,11 @@ mod tests {
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
-                &expand_jitter_dropped_samples,
-                &expand_output_recovery_count,
+                (
+                    &expand_jitter_dropped_samples,
+                    &expand_output_retime_adjustment_count,
+                    &expand_output_recovery_event_count,
+                ),
                 &expand_output_short_write_dropped_samples,
                 &expand_rt_buffer_overflow_count,
                 &expand_rt_error_code,
@@ -675,7 +693,14 @@ mod tests {
         let mut expanded = vec![0.0_f32; 512];
         let expanded_len = expand_consumer.read(&mut expanded);
         assert!(expanded_len > input.len());
-        assert_eq!(expand_output_recovery_count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            expand_output_retime_adjustment_count.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            expand_output_recovery_event_count.load(Ordering::Relaxed),
+            0
+        );
 
         let compress_rb = AudioRingBuffer::new(1024);
         let (mut compress_producer, mut compress_consumer) = compress_rb.split();
@@ -686,7 +711,8 @@ mod tests {
         let mut compress_drift_error_ema = 10_000.0_f32;
         let compress_fade_remaining = Cell::new(0usize);
         let compress_jitter_dropped_samples = AtomicU64::new(0);
-        let compress_output_recovery_count = AtomicU64::new(0);
+        let compress_output_retime_adjustment_count = AtomicU64::new(0);
+        let compress_output_recovery_event_count = AtomicU64::new(0);
         let compress_output_short_write_dropped_samples = AtomicU64::new(0);
         let compress_rt_buffer_overflow_count = AtomicU64::new(0);
         let compress_rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
@@ -702,8 +728,11 @@ mod tests {
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
-                &compress_jitter_dropped_samples,
-                &compress_output_recovery_count,
+                (
+                    &compress_jitter_dropped_samples,
+                    &compress_output_retime_adjustment_count,
+                    &compress_output_recovery_event_count,
+                ),
                 &compress_output_short_write_dropped_samples,
                 &compress_rt_buffer_overflow_count,
                 &compress_rt_error_code,
@@ -719,7 +748,14 @@ mod tests {
         assert!(compressed_len < input.len() + 256);
         assert!(compressed_len > 256);
         assert!(compress_jitter_dropped_samples.load(Ordering::Relaxed) > 0);
-        assert_eq!(compress_output_recovery_count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            compress_output_retime_adjustment_count.load(Ordering::Relaxed),
+            1
+        );
+        assert_eq!(
+            compress_output_recovery_event_count.load(Ordering::Relaxed),
+            0
+        );
     }
 
     #[test]
@@ -735,7 +771,8 @@ mod tests {
         let limiter_enabled = AtomicBool::new(false);
         let output_ceiling_linear = Cell::new(1.0_f32);
         let jitter_dropped_samples = AtomicU64::new(0);
-        let output_recovery_count = AtomicU64::new(0);
+        let output_retime_adjustment_count = AtomicU64::new(0);
+        let output_recovery_event_count = AtomicU64::new(0);
         let output_short_write_dropped_samples = AtomicU64::new(0);
         let rt_buffer_overflow_count = AtomicU64::new(0);
         let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
@@ -751,8 +788,11 @@ mod tests {
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
-                &jitter_dropped_samples,
-                &output_recovery_count,
+                (
+                    &jitter_dropped_samples,
+                    &output_retime_adjustment_count,
+                    &output_recovery_event_count,
+                ),
                 &output_short_write_dropped_samples,
                 &rt_buffer_overflow_count,
                 &rt_error_code,
@@ -789,7 +829,8 @@ mod tests {
         let limiter_enabled = AtomicBool::new(true);
         let output_ceiling_linear = Cell::new(0.5_f32);
         let jitter_dropped_samples = AtomicU64::new(0);
-        let output_recovery_count = AtomicU64::new(0);
+        let output_retime_adjustment_count = AtomicU64::new(0);
+        let output_recovery_event_count = AtomicU64::new(0);
         let output_short_write_dropped_samples = AtomicU64::new(0);
         let rt_buffer_overflow_count = AtomicU64::new(0);
         let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
@@ -805,8 +846,11 @@ mod tests {
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
-                &jitter_dropped_samples,
-                &output_recovery_count,
+                (
+                    &jitter_dropped_samples,
+                    &output_retime_adjustment_count,
+                    &output_recovery_event_count,
+                ),
                 &output_short_write_dropped_samples,
                 &rt_buffer_overflow_count,
                 &rt_error_code,
@@ -931,6 +975,24 @@ mod tests {
                 );
             });
         }
+    }
+
+    #[test]
+    fn test_offline_block_processor_processes_without_live_stream_state() {
+        let mut processor = OfflineDspBlockProcessor::new(TARGET_SAMPLE_RATE as f64);
+        processor.set_deesser_enabled(false);
+        processor.set_eq_enabled(false);
+        processor.set_compressor_enabled(false);
+        processor.set_limiter_enabled(false);
+
+        let mut input = [0.0_f32; 8];
+        fill_probe_block(&mut input);
+        let mut output = FixedAudioBuffer::<f32, 4>::new();
+
+        processor.process_block(&mut input, &mut output);
+
+        assert_eq!(output.len(), 4);
+        assert_eq!(output.as_slice(), &input[..4]);
     }
 
     #[test]
@@ -1279,8 +1341,8 @@ mod tests {
     fn test_marked_rt_regions_reject_blocking_or_allocating_apis() {
         let files = [
             (
-                "processor.rs",
-                include_str!("../processor.rs"),
+                "processor/dsp_loop.rs",
+                include_str!("dsp_loop.rs"),
                 &["dsp_processing_loop"][..],
             ),
             (
@@ -1305,19 +1367,19 @@ mod tests {
 
     #[test]
     fn test_downstream_rt_macro_rejects_blocking_or_allocating_apis() {
-        let source = include_str!("../processor.rs");
+        let source = include_str!("dsp_loop.rs");
         let region = source_between(
             source,
             "macro_rules! apply_downstream_chain_rt",
             "// Time-based EMA smoothing",
         );
 
-        assert_no_forbidden_rt_patterns("processor.rs:apply_downstream_chain_rt", region);
+        assert_no_forbidden_rt_patterns("processor/dsp_loop.rs:apply_downstream_chain_rt", region);
     }
 
     #[test]
     fn test_dsp_loop_uses_caller_provided_suppressor_output_buffers() {
-        let source = include_str!("../processor.rs");
+        let source = include_str!("dsp_loop.rs");
         let region = marked_region(source, "dsp_processing_loop");
         for pattern in ["pop_samples(", "pop_all_samples(", "drain_pending_input("] {
             assert!(
@@ -1330,7 +1392,7 @@ mod tests {
 
     #[test]
     fn test_dsp_loop_diagnoses_suppressor_short_writes() {
-        let source = include_str!("../processor.rs");
+        let source = include_str!("dsp_loop.rs");
         let region = marked_region(source, "dsp_processing_loop");
 
         assert!(region.contains("let accepted = suppressor_rt.push_samples(buffer);"));
@@ -1340,7 +1402,7 @@ mod tests {
 
     #[test]
     fn test_dsp_loop_uses_swap_dirty_flags_to_preserve_racing_updates() {
-        let source = include_str!("../processor.rs");
+        let source = include_str!("dsp_loop.rs");
 
         for dirty_flag in [
             "gate_dirty",
@@ -1363,7 +1425,7 @@ mod tests {
 
     #[test]
     fn test_dsp_loop_rearms_dirty_flags_on_unstable_snapshots() {
-        let source = include_str!("../processor.rs");
+        let source = include_str!("dsp_loop.rs");
 
         for dirty_flag in [
             "gate_dirty",
@@ -1403,7 +1465,7 @@ mod tests {
 
     #[test]
     fn test_dsp_loop_defers_suppressor_drops_out_of_rt_region() {
-        let source = include_str!("../processor.rs");
+        let source = include_str!("dsp_loop.rs");
         let region = marked_region(source, "dsp_processing_loop");
 
         assert!(region.contains("retired_suppressor_tx"));
@@ -1415,7 +1477,7 @@ mod tests {
     #[cfg(feature = "vad")]
     #[test]
     fn test_dsp_loop_diagnoses_vad_worker_short_writes() {
-        let source = include_str!("../processor.rs");
+        let source = include_str!("dsp_loop.rs");
         let region = marked_region(source, "dsp_processing_loop");
 
         assert!(region.contains("let written = vad_worker_producer.write(buffer);"));
@@ -1425,13 +1487,17 @@ mod tests {
     }
 
     #[test]
-    fn test_runtime_diagnostics_include_output_recovery_count() {
+    fn test_runtime_diagnostics_split_retime_adjustments_from_recovery_events() {
         let wrapper = PyAudioProcessor {
             processor: AudioProcessor::new(),
         };
         wrapper
             .processor
-            .output_recovery_count
+            .output_retime_adjustment_count
+            .store(11, Ordering::Relaxed);
+        wrapper
+            .processor
+            .output_recovery_event_count
             .store(7, Ordering::Relaxed);
         wrapper
             .processor
@@ -1443,6 +1509,24 @@ mod tests {
             let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
             let diagnostics = diagnostics.bind(py);
             let diagnostics = diagnostics.downcast::<PyDict>().unwrap();
+            assert_eq!(
+                diagnostics
+                    .get_item("output_retime_adjustment_count")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                11
+            );
+            assert_eq!(
+                diagnostics
+                    .get_item("output_recovery_event_count")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<u64>()
+                    .unwrap(),
+                7
+            );
             assert_eq!(
                 diagnostics
                     .get_item("output_recovery_count")

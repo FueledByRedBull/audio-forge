@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.8.5 - 2026-07-07
+
+- Added input-channel intelligence with selectable left/right/average/max-RMS/phase-safe mono mixdown modes and negative-correlation warnings for phase-cancellation-prone stereo inputs.
+- Added safer output protection with careful limiter headroom, output clip diagnostics, and true-peak-style warning telemetry surfaced in the health UI.
+- Improved gate/VAD behavior with smoother gate decisions, chatter detection, and compact health-panel warnings for rapid open/close transitions.
+- Added a compact diagnostics health panel for input level, output clipping/true peak, gate chatter, suppressor backend state, callback age, and underruns.
+- Improved voice dynamics with compressor sidechain high-pass detection, de-esser detector confidence, and RNNoise model-input soft clipping for hot input.
+- Made Auto-EQ more controllable with explicit adaptive/static target modes, smoothing strength controls, and regularized narrow-residual correction diagnostics.
+- Bumped the project metadata, docs, release notes, and packaging version to `1.8.5`.
+
 ## v1.8.4 - 2026-06-29
 
 - Hardened config and startup recovery against valid-but-wrong persisted JSON, malformed `last_preset` values, and stale recovery cooldown timers.

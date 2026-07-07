@@ -25,4 +25,4 @@
 ## Artifact
 
 - `AudioForge-v1.8.5-win64-ultra.7z`
-- SHA-256: published as `AudioForge-v1.8.5-win64-ultra.7z.sha256`
+- SHA-256: `5E2CF3DF4EE204D09D6624D6FE69C7036B9E8554EF57C53AE416A78C1B249752`

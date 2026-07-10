@@ -10,6 +10,7 @@
 - Upgraded Auto Voice Setup with VAD-masked BS.1770 short-term loudness, loudness range, robust speech-band features, labelled fixtures, offline chain validation, and uncertainty-aware apply behavior.
 - Evaluated a DPSS multi-taper, multi-resolution spectrum estimator across speakers and microphone positions; retained Welch/Hamming because the fixture improvement did not meet the 0.75 dB materiality threshold.
 - Added seeded concurrent control/DSP stress tests for atomic snapshots, dirty-flag rearming, suppressor model switching, resets, and finite bounded output in debug and release modes.
+- Serialized CPAL/WASAPI input and output device enumeration to prevent native access violations during concurrent device-list refreshes.
 - Completed the PyO3 Python typing surface and resolved all Pyright errors.
 - Hardened DeepFilter loading so only bootstrap-registered canonical assets are trusted by default; external DLL/model paths require `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` and then take explicit precedence.
 - Hardened CI and release workflows with SHA-pinned actions, least-privilege permissions, hash-locked Python dependencies, Dependabot updates, pip-audit, Semgrep SARIF, and RustSec auditing.

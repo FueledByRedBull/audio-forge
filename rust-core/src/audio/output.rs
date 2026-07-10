@@ -574,6 +574,7 @@ fn find_48khz_config(
 
 /// List available audio output devices
 pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
+    let _enumeration_guard = super::lock_device_enumeration();
     let host = cpal::default_host();
     let mut devices = Vec::new();
 

@@ -27,6 +27,7 @@ impl DeviceInfo {
 /// List all available input (microphone) devices
 #[pyfunction]
 pub fn list_input_devices() -> PyResult<Vec<DeviceInfo>> {
+    let _enumeration_guard = super::lock_device_enumeration();
     let host = cpal::default_host();
     let default_device = host.default_input_device();
     let default_name = default_device.as_ref().and_then(|d| d.name().ok());
@@ -48,6 +49,7 @@ pub fn list_input_devices() -> PyResult<Vec<DeviceInfo>> {
 /// List all available output devices
 #[pyfunction]
 pub fn list_output_devices() -> PyResult<Vec<DeviceInfo>> {
+    let _enumeration_guard = super::lock_device_enumeration();
     let host = cpal::default_host();
     let default_device = host.default_output_device();
     let default_name = default_device.as_ref().and_then(|d| d.name().ok());

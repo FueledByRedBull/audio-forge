@@ -1038,6 +1038,7 @@ impl AudioInput {
 
 /// List available audio input devices
 pub fn list_input_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
+    let _enumeration_guard = super::lock_device_enumeration();
     let host = cpal::default_host();
     let mut devices = Vec::new();
 

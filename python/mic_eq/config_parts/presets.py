@@ -133,7 +133,7 @@ class Preset:
                     data["deesser"].setdefault("auto_enabled", True)
                     data["deesser"].setdefault("auto_amount", 0.5)
                     data["deesser"].setdefault("low_cut_hz", 4000.0)
-                    data["deesser"].setdefault("high_cut_hz", 9000.0)
+                    data["deesser"].setdefault("high_cut_hz", 11000.0)
                     data["deesser"].setdefault("threshold_db", -28.0)
                     data["deesser"].setdefault("ratio", 4.0)
                     data["deesser"].setdefault("attack_ms", 2.0)
@@ -155,6 +155,7 @@ class Preset:
                 "1.8.3",
                 "1.8.4",
                 "1.8.5",
+                "1.8.6",
             ):
                 if version_tuple < _version_tuple(version):
                     data["version"] = version
@@ -361,7 +362,7 @@ class Preset:
                 "deesser",
             )
             high_cut_hz = _validate_range(
-                deesser_data.get("high_cut_hz", 9000.0),
+                deesser_data.get("high_cut_hz", 11000.0),
                 *deesser_ranges["high_cut_hz"],
                 "high_cut_hz",
                 "deesser",

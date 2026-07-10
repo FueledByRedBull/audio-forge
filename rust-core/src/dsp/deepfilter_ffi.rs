@@ -15,19 +15,13 @@
 //! - df_set_post_filter_beta(*mut DFState, f32)
 //!
 //! RUNTIME REQUIREMENTS (Optional):
-//! If DeepFilterNet C library is available, it will be loaded at runtime:
-//! - Environment variable: DEEPFILTER_LIB_PATH (explicit library file path)
-//! - Executable-local trusted paths:
-//!   - <exe-dir>/{df.dll|libdf.so|libdf.dylib}
-//!   - <exe-dir>/lib/{...}
-//!   - <exe-dir>/libs/{...}
+//! The application bootstrap passes canonical bundled library and model paths
+//! directly to Rust. Ambient `DEEPFILTER_*` environment paths are ignored unless
+//! `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` explicitly opts into external assets.
 //!
 //! MODEL FILES (Optional):
-//! DeepFilterNet requires a model tar.gz file. The library will look for:
-//! - Environment variable: DEEPFILTER_MODEL_PATH
-//! - Default locations:
-//!   - Windows: ./models/DeepFilterNet3_ll_onnx.tar.gz
-//!   - Linux/macOS: ~/.local/share/deepfilter/DeepFilterNet3_ll_onnx.tar.gz
+//! DeepFilterNet requires a model tar.gz file supplied by the application
+//! bootstrap, or by `DEEPFILTER_MODEL_PATH` under the external-assets opt-in.
 //!
 //! If the library or model is not found, the processor will use passthrough mode.
 //!
@@ -40,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::{Mutex, OnceLock};
 use std::vec::Vec;
 
 /// DeepFilterNet frame size (same as RNNoise: 10ms at 48kHz)
@@ -53,6 +48,69 @@ fn deepfilter_runtime_enabled() -> bool {
             normalized == "1" || normalized == "true" || normalized == "yes"
         })
         .unwrap_or(false)
+}
+
+fn external_deepfilter_paths_allowed() -> bool {
+    env::var("AUDIOFORGE_ALLOW_EXTERNAL_DF")
+        .map(|value| {
+            let normalized = value.trim().to_ascii_lowercase();
+            normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on"
+        })
+        .unwrap_or(false)
+}
+
+#[derive(Clone, Debug, Default)]
+struct AppOwnedDeepFilterPaths {
+    library: Option<PathBuf>,
+    model: Option<PathBuf>,
+}
+
+fn app_owned_paths() -> &'static Mutex<AppOwnedDeepFilterPaths> {
+    static PATHS: OnceLock<Mutex<AppOwnedDeepFilterPaths>> = OnceLock::new();
+    PATHS.get_or_init(|| Mutex::new(AppOwnedDeepFilterPaths::default()))
+}
+
+fn canonical_app_owned_path(path: Option<&str>, kind: &str) -> Result<Option<PathBuf>, String> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let canonical = Path::new(path)
+        .canonicalize()
+        .map_err(|error| format!("Invalid app-owned DeepFilter {kind} path: {error}"))?;
+    if !canonical.exists() {
+        return Err(format!(
+            "App-owned DeepFilter {kind} path does not exist: {}",
+            canonical.display()
+        ));
+    }
+    Ok(Some(canonical))
+}
+
+/// Configure bundled DeepFilter assets discovered by the application bootstrap.
+///
+/// These paths are intentionally separate from the external override environment
+/// variables. Ambient `DEEPFILTER_*` paths are ignored unless the caller also sets
+/// `AUDIOFORGE_ALLOW_EXTERNAL_DF=1`.
+pub fn configure_app_owned_paths(
+    library_path: Option<&str>,
+    model_path: Option<&str>,
+) -> Result<(), String> {
+    let configured = AppOwnedDeepFilterPaths {
+        library: canonical_app_owned_path(library_path, "library")?,
+        model: canonical_app_owned_path(model_path, "model")?,
+    };
+    let mut paths = app_owned_paths()
+        .lock()
+        .map_err(|_| "App-owned DeepFilter path state is unavailable".to_string())?;
+    *paths = configured;
+    Ok(())
+}
+
+fn configured_app_owned_paths() -> AppOwnedDeepFilterPaths {
+    app_owned_paths()
+        .lock()
+        .map(|paths| paths.clone())
+        .unwrap_or_default()
 }
 
 // ============================================================================
@@ -129,48 +187,58 @@ impl DeepFilterModel {
     }
 }
 
-/// Find DeepFilterNet model path
-///
-/// Search order:
-/// 1. Environment variable DEEPFILTER_MODEL_PATH
-/// 2. ./models/{model_filename}
-/// 3. ../models/{model_filename}
-/// 4. ~/.local/share/deepfilter/{model_filename} (Linux/macOS)
-fn find_model_path(model: DeepFilterModel) -> Option<PathBuf> {
+/// Resolve a DeepFilterNet model from app-owned paths or an opted-in override.
+fn find_model_path(
+    model: DeepFilterModel,
+    app_paths: &AppOwnedDeepFilterPaths,
+    allow_external: bool,
+) -> Option<PathBuf> {
     let filename = model.filename();
 
-    // 1. Check environment variable
-    if let Ok(path) = env::var("DEEPFILTER_MODEL_PATH") {
-        let path_buf = PathBuf::from(&path);
-        if path_buf.is_file() {
-            return Some(path_buf);
+    // 1. Honor an explicit external override only after the separate opt-in.
+    if allow_external {
+        if let Ok(path) = env::var("DEEPFILTER_MODEL_PATH") {
+            let path_buf = PathBuf::from(&path);
+            if path_buf.is_file() {
+                return Some(path_buf);
+            }
+            let candidate = path_buf.join(filename);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
-        let candidate = path_buf.join(filename);
+    }
+
+    // 2. Otherwise prefer the app-owned bundled model supplied by bootstrap.
+    if let Some(path) = app_paths.model.as_ref() {
+        if path.is_file() {
+            return Some(path.clone());
+        }
+        let candidate = path.join(filename);
         if candidate.is_file() {
             return Some(candidate);
         }
     }
 
-    // 2. Check ./models/ directory
-    let local_model = PathBuf::from(format!("models/{}", filename));
-    if local_model.exists() {
-        return Some(local_model);
+    // 3. Dev convenience is anchored to the compiled manifest, never the CWD.
+    #[cfg(debug_assertions)]
+    if let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR")).parent() {
+        let candidate = root.join("models").join(filename);
+        if candidate.is_file() {
+            return candidate.canonicalize().ok();
+        }
     }
 
-    // 3. Check ../models/ directory (for dev builds)
-    let parent_model = PathBuf::from(format!("../models/{}", filename));
-    if parent_model.exists() {
-        return Some(parent_model);
-    }
-
-    // 4. Check user data directory (Linux/macOS style)
+    // 4. User data is an external location and therefore requires opt-in.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
-        if let Ok(home) = env::var("HOME") {
-            let user_model =
-                PathBuf::from(format!("{}/.local/share/deepfilter/{}", home, filename));
-            if user_model.exists() {
-                return Some(user_model);
+        if allow_external {
+            if let Ok(home) = env::var("HOME") {
+                let user_model =
+                    PathBuf::from(format!("{}/.local/share/deepfilter/{}", home, filename));
+                if user_model.exists() {
+                    return Some(user_model);
+                }
             }
         }
     }
@@ -187,21 +255,23 @@ impl DeepFilterLib {
         }
     }
 
-    fn trusted_library_candidates(lib_name: &str) -> Vec<PathBuf> {
+    fn trusted_library_candidates(
+        _lib_name: &str,
+        app_paths: &AppOwnedDeepFilterPaths,
+        allow_external: bool,
+    ) -> Vec<PathBuf> {
         let mut candidates = Vec::new();
 
-        // Highest-priority explicit override.
-        if let Ok(lib_path) = env::var("DEEPFILTER_LIB_PATH") {
-            Self::add_canonical_file_path(&mut candidates, PathBuf::from(lib_path));
+        // External override is lower trust and requires an explicit opt-in.
+        if allow_external {
+            if let Ok(lib_path) = env::var("DEEPFILTER_LIB_PATH") {
+                Self::add_canonical_file_path(&mut candidates, PathBuf::from(lib_path));
+            }
         }
 
-        // Executable-local paths avoid DLL search-order hijacking from PATH/CWD.
-        if let Ok(exe_path) = env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                Self::add_canonical_file_path(&mut candidates, exe_dir.join(lib_name));
-                Self::add_canonical_file_path(&mut candidates, exe_dir.join("lib").join(lib_name));
-                Self::add_canonical_file_path(&mut candidates, exe_dir.join("libs").join(lib_name));
-            }
+        // App-owned bundled path supplied by the bootstrap is the safe default.
+        if let Some(lib_path) = app_paths.library.as_ref() {
+            Self::add_canonical_file_path(&mut candidates, lib_path.clone());
         }
 
         // Dev convenience in debug builds: repo-local copy adjacent to rust-core.
@@ -209,7 +279,7 @@ impl DeepFilterLib {
         {
             let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent();
             if let Some(root) = repo_root {
-                Self::add_canonical_file_path(&mut candidates, root.join(lib_name));
+                Self::add_canonical_file_path(&mut candidates, root.join(_lib_name));
             }
         }
 
@@ -270,7 +340,7 @@ impl DeepFilterLib {
     }
 
     /// Try to load the DeepFilterNet library from trusted explicit paths.
-    fn try_load() -> Result<Self, String> {
+    fn try_load(app_paths: &AppOwnedDeepFilterPaths, allow_external: bool) -> Result<Self, String> {
         // Library name varies by platform
         #[cfg(target_os = "windows")]
         let lib_name = "df.dll";
@@ -281,17 +351,20 @@ impl DeepFilterLib {
         #[cfg(target_os = "macos")]
         let lib_name = "libdf.dylib";
 
-        let candidates = Self::trusted_library_candidates(lib_name);
+        let candidates = Self::trusted_library_candidates(lib_name, app_paths, allow_external);
         if candidates.is_empty() {
             return Err(format!(
-                "No trusted DeepFilter library file found. Set DEEPFILTER_LIB_PATH \
-or place {} next to the executable (or in exe-dir/lib or exe-dir/libs).",
+                "No trusted DeepFilter library file found. Bundle {} with the app, or set \
+AUDIOFORGE_ALLOW_EXTERNAL_DF=1 together with DEEPFILTER_LIB_PATH.",
                 lib_name
             ));
         }
 
         let mut errors = Vec::new();
         for path in candidates {
+            // Canonical file candidates come only from bootstrap registration,
+            // opted-in external paths, or the compile-time dev root.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe {
                 match Self::load_symbols_from_path(&path) {
                     Ok(lib) => return Ok(lib),
@@ -344,11 +417,16 @@ impl DeepFilterFFI {
     /// # Safety
     /// This function calls unsafe FFI functions to create the DeepFilterNet instance.
     /// It validates the returned pointer and returns an error if creation failed.
-    fn new(lib: Arc<DeepFilterLib>, model: DeepFilterModel) -> Result<Self, String> {
+    fn new(
+        lib: Arc<DeepFilterLib>,
+        model: DeepFilterModel,
+        app_paths: &AppOwnedDeepFilterPaths,
+        allow_external: bool,
+    ) -> Result<Self, String> {
         // Find model path
-        let model_path = find_model_path(model)
+        let model_path = find_model_path(model, app_paths, allow_external)
             .ok_or_else(|| {
-                format!("DeepFilterNet model file not found. Place {} in ./models/ or set DEEPFILTER_MODEL_PATH", model.filename())
+                format!("DeepFilterNet model file not found. Bundle {} with the app, or opt in to an external DEEPFILTER_MODEL_PATH", model.filename())
             })?;
 
         // Convert path to C string
@@ -362,6 +440,9 @@ impl DeepFilterFFI {
         // Default attenuation limit: -80 dB (max suppression)
         let atten_lim = -80.0f32;
 
+        // The symbol signature was checked during loading; the model path is a
+        // live CString, and a null state is rejected before any further call.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             let df_create = lib.df_create;
             let ptr = df_create(model_path_cstr.as_ptr(), atten_lim, std::ptr::null());
@@ -420,7 +501,9 @@ impl DeepFilterFFI {
             return Err(DeepFilterProcessError::OutputSizeMismatch);
         }
 
-        // SAFETY: We've verified buffer sizes and the pointer is valid
+        // SAFETY: Buffer sizes match the backend frame size, the state is valid
+        // and exclusively borrowed, and the library remains alive in `_lib`.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             let input_ptr = input.as_mut_ptr();
             let output_ptr = output.as_mut_ptr();
@@ -443,6 +526,9 @@ impl DeepFilterFFI {
 
     /// Set attenuation limit (dB)
     pub fn set_atten_lim(&mut self, lim_db: f32) {
+        // SAFETY: `self.state` is non-null, exclusively borrowed, and `_lib`
+        // keeps the validated function pointer's library loaded.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             let df_set_atten_lim = self._lib.df_set_atten_lim;
             df_set_atten_lim(self.state_ptr(), lim_db);
@@ -451,6 +537,9 @@ impl DeepFilterFFI {
 
     /// Set post filter beta
     pub fn set_post_filter_beta(&mut self, beta: f32) {
+        // SAFETY: The state and function pointer have the same lifetime and the
+        // mutable borrow serializes access to the opaque C state.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             let df_set_post_filter_beta = self._lib.df_set_post_filter_beta;
             df_set_post_filter_beta(self.state_ptr(), beta);
@@ -460,6 +549,9 @@ impl DeepFilterFFI {
 
 impl Drop for DeepFilterFFI {
     fn drop(&mut self) {
+        // SAFETY: The non-null state was returned by `df_create`, is freed once,
+        // and the owning library handle is still alive during field drop.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             let df_free = self._lib.df_free;
             df_free(self.state.as_ptr());
@@ -512,11 +604,16 @@ impl DeepFilterProcessor {
             };
         }
 
+        // Snapshot bootstrap-owned paths before initialization. This happens
+        // outside the realtime processing loop.
+        let app_paths = configured_app_owned_paths();
+        let allow_external = external_deepfilter_paths_allowed();
+
         // Try to load library and initialize FFI
-        let (df, lib, load_error) = match DeepFilterLib::try_load() {
+        let (df, lib, load_error) = match DeepFilterLib::try_load(&app_paths, allow_external) {
             Ok(lib) => {
                 let lib_arc = Arc::new(lib);
-                match DeepFilterFFI::new(lib_arc.clone(), model) {
+                match DeepFilterFFI::new(lib_arc.clone(), model, &app_paths, allow_external) {
                     Ok(df) => {
                         let latency_str = match model {
                             DeepFilterModel::LowLatency => "~10ms",
@@ -552,7 +649,7 @@ impl DeepFilterProcessor {
                     e
                 );
                 eprintln!("NOTE: To use DeepFilterNet, set DEEPFILTER_LIB_PATH to an explicit library file path,");
-                eprintln!("      or place the library next to the executable (or exe-dir/lib, exe-dir/libs).");
+                eprintln!("      or let the application bootstrap register bundled assets.");
                 eprintln!("NOTE: Also ensure DeepFilterNet3 model file is available:");
                 eprintln!("  - Set DEEPFILTER_MODEL_PATH environment variable");
                 eprintln!("  - Or place in ./models/DeepFilterNet3_ll_onnx.tar.gz or DeepFilterNet3_onnx.tar.gz");

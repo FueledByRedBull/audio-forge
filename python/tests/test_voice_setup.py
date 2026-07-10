@@ -17,6 +17,8 @@ def _make_voice(
     *,
     seconds: float = 10.0,
     sibilant: bool = False,
+    level: float = 1.0,
+    noise_amplitude: float = 0.0025,
 ) -> np.ndarray:
     rng = np.random.default_rng(2400 if sibilant else 2401)
     t = np.arange(int(sample_rate * seconds), dtype=np.float64) / sample_rate
@@ -28,8 +30,8 @@ def _make_voice(
         + 0.05 * np.sin(2.0 * np.pi * 440.0 * t)
         + (0.035 if sibilant else 0.004) * np.sin(2.0 * np.pi * 6500.0 * t)
     )
-    noise = 0.0025 * rng.normal(size=t.size)
-    return (envelope * voiced + noise).astype(np.float32)
+    noise = noise_amplitude * rng.normal(size=t.size)
+    return (level * envelope * voiced + noise).astype(np.float32)
 
 
 def test_voice_setup_uses_vad_assisted_when_available():
@@ -63,3 +65,61 @@ def test_voice_setup_falls_back_without_vad_and_can_enable_deesser():
     assert result["gate_settings"]["auto_threshold_enabled"] is False
     assert result["deesser_settings"]["enabled"] is True
     assert result["deesser_settings"]["high_cut_hz"] > result["deesser_settings"]["low_cut_hz"]
+
+
+def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp():
+    sample_rate = 48_000
+    fixtures = [
+        (
+            "clean",
+            _make_noise(sample_rate, amplitude=0.0012),
+            _make_voice(sample_rate, seconds=5.0),
+            True,
+        ),
+        (
+            "sibilant",
+            _make_noise(sample_rate, amplitude=0.0015),
+            _make_voice(sample_rate, seconds=5.0, sibilant=True),
+            True,
+        ),
+        (
+            "weak_noisy",
+            _make_noise(sample_rate, amplitude=0.012),
+            _make_voice(
+                sample_rate,
+                seconds=5.0,
+                level=0.04,
+                noise_amplitude=0.012,
+            ),
+            False,
+        ),
+    ]
+
+    fixture_results = {}
+    for label, noise, speech, expected_apply in fixtures:
+        result = analyze_voice_setup(noise, speech, sample_rate, "broadcast")
+        fixture_results[label] = result
+        diagnostics = result["diagnostics"]
+
+        assert np.isfinite(diagnostics["short_term_lufs"]), label
+        assert diagnostics["loudness_range_db"] >= 0.0, label
+        assert diagnostics["vad_active_duration_s"] >= 0.0, label
+        assert set(diagnostics["robust_band_energy_db"]) == {
+            "low",
+            "body",
+            "presence",
+            "sibilance",
+        }
+        assert diagnostics["offline_validation"] is not None, label
+        assert isinstance(diagnostics["offline_validation_passed"], bool), label
+        assert result["compressor_settings"]["measured_short_term_lufs"] == diagnostics[
+            "short_term_lufs"
+        ]
+        assert diagnostics["apply_recommended"] is expected_apply, (
+            label,
+            diagnostics["uncertainty_reasons"],
+            diagnostics["setup_confidence"],
+        )
+
+    assert fixture_results["sibilant"]["deesser_settings"]["enabled"] is True
+    assert fixture_results["weak_noisy"]["diagnostics"]["weak_capture"] is True

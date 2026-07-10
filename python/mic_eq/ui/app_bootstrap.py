@@ -10,6 +10,7 @@ from typing import Type
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMainWindow
 
+from .. import configure_deepfilter_runtime_paths
 from ..app_logging import configure_app_logging
 
 
@@ -38,14 +39,8 @@ def _trusted_runtime_roots() -> list[Path]:
     return trusted_roots
 
 
-def _truthy_env(name: str) -> bool:
-    value = os.environ.get(name)
-    return value is not None and value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def configure_deepfilter_env() -> None:
-    """Enable local DeepFilter runtime when local assets are present."""
-    allow_external = _truthy_env("AUDIOFORGE_ALLOW_EXTERNAL_DF")
+    """Register canonical bundled assets without rewriting external overrides."""
 
     if os.name == "nt":
         lib_names = ["df.dll"]
@@ -77,12 +72,7 @@ def configure_deepfilter_env() -> None:
             break
 
     if lib_path and model_dir_with_model:
-        if allow_external:
-            os.environ.setdefault("DEEPFILTER_LIB_PATH", str(lib_path))
-            os.environ.setdefault("DEEPFILTER_MODEL_PATH", str(model_dir_with_model))
-        else:
-            os.environ["DEEPFILTER_LIB_PATH"] = str(lib_path)
-            os.environ["DEEPFILTER_MODEL_PATH"] = str(model_dir_with_model)
+        configure_deepfilter_runtime_paths(str(lib_path), str(model_dir_with_model))
         os.environ.setdefault("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
 
 

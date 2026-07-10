@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "mic_eq"
-version = "1.8.5"
+version = "1.8.6"
 description = "Low-latency microphone audio processor with noise suppression and equalization"
 requires-python = ">=3.10"
 classifiers = [
@@ -25,11 +25,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
+    "pytest>=9.0.3",
     "ruff>=0.4",
     "pyright>=1.1",
     "maturin>=1.4",
     "pyinstaller>=6.0",
+    "pip-audit>=2.10.1",
+    "pip-tools>=7.5.3",
+    "semgrep>=1.165.0",
+    "PyYAML>=6.0.3",
 ]
 
 [project.scripts]

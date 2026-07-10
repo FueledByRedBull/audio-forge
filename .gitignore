@@ -51,8 +51,13 @@ nosetests.xml
 coverage.xml
 *.cover
 *.py,cover
+*.profraw
+lcov.info
 .hypothesis/
 .pytest_cache/
+.pytest-tmp/
+.ruff_cache/
+.pyright/
 
 # Rust
 target/
@@ -104,6 +109,8 @@ test_output.txt
 target-local/
 rust-core/target-local/
 pytest-cache-files-*/
+static_analysis_semgrep_*/
+*.sarif
 nul
 *.bak
 *.cache

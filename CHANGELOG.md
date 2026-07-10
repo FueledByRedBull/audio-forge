@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.8.6 - 2026-07-10
+
+- Replaced interpolated peak estimation with a band-limited 4x true-peak detector validated against an independent reference oversampler, while keeping the limiter path allocation-free.
+- Upgraded phase-safe mono to stateful fractional-delay alignment and adaptive input cleanup to track drifting 49-61 Hz hum plus harmonics with smoothly retuned, single-topology filtering.
+- Made biquad automation duration sample-rate independent and benchmarked rapid parameter morphing in release mode.
+- Added SciPy golden vectors for VAD resampling at 48 kHz and 44.1 kHz, including adversarial high-frequency noise.
+- Made Python-only Auto-EQ headroom simulation explicitly advisory; authoritative safety decisions now require the native Rust chain simulator.
+- Upgraded Auto Voice Setup with VAD-masked BS.1770 short-term loudness, loudness range, robust speech-band features, labelled fixtures, offline chain validation, and uncertainty-aware apply behavior.
+- Evaluated a DPSS multi-taper, multi-resolution spectrum estimator across speakers and microphone positions; retained Welch/Hamming because the fixture improvement did not meet the 0.75 dB materiality threshold.
+- Added seeded concurrent control/DSP stress tests for atomic snapshots, dirty-flag rearming, suppressor model switching, resets, and finite bounded output in debug and release modes.
+- Completed the PyO3 Python typing surface and resolved all Pyright errors.
+- Hardened DeepFilter loading so only bootstrap-registered canonical assets are trusted by default; external DLL/model paths require `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` and then take explicit precedence.
+- Hardened CI and release workflows with SHA-pinned actions, least-privilege permissions, hash-locked Python dependencies, Dependabot updates, pip-audit, Semgrep SARIF, and RustSec auditing.
+- Upgraded PyO3/numpy bindings to 0.29, removed unused dependency features, and cleared the local Python and Rust vulnerability audits.
+- Bumped project metadata, documentation, release notes, presets, and packaging to `1.8.6`.
+
 ## v1.8.5 - 2026-07-07
 
 - Added input-channel intelligence with selectable left/right/average/max-RMS/phase-safe mono mixdown modes and negative-correlation warnings for phase-cancellation-prone stereo inputs.

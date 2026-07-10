@@ -6,6 +6,7 @@ import numpy as np
 
 from mic_eq import config
 from mic_eq.analysis import auto_eq
+from mic_eq.analysis.auto_eq_parts import headroom as headroom_module
 from mic_eq.analysis.failure_detection import validate_analysis
 from mic_eq.analysis.spectrum import analyze_voice_spectrum, smooth_spectrum_perceptual
 
@@ -16,6 +17,8 @@ get_target_curve = auto_eq.get_target_curve
 _remove_spectral_tilt = auto_eq._remove_spectral_tilt
 _snr_aware_gain_upper_bounds = auto_eq._snr_aware_gain_upper_bounds
 evaluate_eq_quality = auto_eq.evaluate_eq_quality
+apply_headroom_validation = auto_eq.apply_headroom_validation
+simulate_candidate_chain = auto_eq.simulate_candidate_chain
 EQ_FREQUENCIES = config.EQ_FREQUENCIES
 AUTO_EQ_DEFAULT_Q = config.AUTO_EQ_DEFAULT_Q
 
@@ -537,3 +540,129 @@ def test_24_fallback_analysis_reports_explicit_fallback_diagnostics():
     assert not validation.passed
     assert eq["used_spectrum_fallback"]
     assert eq["target_profile"].endswith(":fallback")
+
+
+def test_25_headroom_validation_reduces_boosts_when_peak_headroom_is_insufficient():
+    sample_rate = 48_000
+    duration_s = 1.0
+    t = np.arange(int(sample_rate * duration_s), dtype=float) / sample_rate
+    audio = (0.62 * np.sin(2.0 * np.pi * 5000.0 * t)).astype(np.float32)
+    eq_settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 9.0, 0.0, 0.0, 0.0],
+        "band_qs": [1.41] * 10,
+        "validation_gain_scale": 1.0,
+        "validation_confidence": 0.95,
+        "analysis_confidence": 0.95,
+    }
+    chain_settings = {
+        "compressor": {"enabled": False},
+        "deesser": {"enabled": False},
+        "limiter": {"enabled": True, "ceiling_db": -0.5, "careful_output_enabled": True},
+    }
+
+    validated = apply_headroom_validation(audio, sample_rate, eq_settings, chain_settings)
+
+    assert validated["headroom_gain_scale"] < 1.0
+    assert max(validated["band_gains"]) < 9.0
+    assert validated["headroom_validation"]["safe"]
+    assert (
+        validated["headroom_validation"]["after"]["pre_limiter_true_peak_headroom_db"]
+        >= 1.0
+    )
+
+
+def test_26_headroom_validation_preserves_safe_correction():
+    sample_rate = 48_000
+    t = np.arange(sample_rate, dtype=float) / sample_rate
+    audio = (
+        0.05 * np.sin(2.0 * np.pi * 180.0 * t)
+        + 0.02 * np.sin(2.0 * np.pi * 1200.0 * t)
+    ).astype(np.float32)
+    eq_settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.0, 0.0, 0.0, 1.5, 1.0, 0.5, 0.0, 0.0, 0.0, 0.0],
+        "band_qs": [1.41] * 10,
+        "validation_gain_scale": 1.0,
+        "validation_confidence": 0.90,
+        "analysis_confidence": 0.90,
+    }
+
+    validated = apply_headroom_validation(audio, sample_rate, eq_settings)
+
+    assert validated["headroom_gain_scale"] == 1.0
+    assert np.allclose(validated["band_gains"], eq_settings["band_gains"])
+    assert validated["headroom_validation"]["safe"]
+
+
+def test_27_validation_rejects_remaining_headroom_risk():
+    freqs = _default_freqs()
+    spectrum_db = generate_test_spectrum(freqs, "harsh")
+    eq_settings = {
+        "band_gains": [0.0] * 10,
+        "headroom_validation": {"safe": False},
+    }
+
+    validation = validate_analysis(eq_settings, spectrum_db, freqs)
+
+    assert not validation.passed
+    assert validation.details["headroom_safe"] is False
+
+
+def test_28_python_headroom_fallback_is_explicitly_advisory(monkeypatch):
+    monkeypatch.setattr(headroom_module, "_native_simulate", lambda *_args, **_kwargs: None)
+    audio = np.zeros(4096, dtype=np.float32)
+    eq_settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.0] * 10,
+        "band_qs": [1.41] * 10,
+        "validation_confidence": 0.95,
+        "analysis_confidence": 0.95,
+    }
+
+    validated = apply_headroom_validation(
+        audio,
+        48_000,
+        eq_settings,
+        {
+            "compressor": {"enabled": False},
+            "deesser": {"enabled": False},
+            "limiter": {"enabled": True, "careful_output_enabled": True},
+        },
+    )
+    headroom = validated["headroom_validation"]
+
+    assert headroom["status"] == "advisory"
+    assert headroom["advisory"] is True
+    assert headroom["authoritative"] is False
+    assert headroom["safe"] is False
+    assert validated["headroom_safe"] is False
+    assert validated["validation_confidence"] <= 0.42
+    assert headroom["after"]["simulation_backend"] == "python"
+    assert headroom["after"]["limitations"]
+
+
+def test_29_fallback_cannot_report_risky_capture_as_safe(monkeypatch):
+    monkeypatch.setattr(headroom_module, "_native_simulate", lambda *_args, **_kwargs: None)
+    t = np.arange(48_000, dtype=float) / 48_000.0
+    audio = (0.95 * np.sin(2.0 * np.pi * 5000.0 * t)).astype(np.float32)
+    eq_settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [9.0] * 10,
+        "band_qs": [1.41] * 10,
+    }
+
+    validated = apply_headroom_validation(
+        audio,
+        48_000,
+        eq_settings,
+        {
+            "compressor": {"enabled": False},
+            "deesser": {"enabled": False},
+            "limiter": {"enabled": True, "careful_output_enabled": True},
+        },
+    )
+
+    assert validated["headroom_validation"]["status"] == "advisory"
+    assert validated["headroom_validation"]["safe"] is False
+    assert validated["headroom_gain_scale"] < 1.0

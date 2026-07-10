@@ -1,6 +1,7 @@
 //! Unified audio processor - DSP chain runs entirely in Rust
 //!
-//! Processing chain: Mic Input Ã¢â€ â€™ Noise Gate Ã¢â€ â€™ RNNoise Ã¢â€ â€™ 10-Band EQ Ã¢â€ â€™ Output
+//! Processing chain: input cleanup -> gate -> suppressor -> de-esser -> EQ ->
+//! compressor -> sample/true-peak limiting -> output.
 //!
 //! Adapted from Spectral Workbench for AudioForge.
 
@@ -29,7 +30,10 @@ use crate::dsp::biquad::{Biquad, BiquadType};
 use crate::dsp::eq::{DEFAULT_FREQUENCIES, DEFAULT_Q, NUM_BANDS};
 use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressionEngine, NoiseSuppressor};
 use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
-use crate::dsp::{Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, TruePeakDetector};
+use crate::dsp::{
+    Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, TruePeakDetector, TruePeakLimiter,
+    TruePeakLimiterBlockStats,
+};
 
 #[cfg(feature = "vad")]
 use crate::dsp::vad::{GateMode, SileroVAD, VadAutoGate};
@@ -217,6 +221,8 @@ pub struct AudioProcessor {
     raw_monitor_enabled: Arc<AtomicBool>,
     /// Input channel mixdown mode consumed by the CPAL input callback.
     input_channel_mode: Arc<AtomicU8>,
+    /// Optional adaptive cleanup mode that owns the input high-pass topology.
+    input_cleanup_mode: Arc<AtomicU8>,
 
     /// Sample rate
     sample_rate: u32,
@@ -226,6 +232,18 @@ pub struct AudioProcessor {
     input_stereo_correlation: Arc<AtomicU32>,
     /// Number of stereo input blocks with strong negative correlation.
     input_phase_warning_count: Arc<AtomicU64>,
+    /// Last phase-safe mono rescue strategy selected by the input callback.
+    input_phase_rescue_strategy: Arc<AtomicU8>,
+    /// Last estimated stereo channel delay in samples for phase-safe mono.
+    input_phase_estimated_delay_samples: Arc<AtomicU32>,
+    /// Whether the last phase-safe mono rescue flipped polarity.
+    input_phase_polarity_flipped: Arc<AtomicBool>,
+    /// Whether adaptive input cleanup is currently suppressing line hum.
+    input_cleanup_hum_detected: Arc<AtomicBool>,
+    /// Whether adaptive input cleanup is currently reacting to rumble/plosive energy.
+    input_cleanup_rumble_detected: Arc<AtomicBool>,
+    /// Selected effective input cleanup high-pass cutoff in Hz.
+    input_cleanup_high_pass_hz: Arc<AtomicU32>,
 
     /// Input device name
     input_device_name: Option<String>,
@@ -239,10 +257,16 @@ pub struct AudioProcessor {
     input_peak: Arc<AtomicU32>,
     /// Input RMS level
     input_rms: Arc<AtomicU32>,
+    /// Input crest factor in dB (sample peak minus RMS).
+    input_crest_factor_db: Arc<AtomicU32>,
     /// Output peak level (after all processing)
     output_peak: Arc<AtomicU32>,
     /// Output RMS level
     output_rms: Arc<AtomicU32>,
+    /// Output crest factor in dB (sample peak minus RMS).
+    output_crest_factor_db: Arc<AtomicU32>,
+    /// Output short-term loudness estimate in LUFS-like dB.
+    output_short_term_lufs: Arc<AtomicU32>,
     /// Compressor gain reduction in dB
     compressor_gain_reduction: Arc<AtomicU32>,
     /// De-esser gain reduction in dB
@@ -260,6 +284,8 @@ pub struct AudioProcessor {
     /// Latest fused gate open score (0.0-1.0) for diagnostics.
     #[cfg_attr(not(feature = "vad"), allow(dead_code))]
     gate_fused_score: Arc<AtomicU32>,
+    /// Whether VAD-mode chatter mitigation is temporarily relaxing the gate.
+    gate_auto_relax_active: Arc<AtomicBool>,
     /// Lifetime count of detected rapid gate open/close chatter.
     gate_chatter_event_count: Arc<AtomicU64>,
     /// Whether the current VAD backend is available.
@@ -351,6 +377,20 @@ pub struct AudioProcessor {
     output_true_peak_event_count: Arc<AtomicU64>,
     /// Peak estimated true-peak level in dBFS.
     output_true_peak_db: Arc<AtomicU32>,
+    /// Peak estimated true-peak level before final true-peak limiting in dBFS.
+    output_true_peak_input_db: Arc<AtomicU32>,
+    /// Current final true-peak limiter gain reduction in dB.
+    output_true_peak_gain_reduction_db: Arc<AtomicU32>,
+    /// Output true-peak headroom relative to the active ceiling in dB.
+    output_true_peak_headroom_db: Arc<AtomicU32>,
+    /// Current normal limiter gain reduction in dB.
+    limiter_gain_reduction_db: Arc<AtomicU32>,
+    /// Peak normal limiter gain reduction since the last DSP block in dB.
+    limiter_peak_gain_reduction_db: Arc<AtomicU32>,
+    /// Decaying recent normal limiter gain-reduction peak in dB.
+    limiter_gain_reduction_history_db: Arc<AtomicU32>,
+    /// Decaying recent final true-peak limiter gain-reduction peak in dB.
+    output_true_peak_gain_reduction_history_db: Arc<AtomicU32>,
     /// Whether input resampling is active.
     input_resampler_active: Arc<AtomicBool>,
     /// Whether output resampling is active.
@@ -539,17 +579,29 @@ impl AudioProcessor {
             bypass: Arc::new(AtomicBool::new(false)),
             raw_monitor_enabled: Arc::new(AtomicBool::new(false)),
             input_channel_mode: Arc::new(AtomicU8::new(InputChannelMode::Average as u8)),
+            input_cleanup_mode: Arc::new(AtomicU8::new(InputCleanupMode::Off as u8)),
             sample_rate,
             output_sample_rate: Arc::new(AtomicU32::new(sample_rate)),
             input_stereo_correlation: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             input_phase_warning_count: Arc::new(AtomicU64::new(0)),
+            input_phase_rescue_strategy: Arc::new(AtomicU8::new(0)),
+            input_phase_estimated_delay_samples: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            input_phase_polarity_flipped: Arc::new(AtomicBool::new(false)),
+            input_cleanup_hum_detected: Arc::new(AtomicBool::new(false)),
+            input_cleanup_rumble_detected: Arc::new(AtomicBool::new(false)),
+            input_cleanup_high_pass_hz: Arc::new(AtomicU32::new(
+                (INPUT_PREFILTER_HZ as f32).to_bits(),
+            )),
             input_device_name: None,
             output_device_name: None,
             // Initialize metering atomics with -infinity (no signal)
             input_peak: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             input_rms: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
+            input_crest_factor_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             output_peak: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             output_rms: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
+            output_crest_factor_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            output_short_term_lufs: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             compressor_gain_reduction: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             deesser_gain_reduction: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             deesser_detector_confidence: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
@@ -557,6 +609,7 @@ impl AudioProcessor {
             vad_probability: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             gate_noise_floor_db: Arc::new(AtomicU32::new((-60.0_f32).to_bits())),
             gate_fused_score: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            gate_auto_relax_active: Arc::new(AtomicBool::new(false)),
             gate_chatter_event_count: Arc::new(AtomicU64::new(0)),
             vad_available: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "vad")]
@@ -607,6 +660,13 @@ impl AudioProcessor {
             output_clip_peak_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             output_true_peak_event_count: Arc::new(AtomicU64::new(0)),
             output_true_peak_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
+            output_true_peak_input_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
+            output_true_peak_gain_reduction_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            output_true_peak_headroom_db: Arc::new(AtomicU32::new(120.0_f32.to_bits())),
+            limiter_gain_reduction_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            limiter_peak_gain_reduction_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            limiter_gain_reduction_history_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            output_true_peak_gain_reduction_history_db: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             input_resampler_active: Arc::new(AtomicBool::new(false)),
             output_resampler_active: Arc::new(AtomicBool::new(false)),
             noise_backend_available: Arc::new(AtomicBool::new(true)),
@@ -639,6 +699,7 @@ include!("processor/runtime_metrics.rs");
 include!("processor/supervisor.rs");
 include!("processor/vad_worker.rs");
 include!("processor/recovery.rs");
+include!("processor/stress_harness.rs");
 include!("processor/raw_recording.rs");
 
 impl Default for AudioProcessor {

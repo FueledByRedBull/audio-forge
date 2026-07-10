@@ -162,6 +162,10 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
     band_gains = np.asarray(eq_settings.get("band_gains", []), dtype=float)
     clipped_gains = int(np.sum(np.abs(band_gains) >= 11.5)) if band_gains.size else 0
     gain_rms = float(np.sqrt(np.mean(np.square(band_gains)))) if band_gains.size else 0.0
+    headroom = eq_settings.get("headroom_validation") or {}
+    headroom_safe = True
+    if isinstance(headroom, dict):
+        headroom_safe = bool(headroom.get("safe", True))
 
     # Evaluate all criteria. Use tiered gating to reduce false rejections.
     hard_fail_reasons = []
@@ -177,6 +181,8 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
         hard_fail_reasons.append(f"clipped_gains ({clipped_gains} >= 6)")
     if gain_rms > 10.0:
         hard_fail_reasons.append(f"gain_rms ({gain_rms:.1f} > 10.0 dB)")
+    if not headroom_safe:
+        hard_fail_reasons.append("headroom risk after downstream simulation")
 
     if peak_count < ANALYSIS_MIN_PEAK_COUNT:
         soft_failures.append(f"peak_count ({peak_count} < {ANALYSIS_MIN_PEAK_COUNT})")
@@ -222,6 +228,7 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
                 'flatness': flatness,
                 'clipped_gains': clipped_gains,
                 'gain_rms_db': gain_rms,
+                'headroom_safe': headroom_safe,
                 'failures': failures
             }
         )
@@ -236,5 +243,6 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
                 'flatness': flatness,
                 'clipped_gains': clipped_gains,
                 'gain_rms_db': gain_rms,
+                'headroom_safe': headroom_safe,
             }
         )

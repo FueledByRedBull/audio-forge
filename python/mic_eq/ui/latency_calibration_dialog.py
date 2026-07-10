@@ -213,6 +213,14 @@ class LatencyCalibrationDialog(QDialog):
         self.confidence_label = QLabel("--")
         status_layout.addWidget(self.confidence_label, 3, 1)
 
+        status_layout.addWidget(QLabel("Probe Agreement:"), 4, 0)
+        self.agreement_label = QLabel("--")
+        status_layout.addWidget(self.agreement_label, 4, 1)
+
+        status_layout.addWidget(QLabel("Echo Ambiguity:"), 5, 0)
+        self.ambiguity_label = QLabel("--")
+        status_layout.addWidget(self.ambiguity_label, 5, 1)
+
         layout.addWidget(status_group)
 
         self.progress = QProgressBar()
@@ -381,7 +389,13 @@ class LatencyCalibrationDialog(QDialog):
         self._apply_profile_to_labels(profile)
 
         self.progress.setValue(100)
-        self.status_label.setText("Calibration successful. Review values and Accept.")
+        ambiguity = float(profile.get("ambiguity_score", 0.0) or 0.0) if profile else 0.0
+        if ambiguity >= 0.75:
+            self.status_label.setText(
+                "Calibration found the direct path, but echoes are close. Review before accepting."
+            )
+        else:
+            self.status_label.setText("Calibration successful. Review values and Accept.")
         self.run_button.setEnabled(True)
         self.accept_button.setEnabled(True)
 
@@ -409,12 +423,18 @@ class LatencyCalibrationDialog(QDialog):
             self.one_way_label.setText("-- ms")
             self.comp_label.setText("-- ms")
             self.confidence_label.setText("--")
+            self.agreement_label.setText("--")
+            self.ambiguity_label.setText("--")
             return
 
         self.round_trip_label.setText(f"{profile.get('measured_round_trip_ms', 0.0):.2f} ms")
         self.one_way_label.setText(f"{profile.get('estimated_one_way_ms', 0.0):.2f} ms")
         self.comp_label.setText(f"{profile.get('applied_compensation_ms', 0.0):.2f} ms")
         self.confidence_label.setText(f"{profile.get('confidence', 0.0):.2f}")
+        self.agreement_label.setText(
+            f"{profile.get('agreement_ms', 0.0):.2f} ms across probes"
+        )
+        self.ambiguity_label.setText(f"{profile.get('ambiguity_score', 0.0):.2f}")
 
     def _on_accept_clicked(self):
         if not self._latest_profile:

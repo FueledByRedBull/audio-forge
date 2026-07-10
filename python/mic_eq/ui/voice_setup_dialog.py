@@ -493,8 +493,19 @@ class VoiceSetupDialog(QDialog):
         self.start_button.setEnabled(True)
         self.curve_combo.setEnabled(True)
         self.phase_label.setText("Recommendations ready")
-        self.warning_label.setText("Review the suggested settings and apply them.")
-        self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
+        diagnostics = setup_result["diagnostics"]
+        if diagnostics.get("apply_recommended", False):
+            self.warning_label.setText("Review the validated settings and apply them.")
+            color = "#4CAF50"
+        else:
+            reasons = diagnostics.get("uncertainty_reasons") or ["capture confidence is weak"]
+            self.warning_label.setText(
+                "Advisory recommendations only: " + "; ".join(str(reason) for reason in reasons)
+            )
+            color = "#FFB74D"
+        self.warning_label.setStyleSheet(
+            f"color: {color}; font-weight: bold; font-size: 11pt;"
+        )
         self.progress_bar.setValue(100)
         self._show_summary(setup_result)
 
@@ -505,7 +516,8 @@ class VoiceSetupDialog(QDialog):
         self.overall_label.setText(
             "Overall: "
             f"{_format_percent(overall_conf)} | "
-            f"capture {_format_percent(diagnostics['capture_confidence'])}"
+            f"capture {_format_percent(diagnostics['capture_confidence'])} | "
+            f"uncertainty {_format_percent(diagnostics['recommendation_uncertainty'])}"
         )
         self.overall_label.setStyleSheet(status_chip_style(state))
 
@@ -556,6 +568,21 @@ class VoiceSetupDialog(QDialog):
         if not parent or self.setup_result is None:
             QMessageBox.critical(self, "Error", "Could not apply voice setup.")
             return
+
+        diagnostics = self.setup_result.get("diagnostics") or {}
+        if not diagnostics.get("apply_recommended", False):
+            reasons = diagnostics.get("uncertainty_reasons") or ["capture confidence is weak"]
+            reply = QMessageBox.question(
+                self,
+                "Apply Advisory Settings?",
+                "These settings did not reach validated confidence:\n\n"
+                + "\n".join(f"- {reason}" for reason in reasons)
+                + "\n\nApply them anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
 
         parent.gate_panel.set_settings(self.setup_result["gate_settings"])
         parent.deesser_panel.set_settings(self.setup_result["deesser_settings"])

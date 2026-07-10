@@ -11,6 +11,10 @@ impl AudioProcessor {
         f32::from_bits(self.input_rms.load(Ordering::Relaxed))
     }
 
+    pub fn get_input_crest_factor_db(&self) -> f32 {
+        f32::from_bits(self.input_crest_factor_db.load(Ordering::Relaxed))
+    }
+
     /// Get output peak level in dB
     pub fn get_output_peak_db(&self) -> f32 {
         f32::from_bits(self.output_peak.load(Ordering::Relaxed))
@@ -19,6 +23,14 @@ impl AudioProcessor {
     /// Get output RMS level in dB
     pub fn get_output_rms_db(&self) -> f32 {
         f32::from_bits(self.output_rms.load(Ordering::Relaxed))
+    }
+
+    pub fn get_output_crest_factor_db(&self) -> f32 {
+        f32::from_bits(self.output_crest_factor_db.load(Ordering::Relaxed))
+    }
+
+    pub fn get_output_short_term_lufs(&self) -> f32 {
+        f32::from_bits(self.output_short_term_lufs.load(Ordering::Relaxed))
     }
 
     /// Latest stereo input correlation (-1.0 to +1.0).

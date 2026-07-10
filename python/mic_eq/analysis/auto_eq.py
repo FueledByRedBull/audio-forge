@@ -25,6 +25,7 @@ from .auto_eq_parts.optimizer import calculate_eq_bands
 from .auto_eq_parts.pipeline import analyze_auto_eq
 from .auto_eq_parts.response import _predict_eq_response
 from .auto_eq_parts.target import get_target_curve
+from .auto_eq_parts.headroom import apply_headroom_validation, simulate_candidate_chain
 from .eq_quality import evaluate_eq_quality, weighted_target_error
 
 __all__ = [
@@ -44,8 +45,10 @@ __all__ = [
     "_snr_weight_scale_dense",
     "_voice_weights",
     "analyze_auto_eq",
+    "apply_headroom_validation",
     "calculate_eq_bands",
     "evaluate_eq_quality",
     "get_target_curve",
+    "simulate_candidate_chain",
     "weighted_target_error",
 ]

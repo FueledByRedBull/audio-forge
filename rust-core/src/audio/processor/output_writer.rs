@@ -11,6 +11,10 @@ struct OutputWriteCounters<'a> {
     output_clip_peak_db: &'a AtomicU32,
     output_true_peak_event_count: &'a AtomicU64,
     output_true_peak_db: &'a AtomicU32,
+    output_true_peak_input_db: &'a AtomicU32,
+    output_true_peak_gain_reduction_db: &'a AtomicU32,
+    output_true_peak_gain_reduction_history_db: &'a AtomicU32,
+    output_true_peak_headroom_db: &'a AtomicU32,
 }
 
 #[derive(Clone, Copy)]
@@ -33,6 +37,7 @@ struct OutputWriteContext<
     discontinuity_fade_scratch: &'a mut FixedAudioBuffer<f32, DISCONTINUITY_FADE_CAPACITY>,
     output_safety_scratch: &'a mut FixedAudioBuffer<f32, OUTPUT_SAFETY_CAPACITY>,
     true_peak_detector: &'a mut TruePeakDetector,
+    true_peak_limiter: &'a mut TruePeakLimiter,
     drift_error_ema: &'a mut f32,
     discontinuity_fade_remaining: &'a Cell<usize>,
     limiter_enabled: &'a AtomicBool,
@@ -87,6 +92,7 @@ impl<
             write_slice,
             self.output_safety_scratch,
             self.true_peak_detector,
+            self.true_peak_limiter,
             self.limiter_enabled,
             self.output_ceiling_linear,
             &self.counters,
@@ -189,6 +195,7 @@ impl<
         write_slice: &[f32],
         output_safety_scratch: &'b mut FixedAudioBuffer<f32, OUTPUT_SAFETY_CAPACITY>,
         true_peak_detector: &mut TruePeakDetector,
+        true_peak_limiter: &mut TruePeakLimiter,
         limiter_enabled: &AtomicBool,
         output_ceiling_linear: &Cell<f32>,
         counters: &OutputWriteCounters<'_>,
@@ -203,6 +210,22 @@ impl<
         } else {
             1.0
         };
+        sanitize_non_finite_inplace(output_safety_scratch.as_mut_slice());
+        if limiter_enabled.load(Ordering::Acquire) {
+            true_peak_limiter.set_ceiling_linear(output_ceiling);
+            let stats = true_peak_limiter.process_block_inplace(output_safety_scratch.as_mut_slice());
+            Self::record_true_peak_limiter_stats(stats, output_ceiling, counters);
+        } else {
+            true_peak_limiter.reset();
+            counters
+                .output_true_peak_gain_reduction_db
+                .store(0.0_f32.to_bits(), Ordering::Relaxed);
+            update_decaying_peak_db(
+                0.0,
+                counters.output_true_peak_gain_reduction_history_db,
+                0.15,
+            );
+        }
         sanitize_and_clamp_output_inplace_with_metrics(
             output_safety_scratch.as_mut_slice(),
             output_ceiling,
@@ -225,20 +248,43 @@ impl<
         counters: &OutputWriteCounters<'_>,
     ) {
         let true_peak = true_peak_detector.process_block(samples);
-        if true_peak <= output_ceiling {
-            return;
-        }
-
-        counters
-            .output_true_peak_event_count
-            .fetch_add(1, Ordering::Relaxed);
         let peak_db = 20.0 * true_peak.max(1e-10).log10();
-        let current_peak = f32::from_bits(counters.output_true_peak_db.load(Ordering::Relaxed));
-        if peak_db > current_peak {
+        counters
+            .output_true_peak_db
+            .store(peak_db.to_bits(), Ordering::Relaxed);
+        let headroom_db = 20.0 * (output_ceiling.max(1e-10) / true_peak.max(1e-10)).log10();
+        counters
+            .output_true_peak_headroom_db
+            .store(headroom_db.to_bits(), Ordering::Relaxed);
+    }
+
+    fn record_true_peak_limiter_stats(
+        stats: TruePeakLimiterBlockStats,
+        output_ceiling: f32,
+        counters: &OutputWriteCounters<'_>,
+    ) {
+        if stats.limited_events > 0 {
             counters
-                .output_true_peak_db
-                .store(peak_db.to_bits(), Ordering::Relaxed);
+                .output_true_peak_event_count
+                .fetch_add(stats.limited_events, Ordering::Relaxed);
         }
+        let input_peak_db = 20.0 * stats.input_true_peak.max(1e-10).log10();
+        counters
+            .output_true_peak_input_db
+            .store(input_peak_db.to_bits(), Ordering::Relaxed);
+        counters
+            .output_true_peak_gain_reduction_db
+            .store(stats.max_gain_reduction_db.to_bits(), Ordering::Relaxed);
+        update_decaying_peak_db(
+            stats.max_gain_reduction_db,
+            counters.output_true_peak_gain_reduction_history_db,
+            0.15,
+        );
+        let headroom_db =
+            20.0 * (output_ceiling.max(1e-10) / stats.output_true_peak.max(1e-10)).log10();
+        counters
+            .output_true_peak_headroom_db
+            .store(headroom_db.to_bits(), Ordering::Relaxed);
     }
 
     fn write_to_output_queue(

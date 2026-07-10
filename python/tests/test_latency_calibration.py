@@ -155,6 +155,89 @@ def test_analyze_latency_expected_window_handles_attenuated_probe():
     assert abs(result.measured_round_trip_ms - round_trip_ms) < 5.0
 
 
+def test_analyze_latency_repeated_probe_selects_direct_path_with_echo_and_noise():
+    sample_rate = 48000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+
+    direct_offset = int(0.145 * sample_rate)
+    echo_offset = direct_offset + int(0.055 * sample_rate)
+    rec_len = echo_offset + len(probe) + 4096
+
+    rng = np.random.default_rng(9090)
+    recording = rng.normal(0.0, 0.012, rec_len).astype(np.float32)
+    recording[direct_offset : direct_offset + len(probe)] += probe * 0.35
+    recording[echo_offset : echo_offset + len(probe)] += probe * 0.18
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        min_search_ms=5.0,
+        max_search_ms=500.0,
+    )
+
+    expected_ms = (direct_offset * 1000.0) / sample_rate
+    assert result.success
+    assert result.repetition_count >= 3
+    assert result.agreement_ms < 1.0
+    assert abs(result.measured_round_trip_ms - expected_ms) < 2.0
+
+
+def test_analyze_latency_subsample_refinement_beats_integer_peak():
+    sample_rate = 48000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+
+    fractional_offset = 0.1234 * sample_rate
+    base_offset = int(np.floor(fractional_offset))
+    frac = fractional_offset - base_offset
+    rec_len = base_offset + len(probe) + 4096
+
+    rng = np.random.default_rng(5150)
+    recording = rng.normal(0.0, 0.004, rec_len).astype(np.float32)
+    recording[base_offset : base_offset + len(probe)] += probe * (1.0 - frac)
+    recording[base_offset + 1 : base_offset + 1 + len(probe)] += probe * frac
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        min_search_ms=5.0,
+        max_search_ms=500.0,
+    )
+
+    integer_error = abs(float(result.peak_sample_offset) - fractional_offset)
+    refined_error = abs(result.sub_sample_offset - fractional_offset)
+    assert result.success
+    assert refined_error < integer_error
+    assert refined_error < 0.8
+
+
+def test_analyze_latency_reports_ambiguity_for_strong_echo():
+    sample_rate = 48000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+
+    direct_offset = int(0.145 * sample_rate)
+    echo_offset = direct_offset + int(0.055 * sample_rate)
+    rec_len = echo_offset + len(probe) + 4096
+
+    rng = np.random.default_rng(9091)
+    recording = rng.normal(0.0, 0.012, rec_len).astype(np.float32)
+    recording[direct_offset : direct_offset + len(probe)] += probe * 0.35
+    recording[echo_offset : echo_offset + len(probe)] += probe * 0.27
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        min_search_ms=5.0,
+        max_search_ms=500.0,
+    )
+
+    assert not result.success
+    assert "ambigu" in result.message.lower()
+    assert result.ambiguity_score >= 0.9
+
+
 def test_analyze_latency_expected_window_rejects_wrong_region():
     sample_rate = 48000
     probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)

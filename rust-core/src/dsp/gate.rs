@@ -19,9 +19,31 @@ const CHATTER_WINDOW_MS: f64 = 500.0;
 const CHATTER_COOLDOWN_MS: f64 = 1_000.0;
 const CHATTER_TRANSITION_THRESHOLD: u32 = 4;
 #[cfg(feature = "vad")]
+const CHATTER_AUTO_RELAX_MS: f64 = 700.0;
+#[cfg(feature = "vad")]
+const AUTO_RELAX_CLOSE_MARGIN: f32 = 0.20;
+#[cfg(feature = "vad")]
+const NORMAL_CLOSE_MARGIN: f32 = 0.12;
+#[cfg(feature = "vad")]
+const VAD_ONSET_VELOCITY: f32 = 0.08;
+#[cfg(feature = "vad")]
+const UNCERTAIN_LEVEL_SCORE: f32 = 0.22;
+#[cfg(feature = "vad")]
+const AUTO_RELAX_RANGE_DB: f64 = 24.0;
+#[cfg(feature = "vad")]
 const FUSED_GATE_OPEN_SCORE: f32 = 0.55;
 #[cfg(feature = "vad")]
 const FUSED_GATE_CLOSE_SCORE: f32 = 0.35;
+
+#[cfg(feature = "vad")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbabilisticGateState {
+    Closed,
+    Opening,
+    Open,
+    Uncertain,
+    Releasing,
+}
 
 #[cfg(debug_assertions)]
 macro_rules! gate_debug_log {
@@ -101,6 +123,15 @@ pub struct NoiseGate {
     /// Hysteretic fused open state.
     #[cfg(feature = "vad")]
     fused_gate_open: bool,
+    /// Explicit VAD-mode gate state used after level/VAD score fusion.
+    #[cfg(feature = "vad")]
+    gate_state: ProbabilisticGateState,
+    /// Previous external/model VAD probability for onset/release velocity.
+    #[cfg(feature = "vad")]
+    previous_vad_probability: f32,
+    /// Remaining samples of temporary chatter relax behavior.
+    #[cfg(feature = "vad")]
+    auto_relax_remaining_samples: usize,
 }
 
 impl NoiseGate {
@@ -155,6 +186,12 @@ impl NoiseGate {
             fused_gate_score: 0.0,
             #[cfg(feature = "vad")]
             fused_gate_open: false,
+            #[cfg(feature = "vad")]
+            gate_state: ProbabilisticGateState::Closed,
+            #[cfg(feature = "vad")]
+            previous_vad_probability: 0.0,
+            #[cfg(feature = "vad")]
+            auto_relax_remaining_samples: 0,
         }
     }
 
@@ -220,12 +257,22 @@ impl NoiseGate {
     }
 
     #[inline]
+    fn expander_range_db(&self) -> f64 {
+        #[cfg(feature = "vad")]
+        if self.auto_relax_active() {
+            return AUTO_RELAX_RANGE_DB;
+        }
+
+        EXPANDER_RANGE_DB
+    }
+
+    #[inline]
     fn detector_gain_reduction_db(&self) -> f64 {
         if self.is_open {
             0.0
         } else {
             ((self.threshold_db - self.detector_level_db) * (1.0 - 1.0 / EXPANDER_RATIO))
-                .clamp(0.0, EXPANDER_RANGE_DB)
+                .clamp(0.0, self.expander_range_db())
         }
     }
 
@@ -290,10 +337,127 @@ impl NoiseGate {
         self.fused_gate_open
     }
 
+    #[cfg(feature = "vad")]
+    #[inline]
+    fn auto_relax_samples(&self) -> usize {
+        (self.sample_rate * CHATTER_AUTO_RELAX_MS / 1000.0).round() as usize
+    }
+
+    #[cfg(feature = "vad")]
+    #[inline]
+    fn update_probabilistic_gate_state(
+        &mut self,
+        mode: GateMode,
+        vad_probability: f32,
+        vad_available: bool,
+        vad_held_open: bool,
+        vad_threshold: f32,
+        probability_delta: f32,
+    ) -> bool {
+        let level_score = self.level_open_score();
+        let auto_relax = self.auto_relax_active();
+        let close_margin = if auto_relax {
+            AUTO_RELAX_CLOSE_MARGIN
+        } else {
+            NORMAL_CLOSE_MARGIN
+        };
+        let open_threshold = vad_threshold.clamp(0.05, 0.95);
+        let close_threshold = (open_threshold - close_margin).clamp(0.02, open_threshold);
+
+        let vad_open = vad_available
+            && (vad_probability >= open_threshold
+                || (probability_delta >= VAD_ONSET_VELOCITY && vad_probability >= close_threshold));
+        let vad_uncertain = vad_available && vad_probability >= close_threshold;
+        let level_open = self.is_open || level_score >= FUSED_GATE_OPEN_SCORE;
+        let level_uncertain = level_score >= UNCERTAIN_LEVEL_SCORE || self.current_gain > 0.12;
+        let level_speech_candidate =
+            level_open && (!vad_available || vad_uncertain || self.current_gain > 0.20);
+        let fused_speech_candidate =
+            self.fused_gate_open && (!vad_available || vad_uncertain || self.current_gain > 0.20);
+        let vad_hold_candidate =
+            vad_held_open && (!vad_available || vad_uncertain || self.current_gain > 0.20);
+
+        let strong_open = match mode {
+            GateMode::ThresholdOnly => level_open,
+            GateMode::VadAssisted => {
+                level_speech_candidate || fused_speech_candidate || vad_hold_candidate || vad_open
+            }
+            GateMode::VadOnly => vad_held_open || vad_open,
+        };
+        let sustain = match mode {
+            GateMode::ThresholdOnly => level_open,
+            GateMode::VadAssisted => {
+                strong_open
+                    || vad_uncertain
+                    || level_uncertain
+                    || (auto_relax && level_score > 0.08)
+            }
+            GateMode::VadOnly => {
+                strong_open || vad_uncertain || (auto_relax && self.current_gain > 0.12)
+            }
+        };
+        let releasing_sustain =
+            sustain || (self.current_gain > 0.20 && (vad_uncertain || auto_relax));
+
+        self.gate_state = match self.gate_state {
+            ProbabilisticGateState::Closed => {
+                if strong_open {
+                    ProbabilisticGateState::Opening
+                } else {
+                    ProbabilisticGateState::Closed
+                }
+            }
+            ProbabilisticGateState::Opening => {
+                if strong_open {
+                    ProbabilisticGateState::Open
+                } else if sustain {
+                    ProbabilisticGateState::Uncertain
+                } else {
+                    ProbabilisticGateState::Closed
+                }
+            }
+            ProbabilisticGateState::Open => {
+                if strong_open {
+                    ProbabilisticGateState::Open
+                } else if sustain {
+                    ProbabilisticGateState::Uncertain
+                } else if releasing_sustain {
+                    ProbabilisticGateState::Releasing
+                } else {
+                    ProbabilisticGateState::Closed
+                }
+            }
+            ProbabilisticGateState::Uncertain => {
+                if strong_open {
+                    ProbabilisticGateState::Opening
+                } else if sustain {
+                    ProbabilisticGateState::Uncertain
+                } else if releasing_sustain {
+                    ProbabilisticGateState::Releasing
+                } else {
+                    ProbabilisticGateState::Closed
+                }
+            }
+            ProbabilisticGateState::Releasing => {
+                if strong_open {
+                    ProbabilisticGateState::Opening
+                } else if sustain {
+                    ProbabilisticGateState::Uncertain
+                } else if releasing_sustain {
+                    ProbabilisticGateState::Releasing
+                } else {
+                    ProbabilisticGateState::Closed
+                }
+            }
+        };
+
+        self.gate_state != ProbabilisticGateState::Closed
+    }
+
     #[inline]
     fn compute_target_gr_db(&self, force_close: bool) -> f64 {
         if force_close {
-            return EXPANDER_RANGE_DB;
+            return self.expander_range_db();
         }
         self.detector_gain_reduction_db()
     }
@@ -310,6 +474,10 @@ impl NoiseGate {
 
     #[inline]
     fn advance_chatter_timers(&mut self) {
+        #[cfg(feature = "vad")]
+        if self.auto_relax_remaining_samples > 0 {
+            self.auto_relax_remaining_samples -= 1;
+        }
         if self.chatter_window_remaining_samples > 0 {
             self.chatter_window_remaining_samples -= 1;
             if self.chatter_window_remaining_samples == 0 {
@@ -344,6 +512,10 @@ impl NoiseGate {
             {
                 self.chatter_event_count = self.chatter_event_count.saturating_add(1);
                 self.chatter_cooldown_samples = self.chatter_cooldown_samples();
+                #[cfg(feature = "vad")]
+                if self.gate_mode != GateMode::ThresholdOnly {
+                    self.auto_relax_remaining_samples = self.auto_relax_samples();
+                }
                 self.chatter_window_remaining_samples = 0;
                 self.chatter_transition_count = 0;
             }
@@ -394,7 +566,9 @@ impl NoiseGate {
                             self.vad_external_available
                                 .then_some(self.vad_external_probability),
                         );
+                        let vad_threshold = vad.vad_threshold();
                         let vad_probability_available = self.vad_external_available;
+                        let probability_delta = _probability - self.previous_vad_probability;
 
                         if GATE_DEBUG {
                             self.debug_counter += buffer.len();
@@ -427,23 +601,28 @@ impl NoiseGate {
                             let input_f64 = *sample as f64;
                             // Detector tracks continuously even when VAD blocks.
                             self.update_detector(input_f64);
-                            let fused_open = self.update_fused_gate_score(
+                            self.update_fused_gate_score(
                                 self.gate_mode,
                                 _probability,
                                 vad_probability_available,
                                 vad_gate_open,
                             );
-                            let force_close = match self.gate_mode {
-                                GateMode::ThresholdOnly => false,
-                                GateMode::VadAssisted => !(vad_gate_open || fused_open),
-                                GateMode::VadOnly => !vad_gate_open,
-                            };
+                            let probabilistic_open = self.update_probabilistic_gate_state(
+                                self.gate_mode,
+                                _probability,
+                                vad_probability_available,
+                                vad_gate_open,
+                                vad_threshold,
+                                probability_delta,
+                            );
+                            let force_close =
+                                self.gate_mode != GateMode::ThresholdOnly && !probabilistic_open;
                             let target_gr_db = self.compute_target_gr_db(force_close);
-                            let effective_open =
-                                !force_close && (self.is_open || fused_open || vad_gate_open);
+                            let effective_open = !force_close && probabilistic_open;
                             self.track_gate_transition(effective_open);
                             *sample = self.apply_gain(input_f64, target_gr_db);
                         }
+                        self.previous_vad_probability = _probability;
                         return;
                     }
                 }
@@ -486,6 +665,9 @@ impl NoiseGate {
             self.vad_external_available = false;
             self.fused_gate_score = 0.0;
             self.fused_gate_open = false;
+            self.gate_state = ProbabilisticGateState::Closed;
+            self.previous_vad_probability = 0.0;
+            self.auto_relax_remaining_samples = 0;
         }
     }
 
@@ -504,12 +686,28 @@ impl NoiseGate {
         self.chatter_event_count
     }
 
+    /// Whether VAD-mode chatter mitigation is temporarily relaxing the gate.
+    pub fn auto_relax_active(&self) -> bool {
+        #[cfg(feature = "vad")]
+        {
+            self.auto_relax_remaining_samples > 0
+        }
+        #[cfg(not(feature = "vad"))]
+        {
+            false
+        }
+    }
+
     // === VAD Integration Methods ===
 
     #[cfg(feature = "vad")]
     /// Set gate mode
     pub fn set_gate_mode(&mut self, mode: GateMode) {
         self.gate_mode = mode;
+        if mode == GateMode::ThresholdOnly {
+            self.gate_state = ProbabilisticGateState::Closed;
+            self.auto_relax_remaining_samples = 0;
+        }
         if let Some(vad) = &mut self.vad_auto_gate {
             vad.set_gate_mode(mode);
         }
@@ -883,5 +1081,87 @@ mod tests {
 
         assert!(gate.fused_gate_score() <= FUSED_GATE_CLOSE_SCORE);
         assert!(gate.current_gain() < 0.3);
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_state_machine_opens_on_rising_probability() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.5)));
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_hold_time(0.0);
+
+        gate.set_external_vad_probability(0.42, true);
+        let amp = 10f32.powf(-46.0 / 20.0);
+        let mut buffer = vec![amp; 2_000];
+        gate.process_block_inplace(&mut buffer);
+
+        assert_eq!(gate.gate_state, ProbabilisticGateState::Open);
+        assert!(gate.current_gain() > 0.25);
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_state_machine_preserves_ambiguous_trailing_speech() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.5)));
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_hold_time(0.0);
+
+        gate.set_external_vad_probability(0.90, true);
+        let mut voiced = vec![0.08_f32; 2_000];
+        gate.process_block_inplace(&mut voiced);
+        let open_gain = gate.current_gain();
+
+        gate.set_external_vad_probability(0.41, true);
+        let tail_amp = 10f32.powf(-45.0 / 20.0);
+        let mut tail = vec![tail_amp; 2_000];
+        gate.process_block_inplace(&mut tail);
+
+        assert_ne!(gate.gate_state, ProbabilisticGateState::Closed);
+        assert!(
+            gate.current_gain() > open_gain * 0.45,
+            "open_gain={} tail_gain={}",
+            open_gain,
+            gate.current_gain()
+        );
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_state_machine_rejects_short_click_with_low_probability() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.5)));
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_hold_time(0.0);
+        gate.set_external_vad_probability(0.05, true);
+
+        let mut click = vec![0.0_f32; 512];
+        click[0] = 0.8;
+        gate.process_block_inplace(&mut click);
+
+        assert_eq!(gate.gate_state, ProbabilisticGateState::Closed);
+        assert!(gate.current_gain() < 0.2);
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_chatter_triggers_auto_relax() {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 5.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.5)));
+        gate.set_gate_mode(GateMode::VadOnly);
+        gate.set_hold_time(0.0);
+
+        for _ in 0..5 {
+            gate.set_external_vad_probability(0.95, true);
+            let mut speech = vec![0.1_f32; 256];
+            gate.process_block_inplace(&mut speech);
+            gate.set_external_vad_probability(0.0, true);
+            let mut silence = vec![0.0_f32; 256];
+            gate.process_block_inplace(&mut silence);
+        }
+
+        assert!(gate.chatter_event_count() > 0);
+        assert!(gate.auto_relax_active());
     }
 }

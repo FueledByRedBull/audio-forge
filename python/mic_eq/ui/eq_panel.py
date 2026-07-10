@@ -95,6 +95,11 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
     band_confidences = diagnostics.get("band_confidences") or []
     band_gains = diagnostics.get("band_gains") or []
     low_confidence = diagnostics.get("low_confidence_active_bands")
+    headroom = diagnostics.get("headroom_validation") or {}
+    headroom_after = headroom.get("after") if isinstance(headroom, dict) else None
+    headroom_safe = bool(headroom.get("safe", True)) if isinstance(headroom, dict) else True
+    headroom_advisory = bool(headroom.get("advisory", False)) if isinstance(headroom, dict) else False
+    headroom_scale = headroom.get("gain_scale") if isinstance(headroom, dict) else None
     if isinstance(band_confidences, list):
         if low_confidence is None and isinstance(band_gains, list) and len(band_gains) == len(band_confidences):
             low_confidence = sum(
@@ -113,6 +118,8 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
         state = "warn"
     else:
         state = "bad"
+    if not headroom_safe:
+        state = "warn" if state == "ok" else state
 
     text = (
         f"Auto-EQ: overall {_percent(confidence)} | "
@@ -126,6 +133,28 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
         text += " | fallback spectrum"
     if low_confidence:
         text += f" | active low-confidence bands {low_confidence}"
+    if isinstance(headroom_after, dict):
+        pre_tp_headroom = headroom_after.get("pre_limiter_true_peak_headroom_db")
+        limiter_gr = headroom_after.get("limiter_gain_reduction_db")
+        true_peak_gr = headroom_after.get("true_peak_limiter_gain_reduction_db")
+        headroom_status = "advisory" if headroom_advisory else "safe" if headroom_safe else "risk"
+        text += " | headroom " + headroom_status + f" TP {_db_value(pre_tp_headroom)}"
+        if headroom_scale is not None and float(headroom_scale) < 1.0:
+            text += f" scale {_percent(headroom_scale)}"
+        tooltip_status = (
+            "advisory only (Rust simulator unavailable)"
+            if headroom_advisory
+            else "safe correction" if headroom_safe else "headroom risk"
+        )
+        tooltip_extra = (
+            f"\nHeadroom status: {tooltip_status}"
+            f"\nPre-limiter true-peak headroom: {_db_value(pre_tp_headroom)}"
+            f"\nLimiter gain reduction: {_db_value(limiter_gr)}"
+            f"\nTrue-peak limiter gain reduction: {_db_value(true_peak_gr)}"
+            f"\nHeadroom gain scale: {_percent(headroom_scale)}"
+        )
+    else:
+        tooltip_extra = ""
 
     tooltip = (
         "Auto-EQ calibration diagnostics\n"
@@ -138,6 +167,7 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
         f"Validation gain scale: {_percent(scale)}\n"
         f"Target profile: {diagnostics.get('target_profile', '--')}\n"
         f"Fallback analysis: {'yes' if used_fallback else 'no'}"
+        f"{tooltip_extra}"
     )
     return text, state, tooltip
 

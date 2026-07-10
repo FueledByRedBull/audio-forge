@@ -15,6 +15,7 @@ spectrum = importlib.util.module_from_spec(spectrum_spec)
 spectrum_spec.loader.exec_module(spectrum)
 
 compute_voice_spectrum = spectrum.compute_voice_spectrum
+evaluate_spectrum_estimators = spectrum.evaluate_spectrum_estimators
 find_octave_spaced_peaks = spectrum.find_octave_spaced_peaks
 
 
@@ -57,3 +58,44 @@ def test_find_octave_spaced_peaks_handles_degenerate_frequency_grids():
         peak_freqs, peak_values = find_octave_spaced_peaks(np.zeros(len(freqs)), freqs)
         assert peak_freqs.size == 0
         assert peak_values.size == 0
+
+
+def test_multiresolution_experiment_keeps_welch_without_material_all_band_gain():
+    fs = 48_000
+    seconds = 3.0
+    t = np.arange(int(fs * seconds), dtype=float) / fs
+    fixtures = []
+    rng = np.random.default_rng(7319)
+    # Two labelled synthetic speakers, each captured at three microphone
+    # positions with different reflection delay and high-frequency loss.
+    for fundamental_hz, spectral_tilt in ((125.0, 0.82), (185.0, 0.72)):
+        base = np.zeros_like(t)
+        for harmonic in range(1, 48):
+            frequency = fundamental_hz * harmonic
+            if frequency >= 11_000.0:
+                break
+            base += (spectral_tilt**harmonic) * np.sin(2.0 * np.pi * frequency * t)
+        envelope = 0.35 + 0.25 * np.sin(2.0 * np.pi * 2.3 * t) ** 2
+        base *= envelope / max(float(np.max(np.abs(base))), 1e-9)
+        for position, delay_samples in enumerate((7, 19, 41)):
+            reflected = base + (0.18 - 0.035 * position) * np.roll(base, delay_samples)
+            if position:
+                reflected = np.convolve(
+                    reflected,
+                    np.ones(1 + position * 2) / (1 + position * 2),
+                    mode="same",
+                )
+            fixtures.append(
+                (0.16 * reflected + 0.0025 * rng.normal(size=t.size)).astype(np.float32)
+            )
+
+    evaluation = evaluate_spectrum_estimators(fixtures, fs=fs)
+
+    assert set(evaluation.improvement_db) == {
+        "low_frequency",
+        "formant",
+        "sibilance",
+    }
+    assert all(np.isfinite(value) for value in evaluation.improvement_db.values())
+    assert evaluation.material_improvement is False
+    assert evaluation.selected_estimator == "welch_hamming"

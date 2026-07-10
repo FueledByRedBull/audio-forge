@@ -1,0 +1,12 @@
+# Registry rules used by the AudioForge security scan.
+p/security-audit
+p/secrets
+p/python
+p/rust
+p/github-actions
+
+# Third-party rule collections included in the reviewed 2026-07-10 audit.
+https://github.com/trailofbits/semgrep-rules
+https://github.com/Decurity/semgrep-smart-contracts
+https://github.com/elttam/semgrep-rules
+https://github.com/apiiro/malicious-code-ruleset

@@ -1,304 +1,65 @@
-//! Stress tests for AudioForge DSP parameter changes and device-enumeration smoke coverage
-//!
-//! These tests validate that the system can handle:
-//! - Rapid UI interaction (slider spam, preset switching)
-//! - Device enumeration without crashing
-//!
-//! These are the "critical tests only" identified in CONCERNS.md.
+//! Seeded DSP contention and device-enumeration smoke coverage.
 
 use mic_eq_core::audio::input::list_input_devices;
-use mic_eq_core::audio::processor::AudioProcessor;
-use rand::Rng;
+use mic_eq_core::audio::processor::{run_seeded_control_dsp_stress, AudioProcessor};
 
-/// Test rapid parameter changes to validate thread-safe DSP setters
+/// Exercise concurrent rapid controls and production DSP processing.
 ///
-/// This test exercises the Mutex-protected DSP setters under concurrent load:
-/// 1. Creates an AudioProcessor instance (no audio devices required)
-/// 2. Performs 1000 random parameter changes
-/// 3. Verifies processor remains in valid state
-/// 4. Ensures no crashes, panics, or NaN/Inf values
+/// This test is also run explicitly in release mode so the contention timing is
+/// representative of the shipped processor.
 #[test]
-fn test_rapid_parameter_changes() {
-    // Create AudioProcessor instance (does NOT require audio devices)
-    // This only creates the DSP chain, not the audio streams
-    let processor = AudioProcessor::new();
-
-    // Verify initial state
-    assert!(
-        !processor.is_running(),
-        "Processor should not be running initially"
-    );
-
-    // Random number generator for parameter values
-    let mut rng = rand::thread_rng();
-
-    // Perform 1000 random parameter changes
-    for i in 0..1000 {
-        // Pick random DSP stage
-        let stage = rng.gen_range(0..6); // 0=gate, 1=rnnoise, 2=eq, 3=compressor, 4=limiter, 5=deesser
-
-        match stage {
-            0 => {
-                // Noise Gate parameters
-                // Threshold: -120 to 0 dB
-                let threshold = rng.gen_range(-120.0..0.0);
-                processor.set_gate_threshold(threshold);
-
-                // Attack: 1 to 1000 ms
-                let attack = rng.gen_range(1.0..1000.0);
-                processor.set_gate_attack(attack);
-
-                // Release: 1 to 1000 ms
-                let release = rng.gen_range(1.0..1000.0);
-                processor.set_gate_release(release);
-
-                // Randomly toggle enable
-                let enabled = rng.gen_bool(0.5);
-                processor.set_gate_enabled(enabled);
-            }
-            1 => {
-                // RNNoise parameters
-                // Randomly toggle enable
-                let enabled = rng.gen_bool(0.5);
-                processor.set_rnnoise_enabled(enabled);
-            }
-            2 => {
-                // EQ parameters
-                // Random band (0-9 for 10-band EQ)
-                let band = rng.gen_range(0..10);
-
-                // Gain: -12 to +12 dB
-                let gain = rng.gen_range(-12.0..12.0);
-                processor
-                    .set_eq_band_gain(band, gain)
-                    .expect("random gain should be valid");
-
-                // Frequency: 20 Hz to 20 kHz
-                let freq = rng.gen_range(20.0..20000.0);
-                processor
-                    .set_eq_band_frequency(band, freq)
-                    .expect("random frequency should be valid");
-
-                // Q: 0.1 to 10.0
-                let q = rng.gen_range(0.1..10.0);
-                processor
-                    .set_eq_band_q(band, q)
-                    .expect("random Q should be valid");
-
-                // Randomly toggle enable
-                let enabled = rng.gen_bool(0.5);
-                processor.set_eq_enabled(enabled);
-            }
-            3 => {
-                // Compressor parameters
-                // Threshold: -60 to 0 dB
-                let threshold = rng.gen_range(-60.0..0.0);
-                processor.set_compressor_threshold(threshold);
-
-                // Ratio: 1.0 to 20.0
-                let ratio = rng.gen_range(1.0..20.0);
-                processor.set_compressor_ratio(ratio);
-
-                // Attack: 0.1 to 100 ms
-                let attack = rng.gen_range(0.1..100.0);
-                processor.set_compressor_attack(attack);
-
-                // Release: 10 to 1000 ms
-                let release = rng.gen_range(10.0..1000.0);
-                processor.set_compressor_release(release);
-
-                // Makeup gain: -12 to +24 dB
-                let makeup = rng.gen_range(-12.0..24.0);
-                processor.set_compressor_makeup_gain(makeup);
-
-                // Randomly toggle enable
-                let enabled = rng.gen_bool(0.5);
-                processor.set_compressor_enabled(enabled);
-            }
-            4 => {
-                // Limiter parameters
-                // Ceiling: -12 to 0 dB
-                let ceiling = rng.gen_range(-12.0..0.0);
-                processor.set_limiter_ceiling(ceiling);
-
-                // Release: 10 to 1000 ms
-                let release = rng.gen_range(10.0..1000.0);
-                processor.set_limiter_release(release);
-
-                // Randomly toggle enable
-                let enabled = rng.gen_bool(0.5);
-                processor.set_limiter_enabled(enabled);
-            }
-            5 => {
-                // De-esser parameters
-                let enabled = rng.gen_bool(0.5);
-                processor.set_deesser_enabled(enabled);
-
-                let auto_enabled = rng.gen_bool(0.7);
-                processor.set_deesser_auto_enabled(auto_enabled);
-
-                let auto_amount = rng.gen_range(0.0..1.0);
-                processor.set_deesser_auto_amount(auto_amount);
-
-                let low_cut = rng.gen_range(2000.0..12000.0);
-                processor.set_deesser_low_cut_hz(low_cut);
-
-                let high_cut = rng.gen_range((low_cut + 200.0).min(16000.0)..16000.0);
-                processor.set_deesser_high_cut_hz(high_cut);
-
-                let threshold = rng.gen_range(-60.0..-6.0);
-                processor.set_deesser_threshold_db(threshold);
-
-                let ratio = rng.gen_range(1.0..20.0);
-                processor.set_deesser_ratio(ratio);
-
-                let attack = rng.gen_range(0.1..50.0);
-                processor.set_deesser_attack_ms(attack);
-
-                let release = rng.gen_range(5.0..500.0);
-                processor.set_deesser_release_ms(release);
-
-                let max_red = rng.gen_range(0.0..24.0);
-                processor.set_deesser_max_reduction_db(max_red);
-            }
-            _ => unreachable!(),
-        }
-
-        // Every 100 iterations, verify state is still valid
-        if i % 100 == 0 {
-            // Processor should still not be running
-            assert!(
-                !processor.is_running(),
-                "Processor should remain not running"
-            );
-        }
+fn seeded_control_and_dsp_loops_remain_finite_under_contention() {
+    for seed in [1, 0x5eed, 0xdead_beef, u64::MAX - 1] {
+        let report = run_seeded_control_dsp_stress(seed, 600)
+            .unwrap_or_else(|error| panic!("seed {seed:#x}: {error}"));
+        assert_eq!(report.control_updates, 600);
+        assert!(report.processed_blocks >= 600);
+        assert!(report.snapshot_rearms >= 1);
+        assert!(report.model_switches >= 1);
+        assert!(report.suppressor_resets >= 1);
+        assert!(report.max_output_abs.is_finite());
+        assert!(report.max_output_abs <= 16.0);
     }
-
-    // Final verification - processor should still be in valid state
-    assert!(
-        !processor.is_running(),
-        "Processor should not be running after stress test"
-    );
-
-    // Verify we can still query all parameters (no locks poisoned)
-    let _ = processor.is_gate_enabled();
-    let _ = processor.is_rnnoise_enabled();
-    let _ = processor.is_eq_enabled();
-    let _ = processor.is_compressor_enabled();
-    let _ = processor.is_limiter_enabled();
-    let _ = processor.is_deesser_enabled();
-    let _ = processor.get_eq_band_params(0);
-
-    println!("✓ Completed 1000 parameter changes without crash");
 }
 
-/// Smoke-test device enumeration and lifecycle-adjacent error handling
+/// Smoke-test device enumeration and non-started processor lifecycle handling.
 ///
-/// This test validates the unit-testable parts of device handling:
-/// 1. Device enumeration recovery (rapid successive calls)
-/// 2. Invalid device handling (returns error, not panic)
-/// 3. Processor non-started lifecycle safety
-///
-/// This does not simulate USB unplug or WASAPI invalid-device callbacks; those
-/// remain manual or hardware-controlled integration coverage.
+/// USB unplug and WASAPI invalid-device callbacks still require a hardware-driven
+/// integration test; this covers the deterministic, device-independent boundary.
 #[test]
-fn test_device_enumeration_and_lifecycle_smoke() {
-    // DEVICE HOTSWAP BEHAVIOR (Windows/WASAPI):
-    // - When USB device is unplugged mid-stream, cpal's error callback fires
-    // - Current implementation logs to stderr: "Audio input error: ..."
-    // - Stream continues to exist but produces no data
-    // - User must stop() and restart with different device
-    // - No automatic recovery is implemented
-    //
-    // MANUAL TEST PROCEDURE (not automated):
-    // 1. Start processing with USB microphone
-    // 2. Unplug USB microphone
-    // 3. Expected: Error logged, audio stops, no crash
-    // 4. Replug microphone
-    // 5. User must click Stop then Start to recover
-
-    // Test 1: Device enumeration recovery
-    // Call list_input_devices() multiple times in rapid succession
-    // Verify no panics and results are consistent
+fn device_enumeration_and_lifecycle_smoke() {
     let mut device_counts = Vec::new();
     for _ in 0..50 {
         match list_input_devices() {
-            Ok(devices) => {
-                device_counts.push(devices.len());
-            }
-            Err(e) => {
-                // Device enumeration can fail in CI environments
-                // This is acceptable - just log and continue
-                println!("Device enumeration failed (expected in CI): {:?}", e);
-            }
+            Ok(devices) => device_counts.push(devices.len()),
+            Err(error) => println!("Device enumeration unavailable in this environment: {error}"),
         }
     }
 
-    // If we got any results, verify they're non-empty
-    if !device_counts.is_empty() {
-        // At least one device should be found (or consistent count)
-        // Note: In CI, this may be 0, which is acceptable
-        let first_count = device_counts[0];
-        let all_same = device_counts.iter().all(|&c| c == first_count);
+    if let Some(&first_count) = device_counts.first() {
         assert!(
-            all_same || device_counts.iter().any(|&c| c > 0),
-            "Device enumeration should be consistent or find devices"
+            device_counts.iter().all(|&count| count == first_count)
+                || device_counts.iter().any(|&count| count > 0),
+            "device enumeration should be stable or discover at least one device"
         );
     }
 
-    println!("✓ Device enumeration stress test passed (50 iterations)");
-
-    // Test 2: Invalid device handling
-    // Attempt to enumerate with non-existent device
-    // This validates that AudioError::DeviceNotFound is returned, not a panic
-    match list_input_devices() {
-        Ok(devices) => {
-            // Check if fake device is in the list
-            let fake_device_exists = devices
-                .iter()
-                .any(|d| d.name.contains("FAKE_DEVICE_DOES_NOT_EXIST"));
-            assert!(!fake_device_exists, "Fake device should not exist");
-
-            println!("✓ Invalid device not found in enumeration (correct)");
-        }
-        Err(_) => {
-            // Device enumeration can fail in CI environments
-            println!("✓ Device enumeration failed (expected in CI)");
-        }
+    if let Ok(devices) = list_input_devices() {
+        assert!(!devices
+            .iter()
+            .any(|device| device.name.contains("FAKE_DEVICE_DOES_NOT_EXIST")));
     }
 
-    // Test 3: Processor non-started lifecycle
-    // Create processor, call stop() (even though not started - should be safe)
     let processor = AudioProcessor::new();
-    assert!(
-        !processor.is_running(),
-        "Processor should not be running initially"
-    );
-
-    // Calling stop when not running should be safe (no-op)
-    // Note: AudioProcessor doesn't expose a public stop() method in the current API
-    // The processor is only stopped when dropped
-    // This test validates that the processor state remains consistent
-
-    // Verify processor is still in valid state after "non-started" lifecycle
-    assert!(
-        !processor.is_running(),
-        "Processor should remain not running"
-    );
-
-    // Verify we can still set parameters after "stop" (no-op)
+    assert!(!processor.is_running());
     processor.set_gate_threshold(-60.0);
     processor
         .set_eq_band_gain(0, 6.0)
         .expect("test gain should be valid");
     processor.set_compressor_threshold(-20.0);
-
-    // Verify parameters were set correctly
-    let params = processor.get_eq_band_params(0);
-    assert!(params.is_some(), "EQ band params should be accessible");
-    let (_freq, gain, _q) = params.unwrap();
-    assert_eq!(gain, 6.0, "EQ gain should be updated");
-
-    println!("Processor non-started lifecycle safety validated");
-    println!("✓ Device enumeration and lifecycle smoke test passed");
+    let (_, gain, _) = processor
+        .get_eq_band_params(0)
+        .expect("EQ band parameters should remain available");
+    assert_eq!(gain, 6.0);
+    assert!(!processor.is_running());
 }

@@ -1,6 +1,6 @@
 [package]
 name = "mic_eq_core"
-version = "1.8.5"
+version = "1.8.6"
 edition = "2021"
 description = "High-performance DSP engine for AudioForge - real-time noise suppression and equalization"
 
@@ -14,7 +14,7 @@ cpal = "0.16"
 rubato = "0.14"  # High-quality resampling
 
 # Noise suppression (RNNoise)
-nnnoiseless = "0.5"
+nnnoiseless = { version = "0.5", default-features = false }
 
 # Noise suppression (DeepFilterNet) - optional, C FFI approach
 # Uses C API via FFI to avoid Rc/Send issues with Rust libDF crate
@@ -22,8 +22,8 @@ nnnoiseless = "0.5"
 # Build instructions: See rust-core/src/dsp/deepfilter_ffi.rs
 
 # Python bindings
-pyo3 = "0.22"
-numpy = "0.22"
+pyo3 = "0.29"
+numpy = "0.29"
 
 # Array operations (not needed for FFI mode)
 # ndarray = { version = "0.15", optional = true }
@@ -77,4 +77,3 @@ deepfilter-real = ["deepfilter"]
 
 [dev-dependencies]
 approx = "0.5"
-rand = "0.8"

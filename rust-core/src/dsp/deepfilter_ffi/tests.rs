@@ -15,6 +15,9 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        // Test fixtures contain no privileged or secret data; uniqueness only
+        // prevents parallel test collisions and is not a security boundary.
+        // nosemgrep: rust.lang.security.temp-dir.temp-dir
         let path = std::env::temp_dir().join(format!("audioforge-{}-{}", name, suffix));
         fs::create_dir_all(&path).unwrap();
         path
@@ -103,32 +106,141 @@ mod tests {
     }
 
     #[test]
-    fn test_find_model_path_accepts_explicit_file() {
+    fn test_external_model_path_requires_explicit_opt_in() {
         let _guard = env_lock().lock().unwrap();
         let temp_dir = temp_test_dir("deepfilter-file");
         let model_path = temp_dir.join("custom-model.tar.gz");
         fs::write(&model_path, []).unwrap();
 
         std::env::set_var("DEEPFILTER_MODEL_PATH", &model_path);
-        let resolved = find_model_path(DeepFilterModel::LowLatency);
+        std::env::remove_var("AUDIOFORGE_ALLOW_EXTERNAL_DF");
+        let blocked = find_model_path(
+            DeepFilterModel::LowLatency,
+            &AppOwnedDeepFilterPaths::default(),
+            external_deepfilter_paths_allowed(),
+        );
+        std::env::set_var("AUDIOFORGE_ALLOW_EXTERNAL_DF", "1");
+        let allowed = find_model_path(
+            DeepFilterModel::LowLatency,
+            &AppOwnedDeepFilterPaths::default(),
+            external_deepfilter_paths_allowed(),
+        );
         std::env::remove_var("DEEPFILTER_MODEL_PATH");
+        std::env::remove_var("AUDIOFORGE_ALLOW_EXTERNAL_DF");
+
+        assert_ne!(blocked, Some(model_path.clone()));
+        assert_eq!(allowed, Some(model_path));
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_app_owned_model_path_does_not_require_external_opt_in() {
+        let _guard = env_lock().lock().unwrap();
+        let temp_dir = temp_test_dir("deepfilter-dir");
+        let model_path = temp_dir.join(DeepFilterModel::LowLatency.filename());
+        fs::write(&model_path, []).unwrap();
+
+        let app_paths = AppOwnedDeepFilterPaths {
+            library: None,
+            model: Some(temp_dir.clone()),
+        };
+        let resolved = find_model_path(DeepFilterModel::LowLatency, &app_paths, false);
 
         assert_eq!(resolved, Some(model_path));
         let _ = fs::remove_dir_all(temp_dir);
     }
 
     #[test]
-    fn test_find_model_path_accepts_directory() {
+    fn test_opted_in_external_model_overrides_app_owned_model() {
         let _guard = env_lock().lock().unwrap();
-        let temp_dir = temp_test_dir("deepfilter-dir");
-        let model_path = temp_dir.join(DeepFilterModel::LowLatency.filename());
-        fs::write(&model_path, []).unwrap();
+        let temp_dir = temp_test_dir("deepfilter-model-precedence");
+        let bundled_dir = temp_dir.join("bundled");
+        fs::create_dir_all(&bundled_dir).unwrap();
+        let bundled_model = bundled_dir.join(DeepFilterModel::LowLatency.filename());
+        let external_model = temp_dir.join("external-model.tar.gz");
+        fs::write(&bundled_model, []).unwrap();
+        fs::write(&external_model, []).unwrap();
+        let app_paths = AppOwnedDeepFilterPaths {
+            library: None,
+            model: Some(bundled_dir),
+        };
 
-        std::env::set_var("DEEPFILTER_MODEL_PATH", &temp_dir);
-        let resolved = find_model_path(DeepFilterModel::LowLatency);
+        std::env::set_var("DEEPFILTER_MODEL_PATH", &external_model);
+        let default_path = find_model_path(DeepFilterModel::LowLatency, &app_paths, false);
+        let overridden_path = find_model_path(DeepFilterModel::LowLatency, &app_paths, true);
         std::env::remove_var("DEEPFILTER_MODEL_PATH");
 
-        assert_eq!(resolved, Some(model_path));
+        assert_eq!(default_path, Some(bundled_model));
+        assert_eq!(overridden_path, Some(external_model));
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_external_library_path_requires_explicit_opt_in() {
+        let _guard = env_lock().lock().unwrap();
+        let temp_dir = temp_test_dir("deepfilter-library");
+        let library_path = temp_dir.join(if cfg!(target_os = "windows") {
+            "df.dll"
+        } else if cfg!(target_os = "macos") {
+            "libdf.dylib"
+        } else {
+            "libdf.so"
+        });
+        fs::write(&library_path, []).unwrap();
+        let library_name = library_path.file_name().unwrap().to_str().unwrap();
+
+        std::env::set_var("DEEPFILTER_LIB_PATH", &library_path);
+        let blocked = DeepFilterLib::trusted_library_candidates(
+            library_name,
+            &AppOwnedDeepFilterPaths::default(),
+            false,
+        );
+        let allowed = DeepFilterLib::trusted_library_candidates(
+            library_name,
+            &AppOwnedDeepFilterPaths::default(),
+            true,
+        );
+        std::env::remove_var("DEEPFILTER_LIB_PATH");
+
+        let canonical = library_path.canonicalize().unwrap();
+        assert!(!blocked.contains(&canonical));
+        assert!(allowed.contains(&canonical));
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn test_opted_in_external_library_precedes_app_owned_library() {
+        let _guard = env_lock().lock().unwrap();
+        let temp_dir = temp_test_dir("deepfilter-library-precedence");
+        let library_name = if cfg!(target_os = "windows") {
+            "df.dll"
+        } else if cfg!(target_os = "macos") {
+            "libdf.dylib"
+        } else {
+            "libdf.so"
+        };
+        let bundled_dir = temp_dir.join("bundled");
+        let external_dir = temp_dir.join("external");
+        fs::create_dir_all(&bundled_dir).unwrap();
+        fs::create_dir_all(&external_dir).unwrap();
+        let bundled_library = bundled_dir.join(library_name);
+        let external_library = external_dir.join(library_name);
+        fs::write(&bundled_library, []).unwrap();
+        fs::write(&external_library, []).unwrap();
+        let app_paths = AppOwnedDeepFilterPaths {
+            library: Some(bundled_library.clone()),
+            model: None,
+        };
+
+        std::env::set_var("DEEPFILTER_LIB_PATH", &external_library);
+        let default_candidates =
+            DeepFilterLib::trusted_library_candidates(library_name, &app_paths, false);
+        let override_candidates =
+            DeepFilterLib::trusted_library_candidates(library_name, &app_paths, true);
+        std::env::remove_var("DEEPFILTER_LIB_PATH");
+
+        assert_eq!(default_candidates.first(), bundled_library.canonicalize().ok().as_ref());
+        assert_eq!(override_candidates.first(), external_library.canonicalize().ok().as_ref());
         let _ = fs::remove_dir_all(temp_dir);
     }
 }

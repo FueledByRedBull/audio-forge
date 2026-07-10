@@ -53,6 +53,17 @@ impl AudioProcessor {
             .unwrap_or(InputChannelMode::Average)
     }
 
+    /// Set adaptive input cleanup mode.
+    pub fn set_input_cleanup_mode(&self, mode: InputCleanupMode) {
+        self.input_cleanup_mode.store(mode as u8, Ordering::Release);
+    }
+
+    /// Get adaptive input cleanup mode.
+    pub fn input_cleanup_mode(&self) -> InputCleanupMode {
+        InputCleanupMode::from_u8(self.input_cleanup_mode.load(Ordering::Acquire))
+            .unwrap_or_default()
+    }
+
     /// Get sample rate
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate

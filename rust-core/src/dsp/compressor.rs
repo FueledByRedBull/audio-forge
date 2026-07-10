@@ -14,6 +14,10 @@ const SPEECH_ACTIVE_RMS_MIN_DB: f64 = -55.0;
 const SPEECH_ACTIVE_RMS_MAX_DB: f64 = -6.0;
 const MAKEUP_SILENCE_RELAX_MS: f64 = 1500.0;
 const SIDECHAIN_HIGHPASS_DEFAULT_HZ: f64 = 120.0;
+const SIDECHAIN_BAND_ENV_MS: f64 = 18.0;
+const PLOSIVE_RATIO_START: f64 = 1.25;
+const PLOSIVE_RATIO_FULL: f64 = 5.0;
+const PLOSIVE_MIN_DETECTOR_GAIN: f64 = 0.35;
 
 /// Downward compressor with soft-knee gain reduction
 pub struct Compressor {
@@ -83,6 +87,16 @@ pub struct Compressor {
     sidechain_highpass_prev_input: f64,
     /// Previous sidechain high-pass output sample.
     sidechain_highpass_prev_output: f64,
+    /// Low-band detector energy used for plosive discrimination.
+    low_band_env_sq: f64,
+    /// Voiced-band detector energy used for plosive discrimination.
+    voiced_band_env_sq: f64,
+    /// Presence-band detector energy used to keep consonants forward.
+    presence_band_env_sq: f64,
+    /// Smoothed low/voiced ratio exposed for diagnostics and tests.
+    plosive_ratio: f64,
+    /// Previous limiter pressure used to keep auto makeup inside headroom.
+    limiter_feedback_gain_reduction_db: f64,
 }
 
 impl Compressor {
@@ -150,6 +164,11 @@ impl Compressor {
             ),
             sidechain_highpass_prev_input: 0.0,
             sidechain_highpass_prev_output: 0.0,
+            low_band_env_sq: 0.0,
+            voiced_band_env_sq: 0.0,
+            presence_band_env_sq: 0.0,
+            plosive_ratio: 0.0,
+            limiter_feedback_gain_reduction_db: 0.0,
         }
     }
 
@@ -322,6 +341,17 @@ impl Compressor {
         self.sidechain_highpass_enabled
     }
 
+    /// Current low/voiced sidechain ratio used to de-emphasize plosives.
+    pub fn plosive_ratio(&self) -> f64 {
+        self.plosive_ratio
+    }
+
+    /// Feed previous limiter pressure into auto makeup so it does not chase
+    /// loudness targets through unavailable headroom.
+    pub fn set_limiter_feedback_gain_reduction_db(&mut self, gain_reduction_db: f64) {
+        self.limiter_feedback_gain_reduction_db = gain_reduction_db.clamp(0.0, 24.0);
+    }
+
     #[inline]
     fn sidechain_highpass_coeff(cutoff_hz: f64, sample_rate: f64) -> f64 {
         let cutoff_hz = cutoff_hz.clamp(20.0, sample_rate * 0.45);
@@ -333,6 +363,10 @@ impl Compressor {
     fn reset_sidechain_highpass_state(&mut self) {
         self.sidechain_highpass_prev_input = 0.0;
         self.sidechain_highpass_prev_output = 0.0;
+        self.low_band_env_sq = 0.0;
+        self.voiced_band_env_sq = 0.0;
+        self.presence_band_env_sq = 0.0;
+        self.plosive_ratio = 0.0;
     }
 
     #[inline]
@@ -346,6 +380,39 @@ impl Compressor {
         self.sidechain_highpass_prev_input = input;
         self.sidechain_highpass_prev_output = output;
         output
+    }
+
+    #[inline]
+    fn update_sidechain_band_metrics(&mut self, full_band_input: f64, detector_input: f64) -> f64 {
+        if !self.sidechain_highpass_enabled {
+            self.plosive_ratio = 0.0;
+            return 1.0;
+        }
+
+        let low_component = full_band_input - detector_input;
+        let voiced_component = detector_input;
+        let presence_component = 0.65 * detector_input + 0.35 * (detector_input - low_component);
+        let coeff = util::time_constant_to_coeff(SIDECHAIN_BAND_ENV_MS, self.sample_rate);
+
+        self.low_band_env_sq =
+            coeff * self.low_band_env_sq + (1.0 - coeff) * low_component * low_component;
+        self.voiced_band_env_sq =
+            coeff * self.voiced_band_env_sq + (1.0 - coeff) * voiced_component * voiced_component;
+        self.presence_band_env_sq = coeff * self.presence_band_env_sq
+            + (1.0 - coeff) * presence_component * presence_component;
+
+        let low_rms = self.low_band_env_sq.sqrt();
+        let voiced_rms = self.voiced_band_env_sq.sqrt().max(1e-8);
+        let presence_rms = self.presence_band_env_sq.sqrt();
+        self.plosive_ratio = (low_rms / voiced_rms).clamp(0.0, 32.0);
+
+        let plosive_amount = ((self.plosive_ratio - PLOSIVE_RATIO_START)
+            / (PLOSIVE_RATIO_FULL - PLOSIVE_RATIO_START))
+            .clamp(0.0, 1.0);
+        let plosive_penalty = 1.0 - plosive_amount * (1.0 - PLOSIVE_MIN_DETECTOR_GAIN);
+        let presence_ratio = (presence_rms / voiced_rms).clamp(0.0, 4.0);
+        let presence_weight = 1.0 + 0.18 * (presence_ratio - 0.75).clamp(0.0, 1.0);
+        (plosive_penalty * presence_weight).clamp(PLOSIVE_MIN_DETECTOR_GAIN, 1.15)
     }
 
     fn update_adaptive_release_time_meter(&mut self) {
@@ -451,7 +518,9 @@ impl Compressor {
                 return;
             }
             let required_gain = self.target_lufs - self.current_lufs;
-            let clamped_gain = required_gain.clamp(0.0, 12.0);
+            let headroom_cap =
+                (12.0 - self.limiter_feedback_gain_reduction_db * 2.0).clamp(0.0, 12.0);
+            let clamped_gain = required_gain.clamp(0.0, headroom_cap);
 
             let diff = clamped_gain - self.smoothed_makeup_gain;
             if diff.abs() > 0.1 {
@@ -531,6 +600,7 @@ impl Compressor {
 
         let input_f64 = input as f64;
         let detector_input = self.process_sidechain_sample(input_f64);
+        let detector_weight = self.update_sidechain_band_metrics(input_f64, detector_input);
         let detector_abs = detector_input.abs();
         let inst_peak_db = util::linear_to_db(detector_abs, 1e-10);
         let peak_coeff = if inst_peak_db > self.peak_envelope_db {
@@ -546,7 +616,8 @@ impl Compressor {
             self.rms_coeff * self.rms_envelope_sq + (1.0 - self.rms_coeff) * input_squared;
         let rms_db = util::linear_to_db(self.rms_envelope_sq.sqrt(), 1e-10);
 
-        let detector_db = Self::blended_detector_db(self.peak_envelope_db, rms_db);
+        let detector_db = Self::blended_detector_db(self.peak_envelope_db, rms_db)
+            + util::linear_to_db(detector_weight, 1e-10);
 
         self.update_adaptive_release_time_meter();
         let release_diff = self.target_release_ms - self.current_release_ms;
@@ -584,6 +655,7 @@ impl Compressor {
         self.release_coeff =
             util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
         self.reset_sidechain_highpass_state();
+        self.limiter_feedback_gain_reduction_db = 0.0;
         if let Some(meter) = &mut self.loudness_meter {
             if meter.reset().is_ok() {
                 self.current_lufs = -100.0;
@@ -723,6 +795,20 @@ mod tests {
             "highpassed={} full_band={}",
             highpassed.current_gain_reduction(),
             full_band.current_gain_reduction()
+        );
+    }
+
+    #[test]
+    fn test_plosive_ratio_tracks_low_band_bursts() {
+        let mut comp = Compressor::new(-30.0, 8.0, 0.1, 180.0, 0.0, 0.0, 48_000.0);
+        comp.set_sidechain_highpass_enabled(true);
+
+        process_sine(&mut comp, 55.0, 0.7, 12_000);
+        let plosive_ratio = comp.plosive_ratio();
+
+        assert!(
+            plosive_ratio > 1.5,
+            "low-band burst should raise plosive ratio, got {plosive_ratio}"
         );
     }
 
@@ -900,6 +986,34 @@ mod tests {
 
         assert!(compressed.current_gain_reduction() > 1.0);
         assert!(compressed.current_makeup_gain() >= uncompressed.current_makeup_gain());
+    }
+
+    #[test]
+    fn test_auto_makeup_caps_against_limiter_feedback() {
+        let mut uncapped = Compressor::default_voice(48_000.0);
+        uncapped.set_auto_makeup_enabled(true);
+        uncapped.set_target_lufs(-12.0);
+
+        let mut capped = Compressor::default_voice(48_000.0);
+        capped.set_auto_makeup_enabled(true);
+        capped.set_target_lufs(-12.0);
+        capped.set_limiter_feedback_gain_reduction_db(5.0);
+
+        let mut block = vec![0.04_f32; 48_000];
+        for _ in 0..12 {
+            uncapped.process_block_inplace(&mut block);
+            block.fill(0.04);
+            capped.process_block_inplace(&mut block);
+            block.fill(0.04);
+        }
+
+        assert!(
+            capped.current_makeup_gain() < uncapped.current_makeup_gain(),
+            "limiter feedback should cap makeup: capped={} uncapped={}",
+            capped.current_makeup_gain(),
+            uncapped.current_makeup_gain()
+        );
+        assert!(capped.current_makeup_gain() <= 2.5);
     }
 
     #[test]

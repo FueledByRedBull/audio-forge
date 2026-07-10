@@ -67,7 +67,7 @@ def test_preset_migration_to_v17_adds_deesser_defaults():
     assert preset.deesser.auto_enabled is True
     assert preset.deesser.auto_amount == 0.5
     assert preset.deesser.low_cut_hz == 4000.0
-    assert preset.deesser.high_cut_hz == 9000.0
+    assert preset.deesser.high_cut_hz == 11000.0
     assert preset.deesser.threshold_db == -28.0
     assert preset.deesser.max_reduction_db == 6.0
     assert preset.compressor.sidechain_highpass_enabled is True

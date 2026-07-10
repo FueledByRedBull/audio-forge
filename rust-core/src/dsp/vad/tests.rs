@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::excessive_precision)] // SciPy golden vectors are copied verbatim.
+
     use super::*;
 
     #[test]
@@ -144,24 +146,192 @@ mod tests {
     }
 
     #[test]
-    fn test_linear_resample_into_identity_preserves_samples() {
+    fn test_anti_aliased_resample_into_identity_preserves_samples() {
         let input = vec![0.0, 0.25, -0.5, 1.0];
         let mut output = Vec::new();
 
-        linear_resample_into(&input, 1.0, &mut output);
+        anti_aliased_resample_into(&input, 1.0, &mut output);
 
         assert_eq!(output, input);
     }
 
     #[test]
-    fn test_linear_resample_into_downsamples_to_expected_length() {
+    fn test_anti_aliased_resample_into_downsamples_to_expected_length() {
         let input = vec![1.0f32; 1536];
         let mut output = Vec::new();
 
-        linear_resample_into(&input, SILERO_SAMPLE_RATE as f32 / 48_000.0, &mut output);
+        anti_aliased_resample_into(&input, SILERO_SAMPLE_RATE as f32 / 48_000.0, &mut output);
 
         assert_eq!(output.len(), SILERO_WINDOW_SIZE);
         assert!(output.iter().all(|sample| (*sample - 1.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn test_anti_aliased_resample_rejects_high_frequency_aliasing() {
+        let sample_rate = 48_000.0_f32;
+        let ratio = SILERO_SAMPLE_RATE as f32 / sample_rate;
+        let mut high = vec![0.0_f32; 1536];
+        let mut voice = vec![0.0_f32; 1536];
+        for idx in 0..1536 {
+            let t = idx as f32 / sample_rate;
+            high[idx] = (2.0 * std::f32::consts::PI * 12_000.0 * t).sin();
+            voice[idx] = (2.0 * std::f32::consts::PI * 1_000.0 * t).sin();
+        }
+
+        let mut high_out = Vec::new();
+        let mut voice_out = Vec::new();
+        anti_aliased_resample_into(&high, ratio, &mut high_out);
+        anti_aliased_resample_into(&voice, ratio, &mut voice_out);
+
+        let rms = |samples: &[f32]| -> f32 {
+            (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32)
+                .sqrt()
+        };
+        let high_rms = rms(&high_out[32..high_out.len() - 32]);
+        let voice_rms = rms(&voice_out[32..voice_out.len() - 32]);
+
+        assert_eq!(high_out.len(), SILERO_WINDOW_SIZE);
+        assert_eq!(voice_out.len(), SILERO_WINDOW_SIZE);
+        assert!(
+            high_rms < voice_rms * 0.08,
+            "high_rms={high_rms} voice_rms={voice_rms}"
+        );
+    }
+
+    const GOLDEN_INDICES: [usize; 15] = [
+        32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448, 480,
+    ];
+    // Generated with scipy.signal.resample_poly(input, 16000, input_rate,
+    // window=("kaiser", 5.0)). The sparse vectors stay reviewable while
+    // covering the complete 32 ms Silero window.
+    const SCIPY_SPEECH_48K: [f32; 15] = [
+        0.230655119,
+        -0.130217150,
+        0.222004876,
+        -0.501845241,
+        0.438263059,
+        -0.354755819,
+        0.575726748,
+        -0.572377145,
+        0.344859362,
+        -0.422269702,
+        0.480481923,
+        -0.196243078,
+        0.101228043,
+        -0.199756607,
+        -0.031403121,
+    ];
+    const SCIPY_SPEECH_44K1: [f32; 15] = [
+        0.230644554,
+        -0.130219638,
+        0.222025439,
+        -0.501842320,
+        0.438263506,
+        -0.354771644,
+        0.575753927,
+        -0.572403729,
+        0.344874859,
+        -0.422270089,
+        0.480479032,
+        -0.196262598,
+        0.101228848,
+        -0.199745625,
+        -0.031403158,
+    ];
+    const SCIPY_NOISE_48K: [f32; 15] = [
+        -0.071705781,
+        -0.088858202,
+        -0.167572007,
+        -0.222385511,
+        0.008212528,
+        -0.007762028,
+        -0.401018500,
+        -0.032284141,
+        0.061968692,
+        -0.021019392,
+        0.256368130,
+        0.136872485,
+        0.286439091,
+        0.330785215,
+        -0.129022315,
+    ];
+    const SCIPY_NOISE_44K1: [f32; 15] = [
+        -0.306934148,
+        -0.399872720,
+        0.231722042,
+        0.042804722,
+        -0.146513596,
+        0.042475406,
+        0.043586224,
+        -0.038887408,
+        0.097171865,
+        -0.206554338,
+        0.337191194,
+        0.286520392,
+        -0.111895755,
+        0.178830177,
+        -0.271840066,
+    ];
+
+    fn scipy_fixture(sample_rate: u32, high_frequency_noise: bool) -> Vec<f32> {
+        let input_len = (SILERO_WINDOW_SIZE as f64 * sample_rate as f64
+            / SILERO_SAMPLE_RATE as f64)
+            .ceil() as usize;
+        if high_frequency_noise {
+            let mut state = 0xA17D_5EED_u32;
+            return (0..input_len)
+                .map(|_| {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    if state & 0x8000_0000 != 0 { 0.4 } else { -0.4 }
+                })
+                .collect();
+        }
+
+        (0..input_len)
+            .map(|index| {
+                let time = index as f64 / sample_rate as f64;
+                (0.5 * (2.0 * std::f64::consts::PI * 233.0 * time).sin()
+                    + 0.2 * (2.0 * std::f64::consts::PI * 3100.0 * time).sin()
+                    + 0.07 * (2.0 * std::f64::consts::PI * 6900.0 * time).sin())
+                    as f32
+            })
+            .collect()
+    }
+
+    fn assert_matches_scipy_golden(
+        sample_rate: u32,
+        high_frequency_noise: bool,
+        expected: &[f32; 15],
+        max_error: f32,
+    ) {
+        let input = scipy_fixture(sample_rate, high_frequency_noise);
+        let mut output = Vec::new();
+        anti_aliased_resample_into(
+            &input,
+            SILERO_SAMPLE_RATE as f32 / sample_rate as f32,
+            &mut output,
+        );
+        assert!(output.len() >= SILERO_WINDOW_SIZE);
+        for (index, expected) in GOLDEN_INDICES.iter().zip(expected.iter()) {
+            let error = (output[*index] - expected).abs();
+            assert!(
+                error <= max_error,
+                "sample_rate={sample_rate} noise={high_frequency_noise} index={index} actual={} expected={expected} error={error}",
+                output[*index]
+            );
+        }
+    }
+
+    #[test]
+    fn test_resampler_matches_scipy_polyphase_speech_golden_vectors() {
+        assert_matches_scipy_golden(48_000, false, &SCIPY_SPEECH_48K, 0.013);
+        assert_matches_scipy_golden(44_100, false, &SCIPY_SPEECH_44K1, 0.013);
+    }
+
+    #[test]
+    fn test_resampler_matches_scipy_polyphase_noise_golden_vectors() {
+        assert_matches_scipy_golden(48_000, true, &SCIPY_NOISE_48K, 0.06);
+        assert_matches_scipy_golden(44_100, true, &SCIPY_NOISE_44K1, 0.06);
     }
 
     #[test]

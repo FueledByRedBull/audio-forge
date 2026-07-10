@@ -63,6 +63,11 @@ impl AudioProcessor {
         self.gate_chatter_event_count.load(Ordering::Relaxed)
     }
 
+    /// Whether VAD chatter mitigation is temporarily relaxing the gate.
+    pub fn is_gate_auto_relax_active(&self) -> bool {
+        self.gate_auto_relax_active.load(Ordering::Relaxed)
+    }
+
     // === VAD Gate Controls (VAD feature only) ===
 
     #[cfg(feature = "vad")]

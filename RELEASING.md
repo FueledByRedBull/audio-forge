@@ -19,12 +19,12 @@ Raw assets are preferred. If the asset-source release only has an existing `Audi
 For local release prep from a clean clone, you can mirror that behavior with:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.5
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.6
 ```
 
 Then run the workflow with:
 
-- `release_tag`: the target tag, for example `v1.8.5`.
+- `release_tag`: the target tag, for example `v1.8.6`.
 - `asset_source_tag`: the release tag containing the raw assets. Leave blank to use the repository variable `AUDIOFORGE_ASSET_SOURCE_TAG`, or the target release when that variable is unset.
 - `upload_to_release`: enabled when running manually and the generated archive should be uploaded to the GitHub Release.
 
@@ -58,10 +58,18 @@ Run the release validation checks:
 .\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
 .\.venv\Scripts\python.exe -m pyright
 .\.venv\Scripts\python.exe -m pytest python/tests -q
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt
+.\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
+.\.venv\Scripts\python.exe python\tools\check_workflows.py
 .\.venv\Scripts\python.exe python\tools\package_smoke.py --source-only
 cargo fmt --check
+cargo audit
 cargo test -p mic_eq_core
+cargo test --release -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
+cargo test --release -p mic_eq_core audio::input::tests::benchmark_phase_safe_mono_callback_cost -- --ignored --nocapture
+cargo test --release -p mic_eq_core dsp::biquad::tests::benchmark_biquad_morph_cost -- --ignored --nocapture
 cargo clippy -p mic_eq_core --all-targets -- -D warnings
 .\.venv\Scripts\python.exe python\tools\package_smoke.py
 .\.venv\Scripts\python.exe python\tools\self_test.py
@@ -71,26 +79,29 @@ Create the distributable archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.8.5-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.8.6-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 Compute the checksum:
 
 ```powershell
-Get-FileHash .\AudioForge-v1.8.5-win64-ultra.7z -Algorithm SHA256
+Get-FileHash .\AudioForge-v1.8.6-win64-ultra.7z -Algorithm SHA256
 ```
 
 Manual publish:
 
 1. Commit tracked source/doc/version changes.
-2. Create annotated tag `v1.8.5`.
+2. Create annotated tag `v1.8.6`.
 3. Upload the raw runtime assets listed above to the GitHub Release or to the configured `asset_source_tag` release. An existing verified `AudioForge-*-win64-ultra.7z` on that release can also be used as the asset source.
-4. Push `master` and `v1.8.5`, or run the `Release package` workflow manually with `upload_to_release` enabled.
+4. Push `master` and `v1.8.6`, or run the `Release package` workflow manually with `upload_to_release` enabled.
 
 ## Packaging notes
 
 - `AudioForge.spec` is the canonical package definition.
-- Packaged builds prefer the bundled `df.dll`; set `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` only for deliberate override/testing.
+- Packaged builds register canonical bundled DeepFilter paths. Ambient paths stay disabled unless `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` deliberately enables an external override.
+- Install `requirements/dev.txt` with `--require-hashes`; do not release from an environment resolved directly from open-ended `pyproject.toml` constraints.
+- Review every Semgrep warning in the generated SARIF. The CI gate fails reviewed ERROR-severity findings, while warning-level FFI and process-boundary findings require human triage.
+- A clean `cargo audit` is mandatory; do not add RustSec ignores merely to make a release pass.
 - Keep `release-assets.json` current with the required `df.dll`, `target/release/DirectML.dll`, both DeepFilter model tarballs, and `models/silero_vad.onnx`.
 - `build_exe.ps1` fails before PyInstaller if a required asset is missing, hash mismatched, or the local `mic_eq_core*.pyd` is older than Rust sources.
 - `python/tools/package_smoke.py` verifies exact bundled DLL/model/native-extension presence, rejects duplicate top-level native-extension payloads, and checks dependency license or `.dist-info` metadata.

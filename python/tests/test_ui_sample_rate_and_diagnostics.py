@@ -50,18 +50,21 @@ class _CaptureWorkerStub:
         target_preset,
         target_mode="adaptive",
         smoothing_strength="conservative",
+        chain_settings=None,
     ):
         self.audio_data = audio_data
         self.sample_rate = sample_rate
         self.target_preset = target_preset
         self.target_mode = target_mode
         self.smoothing_strength = smoothing_strength
+        self.chain_settings = chain_settings
         _CaptureWorkerStub.last_init = {
             "audio_len": len(audio_data),
             "sample_rate": sample_rate,
             "target_preset": target_preset,
             "target_mode": target_mode,
             "smoothing_strength": smoothing_strength,
+            "chain_settings": chain_settings,
         }
         self.step_progress = _SignalStub()
         self.finished = _SignalStub()
@@ -440,6 +443,7 @@ def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
     assert _CaptureWorkerStub.last_init["sample_rate"] == 44_100
     assert _CaptureWorkerStub.last_init["target_mode"] == "adaptive"
     assert _CaptureWorkerStub.last_init["smoothing_strength"] == "conservative"
+    assert _CaptureWorkerStub.last_init["chain_settings"] == {}
     assert dialog.analysis_worker is not None
     assert dialog.analysis_worker.sample_rate == 44_100
 

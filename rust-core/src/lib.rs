@@ -2,8 +2,8 @@
 
 //! AudioForge core - high-performance DSP for real-time audio processing
 //!
-//! Processing chain: Mic Input -> Pre-Filter -> Noise Gate -> Noise Suppression
-//! -> De-Esser -> 10-Band EQ -> Compressor -> Limiter -> Output
+//! Processing chain: input cleanup -> noise gate -> noise suppression ->
+//! de-esser -> 10-band EQ -> compressor -> sample/true-peak limiter -> output.
 
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -109,6 +109,24 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<audio::DeviceInfo>()?;
     m.add_function(wrap_pyfunction!(audio::list_input_devices, m)?)?;
     m.add_function(wrap_pyfunction!(audio::list_output_devices, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        audio::processor::simulate_auto_eq_chain,
+        m
+    )?)?;
+
+    #[cfg(feature = "deepfilter")]
+    m.add_function(wrap_pyfunction!(configure_deepfilter_runtime_paths, m)?)?;
 
     Ok(())
+}
+
+#[cfg(feature = "deepfilter")]
+#[pyfunction]
+#[pyo3(signature = (library_path=None, model_path=None))]
+fn configure_deepfilter_runtime_paths(
+    library_path: Option<&str>,
+    model_path: Option<&str>,
+) -> PyResult<()> {
+    dsp::deepfilter_ffi::configure_app_owned_paths(library_path, model_path)
+        .map_err(pyo3::exceptions::PyValueError::new_err)
 }

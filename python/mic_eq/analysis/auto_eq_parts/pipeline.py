@@ -2,6 +2,7 @@
 
 from .optimizer import calculate_eq_bands
 from .target import get_target_curve
+from .headroom import apply_headroom_validation
 
 def analyze_auto_eq(
     audio_data,
@@ -10,6 +11,7 @@ def analyze_auto_eq(
     *,
     target_mode="adaptive",
     smoothing_strength="conservative",
+    chain_settings=None,
 ):
     """
     Complete auto-EQ analysis pipeline.
@@ -27,6 +29,7 @@ def analyze_auto_eq(
         target_preset: Target curve name ('broadcast', 'podcast', 'streaming', 'flat')
         target_mode: 'adaptive' for bounded voice-aware targets, 'static' for catalog targets
         smoothing_strength: 'conservative', 'balanced', 'broad', or 'off'
+        chain_settings: Current deterministic downstream DSP settings for headroom simulation
 
     Returns:
         result: Tuple of (eq_settings, validation_result)
@@ -78,6 +81,12 @@ def analyze_auto_eq(
         smoothing_strength=smoothing_strength,
     )
     eq_settings["target_mode"] = target_mode
+    eq_settings = apply_headroom_validation(
+        audio_data,
+        sample_rate,
+        eq_settings,
+        chain_settings=chain_settings,
+    )
 
     # Step 5: Validate results
     validation = validate_analysis(eq_settings, spectrum_smoothed, freqs)
@@ -97,6 +106,9 @@ def analyze_auto_eq(
             "target_mode": eq_settings.get("target_mode"),
             "smoothing_strength": eq_settings.get("smoothing_strength"),
             "residual_regularization": eq_settings.get("residual_regularization"),
+            "headroom_validation": eq_settings.get("headroom_validation"),
+            "headroom_safe": eq_settings.get("headroom_safe"),
+            "headroom_gain_scale": eq_settings.get("headroom_gain_scale"),
         }
     )
 

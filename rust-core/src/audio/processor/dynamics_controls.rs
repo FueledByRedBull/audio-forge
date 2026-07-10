@@ -28,7 +28,7 @@ impl AudioProcessor {
             .deesser_control
             .lock()
             .map(|control| control.high_cut_hz)
-            .unwrap_or(9000.0);
+            .unwrap_or(11_000.0);
         if high_cut_hz <= hz + DEESSER_MIN_BANDWIDTH_HZ {
             hz = (high_cut_hz - DEESSER_MIN_BANDWIDTH_HZ)
                 .clamp(DEESSER_LOW_CUT_MIN_HZ, DEESSER_LOW_CUT_MAX_HZ);
@@ -206,7 +206,7 @@ impl AudioProcessor {
         if let Ok(d) = self.deesser.lock() {
             d.high_cut_hz()
         } else {
-            9000.0
+            11_000.0
         }
     }
 

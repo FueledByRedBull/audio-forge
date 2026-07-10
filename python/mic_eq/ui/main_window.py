@@ -41,6 +41,8 @@ from .eq_panel import EQPanel
 from .compressor_panel import CompressorPanel
 from .deesser_panel import DeEsserPanel
 from .level_meter import LevelMeter
+from .health import input_health_state as build_input_health_state
+from .health import output_health_state as build_output_health_state
 from .calibration_dialog import CalibrationDialog
 from .latency_calibration_dialog import LatencyCalibrationDialog
 from .voice_setup_dialog import VoiceSetupDialog
@@ -102,6 +104,11 @@ INPUT_CHANNEL_MODE_OPTIONS = (
     ("Max RMS", "max_rms"),
     ("Phase-safe mono", "phase_safe_mono"),
 )
+INPUT_CLEANUP_MODE_OPTIONS = (
+    ("Off", "off"),
+    ("Gentle", "gentle"),
+    ("Strong", "strong"),
+)
 INPUT_PHASE_WARNING_CORRELATION = -0.75
 
 
@@ -152,6 +159,9 @@ class MainWindow(QMainWindow):
         self.output_combo.currentIndexChanged.connect(self._on_device_changed)
         self.input_channel_mode_combo.currentIndexChanged.connect(
             self._on_input_channel_mode_changed
+        )
+        self.input_cleanup_mode_combo.currentIndexChanged.connect(
+            self._on_input_cleanup_mode_changed
         )
 
         # Set default size before any persisted geometry overrides it.
@@ -214,6 +224,16 @@ class MainWindow(QMainWindow):
             "How multichannel input is converted to mono. Use Left/Right or Phase-safe mono if stereo channels cancel."
         )
         device_layout.addWidget(self.input_channel_mode_combo)
+
+        device_layout.addWidget(QLabel("Cleanup:"))
+        self.input_cleanup_mode_combo = QComboBox()
+        for label, mode in INPUT_CLEANUP_MODE_OPTIONS:
+            self.input_cleanup_mode_combo.addItem(label, mode)
+        self.input_cleanup_mode_combo.setMinimumWidth(96)
+        self.input_cleanup_mode_combo.setToolTip(
+            "Optional adaptive input cleanup after the fixed safe pre-filter. Off preserves the existing DC/80 Hz path."
+        )
+        device_layout.addWidget(self.input_cleanup_mode_combo)
 
         # Refresh button
         refresh_btn = QPushButton("Refresh")
@@ -545,6 +565,28 @@ class MainWindow(QMainWindow):
                 self.processor.set_input_channel_mode(target)
         except Exception:
             logger.debug("Failed to apply input channel mode", exc_info=True)
+
+    @staticmethod
+    def _is_valid_input_cleanup_mode(mode: object) -> bool:
+        return isinstance(mode, str) and any(
+            mode == option_mode for _label, option_mode in INPUT_CLEANUP_MODE_OPTIONS
+        )
+
+    def _select_input_cleanup_mode(self, mode: str) -> None:
+        target = mode if self._is_valid_input_cleanup_mode(mode) else "off"
+        for index in range(self.input_cleanup_mode_combo.count()):
+            if self.input_cleanup_mode_combo.itemData(index) == target:
+                self.input_cleanup_mode_combo.setCurrentIndex(index)
+                return
+        self.input_cleanup_mode_combo.setCurrentIndex(0)
+
+    def _apply_input_cleanup_mode(self, mode: str) -> None:
+        target = mode if self._is_valid_input_cleanup_mode(mode) else "off"
+        try:
+            if hasattr(self.processor, "set_input_cleanup_mode"):
+                self.processor.set_input_cleanup_mode(target)
+        except Exception:
+            logger.debug("Failed to apply input cleanup mode", exc_info=True)
 
     def _schedule_ui_state_save(self) -> None:
         self._ui_state_timer.start(200)
@@ -913,6 +955,8 @@ class MainWindow(QMainWindow):
         self.output_combo.blockSignals(True)
         if "input_channel_mode_combo" in self.__dict__:
             self.input_channel_mode_combo.blockSignals(True)
+        if "input_cleanup_mode_combo" in self.__dict__:
+            self.input_cleanup_mode_combo.blockSignals(True)
 
         self.input_combo.clear()
         self.output_combo.clear()
@@ -1186,11 +1230,17 @@ class MainWindow(QMainWindow):
             input_channel_mode = getattr(self.config, "input_channel_mode", "average")
             self._select_input_channel_mode(input_channel_mode)
             self._apply_input_channel_mode(input_channel_mode)
+        if "input_cleanup_mode_combo" in self.__dict__:
+            input_cleanup_mode = getattr(self.config, "input_cleanup_mode", "off")
+            self._select_input_cleanup_mode(input_cleanup_mode)
+            self._apply_input_cleanup_mode(input_cleanup_mode)
 
         self.input_combo.blockSignals(False)
         self.output_combo.blockSignals(False)
         if "input_channel_mode_combo" in self.__dict__:
             self.input_channel_mode_combo.blockSignals(False)
+        if "input_cleanup_mode_combo" in self.__dict__:
+            self.input_cleanup_mode_combo.blockSignals(False)
 
         if config_dirty:
             save_config(self.config)
@@ -1218,6 +1268,17 @@ class MainWindow(QMainWindow):
         self._apply_input_channel_mode(mode)
         save_config(self.config)
 
+    def _on_input_cleanup_mode_changed(self):
+        """Persist and apply the selected adaptive input cleanup mode."""
+        if not hasattr(self, "config"):
+            return
+        mode = self.input_cleanup_mode_combo.currentData()
+        if not self._is_valid_input_cleanup_mode(mode):
+            mode = "off"
+        self.config.input_cleanup_mode = mode
+        self._apply_input_cleanup_mode(mode)
+        save_config(self.config)
+
     def _start_processing(self):
         """Start audio processing."""
         if self.processor.is_running():
@@ -1228,6 +1289,7 @@ class MainWindow(QMainWindow):
         input_device = self._device_selection_to_name(self.input_combo) or None
         output_device = self._device_selection_to_name(self.output_combo) or None
         self._apply_input_channel_mode(getattr(self.config, "input_channel_mode", "average"))
+        self._apply_input_cleanup_mode(getattr(self.config, "input_cleanup_mode", "off"))
 
         if DEBUG:
             logger.debug(
@@ -1669,6 +1731,11 @@ class MainWindow(QMainWindow):
             input_stereo_correlation is not None
             and input_stereo_correlation < INPUT_PHASE_WARNING_CORRELATION
         )
+        phase_rescue_strategy = str(diagnostics.get("input_phase_rescue_strategy", "none") or "none")
+        phase_rescue_active = phase_rescue_strategy not in {"", "none"}
+        cleanup_mode = str(diagnostics.get("input_cleanup_mode", "off") or "off")
+        cleanup_hum_detected = bool(diagnostics.get("input_cleanup_hum_detected", False))
+        cleanup_rumble_detected = bool(diagnostics.get("input_cleanup_rumble_detected", False))
         output_recovery_events = int(
             diagnostics.get(
                 "output_recovery_event_count",
@@ -1703,63 +1770,78 @@ class MainWindow(QMainWindow):
         )
         new_gate_chatter_observed = gate_chatter_count > previous_gate_chatter_count
         self._last_gate_chatter_event_count = gate_chatter_count
+        gate_auto_relax_active = bool(diagnostics.get("gate_auto_relax_active", False))
         rt_overflows = diagnostics.get("rt_buffer_overflow_count", 0)
         input_callback_errors = diagnostics.get("input_callback_error_count", 0)
         output_callback_errors = diagnostics.get("output_callback_error_count", 0)
         rt_error_name = diagnostics.get("rt_error_name")
         rt_error_active = bool(rt_error_name and rt_error_name != "none")
+        input_crest_db = diagnostics.get("input_crest_factor_db")
+        output_lufs = diagnostics.get("output_short_term_lufs")
+        output_true_peak_db = diagnostics.get("output_true_peak_db")
+        output_true_peak_headroom_db = diagnostics.get("output_true_peak_headroom_db")
+        limiter_history_db = float(diagnostics.get("limiter_gain_reduction_history_db", 0.0) or 0.0)
+        true_peak_limiter_history_db = float(
+            diagnostics.get("output_true_peak_gain_reduction_history_db", 0.0) or 0.0
+        )
+        try:
+            output_true_peak_headroom = (
+                None
+                if output_true_peak_headroom_db is None
+                else float(output_true_peak_headroom_db)
+            )
+        except (TypeError, ValueError):
+            output_true_peak_headroom = None
 
-        if new_input_clip_observed:
-            input_health_text = f"Input: CLIPPING (CL:{input_clip_count})"
-            input_health_state = "bad"
-        elif input_rms_db is None:
-            input_health_text = "Input: --"
-            input_health_state = "idle"
-        elif input_rms_db < -65.0:
-            input_health_text = f"Input: LOW ({input_rms_db:.0f}dB)"
-            input_health_state = "warn"
-        elif input_rms_db > -3.0:
-            input_health_text = f"Input: HOT ({input_rms_db:.0f}dB)"
-            input_health_state = "warn"
-        else:
-            input_health_text = f"Input: OK ({input_rms_db:.0f}dB)"
-            input_health_state = "ok"
+        input_health_text, input_health_state = build_input_health_state(
+            rms_db=input_rms_db,
+            clip_delta=new_input_clip_observed,
+            phase_rescue_active=phase_rescue_active,
+            cleanup_rumble_detected=cleanup_rumble_detected,
+            cleanup_hum_detected=cleanup_hum_detected,
+            cleanup_mode=cleanup_mode,
+            crest_factor_db=input_crest_db if isinstance(input_crest_db, (int, float)) else None,
+        )
+        if phase_rescue_active:
+            strategy_label = phase_rescue_strategy.replace("_", " ").upper()
+            input_health_text = f"Input: PHASE {strategy_label}"
         self._set_health_chip(
             self.input_health_label,
             input_health_text,
             input_health_state,
         )
 
-        if new_output_clip_observed:
-            output_health_text = f"Output: CLIP (OCL:{output_clip_count})"
-            output_health_state = "bad"
-        elif new_output_true_peak_observed:
-            output_health_text = f"Output: TRUE PEAK (OTP:{output_true_peak_count})"
-            output_health_state = "warn"
-        elif output_rms_db is None:
-            output_health_text = "Output: --"
-            output_health_state = "idle"
-        elif output_rms_db > -1.0:
-            output_health_text = f"Output: HOT ({output_rms_db:.0f}dB)"
-            output_health_state = "warn"
-        else:
-            output_health_text = f"Output: OK ({output_rms_db:.0f}dB)"
-            output_health_state = "ok"
+        output_health_text, output_health_state = build_output_health_state(
+            rms_db=output_rms_db,
+            clip_delta=new_output_clip_observed,
+            true_peak_delta=new_output_true_peak_observed,
+            output_clip_count=output_clip_count,
+            true_peak_count=output_true_peak_count,
+            true_peak_db=output_true_peak_db,
+            true_peak_headroom_db=output_true_peak_headroom,
+            short_term_lufs=output_lufs,
+            limiter_history_db=limiter_history_db,
+            true_peak_limiter_history_db=true_peak_limiter_history_db,
+        )
         self._set_health_chip(
             self.output_health_label,
             output_health_text,
             output_health_state,
         )
 
-        gate_health_text = (
-            f"Gate: CHATTER (GCH:{gate_chatter_count})"
-            if new_gate_chatter_observed
-            else "Gate: OK"
-        )
+        if gate_auto_relax_active:
+            gate_health_text = f"Gate: RELAX (GCH:{gate_chatter_count})"
+            gate_health_state = "warn"
+        elif new_gate_chatter_observed:
+            gate_health_text = f"Gate: CHATTER (GCH:{gate_chatter_count})"
+            gate_health_state = "warn"
+        else:
+            gate_health_text = "Gate: OK"
+            gate_health_state = "ok"
         self._set_health_chip(
             self.gate_health_label,
             gate_health_text,
-            "warn" if new_gate_chatter_observed else "ok",
+            gate_health_state,
         )
 
         callback_ages = [
@@ -1811,6 +1893,19 @@ class MainWindow(QMainWindow):
             dropped_bits,
             diagnostics,
             [
+                ("input_cleanup_mode", "CLN"),
+                ("input_cleanup_hum_detected", "HUM"),
+                ("input_cleanup_rumble_detected", "RMB"),
+                ("input_cleanup_high_pass_hz", "HPF"),
+                ("input_phase_rescue_strategy", "PRS"),
+                ("input_phase_estimated_delay_samples", "PDL"),
+                ("input_phase_polarity_flipped", "PFL"),
+            ],
+        )
+        self._extend_diag_tokens(
+            dropped_bits,
+            diagnostics,
+            [
                 ("input_backlog_recovery_count", "IBR"),
                 ("input_backlog_dropped_samples", "IBD"),
                 ("output_short_write_dropped_samples", "OSW"),
@@ -1819,12 +1914,19 @@ class MainWindow(QMainWindow):
                 ("output_callback_error_count", "OCE"),
                 ("clip_event_count", "CL"),
                 ("clip_peak_db", "PK"),
+                ("input_crest_factor_db", "ICF"),
                 ("output_clip_event_count", "OCL"),
                 ("output_clip_peak_db", "OPK"),
+                ("output_crest_factor_db", "OCF"),
+                ("output_short_term_lufs", "LU"),
                 ("output_true_peak_event_count", "OTP"),
                 ("output_true_peak_db", "TPK"),
+                ("output_true_peak_headroom_db", "TPH"),
+                ("limiter_gain_reduction_history_db", "LGR"),
+                ("output_true_peak_gain_reduction_history_db", "TPGR"),
                 ("limiter_effective_ceiling_db", "LIM"),
                 ("gate_chatter_event_count", "GCH"),
+                ("gate_auto_relax_active", "GAR"),
                 ("deesser_detector_confidence", "DSC"),
             ],
         )
@@ -1847,8 +1949,14 @@ class MainWindow(QMainWindow):
                 and not new_output_clip_observed
                 and not new_output_true_peak_observed
                 and not new_gate_chatter_observed
+                and not gate_auto_relax_active
+                and not phase_rescue_active
                 and not current_phase_warning
                 and not new_phase_warning_observed
+                and not cleanup_rumble_detected
+                and limiter_history_db < 6.0
+                and true_peak_limiter_history_db < 3.0
+                and (output_true_peak_headroom is None or output_true_peak_headroom >= 0.75)
             )
             else "warn"
         )
@@ -2024,17 +2132,16 @@ class MainWindow(QMainWindow):
             "<p>Low-latency microphone audio processor</p>"
             "<p>Inspired by SteelSeries GG Sonar ClearCast AI</p>"
             "<h3>Processing Chain:</h3>"
-            "<p>Mic → Pre-Filter → Gate → AI Noise (RNNoise/DeepFilter) → EQ → Comp → Limiter → Output</p>"
+            "<p>Mic -&gt; Input Cleanup -&gt; Gate -&gt; AI Noise -&gt; De-Esser -&gt; EQ -&gt; Comp -&gt; True-Peak Limiter -&gt; Output</p>"
             "<h3>Features:</h3>"
             "<ul>"
-            "<li>Noise Gate with IIR envelope follower</li>"
-            "<li>Silero VAD-assisted gate mode</li>"
-            "<li>AI Noise Suppression: RNNoise or DeepFilterNet (experimental)</li>"
-            "<li>10-band parametric EQ</li>"
-            "<li>Compressor with soft-knee gain reduction</li>"
-            "<li>Hard limiter for clipping prevention</li>"
-            "<li>OBS-style visual level meters</li>"
-            "<li>VB Audio Cable routing for Discord/etc</li>"
+            "<li>Threshold and Silero VAD-assisted gating</li>"
+            "<li>RNNoise plus opt-in DeepFilterNet suppression</li>"
+            "<li>Phase-safe mono and tracked hum cleanup</li>"
+            "<li>Auto-EQ and uncertainty-aware Auto Voice Setup</li>"
+            "<li>10-band EQ, dynamic de-esser, and compressor</li>"
+            "<li>Band-limited true-peak output protection</li>"
+            "<li>Runtime health, recovery, and calibration diagnostics</li>"
             "</ul>"
             "<p><b>Target latency:</b> &lt;30ms</p>"
         )

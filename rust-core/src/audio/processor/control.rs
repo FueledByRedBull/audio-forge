@@ -436,7 +436,7 @@ impl DeesserControlState {
             auto_enabled: true,
             auto_amount: 0.5,
             low_cut_hz: 4000.0,
-            high_cut_hz: 9000.0,
+            high_cut_hz: 11_000.0,
             threshold_db: -28.0,
             ratio: 4.0,
             attack_ms: 2.0,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -97,11 +98,11 @@ def check_source_packaging() -> list[str]:
     runtime_expectations = [
         (
             "python/mic_eq/ui/app_bootstrap.py",
-            'os.environ["DEEPFILTER_MODEL_PATH"] = str(model_dir_with_model)',
+            "configure_deepfilter_runtime_paths(str(lib_path), str(model_dir_with_model))",
         ),
         (
-            "python/mic_eq/ui/app_bootstrap.py",
-            'os.environ.setdefault("DEEPFILTER_MODEL_PATH", str(model_dir_with_model))',
+            "rust-core/src/dsp/deepfilter_ffi.rs",
+            'env::var("AUDIOFORGE_ALLOW_EXTERNAL_DF")',
         ),
         ("launcher.py", 'os.environ.setdefault("VAD_MODEL_PATH", str(vad_model))'),
     ]
@@ -110,7 +111,7 @@ def check_source_packaging() -> list[str]:
         (".github/workflows/release-package.yml", "python/tools/verify_release_assets.py"),
         (".github/workflows/release-package.yml", "powershell -ExecutionPolicy Bypass -File .\\build_exe.ps1"),
         (".github/workflows/release-package.yml", "python/tools/package_smoke.py"),
-        (".github/workflows/release-package.yml", "actions/upload-artifact@v4"),
+        (".github/workflows/release-package.yml", "actions/upload-artifact@"),
         (".github/workflows/release-package.yml", "AudioForge-*-win64-ultra.7z"),
         (".github/workflows/release-package.yml", "gh release upload"),
     ]
@@ -123,6 +124,33 @@ def check_source_packaging() -> list[str]:
     ]:
         if not _contains(path, needle):
             errors.append(f"{path}: missing expected packaging reference {needle!r}")
+
+    bootstrap_source = (REPO_ROOT / "python/mic_eq/ui/app_bootstrap.py").read_text(
+        encoding="utf-8"
+    )
+    for forbidden in (
+        'os.environ["DEEPFILTER_LIB_PATH"]',
+        'os.environ["DEEPFILTER_MODEL_PATH"]',
+        'os.environ.setdefault("DEEPFILTER_LIB_PATH"',
+        'os.environ.setdefault("DEEPFILTER_MODEL_PATH"',
+    ):
+        if forbidden in bootstrap_source:
+            errors.append(
+                "python/mic_eq/ui/app_bootstrap.py must register bundled DeepFilter "
+                f"paths directly instead of writing {forbidden!r}"
+            )
+
+    action_ref_pattern = re.compile(r"^\s*uses:\s*[^@\s]+@([^\s#]+)", re.MULTILINE)
+    sha_pattern = re.compile(r"[0-9a-f]{40}")
+    for workflow_path in (REPO_ROOT / ".github/workflows").glob("*.yml"):
+        workflow_source = workflow_path.read_text(encoding="utf-8")
+        refs = action_ref_pattern.findall(workflow_source)
+        for ref in refs:
+            if sha_pattern.fullmatch(ref) is None:
+                errors.append(
+                    f"{workflow_path.relative_to(REPO_ROOT)}: action ref {ref!r} "
+                    "must be pinned to a 40-character commit SHA"
+                )
 
     if "dist-info" in (REPO_ROOT / "python/tools/prune_bundle.py").read_text(encoding="utf-8"):
         errors.append("python/tools/prune_bundle.py must not prune dependency dist-info metadata")

@@ -61,6 +61,24 @@ def _processor_sample_rate(owner: Any) -> int:
     return sample_rate
 
 
+def _chain_settings(owner: Any) -> dict[str, Any]:
+    settings: dict[str, Any] = {}
+    if owner is None:
+        return settings
+    if hasattr(owner, "deesser_panel"):
+        try:
+            settings["deesser"] = owner.deesser_panel.get_settings()
+        except Exception:
+            logger.debug("Failed to collect de-esser settings for Auto-EQ simulation", exc_info=True)
+    if hasattr(owner, "compressor_panel"):
+        try:
+            settings["compressor"] = owner.compressor_panel.get_compressor_settings()
+            settings["limiter"] = owner.compressor_panel.get_limiter_settings()
+        except Exception:
+            logger.debug("Failed to collect dynamics settings for Auto-EQ simulation", exc_info=True)
+    return settings
+
+
 def _selected_device_pair(owner: Any) -> tuple[str | None, str | None]:
     if owner is None:
         return None, None
@@ -601,6 +619,7 @@ class CalibrationDialog(QDialog):
         target_preset = self.get_selected_curve()
         target_mode = self.get_selected_target_mode()
         smoothing_strength = self.get_selected_smoothing_strength()
+        chain_settings = _chain_settings(parent)
 
         if DEBUG:
             logger.debug(
@@ -619,6 +638,7 @@ class CalibrationDialog(QDialog):
             target_preset,
             target_mode=target_mode,
             smoothing_strength=smoothing_strength,
+            chain_settings=chain_settings,
         )
         self.analysis_worker.step_progress.connect(self._on_analysis_step)
         self.analysis_worker.finished.connect(self._on_analysis_complete)
@@ -668,6 +688,13 @@ class CalibrationDialog(QDialog):
         target_profile = eq_settings.get("target_profile", "--")
         residual = eq_settings.get("residual_regularization") or {}
         used_fallback = bool(eq_settings.get("used_spectrum_fallback", False))
+        headroom = eq_settings.get("headroom_validation") or {}
+        headroom_after = headroom.get("after") if isinstance(headroom, dict) else None
+        headroom_safe = bool(headroom.get("safe", True)) if isinstance(headroom, dict) else True
+        headroom_advisory = (
+            bool(headroom.get("advisory", False)) if isinstance(headroom, dict) else False
+        )
+        headroom_scale = headroom.get("gain_scale") if isinstance(headroom, dict) else None
 
         self.confidence_label.setText(
             "Confidence: "
@@ -689,6 +716,26 @@ class CalibrationDialog(QDialog):
             self.gain_scale_label.setText(
                 f"{self.gain_scale_label.text()} | correction {requested}->{regularized} | narrow {narrow}"
             )
+        if isinstance(headroom_after, dict):
+            pre_tp_headroom = _format_db(headroom_after.get("pre_limiter_true_peak_headroom_db"))
+            limiter_gr = _format_db(headroom_after.get("limiter_gain_reduction_db"))
+            true_peak_gr = _format_db(headroom_after.get("true_peak_limiter_gain_reduction_db"))
+            headroom_status = (
+                "advisory only (Rust simulator unavailable)"
+                if headroom_advisory
+                else "safe correction" if headroom_safe else "headroom risk"
+            )
+            self.gain_scale_label.setText(
+                f"{self.gain_scale_label.text()} | {headroom_status}: "
+                f"TP headroom {pre_tp_headroom}, LIM GR {limiter_gr}, TP GR {true_peak_gr}"
+            )
+            self.gain_scale_label.setStyleSheet(
+                status_chip_style("info" if headroom_safe else "warn")
+            )
+            if headroom_scale is not None and float(headroom_scale) < 1.0:
+                self.gain_scale_label.setText(
+                    f"{self.gain_scale_label.text()} | headroom scale {_format_percent(headroom_scale)}"
+                )
         self.target_profile_label.setText(
             f"Target profile: {target_profile}"
             + (" | fallback spectrum" if used_fallback else "")

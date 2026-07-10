@@ -281,7 +281,12 @@ mod tests {
             INPUT_PREFILTER_Q,
             48_000.0,
         );
-        apply_input_pre_filter(&mut normal_buffer, &mut pre_filter_state, &mut pre_filter);
+        apply_input_pre_filter(
+            &mut normal_buffer,
+            &mut pre_filter_state,
+            &mut pre_filter,
+            true,
+        );
 
         let max_abs_diff = normal_buffer
             .iter()
@@ -289,6 +294,299 @@ mod tests {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f32, f32::max);
         assert!(max_abs_diff > 0.05);
+    }
+
+    fn process_fixed_input_prefilter(input: &[f32], sample_rate: f32) -> Vec<f32> {
+        let mut output = input.to_vec();
+        let mut pre_filter_state = InputPreFilterState::default();
+        let mut pre_filter = Biquad::new(
+            BiquadType::HighPass,
+            INPUT_PREFILTER_HZ,
+            0.0,
+            INPUT_PREFILTER_Q,
+            sample_rate as f64,
+        );
+        apply_input_pre_filter(&mut output, &mut pre_filter_state, &mut pre_filter, true);
+        output
+    }
+
+    fn process_adaptive_input_cleanup(
+        input: &[f32],
+        mode: InputCleanupMode,
+        sample_rate: f32,
+        chunk_size: usize,
+    ) -> (Vec<f32>, bool, bool, f32, f32) {
+        let mut pre_filter_state = InputPreFilterState::default();
+        let mut pre_filter = Biquad::new(
+            BiquadType::HighPass,
+            INPUT_PREFILTER_HZ,
+            0.0,
+            INPUT_PREFILTER_Q,
+            sample_rate as f64,
+        );
+        let mut cleanup = AdaptiveInputCleanupState::new(sample_rate);
+        cleanup.set_mode(mode);
+
+        let mut output = Vec::with_capacity(input.len());
+        let mut ever_hum = false;
+        let mut ever_rumble = false;
+        let mut max_high_pass_hz = INPUT_PREFILTER_HZ as f32;
+
+        for chunk in input.chunks(chunk_size) {
+            let mut block = chunk.to_vec();
+            if mode.is_enabled() {
+                cleanup.analyze_input(&block);
+            }
+            apply_input_pre_filter(
+                &mut block,
+                &mut pre_filter_state,
+                &mut pre_filter,
+                !mode.is_enabled(),
+            );
+            if mode.is_enabled() {
+                cleanup.process_block(&mut block);
+            }
+            ever_hum |= cleanup.hum_detected;
+            ever_rumble |= cleanup.rumble_detected;
+            max_high_pass_hz = max_high_pass_hz.max(cleanup.selected_high_pass_hz);
+            output.extend_from_slice(&block);
+        }
+
+        (
+            output,
+            ever_hum,
+            ever_rumble,
+            max_high_pass_hz,
+            cleanup.hum_line_hz,
+        )
+    }
+
+    #[test]
+    fn test_input_cleanup_off_matches_existing_prefilter_bit_exactly() {
+        let sample_rate = 48_000.0;
+        let len = 4096;
+        let input: Vec<f32> = (0..len)
+            .map(|index| {
+                let t = index as f32 / sample_rate;
+                0.15 * (2.0 * std::f32::consts::PI * 60.0 * t).sin()
+                    + 0.08 * (2.0 * std::f32::consts::PI * 220.0 * t).sin()
+                    + 0.04 * (2.0 * std::f32::consts::PI * 1200.0 * t).sin()
+            })
+            .collect();
+
+        let fixed = process_fixed_input_prefilter(&input, sample_rate);
+        let (adaptive_off, hum, rumble, high_pass_hz, _) =
+            process_adaptive_input_cleanup(&input, InputCleanupMode::Off, sample_rate, 480);
+
+        assert_eq!(adaptive_off, fixed);
+        assert!(!hum);
+        assert!(!rumble);
+        assert_eq!(high_pass_hz, INPUT_PREFILTER_HZ as f32);
+    }
+
+    #[test]
+    fn test_adaptive_input_cleanup_reduces_synthetic_line_hum() {
+        let sample_rate = 48_000.0;
+        let len = sample_rate as usize;
+        let input: Vec<f32> = (0..len)
+            .map(|index| {
+                let t = index as f32 / sample_rate;
+                0.14 * (2.0 * std::f32::consts::PI * 60.0 * t).sin()
+                    + 0.08 * (2.0 * std::f32::consts::PI * 120.0 * t).sin()
+                    + 0.05 * (2.0 * std::f32::consts::PI * 1000.0 * t).sin()
+            })
+            .collect();
+
+        let fixed = process_fixed_input_prefilter(&input, sample_rate);
+        let (cleaned, hum, _rumble, high_pass_hz, _) =
+            process_adaptive_input_cleanup(&input, InputCleanupMode::Strong, sample_rate, 480);
+        let tail = len / 2;
+        let fixed_hum = tone_amplitude(&fixed[tail..], sample_rate, 60.0);
+        let cleaned_hum = tone_amplitude(&cleaned[tail..], sample_rate, 60.0);
+        let fixed_voice = tone_amplitude(&fixed[tail..], sample_rate, 1000.0);
+        let cleaned_voice = tone_amplitude(&cleaned[tail..], sample_rate, 1000.0);
+
+        assert!(hum);
+        assert!(cleaned_hum < fixed_hum * 0.65);
+        assert!(cleaned_voice > fixed_voice * 0.94);
+        assert_eq!(high_pass_hz, INPUT_PREFILTER_HZ as f32);
+    }
+
+    #[test]
+    fn test_adaptive_input_cleanup_raises_highpass_for_plosive_not_sustained_voice() {
+        let sample_rate = 48_000.0;
+        let len = sample_rate as usize;
+        let input: Vec<f32> = (0..len)
+            .map(|index| {
+                let t = index as f32 / sample_rate;
+                let voice = 0.08 * (2.0 * std::f32::consts::PI * 180.0 * t).sin()
+                    + 0.05 * (2.0 * std::f32::consts::PI * 1200.0 * t).sin();
+                let plosive = if t < 0.05 {
+                    let env = (1.0 - t / 0.05).max(0.0);
+                    0.65 * env * (2.0 * std::f32::consts::PI * 38.0 * t).sin()
+                } else {
+                    0.0
+                };
+                voice + plosive
+            })
+            .collect();
+
+        let fixed = process_fixed_input_prefilter(&input, sample_rate);
+        let (cleaned, _hum, rumble, high_pass_hz, _) =
+            process_adaptive_input_cleanup(&input, InputCleanupMode::Gentle, sample_rate, 480);
+        let tail = len * 3 / 4;
+        let fixed_voice = tone_amplitude(&fixed[tail..], sample_rate, 180.0);
+        let cleaned_voice = tone_amplitude(&cleaned[tail..], sample_rate, 180.0);
+
+        assert!(rumble);
+        assert!(high_pass_hz >= 100.0);
+        assert!(cleaned_voice > fixed_voice * 0.94);
+    }
+
+    #[test]
+    fn test_adaptive_cleanup_tracks_49_to_61_hz_drift_and_retunes_smoothly() {
+        let sample_rate = 48_000.0_f32;
+        let len = sample_rate as usize * 2;
+        let mut phase = 0.0_f32;
+        let mut input = Vec::with_capacity(len);
+        let mut voice_only = Vec::with_capacity(len);
+        for index in 0..len {
+            let time = index as f32 / sample_rate;
+            let frequency = 49.0 + 12.0 * index as f32 / (len - 1) as f32;
+            phase += 2.0 * std::f32::consts::PI * frequency / sample_rate;
+            let voice = 0.045 * (2.0 * std::f32::consts::PI * 1000.0 * time).sin();
+            voice_only.push(voice);
+            input.push(voice + 0.13 * phase.sin() + 0.065 * (2.0 * phase).sin());
+        }
+
+        let (cleaned, hum, _, _, tracked_hz) =
+            process_adaptive_input_cleanup(&input, InputCleanupMode::Strong, sample_rate, 480);
+        let (clean_voice, _, _, _, _) = process_adaptive_input_cleanup(
+            &voice_only,
+            InputCleanupMode::Strong,
+            sample_rate,
+            480,
+        );
+        let tail = len / 2;
+        let input_residual = input[tail..]
+            .iter()
+            .zip(voice_only[tail..].iter())
+            .map(|(mixed, voice)| (mixed - voice).powi(2))
+            .sum::<f32>();
+        let cleaned_residual = cleaned[tail..]
+            .iter()
+            .zip(clean_voice[tail..].iter())
+            .map(|(mixed, voice)| (mixed - voice).powi(2))
+            .sum::<f32>();
+        let max_step = cleaned
+            .windows(2)
+            .map(|window| (window[1] - window[0]).abs())
+            .fold(0.0_f32, f32::max);
+
+        assert!(hum);
+        assert!((57.0..=61.0).contains(&tracked_hz), "tracked_hz={tracked_hz}");
+        assert!(
+            cleaned_residual < input_residual * 0.72,
+            "cleaned_residual={cleaned_residual} input_residual={input_residual}"
+        );
+        assert!(max_step < 0.20, "retune max_step={max_step}");
+    }
+
+    #[test]
+    fn test_adaptive_cleanup_uses_harmonic_to_track_off_nominal_hum() {
+        let sample_rate = 48_000.0_f32;
+        let len = sample_rate as usize * 2;
+        let fundamental = 51.5_f32;
+        let input: Vec<f32> = (0..len)
+            .map(|index| {
+                let time = index as f32 / sample_rate;
+                0.025 * (2.0 * std::f32::consts::PI * fundamental * time).sin()
+                    + 0.14 * (2.0 * std::f32::consts::PI * fundamental * 2.0 * time).sin()
+                    + 0.04 * (2.0 * std::f32::consts::PI * 1200.0 * time).sin()
+            })
+            .collect();
+        let fixed = process_fixed_input_prefilter(&input, sample_rate);
+        let (cleaned, hum, _, _, tracked_hz) =
+            process_adaptive_input_cleanup(&input, InputCleanupMode::Strong, sample_rate, 480);
+        let tail = len / 2;
+        let fixed_harmonic = tone_amplitude(&fixed[tail..], sample_rate, fundamental * 2.0);
+        let cleaned_harmonic = tone_amplitude(&cleaned[tail..], sample_rate, fundamental * 2.0);
+
+        assert!(hum);
+        assert!((tracked_hz - fundamental).abs() < 1.5, "tracked_hz={tracked_hz}");
+        assert!(cleaned_harmonic < fixed_harmonic * 0.72);
+    }
+
+    #[test]
+    fn test_adaptive_cleanup_does_not_classify_plosive_or_low_voice_as_hum() {
+        let sample_rate = 48_000.0_f32;
+        let len = sample_rate as usize;
+        let plosive: Vec<f32> = (0..len)
+            .map(|index| {
+                let time = index as f32 / sample_rate;
+                if time < 0.055 {
+                    0.7 * (1.0 - time / 0.055)
+                        * (2.0 * std::f32::consts::PI * 52.0 * time).sin()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let low_voice: Vec<f32> = (0..len)
+            .map(|index| {
+                let time = index as f32 / sample_rate;
+                0.12 * (2.0 * std::f32::consts::PI * 90.0 * time).sin()
+                    + 0.06 * (2.0 * std::f32::consts::PI * 180.0 * time).sin()
+                    + 0.03 * (2.0 * std::f32::consts::PI * 270.0 * time).sin()
+            })
+            .collect();
+
+        let (_, plosive_hum, plosive_rumble, _, _) = process_adaptive_input_cleanup(
+            &plosive,
+            InputCleanupMode::Strong,
+            sample_rate,
+            480,
+        );
+        let (_, voice_hum, _, voice_highpass, _) = process_adaptive_input_cleanup(
+            &low_voice,
+            InputCleanupMode::Strong,
+            sample_rate,
+            480,
+        );
+
+        assert!(!plosive_hum);
+        assert!(plosive_rumble);
+        assert!(!voice_hum);
+        assert_eq!(voice_highpass, INPUT_PREFILTER_HZ as f32);
+    }
+
+    #[test]
+    fn test_adaptive_cleanup_selects_one_highpass_instead_of_cascading() {
+        let sample_rate = 48_000.0_f32;
+        let input: Vec<f32> = (0..8192)
+            .map(|index| {
+                let time = index as f32 / sample_rate;
+                0.05 * (2.0 * std::f32::consts::PI * 300.0 * time).sin()
+                    + 0.03 * (2.0 * std::f32::consts::PI * 2000.0 * time).sin()
+            })
+            .collect();
+        let fixed = process_fixed_input_prefilter(&input, sample_rate);
+        let (adaptive, hum, rumble, highpass, _) = process_adaptive_input_cleanup(
+            &input,
+            InputCleanupMode::Gentle,
+            sample_rate,
+            480,
+        );
+        let max_difference = fixed
+            .iter()
+            .zip(adaptive.iter())
+            .map(|(left, right)| (left - right).abs())
+            .fold(0.0_f32, f32::max);
+
+        assert!(!hum);
+        assert!(!rumble);
+        assert_eq!(highpass, INPUT_PREFILTER_HZ as f32);
+        assert!(max_difference < 1.0e-5, "max_difference={max_difference}");
     }
 
     #[test]
@@ -363,6 +661,66 @@ mod tests {
         for sample in expanded {
             assert!((*sample >= 0.0) && (*sample <= 1.0));
         }
+    }
+
+    fn warmed_meter_stats(buffer: &[f32]) -> MeterBlockStats {
+        let coeff = smoothing_coeff_for_time_constant(TARGET_SAMPLE_RATE as f32, 100.0);
+        let mut rms_acc = 0.0;
+        let mut stats = MeterBlockStats {
+            peak_db: -120.0,
+            rms_db: -120.0,
+            crest_factor_db: 0.0,
+            mean_power: 0.0,
+        };
+        for _ in 0..4 {
+            stats = update_meter_block_stats(buffer, &mut rms_acc, coeff);
+        }
+        stats
+    }
+
+    #[test]
+    fn test_meter_stats_are_stable_for_silence_sine_noise_and_speech_like_input() {
+        let sample_rate = TARGET_SAMPLE_RATE as f32;
+        let len = TARGET_SAMPLE_RATE as usize;
+
+        let silence = vec![0.0_f32; len];
+        let silence_stats = warmed_meter_stats(&silence);
+        assert_eq!(silence_stats.peak_db, -120.0);
+        assert_eq!(silence_stats.rms_db, -120.0);
+        assert_eq!(silence_stats.crest_factor_db, 0.0);
+
+        let sine = generate_sine(sample_rate, 1000.0, len);
+        let sine_stats = warmed_meter_stats(&sine);
+        assert!((-2.5..=-1.5).contains(&sine_stats.peak_db));
+        assert!((-5.6..=-4.4).contains(&sine_stats.rms_db));
+        assert!((2.5..=3.6).contains(&sine_stats.crest_factor_db));
+
+        let noise_like: Vec<f32> = (0..len)
+            .map(|index| {
+                let n = ((index as u32).wrapping_mul(1_664_525).wrapping_add(1_013_904_223)
+                    & 0xffff) as f32
+                    / 32768.0
+                    - 1.0;
+                0.16 * n
+            })
+            .collect();
+        let noise_stats = warmed_meter_stats(&noise_like);
+        assert!(noise_stats.rms_db < noise_stats.peak_db);
+        assert!((4.0..=6.5).contains(&noise_stats.crest_factor_db));
+
+        let speech_like: Vec<f32> = (0..len)
+            .map(|index| {
+                let t = index as f32 / sample_rate;
+                let envelope = 0.35 + 0.65 * (2.0 * std::f32::consts::PI * 3.0 * t).sin().max(0.0);
+                envelope
+                    * (0.12 * (2.0 * std::f32::consts::PI * 140.0 * t).sin()
+                        + 0.06 * (2.0 * std::f32::consts::PI * 280.0 * t).sin()
+                        + 0.03 * (2.0 * std::f32::consts::PI * 1120.0 * t).sin())
+            })
+            .collect();
+        let speech_stats = warmed_meter_stats(&speech_like);
+        assert!(speech_stats.rms_db < -12.0);
+        assert!((5.0..=14.0).contains(&speech_stats.crest_factor_db));
     }
 
     fn generate_sine(sample_rate: f32, frequency_hz: f32, len: usize) -> Vec<f32> {
@@ -565,6 +923,12 @@ mod tests {
         static OUTPUT_CLIP_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
         static OUTPUT_TRUE_PEAK_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
         static OUTPUT_TRUE_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
+        static OUTPUT_TRUE_PEAK_INPUT_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
+        static OUTPUT_TRUE_PEAK_GAIN_REDUCTION_DB: AtomicU32 =
+            AtomicU32::new(0.0_f32.to_bits());
+        static OUTPUT_TRUE_PEAK_GAIN_REDUCTION_HISTORY_DB: AtomicU32 =
+            AtomicU32::new(0.0_f32.to_bits());
+        static OUTPUT_TRUE_PEAK_HEADROOM_DB: AtomicU32 = AtomicU32::new(120.0_f32.to_bits());
         let (
             jitter_dropped_samples,
             output_retime_adjustment_count,
@@ -583,6 +947,11 @@ mod tests {
             output_clip_peak_db: &OUTPUT_CLIP_PEAK_DB,
             output_true_peak_event_count: &OUTPUT_TRUE_PEAK_EVENT_COUNT,
             output_true_peak_db: &OUTPUT_TRUE_PEAK_DB,
+            output_true_peak_input_db: &OUTPUT_TRUE_PEAK_INPUT_DB,
+            output_true_peak_gain_reduction_db: &OUTPUT_TRUE_PEAK_GAIN_REDUCTION_DB,
+            output_true_peak_gain_reduction_history_db:
+                &OUTPUT_TRUE_PEAK_GAIN_REDUCTION_HISTORY_DB,
+            output_true_peak_headroom_db: &OUTPUT_TRUE_PEAK_HEADROOM_DB,
         }
     }
 
@@ -606,6 +975,7 @@ mod tests {
         let output_buffer_len = AtomicU32::new(0);
         let last_output_write_time = AtomicU64::new(0);
         let mut true_peak_detector = TruePeakDetector::new();
+        let mut true_peak_limiter = TruePeakLimiter::default();
 
         let mut writer = OutputWriteContext {
             output_producer: &mut producer,
@@ -613,6 +983,7 @@ mod tests {
             discontinuity_fade_scratch: &mut fade_scratch,
             output_safety_scratch: &mut safety_scratch,
             true_peak_detector: &mut true_peak_detector,
+            true_peak_limiter: &mut true_peak_limiter,
             drift_error_ema: &mut drift_error_ema,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -658,6 +1029,7 @@ mod tests {
         let output_buffer_len = AtomicU32::new(3);
         let last_output_write_time = AtomicU64::new(0);
         let mut true_peak_detector = TruePeakDetector::new();
+        let mut true_peak_limiter = TruePeakLimiter::default();
 
         let mut writer = OutputWriteContext {
             output_producer: &mut producer,
@@ -665,6 +1037,7 @@ mod tests {
             discontinuity_fade_scratch: &mut fade_scratch,
             output_safety_scratch: &mut safety_scratch,
             true_peak_detector: &mut true_peak_detector,
+            true_peak_limiter: &mut true_peak_limiter,
             drift_error_ema: &mut drift_error_ema,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -721,12 +1094,14 @@ mod tests {
         let expand_output_buffer_len = AtomicU32::new(0);
         let expand_last_output_write_time = AtomicU64::new(0);
         let mut expand_true_peak_detector = TruePeakDetector::new();
+        let mut expand_true_peak_limiter = TruePeakLimiter::default();
         let mut expand_writer = OutputWriteContext {
             output_producer: &mut expand_producer,
             output_queue_control_scratch: &mut expand_control_scratch,
             discontinuity_fade_scratch: &mut expand_fade_scratch,
             output_safety_scratch: &mut expand_safety_scratch,
             true_peak_detector: &mut expand_true_peak_detector,
+            true_peak_limiter: &mut expand_true_peak_limiter,
             drift_error_ema: &mut expand_drift_error_ema,
             discontinuity_fade_remaining: &expand_fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -776,12 +1151,14 @@ mod tests {
         let compress_output_buffer_len = AtomicU32::new(256);
         let compress_last_output_write_time = AtomicU64::new(0);
         let mut compress_true_peak_detector = TruePeakDetector::new();
+        let mut compress_true_peak_limiter = TruePeakLimiter::default();
         let mut compress_writer = OutputWriteContext {
             output_producer: &mut compress_producer,
             output_queue_control_scratch: &mut compress_control_scratch,
             discontinuity_fade_scratch: &mut compress_fade_scratch,
             output_safety_scratch: &mut compress_safety_scratch,
             true_peak_detector: &mut compress_true_peak_detector,
+            true_peak_limiter: &mut compress_true_peak_limiter,
             drift_error_ema: &mut compress_drift_error_ema,
             discontinuity_fade_remaining: &compress_fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -838,12 +1215,14 @@ mod tests {
         let output_buffer_len = AtomicU32::new(6);
         let last_output_write_time = AtomicU64::new(0);
         let mut true_peak_detector = TruePeakDetector::new();
+        let mut true_peak_limiter = TruePeakLimiter::default();
         let mut writer = OutputWriteContext {
             output_producer: &mut producer,
             output_queue_control_scratch: &mut control_scratch,
             discontinuity_fade_scratch: &mut fade_scratch,
             output_safety_scratch: &mut safety_scratch,
             true_peak_detector: &mut true_peak_detector,
+            true_peak_limiter: &mut true_peak_limiter,
             drift_error_ema: &mut drift_error_ema,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -880,7 +1259,7 @@ mod tests {
 
     #[test]
     fn test_output_writer_still_applies_limiter_ceiling_clamp() {
-        let rb = AudioRingBuffer::new(8);
+        let rb = AudioRingBuffer::new(64);
         let (mut producer, mut consumer) = rb.split();
         let mut control_scratch = FixedAudioBuffer::<f32, 32>::new();
         let mut fade_scratch = FixedAudioBuffer::<f32, 32>::new();
@@ -898,12 +1277,14 @@ mod tests {
         let output_buffer_len = AtomicU32::new(0);
         let last_output_write_time = AtomicU64::new(0);
         let mut true_peak_detector = TruePeakDetector::new();
+        let mut true_peak_limiter = TruePeakLimiter::default();
         let mut writer = OutputWriteContext {
             output_producer: &mut producer,
             output_queue_control_scratch: &mut control_scratch,
             discontinuity_fade_scratch: &mut fade_scratch,
             output_safety_scratch: &mut safety_scratch,
             true_peak_detector: &mut true_peak_detector,
+            true_peak_limiter: &mut true_peak_limiter,
             drift_error_ema: &mut drift_error_ema,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -923,15 +1304,17 @@ mod tests {
             limits: test_output_writer_limits(4, 8, 4),
         };
 
-        assert!(writer.write_chunk(&[2.0, -2.0, 0.5], true));
-        let mut limited = [0.0_f32; 3];
-        assert_eq!(consumer.read(&mut limited), 3);
-        assert_eq!(limited, [0.5, -0.5, 0.5]);
+        assert!(writer.write_chunk(&[2.0, -2.0, 0.5, 0.0, 0.0, 0.0, 0.0], true));
+        assert!(writer.write_chunk(&[0.0; 24], true));
+        let mut limited = [0.0_f32; 31];
+        assert_eq!(consumer.read(&mut limited), limited.len());
+        assert!(limited.iter().all(|sample| sample.abs() <= 0.5 + 1e-6));
+        assert!(limited.iter().any(|sample| sample.abs() > 0.1));
     }
 
     #[test]
-    fn test_output_writer_records_true_peak_warning_without_sample_clip() {
-        let rb = AudioRingBuffer::new(16);
+    fn test_output_writer_limits_true_peak_without_sample_clip() {
+        let rb = AudioRingBuffer::new(64);
         let (mut producer, _consumer) = rb.split();
         let mut control_scratch = FixedAudioBuffer::<f32, 32>::new();
         let mut fade_scratch = FixedAudioBuffer::<f32, 32>::new();
@@ -953,12 +1336,18 @@ mod tests {
         let output_clip_peak_db = AtomicU32::new((-120.0_f32).to_bits());
         let output_true_peak_event_count = AtomicU64::new(0);
         let output_true_peak_db = AtomicU32::new((-120.0_f32).to_bits());
+        let output_true_peak_input_db = AtomicU32::new((-120.0_f32).to_bits());
+        let output_true_peak_gain_reduction_db = AtomicU32::new(0.0_f32.to_bits());
+        let output_true_peak_gain_reduction_history_db = AtomicU32::new(0.0_f32.to_bits());
+        let output_true_peak_headroom_db = AtomicU32::new(120.0_f32.to_bits());
+        let mut true_peak_limiter = TruePeakLimiter::default();
         let mut writer = OutputWriteContext {
             output_producer: &mut producer,
             output_queue_control_scratch: &mut control_scratch,
             discontinuity_fade_scratch: &mut fade_scratch,
             output_safety_scratch: &mut safety_scratch,
             true_peak_detector: &mut true_peak_detector,
+            true_peak_limiter: &mut true_peak_limiter,
             drift_error_ema: &mut drift_error_ema,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
@@ -976,15 +1365,25 @@ mod tests {
                 output_clip_peak_db: &output_clip_peak_db,
                 output_true_peak_event_count: &output_true_peak_event_count,
                 output_true_peak_db: &output_true_peak_db,
+                output_true_peak_input_db: &output_true_peak_input_db,
+                output_true_peak_gain_reduction_db: &output_true_peak_gain_reduction_db,
+                output_true_peak_gain_reduction_history_db:
+                    &output_true_peak_gain_reduction_history_db,
+                output_true_peak_headroom_db: &output_true_peak_headroom_db,
             },
             limits: test_output_writer_limits(4, 8, 4),
         };
 
         assert!(writer.write_chunk(&[0.0, 1.0, 1.0, 0.0, 0.0], true));
+        assert!(writer.write_chunk(&[0.0; 32], true));
 
         assert_eq!(output_clip_event_count.load(Ordering::Relaxed), 0);
         assert_eq!(output_true_peak_event_count.load(Ordering::Relaxed), 1);
-        assert!(f32::from_bits(output_true_peak_db.load(Ordering::Relaxed)) > 0.0);
+        assert!(f32::from_bits(output_true_peak_db.load(Ordering::Relaxed)) <= 0.01);
+        assert!(f32::from_bits(output_true_peak_input_db.load(Ordering::Relaxed)) > 0.0);
+        assert!(
+            f32::from_bits(output_true_peak_gain_reduction_db.load(Ordering::Relaxed)) > 0.0
+        );
     }
 
     fn fill_probe_block(buffer: &mut [f32]) {
@@ -1041,6 +1440,12 @@ mod tests {
         limiter.process_block_inplace(&mut block);
         crate::test_alloc::assert_no_allocations("limiter block", || {
             limiter.process_block_inplace(&mut block);
+        });
+
+        let mut true_peak_limiter = TruePeakLimiter::default_settings(TARGET_SAMPLE_RATE as f32);
+        true_peak_limiter.process_block_inplace(&mut block);
+        crate::test_alloc::assert_no_allocations("true peak limiter block", || {
+            true_peak_limiter.process_block_inplace(&mut block);
         });
 
         let mut scratch = FixedAudioBuffer::<f32, 1024>::new();
@@ -1114,6 +1519,49 @@ mod tests {
 
         assert_eq!(output.len(), 4);
         assert_eq!(output.as_slice(), &input[..4]);
+    }
+
+    #[test]
+    fn test_offline_block_processor_matches_deterministic_live_stages() {
+        let sample_rate = TARGET_SAMPLE_RATE as f64;
+        let mut offline = OfflineDspBlockProcessor::new(sample_rate);
+        offline.set_deesser_enabled(false);
+        offline.set_eq_enabled(true);
+        offline.set_compressor_enabled(false);
+        offline.set_limiter_enabled(true);
+        offline.eq_mut().set_band_frequency(5, 2500.0);
+        offline.eq_mut().set_band_gain(5, 4.0);
+        offline.eq_mut().set_band_q(5, 1.8);
+        offline.limiter_mut().set_ceiling(-1.5);
+
+        let mut input = [0.0_f32; 512];
+        for (index, sample) in input.iter_mut().enumerate() {
+            let t = index as f64 / sample_rate;
+            *sample = (0.38 * (2.0 * std::f64::consts::PI * 2500.0 * t).sin()
+                + 0.22 * (2.0 * std::f64::consts::PI * 180.0 * t).sin())
+                as f32;
+        }
+        let mut manual = input;
+        let mut eq = ParametricEQ::new(sample_rate);
+        eq.set_band_frequency(5, 2500.0);
+        eq.set_band_gain(5, 4.0);
+        eq.set_band_q(5, 1.8);
+        eq.process_block_inplace(&mut manual);
+        let mut limiter = Limiter::default_settings(sample_rate);
+        limiter.set_ceiling(-1.5);
+        limiter.process_block_inplace(&mut manual);
+        let mut true_peak_limiter = TruePeakLimiter::default_settings(sample_rate as f32);
+        true_peak_limiter.set_ceiling_linear(10.0_f32.powf(-1.5 / 20.0));
+        true_peak_limiter.process_block_inplace(&mut manual);
+
+        let mut offline_input = input;
+        let mut output = FixedAudioBuffer::<f32, 1024>::new();
+        let stats = offline.process_block_with_stats(&mut offline_input, &mut output);
+
+        assert_eq!(output.len(), manual.len());
+        assert!(rms_error_db(output.as_slice(), &manual) < -100.0);
+        assert!(stats.output_true_peak.is_finite());
+        assert!(stats.true_peak_limiter_input_peak.is_finite());
     }
 
     #[test]
@@ -1329,7 +1777,7 @@ mod tests {
         processor.set_deesser_auto_amount(f64::NAN);
 
         assert_eq!(processor.get_deesser_low_cut_hz(), 4000.0);
-        assert_eq!(processor.get_deesser_high_cut_hz(), 9000.0);
+        assert_eq!(processor.get_deesser_high_cut_hz(), 11_000.0);
         assert_eq!(processor.get_deesser_threshold_db(), -28.0);
         assert_eq!(processor.get_deesser_ratio(), 4.0);
         assert_eq!(processor.get_deesser_max_reduction_db(), 6.0);
@@ -1388,7 +1836,7 @@ mod tests {
         let mut bands = vec![(100.0, 0.0, 1.0); NUM_BANDS];
         bands[NUM_BANDS - 1] = (processor.eq_nyquist_limit_hz() + 100.0, 0.0, 1.0);
 
-        pyo3::prepare_freethreaded_python();
+        Python::initialize();
         let err = processor.apply_eq_settings(bands).unwrap_err();
         assert!(err.to_string().contains("out of range"));
     }
@@ -1654,16 +2102,28 @@ mod tests {
             .processor
             .deesser_detector_confidence
             .store(0.62_f32.to_bits(), Ordering::Relaxed);
+        wrapper.processor.input_phase_rescue_strategy.store(
+            crate::audio::input::PhaseRescueStrategy::FractionalDelay as u8,
+            Ordering::Relaxed,
+        );
+        wrapper
+            .processor
+            .input_phase_estimated_delay_samples
+            .store(2.25_f32.to_bits(), Ordering::Relaxed);
+        wrapper
+            .processor
+            .input_phase_polarity_flipped
+            .store(true, Ordering::Relaxed);
         wrapper
             .processor
             .set_limiter_careful_output_enabled(false);
         wrapper.processor.set_limiter_ceiling(-0.25);
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
             let diagnostics = diagnostics.bind(py);
-            let diagnostics = diagnostics.downcast::<PyDict>().unwrap();
+            let diagnostics = diagnostics.cast::<PyDict>().unwrap();
             assert_eq!(
                 diagnostics
                     .get_item("output_retime_adjustment_count")
@@ -1779,6 +2239,34 @@ mod tests {
                     .abs()
                     < 1e-6
             );
+            assert_eq!(
+                diagnostics
+                    .get_item("input_phase_rescue_strategy")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "fractional_delay"
+            );
+            assert!(
+                (diagnostics
+                    .get_item("input_phase_estimated_delay_samples")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<f32>()
+                    .unwrap()
+                    - 2.25)
+                    .abs()
+                    < 1e-6
+            );
+            assert!(
+                diagnostics
+                    .get_item("input_phase_polarity_flipped")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
         });
     }
 
@@ -1792,12 +2280,16 @@ mod tests {
             .processor
             .gate_fused_score
             .store(0.42_f32.to_bits(), Ordering::Relaxed);
+        wrapper
+            .processor
+            .gate_auto_relax_active
+            .store(true, Ordering::Relaxed);
 
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        Python::initialize();
+        Python::attach(|py| {
             let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
             let diagnostics = diagnostics.bind(py);
-            let diagnostics = diagnostics.downcast::<PyDict>().unwrap();
+            let diagnostics = diagnostics.cast::<PyDict>().unwrap();
             let score = diagnostics
                 .get_item("gate_fused_score")
                 .unwrap()
@@ -1805,6 +2297,14 @@ mod tests {
                 .extract::<f32>()
                 .unwrap();
             assert!((score - 0.42).abs() < 1e-6);
+            assert!(
+                diagnostics
+                    .get_item("gate_auto_relax_active")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap()
+            );
         });
     }
 }

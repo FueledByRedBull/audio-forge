@@ -52,6 +52,7 @@ const NOISE_FLOOR_BIN_STEP_DB: f32 = 1.0;
 const NOISE_FLOOR_ELIGIBLE_PROB_MAX: f32 = 0.3;
 const NOISE_FLOOR_UP_SLEW_DB_PER_FRAME: f32 = 0.5;
 const NOISE_FLOOR_DOWN_SLEW_DB_PER_FRAME: f32 = 0.1;
+const VAD_RESAMPLER_TAPS: i32 = 31;
 /// LSTM hidden dimension
 const LSTM_HIDDEN_DIM: usize = 64;
 /// Number of LSTM layers
@@ -252,7 +253,7 @@ impl SileroVAD {
 
         // Resample to 16kHz if needed
         let inference_input = if self.sample_rate != SILERO_SAMPLE_RATE {
-            linear_resample_into(
+            anti_aliased_resample_into(
                 &self.input_window,
                 self.resample_ratio,
                 &mut self.resample_scratch,
@@ -441,29 +442,53 @@ impl SileroVAD {
     }
 }
 
-fn linear_resample_into(input: &[f32], ratio: f32, output: &mut Vec<f32>) {
+fn anti_aliased_resample_into(input: &[f32], ratio: f32, output: &mut Vec<f32>) {
     output.clear();
-    if ratio == 1.0 {
+    if (ratio - 1.0).abs() < f32::EPSILON {
         output.extend_from_slice(input);
         return;
     }
 
     let output_len = (input.len() as f32 * ratio).ceil() as usize;
-    output.reserve(output_len);
+    output.resize(output_len, 0.0);
+    if input.is_empty() || output_len == 0 {
+        return;
+    }
 
-    for i in 0..output_len {
-        let src_pos = i as f32 / ratio;
-        let src_idx = src_pos as usize;
-        let frac = src_pos - src_idx as f32;
+    // Match the polyphase reference cutoff at the lower Nyquist frequency.
+    // The finite Hann window supplies the transition band and stop-band rolloff.
+    let cutoff = (0.5 * ratio.min(1.0)).clamp(0.01, 0.49);
+    let half_taps = VAD_RESAMPLER_TAPS / 2;
+    for (out_idx, sample) in output.iter_mut().enumerate() {
+        let center = out_idx as f32 / ratio;
+        let center_idx = center.floor() as i32;
+        let mut acc = 0.0_f32;
+        let mut weight_sum = 0.0_f32;
 
-        if src_idx + 1 < input.len() {
-            let sample = input[src_idx] * (1.0 - frac) + input[src_idx + 1] * frac;
-            output.push(sample);
-        } else if src_idx < input.len() {
-            output.push(input[src_idx]);
-        } else {
-            output.push(0.0);
+        for tap in -half_taps..=half_taps {
+            let input_idx = center_idx + tap;
+            if !(0..input.len() as i32).contains(&input_idx) {
+                continue;
+            }
+            let distance = center - input_idx as f32;
+            let sinc_arg = 2.0 * cutoff * distance;
+            let sinc = if sinc_arg.abs() < 1e-6 {
+                1.0
+            } else {
+                let x = std::f32::consts::PI * sinc_arg;
+                x.sin() / x
+            };
+            let window_pos = (tap + half_taps) as f32 / (VAD_RESAMPLER_TAPS - 1) as f32;
+            let window = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * window_pos).cos();
+            let weight = 2.0 * cutoff * sinc * window;
+            acc += input[input_idx as usize] * weight;
+            weight_sum += weight;
         }
+        *sample = if weight_sum.abs() > 1e-6 {
+            acc / weight_sum
+        } else {
+            0.0
+        };
     }
 }
 

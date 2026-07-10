@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 
 /// Information about an audio device
 #[derive(Clone, Debug)]
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 pub struct DeviceInfo {
     #[pyo3(get)]
     pub name: String,

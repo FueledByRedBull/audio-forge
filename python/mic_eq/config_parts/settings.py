@@ -57,7 +57,7 @@ class DeEsserSettings:
     auto_enabled: bool = True
     auto_amount: float = 0.5
     low_cut_hz: float = 4000.0
-    high_cut_hz: float = 9000.0
+    high_cut_hz: float = 11000.0
     threshold_db: float = -28.0
     ratio: float = 4.0
     attack_ms: float = 2.0
@@ -109,6 +109,9 @@ class LatencyCalibrationProfile:
     estimated_one_way_ms: float
     applied_compensation_ms: float
     confidence: float
+    agreement_ms: float = 0.0
+    ambiguity_score: float = 0.0
+    repetition_count: int = 0
     sample_rate: int = 48000
     timestamp_utc: str = ""
 
@@ -122,6 +125,9 @@ class LatencyCalibrationProfile:
             estimated_one_way_ms=float(data.get("estimated_one_way_ms", 0.0)),
             applied_compensation_ms=float(data.get("applied_compensation_ms", 0.0)),
             confidence=float(data.get("confidence", 0.0)),
+            agreement_ms=float(data.get("agreement_ms", 0.0)),
+            ambiguity_score=float(data.get("ambiguity_score", 0.0)),
+            repetition_count=int(data.get("repetition_count", 0)),
             sample_rate=int(data.get("sample_rate", 48000)),
             timestamp_utc=str(data.get("timestamp_utc", "")),
         )

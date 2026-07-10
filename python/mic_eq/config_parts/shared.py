@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-CURRENT_VERSION = "1.8.5"
+CURRENT_VERSION = "1.8.6"
 APPDATA_DIR_NAME = "AudioForge"
 LEGACY_APPDATA_DIR_NAME = "MicEq"
 

@@ -45,7 +45,9 @@ def test_ui_synchronization(qapp):
 
     # Verify processor state updated.
     for i in range(10):
-        freq, gain, q = processor.get_eq_band_params(i)
+        params = processor.get_eq_band_params(i)
+        assert params is not None
+        freq, gain, q = params
         expected_freq, expected_gain, expected_q = auto_eq_bands[i]
         assert abs(freq - expected_freq) <= 0.1
         assert abs(gain - expected_gain) <= 0.1
@@ -56,7 +58,9 @@ def test_ui_synchronization(qapp):
     panel.band_sliders[5]._frequency_rate_limiter.flush()
     qapp.processEvents()
 
-    freq, gain, q = processor.get_eq_band_params(5)
+    params = processor.get_eq_band_params(5)
+    assert params is not None
+    freq, gain, q = params
     assert abs(freq - 2310.0) <= 0.1
     assert abs(gain - auto_eq_bands[5][1]) <= 0.1
     assert abs(q - auto_eq_bands[5][2]) <= 0.1

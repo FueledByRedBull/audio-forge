@@ -1,14 +1,22 @@
 //! IIR Biquad filter implementation using Direct Form II Transposed
 //!
-//! Uses f64 internally for coefficient precision, f32 for audio samples.
+//! Uses f64 internally for coefficient precision, f32 for audio samples, and a
+//! sample-rate-scaled 1.5 ms parallel-state crossfade for live coefficient edits.
 
 use std::f64::consts::PI;
 
 const MIN_BIQUAD_Q: f64 = 1e-6;
-// Fixed 64-sample output crossfade chosen empirically. No sample-rate scaling
-// is needed for this use case; the transition remains inaudible across
-// supported rates.
-const COEFF_CROSSFADE_SAMPLES: usize = 64;
+const COEFF_CROSSFADE_MS: f64 = 1.5;
+const MAX_COEFF_CROSSFADE_SAMPLES: usize = 4096;
+
+fn coefficient_crossfade_samples(sample_rate: f64) -> usize {
+    let samples = (sample_rate * COEFF_CROSSFADE_MS / 1000.0).round();
+    if samples.is_finite() {
+        (samples as usize).clamp(1, MAX_COEFF_CROSSFADE_SAMPLES)
+    } else {
+        1
+    }
+}
 
 /// Biquad filter types
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -41,6 +49,7 @@ pub struct Biquad {
     pending_a2: f64,
     pending_z1: f64,
     pending_z2: f64,
+    crossfade_total: usize,
     crossfade_remaining: usize,
 
     // State variables for Direct Form II Transposed
@@ -78,6 +87,7 @@ impl Biquad {
             pending_a2: 0.0,
             pending_z1: 0.0,
             pending_z2: 0.0,
+            crossfade_total: 0,
             crossfade_remaining: 0,
             z1: 0.0,
             z2: 0.0,
@@ -173,6 +183,7 @@ impl Biquad {
         self.pending_a2 = a2;
         self.pending_z1 = 0.0;
         self.pending_z2 = 0.0;
+        self.crossfade_total = 0;
         self.crossfade_remaining = 0;
     }
 
@@ -185,7 +196,8 @@ impl Biquad {
         self.pending_a2 = a2;
         self.pending_z1 = self.z1;
         self.pending_z2 = self.z2;
-        self.crossfade_remaining = COEFF_CROSSFADE_SAMPLES;
+        self.crossfade_total = coefficient_crossfade_samples(self.sample_rate);
+        self.crossfade_remaining = self.crossfade_total;
     }
 
     #[inline]
@@ -210,6 +222,7 @@ impl Biquad {
         self.a2 = self.pending_a2;
         self.z1 = self.pending_z1;
         self.z2 = self.pending_z2;
+        self.crossfade_total = 0;
         self.crossfade_remaining = 0;
     }
 
@@ -244,8 +257,8 @@ impl Biquad {
             &mut self.pending_z1,
             &mut self.pending_z2,
         );
-        let fade_pos = COEFF_CROSSFADE_SAMPLES - self.crossfade_remaining + 1;
-        let fade = fade_pos as f64 / COEFF_CROSSFADE_SAMPLES as f64;
+        let fade_pos = self.crossfade_total - self.crossfade_remaining + 1;
+        let fade = fade_pos as f64 / self.crossfade_total as f64;
         let output = active_output * (1.0 - fade) + pending_output * fade;
         self.crossfade_remaining -= 1;
         if self.crossfade_remaining == 0 {
@@ -271,6 +284,7 @@ impl Biquad {
         self.z2 = 0.0;
         self.pending_z1 = 0.0;
         self.pending_z2 = 0.0;
+        self.crossfade_total = 0;
         self.crossfade_remaining = 0;
     }
 
@@ -390,8 +404,9 @@ mod tests {
         let mut filter = Biquad::new(BiquadType::Peaking, 1000.0, 0.0, 1.0, 48000.0);
         filter.set_gain_db(12.0);
         let expected = filter.calculate_coefficients_values();
-        assert_eq!(filter.crossfade_remaining, COEFF_CROSSFADE_SAMPLES);
-        for _ in 0..COEFF_CROSSFADE_SAMPLES {
+        let crossfade_samples = coefficient_crossfade_samples(48_000.0);
+        assert_eq!(filter.crossfade_remaining, crossfade_samples);
+        for _ in 0..crossfade_samples {
             let _ = filter.process_sample(0.2);
         }
         assert_eq!(filter.crossfade_remaining, 0);
@@ -405,7 +420,7 @@ mod tests {
         filter.set_gain_db(12.0);
         filter.set_frequency(80.0);
 
-        for _ in 0..(COEFF_CROSSFADE_SAMPLES * 2) {
+        for _ in 0..(coefficient_crossfade_samples(48_000.0) * 2) {
             let output = filter.process_sample(0.0);
             assert!(output.abs() < 1e-9);
         }
@@ -420,5 +435,74 @@ mod tests {
         filter.reset();
 
         assert_eq!(filter.crossfade_remaining, 0);
+    }
+
+    #[test]
+    fn test_biquad_crossfade_duration_is_sample_rate_independent() {
+        for sample_rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let samples = coefficient_crossfade_samples(sample_rate);
+            let duration_ms = samples as f64 * 1000.0 / sample_rate;
+            assert!(
+                (duration_ms - COEFF_CROSSFADE_MS).abs() <= 1000.0 / sample_rate,
+                "sample_rate={sample_rate} duration_ms={duration_ms}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_rapid_biquad_automation_stays_finite_and_click_bounded() {
+        let sample_rate = 192_000.0;
+        let mut filter = Biquad::new(BiquadType::Peaking, 3000.0, 0.0, 2.0, sample_rate);
+        let mut previous = 0.0_f32;
+        let mut max_step = 0.0_f32;
+        for sample_index in 0..(sample_rate as usize / 2) {
+            if sample_index % (sample_rate as usize / 200) == 0 {
+                let update = (sample_index / (sample_rate as usize / 200)) as f64;
+                filter.set_frequency(300.0 + (update * 173.0) % 12_000.0);
+                filter.set_gain_db(if update as usize & 1 == 0 {
+                    12.0
+                } else {
+                    -12.0
+                });
+            }
+            let phase = 2.0 * PI * 1000.0 * sample_index as f64 / sample_rate;
+            let output = filter.process_sample((0.25 * phase.sin()) as f32);
+            assert!(output.is_finite());
+            max_step = max_step.max((output - previous).abs());
+            previous = output;
+        }
+        assert!(max_step < 0.35, "rapid automation max step was {max_step}");
+    }
+
+    #[test]
+    #[ignore = "release-mode callback cost measurement"]
+    fn benchmark_biquad_morph_cost() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        const SAMPLES: usize = 2_000_000;
+        let mut steady = Biquad::new(BiquadType::Peaking, 1000.0, 6.0, 1.0, 192_000.0);
+        let started = Instant::now();
+        for index in 0..SAMPLES {
+            black_box(steady.process_sample(black_box((index as f32 * 0.013).sin())));
+        }
+        let steady_elapsed = started.elapsed();
+
+        let mut automated = Biquad::new(BiquadType::Peaking, 1000.0, 6.0, 1.0, 192_000.0);
+        let started = Instant::now();
+        for index in 0..SAMPLES {
+            if index % 960 == 0 {
+                automated.set_gain_db(if (index / 960) % 2 == 0 { 12.0 } else { -12.0 });
+            }
+            black_box(automated.process_sample(black_box((index as f32 * 0.013).sin())));
+        }
+        let automated_elapsed = started.elapsed();
+
+        println!(
+            "biquad steady={:.2} ns/sample automated={:.2} ns/sample ratio={:.2}",
+            steady_elapsed.as_nanos() as f64 / SAMPLES as f64,
+            automated_elapsed.as_nanos() as f64 / SAMPLES as f64,
+            automated_elapsed.as_secs_f64() / steady_elapsed.as_secs_f64()
+        );
     }
 }

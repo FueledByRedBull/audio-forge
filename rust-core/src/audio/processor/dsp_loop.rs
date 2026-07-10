@@ -77,6 +77,12 @@ impl AudioProcessor {
         self.clip_event_count.store(0, Ordering::Relaxed);
         self.clip_peak_db
             .store((-120.0_f32).to_bits(), Ordering::Relaxed);
+        self.input_crest_factor_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.output_crest_factor_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.output_short_term_lufs
+            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
         self.output_clip_event_count.store(0, Ordering::Relaxed);
         self.output_clip_peak_db
             .store((-120.0_f32).to_bits(), Ordering::Relaxed);
@@ -84,6 +90,20 @@ impl AudioProcessor {
             .store(0, Ordering::Relaxed);
         self.output_true_peak_db
             .store((-120.0_f32).to_bits(), Ordering::Relaxed);
+        self.output_true_peak_input_db
+            .store((-120.0_f32).to_bits(), Ordering::Relaxed);
+        self.output_true_peak_gain_reduction_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.output_true_peak_headroom_db
+            .store(120.0_f32.to_bits(), Ordering::Relaxed);
+        self.limiter_gain_reduction_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.limiter_peak_gain_reduction_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.limiter_gain_reduction_history_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.output_true_peak_gain_reduction_history_db
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
         self.rt_error_code
             .store(RtErrorCode::None as u32, Ordering::Relaxed);
         self.input_callback_error_count.store(0, Ordering::Relaxed);
@@ -92,7 +112,21 @@ impl AudioProcessor {
         self.input_stereo_correlation
             .store(1.0_f32.to_bits(), Ordering::Relaxed);
         self.input_phase_warning_count.store(0, Ordering::Relaxed);
+        self.input_phase_rescue_strategy
+            .store(0, Ordering::Relaxed);
+        self.input_phase_estimated_delay_samples
+            .store(0.0_f32.to_bits(), Ordering::Relaxed);
+        self.input_phase_polarity_flipped
+            .store(false, Ordering::Relaxed);
+        self.input_cleanup_hum_detected
+            .store(false, Ordering::Relaxed);
+        self.input_cleanup_rumble_detected
+            .store(false, Ordering::Relaxed);
+        self.input_cleanup_high_pass_hz
+            .store((INPUT_PREFILTER_HZ as f32).to_bits(), Ordering::Relaxed);
         self.gate_chatter_event_count.store(0, Ordering::Relaxed);
+        self.gate_auto_relax_active
+            .store(false, Ordering::Relaxed);
         self.last_input_callback_time_us.store(0, Ordering::Relaxed);
         self.last_output_callback_time_us
             .store(0, Ordering::Relaxed);
@@ -106,6 +140,9 @@ impl AudioProcessor {
             Arc::clone(&self.input_channel_mode),
             Arc::clone(&self.input_stereo_correlation),
             Arc::clone(&self.input_phase_warning_count),
+            Arc::clone(&self.input_phase_rescue_strategy),
+            Arc::clone(&self.input_phase_estimated_delay_samples),
+            Arc::clone(&self.input_phase_polarity_flipped),
         );
         let input = match input_device {
             Some(name) => AudioInput::from_device_name_with_options(
@@ -281,8 +318,11 @@ impl AudioProcessor {
         // Clone metering atomics
         let input_peak = Arc::clone(&self.input_peak);
         let input_rms = Arc::clone(&self.input_rms);
+        let input_crest_factor_db = Arc::clone(&self.input_crest_factor_db);
         let output_peak = Arc::clone(&self.output_peak);
         let output_rms = Arc::clone(&self.output_rms);
+        let output_crest_factor_db = Arc::clone(&self.output_crest_factor_db);
+        let output_short_term_lufs = Arc::clone(&self.output_short_term_lufs);
         let compressor_gain_reduction = Arc::clone(&self.compressor_gain_reduction);
         let deesser_gain_reduction = Arc::clone(&self.deesser_gain_reduction);
         let deesser_detector_confidence = Arc::clone(&self.deesser_detector_confidence);
@@ -293,6 +333,7 @@ impl AudioProcessor {
         let gate_noise_floor_db = Arc::clone(&self.gate_noise_floor_db);
         #[cfg(feature = "vad")]
         let gate_fused_score = Arc::clone(&self.gate_fused_score);
+        let gate_auto_relax_active = Arc::clone(&self.gate_auto_relax_active);
         let gate_chatter_event_count = Arc::clone(&self.gate_chatter_event_count);
         #[cfg(feature = "vad")]
         let vad_available = Arc::clone(&self.vad_available);
@@ -333,6 +374,20 @@ impl AudioProcessor {
         let output_clip_peak_db = Arc::clone(&self.output_clip_peak_db);
         let output_true_peak_event_count = Arc::clone(&self.output_true_peak_event_count);
         let output_true_peak_db = Arc::clone(&self.output_true_peak_db);
+        let output_true_peak_input_db = Arc::clone(&self.output_true_peak_input_db);
+        let output_true_peak_gain_reduction_db =
+            Arc::clone(&self.output_true_peak_gain_reduction_db);
+        let output_true_peak_headroom_db = Arc::clone(&self.output_true_peak_headroom_db);
+        let limiter_gain_reduction_db = Arc::clone(&self.limiter_gain_reduction_db);
+        let limiter_peak_gain_reduction_db = Arc::clone(&self.limiter_peak_gain_reduction_db);
+        let limiter_gain_reduction_history_db =
+            Arc::clone(&self.limiter_gain_reduction_history_db);
+        let output_true_peak_gain_reduction_history_db =
+            Arc::clone(&self.output_true_peak_gain_reduction_history_db);
+        let input_cleanup_mode = Arc::clone(&self.input_cleanup_mode);
+        let input_cleanup_hum_detected = Arc::clone(&self.input_cleanup_hum_detected);
+        let input_cleanup_rumble_detected = Arc::clone(&self.input_cleanup_rumble_detected);
+        let input_cleanup_high_pass_hz = Arc::clone(&self.input_cleanup_high_pass_hz);
         let noise_backend_available = Arc::clone(&self.noise_backend_available);
         let noise_backend_failed = Arc::clone(&self.noise_backend_failed);
         let rt_error_code = Arc::clone(&self.rt_error_code);
@@ -446,12 +501,17 @@ impl AudioProcessor {
                 INPUT_PREFILTER_Q,
                 sample_rate_for_latency as f64,
             );
+            let mut adaptive_cleanup_state =
+                AdaptiveInputCleanupState::new(sample_rate_for_latency as f32);
 
             // Metering state (IIR smoothing for RMS)
             let mut input_rms_acc: f32 = 0.0;
             let mut output_rms_acc: f32 = 0.0;
             let meter_coeff =
                 smoothing_coeff_for_time_constant(sample_rate_for_latency as f32, 100.0);
+            let short_term_loudness_coeff =
+                smoothing_coeff_for_time_constant(sample_rate_for_latency as f32, 3000.0);
+            let mut output_short_term_power: f32 = 0.0;
 
             // Latency tracking
             let mut last_latency_update = Instant::now();
@@ -472,29 +532,24 @@ impl AudioProcessor {
             let measure_levels = |buffer: &[f32],
                                   rms_acc: &mut f32,
                                   peak_atomic: &AtomicU32,
-                                  rms_atomic: &AtomicU32| {
-                let mut peak: f32 = 0.0;
-                for &sample in buffer.iter() {
-                    let abs = sample.abs();
-                    if abs > peak {
-                        peak = abs;
-                    }
-                    // IIR RMS accumulator
-                    *rms_acc = meter_coeff * *rms_acc + (1.0 - meter_coeff) * (sample * sample);
+                                  rms_atomic: &AtomicU32,
+                                  crest_atomic: &AtomicU32,
+                                  short_term: Option<(&mut f32, &AtomicU32)>| {
+                let stats = update_meter_block_stats(buffer, rms_acc, meter_coeff);
+                peak_atomic.store(stats.peak_db.to_bits(), Ordering::Relaxed);
+                rms_atomic.store(stats.rms_db.to_bits(), Ordering::Relaxed);
+                crest_atomic.store(stats.crest_factor_db.to_bits(), Ordering::Relaxed);
+
+                if let Some((short_power, loudness_atomic)) = short_term {
+                    *short_power = short_term_loudness_coeff * *short_power
+                        + (1.0 - short_term_loudness_coeff) * stats.mean_power;
+                    let loudness = if *short_power > 1.0e-12 {
+                        10.0 * (*short_power).log10() - 0.691
+                    } else {
+                        -120.0
+                    };
+                    loudness_atomic.store(loudness.to_bits(), Ordering::Relaxed);
                 }
-                // Convert to dB
-                let peak_db = if peak > 0.0 {
-                    20.0 * peak.log10()
-                } else {
-                    -120.0
-                };
-                let rms_db = if *rms_acc > 0.0 {
-                    10.0 * rms_acc.log10() // RMS is sqrt of mean squared, so 10*log10 not 20
-                } else {
-                    -120.0
-                };
-                peak_atomic.store(peak_db.to_bits(), Ordering::Relaxed);
-                rms_atomic.store(rms_db.to_bits(), Ordering::Relaxed);
             };
 
             macro_rules! apply_downstream_chain_rt {
@@ -552,6 +607,15 @@ impl AudioProcessor {
                     }
 
                     if compressor_enabled.load(Ordering::Acquire) {
+                        let true_peak_pressure = f32::from_bits(
+                            output_true_peak_gain_reduction_db.load(Ordering::Relaxed),
+                        ) as f64;
+                        compressor_rt.set_limiter_feedback_gain_reduction_db(
+                            limiter_rt
+                                .current_gain_reduction()
+                                .abs()
+                                .max(true_peak_pressure),
+                        );
                         compressor_rt.process_block_inplace($buffer);
                         compressor_gain_reduction.store(
                             (compressor_rt.current_gain_reduction() as f32).to_bits(),
@@ -576,6 +640,29 @@ impl AudioProcessor {
 
                     if limiter_enabled.load(Ordering::Acquire) {
                         limiter_rt.process_block_inplace($buffer);
+                        let limiter_peak_gr =
+                            limiter_rt.peak_gain_reduction_and_reset() as f32;
+                        limiter_gain_reduction_db.store(
+                            (limiter_rt.current_gain_reduction().abs() as f32).to_bits(),
+                            Ordering::Relaxed,
+                        );
+                        limiter_peak_gain_reduction_db.store(
+                            limiter_peak_gr.to_bits(),
+                            Ordering::Relaxed,
+                        );
+                        update_decaying_peak_db(
+                            limiter_peak_gr,
+                            limiter_gain_reduction_history_db.as_ref(),
+                            0.15,
+                        );
+                    } else {
+                        limiter_gain_reduction_db.store(0.0_f32.to_bits(), Ordering::Relaxed);
+                        limiter_peak_gain_reduction_db.store(0.0_f32.to_bits(), Ordering::Relaxed);
+                        update_decaying_peak_db(
+                            0.0,
+                            limiter_gain_reduction_history_db.as_ref(),
+                            0.15,
+                        );
                     }
                 }};
             }
@@ -614,6 +701,8 @@ impl AudioProcessor {
                 duration_samples(output_sample_rate_for_latency, 6).max(1);
             let discontinuity_fade_remaining = Cell::new(0usize);
             let mut output_true_peak_detector = TruePeakDetector::new();
+            let mut output_true_peak_limiter =
+                TruePeakLimiter::default_settings(output_sample_rate_for_latency as f32);
             let mut output_drift_error_ema = 0.0_f32;
             let mut output_writer = OutputWriteContext {
                 output_producer: &mut output_producer,
@@ -621,6 +710,7 @@ impl AudioProcessor {
                 discontinuity_fade_scratch: &mut discontinuity_fade_scratch,
                 output_safety_scratch: &mut output_safety_scratch,
                 true_peak_detector: &mut output_true_peak_detector,
+                true_peak_limiter: &mut output_true_peak_limiter,
                 drift_error_ema: &mut output_drift_error_ema,
                 discontinuity_fade_remaining: &discontinuity_fade_remaining,
                 limiter_enabled: limiter_enabled.as_ref(),
@@ -638,6 +728,12 @@ impl AudioProcessor {
                     output_clip_peak_db: output_clip_peak_db.as_ref(),
                     output_true_peak_event_count: output_true_peak_event_count.as_ref(),
                     output_true_peak_db: output_true_peak_db.as_ref(),
+                    output_true_peak_input_db: output_true_peak_input_db.as_ref(),
+                    output_true_peak_gain_reduction_db: output_true_peak_gain_reduction_db
+                        .as_ref(),
+                    output_true_peak_gain_reduction_history_db:
+                        output_true_peak_gain_reduction_history_db.as_ref(),
+                    output_true_peak_headroom_db: output_true_peak_headroom_db.as_ref(),
                 },
                 limits: OutputWriteLimits {
                     output_target_center_samples,
@@ -717,6 +813,7 @@ impl AudioProcessor {
             // Run entire processing loop with denormals flushed to zero
             // This prevents tiny floating point values from causing CPU stalls and audio artifacts
             // SAFETY: This only modifies floating point control flags for this thread
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe {
                 no_denormals::no_denormals(|| {
                     // RT_REGION_START: dsp_processing_loop
@@ -862,9 +959,16 @@ impl AudioProcessor {
                             );
                             if processing_path != previous_processing_path {
                                 pre_filter_state = InputPreFilterState::default();
+                                adaptive_cleanup_state.reset_dynamic_state();
+                                publish_input_cleanup_bypassed(
+                                    input_cleanup_hum_detected.as_ref(),
+                                    input_cleanup_rumble_detected.as_ref(),
+                                    input_cleanup_high_pass_hz.as_ref(),
+                                );
                                 input_rms_acc = 0.0;
                                 output_rms_acc = 0.0;
                                 gate_gain_meter.store(1.0_f32.to_bits(), Ordering::Relaxed);
+                                gate_auto_relax_active.store(false, Ordering::Relaxed);
                                 compressor_gain_reduction
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
@@ -876,6 +980,18 @@ impl AudioProcessor {
                                     .store((-100.0_f64).to_bits(), Ordering::Relaxed);
                                 compressor_current_makeup_gain
                                     .store(0.0_f64.to_bits(), Ordering::Relaxed);
+                                limiter_gain_reduction_db.store(
+                                    0.0_f32.to_bits(),
+                                    Ordering::Relaxed,
+                                );
+                                limiter_peak_gain_reduction_db.store(
+                                    0.0_f32.to_bits(),
+                                    Ordering::Relaxed,
+                                );
+                                limiter_gain_reduction_history_db
+                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                output_true_peak_gain_reduction_history_db
+                                    .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
                                 suppressor_latency_samples.store(0, Ordering::Relaxed);
                                 smoothed_buffer_len.store(0, Ordering::Relaxed);
@@ -903,8 +1019,21 @@ impl AudioProcessor {
 
                             if processing_path == ProcessingPath::RawMonitor {
                                 sanitize_non_finite_inplace(buffer);
+                                adaptive_cleanup_state.reset_dynamic_state();
+                                publish_input_cleanup_bypassed(
+                                    input_cleanup_hum_detected.as_ref(),
+                                    input_cleanup_rumble_detected.as_ref(),
+                                    input_cleanup_high_pass_hz.as_ref(),
+                                );
 
-                                measure_levels(buffer, &mut input_rms_acc, &input_peak, &input_rms);
+                                measure_levels(
+                                    buffer,
+                                    &mut input_rms_acc,
+                                    &input_peak,
+                                    &input_rms,
+                                    input_crest_factor_db.as_ref(),
+                                    None,
+                                );
 
                                 if recording_active.load(Ordering::Relaxed) {
                                     let target = raw_recording_target.load(Ordering::Acquire);
@@ -944,6 +1073,11 @@ impl AudioProcessor {
                                     &mut output_rms_acc,
                                     &output_peak,
                                     &output_rms,
+                                    output_crest_factor_db.as_ref(),
+                                    Some((
+                                        &mut output_short_term_power,
+                                        output_short_term_lufs.as_ref(),
+                                    )),
                                 );
                                 compressor_gain_reduction
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
@@ -951,12 +1085,31 @@ impl AudioProcessor {
                                 deesser_detector_confidence
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 gate_gain_meter.store(1.0_f32.to_bits(), Ordering::Relaxed);
+                                gate_auto_relax_active.store(false, Ordering::Relaxed);
                                 compressor_current_release_ms
                                     .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed);
                                 compressor_current_lufs
                                     .store((-100.0_f64).to_bits(), Ordering::Relaxed);
                                 compressor_current_makeup_gain
                                     .store(0.0_f64.to_bits(), Ordering::Relaxed);
+                                limiter_gain_reduction_db.store(
+                                    0.0_f32.to_bits(),
+                                    Ordering::Relaxed,
+                                );
+                                limiter_peak_gain_reduction_db.store(
+                                    0.0_f32.to_bits(),
+                                    Ordering::Relaxed,
+                                );
+                                update_decaying_peak_db(
+                                    0.0,
+                                    limiter_gain_reduction_history_db.as_ref(),
+                                    0.15,
+                                );
+                                update_decaying_peak_db(
+                                    0.0,
+                                    output_true_peak_gain_reduction_history_db.as_ref(),
+                                    0.15,
+                                );
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
                                 suppressor_latency_samples.store(0, Ordering::Relaxed);
                                 smoothed_buffer_len.store(0, Ordering::Relaxed);
@@ -975,10 +1128,30 @@ impl AudioProcessor {
                                 &clip_event_count,
                                 &clip_peak_db,
                             );
-                            apply_input_pre_filter(buffer, &mut pre_filter_state, &mut pre_filter);
-
-                            // Measure INPUT levels (after pre-filter, before main processing)
-                            measure_levels(buffer, &mut input_rms_acc, &input_peak, &input_rms);
+                            let cleanup_mode = InputCleanupMode::from_u8(
+                                input_cleanup_mode.load(Ordering::Acquire),
+                            )
+                            .unwrap_or_default();
+                            let adaptive_cleanup_enabled = processing_path == ProcessingPath::Full
+                                && cleanup_mode.is_enabled()
+                                && !recording_active.load(Ordering::Relaxed);
+                            adaptive_cleanup_state.set_mode(cleanup_mode);
+                            if adaptive_cleanup_enabled {
+                                adaptive_cleanup_state.analyze_input(buffer);
+                            } else {
+                                adaptive_cleanup_state.reset_dynamic_state();
+                                publish_input_cleanup_bypassed(
+                                    input_cleanup_hum_detected.as_ref(),
+                                    input_cleanup_rumble_detected.as_ref(),
+                                    input_cleanup_high_pass_hz.as_ref(),
+                                );
+                            }
+                            apply_input_pre_filter(
+                                buffer,
+                                &mut pre_filter_state,
+                                &mut pre_filter,
+                                !adaptive_cleanup_enabled,
+                            );
 
                             // === RAW AUDIO RECORDING TAP (for calibration) ===
                             // Capture audio AFTER pre-filter, BEFORE noise gate
@@ -1014,6 +1187,26 @@ impl AudioProcessor {
                             }
                             // === END RECORDING TAP ===
 
+                            if adaptive_cleanup_enabled {
+                                adaptive_cleanup_state.process_block(buffer);
+                                publish_input_cleanup_diagnostics(
+                                    &adaptive_cleanup_state,
+                                    input_cleanup_hum_detected.as_ref(),
+                                    input_cleanup_rumble_detected.as_ref(),
+                                    input_cleanup_high_pass_hz.as_ref(),
+                                );
+                            }
+
+                            // Measure INPUT levels after fixed pre-filter and optional adaptive cleanup.
+                            measure_levels(
+                                buffer,
+                                &mut input_rms_acc,
+                                &input_peak,
+                                &input_rms,
+                                input_crest_factor_db.as_ref(),
+                                None,
+                            );
+
                             if processing_path == ProcessingPath::Bypass {
                                 // Bypass mode: measure output = input, send directly
                                 measure_levels(
@@ -1021,18 +1214,42 @@ impl AudioProcessor {
                                     &mut output_rms_acc,
                                     &output_peak,
                                     &output_rms,
+                                    output_crest_factor_db.as_ref(),
+                                    Some((
+                                        &mut output_short_term_power,
+                                        output_short_term_lufs.as_ref(),
+                                    )),
                                 );
                                 compressor_gain_reduction
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 deesser_gain_reduction.store(0.0_f32.to_bits(), Ordering::Relaxed);
                                 deesser_detector_confidence
                                     .store(0.0_f32.to_bits(), Ordering::Relaxed);
+                                gate_auto_relax_active.store(false, Ordering::Relaxed);
                                 compressor_current_release_ms
                                     .store(COMPRESSOR_DEFAULT_RELEASE_TENTH_MS, Ordering::Relaxed); // Default 200ms
                                 compressor_current_lufs
                                     .store((-100.0_f64).to_bits(), Ordering::Relaxed);
                                 compressor_current_makeup_gain
                                     .store(0.0_f64.to_bits(), Ordering::Relaxed);
+                                limiter_gain_reduction_db.store(
+                                    0.0_f32.to_bits(),
+                                    Ordering::Relaxed,
+                                );
+                                limiter_peak_gain_reduction_db.store(
+                                    0.0_f32.to_bits(),
+                                    Ordering::Relaxed,
+                                );
+                                update_decaying_peak_db(
+                                    0.0,
+                                    limiter_gain_reduction_history_db.as_ref(),
+                                    0.15,
+                                );
+                                update_decaying_peak_db(
+                                    0.0,
+                                    output_true_peak_gain_reduction_history_db.as_ref(),
+                                    0.15,
+                                );
                                 suppressor_buffer_len.store(0, Ordering::Relaxed);
 
                                 write_output(buffer, uses_clean_write_path(processing_path));
@@ -1087,6 +1304,10 @@ impl AudioProcessor {
                                         gate_rt.chatter_event_count(),
                                         Ordering::Relaxed,
                                     );
+                                    gate_auto_relax_active.store(
+                                        gate_rt.auto_relax_active(),
+                                        Ordering::Relaxed,
+                                    );
                                     #[cfg(feature = "vad")]
                                     {
                                         let prob = gate_rt.get_vad_probability();
@@ -1109,6 +1330,9 @@ impl AudioProcessor {
                                             Ordering::Relaxed,
                                         );
                                     }
+                                } else {
+                                    gate_gain_meter.store(1.0_f32.to_bits(), Ordering::Relaxed);
+                                    gate_auto_relax_active.store(false, Ordering::Relaxed);
                                 }
 
                                 // Stage 2: Noise Suppression (RNNoise or DeepFilterNet)
@@ -1325,6 +1549,11 @@ impl AudioProcessor {
                                                 &mut output_rms_acc,
                                                 &output_peak,
                                                 &output_rms,
+                                                output_crest_factor_db.as_ref(),
+                                                Some((
+                                                    &mut output_short_term_power,
+                                                    output_short_term_lufs.as_ref(),
+                                                )),
                                             );
 
                                             // Send processed samples to output
@@ -1363,6 +1592,11 @@ impl AudioProcessor {
                                         &mut output_rms_acc,
                                         &output_peak,
                                         &output_rms,
+                                        output_crest_factor_db.as_ref(),
+                                        Some((
+                                            &mut output_short_term_power,
+                                            output_short_term_lufs.as_ref(),
+                                        )),
                                     );
 
                                     // Send to output

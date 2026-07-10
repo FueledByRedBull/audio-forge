@@ -1,7 +1,7 @@
 /// Gate operating modes
 #[cfg(feature = "vad")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[pyclass(eq, eq_int)]
+#[pyclass(eq, eq_int, skip_from_py_object)]
 pub enum PyGateMode {
     /// Traditional gate using only level threshold
     ThresholdOnly = 0,
@@ -9,6 +9,222 @@ pub enum PyGateMode {
     VadAssisted = 1,
     /// VAD-only: gate opens solely based on speech probability
     VadOnly = 2,
+}
+
+fn py_dict_bool(
+    settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+    key: &str,
+    default: bool,
+) -> PyResult<bool> {
+    if let Some(settings) = settings {
+        if let Some(value) = settings.get_item(key)? {
+            return value.extract::<bool>();
+        }
+    }
+    Ok(default)
+}
+
+fn py_dict_f64(
+    settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+    key: &str,
+    default: f64,
+) -> PyResult<f64> {
+    if let Some(settings) = settings {
+        if let Some(value) = settings.get_item(key)? {
+            return value.extract::<f64>();
+        }
+    }
+    Ok(default)
+}
+
+fn linear_to_db(value: f32) -> f32 {
+    20.0 * value.max(1.0e-12).log10()
+}
+
+#[pyfunction]
+#[pyo3(signature = (audio, sample_rate, bands, settings=None))]
+pub fn simulate_auto_eq_chain(
+    py: Python<'_>,
+    audio: numpy::PyReadonlyArray1<'_, f32>,
+    sample_rate: f64,
+    bands: Vec<(f64, f64, f64)>,
+    settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+) -> PyResult<Py<PyAny>> {
+    if !sample_rate.is_finite() || sample_rate <= 0.0 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "sample_rate must be positive and finite",
+        ));
+    }
+    if bands.len() != NUM_BANDS {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected {NUM_BANDS} EQ bands, got {}",
+            bands.len()
+        )));
+    }
+
+    let mut processor = OfflineDspBlockProcessor::new(sample_rate);
+    processor.set_eq_enabled(true);
+    for (index, (frequency, gain_db, q)) in bands.iter().copied().enumerate() {
+        processor.eq_mut().set_band_frequency(index, frequency);
+        processor.eq_mut().set_band_gain(index, gain_db);
+        processor.eq_mut().set_band_q(index, q);
+    }
+
+    let deesser_enabled = py_dict_bool(settings, "deesser_enabled", false)?;
+    processor.set_deesser_enabled(deesser_enabled);
+    if deesser_enabled {
+        let deesser = processor.deesser_mut();
+        deesser.set_auto_enabled(py_dict_bool(settings, "deesser_auto_enabled", true)?);
+        deesser.set_auto_amount(py_dict_f64(settings, "deesser_auto_amount", 0.5)?);
+        deesser.set_low_cut_hz(py_dict_f64(settings, "deesser_low_cut_hz", 4000.0)?);
+        deesser.set_high_cut_hz(py_dict_f64(settings, "deesser_high_cut_hz", 11_000.0)?);
+        deesser.set_threshold_db(py_dict_f64(settings, "deesser_threshold_db", -28.0)?);
+        deesser.set_ratio(py_dict_f64(settings, "deesser_ratio", 4.0)?);
+        deesser.set_attack_ms(py_dict_f64(settings, "deesser_attack_ms", 2.0)?);
+        deesser.set_release_ms(py_dict_f64(settings, "deesser_release_ms", 80.0)?);
+        deesser.set_max_reduction_db(py_dict_f64(settings, "deesser_max_reduction_db", 6.0)?);
+    }
+
+    let compressor_enabled = py_dict_bool(settings, "compressor_enabled", true)?;
+    processor.set_compressor_enabled(compressor_enabled);
+    if compressor_enabled {
+        let compressor = processor.compressor_mut();
+        compressor.set_threshold(py_dict_f64(settings, "compressor_threshold_db", -20.0)?);
+        compressor.set_ratio(py_dict_f64(settings, "compressor_ratio", 4.0)?);
+        compressor.set_attack_time(py_dict_f64(settings, "compressor_attack_ms", 10.0)?);
+        compressor.set_release_time(py_dict_f64(settings, "compressor_release_ms", 200.0)?);
+        compressor.set_makeup_gain(py_dict_f64(settings, "compressor_makeup_gain_db", 0.0)?);
+        compressor.set_adaptive_release(py_dict_bool(
+            settings,
+            "compressor_adaptive_release",
+            false,
+        )?);
+        compressor.set_base_release_time(py_dict_f64(
+            settings,
+            "compressor_base_release_ms",
+            50.0,
+        )?);
+        compressor.set_auto_makeup_enabled(py_dict_bool(
+            settings,
+            "compressor_auto_makeup_enabled",
+            false,
+        )?);
+        compressor.set_target_lufs(py_dict_f64(settings, "compressor_target_lufs", -18.0)?);
+        compressor.set_sidechain_highpass_enabled(py_dict_bool(
+            settings,
+            "compressor_sidechain_highpass_enabled",
+            true,
+        )?);
+    }
+
+    let limiter_enabled = py_dict_bool(settings, "limiter_enabled", true)?;
+    processor.set_limiter_enabled(limiter_enabled);
+    let limiter_ceiling_db = py_dict_f64(settings, "limiter_ceiling_db", -0.5)?;
+    let careful_output_enabled = py_dict_bool(settings, "limiter_careful_output_enabled", true)?;
+    let effective_ceiling_db =
+        effective_limiter_ceiling_db(limiter_ceiling_db, careful_output_enabled) as f32;
+    if limiter_enabled {
+        processor
+            .limiter_mut()
+            .set_ceiling(effective_ceiling_db as f64);
+        processor
+            .limiter_mut()
+            .set_release_time(py_dict_f64(settings, "limiter_release_ms", 50.0)?);
+        processor
+            .true_peak_limiter_mut()
+            .set_release_ms(py_dict_f64(settings, "limiter_release_ms", 50.0)? as f32);
+    }
+
+    let mut output = FixedAudioBuffer::<f32, RT_PROCESS_BUFFER_CAPACITY>::new();
+    let mut input_square_sum = 0.0_f64;
+    let mut output_square_sum = 0.0_f64;
+    let mut input_samples = 0_usize;
+    let mut output_samples = 0_usize;
+    let mut input_sample_peak = 0.0_f32;
+    let mut output_sample_peak = 0.0_f32;
+    let mut pre_limiter_true_peak = 0.0_f32;
+    let mut output_true_peak = 0.0_f32;
+    let mut limiter_peak_gain_reduction_db = 0.0_f32;
+    let mut true_peak_limiter_gain_reduction_db = 0.0_f32;
+    let mut compressor_gain_reduction_db = 0.0_f32;
+    let mut deesser_gain_reduction_db = 0.0_f32;
+    let mut true_peak_limited_events = 0_u64;
+
+    let audio = audio.as_slice()?;
+    for chunk in audio.chunks(RT_PROCESS_BUFFER_CAPACITY) {
+        let mut block = chunk.to_vec();
+        for sample in block.iter_mut() {
+            if !sample.is_finite() {
+                *sample = 0.0;
+            }
+            input_square_sum += (*sample as f64) * (*sample as f64);
+            input_samples += 1;
+        }
+
+        let stats = processor.process_block_with_stats(&mut block, &mut output);
+        input_sample_peak = input_sample_peak.max(stats.input_sample_peak);
+        output_sample_peak = output_sample_peak.max(stats.output_sample_peak);
+        pre_limiter_true_peak = pre_limiter_true_peak.max(stats.true_peak_limiter_input_peak);
+        output_true_peak = output_true_peak.max(stats.output_true_peak);
+        limiter_peak_gain_reduction_db =
+            limiter_peak_gain_reduction_db.max(stats.limiter_peak_gain_reduction_db);
+        true_peak_limiter_gain_reduction_db = true_peak_limiter_gain_reduction_db
+            .max(stats.true_peak_limiter_gain_reduction_db);
+        compressor_gain_reduction_db =
+            compressor_gain_reduction_db.max(stats.compressor_gain_reduction_db);
+        deesser_gain_reduction_db = deesser_gain_reduction_db.max(stats.deesser_gain_reduction_db);
+        true_peak_limited_events =
+            true_peak_limited_events.saturating_add(stats.true_peak_limited_events);
+
+        for &sample in output.as_slice() {
+            output_square_sum += (sample as f64) * (sample as f64);
+            output_samples += 1;
+        }
+    }
+
+    let input_rms = if input_samples > 0 {
+        (input_square_sum / input_samples as f64).sqrt() as f32
+    } else {
+        0.0
+    };
+    let output_rms = if output_samples > 0 {
+        (output_square_sum / output_samples as f64).sqrt() as f32
+    } else {
+        0.0
+    };
+    let output_sample_peak_db = linear_to_db(output_sample_peak);
+    let pre_limiter_true_peak_db = linear_to_db(pre_limiter_true_peak);
+    let output_true_peak_db = linear_to_db(output_true_peak);
+    let diagnostics = pyo3::types::PyDict::new(py);
+    diagnostics.set_item("input_sample_peak_db", linear_to_db(input_sample_peak))?;
+    diagnostics.set_item("input_rms_db", linear_to_db(input_rms))?;
+    diagnostics.set_item("output_sample_peak_db", output_sample_peak_db)?;
+    diagnostics.set_item("pre_limiter_true_peak_db", pre_limiter_true_peak_db)?;
+    diagnostics.set_item("output_true_peak_db", output_true_peak_db)?;
+    diagnostics.set_item("output_rms_db", linear_to_db(output_rms))?;
+    diagnostics.set_item("limiter_effective_ceiling_db", effective_ceiling_db)?;
+    diagnostics.set_item(
+        "sample_headroom_db",
+        effective_ceiling_db - output_sample_peak_db,
+    )?;
+    diagnostics.set_item(
+        "pre_limiter_true_peak_headroom_db",
+        effective_ceiling_db - pre_limiter_true_peak_db,
+    )?;
+    diagnostics.set_item(
+        "true_peak_headroom_db",
+        effective_ceiling_db - output_true_peak_db,
+    )?;
+    diagnostics.set_item("limiter_gain_reduction_db", limiter_peak_gain_reduction_db)?;
+    diagnostics.set_item(
+        "true_peak_limiter_gain_reduction_db",
+        true_peak_limiter_gain_reduction_db,
+    )?;
+    diagnostics.set_item("true_peak_limited_events", true_peak_limited_events)?;
+    diagnostics.set_item("compressor_gain_reduction_db", compressor_gain_reduction_db)?;
+    diagnostics.set_item("deesser_gain_reduction_db", deesser_gain_reduction_db)?;
+    diagnostics.set_item("processed_samples", output_samples)?;
+    Ok(diagnostics.into_any().unbind())
 }
 
 /// Python-exposed audio processor
@@ -93,6 +309,20 @@ impl PyAudioProcessor {
 
     fn get_input_channel_mode(&self) -> String {
         self.processor.input_channel_mode().id().to_string()
+    }
+
+    fn set_input_cleanup_mode(&self, mode: &str) -> PyResult<()> {
+        let mode = InputCleanupMode::from_id(mode).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Invalid input cleanup mode: {mode}"
+            ))
+        })?;
+        self.processor.set_input_cleanup_mode(mode);
+        Ok(())
+    }
+
+    fn get_input_cleanup_mode(&self) -> String {
+        self.processor.input_cleanup_mode().id().to_string()
     }
 
     // === Noise Gate ===
@@ -526,12 +756,24 @@ impl PyAudioProcessor {
         self.processor.get_input_rms_db()
     }
 
+    fn get_input_crest_factor_db(&self) -> f32 {
+        self.processor.get_input_crest_factor_db()
+    }
+
     fn get_output_peak_db(&self) -> f32 {
         self.processor.get_output_peak_db()
     }
 
     fn get_output_rms_db(&self) -> f32 {
         self.processor.get_output_rms_db()
+    }
+
+    fn get_output_crest_factor_db(&self) -> f32 {
+        self.processor.get_output_crest_factor_db()
+    }
+
+    fn get_output_short_term_lufs(&self) -> f32 {
+        self.processor.get_output_short_term_lufs()
     }
 
     fn get_input_stereo_correlation(&self) -> f32 {
@@ -689,8 +931,8 @@ impl PyAudioProcessor {
         self.processor.is_recovery_suppressed()
     }
 
-    fn get_runtime_diagnostics(&self, py: Python) -> PyResult<PyObject> {
-        let diagnostics = pyo3::types::PyDict::new_bound(py);
+    fn get_runtime_diagnostics(&self, py: Python) -> PyResult<Py<PyAny>> {
+        let diagnostics = pyo3::types::PyDict::new(py);
         diagnostics.set_item("noise_model", self.processor.get_noise_model().id())?;
         diagnostics.set_item(
             "noise_backend_available",
@@ -761,12 +1003,68 @@ impl PyAudioProcessor {
             self.processor.input_channel_mode().id(),
         )?;
         diagnostics.set_item(
+            "input_cleanup_mode",
+            self.processor.input_cleanup_mode().id(),
+        )?;
+        diagnostics.set_item(
+            "input_cleanup_hum_detected",
+            self.processor
+                .input_cleanup_hum_detected
+                .load(Ordering::Relaxed),
+        )?;
+        diagnostics.set_item(
+            "input_cleanup_rumble_detected",
+            self.processor
+                .input_cleanup_rumble_detected
+                .load(Ordering::Relaxed),
+        )?;
+        diagnostics.set_item(
+            "input_cleanup_high_pass_hz",
+            f32::from_bits(
+                self.processor
+                    .input_cleanup_high_pass_hz
+                    .load(Ordering::Relaxed),
+            ),
+        )?;
+        diagnostics.set_item(
+            "input_crest_factor_db",
+            self.processor.get_input_crest_factor_db(),
+        )?;
+        diagnostics.set_item(
+            "output_crest_factor_db",
+            self.processor.get_output_crest_factor_db(),
+        )?;
+        diagnostics.set_item(
+            "output_short_term_lufs",
+            self.processor.get_output_short_term_lufs(),
+        )?;
+        diagnostics.set_item(
             "input_stereo_correlation",
             self.processor.get_input_stereo_correlation(),
         )?;
         diagnostics.set_item(
             "input_phase_warning_count",
             self.processor.get_input_phase_warning_count(),
+        )?;
+        let phase_strategy = crate::audio::input::PhaseRescueStrategy::from_u8(
+            self.processor
+                .input_phase_rescue_strategy
+                .load(Ordering::Relaxed),
+        );
+        diagnostics.set_item("input_phase_rescue_strategy", phase_strategy.name())?;
+        diagnostics.set_item(
+            "input_phase_estimated_delay_samples",
+            f32::from_bits(
+                self.processor
+                    .input_phase_estimated_delay_samples
+                    .load(Ordering::Relaxed),
+            ),
+        )?;
+        diagnostics.set_item(
+            "input_phase_polarity_flipped",
+            self.processor
+                .input_phase_polarity_flipped
+                .load(Ordering::Relaxed),
         )?;
         diagnostics.set_item(
             "stream_restart_count",
@@ -832,6 +1130,62 @@ impl PyAudioProcessor {
             ),
         )?;
         diagnostics.set_item(
+            "output_true_peak_input_db",
+            f32::from_bits(
+                self.processor
+                    .output_true_peak_input_db
+                    .load(Ordering::Relaxed),
+            ),
+        )?;
+        diagnostics.set_item(
+            "output_true_peak_gain_reduction_db",
+            f32::from_bits(
+                self.processor
+                    .output_true_peak_gain_reduction_db
+                    .load(Ordering::Relaxed),
+            ),
+        )?;
+        diagnostics.set_item(
+            "output_true_peak_gain_reduction_history_db",
+            f32::from_bits(
+                self.processor
+                    .output_true_peak_gain_reduction_history_db
+                    .load(Ordering::Relaxed),
+            ),
+        )?;
+        diagnostics.set_item(
+            "output_true_peak_headroom_db",
+            f32::from_bits(
+                self.processor
+                    .output_true_peak_headroom_db
+                    .load(Ordering::Relaxed),
+            ),
+        )?;
+        diagnostics.set_item(
+            "limiter_gain_reduction_db",
+            f32::from_bits(
+                self.processor
+                    .limiter_gain_reduction_db
+                    .load(Ordering::Relaxed),
+            ),
+        )?;
+        diagnostics.set_item(
+            "limiter_peak_gain_reduction_db",
+            f32::from_bits(
+                self.processor
+                    .limiter_peak_gain_reduction_db
+                    .load(Ordering::Relaxed),
+            ),
+        )?;
+        diagnostics.set_item(
+            "limiter_gain_reduction_history_db",
+            f32::from_bits(
+                self.processor
+                    .limiter_gain_reduction_history_db
+                    .load(Ordering::Relaxed),
+            ),
+        )?;
+        diagnostics.set_item(
             "limiter_careful_output_enabled",
             self.processor.is_limiter_careful_output_enabled(),
         )?;
@@ -842,6 +1196,10 @@ impl PyAudioProcessor {
         diagnostics.set_item(
             "gate_chatter_event_count",
             self.processor.get_gate_chatter_event_count(),
+        )?;
+        diagnostics.set_item(
+            "gate_auto_relax_active",
+            self.processor.is_gate_auto_relax_active(),
         )?;
         diagnostics.set_item(
             "deesser_detector_confidence",
@@ -910,11 +1268,11 @@ impl PyAudioProcessor {
     }
 
     /// Stop recording and return audio data as NumPy array
-    fn stop_raw_recording(&mut self, py: Python) -> PyResult<PyObject> {
+    fn stop_raw_recording(&mut self, py: Python) -> PyResult<Py<PyAny>> {
         if let Some(audio) = self.processor.stop_raw_recording() {
             // Zero-copy transfer to NumPy
             use numpy::PyArray1;
-            let array = PyArray1::from_vec_bound(py, audio);
+            let array = PyArray1::from_vec(py, audio);
             Ok(array.into_any().unbind())
         } else {
             Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(

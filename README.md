@@ -2,20 +2,20 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)]()
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
 
-Current version: `v1.8.5`
+Current version: `v1.8.6`
 
 ## Download
 
 The latest portable build is available on the GitHub releases page:
 
-- [AudioForge v1.8.5](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.8.5)
-- Artifact: `AudioForge-v1.8.5-win64-ultra.7z`
-- SHA-256: `5E2CF3DF4EE204D09D6624D6FE69C7036B9E8554EF57C53AE416A78C1B249752`
+- [AudioForge v1.8.6](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.8.6)
+- Artifact: `AudioForge-v1.8.6-win64-ultra.7z`
+- Checksum: use the matching `.7z.sha256` sidecar published by the release workflow.
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
 
@@ -30,8 +30,11 @@ User-facing tools:
 - Auto thresholding that tracks the live noise floor in VAD modes.
 - 10-band parametric EQ with gain, Q, and per-band center frequencies.
 - Auto-EQ calibration that records your voice, analyzes the spectrum, and applies a bounded correction.
-- Auto Voice Setup wizard that records room noise plus speech and recommends EQ, gate/VAD, de-esser, and compressor settings in one pass.
+- Auto-EQ headroom validation through the native chain simulator; Python-only fallback results are visibly advisory.
+- Auto Voice Setup with VAD-masked short-term loudness, loudness range, robust band analysis, offline chain validation, and capture uncertainty.
 - Dynamic-EQ de-esser, compressor, auto makeup gain, and lookahead limiter.
+- Band-limited 4x true-peak detection and limiting, validated against an independent offline reference.
+- Stateful phase-safe mono alignment and adaptive 49-61 Hz hum/harmonic tracking for difficult input sources.
 - Per device-pair latency calibration profiles.
 - Raw monitor and bypass paths for troubleshooting.
 
@@ -47,7 +50,7 @@ Operational tools:
 
 AudioForge currently supports Windows 10/11 only. Source builds, CI, portable `dist/AudioForge` packaging, runtime assets, device recovery behavior, and desktop identity integration are validated on Windows. Linux and macOS builds are not supported today, even though parts of the Rust audio stack use cross-platform libraries.
 
-DeepFilterNet support is intentionally opt-in at runtime. Use `AUDIOFORGE_ENABLE_DEEPFILTER=1` when you want to exercise the DeepFilter backend; RNNoise remains the default safe path.
+DeepFilterNet support is intentionally opt-in for source runs. Packaged builds register and enable verified bundled assets during application bootstrap; RNNoise remains the safe default when those assets are absent. External DLL/model paths are ignored unless `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` is explicitly set.
 DeepFilter model/DLL initialization and Silero VAD inference are prepared off the realtime DSP loop; the audio path only swaps ready suppressor state and consumes cached VAD probabilities.
 
 ## DSP Chain
@@ -55,7 +58,7 @@ DeepFilter model/DLL initialization and Silero VAD inference are prepared off th
 Normal processing path:
 
 ```text
-Mic Input -> Pre-Filter (DC block + 80 Hz HP) -> Noise Gate -> Noise Suppression
+Mic Input -> Input Cleanup (DC block + one selected/adaptive HP) -> Noise Gate -> Noise Suppression
 -> De-Esser -> 10-Band EQ -> Compressor -> Limiter -> Output
 ```
 
@@ -70,7 +73,7 @@ Latency labels in the UI describe suppressor/DSP behavior, not full round-trip l
 
 - Windows 10/11
 - Python 3.10+
-- Rust 1.70+
+- Rust 1.83+
 - `maturin`
 - A virtual environment in `.venv` is assumed by the packaging script.
 
@@ -81,8 +84,8 @@ git clone https://github.com/FueledByRedBull/audio-forge.git
 cd audio-forge
 
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -e .[dev]
+.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements/dev.txt
+.\.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
 
 .\.venv\Scripts\python.exe -m maturin develop --release
 .\.venv\Scripts\python.exe -m mic_eq
@@ -96,7 +99,7 @@ You can also use the installed console entrypoint:
 
 ## Configuration
 
-RNNoise is the default safe noise-suppression backend. DeepFilterNet is opt-in for source and development runs; set `AUDIOFORGE_ENABLE_DEEPFILTER=1` when you want to use the DeepFilter backend with local `df.dll` and model assets. Packaged builds auto-enable DeepFilterNet when the bundled DeepFilter DLL and model assets are present.
+RNNoise is the default safe noise-suppression backend. DeepFilterNet is opt-in for source and development runs; set `AUDIOFORGE_ENABLE_DEEPFILTER=1` after registering app-owned assets or when intentionally using opted-in external assets. Packaged builds register canonical bundled DLL/model paths and auto-enable DeepFilterNet when both are present.
 
 See [Development Assets](#development-assets) for the full runtime asset and environment-variable list.
 
@@ -113,6 +116,9 @@ Useful behavior to know:
 - Device refresh keeps the current selection when the same device is still available.
 - Input/output stream setup prefers 48 kHz configs when available.
 - In VAD modes, auto threshold is the default path; the UI shows live noise floor and effective threshold.
+- Phase-safe mono retains fractional-delay history across input callbacks instead of re-estimating from isolated blocks.
+- Adaptive cleanup tracks off-nominal mains hum and its harmonic, and selects one high-pass response instead of cascading filters.
+- Weak Auto Voice Setup captures show uncertainty reasons and require confirmation before their recommendations are applied.
 - Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
 - Diagnostics separate input drops, backlog recovery, output recovery, output short-write loss, and active output underrun streaks. Historical output underrun and recovery totals stay visible without forcing the health chip into a warning state after the stream has recovered.
 
@@ -127,7 +133,7 @@ Full-feature development and release builds use the tracked `release-assets.json
 For a cleaner fresh-clone setup, you can hydrate those assets from the matching GitHub release:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.5
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.6
 ```
 
 Create `models/` in the repo root for local runtime discovery:
@@ -150,14 +156,14 @@ Environment variables:
 - `DEEPFILTER_LIB_PATH`
 - `VAD_MODEL_PATH`
 
-Packaged builds prefer bundled DeepFilter assets. By default, bundled `df.dll` and the bundled DeepFilter model override external environment paths. Set `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` only when you intentionally want a packaged build to honor external `DEEPFILTER_LIB_PATH` and/or `DEEPFILTER_MODEL_PATH`; any missing path still defaults to the bundled asset.
+Packaged builds use bootstrap-registered canonical DeepFilter assets by default. Ambient `DEEPFILTER_LIB_PATH` and `DEEPFILTER_MODEL_PATH` values are ignored. Set `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` only when you intentionally want a valid external path to take precedence; any missing external path falls back to the registered bundled asset.
 
 ## Build Portable EXE
 
 Build the Rust extension first, then package:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.5
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.6
 .\.venv\Scripts\python.exe -m maturin develop --release
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
@@ -183,7 +189,7 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.8.5-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.8.6-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This uses LZMA2 with max compression and solid mode, which is appropriate for the PyInstaller bundle.
@@ -196,10 +202,18 @@ CI-equivalent checks:
 .\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
 .\.venv\Scripts\python.exe -m pyright
 .\.venv\Scripts\python.exe -m pytest python/tests -q
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt
+.\.venv\Scripts\python.exe python/tools/run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python/tools/check_versions.py
+.\.venv\Scripts\python.exe python/tools/check_workflows.py
 .\.venv\Scripts\python.exe python/tools/package_smoke.py --source-only
 cargo fmt --check
+cargo audit
 cargo test -p mic_eq_core
+cargo test --release -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
+cargo test --release -p mic_eq_core audio::input::tests::benchmark_phase_safe_mono_callback_cost -- --ignored --nocapture
+cargo test --release -p mic_eq_core dsp::biquad::tests::benchmark_biquad_morph_cost -- --ignored --nocapture
 cargo clippy -p mic_eq_core --all-targets -- -D warnings
 ```
 

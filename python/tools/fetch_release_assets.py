@@ -9,6 +9,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from verify_release_assets import verify_assets
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -175,6 +177,11 @@ def main() -> int:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
             print(f"Installed {asset['name']} -> {destination.relative_to(REPO_ROOT)}")
+
+    verification_errors = verify_assets()
+    if verification_errors:
+        formatted_errors = "\n  ".join(verification_errors)
+        raise RuntimeError(f"Downloaded assets failed verification:\n  {formatted_errors}")
 
     print("Release assets downloaded successfully.")
     return 0

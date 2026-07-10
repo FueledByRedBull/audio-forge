@@ -34,6 +34,7 @@ class AnalysisWorker(QThread):
         target_preset='broadcast',
         target_mode="adaptive",
         smoothing_strength="conservative",
+        chain_settings=None,
     ):
         """
         Initialize analysis worker.
@@ -44,6 +45,7 @@ class AnalysisWorker(QThread):
             target_preset: Target curve name ('broadcast', 'podcast', 'streaming', 'flat')
             target_mode: Target behavior ('adaptive' or 'static')
             smoothing_strength: Auto-EQ smoothing strength
+            chain_settings: Current deterministic DSP settings for offline headroom simulation
         """
         super().__init__()
         self.audio_data = audio_data
@@ -51,6 +53,7 @@ class AnalysisWorker(QThread):
         self.target_preset = target_preset
         self.target_mode = target_mode
         self.smoothing_strength = smoothing_strength
+        self.chain_settings = chain_settings
         self._start_time = None
         self._stop_event = threading.Event()
 
@@ -81,6 +84,7 @@ class AnalysisWorker(QThread):
                 self.target_preset,
                 target_mode=self.target_mode,
                 smoothing_strength=self.smoothing_strength,
+                chain_settings=self.chain_settings,
             )
             if self._should_stop():
                 return

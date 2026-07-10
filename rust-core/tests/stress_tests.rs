@@ -22,11 +22,13 @@ fn seeded_control_and_dsp_loops_remain_finite_under_contention() {
     }
 }
 
-/// Smoke-test device enumeration and non-started processor lifecycle handling.
+/// Smoke-test real-device enumeration and non-started processor lifecycle handling.
 ///
-/// USB unplug and WASAPI invalid-device callbacks still require a hardware-driven
-/// integration test; this covers the deterministic, device-independent boundary.
+/// This must run on a Windows host with working audio endpoints. GitHub-hosted
+/// runners do not provide a stable WASAPI output endpoint and can terminate in
+/// native CPAL enumeration before Rust can return an error.
 #[test]
+#[ignore = "requires Windows audio endpoints"]
 fn device_enumeration_and_lifecycle_smoke() {
     let mut device_counts = Vec::new();
     for _ in 0..50 {

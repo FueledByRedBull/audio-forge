@@ -7,7 +7,6 @@
 - Auto-EQ reports Python fallback headroom checks as advisory and reserves authoritative safety decisions for the native Rust chain simulator.
 - Auto Voice Setup now uses VAD-masked BS.1770 short-term loudness, loudness range, robust band energy, offline chain validation, and visible uncertainty before applying weak captures.
 - Rapid UI automation uses time-based biquad morphs, with seeded concurrent control/DSP stress coverage in release mode.
-- Input and output device-list refreshes are serialized across CPAL/WASAPI to avoid native races on Windows.
 
 ## Security and reproducibility
 
@@ -25,6 +24,7 @@
 - `cargo audit`
 - Ruff, Pyright, pytest, version consistency, and source package smoke checks
 - Rust formatting, full tests, Clippy with warnings denied, and release-mode contention stress tests
+- Explicit hardware-only CPAL/WASAPI enumeration and lifecycle smoke checks on a Windows machine with real audio endpoints
 - Verified runtime assets, a full PyInstaller portable build, and packaged-bundle smoke checks
 
 Release-mode microbenchmarks on the validation machine measured phase-safe mono

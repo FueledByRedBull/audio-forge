@@ -79,6 +79,13 @@ def _load_asset_manifest() -> tuple[list[dict[str, object]], list[str]]:
 def check_source_packaging() -> list[str]:
     errors: list[str] = []
 
+    spec_text = (REPO_ROOT / "AudioForge.spec").read_text(encoding="utf-8")
+    for scipy_module in ("scipy.integrate", "scipy.interpolate", "scipy.stats"):
+        if re.search(rf'^\s*"{re.escape(scipy_module)}",\s*$', spec_text, re.MULTILINE):
+            errors.append(
+                f"AudioForge.spec must not exclude runtime SciPy dependency {scipy_module}"
+            )
+
     spec_expectations = [
         ("AudioForge.spec", "DirectML.dll"),
         ("AudioForge.spec", "df.dll"),

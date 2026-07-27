@@ -1,6 +1,6 @@
 [package]
 name = "mic_eq_core"
-version = "1.8.7"
+version = "1.8.8"
 edition = "2021"
 description = "High-performance DSP engine for AudioForge - real-time noise suppression and equalization"
 

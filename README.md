@@ -7,14 +7,14 @@
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
 
-Current version: `v1.8.7`
+Current version: `v1.8.8`
 
 ## Download
 
 The latest portable build is available on the GitHub releases page:
 
-- [AudioForge v1.8.7](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.8.7)
-- Artifact: `AudioForge-v1.8.7-win64-ultra.7z`
+- [AudioForge v1.8.8](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.8.8)
+- Artifact: `AudioForge-v1.8.8-win64-ultra.7z`
 - Checksum: use the matching `.7z.sha256` sidecar published by the release workflow.
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
@@ -134,7 +134,7 @@ Full-feature development and release builds use the tracked `release-assets.json
 For a cleaner fresh-clone setup, you can hydrate those assets from the matching GitHub release:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.7
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.8
 ```
 
 Create `models/` in the repo root for local runtime discovery:
@@ -164,7 +164,7 @@ Packaged builds use bootstrap-registered canonical DeepFilter assets by default.
 Build the Rust extension first, then package:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.7
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.8
 .\.venv\Scripts\python.exe -m maturin develop --release
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
@@ -191,7 +191,7 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.8.7-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.8.8-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This uses LZMA2 with max compression and solid mode, which is appropriate for the PyInstaller bundle.

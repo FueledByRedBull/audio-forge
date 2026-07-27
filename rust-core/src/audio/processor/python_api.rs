@@ -41,6 +41,22 @@ fn linear_to_db(value: f32) -> f32 {
     20.0 * value.max(1.0e-12).log10()
 }
 
+fn percentile_f32(values: &mut [f32], percentile: f32) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_by(f32::total_cmp);
+    let position = (values.len().saturating_sub(1) as f32) * percentile.clamp(0.0, 1.0);
+    let lower = position.floor() as usize;
+    let upper = position.ceil() as usize;
+    if lower == upper {
+        values[lower]
+    } else {
+        let fraction = position - lower as f32;
+        values[lower] + fraction * (values[upper] - values[lower])
+    }
+}
+
 #[pyfunction]
 #[pyo3(signature = (audio, sample_rate, bands, settings=None))]
 pub fn simulate_auto_eq_chain(
@@ -71,6 +87,7 @@ pub fn simulate_auto_eq_chain(
     }
 
     let deesser_enabled = py_dict_bool(settings, "deesser_enabled", false)?;
+    let return_output_audio = py_dict_bool(settings, "return_output_audio", false)?;
     processor.set_deesser_enabled(deesser_enabled);
     if deesser_enabled {
         let deesser = processor.deesser_mut();
@@ -149,19 +166,39 @@ pub fn simulate_auto_eq_chain(
     let mut compressor_gain_reduction_db = 0.0_f32;
     let mut deesser_gain_reduction_db = 0.0_f32;
     let mut true_peak_limited_events = 0_u64;
-
+    let mut analysis_rows: Vec<(f32, f32, f32)> = Vec::new();
     let audio = audio.as_slice()?;
-    for chunk in audio.chunks(RT_PROCESS_BUFFER_CAPACITY) {
+    let mut rendered_audio = if return_output_audio {
+        Vec::with_capacity(audio.len())
+    } else {
+        Vec::new()
+    };
+
+    let analysis_block_samples = ((sample_rate * 0.020).round() as usize)
+        .clamp(1, RT_PROCESS_BUFFER_CAPACITY);
+    for chunk in audio.chunks(analysis_block_samples) {
         let mut block = chunk.to_vec();
+        let mut block_input_square_sum = 0.0_f64;
         for sample in block.iter_mut() {
             if !sample.is_finite() {
                 *sample = 0.0;
             }
             input_square_sum += (*sample as f64) * (*sample as f64);
+            block_input_square_sum += (*sample as f64) * (*sample as f64);
             input_samples += 1;
         }
 
         let stats = processor.process_block_with_stats(&mut block, &mut output);
+        let block_input_rms = if chunk.is_empty() {
+            0.0
+        } else {
+            (block_input_square_sum / chunk.len() as f64).sqrt() as f32
+        };
+        analysis_rows.push((
+            linear_to_db(block_input_rms),
+            stats.compressor_gain_reduction_db,
+            stats.deesser_gain_reduction_db,
+        ));
         input_sample_peak = input_sample_peak.max(stats.input_sample_peak);
         output_sample_peak = output_sample_peak.max(stats.output_sample_peak);
         pre_limiter_true_peak = pre_limiter_true_peak.max(stats.true_peak_limiter_input_peak);
@@ -180,6 +217,9 @@ pub fn simulate_auto_eq_chain(
             output_square_sum += (sample as f64) * (sample as f64);
             output_samples += 1;
         }
+        if return_output_audio {
+            rendered_audio.extend_from_slice(output.as_slice());
+        }
     }
 
     let input_rms = if input_samples > 0 {
@@ -195,6 +235,41 @@ pub fn simulate_auto_eq_chain(
     let output_sample_peak_db = linear_to_db(output_sample_peak);
     let pre_limiter_true_peak_db = linear_to_db(pre_limiter_true_peak);
     let output_true_peak_db = linear_to_db(output_true_peak);
+    let mut input_rms_rows: Vec<f32> = analysis_rows.iter().map(|row| row.0).collect();
+    let input_floor_db = percentile_f32(&mut input_rms_rows.clone(), 0.20);
+    let input_p90_db = percentile_f32(&mut input_rms_rows, 0.90);
+    let active_threshold_db = (input_floor_db + 6.0).max(input_p90_db - 24.0).max(-60.0);
+    let mut active_compressor_reduction: Vec<f32> = analysis_rows
+        .iter()
+        .filter(|row| row.0 >= active_threshold_db)
+        .map(|row| row.1.max(0.0))
+        .collect();
+    let mut active_deesser_reduction: Vec<f32> = analysis_rows
+        .iter()
+        .filter(|row| row.0 >= active_threshold_db)
+        .map(|row| row.2.max(0.0))
+        .collect();
+    if active_compressor_reduction.len() < 3 {
+        active_compressor_reduction = analysis_rows.iter().map(|row| row.1.max(0.0)).collect();
+        active_deesser_reduction = analysis_rows.iter().map(|row| row.2.max(0.0)).collect();
+    }
+    let active_block_count = active_compressor_reduction.len();
+    let compressor_active_ratio = if active_block_count > 0 {
+        active_compressor_reduction
+            .iter()
+            .filter(|reduction| **reduction >= 0.10)
+            .count() as f32
+            / active_block_count as f32
+    } else {
+        0.0
+    };
+    let compressor_reduction_median_db =
+        percentile_f32(&mut active_compressor_reduction.clone(), 0.50);
+    let compressor_reduction_p95_db =
+        percentile_f32(&mut active_compressor_reduction, 0.95);
+    let deesser_reduction_median_db =
+        percentile_f32(&mut active_deesser_reduction.clone(), 0.50);
+    let deesser_reduction_p95_db = percentile_f32(&mut active_deesser_reduction, 0.95);
     let diagnostics = pyo3::types::PyDict::new(py);
     diagnostics.set_item("input_sample_peak_db", linear_to_db(input_sample_peak))?;
     diagnostics.set_item("input_rms_db", linear_to_db(input_rms))?;
@@ -223,7 +298,33 @@ pub fn simulate_auto_eq_chain(
     diagnostics.set_item("true_peak_limited_events", true_peak_limited_events)?;
     diagnostics.set_item("compressor_gain_reduction_db", compressor_gain_reduction_db)?;
     diagnostics.set_item("deesser_gain_reduction_db", deesser_gain_reduction_db)?;
+    diagnostics.set_item(
+        "compressor_gain_reduction_median_db",
+        compressor_reduction_median_db,
+    )?;
+    diagnostics.set_item(
+        "compressor_gain_reduction_p95_db",
+        compressor_reduction_p95_db,
+    )?;
+    diagnostics.set_item(
+        "compressor_gain_reduction_active_ratio",
+        compressor_active_ratio,
+    )?;
+    diagnostics.set_item(
+        "deesser_gain_reduction_median_db",
+        deesser_reduction_median_db,
+    )?;
+    diagnostics.set_item(
+        "deesser_gain_reduction_p95_db",
+        deesser_reduction_p95_db,
+    )?;
+    diagnostics.set_item("analysis_block_ms", 20.0_f32)?;
+    diagnostics.set_item("active_analysis_threshold_db", active_threshold_db)?;
+    diagnostics.set_item("active_analysis_block_count", active_block_count)?;
     diagnostics.set_item("processed_samples", output_samples)?;
+    if return_output_audio {
+        diagnostics.set_item("output_audio", rendered_audio)?;
+    }
     Ok(diagnostics.into_any().unbind())
 }
 

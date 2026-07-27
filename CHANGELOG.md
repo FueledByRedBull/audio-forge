@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.9.0 - 2026-07-28
+
+- Added explicit room-noise-reference integrity analysis covering duration, finite/digital-silence/clipping failures, stationarity, RMS and octave stability, transients, speech contamination, capture age/identity, and consistency with credible non-speech voice frames.
+- Propagated conservative frequency-dependent noise estimates, confidence reduction, boost restrictions, recapture guidance, and abstention through SNR, Auto-EQ, gate, de-esser, compressor, and overall setup decisions.
+- Replaced brittle valid-evidence de-esser conjunctions with a versioned nonnegative logistic soft fusion trained and evaluated with clip-grouped folds on a reproducible CC0 generated fixture corpus. Reports include frame/clip precision, recall, false activation, PR-AUC, Brier score, and calibration error; generated fixtures are explicitly not perceptual validation.
+- Added Gentle, Balanced, Dense, and Custom dynamics intensity independently from target loudness. Compressor calibration now fits active-frame median/p95 gain reduction in the native Rust chain and enforces an absolute peak-reduction cap.
+- Added guided second-passage verification with exact deterministic native rendering, spectral target error, frequency-dependent SNR, loudness variation, compressor/de-esser reduction statistics, true peak, limiter activity, clipping, and noise-floor change. Candidates resolve to accept, reduce, retry, or rollback.
+- Added capture metadata and immediate room-tone guidance, config migration/round-trip coverage, native rendering diagnostics, focused algorithm/corpus/UI-path tests, and updated release documentation.
+
 ## v1.8.9 - 2026-07-27
 
 - Reworked Auto-EQ measurement reliability around matched room-noise spectra, frequency-dependent SNR, explicit unavailable-reference diagnostics, and safe abstention instead of spectral-percentile pseudo-SNR.

@@ -117,6 +117,35 @@ def test_app_config_latency_profiles_round_trip():
     assert restored_profile.confidence == 0.92
 
 
+def test_voice_setup_dynamics_preferences_round_trip_and_migrate():
+    configured = AppConfig(
+        voice_setup_dynamics_intensity="custom",
+        voice_setup_custom_p95_db=4.25,
+        voice_setup_custom_peak_cap_db=9.5,
+    )
+    restored = AppConfig.from_dict(configured.to_dict())
+
+    assert restored.voice_setup_dynamics_intensity == "custom"
+    assert restored.voice_setup_custom_p95_db == 4.25
+    assert restored.voice_setup_custom_peak_cap_db == 9.5
+
+    legacy = AppConfig.from_dict({})
+    assert legacy.voice_setup_dynamics_intensity == "balanced"
+    assert legacy.voice_setup_custom_p95_db == 3.5
+    assert legacy.voice_setup_custom_peak_cap_db == 8.0
+
+    invalid = AppConfig.from_dict(
+        {
+            "voice_setup_dynamics_intensity": "maximum",
+            "voice_setup_custom_p95_db": 50,
+            "voice_setup_custom_peak_cap_db": -2,
+        }
+    )
+    assert invalid.voice_setup_dynamics_intensity == "balanced"
+    assert invalid.voice_setup_custom_p95_db == 3.5
+    assert invalid.voice_setup_custom_peak_cap_db == 8.0
+
+
 @pytest.mark.parametrize("payload", [[], "bad", 123, True, None])
 def test_app_config_non_object_payload_returns_defaults(payload):
     restored = AppConfig.from_dict(payload)

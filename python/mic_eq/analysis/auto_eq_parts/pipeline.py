@@ -14,6 +14,10 @@ def analyze_auto_eq(
     chain_settings=None,
     vad_probabilities=None,
     noise_audio=None,
+    noise_spectrum_override=None,
+    noise_reference_quality=1.0,
+    noise_reference_status="usable",
+    noise_reference_reasons=None,
     tilt_policy="preserve",
 ):
     """
@@ -61,6 +65,12 @@ def analyze_auto_eq(
         sample_rate,
         vad_probabilities=vad_probabilities,
         noise_audio=noise_audio,
+        noise_spectrum_override=noise_spectrum_override,
+        noise_reference_source_override=(
+            "validated_conservative"
+            if noise_spectrum_override is not None
+            else None
+        ),
     )
     freqs = spectrum_result.freqs
     spectrum_db = spectrum_result.median_spectrum_db
@@ -96,6 +106,9 @@ def analyze_auto_eq(
         global_snr_db=spectrum_result.snr_db,
         spectral_snr_db=spectrum_result.spectral_snr_db,
         noise_reference_source=spectrum_result.noise_reference_source,
+        noise_reference_quality=noise_reference_quality,
+        noise_reference_status=noise_reference_status,
+        noise_reference_reasons=noise_reference_reasons,
         target_profile=target_profile,
         used_spectrum_fallback=spectrum_result.used_single_spectrum_fallback,
         smoothing_strength=smoothing_strength,
@@ -115,6 +128,12 @@ def analyze_auto_eq(
     eq_settings["measurement_noise_reference_source"] = (
         spectrum_result.noise_reference_source
     )
+    eq_settings["measurement_noise_reference_quality"] = float(
+        noise_reference_quality
+    )
+    eq_settings["measurement_noise_reference_status"] = str(
+        noise_reference_status
+    )
     eq_settings = apply_headroom_validation(
         audio_data,
         sample_rate,
@@ -129,6 +148,15 @@ def analyze_auto_eq(
             "voiced_window_ratio": spectrum_result.voiced_window_ratio,
             "spectrum_snr_db": spectrum_result.snr_db,
             "noise_reference_source": spectrum_result.noise_reference_source,
+            "noise_reference_quality": eq_settings.get(
+                "noise_reference_quality"
+            ),
+            "noise_reference_status": eq_settings.get(
+                "noise_reference_status"
+            ),
+            "noise_reference_reasons": eq_settings.get(
+                "noise_reference_reasons"
+            ),
             "snr_reference_available": spectrum_result.spectral_snr_db is not None,
             "spectral_tilt_db_per_octave": spectrum_result.spectral_tilt_db_per_octave,
             "used_single_spectrum_fallback": spectrum_result.used_single_spectrum_fallback,

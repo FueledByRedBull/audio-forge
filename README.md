@@ -7,14 +7,14 @@
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
 
-Current version: `v1.8.9`
+Current version: `v1.9.0`
 
 ## Download
 
 The latest portable build is available on the GitHub releases page:
 
-- [AudioForge v1.8.9](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.8.9)
-- Artifact: `AudioForge-v1.8.9-win64-ultra.7z`
+- [AudioForge v1.9.0](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.9.0)
+- Artifact: `AudioForge-v1.9.0-win64-ultra.7z`
 - Checksum: use the matching `.7z.sha256` sidecar published by the release workflow.
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
@@ -31,7 +31,7 @@ User-facing tools:
 - 10-band parametric EQ with gain, Q, and per-band center frequencies.
 - Auto-EQ calibration that combines energy and Silero speech posteriors, rejects shape outliers, uses matched noise-referenced per-band reliability when available, and abstains when a safe correction is unsupported.
 - Auto-EQ headroom validation through the native chain simulator; Python-only fallback results are visibly advisory.
-- Auto Voice Setup with Silero-posterior-aware speech masking, 400 ms momentary and 3 second short-term loudness, time-local sibilance analysis, exact native compressor calibration, offline chain validation, and capture uncertainty.
+- Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, robust native compressor calibration, and guided second-passage verification.
 - Dynamic-EQ de-esser, compressor, auto makeup gain, and lookahead limiter.
 - Band-limited 4x true-peak detection and limiting, validated against an independent offline reference.
 - Stateful phase-safe mono alignment and adaptive 49-61 Hz hum/harmonic tracking for difficult input sources.
@@ -119,7 +119,8 @@ Useful behavior to know:
 - Phase-safe mono retains fractional-delay history across input callbacks instead of re-estimating from isolated blocks.
 - Adaptive cleanup tracks off-nominal mains hum and its harmonic with fractional frequency/phase continuity, and selects one high-pass response instead of cascading filters.
 - Auto-EQ and Auto Voice Setup use native Silero posteriors when available and report an explicit energy-analysis fallback when they are not.
-- Weak Auto Voice Setup captures show uncertainty reasons and require confirmation before their recommendations are applied.
+- Auto Voice Setup rejects unusable room tone, restricts boosts for questionable references, and reports device/time/channel mismatch or recapture guidance.
+- Voice Setup candidates remain temporary until a second passage produces an explicit accept, reduce, retry, or rollback decision from repeatability and exact downstream native-chain checks. This is engineering validation, not a listening-preference claim.
 - Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
 - Diagnostics separate input drops, backlog recovery, output recovery, output short-write loss, and active output underrun streaks. Historical output underrun and recovery totals stay visible without forcing the health chip into a warning state after the stream has recovered.
 
@@ -191,7 +192,7 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.8.9-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.9.0-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This uses LZMA2 with max compression and solid mode, which is appropriate for the PyInstaller bundle.

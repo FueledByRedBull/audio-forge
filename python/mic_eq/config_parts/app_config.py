@@ -24,6 +24,7 @@ INPUT_CHANNEL_MODES = frozenset(
     {"average", "left", "right", "max_rms", "phase_safe_mono"}
 )
 INPUT_CLEANUP_MODES = frozenset({"off", "gentle", "strong"})
+DYNAMICS_INTENSITIES = frozenset({"gentle", "balanced", "dense", "custom"})
 
 
 def _coerce_input_channel_mode(value: object) -> str:
@@ -32,6 +33,22 @@ def _coerce_input_channel_mode(value: object) -> str:
 
 def _coerce_input_cleanup_mode(value: object) -> str:
     return value if isinstance(value, str) and value in INPUT_CLEANUP_MODES else "off"
+
+
+def _coerce_float(value: object, default: float, low: float, high: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not low <= parsed <= high:
+        return default
+    return parsed
+
+
+def _coerce_dynamics_intensity(value: object) -> str:
+    return value if isinstance(value, str) and value in DYNAMICS_INTENSITIES else "balanced"
 
 
 @dataclass
@@ -50,6 +67,9 @@ class AppConfig:
     main_splitter_sizes: list[int] | None = None
     main_control_tab_index: int = 0
     use_measured_latency: bool = True
+    voice_setup_dynamics_intensity: str = "balanced"
+    voice_setup_custom_p95_db: float = 3.5
+    voice_setup_custom_peak_cap_db: float = 8.0
     latency_calibration_profiles: dict[str, LatencyCalibrationProfile] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -74,6 +94,9 @@ class AppConfig:
             "main_splitter_sizes": self.main_splitter_sizes,
             "main_control_tab_index": self.main_control_tab_index,
             "use_measured_latency": self.use_measured_latency,
+            "voice_setup_dynamics_intensity": self.voice_setup_dynamics_intensity,
+            "voice_setup_custom_p95_db": self.voice_setup_custom_p95_db,
+            "voice_setup_custom_peak_cap_db": self.voice_setup_custom_peak_cap_db,
             "latency_calibration_profiles": {
                 key: profile.to_dict()
                 for key, profile in self.latency_calibration_profiles.items()
@@ -126,6 +149,21 @@ class AppConfig:
             ] or None,
             main_control_tab_index=int(data.get("main_control_tab_index", 0) or 0),
             use_measured_latency=_coerce_config_bool(data.get("use_measured_latency", True), True),
+            voice_setup_dynamics_intensity=_coerce_dynamics_intensity(
+                data.get("voice_setup_dynamics_intensity")
+            ),
+            voice_setup_custom_p95_db=_coerce_float(
+                data.get("voice_setup_custom_p95_db"),
+                3.5,
+                1.0,
+                8.0,
+            ),
+            voice_setup_custom_peak_cap_db=_coerce_float(
+                data.get("voice_setup_custom_peak_cap_db"),
+                8.0,
+                1.5,
+                12.0,
+            ),
             latency_calibration_profiles=parsed_profiles,
         )
 
@@ -170,6 +208,7 @@ __all__ = [
     "AppConfig",
     "INPUT_CHANNEL_MODES",
     "INPUT_CLEANUP_MODES",
+    "DYNAMICS_INTENSITIES",
     "load_config",
     "save_config",
 ]

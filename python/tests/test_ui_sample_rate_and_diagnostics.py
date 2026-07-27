@@ -25,6 +25,7 @@ from mic_eq.ui.main_window import (
     _startup_custom_id,
 )
 from mic_eq.ui.stream_recovery import StreamRecoveryManager
+from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from mic_eq.config import (
     CompressorSettings,
     DeviceIdentity,
@@ -1315,3 +1316,20 @@ def test_latency_calibration_failure_does_not_stop_preexisting_processor(qapp):
     assert processor.started == 0
     assert processor.stopped == 0
     assert processor.running
+
+
+def test_voice_setup_dynamics_intensity_controls_custom_targets(qapp):
+    dialog = VoiceSetupDialog()
+
+    assert dialog.dynamics_combo.currentData() == "balanced"
+    assert dialog.custom_p95_spin.isEnabled() is False
+    assert dialog.custom_peak_spin.isEnabled() is False
+
+    dialog.dynamics_combo.setCurrentIndex(
+        dialog.dynamics_combo.findData("custom")
+    )
+    qapp.processEvents()
+
+    assert dialog.custom_p95_spin.isEnabled() is True
+    assert dialog.custom_peak_spin.isEnabled() is True
+    dialog.close()

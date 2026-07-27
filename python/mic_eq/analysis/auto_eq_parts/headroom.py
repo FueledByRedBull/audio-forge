@@ -46,6 +46,10 @@ def _flatten_chain_settings(chain_settings: dict[str, Any] | None) -> dict[str, 
     limiter = chain_settings.get("limiter") or {}
 
     return {
+        "return_output_audio": _as_bool(
+            chain_settings.get("return_output_audio"),
+            False,
+        ),
         "deesser_enabled": _as_bool(deesser.get("enabled"), False),
         "deesser_auto_enabled": _as_bool(deesser.get("auto_enabled"), True),
         "deesser_auto_amount": _as_float(deesser.get("auto_amount"), 0.5),
@@ -216,7 +220,7 @@ def _simulate_fallback(
     output_sample_peak_db = _db(float(np.max(np.abs(processed))) if processed.size else 0.0)
     output_true_peak_db = _true_peak_db(processed.astype(np.float32, copy=False))
 
-    return {
+    result = {
         "input_sample_peak_db": _db(float(np.max(np.abs(input_audio))) if input_audio.size else 0.0),
         "input_rms_db": _db(float(np.sqrt(np.mean(np.square(input_audio)))) if input_audio.size else 0.0),
         "output_sample_peak_db": output_sample_peak_db,
@@ -232,8 +236,16 @@ def _simulate_fallback(
         "true_peak_limited_events": limited_events,
         "compressor_gain_reduction_db": compressor_gr,
         "deesser_gain_reduction_db": 0.0,
+        "compressor_gain_reduction_median_db": compressor_gr,
+        "compressor_gain_reduction_p95_db": compressor_gr,
+        "compressor_gain_reduction_active_ratio": float(compressor_gr >= 0.10),
+        "deesser_gain_reduction_median_db": 0.0,
+        "deesser_gain_reduction_p95_db": 0.0,
         "processed_samples": int(processed.size),
     }
+    if flat_settings.get("return_output_audio", False):
+        result["output_audio"] = processed.astype(np.float32).tolist()
+    return result
 
 
 def simulate_candidate_chain(

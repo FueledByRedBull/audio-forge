@@ -449,6 +449,9 @@ def calculate_eq_bands(
     global_snr_db=None,
     spectral_snr_db=None,
     noise_reference_source="unavailable",
+    noise_reference_quality=1.0,
+    noise_reference_status="usable",
+    noise_reference_reasons=None,
     target_profile="static",
     used_spectrum_fallback=False,
     smoothing_strength="conservative",
@@ -577,6 +580,20 @@ def calculate_eq_bands(
         if snr_available
         else np.full(NUM_EQ_BANDS, GAIN_MAX_DB, dtype=float)
     )
+    reference_quality = float(np.clip(noise_reference_quality, 0.0, 1.0))
+    reference_status = str(noise_reference_status or "unavailable").strip().lower()
+    if reference_status == "invalid":
+        dynamic_gain_upper = np.minimum(dynamic_gain_upper, 0.0)
+    elif reference_status == "questionable":
+        dynamic_gain_upper = np.minimum(
+            dynamic_gain_upper,
+            max(0.0, 2.0 * reference_quality),
+        )
+    elif reference_quality < 0.75:
+        dynamic_gain_upper = np.minimum(
+            dynamic_gain_upper,
+            1.5 + 3.0 * reference_quality,
+        )
     if measurement_metadata_available:
         dynamic_gain_upper = np.minimum(
             dynamic_gain_upper,
@@ -784,11 +801,17 @@ def calculate_eq_bands(
         abstention_reasons.append("noise-referenced SNR is too low")
     if low_confidence_active_bands >= 3:
         abstention_reasons.append("too many active bands lack measurement support")
+    if reference_status == "invalid" or reference_quality < 0.30:
+        abstention_reasons.append("room-noise reference is invalid")
     if abstention_reasons:
         recommendation_status = "abstain"
         optimal_gains = np.zeros_like(optimal_gains)
         after_error = before_error
-    elif overall_confidence < 0.60 or validation_gain_scale < 0.70:
+    elif (
+        overall_confidence < 0.60
+        or validation_gain_scale < 0.70
+        or reference_status == "questionable"
+    ):
         recommendation_status = "reduced"
 
     debug_log(f"[EQ_CALC] Final gains: {[round(g, 2) for g in optimal_gains]}")
@@ -823,6 +846,10 @@ def calculate_eq_bands(
             if snr_available
             else "unavailable"
         ),
+        'noise_reference_quality': reference_quality,
+        'noise_reference_status': reference_status,
+        'noise_reference_reasons': list(noise_reference_reasons or []),
+        'noise_reference_boost_cap_db': float(np.max(dynamic_gain_upper)),
         'spectral_tilt_policy': tilt_policy,
         'spectral_tilt_slope_db_per_decade': tilt_slope,
         'spectral_tilt_fit_r2': tilt_fit_r2,

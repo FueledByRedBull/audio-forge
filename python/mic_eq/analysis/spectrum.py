@@ -401,15 +401,19 @@ def analyze_voice_spectrum(
     *,
     vad_probabilities: np.ndarray | None = None,
     noise_audio: np.ndarray | None = None,
+    noise_spectrum_override: tuple[np.ndarray, np.ndarray] | None = None,
+    noise_reference_source_override: str | None = None,
 ) -> VoiceSpectrumResult:
     """Analyze speech windows and return a robust repeatability-aware spectrum.
 
     ``vad_probabilities`` contains one posterior per Silero model window. When
     supplied, the energy mask and neural posterior are fused at analysis-frame
     centres. ``noise_audio`` is an optional room-noise capture used as the
-    authoritative frequency-dependent SNR reference. Without it, sufficiently
-    quiet non-speech frames from this capture are used; otherwise SNR remains
-    explicitly unavailable.
+    authoritative frequency-dependent SNR reference. A prevalidated
+    ``noise_spectrum_override`` takes precedence so callers can use a
+    conservative fusion of explicit room tone and credible in-capture quiet
+    frames. Without either reference, sufficiently quiet non-speech frames
+    from this capture are used; otherwise SNR remains explicitly unavailable.
     """
     if len(audio) < nperseg:
         raise ValueError(
@@ -446,7 +450,23 @@ def analyze_voice_spectrum(
     speech_reference = _median_frame_spectrum_db(voiced_frames, fs)
     noise_reference: tuple[np.ndarray, np.ndarray] | None = None
     noise_reference_source = "unavailable"
-    if noise_audio is not None:
+    if noise_spectrum_override is not None:
+        override_freqs = np.asarray(noise_spectrum_override[0], dtype=float)
+        override_spectrum = np.asarray(noise_spectrum_override[1], dtype=float)
+        if (
+            override_freqs.ndim == 1
+            and override_spectrum.shape == override_freqs.shape
+            and override_freqs.size >= 2
+            and np.all(np.isfinite(override_freqs))
+            and np.all(np.isfinite(override_spectrum))
+        ):
+            noise_reference = (override_freqs, override_spectrum)
+            noise_reference_source = (
+                str(noise_reference_source_override)
+                if noise_reference_source_override
+                else "validated_conservative"
+            )
+    if noise_reference is None and noise_audio is not None:
         noise_reference = _audio_reference_spectrum_db(
             np.asarray(noise_audio, dtype=float),
             fs,

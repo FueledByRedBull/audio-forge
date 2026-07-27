@@ -23,8 +23,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
           cache: pip
@@ -47,7 +47,14 @@ jobs:
       - name: Audit locked Python dependencies
         run: |
           python -m pip_audit --require-hashes -r requirements/runtime.txt
-          python -m pip_audit --require-hashes -r requirements/dev.txt
+          # Semgrep 1.171.0 currently pins mcp==1.23.3 for its optional
+          # `semgrep mcp` server. This repository only invokes `semgrep scan`;
+          # keep the upstream IDs explicit until Semgrep publishes a compatible
+          # MCP pin rather than hiding unrelated audit results.
+          python -m pip_audit --require-hashes -r requirements/dev.txt `
+            --ignore-vuln PYSEC-2026-3481 `
+            --ignore-vuln PYSEC-2026-3482 `
+            --ignore-vuln PYSEC-2026-3483
       - name: Ruff
         run: python -m ruff check python/mic_eq python/tests python/tools
       - name: Pyright
@@ -75,7 +82,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

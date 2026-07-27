@@ -20,8 +20,10 @@ def prune_bundle(bundle_root: Path) -> None:
 
     for relative_path in (
         Path("_internal/PyQt6/Qt6/bin/Qt6Pdf.dll"),
+        Path("_internal/PyQt6/Qt6/bin/Qt6Svg.dll"),
         Path("_internal/PyQt6/QtPdf.pyd"),
         Path("_internal/PyQt6/QtPdfWidgets.pyd"),
+        Path("_internal/PyQt6/Qt6/plugins/iconengines/qsvgicon.dll"),
     ):
         candidate = bundle_root / relative_path
         if candidate.exists():

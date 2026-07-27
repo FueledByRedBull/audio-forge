@@ -86,8 +86,13 @@ impl HumBin {
     }
 
     fn power_and_reset(&mut self, window_samples: usize) -> f32 {
+        self.power_phase_and_reset(window_samples).0
+    }
+
+    fn power_phase_and_reset(&mut self, window_samples: usize) -> (f32, f32) {
         let n = window_samples.max(1) as f32;
         let power = (self.i_acc * self.i_acc + self.q_acc * self.q_acc) * (2.0 / (n * n));
+        let phase = self.q_acc.atan2(self.i_acc);
         self.i_acc = 0.0;
         self.q_acc = 0.0;
         let phase_norm = (self.cos_phase * self.cos_phase + self.sin_phase * self.sin_phase).sqrt();
@@ -95,7 +100,7 @@ impl HumBin {
             self.cos_phase /= phase_norm;
             self.sin_phase /= phase_norm;
         }
-        power
+        (power, phase)
     }
 }
 
@@ -230,6 +235,11 @@ struct AdaptiveInputCleanupState {
     hum_total_energy: f32,
     hum_hold_samples: u32,
     hum_line_hz: f32,
+    /// Phase of the selected hum component in the last completed window.
+    /// It is retained so frequency updates can use phase continuity rather
+    /// than relying only on the 1 Hz analysis bank.
+    hum_previous_absolute_phase: f32,
+    hum_phase_valid: bool,
     hum_strength: f32,
     harmonic_strength: f32,
     adaptive_highpass: Biquad,
@@ -268,6 +278,8 @@ impl AdaptiveInputCleanupState {
             hum_total_energy: 0.0,
             hum_hold_samples: 0,
             hum_line_hz: 0.0,
+            hum_previous_absolute_phase: 0.0,
+            hum_phase_valid: false,
             hum_strength: 0.0,
             harmonic_strength: 0.0,
             adaptive_highpass: Biquad::new(
@@ -308,6 +320,8 @@ impl AdaptiveInputCleanupState {
         self.hum_total_energy = 0.0;
         self.hum_hold_samples = 0;
         self.hum_line_hz = 0.0;
+        self.hum_previous_absolute_phase = 0.0;
+        self.hum_phase_valid = false;
         self.hum_strength = 0.0;
         self.harmonic_strength = 0.0;
         self.adaptive_highpass.reset();
@@ -393,16 +407,21 @@ impl AdaptiveInputCleanupState {
         let mut best_primary_power = 0.0_f32;
         let mut best_harmonic_power = 0.0_f32;
         let mut best_score = 0.0_f32;
-        for index in 0..HUM_TRACK_BINS {
-            let primary_power = self.hum_bins[index].power_and_reset(self.hum_window_samples);
+        let mut best_primary_phase = 0.0_f32;
+        let mut primary_powers = [0.0_f32; HUM_TRACK_BINS];
+        for (index, primary_power_slot) in primary_powers.iter_mut().enumerate() {
+            let (primary_power, primary_phase) =
+                self.hum_bins[index].power_phase_and_reset(self.hum_window_samples);
             let harmonic_power =
                 self.hum_harmonic_bins[index].power_and_reset(self.hum_window_samples);
+            *primary_power_slot = primary_power;
             let score = primary_power + harmonic_power * 0.65;
             if score > best_score {
                 best_score = score;
                 best_primary_power = primary_power;
                 best_harmonic_power = harmonic_power;
                 best_frequency_hz = HUM_MIN_HZ + index as f32 * HUM_TRACK_STEP_HZ;
+                best_primary_phase = primary_phase;
             }
         }
         let total_power = self.hum_total_energy / self.hum_window_samples.max(1) as f32 + 1.0e-9;
@@ -424,17 +443,91 @@ impl AdaptiveInputCleanupState {
             && best_frequency_hz > 0.0;
         if candidate {
             self.hum_candidate_windows = self.hum_candidate_windows.saturating_add(1).min(3);
+            // Phase aliasing is only well-defined across consecutive valid
+            // windows. A missed candidate can make the next phase delta span
+            // multiple windows, while the alias spacing below is for one
+            // window, so restart phase continuity after a detection gap.
         } else {
             self.hum_candidate_windows = 0;
+            self.hum_phase_valid = false;
         }
         if self.hum_candidate_windows >= 2 {
             self.hum_hold_samples = (self.sample_rate * 0.75).round() as u32;
-            self.hum_line_hz = if self.hum_line_hz <= 0.0 {
-                best_frequency_hz
+
+            // First refine the coarse 1 Hz bank with a log-power parabolic
+            // interpolation. For powers P[-1], P[0], P[+1], the vertex of
+            // the parabola in log-power space is
+            //   delta = 0.5 * (log(P[-1]) - log(P[+1])) /
+            //                    (log(P[-1]) - 2log(P[0]) + log(P[+1])).
+            // Log power is used because the sinusoid response is multiplicative
+            // in amplitude and this gives a stable local frequency estimate.
+            let best_index = ((best_frequency_hz - HUM_MIN_HZ) / HUM_TRACK_STEP_HZ)
+                .round()
+                .clamp(0.0, (HUM_TRACK_BINS - 1) as f32) as usize;
+            let spectral_offset = if best_index > 0 && best_index + 1 < HUM_TRACK_BINS {
+                let left = primary_powers[best_index - 1].max(1.0e-12).ln();
+                let center = primary_powers[best_index].max(1.0e-12).ln();
+                let right = primary_powers[best_index + 1].max(1.0e-12).ln();
+                let denominator = left - 2.0 * center + right;
+                if denominator.abs() > 1.0e-6 {
+                    (0.5 * (left - right) / denominator).clamp(-0.5, 0.5)
+                } else {
+                    0.0
+                }
             } else {
-                self.hum_line_hz + 0.35 * (best_frequency_hz - self.hum_line_hz)
+                0.0
+            };
+            let spectral_frequency = (best_frequency_hz
+                + spectral_offset * HUM_TRACK_STEP_HZ)
+                .clamp(HUM_MIN_HZ, HUM_MAX_HZ);
+
+            // The bank phase is measured relative to each bin's oscillator.
+            // Convert it to an absolute phase at the window centre, then use
+            // phase continuity to obtain a frequency estimate. A 250 ms
+            // window aliases frequency by 4 Hz, so select the phase-derived
+            // alias closest to the power-derived spectral estimate. This is
+            // the important disambiguation step: phase is used for fractional
+            // tracking without ever allowing a wrapped phase jump to retune
+            // the notch by tens of hertz.
+            let window_seconds = self.hum_window_samples as f32 / self.sample_rate.max(1.0);
+            let center_sample = (self.hum_windows_observed as f32 + 0.5)
+                * self.hum_window_samples as f32;
+            let absolute_phase = wrap_phase(
+                -best_primary_phase
+                    + 2.0 * std::f32::consts::PI * best_frequency_hz * center_sample
+                        / self.sample_rate.max(1.0),
+            );
+            let phase_frequency = if self.hum_phase_valid && window_seconds > 0.0 {
+                let phase_delta = wrap_phase(absolute_phase - self.hum_previous_absolute_phase);
+                let base_frequency = phase_delta
+                    / (2.0 * std::f32::consts::PI * window_seconds);
+                let alias_spacing = 1.0 / window_seconds;
+                let mut best_alias = base_frequency;
+                let mut best_alias_error = f32::INFINITY;
+                for alias_index in -32..=32 {
+                    let candidate = base_frequency + alias_index as f32 * alias_spacing;
+                    let error = (candidate - spectral_frequency).abs();
+                    if error < best_alias_error {
+                        best_alias = candidate;
+                        best_alias_error = error;
+                    }
+                }
+                Some(best_alias.clamp(HUM_MIN_HZ, HUM_MAX_HZ))
+            } else {
+                None
+            };
+            let measured_frequency = phase_frequency
+                .map(|phase_hz| 0.75 * spectral_frequency + 0.25 * phase_hz)
+                .unwrap_or(spectral_frequency);
+
+            self.hum_line_hz = if self.hum_line_hz <= 0.0 {
+                measured_frequency
+            } else {
+                self.hum_line_hz + 0.35 * (measured_frequency - self.hum_line_hz)
             }
             .clamp(HUM_MIN_HZ, HUM_MAX_HZ);
+            self.hum_previous_absolute_phase = absolute_phase;
+            self.hum_phase_valid = true;
         }
     }
 
@@ -500,6 +593,51 @@ impl AdaptiveInputCleanupState {
             y = self.adaptive_highpass.process_sample(y);
             *sample = y;
         }
+    }
+}
+
+#[inline]
+fn wrap_phase(mut phase: f32) -> f32 {
+    let two_pi = 2.0 * std::f32::consts::PI;
+    while phase > std::f32::consts::PI {
+        phase -= two_pi;
+    }
+    while phase < -std::f32::consts::PI {
+        phase += two_pi;
+    }
+    phase
+}
+
+#[cfg(test)]
+mod adaptive_cleanup_tests {
+    use super::*;
+
+    #[test]
+    fn fractional_hum_tracker_uses_power_and_phase_continuity() {
+        let sample_rate = 48_000.0_f32;
+        let mut state = AdaptiveInputCleanupState::new(sample_rate);
+        state.set_mode(InputCleanupMode::Gentle);
+        let frequency_hz = 50.37_f32;
+        let sample_count = state.hum_window_samples * 3;
+        let mut input = Vec::with_capacity(sample_count);
+        for index in 0..sample_count {
+            let time = index as f32 / sample_rate;
+            input.push(
+                0.08 * (2.0 * std::f32::consts::PI * frequency_hz * time).sin()
+                    + 0.025
+                        * (2.0 * std::f32::consts::PI * 2.0 * frequency_hz * time).sin(),
+            );
+        }
+
+        state.analyze_input(&input);
+
+        assert!(state.hum_phase_valid);
+        assert!(state.hum_detected || state.hum_hold_samples > 0);
+        assert!(
+            (state.hum_line_hz - frequency_hz).abs() < 0.8,
+            "tracked={} expected={frequency_hz}",
+            state.hum_line_hz
+        );
     }
 }
 

@@ -36,6 +36,10 @@ class LatencyCalibrationResult:
     agreement_ms: float = 0.0
     ambiguity_score: float = 0.0
     sub_sample_offset: float = 0.0
+    route_latency_ms: float = 0.0
+    directional_latency_ms: float | None = None
+    route_kind: str = "output_to_input"
+    compensation_basis: str = "measured_output_to_input_route"
 
 
 def generate_probe_signal(
@@ -229,8 +233,29 @@ def analyze_latency(
     expected_playback_jitter_ms: float | None = None,
     expected_latency_min_ms: float | None = None,
     expected_latency_max_ms: float | None = None,
+    route_kind: str = "output_to_input",
 ) -> LatencyCalibrationResult:
-    """Estimate latency from repeated coded probes in captured audio."""
+    """Estimate the selected output-to-input route latency.
+
+    The calibration signal is played on the selected output and measured on
+    the selected input. That is one concrete route, not a symmetric round trip
+    by definition. The measured route delay is therefore applied directly;
+    this function deliberately does not divide it by two. A directional
+    one-way estimate requires an independent timing reference and is reported
+    as unavailable here.
+    """
+    route_kind = str(route_kind or "output_to_input").strip().lower()
+    if route_kind != "output_to_input":
+        return LatencyCalibrationResult(
+            success=False,
+            measured_round_trip_ms=0.0,
+            estimated_one_way_ms=0.0,
+            applied_compensation_ms=0.0,
+            confidence=0.0,
+            peak_sample_offset=0,
+            route_kind=route_kind,
+            message="Unsupported latency route; expected output_to_input.",
+        )
     if reference_probe is None or recorded_signal is None:
         return LatencyCalibrationResult(
             success=False,
@@ -382,10 +407,12 @@ def analyze_latency(
     agreement_samples = float(np.percentile(deviations, 75)) if deviations.size else 0.0
     agreement_ms = (agreement_samples * 1000.0) / float(sample_rate)
 
+    # This legacy field name is retained for persisted-profile compatibility.
+    # Its value is the measured selected output->input route delay.
     measured_round_trip_ms = (median_start_samples * 1000.0) / float(sample_rate)
     if expected_window_used:
         measured_round_trip_ms = max(0.0, measured_round_trip_ms - expected_playback_start_ms)
-    estimated_one_way_ms = measured_round_trip_ms / 2.0
+    route_latency_ms = measured_round_trip_ms
 
     peak_value = float(np.median(peak_values)) if peak_values else 0.0
     margin_ratio = float(np.median(margins)) if margins else 0.0
@@ -442,8 +469,11 @@ def analyze_latency(
     return LatencyCalibrationResult(
         success=success,
         measured_round_trip_ms=measured_round_trip_ms,
-        estimated_one_way_ms=estimated_one_way_ms,
-        applied_compensation_ms=estimated_one_way_ms,
+        # Kept for old callers; new UI/profile consumers use route_latency_ms
+        # and directional_latency_ms rather than interpreting this as a
+        # symmetric one-way estimate.
+        estimated_one_way_ms=0.0,
+        applied_compensation_ms=route_latency_ms,
         confidence=confidence,
         peak_sample_offset=int(round(median_start_samples)),
         message=message,
@@ -451,15 +481,34 @@ def analyze_latency(
         agreement_ms=agreement_ms,
         ambiguity_score=ambiguity_score,
         sub_sample_offset=median_start_samples,
+        route_latency_ms=route_latency_ms,
+        directional_latency_ms=None,
+        route_kind=route_kind,
+        compensation_basis="measured_output_to_input_route",
     )
 
 
 def result_to_profile(result: LatencyCalibrationResult, sample_rate: int = 48_000) -> dict:
     """Convert analysis result into persisted profile dictionary."""
+    route_latency_ms = float(result.route_latency_ms)
+    if route_latency_ms <= 0.0:
+        route_latency_ms = max(
+            0.0,
+            float(result.measured_round_trip_ms),
+            float(result.applied_compensation_ms),
+        )
     return {
         "measured_round_trip_ms": float(result.measured_round_trip_ms),
         "estimated_one_way_ms": float(result.estimated_one_way_ms),
         "applied_compensation_ms": float(result.applied_compensation_ms),
+        "route_latency_ms": route_latency_ms,
+        "directional_latency_ms": (
+            float(result.directional_latency_ms)
+            if result.directional_latency_ms is not None
+            else None
+        ),
+        "route_kind": str(result.route_kind),
+        "compensation_basis": str(result.compensation_basis),
         "confidence": float(result.confidence),
         "agreement_ms": float(result.agreement_ms),
         "ambiguity_score": float(result.ambiguity_score),

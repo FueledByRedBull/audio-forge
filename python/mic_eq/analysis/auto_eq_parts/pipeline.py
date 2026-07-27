@@ -12,6 +12,7 @@ def analyze_auto_eq(
     target_mode="adaptive",
     smoothing_strength="conservative",
     chain_settings=None,
+    vad_probabilities=None,
 ):
     """
     Complete auto-EQ analysis pipeline.
@@ -41,9 +42,21 @@ def analyze_auto_eq(
     """
     from ..spectrum import analyze_voice_spectrum, smooth_spectrum_perceptual
     from ..failure_detection import validate_analysis
+    from ..vad import analyze_offline_vad
+
+    vad_backend = "provided"
+    if vad_probabilities is None:
+        vad_probabilities, vad_backend = analyze_offline_vad(
+            audio_data,
+            int(sample_rate),
+        )
 
     # Step 1: Compute repeatability-aware voiced spectrum.
-    spectrum_result = analyze_voice_spectrum(audio_data, sample_rate)
+    spectrum_result = analyze_voice_spectrum(
+        audio_data,
+        sample_rate,
+        vad_probabilities=vad_probabilities,
+    )
     freqs = spectrum_result.freqs
     spectrum_db = spectrum_result.median_spectrum_db
 
@@ -81,6 +94,16 @@ def analyze_auto_eq(
         smoothing_strength=smoothing_strength,
     )
     eq_settings["target_mode"] = target_mode
+    eq_settings["measurement_coverage"] = spectrum_result.measurement_coverage
+    eq_settings["measurement_outlier_rejection_ratio"] = (
+        spectrum_result.outlier_rejection_ratio
+    )
+    eq_settings["measurement_vad_backend"] = (
+        "silero" if spectrum_result.vad_probability_used else vad_backend
+    )
+    eq_settings["measurement_vad_active_window_ratio"] = (
+        spectrum_result.vad_active_window_ratio
+    )
     eq_settings = apply_headroom_validation(
         audio_data,
         sample_rate,
@@ -97,6 +120,10 @@ def analyze_auto_eq(
             "spectral_tilt_db_per_octave": spectrum_result.spectral_tilt_db_per_octave,
             "used_single_spectrum_fallback": spectrum_result.used_single_spectrum_fallback,
             "analysis_confidence": spectrum_result.residual_confidence,
+            "measurement_coverage": spectrum_result.measurement_coverage,
+            "measurement_outlier_rejection_ratio": spectrum_result.outlier_rejection_ratio,
+            "measurement_vad_backend": eq_settings.get("measurement_vad_backend"),
+            "measurement_vad_active_window_ratio": spectrum_result.vad_active_window_ratio,
             "capture_confidence": eq_settings.get("capture_confidence"),
             "eq_confidence": eq_settings.get("eq_confidence"),
             "validation_confidence": eq_settings.get("validation_confidence"),

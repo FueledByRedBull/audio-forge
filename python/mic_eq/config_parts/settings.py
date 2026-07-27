@@ -114,14 +114,28 @@ class LatencyCalibrationProfile:
     repetition_count: int = 0
     sample_rate: int = 48000
     timestamp_utc: str = ""
+    route_latency_ms: float = 0.0
+    directional_latency_ms: float | None = None
+    route_kind: str = "output_to_input"
+    compensation_basis: str = "measured_output_to_input_route"
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "LatencyCalibrationProfile":
+        # Profiles saved before route-aware calibration only had the legacy
+        # round-trip field. Migrate them to the measured route delay instead
+        # of preserving the unjustified half-latency compensation.
+        measured_route = float(data.get("measured_round_trip_ms", 0.0))
+        route_latency = data.get("route_latency_ms")
+        if route_latency is None or float(route_latency) <= 0.0:
+            route_latency = measured_route if measured_route > 0.0 else data.get(
+                "applied_compensation_ms", 0.0
+            )
+        directional = data.get("directional_latency_ms")
         return cls(
-            measured_round_trip_ms=float(data.get("measured_round_trip_ms", 0.0)),
+            measured_round_trip_ms=measured_route,
             estimated_one_way_ms=float(data.get("estimated_one_way_ms", 0.0)),
             applied_compensation_ms=float(data.get("applied_compensation_ms", 0.0)),
             confidence=float(data.get("confidence", 0.0)),
@@ -130,6 +144,12 @@ class LatencyCalibrationProfile:
             repetition_count=int(data.get("repetition_count", 0)),
             sample_rate=int(data.get("sample_rate", 48000)),
             timestamp_utc=str(data.get("timestamp_utc", "")),
+            route_latency_ms=float(route_latency),
+            directional_latency_ms=(float(directional) if directional is not None else None),
+            route_kind=str(data.get("route_kind", "output_to_input")),
+            compensation_basis=str(
+                data.get("compensation_basis", "measured_output_to_input_route")
+            ),
         )
 
 

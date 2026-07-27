@@ -114,6 +114,12 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
 
+    #[cfg(feature = "vad")]
+    m.add_function(wrap_pyfunction!(
+        audio::processor::analyze_vad_probabilities,
+        m
+    )?)?;
+
     #[cfg(feature = "deepfilter")]
     m.add_function(wrap_pyfunction!(configure_deepfilter_runtime_paths, m)?)?;
 

@@ -47,7 +47,14 @@ jobs:
       - name: Audit locked Python dependencies
         run: |
           python -m pip_audit --require-hashes -r requirements/runtime.txt
-          python -m pip_audit --require-hashes -r requirements/dev.txt
+          # Semgrep 1.171.0 currently pins mcp==1.23.3 for its optional
+          # `semgrep mcp` server. This repository only invokes `semgrep scan`;
+          # keep the upstream IDs explicit until Semgrep publishes a compatible
+          # MCP pin rather than hiding unrelated audit results.
+          python -m pip_audit --require-hashes -r requirements/dev.txt `
+            --ignore-vuln PYSEC-2026-3481 `
+            --ignore-vuln PYSEC-2026-3482 `
+            --ignore-vuln PYSEC-2026-3483
       - name: Ruff
         run: python -m ruff check python/mic_eq python/tests python/tools
       - name: Pyright

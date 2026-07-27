@@ -1,9 +1,4 @@
-"""
-Latency calibration dialog.
-
-Runs probe playback + raw input capture, then estimates round-trip latency using
-cross-correlation.
-"""
+"""Latency calibration dialog for the selected output-to-input route."""
 
 from __future__ import annotations
 
@@ -189,7 +184,8 @@ class LatencyCalibrationDialog(QDialog):
 
         instructions = QLabel(
             "Run calibration with your current input/output device pair.\n"
-            "Best results require a loopback cable or speaker-to-mic route in a quiet room."
+            "Best results require a loopback cable or speaker-to-mic route in a quiet room. "
+            "Compensation uses the measured route delay directly."
         )
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
@@ -197,11 +193,11 @@ class LatencyCalibrationDialog(QDialog):
         status_group = QGroupBox("Measured Latency")
         status_layout = QGridLayout(status_group)
 
-        status_layout.addWidget(QLabel("Round-Trip:"), 0, 0)
+        status_layout.addWidget(QLabel("Measured Route:"), 0, 0)
         self.round_trip_label = QLabel("-- ms")
         status_layout.addWidget(self.round_trip_label, 0, 1)
 
-        status_layout.addWidget(QLabel("One-Way Estimate:"), 1, 0)
+        status_layout.addWidget(QLabel("Directional Estimate:"), 1, 0)
         self.one_way_label = QLabel("-- ms")
         status_layout.addWidget(self.one_way_label, 1, 1)
 
@@ -401,9 +397,8 @@ class LatencyCalibrationDialog(QDialog):
 
         if analysis is not None and DEBUG:
             logger.debug(
-                "Latency calibration success rt=%.2fms one_way=%.2fms conf=%.2f",
+                "Latency calibration success route=%.2fms conf=%.2f",
                 analysis.measured_round_trip_ms,
-                analysis.estimated_one_way_ms,
                 analysis.confidence,
             )
 
@@ -428,8 +423,20 @@ class LatencyCalibrationDialog(QDialog):
             return
 
         self.round_trip_label.setText(f"{profile.get('measured_round_trip_ms', 0.0):.2f} ms")
-        self.one_way_label.setText(f"{profile.get('estimated_one_way_ms', 0.0):.2f} ms")
-        self.comp_label.setText(f"{profile.get('applied_compensation_ms', 0.0):.2f} ms")
+        directional = profile.get("directional_latency_ms")
+        self.one_way_label.setText(
+            f"{float(directional):.2f} ms" if directional is not None else "Not inferred"
+        )
+        route_latency = float(profile.get("route_latency_ms", 0.0) or 0.0)
+        if route_latency <= 0.0:
+            route_latency = float(
+                profile.get(
+                    "measured_round_trip_ms",
+                    profile.get("applied_compensation_ms", 0.0),
+                )
+                or 0.0
+            )
+        self.comp_label.setText(f"{route_latency:.2f} ms")
         self.confidence_label.setText(f"{profile.get('confidence', 0.0):.2f}")
         self.agreement_label.setText(
             f"{profile.get('agreement_ms', 0.0):.2f} ms across probes"

@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.8.7 - 2026-07-27
+
+- Added continuous VAD-posterior gain shaping with sample-rate-aware smoothing, preserving the existing low-latency VAD state machine while avoiding binary gate jumps around uncertain speech.
+- Added phase-continuity-assisted fractional tracking for drifting 49-61 Hz hum, with log-power interpolation and bounded alias selection before notch retuning.
+- Improved Auto-EQ measurement quality with Silero-posterior-aware voiced-window selection, robust RMS shape-outlier rejection, and coverage/backend diagnostics.
+- Applied the same Silero posteriors to Auto Voice Setup's speech metrics and exposed an explicit energy-analysis fallback when native inference is unavailable.
+- Made latency calibration route-aware: output-to-input measurements are compensated at their measured route delay, without inferring a symmetric one-way value by dividing by two.
+- Added targeted DSP, measurement, migration, and latency regression tests and bumped the synchronized project version to `1.8.7`.
+- Reduced the portable bundle by 12,997,224 bytes (4.30%, 302,232,972 to 289,235,748 bytes in the Windows build) by stripping native release symbols, excluding unused SciPy namespaces, and pruning unused Qt SVG payloads without removing required models, render fallback, or DSP dependencies.
+- Refreshed the hash-locked development tools; the only remaining audit exception is the three upstream MCP advisories pulled by Semgrep's unused optional MCP server, documented in the release gates.
+
 ## v1.8.6 - 2026-07-10
 
 - Replaced interpolated peak estimation with a band-limited 4x true-peak detector validated against an independent reference oversampler, while keeping the limiter path allocation-free.

@@ -19,6 +19,8 @@ VOICE_FRAME_GATE_FRACTION = 0.60
 VOICE_FRAME_MIN_SPREAD_DB = 6.0
 MIN_VOICED_FRAME_RATIO = 0.15
 MIN_VOICED_FRAMES = 3
+SILERO_WINDOW_SAMPLES = 512
+SILERO_SAMPLE_RATE = 16_000
 MULTIRES_MATERIAL_IMPROVEMENT_DB = 0.75
 SPECTRUM_ESTIMATOR_POLICY = "welch_hamming"
 
@@ -36,6 +38,10 @@ class VoiceSpectrumResult:
     spectral_tilt_db_per_octave: float
     residual_confidence: float
     used_single_spectrum_fallback: bool
+    measurement_coverage: float = 1.0
+    outlier_rejection_ratio: float = 0.0
+    vad_probability_used: bool = False
+    vad_active_window_ratio: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,17 +157,125 @@ def _frame_rms_db(frames: np.ndarray) -> np.ndarray:
     return 10.0 * np.log10(frame_power + 1e-12)
 
 
-def _voiced_frame_mask(frame_rms_db: np.ndarray) -> np.ndarray:
+def _interpolate_vad_probabilities(
+    vad_probabilities: np.ndarray | None,
+    frame_starts: np.ndarray,
+    frame_size: int,
+    sample_rate: int,
+) -> np.ndarray | None:
+    """Map 32 ms Silero posteriors onto arbitrary analysis-frame centres."""
+    if vad_probabilities is None:
+        return None
+    probabilities = np.asarray(vad_probabilities, dtype=float).reshape(-1)
+    if probabilities.size == 0 or frame_starts.size == 0 or sample_rate <= 0:
+        return None
+
+    vad_window_samples = max(
+        1,
+        int(np.ceil(sample_rate * SILERO_WINDOW_SAMPLES / SILERO_SAMPLE_RATE)),
+    )
+    analysis_centres = frame_starts.astype(float) + frame_size * 0.5
+    vad_centres = (np.arange(probabilities.size, dtype=float) + 0.5) * vad_window_samples
+    return np.interp(
+        analysis_centres,
+        vad_centres,
+        np.clip(probabilities, 0.0, 1.0),
+        left=float(np.clip(probabilities[0], 0.0, 1.0)),
+        right=float(np.clip(probabilities[-1], 0.0, 1.0)),
+    )
+
+
+def _voiced_frame_mask(
+    frame_rms_db: np.ndarray,
+    *,
+    vad_probabilities: np.ndarray | None = None,
+    frame_starts: np.ndarray | None = None,
+    frame_size: int | None = None,
+    sample_rate: int = 48_000,
+) -> np.ndarray:
     floor_db = float(np.percentile(frame_rms_db, VOICE_FRAME_FLOOR_PERCENTILE))
     peak_db = float(np.percentile(frame_rms_db, VOICE_FRAME_PEAK_PERCENTILE))
     spread_db = peak_db - floor_db
-    if spread_db < VOICE_FRAME_MIN_SPREAD_DB:
-        return np.ones_like(frame_rms_db, dtype=bool)
     gate_db = max(
         VOICE_FRAME_RMS_GATE_DB,
-        floor_db + VOICE_FRAME_GATE_FRACTION * spread_db,
+        floor_db
+        + VOICE_FRAME_GATE_FRACTION
+        * max(spread_db, VOICE_FRAME_MIN_SPREAD_DB),
     )
-    return frame_rms_db >= gate_db
+    energy_mask = (
+        np.ones_like(frame_rms_db, dtype=bool)
+        if spread_db < VOICE_FRAME_MIN_SPREAD_DB
+        else frame_rms_db >= gate_db
+    )
+    if vad_probabilities is None or frame_starts is None or frame_size is None:
+        return energy_mask
+
+    posterior = _interpolate_vad_probabilities(
+        vad_probabilities,
+        frame_starts,
+        frame_size,
+        sample_rate,
+    )
+    if posterior is None or posterior.shape != frame_rms_db.shape:
+        return energy_mask
+
+    # Use the posterior as speech evidence, but retain an energy floor to stop
+    # a neural false positive from turning a noise-only window into an EQ
+    # measurement. Strong posterior evidence can admit quiet speech below the
+    # ordinary energy gate.
+    supported_energy = frame_rms_db >= max(
+        VOICE_FRAME_RMS_GATE_DB,
+        floor_db + 0.25 * max(spread_db, VOICE_FRAME_MIN_SPREAD_DB),
+    )
+    posterior_mask = (posterior >= 0.35) & supported_energy
+    strong_posterior_mask = posterior >= 0.65
+    combined = posterior_mask | strong_posterior_mask
+    if int(np.count_nonzero(combined)) >= MIN_VOICED_FRAMES:
+        return combined
+    return energy_mask
+
+
+def _robust_median_spectrum(
+    freqs: np.ndarray,
+    spectra_db: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    """Aggregate window spectra after rejecting shape outliers.
+
+    Level differences between phrases should not make a loud phrase dominate
+    the microphone-shape estimate. We therefore normalize each window over
+    the voice band, compute a median shape, reject windows whose RMS shape
+    error is a robust-MAD outlier, then restore the median
+    level of the retained windows.
+    """
+    if spectra_db.shape[0] < 3:
+        return np.median(spectra_db, axis=0), 1.0
+
+    voice_mask = (freqs >= 100.0) & (freqs <= 8000.0)
+    if not np.any(voice_mask):
+        voice_mask = np.ones(freqs.shape, dtype=bool)
+    levels = np.median(spectra_db[:, voice_mask], axis=1)
+    normalized = spectra_db - levels[:, np.newaxis]
+    centre = np.median(normalized, axis=0)
+    shape_error = normalized[:, voice_mask] - centre[voice_mask]
+    # A frequency-wise median would hide a narrow but severe resonance because
+    # most bins remain unchanged. RMS error preserves that diagnostic signal
+    # while the later MAD cutoff remains robust across windows.
+    distances = np.sqrt(np.mean(np.square(shape_error), axis=1))
+    median_distance = float(np.median(distances))
+    mad = float(np.median(np.abs(distances - median_distance)))
+    cutoff = median_distance + 4.0 * max(mad, 0.25)
+    inliers = distances <= cutoff
+
+    minimum_inliers = max(3, int(np.ceil(spectra_db.shape[0] * 0.50)))
+    if int(np.count_nonzero(inliers)) < minimum_inliers:
+        closest = np.argsort(distances)[:minimum_inliers]
+        inliers = np.zeros(spectra_db.shape[0], dtype=bool)
+        inliers[closest] = True
+
+    robust_shape = np.median(normalized[inliers], axis=0)
+    robust_level = float(np.median(levels[inliers]))
+    coverage = float(np.count_nonzero(inliers) / max(1, spectra_db.shape[0]))
+    return robust_shape + robust_level, coverage
 
 
 def _window_spectrum_db(frame: np.ndarray, fs: int) -> tuple[np.ndarray, np.ndarray]:
@@ -219,8 +333,20 @@ def _shape_repeatability(
     return np.clip(repeatability, 0.0, 1.0), smoothed
 
 
-def analyze_voice_spectrum(audio, fs=48000, nperseg=4096) -> VoiceSpectrumResult:
-    """Analyze voiced windows and return a repeatability-aware spectrum."""
+def analyze_voice_spectrum(
+    audio,
+    fs=48000,
+    nperseg=4096,
+    *,
+    vad_probabilities: np.ndarray | None = None,
+) -> VoiceSpectrumResult:
+    """Analyze speech windows and return a robust repeatability-aware spectrum.
+
+    ``vad_probabilities`` contains one posterior per Silero model window. When
+    supplied, the energy mask and neural posterior are fused at analysis-frame
+    centres; the spectral aggregate then rejects isolated mouth/noise shape
+    outliers before Auto-EQ sees the measurement.
+    """
     if len(audio) < nperseg:
         raise ValueError(
             f"Audio too short for FFT: need {nperseg} samples, "
@@ -231,9 +357,28 @@ def analyze_voice_spectrum(audio, fs=48000, nperseg=4096) -> VoiceSpectrumResult
     hop = max(1, nperseg // 2)
     frames = np.lib.stride_tricks.sliding_window_view(audio_arr, nperseg)[::hop]
     frame_rms = _frame_rms_db(frames)
-    voiced_mask = _voiced_frame_mask(frame_rms)
+    frame_starts = np.arange(frames.shape[0], dtype=int) * hop
+    frame_vad_probabilities = _interpolate_vad_probabilities(
+        vad_probabilities,
+        frame_starts,
+        nperseg,
+        fs,
+    )
+    voiced_mask = _voiced_frame_mask(
+        frame_rms,
+        vad_probabilities=vad_probabilities,
+        frame_starts=frame_starts,
+        frame_size=nperseg,
+        sample_rate=fs,
+    )
     voiced_ratio = float(np.mean(voiced_mask)) if voiced_mask.size else 0.0
     voiced_frames = frames[voiced_mask]
+    vad_active_ratio = (
+        float(np.mean(frame_vad_probabilities >= 0.35))
+        if frame_vad_probabilities is not None
+        else 0.0
+    )
+    vad_used = frame_vad_probabilities is not None
 
     if voiced_frames.shape[0] < MIN_VOICED_FRAMES or voiced_ratio < MIN_VOICED_FRAME_RATIO:
         freqs, spectrum_db = compute_voice_spectrum(audio_arr, fs, nperseg)
@@ -248,6 +393,10 @@ def analyze_voice_spectrum(audio, fs=48000, nperseg=4096) -> VoiceSpectrumResult
             spectral_tilt_db_per_octave=_estimate_tilt_db_per_octave(freqs, spectrum_db),
             residual_confidence=0.45,
             used_single_spectrum_fallback=True,
+            measurement_coverage=0.45,
+            outlier_rejection_ratio=0.0,
+            vad_probability_used=vad_used,
+            vad_active_window_ratio=vad_active_ratio,
         )
 
     spectra = []
@@ -261,7 +410,7 @@ def analyze_voice_spectrum(audio, fs=48000, nperseg=4096) -> VoiceSpectrumResult
     assert freqs is not None
     spectra_arr = np.asarray(spectra, dtype=float)
     repeatability, smoothed_spectra = _shape_repeatability(freqs, spectra_arr)
-    median_spectrum = np.median(smoothed_spectra, axis=0)
+    median_spectrum, inlier_ratio = _robust_median_spectrum(freqs, smoothed_spectra)
     snr_db = _estimate_snr_from_spectrum(freqs, median_spectrum)
     snr_confidence = np.clip((snr_db - 3.0) / 18.0, 0.0, 1.0)
     voice_mask = (freqs >= 100.0) & (freqs <= 8000.0)
@@ -271,14 +420,18 @@ def analyze_voice_spectrum(audio, fs=48000, nperseg=4096) -> VoiceSpectrumResult
         else float(np.median(repeatability))
     )
     coverage = float(np.clip(voiced_ratio / 0.55, 0.0, 1.0))
+    measurement_coverage = float(np.clip(0.55 * coverage + 0.45 * inlier_ratio, 0.0, 1.0))
     residual_confidence = float(
         np.clip(
-            0.50 * repeatability_score
-            + 0.30 * coverage
+            0.45 * repeatability_score
+            + 0.25 * coverage
             + 0.20 * snr_confidence,
             0.0,
             1.0,
         )
+    )
+    residual_confidence = float(
+        np.clip(residual_confidence * (0.75 + 0.25 * measurement_coverage), 0.0, 1.0)
     )
 
     return VoiceSpectrumResult(
@@ -291,6 +444,10 @@ def analyze_voice_spectrum(audio, fs=48000, nperseg=4096) -> VoiceSpectrumResult
         spectral_tilt_db_per_octave=_estimate_tilt_db_per_octave(freqs, median_spectrum),
         residual_confidence=residual_confidence,
         used_single_spectrum_fallback=False,
+        measurement_coverage=measurement_coverage,
+        outlier_rejection_ratio=1.0 - inlier_ratio,
+        vad_probability_used=vad_used,
+        vad_active_window_ratio=vad_active_ratio,
     )
 
 

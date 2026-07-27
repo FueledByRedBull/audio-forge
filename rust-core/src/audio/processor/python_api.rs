@@ -227,6 +227,53 @@ pub fn simulate_auto_eq_chain(
     Ok(diagnostics.into_any().unbind())
 }
 
+/// Analyze an offline capture with the same stateful Silero VAD used by the
+/// realtime gate. The returned probabilities are one value per model window;
+/// the final partial window is zero-padded so callers can map every sample of
+/// a capture to a posterior without inventing a second VAD implementation.
+#[cfg(feature = "vad")]
+#[pyfunction]
+#[pyo3(signature = (audio, sample_rate, threshold=0.5))]
+pub fn analyze_vad_probabilities(
+    audio: numpy::PyReadonlyArray1<'_, f32>,
+    sample_rate: u32,
+    threshold: f32,
+) -> PyResult<Vec<f32>> {
+    if sample_rate == 0 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "sample_rate must be positive",
+        ));
+    }
+
+    let samples = audio.as_slice().map_err(|error| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "audio must be a contiguous float32 array: {error}"
+        ))
+    })?;
+    let mut vad = SileroVAD::new(sample_rate, threshold).map_err(|error| {
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+            "Silero VAD is unavailable for offline analysis: {error}"
+        ))
+    })?;
+    let window_size = vad.window_size().max(1);
+    let frame_count = samples.len().div_ceil(window_size);
+    let mut frame = vec![0.0_f32; window_size];
+    let mut probabilities = Vec::with_capacity(frame_count);
+
+    for chunk in samples.chunks(window_size) {
+        frame.fill(0.0);
+        frame[..chunk.len()].copy_from_slice(chunk);
+        let probability = vad.process(&frame).map_err(|error| {
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
+                "Silero VAD offline inference failed: {error}"
+            ))
+        })?;
+        probabilities.push(probability.clamp(0.0, 1.0));
+    }
+
+    Ok(probabilities)
+}
+
 /// Python-exposed audio processor
 #[pyclass(name = "AudioProcessor", unsendable)]
 pub struct PyAudioProcessor {

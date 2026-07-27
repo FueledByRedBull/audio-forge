@@ -283,3 +283,31 @@ def test_result_to_profile_has_expected_fields():
     assert profile["confidence"] == 0.88
     assert profile["sample_rate"] == 48000
     assert "timestamp_utc" in profile
+
+
+def test_latency_calibration_applies_measured_route_without_halving():
+    sample_rate = 48_000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+    route_latency_samples = int(0.143 * sample_rate)
+    recording = np.zeros(route_latency_samples + len(probe) + 2048, dtype=np.float32)
+    recording[route_latency_samples : route_latency_samples + len(probe)] = probe
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        min_search_ms=5.0,
+        max_search_ms=500.0,
+    )
+
+    expected_ms = route_latency_samples * 1000.0 / sample_rate
+    assert result.success
+    assert abs(result.route_latency_ms - expected_ms) < 2.0
+    assert abs(result.applied_compensation_ms - expected_ms) < 2.0
+    assert result.directional_latency_ms is None
+    assert result.estimated_one_way_ms == 0.0
+
+    profile = lat.result_to_profile(result, sample_rate=sample_rate)
+    assert abs(profile["route_latency_ms"] - expected_ms) < 2.0
+    assert profile["compensation_basis"] == "measured_output_to_input_route"
+    assert profile["directional_latency_ms"] is None

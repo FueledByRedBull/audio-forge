@@ -13,7 +13,12 @@ import numpy as np
 from scipy.signal import lfilter, resample_poly
 
 from .auto_eq import analyze_auto_eq, simulate_candidate_chain
-from .spectrum import analyze_voice_spectrum, smooth_spectrum_perceptual
+from .spectrum import (
+    _interpolate_vad_probabilities,
+    analyze_voice_spectrum,
+    smooth_spectrum_perceptual,
+)
+from .vad import analyze_offline_vad
 from ..config import EQ_FREQUENCIES
 
 NOISE_MIN_DURATION_S = 1.0
@@ -84,8 +89,9 @@ def _vad_masked_speech_features(
     speech: np.ndarray,
     sample_rate: int,
     noise_rms_db: float,
+    vad_probabilities: np.ndarray | None = None,
 ) -> dict[str, Any]:
-    """Extract energy-VAD-masked loudness, range, and robust band features."""
+    """Extract posterior/energy-masked loudness, range, and band features."""
     signal = np.asarray(speech, dtype=np.float64)
     frame_size = max(256, int(sample_rate * FRAME_MS / 1000.0))
     hop_size = max(128, int(sample_rate * HOP_MS / 1000.0))
@@ -98,7 +104,26 @@ def _vad_masked_speech_features(
     frame_power = np.mean(frames * frames, axis=1)
     frame_db = 10.0 * np.log10(frame_power + 1e-12)
     adaptive_floor = max(noise_rms_db + 6.0, float(np.percentile(frame_db, 30.0)) + 2.0)
-    active_frames = frame_db >= adaptive_floor
+    energy_active_frames = frame_db >= adaptive_floor
+    frame_starts = np.arange(frame_db.size, dtype=int) * hop_size
+    frame_vad_probabilities = _interpolate_vad_probabilities(
+        vad_probabilities,
+        frame_starts,
+        frame_size,
+        sample_rate,
+    )
+    active_frames = energy_active_frames
+    if frame_vad_probabilities is not None:
+        supported_energy = frame_db >= max(noise_rms_db + 2.0, adaptive_floor - 4.0)
+        posterior_active = (
+            ((frame_vad_probabilities >= 0.35) & supported_energy)
+            | (frame_vad_probabilities >= 0.65)
+        )
+        # Require enough posterior-supported material to replace the energy
+        # mask; otherwise a failed/under-confident model must not erase a
+        # usable capture.
+        if int(np.count_nonzero(posterior_active)) >= 6:
+            active_frames = posterior_active
     if active_frames.size >= 3:
         active_frames = np.convolve(active_frames.astype(int), np.ones(3, dtype=int), mode="same") > 0
 
@@ -173,6 +198,12 @@ def _vad_masked_speech_features(
         "active_frame_mask": active_frames,
         "active_duration_s": active_duration_s,
         "active_ratio": active_ratio,
+        "vad_probability_used": frame_vad_probabilities is not None,
+        "vad_active_frame_ratio": (
+            float(np.mean(frame_vad_probabilities >= 0.35))
+            if frame_vad_probabilities is not None
+            else 0.0
+        ),
         "short_term_lufs": short_term_lufs,
         "loudness_range_db": loudness_range_db,
         "loudness_window_count": int(loudness.size),
@@ -341,7 +372,19 @@ def analyze_voice_setup(
     noise_peak_db = _peak_db(noise_arr)
     speech_rms_db = _rms_db(speech_arr)
     speech_peak_db = _peak_db(speech_arr)
-    features = _vad_masked_speech_features(speech_arr, sample_rate, noise_rms_db)
+    vad_probabilities = None
+    vad_analysis_backend = "energy_fallback"
+    if vad_available:
+        vad_probabilities, vad_analysis_backend = analyze_offline_vad(
+            speech_arr,
+            sample_rate,
+        )
+    features = _vad_masked_speech_features(
+        speech_arr,
+        sample_rate,
+        noise_rms_db,
+        vad_probabilities=vad_probabilities,
+    )
     frame_rms = np.asarray(features["frame_db"], dtype=float)
     active_frames = frame_rms[np.asarray(features["active_frame_mask"], dtype=bool)]
     if active_frames.size < 6:
@@ -354,7 +397,11 @@ def analyze_voice_setup(
     speech_dynamic_range_db = float(features["loudness_range_db"])
     speech_snr_db = speech_body_db - noise_rms_db
 
-    spectrum_result = analyze_voice_spectrum(speech_arr, sample_rate)
+    spectrum_result = analyze_voice_spectrum(
+        speech_arr,
+        sample_rate,
+        vad_probabilities=vad_probabilities,
+    )
     smoothed_spectrum = smooth_spectrum_perceptual(
         spectrum_result.freqs,
         spectrum_result.median_spectrum_db,
@@ -400,7 +447,12 @@ def analyze_voice_setup(
     eq_settings: dict[str, Any] | None = None
     eq_error: str | None = None
     try:
-        eq_settings, _validation = analyze_auto_eq(speech_arr, sample_rate, target_preset)
+        eq_settings, _validation = analyze_auto_eq(
+            speech_arr,
+            sample_rate,
+            target_preset,
+            vad_probabilities=vad_probabilities,
+        )
     except Exception as exc:  # pragma: no cover - exercised through return shape
         eq_error = str(exc)
 
@@ -525,6 +577,9 @@ def analyze_voice_setup(
             "compressor_auto_makeup_enabled": compressor_diag["auto_makeup_enabled"],
             "compressor_target_lufs": compressor_diag["target_lufs"],
             "vad_available": bool(vad_available),
+            "vad_analysis_backend": vad_analysis_backend,
+            "vad_probability_used": bool(features["vad_probability_used"]),
+            "vad_active_frame_ratio": float(features["vad_active_frame_ratio"]),
             "offline_validation_passed": offline_validation_passed,
             "offline_validation": offline_validation,
         },

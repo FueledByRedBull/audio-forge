@@ -34,6 +34,21 @@ const AUTO_RELAX_RANGE_DB: f64 = 24.0;
 const FUSED_GATE_OPEN_SCORE: f32 = 0.55;
 #[cfg(feature = "vad")]
 const FUSED_GATE_CLOSE_SCORE: f32 = 0.35;
+/// Time constant used to turn the worker's frame-rate VAD posterior into a
+/// sample-rate control signal. The state machine still uses the raw frame
+/// posterior for onset decisions; this path only shapes the gain target.
+#[cfg(feature = "vad")]
+const VAD_CONTINUOUS_SMOOTH_MS: f64 = 35.0;
+/// Probability interval below the configured opening threshold that is
+/// treated as an uncertain transition region for continuous attenuation.
+#[cfg(feature = "vad")]
+const VAD_CONTINUOUS_CLOSE_MARGIN: f32 = 0.20;
+/// Keep VAD-assisted mode conservative: level evidence remains the primary
+/// opener, while posterior-derived attenuation can reject loud non-speech.
+#[cfg(feature = "vad")]
+const VAD_ASSISTED_CONTINUOUS_SCALE: f64 = 0.30;
+#[cfg(feature = "vad")]
+const VAD_ONLY_CONTINUOUS_SCALE: f64 = 0.45;
 
 #[cfg(feature = "vad")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,6 +144,12 @@ pub struct NoiseGate {
     /// Previous external/model VAD probability for onset/release velocity.
     #[cfg(feature = "vad")]
     previous_vad_probability: f32,
+    /// Sample-rate-smoothed VAD posterior used for continuous gain control.
+    #[cfg(feature = "vad")]
+    vad_smoothed_probability: f32,
+    /// One-pole coefficient for `vad_smoothed_probability`.
+    #[cfg(feature = "vad")]
+    vad_probability_smoothing_coeff: f64,
     /// Remaining samples of temporary chatter relax behavior.
     #[cfg(feature = "vad")]
     auto_relax_remaining_samples: usize,
@@ -190,6 +211,13 @@ impl NoiseGate {
             gate_state: ProbabilisticGateState::Closed,
             #[cfg(feature = "vad")]
             previous_vad_probability: 0.0,
+            #[cfg(feature = "vad")]
+            vad_smoothed_probability: 0.0,
+            #[cfg(feature = "vad")]
+            vad_probability_smoothing_coeff: util::time_constant_to_coeff(
+                VAD_CONTINUOUS_SMOOTH_MS,
+                sample_rate,
+            ),
             #[cfg(feature = "vad")]
             auto_relax_remaining_samples: 0,
         }
@@ -454,6 +482,76 @@ impl NoiseGate {
         self.gate_state != ProbabilisticGateState::Closed
     }
 
+    #[cfg(feature = "vad")]
+    #[inline]
+    fn probability_speech_confidence(&self, probability: f32, vad_threshold: f32) -> f64 {
+        let open_threshold = vad_threshold.clamp(0.05, 0.95);
+        let close_threshold = (open_threshold - VAD_CONTINUOUS_CLOSE_MARGIN)
+            .clamp(0.02, (open_threshold - 0.02).max(0.02));
+        let span = (open_threshold - close_threshold).max(1.0e-3);
+        let normalized = ((probability - close_threshold) / span).clamp(0.0, 1.0) as f64;
+        // Cubic smoothstep has zero slope at both ends, so the posterior does
+        // not create a gain kink while crossing either threshold.
+        normalized * normalized * (3.0 - 2.0 * normalized)
+    }
+
+    #[cfg(feature = "vad")]
+    #[inline]
+    fn continuous_vad_gain_reduction_db(
+        &self,
+        mode: GateMode,
+        probability: f32,
+        vad_available: bool,
+        vad_held_open: bool,
+        vad_threshold: f32,
+    ) -> f64 {
+        if !vad_available {
+            return 0.0;
+        }
+
+        let speech_confidence = self.probability_speech_confidence(probability, vad_threshold);
+        let mut closure = 1.0 - speech_confidence;
+        // Hold time is a speech-tail grace period. It must not defeat a
+        // genuinely low posterior, but it prevents an uncertain tail from
+        // being attenuated as aggressively as stationary noise.
+        if vad_held_open && probability >= (vad_threshold - VAD_CONTINUOUS_CLOSE_MARGIN) {
+            closure = closure.min(0.80);
+        }
+
+        let scale = match mode {
+            GateMode::VadAssisted => VAD_ASSISTED_CONTINUOUS_SCALE,
+            GateMode::VadOnly => VAD_ONLY_CONTINUOUS_SCALE,
+            GateMode::ThresholdOnly => 0.0,
+        };
+        self.expander_range_db() * closure * scale
+    }
+
+    #[cfg(feature = "vad")]
+    #[inline]
+    fn compute_vad_target_gr_db(
+        &self,
+        mode: GateMode,
+        probability: f32,
+        vad_available: bool,
+        vad_held_open: bool,
+        vad_threshold: f32,
+        force_close: bool,
+    ) -> f64 {
+        if force_close {
+            return self.expander_range_db();
+        }
+
+        let level_reduction = self.detector_gain_reduction_db();
+        let posterior_reduction = self.continuous_vad_gain_reduction_db(
+            mode,
+            probability,
+            vad_available,
+            vad_held_open,
+            vad_threshold,
+        );
+        level_reduction.max(posterior_reduction)
+    }
+
     #[inline]
     fn compute_target_gr_db(&self, force_close: bool) -> f64 {
         if force_close {
@@ -599,6 +697,12 @@ impl NoiseGate {
 
                         for sample in buffer.iter_mut() {
                             let input_f64 = *sample as f64;
+                            self.vad_smoothed_probability = (self.vad_probability_smoothing_coeff
+                                * self.vad_smoothed_probability as f64
+                                + (1.0 - self.vad_probability_smoothing_coeff)
+                                    * _probability as f64)
+                                .clamp(0.0, 1.0)
+                                as f32;
                             // Detector tracks continuously even when VAD blocks.
                             self.update_detector(input_f64);
                             self.update_fused_gate_score(
@@ -617,7 +721,14 @@ impl NoiseGate {
                             );
                             let force_close =
                                 self.gate_mode != GateMode::ThresholdOnly && !probabilistic_open;
-                            let target_gr_db = self.compute_target_gr_db(force_close);
+                            let target_gr_db = self.compute_vad_target_gr_db(
+                                self.gate_mode,
+                                self.vad_smoothed_probability,
+                                vad_probability_available,
+                                vad_gate_open,
+                                vad_threshold,
+                                force_close,
+                            );
                             let effective_open = !force_close && probabilistic_open;
                             self.track_gate_transition(effective_open);
                             *sample = self.apply_gain(input_f64, target_gr_db);
@@ -667,6 +778,7 @@ impl NoiseGate {
             self.fused_gate_open = false;
             self.gate_state = ProbabilisticGateState::Closed;
             self.previous_vad_probability = 0.0;
+            self.vad_smoothed_probability = 0.0;
             self.auto_relax_remaining_samples = 0;
         }
     }
@@ -747,11 +859,7 @@ impl NoiseGate {
     #[cfg(feature = "vad")]
     /// Get VAD probability (for metering)
     pub fn get_vad_probability(&self) -> f32 {
-        if let Some(vad) = &self.vad_auto_gate {
-            vad.probability()
-        } else {
-            0.0
-        }
+        self.vad_smoothed_probability
     }
 
     #[cfg(feature = "vad")]
@@ -1163,5 +1271,22 @@ mod tests {
 
         assert!(gate.chatter_event_count() > 0);
         assert!(gate.auto_relax_active());
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_continuous_vad_reduction_is_monotone_and_flat_at_speech_endpoints() {
+        let gate = NoiseGate::new(-40.0, 1.0, 20.0, 48_000.0);
+        let low_probability =
+            gate.continuous_vad_gain_reduction_db(GateMode::VadOnly, 0.10, true, false, 0.50);
+        let uncertain_probability =
+            gate.continuous_vad_gain_reduction_db(GateMode::VadOnly, 0.40, true, false, 0.50);
+        let high_probability =
+            gate.continuous_vad_gain_reduction_db(GateMode::VadOnly, 0.90, true, false, 0.50);
+
+        assert!(low_probability > uncertain_probability);
+        assert!(uncertain_probability > high_probability);
+        assert!(high_probability.abs() < 1.0e-9);
+        assert!(low_probability <= EXPANDER_RANGE_DB * VAD_ONLY_CONTINUOUS_SCALE);
     }
 }

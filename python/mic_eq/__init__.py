@@ -6,7 +6,7 @@ AudioForge - Low-latency microphone audio processor
 Provides real-time noise suppression and equalization for voice communication.
 """
 
-__version__ = "1.8.6"
+__version__ = "1.8.7"
 
 from typing import TYPE_CHECKING
 
@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from .mic_eq_core import (
         AudioProcessor,
         DeviceInfo,
+        analyze_vad_probabilities,
         configure_deepfilter_runtime_paths,
         list_input_devices,
         list_output_devices,
@@ -52,6 +53,11 @@ else:
             "configure_deepfilter_runtime_paths",
             lambda *_args, **_kwargs: None,
         )
+        analyze_vad_probabilities = getattr(
+            _core_module,
+            "analyze_vad_probabilities",
+            None,
+        )
         CORE_AVAILABLE = True
 
         def _raise_missing_simulation_helper(*args, **kwargs):
@@ -88,12 +94,16 @@ else:
         def configure_deepfilter_runtime_paths(*args, **kwargs):
             _raise_core_import_error()
 
+        def analyze_vad_probabilities(*args, **kwargs):
+            _raise_core_import_error()
+
 __all__ = [
     "AudioProcessor",
     "DeviceInfo",
     "list_input_devices",
     "list_output_devices",
     "simulate_auto_eq_chain",
+    "analyze_vad_probabilities",
     "configure_deepfilter_runtime_paths",
     "CORE_AVAILABLE",
     "Preset",

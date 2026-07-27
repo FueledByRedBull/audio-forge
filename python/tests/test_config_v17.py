@@ -113,6 +113,7 @@ def test_app_config_latency_profiles_round_trip():
     assert restored_profile.measured_round_trip_ms == 36.5
     assert restored_profile.estimated_one_way_ms == 18.25
     assert restored_profile.applied_compensation_ms == 18.25
+    assert restored_profile.route_latency_ms == 36.5
     assert restored_profile.confidence == 0.92
 
 
@@ -223,6 +224,7 @@ def test_app_config_migrates_legacy_device_names_and_profile_keys():
     assert legacy_key not in restored.latency_calibration_profiles
     restored_profile = restored.latency_calibration_profiles[expected_key]
     assert restored_profile.measured_round_trip_ms == 28.0
+    assert restored_profile.route_latency_ms == 28.0
 
 
 def test_load_preset_rejects_path_outside_allowlisted_roots():

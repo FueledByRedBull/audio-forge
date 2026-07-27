@@ -19,12 +19,12 @@ Raw assets are preferred. If the asset-source release only has an existing `Audi
 For local release prep from a clean clone, you can mirror that behavior with:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.6
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.7
 ```
 
 Then run the workflow with:
 
-- `release_tag`: the target tag, for example `v1.8.6`.
+- `release_tag`: the target tag, for example `v1.8.7`.
 - `asset_source_tag`: the release tag containing the raw assets. Leave blank to use the repository variable `AUDIOFORGE_ASSET_SOURCE_TAG`, or the target release when that variable is unset.
 - `upload_to_release`: enabled when running manually and the generated archive should be uploaded to the GitHub Release.
 
@@ -54,12 +54,20 @@ This reuses PyInstaller's analysis cache for faster repeat builds. Add `-Clean` 
 
 Run the release validation checks:
 
+The current Semgrep release pins `mcp==1.23.3` for its optional MCP server;
+AudioForge only invokes `semgrep scan`, so the three upstream MCP advisories
+are listed explicitly below until Semgrep publishes a compatible pin. Runtime
+dependencies remain unignored.
+
 ```powershell
 .\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
 .\.venv\Scripts\python.exe -m pyright
 .\.venv\Scripts\python.exe -m pytest python/tests -q
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt `
+  --ignore-vuln PYSEC-2026-3481 `
+  --ignore-vuln PYSEC-2026-3482 `
+  --ignore-vuln PYSEC-2026-3483
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py
@@ -79,21 +87,21 @@ Create the distributable archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.8.6-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.8.7-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 Compute the checksum:
 
 ```powershell
-Get-FileHash .\AudioForge-v1.8.6-win64-ultra.7z -Algorithm SHA256
+Get-FileHash .\AudioForge-v1.8.7-win64-ultra.7z -Algorithm SHA256
 ```
 
 Manual publish:
 
 1. Commit tracked source/doc/version changes.
-2. Create annotated tag `v1.8.6`.
+2. Create annotated tag `v1.8.7`.
 3. Upload the raw runtime assets listed above to the GitHub Release or to the configured `asset_source_tag` release. An existing verified `AudioForge-*-win64-ultra.7z` on that release can also be used as the asset source.
-4. Push `master` and `v1.8.6`, or run the `Release package` workflow manually with `upload_to_release` enabled.
+4. Push `master` and `v1.8.7`, or run the `Release package` workflow manually with `upload_to_release` enabled.
 
 ## Packaging notes
 
@@ -106,6 +114,7 @@ Manual publish:
 - `build_exe.ps1` fails before PyInstaller if a required asset is missing, hash mismatched, or the local `mic_eq_core*.pyd` is older than Rust sources.
 - `python/tools/package_smoke.py` verifies exact bundled DLL/model/native-extension presence, rejects duplicate top-level native-extension payloads, and checks dependency license or `.dist-info` metadata.
 - `python/tools/prune_bundle.py` must not remove dependency `.dist-info` directories; license/metadata retention is part of the release gate. It may remove duplicate native-extension payloads only when the canonical `_internal/mic_eq/mic_eq_core*.pyd` copy is present.
+- The release profile strips native symbols without changing optimization level. The package spec excludes only unused SciPy namespaces, while the prune step removes unused Qt SVG payloads; keep both NumPy/SciPy BLAS DLLs, `opengl32sw.dll`, all required models, DirectML, and df.dll because they are runtime dependencies.
 - Obtain `DirectML.dll` from the pinned Microsoft DirectML redistributable package, `df.dll` from the pinned DeepFilter runtime build/artifact, and model files from the pinned model artifacts documented in `release-assets.json`.
 
 ## Strict realtime regression gates

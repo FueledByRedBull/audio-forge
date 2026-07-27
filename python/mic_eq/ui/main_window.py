@@ -895,7 +895,12 @@ class MainWindow(QMainWindow):
         profile = self._current_latency_profile()
 
         if self.config.use_measured_latency and profile is not None:
-            compensation_ms = max(0.0, float(profile.applied_compensation_ms))
+            route_latency_ms = float(profile.route_latency_ms)
+            if route_latency_ms <= 0.0:
+                # Compatibility for profiles constructed in-memory by older
+                # callers; persisted profiles are migrated by from_dict().
+                route_latency_ms = float(profile.applied_compensation_ms)
+            compensation_ms = max(0.0, route_latency_ms)
 
         try:
             self.processor.set_latency_compensation_ms(compensation_ms)
@@ -927,8 +932,11 @@ class MainWindow(QMainWindow):
         self._sync_latency_profile_for_current_devices(profile)
         save_config(self.config)
         self._apply_latency_compensation_for_current_devices()
+        route_latency_ms = float(profile.route_latency_ms)
+        if route_latency_ms <= 0.0:
+            route_latency_ms = float(profile.measured_round_trip_ms)
         self.status_bar.showMessage(
-            f"Latency calibration saved for current device pair ({profile.applied_compensation_ms:.1f} ms)",
+            f"Measured route latency saved for current device pair ({route_latency_ms:.1f} ms)",
             5000,
         )
 

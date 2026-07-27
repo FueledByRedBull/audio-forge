@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.8.9 - 2026-07-27
+
+- Reworked Auto-EQ measurement reliability around matched room-noise spectra, frequency-dependent SNR, explicit unavailable-reference diagnostics, and safe abstention instead of spectral-percentile pseudo-SNR.
+- Preserved broad microphone/voice tilt by default, kept detrending as an explicit experiment, and made gain curvature plus adjacency constraints aware of actual log-frequency spacing.
+- Removed per-frame DC before spectral analysis and added regressions for DC invariance, noise-reference behavior, tilt policy, confidence abstention, and constrained optimization.
+- Replaced aggregate-spectrum de-esser setup with time-local, noise-supported unvoiced/sibilant evidence aligned to the live Rust de-esser, preventing steady microphone brightness from being misclassified.
+- Added exact Rust-chain compressor threshold calibration and verified recommended de-essing/compression against measured native gain reduction.
+- Corrected loudness math and terminology with 400 ms momentary plus 3 second short-term K-weighted measurements, and relabelled house EQ curves without false BS.1770 or IEC conformance claims.
+- Made the standalone Auto-EQ dialog refuse abstained corrections and offer a new recording instead.
+
 ## v1.8.8 - 2026-07-27
 
 - Fixed the portable Windows bundle's SciPy runtime collection. `scipy.signal` transitively imports `scipy.integrate`, `scipy.interpolate`, and `scipy.stats`; none of these modules are excluded from the executable now.

@@ -6,7 +6,7 @@ AudioForge - Low-latency microphone audio processor
 Provides real-time noise suppression and equalization for voice communication.
 """
 
-__version__ = "1.8.8"
+__version__ = "1.8.9"
 
 from typing import TYPE_CHECKING
 

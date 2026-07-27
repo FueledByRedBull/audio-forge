@@ -15,6 +15,7 @@ calculate_eq_bands = auto_eq.calculate_eq_bands
 analyze_auto_eq = auto_eq.analyze_auto_eq
 get_target_curve = auto_eq.get_target_curve
 _remove_spectral_tilt = auto_eq._remove_spectral_tilt
+_log_frequency_gain_curvature = auto_eq._log_frequency_gain_curvature
 _snr_aware_gain_upper_bounds = auto_eq._snr_aware_gain_upper_bounds
 evaluate_eq_quality = auto_eq.evaluate_eq_quality
 apply_headroom_validation = auto_eq.apply_headroom_validation
@@ -137,10 +138,12 @@ def test_08_extreme_uneven_response():
     freqs = _default_freqs()
     spectrum_db = generate_test_spectrum(freqs, "extreme")
     target_db = get_target_curve(freqs, "flat")
-    gains = calculate_eq_bands(freqs, spectrum_db, target_db)["band_gains"]
-    # The solver applies a correction factor, so strong responses may not hit
-    # hard +/-12 dB bounds in final output. Require a large correction instead.
-    assert any(abs(g) >= 7.0 for g in gains)
+    eq = calculate_eq_bands(freqs, spectrum_db, target_db)
+    gains = eq["band_gains"]
+    # The constrained solver should still make a material correction without
+    # requiring a dangerous hard-bound excursion.
+    assert any(abs(g) >= 3.0 for g in gains)
+    assert eq["validation_after_error_db"] < eq["validation_before_error_db"] * 0.80
 
 
 def test_09_very_quiet_signal():
@@ -218,9 +221,13 @@ def test_14_adjacent_gain_coupling_limit():
     freqs = _default_freqs()
     spectrum_db = generate_test_spectrum(freqs, "extreme")
     target_db = get_target_curve(freqs, "flat")
-    gains = np.asarray(calculate_eq_bands(freqs, spectrum_db, target_db)["band_gains"], dtype=float)
+    eq = calculate_eq_bands(freqs, spectrum_db, target_db)
+    gains = np.asarray(eq["band_gains"], dtype=float)
+    centers = np.asarray(eq["band_freqs"], dtype=float)
 
     assert np.all(np.abs(np.diff(gains)) <= 6.0 + 1e-9)
+    slopes = np.abs(np.diff(gains)) / np.diff(np.log2(centers))
+    assert np.all(slopes <= 12.0 + 1e-6)
 
 
 def test_15_tilt_removal_reduces_linear_log_slope():
@@ -283,13 +290,103 @@ def test_15d_tilt_removal_rejects_random_response_below_fit_threshold():
     assert np.allclose(detrended, measured_db)
 
 
+def test_15e_production_tilt_policy_preserves_broad_mic_response():
+    freqs = _default_freqs()
+    measured_db = -70.0 - 5.0 * np.log2(freqs / 1000.0)
+    target_db = get_target_curve(freqs, "flat", target_mode="static")
+
+    preserved = calculate_eq_bands(
+        freqs,
+        measured_db,
+        target_db,
+        tilt_policy="preserve",
+    )
+    detrended = calculate_eq_bands(
+        freqs,
+        measured_db,
+        target_db,
+        tilt_policy="detrend",
+    )
+
+    preserved_gains = np.asarray(preserved["band_gains"], dtype=float)
+    detrended_gains = np.asarray(detrended["band_gains"], dtype=float)
+    assert preserved["spectral_tilt_policy"] == "preserve"
+    assert detrended["spectral_tilt_policy"] == "detrend"
+    assert np.max(np.abs(preserved_gains)) > np.max(np.abs(detrended_gains)) + 2.0
+
+
+def test_15f_log_frequency_curvature_is_zero_for_linear_tilt():
+    centers = np.asarray(
+        [80.0, 210.0, 330.0, 800.0, 1450.0, 2400.0, 3900.0, 6100.0, 8500.0, 15000.0],
+        dtype=float,
+    )
+    gains = 2.5 * np.log2(centers / 1000.0) + 1.0
+
+    curvature = _log_frequency_gain_curvature(gains, centers)
+
+    assert curvature.shape == (8,)
+    assert np.max(np.abs(curvature)) < 1e-10
+
+
 def test_16_snr_aware_boost_caps_are_bounded_and_monotonic():
     snr_db = np.array([-5.0, 0.0, 3.0, 8.0, 12.0, 18.0, 30.0], dtype=float)
     caps = _snr_aware_gain_upper_bounds(snr_db)
 
-    assert np.all(caps >= 3.0)
+    assert np.all(caps >= 1.5)
     assert np.all(caps <= 12.0)
     assert np.all(np.diff(caps) >= -1e-9)
+
+
+def test_16a_frequency_dependent_snr_caps_only_unsupported_boosts():
+    freqs = _default_freqs()
+    log_freqs = np.log10(freqs)
+    measured_db = np.full_like(freqs, -70.0)
+    measured_db -= 10.0 * np.exp(
+        -((log_freqs - np.log10(6000.0)) ** 2) / (2 * 0.08**2)
+    )
+    target_db = get_target_curve(freqs, "flat", target_mode="static")
+    spectral_snr = np.full_like(freqs, 24.0)
+    spectral_snr[(freqs >= 4500.0) & (freqs <= 8000.0)] = 0.0
+
+    eq = calculate_eq_bands(
+        freqs,
+        measured_db,
+        target_db,
+        spectral_repeatability=np.ones_like(freqs),
+        spectral_snr_db=spectral_snr,
+        noise_reference_source="explicit_capture",
+        analysis_confidence=0.95,
+    )
+    centers = np.asarray(eq["band_freqs"], dtype=float)
+    gains = np.asarray(eq["band_gains"], dtype=float)
+    high_band = int(np.argmin(np.abs(centers - 6000.0)))
+
+    assert eq["snr_reference_available"] is True
+    assert eq["noise_reference_source"] == "explicit_capture"
+    assert gains[high_band] <= 1.5
+
+
+def test_16b_low_quality_capture_abstains_instead_of_applying_eq():
+    freqs = _default_freqs()
+    measured_db = generate_test_spectrum(freqs, "harsh")
+    target_db = get_target_curve(freqs, "flat", target_mode="static")
+
+    eq = calculate_eq_bands(
+        freqs,
+        measured_db,
+        target_db,
+        spectral_repeatability=np.full_like(freqs, 0.05),
+        spectral_snr_db=np.full_like(freqs, -2.0),
+        noise_reference_source="explicit_capture",
+        voiced_window_ratio=0.08,
+        analysis_confidence=0.15,
+    )
+
+    assert eq["recommendation_status"] == "abstain"
+    assert eq["apply_recommended"] is False
+    assert eq["abstention_reasons"]
+    assert np.allclose(eq["band_gains"], 0.0)
+    assert max(eq["band_confidences"]) < 0.75
 
 
 def test_17_dynamic_center_tracks_non_default_problem_frequency():
@@ -384,6 +481,14 @@ def test_18b_target_modes_are_explicit_and_bounded():
     assert np.allclose(static_target, catalog_target)
     assert np.max(np.abs(adaptive_target - static_target)) <= 2.0 + 1e-9
     assert np.max(np.abs(adaptive_target - static_target)) > 0.25
+
+
+def test_18c_broadcast_target_is_labelled_as_a_house_style_not_a_standard():
+    broadcast = config.TARGET_CURVES["broadcast"]
+
+    assert broadcast.name == "Broadcast-style Voice"
+    assert "house curve" in broadcast.description.lower()
+    assert "compliant" not in broadcast.description.lower()
 
 
 def test_19_diagnostics_and_validation_are_present_and_valid():

@@ -42,6 +42,9 @@ class VoiceSpectrumResult:
     outlier_rejection_ratio: float = 0.0
     vad_probability_used: bool = False
     vad_active_window_ratio: float = 0.0
+    spectral_snr_db: np.ndarray | None = None
+    noise_spectrum_db: np.ndarray | None = None
+    noise_reference_source: str = "unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +145,8 @@ def compute_voice_spectrum(audio, fs=48000, nperseg=4096):
         fs=fs,
         window="hamming",
         nperseg=nperseg,
-        noverlap=nperseg // 2  # 50% overlap
+        noverlap=nperseg // 2,  # 50% overlap
+        detrend="constant",
     )
 
     # Convert power spectral density to dB
@@ -279,6 +283,8 @@ def _robust_median_spectrum(
 
 
 def _window_spectrum_db(frame: np.ndarray, fs: int) -> tuple[np.ndarray, np.ndarray]:
+    frame = np.asarray(frame, dtype=float)
+    frame = frame - float(np.mean(frame))
     window = np.hamming(frame.size)
     windowed = frame * window
     psd = np.square(np.abs(np.fft.rfft(windowed))) / max(float(np.sum(window * window)), 1e-12)
@@ -286,14 +292,69 @@ def _window_spectrum_db(frame: np.ndarray, fs: int) -> tuple[np.ndarray, np.ndar
     return freqs, 10.0 * np.log10(psd + 1e-12)
 
 
-def _estimate_snr_from_spectrum(freqs: np.ndarray, spectrum_db: np.ndarray) -> float:
-    voice_mask = (freqs >= 80.0) & (freqs <= 8000.0)
-    spec = spectrum_db[voice_mask] if np.any(voice_mask) else spectrum_db
-    if spec.size == 0:
+def _median_frame_spectrum_db(
+    frames: np.ndarray,
+    fs: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    if frames.ndim != 2 or frames.shape[0] == 0:
+        return None
+    spectra: list[np.ndarray] = []
+    freqs: np.ndarray | None = None
+    for frame in frames:
+        local_freqs, spectrum_db = _window_spectrum_db(frame, fs)
+        if freqs is None:
+            freqs = local_freqs
+        spectra.append(spectrum_db)
+    assert freqs is not None
+    return freqs, np.median(np.asarray(spectra, dtype=float), axis=0)
+
+
+def _audio_reference_spectrum_db(
+    audio: np.ndarray,
+    fs: int,
+    nperseg: int,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    signal_arr = np.asarray(audio, dtype=float).reshape(-1)
+    if signal_arr.size < nperseg:
+        return None
+    hop = max(1, nperseg // 2)
+    frames = np.lib.stride_tricks.sliding_window_view(signal_arr, nperseg)[::hop]
+    return _median_frame_spectrum_db(frames, fs)
+
+
+def _spectral_snr_db(
+    speech_spectrum_db: np.ndarray,
+    noise_spectrum_db: np.ndarray,
+) -> np.ndarray:
+    """Return per-bin signal-to-noise ratio from matched total/noise spectra."""
+    total_power = np.power(10.0, np.asarray(speech_spectrum_db, dtype=float) / 10.0)
+    noise_power = np.power(10.0, np.asarray(noise_spectrum_db, dtype=float) / 10.0)
+    noise_power = np.maximum(noise_power, 1e-18)
+    signal_power = np.maximum(total_power - noise_power, noise_power * 1e-6)
+    return 10.0 * np.log10(signal_power / noise_power)
+
+
+def _estimate_snr_from_spectrum(
+    freqs: np.ndarray,
+    spectrum_db: np.ndarray,
+    noise_spectrum_db: np.ndarray | None = None,
+) -> float:
+    """Return integrated voice-band SNR when a matched noise reference exists."""
+    if noise_spectrum_db is None:
         return 0.0
-    signal_db = float(np.percentile(spec, 80.0))
-    floor_db = float(np.percentile(spec, 20.0))
-    return signal_db - floor_db
+    voice_mask = (freqs >= 80.0) & (freqs <= 8000.0)
+    if not np.any(voice_mask):
+        voice_mask = np.ones_like(freqs, dtype=bool)
+    if not np.any(voice_mask):
+        return 0.0
+    total_power = np.power(10.0, np.asarray(spectrum_db, dtype=float)[voice_mask] / 10.0)
+    noise_power = np.power(
+        10.0,
+        np.asarray(noise_spectrum_db, dtype=float)[voice_mask] / 10.0,
+    )
+    noise_sum = max(float(np.sum(noise_power)), 1e-18)
+    signal_sum = max(float(np.sum(total_power - noise_power)), noise_sum * 1e-6)
+    return float(10.0 * np.log10(signal_sum / noise_sum))
 
 
 def _estimate_tilt_db_per_octave(freqs: np.ndarray, spectrum_db: np.ndarray) -> float:
@@ -339,13 +400,16 @@ def analyze_voice_spectrum(
     nperseg=4096,
     *,
     vad_probabilities: np.ndarray | None = None,
+    noise_audio: np.ndarray | None = None,
 ) -> VoiceSpectrumResult:
     """Analyze speech windows and return a robust repeatability-aware spectrum.
 
     ``vad_probabilities`` contains one posterior per Silero model window. When
     supplied, the energy mask and neural posterior are fused at analysis-frame
-    centres; the spectral aggregate then rejects isolated mouth/noise shape
-    outliers before Auto-EQ sees the measurement.
+    centres. ``noise_audio`` is an optional room-noise capture used as the
+    authoritative frequency-dependent SNR reference. Without it, sufficiently
+    quiet non-speech frames from this capture are used; otherwise SNR remains
+    explicitly unavailable.
     """
     if len(audio) < nperseg:
         raise ValueError(
@@ -379,16 +443,70 @@ def analyze_voice_spectrum(
         else 0.0
     )
     vad_used = frame_vad_probabilities is not None
+    speech_reference = _median_frame_spectrum_db(voiced_frames, fs)
+    noise_reference: tuple[np.ndarray, np.ndarray] | None = None
+    noise_reference_source = "unavailable"
+    if noise_audio is not None:
+        noise_reference = _audio_reference_spectrum_db(
+            np.asarray(noise_audio, dtype=float),
+            fs,
+            nperseg,
+        )
+        if noise_reference is not None:
+            noise_reference_source = "explicit_capture"
+    if noise_reference is None:
+        unvoiced_frames = frames[~voiced_mask]
+        if unvoiced_frames.shape[0] >= MIN_VOICED_FRAMES and voiced_frames.shape[0] > 0:
+            voiced_level = float(np.median(frame_rms[voiced_mask]))
+            unvoiced_level = float(np.median(frame_rms[~voiced_mask]))
+            if voiced_level - unvoiced_level >= 3.0:
+                noise_reference = _median_frame_spectrum_db(unvoiced_frames, fs)
+                if noise_reference is not None:
+                    noise_reference_source = "in_capture_non_speech"
+
+    noise_spectrum_db: np.ndarray | None = None
+    spectral_snr_db: np.ndarray | None = None
+    reference_speech_db: np.ndarray | None = None
+    reference_freqs: np.ndarray | None = None
+    if speech_reference is not None:
+        reference_freqs, reference_speech_db = speech_reference
+    if noise_reference is not None and reference_freqs is not None and reference_speech_db is not None:
+        noise_freqs, raw_noise_spectrum = noise_reference
+        noise_spectrum_db = np.interp(
+            reference_freqs,
+            noise_freqs,
+            raw_noise_spectrum,
+            left=float(raw_noise_spectrum[0]),
+            right=float(raw_noise_spectrum[-1]),
+        )
+        spectral_snr_db = _spectral_snr_db(reference_speech_db, noise_spectrum_db)
 
     if voiced_frames.shape[0] < MIN_VOICED_FRAMES or voiced_ratio < MIN_VOICED_FRAME_RATIO:
         freqs, spectrum_db = compute_voice_spectrum(audio_arr, fs, nperseg)
+        aligned_noise_spectrum: np.ndarray | None = None
+        aligned_spectral_snr: np.ndarray | None = None
+        if (
+            reference_freqs is not None
+            and reference_speech_db is not None
+            and noise_spectrum_db is not None
+        ):
+            aligned_noise_spectrum = np.interp(freqs, reference_freqs, noise_spectrum_db)
+            aligned_speech_spectrum = np.interp(freqs, reference_freqs, reference_speech_db)
+            aligned_spectral_snr = _spectral_snr_db(
+                aligned_speech_spectrum,
+                aligned_noise_spectrum,
+            )
         repeatability = np.full_like(freqs, 0.45, dtype=float)
         return VoiceSpectrumResult(
             freqs=freqs,
             median_spectrum_db=spectrum_db,
             window_spectra_db=np.asarray([spectrum_db], dtype=float),
             voiced_window_ratio=max(voiced_ratio, 1.0 / max(1, frames.shape[0])),
-            snr_db=_estimate_snr_from_spectrum(freqs, spectrum_db),
+            snr_db=_estimate_snr_from_spectrum(
+                freqs,
+                spectrum_db,
+                aligned_noise_spectrum,
+            ),
             spectral_repeatability=repeatability,
             spectral_tilt_db_per_octave=_estimate_tilt_db_per_octave(freqs, spectrum_db),
             residual_confidence=0.45,
@@ -397,6 +515,9 @@ def analyze_voice_spectrum(
             outlier_rejection_ratio=0.0,
             vad_probability_used=vad_used,
             vad_active_window_ratio=vad_active_ratio,
+            spectral_snr_db=aligned_spectral_snr,
+            noise_spectrum_db=aligned_noise_spectrum,
+            noise_reference_source=noise_reference_source,
         )
 
     spectra = []
@@ -411,8 +532,15 @@ def analyze_voice_spectrum(
     spectra_arr = np.asarray(spectra, dtype=float)
     repeatability, smoothed_spectra = _shape_repeatability(freqs, spectra_arr)
     median_spectrum, inlier_ratio = _robust_median_spectrum(freqs, smoothed_spectra)
-    snr_db = _estimate_snr_from_spectrum(freqs, median_spectrum)
-    snr_confidence = np.clip((snr_db - 3.0) / 18.0, 0.0, 1.0)
+    if noise_spectrum_db is not None and reference_freqs is not None:
+        noise_spectrum_db = np.interp(freqs, reference_freqs, noise_spectrum_db)
+        spectral_snr_db = _spectral_snr_db(median_spectrum, noise_spectrum_db)
+    snr_db = _estimate_snr_from_spectrum(freqs, median_spectrum, noise_spectrum_db)
+    snr_confidence = (
+        float(np.clip((snr_db - 3.0) / 15.0, 0.0, 1.0))
+        if noise_spectrum_db is not None
+        else 0.25
+    )
     voice_mask = (freqs >= 100.0) & (freqs <= 8000.0)
     repeatability_score = (
         float(np.median(repeatability[voice_mask]))
@@ -433,6 +561,8 @@ def analyze_voice_spectrum(
     residual_confidence = float(
         np.clip(residual_confidence * (0.75 + 0.25 * measurement_coverage), 0.0, 1.0)
     )
+    if noise_spectrum_db is None:
+        residual_confidence = min(residual_confidence, 0.70)
 
     return VoiceSpectrumResult(
         freqs=freqs,
@@ -448,6 +578,9 @@ def analyze_voice_spectrum(
         outlier_rejection_ratio=1.0 - inlier_ratio,
         vad_probability_used=vad_used,
         vad_active_window_ratio=vad_active_ratio,
+        spectral_snr_db=spectral_snr_db,
+        noise_spectrum_db=noise_spectrum_db,
+        noise_reference_source=noise_reference_source,
     )
 
 
@@ -547,10 +680,10 @@ def evaluate_spectrum_estimators(
 
 def get_octave_frequencies(fraction=6, limits=(20, 20000), ref_freq=1000.0):
     """
-    Calculate IEC 61260-1 compliant center frequencies.
+    Calculate fractional-octave centers using IEC 61260-1 spacing equations.
 
-    Implements international standard for fractional octave band filters.
-    Uses base-10 octave ratio (G = 10^0.3) per IEC specification.
+    This helper calculates nominal centers and edges only. It does not implement
+    or claim conformance for an IEC filter bank.
 
     Args:
         fraction: Octave fraction (6 = 1/6 octave, 3 = 1/3 octave)
@@ -603,8 +736,9 @@ def smooth_spectrum_octave(freqs, spectrum_db, fraction=6):
     Apply fractional octave smoothing to spectrum.
 
     Reduces spectral variance while preserving formant detail by
-    averaging energy within each fractional octave band. Uses
-    IEC 61260-1 compliant band calculation.
+    averaging energy within fractional-octave bands whose center and edge
+    spacing follows the IEC 61260-1 equations. This is offline smoothing, not a
+    certified IEC filter-bank implementation.
 
     Args:
         freqs: Frequency array from FFT (linear spacing, Hz)

@@ -104,8 +104,8 @@ def build_target_curves(target_curve_cls: type) -> dict[str, Any]:
     """Build Auto-EQ target curve catalog using the public TargetCurve dataclass."""
     return {
         'broadcast': target_curve_cls(
-            name="Broadcast Standard",
-            description="ITU-R BS.1770 compliant - professional broadcast voice",
+            name="Broadcast-style Voice",
+            description="Audio Forge house curve for clear, balanced broadcast-style speech",
             band_targets=[-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 2.0, 1.0, 0.0, -1.0]
         ),
         'podcast': target_curve_cls(
@@ -119,8 +119,8 @@ def build_target_curves(target_curve_cls: type) -> dict[str, Any]:
             band_targets=[-1.0, 0.0, 1.0, 2.0, 4.0, 5.0, 4.0, 2.0, 0.0, -2.0]
         ),
         'flat': target_curve_cls(
-            name="Flat Response",
-            description="No frequency correction - measure mic as-is",
+            name="Neutral Reference",
+            description="Neutral house target for broad microphone-response correction",
             band_targets=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         ),
     }

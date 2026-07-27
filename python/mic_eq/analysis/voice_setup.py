@@ -1,8 +1,9 @@
 """Uncertainty-aware Auto Voice Setup analysis and native-chain validation.
 
-Recommendations use energy-VAD-masked speech, BS.1770 K-weighted short-term
-loudness, loudness range, and robust band-energy summaries. Candidate settings
-are checked through the offline DSP simulator before the UI offers to apply them.
+Recommendations use energy-VAD-masked speech, BS.1770 K-weighted momentary and
+three-second short-term loudness, active loudness spread, and robust band-energy
+summaries. Candidate settings are checked through the offline DSP simulator
+before the UI offers to apply them.
 """
 
 from __future__ import annotations
@@ -42,6 +43,22 @@ TARGET_LUFS_BY_CURVE = {
 
 def _clamp(value: float, low: float, high: float) -> float:
     return float(max(low, min(high, value)))
+
+
+def _bounded_quality_score(
+    components: list[tuple[float, float]],
+) -> float:
+    """Combine bounded quality evidence without letting one metric dominate."""
+    if not components:
+        return 0.0
+    values = np.asarray([np.clip(value, 0.0, 1.0) for value, _weight in components])
+    weights = np.asarray([max(0.0, weight) for _value, weight in components])
+    if float(np.sum(weights)) <= 0.0:
+        return 0.0
+    weights /= float(np.sum(weights))
+    # A weighted geometric mean makes a genuinely weak prerequisite visible,
+    # unlike an arithmetic score that can hide it behind unrelated strengths.
+    return float(np.exp(np.sum(weights * np.log(np.maximum(values, 0.03)))))
 
 
 def _rms_db(audio: np.ndarray) -> float:
@@ -85,11 +102,30 @@ def _k_weighted_48k(audio: np.ndarray, sample_rate: int) -> np.ndarray:
     )
 
 
+def _active_loudness_windows(
+    weighted: np.ndarray,
+    active_mask: np.ndarray,
+    *,
+    window_samples: int,
+    hop_samples: int,
+) -> np.ndarray:
+    values: list[float] = []
+    if weighted.size >= window_samples:
+        for start in range(0, weighted.size - window_samples + 1, hop_samples):
+            stop = start + window_samples
+            if float(np.mean(active_mask[start:stop])) < 0.55:
+                continue
+            mean_square = float(np.mean(np.square(weighted[start:stop])))
+            values.append(float(-0.691 + 10.0 * np.log10(mean_square + 1e-12)))
+    return np.asarray(values, dtype=float)
+
+
 def _vad_masked_speech_features(
     speech: np.ndarray,
     sample_rate: int,
     noise_rms_db: float,
     vad_probabilities: np.ndarray | None = None,
+    noise_audio: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Extract posterior/energy-masked loudness, range, and band features."""
     signal = np.asarray(speech, dtype=np.float64)
@@ -151,31 +187,46 @@ def _vad_masked_speech_features(
         weighted_mask = np.pad(weighted_mask, (0, weighted.size - weighted_mask.size))
     elif weighted_mask.size > weighted.size:
         weighted_mask = weighted_mask[: weighted.size]
-    short_size = int(0.400 * 48_000)
-    short_hop = int(0.100 * 48_000)
-    loudness_values: list[float] = []
-    if weighted.size >= short_size:
-        for start in range(0, weighted.size - short_size + 1, short_hop):
-            stop = start + short_size
-            if float(np.mean(weighted_mask[start:stop])) < 0.55:
-                continue
-            mean_square = float(np.mean(np.square(weighted[start:stop])))
-            loudness_values.append(float(-0.691 + 10.0 * np.log10(mean_square + 1e-12)))
-    if not loudness_values:
+    momentary_loudness = _active_loudness_windows(
+        weighted,
+        weighted_mask,
+        window_samples=int(0.400 * 48_000),
+        hop_samples=int(0.100 * 48_000),
+    )
+    short_term_loudness = _active_loudness_windows(
+        weighted,
+        weighted_mask,
+        window_samples=int(3.000 * 48_000),
+        hop_samples=int(1.000 * 48_000),
+    )
+    if momentary_loudness.size == 0:
         active_weighted = weighted[weighted_mask]
         mean_square = float(np.mean(np.square(active_weighted))) if active_weighted.size else 0.0
-        loudness_values = [float(-0.691 + 10.0 * np.log10(mean_square + 1e-12))]
-    loudness = np.asarray(loudness_values, dtype=float)
-    short_term_lufs = float(np.median(loudness))
-    loudness_range_db = (
-        float(np.percentile(loudness, 95.0) - np.percentile(loudness, 10.0))
-        if loudness.size >= 4
+        momentary_loudness = np.asarray(
+            [float(-0.691 + 10.0 * np.log10(mean_square + 1e-12))],
+            dtype=float,
+        )
+    if short_term_loudness.size == 0:
+        short_term_loudness = momentary_loudness
+    momentary_lufs = float(np.median(momentary_loudness))
+    short_term_lufs = float(np.median(short_term_loudness))
+    active_loudness_spread_db = (
+        float(
+            np.percentile(momentary_loudness, 95.0)
+            - np.percentile(momentary_loudness, 10.0)
+        )
+        if momentary_loudness.size >= 4
         else 0.0
     )
 
     window = np.hanning(frame_size)
     frequencies = np.fft.rfftfreq(frame_size, 1.0 / sample_rate)
-    active_indices = np.flatnonzero(active_frames)
+    # Silero correctly treats many sibilants as unvoiced and can assign them a
+    # low speech posterior. Keep energy-supported unvoiced frames in the
+    # spectral/de-esser analysis while retaining the stricter posterior mask
+    # for loudness and speech-duration measurements.
+    spectral_active_frames = active_frames | energy_active_frames
+    active_indices = np.flatnonzero(spectral_active_frames)
     band_ranges = {
         "low": (80.0, 250.0),
         "body": (250.0, 2000.0),
@@ -183,8 +234,11 @@ def _vad_masked_speech_features(
         "sibilance": (5000.0, min(10_000.0, sample_rate * 0.45)),
     }
     band_rows: dict[str, list[float]] = {name: [] for name in band_ranges}
+    active_power_rows: list[np.ndarray] = []
     for frame_index in active_indices:
-        power = np.square(np.abs(np.fft.rfft(frames[frame_index] * window))) + 1e-18
+        frame = frames[frame_index] - float(np.mean(frames[frame_index]))
+        power = np.square(np.abs(np.fft.rfft(frame * window))) + 1e-18
+        active_power_rows.append(power)
         for name, (low_hz, high_hz) in band_ranges.items():
             mask = (frequencies >= low_hz) & (frequencies <= high_hz)
             band_rows[name].append(float(10.0 * np.log10(np.sum(power[mask]) + 1e-18)))
@@ -192,6 +246,111 @@ def _vad_masked_speech_features(
         name: float(np.median(values)) if values else -120.0
         for name, values in band_rows.items()
     }
+
+    deesser_evidence: dict[str, float | bool] = {
+        "available": False,
+        "confidence": 0.0,
+        "excess_p90_db": -120.0,
+        "temporal_contrast_db": 0.0,
+        "candidate_frame_ratio": 0.0,
+        "candidate_snr_db": 0.0,
+        "peak_hz": 6500.0,
+    }
+    if active_power_rows:
+        active_power = np.asarray(active_power_rows, dtype=float)
+        voice_reference_mask = (frequencies >= 250.0) & (frequencies <= 4500.0)
+        sibilance_mask = (frequencies >= 5000.0) & (
+            frequencies <= min(9500.0, sample_rate * 0.45)
+        )
+        if np.any(voice_reference_mask) and np.any(sibilance_mask):
+            voice_reference_rows = 10.0 * np.log10(
+                np.sum(active_power[:, voice_reference_mask], axis=1) + 1e-18
+            )
+            sibilance_rows = 10.0 * np.log10(
+                np.sum(active_power[:, sibilance_mask], axis=1) + 1e-18
+            )
+            excess_rows = sibilance_rows - voice_reference_rows
+            noise_sibilance_db = float(np.percentile(sibilance_rows, 10.0))
+            noise_arr = (
+                np.asarray(noise_audio, dtype=float).reshape(-1)
+                if noise_audio is not None
+                else np.empty(0, dtype=float)
+            )
+            if noise_arr.size >= frame_size:
+                noise_frames = np.lib.stride_tricks.sliding_window_view(
+                    noise_arr,
+                    frame_size,
+                )[::hop_size]
+                noise_band_levels: list[float] = []
+                for noise_frame in noise_frames:
+                    centered = noise_frame - float(np.mean(noise_frame))
+                    noise_power = (
+                        np.square(np.abs(np.fft.rfft(centered * window))) + 1e-18
+                    )
+                    noise_band_levels.append(
+                        float(
+                            10.0
+                            * np.log10(np.sum(noise_power[sibilance_mask]) + 1e-18)
+                        )
+                    )
+                if noise_band_levels:
+                    noise_sibilance_db = float(np.median(noise_band_levels))
+
+            sibilance_snr_rows = sibilance_rows - noise_sibilance_db
+            excess_median = float(np.median(excess_rows))
+            excess_p90 = float(np.percentile(excess_rows, 90.0))
+            temporal_contrast = max(0.0, excess_p90 - excess_median)
+            candidate_threshold = max(1.0, excess_median + 1.25)
+            candidate_mask = (
+                (excess_rows >= candidate_threshold)
+                & (sibilance_snr_rows >= 6.0)
+            )
+            candidate_ratio = float(np.mean(candidate_mask))
+            candidate_snr = (
+                float(np.median(sibilance_snr_rows[candidate_mask]))
+                if np.any(candidate_mask)
+                else float(np.percentile(sibilance_snr_rows, 75.0))
+            )
+            peak_hz = 6500.0
+            if np.any(candidate_mask):
+                candidate_spectrum = np.median(active_power[candidate_mask], axis=0)
+                local_freqs = frequencies[sibilance_mask]
+                peak_hz = float(
+                    local_freqs[
+                        int(np.argmax(candidate_spectrum[sibilance_mask]))
+                    ]
+                )
+
+            strength_score = _clamp((excess_p90 - 0.75) / 4.0, 0.0, 1.0)
+            temporal_score = _clamp((temporal_contrast - 0.50) / 2.5, 0.0, 1.0)
+            support_score = min(
+                _clamp(candidate_ratio / 0.06, 0.0, 1.0),
+                _clamp((0.65 - candidate_ratio) / 0.20, 0.0, 1.0),
+            )
+            snr_score = _clamp((candidate_snr - 4.0) / 12.0, 0.0, 1.0)
+            evidence_confidence = _bounded_quality_score(
+                [
+                    (strength_score, 0.35),
+                    (temporal_score, 0.25),
+                    (support_score, 0.20),
+                    (snr_score, 0.20),
+                ]
+            )
+            if (
+                temporal_contrast < 1.50
+                or candidate_ratio < 0.03
+                or candidate_ratio > 0.65
+            ):
+                evidence_confidence *= 0.25
+            deesser_evidence = {
+                "available": True,
+                "confidence": float(np.clip(evidence_confidence, 0.0, 1.0)),
+                "excess_p90_db": excess_p90,
+                "temporal_contrast_db": temporal_contrast,
+                "candidate_frame_ratio": candidate_ratio,
+                "candidate_snr_db": candidate_snr,
+                "peak_hz": peak_hz,
+            }
 
     return {
         "frame_db": frame_db,
@@ -205,10 +364,16 @@ def _vad_masked_speech_features(
             else 0.0
         ),
         "short_term_lufs": short_term_lufs,
-        "loudness_range_db": loudness_range_db,
-        "loudness_window_count": int(loudness.size),
+        "short_term_window_count": int(short_term_loudness.size),
+        "momentary_lufs": momentary_lufs,
+        "active_loudness_spread_db": active_loudness_spread_db,
+        # Compatibility key retained for persisted/UI consumers. The value is
+        # an active 400 ms loudness spread, not standards-defined EBU LRA.
+        "loudness_range_db": active_loudness_spread_db,
+        "loudness_window_count": int(momentary_loudness.size),
         "band_energy_db": robust_bands,
         "sibilance_excess_db": robust_bands["sibilance"] - robust_bands["presence"],
+        "deesser_frame_evidence": deesser_evidence,
     }
 
 
@@ -259,6 +424,7 @@ def _recommend_deesser_settings(
     spectrum_db: np.ndarray,
     capture_confidence: float,
     robust_sibilance_excess_db: float | None = None,
+    frame_evidence: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, float | bool]]:
     presence_db = _band_mean(freqs, spectrum_db, 2500.0, 4500.0)
     sibilance_db = _band_mean(freqs, spectrum_db, 5000.0, 9000.0)
@@ -268,21 +434,38 @@ def _recommend_deesser_settings(
         sib_spec = spectrum_db[sib_mask]
         peak_index = int(np.argmax(sib_spec))
         peak_hz = float(sib_freqs[peak_index])
-        sibilance_peak_db = float(sib_spec[peak_index])
     else:
         peak_hz = 6500.0
-        sibilance_peak_db = sibilance_db
 
     spectral_excess_db = sibilance_db - presence_db
-    sibilance_excess_db = (
+    aggregate_excess_db = (
         spectral_excess_db
         if robust_sibilance_excess_db is None
         else float(0.35 * spectral_excess_db + 0.65 * robust_sibilance_excess_db)
     )
-    peak_prominence_db = sibilance_peak_db - sibilance_db
+    frame_data = frame_evidence or {}
+    frame_available = bool(frame_data.get("available"))
+    evidence_confidence = (
+        float(frame_data.get("confidence", 0.0))
+        if frame_available
+        else 0.0
+    )
+    sibilance_excess_db = (
+        float(frame_data.get("excess_p90_db", aggregate_excess_db))
+        if frame_available
+        else aggregate_excess_db
+    )
+    if frame_available:
+        peak_hz = float(frame_data.get("peak_hz", peak_hz))
     enabled = bool(
         capture_confidence >= 0.40
-        and (sibilance_excess_db >= 1.5 or peak_prominence_db >= 2.5)
+        and frame_available
+        and evidence_confidence >= 0.48
+        and sibilance_excess_db >= 1.0
+        and float(frame_data.get("temporal_contrast_db", 0.0)) >= 1.50
+        and 0.03
+        <= float(frame_data.get("candidate_frame_ratio", 0.0))
+        <= 0.65
     )
     auto_amount = _clamp((sibilance_excess_db + 1.5) / 8.0, 0.25, 0.85)
     low_cut_hz = _clamp(peak_hz - 1700.0, 3500.0, 7000.0)
@@ -306,6 +489,17 @@ def _recommend_deesser_settings(
         "enabled": enabled,
         "sibilance_excess_db": float(sibilance_excess_db),
         "peak_hz": peak_hz,
+        "frame_evidence_available": frame_available,
+        "frame_evidence_confidence": evidence_confidence,
+        "temporal_contrast_db": float(
+            frame_data.get("temporal_contrast_db", 0.0)
+        ),
+        "candidate_frame_ratio": float(
+            frame_data.get("candidate_frame_ratio", 0.0)
+        ),
+        "candidate_snr_db": float(
+            frame_data.get("candidate_snr_db", 0.0)
+        ),
     }
     return settings, diagnostics
 
@@ -320,7 +514,7 @@ def _recommend_compressor_settings(
     capture_confidence: float,
 ) -> tuple[dict[str, Any], dict[str, float | bool]]:
     target_lufs = TARGET_LUFS_BY_CURVE.get(target_preset, -18.0)
-    threshold_db = _clamp(speech_body_db - 5.5, -30.0, -14.0)
+    threshold_db = _clamp(speech_body_db - 5.5, -48.0, -14.0)
     ratio = _clamp(2.2 + loudness_range_db / 5.0, 2.2, 4.5)
     attack_ms = _clamp(11.0 - loudness_range_db / 2.5, 4.0, 12.0)
     release_ms = _clamp(135.0 + loudness_range_db * 11.0, 120.0, 260.0)
@@ -341,6 +535,7 @@ def _recommend_compressor_settings(
         "base_release_ms": base_release_ms,
         "auto_makeup_enabled": auto_makeup_enabled,
         "target_lufs": target_lufs,
+        "sidechain_highpass_enabled": True,
         "measured_short_term_lufs": speech_loudness_lufs,
         "measured_loudness_range_db": loudness_range_db,
     }
@@ -349,6 +544,82 @@ def _recommend_compressor_settings(
         "target_lufs": target_lufs,
     }
     return settings, diagnostics
+
+
+def _calibrate_compressor_threshold(
+    *,
+    speech_audio: np.ndarray,
+    sample_rate: int,
+    eq_settings: dict[str, Any],
+    deesser_settings: dict[str, Any],
+    compressor_settings: dict[str, Any],
+    active_loudness_spread_db: float,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Match peak compressor reduction against the authoritative Rust chain."""
+    calibrated = dict(compressor_settings)
+    target_reduction_db = _clamp(
+        1.5 + 0.35 * active_loudness_spread_db,
+        1.5,
+        4.5,
+    )
+    diagnostics: dict[str, Any] = {
+        "backend": "unavailable",
+        "target_gain_reduction_db": target_reduction_db,
+        "measured_gain_reduction_db": 0.0,
+        "iterations": 0,
+    }
+    lower_threshold = -55.0
+    upper_threshold = -6.0
+    best_threshold = float(calibrated["threshold_db"])
+    best_reduction = 0.0
+    best_error = float("inf")
+
+    for iteration in range(7):
+        threshold = (
+            best_threshold
+            if iteration == 0
+            else 0.5 * (lower_threshold + upper_threshold)
+        )
+        candidate = dict(calibrated)
+        candidate["threshold_db"] = threshold
+        simulation = simulate_candidate_chain(
+            speech_audio.astype(np.float32, copy=False),
+            sample_rate,
+            eq_settings,
+            {
+                "deesser": deesser_settings,
+                "compressor": candidate,
+                "limiter": {
+                    "enabled": False,
+                    "careful_output_enabled": False,
+                },
+            },
+        )
+        if simulation.get("simulation_backend") != "rust":
+            return calibrated, diagnostics
+        reduction = float(simulation.get("compressor_gain_reduction_db", 0.0))
+        if not np.isfinite(reduction):
+            return calibrated, diagnostics
+        error = abs(reduction - target_reduction_db)
+        if error < best_error:
+            best_error = error
+            best_threshold = threshold
+            best_reduction = reduction
+        if reduction > target_reduction_db:
+            lower_threshold = threshold
+        else:
+            upper_threshold = threshold
+        diagnostics["iterations"] = iteration + 1
+
+    calibrated["threshold_db"] = _clamp(best_threshold, -55.0, -6.0)
+    diagnostics.update(
+        {
+            "backend": "rust",
+            "measured_gain_reduction_db": best_reduction,
+            "threshold_db": calibrated["threshold_db"],
+        }
+    )
+    return calibrated, diagnostics
 
 
 def analyze_voice_setup(
@@ -384,6 +655,7 @@ def analyze_voice_setup(
         sample_rate,
         noise_rms_db,
         vad_probabilities=vad_probabilities,
+        noise_audio=noise_arr,
     )
     frame_rms = np.asarray(features["frame_db"], dtype=float)
     active_frames = frame_rms[np.asarray(features["active_frame_mask"], dtype=bool)]
@@ -401,25 +673,31 @@ def analyze_voice_setup(
         speech_arr,
         sample_rate,
         vad_probabilities=vad_probabilities,
+        noise_audio=noise_arr,
     )
     smoothed_spectrum = smooth_spectrum_perceptual(
         spectrum_result.freqs,
         spectrum_result.median_spectrum_db,
     )
     spectral_confidence = float(spectrum_result.residual_confidence)
-    snr_confidence = _clamp((speech_snr_db - 6.0) / 12.0, 0.0, 1.0)
+    noise_referenced_snr_db = float(spectrum_result.snr_db)
+    snr_confidence = _clamp((noise_referenced_snr_db - 6.0) / 12.0, 0.0, 1.0)
     active_duration_confidence = _clamp(float(features["active_duration_s"]) / 3.0, 0.0, 1.0)
     loudness_confidence = _clamp(float(features["loudness_window_count"]) / 8.0, 0.0, 1.0)
-    capture_confidence = float(
-        np.clip(
-            0.45 * spectral_confidence
-            + 0.25 * snr_confidence
-            + 0.20 * active_duration_confidence
-            + 0.10 * loudness_confidence,
-            0.0,
-            1.0,
-        )
+    capture_confidence = _bounded_quality_score(
+        [
+            (spectral_confidence, 0.40),
+            (snr_confidence, 0.30),
+            (active_duration_confidence, 0.20),
+            (loudness_confidence, 0.10),
+        ]
     )
+    if noise_referenced_snr_db < 6.0:
+        capture_confidence = min(capture_confidence, 0.40)
+    if float(features["active_duration_s"]) < 2.0:
+        capture_confidence = min(capture_confidence, 0.45)
+    if spectrum_result.used_single_spectrum_fallback:
+        capture_confidence = min(capture_confidence, 0.40)
 
     gate_settings = _recommend_gate_settings(
         vad_available=vad_available,
@@ -434,6 +712,7 @@ def analyze_voice_setup(
         spectrum_db=smoothed_spectrum,
         capture_confidence=capture_confidence,
         robust_sibilance_excess_db=float(features["sibilance_excess_db"]),
+        frame_evidence=features["deesser_frame_evidence"],
     )
     compressor_settings, compressor_diag = _recommend_compressor_settings(
         target_preset=target_preset,
@@ -452,33 +731,50 @@ def analyze_voice_setup(
             sample_rate,
             target_preset,
             vad_probabilities=vad_probabilities,
+            noise_audio=noise_arr,
         )
     except Exception as exc:  # pragma: no cover - exercised through return shape
         eq_error = str(exc)
+
+    compressor_calibration: dict[str, Any] = {
+        "backend": "unavailable",
+        "target_gain_reduction_db": 0.0,
+        "measured_gain_reduction_db": 0.0,
+        "iterations": 0,
+    }
+    if eq_settings is not None:
+        compressor_settings, compressor_calibration = (
+            _calibrate_compressor_threshold(
+                speech_audio=speech_arr,
+                sample_rate=sample_rate,
+                eq_settings=eq_settings,
+                deesser_settings=deesser_settings,
+                compressor_settings=compressor_settings,
+                active_loudness_spread_db=float(
+                    features["active_loudness_spread_db"]
+                ),
+            )
+        )
 
     dynamics_confidence = _clamp(speech_dynamic_range_db / 8.0, 0.0, 1.0)
     quiet_room_confidence = _clamp((-32.0 - noise_rms_db) / 18.0, 0.0, 1.0)
     eq_confidence = float(eq_settings.get("analysis_confidence", capture_confidence)) if eq_settings else capture_confidence
     gate_confidence = float(np.clip(0.55 * capture_confidence + 0.45 * snr_confidence, 0.0, 1.0))
-    deesser_confidence = float(
-        np.clip(
-            0.60 * capture_confidence
-            + 0.40 * (0.8 if not deesser_diag["enabled"] else _clamp((deesser_diag["sibilance_excess_db"] + 1.0) / 5.0, 0.25, 1.0)),
-            0.0,
-            1.0,
-        )
+    deesser_confidence = _bounded_quality_score(
+        [
+            (capture_confidence, 0.55),
+            (float(deesser_diag["frame_evidence_confidence"]), 0.45),
+        ]
     )
     compressor_confidence = float(np.clip(0.55 * capture_confidence + 0.45 * dynamics_confidence, 0.0, 1.0))
-    setup_confidence = float(
-        np.clip(
-            0.35 * eq_confidence
-            + 0.25 * gate_confidence
-            + 0.15 * deesser_confidence
-            + 0.15 * compressor_confidence
-            + 0.10 * quiet_room_confidence,
-            0.0,
-            1.0,
-        )
+    setup_confidence = _bounded_quality_score(
+        [
+            (eq_confidence, 0.35),
+            (gate_confidence, 0.25),
+            (max(deesser_confidence, 0.50) if not deesser_diag["enabled"] else deesser_confidence, 0.15),
+            (compressor_confidence, 0.15),
+            (quiet_room_confidence, 0.10),
+        ]
     )
 
     offline_validation: dict[str, Any] | None = None
@@ -520,7 +816,7 @@ def analyze_voice_setup(
     uncertainty_reasons: list[str] = []
     if float(features["active_duration_s"]) < 2.0:
         uncertainty_reasons.append("too little VAD-active speech")
-    if speech_snr_db < 8.0:
+    if noise_referenced_snr_db < 8.0:
         uncertainty_reasons.append("speech-to-noise ratio is weak")
     if capture_confidence < 0.50:
         uncertainty_reasons.append("spectral feature stability is weak")
@@ -531,10 +827,20 @@ def analyze_voice_setup(
         setup_confidence *= 0.90
     weak_capture = bool(
         float(features["active_duration_s"]) < 2.0
-        or speech_snr_db < 8.0
+        or noise_referenced_snr_db < 8.0
         or capture_confidence < 0.50
     )
-    apply_recommended = bool(not weak_capture and offline_validation_passed)
+    eq_apply_recommended = bool(
+        eq_settings is not None
+        and eq_settings.get("apply_recommended", True)
+    )
+    if not eq_apply_recommended:
+        uncertainty_reasons.append("Auto-EQ abstained from this capture")
+    apply_recommended = bool(
+        not weak_capture
+        and eq_apply_recommended
+        and offline_validation_passed
+    )
     if weak_capture:
         setup_confidence = min(setup_confidence, 0.49)
     setup_confidence = float(np.clip(setup_confidence, 0.0, 1.0))
@@ -548,6 +854,7 @@ def analyze_voice_setup(
         "diagnostics": {
             "setup_confidence": setup_confidence,
             "recommendation_uncertainty": 1.0 - setup_confidence,
+            "confidence_semantics": "bounded_quality_score",
             "uncertainty_reasons": uncertainty_reasons,
             "weak_capture": weak_capture,
             "apply_recommended": apply_recommended,
@@ -565,17 +872,37 @@ def analyze_voice_setup(
             "speech_dynamic_range_db": speech_dynamic_range_db,
             "speech_frame_dynamic_range_db": frame_dynamic_range_db,
             "speech_snr_db": speech_snr_db,
+            "noise_referenced_snr_db": noise_referenced_snr_db,
+            "noise_reference_source": spectrum_result.noise_reference_source,
             "vad_active_duration_s": features["active_duration_s"],
             "vad_active_ratio": features["active_ratio"],
             "short_term_lufs": features["short_term_lufs"],
+            "short_term_loudness_window_count": features[
+                "short_term_window_count"
+            ],
+            "momentary_lufs": features["momentary_lufs"],
+            "active_loudness_spread_db": features[
+                "active_loudness_spread_db"
+            ],
             "loudness_range_db": features["loudness_range_db"],
             "robust_band_energy_db": features["band_energy_db"],
             "gate_mode_label": GATE_MODE_LABELS[gate_settings["gate_mode"]],
             "sibilance_excess_db": deesser_diag["sibilance_excess_db"],
             "sibilance_peak_hz": deesser_diag["peak_hz"],
             "deesser_enabled": deesser_diag["enabled"],
+            "deesser_frame_evidence_confidence": deesser_diag[
+                "frame_evidence_confidence"
+            ],
+            "deesser_temporal_contrast_db": deesser_diag[
+                "temporal_contrast_db"
+            ],
+            "deesser_candidate_frame_ratio": deesser_diag[
+                "candidate_frame_ratio"
+            ],
+            "deesser_candidate_snr_db": deesser_diag["candidate_snr_db"],
             "compressor_auto_makeup_enabled": compressor_diag["auto_makeup_enabled"],
             "compressor_target_lufs": compressor_diag["target_lufs"],
+            "compressor_calibration": compressor_calibration,
             "vad_available": bool(vad_available),
             "vad_analysis_backend": vad_analysis_backend,
             "vad_probability_used": bool(features["vad_probability_used"]),

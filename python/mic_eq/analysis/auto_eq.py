@@ -19,9 +19,13 @@ from .auto_eq_parts.dynamic_bands import (
     _select_dynamic_band_layout,
     _snr_aware_gain_upper_bounds,
     _snr_weight_scale_dense,
+    _spectral_tilt_fit,
     _voice_weights,
 )
-from .auto_eq_parts.optimizer import calculate_eq_bands
+from .auto_eq_parts.optimizer import (
+    _log_frequency_gain_curvature,
+    calculate_eq_bands,
+)
 from .auto_eq_parts.pipeline import analyze_auto_eq
 from .auto_eq_parts.response import _predict_eq_response
 from .auto_eq_parts.target import get_target_curve
@@ -43,6 +47,8 @@ __all__ = [
     "_select_dynamic_band_layout",
     "_snr_aware_gain_upper_bounds",
     "_snr_weight_scale_dense",
+    "_spectral_tilt_fit",
+    "_log_frequency_gain_curvature",
     "_voice_weights",
     "analyze_auto_eq",
     "apply_headroom_validation",

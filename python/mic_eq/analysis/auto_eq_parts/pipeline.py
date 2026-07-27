@@ -13,6 +13,8 @@ def analyze_auto_eq(
     smoothing_strength="conservative",
     chain_settings=None,
     vad_probabilities=None,
+    noise_audio=None,
+    tilt_policy="preserve",
 ):
     """
     Complete auto-EQ analysis pipeline.
@@ -31,6 +33,8 @@ def analyze_auto_eq(
         target_mode: 'adaptive' for bounded voice-aware targets, 'static' for catalog targets
         smoothing_strength: 'conservative', 'balanced', 'broad', or 'off'
         chain_settings: Current deterministic downstream DSP settings for headroom simulation
+        noise_audio: Optional room-noise capture for frequency-dependent SNR
+        tilt_policy: 'preserve' by default; 'detrend' is an explicit experiment
 
     Returns:
         result: Tuple of (eq_settings, validation_result)
@@ -56,6 +60,7 @@ def analyze_auto_eq(
         audio_data,
         sample_rate,
         vad_probabilities=vad_probabilities,
+        noise_audio=noise_audio,
     )
     freqs = spectrum_result.freqs
     spectrum_db = spectrum_result.median_spectrum_db
@@ -89,9 +94,12 @@ def analyze_auto_eq(
         voiced_window_ratio=spectrum_result.voiced_window_ratio,
         analysis_confidence=spectrum_result.residual_confidence,
         global_snr_db=spectrum_result.snr_db,
+        spectral_snr_db=spectrum_result.spectral_snr_db,
+        noise_reference_source=spectrum_result.noise_reference_source,
         target_profile=target_profile,
         used_spectrum_fallback=spectrum_result.used_single_spectrum_fallback,
         smoothing_strength=smoothing_strength,
+        tilt_policy=tilt_policy,
     )
     eq_settings["target_mode"] = target_mode
     eq_settings["measurement_coverage"] = spectrum_result.measurement_coverage
@@ -103,6 +111,9 @@ def analyze_auto_eq(
     )
     eq_settings["measurement_vad_active_window_ratio"] = (
         spectrum_result.vad_active_window_ratio
+    )
+    eq_settings["measurement_noise_reference_source"] = (
+        spectrum_result.noise_reference_source
     )
     eq_settings = apply_headroom_validation(
         audio_data,
@@ -117,6 +128,8 @@ def analyze_auto_eq(
         {
             "voiced_window_ratio": spectrum_result.voiced_window_ratio,
             "spectrum_snr_db": spectrum_result.snr_db,
+            "noise_reference_source": spectrum_result.noise_reference_source,
+            "snr_reference_available": spectrum_result.spectral_snr_db is not None,
             "spectral_tilt_db_per_octave": spectrum_result.spectral_tilt_db_per_octave,
             "used_single_spectrum_fallback": spectrum_result.used_single_spectrum_fallback,
             "analysis_confidence": spectrum_result.residual_confidence,
@@ -136,6 +149,16 @@ def analyze_auto_eq(
             "headroom_validation": eq_settings.get("headroom_validation"),
             "headroom_safe": eq_settings.get("headroom_safe"),
             "headroom_gain_scale": eq_settings.get("headroom_gain_scale"),
+            "recommendation_status": eq_settings.get("recommendation_status"),
+            "apply_recommended": eq_settings.get("apply_recommended"),
+            "abstention_reasons": eq_settings.get("abstention_reasons"),
+            "spectral_tilt_policy": eq_settings.get("spectral_tilt_policy"),
+            "spectral_tilt_slope_db_per_decade": eq_settings.get(
+                "spectral_tilt_slope_db_per_decade"
+            ),
+            "constraint_solver_success": eq_settings.get(
+                "constraint_solver_success"
+            ),
         }
     )
 

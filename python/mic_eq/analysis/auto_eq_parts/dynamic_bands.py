@@ -275,50 +275,70 @@ def _select_dynamic_band_layout(
     return centers, q_prior
 
 
-def _enforce_adjacent_gain_limit(gains: np.ndarray, max_diff_db: float) -> np.ndarray:
+def _enforce_adjacent_gain_limit(
+    gains: np.ndarray,
+    max_diff_db: float | np.ndarray,
+) -> np.ndarray:
     bounded = np.asarray(gains, dtype=float).copy()
     bounded = np.clip(bounded, GAIN_MIN_DB, GAIN_MAX_DB)
+    limits = np.broadcast_to(
+        np.asarray(max_diff_db, dtype=float),
+        (max(0, bounded.size - 1),),
+    )
 
     for i in range(1, bounded.size):
-        lo = bounded[i - 1] - max_diff_db
-        hi = bounded[i - 1] + max_diff_db
+        lo = bounded[i - 1] - limits[i - 1]
+        hi = bounded[i - 1] + limits[i - 1]
         bounded[i] = np.clip(bounded[i], lo, hi)
 
     for i in range(bounded.size - 2, -1, -1):
-        lo = bounded[i + 1] - max_diff_db
-        hi = bounded[i + 1] + max_diff_db
+        lo = bounded[i + 1] - limits[i]
+        hi = bounded[i + 1] + limits[i]
         bounded[i] = np.clip(bounded[i], lo, hi)
 
     return np.clip(bounded, GAIN_MIN_DB, GAIN_MAX_DB)
 
 
-def _remove_spectral_tilt(freqs: np.ndarray, measured_db: np.ndarray) -> tuple[np.ndarray, float]:
+def _spectral_tilt_fit(
+    freqs: np.ndarray,
+    measured_db: np.ndarray,
+) -> tuple[np.ndarray, float, float]:
     mask = (freqs >= TILT_FIT_MIN_HZ) & (freqs <= TILT_FIT_MAX_HZ)
     if np.sum(mask) < 2:
-        return measured_db, 0.0
+        return np.zeros_like(measured_db, dtype=float), 0.0, 0.0
 
     x = np.log10(freqs[mask])
     y = measured_db[mask]
     x_center = x - np.mean(x)
     denom = float(np.sum(x_center ** 2))
     if denom <= 0.0:
-        return measured_db, 0.0
+        return np.zeros_like(measured_db, dtype=float), 0.0, 0.0
 
     slope = float(np.dot(x_center, y) / denom)
     intercept = float(np.mean(y))
     y_center = y - intercept
     ss_tot = float(np.sum(y_center ** 2))
     if ss_tot <= 1e-12:
-        return measured_db, 0.0
+        return np.zeros_like(measured_db, dtype=float), 0.0, 0.0
 
     fit_y = slope * x_center + intercept
     ss_res = float(np.sum((y - fit_y) ** 2))
     fit_r2 = 1.0 - (ss_res / ss_tot)
     if not np.isfinite(fit_r2) or fit_r2 < TILT_MIN_FIT_R2:
-        return measured_db, 0.0
+        return np.zeros_like(measured_db, dtype=float), 0.0, max(0.0, float(fit_r2))
 
     all_x_center = np.log10(np.clip(freqs, 1e-6, None)) - np.mean(x)
     tilt_component = slope * all_x_center
+    return tilt_component, slope, float(np.clip(fit_r2, 0.0, 1.0))
+
+
+def _remove_spectral_tilt(freqs: np.ndarray, measured_db: np.ndarray) -> tuple[np.ndarray, float]:
+    """Explicitly remove a well-supported broad log-frequency trend.
+
+    Production Auto-EQ preserves this trend by default. This helper remains
+    available for experiments and the opt-in ``tilt_policy="detrend"`` mode.
+    """
+    tilt_component, slope, _fit_r2 = _spectral_tilt_fit(freqs, measured_db)
     return measured_db - tilt_component, slope
 
 
@@ -353,23 +373,29 @@ def _snr_weight_scale_dense(
 
 def _estimate_band_snr_db(
     dense_freqs: np.ndarray,
-    measured_dense_db: np.ndarray,
+    spectral_snr_dense_db: np.ndarray | None,
     band_centers_hz: np.ndarray,
 ) -> np.ndarray:
-    voice_mask = (dense_freqs >= TILT_FIT_MIN_HZ) & (dense_freqs <= TILT_FIT_MAX_HZ)
-    if np.any(voice_mask):
-        noise_floor_db = float(np.percentile(measured_dense_db[voice_mask], 20.0))
-    else:
-        noise_floor_db = float(np.percentile(measured_dense_db, 20.0))
+    """Aggregate matched speech/noise SNR around each dynamic EQ center."""
+    if spectral_snr_dense_db is None:
+        return np.full(band_centers_hz.size, np.nan, dtype=float)
+    spectral_snr = np.asarray(spectral_snr_dense_db, dtype=float)
+    if spectral_snr.shape != dense_freqs.shape:
+        return np.full(band_centers_hz.size, np.nan, dtype=float)
 
     band_snr = np.empty(band_centers_hz.size, dtype=float)
     half_oct = 2 ** (1.0 / 6.0)
     for i, fc in enumerate(band_centers_hz):
         band_mask = (dense_freqs >= fc / half_oct) & (dense_freqs <= fc * half_oct)
         if np.any(band_mask):
-            band_peak_db = float(np.max(measured_dense_db[band_mask]))
+            finite_values = spectral_snr[band_mask]
+            finite_values = finite_values[np.isfinite(finite_values)]
+            band_snr[i] = (
+                float(np.median(finite_values))
+                if finite_values.size
+                else np.nan
+            )
         else:
-            band_peak_db = float(np.interp(fc, dense_freqs, measured_dense_db))
-        band_snr[i] = band_peak_db - noise_floor_db
+            band_snr[i] = float(np.interp(fc, dense_freqs, spectral_snr))
 
     return band_snr

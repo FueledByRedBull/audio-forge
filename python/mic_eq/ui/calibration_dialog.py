@@ -342,6 +342,9 @@ class CalibrationDialog(QDialog):
 
     def _apply_eq_settings(self):
         """Apply auto-EQ settings to main window and close dialog."""
+        eq_settings = self.eq_settings
+        if eq_settings is None:
+            return
         if DEBUG:
             logger.debug("Applying EQ settings")
 
@@ -354,17 +357,17 @@ class CalibrationDialog(QDialog):
 
         # Build band tuples from eq_settings
         from ..config import EQ_FREQUENCIES as BAND_FREQUENCIES_HZ
-        freqs_hz = self.eq_settings.get('band_freqs', BAND_FREQUENCIES_HZ)
+        freqs_hz = eq_settings.get('band_freqs', BAND_FREQUENCIES_HZ)
         if len(freqs_hz) != len(BAND_FREQUENCIES_HZ):
             freqs_hz = BAND_FREQUENCIES_HZ
         bands = []
         for i, freq in enumerate(freqs_hz):
-            gain = self.eq_settings['band_gains'][i]
-            q = self.eq_settings['band_qs'][i] if 'band_qs' in self.eq_settings else 1.41
+            gain = eq_settings['band_gains'][i]
+            q = eq_settings['band_qs'][i] if 'band_qs' in eq_settings else 1.41
             bands.append((freq, gain, q))
 
         # Apply settings to EQ panel
-        parent.eq_panel.apply_auto_eq_results(bands, diagnostics=self.eq_settings)
+        parent.eq_panel.apply_auto_eq_results(bands, diagnostics=eq_settings)
 
         # Emit signal for main window to handle preset save and undo button
         target_curve = self.get_selected_curve()
@@ -663,14 +666,33 @@ class CalibrationDialog(QDialog):
             max_gain = max(abs(g) for g in eq_settings['band_gains'])
             logger.debug("Max correction: %.1f dB", round(max_gain, 1))
 
-        self.eq_settings = eq_settings
-        self.warning_label.setText(f"✓ Analysis complete! Max correction: {round(max(abs(g) for g in eq_settings['band_gains']), 1)} dB")
-        self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
+        apply_recommended = bool(eq_settings.get("apply_recommended", True))
+        self.eq_settings = eq_settings if apply_recommended else None
+        if apply_recommended:
+            self.warning_label.setText(
+                "Analysis complete! Max correction: "
+                f"{round(max(abs(g) for g in eq_settings['band_gains']), 1)} dB"
+            )
+            self.warning_label.setStyleSheet(
+                "color: #4CAF50; font-weight: bold; font-size: 11pt;"
+            )
+        else:
+            reasons = eq_settings.get("abstention_reasons") or [
+                "the recording did not support a safe correction"
+            ]
+            self.warning_label.setText(
+                "No EQ applied: " + "; ".join(str(reason) for reason in reasons)
+            )
+            self.warning_label.setStyleSheet(
+                "color: #FFB74D; font-weight: bold; font-size: 11pt;"
+            )
         self.progress_bar.setValue(100)
         self._show_analysis_diagnostics(eq_settings)
         self.analysis_worker = None
 
-        self.start_button.setText("Apply EQ Settings")
+        self.start_button.setText(
+            "Apply EQ Settings" if apply_recommended else "Record Again"
+        )
         self.start_button.setEnabled(True)
         if DEBUG:
             logger.debug("EQ settings ready to apply")

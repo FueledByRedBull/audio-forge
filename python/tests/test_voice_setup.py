@@ -24,11 +24,19 @@ def _make_voice(
     t = np.arange(int(sample_rate * seconds), dtype=np.float64) / sample_rate
     gate = ((np.floor(t * 3.0) % 4.0) != 3.0).astype(np.float64)
     envelope = gate * (0.55 + 0.25 * np.sin(2.0 * np.pi * 2.1 * t) ** 2)
+    sibilance_bursts = (
+        ((np.mod(t, 1.25) >= 0.72) & (np.mod(t, 1.25) <= 0.88)).astype(np.float64)
+        if sibilant
+        else np.zeros_like(t)
+    )
     voiced = (
         0.11 * np.sin(2.0 * np.pi * 140.0 * t)
         + 0.07 * np.sin(2.0 * np.pi * 220.0 * t)
         + 0.05 * np.sin(2.0 * np.pi * 440.0 * t)
-        + (0.035 if sibilant else 0.004) * np.sin(2.0 * np.pi * 6500.0 * t)
+        + 0.004 * np.sin(2.0 * np.pi * 6500.0 * t)
+        + 0.30
+        * sibilance_bursts
+        * np.sin(2.0 * np.pi * 6500.0 * t)
     )
     noise = noise_amplitude * rng.normal(size=t.size)
     return (level * envelope * voiced + noise).astype(np.float32)
@@ -65,6 +73,7 @@ def test_voice_setup_falls_back_without_vad_and_can_enable_deesser():
     assert result["gate_settings"]["auto_threshold_enabled"] is False
     assert result["deesser_settings"]["enabled"] is True
     assert result["deesser_settings"]["high_cut_hz"] > result["deesser_settings"]["low_cut_hz"]
+    assert result["diagnostics"]["deesser_temporal_contrast_db"] > 0.75
 
 
 def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp():
@@ -112,6 +121,16 @@ def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp(
         }
         assert diagnostics["offline_validation"] is not None, label
         assert isinstance(diagnostics["offline_validation_passed"], bool), label
+        calibration = diagnostics["compressor_calibration"]
+        if expected_apply:
+            assert calibration["backend"] == "rust", label
+            assert (
+                abs(
+                    calibration["measured_gain_reduction_db"]
+                    - calibration["target_gain_reduction_db"]
+                )
+                <= 0.75
+            ), label
         assert result["compressor_settings"]["measured_short_term_lufs"] == diagnostics[
             "short_term_lufs"
         ]
@@ -122,4 +141,34 @@ def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp(
         )
 
     assert fixture_results["sibilant"]["deesser_settings"]["enabled"] is True
+    assert (
+        fixture_results["sibilant"]["diagnostics"]["offline_validation"][
+            "deesser_gain_reduction_db"
+        ]
+        > 0.25
+    )
     assert fixture_results["weak_noisy"]["diagnostics"]["weak_capture"] is True
+    assert fixture_results["clean"]["diagnostics"]["noise_reference_source"] == (
+        "explicit_capture"
+    )
+    assert fixture_results["clean"]["eq_settings"]["snr_reference_available"] is True
+
+
+def test_static_microphone_brightness_does_not_trigger_deesser():
+    sample_rate = 48_000
+    speech = _make_voice(sample_rate, seconds=5.0)
+    t = np.arange(speech.size, dtype=float) / sample_rate
+    static_brightness = speech + (
+        0.025 * np.sin(2.0 * np.pi * 6500.0 * t)
+    ).astype(np.float32)
+
+    result = analyze_voice_setup(
+        _make_noise(sample_rate),
+        static_brightness,
+        sample_rate,
+        "broadcast",
+        vad_available=False,
+    )
+
+    assert result["deesser_settings"]["enabled"] is False
+    assert result["diagnostics"]["deesser_frame_evidence_confidence"] < 0.48

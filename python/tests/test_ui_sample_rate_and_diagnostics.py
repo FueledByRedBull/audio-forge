@@ -513,6 +513,41 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
     owner.close()
 
 
+def test_calibration_dialog_does_not_offer_abstained_eq(qapp):
+    owner = _FakeOwner(_FakeProcessor(sample_rate=48_000))
+    dialog = CalibrationDialog(parent=owner)
+    eq_settings = {
+        "band_freqs": [
+            80.0,
+            160.0,
+            320.0,
+            640.0,
+            1280.0,
+            2500.0,
+            5000.0,
+            8000.0,
+            12000.0,
+            16000.0,
+        ],
+        "band_gains": [0.0] * 10,
+        "band_qs": [1.41] * 10,
+        "analysis_confidence": 0.20,
+        "apply_recommended": False,
+        "recommendation_status": "abstain",
+        "abstention_reasons": ["noise-referenced SNR is too low"],
+    }
+
+    dialog._on_analysis_complete(eq_settings)
+
+    assert dialog.eq_settings is None
+    assert dialog.start_button.text() == "Record Again"
+    assert "No EQ applied" in dialog.warning_label.text()
+    assert "noise-referenced SNR is too low" in dialog.warning_label.text()
+
+    dialog.close()
+    owner.close()
+
+
 def test_latency_calibration_uses_processor_output_sample_rate(qapp):
     owner = _FakeOwner(_FakeProcessor(output_sample_rate=44_100))
     assert _capture_sample_rate(owner) == 44_100

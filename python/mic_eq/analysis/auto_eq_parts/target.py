@@ -37,7 +37,10 @@ def _adaptive_voice_offsets(
         denom = float(np.sum(xc * xc))
         if denom > 0.0:
             tilt = float(np.dot(xc, yv - float(np.mean(yv))) / denom)
-    tilt_norm = np.clip(tilt / 12.0, -1.0, 1.0)
+    # The regression above is dB per log10-frequency decade. Convert it to
+    # dB/octave before normalizing against a documented broad-tilt range.
+    tilt_db_per_octave = tilt * np.log10(2.0)
+    tilt_norm = np.clip(tilt_db_per_octave / 4.0, -1.0, 1.0)
 
     offsets = np.zeros_like(freqs, dtype=float)
     # Keep flat closest to neutral: only gentle normalization of obvious tilt.

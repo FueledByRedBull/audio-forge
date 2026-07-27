@@ -68,21 +68,18 @@ def calculate_spectral_flatness(spectrum_db):
     return min(flatness, 1.0)  # Clip to [0, 1]
 
 
-def calculate_snr(freqs, spectrum_db, noise_floor_freq=200.0):
+def calculate_spectral_contrast(freqs, spectrum_db):
     """
-    Estimate signal-to-noise ratio.
+    Measure robust spectral contrast in the voice band.
 
-    SNR is estimated from robust spectral percentiles in the voice band.
-    This avoids penalizing low-pitched voices where 80-200 Hz can contain
-    legitimate speech fundamentals (not just noise).
+    This is not an SNR estimate because it has no independent noise reference.
+    It remains useful for rejecting spectrally featureless captures.
 
     Args:
         freqs: Frequency array in Hz
         spectrum_db: Spectrum in dB
-        noise_floor_freq: Frequency below which is considered noise (Hz)
-
     Returns:
-        snr_db: Estimated SNR in dB
+        contrast_db: 80th-to-20th-percentile spectral contrast in dB
     """
     freqs = np.asarray(freqs, dtype=float)
     spectrum_db = np.asarray(spectrum_db, dtype=float)
@@ -107,9 +104,9 @@ def calculate_snr(freqs, spectrum_db, noise_floor_freq=200.0):
         signal_level_db = float(np.percentile(spec, 80))
 
     # Floor estimate from lower percentile of whole voice band.
-    noise_floor_db = float(np.percentile(spec, 20))
+    lower_percentile_db = float(np.percentile(spec, 20))
 
-    return signal_level_db - noise_floor_db
+    return signal_level_db - lower_percentile_db
 
 
 def validate_analysis(eq_settings, spectrum_db, freqs):
@@ -119,8 +116,8 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
     Combines multiple checks to detect invalid recordings:
     - Peak count: Detect voice presence (need formant structure)
     - Dynamic range: Ensure sufficient variation (not silent/flat)
-    - SNR: Ensure voice above noise floor
-    - Spectral flatness: Ensure tonal (not white noise)
+    - Noise-referenced SNR: Ensure speech exceeds a matched noise capture
+    - Spectral contrast/flatness: Reject featureless noise-like captures
 
     Args:
         eq_settings: Calculated EQ settings (dict with band_gains)
@@ -152,10 +149,35 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
         np.percentile(spectrum_voice, 95) - np.percentile(spectrum_voice, 5)
     )
 
-    # Check 3: SNR (signal vs noise)
-    snr_db = calculate_snr(freqs_voice, spectrum_voice)
+    # Check 3: use matched noise-referenced SNR when the analysis pipeline
+    # supplied it. Spectral contrast is tracked separately and never labelled
+    # as SNR.
+    spectral_contrast_db = calculate_spectral_contrast(freqs_voice, spectrum_voice)
+    band_snr_values = np.asarray(
+        [
+            value
+            for value in eq_settings.get("band_snr_db", [])
+            if value is not None
+        ],
+        dtype=float,
+    )
+    snr_reference_available = bool(
+        eq_settings.get("snr_reference_available", False)
+        and band_snr_values.size
+        and np.any(np.isfinite(band_snr_values))
+    )
+    global_snr = eq_settings.get("noise_referenced_snr_db")
+    snr_db = (
+        float(global_snr)
+        if snr_reference_available and global_snr is not None
+        else (
+            float(np.median(band_snr_values[np.isfinite(band_snr_values)]))
+            if snr_reference_available
+            else None
+        )
+    )
 
-    # Check 4: Spectral flatness (tonal vs noise)
+    # Check 4: Spectral flatness (structured spectrum vs noise-like spectrum)
     flatness = calculate_spectral_flatness(spectrum_voice)
 
     # Check 5: Excessive correction request suggests unreliable capture.
@@ -190,8 +212,12 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
         soft_failures.append(
             f"dynamic_range ({dynamic_range:.1f} < {ANALYSIS_MIN_DYNAMIC_RANGE} dB)"
         )
-    if snr_db < ANALYSIS_MIN_SNR:
+    if snr_db is not None and snr_db < ANALYSIS_MIN_SNR:
         soft_failures.append(f"snr ({snr_db:.1f} < {ANALYSIS_MIN_SNR} dB)")
+    if not snr_reference_available and spectral_contrast_db < ANALYSIS_MIN_SNR:
+        soft_failures.append(
+            f"spectral_contrast ({spectral_contrast_db:.1f} < {ANALYSIS_MIN_SNR} dB)"
+        )
     if flatness > ANALYSIS_MAX_SPECTRAL_FLATNESS:
         soft_failures.append(f"flatness ({flatness:.2f} > {ANALYSIS_MAX_SPECTRAL_FLATNESS})")
     if clipped_gains >= 4:
@@ -207,7 +233,9 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
     # DEBUG: Log validation results
     _debug_log(
         f"[VALIDATION] peak_count={peak_count}, dynamic_range={dynamic_range:.1f}dB, "
-        f"snr={snr_db:.1f}dB, flatness={flatness:.2f}, clipped={clipped_gains}, "
+        f"snr={snr_db if snr_db is not None else 'unavailable'}, "
+        f"spectral_contrast={spectral_contrast_db:.1f}dB, "
+        f"flatness={flatness:.2f}, clipped={clipped_gains}, "
         f"gain_rms={gain_rms:.1f}, soft_failures={len(soft_failures)}"
     )
     if failures:
@@ -225,6 +253,8 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
                 'peak_count': peak_count,
                 'dynamic_range_db': dynamic_range,
                 'snr_db': snr_db,
+                'snr_reference_available': snr_reference_available,
+                'spectral_contrast_db': spectral_contrast_db,
                 'flatness': flatness,
                 'clipped_gains': clipped_gains,
                 'gain_rms_db': gain_rms,
@@ -240,6 +270,8 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
                 'peak_count': peak_count,
                 'dynamic_range_db': dynamic_range,
                 'snr_db': snr_db,
+                'snr_reference_available': snr_reference_available,
+                'spectral_contrast_db': spectral_contrast_db,
                 'flatness': flatness,
                 'clipped_gains': clipped_gains,
                 'gain_rms_db': gain_rms,

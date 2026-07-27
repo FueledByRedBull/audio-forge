@@ -7,14 +7,14 @@
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
 
-Current version: `v1.8.8`
+Current version: `v1.8.9`
 
 ## Download
 
 The latest portable build is available on the GitHub releases page:
 
-- [AudioForge v1.8.8](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.8.8)
-- Artifact: `AudioForge-v1.8.8-win64-ultra.7z`
+- [AudioForge v1.8.9](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.8.9)
+- Artifact: `AudioForge-v1.8.9-win64-ultra.7z`
 - Checksum: use the matching `.7z.sha256` sidecar published by the release workflow.
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
@@ -29,9 +29,9 @@ User-facing tools:
 - Smart noise gate with threshold-only, VAD-assisted, and VAD-only modes, including smoothed continuous VAD-posterior gain control around uncertain speech.
 - Auto thresholding that tracks the live noise floor in VAD modes.
 - 10-band parametric EQ with gain, Q, and per-band center frequencies.
-- Auto-EQ calibration that records your voice, combines energy and Silero speech posteriors, rejects shape outliers, and applies a bounded correction with measurement-coverage diagnostics.
+- Auto-EQ calibration that combines energy and Silero speech posteriors, rejects shape outliers, uses matched noise-referenced per-band reliability when available, and abstains when a safe correction is unsupported.
 - Auto-EQ headroom validation through the native chain simulator; Python-only fallback results are visibly advisory.
-- Auto Voice Setup with Silero-posterior-aware speech masking, short-term loudness, loudness range, robust band analysis, offline chain validation, and capture uncertainty.
+- Auto Voice Setup with Silero-posterior-aware speech masking, 400 ms momentary and 3 second short-term loudness, time-local sibilance analysis, exact native compressor calibration, offline chain validation, and capture uncertainty.
 - Dynamic-EQ de-esser, compressor, auto makeup gain, and lookahead limiter.
 - Band-limited 4x true-peak detection and limiting, validated against an independent offline reference.
 - Stateful phase-safe mono alignment and adaptive 49-61 Hz hum/harmonic tracking for difficult input sources.
@@ -134,7 +134,7 @@ Full-feature development and release builds use the tracked `release-assets.json
 For a cleaner fresh-clone setup, you can hydrate those assets from the matching GitHub release:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.8
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.9
 ```
 
 Create `models/` in the repo root for local runtime discovery:
@@ -164,7 +164,7 @@ Packaged builds use bootstrap-registered canonical DeepFilter assets by default.
 Build the Rust extension first, then package:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.8
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.9
 .\.venv\Scripts\python.exe -m maturin develop --release
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
@@ -191,7 +191,7 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.8.8-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.8.9-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This uses LZMA2 with max compression and solid mode, which is appropriate for the PyInstaller bundle.

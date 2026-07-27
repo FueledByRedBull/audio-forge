@@ -15,8 +15,10 @@ spectrum = importlib.util.module_from_spec(spectrum_spec)
 spectrum_spec.loader.exec_module(spectrum)
 
 compute_voice_spectrum = spectrum.compute_voice_spectrum
+analyze_voice_spectrum = spectrum.analyze_voice_spectrum
 evaluate_spectrum_estimators = spectrum.evaluate_spectrum_estimators
 find_octave_spaced_peaks = spectrum.find_octave_spaced_peaks
+_window_spectrum_db = spectrum._window_spectrum_db
 
 
 def test_voiced_frame_selection_reduces_background_hum_bias():
@@ -47,6 +49,57 @@ def test_compute_voice_spectrum_keeps_valid_output_when_voiced_mask_is_sparse():
     freqs, spectrum_db = compute_voice_spectrum(audio, fs=fs, nperseg=nperseg)
     assert freqs.shape == spectrum_db.shape
     assert len(freqs) > 0
+
+
+def test_window_spectrum_is_invariant_to_dc_offset():
+    fs = 48_000
+    n = 4096
+    t = np.arange(n, dtype=float) / fs
+    tone = 0.1 * np.sin(2.0 * np.pi * 750.0 * t)
+
+    freqs, centered = _window_spectrum_db(tone, fs)
+    offset_freqs, offset = _window_spectrum_db(tone + 0.35, fs)
+
+    assert np.array_equal(freqs, offset_freqs)
+    assert np.allclose(centered, offset, atol=1e-8)
+
+
+def test_explicit_noise_capture_produces_frequency_dependent_snr():
+    fs = 48_000
+    seconds = 4.0
+    rng = np.random.default_rng(4402)
+    t = np.arange(int(fs * seconds), dtype=float) / fs
+    noise = 0.0015 * rng.normal(size=t.size)
+    speech_gate = ((np.floor(t * 2.0) % 2.0) == 0.0).astype(float)
+    speech = noise + speech_gate * (
+        0.05 * np.sin(2.0 * np.pi * 180.0 * t)
+        + 0.025 * np.sin(2.0 * np.pi * 900.0 * t)
+    )
+
+    result = analyze_voice_spectrum(
+        speech.astype(np.float32),
+        fs,
+        noise_audio=noise.astype(np.float32),
+    )
+
+    assert result.noise_reference_source == "explicit_capture"
+    assert result.spectral_snr_db is not None
+    assert result.noise_spectrum_db is not None
+    assert result.spectral_snr_db.shape == result.freqs.shape
+    assert result.snr_db > 10.0
+
+
+def test_missing_noise_reference_is_reported_as_unavailable():
+    fs = 48_000
+    t = np.arange(fs * 3, dtype=float) / fs
+    continuous = 0.05 * np.sin(2.0 * np.pi * 180.0 * t)
+
+    result = analyze_voice_spectrum(continuous.astype(np.float32), fs)
+
+    assert result.noise_reference_source == "unavailable"
+    assert result.spectral_snr_db is None
+    assert result.noise_spectrum_db is None
+    assert result.residual_confidence <= 0.70
 
 
 def test_find_octave_spaced_peaks_handles_degenerate_frequency_grids():

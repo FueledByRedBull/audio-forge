@@ -1,7 +1,9 @@
 """Constrained least-squares optimizer for Auto-EQ."""
 
+from typing import Any
+
 import numpy as np
-from scipy.optimize import least_squares
+from scipy.optimize import least_squares, minimize
 
 from .constants import (
     DEBUG,
@@ -13,6 +15,7 @@ from .constants import (
     LAMBDA_Q,
     LAMBDA_TILT,
     MAX_ADJ_GAIN_DIFF_DB,
+    MAX_GAIN_SLOPE_DB_PER_OCTAVE,
     NUM_EQ_BANDS,
     debug_log,
 )
@@ -26,6 +29,7 @@ from .dynamic_bands import (
     _select_dynamic_band_layout,
     _snr_aware_gain_upper_bounds,
     _snr_weight_scale_dense,
+    _spectral_tilt_fit,
     _voice_weights,
 )
 from .response import _predict_eq_response
@@ -45,6 +49,36 @@ def _gain_only_residuals(
     return np.sqrt(weights) * error
 
 
+def _log_frequency_gain_curvature(
+    gains: np.ndarray,
+    centers_hz: np.ndarray,
+) -> np.ndarray:
+    """Return slope changes on a non-uniform log-frequency grid.
+
+    A gain line that is linear in octaves has zero curvature regardless of how
+    the dynamic EQ centers are spaced.
+    """
+    gains_arr = np.asarray(gains, dtype=float)
+    log_centers = np.log2(np.clip(np.asarray(centers_hz, dtype=float), 1e-6, None))
+    if gains_arr.size < 3 or log_centers.size != gains_arr.size:
+        return np.empty(0, dtype=float)
+    spacing = np.maximum(np.diff(log_centers), 1e-6)
+    slopes = np.diff(gains_arr) / spacing
+    local_span = 0.5 * (spacing[:-1] + spacing[1:])
+    return np.diff(slopes) * local_span
+
+
+def _adjacent_gain_limits(centers_hz: np.ndarray) -> np.ndarray:
+    octave_spacing = np.maximum(
+        np.diff(np.log2(np.clip(np.asarray(centers_hz, dtype=float), 1e-6, None))),
+        1e-6,
+    )
+    return np.minimum(
+        MAX_ADJ_GAIN_DIFF_DB,
+        MAX_GAIN_SLOPE_DB_PER_OCTAVE * octave_spacing,
+    )
+
+
 def _joint_gain_q_residuals(
     params: np.ndarray,
     dense_freqs: np.ndarray,
@@ -62,13 +96,14 @@ def _joint_gain_q_residuals(
     error = target_dense_db - (measured_dense_db + eq_response)
 
     q_regularization = np.log(qs / q_prior)
-    gain_ripple = np.diff(gains, n=2)
+    gain_ripple = _log_frequency_gain_curvature(gains, centers_hz)
     center_regularization = np.log(centers_hz / base_centers_hz)
     gain_coupling_excess = np.maximum(
-        0.0, np.abs(np.diff(gains)) - MAX_ADJ_GAIN_DIFF_DB
+        0.0,
+        np.abs(np.diff(gains)) - _adjacent_gain_limits(centers_hz),
     )
 
-    log_centers = np.log10(base_centers_hz)
+    log_centers = np.log10(centers_hz)
     centered_log_centers = log_centers - np.mean(log_centers)
     denom = float(np.sum(centered_log_centers ** 2))
     tilt_slope = float(np.dot(centered_log_centers, gains) / denom) if denom > 0.0 else 0.0
@@ -93,8 +128,13 @@ def _band_confidence(
     voiced_window_ratio: float,
     repeatability_dense: np.ndarray | None,
     active_gains: np.ndarray | None = None,
+    *,
+    snr_available: bool = True,
 ) -> np.ndarray:
-    snr_reliability = np.clip((band_snr_db - 3.0) / 10.0, 0.0, 1.0)
+    if snr_available:
+        snr_reliability = np.clip((band_snr_db - 3.0) / 10.0, 0.0, 1.0)
+    else:
+        snr_reliability = np.full_like(centers_hz, 0.45, dtype=float)
     residual_at_centers = np.abs(np.interp(centers_hz, dense_freqs, residual_db))
     if active_gains is None:
         active_mask = residual_at_centers >= 0.75
@@ -103,11 +143,10 @@ def _band_confidence(
     correction_support = np.where(
         active_mask,
         np.clip(residual_at_centers / 2.0, 0.55, 1.0),
-        0.85,
+        0.55,
     )
     if repeatability_dense is None:
-        repeatability = np.full_like(centers_hz, 0.90, dtype=float)
-        snr_reliability = np.maximum(snr_reliability, 0.75)
+        repeatability = np.full_like(centers_hz, 0.60, dtype=float)
     else:
         repeatability = np.interp(
             centers_hz,
@@ -124,6 +163,66 @@ def _band_confidence(
         + 0.15 * coverage
     )
     return np.clip(confidence, 0.0, 1.0)
+
+
+def _constrained_gain_refinement(
+    gains: np.ndarray,
+    dense_freqs: np.ndarray,
+    measured_dense_db: np.ndarray,
+    target_dense_db: np.ndarray,
+    qs: np.ndarray,
+    centers_hz: np.ndarray,
+    weights: np.ndarray,
+) -> tuple[np.ndarray, bool]:
+    """Re-optimize confidence-scaled gains under explicit adjacency bounds."""
+    gains_arr = np.asarray(gains, dtype=float)
+    adjacent_limits = _adjacent_gain_limits(centers_hz)
+    projected = _enforce_adjacent_gain_limit(gains_arr, adjacent_limits)
+    lower = np.minimum(gains_arr, 0.0)
+    upper = np.maximum(gains_arr, 0.0)
+    projected = np.clip(projected, lower, upper)
+
+    def objective(candidate: np.ndarray) -> float:
+        response = _predict_eq_response(dense_freqs, candidate, qs, centers_hz)
+        error = target_dense_db - (measured_dense_db + response)
+        curvature = _log_frequency_gain_curvature(candidate, centers_hz)
+        log_centers = np.log10(np.clip(centers_hz, 1e-6, None))
+        centered_log_centers = log_centers - float(np.mean(log_centers))
+        denominator = float(np.sum(centered_log_centers**2))
+        tilt = (
+            float(np.dot(centered_log_centers, candidate) / denominator)
+            if denominator > 0.0
+            else 0.0
+        )
+        return float(
+            np.sum(weights * error * error)
+            + LAMBDA_G * np.sum(curvature * curvature)
+            + LAMBDA_TILT * tilt * tilt
+        )
+
+    def adjacency_slack(candidate: np.ndarray) -> np.ndarray:
+        return adjacent_limits - np.abs(np.diff(candidate))
+
+    solver_bounds: Any = list(zip(lower.tolist(), upper.tolist(), strict=True))
+    solver_constraints: Any = (
+        {
+            "type": "ineq",
+            "fun": adjacency_slack,
+        },
+    )
+    result = minimize(
+        objective,
+        projected,
+        method="SLSQP",
+        bounds=solver_bounds,
+        constraints=solver_constraints,
+        options={"ftol": 1e-7, "maxiter": 120, "disp": False},
+    )
+    if result.success and np.all(np.isfinite(result.x)):
+        candidate = np.asarray(result.x, dtype=float)
+        if np.all(np.abs(np.diff(candidate)) <= adjacent_limits + 1e-6):
+            return candidate, True
+    return projected, False
 
 
 def _regularize_q_for_confidence(
@@ -348,9 +447,12 @@ def calculate_eq_bands(
     voiced_window_ratio=1.0,
     analysis_confidence=None,
     global_snr_db=None,
+    spectral_snr_db=None,
+    noise_reference_source="unavailable",
     target_profile="static",
     used_spectrum_fallback=False,
     smoothing_strength="conservative",
+    tilt_policy="preserve",
 ):
     """
     Calculate optimal 10-band EQ settings using least-squares optimization.
@@ -394,10 +496,20 @@ def calculate_eq_bands(
         f"[EQ_CALC] Difference (target - normalized): avg {(target_db - measured_db_normalized).mean():.2f} dB"
     )
 
-    # Use normalized measured spectrum for optimization.
+    # Preserve broad microphone/voice tilt unless the caller explicitly opts
+    # into the legacy detrending experiment. Silent detrending can erase the
+    # exact dark/bright response a static target is intended to correct.
     measured_db = measured_db_normalized
-    measured_db, tilt_slope = _remove_spectral_tilt(freqs, measured_db)
-    debug_log(f"[EQ_CALC] Removed tilt slope: {tilt_slope:.3f} dB/log10(Hz)")
+    tilt_policy = str(tilt_policy or "preserve").strip().lower()
+    if tilt_policy not in {"preserve", "detrend"}:
+        raise ValueError(f"Unknown spectral tilt policy: {tilt_policy}")
+    _tilt_component, tilt_slope, tilt_fit_r2 = _spectral_tilt_fit(freqs, measured_db)
+    if tilt_policy == "detrend":
+        measured_db, tilt_slope = _remove_spectral_tilt(freqs, measured_db)
+    debug_log(
+        f"[EQ_CALC] Spectral tilt: {tilt_slope:.3f} dB/log10(Hz), "
+        f"R2={tilt_fit_r2:.3f}, policy={tilt_policy}"
+    )
 
     # Use a dense log-spaced frequency grid for optimization to reduce center-only artifacts.
     dense_freqs = _build_dense_log_grid(freqs)
@@ -419,6 +531,15 @@ def calculate_eq_bands(
                 freqs,
                 np.clip(repeatability_arr, 0.0, 1.0),
             )
+    spectral_snr_dense = None
+    if spectral_snr_db is not None:
+        spectral_snr_arr = np.asarray(spectral_snr_db, dtype=float)
+        if spectral_snr_arr.shape == np.asarray(freqs).shape:
+            spectral_snr_dense = np.interp(
+                dense_freqs,
+                freqs,
+                spectral_snr_arr,
+            )
     center_selection_weights = _voice_weights(dense_freqs)
     base_centers_hz, q_initial = _select_dynamic_band_layout(
         dense_freqs,
@@ -428,25 +549,46 @@ def calculate_eq_bands(
     center_freqs = base_centers_hz.tolist()
     qs_stage1 = q_initial
 
-    band_snr_db = _estimate_band_snr_db(dense_freqs, measured_dense_db, base_centers_hz)
-    if global_snr_db is not None:
-        band_snr_db = np.maximum(band_snr_db, float(global_snr_db) - 6.0)
+    band_snr_db = _estimate_band_snr_db(
+        dense_freqs,
+        spectral_snr_dense,
+        base_centers_hz,
+    )
+    snr_available = bool(np.any(np.isfinite(band_snr_db)))
+    effective_band_snr_db = np.where(
+        np.isfinite(band_snr_db),
+        band_snr_db,
+        18.0,
+    )
+    measurement_metadata_available = bool(
+        spectral_repeatability is not None or analysis_confidence is not None
+    )
     preliminary_confidence = _band_confidence(
         dense_freqs,
         base_centers_hz,
         target_dense_db - measured_dense_db,
-        band_snr_db,
+        effective_band_snr_db,
         float(voiced_window_ratio),
         repeatability_dense,
+        snr_available=snr_available,
     )
-    dynamic_gain_upper = _snr_aware_gain_upper_bounds(band_snr_db)
-    dynamic_gain_upper = np.minimum(
-        dynamic_gain_upper,
-        0.35 + preliminary_confidence * preliminary_confidence * (GAIN_MAX_DB - 0.35),
+    dynamic_gain_upper = (
+        _snr_aware_gain_upper_bounds(effective_band_snr_db)
+        if snr_available
+        else np.full(NUM_EQ_BANDS, GAIN_MAX_DB, dtype=float)
     )
-    weights = _voice_weights(dense_freqs) * _snr_weight_scale_dense(
-        dense_freqs, base_centers_hz, band_snr_db
-    )
+    if measurement_metadata_available:
+        dynamic_gain_upper = np.minimum(
+            dynamic_gain_upper,
+            0.35 + preliminary_confidence * preliminary_confidence * (GAIN_MAX_DB - 0.35),
+        )
+    weights = _voice_weights(dense_freqs)
+    if snr_available:
+        weights = weights * _snr_weight_scale_dense(
+            dense_freqs,
+            base_centers_hz,
+            effective_band_snr_db,
+        )
     if repeatability_dense is not None:
         weights = weights * (0.35 + 0.65 * repeatability_dense)
 
@@ -517,10 +659,11 @@ def calculate_eq_bands(
         dense_freqs,
         optimal_centers_hz,
         target_dense_db - measured_dense_db,
-        band_snr_db,
+        effective_band_snr_db,
         float(voiced_window_ratio),
         repeatability_dense,
         active_gains=optimal_gains,
+        snr_available=snr_available,
     )
 
     debug_log(
@@ -542,7 +685,8 @@ def calculate_eq_bands(
         f"[EQ_CALC] Stage2 centers: {[round(fc, 1) for fc in optimal_centers_hz]}"
     )
     debug_log(
-        f"[EQ_CALC] Band SNR dB: {[round(v, 1) for v in band_snr_db]}"
+        f"[EQ_CALC] Band SNR dB: "
+        f"{[round(v, 1) if np.isfinite(v) else None for v in band_snr_db]}"
     )
     debug_log(
         f"[EQ_CALC] Dynamic max boosts: {[round(v, 2) for v in dynamic_gain_upper]}"
@@ -551,8 +695,11 @@ def calculate_eq_bands(
     if hasattr(stage2, "message"):
         debug_log(f"[EQ_CALC] Stage2 message: {stage2.message}")
 
-    # Apply confidence scaling once and let validation decide whether more attenuation is needed.
-    optimal_gains = _apply_confidence_gain_scaling(optimal_gains, band_confidences)
+    # Apply measurement confidence only when this came from the production
+    # analysis pipeline. Low-level synthetic callers do not have capture
+    # metadata and retain the solver's ordinary bounds.
+    if measurement_metadata_available:
+        optimal_gains = _apply_confidence_gain_scaling(optimal_gains, band_confidences)
     optimal_qs = _regularize_q_for_confidence(
         optimal_qs,
         optimal_gains,
@@ -560,9 +707,19 @@ def calculate_eq_bands(
         band_confidences,
     )
 
-    # Clip to SNR-aware boost limits and enforce adjacent-band coupling.
+    # Re-optimize confidence-scaled gains under explicit adjacent-band
+    # constraints. The projection is only a feasible starting point/fallback;
+    # successful output is a constrained optimum rather than a post-hoc clamp.
     optimal_gains = np.clip(optimal_gains, gain_lower, dynamic_gain_upper)
-    optimal_gains = _enforce_adjacent_gain_limit(optimal_gains, MAX_ADJ_GAIN_DIFF_DB)
+    optimal_gains, constraint_solver_success = _constrained_gain_refinement(
+        optimal_gains,
+        dense_freqs,
+        measured_dense_db,
+        target_dense_db,
+        optimal_qs,
+        optimal_centers_hz,
+        weights,
+    )
     (
         optimal_gains,
         before_error,
@@ -583,8 +740,20 @@ def calculate_eq_bands(
     if np.any(inactive_mask):
         optimal_gains = optimal_gains.copy()
         optimal_gains[inactive_mask] = 0.0
-        band_confidences = band_confidences.copy()
-        band_confidences[inactive_mask] = np.maximum(band_confidences[inactive_mask], 0.75)
+        optimal_gains, inactive_constraint_solver_success = (
+            _constrained_gain_refinement(
+                optimal_gains,
+                dense_freqs,
+                measured_dense_db,
+                target_dense_db,
+                optimal_qs,
+                optimal_centers_hz,
+                weights,
+            )
+        )
+        constraint_solver_success = bool(
+            constraint_solver_success and inactive_constraint_solver_success
+        )
         after_error = weighted_target_error(
             dense_freqs,
             measured_dense_db,
@@ -605,6 +774,22 @@ def calculate_eq_bands(
     low_confidence_active_bands = int(
         np.sum((np.abs(optimal_gains) >= 0.25) & (band_confidences < 0.45))
     )
+    recommendation_status = "apply"
+    abstention_reasons: list[str] = []
+    if used_spectrum_fallback:
+        abstention_reasons.append("insufficient repeatable voiced windows")
+    if analysis_confidence is not None and float(analysis_confidence) < 0.35:
+        abstention_reasons.append("capture quality score is too low")
+    if snr_available and np.nanmedian(band_snr_db) < 3.0:
+        abstention_reasons.append("noise-referenced SNR is too low")
+    if low_confidence_active_bands >= 3:
+        abstention_reasons.append("too many active bands lack measurement support")
+    if abstention_reasons:
+        recommendation_status = "abstain"
+        optimal_gains = np.zeros_like(optimal_gains)
+        after_error = before_error
+    elif overall_confidence < 0.60 or validation_gain_scale < 0.70:
+        recommendation_status = "reduced"
 
     debug_log(f"[EQ_CALC] Final gains: {[round(g, 2) for g in optimal_gains]}")
 
@@ -613,12 +798,55 @@ def calculate_eq_bands(
         'band_qs': optimal_qs.tolist(),
         'band_freqs': optimal_centers_hz.tolist(),
         'band_confidences': band_confidences.tolist(),
+        'band_snr_db': [
+            float(value) if np.isfinite(value) else None
+            for value in band_snr_db
+        ],
+        'noise_referenced_snr_db': (
+            float(global_snr_db)
+            if snr_available and global_snr_db is not None
+            else None
+        ),
         'analysis_confidence': overall_confidence,
         'eq_confidence': eq_confidence,
         'capture_confidence': capture_confidence,
         'validation_confidence': validation_conf,
         'low_confidence_active_bands': low_confidence_active_bands,
         'active_band_count': int(np.sum(np.abs(optimal_gains) >= 0.25)),
+        'recommendation_status': recommendation_status,
+        'apply_recommended': recommendation_status != "abstain",
+        'abstention_reasons': abstention_reasons,
+        'confidence_semantics': 'bounded_quality_score',
+        'snr_reference_available': snr_available,
+        'noise_reference_source': (
+            str(noise_reference_source)
+            if snr_available
+            else "unavailable"
+        ),
+        'spectral_tilt_policy': tilt_policy,
+        'spectral_tilt_slope_db_per_decade': tilt_slope,
+        'spectral_tilt_fit_r2': tilt_fit_r2,
+        'constraint_solver_success': constraint_solver_success,
+        'max_adjacent_gain_difference_db': float(
+            np.max(np.abs(np.diff(optimal_gains)))
+        ),
+        'max_adjacent_gain_slope_db_per_octave': float(
+            np.max(
+                np.abs(np.diff(optimal_gains))
+                / np.maximum(
+                    np.diff(
+                        np.log2(
+                            np.clip(
+                                optimal_centers_hz,
+                                1e-6,
+                                None,
+                            )
+                        )
+                    ),
+                    1e-6,
+                )
+            )
+        ),
         'validation_before_error_db': before_error,
         'validation_after_error_db': after_error,
         'validation_gain_scale': validation_gain_scale,

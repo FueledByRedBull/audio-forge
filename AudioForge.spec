@@ -48,12 +48,6 @@ a = Analysis(
     excludes=[
         "PyQt6.QtPdf",
         "PyQt6.QtPdfWidgets",
-        # These SciPy namespaces are not imported by AudioForge's analysis
-        # path. Keeping them out avoids shipping optional solvers without
-        # changing the signal-processing or least-squares dependencies.
-        "scipy.integrate",
-        "scipy.interpolate",
-        "scipy.stats",
         "pytest",
         "setuptools",
         "wheel",

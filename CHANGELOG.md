@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.8.8 - 2026-07-27
+
+- Fixed the portable Windows bundle's SciPy runtime collection. `scipy.signal` transitively imports `scipy.integrate`, `scipy.interpolate`, and `scipy.stats`; none of these modules are excluded from the executable now.
+- Added a packaging regression guard so `package_smoke.py` fails if a required SciPy runtime module is excluded again.
+
 ## v1.8.7 - 2026-07-27
 
 - Added continuous VAD-posterior gain shaping with sample-rate-aware smoothing, preserving the existing low-latency VAD state machine while avoiding binary gate jumps around uncertain speech.

@@ -59,7 +59,8 @@ def _load_mono(path: Path) -> tuple[int, np.ndarray]:
     if np.issubdtype(audio.dtype, np.floating):
         normalized = audio.astype(np.float64)
     elif np.issubdtype(audio.dtype, np.signedinteger):
-        scale = float(max(abs(np.iinfo(audio.dtype).min), np.iinfo(audio.dtype).max))
+        info = np.iinfo(audio.dtype.name)
+        scale = float(max(abs(info.min), info.max))
         normalized = audio.astype(np.float64) / scale
     else:
         raise ValueError(f"unsupported WAV dtype in {path}: {audio.dtype}")

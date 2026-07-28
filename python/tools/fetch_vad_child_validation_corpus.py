@@ -108,7 +108,7 @@ def _select_rows(
 
 def _decode_flac(payload: bytes) -> tuple[int, np.ndarray]:
     try:
-        import soundfile as sf
+        import soundfile as sf  # type: ignore[reportMissingImports]
     except ImportError as exc:
         raise RuntimeError(
             "Install benchmark-only dependency soundfile==0.13.1"

@@ -60,6 +60,7 @@ norecursedirs = [
 
 [tool.pyright]
 include = ["python/mic_eq", "python/tests", "python/tools"]
+extraPaths = ["python/tools"]
 exclude = [
     ".venv",
     "build",

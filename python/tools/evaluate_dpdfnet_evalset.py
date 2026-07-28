@@ -35,7 +35,7 @@ def _load(path: Path) -> np.ndarray:
     if audio.ndim == 2:
         audio = np.mean(audio.astype(np.float64), axis=1)
     if np.issubdtype(audio.dtype, np.integer):
-        info = np.iinfo(audio.dtype)
+        info = np.iinfo(audio.dtype.name)
         audio = audio.astype(np.float64) / float(max(abs(info.min), info.max))
     return np.asarray(np.nan_to_num(audio), dtype=np.float64)
 

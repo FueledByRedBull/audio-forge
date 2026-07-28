@@ -369,7 +369,10 @@ def train_and_evaluate() -> dict[str, Any]:
 
     per_condition: dict[str, dict[str, float | int]] = {}
     for condition in sorted({str(clip["condition"]) for clip in clips}):
-        mask = np.asarray([clip["condition"] == condition for clip in clips])
+        mask = np.asarray(
+            [clip["condition"] == condition for clip in clips],
+            dtype=np.bool_,
+        )
         per_condition[condition] = _classification_metrics(
             clip_labels_array[mask],
             clip_probabilities_oof[mask],

@@ -47,10 +47,11 @@ def _load_mono_audio(path: Path) -> tuple[int, np.ndarray]:
     if np.issubdtype(audio.dtype, np.floating):
         normalized = audio.astype(np.float32)
     elif np.issubdtype(audio.dtype, np.signedinteger):
-        scale = float(max(abs(np.iinfo(audio.dtype).min), np.iinfo(audio.dtype).max))
+        info = np.iinfo(audio.dtype.name)
+        scale = float(max(abs(info.min), info.max))
         normalized = audio.astype(np.float32) / scale
     elif np.issubdtype(audio.dtype, np.unsignedinteger):
-        info = np.iinfo(audio.dtype)
+        info = np.iinfo(audio.dtype.name)
         midpoint = (float(info.max) + 1.0) / 2.0
         normalized = ((audio.astype(np.float64) - midpoint) / midpoint).astype(np.float32)
     else:

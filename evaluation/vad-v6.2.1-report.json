@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "evaluated_at": "2026-07-28",
+  "baseline_commit": "a99d7ff3fe99fed40ab545efd934aa5148cc1d3f",
+  "decision": {
+    "adapter_fix": "retain",
+    "silero_v5_1_2": "baseline",
+    "silero_v6_2_1": "retain",
+    "probability_calibration": "retain",
+    "default_gate_threshold": 0.48,
+    "reason": "The original one-child SLR98 gate used utterance clips as frame-exact speech labels and applied one compiled calibration to both models; that rejection was invalid. With independent calibration and thresholds fixed on the general calibration split, v6.2.1 improves the general held-out set and a balanced external set of 44 children without an event or false-opening regression."
+  },
+  "models": {
+    "v5_1_2": {
+      "sha256": "2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f",
+      "source": "https://raw.githubusercontent.com/snakers4/silero-vad/v5.1.2/src/silero_vad/data/silero_vad.onnx",
+      "license": "MIT"
+    },
+    "v6_2_1": {
+      "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+      "source": "https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.1/src/silero_vad/data/silero_vad.onnx",
+      "license": "MIT"
+    }
+  },
+  "adapter_finding": {
+    "shipped_behavior": "AudioForge 1.9.0 sent 512 samples directly and looked for optional output state_n.",
+    "documented_behavior": "Silero v5.1.2 and v6.2.1 prepend 64 prior samples to each 512-sample frame and return recurrent output stateN.",
+    "impact": "The shipped adapter omitted documented context and silently left recurrent state at zero.",
+    "fix": "Send a fixed 576-sample tensor, require stateN with exactly 256 float elements, update context/state after successful inference, and reset both together."
+  },
+  "corpus": {
+    "manifest_sha256": "b38d35b7c5e3b8e5c4bb891b1703cb5c2e3cc497ffda3ea739d38ec265c97e2e",
+    "capture_count": 498,
+    "source_count": 60,
+    "speech": "54 FSDD v1.0.10 recordings, six speakers, CC BY-SA 4.0",
+    "noise": "Six ESC-50 environmental recordings, CC BY-NC 3.0",
+    "conditions": [
+      "clean 16 kHz",
+      "clean 48 kHz",
+      "0 dB environmental noise",
+      "5 dB environmental noise at 48 kHz",
+      "10 dB environmental noise",
+      "20 dB environmental noise at 48 kHz",
+      "quiet speech",
+      "phone-band speech",
+      "deterministic high-pitch transform",
+      "noise-only at 16 and 48 kHz"
+    ],
+    "split": "Speaker-disjoint calibration, development, and held-out groups",
+    "label_method": "Exact inserted-speech sample intervals; a model frame is positive at 50% or greater interval overlap."
+  },
+  "three_arm_results_at_common_0_4_policy": {
+    "A1_v5_shipped_adapter": {
+      "macro_f1": 0.7505698581348537,
+      "balanced_accuracy": 0.8177214391301826,
+      "recall": 0.6671515856851906,
+      "held_out_macro_f1": 0.7338194443384302,
+      "held_out_balanced_accuracy": 0.8339835062340055,
+      "event_recall": 0.6893004115226338,
+      "held_out_event_recall": 0.6234567901234568,
+      "false_opening_count": 3,
+      "held_out_p95_onset_ms": 192.0,
+      "cold_start_inclusive_rtf": 0.04719877015090736,
+      "report_sha256": "0077abe45539e6e5720f805170bd1f9f3ca36b3e496cb79c3d73e7778abe8f3e"
+    },
+    "A2_v5_fixed_adapter_common_calibration": {
+      "macro_f1": 0.7420852645728306,
+      "balanced_accuracy": 0.8279111135768245,
+      "recall": 0.758073901658423,
+      "held_out_macro_f1": 0.704773350655023,
+      "held_out_balanced_accuracy": 0.8458564770085195,
+      "event_recall": 0.9300411522633745,
+      "held_out_event_recall": 0.9074074074074074,
+      "false_opening_count": 1,
+      "held_out_p95_onset_ms": 192.0,
+      "cold_start_inclusive_rtf": 0.04635147210768251,
+      "report_sha256": "b5f3cd374f23b0daaca5c236ac359859b72525745200a2bb4561dc2050253fd8"
+    },
+    "A3_v6_2_1_fixed_adapter_initial_candidate_calibration": {
+      "macro_f1": 0.74567138520057,
+      "balanced_accuracy": 0.8296091283196065,
+      "recall": 0.7743671806808263,
+      "held_out_macro_f1": 0.713120558691521,
+      "held_out_balanced_accuracy": 0.8534830729340908,
+      "event_recall": 0.9753086419753086,
+      "held_out_event_recall": 0.9629629629629629,
+      "false_opening_count": 0,
+      "held_out_p95_onset_ms": 168.0,
+      "cold_start_inclusive_rtf": 0.05028655593022316,
+      "report_sha256": "4a6768c9a3edfe8fc95818a5976432a6979d83027c385d67080dd83fbf1ad184"
+    }
+  },
+  "model_only_raw_0_5_comparison": {
+    "A2_v5_fixed": {
+      "macro_f1": 0.7092264561931383,
+      "balanced_accuracy": 0.8074737257441496,
+      "held_out_macro_f1": 0.6717791114146311,
+      "held_out_balanced_accuracy": 0.8193936905751514,
+      "noise_only_false_positive_frames": 8
+    },
+    "A3_v6_2_1_fixed": {
+      "macro_f1": 0.7413893792295579,
+      "balanced_accuracy": 0.8236406956977047,
+      "held_out_macro_f1": 0.7019251801182641,
+      "held_out_balanced_accuracy": 0.83532274821876,
+      "noise_only_false_positive_frames": 6
+    }
+  },
+  "calibration": {
+    "formula": "sigmoid(a * logit(p) + b)",
+    "retained_model": "Silero v6.2.1",
+    "a": 0.6922876962695815,
+    "b": 0.08612386233436284,
+    "held_out_raw_brier": 0.08901719652722678,
+    "held_out_calibrated_brier": 0.08744514085033282,
+    "held_out_raw_ece": 0.05172749018655324,
+    "held_out_calibrated_ece": 0.03453260614364668,
+    "residual_calibration_after_implementation": "identity"
+  },
+  "initial_proxy_edge_and_runtime_results": {
+    "high_pitch_A2_frame_f1": 0.7926112510495382,
+    "high_pitch_A3_frame_f1": 0.7842493847415914,
+    "high_pitch_A2_event_recall": 0.9074074074074074,
+    "high_pitch_A3_event_recall": 0.9444444444444444,
+    "high_pitch_A2_p95_onset_ms": 211.19999999999982,
+    "high_pitch_A3_p95_onset_ms": 208.0,
+    "candidate_v6_false_openings_per_noise_minute_for_250ms_events": 0.0,
+    "candidate_v6_60_second_steady_rtf": 0.005089998833332174,
+    "candidate_v6_60_second_median_runtime_seconds": 0.32201165000014953,
+    "candidate_v6_60_second_p95_runtime_seconds": 0.33965840499963634
+  },
+  "downstream_constant_decisions": {
+    "gate_default": "Use 0.48, the UI-representable rounding of the independently selected v6 calibration threshold 0.475. Existing user-authored numeric thresholds are preserved.",
+    "auto_setup_threshold": "Replace the old 0.34-0.58 rule with a calibrated 0.4475-0.4725 SNR range.",
+    "ordinary_measurement_evidence": "Use 0.40 instead of 0.35.",
+    "strong_measurement_evidence": "Retain 0.65.",
+    "noise_reference_contamination": "Retain conservative 0.35.",
+    "noise_floor_eligibility": "Retain 0.30; it excludes speech-like clock transients while admitting the P99 of five of six noise-only classes.",
+    "deesser_enable_probability": "Unchanged because it is a sibilance-classifier probability, not a VAD posterior."
+  },
+  "superseded_slr98_validation": {
+    "validity_finding": "Speaker b is correctly identified as the five-year-old child, but SLR98 supplies segmented utterance-level metadata rather than frame-exact speech intervals. Labeling every sample as speech made frame F1, recall, specificity, and onset unsuitable as a model-retention gate. Both models also shared the currently compiled calibration in each run.",
+    "general_corpus": {
+      "capture_count": 498,
+      "old_v5_macro_f1": 0.7378365739838275,
+      "old_v6_macro_f1": 0.7338088241869422,
+      "old_v5_balanced_accuracy": 0.8252669884505517,
+      "old_v6_balanced_accuracy": 0.8224240237215998,
+      "old_v5_held_out_macro_f1": 0.7010461526371483,
+      "old_v6_held_out_macro_f1": 0.6974986205634467,
+      "old_v5_held_out_event_recall": 0.9753086419753086,
+      "old_v6_held_out_event_recall": 0.9814814814814815,
+      "old_v5_held_out_p95_onset_ms": 192.0,
+      "old_v6_held_out_p95_onset_ms": 160.0,
+      "interpretation": "The final model-specific calibration leaves the general-corpus result mixed: v5 leads macro-F1 and balanced accuracy, while v6 has a small event-recall/onset advantage."
+    },
+    "real_child_corpus": {
+      "source": "OpenSLR SLR98 Parent-Child Vocal Interaction, speaker-b child utterances, local evaluation only",
+      "license": "CC BY-NC-ND 4.0",
+      "capture_count": 60,
+      "old_v5_macro_f1": 0.7633822015469733,
+      "old_v6_macro_f1": 0.6938551157165496,
+      "old_v5_recall": 0.6852068411051015,
+      "old_v6_recall": 0.6099985382254056,
+      "old_v5_event_recall": 0.9166666666666666,
+      "old_v6_event_recall": 0.8833333333333333,
+      "old_v5_p95_onset_ms": 2297.5999999999995,
+      "old_v6_p95_onset_ms": 2783.999999999999,
+      "superseded_report_status": "Removed because its labels were invalid for frame-level and onset model selection."
+    },
+    "retention_rule": "Superseded; these values are retained only to document why the first rejection was withdrawn."
+  },
+  "corrected_model_selection": {
+    "report": "evaluation/vad-model-selection-report.json",
+    "method": "Fit a separate Platt transform and threshold for each model on the existing general calibration split; lock both; evaluate the general held-out split and an untouched OpenSLR SLR117 test subset balanced across ages 6-16 and female/male speakers; bootstrap paired differences by speaker.",
+    "external_child_corpus": {
+      "source": "OpenSLR SLR117 Samromur Children 21.09",
+      "license": "CC BY 4.0",
+      "speaker_count": 44,
+      "capture_count": 88
+    },
+    "general_held_out": {
+      "v5_macro_f1": 0.7051514066085958,
+      "v6_macro_f1": 0.7160368299925262,
+      "v5_balanced_accuracy": 0.8466496558312249,
+      "v6_balanced_accuracy": 0.8494090991733134,
+      "v5_event_recall": 0.9197530864197531,
+      "v6_event_recall": 0.9382716049382716,
+      "false_openings_both": 0
+    },
+    "external_child": {
+      "v5_macro_f1": 0.7496480869885809,
+      "v6_macro_f1": 0.7623679982906771,
+      "paired_macro_f1_delta": 0.01271991130209623,
+      "paired_macro_f1_delta_ci95": [
+        0.005457005502158203,
+        0.02047548429575417
+      ],
+      "v5_recall": 0.6114913918274217,
+      "v6_recall": 0.6254926363824933,
+      "v5_roc_auc": 0.8773579421766793,
+      "v6_roc_auc": 0.9016186721228715,
+      "paired_roc_auc_delta": 0.019819828349863153,
+      "paired_roc_auc_delta_ci95": [
+        0.009131826027945043,
+        0.030153873724905644
+      ],
+      "event_recall_both": 1.0,
+      "false_openings_both": 0,
+      "youngest_age_6_mean_macro_f1_delta": 0.05711
+    },
+    "decision": "Retain v6.2.1; every predefined independently calibrated general and multi-speaker child gate passes."
+  },
+  "limitations": [
+    "The local speech corpus contains English spoken digits from six speakers, not conversational multilingual speech.",
+    "The corrected child set contains Icelandic read speech from 44 speakers; spontaneous speech and children younger than six remain outside that external set.",
+    "SLR98 contains one five-year-old child and remains a qualitative stress corpus only; its old frame/onset metrics are not load-bearing.",
+    "High-pitch proxy results remain descriptive and are not treated as a substitute for real child speech.",
+    "Upstream v6.0/v6.2 quality claims remain author-reported; this report does not reproduce their private datasets.",
+    "Cold-start-inclusive corpus RTF includes one model/session construction per short capture and is not the live steady-state cost."
+  ]
+}

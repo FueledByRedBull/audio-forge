@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -67,6 +68,15 @@ def _extract_main_window_preset_version(path: str) -> str:
     raise ValueError(f"auto-eq preset default: version assignment not found in {path}")
 
 
+def _extract_cargo_lock_version(package_name: str) -> str:
+    with (REPO_ROOT / "Cargo.lock").open("rb") as handle:
+        lock = tomllib.load(handle)
+    for package in lock.get("package", []):
+        if package.get("name") == package_name:
+            return str(package["version"])
+    raise ValueError(f"Cargo.lock: package {package_name!r} not found")
+
+
 def main() -> int:
     expected = _single_match("pyproject.toml", r'^version\s*=\s*"([^"]+)"', "pyproject")
     package_version = _single_match(
@@ -88,6 +98,7 @@ def main() -> int:
             r'^version\s*=\s*"([^"]+)"',
             "rust core",
         ),
+        "Cargo.lock mic_eq_core": _extract_cargo_lock_version("mic_eq_core"),
         "python/mic_eq/__init__.py": package_version,
         "python/mic_eq/config_parts/shared.py CURRENT_VERSION": current_version,
         "README.md": _single_match(

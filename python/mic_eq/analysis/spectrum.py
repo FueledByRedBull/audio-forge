@@ -12,6 +12,8 @@ from scipy import signal
 from scipy.signal import find_peaks
 from scipy.signal.windows import dpss
 
+from .vad import VAD_SPEECH_EVIDENCE_THRESHOLD, VAD_STRONG_SPEECH_THRESHOLD
+
 VOICE_FRAME_RMS_GATE_DB = -48.0
 VOICE_FRAME_FLOOR_PERCENTILE = 20.0
 VOICE_FRAME_PEAK_PERCENTILE = 95.0
@@ -23,6 +25,9 @@ SILERO_WINDOW_SAMPLES = 512
 SILERO_SAMPLE_RATE = 16_000
 MULTIRES_MATERIAL_IMPROVEMENT_DB = 0.75
 SPECTRUM_ESTIMATOR_POLICY = "welch_hamming"
+UNCERTAINTY_BLOCK_FRAMES = 3
+UNCERTAINTY_SCALE_DB = 2.5
+PHONETIC_COVERAGE_TARGET_BLOCKS = 12
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +50,9 @@ class VoiceSpectrumResult:
     spectral_snr_db: np.ndarray | None = None
     noise_spectrum_db: np.ndarray | None = None
     noise_reference_source: str = "unavailable"
+    measurement_uncertainty_db: np.ndarray | None = None
+    phonetic_coverage: float = 0.0
+    effective_measurement_blocks: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,8 +239,8 @@ def _voiced_frame_mask(
         VOICE_FRAME_RMS_GATE_DB,
         floor_db + 0.25 * max(spread_db, VOICE_FRAME_MIN_SPREAD_DB),
     )
-    posterior_mask = (posterior >= 0.35) & supported_energy
-    strong_posterior_mask = posterior >= 0.65
+    posterior_mask = (posterior >= VAD_SPEECH_EVIDENCE_THRESHOLD) & supported_energy
+    strong_posterior_mask = posterior >= VAD_STRONG_SPEECH_THRESHOLD
     combined = posterior_mask | strong_posterior_mask
     if int(np.count_nonzero(combined)) >= MIN_VOICED_FRAMES:
         return combined
@@ -370,10 +378,59 @@ def _estimate_tilt_db_per_octave(freqs: np.ndarray, spectrum_db: np.ndarray) -> 
     return float(np.dot(x_center, y - float(np.mean(y))) / denom)
 
 
-def _shape_repeatability(
+def _coarse_phonetic_coverage(
+    freqs: np.ndarray,
+    normalized_spectra_db: np.ndarray,
+) -> float:
+    """Estimate whether the take spans useful broad speech shapes.
+
+    This is intentionally separate from estimator uncertainty. A homogeneous
+    utterance can be measured precisely while still being unrepresentative of
+    the speaker's broader phonetic distribution.
+    """
+    bands = (
+        (100.0, 350.0, 3.0),
+        (350.0, 1000.0, 4.0),
+        (1000.0, 2500.0, 5.0),
+        (2500.0, 4500.0, 6.0),
+        (4500.0, 8000.0, 7.0),
+    )
+    diversity_scores: list[float] = []
+    for low_hz, high_hz, target_spread_db in bands:
+        mask = (freqs >= low_hz) & (freqs < high_hz)
+        if not np.any(mask):
+            continue
+        band_level = np.median(normalized_spectra_db[:, mask], axis=1)
+        spread_db = float(np.percentile(band_level, 90.0) - np.percentile(band_level, 10.0))
+        diversity_scores.append(float(np.clip(spread_db / target_spread_db, 0.0, 1.0)))
+    if not diversity_scores:
+        return 0.0
+    return float(np.mean(diversity_scores))
+
+
+def _effective_block_count(block_spectra_db: np.ndarray) -> float:
+    block_count = int(block_spectra_db.shape[0])
+    if block_count <= 1:
+        return float(block_count)
+    centered = block_spectra_db - np.median(block_spectra_db, axis=0, keepdims=True)
+    left = centered[:-1].reshape(-1)
+    right = centered[1:].reshape(-1)
+    denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
+    if denominator <= 1e-12:
+        lag_one = 0.95
+    else:
+        lag_one = float(np.clip(np.dot(left, right) / denominator, 0.0, 0.95))
+    effective = block_count * (1.0 - lag_one) / (1.0 + lag_one)
+    return float(np.clip(effective, 1.0, float(block_count)))
+
+
+def _measurement_reliability(
     freqs: np.ndarray,
     spectra_db: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
+    frame_starts: np.ndarray,
+    frame_size: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float]:
+    """Return uncertainty-derived reliability without treating phonetics as noise."""
     smoothed = np.asarray(
         [smooth_spectrum_perceptual(freqs, spectrum) for spectrum in spectra_db],
         dtype=float,
@@ -385,13 +442,57 @@ def _shape_repeatability(
         per_window_level = np.mean(smoothed, axis=1, keepdims=True)
 
     normalized = smoothed - per_window_level
-    std_db = np.std(normalized, axis=0)
-    repeatability = np.clip(1.0 - std_db / 8.0, 0.0, 1.0)
 
-    if np.any(voice_mask):
-        voice_repeatability = float(np.median(repeatability[voice_mask]))
-        repeatability[voice_mask] = 0.70 * repeatability[voice_mask] + 0.30 * voice_repeatability
-    return np.clip(repeatability, 0.0, 1.0), smoothed
+    # Greedily retain non-overlapping analysis windows. The production windows
+    # overlap by 50%, so raw window count is not a valid independent N.
+    independent_indices: list[int] = []
+    next_start = -1
+    for index, start in enumerate(np.asarray(frame_starts, dtype=int)):
+        if int(start) >= next_start:
+            independent_indices.append(index)
+            next_start = int(start) + int(frame_size)
+    independent = normalized[np.asarray(independent_indices, dtype=int)]
+
+    block_rows: list[np.ndarray] = []
+    for start in range(0, independent.shape[0], UNCERTAINTY_BLOCK_FRAMES):
+        block = independent[start:start + UNCERTAINTY_BLOCK_FRAMES]
+        if block.shape[0] == UNCERTAINTY_BLOCK_FRAMES:
+            block_rows.append(np.median(block, axis=0))
+    if not block_rows and independent.shape[0] > 0:
+        block_rows.append(np.median(independent, axis=0))
+    blocks = np.asarray(block_rows, dtype=float)
+    effective_blocks = _effective_block_count(blocks)
+
+    if blocks.shape[0] < 2:
+        uncertainty_db = np.full(freqs.shape, np.inf, dtype=float)
+        reliability = np.zeros(freqs.shape, dtype=float)
+    else:
+        centre = np.median(blocks, axis=0)
+        robust_sigma = 1.4826 * np.median(np.abs(blocks - centre), axis=0)
+        # 1.253 is the asymptotic normal-distribution standard-error factor for
+        # a sample median. A small resolution floor prevents exact duplicated
+        # blocks from manufacturing perfect certainty.
+        uncertainty_db = (
+            1.253 * robust_sigma + 0.35
+        ) / np.sqrt(max(effective_blocks, 1.0))
+        reliability = np.exp(-np.square(uncertainty_db / UNCERTAINTY_SCALE_DB))
+
+    phonetic_diversity = _coarse_phonetic_coverage(freqs, independent)
+    duration_coverage = float(
+        np.clip(
+            effective_blocks / PHONETIC_COVERAGE_TARGET_BLOCKS,
+            0.0,
+            1.0,
+        )
+    )
+    phonetic_coverage = float(np.sqrt(phonetic_diversity * duration_coverage))
+    return (
+        np.clip(reliability, 0.0, 1.0),
+        smoothed,
+        uncertainty_db,
+        phonetic_coverage,
+        effective_blocks,
+    )
 
 
 def analyze_voice_spectrum(
@@ -442,7 +543,7 @@ def analyze_voice_spectrum(
     voiced_ratio = float(np.mean(voiced_mask)) if voiced_mask.size else 0.0
     voiced_frames = frames[voiced_mask]
     vad_active_ratio = (
-        float(np.mean(frame_vad_probabilities >= 0.35))
+        float(np.mean(frame_vad_probabilities >= VAD_SPEECH_EVIDENCE_THRESHOLD))
         if frame_vad_probabilities is not None
         else 0.0
     )
@@ -516,7 +617,7 @@ def analyze_voice_spectrum(
                 aligned_speech_spectrum,
                 aligned_noise_spectrum,
             )
-        repeatability = np.full_like(freqs, 0.45, dtype=float)
+        repeatability = np.zeros_like(freqs, dtype=float)
         return VoiceSpectrumResult(
             freqs=freqs,
             median_spectrum_db=spectrum_db,
@@ -529,7 +630,7 @@ def analyze_voice_spectrum(
             ),
             spectral_repeatability=repeatability,
             spectral_tilt_db_per_octave=_estimate_tilt_db_per_octave(freqs, spectrum_db),
-            residual_confidence=0.45,
+            residual_confidence=0.0,
             used_single_spectrum_fallback=True,
             measurement_coverage=0.45,
             outlier_rejection_ratio=0.0,
@@ -538,6 +639,9 @@ def analyze_voice_spectrum(
             spectral_snr_db=aligned_spectral_snr,
             noise_spectrum_db=aligned_noise_spectrum,
             noise_reference_source=noise_reference_source,
+            measurement_uncertainty_db=np.full_like(freqs, np.inf, dtype=float),
+            phonetic_coverage=0.0,
+            effective_measurement_blocks=0.0,
         )
 
     spectra = []
@@ -550,7 +654,18 @@ def analyze_voice_spectrum(
 
     assert freqs is not None
     spectra_arr = np.asarray(spectra, dtype=float)
-    repeatability, smoothed_spectra = _shape_repeatability(freqs, spectra_arr)
+    (
+        repeatability,
+        smoothed_spectra,
+        uncertainty_db,
+        phonetic_coverage,
+        effective_blocks,
+    ) = _measurement_reliability(
+        freqs,
+        spectra_arr,
+        frame_starts[voiced_mask],
+        nperseg,
+    )
     median_spectrum, inlier_ratio = _robust_median_spectrum(freqs, smoothed_spectra)
     if noise_spectrum_db is not None and reference_freqs is not None:
         noise_spectrum_db = np.interp(freqs, reference_freqs, noise_spectrum_db)
@@ -559,7 +674,7 @@ def analyze_voice_spectrum(
     snr_confidence = (
         float(np.clip((snr_db - 3.0) / 15.0, 0.0, 1.0))
         if noise_spectrum_db is not None
-        else 0.25
+        else None
     )
     voice_mask = (freqs >= 100.0) & (freqs <= 8000.0)
     repeatability_score = (
@@ -567,23 +682,43 @@ def analyze_voice_spectrum(
         if np.any(voice_mask)
         else float(np.median(repeatability))
     )
-    coverage = float(np.clip(voiced_ratio / 0.55, 0.0, 1.0))
-    measurement_coverage = float(np.clip(0.55 * coverage + 0.45 * inlier_ratio, 0.0, 1.0))
-    residual_confidence = float(
+    duration_coverage = float(
         np.clip(
-            0.45 * repeatability_score
-            + 0.25 * coverage
-            + 0.20 * snr_confidence,
+            effective_blocks / PHONETIC_COVERAGE_TARGET_BLOCKS,
             0.0,
             1.0,
         )
     )
+    measurement_coverage = float(
+        np.clip(
+            0.45 * inlier_ratio
+            + 0.35 * phonetic_coverage
+            + 0.20 * duration_coverage,
+            0.0,
+            1.0,
+        )
+    )
+    if snr_confidence is None:
+        residual_confidence = float(
+            np.clip(
+                0.5625 * repeatability_score + 0.4375 * phonetic_coverage,
+                0.0,
+                0.70,
+            )
+        )
+    else:
+        residual_confidence = float(
+            np.clip(
+                0.45 * repeatability_score
+                + 0.35 * phonetic_coverage
+                + 0.20 * snr_confidence,
+                0.0,
+                1.0,
+            )
+        )
     residual_confidence = float(
         np.clip(residual_confidence * (0.75 + 0.25 * measurement_coverage), 0.0, 1.0)
     )
-    if noise_spectrum_db is None:
-        residual_confidence = min(residual_confidence, 0.70)
-
     return VoiceSpectrumResult(
         freqs=freqs,
         median_spectrum_db=median_spectrum,
@@ -601,6 +736,9 @@ def analyze_voice_spectrum(
         spectral_snr_db=spectral_snr_db,
         noise_spectrum_db=noise_spectrum_db,
         noise_reference_source=noise_reference_source,
+        measurement_uncertainty_db=uncertainty_db,
+        phonetic_coverage=phonetic_coverage,
+        effective_measurement_blocks=effective_blocks,
     )
 
 

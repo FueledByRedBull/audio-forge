@@ -31,8 +31,8 @@ use crate::dsp::eq::{DEFAULT_FREQUENCIES, DEFAULT_Q, NUM_BANDS};
 use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressionEngine, NoiseSuppressor};
 use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
 use crate::dsp::{
-    Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, TruePeakDetector, TruePeakLimiter,
-    TruePeakLimiterBlockStats,
+    AutoMakeupActivityInput, Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ,
+    TruePeakDetector, TruePeakLimiter, TruePeakLimiterBlockStats,
 };
 
 #[cfg(feature = "vad")]
@@ -514,7 +514,7 @@ impl AudioProcessor {
 
                 #[cfg(feature = "vad")]
                 {
-                    let vad_auto_gate = VadAutoGate::without_backend(sample_rate, 0.5);
+                    let vad_auto_gate = VadAutoGate::without_backend(sample_rate, 0.48);
                     if let Ok(mut g) = gate.lock() {
                         g.set_vad_auto_gate(Some(vad_auto_gate));
                         apply_gate_control(&mut g, &gate_control_state);

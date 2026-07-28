@@ -100,6 +100,17 @@ if ($LASTEXITCODE -eq 0) {
         exit $LASTEXITCODE
     }
 
+    $version = & $venvPython -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
+        Write-Host "Failed to resolve the bundle version from pyproject.toml." -ForegroundColor Red
+        exit 1
+    }
+    $buildInfoPath = Join-Path $ProjectRoot "dist\AudioForge\_internal\audioforge-build.json"
+    @{
+        schema_version = 1
+        version = $version.Trim()
+    } | ConvertTo-Json | Set-Content -LiteralPath $buildInfoPath -Encoding utf8
+
     Write-Host ""
     Write-Host "SUCCESS!" -ForegroundColor Green
     Write-Host ""

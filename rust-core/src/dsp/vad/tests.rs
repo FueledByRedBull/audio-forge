@@ -156,6 +156,46 @@ mod tests {
     }
 
     #[test]
+    fn test_silero_model_input_prepends_context_and_applies_gain() {
+        let mut context = [0.0_f32; SILERO_CONTEXT_SIZE];
+        for (index, sample) in context.iter_mut().enumerate() {
+            *sample = index as f32;
+        }
+        let frame = std::array::from_fn(|index| 1000.0 + index as f32);
+        let mut model_input = [0.0_f32; SILERO_MODEL_INPUT_SIZE];
+
+        prepare_silero_model_input(&context, &frame, 0.5, &mut model_input);
+
+        assert_eq!(model_input.len(), SILERO_MODEL_INPUT_SIZE);
+        assert_eq!(model_input[0], 0.0);
+        assert_eq!(
+            model_input[SILERO_CONTEXT_SIZE - 1],
+            (SILERO_CONTEXT_SIZE - 1) as f32 * 0.5
+        );
+        assert_eq!(model_input[SILERO_CONTEXT_SIZE], 500.0);
+        assert_eq!(
+            model_input[SILERO_MODEL_INPUT_SIZE - 1],
+            (1000.0 + (SILERO_WINDOW_SIZE - 1) as f32) * 0.5
+        );
+    }
+
+    #[test]
+    fn test_silero_probability_calibration_is_finite_monotonic_and_bounded() {
+        let inputs = [f32::NEG_INFINITY, f32::NAN, 0.0, 0.1, 0.5, 0.9, 1.0];
+        let outputs = inputs.map(calibrate_silero_probability);
+
+        assert!(outputs.iter().all(|value| value.is_finite()));
+        assert!(outputs.iter().all(|value| (0.0..=1.0).contains(value)));
+        assert_eq!(outputs[0], 0.0);
+        assert_eq!(outputs[1], 0.0);
+        assert!(outputs[2] < outputs[3]);
+        assert!(outputs[3] < outputs[4]);
+        assert!(outputs[4] < outputs[5]);
+        assert!(outputs[5] < outputs[6]);
+        assert!((outputs[4] - 0.521_517_7).abs() < 1e-5);
+    }
+
+    #[test]
     fn test_anti_aliased_resample_into_downsamples_to_expected_length() {
         let input = vec![1.0f32; 1536];
         let mut output = Vec::new();
@@ -360,7 +400,59 @@ mod tests {
         let _ = vad.process(&frame);
 
         assert_eq!(vad.audio_512.len(), SILERO_WINDOW_SIZE);
+        assert_eq!(vad.gained_audio.len(), SILERO_MODEL_INPUT_SIZE);
         assert_eq!(vad.resample_scratch.len(), SILERO_WINDOW_SIZE);
+    }
+
+    #[test]
+    fn test_model_optional_vad_updates_and_resets_v621_context() {
+        let Some(mut vad) = optional_silero_vad(SILERO_SAMPLE_RATE, 0.5) else {
+            return;
+        };
+
+        let frame = (0..SILERO_WINDOW_SIZE)
+            .map(|index| index as f32 / SILERO_WINDOW_SIZE as f32)
+            .collect::<Vec<_>>();
+        let _ = vad.process(&frame).unwrap();
+
+        assert_eq!(
+            vad.context_audio.as_slice(),
+            &frame[SILERO_WINDOW_SIZE - SILERO_CONTEXT_SIZE..]
+        );
+
+        vad.reset();
+        assert!(vad.context_audio.iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn test_pinned_silero_model_contract_runs_context_and_recurrent_state() {
+        let mut vad = SileroVAD::new(SILERO_SAMPLE_RATE, 0.5)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let initial_state = vad.state.clone();
+        let frame = (0..SILERO_WINDOW_SIZE)
+            .map(|index| {
+                let time = index as f32 / SILERO_SAMPLE_RATE as f32;
+                0.2 * (2.0 * std::f32::consts::PI * 220.0 * time).sin()
+            })
+            .collect::<Vec<_>>();
+
+        let probability = vad.process(&frame).expect(
+            "576-sample context/frame input and mandatory stateN output must run successfully",
+        );
+
+        assert!(probability.is_finite());
+        assert_ne!(
+            vad.state, initial_state,
+            "stateN must update the recurrent state"
+        );
+        assert_eq!(
+            vad.context_audio.as_slice(),
+            &frame[SILERO_WINDOW_SIZE - SILERO_CONTEXT_SIZE..]
+        );
+
+        vad.reset();
+        assert!(vad.state.iter().all(|sample| *sample == 0.0));
+        assert!(vad.context_audio.iter().all(|sample| *sample == 0.0));
     }
 
     #[test]
@@ -374,6 +466,31 @@ mod tests {
 
         assert!((prob - 0.42).abs() < 1e-6);
         assert!((vad.probability() - 0.42).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_noise_floor_reliability_requires_mature_history() {
+        let mut gate = VadAutoGate::without_backend(48_000, 0.4);
+        for _ in 0..NOISE_FLOOR_HISTORY_FRAMES / 4 {
+            gate.push_noise_floor_sample(-52.0);
+        }
+
+        let expected =
+            (NOISE_FLOOR_HISTORY_FRAMES / 4) as f32 / NOISE_FLOOR_HISTORY_FRAMES as f32;
+        assert!((gate.noise_floor_reliability() - expected).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn test_noise_floor_reliability_rejects_nonstationary_history() {
+        let mut stationary = VadAutoGate::without_backend(48_000, 0.4);
+        let mut varying = VadAutoGate::without_backend(48_000, 0.4);
+        for index in 0..NOISE_FLOOR_HISTORY_FRAMES {
+            stationary.push_noise_floor_sample(-52.0 + (index % 2) as f32);
+            varying.push_noise_floor_sample(-72.0 + (index % 30) as f32);
+        }
+
+        assert!(stationary.noise_floor_reliability() > 0.95);
+        assert!(varying.noise_floor_reliability() < 0.10);
     }
 
     fn optional_silero_vad(sample_rate: u32, threshold: f32) -> Option<SileroVAD> {

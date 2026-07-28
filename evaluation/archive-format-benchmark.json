@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "evaluated_bundle": {
+    "path": "dist/AudioForge",
+    "bytes": 301611876,
+    "file_count": 211
+  },
+  "environment": {
+    "platform": "Windows 11 x64",
+    "seven_zip": "26.02",
+    "bsdtar": "3.8.4"
+  },
+  "method": "Archive the same final portable-folder contents, then validate each archive with 7z test or bsdtar list.",
+  "results": [
+    {
+      "format": "7z solid LZMA2 max with automatic BCJ2",
+      "bytes": 112014596,
+      "seconds": 37.71,
+      "valid": true
+    },
+    {
+      "format": "7z solid LZMA2 256 MiB dictionary",
+      "bytes": 112014596,
+      "seconds": 37.22,
+      "valid": true
+    },
+    {
+      "format": "7z solid LZMA 256 MiB dictionary",
+      "bytes": 112693623,
+      "seconds": 35.97,
+      "valid": true
+    },
+    {
+      "format": "tar.xz",
+      "bytes": 117298684,
+      "seconds": 58.21,
+      "valid": true
+    },
+    {
+      "format": "tar.zst",
+      "bytes": 139895978,
+      "seconds": 0.99,
+      "valid": true
+    },
+    {
+      "format": "ZIP Deflate max",
+      "bytes": 143646633,
+      "seconds": 16.11,
+      "valid": true
+    },
+    {
+      "format": "tar.gz",
+      "bytes": 147121206,
+      "seconds": 7.39,
+      "valid": true
+    }
+  ],
+  "decision": {
+    "format": "7z",
+    "command_settings": "-t7z -mx=9 -m0=lzma2 -mmt=on -ms=on",
+    "reason": "Smallest verified output; an explicit 256 MiB dictionary produced identical bytes, so the simpler existing command is retained."
+  },
+  "final_artifact": {
+    "path": "AudioForge-v1.10.0-win64-ultra.7z",
+    "bytes": 112014596,
+    "sha256": "80be47b72cb934e39b97e014e2d5ea88d73eb56c1e68071c843ab2dcce140d37"
+  }
+}

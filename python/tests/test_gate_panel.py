@@ -47,6 +47,13 @@ class _GateProcessor:
         return -60.0
 
 
+def test_gate_panel_uses_calibrated_vad_default(qapp):
+    panel = GatePanel(_GateProcessor(vad_available=True))
+
+    assert panel.vad_threshold_slider.value() == 48
+    assert panel.vad_threshold_spinbox.value() == 0.48
+
+
 def test_gate_panel_preserves_loaded_vad_mode_when_backend_unavailable(qapp):
     processor = _GateProcessor(vad_available=False)
     panel = GatePanel(processor)

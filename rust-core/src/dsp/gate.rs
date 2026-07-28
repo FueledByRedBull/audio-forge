@@ -945,6 +945,15 @@ impl NoiseGate {
             .map(|v| v.noise_floor())
             .unwrap_or(-60.0)
     }
+
+    #[cfg(feature = "vad")]
+    /// Return maturity/stationarity confidence for the live noise-floor estimate.
+    pub fn noise_floor_reliability(&self) -> f32 {
+        self.vad_auto_gate
+            .as_ref()
+            .map(|v| v.noise_floor_reliability())
+            .unwrap_or(0.0)
+    }
 }
 
 #[cfg(test)]

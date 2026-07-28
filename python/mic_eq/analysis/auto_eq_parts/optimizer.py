@@ -22,7 +22,6 @@ from .constants import (
 from .dynamic_bands import (
     _build_dense_log_grid,
     _center_bounds,
-    _enforce_adjacent_gain_limit,
     _estimate_band_snr_db,
     _q_bounds,
     _remove_spectral_tilt,
@@ -130,11 +129,10 @@ def _band_confidence(
     active_gains: np.ndarray | None = None,
     *,
     snr_available: bool = True,
+    phonetic_coverage: float | None = None,
 ) -> np.ndarray:
     if snr_available:
         snr_reliability = np.clip((band_snr_db - 3.0) / 10.0, 0.0, 1.0)
-    else:
-        snr_reliability = np.full_like(centers_hz, 0.45, dtype=float)
     residual_at_centers = np.abs(np.interp(centers_hz, dense_freqs, residual_db))
     if active_gains is None:
         active_mask = residual_at_centers >= 0.75
@@ -145,9 +143,8 @@ def _band_confidence(
         np.clip(residual_at_centers / 2.0, 0.55, 1.0),
         0.55,
     )
-    if repeatability_dense is None:
-        repeatability = np.full_like(centers_hz, 0.60, dtype=float)
-    else:
+    repeatability: np.ndarray | None = None
+    if repeatability_dense is not None:
         repeatability = np.interp(
             centers_hz,
             dense_freqs,
@@ -155,13 +152,20 @@ def _band_confidence(
             left=float(repeatability_dense[0]),
             right=float(repeatability_dense[-1]),
         )
-    coverage = np.clip(voiced_window_ratio / 0.55, 0.0, 1.0)
-    confidence = (
-        0.25 * snr_reliability
-        + 0.35 * repeatability
-        + 0.25 * correction_support
-        + 0.15 * coverage
+    coverage = (
+        float(np.clip(phonetic_coverage, 0.0, 1.0))
+        if phonetic_coverage is not None
+        else float(np.clip(voiced_window_ratio / 0.55, 0.0, 1.0))
     )
+    confidence = 0.25 * correction_support + 0.15 * coverage
+    evidence_weight = 0.40
+    if snr_available:
+        confidence = confidence + 0.25 * snr_reliability
+        evidence_weight += 0.25
+    if repeatability is not None:
+        confidence = confidence + 0.35 * repeatability
+        evidence_weight += 0.35
+    confidence = confidence / evidence_weight
     return np.clip(confidence, 0.0, 1.0)
 
 
@@ -173,14 +177,24 @@ def _constrained_gain_refinement(
     qs: np.ndarray,
     centers_hz: np.ndarray,
     weights: np.ndarray,
+    gain_lower: np.ndarray | None = None,
+    gain_upper: np.ndarray | None = None,
 ) -> tuple[np.ndarray, bool]:
-    """Re-optimize confidence-scaled gains under explicit adjacency bounds."""
+    """Re-optimize gains symmetrically inside the final safety bounds."""
     gains_arr = np.asarray(gains, dtype=float)
     adjacent_limits = _adjacent_gain_limits(centers_hz)
-    projected = _enforce_adjacent_gain_limit(gains_arr, adjacent_limits)
-    lower = np.minimum(gains_arr, 0.0)
-    upper = np.maximum(gains_arr, 0.0)
-    projected = np.clip(projected, lower, upper)
+    constraint_margin = 1.0e-7
+    lower = (
+        np.full(gains_arr.shape, GAIN_MIN_DB, dtype=float)
+        if gain_lower is None
+        else np.asarray(gain_lower, dtype=float)
+    )
+    upper = (
+        np.full(gains_arr.shape, GAIN_MAX_DB, dtype=float)
+        if gain_upper is None
+        else np.asarray(gain_upper, dtype=float)
+    )
+    gains_arr = np.clip(gains_arr, lower, upper)
 
     def objective(candidate: np.ndarray) -> float:
         response = _predict_eq_response(dense_freqs, candidate, qs, centers_hz)
@@ -201,7 +215,7 @@ def _constrained_gain_refinement(
         )
 
     def adjacency_slack(candidate: np.ndarray) -> np.ndarray:
-        return adjacent_limits - np.abs(np.diff(candidate))
+        return adjacent_limits - constraint_margin - np.abs(np.diff(candidate))
 
     solver_bounds: Any = list(zip(lower.tolist(), upper.tolist(), strict=True))
     solver_constraints: Any = (
@@ -209,6 +223,21 @@ def _constrained_gain_refinement(
             "type": "ineq",
             "fun": adjacency_slack,
         },
+    )
+    projection = minimize(
+        lambda candidate: float(np.sum(np.square(candidate - gains_arr))),
+        gains_arr,
+        method="SLSQP",
+        bounds=solver_bounds,
+        constraints=solver_constraints,
+        options={"ftol": 1e-9, "maxiter": 120, "disp": False},
+    )
+    projected = (
+        np.asarray(projection.x, dtype=float)
+        if projection.success
+        and np.all(np.isfinite(projection.x))
+        and np.all(np.abs(np.diff(projection.x)) <= adjacent_limits + 1.0e-9)
+        else np.zeros_like(gains_arr)
     )
     result = minimize(
         objective,
@@ -220,7 +249,7 @@ def _constrained_gain_refinement(
     )
     if result.success and np.all(np.isfinite(result.x)):
         candidate = np.asarray(result.x, dtype=float)
-        if np.all(np.abs(np.diff(candidate)) <= adjacent_limits + 1e-6):
+        if np.all(np.abs(np.diff(candidate)) <= adjacent_limits + 1e-9):
             return candidate, True
     return projected, False
 
@@ -237,10 +266,9 @@ def _regularize_q_for_confidence(
         conf = float(confidence[i])
         if abs(gain) < 0.25:
             continue
-        if conf < 0.65:
-            bounded[i] = min(bounded[i], 1.0 + conf * 2.0)
+        bounded[i] = min(bounded[i], 1.0 + conf * 3.2)
         if gain > 0.0:
-            bounded[i] = min(bounded[i], 4.2 if conf > 0.75 else 2.8)
+            bounded[i] = min(bounded[i], 1.0 + conf * 3.2)
         if centers_hz[i] < 250.0:
             bounded[i] = min(bounded[i], 1.8 if gain > 0.0 else 2.2)
 
@@ -251,23 +279,6 @@ def _regularize_q_for_confidence(
                 bounded[i - 1] = min(bounded[i - 1], 2.5)
                 bounded[i] = min(bounded[i], 2.5)
     return np.clip(bounded, q_low, q_high)
-
-
-def _apply_confidence_gain_scaling(
-    gains: np.ndarray,
-    confidence: np.ndarray,
-) -> np.ndarray:
-    scaled = gains.copy()
-    for i, gain in enumerate(scaled):
-        conf = float(confidence[i])
-        if gain > 0.0:
-            max_boost = 0.35 + conf * conf * 7.65
-            scaled[i] = min(gain * (0.35 + 0.65 * conf), max_boost)
-        else:
-            scaled[i] = gain * (0.55 + 0.45 * conf)
-        if conf < 0.20:
-            scaled[i] *= 0.15
-    return scaled
 
 
 def _validation_confidence(
@@ -444,6 +455,8 @@ def calculate_eq_bands(
     target_db,
     *,
     spectral_repeatability=None,
+    spectral_uncertainty_db=None,
+    phonetic_coverage=None,
     voiced_window_ratio=1.0,
     analysis_confidence=None,
     global_snr_db=None,
@@ -564,7 +577,10 @@ def calculate_eq_bands(
         18.0,
     )
     measurement_metadata_available = bool(
-        spectral_repeatability is not None or analysis_confidence is not None
+        spectral_repeatability is not None
+        or spectral_uncertainty_db is not None
+        or analysis_confidence is not None
+        or phonetic_coverage is not None
     )
     preliminary_confidence = _band_confidence(
         dense_freqs,
@@ -574,6 +590,7 @@ def calculate_eq_bands(
         float(voiced_window_ratio),
         repeatability_dense,
         snr_available=snr_available,
+        phonetic_coverage=phonetic_coverage,
     )
     dynamic_gain_upper = (
         _snr_aware_gain_upper_bounds(effective_band_snr_db)
@@ -594,11 +611,18 @@ def calculate_eq_bands(
             dynamic_gain_upper,
             1.5 + 3.0 * reference_quality,
         )
+    dynamic_gain_lower = np.full(NUM_EQ_BANDS, GAIN_MIN_DB, dtype=float)
     if measurement_metadata_available:
         dynamic_gain_upper = np.minimum(
             dynamic_gain_upper,
             0.35 + preliminary_confidence * preliminary_confidence * (GAIN_MAX_DB - 0.35),
         )
+        dynamic_gain_lower = np.maximum(
+            dynamic_gain_lower,
+            -(1.0 + preliminary_confidence * (abs(GAIN_MIN_DB) - 1.0)),
+        )
+        if not snr_available:
+            dynamic_gain_upper = np.minimum(dynamic_gain_upper, 3.0)
     weights = _voice_weights(dense_freqs)
     if snr_available:
         weights = weights * _snr_weight_scale_dense(
@@ -606,14 +630,11 @@ def calculate_eq_bands(
             base_centers_hz,
             effective_band_snr_db,
         )
-    if repeatability_dense is not None:
-        weights = weights * (0.35 + 0.65 * repeatability_dense)
 
     measured_db_at_centers = np.interp(center_freqs, dense_freqs, measured_dense_db)
     target_db_at_centers = np.interp(center_freqs, dense_freqs, target_dense_db)
     desired_gains = target_db_at_centers - measured_db_at_centers
-    gain_lower = np.full(NUM_EQ_BANDS, GAIN_MIN_DB, dtype=float)
-    gains_initial = np.clip(desired_gains, gain_lower, dynamic_gain_upper)
+    gains_initial = np.clip(desired_gains, dynamic_gain_lower, dynamic_gain_upper)
 
     verbose_level = 2 if DEBUG else 0
 
@@ -629,7 +650,7 @@ def calculate_eq_bands(
             qs_stage1,
             weights,
         ),
-        bounds=(gain_lower, dynamic_gain_upper),
+        bounds=(dynamic_gain_lower, dynamic_gain_upper),
         method="trf",
         ftol=1e-4,
         xtol=1e-4,
@@ -645,7 +666,7 @@ def calculate_eq_bands(
     q_prior = np.clip(q_initial, q_low, q_high)
     params_initial = np.concatenate([gains_stage1, q_prior, base_centers_hz])
     params_lower = np.concatenate(
-        [gain_lower, q_low, center_low]
+        [dynamic_gain_lower, q_low, center_low]
     )
     params_upper = np.concatenate(
         [dynamic_gain_upper, q_high, center_high]
@@ -681,6 +702,7 @@ def calculate_eq_bands(
         repeatability_dense,
         active_gains=optimal_gains,
         snr_available=snr_available,
+        phonetic_coverage=phonetic_coverage,
     )
 
     debug_log(
@@ -712,11 +734,18 @@ def calculate_eq_bands(
     if hasattr(stage2, "message"):
         debug_log(f"[EQ_CALC] Stage2 message: {stage2.message}")
 
-    # Apply measurement confidence only when this came from the production
-    # analysis pipeline. Low-level synthetic callers do not have capture
-    # metadata and retain the solver's ordinary bounds.
-    if measurement_metadata_available:
-        optimal_gains = _apply_confidence_gain_scaling(optimal_gains, band_confidences)
+    # Unsupported bands abstain locally. Their zero bounds are included in the
+    # constrained re-solve so adjacency/curvature guarantees remain valid.
+    local_abstention_mask = (
+        (np.abs(optimal_gains) >= 0.25) & (band_confidences < 0.45)
+        if measurement_metadata_available
+        else np.zeros(NUM_EQ_BANDS, dtype=bool)
+    )
+    final_gain_lower = dynamic_gain_lower.copy()
+    final_gain_upper = dynamic_gain_upper.copy()
+    final_gain_lower[local_abstention_mask] = 0.0
+    final_gain_upper[local_abstention_mask] = 0.0
+    optimal_gains = np.clip(optimal_gains, final_gain_lower, final_gain_upper)
     optimal_qs = _regularize_q_for_confidence(
         optimal_qs,
         optimal_gains,
@@ -724,10 +753,9 @@ def calculate_eq_bands(
         band_confidences,
     )
 
-    # Re-optimize confidence-scaled gains under explicit adjacent-band
+    # Re-optimize bounded gains under explicit adjacent-band
     # constraints. The projection is only a feasible starting point/fallback;
     # successful output is a constrained optimum rather than a post-hoc clamp.
-    optimal_gains = np.clip(optimal_gains, gain_lower, dynamic_gain_upper)
     optimal_gains, constraint_solver_success = _constrained_gain_refinement(
         optimal_gains,
         dense_freqs,
@@ -736,6 +764,8 @@ def calculate_eq_bands(
         optimal_qs,
         optimal_centers_hz,
         weights,
+        final_gain_lower,
+        final_gain_upper,
     )
     (
         optimal_gains,
@@ -757,6 +787,10 @@ def calculate_eq_bands(
     if np.any(inactive_mask):
         optimal_gains = optimal_gains.copy()
         optimal_gains[inactive_mask] = 0.0
+        inactive_gain_lower = final_gain_lower.copy()
+        inactive_gain_upper = final_gain_upper.copy()
+        inactive_gain_lower[inactive_mask] = 0.0
+        inactive_gain_upper[inactive_mask] = 0.0
         optimal_gains, inactive_constraint_solver_success = (
             _constrained_gain_refinement(
                 optimal_gains,
@@ -766,6 +800,8 @@ def calculate_eq_bands(
                 optimal_qs,
                 optimal_centers_hz,
                 weights,
+                inactive_gain_lower,
+                inactive_gain_upper,
             )
         )
         constraint_solver_success = bool(
@@ -788,9 +824,6 @@ def calculate_eq_bands(
         analysis_confidence,
         validation_conf,
     )
-    low_confidence_active_bands = int(
-        np.sum((np.abs(optimal_gains) >= 0.25) & (band_confidences < 0.45))
-    )
     recommendation_status = "apply"
     abstention_reasons: list[str] = []
     if used_spectrum_fallback:
@@ -799,8 +832,6 @@ def calculate_eq_bands(
         abstention_reasons.append("capture quality score is too low")
     if snr_available and np.nanmedian(band_snr_db) < 3.0:
         abstention_reasons.append("noise-referenced SNR is too low")
-    if low_confidence_active_bands >= 3:
-        abstention_reasons.append("too many active bands lack measurement support")
     if reference_status == "invalid" or reference_quality < 0.30:
         abstention_reasons.append("room-noise reference is invalid")
     if abstention_reasons:
@@ -834,7 +865,7 @@ def calculate_eq_bands(
         'eq_confidence': eq_confidence,
         'capture_confidence': capture_confidence,
         'validation_confidence': validation_conf,
-        'low_confidence_active_bands': low_confidence_active_bands,
+        'low_confidence_active_bands': int(np.count_nonzero(local_abstention_mask)),
         'active_band_count': int(np.sum(np.abs(optimal_gains) >= 0.25)),
         'recommendation_status': recommendation_status,
         'apply_recommended': recommendation_status != "abstain",
@@ -850,6 +881,15 @@ def calculate_eq_bands(
         'noise_reference_status': reference_status,
         'noise_reference_reasons': list(noise_reference_reasons or []),
         'noise_reference_boost_cap_db': float(np.max(dynamic_gain_upper)),
+        'local_abstained_band_indices': np.flatnonzero(local_abstention_mask).tolist(),
+        'spectral_uncertainty_available': bool(
+            spectral_uncertainty_db is not None
+        ),
+        'phonetic_coverage': (
+            float(np.clip(phonetic_coverage, 0.0, 1.0))
+            if phonetic_coverage is not None
+            else None
+        ),
         'spectral_tilt_policy': tilt_policy,
         'spectral_tilt_slope_db_per_decade': tilt_slope,
         'spectral_tilt_fit_r2': tilt_fit_r2,

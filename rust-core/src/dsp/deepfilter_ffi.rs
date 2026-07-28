@@ -173,7 +173,7 @@ struct DeepFilterLib {
 pub enum DeepFilterModel {
     /// Low Latency variant (~10ms, no lookahead)
     LowLatency,
-    /// Standard variant (~40ms, 2-frame lookahead, best quality)
+    /// Standard variant (~30ms, 2-frame lookahead, best quality)
     Standard,
 }
 
@@ -617,7 +617,7 @@ impl DeepFilterProcessor {
                     Ok(df) => {
                         let latency_str = match model {
                             DeepFilterModel::LowLatency => "~10ms",
-                            DeepFilterModel::Standard => "~40ms",
+                            DeepFilterModel::Standard => "~30ms",
                         };
                         eprintln!(
                             "DeepFilterNet initialized (C FFI MODE - {} variant, {} latency)",

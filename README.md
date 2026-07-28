@@ -7,14 +7,15 @@
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
 
-Current version: `v1.9.0`
+Current version: `v1.10.0`
 
 ## Download
 
-The latest portable build is available on the GitHub releases page:
+The source tree is prepared for v1.10.0. The latest published portable build
+remains v1.9.0 until the v1.10.0 release workflow is deliberately run:
 
 - [AudioForge v1.9.0](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.9.0)
-- Artifact: `AudioForge-v1.9.0-win64-ultra.7z`
+- Published artifact: `AudioForge-v1.9.0-win64-ultra.7z`
 - Checksum: use the matching `.7z.sha256` sidecar published by the release workflow.
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
@@ -31,8 +32,8 @@ User-facing tools:
 - 10-band parametric EQ with gain, Q, and per-band center frequencies.
 - Auto-EQ calibration that combines energy and Silero speech posteriors, rejects shape outliers, uses matched noise-referenced per-band reliability when available, and abstains when a safe correction is unsupported.
 - Auto-EQ headroom validation through the native chain simulator; Python-only fallback results are visibly advisory.
-- Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, robust native compressor calibration, and guided second-passage verification.
-- Dynamic-EQ de-esser, compressor, auto makeup gain, and lookahead limiter.
+- Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, bounded multi-parameter native compressor calibration (threshold, ratio, attack, release), and guided second-passage verification.
+- Dynamic-EQ de-esser, compressor with speech-aware auto makeup gain driven by calibrated VAD and noise-floor evidence, and lookahead limiter.
 - Band-limited 4x true-peak detection and limiting, validated against an independent offline reference.
 - Stateful phase-safe mono alignment and adaptive 49-61 Hz hum/harmonic tracking for difficult input sources.
 - Per device-pair route-aware latency calibration profiles; measured output-to-input route delay is applied directly instead of assuming symmetric one-way latency.
@@ -135,8 +136,13 @@ Full-feature development and release builds use the tracked `release-assets.json
 For a cleaner fresh-clone setup, you can hydrate those assets from the matching GitHub release:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.9
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.0
 ```
+
+The tag above is a standing source for the older pinned DeepFilter/DirectML
+assets, not the application version. Silero v6.2.1 is downloaded directly from
+the immutable source recorded in `release-assets.json`; every file is then
+verified by size and SHA-256.
 
 Create `models/` in the repo root for local runtime discovery:
 
@@ -165,7 +171,7 @@ Packaged builds use bootstrap-registered canonical DeepFilter assets by default.
 Build the Rust extension first, then package:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.9
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.0
 .\.venv\Scripts\python.exe -m maturin develop --release
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
@@ -177,8 +183,10 @@ Packaging script behavior:
 - Validates required full-feature runtime assets against `release-assets.json`.
 - Reuses PyInstaller's analysis cache by default; pass `-Clean` for a cold PyInstaller rebuild.
 - Bundles the Python runtime with PyInstaller.
+- Bundles AudioForge, DeepFilterNet, Silero VAD, and DirectML license notices.
+- Writes `_internal/audioforge-build.json`; package smoke rejects a bundle whose version differs from the source tree.
 - Prunes unused Qt payload and duplicate native-extension payload with `python/tools/prune_bundle.py` while retaining dependency metadata and licenses.
-- The release profile strips native symbols, and packaging excludes only unused SciPy namespaces plus Qt SVG payloads. In the 2026-07-27 Windows build this reduced the portable folder from 302,232,972 to 289,235,748 bytes (12,997,224 bytes / 4.30%) while retaining both DeepFilter models, Silero, DirectML, df.dll, SciPy signal/optimization support, and the software OpenGL renderer.
+- The release profile strips native symbols, and packaging excludes only unused SciPy namespaces plus Qt SVG payloads. The verified v1.10.0 folder is 301,611,876 bytes across 211 files while retaining both DeepFilter models, Silero, DirectML, df.dll, SciPy signal/optimization support, the software OpenGL renderer, and explicit license notices.
 - Keeps the application self-contained in `dist/AudioForge`.
 
 Portable output:
@@ -192,10 +200,13 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.9.0-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.10.0-win64-ultra.7z .\dist\AudioForge\*
 ```
 
-This uses LZMA2 with max compression and solid mode, which is appropriate for the PyInstaller bundle.
+The final v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz,
+tar.zst, solid LZMA, and solid LZMA2. The command above was the smallest
+verified result at 112,014,596 bytes; explicitly forcing a 256 MiB dictionary
+produced identical bytes. See `evaluation/archive-format-benchmark.json`.
 
 ## Testing
 

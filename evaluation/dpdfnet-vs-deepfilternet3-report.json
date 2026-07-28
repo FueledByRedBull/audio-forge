@@ -1,0 +1,600 @@
+{
+  "aggregate": {
+    "deepfilter_ll": {
+      "capture_count": 36,
+      "inference_rtf": 0.09277921452145214,
+      "median_clean_dropout_fraction": 0.0,
+      "median_clean_gain_error_db": -0.5964289631632458,
+      "median_clean_log_spectral_distance_db": 4.044854124055968,
+      "median_clean_scale_dependent_snr_db": 17.95951645619774,
+      "median_hop_ms": 0.88245,
+      "median_initialization_ms": 503.9915,
+      "median_si_sdr_improvement_db": 2.361511699409916,
+      "median_silence_noise_attenuation_db": 30.237821685352316,
+      "median_speech_dropout_fraction": 0.014285714285714285,
+      "median_speech_log_spectral_distance_db": 8.085519546554202,
+      "p95_hop_ms": 1.207915,
+      "p99_hop_ms": 1.386064
+    },
+    "deepfilter_standard": {
+      "capture_count": 36,
+      "inference_rtf": 0.050421024752475244,
+      "median_clean_dropout_fraction": 0.03952991452991453,
+      "median_clean_gain_error_db": -1.7158264514417976,
+      "median_clean_log_spectral_distance_db": 7.235010025979381,
+      "median_clean_scale_dependent_snr_db": 11.874822556672697,
+      "median_hop_ms": 0.4568,
+      "median_initialization_ms": 312.9687,
+      "median_si_sdr_improvement_db": 4.50200780424038,
+      "median_silence_noise_attenuation_db": 32.710308026456275,
+      "median_speech_dropout_fraction": 0.0328042328042328,
+      "median_speech_log_spectral_distance_db": 9.198531832707623,
+      "p95_hop_ms": 0.7322150000000001,
+      "p99_hop_ms": 0.8942689999999999
+    },
+    "dpdfnet2_48khz_hr": {
+      "capture_count": 36,
+      "inference_rtf": 0.2112517673267327,
+      "median_clean_dropout_fraction": 0.043478260869565216,
+      "median_clean_gain_error_db": -0.3431086106553264,
+      "median_clean_log_spectral_distance_db": 8.140106012880466,
+      "median_clean_scale_dependent_snr_db": 17.348815574711566,
+      "median_hop_ms": 2.0269,
+      "median_initialization_ms": 136.01425,
+      "median_si_sdr_improvement_db": 8.196318695443525,
+      "median_silence_noise_attenuation_db": 36.032802912202285,
+      "median_speech_dropout_fraction": 0.0,
+      "median_speech_log_spectral_distance_db": 7.679453738499433,
+      "p95_hop_ms": 2.59225,
+      "p99_hop_ms": 3.0195529999999993
+    }
+  },
+  "assets": {
+    "benchmark_executable": {
+      "path": "target/release/model_benchmark.exe",
+      "sha256": "499848ac7f37fe93b0495bfff65942448a2f29c90ed4188627296ab959b606ce",
+      "size": 21140992
+    },
+    "corpus_manifest": {
+      "path": "models/vad_eval_corpus/manifest.json",
+      "sha256": "b38d35b7c5e3b8e5c4bb891b1703cb5c2e3cc497ffda3ea739d38ec265c97e2e",
+      "size": 292212
+    },
+    "deepfilter_ll": {
+      "path": "models/DeepFilterNet3_ll_onnx.tar.gz",
+      "sha256": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
+      "size": 36359660
+    },
+    "deepfilter_standard": {
+      "path": "models/DeepFilterNet3_onnx.tar.gz",
+      "sha256": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+      "size": 7983136
+    },
+    "df_library": {
+      "path": "df.dll",
+      "sha256": "270d14b92143c18c5f7e14e9eba3192d7843ec52fb9d1ade2fd9173d03a71656",
+      "size": 16614912
+    },
+    "dpdfnet2_48khz_hr": {
+      "path": "models/dpdfnet2_48khz_hr.onnx",
+      "sha256": "0b399f8a58dc4d70d8cd97541f5c39869406145193b957d00a03b66070944928",
+      "size": 10596848
+    }
+  },
+  "claim_audit": {
+    "author_reported_not_independently_reproduced": [
+      "The paper's multilingual PESQ, STOI, SI-SNR, DNSMOS, NISQA, and PRISM table.",
+      "The paper's DNS4 blind-test scores.",
+      "The paper's Ceva NPU realtime factors.",
+      "The attribution of part of the gain to OA loss and always-on fine-tuning."
+    ],
+    "confirmed_from_primary_source": [
+      "DPDFNet extends the DeepFilterNet2 lineage with dual-path recurrent blocks.",
+      "Its intra stage is bidirectional over frequency and its inter stage is causal over time.",
+      "The paper reports OA loss and always-on fine-tuning with 30-40 second sequences.",
+      "The official 16 kHz profiles report 2.49-3.54M parameters and 1.35-4.37G MACs for DPDFNet-2/4/8.",
+      "The exact 48 kHz HR candidate reports 2.58M parameters and 2.42G MACs.",
+      "The official streaming API buffers a 20 ms first window and then emits 10 ms hops."
+    ],
+    "contradicted_or_narrowed": [
+      "DPDFNet is Apache-2.0, not MIT.",
+      "The exact local DeepFilterNet3 standard config is about 30 ms by the upstream delay formula, not 40 ms.",
+      "DPDFNet is not established as categorically better everywhere; the measured candidate result is limited to author-reported tables and this app's fixed local corpora/gates.",
+      "The 1.35-4.37G MAC range describes 16 kHz DPDFNet-2/4/8; the integrated 48 kHz HR DPDFNet-2 is reported at 2.42G MACs."
+    ],
+    "locally_reproduced_or_measured": [
+      "DPDFNet-2 HR passed all four local noisy-speech component gates against both bundled DeepFilterNet3 variants but failed two clean-preservation gates.",
+      "The per-file result uses a three-of-four component rule rather than a composite of incompatible raw units.",
+      "The production worker path stayed below the 7.5 ms P99 hop and 0.75 RTF gates on this host.",
+      "The bundled DeepFilterNet3 LL and standard configs have 10 ms and 30 ms declared algorithmic latency respectively."
+    ],
+    "primary_sources": [
+      "https://arxiv.org/html/2512.16420v2",
+      "https://github.com/ceva-ip/DPDFNet",
+      "https://raw.githubusercontent.com/ceva-ip/DPDFNet/main/LICENSE",
+      "https://github.com/Rikorose/DeepFilterNet"
+    ]
+  },
+  "clean_preservation": {
+    "deepfilter_ll": [
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.16881513868185327,
+        "key": "0_theo_0_48000.wav",
+        "log_spectral_distance_db": 2.4293086114453106,
+        "scale_dependent_snr_db": 25.548586945568644
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.02564102564102564,
+        "gain_error_db": -0.6318217098559215,
+        "key": "0_theo_10_48000.wav",
+        "log_spectral_distance_db": 6.862904703617096,
+        "scale_dependent_snr_db": 13.57307820100429
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.5549021209924185,
+        "key": "0_theo_20_48000.wav",
+        "log_spectral_distance_db": 3.616002747747633,
+        "scale_dependent_snr_db": 18.78166709920049
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.567881896259531,
+        "key": "0_yweweler_0_48000.wav",
+        "log_spectral_distance_db": 3.1164504580199717,
+        "scale_dependent_snr_db": 19.491360503625884
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -1.0485908641934483,
+        "key": "0_yweweler_10_48000.wav",
+        "log_spectral_distance_db": 2.113315836741374,
+        "scale_dependent_snr_db": 17.13736581319499
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.5065187230288761,
+        "key": "0_yweweler_20_48000.wav",
+        "log_spectral_distance_db": 1.896833303145,
+        "scale_dependent_snr_db": 22.829892337673478
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.16666666666666666,
+        "gain_error_db": -0.24290613942975503,
+        "key": "3_theo_0_48000.wav",
+        "log_spectral_distance_db": 5.360400825738907,
+        "scale_dependent_snr_db": 20.908791424145157
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.2070828765758034,
+        "key": "3_theo_10_48000.wav",
+        "log_spectral_distance_db": 1.6270034747819107,
+        "scale_dependent_snr_db": 26.77923438930938
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.2226912794790503,
+        "key": "3_theo_20_48000.wav",
+        "log_spectral_distance_db": 1.191319712003072,
+        "scale_dependent_snr_db": 30.825558552470028
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.18181818181818182,
+        "gain_error_db": -1.3487357139014364,
+        "key": "3_yweweler_0_48000.wav",
+        "log_spectral_distance_db": 11.125219230244799,
+        "scale_dependent_snr_db": 8.377482707555508
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -1.1818446664841913,
+        "key": "3_yweweler_10_48000.wav",
+        "log_spectral_distance_db": 4.703497625248772,
+        "scale_dependent_snr_db": 12.481335395104495
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.31061684410731893,
+        "key": "3_yweweler_20_48000.wav",
+        "log_spectral_distance_db": 1.0911854130440746,
+        "scale_dependent_snr_db": 24.41988747533053
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.3488372093023256,
+        "gain_error_db": -0.43482435255455343,
+        "key": "7_theo_0_48000.wav",
+        "log_spectral_distance_db": 13.95219996842471,
+        "scale_dependent_snr_db": 17.05902829835948
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.3617021276595745,
+        "gain_error_db": -1.1970099138596477,
+        "key": "7_theo_10_48000.wav",
+        "log_spectral_distance_db": 16.878027309974033,
+        "scale_dependent_snr_db": 13.062144231742092
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.30434782608695654,
+        "gain_error_db": -3.676436400095212,
+        "key": "7_theo_20_48000.wav",
+        "log_spectral_distance_db": 16.271119067009458,
+        "scale_dependent_snr_db": 7.101790211381875
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -2.7587314679800694,
+        "key": "7_yweweler_0_48000.wav",
+        "log_spectral_distance_db": 5.123202917310927,
+        "scale_dependent_snr_db": 10.328000422194755
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.6249760300669607,
+        "key": "7_yweweler_10_48000.wav",
+        "log_spectral_distance_db": 2.114167139718407,
+        "scale_dependent_snr_db": 20.924829154809743
+      },
+      {
+        "alignment_lag_samples": 480,
+        "dropout_fraction": 0.027777777777777776,
+        "gain_error_db": -2.360515493413663,
+        "key": "7_yweweler_20_48000.wav",
+        "log_spectral_distance_db": 4.473705500364304,
+        "scale_dependent_snr_db": 11.348137198706251
+      }
+    ],
+    "deepfilter_standard": [
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -1.8280468982314968,
+        "key": "0_theo_0_48000.wav",
+        "log_spectral_distance_db": 9.085051940708626,
+        "scale_dependent_snr_db": 11.327845056859193
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.28205128205128205,
+        "gain_error_db": -8.733657873770243,
+        "key": "0_theo_10_48000.wav",
+        "log_spectral_distance_db": 14.770263588428497,
+        "scale_dependent_snr_db": 2.76434063372415
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.1590909090909091,
+        "gain_error_db": -9.21290382410739,
+        "key": "0_theo_20_48000.wav",
+        "log_spectral_distance_db": 16.045018439822726,
+        "scale_dependent_snr_db": 2.9324148694861973
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.05128205128205128,
+        "gain_error_db": -0.3896831480512498,
+        "key": "0_yweweler_0_48000.wav",
+        "log_spectral_distance_db": 2.8109392054378985,
+        "scale_dependent_snr_db": 23.707355556093948
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.26850908464013595,
+        "key": "0_yweweler_10_48000.wav",
+        "log_spectral_distance_db": 2.160355358169629,
+        "scale_dependent_snr_db": 27.050758881433744
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.2563085493073384,
+        "key": "0_yweweler_20_48000.wav",
+        "log_spectral_distance_db": 1.6043133267334528,
+        "scale_dependent_snr_db": 29.860859393360517
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.16666666666666666,
+        "gain_error_db": -2.571185044194144,
+        "key": "3_theo_0_48000.wav",
+        "log_spectral_distance_db": 11.505740679227388,
+        "scale_dependent_snr_db": 10.712429027460022
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.08695652173913043,
+        "gain_error_db": -1.1201302393758936,
+        "key": "3_theo_10_48000.wav",
+        "log_spectral_distance_db": 4.653850048780441,
+        "scale_dependent_snr_db": 16.06558600891351
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.6908326068370046,
+        "key": "3_theo_20_48000.wav",
+        "log_spectral_distance_db": 1.583677977323532,
+        "scale_dependent_snr_db": 20.68804116096583
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.18181818181818182,
+        "gain_error_db": -1.0801444041587673,
+        "key": "3_yweweler_0_48000.wav",
+        "log_spectral_distance_db": 14.901734456783387,
+        "scale_dependent_snr_db": 13.937181134794441
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -1.6036060046520986,
+        "key": "3_yweweler_10_48000.wav",
+        "log_spectral_distance_db": 10.799317707334247,
+        "scale_dependent_snr_db": 11.74313629899633
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.5764972400289656,
+        "key": "3_yweweler_20_48000.wav",
+        "log_spectral_distance_db": 1.604474528082486,
+        "scale_dependent_snr_db": 20.759092317579487
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.32558139534883723,
+        "gain_error_db": -4.838444046745173,
+        "key": "7_theo_0_48000.wav",
+        "log_spectral_distance_db": 15.092136551033366,
+        "scale_dependent_snr_db": 6.676258763111611
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.3404255319148936,
+        "gain_error_db": -4.050074381051909,
+        "key": "7_theo_10_48000.wav",
+        "log_spectral_distance_db": 17.554827392101288,
+        "scale_dependent_snr_db": 7.336902419760624
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.2826086956521739,
+        "gain_error_db": -4.689670152201679,
+        "key": "7_theo_20_48000.wav",
+        "log_spectral_distance_db": 14.898971263398515,
+        "scale_dependent_snr_db": 6.678523247332313
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -2.718183630559518,
+        "key": "7_yweweler_0_48000.wav",
+        "log_spectral_distance_db": 5.384968111250136,
+        "scale_dependent_snr_db": 10.872742037011516
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.8814088187824086,
+        "key": "7_yweweler_10_48000.wav",
+        "log_spectral_distance_db": 1.706255646912675,
+        "scale_dependent_snr_db": 18.648302384482925
+      },
+      {
+        "alignment_lag_samples": 1440,
+        "dropout_fraction": 0.027777777777777776,
+        "gain_error_db": -2.2605131386411794,
+        "key": "7_yweweler_20_48000.wav",
+        "log_spectral_distance_db": 5.282229083776474,
+        "scale_dependent_snr_db": 12.006508814349067
+      }
+    ],
+    "dpdfnet2_48khz_hr": [
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.2667253314291004,
+        "key": "0_theo_0_48000.wav",
+        "log_spectral_distance_db": 8.323715564681262,
+        "scale_dependent_snr_db": 18.78693557973486
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.34656944577903753,
+        "key": "0_theo_10_48000.wav",
+        "log_spectral_distance_db": 7.240946626663208,
+        "scale_dependent_snr_db": 17.19795791669337
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.32681735801245937,
+        "key": "0_theo_20_48000.wav",
+        "log_spectral_distance_db": 7.476232682334052,
+        "scale_dependent_snr_db": 20.254989358395406
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -2.3531944126503768,
+        "key": "0_yweweler_0_48000.wav",
+        "log_spectral_distance_db": 7.611847770214081,
+        "scale_dependent_snr_db": 10.868798897638701
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 1.0,
+        "gain_error_db": -24.301920082141535,
+        "key": "0_yweweler_10_48000.wav",
+        "log_spectral_distance_db": 19.81978876162798,
+        "scale_dependent_snr_db": 0.31439096284208995
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.16655410155259884,
+        "key": "0_yweweler_20_48000.wav",
+        "log_spectral_distance_db": 4.838188821928842,
+        "scale_dependent_snr_db": 31.657570698013025
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.16666666666666666,
+        "gain_error_db": -0.2567615139976254,
+        "key": "3_theo_0_48000.wav",
+        "log_spectral_distance_db": 7.956496461079671,
+        "scale_dependent_snr_db": 20.058713014955515
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.08695652173913043,
+        "gain_error_db": -0.19358514916708408,
+        "key": "3_theo_10_48000.wav",
+        "log_spectral_distance_db": 5.530622959136963,
+        "scale_dependent_snr_db": 21.360175119776926
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.16643249305771862,
+        "key": "3_theo_20_48000.wav",
+        "log_spectral_distance_db": 3.363719357053439,
+        "scale_dependent_snr_db": 32.11794306830731
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.15151515151515152,
+        "gain_error_db": -0.3885383756919172,
+        "key": "3_yweweler_0_48000.wav",
+        "log_spectral_distance_db": 15.640325203174498,
+        "scale_dependent_snr_db": 19.862372618744036
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -5.780176960537105,
+        "key": "3_yweweler_10_48000.wav",
+        "log_spectral_distance_db": 14.095560482570104,
+        "scale_dependent_snr_db": 4.642007047378676
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -1.3057910541918625,
+        "key": "3_yweweler_20_48000.wav",
+        "log_spectral_distance_db": 5.747585738527364,
+        "scale_dependent_snr_db": 14.494172916461789
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.3488372093023256,
+        "gain_error_db": -0.20039000078782507,
+        "key": "7_theo_0_48000.wav",
+        "log_spectral_distance_db": 14.022229107943447,
+        "scale_dependent_snr_db": 17.49967323272976
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.3404255319148936,
+        "gain_error_db": -0.2629307235505102,
+        "key": "7_theo_10_48000.wav",
+        "log_spectral_distance_db": 17.031049087643623,
+        "scale_dependent_snr_db": 15.744440832462809
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.30434782608695654,
+        "gain_error_db": -0.33964777553161524,
+        "key": "7_theo_20_48000.wav",
+        "log_spectral_distance_db": 14.71086291049389,
+        "scale_dependent_snr_db": 14.461243937626707
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 1.0,
+        "gain_error_db": -31.104269550165537,
+        "key": "7_yweweler_0_48000.wav",
+        "log_spectral_distance_db": 23.620289463467067,
+        "scale_dependent_snr_db": 0.14293030746805183
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.0,
+        "gain_error_db": -0.35442904161225175,
+        "key": "7_yweweler_10_48000.wav",
+        "log_spectral_distance_db": 5.884004083118941,
+        "scale_dependent_snr_db": 26.039877021203537
+      },
+      {
+        "alignment_lag_samples": 1920,
+        "dropout_fraction": 0.9722222222222222,
+        "gain_error_db": -25.364533176304313,
+        "key": "7_yweweler_20_48000.wav",
+        "log_spectral_distance_db": 23.605922436714174,
+        "scale_dependent_snr_db": 0.27941121514772593
+      }
+    ]
+  },
+  "decision": {
+    "beats_both_per_file_component_fraction": 0.9166666666666666,
+    "clean_preservation_gates": {
+      "median_clean_dropout_within_2_points_of_best": false,
+      "median_clean_gain_error_within_1_db": true,
+      "median_clean_lsd_within_2_db_of_best": false,
+      "median_clean_snr_within_1_db_of_best": true
+    },
+    "component_gates": {
+      "noise_attenuation_beats_both": true,
+      "si_sdr_improvement_beats_both": true,
+      "speech_dropout_within_one_point_of_best": true,
+      "speech_lsd_beats_both": true
+    },
+    "next_step": "candidate rejected; production integration, bundled model, dependency, and benchmark bridge removed",
+    "p99_below_7_5_ms_and_rtf_below_0_75": true,
+    "production_integration": "removed",
+    "retained": false
+  },
+  "elapsed_seconds": 95.65897550000045,
+  "limitations": [
+    "The held-out corpus contains English spoken digits from two speakers.",
+    "This 48 kHz production-path report does not claim PESQ, STOI, DNSMOS, or NISQA reproduction; those metrics belong in the pinned official EvalSet report.",
+    "Initialization is reported separately and excluded from steady-state RTF.",
+    "A controlled listening test would have been necessary before any default-backend claim, but the candidate already failed the objective clean-preservation gate and no DPDFNet backend was retained."
+  ],
+  "method": {
+    "alignment": "bounded FFT cross-correlation, +/-100 ms, speech interval",
+    "capture_split": "held_out",
+    "conditions": [
+      "noise_5db_48k",
+      "noise_20db_48k"
+    ],
+    "dpdfnet_execution_path": "candidate Rust bounded worker, ORT session, realfft Vorbis-window STFT/overlap-add, and lock-free input/output queues; removed from production after the clean-preservation gate failed",
+    "hop_samples": 480,
+    "onnx_threads": 1,
+    "quality_decision": "component-wise SI-SDR, noise attenuation, reference-relative active-bin LSD, and speech-dropout gates; no raw-unit composite",
+    "sample_rate": 48000,
+    "timing": "release build; end-to-end per-hop worker wall time including STFT/ISTFT and scheduling; first five frames of each fresh stream excluded",
+    "window_samples": 960
+  },
+  "schema_version": 1
+}

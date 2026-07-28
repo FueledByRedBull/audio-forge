@@ -86,7 +86,7 @@ impl GateControlState {
             #[cfg(feature = "vad")]
             gate_mode: GateMode::ThresholdOnly,
             #[cfg(feature = "vad")]
-            vad_threshold: 0.4,
+            vad_threshold: 0.48,
             #[cfg(feature = "vad")]
             hold_ms: 200.0,
             #[cfg(feature = "vad")]
@@ -560,6 +560,7 @@ struct CompressorControlState {
     adaptive_release: bool,
     auto_makeup_enabled: bool,
     target_lufs: f64,
+    noise_reference_reliability: f64,
     sidechain_highpass_enabled: bool,
 }
 
@@ -575,6 +576,7 @@ impl CompressorControlState {
             adaptive_release: false,
             auto_makeup_enabled: false,
             target_lufs: -18.0,
+            noise_reference_reliability: 0.0,
             sidechain_highpass_enabled: true,
         }
     }
@@ -592,6 +594,7 @@ struct AtomicCompressorControlState {
     adaptive_release: AtomicBool,
     auto_makeup_enabled: AtomicBool,
     target_lufs_bits: AtomicU64,
+    noise_reference_reliability_bits: AtomicU64,
     sidechain_highpass_enabled: AtomicBool,
 }
 
@@ -610,6 +613,9 @@ impl AtomicCompressorControlState {
             adaptive_release: AtomicBool::new(state.adaptive_release),
             auto_makeup_enabled: AtomicBool::new(state.auto_makeup_enabled),
             target_lufs_bits: AtomicU64::new(state.target_lufs.to_bits()),
+            noise_reference_reliability_bits: AtomicU64::new(
+                state.noise_reference_reliability.to_bits(),
+            ),
             sidechain_highpass_enabled: AtomicBool::new(state.sidechain_highpass_enabled),
         }
     }
@@ -636,6 +642,10 @@ impl AtomicCompressorControlState {
                 adaptive_release: self.adaptive_release.load(Ordering::Relaxed),
                 auto_makeup_enabled: self.auto_makeup_enabled.load(Ordering::Relaxed),
                 target_lufs: f64::from_bits(self.target_lufs_bits.load(Ordering::Relaxed)),
+                noise_reference_reliability: f64::from_bits(
+                    self.noise_reference_reliability_bits
+                        .load(Ordering::Relaxed),
+                ),
                 sidechain_highpass_enabled: self
                     .sidechain_highpass_enabled
                     .load(Ordering::Relaxed),
@@ -684,6 +694,14 @@ impl AtomicCompressorControlState {
 
     fn set_target_lufs(&self, value: f64) {
         self.update(|state| state.target_lufs_bits.store(value.to_bits(), Ordering::Relaxed));
+    }
+
+    fn set_noise_reference_reliability(&self, value: f64) {
+        self.update(|state| {
+            state
+                .noise_reference_reliability_bits
+                .store(value.to_bits(), Ordering::Relaxed);
+        });
     }
 
     fn set_sidechain_highpass_enabled(&self, enabled: bool) {
@@ -833,6 +851,7 @@ fn apply_compressor_control(compressor: &mut Compressor, control: &CompressorCon
     compressor.set_adaptive_release(control.adaptive_release);
     compressor.set_auto_makeup_enabled(control.auto_makeup_enabled);
     compressor.set_target_lufs(control.target_lufs);
+    compressor.set_noise_reference_reliability(control.noise_reference_reliability);
     compressor.set_sidechain_highpass_enabled(control.sidechain_highpass_enabled);
 }
 

@@ -616,6 +616,51 @@ impl AudioProcessor {
                                 .abs()
                                 .max(true_peak_pressure),
                         );
+                        #[cfg(feature = "vad")]
+                        {
+                            let last_update = vad_last_update_us.load(Ordering::Acquire);
+                            let age_us = if last_update > 0 {
+                                now_micros().saturating_sub(last_update)
+                            } else {
+                                u64::MAX
+                            };
+                            let vad_reliability = if vad_available.load(Ordering::Acquire)
+                                && age_us <= VAD_PROBABILITY_STALE_US
+                            {
+                                let freshness = if age_us <= VAD_PROBABILITY_STALE_US / 2 {
+                                    1.0
+                                } else {
+                                    1.0
+                                        - (age_us - VAD_PROBABILITY_STALE_US / 2) as f64
+                                            / (VAD_PROBABILITY_STALE_US / 2) as f64
+                                };
+                                let t = freshness.clamp(0.0, 1.0);
+                                t * t * (3.0 - 2.0 * t)
+                            } else {
+                                0.0
+                            };
+                            let gate_is_enabled = gate_enabled.load(Ordering::Acquire);
+                            compressor_rt.process_block_inplace_with_activity_control(
+                                $buffer,
+                                Some(AutoMakeupActivityInput {
+                                    vad_probability: f32::from_bits(
+                                        vad_probability.load(Ordering::Acquire),
+                                    ) as f64,
+                                    vad_reliability,
+                                    noise_floor_db: if gate_is_enabled {
+                                        gate_rt.noise_floor() as f64
+                                    } else {
+                                        -60.0
+                                    },
+                                    live_noise_reliability: if gate_is_enabled {
+                                        gate_rt.noise_floor_reliability() as f64
+                                    } else {
+                                        0.0
+                                    },
+                                }),
+                            );
+                        }
+                        #[cfg(not(feature = "vad"))]
                         compressor_rt.process_block_inplace($buffer);
                         compressor_gain_reduction.store(
                             (compressor_rt.current_gain_reduction() as f32).to_bits(),
@@ -1260,6 +1305,18 @@ impl AudioProcessor {
                                 dsp_time_us.store(raw_dsp_us, Ordering::Relaxed);
                                 dsp_time_smoothed_us.store(smoothed, Ordering::Relaxed);
                             } else {
+                                #[cfg(feature = "vad")]
+                                {
+                                    let written = vad_worker_producer.write(buffer);
+                                    if written < buffer.len() {
+                                        rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
+                                        store_rt_error(
+                                            rt_error_code.as_ref(),
+                                            RtErrorCode::FixedBufferOverflow,
+                                        );
+                                    }
+                                }
+
                                 // Stage 1: Noise Gate
                                 if gate_enabled.load(Ordering::Acquire) {
                                     if gate_dirty.swap(false, Ordering::AcqRel) {
@@ -1272,15 +1329,6 @@ impl AudioProcessor {
 
                                     #[cfg(feature = "vad")]
                                     {
-                                        let written = vad_worker_producer.write(buffer);
-                                        if written < buffer.len() {
-                                            rt_buffer_overflow_count
-                                                .fetch_add(1, Ordering::Relaxed);
-                                            store_rt_error(
-                                                rt_error_code.as_ref(),
-                                                RtErrorCode::FixedBufferOverflow,
-                                            );
-                                        }
                                         let latest_prob =
                                             f32::from_bits(vad_probability.load(Ordering::Acquire));
                                         let last_update =

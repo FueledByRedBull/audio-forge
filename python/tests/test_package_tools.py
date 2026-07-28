@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
 from pathlib import Path
@@ -24,12 +25,22 @@ def _load_tool(name: str):
 package_smoke = _load_tool("package_smoke")
 prune_bundle = _load_tool("prune_bundle")
 verify_release_assets = _load_tool("verify_release_assets")
+fetch_release_assets = _load_tool("fetch_release_assets")
 
 
 def _write_bundle_file(bundle: Path, relative_path: str) -> None:
     path = bundle / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"x")
+
+
+def _write_valid_build_info(bundle: Path) -> None:
+    path = bundle / "_internal" / "audioforge-build.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"schema_version": 1, "version": package_smoke._expected_version()}),
+        encoding="utf-8",
+    )
 
 
 def test_package_smoke_source_packaging_checks_pass():
@@ -58,8 +69,8 @@ def test_package_smoke_accepts_required_assets_and_metadata(tmp_path):
     (bundle / "AudioForge.exe").write_bytes(b"x")
     for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
         _write_bundle_file(bundle, relative_path)
+    _write_valid_build_info(bundle)
     _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
-    (bundle / "_internal" / "example.dist-info").mkdir()
 
     assert package_smoke.check_dist_bundle(bundle) == []
 
@@ -116,17 +127,36 @@ def test_package_smoke_rejects_misplaced_decoy_assets(tmp_path):
     assert any("_internal/mic_eq/mic_eq_core*.pyd" in error for error in errors)
 
 
-def test_package_smoke_rejects_bundle_without_license_metadata(tmp_path):
+def test_package_smoke_rejects_bundle_without_required_license_notice(tmp_path):
     bundle = tmp_path / "AudioForge"
     (bundle / "AudioForge.exe").parent.mkdir(parents=True)
     (bundle / "AudioForge.exe").write_bytes(b"x")
     for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        if relative_path == "_internal/licenses/DirectML-LICENSE.txt":
+            continue
         _write_bundle_file(bundle, relative_path)
+    _write_valid_build_info(bundle)
     _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
 
     errors = package_smoke.check_dist_bundle(bundle)
 
-    assert any("dependency dist-info" in error for error in errors)
+    assert any("DirectML-LICENSE.txt" in error for error in errors)
+
+
+def test_package_smoke_rejects_stale_bundle_version(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES:
+        _write_bundle_file(bundle, relative_path)
+    build_info = bundle / "_internal" / "audioforge-build.json"
+    build_info.write_text(
+        json.dumps({"schema_version": 1, "version": "0.0.0"}),
+        encoding="utf-8",
+    )
+    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert any("reports version '0.0.0'" in error for error in errors)
 
 
 def test_verify_release_assets_reports_missing_and_hash_mismatch(tmp_path, monkeypatch):
@@ -208,3 +238,19 @@ def test_verify_release_assets_rejects_absolute_and_traversal_paths(
     assert any(r"C:\tmp\asset.bin" in error and "absolute path" in error for error in errors)
     assert any(r"models\..\asset.bin" in error for error in errors)
     assert any(r"models\..\bundle.bin" in error for error in errors)
+
+
+def test_fetch_release_assets_direct_download_writes_response(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        fetch_release_assets.urllib.request,
+        "urlopen",
+        lambda request, timeout: io.BytesIO(b"pinned-model"),
+    )
+    destination = tmp_path / "silero_vad.onnx"
+
+    fetch_release_assets._download_direct_url(
+        "https://example.invalid/silero_vad.onnx",
+        destination,
+    )
+
+    assert destination.read_bytes() == b"pinned-model"

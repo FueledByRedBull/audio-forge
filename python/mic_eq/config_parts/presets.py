@@ -117,12 +117,12 @@ class Preset:
                     data["gate"].setdefault("auto_threshold_enabled", True)
                     data["gate"].setdefault("gate_margin_db", 10.0)
                     if data["gate"].get("vad_threshold", 0.5) == 0.5:
-                        data["gate"]["vad_threshold"] = 0.4
+                        data["gate"]["vad_threshold"] = 0.48
                 else:
                     data["gate"] = {
                         "auto_threshold_enabled": True,
                         "gate_margin_db": 10.0,
-                        "vad_threshold": 0.4,
+                        "vad_threshold": 0.48,
                     }
                 data["version"] = "1.6.0"
                 version_tuple = _version_tuple("1.6.0")
@@ -144,6 +144,14 @@ class Preset:
                 data["version"] = "1.7.0"
                 version_tuple = _version_tuple("1.7.0")
 
+            if version_tuple < _version_tuple("1.10.0"):
+                gate_data = data.get("gate")
+                if (
+                    isinstance(gate_data, dict)
+                    and gate_data.get("vad_threshold") == 0.4
+                ):
+                    gate_data["vad_threshold"] = 0.48
+
             for version in (
                 "1.7.1",
                 "1.7.2",
@@ -160,6 +168,7 @@ class Preset:
                 "1.8.8",
                 "1.8.9",
                 "1.9.0",
+                "1.10.0",
             ):
                 if version_tuple < _version_tuple(version):
                     data["version"] = version
@@ -196,7 +205,7 @@ class Preset:
                     )
                 ),
                 vad_threshold=_validate_range(
-                    gate_data.get("vad_threshold", 0.4),
+                    gate_data.get("vad_threshold", 0.48),
                     *gate_ranges["vad_threshold"],
                     "vad_threshold",
                     "gate",

@@ -7,6 +7,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from .vad import VAD_NOISE_CONTAMINATION_THRESHOLD
+
 MIN_NOISE_DURATION_S = 1.5
 QUESTIONABLE_CAPTURE_AGE_S = 120.0
 INVALID_CAPTURE_AGE_S = 600.0
@@ -367,7 +369,11 @@ def analyze_noise_reference(
         noise_frames.frame_rms_db.size if noise_frames is not None else 0,
     )
     vad_contamination_ratio = (
-        float(np.mean(noise_vad >= 0.35)) if noise_vad is not None else 0.0
+        (
+            float(np.mean(noise_vad >= VAD_NOISE_CONTAMINATION_THRESHOLD))
+            if noise_vad is not None
+            else 0.0
+        )
     )
     vad_contamination_p90 = (
         float(np.percentile(noise_vad, 90.0)) if noise_vad is not None else 0.0

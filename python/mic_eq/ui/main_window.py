@@ -466,7 +466,7 @@ class MainWindow(QMainWindow):
             "Choose the suppression backend.\n"
             "RNNoise: low latency baseline.\n"
             "DeepFilterNet LL: low latency with stronger cleanup.\n"
-            "DeepFilterNet: highest cleanup quality with higher latency."
+            "DeepFilterNet: stronger cleanup at about 30 ms."
         )
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         model_layout.addWidget(self.model_combo, stretch=1)
@@ -504,7 +504,7 @@ class MainWindow(QMainWindow):
 
         info_label = QLabel(
             "Backend choice affects cleanup quality, CPU use, and latency.\n"
-            "Packaged builds prefer bundled DeepFilter assets when available."
+            "Packaged builds use bundled, integrity-checked neural model assets."
         )
         info_label.setStyleSheet(SUBDUED_TEXT_STYLE)
         info_label.setWordWrap(True)
@@ -630,7 +630,7 @@ class MainWindow(QMainWindow):
 
     def _set_noise_suppression_latency_label(self, model_id: str) -> None:
         if model_id == "deepfilter":
-            self.rnnoise_latency_label.setText("Latency: ~40ms (DeepFilterNet)")
+            self.rnnoise_latency_label.setText("Latency: ~30ms (DeepFilterNet)")
         elif model_id == "deepfilter-ll":
             self.rnnoise_latency_label.setText("Latency: ~10ms (DeepFilterNet LL)")
         else:
@@ -1577,11 +1577,11 @@ class MainWindow(QMainWindow):
                 "Error Switching Model",
                 f"An unexpected error occurred while switching noise models:\n\n"
                 f"{type(e).__name__}: {e}\n\n"
-                f"This may indicate a problem with the DeepFilterNet integration.\n"
+                f"This may indicate a problem with the selected neural backend.\n"
                 f"Please try:\n"
                 f"1. Restarting the application\n"
                 f"2. Using RNNoise model as fallback\n"
-                f"3. Ensuring df.dll is available (falls back to passthrough if not found)"
+                f"3. Verifying the bundled model/runtime assets"
             )
             # Revert to RNNoise using find-by-ID loop (NOT hardcoded index)
             for i in range(self.model_combo.count()):
@@ -1979,7 +1979,7 @@ class MainWindow(QMainWindow):
         backend_error = diagnostics.get("noise_backend_error")
         noise_model = diagnostics.get("noise_model", "rnnoise")
         if noise_model != "rnnoise" and (backend_failed or not backend_available):
-            warning = backend_error or "Selected DeepFilter backend fell back to passthrough/RNNoise behavior."
+            warning = backend_error or "Selected neural backend fell back to dry passthrough."
             if warning != self._last_backend_warning:
                 self.status_bar.showMessage(warning, 6000)
                 self._last_backend_warning = warning
@@ -2151,7 +2151,7 @@ class MainWindow(QMainWindow):
             "<li>Band-limited true-peak output protection</li>"
             "<li>Runtime health, recovery, and calibration diagnostics</li>"
             "</ul>"
-            "<p><b>Target latency:</b> &lt;30ms</p>"
+            "<p><b>Target neural-suppression latency:</b> up to about 30ms</p>"
         )
 
     def _on_dropped_context_menu(self, pos):

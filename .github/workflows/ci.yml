@@ -97,9 +97,22 @@ jobs:
       - name: Rust format
         run: cargo fmt --check
       - name: RustSec audit
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # master, Node 24
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download pinned Silero contract model
+        run: |
+          $asset = (Get-Content release-assets.json | ConvertFrom-Json).assets |
+            Where-Object { $_.path -eq "models/silero_vad.onnx" }
+          if (-not $asset -or $asset.source -notmatch "^https://") {
+            throw "release-assets.json does not define a direct Silero model source."
+          }
+          New-Item -ItemType Directory -Force -Path models | Out-Null
+          Invoke-WebRequest -Uri $asset.source -OutFile $asset.path
+          $actualHash = (Get-FileHash -LiteralPath $asset.path -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $asset.sha256) {
+            throw "Silero model hash mismatch: $actualHash"
+          }
       - name: Rust tests
         run: cargo test -p mic_eq_core
       - name: Release-mode control/DSP contention stress

@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "experiment": "VAD/noise-reliability auto-makeup versus RMS-only fallback",
+  "decision": {
+    "retained": true,
+    "reason": "Every predefined control and realtime-safety gate passed after correcting block-rate coefficient application."
+  },
+  "implementation_audit": {
+    "elapsed_time_fix": "Per-sample smoothing coefficients are raised to elapsed_samples when control is updated once per block.",
+    "realtime_inference": false,
+    "control_inputs": [
+      "calibrated smoothed VAD probability",
+      "VAD availability/freshness reliability",
+      "noise-floor estimate",
+      "live noise-reference reliability"
+    ]
+  },
+  "method": {
+    "sample_rate_hz": 48000,
+    "block_size_samples": 480,
+    "block_duration_ms": 10.0,
+    "signal_source": "deterministic controlled tone/noise fixtures",
+    "baseline": "RMS-only activity fallback",
+    "candidate": "continuous VAD and noise-relative activity fusion",
+    "release_command": "cargo run --release --manifest-path rust-core/Cargo.toml --bin auto_makeup_benchmark",
+    "allocation_command": "cargo test --manifest-path rust-core/Cargo.toml test_steady_state_dsp_blocks_do_not_allocate -- --nocapture",
+    "fixture_rationale": "Deterministic injected VAD/noise evidence is intentional here: the experiment isolates control-law response, stale-evidence fallback, transition continuity, and allocation behavior without conflating them with model classification accuracy, which is evaluated separately in the VAD reports.",
+    "speech_convergence_tie_interpretation": "The exact tie is expected: baseline and candidate receive equivalent fully reliable speech evidence in this arm and therefore converge to the same target. The retention gate requires non-regression, not a fabricated improvement."
+  },
+  "metrics": {
+    "noise_false_activation": {
+      "baseline_gain_db": 8.434860229,
+      "candidate_gain_db": 0.0,
+      "gate": "candidate <= 0.25 dB and at least 1.0 dB below baseline",
+      "passed": true
+    },
+    "speech_convergence": {
+      "baseline_gain_db": 7.568681717,
+      "candidate_gain_db": 7.568681717,
+      "gate": "candidate >= 0.5 dB and no more than 1.0 dB below baseline",
+      "passed": true
+    },
+    "silence_relaxation": {
+      "maximum_gain_db": 7.568681717,
+      "relaxation_db": 7.23669083,
+      "gate": "finite and at least 0.5 dB relaxation",
+      "passed": true
+    },
+    "stale_vad": {
+      "fresh_gain_db": 7.568681717,
+      "stale_gain_db": 0.000002315,
+      "gate": "stale evidence reduces gain by at least 0.5 dB",
+      "passed": true
+    },
+    "pumping": {
+      "baseline_makeup_std_db": 1.139717251,
+      "candidate_makeup_std_db": 0.179404194,
+      "gate": "candidate no more than 105% of baseline",
+      "passed": true
+    },
+    "transition_click": {
+      "maximum_boundary_jump_linear": 0.0014644,
+      "gate": "maximum boundary jump <= 0.01 linear",
+      "passed": true
+    },
+    "steady_state_allocations": {
+      "activity_control_block_allocations": 0,
+      "passed": true
+    }
+  },
+  "limitations": [
+    "This report establishes deterministic control behavior, stale-state handling, and realtime allocation safety; it is not a perceptual listening result.",
+    "The current corpus contains isolated digit speech rather than representative long-form narration, so long-form listening remains a release-review item rather than evidence claimed by this report."
+  ]
+}

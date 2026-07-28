@@ -18,15 +18,16 @@ fn deepfilter_experimental_enabled() -> bool {
 
 /// Noise suppression model types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum NoiseModel {
     /// RNNoise: Low latency (~10ms), good quality
-    RNNoise,
+    RNNoise = 0,
     /// DeepFilterNet Low Latency: Better quality than RNNoise, ~10ms latency (no lookahead)
     #[cfg(feature = "deepfilter")]
-    DeepFilterNetLL,
-    /// DeepFilterNet Standard: Best quality, ~40ms latency (2-frame lookahead)
+    DeepFilterNetLL = 1,
+    /// DeepFilterNet Standard: stronger cleanup, ~30ms latency (2-frame lookahead)
     #[cfg(feature = "deepfilter")]
-    DeepFilterNet,
+    DeepFilterNet = 2,
 }
 
 impl NoiseModel {
@@ -59,7 +60,7 @@ impl NoiseModel {
             #[cfg(feature = "deepfilter")]
             NoiseModel::DeepFilterNetLL => "~10ms",
             #[cfg(feature = "deepfilter")]
-            NoiseModel::DeepFilterNet => "~40ms",
+            NoiseModel::DeepFilterNet => "~30ms",
         }
     }
 
@@ -77,7 +78,7 @@ impl NoiseModel {
 
     /// Get all available models
     pub fn available() -> Vec<NoiseModel> {
-        #[allow(unused_mut)]
+        #[cfg_attr(not(feature = "deepfilter"), allow(unused_mut))]
         let mut models = vec![NoiseModel::RNNoise];
         #[cfg(feature = "deepfilter")]
         {

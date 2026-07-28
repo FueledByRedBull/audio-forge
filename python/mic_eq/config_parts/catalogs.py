@@ -18,7 +18,7 @@ def build_builtin_presets(
             description="Optimized for voice communication - cuts low end rumble and boosts presence",
             version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                                   gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                                   gate_mode=0, vad_threshold=0.48, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),
             eq=eq_settings_cls(
                 enabled=True,
@@ -32,7 +32,7 @@ def build_builtin_presets(
             description="High-pass effect to remove low frequency rumble and proximity effect",
             version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                                   gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                                   gate_mode=0, vad_threshold=0.48, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),
             eq=eq_settings_cls(
                 enabled=True,
@@ -46,7 +46,7 @@ def build_builtin_presets(
             description="Enhances voice presence and intelligibility",
             version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                                   gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                                   gate_mode=0, vad_threshold=0.48, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),
             eq=eq_settings_cls(
                 enabled=True,
@@ -60,7 +60,7 @@ def build_builtin_presets(
             description="No EQ processing - flat frequency response",
             version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-40.0, attack_ms=10.0, release_ms=100.0,
-                                   gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                                   gate_mode=0, vad_threshold=0.48, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),
             eq=eq_settings_cls(
                 enabled=True,
@@ -74,7 +74,7 @@ def build_builtin_presets(
             description="Gate and RNNoise only - no EQ",
             version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-45.0, attack_ms=5.0, release_ms=150.0,
-                                   gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                                   gate_mode=0, vad_threshold=0.48, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),
             eq=eq_settings_cls(
                 enabled=False,
@@ -88,7 +88,7 @@ def build_builtin_presets(
             description="Maximum noise reduction with tight gate",
             version=CURRENT_VERSION,
             gate=gate_settings_cls(enabled=True, threshold_db=-35.0, attack_ms=5.0, release_ms=50.0,
-                                   gate_mode=0, vad_threshold=0.4, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
+                                   gate_mode=0, vad_threshold=0.48, vad_hold_time_ms=200.0, vad_pre_gain=1.0,
                                    auto_threshold_enabled=True, gate_margin_db=10.0),
             eq=eq_settings_cls(
                 enabled=True,

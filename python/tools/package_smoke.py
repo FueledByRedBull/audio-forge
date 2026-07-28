@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -17,6 +18,12 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/models/DeepFilterNet3_ll_onnx.tar.gz",
     "_internal/models/DeepFilterNet3_onnx.tar.gz",
     "_internal/models/silero_vad.onnx",
+    "_internal/audioforge-build.json",
+    "_internal/licenses/LICENSE",
+    "_internal/licenses/DeepFilterNet-LICENSE.txt",
+    "_internal/licenses/DirectML-LICENSE.txt",
+    "_internal/licenses/Silero-VAD-LICENSE.txt",
+    "_internal/licenses/THIRD_PARTY_NOTICES.md",
 )
 REQUIRED_MANIFEST_ASSETS = (
     "df.dll",
@@ -90,6 +97,7 @@ def check_source_packaging() -> list[str]:
         ("AudioForge.spec", "DirectML.dll"),
         ("AudioForge.spec", "df.dll"),
         ("AudioForge.spec", "models"),
+        ("AudioForge.spec", "licenses"),
         ("AudioForge.spec", "AudioForge.ico"),
     ]
     script_expectations = [
@@ -101,6 +109,7 @@ def check_source_packaging() -> list[str]:
         ("build_exe.ps1", "silero_vad.onnx"),
         ("build_exe.ps1", "verify_release_assets.py"),
         ("build_exe.ps1", "prune_bundle.py"),
+        ("build_exe.ps1", "audioforge-build.json"),
     ]
     runtime_expectations = [
         (
@@ -119,7 +128,8 @@ def check_source_packaging() -> list[str]:
         (".github/workflows/release-package.yml", "powershell -ExecutionPolicy Bypass -File .\\build_exe.ps1"),
         (".github/workflows/release-package.yml", "python/tools/package_smoke.py"),
         (".github/workflows/release-package.yml", "actions/upload-artifact@"),
-        (".github/workflows/release-package.yml", "AudioForge-*-win64-ultra.7z"),
+        (".github/workflows/release-package.yml", "AudioForge-v$version-win64-ultra.7z"),
+        (".github/workflows/release-package.yml", "fetch_release_assets.py"),
         (".github/workflows/release-package.yml", "gh release upload"),
     ]
 
@@ -165,6 +175,18 @@ def check_source_packaging() -> list[str]:
     _assets, manifest_errors = _load_asset_manifest()
     errors.extend(manifest_errors)
 
+    for notice in REQUIRED_BUNDLE_FILES:
+        if not notice.startswith("_internal/licenses/"):
+            continue
+        source_name = notice.removeprefix("_internal/licenses/")
+        source_path = (
+            REPO_ROOT / "LICENSE"
+            if source_name == "LICENSE"
+            else REPO_ROOT / "licenses" / source_name
+        )
+        if not source_path.is_file():
+            errors.append(f"required bundle notice source is missing: {source_path}")
+
     return errors
 
 
@@ -188,15 +210,26 @@ def _has_duplicate_native_extension(dist: Path) -> bool:
     )
 
 
-def _has_dependency_license_metadata(dist: Path) -> bool:
-    internal = dist / "_internal"
-    if any(path.is_dir() for path in internal.glob("*.dist-info")):
-        return True
-    license_root = internal / "licenses"
-    if license_root.is_dir():
-        license_names = {"LICENSE", "LICENSE.txt", "NOTICE", "NOTICE.txt", "COPYING"}
-        return any(path.is_file() and path.name in license_names for path in license_root.rglob("*"))
-    return False
+def _expected_version() -> str:
+    with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
+        return str(tomllib.load(handle)["project"]["version"])
+
+
+def _check_bundle_identity(dist: Path) -> list[str]:
+    build_info_path = dist / "_internal" / "audioforge-build.json"
+    if not build_info_path.is_file():
+        return []
+    try:
+        build_info = json.loads(build_info_path.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return [f"{build_info_path} is invalid JSON: {exc}"]
+    actual = build_info.get("version")
+    expected = _expected_version()
+    if actual != expected:
+        return [
+            f"{build_info_path} reports version {actual!r}; expected {expected!r}"
+        ]
+    return []
 
 
 def check_dist_bundle(dist: Path | None = None) -> list[str]:
@@ -217,8 +250,7 @@ def check_dist_bundle(dist: Path | None = None) -> list[str]:
     if _has_duplicate_native_extension(dist):
         errors.append(f"{dist} contains duplicate _internal/mic_eq_core/mic_eq_core*.pyd")
 
-    if not _has_dependency_license_metadata(dist):
-        errors.append(f"{dist} does not contain dependency dist-info or collected licenses")
+    errors.extend(_check_bundle_identity(dist))
 
     return errors
 

@@ -146,15 +146,15 @@ class GatePanel(QWidget):
         vad_threshold_layout = QHBoxLayout()
         self.vad_threshold_slider = QSlider(Qt.Orientation.Horizontal)
         self.vad_threshold_slider.setRange(30, 80)  # 0.3 to 0.8
-        self.vad_threshold_slider.setValue(40)
+        self.vad_threshold_slider.setValue(48)
         self.vad_threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.vad_threshold_slider.setTickInterval(10)
         vad_threshold_layout.addWidget(self.vad_threshold_slider)
 
         self.vad_threshold_spinbox = QDoubleSpinBox()
         self.vad_threshold_spinbox.setRange(0.3, 0.8)
-        self.vad_threshold_spinbox.setSingleStep(0.05)
-        self.vad_threshold_spinbox.setValue(0.4)
+        self.vad_threshold_spinbox.setSingleStep(0.01)
+        self.vad_threshold_spinbox.setValue(0.48)
         self.vad_threshold_spinbox.setDecimals(2)
         self.vad_threshold_spinbox.setToolTip("Speech probability threshold (0.3-0.8)")
         self.vad_threshold_spinbox.setFixedWidth(80)

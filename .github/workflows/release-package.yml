@@ -8,7 +8,7 @@ on:
         required: false
         type: string
       asset_source_tag:
-        description: "GitHub Release tag containing raw runtime assets. Defaults to release_tag."
+        description: "Published release used only as a fallback for pinned runtime assets. Defaults to v1.8.0."
         required: false
         type: string
       upload_to_release:
@@ -73,6 +73,52 @@ jobs:
       - name: Install Python dependencies
         run: .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements/dev.txt
 
+      - name: Resolve release metadata
+        id: meta
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          INPUT_ASSET_SOURCE_TAG: ${{ inputs.asset_source_tag }}
+          CONFIGURED_ASSET_SOURCE_TAG: ${{ vars.AUDIOFORGE_ASSET_SOURCE_TAG }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = .\.venv\Scripts\python.exe -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          $expectedTag = "v$version"
+          $releaseTag = $env:INPUT_RELEASE_TAG
+          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
+            if ($env:REF_TYPE -eq "tag") {
+              $releaseTag = $env:REF_NAME
+            } else {
+              $releaseTag = $expectedTag
+            }
+          }
+          if ($releaseTag -ne $expectedTag) {
+            throw "Release tag '$releaseTag' does not match pyproject version '$version' ($expectedTag)."
+          }
+
+          $assetSourceTag = $env:INPUT_ASSET_SOURCE_TAG
+          if ([string]::IsNullOrWhiteSpace($assetSourceTag)) {
+            $assetSourceTag = $env:CONFIGURED_ASSET_SOURCE_TAG
+          }
+          if ([string]::IsNullOrWhiteSpace($assetSourceTag)) {
+            $assetSourceTag = "v1.8.0"
+          }
+
+          $archive = "AudioForge-v$version-win64-ultra.7z"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+          "asset_source_tag=$assetSourceTag" >> $env:GITHUB_OUTPUT
+          "archive=$archive" >> $env:GITHUB_OUTPUT
+
+      - name: Download and verify pinned release runtime assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_SOURCE_TAG: ${{ steps.meta.outputs.asset_source_tag }}
+        run: |
+          .\.venv\Scripts\python.exe python/tools/fetch_release_assets.py `
+            --release-tag $env:ASSET_SOURCE_TAG `
+            --force
+
       - name: Build Rust extension
         run: .\.venv\Scripts\python.exe -m maturin develop --release
 
@@ -113,7 +159,7 @@ jobs:
         run: cargo fmt --check
 
       - name: RustSec audit
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # master, Node 24
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -122,147 +168,6 @@ jobs:
           cargo test -p mic_eq_core
           cargo test --release -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
           cargo clippy -p mic_eq_core --all-targets -- -D warnings
-
-      - name: Resolve release metadata
-        id: meta
-        env:
-          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
-          INPUT_ASSET_SOURCE_TAG: ${{ inputs.asset_source_tag }}
-          CONFIGURED_ASSET_SOURCE_TAG: ${{ vars.AUDIOFORGE_ASSET_SOURCE_TAG }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          $version = .\.venv\Scripts\python.exe -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
-          $expectedTag = "v$version"
-          $releaseTag = $env:INPUT_RELEASE_TAG
-          if ([string]::IsNullOrWhiteSpace($releaseTag)) {
-            if ($env:REF_TYPE -eq "tag") {
-              $releaseTag = $env:REF_NAME
-            } else {
-              $releaseTag = $expectedTag
-            }
-          }
-          if ($releaseTag -ne $expectedTag) {
-            throw "Release tag '$releaseTag' does not match pyproject version '$version' ($expectedTag)."
-          }
-
-          $assetSourceTag = $env:INPUT_ASSET_SOURCE_TAG
-          if ([string]::IsNullOrWhiteSpace($assetSourceTag)) {
-            $assetSourceTag = $env:CONFIGURED_ASSET_SOURCE_TAG
-          }
-          if ([string]::IsNullOrWhiteSpace($assetSourceTag)) {
-            $assetSourceTag = $releaseTag
-          }
-
-          $archive = "AudioForge-v$version-win64-ultra.7z"
-          "version=$version" >> $env:GITHUB_OUTPUT
-          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
-          "asset_source_tag=$assetSourceTag" >> $env:GITHUB_OUTPUT
-          "archive=$archive" >> $env:GITHUB_OUTPUT
-
-      - name: Download release runtime assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          ASSET_SOURCE_TAG: ${{ steps.meta.outputs.asset_source_tag }}
-        run: |
-          $assetDir = Join-Path $env:RUNNER_TEMP "audioforge-release-assets"
-          $extractDir = Join-Path $assetDir "archive-extract"
-          New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
-
-          $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
-          if (-not (Test-Path -LiteralPath $sevenZip)) {
-            $sevenZip = "7z.exe"
-          }
-
-          $packageArchive = $null
-          $archiveExtracted = $false
-          $releaseAssetNames = @{}
-          $releaseAssets = gh release view $env:ASSET_SOURCE_TAG `
-            --repo $env:GITHUB_REPOSITORY `
-            --json assets `
-            --jq ".assets[].name"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to inspect release assets from '$env:ASSET_SOURCE_TAG'."
-          }
-          foreach ($releaseAssetName in $releaseAssets) {
-            if (-not [string]::IsNullOrWhiteSpace($releaseAssetName)) {
-              $releaseAssetNames[$releaseAssetName] = $true
-            }
-          }
-
-          $assets = @(
-            @{ Name = "df.dll"; Destination = "df.dll"; ArchivePath = "_internal/df.dll" },
-            @{ Name = "DirectML.dll"; Destination = "target/release/DirectML.dll"; ArchivePath = "_internal/DirectML.dll" },
-            @{ Name = "DeepFilterNet3_ll_onnx.tar.gz"; Destination = "models/DeepFilterNet3_ll_onnx.tar.gz"; ArchivePath = "_internal/models/DeepFilterNet3_ll_onnx.tar.gz" },
-            @{ Name = "DeepFilterNet3_onnx.tar.gz"; Destination = "models/DeepFilterNet3_onnx.tar.gz"; ArchivePath = "_internal/models/DeepFilterNet3_onnx.tar.gz" },
-            @{ Name = "silero_vad.onnx"; Destination = "models/silero_vad.onnx"; ArchivePath = "_internal/models/silero_vad.onnx" }
-          )
-
-          function Resolve-AssetFromArchive($asset) {
-            if (-not $script:packageArchive) {
-              $archiveAssetName = $releaseAssetNames.Keys |
-                Where-Object { $_ -like "AudioForge-*-win64-ultra.7z" } |
-                Select-Object -First 1
-              if ([string]::IsNullOrWhiteSpace($archiveAssetName)) {
-                throw "No AudioForge release archive fallback was found in '$env:ASSET_SOURCE_TAG'."
-              }
-
-              gh release download $env:ASSET_SOURCE_TAG `
-                --repo $env:GITHUB_REPOSITORY `
-                --pattern $archiveAssetName `
-                --dir $assetDir `
-                --clobber *> $null
-              if ($LASTEXITCODE -ne 0) {
-                throw "Failed to download a release archive fallback from '$env:ASSET_SOURCE_TAG'."
-              }
-
-              $script:packageArchive = Get-ChildItem -Path $assetDir -Filter "AudioForge-*-win64-ultra.7z" |
-                Sort-Object LastWriteTimeUtc -Descending |
-                Select-Object -First 1
-              if (-not $script:packageArchive) {
-                throw "No AudioForge release archive fallback was found in '$env:ASSET_SOURCE_TAG'."
-              }
-            }
-
-            if (-not $script:archiveExtracted) {
-              New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-              & $sevenZip x $script:packageArchive.FullName -o"$extractDir" -y *> $null
-              if ($LASTEXITCODE -ne 0) {
-                throw "Failed to extract release archive '$($script:packageArchive.FullName)'."
-              }
-              $script:archiveExtracted = $true
-            }
-
-            $archiveAsset = Join-Path $extractDir $asset.ArchivePath
-            if (-not (Test-Path -LiteralPath $archiveAsset)) {
-              throw "Release archive '$($script:packageArchive.Name)' did not contain '$($asset.ArchivePath)'."
-            }
-            return $archiveAsset
-          }
-
-          foreach ($asset in $assets) {
-            if ($releaseAssetNames.ContainsKey($asset.Name)) {
-              gh release download $env:ASSET_SOURCE_TAG `
-                --repo $env:GITHUB_REPOSITORY `
-                --pattern $asset.Name `
-                --dir $assetDir `
-                --clobber *> $null
-              if ($LASTEXITCODE -ne 0) {
-                throw "Failed to download raw release asset '$($asset.Name)' from '$env:ASSET_SOURCE_TAG'."
-              }
-            }
-
-            $source = Join-Path $assetDir $asset.Name
-            if (-not (Test-Path -LiteralPath $source)) {
-              Write-Host "Raw release asset '$($asset.Name)' was not found in '$env:ASSET_SOURCE_TAG'; extracting from release archive fallback."
-              $source = Resolve-AssetFromArchive $asset
-            }
-
-            $destination = Join-Path $PWD $asset.Destination
-            $destinationDir = Split-Path -Parent $destination
-            New-Item -ItemType Directory -Force -Path $destinationDir | Out-Null
-            Copy-Item -LiteralPath $source -Destination $destination -Force
-          }
 
       - name: Verify release assets
         run: .\.venv\Scripts\python.exe python/tools/verify_release_assets.py

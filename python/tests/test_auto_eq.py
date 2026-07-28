@@ -7,6 +7,7 @@ import numpy as np
 from mic_eq import config
 from mic_eq.analysis import auto_eq
 from mic_eq.analysis.auto_eq_parts import headroom as headroom_module
+from mic_eq.analysis.auto_eq_parts import optimizer as optimizer_module
 from mic_eq.analysis.failure_detection import validate_analysis
 from mic_eq.analysis.spectrum import analyze_voice_spectrum, smooth_spectrum_perceptual
 
@@ -22,6 +23,60 @@ apply_headroom_validation = auto_eq.apply_headroom_validation
 simulate_candidate_chain = auto_eq.simulate_candidate_chain
 EQ_FREQUENCIES = config.EQ_FREQUENCIES
 AUTO_EQ_DEFAULT_Q = config.AUTO_EQ_DEFAULT_Q
+
+
+def test_constrained_gain_projection_preserves_feasible_material_correction():
+    dense_freqs = np.geomspace(20.0, 20_000.0, 256)
+    centers = np.asarray(
+        [120, 205, 318, 355, 497, 903, 1823, 2985, 7246, 9961],
+        dtype=float,
+    )
+    gains = np.asarray(
+        [-9.73, -3.61, 0.27, 0.43, 0.50, 0.75, 1.61, 2.01, 1.16, 0.67],
+        dtype=float,
+    )
+    qs = np.asarray([0.68, 0.62, 1.01, 4.22, 0.30, 0.30, 0.30, 0.44, 0.55, 0.67])
+    target = _predict_eq_response(dense_freqs, gains, qs, centers)
+
+    refined, success = optimizer_module._constrained_gain_refinement(
+        gains,
+        dense_freqs,
+        np.zeros_like(dense_freqs),
+        target,
+        qs,
+        centers,
+        np.ones_like(dense_freqs),
+    )
+    limits = optimizer_module._adjacent_gain_limits(centers)
+
+    assert success is True
+    assert np.max(np.abs(refined)) > 5.0
+    assert np.all(np.abs(np.diff(refined)) <= limits + 1.0e-6)
+
+
+def test_constrained_refinement_can_recover_from_an_undersized_initial_fit():
+    dense_freqs = np.geomspace(20.0, 20_000.0, 256)
+    centers = np.geomspace(80.0, 16_000.0, 10)
+    qs = np.full(10, 1.2)
+    desired = np.asarray([0.0, 0.5, 1.5, 3.0, 5.0, 5.0, 3.0, 1.5, 0.5, 0.0])
+    target = _predict_eq_response(dense_freqs, desired, qs, centers)
+    undersized = desired * 0.20
+
+    refined, success = optimizer_module._constrained_gain_refinement(
+        undersized,
+        dense_freqs,
+        np.zeros_like(dense_freqs),
+        target,
+        qs,
+        centers,
+        np.ones_like(dense_freqs),
+        np.full(10, -12.0),
+        np.full(10, 12.0),
+    )
+
+    assert success is True
+    assert np.max(refined) > np.max(undersized) + 2.0
+    assert np.linalg.norm(refined - desired) < np.linalg.norm(undersized - desired)
 
 
 def _seed_for_response(response_type: str) -> int:
@@ -387,6 +442,47 @@ def test_16b_low_quality_capture_abstains_instead_of_applying_eq():
     assert eq["abstention_reasons"]
     assert np.allclose(eq["band_gains"], 0.0)
     assert max(eq["band_confidences"]) < 0.75
+
+
+def test_16c_unsupported_band_abstains_locally_and_response_is_reprojected():
+    freqs = _default_freqs()
+    log_freqs = np.log10(freqs)
+    measured_db = np.full_like(freqs, -70.0)
+    measured_db -= 7.0 * np.exp(
+        -((log_freqs - np.log10(550.0)) ** 2) / (2 * 0.10**2)
+    )
+    measured_db -= 10.0 * np.exp(
+        -((log_freqs - np.log10(6200.0)) ** 2) / (2 * 0.07**2)
+    )
+    target_db = get_target_curve(freqs, "flat", target_mode="static")
+    reliability = np.ones_like(freqs)
+    reliability[freqs >= 4500.0] = 0.0
+    spectral_snr = np.full_like(freqs, 24.0)
+    spectral_snr[freqs >= 4500.0] = -3.0
+
+    eq = calculate_eq_bands(
+        freqs,
+        measured_db,
+        target_db,
+        spectral_repeatability=reliability,
+        spectral_uncertainty_db=np.where(reliability > 0.0, 0.3, 8.0),
+        phonetic_coverage=0.9,
+        spectral_snr_db=spectral_snr,
+        noise_reference_source="explicit_capture",
+        analysis_confidence=0.9,
+    )
+    gains = np.asarray(eq["band_gains"], dtype=float)
+    centers = np.asarray(eq["band_freqs"], dtype=float)
+    limits = optimizer_module._adjacent_gain_limits(centers)
+
+    assert eq["recommendation_status"] != "abstain"
+    assert eq["local_abstained_band_indices"]
+    assert np.any(np.abs(gains[centers < 2000.0]) >= 0.25)
+    assert np.allclose(
+        gains[np.asarray(eq["local_abstained_band_indices"], dtype=int)],
+        0.0,
+    )
+    assert np.all(np.abs(np.diff(gains)) <= limits + 1.0e-9)
 
 
 def test_17_dynamic_center_tracks_non_default_problem_frequency():

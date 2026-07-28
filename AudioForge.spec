@@ -10,6 +10,16 @@ hook_source = repo_root / "pyinstaller-hooks"
 binaries = []
 datas = []
 
+project_license = repo_root / "LICENSE"
+if project_license.exists():
+    datas.append((str(project_license), "licenses"))
+
+licenses_dir = repo_root / "licenses"
+if licenses_dir.exists():
+    for license_file in sorted(licenses_dir.iterdir()):
+        if license_file.is_file():
+            datas.append((str(license_file), "licenses"))
+
 df_dll = repo_root / "df.dll"
 if df_dll.exists():
     binaries.append((str(df_dll), "."))
@@ -19,8 +29,14 @@ if directml_dll.exists():
     binaries.append((str(directml_dll), "."))
 
 models_dir = repo_root / "models"
-if models_dir.exists():
-    datas.append((str(models_dir), "models"))
+for model_name in (
+    "DeepFilterNet3_ll_onnx.tar.gz",
+    "DeepFilterNet3_onnx.tar.gz",
+    "silero_vad.onnx",
+):
+    model_path = models_dir / model_name
+    if model_path.exists():
+        datas.append((str(model_path), "models"))
 icon_file = repo_root / "AudioForge.ico"
 
 

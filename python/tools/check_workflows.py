@@ -14,6 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 ACTION_REF = re.compile(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE)
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+RUSTSEC_NODE24_SHA = "858dc40f52ca2b8570b7a997c1c4e35c6fc9a432"
 
 
 def _mapping(value: Any, context: str, errors: list[str]) -> dict[str, Any]:
@@ -67,6 +68,27 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
     for needle in required:
         if needle not in source:
             errors.append(f"{name}: missing required release gate {needle!r}")
+
+    if f"rustsec/audit-check@{RUSTSEC_NODE24_SHA}" not in source:
+        errors.append(f"{name}: RustSec must use the pinned Node 24 action revision")
+    if "cargo test -p mic_eq_core" in source:
+        model_step = source.find(
+            "fetch_release_assets.py"
+            if name == "release-package.yml"
+            else "silero_vad.onnx"
+        )
+        rust_tests = source.find("cargo test -p mic_eq_core")
+        if model_step < 0 or model_step > rust_tests:
+            errors.append(
+                f"{name}: pinned Silero model must be available before Rust tests"
+            )
+    if name == "release-package.yml":
+        asset_fetch = source.find("fetch_release_assets.py")
+        extension_build = source.find("maturin develop --release")
+        if asset_fetch < 0 or asset_fetch > extension_build:
+            errors.append(
+                f"{name}: verified runtime assets must be fetched before extension build"
+            )
 
 
 def check_workflows() -> list[str]:

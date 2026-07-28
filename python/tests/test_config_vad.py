@@ -14,7 +14,7 @@ def test_vad_preset_persistence(tmp_path):
 
         original = Preset(
             name="VAD Test",
-            version="1.7.13",
+            version="1.10.0",
             gate=GateSettings(
                 enabled=True,
                 threshold_db=-35.0,
@@ -60,11 +60,53 @@ def test_backward_compatibility_defaults():
     loaded = Preset.from_dict(old_preset_data)
 
     assert loaded.gate.gate_mode == 0
-    assert loaded.gate.vad_threshold == 0.4
+    assert loaded.gate.vad_threshold == 0.48
     assert loaded.gate.vad_hold_time_ms == 200.0
     assert loaded.gate.vad_pre_gain == 1.0
     assert loaded.gate.auto_threshold_enabled is True
     assert loaded.gate.gate_margin_db == 10.0
+
+
+def test_legacy_uncalibrated_vad_default_migrates_to_v6_default():
+    old_preset_data = {
+        "name": "Legacy VAD Default",
+        "version": "1.5.0",
+        "gate": {
+            "enabled": True,
+            "threshold_db": -40.0,
+            "attack_ms": 10.0,
+            "release_ms": 100.0,
+            "vad_threshold": 0.5,
+        },
+    }
+
+    loaded = Preset.from_dict(old_preset_data)
+
+    assert loaded.gate.vad_threshold == 0.48
+
+
+def test_v19_vad_default_migrates_to_current_calibration():
+    loaded = Preset.from_dict(
+        {
+            "name": "Version 1.9 VAD Default",
+            "version": "1.9.0",
+            "gate": {"vad_threshold": 0.4},
+        }
+    )
+
+    assert loaded.gate.vad_threshold == 0.48
+
+
+def test_nondefault_v19_vad_threshold_is_preserved():
+    loaded = Preset.from_dict(
+        {
+            "name": "Version 1.9 Custom VAD",
+            "version": "1.9.0",
+            "gate": {"vad_threshold": 0.43},
+        }
+    )
+
+    assert loaded.gate.vad_threshold == 0.43
 
 
 def test_audioforge_appdata_migrates_legacy_miceq_dir(tmp_path, monkeypatch):

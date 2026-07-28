@@ -7,12 +7,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.request
 from pathlib import Path
 
 from verify_release_assets import verify_assets
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ASSET_SOURCE_TAG = "v1.8.0"
 
 ASSETS = [
     {
@@ -39,6 +41,10 @@ ASSETS = [
         "name": "silero_vad.onnx",
         "destination": Path("models/silero_vad.onnx"),
         "archive_path": Path("_internal/models/silero_vad.onnx"),
+        "direct_url": (
+            "https://raw.githubusercontent.com/snakers4/silero-vad/"
+            "v6.2.1/src/silero_vad/data/silero_vad.onnx"
+        ),
     },
 ]
 
@@ -54,15 +60,6 @@ def _run(command: list[str], *, capture: bool = False) -> str:
         kwargs["stderr"] = subprocess.PIPE
     completed = subprocess.run(command, **kwargs)
     return completed.stdout if capture else ""
-
-
-def _resolve_default_tag() -> str:
-    import tomllib
-
-    pyproject = REPO_ROOT / "pyproject.toml"
-    with pyproject.open("rb") as handle:
-        version = tomllib.load(handle)["project"]["version"]
-    return f"v{version}"
 
 
 def _find_7z() -> str:
@@ -101,6 +98,18 @@ def _download_asset(tag: str, repo: str, pattern: str, destination_dir: Path) ->
     )
 
 
+def _download_direct_url(url: str, destination: Path) -> None:
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "AudioForge-release-assets"},
+    )
+    with (
+        urllib.request.urlopen(request, timeout=60) as response,
+        destination.open("wb") as output,
+    ):
+        shutil.copyfileobj(response, output)
+
+
 def _extract_archive_asset(
     archive_path: Path,
     extracted_root: Path,
@@ -125,8 +134,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--release-tag",
-        default=_resolve_default_tag(),
-        help="Release tag to read assets from. Defaults to v<pyproject version>.",
+        default=DEFAULT_ASSET_SOURCE_TAG,
+        help=(
+            "Published release used as a fallback for pinned assets. "
+            f"Defaults to {DEFAULT_ASSET_SOURCE_TAG}."
+        ),
     )
     parser.add_argument(
         "--repo",
@@ -160,7 +172,11 @@ def main() -> int:
                 print(f"Skipping existing {destination.relative_to(REPO_ROOT)}")
                 continue
 
-            if asset["name"] in asset_names:
+            direct_url = asset.get("direct_url")
+            if isinstance(direct_url, str) and direct_url:
+                source = temp_dir / asset["name"]
+                _download_direct_url(direct_url, source)
+            elif asset["name"] in asset_names:
                 _download_asset(args.release_tag, args.repo, asset["name"], temp_dir)
                 source = temp_dir / asset["name"]
             else:

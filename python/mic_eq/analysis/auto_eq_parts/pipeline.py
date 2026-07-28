@@ -101,6 +101,8 @@ def analyze_auto_eq(
         spectrum_smoothed,
         target_db,
         spectral_repeatability=spectrum_result.spectral_repeatability,
+        spectral_uncertainty_db=spectrum_result.measurement_uncertainty_db,
+        phonetic_coverage=spectrum_result.phonetic_coverage,
         voiced_window_ratio=spectrum_result.voiced_window_ratio,
         analysis_confidence=spectrum_result.residual_confidence,
         global_snr_db=spectrum_result.snr_db,
@@ -118,6 +120,12 @@ def analyze_auto_eq(
     eq_settings["measurement_coverage"] = spectrum_result.measurement_coverage
     eq_settings["measurement_outlier_rejection_ratio"] = (
         spectrum_result.outlier_rejection_ratio
+    )
+    eq_settings["measurement_phonetic_coverage"] = (
+        spectrum_result.phonetic_coverage
+    )
+    eq_settings["measurement_effective_blocks"] = (
+        spectrum_result.effective_measurement_blocks
     )
     eq_settings["measurement_vad_backend"] = (
         "silero" if spectrum_result.vad_probability_used else vad_backend
@@ -163,6 +171,8 @@ def analyze_auto_eq(
             "analysis_confidence": spectrum_result.residual_confidence,
             "measurement_coverage": spectrum_result.measurement_coverage,
             "measurement_outlier_rejection_ratio": spectrum_result.outlier_rejection_ratio,
+            "measurement_phonetic_coverage": spectrum_result.phonetic_coverage,
+            "measurement_effective_blocks": spectrum_result.effective_measurement_blocks,
             "measurement_vad_backend": eq_settings.get("measurement_vad_backend"),
             "measurement_vad_active_window_ratio": spectrum_result.vad_active_window_ratio,
             "capture_confidence": eq_settings.get("capture_confidence"),

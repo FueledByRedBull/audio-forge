@@ -1,0 +1,288 @@
+{
+  "child_manifest": {
+    "license": "CC BY 4.0",
+    "path": "models/vad_child_multispeaker_corpus/manifest.json",
+    "selection": {
+      "ages": [
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "capture_count": 88,
+      "duration_range_s": [
+        1.5,
+        6.0
+      ],
+      "genders": [
+        "female",
+        "male"
+      ],
+      "minimum_validation_score": 0.8,
+      "padding_seconds": 0.5,
+      "redistribution": "local evaluation only; never packaged",
+      "seed": "audioforge-vad-child-v2",
+      "speaker_count": 44,
+      "speakers_per_age_gender": 2,
+      "status": "test",
+      "utterances_per_speaker": 2
+    },
+    "source": "https://www.openslr.org/117/"
+  },
+  "decision": {
+    "baseline": "v5_1_2",
+    "candidate": "v6_2_1",
+    "reason": "Candidate passes every independently calibrated general and multi-speaker child gate.",
+    "retain_candidate": true
+  },
+  "gates": {
+    "child_event_recall_noninferior": true,
+    "child_speaker_macro_f1_noninferior": true,
+    "general_false_openings_within_five_percent_or_one": true,
+    "general_macro_f1_noninferior": true,
+    "meaningful_child_improvement": true
+  },
+  "general_manifest": "models/vad_eval_corpus/manifest.json",
+  "method": {
+    "bootstrap_repetitions": 10000,
+    "external_child_use": "No fitting or threshold tuning. Bootstrap unit is speaker. Clip-boundary onset is descriptive, not a hard gate.",
+    "native_calibration_inverted": {
+      "a": 0.6922877,
+      "b": 0.08612386,
+      "reason": "Recover smoothed pre-calibration model posteriors from the currently compiled production transform before fitting each model independently."
+    },
+    "predefined_margins": {
+      "child_event_recall_ci95_low": -0.02,
+      "child_speaker_macro_f1_ci95_low": -0.01,
+      "general_macro_f1": -0.01,
+      "meaningful_child_improvement": 0.01
+    },
+    "threshold_selection": "Each model receives its own Platt calibration and balanced-accuracy threshold fitted only on the general calibration split."
+  },
+  "models": {
+    "v5_1_2": {
+      "asset": {
+        "path": "models/silero_vad_v5_1_2.identify.onnx",
+        "sha256": "2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f",
+        "size": 2327524
+      },
+      "calibration": {
+        "a": 0.6902501289234392,
+        "b": 0.36937071693545764,
+        "fit_split": "general calibration only",
+        "selected_threshold": 0.45999999999999996
+      },
+      "child_runtime": {
+        "aggregate_realtime_factor": 0.014433446733337168,
+        "capture_count": 88,
+        "model_path": "models/silero_vad_v5_1_2.identify.onnx",
+        "runtime_median_seconds": 0.06551990000116348,
+        "runtime_p95_seconds": 0.0716457199989236,
+        "timed_repetitions": 1
+      },
+      "external_child": {
+        "average_precision": 0.9649076556374231,
+        "balanced_accuracy": 0.7979415100321926,
+        "brier_score": 0.26511266800640565,
+        "capture_count": 88,
+        "events": {
+          "detected_event_count": 88,
+          "event_recall": 1.0,
+          "false_opening_count": 0,
+          "false_openings_per_noise_minute": 0.0,
+          "median_onset_delay_ms": 688.0,
+          "minimum_event_duration_ms": 250,
+          "p95_onset_delay_ms": 1481.5999999999995,
+          "true_event_count": 88
+        },
+        "f1": 0.7567706327814144,
+        "false_negative": 3746,
+        "false_positive": 44,
+        "false_positive_rate": 0.015608371763036533,
+        "frame_count": 12461,
+        "macro_f1": 0.7496480869885809,
+        "macro_recall": 0.6215350006948799,
+        "noise_frame_count": 2819,
+        "precision": 0.9925925925925926,
+        "recall": 0.6114913918274217,
+        "roc_auc": 0.8773563233868262,
+        "specificity": 0.9843916282369635,
+        "speech_frame_count": 9642,
+        "true_negative": 2775,
+        "true_positive": 5896
+      },
+      "general_held_out": {
+        "average_precision": 0.8127041775579461,
+        "balanced_accuracy": 0.8466496558312249,
+        "brier_score": 0.09069625608695851,
+        "capture_count": 174,
+        "events": {
+          "detected_event_count": 149,
+          "event_recall": 0.9197530864197531,
+          "false_opening_count": 0,
+          "false_openings_per_noise_minute": 0.0,
+          "median_onset_delay_ms": 32.0,
+          "minimum_event_duration_ms": 250,
+          "p95_onset_delay_ms": 192.0,
+          "true_event_count": 162
+        },
+        "f1": 0.7564265716467293,
+        "false_negative": 403,
+        "false_positive": 554,
+        "false_positive_rate": 0.09336029659588807,
+        "frame_count": 7823,
+        "macro_f1": 0.7051514066085958,
+        "macro_recall": 0.7378216929941068,
+        "noise_frame_count": 5934,
+        "precision": 0.7284313725490196,
+        "recall": 0.7866596082583377,
+        "roc_auc": 0.9198250635229986,
+        "specificity": 0.9066397034041119,
+        "speech_frame_count": 1889,
+        "true_negative": 5380,
+        "true_positive": 1486
+      },
+      "general_runtime": {
+        "aggregate_realtime_factor": 0.043637418764783734,
+        "capture_count": 498,
+        "model_path": "models/silero_vad_v5_1_2.identify.onnx",
+        "runtime_median_seconds": 0.05745905000003404,
+        "runtime_p95_seconds": 0.06536340999973618,
+        "timed_repetitions": 1
+      }
+    },
+    "v6_2_1": {
+      "asset": {
+        "path": "models/silero_vad_v6.2.1.candidate.onnx",
+        "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+        "size": 2327524
+      },
+      "calibration": {
+        "a": 0.6922877076326707,
+        "b": 0.0861237955201898,
+        "fit_split": "general calibration only",
+        "selected_threshold": 0.475
+      },
+      "child_runtime": {
+        "aggregate_realtime_factor": 0.014265853021133696,
+        "capture_count": 88,
+        "model_path": "models/silero_vad_v6.2.1.candidate.onnx",
+        "runtime_median_seconds": 0.06405880000056641,
+        "runtime_p95_seconds": 0.07068648499862319,
+        "timed_repetitions": 1
+      },
+      "external_child": {
+        "average_precision": 0.9724399700163344,
+        "balanced_accuracy": 0.8058289716144464,
+        "brier_score": 0.24642369581325016,
+        "capture_count": 88,
+        "events": {
+          "detected_event_count": 88,
+          "event_recall": 1.0,
+          "false_opening_count": 0,
+          "false_openings_per_noise_minute": 0.0,
+          "median_onset_delay_ms": 704.0,
+          "minimum_event_duration_ms": 250,
+          "p95_onset_delay_ms": 1566.3999999999992,
+          "true_event_count": 88
+        },
+        "f1": 0.7676934826883911,
+        "false_negative": 3611,
+        "false_positive": 39,
+        "false_positive_rate": 0.01383469315360053,
+        "frame_count": 12461,
+        "macro_f1": 0.7623679982906771,
+        "macro_recall": 0.6348142395679875,
+        "noise_frame_count": 2819,
+        "precision": 0.9935749588138385,
+        "recall": 0.6254926363824933,
+        "roc_auc": 0.9016186721228715,
+        "specificity": 0.9861653068463995,
+        "speech_frame_count": 9642,
+        "true_negative": 2780,
+        "true_positive": 6031
+      },
+      "general_held_out": {
+        "average_precision": 0.8091010719393618,
+        "balanced_accuracy": 0.8494090991733134,
+        "brier_score": 0.08744513980315904,
+        "capture_count": 174,
+        "events": {
+          "detected_event_count": 152,
+          "event_recall": 0.9382716049382716,
+          "false_opening_count": 0,
+          "false_openings_per_noise_minute": 0.0,
+          "median_onset_delay_ms": 64.0,
+          "minimum_event_duration_ms": 250,
+          "p95_onset_delay_ms": 192.0,
+          "true_event_count": 162
+        },
+        "f1": 0.7697974217311233,
+        "false_negative": 426,
+        "false_positive": 449,
+        "false_positive_rate": 0.07566565554432081,
+        "frame_count": 7823,
+        "macro_f1": 0.7160368299925262,
+        "macro_recall": 0.7269644786886167,
+        "noise_frame_count": 5934,
+        "precision": 0.7651673640167364,
+        "recall": 0.7744838538909475,
+        "roc_auc": 0.9266318510140574,
+        "specificity": 0.9243343444556792,
+        "speech_frame_count": 1889,
+        "true_negative": 5485,
+        "true_positive": 1463
+      },
+      "general_runtime": {
+        "aggregate_realtime_factor": 0.04290046177938259,
+        "capture_count": 498,
+        "model_path": "models/silero_vad_v6.2.1.candidate.onnx",
+        "runtime_median_seconds": 0.05648599999949511,
+        "runtime_p95_seconds": 0.06394823499958875,
+        "timed_repetitions": 1
+      }
+    }
+  },
+  "paired_child_bootstrap": {
+    "event_recall": {
+      "candidate_better_speaker_fraction": 0.0,
+      "candidate_minus_baseline_mean": 0.0,
+      "ci95_high": 0.0,
+      "ci95_low": 0.0,
+      "speaker_count": 44,
+      "tied_speaker_fraction": 1.0
+    },
+    "macro_f1": {
+      "candidate_better_speaker_fraction": 0.6363636363636364,
+      "candidate_minus_baseline_mean": 0.01271991130209623,
+      "ci95_high": 0.02047548429575417,
+      "ci95_low": 0.005457005502158203,
+      "speaker_count": 44,
+      "tied_speaker_fraction": 0.045454545454545456
+    },
+    "recall": {
+      "candidate_better_speaker_fraction": 0.5909090909090909,
+      "candidate_minus_baseline_mean": 0.012962774901406548,
+      "ci95_high": 0.022019032728889613,
+      "ci95_low": 0.004593854720454012,
+      "speaker_count": 44,
+      "tied_speaker_fraction": 0.11363636363636363
+    },
+    "roc_auc": {
+      "candidate_better_speaker_fraction": 0.7272727272727273,
+      "candidate_minus_baseline_mean": 0.0198211196721772,
+      "ci95_high": 0.03015774769184779,
+      "ci95_low": 0.00913311735025909,
+      "speaker_count": 44,
+      "tied_speaker_fraction": 0.0
+    }
+  },
+  "schema_version": 1
+}

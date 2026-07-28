@@ -6,12 +6,17 @@ from typing import Any
 
 import numpy as np
 
+CALIBRATED_VAD_DEFAULT_THRESHOLD = 0.48
+VAD_SPEECH_EVIDENCE_THRESHOLD = 0.40
+VAD_STRONG_SPEECH_THRESHOLD = 0.65
+VAD_NOISE_CONTAMINATION_THRESHOLD = 0.35
+
 
 def analyze_offline_vad(
     audio: np.ndarray,
     sample_rate: int,
     *,
-    threshold: float = 0.5,
+    threshold: float = CALIBRATED_VAD_DEFAULT_THRESHOLD,
 ) -> tuple[np.ndarray | None, str]:
     """Return native Silero posteriors, or an explicit analysis backend label.
 
@@ -47,4 +52,10 @@ def analyze_offline_vad(
     return np.clip(probabilities, 0.0, 1.0), "silero"
 
 
-__all__ = ["analyze_offline_vad"]
+__all__ = [
+    "CALIBRATED_VAD_DEFAULT_THRESHOLD",
+    "VAD_NOISE_CONTAMINATION_THRESHOLD",
+    "VAD_SPEECH_EVIDENCE_THRESHOLD",
+    "VAD_STRONG_SPEECH_THRESHOLD",
+    "analyze_offline_vad",
+]

@@ -84,7 +84,7 @@ def _configure_frozen_runtime():
 
 _configure_frozen_runtime()
 
-from mic_eq.ui import run_app
+from mic_eq.ui import run_app  # noqa: E402 - frozen runtime paths must be configured first
 
 if __name__ == "__main__":
     sys.exit(run_app())

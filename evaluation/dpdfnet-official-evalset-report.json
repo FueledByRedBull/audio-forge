@@ -1,0 +1,106 @@
+{
+  "aggregate": {
+    "DPDFNet2": {
+      "condition_count": 36,
+      "mean_pesq_wb": 3.132702569166819,
+      "mean_si_snr_db": 14.158065330903163,
+      "mean_stoi": 0.9171666712389897,
+      "median_pesq_wb": 3.278615713119507,
+      "median_si_snr_db": 14.455492363134159,
+      "median_stoi": 0.9506086739842023
+    },
+    "DPDFNet4": {
+      "condition_count": 36,
+      "mean_pesq_wb": 3.1559128959973655,
+      "mean_si_snr_db": 14.455744197159142,
+      "mean_stoi": 0.9219804065583018,
+      "median_pesq_wb": 3.2429654598236084,
+      "median_si_snr_db": 14.701571167821808,
+      "median_stoi": 0.9539611502561913
+    },
+    "DPDFNet8": {
+      "condition_count": 36,
+      "mean_pesq_wb": 3.1762461331155567,
+      "mean_si_snr_db": 14.777509098848283,
+      "mean_stoi": 0.9268308573156541,
+      "median_pesq_wb": 3.289821982383728,
+      "median_si_snr_db": 14.986853492432965,
+      "median_stoi": 0.9550618535517204
+    },
+    "DeepFilterNet3": {
+      "condition_count": 36,
+      "mean_pesq_wb": 2.729380637407303,
+      "mean_si_snr_db": 12.48943764591172,
+      "mean_stoi": 0.8947640638525178,
+      "median_pesq_wb": 2.8571654558181763,
+      "median_si_snr_db": 13.247981765394327,
+      "median_stoi": 0.9245063747088882
+    },
+    "Noisy": {
+      "condition_count": 36,
+      "mean_pesq_wb": 1.3269831703768835,
+      "mean_si_snr_db": 0.3305292506636397,
+      "mean_stoi": 0.8187935536680848,
+      "median_pesq_wb": 1.2886751890182495,
+      "median_si_snr_db": 0.29539236373435956,
+      "median_stoi": 0.8653802169699389
+    }
+  },
+  "claim_labels": {
+    "author_reported_not_independently_reproduced": [
+      "The paper's full 324-condition averages.",
+      "DNSMOS, NISQA, PRISM, DNS4 blind-test scores, and Ceva NPU realtime factors."
+    ],
+    "locally_reproduced": [
+      "PESQ, STOI, and SI-SNR ordering on the pinned 36-condition stratified EvalSet subset."
+    ],
+    "scope_limit": "Subset reproduction validates direction on selected official outputs; it does not reproduce the paper's full-table values."
+  },
+  "component_comparisons": {
+    "DPDFNet2": {
+      "pesq_above_deepfilternet3": true,
+      "si_snr_above_deepfilternet3": true,
+      "stoi_above_deepfilternet3": true
+    },
+    "DPDFNet4": {
+      "pesq_above_deepfilternet3": true,
+      "si_snr_above_deepfilternet3": true,
+      "stoi_above_deepfilternet3": true
+    },
+    "DPDFNet8": {
+      "pesq_above_deepfilternet3": true,
+      "si_snr_above_deepfilternet3": true,
+      "stoi_above_deepfilternet3": true
+    }
+  },
+  "dataset": {
+    "license": "Apache-2.0",
+    "manifest_sha256": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5",
+    "revision": "24866d8ae065f0518aef0f5f0c6200f31166af98",
+    "selection": {
+      "condition_count": 36,
+      "outputs": [
+        "Clean",
+        "Noisy",
+        "DeepFilterNet3",
+        "DPDFNet2",
+        "DPDFNet4",
+        "DPDFNet8"
+      ],
+      "strategy": "all 12 languages x all 3 SNRs, rotating across all 9 noise types"
+    },
+    "source": "https://huggingface.co/datasets/Ceva-IP/DPDFNet_EvalSet"
+  },
+  "method": {
+    "aggregation": "unweighted mean and median across 36 stratified conditions",
+    "alignment": "official EvalSet files used as supplied; equal-length common prefix",
+    "pesq_mode": "wideband",
+    "sample_rate": 16000,
+    "stoi_extended": false
+  },
+  "metric_packages": {
+    "pesq": "0.0.4",
+    "pystoi": "0.4.1"
+  },
+  "schema_version": 1
+}

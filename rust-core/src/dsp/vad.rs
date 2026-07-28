@@ -44,6 +44,15 @@ pub enum GateMode {
 const SILERO_SAMPLE_RATE: u32 = 16000;
 /// Silero VAD window size (512 samples at 16kHz = 32ms)
 const SILERO_WINDOW_SIZE: usize = 512;
+/// Silero VAD v5.0+ rolling context at 16kHz (4ms).
+const SILERO_CONTEXT_SIZE: usize = 64;
+/// ONNX input combines the prior context and current inference window.
+const SILERO_MODEL_INPUT_SIZE: usize = SILERO_CONTEXT_SIZE + SILERO_WINDOW_SIZE;
+/// Platt-style calibration fitted on the deterministic AudioForge calibration
+/// split for Silero v6.2.1 and validated on the speaker-disjoint general split
+/// plus an external 44-speaker child corpus.
+const SILERO_CALIBRATION_A: f32 = 0.692_287_7;
+const SILERO_CALIBRATION_B: f32 = 0.086_123_86;
 const VAD_INPUT_COMPACT_THRESHOLD: usize = 4096;
 const NOISE_FLOOR_HISTORY_FRAMES: usize = 250;
 const NOISE_FLOOR_BIN_COUNT: usize = 61;
@@ -99,10 +108,12 @@ pub struct SileroVAD {
     buffer_read_pos: usize,
     /// Reusable input-rate window scratch
     input_window: Vec<f32>,
-    /// Reusable 16kHz pre-gain scratch
-    gained_audio: Vec<f32>,
+    /// Reusable 16kHz model input containing context plus the current frame
+    gained_audio: [f32; SILERO_MODEL_INPUT_SIZE],
     /// Reusable fixed-size inference window
-    audio_512: Vec<f32>,
+    audio_512: [f32; SILERO_WINDOW_SIZE],
+    /// Rolling raw-audio context required by the Silero v5.0+ ONNX wrapper
+    context_audio: [f32; SILERO_CONTEXT_SIZE],
     /// Reusable resample scratch
     resample_scratch: Vec<f32>,
     /// Combined LSTM state (h and c concatenated) - shape [2, 1, 128]
@@ -196,6 +207,7 @@ impl SileroVAD {
                     model_path, e
                 ))
             })?;
+        validate_silero_outlets(&session)?;
 
         // Calculate resampling ratio and preallocate reusable buffers.
         let resample_ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
@@ -215,8 +227,9 @@ impl SileroVAD {
             buffer: Vec::with_capacity(window_size * 4),
             buffer_read_pos: 0,
             input_window: Vec::with_capacity(window_size),
-            gained_audio: vec![0.0; SILERO_WINDOW_SIZE],
-            audio_512: vec![0.0; SILERO_WINDOW_SIZE],
+            gained_audio: [0.0; SILERO_MODEL_INPUT_SIZE],
+            audio_512: [0.0; SILERO_WINDOW_SIZE],
+            context_audio: [0.0; SILERO_CONTEXT_SIZE],
             resample_scratch: Vec::with_capacity(SILERO_WINDOW_SIZE),
             state,
             smoothed_prob: 0.0,
@@ -280,7 +293,7 @@ impl SileroVAD {
             self.has_inference = true;
         }
 
-        Ok(self.smoothed_prob)
+        Ok(calibrate_silero_probability(self.smoothed_prob))
     }
 
     /// Quick check if speech is detected
@@ -323,6 +336,7 @@ impl SileroVAD {
         self.resample_scratch.clear();
         self.gained_audio.fill(0.0);
         self.audio_512.fill(0.0);
+        self.context_audio.fill(0.0);
         self.smoothed_prob = 0.0;
         self.has_inference = false;
         // Reset combined LSTM state to zeros
@@ -332,7 +346,7 @@ impl SileroVAD {
     #[inline]
     fn current_probability(&self) -> f32 {
         if self.has_inference {
-            self.smoothed_prob
+            calibrate_silero_probability(self.smoothed_prob)
         } else {
             self.threshold
         }
@@ -357,25 +371,22 @@ impl SileroVAD {
 
     /// Run ONNX inference with proper Silero VAD inputs
     fn run_inference(&mut self) -> Result<f32, VadError> {
-        // Silero VAD v4/v5 expects these inputs:
-        // - "input": audio tensor, shape [1, 512] or [batch, samples]
+        // Silero VAD v5.0+ expects these inputs:
+        // - "input": audio tensor, shape [1, 576] at 16kHz. The first
+        //   64 samples are rolling context and the remaining 512 are the
+        //   current 32ms frame.
         // - "sr": sample rate tensor, scalar (16000)
         // - "state": combined LSTM state, shape [2, 1, 128] (h and c concatenated)
 
-        if self.pre_gain != 1.0 {
-            for (dst, src) in self
-                .gained_audio
-                .iter_mut()
-                .zip(self.audio_512.iter().copied())
-            {
-                *dst = src * self.pre_gain;
-            }
-        } else {
-            self.gained_audio.copy_from_slice(&self.audio_512);
-        }
+        prepare_silero_model_input(
+            &self.context_audio,
+            &self.audio_512,
+            self.pre_gain,
+            &mut self.gained_audio,
+        );
 
         let audio_array =
-            ArrayView2::from_shape((1, SILERO_WINDOW_SIZE), &self.gained_audio[..])
+            ArrayView2::from_shape((1, SILERO_MODEL_INPUT_SIZE), &self.gained_audio[..])
                 .map_err(|e| VadError::OnnxError(format!("Failed to create audio view: {}", e)))?;
         let sr_array = ArrayView1::from(&SILERO_SR_TENSOR);
 
@@ -390,7 +401,6 @@ impl SileroVAD {
         let state_ref = TensorRef::from_array_view(&self.state).map_err(|e| {
             VadError::OnnxError(format!("Failed to create state tensor ref: {}", e))
         })?;
-
         // Run inference with ort 2.0 API
         // Note: Silero VAD uses "state" not "h"/"c"
         let outputs = self
@@ -403,7 +413,7 @@ impl SileroVAD {
             .map_err(|e| VadError::OnnxError(format!("Inference failed: {}", e)))?;
 
         // Extract probability output
-        // Silero VAD returns: "output" (probability), "state_n" (new combined state)
+        // Silero VAD returns: "output" (probability), "stateN" (new combined state)
         let prob_output = outputs
             .get("output")
             .ok_or_else(|| VadError::OnnxError("Missing 'output' in model outputs".to_string()))?;
@@ -416,29 +426,104 @@ impl SileroVAD {
             .first()
             .copied()
             .ok_or_else(|| VadError::OnnxError("Output tensor is empty".to_string()))?;
+        if !prob.is_finite() {
+            return Err(VadError::OnnxError(
+                "Model returned a non-finite speech probability".to_string(),
+            ));
+        }
 
-        // Update combined LSTM state from state_n output
-        if let Some(state_n_output) = outputs.get("state_n") {
-            let (_shape, state_n_data) =
-                state_n_output.try_extract_tensor::<f32>().map_err(|e| {
-                    VadError::OnnxError(format!("Failed to extract state_n tensor: {}", e))
-                })?;
+        // Update combined LSTM state from stateN output.
+        let state_n_output = outputs.get("stateN").ok_or_else(|| {
+            VadError::OnnxError(
+                "Validated Silero model did not return required 'stateN' output".to_string(),
+            )
+        })?;
+        let (_shape, state_n_data) = state_n_output
+            .try_extract_tensor::<f32>()
+            .map_err(|e| VadError::OnnxError(format!("Failed to extract stateN tensor: {}", e)))?;
 
-            // Copy data to self.state - shape [2, 1, 128]
-            let total_elements = LSTM_NUM_LAYERS * LSTM_STATE_DIM;
-            if state_n_data.len() >= total_elements {
-                for i in 0..LSTM_NUM_LAYERS {
-                    for k in 0..LSTM_STATE_DIM {
-                        let flat_idx = i * LSTM_STATE_DIM + k;
-                        if flat_idx < state_n_data.len() {
-                            self.state[[i, 0, k]] = state_n_data[flat_idx];
-                        }
-                    }
-                }
+        // Copy data to self.state - shape [2, 1, 128].
+        let total_elements = LSTM_NUM_LAYERS * LSTM_STATE_DIM;
+        if state_n_data.len() != total_elements {
+            return Err(VadError::OnnxError(format!(
+                "Invalid stateN size: expected {total_elements}, got {}",
+                state_n_data.len()
+            )));
+        }
+        for i in 0..LSTM_NUM_LAYERS {
+            for k in 0..LSTM_STATE_DIM {
+                let flat_idx = i * LSTM_STATE_DIM + k;
+                self.state[[i, 0, k]] = state_n_data[flat_idx];
             }
         }
 
-        Ok(prob)
+        self.context_audio.copy_from_slice(
+            &self.audio_512[SILERO_WINDOW_SIZE - SILERO_CONTEXT_SIZE..SILERO_WINDOW_SIZE],
+        );
+
+        Ok(prob.clamp(0.0, 1.0))
+    }
+}
+
+fn calibrate_silero_probability(probability: f32) -> f32 {
+    if !probability.is_finite() {
+        return 0.0;
+    }
+    let epsilon = 1e-6_f32;
+    let bounded = probability.clamp(epsilon, 1.0 - epsilon);
+    let logit = (bounded / (1.0 - bounded)).ln();
+    let transformed = (SILERO_CALIBRATION_A * logit + SILERO_CALIBRATION_B).clamp(-30.0, 30.0);
+    (1.0 / (1.0 + (-transformed).exp())).clamp(0.0, 1.0)
+}
+
+fn validate_silero_outlets(session: &Session) -> Result<(), VadError> {
+    let input_names = session
+        .inputs()
+        .iter()
+        .map(|input| input.name())
+        .collect::<Vec<_>>();
+    let output_names = session
+        .outputs()
+        .iter()
+        .map(|output| output.name())
+        .collect::<Vec<_>>();
+
+    for required in ["input", "sr", "state"] {
+        if !input_names.contains(&required) {
+            return Err(VadError::ModelLoadError(format!(
+                "Silero model is missing required input '{required}'; available inputs: {}",
+                input_names.join(", ")
+            )));
+        }
+    }
+    for required in ["output", "stateN"] {
+        if !output_names.contains(&required) {
+            return Err(VadError::ModelLoadError(format!(
+                "Silero model is missing required output '{required}'; available outputs: {}",
+                output_names.join(", ")
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn prepare_silero_model_input(
+    context: &[f32; SILERO_CONTEXT_SIZE],
+    frame: &[f32; SILERO_WINDOW_SIZE],
+    gain: f32,
+    output: &mut [f32; SILERO_MODEL_INPUT_SIZE],
+) {
+    for (dst, src) in output[..SILERO_CONTEXT_SIZE]
+        .iter_mut()
+        .zip(context.iter().copied())
+    {
+        *dst = src * gain;
+    }
+    for (dst, src) in output[SILERO_CONTEXT_SIZE..]
+        .iter_mut()
+        .zip(frame.iter().copied())
+    {
+        *dst = src * gain;
     }
 }
 
@@ -700,12 +785,17 @@ impl VadAutoGate {
             (self.noise_floor_history_cursor + 1) % NOISE_FLOOR_HISTORY_FRAMES;
     }
 
-    fn percentile_noise_floor(&mut self) -> Option<f32> {
+    fn percentile_noise_floor(&self) -> Option<f32> {
+        self.noise_floor_percentile(0.20)
+    }
+
+    fn noise_floor_percentile(&self, percentile: f32) -> Option<f32> {
         if self.noise_floor_history_len == 0 {
             return None;
         }
 
-        let target = ((self.noise_floor_history_len as f32 * 0.2).floor() as usize)
+        let target = ((self.noise_floor_history_len as f32 * percentile.clamp(0.0, 1.0)).floor()
+            as usize)
             .min(self.noise_floor_history_len - 1);
         let mut cumulative = 0usize;
         for (bin, count) in self.noise_floor_bins.iter().copied().enumerate() {
@@ -715,6 +805,25 @@ impl VadAutoGate {
             }
         }
         Some(self.noise_floor)
+    }
+
+    /// Confidence that the live noise-floor estimate is mature and stationary.
+    pub fn noise_floor_reliability(&self) -> f32 {
+        if self.noise_floor_history_len == 0 {
+            return 0.0;
+        }
+        let maturity = (self.noise_floor_history_len as f32 / NOISE_FLOOR_HISTORY_FRAMES as f32)
+            .clamp(0.0, 1.0);
+        let Some(p20) = self.noise_floor_percentile(0.20) else {
+            return 0.0;
+        };
+        let Some(p80) = self.noise_floor_percentile(0.80) else {
+            return 0.0;
+        };
+        let spread = (p80 - p20).max(0.0);
+        let t = ((spread - 3.0) / 7.0).clamp(0.0, 1.0);
+        let stationarity = 1.0 - t * t * (3.0 - 2.0 * t);
+        (maturity * stationarity).clamp(0.0, 1.0)
     }
 
     fn noise_floor_bin(sample_db: f32) -> usize {

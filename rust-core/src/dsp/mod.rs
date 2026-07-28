@@ -19,7 +19,7 @@ pub mod vad;
 pub mod deepfilter_ffi;
 
 pub use biquad::{Biquad, BiquadType};
-pub use compressor::Compressor;
+pub use compressor::{AutoMakeupActivityInput, Compressor};
 pub use deesser::DeEsser;
 pub use eq::{ParametricEQ, DEFAULT_FREQUENCIES, DEFAULT_Q, NUM_BANDS};
 pub use gate::NoiseGate;

@@ -19,6 +19,7 @@ analyze_voice_spectrum = spectrum.analyze_voice_spectrum
 evaluate_spectrum_estimators = spectrum.evaluate_spectrum_estimators
 find_octave_spaced_peaks = spectrum.find_octave_spaced_peaks
 _window_spectrum_db = spectrum._window_spectrum_db
+_measurement_reliability = spectrum._measurement_reliability
 
 
 def test_voiced_frame_selection_reduces_background_hum_bias():
@@ -100,6 +101,69 @@ def test_missing_noise_reference_is_reported_as_unavailable():
     assert result.spectral_snr_db is None
     assert result.noise_spectrum_db is None
     assert result.residual_confidence <= 0.70
+
+
+def test_measurement_uncertainty_rewards_longer_independent_evidence():
+    rng = np.random.default_rng(9917)
+    freqs = np.geomspace(80.0, 10_000.0, 192)
+    base = -18.0 - 3.0 * np.log2(freqs / 1000.0)
+
+    def make_rows(count: int) -> tuple[np.ndarray, np.ndarray]:
+        rows = []
+        for _ in range(count):
+            broad_noise = np.interp(
+                np.linspace(0.0, 1.0, freqs.size),
+                np.linspace(0.0, 1.0, 18),
+                rng.normal(0.0, 2.0, 18),
+            )
+            rows.append(base + broad_noise)
+        starts = np.arange(count, dtype=int) * 4096
+        return np.asarray(rows), starts
+
+    short_rows, short_starts = make_rows(6)
+    long_rows, long_starts = make_rows(36)
+    _, _, short_uncertainty, _, short_blocks = _measurement_reliability(
+        freqs,
+        short_rows,
+        short_starts,
+        4096,
+    )
+    _, _, long_uncertainty, _, long_blocks = _measurement_reliability(
+        freqs,
+        long_rows,
+        long_starts,
+        4096,
+    )
+
+    assert long_blocks > short_blocks
+    assert np.median(long_uncertainty) < np.median(short_uncertainty)
+
+
+def test_phonetic_coverage_is_separate_from_precise_homogeneous_capture():
+    freqs = np.geomspace(80.0, 10_000.0, 192)
+    base = -18.0 - 3.0 * np.log2(freqs / 1000.0)
+    starts = np.arange(36, dtype=int) * 4096
+    homogeneous = np.tile(base, (36, 1))
+    diverse = homogeneous.copy()
+    log_freqs = np.log2(freqs)
+    for index, row in enumerate(diverse):
+        centre = np.log2((180.0, 600.0, 1800.0, 5200.0)[index % 4])
+        row += 8.0 * np.exp(-0.5 * np.square((log_freqs - centre) / 0.38))
+
+    homogeneous_reliability, _, homogeneous_uncertainty, homogeneous_coverage, _ = (
+        _measurement_reliability(freqs, homogeneous, starts, 4096)
+    )
+    _, _, _, diverse_coverage, _ = _measurement_reliability(
+        freqs,
+        diverse,
+        starts,
+        4096,
+    )
+
+    assert np.median(homogeneous_uncertainty) < 0.5
+    assert np.median(homogeneous_reliability) > 0.95
+    assert homogeneous_coverage < 0.05
+    assert diverse_coverage > homogeneous_coverage + 0.35
 
 
 def test_find_octave_spaced_peaks_handles_degenerate_frequency_grids():

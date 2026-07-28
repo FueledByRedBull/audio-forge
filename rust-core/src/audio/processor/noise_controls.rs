@@ -61,23 +61,17 @@ impl AudioProcessor {
         let new_engine = NoiseSuppressionEngine::new(model, strength);
         let backend_diagnostics = noise_backend_diagnostics(&new_engine);
 
-        #[cfg(feature = "deepfilter")]
-        {
-            if matches!(
-                model,
-                NoiseModel::DeepFilterNetLL | NoiseModel::DeepFilterNet
-            ) && !backend_diagnostics.available
-            {
-                // DeepFilter is present in code but runtime backend failed to initialize.
-                // Report failure so UI can revert to RNNoise instead of silent passthrough.
-                store_backend_diagnostics(
-                    &self.noise_backend_available,
-                    &self.noise_backend_failed,
-                    self.noise_backend_error.as_ref(),
-                    backend_diagnostics,
-                );
-                return false;
-            }
+        if model != NoiseModel::RNNoise && !backend_diagnostics.available {
+            // A neural backend can construct a dry fallback when an asset or
+            // runtime fails. Reject selection so the UI does not mistake that
+            // fallback for active suppression.
+            store_backend_diagnostics(
+                &self.noise_backend_available,
+                &self.noise_backend_failed,
+                self.noise_backend_error.as_ref(),
+                backend_diagnostics,
+            );
+            return false;
         }
 
         if self.running.load(Ordering::Acquire) {
@@ -129,14 +123,14 @@ impl AudioProcessor {
 
     /// Get list of available noise models
     pub fn list_noise_models(&self) -> Vec<(String, String)> {
-        let models = vec![(
+        #[cfg_attr(not(feature = "deepfilter"), allow(unused_mut))]
+        let mut models = vec![(
             NoiseModel::RNNoise.id().to_string(),
             NoiseModel::RNNoise.display_name().to_string(),
         )];
 
         #[cfg(feature = "deepfilter")]
         {
-            let mut models = models;
             if Self::deepfilter_experimental_enabled() {
                 let strength = Arc::clone(&self.suppressor_strength);
 
@@ -157,12 +151,8 @@ impl AudioProcessor {
                     ));
                 }
             }
-            models
         }
 
-        #[cfg(not(feature = "deepfilter"))]
         models
     }
-
-
 }

@@ -5,7 +5,10 @@ from __future__ import annotations
 import numpy as np
 
 from mic_eq.analysis.voice_setup import (
+    _COMPRESSOR_SEARCH_BUDGET,
+    _calibrate_compressor_threshold,
     _recommend_compressor_settings,
+    _recommend_gate_settings,
     analyze_voice_setup,
     validate_voice_setup_verification,
 )
@@ -61,7 +64,29 @@ def test_voice_setup_uses_vad_assisted_when_available():
     assert result["gate_settings"]["auto_threshold_enabled"] is True
     assert result["compressor_settings"]["adaptive_release"] is True
     assert result["compressor_settings"]["enabled"] is True
+    assert (
+        0.0
+        <= result["compressor_settings"]["noise_reference_reliability"]
+        <= 1.0
+    )
     assert result["diagnostics"]["setup_confidence"] > 0.0
+
+
+def test_gate_vad_threshold_stays_in_calibrated_narrow_snr_range():
+    thresholds = [
+        _recommend_gate_settings(
+            vad_available=True,
+            noise_rms_db=-50.0,
+            speech_floor_db=-36.0,
+            speech_body_db=-22.0,
+            speech_snr_db=snr_db,
+            speech_dynamic_range_db=8.0,
+        )["vad_threshold"]
+        for snr_db in (0.0, 5.0, 10.0, 20.0)
+    ]
+
+    np.testing.assert_allclose(thresholds, [0.4725, 0.46625, 0.46, 0.4475])
+    assert all(0.42 <= threshold <= 0.50 for threshold in thresholds)
 
 
 def test_voice_setup_falls_back_without_vad_and_can_enable_deesser():
@@ -258,6 +283,201 @@ def test_custom_dynamics_targets_are_bounded():
     assert settings["dynamics_intensity"] == "custom"
 
 
+def test_expanded_compressor_search_is_bounded_deterministic_and_improves(
+    monkeypatch,
+):
+    def fake_simulation(_audio, _sample_rate, _eq, chain):
+        compressor = chain["compressor"]
+        ratio = float(compressor["ratio"])
+        attack = float(compressor["attack_ms"])
+        release = float(compressor["release_ms"])
+        pumping = (
+            abs(ratio - 4.0)
+            + abs(attack - 10.0) / 10.0
+            + abs(release - 180.0) / 100.0
+        )
+        return {
+            "simulation_backend": "rust",
+            "compressor_gain_reduction_db": 3.7,
+            "compressor_gain_reduction_median_db": 1.4,
+            "compressor_gain_reduction_p95_db": 3.5,
+            "compressor_gain_reduction_active_ratio": 1.0,
+            "active_output_gain_db": 0.0,
+            "output_true_peak_db": -3.0,
+            "limiter_effective_ceiling_db": -1.5,
+            "pre_limiter_true_peak_headroom_db": 2.0,
+            "compressor_pumping_score_db": pumping,
+            "silence_output_gain_db": 0.0,
+            "non_finite_output": False,
+        }
+
+    monkeypatch.setattr(
+        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        fake_simulation,
+    )
+    compressor = {
+        "threshold_db": -24.0,
+        "ratio": 2.0,
+        "attack_ms": 20.0,
+        "release_ms": 300.0,
+        "auto_makeup_enabled": True,
+        "makeup_gain_db": 0.0,
+        "target_lufs": -18.0,
+        "measured_short_term_lufs": -22.0,
+    }
+    eq = {
+        "band_freqs": list(np.geomspace(60.0, 16000.0, 10)),
+        "band_gains": [0.0] * 10,
+        "band_qs": [1.41] * 10,
+    }
+
+    def run_search():
+        return _calibrate_compressor_threshold(
+            speech_audio=np.zeros(4800, dtype=np.float32),
+            sample_rate=48000,
+            eq_settings=eq,
+            deesser_settings={"enabled": False},
+            compressor_settings=compressor,
+            target_p95_db=3.5,
+            target_median_db=1.4,
+            peak_cap_db=8.0,
+        )
+
+    first, first_diag = run_search()
+    second, second_diag = run_search()
+
+    assert first_diag["candidate_count"] <= _COMPRESSOR_SEARCH_BUDGET
+    assert first_diag["expanded_search_selected"] is True
+    assert first_diag["total_objective"] < first_diag["threshold_only_objective"]
+    assert first["ratio"] != compressor["ratio"]
+    assert {
+        key: first[key]
+        for key in ("threshold_db", "ratio", "attack_ms", "release_ms")
+    } == {
+        key: second[key]
+        for key in ("threshold_db", "ratio", "attack_ms", "release_ms")
+    }
+    assert first_diag["candidate_count"] == second_diag["candidate_count"]
+
+
+def test_expanded_compressor_search_keeps_safe_profile_on_effective_tie(
+    monkeypatch,
+):
+    def tied_simulation(_audio, _sample_rate, _eq, _chain):
+        return {
+            "simulation_backend": "rust",
+            "compressor_gain_reduction_db": 3.7,
+            "compressor_gain_reduction_median_db": 1.4,
+            "compressor_gain_reduction_p95_db": 3.5,
+            "compressor_gain_reduction_active_ratio": 1.0,
+            "active_output_gain_db": 0.0,
+            "output_true_peak_db": -3.0,
+            "limiter_effective_ceiling_db": -1.5,
+            "pre_limiter_true_peak_headroom_db": 2.0,
+            "compressor_pumping_score_db": 0.0,
+            "silence_output_gain_db": 0.0,
+            "non_finite_output": False,
+        }
+
+    monkeypatch.setattr(
+        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        tied_simulation,
+    )
+    compressor = {
+        "threshold_db": -24.0,
+        "ratio": 2.5,
+        "attack_ms": 12.0,
+        "release_ms": 180.0,
+        "auto_makeup_enabled": True,
+        "makeup_gain_db": 0.0,
+        "target_lufs": -18.0,
+        "measured_short_term_lufs": -22.0,
+    }
+    calibrated, diagnostics = _calibrate_compressor_threshold(
+        speech_audio=np.zeros(4800, dtype=np.float32),
+        sample_rate=48000,
+        eq_settings={
+            "band_freqs": list(np.geomspace(60.0, 16000.0, 10)),
+            "band_gains": [0.0] * 10,
+            "band_qs": [1.41] * 10,
+        },
+        deesser_settings={"enabled": False},
+        compressor_settings=compressor,
+        target_p95_db=3.5,
+        target_median_db=1.4,
+        peak_cap_db=8.0,
+    )
+
+    assert diagnostics["expanded_search_selected"] is False
+    assert calibrated["ratio"] == compressor["ratio"]
+    assert calibrated["attack_ms"] == compressor["attack_ms"]
+    assert calibrated["release_ms"] == compressor["release_ms"]
+
+
+def test_expanded_compressor_search_handles_no_safe_threshold_only_candidate(
+    monkeypatch,
+):
+    incumbent = {
+        "ratio": 2.5,
+        "attack_ms": 12.0,
+        "release_ms": 180.0,
+    }
+
+    def simulation_with_rejected_threshold_only(_audio, _sample_rate, _eq, chain):
+        compressor = chain["compressor"]
+        threshold_only = all(
+            abs(float(compressor[key]) - value) <= 1.0e-6
+            for key, value in incumbent.items()
+        )
+        return {
+            "simulation_backend": "rust",
+            "compressor_gain_reduction_db": 3.7,
+            "compressor_gain_reduction_median_db": 1.4,
+            "compressor_gain_reduction_p95_db": 3.5,
+            "compressor_gain_reduction_active_ratio": 1.0,
+            "active_output_gain_db": 0.0,
+            "output_true_peak_db": 0.0 if threshold_only else -3.0,
+            "limiter_effective_ceiling_db": -1.5,
+            "pre_limiter_true_peak_headroom_db": 2.0,
+            "compressor_pumping_score_db": 0.0,
+            "silence_output_gain_db": 0.0,
+            "non_finite_output": False,
+        }
+
+    monkeypatch.setattr(
+        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        simulation_with_rejected_threshold_only,
+    )
+    calibrated, diagnostics = _calibrate_compressor_threshold(
+        speech_audio=np.zeros(4800, dtype=np.float32),
+        sample_rate=48000,
+        eq_settings={
+            "band_freqs": list(np.geomspace(60.0, 16000.0, 10)),
+            "band_gains": [0.0] * 10,
+            "band_qs": [1.41] * 10,
+        },
+        deesser_settings={"enabled": False},
+        compressor_settings={
+            "threshold_db": -24.0,
+            **incumbent,
+            "auto_makeup_enabled": True,
+            "makeup_gain_db": 0.0,
+            "target_lufs": -18.0,
+            "measured_short_term_lufs": -22.0,
+        },
+        target_p95_db=3.5,
+        target_median_db=1.4,
+        peak_cap_db=8.0,
+    )
+
+    assert diagnostics["expanded_search_selected"] is True
+    assert diagnostics["threshold_only_objective"] == float("inf")
+    assert any(
+        calibrated[key] != value
+        for key, value in incumbent.items()
+    )
+
+
 def test_native_chain_reports_robust_reduction_and_can_return_rendered_audio():
     sample_rate = 48_000
     audio = _make_voice(sample_rate, seconds=1.0)
@@ -282,6 +502,8 @@ def test_native_chain_reports_robust_reduction_and_can_return_rendered_audio():
 
     assert simulation["simulation_backend"] == "rust"
     assert len(simulation["output_audio"]) == audio.size
+    assert simulation["silence_output_gain_db"] <= 0.0
+    assert np.isfinite(simulation["silence_level_delta_db"])
     assert simulation["analysis_block_ms"] == 20.0
     assert simulation["active_analysis_block_count"] > 0
     assert (

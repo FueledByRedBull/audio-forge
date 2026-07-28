@@ -57,6 +57,45 @@ fn percentile_f32(values: &mut [f32], percentile: f32) -> f32 {
     }
 }
 
+fn compressor_pumping_score(gr_trace_db: &[f32], cadence_hz: f32) -> f32 {
+    if gr_trace_db.len() < 3 || !cadence_hz.is_finite() || cadence_hz <= 0.0 {
+        return 0.0;
+    }
+    let dt = 1.0 / cadence_hz;
+    let highpass_rc = 1.0 / (2.0 * std::f32::consts::PI * 2.0);
+    let lowpass_rc = 1.0 / (2.0 * std::f32::consts::PI * 8.0);
+    let highpass_alpha = highpass_rc / (highpass_rc + dt);
+    let lowpass_alpha = dt / (lowpass_rc + dt);
+    let mut previous_input = gr_trace_db[0];
+    let mut highpass = 0.0_f32;
+    let mut bandpass = 0.0_f32;
+    let mut bandpass_abs = Vec::with_capacity(gr_trace_db.len());
+    let mut deltas = Vec::with_capacity(gr_trace_db.len().saturating_sub(1));
+
+    for &value in gr_trace_db.iter().skip(1) {
+        if !value.is_finite() {
+            return f32::INFINITY;
+        }
+        highpass = highpass_alpha * (highpass + value - previous_input);
+        bandpass += lowpass_alpha * (highpass - bandpass);
+        bandpass_abs.push(bandpass.abs());
+        deltas.push((value - previous_input).abs());
+        previous_input = value;
+    }
+    let robust_limit = percentile_f32(&mut bandpass_abs.clone(), 0.95);
+    let robust_rms = if bandpass_abs.is_empty() {
+        0.0
+    } else {
+        (bandpass_abs
+            .iter()
+            .map(|value| value.min(robust_limit).powi(2))
+            .sum::<f32>()
+            / bandpass_abs.len() as f32)
+            .sqrt()
+    };
+    robust_rms + percentile_f32(&mut deltas, 0.95)
+}
+
 #[pyfunction]
 #[pyo3(signature = (audio, sample_rate, bands, settings=None))]
 pub fn simulate_auto_eq_chain(
@@ -66,6 +105,7 @@ pub fn simulate_auto_eq_chain(
     bands: Vec<(f64, f64, f64)>,
     settings: Option<&Bound<'_, pyo3::types::PyDict>>,
 ) -> PyResult<Py<PyAny>> {
+    let simulation_started = Instant::now();
     if !sample_rate.is_finite() || sample_rate <= 0.0 {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
             "sample_rate must be positive and finite",
@@ -166,7 +206,8 @@ pub fn simulate_auto_eq_chain(
     let mut compressor_gain_reduction_db = 0.0_f32;
     let mut deesser_gain_reduction_db = 0.0_f32;
     let mut true_peak_limited_events = 0_u64;
-    let mut analysis_rows: Vec<(f32, f32, f32)> = Vec::new();
+    let mut analysis_rows: Vec<(f32, f32, f32, f32)> = Vec::new();
+    let mut non_finite_output = false;
     let audio = audio.as_slice()?;
     let mut rendered_audio = if return_output_audio {
         Vec::with_capacity(audio.len())
@@ -194,8 +235,26 @@ pub fn simulate_auto_eq_chain(
         } else {
             (block_input_square_sum / chunk.len() as f64).sqrt() as f32
         };
+        let block_output_square_sum = output
+            .as_slice()
+            .iter()
+            .map(|sample| {
+                if !sample.is_finite() {
+                    non_finite_output = true;
+                    0.0
+                } else {
+                    (*sample as f64) * (*sample as f64)
+                }
+            })
+            .sum::<f64>();
+        let block_output_rms = if output.as_slice().is_empty() {
+            0.0
+        } else {
+            (block_output_square_sum / output.as_slice().len() as f64).sqrt() as f32
+        };
         analysis_rows.push((
             linear_to_db(block_input_rms),
+            linear_to_db(block_output_rms),
             stats.compressor_gain_reduction_db,
             stats.deesser_gain_reduction_db,
         ));
@@ -242,16 +301,16 @@ pub fn simulate_auto_eq_chain(
     let mut active_compressor_reduction: Vec<f32> = analysis_rows
         .iter()
         .filter(|row| row.0 >= active_threshold_db)
-        .map(|row| row.1.max(0.0))
+            .map(|row| row.2.max(0.0))
         .collect();
     let mut active_deesser_reduction: Vec<f32> = analysis_rows
         .iter()
         .filter(|row| row.0 >= active_threshold_db)
-        .map(|row| row.2.max(0.0))
+            .map(|row| row.3.max(0.0))
         .collect();
     if active_compressor_reduction.len() < 3 {
-        active_compressor_reduction = analysis_rows.iter().map(|row| row.1.max(0.0)).collect();
-        active_deesser_reduction = analysis_rows.iter().map(|row| row.2.max(0.0)).collect();
+        active_compressor_reduction = analysis_rows.iter().map(|row| row.2.max(0.0)).collect();
+        active_deesser_reduction = analysis_rows.iter().map(|row| row.3.max(0.0)).collect();
     }
     let active_block_count = active_compressor_reduction.len();
     let compressor_active_ratio = if active_block_count > 0 {
@@ -270,6 +329,29 @@ pub fn simulate_auto_eq_chain(
     let deesser_reduction_median_db =
         percentile_f32(&mut active_deesser_reduction.clone(), 0.50);
     let deesser_reduction_p95_db = percentile_f32(&mut active_deesser_reduction, 0.95);
+    let mut active_output_gain_db: Vec<f32> = analysis_rows
+        .iter()
+        .filter(|row| row.0 >= active_threshold_db && row.0 > -100.0)
+        .map(|row| row.1 - row.0)
+        .collect();
+    let mut silence_level_delta_db: Vec<f32> = analysis_rows
+        .iter()
+        .filter(|row| row.0 < active_threshold_db && row.0 > -100.0)
+        .map(|row| row.1 - row.0)
+        .collect();
+    let mut silence_output_gain_db: Vec<f32> = analysis_rows
+        .iter()
+        .filter(|row| row.0 < active_threshold_db)
+        .map(|row| -row.2.max(0.0))
+        .collect();
+    let active_output_gain_db = percentile_f32(&mut active_output_gain_db, 0.50);
+    let silence_output_gain_db = percentile_f32(&mut silence_output_gain_db, 0.50);
+    let silence_level_delta_db = percentile_f32(&mut silence_level_delta_db, 0.50);
+    let compressor_gr_trace = analysis_rows
+        .iter()
+        .map(|row| row.2.max(0.0))
+        .collect::<Vec<_>>();
+    let compressor_pumping_score_db = compressor_pumping_score(&compressor_gr_trace, 50.0);
     let diagnostics = pyo3::types::PyDict::new(py);
     diagnostics.set_item("input_sample_peak_db", linear_to_db(input_sample_peak))?;
     diagnostics.set_item("input_rms_db", linear_to_db(input_rms))?;
@@ -310,6 +392,15 @@ pub fn simulate_auto_eq_chain(
         "compressor_gain_reduction_active_ratio",
         compressor_active_ratio,
     )?;
+    diagnostics.set_item("active_output_gain_db", active_output_gain_db)?;
+    diagnostics.set_item("silence_output_gain_db", silence_output_gain_db)?;
+    diagnostics.set_item("silence_level_delta_db", silence_level_delta_db)?;
+    diagnostics.set_item("compressor_pumping_score_db", compressor_pumping_score_db)?;
+    diagnostics.set_item("non_finite_output", non_finite_output)?;
+    diagnostics.set_item(
+        "candidate_runtime_ms",
+        simulation_started.elapsed().as_secs_f64() * 1000.0,
+    )?;
     diagnostics.set_item(
         "deesser_gain_reduction_median_db",
         deesser_reduction_median_db,
@@ -334,7 +425,7 @@ pub fn simulate_auto_eq_chain(
 /// a capture to a posterior without inventing a second VAD implementation.
 #[cfg(feature = "vad")]
 #[pyfunction]
-#[pyo3(signature = (audio, sample_rate, threshold=0.5))]
+#[pyo3(signature = (audio, sample_rate, threshold=0.48))]
 pub fn analyze_vad_probabilities(
     audio: numpy::PyReadonlyArray1<'_, f32>,
     sample_rate: u32,
@@ -373,6 +464,36 @@ pub fn analyze_vad_probabilities(
     }
 
     Ok(probabilities)
+}
+
+#[cfg(test)]
+mod compressor_metric_tests {
+    use super::compressor_pumping_score;
+
+    #[test]
+    fn pumping_score_is_zero_for_steady_gain_reduction() {
+        let trace = vec![3.0_f32; 250];
+        assert_eq!(compressor_pumping_score(&trace, 50.0), 0.0);
+    }
+
+    #[test]
+    fn pumping_score_focuses_on_fast_gain_modulation() {
+        let fast = (0..500)
+            .map(|index| {
+                3.0 + (2.0 * std::f32::consts::PI * 4.0 * index as f32 / 50.0).sin()
+            })
+            .collect::<Vec<_>>();
+        let slow = (0..500)
+            .map(|index| {
+                3.0 + (2.0 * std::f32::consts::PI * 0.2 * index as f32 / 50.0).sin()
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            compressor_pumping_score(&fast, 50.0)
+                > 2.0 * compressor_pumping_score(&slow, 50.0)
+        );
+    }
 }
 
 /// Python-exposed audio processor
@@ -851,6 +972,12 @@ impl PyAudioProcessor {
     /// Get compressor target LUFS
     fn get_compressor_target_lufs(&self) -> f64 {
         self.processor.get_compressor_target_lufs()
+    }
+
+    /// Set confidence in Auto Voice Setup's room-noise reference (0.0-1.0).
+    fn set_compressor_noise_reference_reliability(&self, reliability: f64) {
+        self.processor
+            .set_compressor_noise_reference_reliability(reliability);
     }
 
     /// Get compressor current LUFS

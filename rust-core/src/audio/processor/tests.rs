@@ -1428,6 +1428,24 @@ mod tests {
         crate::test_alloc::assert_no_allocations("compressor block", || {
             compressor.process_block_inplace(&mut block);
         });
+        compressor.set_auto_makeup_enabled(true);
+        compressor.set_noise_reference_reliability(1.0);
+        let auto_makeup_evidence = AutoMakeupActivityInput {
+            vad_probability: 0.92,
+            vad_reliability: 1.0,
+            noise_floor_db: -58.0,
+            live_noise_reliability: 0.9,
+        };
+        compressor.process_block_inplace_with_activity_control(
+            &mut block,
+            Some(auto_makeup_evidence),
+        );
+        crate::test_alloc::assert_no_allocations("compressor activity-control block", || {
+            compressor.process_block_inplace_with_activity_control(
+                &mut block,
+                Some(auto_makeup_evidence),
+            );
+        });
 
         let mut deesser = DeEsser::new(TARGET_SAMPLE_RATE as f64);
         deesser.set_enabled(true);

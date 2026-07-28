@@ -23,7 +23,7 @@ class GateSettings:
     attack_ms: float = 10.0
     release_ms: float = 100.0
     gate_mode: int = 0
-    vad_threshold: float = 0.4
+    vad_threshold: float = 0.48
     vad_hold_time_ms: float = 200.0
     vad_pre_gain: float = 1.0
     auto_threshold_enabled: bool = True

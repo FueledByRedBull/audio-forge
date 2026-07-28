@@ -591,6 +591,22 @@ impl AudioProcessor {
         }
     }
 
+    /// Set confidence in the room-noise reference used by compressor auto makeup.
+    pub fn set_compressor_noise_reference_reliability(&self, reliability: f64) {
+        let Some(reliability) = clamp_control_value(reliability, 0.0, 1.0) else {
+            return;
+        };
+        if let Ok(mut c) = self.compressor.lock() {
+            c.set_noise_reference_reliability(reliability);
+        }
+        if let Ok(mut control) = self.compressor_control.lock() {
+            control.noise_reference_reliability = reliability;
+        }
+        self.compressor_rt_control
+            .set_noise_reference_reliability(reliability);
+        self.compressor_dirty.store(true, Ordering::Release);
+    }
+
     /// Get compressor current LUFS
     pub fn get_compressor_current_lufs(&self) -> f64 {
         f64::from_bits(self.compressor_current_lufs.load(Ordering::Relaxed))

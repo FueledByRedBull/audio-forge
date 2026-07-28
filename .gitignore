@@ -124,9 +124,11 @@ libdf.dylib
 
 # Project docs (development only)
 Considerations.md
+GPLAN.md
 Maybes.md
 audio-forge-review-report.md
 future-dsp.md
+ROADMAP.md
 
 # Local archives
 AudioForge.7z

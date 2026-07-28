@@ -576,6 +576,13 @@ class CompressorPanel(QWidget):
         self._update_compressor()
         self._update_adaptive_release()
         self._update_auto_makeup()
+        if hasattr(
+            self.processor,
+            "set_compressor_noise_reference_reliability",
+        ):
+            self.processor.set_compressor_noise_reference_reliability(
+                settings.get('noise_reference_reliability', 0.0)
+            )
 
     def set_limiter_settings(self, settings: dict) -> None:
         """Apply limiter settings from a dictionary."""

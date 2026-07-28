@@ -8,6 +8,7 @@ before the UI offers to apply them.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Mapping
 
 import numpy as np
@@ -31,7 +32,11 @@ from .spectrum import (
     analyze_voice_spectrum,
     smooth_spectrum_perceptual,
 )
-from .vad import analyze_offline_vad
+from .vad import (
+    VAD_SPEECH_EVIDENCE_THRESHOLD,
+    VAD_STRONG_SPEECH_THRESHOLD,
+    analyze_offline_vad,
+)
 from ..config import EQ_FREQUENCIES
 
 NOISE_MIN_DURATION_S = MIN_NOISE_DURATION_S
@@ -185,8 +190,11 @@ def _vad_masked_speech_features(
     if frame_vad_probabilities is not None:
         supported_energy = frame_db >= max(noise_rms_db + 2.0, adaptive_floor - 4.0)
         posterior_active = (
-            ((frame_vad_probabilities >= 0.35) & supported_energy)
-            | (frame_vad_probabilities >= 0.65)
+            (
+                (frame_vad_probabilities >= VAD_SPEECH_EVIDENCE_THRESHOLD)
+                & supported_energy
+            )
+            | (frame_vad_probabilities >= VAD_STRONG_SPEECH_THRESHOLD)
         )
         # Require enough posterior-supported material to replace the energy
         # mask; otherwise a failed/under-confident model must not erase a
@@ -428,7 +436,11 @@ def _vad_masked_speech_features(
         "active_ratio": active_ratio,
         "vad_probability_used": frame_vad_probabilities is not None,
         "vad_active_frame_ratio": (
-            float(np.mean(frame_vad_probabilities >= 0.35))
+            float(
+                np.mean(
+                    frame_vad_probabilities >= VAD_SPEECH_EVIDENCE_THRESHOLD
+                )
+            )
             if frame_vad_probabilities is not None
             else 0.0
         ),
@@ -464,7 +476,10 @@ def _recommend_gate_settings(
 ) -> dict[str, Any]:
     margin_db = _clamp(speech_floor_db - noise_rms_db - 3.0, 4.0, 12.0)
     threshold_db = _clamp(noise_rms_db + margin_db, -80.0, -10.0)
-    vad_threshold = _clamp(0.54 - (speech_snr_db - 10.0) / 30.0, 0.34, 0.58)
+    # Corrected and calibrated Silero v6.2.1 is stable near 0.45-0.48 across
+    # 0-20 dB mixtures. Keep only a small SNR adjustment instead of the old
+    # wide range tuned against the shipped stateless/truncated VAD adapter.
+    vad_threshold = _clamp(0.46 - (speech_snr_db - 10.0) / 800.0, 0.42, 0.50)
     quietness_gap_db = max(0.0, -22.0 - speech_body_db)
     vad_pre_gain = _clamp(10.0 ** (quietness_gap_db / 20.0), 1.0, 3.0)
     vad_hold_time_ms = _clamp(140.0 + speech_dynamic_range_db * 6.0, 140.0, 260.0)
@@ -681,6 +696,49 @@ def _recommend_compressor_settings(
     return settings, diagnostics
 
 
+_COMPRESSOR_SEARCH_BUDGET = 68
+_COMPRESSOR_SEARCH_BOUNDS = {
+    "threshold_db": (-55.0, -6.0),
+    "ratio": (1.5, 6.0),
+    "attack_ms": (3.0, 25.0),
+    "release_ms": (60.0, 320.0),
+}
+_COMPRESSOR_OBJECTIVE_NORMALIZERS = {
+    "loudness_error_db": 2.0,
+    "median_gr_error_db": 1.0,
+    "p95_gr_error_db": 1.0,
+    "headroom_shortfall_db": 1.0,
+    "pumping_score_db": 1.0,
+    "silence_gain_excess_db": 1.0,
+    "activity_ratio_deficit": 0.20,
+}
+_COMPRESSOR_OBJECTIVE_WEIGHTS = {
+    "loudness": 1.00,
+    "median_gr": 0.35,
+    "p95_gr": 0.90,
+    "headroom": 0.45,
+    "pumping": 0.30,
+    "silence_gain": 1.50,
+    "activity": 0.25,
+    "prior": 0.08,
+}
+
+
+def _huber(value: float) -> float:
+    magnitude = abs(float(value))
+    return 0.5 * magnitude * magnitude if magnitude <= 1.0 else magnitude - 0.5
+
+
+def _halton(index: int, base: int) -> float:
+    result = 0.0
+    scale = 1.0
+    while index > 0:
+        scale /= base
+        result += scale * (index % base)
+        index //= base
+    return result
+
+
 def _calibrate_compressor_threshold(
     *,
     speech_audio: np.ndarray,
@@ -692,11 +750,11 @@ def _calibrate_compressor_threshold(
     target_median_db: float,
     peak_cap_db: float,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Fit robust active-frame reduction while enforcing an absolute peak cap."""
+    """Fit four compressor controls with a bounded deterministic native search."""
     calibrated = dict(compressor_settings)
     diagnostics: dict[str, Any] = {
         "backend": "unavailable",
-        "objective": "active_frame_median_p95_with_peak_cap",
+        "objective": "bounded_multi_objective_compressor_search_v1",
         "target_p95_gain_reduction_db": target_p95_db,
         "target_median_gain_reduction_db": target_median_db,
         "peak_gain_reduction_cap_db": peak_cap_db,
@@ -704,37 +762,65 @@ def _calibrate_compressor_threshold(
         "measured_median_gain_reduction_db": 0.0,
         "measured_peak_gain_reduction_db": 0.0,
         "iterations": 0,
+        "candidate_budget": _COMPRESSOR_SEARCH_BUDGET,
+        "objective_normalizers": dict(_COMPRESSOR_OBJECTIVE_NORMALIZERS),
+        "objective_weights": dict(_COMPRESSOR_OBJECTIVE_WEIGHTS),
     }
-    best_threshold = float(calibrated["threshold_db"])
-    best_metrics = (0.0, 0.0, 0.0, 0.0)
-    best_error = float("inf")
-
-    thresholds = np.unique(
-        np.concatenate(
-            (
-                np.asarray([best_threshold], dtype=float),
-                np.linspace(-55.0, -6.0, 33),
-            )
+    started = time.perf_counter()
+    incumbent = {
+        key: _clamp(
+            float(calibrated[key]),
+            *_COMPRESSOR_SEARCH_BOUNDS[key],
         )
-    )
-    for iteration, threshold in enumerate(thresholds):
+        for key in _COMPRESSOR_SEARCH_BOUNDS
+    }
+    evaluated: dict[tuple[float, ...], tuple[float, dict[str, Any], dict[str, float]]] = {}
+
+    def key_for(candidate: Mapping[str, float]) -> tuple[float, ...]:
+        return tuple(round(float(candidate[key]), 6) for key in _COMPRESSOR_SEARCH_BOUNDS)
+
+    def evaluate(candidate_values: Mapping[str, float]) -> None:
+        if len(evaluated) >= _COMPRESSOR_SEARCH_BUDGET - 1:
+            return
+        candidate_key = key_for(candidate_values)
+        if candidate_key in evaluated:
+            return
         candidate = dict(calibrated)
-        candidate["threshold_db"] = float(threshold)
+        candidate.update(
+            {
+                key: _clamp(
+                    float(candidate_values[key]),
+                    *_COMPRESSOR_SEARCH_BOUNDS[key],
+                )
+                for key in _COMPRESSOR_SEARCH_BOUNDS
+            }
+        )
+        simulation_compressor = dict(candidate)
+        if simulation_compressor.get("auto_makeup_enabled", False):
+            simulation_compressor["auto_makeup_enabled"] = False
+            simulation_compressor["makeup_gain_db"] = 0.0
         simulation = simulate_candidate_chain(
             speech_audio.astype(np.float32, copy=False),
             sample_rate,
             eq_settings,
             {
                 "deesser": deesser_settings,
-                "compressor": candidate,
+                "compressor": simulation_compressor,
                 "limiter": {
-                    "enabled": False,
-                    "careful_output_enabled": False,
+                    "enabled": True,
+                    "ceiling_db": -1.5,
+                    "release_ms": 80.0,
+                    "careful_output_enabled": True,
                 },
             },
         )
         if simulation.get("simulation_backend") != "rust":
-            return calibrated, diagnostics
+            evaluated[candidate_key] = (
+                float("inf"),
+                simulation,
+                dict(candidate_values),
+            )
+            return
         peak = float(simulation.get("compressor_gain_reduction_db", 0.0))
         median = float(
             simulation.get("compressor_gain_reduction_median_db", peak)
@@ -743,24 +829,211 @@ def _calibrate_compressor_threshold(
         active_ratio = float(
             simulation.get("compressor_gain_reduction_active_ratio", 0.0)
         )
-        if not np.isfinite([peak, median, p95, active_ratio]).all():
-            return calibrated, diagnostics
-        peak_penalty = max(0.0, peak - peak_cap_db)
-        activity_penalty = max(0.0, 0.20 - active_ratio)
-        error = (
-            abs(p95 - target_p95_db)
-            + 0.35 * abs(median - target_median_db)
-            + 12.0 * peak_penalty
-            + 1.5 * activity_penalty
+        active_gain = float(simulation.get("active_output_gain_db", 0.0))
+        target_lufs = float(calibrated.get("target_lufs", -18.0))
+        output_lufs = (
+            target_lufs
+            if calibrated.get("auto_makeup_enabled", False)
+            else float(calibrated.get("measured_short_term_lufs", -18.0))
+            + active_gain
         )
-        if error < best_error:
-            best_error = error
-            best_threshold = float(threshold)
-            best_metrics = (median, p95, peak, active_ratio)
-        diagnostics["iterations"] = iteration + 1
+        output_true_peak = float(simulation.get("output_true_peak_db", 120.0))
+        ceiling = float(simulation.get("limiter_effective_ceiling_db", -1.5))
+        pre_limiter_headroom = float(
+            simulation.get("pre_limiter_true_peak_headroom_db", -120.0)
+        )
+        pumping = float(simulation.get("compressor_pumping_score_db", 120.0))
+        silence_gain = float(simulation.get("silence_output_gain_db", 120.0))
+        non_finite = bool(simulation.get("non_finite_output", True))
+        finite_values = np.asarray(
+            [
+                peak,
+                median,
+                p95,
+                active_ratio,
+                output_lufs,
+                output_true_peak,
+                pre_limiter_headroom,
+                pumping,
+                silence_gain,
+            ],
+            dtype=float,
+        )
+        hard_rejected = bool(
+            non_finite
+            or not np.isfinite(finite_values).all()
+            or output_true_peak > ceiling + 0.10
+            or peak > peak_cap_db + 1.0e-6
+        )
+        prior_terms = []
+        for key, (lower, upper) in _COMPRESSOR_SEARCH_BOUNDS.items():
+            span = upper - lower
+            prior_terms.append(
+                ((float(candidate[key]) - incumbent[key]) / span) ** 2
+            )
+        terms = {
+            "loudness": _huber(
+                (output_lufs - target_lufs)
+                / _COMPRESSOR_OBJECTIVE_NORMALIZERS["loudness_error_db"]
+            ),
+            "median_gr": _huber(
+                (median - target_median_db)
+                / _COMPRESSOR_OBJECTIVE_NORMALIZERS["median_gr_error_db"]
+            ),
+            "p95_gr": _huber(
+                (p95 - target_p95_db)
+                / _COMPRESSOR_OBJECTIVE_NORMALIZERS["p95_gr_error_db"]
+            ),
+            "headroom": _huber(
+                max(0.0, 1.0 - pre_limiter_headroom)
+                / _COMPRESSOR_OBJECTIVE_NORMALIZERS["headroom_shortfall_db"]
+            ),
+            "pumping": _huber(
+                pumping / _COMPRESSOR_OBJECTIVE_NORMALIZERS["pumping_score_db"]
+            ),
+            "silence_gain": _huber(
+                max(0.0, silence_gain - 0.25)
+                / _COMPRESSOR_OBJECTIVE_NORMALIZERS["silence_gain_excess_db"]
+            ),
+            "activity": _huber(
+                max(0.0, 0.20 - active_ratio)
+                / _COMPRESSOR_OBJECTIVE_NORMALIZERS["activity_ratio_deficit"]
+            ),
+            "prior": float(np.mean(prior_terms)),
+        }
+        score = sum(
+            _COMPRESSOR_OBJECTIVE_WEIGHTS[name] * value
+            for name, value in terms.items()
+        )
+        if hard_rejected:
+            score = float("inf")
+        evaluated[candidate_key] = (
+            float(score),
+            simulation,
+            {key: float(candidate[key]) for key in _COMPRESSOR_SEARCH_BOUNDS},
+        )
 
-    calibrated["threshold_db"] = _clamp(best_threshold, -55.0, -6.0)
-    median, p95, peak, active_ratio = best_metrics
+    evaluate(incumbent)
+    for threshold in np.linspace(-55.0, -6.0, 33):
+        threshold_candidate = dict(incumbent)
+        threshold_candidate["threshold_db"] = float(threshold)
+        evaluate(threshold_candidate)
+    for index in range(1, 17):
+        candidate = {}
+        for key, base in zip(_COMPRESSOR_SEARCH_BOUNDS, (2, 3, 5, 7)):
+            lower, upper = _COMPRESSOR_SEARCH_BOUNDS[key]
+            candidate[key] = lower + _halton(index, base) * (upper - lower)
+        evaluate(candidate)
+
+    feasible = sorted(
+        (item for item in evaluated.values() if np.isfinite(item[0])),
+        key=lambda item: (item[0], key_for(item[2])),
+    )
+    if not feasible:
+        diagnostics["iterations"] = len(evaluated)
+        diagnostics["search_runtime_ms"] = (time.perf_counter() - started) * 1000.0
+        return calibrated, diagnostics
+
+    local_steps = {
+        "threshold_db": 3.0,
+        "ratio": 0.5,
+        "attack_ms": 3.0,
+        "release_ms": 25.0,
+    }
+    refinement_seeds = [feasible[0]]
+    multivariable_seed = next(
+        (
+            item
+            for item in feasible
+            if any(
+                abs(item[2][key] - incumbent[key]) > 1.0e-6
+                for key in ("ratio", "attack_ms", "release_ms")
+            )
+        ),
+        None,
+    )
+    if multivariable_seed is not None and key_for(multivariable_seed[2]) != key_for(
+        refinement_seeds[0][2]
+    ):
+        refinement_seeds.append(multivariable_seed)
+    else:
+        refinement_seeds.extend(feasible[1:2])
+    for _, _, seed in refinement_seeds:
+        for key, step in local_steps.items():
+            for direction in (-1.0, 1.0):
+                candidate = dict(seed)
+                candidate[key] += direction * step
+                evaluate(candidate)
+
+    feasible = sorted(
+        (item for item in evaluated.values() if np.isfinite(item[0])),
+        key=lambda item: (item[0], key_for(item[2])),
+    )
+    threshold_only = min(
+        (
+            item
+            for item in feasible
+            if all(
+                abs(item[2][key] - incumbent[key]) <= 1.0e-6
+                for key in ("ratio", "attack_ms", "release_ms")
+            )
+        ),
+        key=lambda item: (item[0], key_for(item[2])),
+        default=None,
+    )
+    expanded = feasible[0]
+    if threshold_only is None:
+        expanded_selected = True
+        best_score, best_simulation, best_values = expanded
+    else:
+        required_tie_break_improvement = max(0.001, 0.01 * threshold_only[0])
+        expanded_selected = bool(
+            threshold_only[0] - expanded[0] > required_tie_break_improvement
+        )
+        best_score, best_simulation, best_values = (
+            expanded if expanded_selected else threshold_only
+        )
+    calibrated.update(best_values)
+    winner_verification = simulate_candidate_chain(
+        speech_audio.astype(np.float32, copy=False),
+        sample_rate,
+        eq_settings,
+        {
+            "deesser": deesser_settings,
+            "compressor": {
+                **calibrated,
+                **(
+                    {
+                        "auto_makeup_enabled": False,
+                        "makeup_gain_db": 0.0,
+                    }
+                    if calibrated.get("auto_makeup_enabled", False)
+                    else {}
+                ),
+            },
+            "limiter": {
+                "enabled": True,
+                "ceiling_db": -1.5,
+                "release_ms": 80.0,
+                "careful_output_enabled": True,
+            },
+        },
+    )
+    if winner_verification.get("simulation_backend") == "rust":
+        best_simulation = winner_verification
+    median = float(best_simulation["compressor_gain_reduction_median_db"])
+    p95 = float(best_simulation["compressor_gain_reduction_p95_db"])
+    peak = float(best_simulation["compressor_gain_reduction_db"])
+    active_ratio = float(best_simulation["compressor_gain_reduction_active_ratio"])
+    threshold_only_scores = [
+        score
+        for score, _, values in evaluated.values()
+        if all(
+            abs(values[key] - incumbent[key]) <= 1.0e-6
+            for key in ("ratio", "attack_ms", "release_ms")
+        )
+    ]
+    incumbent_entry = evaluated.get(key_for(incumbent))
     diagnostics.update(
         {
             "backend": "rust",
@@ -769,10 +1042,38 @@ def _calibrate_compressor_threshold(
             "measured_peak_gain_reduction_db": peak,
             "active_reduction_ratio": active_ratio,
             "peak_cap_passed": peak <= peak_cap_db + 1.0e-6,
+            "total_objective": best_score,
+            "incumbent_objective": (
+                incumbent_entry[0] if incumbent_entry is not None else float("inf")
+            ),
+            "threshold_only_objective": min(threshold_only_scores, default=float("inf")),
+            "expanded_candidate_objective": expanded[0],
+            "expanded_search_selected": expanded_selected,
+            "active_output_gain_db": float(
+                best_simulation.get("active_output_gain_db", 0.0)
+            ),
+            "silence_output_gain_db": float(
+                best_simulation.get("silence_output_gain_db", 0.0)
+            ),
+            "compressor_pumping_score_db": float(
+                best_simulation.get("compressor_pumping_score_db", 0.0)
+            ),
+            "output_true_peak_db": float(
+                best_simulation.get("output_true_peak_db", -120.0)
+            ),
+            "pre_limiter_true_peak_headroom_db": float(
+                best_simulation.get("pre_limiter_true_peak_headroom_db", 0.0)
+            ),
+            "search_runtime_ms": (time.perf_counter() - started) * 1000.0,
+            "candidate_count": len(evaluated) + 1,
+            "iterations": len(evaluated) + 1,
             # Compatibility aliases for older diagnostic consumers.
             "target_gain_reduction_db": target_p95_db,
             "measured_gain_reduction_db": p95,
             "threshold_db": calibrated["threshold_db"],
+            "ratio": calibrated["ratio"],
+            "attack_ms": calibrated["attack_ms"],
+            "release_ms": calibrated["release_ms"],
         }
     )
     return calibrated, diagnostics
@@ -915,6 +1216,9 @@ def analyze_voice_setup(
         dynamics_intensity=dynamics_intensity,
         custom_target_p95_db=custom_target_p95_db,
         custom_peak_cap_db=custom_peak_cap_db,
+    )
+    compressor_settings["noise_reference_reliability"] = float(
+        np.clip(noise_reference.quality_score, 0.0, 1.0)
     )
 
     eq_settings: dict[str, Any] | None = None

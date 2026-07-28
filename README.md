@@ -11,11 +11,10 @@ Current version: `v1.10.0`
 
 ## Download
 
-The source tree is prepared for v1.10.0. The latest published portable build
-remains v1.9.0 until the v1.10.0 release workflow is deliberately run:
+Download the latest published Windows build from the
+[latest AudioForge release](https://github.com/FueledByRedBull/audio-forge/releases/latest):
 
-- [AudioForge v1.9.0](https://github.com/FueledByRedBull/audio-forge/releases/tag/v1.9.0)
-- Published artifact: `AudioForge-v1.9.0-win64-ultra.7z`
+- Published archive: `AudioForge-v<version>-win64-ultra.7z`
 - Checksum: use the matching `.7z.sha256` sidecar published by the release workflow.
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.

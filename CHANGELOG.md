@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.10.1 - 2026-07-29
+
+- Fixed DeepFilter partial-strength wet/dry comb filtering by delaying the dry path to the measured model latency (480 samples for Low Latency and 1440 for Standard), with allocation-free reset, switch, and 0/50/100% mix-contract tests. Disabled or unavailable Standard now reports only its actual one-frame passthrough latency instead of two nonexistent model-lookahead frames.
+- Replaced the implicit 80 dB DeepFilter attenuation limit with an explicit internal 30 dB operating point and zero post-filter beta, selected on a 12-language paired clean/noisy corpus. Evaluation reports now record exact model/runtime configuration, assets, latency, P99 timing, clean preservation, and listening status.
+- Routed latency-calibration probes through AudioForge's selected CPAL output, kept capture and output sample rates distinct, separated route/engine/total latency, refreshed profiles when engine configuration changes, and added optional fixed-buffer negotiation with safe driver-default fallback.
+- Removed the duplicate Python RBJ EQ implementation; graph rendering now calls the exact native Rust filter topology, with parity coverage across bands, frequency, gain, Q, and sample rate.
+- Added preset value provenance, portable corpus manifests, evaluation-contract validation, release trend records, full-chain golden regression, dynamics-aliasing diagnostics, real-speech auto-makeup evidence, and held-out Auto-EQ confidence-threshold calibration.
+- Experimentally rejected suppressor-before-gate, EQ-before-de-esser, shorter limiter lookahead, and current upstream Xiph RNNoise as defaults under predefined quality, clean-preservation, runtime, and size gates. Existing processing order, 2 ms limiter lookahead, and `nnnoiseless` remain unchanged.
+- Made release-asset hydration use one manifest-owned fallback tag, added CI drift detection, upgraded/pinned GitHub Actions to Node 24 revisions, and added sustained hardware, package, and executable validation gates.
+
 ## v1.10.0 - 2026-07-29
 
 - Upgraded Silero VAD from v5.1.2 to v6.2.1 and corrected the ONNX adapter contract: each 512-sample frame is now preceded by the documented 64-sample rolling context, and the recurrent `stateN` output is required rather than optionally looked up under a wrong name. Shipped 1.9.0 builds had silently run the model with truncated input and a frozen recurrent state; the repair and the model upgrade were evaluated as independent decisions on a speaker-disjoint labeled corpus, and both passed their retention gates (held-out speech-event recall improved from roughly 62% to 96% with fewer noise-only false openings).

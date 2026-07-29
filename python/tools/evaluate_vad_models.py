@@ -15,6 +15,16 @@ import numpy as np
 from scipy.io import wavfile
 from scipy.optimize import minimize
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _portable_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return resolved.name
+
 
 @dataclass(frozen=True)
 class Capture:
@@ -489,9 +499,10 @@ def _evaluate_model(
         timed_seconds.extend(measured_times)
         audio_seconds = float(audio.size / sample_rate)
         total_audio_seconds += audio_seconds * repetitions
-        capture_key = str(path)
-        posteriors[capture_key] = probabilities
-        per_capture[capture_key] = {
+        internal_capture_key = str(path)
+        report_capture_key = _portable_path(path)
+        posteriors[internal_capture_key] = probabilities
+        per_capture[report_capture_key] = {
             "split": capture.split,
             "condition": capture.condition,
             "sample_rate": sample_rate,
@@ -508,7 +519,7 @@ def _evaluate_model(
 
     total_runtime = float(sum(timed_seconds))
     summary = {
-        "model_path": str(model_path),
+        "model_path": _portable_path(model_path),
         "capture_count": len(captures),
         "timed_repetitions": repetitions,
         "runtime_median_seconds": float(np.median(timed_seconds)),

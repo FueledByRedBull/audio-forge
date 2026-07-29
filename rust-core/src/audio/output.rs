@@ -7,8 +7,8 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
-    Device, FromSample, SampleFormat, SizedSample, Stream, StreamConfig, SupportedStreamConfig,
-    SupportedStreamConfigRange,
+    BufferSize, Device, FromSample, SampleFormat, SizedSample, Stream, StreamConfig,
+    SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -18,10 +18,18 @@ use super::clock::now_micros;
 use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
 use super::rt::{store_rt_error, RtErrorCode};
 
+pub(crate) struct OutputProbeControl {
+    pub(crate) consumer: AudioConsumer,
+    pub(crate) active: Arc<AtomicBool>,
+    pub(crate) complete: Arc<AtomicBool>,
+    pub(crate) cancel_requested: Arc<AtomicBool>,
+}
+
 /// Audio output stream
 pub struct AudioOutput {
     stream: Stream,
     device_info: AudioDeviceInfo,
+    fixed_buffer_frames: Option<u32>,
 }
 
 pub(crate) struct OutputStreamSetup {
@@ -31,6 +39,67 @@ pub(crate) struct OutputStreamSetup {
 }
 
 impl AudioOutput {
+    const MIN_FIXED_BUFFER_FRAMES: u32 = 16;
+    const MAX_FIXED_BUFFER_FRAMES: u32 = 8192;
+
+    fn parse_fixed_buffer_frames(value: Option<&str>) -> Option<u32> {
+        let frames = value?.trim().parse::<u32>().ok()?;
+        (Self::MIN_FIXED_BUFFER_FRAMES..=Self::MAX_FIXED_BUFFER_FRAMES)
+            .contains(&frames)
+            .then_some(frames)
+    }
+
+    fn requested_fixed_buffer_frames() -> Option<u32> {
+        let value = std::env::var("AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES").ok();
+        Self::parse_fixed_buffer_frames(value.as_deref())
+    }
+
+    fn supported_fixed_buffer_frames(frames: u32, supported: &SupportedBufferSize) -> bool {
+        match supported {
+            SupportedBufferSize::Range { min, max } => (*min..=*max).contains(&frames),
+            SupportedBufferSize::Unknown => true,
+        }
+    }
+
+    fn preflight_config<T>(device: &Device, config: &StreamConfig) -> bool
+    where
+        T: SizedSample + FromSample<f32>,
+    {
+        device
+            .build_output_stream(
+                config,
+                |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+                    let silence = T::from_sample(0.0_f32);
+                    for sample in data {
+                        *sample = silence;
+                    }
+                },
+                |_error| {},
+                None,
+            )
+            .is_ok()
+    }
+
+    fn preflight_sample_format(
+        device: &Device,
+        sample_format: SampleFormat,
+        config: &StreamConfig,
+    ) -> bool {
+        match sample_format {
+            SampleFormat::I8 => Self::preflight_config::<i8>(device, config),
+            SampleFormat::F32 => Self::preflight_config::<f32>(device, config),
+            SampleFormat::F64 => Self::preflight_config::<f64>(device, config),
+            SampleFormat::I16 => Self::preflight_config::<i16>(device, config),
+            SampleFormat::I32 => Self::preflight_config::<i32>(device, config),
+            SampleFormat::I64 => Self::preflight_config::<i64>(device, config),
+            SampleFormat::U8 => Self::preflight_config::<u8>(device, config),
+            SampleFormat::U16 => Self::preflight_config::<u16>(device, config),
+            SampleFormat::U32 => Self::preflight_config::<u32>(device, config),
+            SampleFormat::U64 => Self::preflight_config::<u64>(device, config),
+            _ => false,
+        }
+    }
+
     fn select_device(device: Device) -> Result<OutputStreamSetup, AudioError> {
         let name = device
             .name()
@@ -169,6 +238,68 @@ impl AudioOutput {
         drained
     }
 
+    fn render_probe<T>(
+        data: &mut [T],
+        num_channels: usize,
+        probe: &mut OutputProbeControl,
+        scratch: &mut [f32],
+    ) -> bool
+    where
+        T: SizedSample + FromSample<f32>,
+    {
+        let frame_count = if num_channels == 1 {
+            data.len()
+        } else {
+            data.len() / num_channels
+        };
+        let silence = Self::convert_output_sample::<T>(0.0);
+        for sample in data.iter_mut() {
+            *sample = silence;
+        }
+
+        let mut rendered = 0usize;
+        while rendered < frame_count {
+            let batch = (frame_count - rendered).min(scratch.len());
+            if batch == 0 {
+                break;
+            }
+            let count = probe.consumer.read(&mut scratch[..batch]);
+            if count == 0 {
+                break;
+            }
+            for (offset, &sample) in scratch[..count].iter().enumerate() {
+                let converted = Self::convert_output_sample::<T>(sample);
+                let frame = rendered + offset;
+                if num_channels == 1 {
+                    data[frame] = converted;
+                } else {
+                    for channel in 0..num_channels {
+                        data[frame * num_channels + channel] = converted;
+                    }
+                }
+            }
+            rendered += count;
+            if count < batch {
+                break;
+            }
+        }
+
+        probe.consumer.is_empty()
+    }
+
+    fn discard_probe(probe: &mut OutputProbeControl, scratch: &mut [f32]) {
+        while !probe.consumer.is_empty() {
+            let count = probe.consumer.read(scratch);
+            if count == 0 {
+                break;
+            }
+        }
+        probe.consumer.set_last_sample(0.0);
+        probe.cancel_requested.store(false, Ordering::Release);
+        probe.active.store(false, Ordering::Release);
+        probe.complete.store(true, Ordering::Release);
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build_stream<T>(
         device: Device,
@@ -182,6 +313,8 @@ impl AudioOutput {
         total_underruns: Arc<AtomicU64>,
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
+        output_probe: Option<OutputProbeControl>,
+        fixed_buffer_frames: Option<u32>,
     ) -> Result<Self, AudioError>
     where
         T: SizedSample + FromSample<f32>,
@@ -191,6 +324,7 @@ impl AudioOutput {
 
         const OUTPUT_SCRATCH_CAPACITY: usize = 8192;
         let mut mono_scratch: Vec<f32> = vec![0.0; OUTPUT_SCRATCH_CAPACITY];
+        let mut output_probe = output_probe;
 
         let recording_active_clone = Arc::clone(&recording_active);
         let output_muted_clone = Arc::clone(&output_muted);
@@ -201,6 +335,31 @@ impl AudioOutput {
                 move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
                     // RT_REGION_START: cpal_output_callback
                     last_callback_time_us.store(now_micros(), Ordering::Relaxed);
+
+                    if let Some(probe) = output_probe.as_mut() {
+                        if probe.cancel_requested.load(Ordering::Acquire) {
+                            Self::discard_probe(probe, &mut mono_scratch);
+                        } else if probe.active.load(Ordering::Acquire) {
+                            let frames_needed = if num_channels == 1 {
+                                data.len()
+                            } else {
+                                data.len() / num_channels
+                            };
+                            Self::drain_muted_consumer(
+                                &mut consumer,
+                                frames_needed,
+                                &mut mono_scratch,
+                            );
+                            underrun_streak.store(0, Ordering::Relaxed);
+                            let complete =
+                                Self::render_probe(data, num_channels, probe, &mut mono_scratch);
+                            if complete {
+                                probe.active.store(false, Ordering::Release);
+                                probe.complete.store(true, Ordering::Release);
+                            }
+                            return;
+                        }
+                    }
 
                     if recording_active_clone.load(Ordering::Relaxed)
                         || output_muted_clone.load(Ordering::Relaxed)
@@ -315,6 +474,7 @@ impl AudioOutput {
         Ok(Self {
             stream,
             device_info,
+            fixed_buffer_frames,
         })
     }
 
@@ -341,6 +501,7 @@ impl AudioOutput {
             total_underruns,
             error_count,
             rt_error_code,
+            None,
         )
     }
 
@@ -368,6 +529,7 @@ impl AudioOutput {
             total_underruns,
             error_count,
             rt_error_code,
+            None,
         )
     }
 
@@ -382,9 +544,21 @@ impl AudioOutput {
         total_underruns: Arc<AtomicU64>,
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
+        output_probe: Option<OutputProbeControl>,
     ) -> Result<Self, AudioError> {
         let sample_format = setup.supported_config.sample_format();
-        let stream_config = setup.supported_config.config();
+        let mut stream_config = setup.supported_config.config();
+        let mut fixed_buffer_frames = None;
+        if let Some(frames) = Self::requested_fixed_buffer_frames() {
+            if Self::supported_fixed_buffer_frames(frames, setup.supported_config.buffer_size()) {
+                let mut candidate = stream_config.clone();
+                candidate.buffer_size = BufferSize::Fixed(frames);
+                if Self::preflight_sample_format(&setup.device, sample_format, &candidate) {
+                    stream_config = candidate;
+                    fixed_buffer_frames = Some(frames);
+                }
+            }
+        }
 
         match sample_format {
             SampleFormat::I8 => Self::build_stream::<i8>(
@@ -399,6 +573,8 @@ impl AudioOutput {
                 total_underruns,
                 error_count,
                 rt_error_code,
+                output_probe,
+                fixed_buffer_frames,
             ),
             SampleFormat::F32 => Self::build_stream::<f32>(
                 setup.device,
@@ -412,6 +588,8 @@ impl AudioOutput {
                 total_underruns,
                 error_count,
                 rt_error_code,
+                output_probe,
+                fixed_buffer_frames,
             ),
             SampleFormat::F64 => Self::build_stream::<f64>(
                 setup.device,
@@ -425,6 +603,8 @@ impl AudioOutput {
                 total_underruns,
                 error_count,
                 rt_error_code,
+                output_probe,
+                fixed_buffer_frames,
             ),
             SampleFormat::I16 => Self::build_stream::<i16>(
                 setup.device,
@@ -438,6 +618,8 @@ impl AudioOutput {
                 total_underruns,
                 error_count,
                 rt_error_code,
+                output_probe,
+                fixed_buffer_frames,
             ),
             SampleFormat::I32 => Self::build_stream::<i32>(
                 setup.device,
@@ -451,6 +633,8 @@ impl AudioOutput {
                 total_underruns,
                 error_count,
                 rt_error_code,
+                output_probe,
+                fixed_buffer_frames,
             ),
             SampleFormat::I64 => Self::build_stream::<i64>(
                 setup.device,
@@ -464,6 +648,8 @@ impl AudioOutput {
                 total_underruns,
                 error_count,
                 rt_error_code,
+                output_probe,
+                fixed_buffer_frames,
             ),
             SampleFormat::U8 => Self::build_stream::<u8>(
                 setup.device,
@@ -477,6 +663,8 @@ impl AudioOutput {
                 total_underruns,
                 error_count,
                 rt_error_code,
+                output_probe,
+                fixed_buffer_frames,
             ),
             SampleFormat::U16 => Self::build_stream::<u16>(
                 setup.device,
@@ -490,6 +678,8 @@ impl AudioOutput {
                 total_underruns,
                 error_count,
                 rt_error_code,
+                output_probe,
+                fixed_buffer_frames,
             ),
             SampleFormat::U32 => Self::build_stream::<u32>(
                 setup.device,
@@ -503,6 +693,8 @@ impl AudioOutput {
                 total_underruns,
                 error_count,
                 rt_error_code,
+                output_probe,
+                fixed_buffer_frames,
             ),
             SampleFormat::U64 => Self::build_stream::<u64>(
                 setup.device,
@@ -516,6 +708,8 @@ impl AudioOutput {
                 total_underruns,
                 error_count,
                 rt_error_code,
+                output_probe,
+                fixed_buffer_frames,
             ),
             other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
         }
@@ -538,6 +732,10 @@ impl AudioOutput {
     /// Get device information
     pub fn device_info(&self) -> &AudioDeviceInfo {
         &self.device_info
+    }
+
+    pub fn fixed_buffer_frames(&self) -> Option<u32> {
+        self.fixed_buffer_frames
     }
 }
 
@@ -656,6 +854,81 @@ mod tests {
     }
 
     #[test]
+    fn test_probe_render_duplicates_mono_across_output_channels() {
+        let rb = crate::audio::AudioRingBuffer::new(8);
+        let (mut producer, consumer) = rb.split();
+        assert_eq!(producer.write(&[0.25, -0.5, 0.75]), 3);
+        let mut probe = OutputProbeControl {
+            consumer,
+            active: Arc::new(AtomicBool::new(true)),
+            complete: Arc::new(AtomicBool::new(false)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+        };
+        let mut output = [9.0_f32; 8];
+        let mut scratch = [0.0_f32; 8];
+
+        let complete = AudioOutput::render_probe(&mut output, 2, &mut probe, &mut scratch);
+
+        assert!(complete);
+        assert_eq!(output, [0.25, 0.25, -0.5, -0.5, 0.75, 0.75, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_probe_render_continues_across_callbacks_without_padding_source() {
+        let rb = crate::audio::AudioRingBuffer::new(8);
+        let (mut producer, consumer) = rb.split();
+        assert_eq!(producer.write(&[0.1, 0.2, 0.3, 0.4]), 4);
+        let mut probe = OutputProbeControl {
+            consumer,
+            active: Arc::new(AtomicBool::new(true)),
+            complete: Arc::new(AtomicBool::new(false)),
+            cancel_requested: Arc::new(AtomicBool::new(false)),
+        };
+        let mut first = [0.0_f32; 2];
+        let mut second = [0.0_f32; 3];
+        let mut scratch = [0.0_f32; 8];
+
+        assert!(!AudioOutput::render_probe(
+            &mut first,
+            1,
+            &mut probe,
+            &mut scratch
+        ));
+        assert!(AudioOutput::render_probe(
+            &mut second,
+            1,
+            &mut probe,
+            &mut scratch
+        ));
+        assert_eq!(first, [0.1, 0.2]);
+        assert_eq!(second, [0.3, 0.4, 0.0]);
+    }
+
+    #[test]
+    fn test_discard_probe_clears_queue_and_publishes_completion() {
+        let rb = crate::audio::AudioRingBuffer::new(8);
+        let (mut producer, consumer) = rb.split();
+        assert_eq!(producer.write(&[0.1, 0.2, 0.3]), 3);
+        let active = Arc::new(AtomicBool::new(true));
+        let complete = Arc::new(AtomicBool::new(false));
+        let cancel_requested = Arc::new(AtomicBool::new(true));
+        let mut probe = OutputProbeControl {
+            consumer,
+            active: Arc::clone(&active),
+            complete: Arc::clone(&complete),
+            cancel_requested: Arc::clone(&cancel_requested),
+        };
+        let mut scratch = [0.0_f32; 2];
+
+        AudioOutput::discard_probe(&mut probe, &mut scratch);
+
+        assert!(probe.consumer.is_empty());
+        assert!(!active.load(Ordering::Acquire));
+        assert!(complete.load(Ordering::Acquire));
+        assert!(!cancel_requested.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn test_preferred_sample_rate_uses_target_when_supported() {
         let chosen = preferred_sample_rate_from_ranges(44_100, &[(44_100, 48_000)], 48_000);
         assert_eq!(chosen, 48_000);
@@ -665,5 +938,32 @@ mod tests {
     fn test_preferred_sample_rate_falls_back_to_default_when_target_missing() {
         let chosen = preferred_sample_rate_from_ranges(44_100, &[(44_100, 44_100)], 48_000);
         assert_eq!(chosen, 44_100);
+    }
+
+    #[test]
+    fn test_fixed_buffer_request_parser_is_bounded_and_fail_closed() {
+        assert_eq!(AudioOutput::parse_fixed_buffer_frames(None), None);
+        assert_eq!(AudioOutput::parse_fixed_buffer_frames(Some("")), None);
+        assert_eq!(AudioOutput::parse_fixed_buffer_frames(Some("abc")), None);
+        assert_eq!(AudioOutput::parse_fixed_buffer_frames(Some("15")), None);
+        assert_eq!(
+            AudioOutput::parse_fixed_buffer_frames(Some("256")),
+            Some(256)
+        );
+        assert_eq!(AudioOutput::parse_fixed_buffer_frames(Some("8193")), None);
+    }
+
+    #[test]
+    fn test_fixed_buffer_request_respects_reported_driver_range() {
+        let range = SupportedBufferSize::Range { min: 64, max: 1024 };
+        assert!(!AudioOutput::supported_fixed_buffer_frames(32, &range));
+        assert!(AudioOutput::supported_fixed_buffer_frames(64, &range));
+        assert!(AudioOutput::supported_fixed_buffer_frames(512, &range));
+        assert!(AudioOutput::supported_fixed_buffer_frames(1024, &range));
+        assert!(!AudioOutput::supported_fixed_buffer_frames(2048, &range));
+        assert!(AudioOutput::supported_fixed_buffer_frames(
+            256,
+            &SupportedBufferSize::Unknown
+        ));
     }
 }

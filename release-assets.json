@@ -1,4 +1,5 @@
 {
+  "fallback_release_tag": "v1.10.0",
   "assets": [
     {
       "path": "df.dll",

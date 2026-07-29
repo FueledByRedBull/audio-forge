@@ -1,0 +1,495 @@
+{
+  "schema_version": 2,
+  "generated_at": "2026-07-29T15:39:27.881244+00:00",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "audible_change": false,
+  "purpose": "Retain-or-reject comparison; production backend remains unchanged unless every predefined gate passes.",
+  "corpus": {
+    "root": "models/dpdfnet_eval_subset",
+    "languages": 12,
+    "clip_seconds_per_language": 15.0,
+    "paired_clean_noisy": true,
+    "segments": [
+      {
+        "id": "arabic_airport_snr0_rt60none_0",
+        "language": "arabic",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/arabic_airport_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/arabic_airport_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 0,
+        "stream_end": 720000
+      },
+      {
+        "id": "dutch_pub_snr0_rt60none_0",
+        "language": "dutch",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/dutch_pub_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/dutch_pub_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 744000,
+        "stream_end": 1464000
+      },
+      {
+        "id": "french_street_snr0_rt60none_0",
+        "language": "french",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/french_street_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/french_street_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 1488000,
+        "stream_end": 2208000
+      },
+      {
+        "id": "german_airport_snr0_rt60none_0",
+        "language": "german",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/german_airport_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/german_airport_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 2232000,
+        "stream_end": 2952000
+      },
+      {
+        "id": "hungarian_pub_snr0_rt60none_0",
+        "language": "hungarian",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/hungarian_pub_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/hungarian_pub_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 2976000,
+        "stream_end": 3696000
+      },
+      {
+        "id": "korean_street_snr0_rt60none_0",
+        "language": "korean",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/korean_street_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/korean_street_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 3720000,
+        "stream_end": 4440000
+      },
+      {
+        "id": "polish_airport_snr0_rt60none_0",
+        "language": "polish",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/polish_airport_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/polish_airport_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 4464000,
+        "stream_end": 5184000
+      },
+      {
+        "id": "portuguese_pub_snr0_rt60none_0",
+        "language": "portuguese",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/portuguese_pub_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/portuguese_pub_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 5208000,
+        "stream_end": 5928000
+      },
+      {
+        "id": "russian_street_snr0_rt60none_0",
+        "language": "russian",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/russian_street_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/russian_street_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 5952000,
+        "stream_end": 6672000
+      },
+      {
+        "id": "spanish_airport_snr0_rt60none_0",
+        "language": "spanish",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/spanish_airport_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/spanish_airport_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 6696000,
+        "stream_end": 7416000
+      },
+      {
+        "id": "turkish_pub_snr0_rt60none_0",
+        "language": "turkish",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/turkish_pub_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/turkish_pub_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 7440000,
+        "stream_end": 8160000
+      },
+      {
+        "id": "vietnamese_street_snr0_rt60none_0",
+        "language": "vietnamese",
+        "clean_path": "models/dpdfnet_eval_subset/Clean/vietnamese_street_snr0_rt60none_0_mixture_clean.wav",
+        "noisy_path": "models/dpdfnet_eval_subset/Noisy/vietnamese_street_snr0_rt60none_0_mixture_noisy.wav",
+        "stream_start": 8184000,
+        "stream_end": 8904000
+      }
+    ]
+  },
+  "provenance": {
+    "shipped": {
+      "implementation": "nnnoiseless 0.5.2 (Cargo.lock)",
+      "binary": "target/release/rnnoise_benchmark.exe",
+      "binary_sha256": "79c2d7f063937f563f9fcbe0c3e3c7122fcd24deea3370762848f32dd5e6a3e7",
+      "compiler_profile": "cargo release, portable target defaults"
+    },
+    "upstream": {
+      "repository": "https://github.com/xiph/rnnoise",
+      "commit": "70f1d256acd4b34a572f999a05c87bf00b67730d",
+      "model_version_sha256": "0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37",
+      "model_source": "models/benchmarks/upstream-rnnoise/src/rnnoise_data.c",
+      "model_source_sha256": "d6021b7697677c4d2274c912975e143765552b0e6f25500aa660fdb4a9849be5",
+      "binary": "models/benchmarks/rnnoise-upstream-benchmark.exe",
+      "binary_sha256": "38a4002af4dfc9c90e82232d5e7a357d2a9aeaeb020725eea3a9144cb25fba64",
+      "compiler": "Zig 0.16.0 cc -O3, portable target defaults, scalar path",
+      "compiler_archive_sha256": "68659eb5f1e4eb1437a722f1dd889c5a322c9954607f5edcf337bc3684a75a7e"
+    },
+    "sample_rate_hz": 48000,
+    "frame_size": 480,
+    "strength": 1.0,
+    "sample_transport": "raw little-endian float32; model input scaled to +/-32768"
+  },
+  "alignment_delay_samples": {
+    "shipped_noisy": 479,
+    "shipped_clean": 479,
+    "upstream_noisy": 959,
+    "upstream_clean": 958
+  },
+  "runtime": {
+    "shipped_worst_of_clean_noisy": {
+      "elapsed_seconds": 0.7593674,
+      "rtf": 0.004082620430107527,
+      "frame_p95_seconds": 5.09e-05,
+      "frame_p99_seconds": 7e-05,
+      "frame_max_seconds": 0.0004497
+    },
+    "upstream_worst_of_clean_noisy": {
+      "elapsed_seconds": 5.7354194,
+      "rtf": 0.030835588172,
+      "frame_p95_seconds": 0.000356205,
+      "frame_p99_seconds": 0.000495408,
+      "frame_max_seconds": 0.0058636
+    }
+  },
+  "rows": {
+    "shipped": [
+      {
+        "id": "arabic_airport_snr0_rt60none_0",
+        "language": "arabic",
+        "input_si_sdr_db": -6.081888279711261,
+        "enhanced_si_sdr_db": 3.050264749340963,
+        "si_sdr_improvement_db": 9.132153029052223,
+        "noisy_speech_lsd_db": 6.961493191927331,
+        "noisy_speech_dropout_rate": 0.02258064516129032,
+        "clean_si_sdr_db": 18.163397136694968,
+        "clean_speech_lsd_db": 0.937985659130034,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "dutch_pub_snr0_rt60none_0",
+        "language": "dutch",
+        "input_si_sdr_db": -1.8259766688100685,
+        "enhanced_si_sdr_db": 4.601634684766732,
+        "si_sdr_improvement_db": 6.4276113535768005,
+        "noisy_speech_lsd_db": 8.487000198594039,
+        "noisy_speech_dropout_rate": 0.12341772151898735,
+        "clean_si_sdr_db": 12.370432341721108,
+        "clean_speech_lsd_db": 0.5537630224731586,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "french_street_snr0_rt60none_0",
+        "language": "french",
+        "input_si_sdr_db": -2.2709055988887714,
+        "enhanced_si_sdr_db": 6.417610934903921,
+        "si_sdr_improvement_db": 8.688516533792694,
+        "noisy_speech_lsd_db": 8.962385251219283,
+        "noisy_speech_dropout_rate": 0.027944111776447105,
+        "clean_si_sdr_db": 18.66735175272182,
+        "clean_speech_lsd_db": 0.7224640749896794,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "german_airport_snr0_rt60none_0",
+        "language": "german",
+        "input_si_sdr_db": -2.387921718530712,
+        "enhanced_si_sdr_db": 3.088468021408206,
+        "si_sdr_improvement_db": 5.476389739938918,
+        "noisy_speech_lsd_db": 8.617475283800038,
+        "noisy_speech_dropout_rate": 0.10869565217391304,
+        "clean_si_sdr_db": 17.137620670162104,
+        "clean_speech_lsd_db": 0.9637930596596503,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "hungarian_pub_snr0_rt60none_0",
+        "language": "hungarian",
+        "input_si_sdr_db": -8.548953987576423,
+        "enhanced_si_sdr_db": -7.058176787104284,
+        "si_sdr_improvement_db": 1.490777200472139,
+        "noisy_speech_lsd_db": 8.536278004047132,
+        "noisy_speech_dropout_rate": 0.09387755102040816,
+        "clean_si_sdr_db": 19.72697205491471,
+        "clean_speech_lsd_db": 0.7512921947086634,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "korean_street_snr0_rt60none_0",
+        "language": "korean",
+        "input_si_sdr_db": -5.563122392062754,
+        "enhanced_si_sdr_db": 5.438631451102993,
+        "si_sdr_improvement_db": 11.001753843165748,
+        "noisy_speech_lsd_db": 8.520258875992164,
+        "noisy_speech_dropout_rate": 0.053003533568904596,
+        "clean_si_sdr_db": 19.690059280265526,
+        "clean_speech_lsd_db": 0.9272836579814803,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "polish_airport_snr0_rt60none_0",
+        "language": "polish",
+        "input_si_sdr_db": -5.662613867611045,
+        "enhanced_si_sdr_db": 2.827087908286061,
+        "si_sdr_improvement_db": 8.489701775897107,
+        "noisy_speech_lsd_db": 6.476326363176353,
+        "noisy_speech_dropout_rate": 0.0,
+        "clean_si_sdr_db": 13.49655740344293,
+        "clean_speech_lsd_db": 1.1721175071154957,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "portuguese_pub_snr0_rt60none_0",
+        "language": "portuguese",
+        "input_si_sdr_db": -6.3059655624753175,
+        "enhanced_si_sdr_db": 4.657945568983092,
+        "si_sdr_improvement_db": 10.96391113145841,
+        "noisy_speech_lsd_db": 6.286513722931427,
+        "noisy_speech_dropout_rate": 0.05223880597014925,
+        "clean_si_sdr_db": 14.079794114984953,
+        "clean_speech_lsd_db": 0.6714006488632455,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "russian_street_snr0_rt60none_0",
+        "language": "russian",
+        "input_si_sdr_db": -4.035915362379249,
+        "enhanced_si_sdr_db": 5.014817231882581,
+        "si_sdr_improvement_db": 9.05073259426183,
+        "noisy_speech_lsd_db": 7.112236931713838,
+        "noisy_speech_dropout_rate": 0.019230769230769232,
+        "clean_si_sdr_db": 13.472374943489262,
+        "clean_speech_lsd_db": 0.7226696735231853,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "spanish_airport_snr0_rt60none_0",
+        "language": "spanish",
+        "input_si_sdr_db": -5.882009046954764,
+        "enhanced_si_sdr_db": 3.6535231255510396,
+        "si_sdr_improvement_db": 9.535532172505803,
+        "noisy_speech_lsd_db": 7.286104524813076,
+        "noisy_speech_dropout_rate": 0.051094890510948905,
+        "clean_si_sdr_db": 23.15684104712561,
+        "clean_speech_lsd_db": 0.9313317027546403,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "turkish_pub_snr0_rt60none_0",
+        "language": "turkish",
+        "input_si_sdr_db": -4.320917057895126,
+        "enhanced_si_sdr_db": 1.4778902657923396,
+        "si_sdr_improvement_db": 5.798807323687465,
+        "noisy_speech_lsd_db": 7.573707469843947,
+        "noisy_speech_dropout_rate": 0.00684931506849315,
+        "clean_si_sdr_db": 11.324080384334337,
+        "clean_speech_lsd_db": 0.49796080426136746,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "vietnamese_street_snr0_rt60none_0",
+        "language": "vietnamese",
+        "input_si_sdr_db": -2.6343456075930165,
+        "enhanced_si_sdr_db": 5.382354633710179,
+        "si_sdr_improvement_db": 8.016700241303194,
+        "noisy_speech_lsd_db": 9.231901972168846,
+        "noisy_speech_dropout_rate": 0.09523809523809523,
+        "clean_si_sdr_db": 16.12333948780695,
+        "clean_speech_lsd_db": 1.8678845802866368,
+        "clean_speech_dropout_rate": 0.006802721088435374
+      }
+    ],
+    "upstream": [
+      {
+        "id": "arabic_airport_snr0_rt60none_0",
+        "language": "arabic",
+        "input_si_sdr_db": -6.081888279711261,
+        "enhanced_si_sdr_db": -1.354904786249371,
+        "si_sdr_improvement_db": 4.72698349346189,
+        "noisy_speech_lsd_db": 8.567580663569249,
+        "noisy_speech_dropout_rate": 0.15483870967741936,
+        "clean_si_sdr_db": 12.585609511674571,
+        "clean_speech_lsd_db": 1.7025594281530247,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "dutch_pub_snr0_rt60none_0",
+        "language": "dutch",
+        "input_si_sdr_db": -1.8259766688100685,
+        "enhanced_si_sdr_db": 6.046868108174909,
+        "si_sdr_improvement_db": 7.872844776984977,
+        "noisy_speech_lsd_db": 7.6880051619822,
+        "noisy_speech_dropout_rate": 0.03639240506329114,
+        "clean_si_sdr_db": 7.181055561107464,
+        "clean_speech_lsd_db": 1.7003557291355154,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "french_street_snr0_rt60none_0",
+        "language": "french",
+        "input_si_sdr_db": -2.2709055988887714,
+        "enhanced_si_sdr_db": 7.6146821704560175,
+        "si_sdr_improvement_db": 9.885587769344788,
+        "noisy_speech_lsd_db": 7.748554280413777,
+        "noisy_speech_dropout_rate": 0.015968063872255488,
+        "clean_si_sdr_db": 14.804796812550427,
+        "clean_speech_lsd_db": 1.3759264043481445,
+        "clean_speech_dropout_rate": 0.001996007984031936
+      },
+      {
+        "id": "german_airport_snr0_rt60none_0",
+        "language": "german",
+        "input_si_sdr_db": -2.387921718530712,
+        "enhanced_si_sdr_db": 4.964678598973515,
+        "si_sdr_improvement_db": 7.352600317504227,
+        "noisy_speech_lsd_db": 7.89549692210576,
+        "noisy_speech_dropout_rate": 0.03804347826086957,
+        "clean_si_sdr_db": 14.057020766899559,
+        "clean_speech_lsd_db": 2.300437649620152,
+        "clean_speech_dropout_rate": 0.005434782608695652
+      },
+      {
+        "id": "hungarian_pub_snr0_rt60none_0",
+        "language": "hungarian",
+        "input_si_sdr_db": -8.548953987576423,
+        "enhanced_si_sdr_db": 0.47489930753630705,
+        "si_sdr_improvement_db": 9.02385329511273,
+        "noisy_speech_lsd_db": 9.208304342109635,
+        "noisy_speech_dropout_rate": 0.04081632653061224,
+        "clean_si_sdr_db": 14.442249739650652,
+        "clean_speech_lsd_db": 2.2637229160213694,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "korean_street_snr0_rt60none_0",
+        "language": "korean",
+        "input_si_sdr_db": -5.563122392062754,
+        "enhanced_si_sdr_db": 7.103602278547159,
+        "si_sdr_improvement_db": 12.666724670609913,
+        "noisy_speech_lsd_db": 8.407832820356937,
+        "noisy_speech_dropout_rate": 0.04240282685512368,
+        "clean_si_sdr_db": 13.707121103964273,
+        "clean_speech_lsd_db": 1.1395519639298926,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "polish_airport_snr0_rt60none_0",
+        "language": "polish",
+        "input_si_sdr_db": -5.662613867611045,
+        "enhanced_si_sdr_db": 4.0544811843919595,
+        "si_sdr_improvement_db": 9.717095052003003,
+        "noisy_speech_lsd_db": 6.408904722220346,
+        "noisy_speech_dropout_rate": 0.0033112582781456954,
+        "clean_si_sdr_db": 8.104524633443882,
+        "clean_speech_lsd_db": 2.171628217983633,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "portuguese_pub_snr0_rt60none_0",
+        "language": "portuguese",
+        "input_si_sdr_db": -6.3059655624753175,
+        "enhanced_si_sdr_db": 5.1502206070434084,
+        "si_sdr_improvement_db": 11.456186169518727,
+        "noisy_speech_lsd_db": 6.8626371013438225,
+        "noisy_speech_dropout_rate": 0.007462686567164179,
+        "clean_si_sdr_db": 9.57309383244264,
+        "clean_speech_lsd_db": 3.1874029312573544,
+        "clean_speech_dropout_rate": 0.0037313432835820895
+      },
+      {
+        "id": "russian_street_snr0_rt60none_0",
+        "language": "russian",
+        "input_si_sdr_db": -4.035915362379249,
+        "enhanced_si_sdr_db": 5.817729916831463,
+        "si_sdr_improvement_db": 9.853645279210713,
+        "noisy_speech_lsd_db": 7.569161366070614,
+        "noisy_speech_dropout_rate": 0.01201923076923077,
+        "clean_si_sdr_db": 7.336015625996552,
+        "clean_speech_lsd_db": 1.3035851103624754,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "spanish_airport_snr0_rt60none_0",
+        "language": "spanish",
+        "input_si_sdr_db": -5.882009046954764,
+        "enhanced_si_sdr_db": 4.389898052342647,
+        "si_sdr_improvement_db": 10.271907099297412,
+        "noisy_speech_lsd_db": 8.685320985477528,
+        "noisy_speech_dropout_rate": 0.058394160583941604,
+        "clean_si_sdr_db": 16.528952847910745,
+        "clean_speech_lsd_db": 2.250715681450427,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "turkish_pub_snr0_rt60none_0",
+        "language": "turkish",
+        "input_si_sdr_db": -4.320917057895126,
+        "enhanced_si_sdr_db": -1.8132212470649134,
+        "si_sdr_improvement_db": 2.5076958108302123,
+        "noisy_speech_lsd_db": 13.324817604316115,
+        "noisy_speech_dropout_rate": 0.23972602739726026,
+        "clean_si_sdr_db": 6.056836727774055,
+        "clean_speech_lsd_db": 1.2190430517305448,
+        "clean_speech_dropout_rate": 0.0
+      },
+      {
+        "id": "vietnamese_street_snr0_rt60none_0",
+        "language": "vietnamese",
+        "input_si_sdr_db": -2.6343456075930165,
+        "enhanced_si_sdr_db": 6.121228426073597,
+        "si_sdr_improvement_db": 8.755574033666614,
+        "noisy_speech_lsd_db": 8.499528555485883,
+        "noisy_speech_dropout_rate": 0.034013605442176874,
+        "clean_si_sdr_db": 11.207834539908422,
+        "clean_speech_lsd_db": 3.4672805913638145,
+        "clean_speech_dropout_rate": 0.009070294784580499
+      }
+    ]
+  },
+  "decision": {
+    "predefined_gates": {
+      "si_sdr_improvement_over_shipped_min_db": 0.5,
+      "noisy_lsd_must_not_regress": true,
+      "clean_si_sdr_regression_max_db": 0.25,
+      "clean_lsd_regression_max_db": 0.25,
+      "clean_dropout_regression_max": 0.005,
+      "p99_runtime_ratio_max": 1.5,
+      "frame_deadline_seconds": 0.01,
+      "estimated_archive_growth_max_ratio": 0.05
+    },
+    "shipped_medians": {
+      "si_sdr_improvement_db": 8.5891091548449,
+      "noisy_speech_lsd_db": 8.030353834218992,
+      "noisy_speech_dropout_rate": 0.05166684824054908,
+      "clean_si_sdr_db": 16.630480078984526,
+      "clean_speech_lsd_db": 0.8392879263450719,
+      "clean_speech_dropout_rate": 0.0
+    },
+    "upstream_medians": {
+      "si_sdr_improvement_db": 9.370474173557866,
+      "noisy_speech_lsd_db": 8.151664871231349,
+      "noisy_speech_dropout_rate": 0.03721794166208035,
+      "clean_si_sdr_db": 11.896722025791497,
+      "clean_speech_lsd_db": 1.937093823068329,
+      "clean_speech_dropout_rate": 0.0
+    },
+    "upstream_to_shipped_p99_runtime_ratio": 7.077257142857144,
+    "estimated_archive_growth_bytes": 13645312,
+    "estimated_archive_growth_ratio": 0.12181726745682321,
+    "gates": {
+      "material_noisy_quality_win": false,
+      "clean_si_sdr_non_regression": false,
+      "clean_lsd_non_regression": false,
+      "clean_dropout_non_regression": true,
+      "p99_runtime_ratio_at_most_1_5": false,
+      "p99_meets_10ms_deadline": true,
+      "estimated_archive_growth_at_most_5_percent": false
+    },
+    "decision": "retain_nnnoiseless"
+  },
+  "listening_validation": {
+    "status": "not_run",
+    "reason": "No human involvement requested; objective gate must pass before listening could justify adoption."
+  }
+}

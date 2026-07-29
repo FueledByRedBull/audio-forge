@@ -1,0 +1,171 @@
+{
+  "schema_version": 2,
+  "audible_change": false,
+  "generated_at_utc": "2026-07-29T15:24:54.803247+00:00",
+  "predefined_gates": {
+    "pre_true_peak_overshoot_db_max": 0.1,
+    "output_true_peak_overshoot_db_max": 0.01,
+    "downstream_true_peak_gr_regression_db_max": 0.1,
+    "gain_variation_regression_ratio_max": 1.05,
+    "runtime_ratio_max": 1.05
+  },
+  "aggregates": {
+    "0.5": {
+      "worst_pre_true_peak_overshoot_db": 0.5220339000225067,
+      "worst_output_true_peak_overshoot_db": 0.0,
+      "max_true_peak_limiter_gain_reduction_db": 0.5307245850563049,
+      "total_true_peak_limited_events": 70,
+      "median_aligned_gain_variation": 0.0810826187807101,
+      "median_runtime_ms": 120.2448
+    },
+    "1.0": {
+      "worst_pre_true_peak_overshoot_db": 0.5220339000225067,
+      "worst_output_true_peak_overshoot_db": 0.0,
+      "max_true_peak_limiter_gain_reduction_db": 0.5307245850563049,
+      "total_true_peak_limited_events": 66,
+      "median_aligned_gain_variation": 0.08185191016990397,
+      "median_runtime_ms": 124.21640000000001
+    },
+    "2.0": {
+      "worst_pre_true_peak_overshoot_db": 0.5220339000225067,
+      "worst_output_true_peak_overshoot_db": 0.0,
+      "max_true_peak_limiter_gain_reduction_db": 0.5307245850563049,
+      "total_true_peak_limited_events": 57,
+      "median_aligned_gain_variation": 0.08448155203507568,
+      "median_runtime_ms": 122.51180000000001
+    }
+  },
+  "candidate_checks": {
+    "0.5": {
+      "checks": {
+        "pre_true_peak_overshoot_at_most_0_10_db": false,
+        "output_true_peak_overshoot_at_most_0_01_db": true,
+        "downstream_true_peak_gr_regression_at_most_0_10_db": true,
+        "gain_variation_regression_at_most_5_percent": true,
+        "runtime_not_slower": true
+      },
+      "passes": false
+    },
+    "1.0": {
+      "checks": {
+        "pre_true_peak_overshoot_at_most_0_10_db": false,
+        "output_true_peak_overshoot_at_most_0_01_db": true,
+        "downstream_true_peak_gr_regression_at_most_0_10_db": true,
+        "gain_variation_regression_at_most_5_percent": true,
+        "runtime_not_slower": true
+      },
+      "passes": false
+    }
+  },
+  "selected_lookahead_ms": 2.0,
+  "decision": "retain_2ms",
+  "cases": [
+    {
+      "id": "sine_bursts",
+      "lookahead_ms": 0.5,
+      "pre_true_peak_overshoot_db": 0.0,
+      "output_true_peak_overshoot_db": 0.0,
+      "main_peak_gain_reduction_db": 3.6066601276397705,
+      "true_peak_limiter_gain_reduction_db": 0.0,
+      "true_peak_limited_events": 0,
+      "aligned_gain_variation": 0.13656012895611785,
+      "runtime_ms": 120.2448
+    },
+    {
+      "id": "sine_bursts",
+      "lookahead_ms": 1.0,
+      "pre_true_peak_overshoot_db": 0.0,
+      "output_true_peak_overshoot_db": 0.0,
+      "main_peak_gain_reduction_db": 3.6066601276397705,
+      "true_peak_limiter_gain_reduction_db": 0.0,
+      "true_peak_limited_events": 0,
+      "aligned_gain_variation": 0.13309471506698517,
+      "runtime_ms": 124.21640000000001
+    },
+    {
+      "id": "sine_bursts",
+      "lookahead_ms": 2.0,
+      "pre_true_peak_overshoot_db": 0.0,
+      "output_true_peak_overshoot_db": 0.0,
+      "main_peak_gain_reduction_db": 3.6066601276397705,
+      "true_peak_limiter_gain_reduction_db": 0.0,
+      "true_peak_limited_events": 0,
+      "aligned_gain_variation": 0.1245319343248482,
+      "runtime_ms": 122.51180000000001
+    },
+    {
+      "id": "impulses",
+      "lookahead_ms": 0.5,
+      "pre_true_peak_overshoot_db": 0.5220339000225067,
+      "output_true_peak_overshoot_db": 0.0,
+      "main_peak_gain_reduction_db": 4.227360248565674,
+      "true_peak_limiter_gain_reduction_db": 0.5307245850563049,
+      "true_peak_limited_events": 1,
+      "aligned_gain_variation": 0.020621042219520932,
+      "runtime_ms": 118.65390000000001
+    },
+    {
+      "id": "impulses",
+      "lookahead_ms": 1.0,
+      "pre_true_peak_overshoot_db": 0.5220339000225067,
+      "output_true_peak_overshoot_db": 0.0,
+      "main_peak_gain_reduction_db": 4.227360248565674,
+      "true_peak_limiter_gain_reduction_db": 0.5307245850563049,
+      "true_peak_limited_events": 1,
+      "aligned_gain_variation": 0.020232091793301932,
+      "runtime_ms": 120.8171
+    },
+    {
+      "id": "impulses",
+      "lookahead_ms": 2.0,
+      "pre_true_peak_overshoot_db": 0.5220339000225067,
+      "output_true_peak_overshoot_db": 0.0,
+      "main_peak_gain_reduction_db": 4.227360248565674,
+      "true_peak_limiter_gain_reduction_db": 0.5307245850563049,
+      "true_peak_limited_events": 1,
+      "aligned_gain_variation": 0.01942919757041438,
+      "runtime_ms": 125.83189999999999
+    },
+    {
+      "id": "clipped_voice",
+      "lookahead_ms": 0.5,
+      "pre_true_peak_overshoot_db": 0.03114229440689087,
+      "output_true_peak_overshoot_db": 0.0,
+      "main_peak_gain_reduction_db": 2.4303386211395264,
+      "true_peak_limiter_gain_reduction_db": 0.039832890033721924,
+      "true_peak_limited_events": 69,
+      "aligned_gain_variation": 0.0810826187807101,
+      "runtime_ms": 124.9631
+    },
+    {
+      "id": "clipped_voice",
+      "lookahead_ms": 1.0,
+      "pre_true_peak_overshoot_db": 0.03114229440689087,
+      "output_true_peak_overshoot_db": 0.0,
+      "main_peak_gain_reduction_db": 2.4303386211395264,
+      "true_peak_limiter_gain_reduction_db": 0.039832890033721924,
+      "true_peak_limited_events": 65,
+      "aligned_gain_variation": 0.08185191016990397,
+      "runtime_ms": 127.0917
+    },
+    {
+      "id": "clipped_voice",
+      "lookahead_ms": 2.0,
+      "pre_true_peak_overshoot_db": 0.03114229440689087,
+      "output_true_peak_overshoot_db": 0.0,
+      "main_peak_gain_reduction_db": 2.4303386211395264,
+      "true_peak_limiter_gain_reduction_db": 0.039832890033721924,
+      "true_peak_limited_events": 56,
+      "aligned_gain_variation": 0.08448155203507568,
+      "runtime_ms": 121.67179999999999
+    }
+  ],
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
+  },
+  "listening_status": {
+    "status": "not_run",
+    "reason": "No human involvement is allowed; even an objective candidate remains conditional if transient transparency cannot be settled by metrics."
+  }
+}

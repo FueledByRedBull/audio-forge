@@ -5,7 +5,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 
 
-EQ_FREQUENCIES = [80.0, 160.0, 320.0, 640.0, 1280.0, 2500.0, 5000.0, 8000.0, 12000.0, 16000.0]
+EQ_FREQUENCIES = [
+    80.0,
+    160.0,
+    320.0,
+    640.0,
+    1280.0,
+    2500.0,
+    5000.0,
+    8000.0,
+    12000.0,
+    16000.0,
+]
 AUTO_EQ_DEFAULT_Q = 4.33
 
 ANALYSIS_MIN_PEAK_COUNT = 3
@@ -118,6 +129,9 @@ class LatencyCalibrationProfile:
     directional_latency_ms: float | None = None
     route_kind: str = "output_to_input"
     compensation_basis: str = "measured_output_to_input_route"
+    engine_latency_ms: float = 0.0
+    total_latency_ms: float = 0.0
+    engine_config_signature: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -130,10 +144,16 @@ class LatencyCalibrationProfile:
         measured_route = float(data.get("measured_round_trip_ms", 0.0))
         route_latency = data.get("route_latency_ms")
         if route_latency is None or float(route_latency) <= 0.0:
-            route_latency = measured_route if measured_route > 0.0 else data.get(
-                "applied_compensation_ms", 0.0
+            route_latency = (
+                measured_route
+                if measured_route > 0.0
+                else data.get("applied_compensation_ms", 0.0)
             )
         directional = data.get("directional_latency_ms")
+        engine_latency = max(0.0, float(data.get("engine_latency_ms", 0.0)))
+        total_latency = data.get("total_latency_ms")
+        if total_latency is None or float(total_latency) <= 0.0:
+            total_latency = float(route_latency) + engine_latency
         return cls(
             measured_round_trip_ms=measured_route,
             estimated_one_way_ms=float(data.get("estimated_one_way_ms", 0.0)),
@@ -145,11 +165,16 @@ class LatencyCalibrationProfile:
             sample_rate=int(data.get("sample_rate", 48000)),
             timestamp_utc=str(data.get("timestamp_utc", "")),
             route_latency_ms=float(route_latency),
-            directional_latency_ms=(float(directional) if directional is not None else None),
+            directional_latency_ms=(
+                float(directional) if directional is not None else None
+            ),
             route_kind=str(data.get("route_kind", "output_to_input")),
             compensation_basis=str(
                 data.get("compensation_basis", "measured_output_to_input_route")
             ),
+            engine_latency_ms=engine_latency,
+            total_latency_ms=float(total_latency),
+            engine_config_signature=str(data.get("engine_config_signature", "")),
         )
 
 

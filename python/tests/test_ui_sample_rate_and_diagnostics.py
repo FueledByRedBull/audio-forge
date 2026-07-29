@@ -11,6 +11,8 @@ from mic_eq.ui.latency_calibration_dialog import (
     LatencyCalibrationDialog,
     _capture_sample_rate,
     _device_name as latency_device_name,
+    _output_sample_rate,
+    _resample_probe,
 )
 from mic_eq.ui.device_selection import (
     default_device_index,
@@ -383,7 +385,9 @@ class _RecoveryWindow:
         return MainWindow._diag_token(label, value)
 
     @classmethod
-    def _extend_diag_tokens(cls, tokens: list[str], diagnostics: dict, keys: list[tuple[str, str]]) -> None:
+    def _extend_diag_tokens(
+        cls, tokens: list[str], diagnostics: dict, keys: list[tuple[str, str]]
+    ) -> None:
         MainWindow._extend_diag_tokens(tokens, diagnostics, keys)
 
     def _set_health_chip(self, label: _FakeLabel, text: str, state: str) -> None:
@@ -436,7 +440,9 @@ def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
     owner = _FakeOwner(_FakeProcessor(sample_rate=44_100))
     dialog = CalibrationDialog(parent=owner)
     dialog.audio_data = np.ones(256, dtype=np.float32)
-    monkeypatch.setattr("mic_eq.ui.calibration_dialog.AnalysisWorker", _CaptureWorkerStub)
+    monkeypatch.setattr(
+        "mic_eq.ui.calibration_dialog.AnalysisWorker", _CaptureWorkerStub
+    )
 
     dialog._start_analysis()
 
@@ -503,7 +509,10 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
     dialog._on_analysis_complete(eq_settings)
 
     assert not dialog.diagnostics_group.isHidden()
-    assert dialog.confidence_label.text() == "Confidence: overall 76% | EQ 74% | capture 81%"
+    assert (
+        dialog.confidence_label.text()
+        == "Confidence: overall 76% | EQ 74% | capture 81%"
+    )
     assert dialog.error_label.text() == "Target error: 5.0 dB -> 2.5 dB"
     assert "Validation: 78% | gain scale 90%" in dialog.gain_scale_label.text()
     assert "correction 6.0 dB->4.0 dB" in dialog.gain_scale_label.text()
@@ -549,10 +558,21 @@ def test_calibration_dialog_does_not_offer_abstained_eq(qapp):
     owner.close()
 
 
-def test_latency_calibration_uses_processor_output_sample_rate(qapp):
-    owner = _FakeOwner(_FakeProcessor(output_sample_rate=44_100))
-    assert _capture_sample_rate(owner) == 44_100
+def test_latency_calibration_keeps_capture_and_output_rates_distinct(qapp):
+    owner = _FakeOwner(_FakeProcessor(sample_rate=48_000, output_sample_rate=44_100))
+    assert _capture_sample_rate(owner) == 48_000
+    assert _output_sample_rate(owner) == 44_100
     owner.close()
+
+
+def test_latency_calibration_resamples_selected_route_probe():
+    probe = np.linspace(-0.5, 0.5, 480, dtype=np.float32)
+    resampled = _resample_probe(probe, 48_000, 44_100)
+
+    assert resampled.dtype == np.float32
+    assert resampled.flags.c_contiguous
+    assert abs(len(resampled) - 441) <= 1
+    assert np.all(np.isfinite(resampled))
 
 
 def test_main_window_diagnostics_include_new_metrics():
@@ -725,7 +745,9 @@ def test_input_channel_mode_change_persists_and_applies(monkeypatch):
     window.config = type("Cfg", (), {"input_channel_mode": "average"})()
     window.input_channel_mode_combo = _FakeCombo(list(INPUT_CHANNEL_MODE_OPTIONS))
     window.input_channel_mode_combo.setCurrentIndex(4)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda cfg: saved.append(cfg))
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.save_config", lambda cfg: saved.append(cfg)
+    )
 
     window._on_input_channel_mode_changed()
 
@@ -780,9 +802,20 @@ def test_device_selection_policy_matches_exact_then_name():
         DeviceIdentity(name="Mic B", is_default=True),
     ]
 
-    assert find_identity_index(identities, DeviceIdentity(name="Mic B", is_default=True)) == 1
-    assert find_identity_index(identities, DeviceIdentity(name="Mic B", is_default=False)) == 1
-    assert find_identity_index(identities, DeviceIdentity(name="Missing", is_default=False)) == -1
+    assert (
+        find_identity_index(identities, DeviceIdentity(name="Mic B", is_default=True))
+        == 1
+    )
+    assert (
+        find_identity_index(identities, DeviceIdentity(name="Mic B", is_default=False))
+        == 1
+    )
+    assert (
+        find_identity_index(
+            identities, DeviceIdentity(name="Missing", is_default=False)
+        )
+        == -1
+    )
 
 
 def test_device_selection_policy_prefers_default_and_virtual_output():
@@ -819,8 +852,12 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
         {
             "last_input_device": "Mic A",
             "last_output_device": "Out A",
-            "last_input_device_identity": DeviceIdentity(name="Mic A", is_default=False),
-            "last_output_device_identity": DeviceIdentity(name="Out A", is_default=False),
+            "last_input_device_identity": DeviceIdentity(
+                name="Mic A", is_default=False
+            ),
+            "last_output_device_identity": DeviceIdentity(
+                name="Out A", is_default=False
+            ),
         },
     )()
 
@@ -842,8 +879,12 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
 
     window._refresh_devices()
 
-    assert window.output_combo.currentData() == DeviceIdentity(name="Out A", is_default=False)
-    assert window.input_combo.currentData() == DeviceIdentity(name="Mic A", is_default=False)
+    assert window.output_combo.currentData() == DeviceIdentity(
+        name="Out A", is_default=False
+    )
+    assert window.input_combo.currentData() == DeviceIdentity(
+        name="Mic A", is_default=False
+    )
     assert window.status_bar.messages == []
 
 
@@ -866,7 +907,9 @@ def test_refresh_devices_clears_missing_output_selection(qapp, monkeypatch):
             "last_input_device": "Mic A",
             "last_output_device": "Out Old",
             "last_input_device_identity": DeviceIdentity(name="Mic A", is_default=True),
-            "last_output_device_identity": DeviceIdentity(name="Out Old", is_default=False),
+            "last_output_device_identity": DeviceIdentity(
+                name="Out Old", is_default=False
+            ),
         },
     )()
 
@@ -884,8 +927,13 @@ def test_refresh_devices_clears_missing_output_selection(qapp, monkeypatch):
 
     assert window.config.last_output_device == ""
     assert window.config.last_output_device_identity is None
-    assert window.output_combo.currentData() == DeviceIdentity(name="Out New", is_default=True)
-    assert any("Previous output device 'Out Old' not found" in message for message, _ in window.status_bar.messages)
+    assert window.output_combo.currentData() == DeviceIdentity(
+        name="Out New", is_default=True
+    )
+    assert any(
+        "Previous output device 'Out Old' not found" in message
+        for message, _ in window.status_bar.messages
+    )
 
 
 def test_latency_profile_key_uses_structured_device_identity():
@@ -907,14 +955,20 @@ def test_latency_profile_key_uses_structured_device_identity():
 
 def test_calibration_dialog_selected_device_pair_returns_names():
     owner = type("Owner", (), {})()
-    owner.input_combo = _FakeCombo([("Mic A", DeviceIdentity(name="Mic A", is_default=False))])
-    owner.output_combo = _FakeCombo([("Out B", DeviceIdentity(name="Out B", is_default=True))])
+    owner.input_combo = _FakeCombo(
+        [("Mic A", DeviceIdentity(name="Mic A", is_default=False))]
+    )
+    owner.output_combo = _FakeCombo(
+        [("Out B", DeviceIdentity(name="Out B", is_default=True))]
+    )
 
     assert _selected_device_pair(owner) == ("Mic A", "Out B")
 
 
 def test_latency_dialog_device_name_coerces_identity_to_name():
-    assert latency_device_name(DeviceIdentity(name="Mic A", is_default=False)) == "Mic A"
+    assert (
+        latency_device_name(DeviceIdentity(name="Mic A", is_default=False)) == "Mic A"
+    )
     assert latency_device_name("Out B") == "Out B"
     assert latency_device_name(None) is None
 
@@ -1205,8 +1259,12 @@ def test_new_gate_chatter_event_warns_once():
 def test_startup_preset_ids_normalize_builtin_and_custom_legacy_names():
     assert _normalize_startup_preset_id("Voice Clarity") == _startup_builtin_id("voice")
     assert _normalize_startup_preset_id("voice") == _startup_builtin_id("voice")
-    assert _normalize_startup_preset_id("Custom Voice", ("Custom Voice",)) == _startup_custom_id("Custom Voice")
-    assert _normalize_startup_preset_id(_startup_builtin_id("flat")) == _startup_builtin_id("flat")
+    assert _normalize_startup_preset_id(
+        "Custom Voice", ("Custom Voice",)
+    ) == _startup_custom_id("Custom Voice")
+    assert _normalize_startup_preset_id(
+        _startup_builtin_id("flat")
+    ) == _startup_builtin_id("flat")
 
 
 def test_apply_preset_passes_advanced_compressor_fields(qapp):
@@ -1246,7 +1304,10 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
     assert window.compressor_panel.compressor_settings["base_release_ms"] == 75.0
     assert window.compressor_panel.compressor_settings["auto_makeup_enabled"] is True
     assert window.compressor_panel.compressor_settings["target_lufs"] == -16.0
-    assert window.compressor_panel.compressor_settings["sidechain_highpass_enabled"] is False
+    assert (
+        window.compressor_panel.compressor_settings["sidechain_highpass_enabled"]
+        is False
+    )
     assert window.compressor_panel.limiter_settings["careful_output_enabled"] is False
 
 
@@ -1290,8 +1351,12 @@ class _LatencyOwner(QWidget):
     def __init__(self, processor):
         super().__init__()
         self.processor = processor
-        self.input_combo = _FakeCombo([("Mic", DeviceIdentity(name="Mic", is_default=False))])
-        self.output_combo = _FakeCombo([("Out", DeviceIdentity(name="Out", is_default=False))])
+        self.input_combo = _FakeCombo(
+            [("Mic", DeviceIdentity(name="Mic", is_default=False))]
+        )
+        self.output_combo = _FakeCombo(
+            [("Out", DeviceIdentity(name="Out", is_default=False))]
+        )
 
 
 def test_latency_calibration_failure_stops_owned_processor(qapp):
@@ -1325,9 +1390,7 @@ def test_voice_setup_dynamics_intensity_controls_custom_targets(qapp):
     assert dialog.custom_p95_spin.isEnabled() is False
     assert dialog.custom_peak_spin.isEnabled() is False
 
-    dialog.dynamics_combo.setCurrentIndex(
-        dialog.dynamics_combo.findData("custom")
-    )
+    dialog.dynamics_combo.setCurrentIndex(dialog.dynamics_combo.findData("custom"))
     qapp.processEvents()
 
     assert dialog.custom_p95_spin.isEnabled() is True

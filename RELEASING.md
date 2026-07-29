@@ -19,13 +19,17 @@ Raw assets are preferred. If the asset-source release only has an existing `Audi
 For local release prep from a clean clone, you can mirror that behavior with:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.0
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
 ```
 
 Then run the workflow with:
 
-- `release_tag`: the target tag, for example `v1.10.0`.
-- `asset_source_tag`: the published release used as a fallback for pinned DeepFilter/DirectML assets. Leave blank to use `AUDIOFORGE_ASSET_SOURCE_TAG`, then the standing `v1.8.0` source. Silero v6.2.1 comes from its immutable direct URL.
+- `release_tag`: the target tag, for example `v1.10.1`.
+- `asset_source_tag`: optional published release override for pinned
+  DeepFilter/DirectML assets. Leave blank to use the repository
+  `AUDIOFORGE_ASSET_SOURCE_TAG` override when configured, then the
+  `fallback_release_tag` pinned in `release-assets.json`. Silero v6.2.1 comes
+  from its immutable direct URL.
 - `upload_to_release`: enabled when running manually and the generated archive should be uploaded to the GitHub Release.
 
 On `v*` tag pushes, the workflow builds the Windows package, uploads the `.7z` plus `.sha256` as workflow artifacts, and uploads them to the matching GitHub Release. Set `AUDIOFORGE_ASSET_SOURCE_TAG` when tag-push builds should pull raw assets or an existing package archive from a standing asset-source release. The workflow still verifies all downloaded/extracted assets against `release-assets.json` before packaging.
@@ -35,7 +39,7 @@ On `v*` tag pushes, the workflow builds the Windows package, uploads the `.7z` p
 Build the Rust extension with all configured features:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.0
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
 .\.venv\Scripts\python.exe -m maturin develop --release
 ```
 
@@ -88,7 +92,7 @@ Create the distributable archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.10.0-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.10.1-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This setting is retained from a final-bundle comparison against ZIP/Deflate,
@@ -99,15 +103,15 @@ filtering was smallest; the exact measurements are recorded in
 Compute the checksum:
 
 ```powershell
-Get-FileHash .\AudioForge-v1.10.0-win64-ultra.7z -Algorithm SHA256
+Get-FileHash .\AudioForge-v1.10.1-win64-ultra.7z -Algorithm SHA256
 ```
 
 Manual publish:
 
 1. Commit tracked source/doc/version changes.
-2. Create annotated tag `v1.10.0`.
+2. Create annotated tag `v1.10.1`.
 3. Upload the raw runtime assets listed above to the GitHub Release or to the configured `asset_source_tag` release. An existing verified `AudioForge-*-win64-ultra.7z` on that release can also be used as the asset source.
-4. Push `master` and `v1.10.0`, or run the `Release package` workflow manually with `upload_to_release` enabled.
+4. Push `master` and `v1.10.1`, or run the `Release package` workflow manually with `upload_to_release` enabled.
 
 ## Packaging notes
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -31,6 +32,47 @@ from .validation import (
     _validate_range,
 )
 
+_PRESET_SETTING_SECTIONS = (
+    "gate",
+    "eq",
+    "rnnoise",
+    "deesser",
+    "compressor",
+    "limiter",
+)
+_PROVENANCE_EXPLICIT = "explicit"
+_PROVENANCE_MIGRATION_DEFAULT = "migration_default"
+_VALID_PROVENANCE_VALUES = {
+    _PROVENANCE_EXPLICIT,
+    _PROVENANCE_MIGRATION_DEFAULT,
+}
+
+
+def _preset_value_paths(data: dict) -> set[str]:
+    paths: set[str] = set()
+    for section in _PRESET_SETTING_SECTIONS:
+        values = data.get(section)
+        if isinstance(values, dict):
+            paths.update(f"{section}.{key}" for key in values)
+    if "bypass" in data:
+        paths.add("bypass")
+    return paths
+
+
+def _validated_value_provenance(value: object) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise PresetValidationError("Preset value_provenance must be an object")
+    provenance: dict[str, str] = {}
+    for path, source in value.items():
+        if not isinstance(path, str) or source not in _VALID_PROVENANCE_VALUES:
+            raise PresetValidationError(
+                "Preset value_provenance contains an invalid path or source"
+            )
+        provenance[path] = str(source)
+    return provenance
+
 
 @dataclass
 class Preset:
@@ -46,9 +88,10 @@ class Preset:
     compressor: CompressorSettings = field(default_factory=CompressorSettings)
     limiter: LimiterSettings = field(default_factory=LimiterSettings)
     bypass: bool = False
+    value_provenance: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "name": self.name,
             "description": self.description,
             "version": self.version,
@@ -60,10 +103,25 @@ class Preset:
             "limiter": asdict(self.limiter),
             "bypass": self.bypass,
         }
+        provenance = dict(self.value_provenance)
+        for path in _preset_value_paths(payload):
+            provenance.setdefault(path, _PROVENANCE_EXPLICIT)
+        payload["value_provenance"] = dict(sorted(provenance.items()))
+        return payload
+
+    def mark_value_explicit(self, path: str) -> None:
+        if path not in _preset_value_paths(self.to_dict()):
+            raise ValueError(f"Unknown preset value path: {path}")
+        self.value_provenance[path] = _PROVENANCE_EXPLICIT
 
     @classmethod
     def from_dict(cls, data: dict) -> "Preset":
         try:
+            data = deepcopy(data)
+            provenance = _validated_value_provenance(data.get("value_provenance"))
+            original_value_paths = _preset_value_paths(data)
+            for path in original_value_paths:
+                provenance.setdefault(path, _PROVENANCE_EXPLICIT)
             version_tuple = _version_tuple(data.get("version", "1.0.0"))
 
             if version_tuple < _version_tuple("1.1.0"):
@@ -116,7 +174,11 @@ class Preset:
                 if "gate" in data:
                     data["gate"].setdefault("auto_threshold_enabled", True)
                     data["gate"].setdefault("gate_margin_db", 10.0)
-                    if data["gate"].get("vad_threshold", 0.5) == 0.5:
+                    if (
+                        data["gate"].get("vad_threshold", 0.5) == 0.5
+                        and provenance.get("gate.vad_threshold")
+                        != _PROVENANCE_EXPLICIT
+                    ):
                         data["gate"]["vad_threshold"] = 0.48
                 else:
                     data["gate"] = {
@@ -149,6 +211,8 @@ class Preset:
                 if (
                     isinstance(gate_data, dict)
                     and gate_data.get("vad_threshold") == 0.4
+                    and provenance.get("gate.vad_threshold")
+                    != _PROVENANCE_EXPLICIT
                 ):
                     gate_data["vad_threshold"] = 0.48
 
@@ -169,12 +233,15 @@ class Preset:
                 "1.8.9",
                 "1.9.0",
                 "1.10.0",
+                "1.10.1",
             ):
                 if version_tuple < _version_tuple(version):
                     data["version"] = version
                     version_tuple = _version_tuple(version)
 
             gate_data = data.get("gate", {})
+            for path in _preset_value_paths(data):
+                provenance.setdefault(path, _PROVENANCE_MIGRATION_DEFAULT)
             gate_ranges = VALIDATION_RANGES["gate"]
             validated_gate = GateSettings(
                 enabled=_validate_bool(gate_data.get("enabled", True), "enabled", "gate"),
@@ -429,6 +496,17 @@ class Preset:
                     "deesser",
                 ),
             )
+            validated_values = {
+                "gate": asdict(validated_gate),
+                "eq": asdict(validated_eq),
+                "rnnoise": asdict(validated_rnnoise),
+                "deesser": asdict(validated_deesser),
+                "compressor": asdict(validated_comp),
+                "limiter": asdict(validated_lim),
+                "bypass": data.get("bypass", False),
+            }
+            for path in _preset_value_paths(validated_values):
+                provenance.setdefault(path, _PROVENANCE_MIGRATION_DEFAULT)
 
             return cls(
                 name=data.get("name", "Unnamed"),
@@ -441,6 +519,7 @@ class Preset:
                 compressor=validated_comp,
                 limiter=validated_lim,
                 bypass=_validate_bool(data.get("bypass", False), "bypass", "preset"),
+                value_provenance=provenance,
             )
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise PresetValidationError(f"Preset data is invalid or corrupted: {exc}") from exc

@@ -27,8 +27,16 @@ def _error_findings(sarif_path: Path) -> list[str]:
     payload = json.loads(sarif_path.read_text(encoding="utf-8"))
     findings: list[str] = []
     for run in payload.get("runs", []):
+        rules = {
+            str(rule.get("id", "")): str(
+                rule.get("defaultConfiguration", {}).get("level", "")
+            )
+            for rule in run.get("tool", {}).get("driver", {}).get("rules", [])
+        }
         for result in run.get("results", []):
-            if result.get("level") == "error":
+            rule_id = str(result.get("ruleId", "unknown-rule"))
+            severity = str(result.get("level") or rules.get(rule_id, ""))
+            if severity == "error":
                 findings.append(str(result.get("ruleId", "unknown-rule")))
     return findings
 
@@ -50,6 +58,11 @@ def main() -> int:
     parser.add_argument("--sarif", type=Path, default=Path("semgrep-results.sarif"))
     args = parser.parse_args()
     sarif_path = args.sarif.resolve()
+    if sarif_path.is_file():
+        sarif_path.unlink()
+    scan_output = REPO_ROOT / ".semgrep-results.sarif"
+    if scan_output.is_file():
+        scan_output.unlink()
 
     command = [
         _semgrep_executable(),
@@ -57,7 +70,7 @@ def main() -> int:
         "--metrics=off",
         "--sarif",
         "--output",
-        str(sarif_path),
+        str(scan_output),
         "--exclude",
         ".venv",
         "--exclude",
@@ -75,10 +88,10 @@ def main() -> int:
 
     child_env = os.environ.copy()
     child_env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
-    # The reviewed executable/configs and user-selected SARIF path are separate
-    # argv entries; shell execution is disabled, so no command text is evaluated.
-    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args
     completed = subprocess.run(command, cwd=REPO_ROOT, env=child_env, check=False)
+    if scan_output.is_file():
+        shutil.copyfile(scan_output, sarif_path)
+        scan_output.unlink()
     if completed.returncode != 0:
         return completed.returncode
     if not sarif_path.is_file():

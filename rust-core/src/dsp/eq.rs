@@ -180,6 +180,22 @@ impl ParametricEQ {
             None
         }
     }
+
+    /// Calculate the exact cascaded response used by the runtime EQ.
+    pub fn magnitude_response_db(&self, frequencies_hz: &[f64]) -> Vec<f64> {
+        if !self.enabled {
+            return vec![0.0; frequencies_hz.len()];
+        }
+        frequencies_hz
+            .iter()
+            .map(|frequency_hz| {
+                self.bands
+                    .iter()
+                    .map(|band| band.target_magnitude_response_db(*frequency_hz))
+                    .sum()
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -295,5 +311,26 @@ mod tests {
         assert_eq!(ParametricEQ::default_frequency(0), Some(80.0));
         assert_eq!(ParametricEQ::default_frequency(9), Some(16000.0));
         assert_eq!(ParametricEQ::default_frequency(10), None);
+    }
+
+    #[test]
+    fn test_eq_magnitude_response_is_flat_at_zero_gain() {
+        let eq = ParametricEQ::new(48_000.0);
+        let response = eq.magnitude_response_db(&[20.0, 80.0, 1_000.0, 20_000.0]);
+        assert!(response.iter().all(|value| value.abs() < 1.0e-10));
+    }
+
+    #[test]
+    fn test_eq_magnitude_response_sums_cascaded_bands() {
+        let mut eq = ParametricEQ::new(48_000.0);
+        eq.set_band_frequency(4, 1_000.0);
+        eq.set_band_q(4, 2.0);
+        eq.set_band_gain(4, 6.0);
+        eq.set_band_frequency(5, 1_000.0);
+        eq.set_band_q(5, 2.0);
+        eq.set_band_gain(5, -3.0);
+
+        let response = eq.magnitude_response_db(&[1_000.0]);
+        assert!((response[0] - 3.0).abs() < 1.0e-8);
     }
 }

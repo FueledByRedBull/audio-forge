@@ -25,29 +25,121 @@ mod tests {
             let limiter = Limiter::default_settings(sample_rate as f64);
             let lookahead_samples = limiter.lookahead_samples() as u64;
             let total = total_reported_latency_us(
-                0,
-                sample_rate,
-                0,
-                lookahead_samples,
-                true,
-                sample_rate,
+                LatencyComponents {
+                    output_buffer_samples: 0,
+                    output_sample_rate: sample_rate,
+                    output_resampler_delay_samples: 0,
+                    suppressor_latency_samples: 0,
+                    limiter_lookahead_samples: lookahead_samples,
+                    true_peak_lookahead_samples: 20,
+                    limiter_enabled: true,
+                    processing_sample_rate: sample_rate,
+                },
                 0,
             );
-            assert_eq!(total, expected_us);
+            assert_eq!(
+                total,
+                expected_us + samples_to_micros(20, sample_rate)
+            );
         }
     }
 
     #[test]
     fn test_total_reported_latency_respects_output_vs_processing_rates() {
         let total = total_reported_latency_us(
-            882,    // 20ms @ 44.1kHz output buffer
-            44_100, // output sample rate
-            480,    // 10ms suppressor latency @ 48kHz
-            96,     // 2ms limiter lookahead @ 48kHz
-            true, 48_000, // processing sample rate
-            500,    // fixed compensation
+            LatencyComponents {
+                output_buffer_samples: 882,
+                output_sample_rate: 44_100,
+                output_resampler_delay_samples: 64,
+                suppressor_latency_samples: 480,
+                limiter_lookahead_samples: 96,
+                true_peak_lookahead_samples: 20,
+                limiter_enabled: true,
+                processing_sample_rate: 48_000,
+            },
+            500,
         );
-        assert_eq!(total, 20_000 + 10_000 + 2_000 + 500);
+        assert_eq!(
+            total,
+            20_000
+                + samples_to_micros(64, 44_100)
+                + 10_000
+                + 2_000
+                + samples_to_micros(20, 44_100)
+                + 500
+        );
+    }
+
+    #[test]
+    fn test_total_reported_latency_omits_both_limiter_delays_when_disabled() {
+        let total = total_reported_latency_us(
+            LatencyComponents {
+                output_buffer_samples: 0,
+                output_sample_rate: 48_000,
+                output_resampler_delay_samples: 0,
+                suppressor_latency_samples: 0,
+                limiter_lookahead_samples: 96,
+                true_peak_lookahead_samples: 20,
+                limiter_enabled: false,
+                processing_sample_rate: 48_000,
+            },
+            0,
+        );
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_engine_latency_excludes_route_compensation() {
+        let processor = AudioProcessor::new();
+        processor.latency_us.store(42_500, Ordering::Relaxed);
+        processor
+            .latency_compensation_us
+            .store(17_250, Ordering::Relaxed);
+
+        assert_eq!(processor.get_latency_ms(), 42.5);
+        assert_eq!(processor.get_engine_latency_ms(), 25.25);
+    }
+
+    #[test]
+    fn test_output_probe_queue_validates_and_publishes_state() {
+        let processor = AudioProcessor::new();
+        let rb = AudioRingBuffer::new(16);
+        let (producer, mut consumer) = rb.split();
+        *processor.output_probe_producer.lock().unwrap() = Some(producer);
+        processor.running.store(true, Ordering::Release);
+        processor.output_sample_rate.store(8, Ordering::Relaxed);
+
+        assert!(processor.queue_output_probe(&[]).is_err());
+        assert!(processor.queue_output_probe(&[f32::NAN]).is_err());
+        processor.queue_output_probe(&[0.1, -0.2, 0.3]).unwrap();
+        assert!(processor.output_probe_active.load(Ordering::Acquire));
+        assert!(!processor.is_output_probe_complete());
+        assert!(processor.queue_output_probe(&[0.4]).is_err());
+
+        let mut rendered = [0.0_f32; 3];
+        assert_eq!(consumer.read(&mut rendered), 3);
+        assert_eq!(rendered, [0.1, -0.2, 0.3]);
+
+        processor.running.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn test_output_probe_cancel_only_requests_callback_drain_when_active() {
+        let processor = AudioProcessor::new();
+        processor.cancel_output_probe();
+        assert!(
+            !processor
+                .output_probe_cancel_requested
+                .load(Ordering::Acquire)
+        );
+
+        processor.output_probe_active.store(true, Ordering::Release);
+        processor.cancel_output_probe();
+        assert!(
+            processor
+                .output_probe_cancel_requested
+                .load(Ordering::Acquire)
+        );
     }
 
     #[test]
@@ -1583,6 +1675,110 @@ mod tests {
     }
 
     #[test]
+    fn test_full_downstream_chain_matches_golden_tolerance() {
+        let sample_rate = TARGET_SAMPLE_RATE as f64;
+        let mut processor = OfflineDspBlockProcessor::new(sample_rate);
+        processor.set_deesser_enabled(true);
+        processor.set_eq_enabled(true);
+        processor.set_compressor_enabled(true);
+        processor.set_limiter_enabled(true);
+        processor.deesser_mut().set_auto_enabled(true);
+        processor.deesser_mut().set_auto_amount(0.85);
+        processor.deesser_mut().set_max_reduction_db(10.0);
+        processor.eq_mut().set_band_frequency(2, 180.0);
+        processor.eq_mut().set_band_gain(2, -2.5);
+        processor.eq_mut().set_band_q(2, 0.8);
+        processor.eq_mut().set_band_frequency(6, 2_800.0);
+        processor.eq_mut().set_band_gain(6, 3.0);
+        processor.eq_mut().set_band_q(6, 1.2);
+        processor.eq_mut().set_band_frequency(8, 7_200.0);
+        processor.eq_mut().set_band_gain(8, 1.5);
+        processor.eq_mut().set_band_q(8, 1.0);
+        processor.compressor_mut().set_threshold(-22.0);
+        processor.compressor_mut().set_ratio(3.5);
+        processor.compressor_mut().set_attack_time(8.0);
+        processor.compressor_mut().set_release_time(160.0);
+        processor.compressor_mut().set_makeup_gain(8.0);
+        processor.compressor_mut().set_adaptive_release(true);
+        processor.limiter_mut().set_ceiling(-6.0);
+        processor.limiter_mut().set_release_time(55.0);
+
+        let mut noise_state = 0x6a09_e667_f3bc_c909_u64;
+        let mut output = FixedAudioBuffer::<f32, 960>::new();
+        let mut square_sum = 0.0_f64;
+        let mut weighted_sum = 0.0_f64;
+        let mut peak = 0.0_f32;
+        let mut max_compressor_gr = 0.0_f32;
+        let mut max_deesser_gr = 0.0_f32;
+        let mut max_limiter_gr = 0.0_f32;
+        let mut limited_events = 0_u64;
+        let mut sample_count = 0_usize;
+        let mut checkpoints = Vec::new();
+
+        for block_index in 0..300 {
+            let mut input = [0.0_f32; 480];
+            for (local_index, sample) in input.iter_mut().enumerate() {
+                let index = block_index * 480 + local_index;
+                let time = index as f64 / sample_rate;
+                let phrase = 0.25 + 0.75 * (2.0 * std::f64::consts::PI * 1.7 * time).sin().abs();
+                let sibilant_gate = if (block_index / 12) % 5 == 2 {
+                    1.0
+                } else {
+                    0.0
+                };
+                noise_state = noise_state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let noise = (((noise_state >> 40) as u32) as f64
+                    / ((1_u32 << 24) - 1) as f64
+                    * 2.0
+                    - 1.0)
+                    * 0.012;
+                *sample = (phrase
+                    * (0.30 * (2.0 * std::f64::consts::PI * 180.0 * time).sin()
+                        + 0.14 * (2.0 * std::f64::consts::PI * 360.0 * time).sin()
+                        + 0.08 * (2.0 * std::f64::consts::PI * 2_700.0 * time).sin())
+                    + sibilant_gate
+                        * 0.35
+                        * (2.0 * std::f64::consts::PI * 7_200.0 * time).sin()
+                    + noise) as f32;
+            }
+
+            let stats = processor.process_block_with_stats(&mut input, &mut output);
+            assert_eq!(output.len(), input.len());
+            max_compressor_gr = max_compressor_gr.max(stats.compressor_gain_reduction_db);
+            max_deesser_gr = max_deesser_gr.max(stats.deesser_gain_reduction_db);
+            max_limiter_gr = max_limiter_gr
+                .max(stats.limiter_peak_gain_reduction_db)
+                .max(stats.true_peak_limiter_gain_reduction_db);
+            limited_events = limited_events.saturating_add(stats.true_peak_limited_events);
+            for &sample in output.as_slice() {
+                peak = peak.max(sample.abs());
+                square_sum += (sample as f64) * (sample as f64);
+                weighted_sum += sample as f64 * ((sample_count % 997) + 1) as f64;
+                if matches!(sample_count, 1_000 | 10_000 | 50_000 | 100_000) {
+                    checkpoints.push(sample);
+                }
+                sample_count += 1;
+            }
+        }
+
+        let rms = (square_sum / sample_count as f64).sqrt();
+        assert!((rms - 0.185_715_270_552).abs() <= 1.0e-6);
+        assert!((peak - 0.500_814_14).abs() <= 2.0e-6);
+        assert!((weighted_sum - (-4_246.481_547_342)).abs() <= 0.05);
+        assert!((max_compressor_gr - 8.687_991).abs() <= 0.001);
+        assert!((max_deesser_gr - 10.0).abs() <= 0.001);
+        assert!((max_limiter_gr - 4.348_602).abs() <= 0.001);
+        assert!((20..=24).contains(&limited_events));
+        let expected = [-0.038_492_45, 0.185_469_2, 0.200_082_9, -0.093_881_376];
+        assert_eq!(checkpoints.len(), expected.len());
+        for (actual, expected) in checkpoints.into_iter().zip(expected) {
+            assert!((actual - expected).abs() <= 2.0e-5);
+        }
+    }
+
+    #[test]
     fn test_rnnoise_accepts_full_rt_block_without_short_write() {
         let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
         let mut suppressor = NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength);
@@ -2142,6 +2338,16 @@ mod tests {
             let diagnostics = wrapper.get_runtime_diagnostics(py).unwrap();
             let diagnostics = diagnostics.bind(py);
             let diagnostics = diagnostics.cast::<PyDict>().unwrap();
+            assert!(diagnostics
+                .get_item("noise_attenuation_limit_db")
+                .unwrap()
+                .unwrap()
+                .is_none());
+            assert!(diagnostics
+                .get_item("noise_post_filter_beta")
+                .unwrap()
+                .unwrap()
+                .is_none());
             assert_eq!(
                 diagnostics
                     .get_item("output_retime_adjustment_count")

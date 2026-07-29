@@ -108,6 +108,15 @@ def test_pitch_up_shortens_waveform_without_non_finite_samples():
     assert np.isfinite(pitched).all()
 
 
+def test_corpus_manifests_never_embed_machine_absolute_paths(tmp_path: Path):
+    external = tmp_path / "speaker.wav"
+    external.write_bytes(b"fixture")
+
+    assert vad_corpus._portable_path(external) == "speaker.wav"
+    assert not Path(vad_corpus._portable_path(external)).is_absolute()
+    assert not Path(vad_eval._portable_path(external)).is_absolute()
+
+
 def test_native_calibration_inversion_round_trips_probabilities():
     raw = np.asarray([0.01, 0.1, 0.5, 0.9, 0.99])
     calibrated = vad_eval._apply_logit_calibration(

@@ -159,8 +159,12 @@ def _normalized_correlation_scores(
 
     ref_energy = float(np.sum(ref * ref) + 1e-12)
     rec_energy_prefix = np.concatenate(([0.0], np.cumsum(rec * rec)))
-    window_energy = rec_energy_prefix[lag_window + ref.size] - rec_energy_prefix[lag_window]
-    normalized_scores = magnitudes / np.sqrt(np.maximum(window_energy, 1e-12) * ref_energy)
+    window_energy = (
+        rec_energy_prefix[lag_window + ref.size] - rec_energy_prefix[lag_window]
+    )
+    normalized_scores = magnitudes / np.sqrt(
+        np.maximum(window_energy, 1e-12) * ref_energy
+    )
     return lag_window, normalized_scores
 
 
@@ -214,7 +218,9 @@ def _pick_peak(
 
     exclusion_radius = max(1, min(128, scores.size // 50))
     off_peak_mask = np.ones_like(scores, dtype=bool)
-    off_peak_mask[max(0, peak_index - exclusion_radius) : peak_index + exclusion_radius + 1] = False
+    off_peak_mask[
+        max(0, peak_index - exclusion_radius) : peak_index + exclusion_radius + 1
+    ] = False
     off_peak_scores = scores[off_peak_mask]
     background = float(np.median(off_peak_scores)) if off_peak_scores.size else 0.0
     second_peak = float(np.max(off_peak_scores)) if off_peak_scores.size else 0.0
@@ -284,14 +290,24 @@ def analyze_latency(
     min_lag = int((min_search_ms / 1000.0) * sample_rate)
     max_lag = int((max_search_ms / 1000.0) * sample_rate)
     expected_window_used = expected_playback_start_ms is not None
-    expected_min = expected_latency_min_ms if expected_latency_min_ms is not None else min_search_ms
-    expected_max = expected_latency_max_ms if expected_latency_max_ms is not None else max_search_ms
+    expected_min = (
+        expected_latency_min_ms
+        if expected_latency_min_ms is not None
+        else min_search_ms
+    )
+    expected_max = (
+        expected_latency_max_ms
+        if expected_latency_max_ms is not None
+        else max_search_ms
+    )
     playback_min_ms = 0.0
     playback_max_ms = 0.0
     if expected_window_used:
         playback_jitter_ms = max(0.0, expected_playback_jitter_ms or 0.0)
         playback_min_ms = max(0.0, expected_playback_start_ms - playback_jitter_ms)
-        playback_max_ms = max(playback_min_ms, expected_playback_start_ms + playback_jitter_ms)
+        playback_max_ms = max(
+            playback_min_ms, expected_playback_start_ms + playback_jitter_ms
+        )
         min_lag = int(((playback_min_ms + expected_min) / 1000.0) * sample_rate)
         max_lag = int(((playback_max_ms + expected_max) / 1000.0) * sample_rate)
 
@@ -371,7 +387,11 @@ def analyze_latency(
         if phat_hint is not None:
             phat_start = float(phat_hint - int(offset))
             phat_matches.append(
-                max(0.0, 1.0 - abs(phat_start - start_estimate) / max(1.0, sample_rate * 0.006))
+                max(
+                    0.0,
+                    1.0
+                    - abs(phat_start - start_estimate) / max(1.0, sample_rate * 0.006),
+                )
             )
 
     if not estimates:
@@ -411,7 +431,9 @@ def analyze_latency(
     # Its value is the measured selected output->input route delay.
     measured_round_trip_ms = (median_start_samples * 1000.0) / float(sample_rate)
     if expected_window_used:
-        measured_round_trip_ms = max(0.0, measured_round_trip_ms - expected_playback_start_ms)
+        measured_round_trip_ms = max(
+            0.0, measured_round_trip_ms - expected_playback_start_ms
+        )
     route_latency_ms = measured_round_trip_ms
 
     peak_value = float(np.median(peak_values)) if peak_values else 0.0
@@ -421,7 +443,9 @@ def analyze_latency(
 
     peak_strength_score = float(np.clip((peak_value - 0.06) / 0.24, 0.0, 1.0))
     agreement_score = float(np.clip(1.0 - agreement_ms / 4.0, 0.0, 1.0))
-    repetition_score = float(np.clip(len(estimates) / min(3, max(1, len(offsets))), 0.0, 1.0))
+    repetition_score = float(
+        np.clip(len(estimates) / min(3, max(1, len(offsets))), 0.0, 1.0)
+    )
     margin_score = float(np.clip(margin_ratio / 0.28, 0.0, 1.0))
     ambiguity_confidence = float(np.clip(1.0 - ambiguity_score, 0.0, 1.0))
 
@@ -435,7 +459,10 @@ def analyze_latency(
         alignment_score = max(
             0.0,
             1.0
-            - (abs(median_start_samples - expected_center_samples) / float(half_width_samples)),
+            - (
+                abs(median_start_samples - expected_center_samples)
+                / float(half_width_samples)
+            ),
         )
 
     confidence = (
@@ -488,7 +515,13 @@ def analyze_latency(
     )
 
 
-def result_to_profile(result: LatencyCalibrationResult, sample_rate: int = 48_000) -> dict:
+def result_to_profile(
+    result: LatencyCalibrationResult,
+    sample_rate: int = 48_000,
+    *,
+    engine_latency_ms: float = 0.0,
+    engine_config_signature: str = "",
+) -> dict:
     """Convert analysis result into persisted profile dictionary."""
     route_latency_ms = float(result.route_latency_ms)
     if route_latency_ms <= 0.0:
@@ -497,6 +530,7 @@ def result_to_profile(result: LatencyCalibrationResult, sample_rate: int = 48_00
             float(result.measured_round_trip_ms),
             float(result.applied_compensation_ms),
         )
+    engine_latency_ms = max(0.0, float(engine_latency_ms))
     return {
         "measured_round_trip_ms": float(result.measured_round_trip_ms),
         "estimated_one_way_ms": float(result.estimated_one_way_ms),
@@ -514,5 +548,8 @@ def result_to_profile(result: LatencyCalibrationResult, sample_rate: int = 48_00
         "ambiguity_score": float(result.ambiguity_score),
         "repetition_count": int(result.repetition_count),
         "sample_rate": int(sample_rate),
+        "engine_latency_ms": engine_latency_ms,
+        "total_latency_ms": route_latency_ms + engine_latency_ms,
+        "engine_config_signature": str(engine_config_signature),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }

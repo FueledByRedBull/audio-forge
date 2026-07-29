@@ -96,6 +96,271 @@ fn compressor_pumping_score(gr_trace_db: &[f32], cadence_hz: f32) -> f32 {
     robust_rms + percentile_f32(&mut deltas, 0.95)
 }
 
+/// Stream a capture through the production compressor auto-makeup controller.
+///
+/// VAD probabilities are supplied at the fixed 10 ms control cadence so the
+/// evaluation harness can use the exact shared Silero posterior while keeping
+/// model inference outside the compressor implementation.
+#[pyfunction]
+#[pyo3(signature = (
+    audio,
+    sample_rate,
+    vad_probabilities,
+    noise_floor_db,
+    noise_reliability,
+    settings=None
+))]
+pub fn simulate_auto_makeup_control(
+    py: Python<'_>,
+    audio: numpy::PyReadonlyArray1<'_, f32>,
+    sample_rate: f64,
+    vad_probabilities: Vec<f64>,
+    noise_floor_db: f64,
+    noise_reliability: f64,
+    settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+) -> PyResult<Py<PyAny>> {
+    const CONTROL_BLOCK_SIZE: usize = 480;
+    if !sample_rate.is_finite() || sample_rate <= 0.0 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "sample_rate must be positive and finite",
+        ));
+    }
+    if !noise_floor_db.is_finite()
+        || !noise_reliability.is_finite()
+        || !(0.0..=1.0).contains(&noise_reliability)
+    {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "noise evidence must be finite and reliability must be between 0 and 1",
+        ));
+    }
+    if vad_probabilities
+        .iter()
+        .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+    {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "VAD probabilities must be finite and between 0 and 1",
+        ));
+    }
+
+    let audio = audio.as_slice()?;
+    let block_count = audio.len().div_ceil(CONTROL_BLOCK_SIZE);
+    if !vad_probabilities.is_empty() && vad_probabilities.len() != block_count {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected {block_count} VAD probabilities at the 10 ms control cadence, got {}",
+            vad_probabilities.len()
+        )));
+    }
+
+    let mut compressor = Compressor::new(
+        py_dict_f64(settings, "threshold_db", -24.0)?,
+        py_dict_f64(settings, "ratio", 3.0)?,
+        py_dict_f64(settings, "attack_ms", 10.0)?,
+        py_dict_f64(settings, "release_ms", 180.0)?,
+        py_dict_f64(settings, "makeup_gain_db", 0.0)?,
+        6.0,
+        sample_rate,
+    );
+    compressor.set_auto_makeup_enabled(true);
+    compressor.set_target_lufs(py_dict_f64(settings, "target_lufs", -18.0)?);
+    compressor.set_noise_reference_reliability(noise_reliability);
+    compressor.set_adaptive_release(py_dict_bool(settings, "adaptive_release", true)?);
+    compressor.set_sidechain_highpass_enabled(py_dict_bool(
+        settings,
+        "sidechain_highpass_enabled",
+        true,
+    )?);
+    let vad_reliability = py_dict_f64(settings, "vad_reliability", 1.0)?;
+    if !vad_reliability.is_finite() || !(0.0..=1.0).contains(&vad_reliability) {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "vad_reliability must be finite and between 0 and 1",
+        ));
+    }
+    let return_output_audio = py_dict_bool(settings, "return_output_audio", false)?;
+
+    let mut output_audio = if return_output_audio {
+        Vec::with_capacity(audio.len())
+    } else {
+        Vec::new()
+    };
+    let mut makeup_gain_db = Vec::with_capacity(block_count);
+    let mut activity = Vec::with_capacity(block_count);
+    let mut reliability = Vec::with_capacity(block_count);
+    let mut gain_reduction_db = Vec::with_capacity(block_count);
+    let mut input_rms_db = Vec::with_capacity(block_count);
+    let mut output_rms_db = Vec::with_capacity(block_count);
+    let mut block_runtime_ms = Vec::with_capacity(block_count);
+
+    for (block_index, chunk) in audio.chunks(CONTROL_BLOCK_SIZE).enumerate() {
+        let mut block = chunk.to_vec();
+        let input_rms = (block
+            .iter()
+            .map(|sample| (*sample as f64) * (*sample as f64))
+            .sum::<f64>()
+            / block.len().max(1) as f64)
+            .sqrt() as f32;
+        let evidence = vad_probabilities
+            .get(block_index)
+            .copied()
+            .map(|vad_probability| AutoMakeupActivityInput {
+                vad_probability,
+                vad_reliability,
+                noise_floor_db,
+                live_noise_reliability: noise_reliability,
+            });
+        let started = Instant::now();
+        compressor.process_block_inplace_with_activity_control(&mut block, evidence);
+        block_runtime_ms.push(started.elapsed().as_secs_f32() * 1000.0);
+        let output_rms = (block
+            .iter()
+            .map(|sample| (*sample as f64) * (*sample as f64))
+            .sum::<f64>()
+            / block.len().max(1) as f64)
+            .sqrt() as f32;
+        input_rms_db.push(linear_to_db(input_rms));
+        output_rms_db.push(linear_to_db(output_rms));
+        makeup_gain_db.push(compressor.current_makeup_gain() as f32);
+        activity.push(compressor.auto_makeup_activity() as f32);
+        reliability.push(compressor.auto_makeup_activity_reliability() as f32);
+        gain_reduction_db.push(compressor.current_gain_reduction() as f32);
+        if return_output_audio {
+            output_audio.extend_from_slice(&block);
+        }
+    }
+
+    let diagnostics = pyo3::types::PyDict::new(py);
+    diagnostics.set_item("control_block_size", CONTROL_BLOCK_SIZE)?;
+    diagnostics.set_item(
+        "control_cadence_hz",
+        sample_rate / CONTROL_BLOCK_SIZE as f64,
+    )?;
+    diagnostics.set_item("processed_samples", audio.len())?;
+    diagnostics.set_item("makeup_gain_db", makeup_gain_db)?;
+    diagnostics.set_item("activity", activity)?;
+    diagnostics.set_item("reliability", reliability)?;
+    diagnostics.set_item("gain_reduction_db", gain_reduction_db)?;
+    diagnostics.set_item("input_rms_db", input_rms_db)?;
+    diagnostics.set_item("output_rms_db", output_rms_db)?;
+    diagnostics.set_item(
+        "p95_block_runtime_ms",
+        percentile_f32(&mut block_runtime_ms.clone(), 0.95),
+    )?;
+    diagnostics.set_item(
+        "p99_block_runtime_ms",
+        percentile_f32(&mut block_runtime_ms.clone(), 0.99),
+    )?;
+    diagnostics.set_item(
+        "max_block_runtime_ms",
+        block_runtime_ms
+            .into_iter()
+            .max_by(f32::total_cmp)
+            .unwrap_or(0.0),
+    )?;
+    if return_output_audio {
+        diagnostics.set_item("output_audio", output_audio)?;
+    }
+    Ok(diagnostics.into_any().unbind())
+}
+
+/// Evaluate the existing gate/RNNoise stages in either application order.
+#[cfg(feature = "vad")]
+#[pyfunction]
+#[pyo3(signature = (
+    audio,
+    vad_probabilities,
+    suppressor_before_gate,
+    suppressor_strength=1.0,
+    settings=None
+))]
+pub fn simulate_gate_suppressor_order(
+    py: Python<'_>,
+    audio: numpy::PyReadonlyArray1<'_, f32>,
+    vad_probabilities: Vec<f32>,
+    suppressor_before_gate: bool,
+    suppressor_strength: f32,
+    settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+) -> PyResult<Py<PyAny>> {
+    if !suppressor_strength.is_finite() || !(0.0..=1.0).contains(&suppressor_strength) {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "suppressor_strength must be finite and between 0 and 1",
+        ));
+    }
+    let audio = audio.as_slice()?;
+    let block_count = audio.len().div_ceil(RNNOISE_FRAME_SIZE);
+    if vad_probabilities.len() != block_count
+        || vad_probabilities
+            .iter()
+            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+    {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected {block_count} finite VAD probabilities at the 10 ms RNNoise cadence"
+        )));
+    }
+
+    let mut gate = NoiseGate::new(
+        py_dict_f64(settings, "gate_threshold_db", -40.0)?,
+        py_dict_f64(settings, "gate_attack_ms", 10.0)?,
+        py_dict_f64(settings, "gate_release_ms", 100.0)?,
+        48_000.0,
+    );
+    gate.set_gate_mode(GateMode::VadAssisted);
+    let strength = Arc::new(AtomicU32::new(suppressor_strength.to_bits()));
+    let mut suppressor = NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength);
+    let mut output = Vec::with_capacity(audio.len());
+    let mut gate_gain = Vec::with_capacity(block_count);
+    let started = Instant::now();
+
+    for (block_index, chunk) in audio.chunks(RNNOISE_FRAME_SIZE).enumerate() {
+        let mut frame = [0.0_f32; RNNOISE_FRAME_SIZE];
+        frame[..chunk.len()].copy_from_slice(chunk);
+        gate.set_external_vad_probability(vad_probabilities[block_index], true);
+        if suppressor_before_gate {
+            if suppressor.push_samples(&frame) != RNNOISE_FRAME_SIZE {
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "RNNoise rejected a complete input frame",
+                ));
+            }
+            suppressor.process_frames();
+            if suppressor.pop_samples_into(&mut frame) != RNNOISE_FRAME_SIZE {
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "RNNoise did not produce a complete output frame",
+                ));
+            }
+            gate.process_block_inplace(&mut frame);
+        } else {
+            gate.process_block_inplace(&mut frame);
+            if suppressor.push_samples(&frame) != RNNOISE_FRAME_SIZE {
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "RNNoise rejected a complete input frame",
+                ));
+            }
+            suppressor.process_frames();
+            if suppressor.pop_samples_into(&mut frame) != RNNOISE_FRAME_SIZE {
+                return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "RNNoise did not produce a complete output frame",
+                ));
+            }
+        }
+        output.extend_from_slice(&frame[..chunk.len()]);
+        gate_gain.push(gate.current_gain());
+    }
+
+    let diagnostics = pyo3::types::PyDict::new(py);
+    diagnostics.set_item("output_audio", output)?;
+    diagnostics.set_item("gate_gain", gate_gain)?;
+    diagnostics.set_item("gate_chatter_event_count", gate.chatter_event_count())?;
+    diagnostics.set_item("gate_noise_floor_db", gate.noise_floor())?;
+    diagnostics.set_item(
+        "gate_noise_floor_reliability",
+        gate.noise_floor_reliability(),
+    )?;
+    diagnostics.set_item("suppressor_latency_samples", suppressor.latency_samples())?;
+    diagnostics.set_item(
+        "runtime_ms",
+        started.elapsed().as_secs_f64() * 1000.0,
+    )?;
+    Ok(diagnostics.into_any().unbind())
+}
+
 #[pyfunction]
 #[pyo3(signature = (audio, sample_rate, bands, settings=None))]
 pub fn simulate_auto_eq_chain(
@@ -128,6 +393,11 @@ pub fn simulate_auto_eq_chain(
 
     let deesser_enabled = py_dict_bool(settings, "deesser_enabled", false)?;
     let return_output_audio = py_dict_bool(settings, "return_output_audio", false)?;
+    processor.set_eq_before_deesser(py_dict_bool(
+        settings,
+        "eq_before_deesser",
+        false,
+    )?);
     processor.set_deesser_enabled(deesser_enabled);
     if deesser_enabled {
         let deesser = processor.deesser_mut();
@@ -181,6 +451,9 @@ pub fn simulate_auto_eq_chain(
     let effective_ceiling_db =
         effective_limiter_ceiling_db(limiter_ceiling_db, careful_output_enabled) as f32;
     if limiter_enabled {
+        processor
+            .limiter_mut()
+            .set_lookahead_ms(py_dict_f64(settings, "limiter_lookahead_ms", 2.0)?);
         processor
             .limiter_mut()
             .set_ceiling(effective_ceiling_db as f64);
@@ -1067,6 +1340,10 @@ impl PyAudioProcessor {
         self.processor.get_latency_ms()
     }
 
+    fn get_engine_latency_ms(&self) -> f32 {
+        self.processor.get_engine_latency_ms()
+    }
+
     fn set_latency_compensation_ms(&self, compensation_ms: f32) {
         self.processor.set_latency_compensation_ms(compensation_ms);
     }
@@ -1095,6 +1372,14 @@ impl PyAudioProcessor {
 
     fn output_sample_rate(&self) -> u32 {
         self.processor.output_sample_rate()
+    }
+
+    fn output_fixed_buffer_frames(&self) -> u32 {
+        self.processor.output_fixed_buffer_frames()
+    }
+
+    fn input_fixed_buffer_frames(&self) -> u32 {
+        self.processor.input_fixed_buffer_frames()
     }
 
     fn get_rnnoise_buffer_samples(&self) -> u32 {
@@ -1208,7 +1493,27 @@ impl PyAudioProcessor {
 
     fn get_runtime_diagnostics(&self, py: Python) -> PyResult<Py<PyAny>> {
         let diagnostics = pyo3::types::PyDict::new(py);
-        diagnostics.set_item("noise_model", self.processor.get_noise_model().id())?;
+        let noise_model = self.processor.get_noise_model();
+        diagnostics.set_item("noise_model", noise_model.id())?;
+        #[cfg(feature = "deepfilter")]
+        {
+            let deepfilter_config = if matches!(
+                noise_model,
+                NoiseModel::DeepFilterNetLL | NoiseModel::DeepFilterNet
+            ) {
+                Some(crate::dsp::deepfilter_ffi::DeepFilterRuntimeConfig::default())
+            } else {
+                None
+            };
+            diagnostics.set_item(
+                "noise_attenuation_limit_db",
+                deepfilter_config.map(|config| config.attenuation_limit_db()),
+            )?;
+            diagnostics.set_item(
+                "noise_post_filter_beta",
+                deepfilter_config.map(|config| config.post_filter_beta()),
+            )?;
+        }
         diagnostics.set_item(
             "noise_backend_available",
             self.processor.is_noise_backend_available(),
@@ -1494,6 +1799,16 @@ impl PyAudioProcessor {
         )?;
         diagnostics.set_item("output_sample_rate", self.processor.output_sample_rate())?;
         diagnostics.set_item(
+            "output_fixed_buffer_frames",
+            self.processor.output_fixed_buffer_frames(),
+        )?;
+        diagnostics.set_item(
+            "input_fixed_buffer_frames",
+            self.processor.input_fixed_buffer_frames(),
+        )?;
+        diagnostics.set_item("engine_latency_ms", self.processor.get_engine_latency_ms())?;
+        diagnostics.set_item("total_latency_ms", self.processor.get_latency_ms())?;
+        diagnostics.set_item(
             "recovery_suppressed",
             self.processor.is_recovery_suppressed(),
         )?;
@@ -1574,5 +1889,28 @@ impl PyAudioProcessor {
     /// Manually set output mute state (useful for calibration workflow)
     fn set_output_mute(&mut self, muted: bool) {
         self.processor.set_output_mute(muted);
+    }
+
+    /// Queue a mono calibration probe on the selected CPAL output route.
+    fn queue_output_probe(
+        &self,
+        samples: numpy::PyReadonlyArray1<'_, f32>,
+    ) -> PyResult<()> {
+        let samples = samples.as_slice().map_err(|error| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "output probe must be a contiguous float32 array: {error}"
+            ))
+        })?;
+        self.processor
+            .queue_output_probe(samples)
+            .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
+    }
+
+    fn is_output_probe_complete(&self) -> bool {
+        self.processor.is_output_probe_complete()
+    }
+
+    fn cancel_output_probe(&self) {
+        self.processor.cancel_output_probe();
     }
 }

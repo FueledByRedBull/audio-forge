@@ -169,6 +169,53 @@ impl Biquad {
         (b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
     }
 
+    fn coefficient_magnitude_response_db(
+        coefficients: (f64, f64, f64, f64, f64),
+        frequency_hz: f64,
+        sample_rate: f64,
+    ) -> f64 {
+        let (b0, b1, b2, a1, a2) = coefficients;
+        let omega = 2.0 * PI * frequency_hz / sample_rate;
+        let cos_omega = omega.cos();
+        let sin_omega = omega.sin();
+        let cos_two_omega = (2.0 * omega).cos();
+        let sin_two_omega = (2.0 * omega).sin();
+
+        let numerator_real = b0 + b1 * cos_omega + b2 * cos_two_omega;
+        let numerator_imag = -b1 * sin_omega - b2 * sin_two_omega;
+        let denominator_real = 1.0 + a1 * cos_omega + a2 * cos_two_omega;
+        let denominator_imag = -a1 * sin_omega - a2 * sin_two_omega;
+        let numerator_power = numerator_real * numerator_real + numerator_imag * numerator_imag;
+        let denominator_power =
+            denominator_real * denominator_real + denominator_imag * denominator_imag;
+        let magnitude = (numerator_power / denominator_power.max(1.0e-30)).sqrt();
+        20.0 * magnitude.max(1.0e-10).log10()
+    }
+
+    /// Magnitude response of the active coefficients at one frequency.
+    pub fn magnitude_response_db(&self, frequency_hz: f64) -> f64 {
+        if !self.enabled {
+            return 0.0;
+        }
+        Self::coefficient_magnitude_response_db(
+            (self.b0, self.b1, self.b2, self.a1, self.a2),
+            frequency_hz,
+            self.sample_rate,
+        )
+    }
+
+    /// Magnitude response of the configured target after any live crossfade.
+    pub fn target_magnitude_response_db(&self, frequency_hz: f64) -> f64 {
+        if !self.enabled {
+            return 0.0;
+        }
+        Self::coefficient_magnitude_response_db(
+            self.calculate_coefficients_values(),
+            frequency_hz,
+            self.sample_rate,
+        )
+    }
+
     fn set_coefficients_immediate(&mut self, coeffs: (f64, f64, f64, f64, f64)) {
         let (b0, b1, b2, a1, a2) = coeffs;
         self.b0 = b0;
@@ -435,6 +482,29 @@ mod tests {
         filter.reset();
 
         assert_eq!(filter.crossfade_remaining, 0);
+    }
+
+    #[test]
+    fn test_magnitude_response_matches_peaking_center_gain() {
+        let filter = Biquad::new(BiquadType::Peaking, 1_000.0, 6.0, 2.0, 48_000.0);
+        assert!((filter.magnitude_response_db(1_000.0) - 6.0).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn test_disabled_biquad_reports_flat_response() {
+        let mut filter = Biquad::new(BiquadType::LowShelf, 100.0, 12.0, 0.7, 48_000.0);
+        filter.set_enabled(false);
+        assert_eq!(filter.magnitude_response_db(50.0), 0.0);
+        assert_eq!(filter.target_magnitude_response_db(50.0), 0.0);
+    }
+
+    #[test]
+    fn test_target_response_updates_before_live_crossfade_completes() {
+        let mut filter = Biquad::new(BiquadType::Peaking, 1_000.0, 0.0, 2.0, 48_000.0);
+        filter.set_gain_db(6.0);
+
+        assert!(filter.magnitude_response_db(1_000.0).abs() < 1.0e-9);
+        assert!((filter.target_magnitude_response_db(1_000.0) - 6.0).abs() < 1.0e-9);
     }
 
     #[test]

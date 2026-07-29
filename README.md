@@ -7,7 +7,7 @@
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
 
-Current version: `v1.10.0`
+Current version: `v1.10.1`
 
 ## Download
 
@@ -135,13 +135,13 @@ Full-feature development and release builds use the tracked `release-assets.json
 For a cleaner fresh-clone setup, you can hydrate those assets from the matching GitHub release:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.0
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
 ```
 
-The tag above is a standing source for the older pinned DeepFilter/DirectML
-assets, not the application version. Silero v6.2.1 is downloaded directly from
-the immutable source recorded in `release-assets.json`; every file is then
-verified by size and SHA-256.
+The fallback release is pinned once in `release-assets.json`; it is an asset
+source, not the application version. Silero v6.2.1 is downloaded directly from
+the immutable source recorded in the same manifest; every file is then verified
+by size and SHA-256.
 
 Create `models/` in the repo root for local runtime discovery:
 
@@ -162,15 +162,21 @@ Environment variables:
 - `DEEPFILTER_MODEL_PATH`
 - `DEEPFILTER_LIB_PATH`
 - `VAD_MODEL_PATH`
+- `AUDIOFORGE_FIXED_INPUT_BUFFER_FRAMES`
+- `AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES`
 
 Packaged builds use bootstrap-registered canonical DeepFilter assets by default. Ambient `DEEPFILTER_LIB_PATH` and `DEEPFILTER_MODEL_PATH` values are ignored. Set `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` only when you intentionally want a valid external path to take precedence; any missing external path falls back to the registered bundled asset.
+
+The two fixed-buffer variables are optional diagnostics for callback-size
+consistency. Values must be 16–8192 frames and fit the endpoint's advertised
+range; AudioForge preflights the request and otherwise keeps the driver default.
 
 ## Build Portable EXE
 
 Build the Rust extension first, then package:
 
 ```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py --release-tag v1.8.0
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
 .\.venv\Scripts\python.exe -m maturin develop --release
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
@@ -185,7 +191,7 @@ Packaging script behavior:
 - Bundles AudioForge, DeepFilterNet, Silero VAD, and DirectML license notices.
 - Writes `_internal/audioforge-build.json`; package smoke rejects a bundle whose version differs from the source tree.
 - Prunes unused Qt payload and duplicate native-extension payload with `python/tools/prune_bundle.py` while retaining dependency metadata and licenses.
-- The release profile strips native symbols, and packaging excludes only unused SciPy namespaces plus Qt SVG payloads. The verified v1.10.0 folder is 301,611,876 bytes across 211 files while retaining both DeepFilter models, Silero, DirectML, df.dll, SciPy signal/optimization support, the software OpenGL renderer, and explicit license notices.
+- The release profile strips native symbols, and packaging excludes only unused SciPy namespaces plus Qt SVG payloads. The verified v1.10.1 folder is 301,731,513 bytes across 209 files while retaining both DeepFilter models, Silero, DirectML, df.dll, SciPy signal/optimization support, the software OpenGL renderer, and explicit license notices.
 - Keeps the application self-contained in `dist/AudioForge`.
 
 Portable output:
@@ -199,13 +205,14 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.10.0-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.10.1-win64-ultra.7z .\dist\AudioForge\*
 ```
 
-The final v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz,
-tar.zst, solid LZMA, and solid LZMA2. The command above was the smallest
-verified result at 112,014,596 bytes; explicitly forcing a 256 MiB dictionary
-produced identical bytes. See `evaluation/archive-format-benchmark.json`.
+The v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz, tar.zst,
+solid LZMA, and solid LZMA2. The command above was the smallest verified
+format. The exact v1.10.1 candidate archive is 112,014,644 bytes with SHA-256
+`199453a3a18d39ca9d2864e9f7ac6cff0f5254244c9c845b851f2950156e5994`.
+See `evaluation/archive-format-benchmark.json`.
 
 ## Testing
 
@@ -250,6 +257,9 @@ Headless runtime checks:
 ```powershell
 .\.venv\Scripts\python.exe python/tools/health_check.py --duration 1800
 .\.venv\Scripts\python.exe python/tools/self_test.py
+.\.venv\Scripts\python.exe python/tools/evaluate_hardware_validation.py `
+  --health-input "<microphone>" --health-output "<virtual output>" `
+  --correlation-input "<loopback input>" --correlation-output "<loopback output>"
 ```
 
 ## Repository Layout

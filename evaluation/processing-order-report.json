@@ -1,0 +1,1148 @@
+{
+  "schema_version": 2,
+  "audible_change": false,
+  "generated_at_utc": "2026-07-29T15:25:15.041585+00:00",
+  "gate_suppressor": {
+    "predefined_gates": {
+      "material_win": ">=10% chatter reduction, >=1 point false-closure reduction, or >=5% tail retention improvement",
+      "active_and_tail_retention_min_ratio_vs_baseline": 0.98,
+      "pumping_regression_max": 0.03,
+      "runtime_ratio_max": 1.1
+    },
+    "metrics": {
+      "baseline_chatter_events": 0,
+      "candidate_chatter_events": 34,
+      "median_baseline_false_closure_rate": 0.0,
+      "median_candidate_false_closure_rate": 0.0,
+      "median_baseline_active_retained_ratio": 0.3542837275633804,
+      "median_candidate_active_retained_ratio": 0.36365202881886205,
+      "median_baseline_tail_retained_ratio": 0.01473669302796269,
+      "median_candidate_tail_retained_ratio": 0.006257929727191633,
+      "median_baseline_pumping_score": 5.245177218607963e-05,
+      "median_candidate_pumping_score": 0.20303470444391258,
+      "median_runtime_ratio": 1.0644998847325358
+    },
+    "non_regression": {
+      "false_closure": true,
+      "active_retention": true,
+      "tail_retention": false,
+      "pumping": false,
+      "runtime": true
+    },
+    "material_win": false,
+    "decision": "retain_gate_before_suppressor",
+    "cases": [
+      {
+        "id": "arabic_airport_snr0_rt60none_0",
+        "language": "arabic",
+        "active_ratio": 0.286,
+        "tail_ratio": 0.0325,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.0,
+        "baseline_active_retained_ratio": 0.24431798388662843,
+        "candidate_active_retained_ratio": 0.2485744792247136,
+        "baseline_tail_retained_ratio": 0.011552470682719444,
+        "candidate_tail_retained_ratio": 0.00643095804870704,
+        "baseline_pumping_score": 5.245160877214082e-05,
+        "candidate_pumping_score": 0.23289862038482947,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 3,
+        "baseline_runtime_ms": 108.32809999999999,
+        "candidate_runtime_ms": 116.5036
+      },
+      {
+        "id": "dutch_pub_snr0_rt60none_0",
+        "language": "dutch",
+        "active_ratio": 0.378,
+        "tail_ratio": 0.02,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.0,
+        "baseline_active_retained_ratio": 0.2569251835390714,
+        "candidate_active_retained_ratio": 0.27814584108920415,
+        "baseline_tail_retained_ratio": 0.010411790342138358,
+        "candidate_tail_retained_ratio": 0.002933279198108483,
+        "baseline_pumping_score": 5.245180672646072e-05,
+        "candidate_pumping_score": 0.19582827530674504,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 5,
+        "baseline_runtime_ms": 106.4086,
+        "candidate_runtime_ms": 113.9107
+      },
+      {
+        "id": "french_street_snr0_rt60none_0",
+        "language": "french",
+        "active_ratio": 0.485,
+        "tail_ratio": 0.04,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.002061855670103093,
+        "baseline_active_retained_ratio": 0.4935439163425591,
+        "candidate_active_retained_ratio": 0.4854729008420108,
+        "baseline_tail_retained_ratio": 0.024090529447011275,
+        "candidate_tail_retained_ratio": 0.014072578098829072,
+        "baseline_pumping_score": 5.245198394312948e-05,
+        "candidate_pumping_score": 0.2102411335810801,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 5,
+        "baseline_runtime_ms": 109.5283,
+        "candidate_runtime_ms": 107.0994
+      },
+      {
+        "id": "german_airport_snr0_rt60none_0",
+        "language": "german",
+        "active_ratio": 0.4945,
+        "tail_ratio": 0.03,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.0,
+        "baseline_active_retained_ratio": 0.36519375682844213,
+        "candidate_active_retained_ratio": 0.3618950209906887,
+        "baseline_tail_retained_ratio": 0.013906146943326755,
+        "candidate_tail_retained_ratio": 0.006084901405676226,
+        "baseline_pumping_score": 5.245170617351028e-05,
+        "candidate_pumping_score": 0.23563957791495235,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 1,
+        "baseline_runtime_ms": 102.24289999999999,
+        "candidate_runtime_ms": 106.7621
+      },
+      {
+        "id": "hungarian_pub_snr0_rt60none_0",
+        "language": "hungarian",
+        "active_ratio": 0.261,
+        "tail_ratio": 0.01,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.0019157088122605363,
+        "baseline_active_retained_ratio": 0.4186094742731481,
+        "candidate_active_retained_ratio": 0.4252674959470802,
+        "baseline_tail_retained_ratio": 0.32094581478577283,
+        "candidate_tail_retained_ratio": 0.3326886199258278,
+        "baseline_pumping_score": 5.245185785312065e-05,
+        "candidate_pumping_score": 0.19162594857872836,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 4,
+        "baseline_runtime_ms": 114.1412,
+        "candidate_runtime_ms": 149.846
+      },
+      {
+        "id": "korean_street_snr0_rt60none_0",
+        "language": "korean",
+        "active_ratio": 0.3105,
+        "tail_ratio": 0.02,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.00322061191626409,
+        "baseline_active_retained_ratio": 0.344187220713691,
+        "candidate_active_retained_ratio": 0.3654090366470354,
+        "baseline_tail_retained_ratio": 0.013753989431194968,
+        "candidate_tail_retained_ratio": 0.004812702785519015,
+        "baseline_pumping_score": 5.2451646197828906e-05,
+        "candidate_pumping_score": 0.15001338467060285,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 1,
+        "baseline_runtime_ms": 113.48179999999999,
+        "candidate_runtime_ms": 138.7299
+      },
+      {
+        "id": "polish_airport_snr0_rt60none_0",
+        "language": "polish",
+        "active_ratio": 0.177,
+        "tail_ratio": 0.02,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.0,
+        "baseline_active_retained_ratio": 0.36438023441306977,
+        "candidate_active_retained_ratio": 0.3676389826212463,
+        "baseline_tail_retained_ratio": 0.02786044842079526,
+        "candidate_tail_retained_ratio": 0.02305839652083162,
+        "baseline_pumping_score": 5.245201492872607e-05,
+        "candidate_pumping_score": 0.187701551889651,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 4,
+        "baseline_runtime_ms": 108.125,
+        "candidate_runtime_ms": 110.29759999999999
+      },
+      {
+        "id": "portuguese_pub_snr0_rt60none_0",
+        "language": "portuguese",
+        "active_ratio": 0.3035,
+        "tail_ratio": 0.017,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.0016474464579901153,
+        "baseline_active_retained_ratio": 0.48612298338353016,
+        "candidate_active_retained_ratio": 0.505237696177695,
+        "baseline_tail_retained_ratio": 0.007329779969221444,
+        "candidate_tail_retained_ratio": 0.000935487038291073,
+        "baseline_pumping_score": 5.245182980075153e-05,
+        "candidate_pumping_score": 0.16925566209355805,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 1,
+        "baseline_runtime_ms": 103.5393,
+        "candidate_runtime_ms": 123.594
+      },
+      {
+        "id": "russian_street_snr0_rt60none_0",
+        "language": "russian",
+        "active_ratio": 0.248,
+        "tail_ratio": 0.02,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.0020161290322580645,
+        "baseline_active_retained_ratio": 0.3208448302784881,
+        "candidate_active_retained_ratio": 0.3174901835799604,
+        "baseline_tail_retained_ratio": 0.015567239112598627,
+        "candidate_tail_retained_ratio": 0.004966432649731437,
+        "baseline_pumping_score": 5.2451737645698534e-05,
+        "candidate_pumping_score": 0.09381529796619383,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 2,
+        "baseline_runtime_ms": 120.4691,
+        "candidate_runtime_ms": 139.7505
+      },
+      {
+        "id": "spanish_airport_snr0_rt60none_0",
+        "language": "spanish",
+        "active_ratio": 0.3305,
+        "tail_ratio": 0.01,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.0,
+        "baseline_active_retained_ratio": 0.3088408957872377,
+        "candidate_active_retained_ratio": 0.30242436154673435,
+        "baseline_tail_retained_ratio": 0.011016950019313066,
+        "candidate_tail_retained_ratio": 0.0023583465423077303,
+        "baseline_pumping_score": 5.245157880120341e-05,
+        "candidate_pumping_score": 0.22695170634671763,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 2,
+        "baseline_runtime_ms": 136.09029999999998,
+        "candidate_runtime_ms": 131.1305
+      },
+      {
+        "id": "turkish_pub_snr0_rt60none_0",
+        "language": "turkish",
+        "active_ratio": 0.1705,
+        "tail_ratio": 0.02,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.0,
+        "baseline_active_retained_ratio": 0.6840880248137035,
+        "candidate_active_retained_ratio": 0.665899610703804,
+        "baseline_tail_retained_ratio": 0.2783562722684894,
+        "candidate_tail_retained_ratio": 0.21348318032744507,
+        "baseline_pumping_score": 5.2451866371155884e-05,
+        "candidate_pumping_score": 0.4042471956497087,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 3,
+        "baseline_runtime_ms": 98.5271,
+        "candidate_runtime_ms": 108.02879999999999
+      },
+      {
+        "id": "vietnamese_street_snr0_rt60none_0",
+        "language": "vietnamese",
+        "active_ratio": 0.3975,
+        "tail_ratio": 0.08,
+        "baseline_false_closure_rate": 0.0,
+        "candidate_false_closure_rate": 0.0,
+        "baseline_active_retained_ratio": 0.28052127710105174,
+        "candidate_active_retained_ratio": 0.2795462195016709,
+        "baseline_tail_retained_ratio": 0.037199234761099126,
+        "candidate_tail_retained_ratio": 0.02540183177564729,
+        "baseline_pumping_score": 5.2451596549808205e-05,
+        "candidate_pumping_score": 0.22140642843850028,
+        "baseline_chatter_events": 0,
+        "candidate_chatter_events": 3,
+        "baseline_runtime_ms": 105.6528,
+        "candidate_runtime_ms": 113.338
+      }
+    ]
+  },
+  "eq_deesser": {
+    "predefined_gates": {
+      "positive_reduction_improvement_db_min": 0.25,
+      "negative_reduction_regression_db_max": 0.1,
+      "bright_hf_attenuation_regression_db_max": 0.25
+    },
+    "metrics": {
+      "positive_baseline_peak_reduction_db": 6.0,
+      "positive_candidate_peak_reduction_db": 6.0,
+      "negative_baseline_peak_reduction_db": 0.0,
+      "negative_candidate_peak_reduction_db": 0.8453983068466187,
+      "bright_baseline_hf_change_db": 4.926231904441142,
+      "bright_candidate_hf_change_db": 4.86303839513589
+    },
+    "gates": {
+      "positive_reduction_improves_by_0_25_db": false,
+      "negative_reduction_regression_at_most_0_10_db": false,
+      "bright_hf_attenuation_regression_at_most_0_25_db": true
+    },
+    "decision": "retain_deesser_before_eq",
+    "cases": [
+      {
+        "id": "low-near-s-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.72164666880499,
+        "candidate_hf_change_db": 2.713243433635571
+      },
+      {
+        "id": "low-near-sh-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.0261259327794523,
+        "candidate_hf_change_db": 2.9571488002808053
+      },
+      {
+        "id": "low-near-clean-44100",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.018702489440061,
+        "candidate_hf_change_db": 5.018702489440061
+      },
+      {
+        "id": "low-near-bright-44100",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 2.3818187713623047,
+        "candidate_peak_reduction_db": 5.01824426651001,
+        "baseline_hf_change_db": 4.869228248958134,
+        "candidate_hf_change_db": 4.728010340440237
+      },
+      {
+        "id": "low-near-hiss-44100",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.433541858133402,
+        "candidate_hf_change_db": 4.308345672281712
+      },
+      {
+        "id": "low-near-hvac-44100",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.015053775224308,
+        "candidate_hf_change_db": 5.015053775224308
+      },
+      {
+        "id": "low-near-transient-44100",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.4793650507926941,
+        "baseline_hf_change_db": 5.060503606186792,
+        "candidate_hf_change_db": 5.054446661546121
+      },
+      {
+        "id": "low-near-fricative_f-44100",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 1.6275302171707153,
+        "candidate_peak_reduction_db": 5.583497524261475,
+        "baseline_hf_change_db": 5.361419593996971,
+        "candidate_hf_change_db": 4.619664324626382
+      },
+      {
+        "id": "low-far-s-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.7150890138853203,
+        "candidate_hf_change_db": 2.7130768223926554
+      },
+      {
+        "id": "low-far-sh-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.1128487767949995,
+        "candidate_hf_change_db": 2.978720453046904
+      },
+      {
+        "id": "low-far-clean-44100",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.012415364844673,
+        "candidate_hf_change_db": 5.012415364844673
+      },
+      {
+        "id": "low-far-bright-44100",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 0.20752839744091034,
+        "candidate_peak_reduction_db": 4.40523099899292,
+        "baseline_hf_change_db": 4.912148653921864,
+        "candidate_hf_change_db": 4.829640447570895
+      },
+      {
+        "id": "low-far-hiss-44100",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.297021127179173,
+        "candidate_hf_change_db": 3.9237560547045147
+      },
+      {
+        "id": "low-far-hvac-44100",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.018953605123597,
+        "candidate_hf_change_db": 5.018953605123597
+      },
+      {
+        "id": "low-far-transient-44100",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.8964923620223999,
+        "baseline_hf_change_db": 5.061905787319888,
+        "candidate_hf_change_db": 5.038734548352007
+      },
+      {
+        "id": "low-far-fricative_f-44100",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 1.8202860355377197,
+        "candidate_peak_reduction_db": 5.250869274139404,
+        "baseline_hf_change_db": 5.301992760818858,
+        "candidate_hf_change_db": 4.658965483065151
+      },
+      {
+        "id": "mid-near-s-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.695870217141688,
+        "candidate_hf_change_db": 2.665602445776167
+      },
+      {
+        "id": "mid-near-sh-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.0954406839767463,
+        "candidate_hf_change_db": 2.988258933971176
+      },
+      {
+        "id": "mid-near-clean-44100",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.015115360816788,
+        "candidate_hf_change_db": 5.015115360816788
+      },
+      {
+        "id": "mid-near-bright-44100",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 0.022760620340704918,
+        "candidate_peak_reduction_db": 3.8926005363464355,
+        "baseline_hf_change_db": 4.902633008866665,
+        "candidate_hf_change_db": 4.817531814643324
+      },
+      {
+        "id": "mid-near-hiss-44100",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.437278081173391,
+        "candidate_hf_change_db": 4.309361727377652
+      },
+      {
+        "id": "mid-near-hvac-44100",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.0123864133547515,
+        "candidate_hf_change_db": 5.0123864133547515
+      },
+      {
+        "id": "mid-near-transient-44100",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.8565188050270081,
+        "baseline_hf_change_db": 5.025937508022945,
+        "candidate_hf_change_db": 4.996098592811551
+      },
+      {
+        "id": "mid-near-fricative_f-44100",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 2.9145596027374268,
+        "candidate_peak_reduction_db": 5.950836658477783,
+        "baseline_hf_change_db": 5.241945470321009,
+        "candidate_hf_change_db": 4.65617055241104
+      },
+      {
+        "id": "mid-far-s-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.7433410248437218,
+        "candidate_hf_change_db": 2.701256348438214
+      },
+      {
+        "id": "mid-far-sh-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.0931711525616206,
+        "candidate_hf_change_db": 2.9647290145468426
+      },
+      {
+        "id": "mid-far-clean-44100",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.020124861537429,
+        "candidate_hf_change_db": 5.020124861537429
+      },
+      {
+        "id": "mid-far-bright-44100",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 3.299011468887329,
+        "baseline_hf_change_db": 4.9111507348006045,
+        "candidate_hf_change_db": 4.816725611083339
+      },
+      {
+        "id": "mid-far-hiss-44100",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.31725860860503,
+        "candidate_hf_change_db": 4.045700828748381
+      },
+      {
+        "id": "mid-far-hvac-44100",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.0227210952208665,
+        "candidate_hf_change_db": 5.0227210952208665
+      },
+      {
+        "id": "mid-far-transient-44100",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 2.0582594871520996,
+        "baseline_hf_change_db": 4.906529988487685,
+        "candidate_hf_change_db": 4.824164862402146
+      },
+      {
+        "id": "mid-far-fricative_f-44100",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 1.887045979499817,
+        "candidate_peak_reduction_db": 5.4419074058532715,
+        "baseline_hf_change_db": 5.317907004655584,
+        "candidate_hf_change_db": 4.74692708938016
+      },
+      {
+        "id": "high-near-s-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.7724990837585035,
+        "candidate_hf_change_db": 2.70471641210841
+      },
+      {
+        "id": "high-near-sh-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.1461906500970693,
+        "candidate_hf_change_db": 2.9793874406276033
+      },
+      {
+        "id": "high-near-clean-44100",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.041451127462696,
+        "candidate_hf_change_db": 5.041451127462696
+      },
+      {
+        "id": "high-near-bright-44100",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.04290320724248886,
+        "baseline_hf_change_db": 4.8958596542163875,
+        "candidate_hf_change_db": 4.894071273127653
+      },
+      {
+        "id": "high-near-hiss-44100",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.449006829541689,
+        "candidate_hf_change_db": 4.333475515027527
+      },
+      {
+        "id": "high-near-hvac-44100",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.037216630371992,
+        "candidate_hf_change_db": 5.037216630371992
+      },
+      {
+        "id": "high-near-transient-44100",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.4506714642047882,
+        "baseline_hf_change_db": 5.025766991333734,
+        "candidate_hf_change_db": 5.020653855505527
+      },
+      {
+        "id": "high-near-fricative_f-44100",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 1.6312214136123657,
+        "candidate_peak_reduction_db": 5.35594367980957,
+        "baseline_hf_change_db": 5.333414666888157,
+        "candidate_hf_change_db": 4.727113529185615
+      },
+      {
+        "id": "high-far-s-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.7217904449287404,
+        "candidate_hf_change_db": 2.6846898436466846
+      },
+      {
+        "id": "high-far-sh-44100",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.167414852478734,
+        "candidate_hf_change_db": 2.9969792561757935
+      },
+      {
+        "id": "high-far-clean-44100",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.019595753862842,
+        "candidate_hf_change_db": 5.019595753862842
+      },
+      {
+        "id": "high-far-bright-44100",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.058386363089084625,
+        "baseline_hf_change_db": 4.9068371923972425,
+        "candidate_hf_change_db": 4.90496479996001
+      },
+      {
+        "id": "high-far-hiss-44100",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.336185228453924,
+        "candidate_hf_change_db": 4.203257002487636
+      },
+      {
+        "id": "high-far-hvac-44100",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.011360997747952,
+        "candidate_hf_change_db": 5.011360997747952
+      },
+      {
+        "id": "high-far-transient-44100",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 1.2930008172988892,
+        "baseline_hf_change_db": 5.0544145631397965,
+        "candidate_hf_change_db": 4.975340865925312
+      },
+      {
+        "id": "high-far-fricative_f-44100",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 1.986649513244629,
+        "candidate_peak_reduction_db": 4.424108505249023,
+        "baseline_hf_change_db": 5.342248783697098,
+        "candidate_hf_change_db": 4.916191931669138
+      },
+      {
+        "id": "low-near-s-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.7408123491920326,
+        "candidate_hf_change_db": 2.7542449860803844
+      },
+      {
+        "id": "low-near-sh-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.096871313330998,
+        "candidate_hf_change_db": 3.0325006271494264
+      },
+      {
+        "id": "low-near-clean-48000",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.080570519453646,
+        "candidate_hf_change_db": 5.080570519453646
+      },
+      {
+        "id": "low-near-bright-48000",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 1.4503815174102783,
+        "candidate_peak_reduction_db": 4.983767509460449,
+        "baseline_hf_change_db": 4.954587899483915,
+        "candidate_hf_change_db": 4.855459853810969
+      },
+      {
+        "id": "low-near-hiss-48000",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.487635288608312,
+        "candidate_hf_change_db": 4.3497981169986915
+      },
+      {
+        "id": "low-near-hvac-48000",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.080195376661405,
+        "candidate_hf_change_db": 5.080195376661405
+      },
+      {
+        "id": "low-near-transient-48000",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.027944359928369522,
+        "baseline_hf_change_db": 5.097992885372934,
+        "candidate_hf_change_db": 5.097658519021218
+      },
+      {
+        "id": "low-near-fricative_f-48000",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 2.3828303813934326,
+        "candidate_peak_reduction_db": 5.874417781829834,
+        "baseline_hf_change_db": 5.287262385411783,
+        "candidate_hf_change_db": 4.685931452808178
+      },
+      {
+        "id": "low-far-s-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.7388854593187966,
+        "candidate_hf_change_db": 2.7409223270374543
+      },
+      {
+        "id": "low-far-sh-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.0742549444067704,
+        "candidate_hf_change_db": 3.0537529632303215
+      },
+      {
+        "id": "low-far-clean-48000",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.070059811072776,
+        "candidate_hf_change_db": 5.070059811072776
+      },
+      {
+        "id": "low-far-bright-48000",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 1.1789511442184448,
+        "candidate_peak_reduction_db": 4.963838577270508,
+        "baseline_hf_change_db": 4.940315154960419,
+        "candidate_hf_change_db": 4.841439156212505
+      },
+      {
+        "id": "low-far-hiss-48000",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.363833536099293,
+        "candidate_hf_change_db": 3.9039840210484043
+      },
+      {
+        "id": "low-far-hvac-48000",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.074648078847823,
+        "candidate_hf_change_db": 5.074648078847823
+      },
+      {
+        "id": "low-far-transient-48000",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.8342778086662292,
+        "baseline_hf_change_db": 5.015685110147594,
+        "candidate_hf_change_db": 4.9597938067289995
+      },
+      {
+        "id": "low-far-fricative_f-48000",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 1.9670395851135254,
+        "candidate_peak_reduction_db": 5.341190814971924,
+        "baseline_hf_change_db": 5.327523195555219,
+        "candidate_hf_change_db": 4.700762270912502
+      },
+      {
+        "id": "mid-near-s-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.6614338511100284,
+        "candidate_hf_change_db": 2.6380642541387775
+      },
+      {
+        "id": "mid-near-sh-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.0176714694013067,
+        "candidate_hf_change_db": 3.0094876074382144
+      },
+      {
+        "id": "mid-near-clean-48000",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.066745350940112,
+        "candidate_hf_change_db": 5.066745350940112
+      },
+      {
+        "id": "mid-near-bright-48000",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 0.16421456634998322,
+        "candidate_peak_reduction_db": 3.868187665939331,
+        "baseline_hf_change_db": 4.964160420574351,
+        "candidate_hf_change_db": 4.870616936460811
+      },
+      {
+        "id": "mid-near-hiss-48000",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.504196823156511,
+        "candidate_hf_change_db": 4.367948826955787
+      },
+      {
+        "id": "mid-near-hvac-48000",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.071142076399433,
+        "candidate_hf_change_db": 5.071142076399433
+      },
+      {
+        "id": "mid-near-transient-48000",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.5132312178611755,
+        "baseline_hf_change_db": 4.9067865424479775,
+        "candidate_hf_change_db": 4.892279914525681
+      },
+      {
+        "id": "mid-near-fricative_f-48000",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 4.107199668884277,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 5.207336334979365,
+        "candidate_hf_change_db": 4.675837134527014
+      },
+      {
+        "id": "mid-far-s-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.710799062151119,
+        "candidate_hf_change_db": 2.6803571757653506
+      },
+      {
+        "id": "mid-far-sh-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.1021762012527065,
+        "candidate_hf_change_db": 3.01169931194985
+      },
+      {
+        "id": "mid-far-clean-48000",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.072820588877093,
+        "candidate_hf_change_db": 5.072820588877093
+      },
+      {
+        "id": "mid-far-bright-48000",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 3.707270383834839,
+        "baseline_hf_change_db": 4.961846646842271,
+        "candidate_hf_change_db": 4.882309783872477
+      },
+      {
+        "id": "mid-far-hiss-48000",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.357419926280583,
+        "candidate_hf_change_db": 4.124561399188666
+      },
+      {
+        "id": "mid-far-hvac-48000",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.065452277088887,
+        "candidate_hf_change_db": 5.065452277088887
+      },
+      {
+        "id": "mid-far-transient-48000",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.6245890855789185,
+        "baseline_hf_change_db": 5.133900698597969,
+        "candidate_hf_change_db": 5.096266847510069
+      },
+      {
+        "id": "mid-far-fricative_f-48000",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 1.8508200645446777,
+        "candidate_peak_reduction_db": 5.246192932128906,
+        "baseline_hf_change_db": 5.344317597924089,
+        "candidate_hf_change_db": 4.732126701765748
+      },
+      {
+        "id": "high-near-s-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.7401270490560243,
+        "candidate_hf_change_db": 2.7349607527211255
+      },
+      {
+        "id": "high-near-sh-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.1695416287428886,
+        "candidate_hf_change_db": 2.9465925471845384
+      },
+      {
+        "id": "high-near-clean-48000",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.100579451044994,
+        "candidate_hf_change_db": 5.100579451044994
+      },
+      {
+        "id": "high-near-bright-48000",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.039436981081962585,
+        "baseline_hf_change_db": 4.960345422127422,
+        "candidate_hf_change_db": 4.959512049386141
+      },
+      {
+        "id": "high-near-hiss-48000",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.502997744657379,
+        "candidate_hf_change_db": 4.37452890132595
+      },
+      {
+        "id": "high-near-hvac-48000",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.110734306580587,
+        "candidate_hf_change_db": 5.110734306580587
+      },
+      {
+        "id": "high-near-transient-48000",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.46465620398521423,
+        "baseline_hf_change_db": 5.074809216129223,
+        "candidate_hf_change_db": 5.072293350720404
+      },
+      {
+        "id": "high-near-fricative_f-48000",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 3.298837423324585,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 5.212274643198322,
+        "candidate_hf_change_db": 4.794048992422179
+      },
+      {
+        "id": "high-far-s-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 2.7911928767173992,
+        "candidate_hf_change_db": 2.7446372501672145
+      },
+      {
+        "id": "high-far-sh-48000",
+        "needs_deesser": true,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 3.0694178057021313,
+        "candidate_hf_change_db": 2.9963246370623215
+      },
+      {
+        "id": "high-far-clean-48000",
+        "needs_deesser": false,
+        "condition": "clean",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.075070951150968,
+        "candidate_hf_change_db": 5.075070951150968
+      },
+      {
+        "id": "high-far-bright-48000",
+        "needs_deesser": false,
+        "condition": "bright",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.12282656133174896,
+        "baseline_hf_change_db": 4.98031380564813,
+        "candidate_hf_change_db": 4.979540904081447
+      },
+      {
+        "id": "high-far-hiss-48000",
+        "needs_deesser": false,
+        "condition": "hiss",
+        "baseline_peak_reduction_db": 6.0,
+        "candidate_peak_reduction_db": 6.0,
+        "baseline_hf_change_db": 4.35435985276127,
+        "candidate_hf_change_db": 4.212434536477495
+      },
+      {
+        "id": "high-far-hvac-48000",
+        "needs_deesser": false,
+        "condition": "hvac",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.0,
+        "baseline_hf_change_db": 5.072924475534028,
+        "candidate_hf_change_db": 5.072924475534028
+      },
+      {
+        "id": "high-far-transient-48000",
+        "needs_deesser": false,
+        "condition": "transient",
+        "baseline_peak_reduction_db": 0.0,
+        "candidate_peak_reduction_db": 0.5274655818939209,
+        "baseline_hf_change_db": 5.033478394012682,
+        "candidate_hf_change_db": 5.006938343653448
+      },
+      {
+        "id": "high-far-fricative_f-48000",
+        "needs_deesser": false,
+        "condition": "fricative_f",
+        "baseline_peak_reduction_db": 1.6787625551223755,
+        "candidate_peak_reduction_db": 5.516443252563477,
+        "baseline_hf_change_db": 5.355621297702672,
+        "candidate_hf_change_db": 4.785222960164651
+      }
+    ]
+  },
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
+  },
+  "listening_status": {
+    "status": "not_run",
+    "reason": "The autonomous hardening scope excludes human listening; ambiguous candidates retain the incumbent."
+  }
+}

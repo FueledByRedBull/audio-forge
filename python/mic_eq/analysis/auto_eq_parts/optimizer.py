@@ -9,14 +9,17 @@ from .constants import (
     DEBUG,
     GAIN_MAX_DB,
     GAIN_MIN_DB,
+    GLOBAL_CAPTURE_CONFIDENCE_THRESHOLD,
     LAMBDA_CENTER,
     LAMBDA_COUPLING,
     LAMBDA_G,
     LAMBDA_Q,
     LAMBDA_TILT,
+    LOCAL_ABSTENTION_CONFIDENCE_THRESHOLD,
     MAX_ADJ_GAIN_DIFF_DB,
     MAX_GAIN_SLOPE_DB_PER_OCTAVE,
     NUM_EQ_BANDS,
+    REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD,
     debug_log,
 )
 from .dynamic_bands import (
@@ -33,6 +36,7 @@ from .dynamic_bands import (
 )
 from .response import _predict_eq_response
 from ..eq_quality import evaluate_eq_quality, weighted_target_error
+
 
 def _gain_only_residuals(
     gains: np.ndarray,
@@ -736,8 +740,10 @@ def calculate_eq_bands(
 
     # Unsupported bands abstain locally. Their zero bounds are included in the
     # constrained re-solve so adjacency/curvature guarantees remain valid.
+    pre_abstention_gains = optimal_gains.copy()
     local_abstention_mask = (
-        (np.abs(optimal_gains) >= 0.25) & (band_confidences < 0.45)
+        (np.abs(optimal_gains) >= 0.25)
+        & (band_confidences < LOCAL_ABSTENTION_CONFIDENCE_THRESHOLD)
         if measurement_metadata_available
         else np.zeros(NUM_EQ_BANDS, dtype=bool)
     )
@@ -828,7 +834,10 @@ def calculate_eq_bands(
     abstention_reasons: list[str] = []
     if used_spectrum_fallback:
         abstention_reasons.append("insufficient repeatable voiced windows")
-    if analysis_confidence is not None and float(analysis_confidence) < 0.35:
+    if (
+        analysis_confidence is not None
+        and float(analysis_confidence) < GLOBAL_CAPTURE_CONFIDENCE_THRESHOLD
+    ):
         abstention_reasons.append("capture quality score is too low")
     if snr_available and np.nanmedian(band_snr_db) < 3.0:
         abstention_reasons.append("noise-referenced SNR is too low")
@@ -839,7 +848,7 @@ def calculate_eq_bands(
         optimal_gains = np.zeros_like(optimal_gains)
         after_error = before_error
     elif (
-        overall_confidence < 0.60
+        overall_confidence < REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD
         or validation_gain_scale < 0.70
         or reference_status == "questionable"
     ):
@@ -852,6 +861,7 @@ def calculate_eq_bands(
         'band_qs': optimal_qs.tolist(),
         'band_freqs': optimal_centers_hz.tolist(),
         'band_confidences': band_confidences.tolist(),
+        'pre_abstention_band_gains': pre_abstention_gains.tolist(),
         'band_snr_db': [
             float(value) if np.isfinite(value) else None
             for value in band_snr_db

@@ -67,7 +67,7 @@ def test_backward_compatibility_defaults():
     assert loaded.gate.gate_margin_db == 10.0
 
 
-def test_legacy_uncalibrated_vad_default_migrates_to_v6_default():
+def test_legacy_explicit_vad_value_is_preserved_without_retroactive_guessing():
     old_preset_data = {
         "name": "Legacy VAD Default",
         "version": "1.5.0",
@@ -82,10 +82,11 @@ def test_legacy_uncalibrated_vad_default_migrates_to_v6_default():
 
     loaded = Preset.from_dict(old_preset_data)
 
-    assert loaded.gate.vad_threshold == 0.48
+    assert loaded.gate.vad_threshold == 0.5
+    assert loaded.value_provenance["gate.vad_threshold"] == "explicit"
 
 
-def test_v19_vad_default_migrates_to_current_calibration():
+def test_v19_explicit_vad_value_is_preserved_without_retroactive_guessing():
     loaded = Preset.from_dict(
         {
             "name": "Version 1.9 VAD Default",
@@ -94,7 +95,22 @@ def test_v19_vad_default_migrates_to_current_calibration():
         }
     )
 
+    assert loaded.gate.vad_threshold == 0.4
+    assert loaded.value_provenance["gate.vad_threshold"] == "explicit"
+
+
+def test_known_migration_default_can_move_to_current_calibration():
+    loaded = Preset.from_dict(
+        {
+            "name": "Version 1.9 inherited VAD default",
+            "version": "1.9.0",
+            "gate": {"vad_threshold": 0.4},
+            "value_provenance": {"gate.vad_threshold": "migration_default"},
+        }
+    )
+
     assert loaded.gate.vad_threshold == 0.48
+    assert loaded.value_provenance["gate.vad_threshold"] == "migration_default"
 
 
 def test_nondefault_v19_vad_threshold_is_preserved():
@@ -107,6 +123,35 @@ def test_nondefault_v19_vad_threshold_is_preserved():
     )
 
     assert loaded.gate.vad_threshold == 0.43
+
+
+def test_preset_migration_does_not_mutate_caller_payload():
+    payload = {
+        "name": "Legacy",
+        "version": "1.5.0",
+        "gate": {"vad_threshold": 0.5},
+    }
+    original = {
+        "name": "Legacy",
+        "version": "1.5.0",
+        "gate": {"vad_threshold": 0.5},
+    }
+
+    Preset.from_dict(payload)
+
+    assert payload == original
+
+
+def test_newly_saved_preset_records_explicit_value_provenance(tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    preset = Preset(name="Provenance", gate=GateSettings(vad_threshold=0.41))
+    path = save_preset(preset)
+
+    loaded = load_preset(path)
+
+    assert loaded.gate.vad_threshold == 0.41
+    assert loaded.value_provenance["gate.vad_threshold"] == "explicit"
+    assert loaded.value_provenance["compressor.target_lufs"] == "explicit"
 
 
 def test_audioforge_appdata_migrates_legacy_miceq_dir(tmp_path, monkeypatch):

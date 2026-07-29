@@ -95,6 +95,59 @@ pub(crate) mod test_alloc {
 pub use audio::{AudioProcessor, PyAudioProcessor};
 pub use dsp::{Biquad, Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ, RNNoiseProcessor};
 
+#[pyfunction]
+fn eq_magnitude_response(
+    frequencies_hz: Vec<f64>,
+    bands: Vec<(f64, f64, f64)>,
+    sample_rate: f64,
+) -> PyResult<Vec<f64>> {
+    if !sample_rate.is_finite() || sample_rate <= 0.0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "sample_rate must be finite and positive",
+        ));
+    }
+    if bands.len() != dsp::eq::NUM_BANDS {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "expected {} EQ bands, got {}",
+            dsp::eq::NUM_BANDS,
+            bands.len()
+        )));
+    }
+    let nyquist = sample_rate / 2.0;
+    for (index, (frequency_hz, gain_db, q)) in bands.iter().copied().enumerate() {
+        if !frequency_hz.is_finite() || frequency_hz <= 0.0 || frequency_hz >= nyquist {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "band {index} frequency must be between 0 Hz and Nyquist"
+            )));
+        }
+        if !gain_db.is_finite() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "band {index} gain must be finite"
+            )));
+        }
+        if !q.is_finite() || q <= 0.0 {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "band {index} Q must be finite and positive"
+            )));
+        }
+    }
+    if frequencies_hz.iter().any(|frequency_hz| {
+        !frequency_hz.is_finite() || *frequency_hz < 0.0 || *frequency_hz > nyquist
+    }) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "response frequencies must be finite and between 0 Hz and Nyquist",
+        ));
+    }
+
+    let mut eq = ParametricEQ::new(sample_rate);
+    for (index, (frequency_hz, gain_db, q)) in bands.into_iter().enumerate() {
+        eq.set_band_frequency(index, frequency_hz);
+        eq.set_band_gain(index, gain_db);
+        eq.set_band_q(index, q);
+    }
+    Ok(eq.magnitude_response_db(&frequencies_hz))
+}
+
 /// Python module initialization
 #[pymodule]
 fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -113,6 +166,16 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         audio::processor::simulate_auto_eq_chain,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(
+        audio::processor::simulate_auto_makeup_control,
+        m
+    )?)?;
+    #[cfg(feature = "vad")]
+    m.add_function(wrap_pyfunction!(
+        audio::processor::simulate_gate_suppressor_order,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(eq_magnitude_response, m)?)?;
 
     #[cfg(feature = "vad")]
     m.add_function(wrap_pyfunction!(

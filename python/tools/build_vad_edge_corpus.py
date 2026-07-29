@@ -17,6 +17,15 @@ LICENSE = "CC BY-NC-ND 4.0"
 ARCHIVE_NAME = "Parent-ChildVocalInteraction.tar.gz"
 METADATA_NAME = "Parent_Child_Vocal_Interaction.json"
 PER_LOCATION = 20
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _portable_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return resolved.name
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -91,7 +100,7 @@ def build(source_root: Path, output_root: Path) -> Path:
         "source": SOURCE,
         "license": LICENSE,
         "archive": {
-            "path": str(archive_path.as_posix()),
+            "path": _portable_path(archive_path),
             "sha256": _sha256(archive_path),
         },
         "selection": {

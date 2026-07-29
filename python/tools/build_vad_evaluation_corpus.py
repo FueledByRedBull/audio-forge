@@ -39,6 +39,15 @@ NOISE_CATEGORIES = {
     "1-18527-A-44.wav": "engine",
     "1-21934-A-38.wav": "clock_tick",
 }
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _portable_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return resolved.name
 
 
 def _sha256(path: Path) -> str:
@@ -151,7 +160,7 @@ def _write_capture(
             "speech_intervals_samples": (
                 [list(speech_interval)] if speech_interval is not None else []
             ),
-            "source_paths": [str(path.as_posix()) for path in source_paths],
+            "source_paths": [_portable_path(path) for path in source_paths],
             "sha256": _sha256(destination),
         }
     )

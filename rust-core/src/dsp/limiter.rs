@@ -99,9 +99,20 @@ pub struct Limiter {
 impl Limiter {
     /// Create a new limiter
     pub fn new(ceiling_db: f64, release_ms: f64, sample_rate: f64) -> Self {
+        Self::new_with_lookahead_ms(ceiling_db, release_ms, sample_rate, 2.0)
+    }
+
+    /// Create a limiter with an explicit lookahead for offline evaluation.
+    pub fn new_with_lookahead_ms(
+        ceiling_db: f64,
+        release_ms: f64,
+        sample_rate: f64,
+        lookahead_ms: f64,
+    ) -> Self {
         let release_coeff = util::time_constant_to_coeff(release_ms, sample_rate);
-        let lookahead_samples =
-            ((0.002 * sample_rate).round() as usize).clamp(1, MAX_LIMITER_LOOKAHEAD_SAMPLES);
+        let lookahead_samples = ((lookahead_ms.clamp(0.1, 10.0) / 1000.0 * sample_rate).round()
+            as usize)
+            .clamp(1, MAX_LIMITER_LOOKAHEAD_SAMPLES);
 
         Self {
             ceiling_db,
@@ -138,6 +149,20 @@ impl Limiter {
     /// Set release time in ms
     pub fn set_release_time(&mut self, release_ms: f64) {
         self.release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
+    }
+
+    /// Change lookahead before processing starts.
+    ///
+    /// This resizes internal storage and is not safe on a realtime callback.
+    pub fn set_lookahead_ms(&mut self, lookahead_ms: f64) {
+        let samples = ((lookahead_ms.clamp(0.1, 10.0) / 1000.0 * self.sample_rate).round()
+            as usize)
+            .clamp(1, MAX_LIMITER_LOOKAHEAD_SAMPLES);
+        if samples != self.lookahead_samples {
+            self.lookahead_samples = samples;
+            self.delay_buffer.resize(samples, 0.0);
+            self.reset();
+        }
     }
 
     /// Get configured lookahead in samples.

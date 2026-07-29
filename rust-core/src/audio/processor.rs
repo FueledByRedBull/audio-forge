@@ -24,7 +24,7 @@ use std::sync::atomic::AtomicU8;
 use super::buffer::{AudioProducer, AudioRingBuffer};
 use super::clock::now_micros;
 use super::input::{AudioInput, InputChannelMode, InputStreamOptions, TARGET_SAMPLE_RATE};
-use super::output::AudioOutput;
+use super::output::{AudioOutput, OutputProbeControl};
 use super::rt::{store_rt_error, FixedAudioBuffer, RtCommandQueue, RtErrorCode};
 use crate::dsp::biquad::{Biquad, BiquadType};
 use crate::dsp::eq::{DEFAULT_FREQUENCIES, DEFAULT_Q, NUM_BANDS};
@@ -56,6 +56,7 @@ const OUTPUT_DRIFT_MAX_RATIO_ADJUST: f32 = 0.008;
 const OUTPUT_DRIFT_MAX_EXPANSION_RATIO: f32 = 0.96;
 const DSP_THREAD_READY_TIMEOUT_MS: u64 = 5_000;
 const MAX_RECORDING_SECONDS: usize = 30;
+const MAX_OUTPUT_PROBE_SECONDS: usize = 2;
 const INPUT_DC_BLOCK_COEFF: f32 = 0.995;
 const INPUT_PREFILTER_HZ: f64 = 80.0;
 const INPUT_PREFILTER_Q: f64 = 0.707;
@@ -228,6 +229,10 @@ pub struct AudioProcessor {
     sample_rate: u32,
     /// Actual active output device sample rate
     output_sample_rate: Arc<AtomicU32>,
+    /// Negotiated fixed input callback buffer size, or zero for driver default.
+    input_fixed_buffer_frames: Arc<AtomicU32>,
+    /// Negotiated fixed output callback buffer size, or zero for driver default.
+    output_fixed_buffer_frames: Arc<AtomicU32>,
     /// Latest stereo input correlation reported by the input callback.
     input_stereo_correlation: Arc<AtomicU32>,
     /// Number of stereo input blocks with strong negative correlation.
@@ -423,6 +428,14 @@ pub struct AudioProcessor {
     output_muted: Arc<AtomicBool>,
     /// Flag indicating recording is active (used to mute output to prevent user from hearing themselves)
     recording_active: Arc<AtomicBool>,
+    /// Producer for calibration probes rendered by the selected CPAL output stream.
+    output_probe_producer: Arc<Mutex<Option<AudioProducer>>>,
+    /// Whether the selected output callback should render the queued calibration probe.
+    output_probe_active: Arc<AtomicBool>,
+    /// Whether the last queued output probe has been fully rendered.
+    output_probe_complete: Arc<AtomicBool>,
+    /// Requests that the output callback discard any remaining queued probe.
+    output_probe_cancel_requested: Arc<AtomicBool>,
     /// Temporarily disables watchdog-driven recovery during intrusive UI workflows.
     recovery_suppressed: Arc<AtomicBool>,
 }
@@ -582,6 +595,8 @@ impl AudioProcessor {
             input_cleanup_mode: Arc::new(AtomicU8::new(InputCleanupMode::Off as u8)),
             sample_rate,
             output_sample_rate: Arc::new(AtomicU32::new(sample_rate)),
+            input_fixed_buffer_frames: Arc::new(AtomicU32::new(0)),
+            output_fixed_buffer_frames: Arc::new(AtomicU32::new(0)),
             input_stereo_correlation: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             input_phase_warning_count: Arc::new(AtomicU64::new(0)),
             input_phase_rescue_strategy: Arc::new(AtomicU8::new(0)),
@@ -684,6 +699,10 @@ impl AudioProcessor {
             recording_level_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             output_muted: Arc::new(AtomicBool::new(false)),
             recording_active: Arc::new(AtomicBool::new(false)),
+            output_probe_producer: Arc::new(Mutex::new(None)),
+            output_probe_active: Arc::new(AtomicBool::new(false)),
+            output_probe_complete: Arc::new(AtomicBool::new(true)),
+            output_probe_cancel_requested: Arc::new(AtomicBool::new(false)),
             recovery_suppressed: Arc::new(AtomicBool::new(false)),
         }
     }

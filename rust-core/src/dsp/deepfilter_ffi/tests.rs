@@ -64,8 +64,114 @@ mod tests {
 
     #[test]
     fn test_latency_samples() {
-        let processor = DeepFilterProcessor::default();
-        assert_eq!(processor.latency_samples(), 480);
+        assert_eq!(
+            DeepFilterModel::LowLatency.latency_samples(),
+            DEEPFILTER_FRAME_SIZE
+        );
+        assert_eq!(
+            DeepFilterModel::Standard.latency_samples(),
+            DEEPFILTER_FRAME_SIZE * 3
+        );
+
+        let ll = DeepFilterProcessor::new(
+            Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            DeepFilterModel::LowLatency,
+        );
+        let standard = DeepFilterProcessor::new(
+            Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            DeepFilterModel::Standard,
+        );
+        assert_eq!(ll.latency_samples(), 480);
+        assert_eq!(
+            standard.latency_samples(),
+            if standard.df.is_some() { 1440 } else { 480 }
+        );
+    }
+
+    #[test]
+    fn disabled_deepfilter_reports_only_passthrough_frame_latency() {
+        let mut processor = DeepFilterProcessor::new(
+            Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+            DeepFilterModel::Standard,
+        );
+
+        processor.set_enabled(false);
+
+        assert_eq!(processor.latency_samples(), DEEPFILTER_FRAME_SIZE);
+    }
+
+    #[test]
+    fn runtime_config_rejects_invalid_values() {
+        assert!(DeepFilterRuntimeConfig::try_new(12.0, 0.0).is_ok());
+        assert!(DeepFilterRuntimeConfig::try_new(0.0, 0.0).is_err());
+        assert!(DeepFilterRuntimeConfig::try_new(101.0, 0.0).is_err());
+        assert!(DeepFilterRuntimeConfig::try_new(20.0, -0.01).is_err());
+        assert!(DeepFilterRuntimeConfig::try_new(20.0, 0.051).is_err());
+    }
+
+    #[test]
+    fn runtime_config_defaults_match_retained_evaluation() {
+        let config = DeepFilterRuntimeConfig::default();
+        assert_eq!(config.attenuation_limit_db(), 30.0);
+        assert_eq!(config.post_filter_beta(), 0.0);
+    }
+
+    #[test]
+    fn dry_delay_matches_each_model_latency_and_resets() {
+        for model in [DeepFilterModel::LowLatency, DeepFilterModel::Standard] {
+            let mut processor = DeepFilterProcessor::new(
+                Arc::new(AtomicU32::new(0.5_f32.to_bits())),
+                model,
+            );
+            processor.dry_frame.fill(0.0);
+            processor.dry_frame[0] = 1.0;
+            processor.delay_dry_frame();
+            assert!(processor.aligned_dry_frame.iter().all(|sample| *sample == 0.0));
+
+            let frame_count = model.latency_samples() / DEEPFILTER_FRAME_SIZE;
+            for frame in 1..=frame_count {
+                processor.dry_frame.fill(0.0);
+                processor.delay_dry_frame();
+                if frame < frame_count {
+                    assert!(
+                        processor
+                            .aligned_dry_frame
+                            .iter()
+                            .all(|sample| *sample == 0.0)
+                    );
+                } else {
+                    assert_eq!(processor.aligned_dry_frame[0], 1.0);
+                }
+            }
+
+            processor.soft_reset();
+            processor.dry_frame.fill(0.0);
+            processor.delay_dry_frame();
+            assert!(processor.aligned_dry_frame.iter().all(|sample| *sample == 0.0));
+        }
+    }
+
+    #[test]
+    fn dry_delay_has_no_realtime_allocations() {
+        let mut processor = DeepFilterProcessor::new(
+            Arc::new(AtomicU32::new(0.5_f32.to_bits())),
+            DeepFilterModel::Standard,
+        );
+        processor.dry_frame.fill(0.25);
+
+        crate::test_alloc::assert_no_allocations("DeepFilter dry delay", || {
+            processor.delay_dry_frame();
+        });
+    }
+
+    #[test]
+    fn wet_dry_mix_contract_covers_zero_half_and_full_strength() {
+        let dry = [0.25; DEEPFILTER_FRAME_SIZE];
+        for (strength, expected) in [(0.0, 0.25), (0.5, 0.625), (1.0, 1.0)] {
+            let mut wet = [1.0; DEEPFILTER_FRAME_SIZE];
+            mix_wet_with_aligned_dry(&mut wet, &dry, strength);
+            assert!(wet.iter().all(|sample| *sample == expected));
+        }
     }
 
     #[test]

@@ -33,25 +33,46 @@ fn next_process_idle_sleep_us(consecutive_idle_wakeups: u32, input_callback_age_
         .min(PROCESS_IDLE_MAX_SLEEP_US)
 }
 
-fn total_reported_latency_us(
+#[derive(Clone, Copy)]
+struct LatencyComponents {
     output_buffer_samples: u64,
     output_sample_rate: u32,
+    output_resampler_delay_samples: u64,
     suppressor_latency_samples: u64,
     limiter_lookahead_samples: u64,
+    true_peak_lookahead_samples: u64,
     limiter_enabled: bool,
     processing_sample_rate: u32,
-    compensation_us: u64,
-) -> u64 {
-    let output_latency_us = samples_to_micros(output_buffer_samples, output_sample_rate);
-    let suppressor_latency_us =
-        samples_to_micros(suppressor_latency_samples, processing_sample_rate);
-    let limiter_latency_us = if limiter_enabled {
-        samples_to_micros(limiter_lookahead_samples, processing_sample_rate)
+}
+
+fn total_reported_latency_us(components: LatencyComponents, compensation_us: u64) -> u64 {
+    let output_latency_us = samples_to_micros(
+        components.output_buffer_samples,
+        components.output_sample_rate,
+    );
+    let output_resampler_latency_us = samples_to_micros(
+        components.output_resampler_delay_samples,
+        components.output_sample_rate,
+    );
+    let suppressor_latency_us = samples_to_micros(
+        components.suppressor_latency_samples,
+        components.processing_sample_rate,
+    );
+    let limiter_latency_us = if components.limiter_enabled {
+        samples_to_micros(
+            components.limiter_lookahead_samples,
+            components.processing_sample_rate,
+        )
+        .saturating_add(samples_to_micros(
+            components.true_peak_lookahead_samples,
+            components.output_sample_rate,
+        ))
     } else {
         0
     };
 
     output_latency_us
+        .saturating_add(output_resampler_latency_us)
         .saturating_add(suppressor_latency_us)
         .saturating_add(limiter_latency_us)
         .saturating_add(compensation_us)

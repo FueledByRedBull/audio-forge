@@ -40,6 +40,52 @@ use std::vec::Vec;
 /// DeepFilterNet frame size (same as RNNoise: 10ms at 48kHz)
 pub const DEEPFILTER_FRAME_SIZE: usize = 480;
 const DEEPFILTER_BUFFER_CAPACITY: usize = 8192 + DEEPFILTER_FRAME_SIZE;
+const DEEPFILTER_MAX_LATENCY_SAMPLES: usize = DEEPFILTER_FRAME_SIZE * 3;
+pub const DEFAULT_DEEPFILTER_ATTENUATION_LIMIT_DB: f32 = 30.0;
+pub const DEFAULT_DEEPFILTER_POST_FILTER_BETA: f32 = 0.0;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DeepFilterRuntimeConfig {
+    attenuation_limit_db: f32,
+    post_filter_beta: f32,
+}
+
+impl DeepFilterRuntimeConfig {
+    pub fn try_new(attenuation_limit_db: f32, post_filter_beta: f32) -> Result<Self, String> {
+        if !attenuation_limit_db.is_finite() || !(0.01..=100.0).contains(&attenuation_limit_db) {
+            return Err(
+                "DeepFilter attenuation limit must be finite and between 0.01 and 100 dB"
+                    .to_string(),
+            );
+        }
+        if !post_filter_beta.is_finite() || !(0.0..=0.05).contains(&post_filter_beta) {
+            return Err(
+                "DeepFilter post-filter beta must be finite and between 0 and 0.05".to_string(),
+            );
+        }
+        Ok(Self {
+            attenuation_limit_db,
+            post_filter_beta,
+        })
+    }
+
+    pub fn attenuation_limit_db(self) -> f32 {
+        self.attenuation_limit_db
+    }
+
+    pub fn post_filter_beta(self) -> f32 {
+        self.post_filter_beta
+    }
+}
+
+impl Default for DeepFilterRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            attenuation_limit_db: DEFAULT_DEEPFILTER_ATTENUATION_LIMIT_DB,
+            post_filter_beta: DEFAULT_DEEPFILTER_POST_FILTER_BETA,
+        }
+    }
+}
 
 fn deepfilter_runtime_enabled() -> bool {
     env::var("AUDIOFORGE_ENABLE_DEEPFILTER")
@@ -183,6 +229,15 @@ impl DeepFilterModel {
         match self {
             DeepFilterModel::LowLatency => "DeepFilterNet3_ll_onnx.tar.gz",
             DeepFilterModel::Standard => "DeepFilterNet3_onnx.tar.gz",
+        }
+    }
+
+    pub fn latency_samples(self) -> usize {
+        match self {
+            // The 960-point STFT with a 480-sample hop contributes one frame.
+            DeepFilterModel::LowLatency => DEEPFILTER_FRAME_SIZE,
+            // The standard model adds two frames of convolution/DF lookahead.
+            DeepFilterModel::Standard => DEEPFILTER_FRAME_SIZE * 3,
         }
     }
 }
@@ -420,6 +475,7 @@ impl DeepFilterFFI {
     fn new(
         lib: Arc<DeepFilterLib>,
         model: DeepFilterModel,
+        config: DeepFilterRuntimeConfig,
         app_paths: &AppOwnedDeepFilterPaths,
         allow_external: bool,
     ) -> Result<Self, String> {
@@ -437,15 +493,16 @@ impl DeepFilterFFI {
         )
         .map_err(|e| format!("Failed to create model path CString: {}", e))?;
 
-        // Default attenuation limit: -80 dB (max suppression)
-        let atten_lim = -80.0f32;
-
         // The symbol signature was checked during loading; the model path is a
         // live CString, and a null state is rejected before any further call.
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             let df_create = lib.df_create;
-            let ptr = df_create(model_path_cstr.as_ptr(), atten_lim, std::ptr::null());
+            let ptr = df_create(
+                model_path_cstr.as_ptr(),
+                config.attenuation_limit_db(),
+                std::ptr::null(),
+            );
             let state = NonNull::new(ptr).ok_or_else(|| {
                 format!(
                     "Failed to create DeepFilterNet instance with model: {}",
@@ -465,11 +522,16 @@ impl DeepFilterFFI {
                 ));
             }
 
-            Ok(Self {
+            let mut wrapper = Self {
                 _lib: lib,
                 state,
                 frame_size,
-            })
+            };
+            // Apply both runtime controls explicitly so construction and future
+            // reconfiguration use the same C API semantics.
+            wrapper.set_atten_lim(config.attenuation_limit_db());
+            wrapper.set_post_filter_beta(config.post_filter_beta());
+            Ok(wrapper)
         }
     }
 
@@ -563,6 +625,17 @@ impl Drop for DeepFilterFFI {
 // PROCESSOR IMPLEMENTATION
 // ============================================================================
 
+#[inline]
+fn mix_wet_with_aligned_dry(
+    wet: &mut [f32; DEEPFILTER_FRAME_SIZE],
+    aligned_dry: &[f32; DEEPFILTER_FRAME_SIZE],
+    strength: f32,
+) {
+    for (wet_sample, dry_sample) in wet.iter_mut().zip(aligned_dry.iter().copied()) {
+        *wet_sample = *wet_sample * strength + dry_sample * (1.0 - strength);
+    }
+}
+
 pub struct DeepFilterProcessor {
     df: Option<DeepFilterFFI>, // Option for graceful fallback if FFI fails
     _lib: Option<Arc<DeepFilterLib>>, // Keep library loaded
@@ -574,14 +647,27 @@ pub struct DeepFilterProcessor {
     dry_frame: [f32; DEEPFILTER_FRAME_SIZE],
     frame_scratch: [f32; DEEPFILTER_FRAME_SIZE],
     output_frame: [f32; DEEPFILTER_FRAME_SIZE],
+    aligned_dry_frame: [f32; DEEPFILTER_FRAME_SIZE],
+    dry_delay: [f32; DEEPFILTER_MAX_LATENCY_SAMPLES],
+    dry_delay_index: usize,
     load_error: Option<String>, // Store load error for reporting
     model: DeepFilterModel,     // Track which model variant we're using
+    runtime_config: DeepFilterRuntimeConfig,
     backend_failed: bool,
     runtime_error: Option<DeepFilterProcessError>,
 }
 
 impl DeepFilterProcessor {
     pub fn new(strength: Arc<AtomicU32>, model: DeepFilterModel) -> Self {
+        Self::new_with_config(strength, model, DeepFilterRuntimeConfig::default())
+    }
+
+    pub fn new_with_config(
+        strength: Arc<AtomicU32>,
+        model: DeepFilterModel,
+        runtime_config: DeepFilterRuntimeConfig,
+    ) -> Self {
+        let initial_strength = f32::from_bits(strength.load(Ordering::Relaxed)).clamp(0.0, 1.0);
         if !deepfilter_runtime_enabled() {
             return Self {
                 df: None,
@@ -590,15 +676,19 @@ impl DeepFilterProcessor {
                 output_buffer: FixedAudioRing::new(),
                 enabled: true,
                 strength,
-                smoothed_strength: 1.0,
+                smoothed_strength: initial_strength,
                 dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
                 frame_scratch: [0.0; DEEPFILTER_FRAME_SIZE],
                 output_frame: [0.0; DEEPFILTER_FRAME_SIZE],
+                aligned_dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
+                dry_delay: [0.0; DEEPFILTER_MAX_LATENCY_SAMPLES],
+                dry_delay_index: 0,
                 load_error: Some(
                     "DeepFilterNet disabled; set AUDIOFORGE_ENABLE_DEEPFILTER=1 to enable"
                         .to_string(),
                 ),
                 model,
+                runtime_config,
                 backend_failed: false,
                 runtime_error: None,
             };
@@ -613,7 +703,13 @@ impl DeepFilterProcessor {
         let (df, lib, load_error) = match DeepFilterLib::try_load(&app_paths, allow_external) {
             Ok(lib) => {
                 let lib_arc = Arc::new(lib);
-                match DeepFilterFFI::new(lib_arc.clone(), model, &app_paths, allow_external) {
+                match DeepFilterFFI::new(
+                    lib_arc.clone(),
+                    model,
+                    runtime_config,
+                    &app_paths,
+                    allow_external,
+                ) {
                     Ok(df) => {
                         let latency_str = match model {
                             DeepFilterModel::LowLatency => "~10ms",
@@ -668,12 +764,16 @@ impl DeepFilterProcessor {
             output_buffer: FixedAudioRing::new(),
             enabled: true,
             strength,
-            smoothed_strength: 1.0,
+            smoothed_strength: initial_strength,
             dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
             frame_scratch: [0.0; DEEPFILTER_FRAME_SIZE],
             output_frame: [0.0; DEEPFILTER_FRAME_SIZE],
+            aligned_dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
+            dry_delay: [0.0; DEEPFILTER_MAX_LATENCY_SAMPLES],
+            dry_delay_index: 0,
             load_error,
             model,
+            runtime_config,
             backend_failed: false,
             runtime_error: None,
         }
@@ -682,6 +782,31 @@ impl DeepFilterProcessor {
     fn mark_backend_failed_rt(&mut self, error: DeepFilterProcessError) {
         self.backend_failed = true;
         self.runtime_error = Some(error);
+    }
+
+    #[inline]
+    fn delay_dry_frame(&mut self) {
+        let delay_samples = self.model.latency_samples();
+        debug_assert!(delay_samples <= self.dry_delay.len());
+        for (input, delayed) in self
+            .dry_frame
+            .iter()
+            .copied()
+            .zip(self.aligned_dry_frame.iter_mut())
+        {
+            *delayed = self.dry_delay[self.dry_delay_index];
+            self.dry_delay[self.dry_delay_index] = input;
+            self.dry_delay_index += 1;
+            if self.dry_delay_index == delay_samples {
+                self.dry_delay_index = 0;
+            }
+        }
+    }
+
+    fn reset_dry_delay(&mut self) {
+        self.dry_delay.fill(0.0);
+        self.aligned_dry_frame.fill(0.0);
+        self.dry_delay_index = 0;
     }
 
     /// Process frames through FFI or fallback
@@ -703,19 +828,21 @@ impl DeepFilterProcessor {
                 break;
             }
             self.frame_scratch.copy_from_slice(&self.dry_frame);
+            let use_aligned_dry = self.enabled && self.df.is_some();
+            if use_aligned_dry {
+                self.delay_dry_frame();
+            }
 
             // Process through FFI if available
             if self.enabled && !self.backend_failed {
                 if let Some(ref mut df) = self.df {
                     match df.process_into(&mut self.frame_scratch, &mut self.output_frame) {
                         Ok(_lsnr) => {
-                            // Apply wet/dry mix to FFI output
-                            for i in 0..DEEPFILTER_FRAME_SIZE {
-                                let wet = self.output_frame[i];
-                                let dry = self.dry_frame[i];
-                                self.output_frame[i] = wet * self.smoothed_strength
-                                    + dry * (1.0 - self.smoothed_strength);
-                            }
+                            mix_wet_with_aligned_dry(
+                                &mut self.output_frame,
+                                &self.aligned_dry_frame,
+                                self.smoothed_strength,
+                            );
                             self.output_buffer.push_slice(&self.output_frame);
                             continue;
                         }
@@ -726,12 +853,12 @@ impl DeepFilterProcessor {
                 }
             }
 
-            // Passthrough (fallback or disabled)
-            for i in 0..DEEPFILTER_FRAME_SIZE {
-                let wet = self.dry_frame[i];
-                let dry = self.dry_frame[i];
-                self.output_frame[i] =
-                    wet * self.smoothed_strength + dry * (1.0 - self.smoothed_strength);
+            // Passthrough. Preserve the selected backend's fixed latency after
+            // a runtime failure, but do not delay an unavailable backend.
+            if use_aligned_dry {
+                self.output_frame.copy_from_slice(&self.aligned_dry_frame);
+            } else {
+                self.output_frame.copy_from_slice(&self.dry_frame);
             }
             self.output_buffer.push_slice(&self.output_frame);
         }
@@ -751,6 +878,20 @@ impl DeepFilterProcessor {
 
     pub fn backend_failed(&self) -> bool {
         self.backend_failed
+    }
+
+    pub fn runtime_config(&self) -> DeepFilterRuntimeConfig {
+        self.runtime_config
+    }
+
+    fn effective_latency_samples(&self) -> usize {
+        if self.enabled && self.df.is_some() {
+            self.model.latency_samples()
+        } else {
+            // Disabled/unavailable passthrough still waits for one common
+            // 480-sample frame, but does not enter the model lookahead.
+            DEEPFILTER_FRAME_SIZE
+        }
     }
 }
 
@@ -811,6 +952,9 @@ impl NoiseSuppressor for DeepFilterProcessor {
     }
 
     fn set_enabled(&mut self, enabled: bool) {
+        if self.enabled != enabled {
+            self.reset_dry_delay();
+        }
         self.enabled = enabled;
     }
 
@@ -825,6 +969,7 @@ impl NoiseSuppressor for DeepFilterProcessor {
         self.dry_frame.fill(0.0);
         self.frame_scratch.fill(0.0);
         self.output_frame.fill(0.0);
+        self.reset_dry_delay();
         // Keep smoothed_strength to avoid zipper noise
     }
 
@@ -844,12 +989,7 @@ impl NoiseSuppressor for DeepFilterProcessor {
     }
 
     fn latency_samples(&self) -> usize {
-        match self.model {
-            // LL has no lookahead: just frame size
-            DeepFilterModel::LowLatency => DEEPFILTER_FRAME_SIZE,
-            // Standard has 2-frame lookahead: frame size + 2 * frame size = 3 * frame size
-            DeepFilterModel::Standard => DEEPFILTER_FRAME_SIZE * 3,
-        }
+        self.effective_latency_samples()
     }
 }
 

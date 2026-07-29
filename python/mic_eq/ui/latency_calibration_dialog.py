@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
+import json
 import logging
-import tempfile
 import threading
 import time
-import wave
+from math import gcd
 from typing import Any
 
 import numpy as np
@@ -23,8 +22,13 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QVBoxLayout,
 )
+from scipy.signal import resample_poly
 
-from ..analysis.latency_calibration import analyze_latency, generate_probe_signal, result_to_profile
+from ..analysis.latency_calibration import (
+    analyze_latency,
+    generate_probe_signal,
+    result_to_profile,
+)
 from ..config import coerce_device_identity
 from .level_meter import LevelMeter
 
@@ -46,51 +50,55 @@ def _capture_sample_rate(owner: Any) -> int:
     if owner is None or not hasattr(owner, "processor"):
         raise RuntimeError("Could not find audio processor.")
 
-    sample_rate = int(owner.processor.output_sample_rate())
+    sample_rate = int(owner.processor.sample_rate())
     if sample_rate <= 0:
-        raise RuntimeError("Output sample rate is unavailable.")
+        raise RuntimeError("Processing sample rate is unavailable.")
 
     return sample_rate
 
 
-def _play_probe_blocking(probe: np.ndarray, sample_rate: int) -> None:
-    """Play probe signal using platform-available APIs."""
-    if os.name == "nt":
-        import winsound
+def _output_sample_rate(owner: Any) -> int:
+    if owner is None or not hasattr(owner, "processor"):
+        raise RuntimeError("Could not find audio processor.")
+    sample_rate = int(owner.processor.output_sample_rate())
+    if sample_rate <= 0:
+        raise RuntimeError("Output sample rate is unavailable.")
+    return sample_rate
 
-        pcm = np.clip(probe, -1.0, 1.0)
-        pcm16 = (pcm * 32767.0).astype(np.int16)
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            wav_path = f.name
+def _resample_probe(
+    probe: np.ndarray, source_rate: int, output_rate: int
+) -> np.ndarray:
+    if source_rate == output_rate:
+        return np.ascontiguousarray(probe, dtype=np.float32)
+    divisor = gcd(source_rate, output_rate)
+    resampled = resample_poly(
+        probe.astype(np.float64, copy=False),
+        output_rate // divisor,
+        source_rate // divisor,
+    )
+    return np.ascontiguousarray(resampled, dtype=np.float32)
 
-        try:
-            with wave.open(wav_path, "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(sample_rate)
-                wav_file.writeframes(pcm16.tobytes())
-            # Synchronous playback is the default when SND_ASYNC is not set.
-            # Some Python builds do not expose winsound.SND_SYNC.
-            play_flags = winsound.SND_FILENAME
-            play_flags |= getattr(winsound, "SND_SYNC", 0)
-            winsound.PlaySound(wav_path, play_flags)
-        finally:
-            try:
-                os.remove(wav_path)
-            except OSError:
-                if DEBUG:
-                    logger.debug("Failed to remove temporary probe file", exc_info=True)
-        return
 
-    # Best-effort fallback for non-Windows hosts.
-    from PyQt6.QtWidgets import QApplication
-
-    app = QApplication.instance()
-    if app is not None:
-        for _ in range(3):
-            app.beep()
-            time.sleep(0.06)
+def engine_config_signature(processor: Any) -> str:
+    diagnostics = dict(processor.get_runtime_diagnostics())
+    fields = {
+        "limiter_enabled": bool(processor.is_limiter_enabled()),
+        "input_fixed_buffer_frames": int(
+            diagnostics.get("input_fixed_buffer_frames", 0)
+        ),
+        "noise_enabled": bool(processor.is_rnnoise_enabled()),
+        "noise_model": str(processor.get_noise_model()),
+        "output_resampler_active": bool(
+            diagnostics.get("output_resampler_active", False)
+        ),
+        "output_fixed_buffer_frames": int(
+            diagnostics.get("output_fixed_buffer_frames", 0)
+        ),
+        "output_sample_rate": int(processor.output_sample_rate()),
+        "processing_sample_rate": int(processor.sample_rate()),
+    }
+    return json.dumps(fields, sort_keys=True, separators=(",", ":"))
 
 
 class LatencyCalibrationWorker(QThread):
@@ -106,6 +114,8 @@ class LatencyCalibrationWorker(QThread):
         sample_rate: int,
         expected_playback_start_ms: float | None = None,
         expected_playback_jitter_ms: float | None = None,
+        engine_latency_ms: float = 0.0,
+        engine_config_signature: str = "",
     ):
         super().__init__()
         self.probe = probe
@@ -113,6 +123,8 @@ class LatencyCalibrationWorker(QThread):
         self.sample_rate = sample_rate
         self.expected_playback_start_ms = expected_playback_start_ms
         self.expected_playback_jitter_ms = expected_playback_jitter_ms
+        self.engine_latency_ms = engine_latency_ms
+        self.engine_config_signature = engine_config_signature
         self._stop_event = threading.Event()
 
     def run(self):
@@ -139,7 +151,12 @@ class LatencyCalibrationWorker(QThread):
 
             payload = {
                 "analysis": analysis,
-                "profile": result_to_profile(analysis, sample_rate=self.sample_rate),
+                "profile": result_to_profile(
+                    analysis,
+                    sample_rate=self.sample_rate,
+                    engine_latency_ms=self.engine_latency_ms,
+                    engine_config_signature=self.engine_config_signature,
+                ),
             }
             self.finished.emit(payload)
         except Exception as e:
@@ -168,6 +185,7 @@ class LatencyCalibrationDialog(QDialog):
         self._capture_timer.setInterval(50)
         self._capture_timer.timeout.connect(self._poll_capture)
         self._probe: np.ndarray | None = None
+        self._playback_probe: np.ndarray | None = None
         self._capture_started_at = 0.0
         self._capture_sample_rate = 0
         self._recording_duration_s = 2.5
@@ -175,7 +193,8 @@ class LatencyCalibrationDialog(QDialog):
         self._played_probe = False
         self._probe_started = False
         self._probe_started_at: float | None = None
-        self._probe_finished = threading.Event()
+        self._engine_latency_samples: list[float] = []
+        self._engine_signature = ""
 
         self._setup_ui(existing_profile)
 
@@ -216,6 +235,14 @@ class LatencyCalibrationDialog(QDialog):
         status_layout.addWidget(QLabel("Echo Ambiguity:"), 5, 0)
         self.ambiguity_label = QLabel("--")
         status_layout.addWidget(self.ambiguity_label, 5, 1)
+
+        status_layout.addWidget(QLabel("Engine Latency:"), 6, 0)
+        self.engine_label = QLabel("-- ms")
+        status_layout.addWidget(self.engine_label, 6, 1)
+
+        status_layout.addWidget(QLabel("Total Latency:"), 7, 0)
+        self.total_label = QLabel("-- ms")
+        status_layout.addWidget(self.total_label, 7, 1)
 
         layout.addWidget(status_group)
 
@@ -271,14 +298,20 @@ class LatencyCalibrationDialog(QDialog):
             if not owner.processor.is_running():
                 input_device = getattr(owner, "input_combo", None)
                 output_device = getattr(owner, "output_combo", None)
-                selected_input = _device_name(input_device.currentData()) if input_device else None
-                selected_output = _device_name(output_device.currentData()) if output_device else None
+                selected_input = (
+                    _device_name(input_device.currentData()) if input_device else None
+                )
+                selected_output = (
+                    _device_name(output_device.currentData()) if output_device else None
+                )
                 owner.processor.start(selected_input, selected_output)
                 self._started_processor = True
             else:
                 self._started_processor = False
         except Exception as e:
-            QMessageBox.critical(self, "Audio Error", f"Failed to start processing: {e}")
+            QMessageBox.critical(
+                self, "Audio Error", f"Failed to start processing: {e}"
+            )
             return
 
         self.run_button.setEnabled(False)
@@ -293,15 +326,23 @@ class LatencyCalibrationDialog(QDialog):
                 sample_rate=self._capture_sample_rate,
                 duration_ms=80.0,
             )
+            self._playback_probe = _resample_probe(
+                self._probe,
+                self._capture_sample_rate,
+                _output_sample_rate(owner),
+            )
+            self._engine_signature = engine_config_signature(owner.processor)
+            self._engine_latency_samples = []
             owner.processor.start_raw_recording(self._recording_duration_s)
         except Exception as e:
-            self._on_worker_failed(f"Latency calibration failed: {type(e).__name__}: {e}")
+            self._on_worker_failed(
+                f"Latency calibration failed: {type(e).__name__}: {e}"
+            )
             return
 
         self._played_probe = False
         self._probe_started = False
         self._probe_started_at = None
-        self._probe_finished.clear()
         self._capture_started_at = time.time()
         self._capture_timer.start()
 
@@ -313,29 +354,29 @@ class LatencyCalibrationDialog(QDialog):
 
         try:
             elapsed = time.time() - self._capture_started_at
+            engine_latency = float(owner.processor.get_engine_latency_ms())
+            if np.isfinite(engine_latency) and engine_latency >= 0.0:
+                self._engine_latency_samples.append(engine_latency)
             if (not self._probe_started) and elapsed >= self._playback_delay_s:
                 self.status_label.setText("Playing probe signal...")
                 self._probe_started = True
                 self._probe_started_at = time.time()
+                if self._playback_probe is None:
+                    self._on_worker_failed("Probe signal is unavailable.")
+                    return
+                owner.processor.queue_output_probe(self._playback_probe)
 
-                def _play_probe():
-                    probe = self._probe
-                    if probe is None:
-                        self._on_worker_failed("Probe signal is unavailable.")
-                        return
-                    try:
-                        _play_probe_blocking(probe, self._capture_sample_rate)
-                    finally:
-                        self._played_probe = True
-                        self._probe_finished.set()
-
-                threading.Thread(target=_play_probe, daemon=True).start()
+            if self._probe_started and owner.processor.is_output_probe_complete():
+                self._played_probe = True
 
             self._on_level_update(float(owner.processor.recording_level_db()))
             progress = int(min(99.0, (elapsed / self._recording_duration_s) * 100.0))
             self.progress.setValue(progress)
 
-            if elapsed < self._recording_duration_s and not owner.processor.is_recording_complete():
+            if (
+                elapsed < self._recording_duration_s
+                and not owner.processor.is_recording_complete()
+            ):
                 return
 
             self._capture_timer.stop()
@@ -367,12 +408,20 @@ class LatencyCalibrationDialog(QDialog):
                 sample_rate=self._capture_sample_rate,
                 expected_playback_start_ms=expected_start_ms,
                 expected_playback_jitter_ms=expected_jitter_ms,
+                engine_latency_ms=(
+                    float(np.median(self._engine_latency_samples))
+                    if self._engine_latency_samples
+                    else float(owner.processor.get_engine_latency_ms())
+                ),
+                engine_config_signature=self._engine_signature,
             )
             self.worker.finished.connect(self._on_worker_finished)
             self.worker.failed.connect(self._on_worker_failed)
             self.worker.start()
         except Exception as e:
-            self._on_worker_failed(f"Latency calibration failed: {type(e).__name__}: {e}")
+            self._on_worker_failed(
+                f"Latency calibration failed: {type(e).__name__}: {e}"
+            )
 
     def _on_level_update(self, rms_db: float):
         self.level_meter.set_levels(rms_db, rms_db + 6.0)
@@ -385,13 +434,17 @@ class LatencyCalibrationDialog(QDialog):
         self._apply_profile_to_labels(profile)
 
         self.progress.setValue(100)
-        ambiguity = float(profile.get("ambiguity_score", 0.0) or 0.0) if profile else 0.0
+        ambiguity = (
+            float(profile.get("ambiguity_score", 0.0) or 0.0) if profile else 0.0
+        )
         if ambiguity >= 0.75:
             self.status_label.setText(
                 "Calibration found the direct path, but echoes are close. Review before accepting."
             )
         else:
-            self.status_label.setText("Calibration successful. Review values and Accept.")
+            self.status_label.setText(
+                "Calibration successful. Review values and Accept."
+            )
         self.run_button.setEnabled(True)
         self.accept_button.setEnabled(True)
 
@@ -420,12 +473,18 @@ class LatencyCalibrationDialog(QDialog):
             self.confidence_label.setText("--")
             self.agreement_label.setText("--")
             self.ambiguity_label.setText("--")
+            self.engine_label.setText("-- ms")
+            self.total_label.setText("-- ms")
             return
 
-        self.round_trip_label.setText(f"{profile.get('measured_round_trip_ms', 0.0):.2f} ms")
+        self.round_trip_label.setText(
+            f"{profile.get('measured_round_trip_ms', 0.0):.2f} ms"
+        )
         directional = profile.get("directional_latency_ms")
         self.one_way_label.setText(
-            f"{float(directional):.2f} ms" if directional is not None else "Not inferred"
+            f"{float(directional):.2f} ms"
+            if directional is not None
+            else "Not inferred"
         )
         route_latency = float(profile.get("route_latency_ms", 0.0) or 0.0)
         if route_latency <= 0.0:
@@ -442,6 +501,8 @@ class LatencyCalibrationDialog(QDialog):
             f"{profile.get('agreement_ms', 0.0):.2f} ms across probes"
         )
         self.ambiguity_label.setText(f"{profile.get('ambiguity_score', 0.0):.2f}")
+        self.engine_label.setText(f"{profile.get('engine_latency_ms', 0.0):.2f} ms")
+        self.total_label.setText(f"{profile.get('total_latency_ms', 0.0):.2f} ms")
 
     def _on_accept_clicked(self):
         if not self._latest_profile:
@@ -493,6 +554,10 @@ class LatencyCalibrationDialog(QDialog):
             except Exception:
                 pass
             try:
+                owner.processor.cancel_output_probe()
+            except Exception:
+                pass
+            try:
                 owner.processor.set_output_mute(False)
             except Exception:
                 pass
@@ -500,7 +565,6 @@ class LatencyCalibrationDialog(QDialog):
                 owner.processor.set_recovery_suppressed(False)
             except Exception:
                 pass
-        self._probe_finished.clear()
         self._probe_started = False
         self._played_probe = False
         owner = self._get_processor_owner()

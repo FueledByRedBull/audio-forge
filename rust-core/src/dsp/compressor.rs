@@ -142,13 +142,7 @@ impl Compressor {
         let release_smoothing_coeff = util::time_constant_to_coeff(100.0, sample_rate);
         let makeup_smoothing_coeff = util::time_constant_to_coeff(200.0, sample_rate);
 
-        let loudness_meter = match crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32) {
-            Ok(meter) => Some(meter),
-            Err(e) => {
-                eprintln!("Failed to initialize loudness meter: {}", e);
-                None
-            }
-        };
+        let loudness_meter = crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32).ok();
 
         Self {
             threshold_db,

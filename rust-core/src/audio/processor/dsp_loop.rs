@@ -163,6 +163,10 @@ impl AudioProcessor {
         }
         .map_err(|e| format!("Failed to start audio input: {}", e))?;
 
+        self.input_fixed_buffer_frames.store(
+            input.fixed_buffer_frames().unwrap_or(0),
+            Ordering::Relaxed,
+        );
         let input_device_name = input.device_info().name.clone();
         let input_sample_rate_for_thread = input.device_info().sample_rate;
 
@@ -185,6 +189,27 @@ impl AudioProcessor {
         // Create output ring buffer sized for the actual playback device rate.
         let output_rb = AudioRingBuffer::new(output_sample_rate_for_thread as usize * 2);
         let (output_producer, output_consumer) = output_rb.split();
+        let output_probe_rb = AudioRingBuffer::new(
+            output_sample_rate_for_thread as usize * MAX_OUTPUT_PROBE_SECONDS,
+        );
+        let (output_probe_producer, output_probe_consumer) = output_probe_rb.split();
+        {
+            let mut producer = self
+                .output_probe_producer
+                .lock()
+                .map_err(|_| "Failed to initialize output probe buffer".to_string())?;
+            *producer = Some(output_probe_producer);
+        }
+        self.output_probe_active.store(false, Ordering::Release);
+        self.output_probe_complete.store(true, Ordering::Release);
+        self.output_probe_cancel_requested
+            .store(false, Ordering::Release);
+        let output_probe = OutputProbeControl {
+            consumer: output_probe_consumer,
+            active: Arc::clone(&self.output_probe_active),
+            complete: Arc::clone(&self.output_probe_complete),
+            cancel_requested: Arc::clone(&self.output_probe_cancel_requested),
+        };
 
         // Start audio output
         let recording_active = Arc::clone(&self.recording_active);
@@ -204,6 +229,7 @@ impl AudioProcessor {
             output_underrun_total,
             output_callback_error_count,
             rt_error_code_for_output,
+            Some(output_probe),
         );
         let output = match output_result {
             Ok(output) => output,
@@ -211,6 +237,10 @@ impl AudioProcessor {
                 return Err(format!("Failed to start audio output: {}", e));
             }
         };
+        self.output_fixed_buffer_frames.store(
+            output.fixed_buffer_frames().unwrap_or(0),
+            Ordering::Relaxed,
+        );
 
         let output_prime_samples = duration_samples(output_sample_rate_for_thread, OUTPUT_PRIME_MS);
         let mut prod = output_producer;
@@ -262,6 +292,10 @@ impl AudioProcessor {
         } else {
             None
         };
+        let output_resampler_delay_samples_for_latency = output_resampler
+            .as_ref()
+            .map(|resampler| resampler.output_delay() as u64)
+            .unwrap_or(0);
         self.input_resampler_active
             .store(input_resampler.is_some(), Ordering::Relaxed);
         self.output_resampler_active
@@ -748,6 +782,8 @@ impl AudioProcessor {
             let mut output_true_peak_detector = TruePeakDetector::new();
             let mut output_true_peak_limiter =
                 TruePeakLimiter::default_settings(output_sample_rate_for_latency as f32);
+            let true_peak_lookahead_samples =
+                output_true_peak_limiter.lookahead_samples() as u64;
             let mut output_drift_error_ema = 0.0_f32;
             let mut output_writer = OutputWriteContext {
                 output_producer: &mut output_producer,
@@ -1672,12 +1708,18 @@ impl AudioProcessor {
                                         0
                                     };
                                 let total_latency = total_reported_latency_us(
-                                    output_buffer_samples,
-                                    output_sample_rate_for_latency,
-                                    suppressor_latency_samples,
-                                    limiter_lookahead_samples.load(Ordering::Relaxed),
-                                    limiter_enabled.load(Ordering::Acquire),
-                                    sample_rate_for_latency,
+                                    LatencyComponents {
+                                        output_buffer_samples,
+                                        output_sample_rate: output_sample_rate_for_latency,
+                                        output_resampler_delay_samples:
+                                            output_resampler_delay_samples_for_latency,
+                                        suppressor_latency_samples,
+                                        limiter_lookahead_samples: limiter_lookahead_samples
+                                            .load(Ordering::Relaxed),
+                                        true_peak_lookahead_samples,
+                                        limiter_enabled: limiter_enabled.load(Ordering::Acquire),
+                                        processing_sample_rate: sample_rate_for_latency,
+                                    },
                                     latency_compensation_us.load(Ordering::Relaxed),
                                 );
                                 latency_us.store(total_latency, Ordering::Relaxed);
@@ -1740,6 +1782,15 @@ impl AudioProcessor {
     /// Stop audio processing
     pub fn stop(&mut self) {
         self.running.store(false, Ordering::SeqCst);
+        self.output_probe_active.store(false, Ordering::Release);
+        self.output_probe_complete.store(true, Ordering::Release);
+        self.output_probe_cancel_requested
+            .store(false, Ordering::Release);
+        self.input_fixed_buffer_frames.store(0, Ordering::Relaxed);
+        self.output_fixed_buffer_frames.store(0, Ordering::Relaxed);
+        if let Ok(mut producer) = self.output_probe_producer.lock() {
+            *producer = None;
+        }
         self.restart_requested.store(false, Ordering::Release);
         self.recovering.store(false, Ordering::Release);
         self.last_start_time_us.store(0, Ordering::Release);

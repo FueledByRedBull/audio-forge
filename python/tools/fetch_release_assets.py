@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,7 @@ from verify_release_assets import verify_assets
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_ASSET_SOURCE_TAG = "v1.8.0"
+MANIFEST_PATH = REPO_ROOT / "release-assets.json"
 
 ASSETS = [
     {
@@ -47,6 +48,16 @@ ASSETS = [
         ),
     },
 ]
+
+
+def _default_asset_source_tag() -> str:
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    tag = manifest.get("fallback_release_tag")
+    if not isinstance(tag, str) or not tag.startswith("v") or not tag[1:]:
+        raise RuntimeError(
+            "release-assets.json must define a non-empty fallback_release_tag"
+        )
+    return tag
 
 
 def _run(command: list[str], *, capture: bool = False) -> str:
@@ -134,10 +145,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--release-tag",
-        default=DEFAULT_ASSET_SOURCE_TAG,
+        default=_default_asset_source_tag(),
         help=(
             "Published release used as a fallback for pinned assets. "
-            f"Defaults to {DEFAULT_ASSET_SOURCE_TAG}."
+            "Defaults to release-assets.json fallback_release_tag."
         ),
     )
     parser.add_argument(

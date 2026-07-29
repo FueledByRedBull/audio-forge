@@ -7,10 +7,66 @@ Runs the processor for a specified duration and validates callback health.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 
 from mic_eq import AudioProcessor
+
+
+# Normal clock-drift retiming counters are observational, not failures. True
+# recovery, callback, overflow, short-write, and backlog-loss counters stay strict.
+_ZERO_REQUIRED_DIAGNOSTICS = (
+    "input_dropped_samples",
+    "input_backlog_dropped_samples",
+    "input_backlog_recovery_count",
+    "input_callback_error_count",
+    "lock_contention_count",
+    "output_callback_error_count",
+    "output_recovery_count",
+    "output_recovery_event_count",
+    "output_short_write_dropped_samples",
+    "output_underrun_streak",
+    "rt_buffer_overflow_count",
+    "rt_error_code",
+    "stream_restart_count",
+    "suppressor_non_finite_count",
+)
+
+
+def _critical_diagnostic_failures(
+    diagnostics: dict, *, output_underrun_baseline: int
+) -> list[str]:
+    failures: list[str] = []
+    for key in _ZERO_REQUIRED_DIAGNOSTICS:
+        if key not in diagnostics:
+            failures.append(f"{key}=missing")
+            continue
+        try:
+            value = int(diagnostics[key] or 0)
+        except (TypeError, ValueError):
+            failures.append(f"{key}=invalid")
+            continue
+        if value != 0:
+            failures.append(f"{key}={value}")
+
+    if not bool(diagnostics.get("noise_backend_available", False)):
+        failures.append("noise_backend_available=false")
+    if bool(diagnostics.get("noise_backend_failed", False)):
+        failures.append("noise_backend_failed=true")
+    if diagnostics.get("last_stream_error"):
+        failures.append("last_stream_error=set")
+    final_underruns = diagnostics.get("output_underrun_total")
+    if not isinstance(final_underruns, (int, float)):
+        failures.append("output_underrun_total=missing_or_invalid")
+    else:
+        final_underrun_count = int(final_underruns)
+        if final_underrun_count != output_underrun_baseline:
+            failures.append(
+                "output_underrun_total="
+                f"{final_underrun_count} (baseline {output_underrun_baseline})"
+            )
+    return failures
 
 
 def main() -> int:
@@ -44,8 +100,12 @@ def main() -> int:
         action="store_true",
         help="Allow auto-recovery events without failing.",
     )
-    parser.add_argument("--input-device", type=str, default=None, help="Input device name.")
-    parser.add_argument("--output-device", type=str, default=None, help="Output device name.")
+    parser.add_argument(
+        "--input-device", type=str, default=None, help="Input device name."
+    )
+    parser.add_argument(
+        "--output-device", type=str, default=None, help="Output device name."
+    )
     args = parser.parse_args()
 
     processor = AudioProcessor()
@@ -56,6 +116,9 @@ def main() -> int:
         start = time.monotonic()
         warmup_start = start
         last_restart_count = 0
+        max_input_age = 0
+        max_output_age = 0
+        output_underrun_baseline: int | None = None
         try:
             last_restart_count = processor.get_stream_restart_count()
         except Exception:
@@ -105,6 +168,12 @@ def main() -> int:
                 time.sleep(args.poll)
                 continue
 
+            if not in_warmup and output_underrun_baseline is None:
+                warm_diagnostics = dict(processor.get_runtime_diagnostics())
+                output_underrun_baseline = int(
+                    warm_diagnostics.get("output_underrun_total", 0) or 0
+                )
+
             if not in_warmup and (input_unknown or output_unknown):
                 unknown_parts = []
                 if input_unknown:
@@ -117,6 +186,11 @@ def main() -> int:
                     f"({missing}) after {args.warmup:.1f}s warmup."
                 )
                 return 5
+
+            if not input_unknown:
+                max_input_age = max(max_input_age, int(input_age))
+            if not output_unknown:
+                max_output_age = max(max_output_age, int(output_age))
 
             if input_age > args.max_callback_age or output_age > args.max_callback_age:
                 print(
@@ -135,6 +209,28 @@ def main() -> int:
             last_restart_count = current_restart_count
             time.sleep(args.poll)
 
+        diagnostics = dict(processor.get_runtime_diagnostics())
+        if output_underrun_baseline is None:
+            print("Health check failed: no post-warmup underrun baseline was recorded.")
+            return 7
+        print(
+            "Health summary: "
+            f"max_input_age_ms={max_input_age} "
+            f"max_output_age_ms={max_output_age} "
+            f"restarts={last_restart_count} "
+            f"underrun_baseline={output_underrun_baseline} "
+            f"diagnostics={json.dumps(diagnostics, sort_keys=True, separators=(',', ':'))}"
+        )
+        diagnostic_failures = _critical_diagnostic_failures(
+            diagnostics,
+            output_underrun_baseline=output_underrun_baseline,
+        )
+        if diagnostic_failures:
+            print(
+                "Health check failed: critical runtime diagnostics were not clean "
+                f"({', '.join(diagnostic_failures)})."
+            )
+            return 6
         print("Health check passed.")
         return 0
     except Exception as exc:

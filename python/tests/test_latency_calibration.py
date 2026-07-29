@@ -7,8 +7,12 @@ from pathlib import Path
 import numpy as np
 
 
-LATENCY_PATH = Path(__file__).parent.parent / "mic_eq" / "analysis" / "latency_calibration.py"
-spec = importlib.util.spec_from_file_location("mic_eq.analysis.latency_calibration", LATENCY_PATH)
+LATENCY_PATH = (
+    Path(__file__).parent.parent / "mic_eq" / "analysis" / "latency_calibration.py"
+)
+spec = importlib.util.spec_from_file_location(
+    "mic_eq.analysis.latency_calibration", LATENCY_PATH
+)
 assert spec is not None and spec.loader is not None
 lat = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = lat
@@ -276,12 +280,20 @@ def test_result_to_profile_has_expected_fields():
         message="ok",
     )
 
-    profile = lat.result_to_profile(result, sample_rate=48000)
+    profile = lat.result_to_profile(
+        result,
+        sample_rate=48000,
+        engine_latency_ms=12.5,
+        engine_config_signature='{"limiter_enabled":true}',
+    )
     assert profile["measured_round_trip_ms"] == 42.0
     assert profile["estimated_one_way_ms"] == 21.0
     assert profile["applied_compensation_ms"] == 21.0
     assert profile["confidence"] == 0.88
     assert profile["sample_rate"] == 48000
+    assert profile["engine_latency_ms"] == 12.5
+    assert profile["total_latency_ms"] == 54.5
+    assert profile["engine_config_signature"] == '{"limiter_enabled":true}'
     assert "timestamp_utc" in profile
 
 

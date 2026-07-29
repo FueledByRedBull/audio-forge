@@ -8,7 +8,7 @@ on:
         required: false
         type: string
       asset_source_tag:
-        description: "Published release used only as a fallback for pinned runtime assets. Defaults to v1.8.0."
+        description: "Published release used only as a fallback for pinned runtime assets. Defaults to release-assets.json."
         required: false
         type: string
       upload_to_release:
@@ -101,7 +101,13 @@ jobs:
             $assetSourceTag = $env:CONFIGURED_ASSET_SOURCE_TAG
           }
           if ([string]::IsNullOrWhiteSpace($assetSourceTag)) {
-            $assetSourceTag = "v1.8.0"
+            $assetSourceTag = (
+              Get-Content -LiteralPath "release-assets.json" -Raw |
+                ConvertFrom-Json
+            ).fallback_release_tag
+          }
+          if ([string]::IsNullOrWhiteSpace($assetSourceTag)) {
+            throw "release-assets.json does not define fallback_release_tag."
           }
 
           $archive = "AudioForge-v$version-win64-ultra.7z"
@@ -141,6 +147,7 @@ jobs:
           .\.venv\Scripts\python.exe -m pytest python/tests -q
           .\.venv\Scripts\python.exe python/tools/check_versions.py
           .\.venv\Scripts\python.exe python/tools/check_workflows.py
+          .\.venv\Scripts\python.exe python/tools/check_evaluation_hygiene.py
           .\.venv\Scripts\python.exe python/tools/package_smoke.py --source-only
 
       - name: Semgrep

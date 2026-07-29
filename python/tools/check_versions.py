@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 import sys
 import tomllib
@@ -77,7 +78,49 @@ def _extract_cargo_lock_version(package_name: str) -> str:
     raise ValueError(f"Cargo.lock: package {package_name!r} not found")
 
 
+def _check_release_asset_hydration() -> None:
+    manifest = json.loads(_read("release-assets.json"))
+    fallback_tag = manifest.get("fallback_release_tag")
+    if not isinstance(fallback_tag, str) or re.fullmatch(
+        r"v[0-9]+\.[0-9]+\.[0-9]+", fallback_tag
+    ) is None:
+        raise ValueError(
+            "release-assets.json: fallback_release_tag must be a vMAJOR.MINOR.PATCH tag"
+        )
+
+    docs = {name: _read(name) for name in ("README.md", "RELEASING.md")}
+    for name, contents in docs.items():
+        explicit_tags = re.findall(
+            r"fetch_release_assets\.py\s+--release-tag\s+(v[0-9]+\.[0-9]+\.[0-9]+)",
+            contents,
+        )
+        mismatched = sorted({tag for tag in explicit_tags if tag != fallback_tag})
+        if mismatched:
+            raise ValueError(
+                f"{name}: fetch_release_assets.py uses stale fallback tag(s): "
+                + ", ".join(mismatched)
+            )
+    readme = docs["README.md"]
+    if "fallback release is pinned once in `release-assets.json`" not in readme:
+        raise ValueError(
+            "README.md: release-asset hydration must document the manifest-owned fallback"
+        )
+
+    fetch_tool = _read("python/tools/fetch_release_assets.py")
+    if "default=_default_asset_source_tag()" not in fetch_tool:
+        raise ValueError(
+            "fetch_release_assets.py: --release-tag default must come from release-assets.json"
+        )
+
+    workflow = _read(".github/workflows/release-package.yml")
+    if ").fallback_release_tag" not in workflow:
+        raise ValueError(
+            "release-package.yml: asset fallback must come from release-assets.json"
+        )
+
+
 def main() -> int:
+    _check_release_asset_hydration()
     expected = _single_match("pyproject.toml", r'^version\s*=\s*"([^"]+)"', "pyproject")
     package_version = _single_match(
         "python/mic_eq/__init__.py",

@@ -8,6 +8,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 TOOLS_DIR = Path(__file__).parent.parent / "tools"
 
@@ -26,6 +28,8 @@ package_smoke = _load_tool("package_smoke")
 prune_bundle = _load_tool("prune_bundle")
 verify_release_assets = _load_tool("verify_release_assets")
 fetch_release_assets = _load_tool("fetch_release_assets")
+check_versions = _load_tool("check_versions")
+run_semgrep = _load_tool("run_semgrep")
 
 
 def _write_bundle_file(bundle: Path, relative_path: str) -> None:
@@ -45,6 +49,43 @@ def _write_valid_build_info(bundle: Path) -> None:
 
 def test_package_smoke_source_packaging_checks_pass():
     assert package_smoke.check_source_packaging() == []
+
+
+def test_semgrep_gate_uses_rule_default_severity_when_result_omits_level(
+    tmp_path,
+):
+    sarif = tmp_path / "results.sarif"
+    sarif.write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "tool": {
+                            "driver": {
+                                "rules": [
+                                    {
+                                        "id": "error-rule",
+                                        "defaultConfiguration": {"level": "error"},
+                                    },
+                                    {
+                                        "id": "warning-rule",
+                                        "defaultConfiguration": {"level": "warning"},
+                                    },
+                                ]
+                            }
+                        },
+                        "results": [
+                            {"ruleId": "error-rule"},
+                            {"ruleId": "warning-rule"},
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert run_semgrep._error_findings(sarif) == ["error-rule"]
 
 
 def test_package_smoke_rejects_empty_models_directory(tmp_path):
@@ -90,14 +131,18 @@ def test_package_smoke_rejects_duplicate_native_extension(tmp_path):
     assert any("_internal/mic_eq_core/mic_eq_core*.pyd" in error for error in errors)
 
 
-def test_prune_bundle_removes_duplicate_native_extension_only_when_packaged_copy_exists(tmp_path):
+def test_prune_bundle_removes_duplicate_native_extension_only_when_packaged_copy_exists(
+    tmp_path,
+):
     bundle = tmp_path / "AudioForge"
     _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
     _write_bundle_file(bundle, "_internal/mic_eq_core/mic_eq_core.cp312-win_amd64.pyd")
 
     prune_bundle.prune_bundle(bundle)
 
-    assert (bundle / "_internal" / "mic_eq" / "mic_eq_core.cp312-win_amd64.pyd").is_file()
+    assert (
+        bundle / "_internal" / "mic_eq" / "mic_eq_core.cp312-win_amd64.pyd"
+    ).is_file()
     assert not (bundle / "_internal" / "mic_eq_core").exists()
 
 
@@ -107,7 +152,9 @@ def test_prune_bundle_keeps_top_level_native_extension_without_packaged_copy(tmp
 
     prune_bundle.prune_bundle(bundle)
 
-    assert (bundle / "_internal" / "mic_eq_core" / "mic_eq_core.cp312-win_amd64.pyd").is_file()
+    assert (
+        bundle / "_internal" / "mic_eq_core" / "mic_eq_core.cp312-win_amd64.pyd"
+    ).is_file()
 
 
 def test_package_smoke_rejects_misplaced_decoy_assets(tmp_path):
@@ -235,7 +282,9 @@ def test_verify_release_assets_rejects_absolute_and_traversal_paths(
     assert any("absolute path" in error for error in errors)
     assert any("'..' traversal" in error for error in errors)
     assert any("bundle_path" in error and "'..' traversal" in error for error in errors)
-    assert any(r"C:\tmp\asset.bin" in error and "absolute path" in error for error in errors)
+    assert any(
+        r"C:\tmp\asset.bin" in error and "absolute path" in error for error in errors
+    )
     assert any(r"models\..\asset.bin" in error for error in errors)
     assert any(r"models\..\bundle.bin" in error for error in errors)
 
@@ -254,3 +303,75 @@ def test_fetch_release_assets_direct_download_writes_response(tmp_path, monkeypa
     )
 
     assert destination.read_bytes() == b"pinned-model"
+
+
+def test_fetch_release_assets_default_tag_comes_from_manifest(tmp_path, monkeypatch):
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(
+        json.dumps({"fallback_release_tag": "v9.8.7", "assets": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fetch_release_assets, "MANIFEST_PATH", manifest)
+
+    assert fetch_release_assets._default_asset_source_tag() == "v9.8.7"
+
+
+def test_version_check_rejects_stale_readme_hydration_tag(tmp_path, monkeypatch):
+    (tmp_path / "python" / "tools").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / "release-assets.json").write_text(
+        json.dumps({"fallback_release_tag": "v1.10.0"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "README.md").write_text(
+        "The fallback release is pinned once in `release-assets.json`.\n"
+        "fetch_release_assets.py --release-tag v1.8.0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "RELEASING.md").write_text(
+        "fetch_release_assets.py\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "python" / "tools" / "fetch_release_assets.py").write_text(
+        "default=_default_asset_source_tag()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".github" / "workflows" / "release-package.yml").write_text(
+        ").fallback_release_tag\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="stale fallback tag"):
+        check_versions._check_release_asset_hydration()
+
+
+def test_version_check_rejects_stale_releasing_hydration_tag(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "python" / "tools").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / "release-assets.json").write_text(
+        json.dumps({"fallback_release_tag": "v1.10.0"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "README.md").write_text(
+        "The fallback release is pinned once in `release-assets.json`.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "RELEASING.md").write_text(
+        "fetch_release_assets.py --release-tag v1.8.0\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "python" / "tools" / "fetch_release_assets.py").write_text(
+        "default=_default_asset_source_tag()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".github" / "workflows" / "release-package.yml").write_text(
+        ").fallback_release_tag\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="RELEASING.md.*stale fallback tag"):
+        check_versions._check_release_asset_hydration()

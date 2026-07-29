@@ -3,12 +3,12 @@ Frequency response curve visualization for parametric EQ
 """
 
 import math
-import cmath
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtGui import QPainter, QPen, QColor
 from PyQt6.QtCore import Qt
 
 from mic_eq.analysis.eq_quality import evaluate_eq_quality
+from mic_eq import eq_magnitude_response
 
 
 class EQCurveWidget(QWidget):
@@ -51,81 +51,21 @@ class EQCurveWidget(QWidget):
         step = (log_max - log_min) / (num_points - 1)
         return [10 ** (log_min + i * step) for i in range(num_points)]
 
-    def _calc_biquad_coefficients(self, freq, gain_db, q, filter_type):
-        """
-        Calculate biquad filter coefficients.
-        Returns (b0, b1, b2, a1, a2) normalized so a0 = 1.
-        Uses Robert Bristow-Johnson formulas.
-        """
-        omega = 2 * math.pi * freq / self.sample_rate
-        sin_omega = math.sin(omega)
-        cos_omega = math.cos(omega)
-        alpha = sin_omega / (2.0 * q)
-        A = 10 ** (gain_db / 40.0)  # sqrt(10^(dB/20))
-
-        if filter_type == 1:  # Peaking
-            b0 = 1.0 + alpha * A
-            b1 = -2.0 * cos_omega
-            b2 = 1.0 - alpha * A
-            a0 = 1.0 + alpha / A
-            a1 = -2.0 * cos_omega
-            a2 = 1.0 - alpha / A
-
-        elif filter_type == 0:  # Low shelf
-            two_sqrt_a_alpha = 2.0 * math.sqrt(A) * alpha
-            b0 = A * ((A + 1.0) - (A - 1.0) * cos_omega + two_sqrt_a_alpha)
-            b1 = 2.0 * A * ((A - 1.0) - (A + 1.0) * cos_omega)
-            b2 = A * ((A + 1.0) - (A - 1.0) * cos_omega - two_sqrt_a_alpha)
-            a0 = (A + 1.0) + (A - 1.0) * cos_omega + two_sqrt_a_alpha
-            a1 = -2.0 * ((A - 1.0) + (A + 1.0) * cos_omega)
-            a2 = (A + 1.0) + (A - 1.0) * cos_omega - two_sqrt_a_alpha
-
-        else:  # High shelf (filter_type == 2)
-            two_sqrt_a_alpha = 2.0 * math.sqrt(A) * alpha
-            b0 = A * ((A + 1.0) + (A - 1.0) * cos_omega + two_sqrt_a_alpha)
-            b1 = -2.0 * A * ((A - 1.0) + (A + 1.0) * cos_omega)
-            b2 = A * ((A + 1.0) + (A - 1.0) * cos_omega - two_sqrt_a_alpha)
-            a0 = (A + 1.0) - (A - 1.0) * cos_omega + two_sqrt_a_alpha
-            a1 = 2.0 * ((A - 1.0) - (A + 1.0) * cos_omega)
-            a2 = (A + 1.0) - (A - 1.0) * cos_omega - two_sqrt_a_alpha
-
-        # Normalize so a0 = 1
-        return (b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0)
-
-    def _biquad_response(self, freq_hz, b0, b1, b2, a1, a2):
-        """
-        Calculate magnitude response in dB at given frequency.
-        H(z) = (b0 + b1*z^-1 + b2*z^-2) / (1 + a1*z^-1 + a2*z^-2)
-        """
-        omega = 2 * math.pi * freq_hz / self.sample_rate
-        z = cmath.exp(1j * omega)  # z = e^(j*omega)
-
-        # Evaluate transfer function
-        numerator = b0 + b1 * (z ** -1) + b2 * (z ** -2)
-        denominator = 1 + a1 * (z ** -1) + a2 * (z ** -2)
-
-        h = numerator / denominator
-        magnitude_db = 20 * math.log10(abs(h) + 1e-10)  # Add epsilon to avoid log(0)
-        return magnitude_db
+    def _native_response(self, bands):
+        parameters = [
+            (float(freq), float(gain), float(q)) for freq, gain, q, _ in bands
+        ]
+        return list(
+            eq_magnitude_response(
+                self.freq_points,
+                parameters,
+                self.sample_rate,
+            )
+        )
 
     def _update_response(self):
         """Calculate combined frequency response for all bands."""
-        # Initialize response to 0 dB
-        self.response_db = [0.0] * len(self.freq_points)
-
-        # Sum contribution from each band
-        for freq, gain_db, q, filter_type in self.bands:
-            # Skip bands with 0 gain (optimization)
-            if abs(gain_db) < 0.01:
-                continue
-
-            # Calculate coefficients for this band
-            b0, b1, b2, a1, a2 = self._calc_biquad_coefficients(freq, gain_db, q, filter_type)
-
-            # Add this band's response at each frequency point
-            for i, f in enumerate(self.freq_points):
-                db = self._biquad_response(f, b0, b1, b2, a1, a2)
-                self.response_db[i] += db
+        self.response_db = self._native_response(self.bands)
         freqs = [band[0] for band in self.bands]
         gains = [band[1] for band in self.bands]
         qs = [band[2] for band in self.bands]
@@ -192,17 +132,7 @@ class EQCurveWidget(QWidget):
 
     def _update_overlay_response(self):
         """Calculate frequency response for overlay curve."""
-        self.overlay_response_db = [0.0] * len(self.freq_points)
-
-        for freq, gain_db, q, filter_type in self.overlay_bands:
-            if abs(gain_db) < 0.01:
-                continue
-
-            b0, b1, b2, a1, a2 = self._calc_biquad_coefficients(freq, gain_db, q, filter_type)
-
-            for i, f in enumerate(self.freq_points):
-                db = self._biquad_response(f, b0, b1, b2, a1, a2)
-                self.overlay_response_db[i] += db
+        self.overlay_response_db = self._native_response(self.overlay_bands)
 
     def paintEvent(self, event):
         """Draw the frequency response curve."""

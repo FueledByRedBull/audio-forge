@@ -7,8 +7,8 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
-    Device, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig,
-    SupportedStreamConfig, SupportedStreamConfigRange,
+    BufferSize, Device, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig,
+    SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -274,9 +274,67 @@ pub struct AudioDeviceInfo {
 pub struct AudioInput {
     stream: Stream,
     device_info: AudioDeviceInfo,
+    fixed_buffer_frames: Option<u32>,
 }
 
 impl AudioInput {
+    const MIN_FIXED_BUFFER_FRAMES: u32 = 16;
+    const MAX_FIXED_BUFFER_FRAMES: u32 = 8192;
+
+    fn parse_fixed_buffer_frames(value: Option<&str>) -> Option<u32> {
+        let frames = value?.trim().parse::<u32>().ok()?;
+        (Self::MIN_FIXED_BUFFER_FRAMES..=Self::MAX_FIXED_BUFFER_FRAMES)
+            .contains(&frames)
+            .then_some(frames)
+    }
+
+    fn requested_fixed_buffer_frames() -> Option<u32> {
+        let value = std::env::var("AUDIOFORGE_FIXED_INPUT_BUFFER_FRAMES").ok();
+        Self::parse_fixed_buffer_frames(value.as_deref())
+    }
+
+    fn supported_fixed_buffer_frames(frames: u32, supported: &SupportedBufferSize) -> bool {
+        match supported {
+            SupportedBufferSize::Range { min, max } => (*min..=*max).contains(&frames),
+            SupportedBufferSize::Unknown => true,
+        }
+    }
+
+    fn preflight_config<T>(device: &Device, config: &StreamConfig) -> bool
+    where
+        T: SizedSample,
+        f32: FromSample<T>,
+    {
+        device
+            .build_input_stream(
+                config,
+                |_data: &[T], _: &cpal::InputCallbackInfo| {},
+                |_error| {},
+                None,
+            )
+            .is_ok()
+    }
+
+    fn preflight_sample_format(
+        device: &Device,
+        sample_format: SampleFormat,
+        config: &StreamConfig,
+    ) -> bool {
+        match sample_format {
+            SampleFormat::I8 => Self::preflight_config::<i8>(device, config),
+            SampleFormat::F32 => Self::preflight_config::<f32>(device, config),
+            SampleFormat::F64 => Self::preflight_config::<f64>(device, config),
+            SampleFormat::I16 => Self::preflight_config::<i16>(device, config),
+            SampleFormat::I32 => Self::preflight_config::<i32>(device, config),
+            SampleFormat::I64 => Self::preflight_config::<i64>(device, config),
+            SampleFormat::U8 => Self::preflight_config::<u8>(device, config),
+            SampleFormat::U16 => Self::preflight_config::<u16>(device, config),
+            SampleFormat::U32 => Self::preflight_config::<u32>(device, config),
+            SampleFormat::U64 => Self::preflight_config::<u64>(device, config),
+            _ => false,
+        }
+    }
+
     fn select_device(
         device: Device,
     ) -> Result<(Device, SupportedStreamConfig, AudioDeviceInfo), AudioError> {
@@ -703,6 +761,7 @@ impl AudioInput {
         metrics: InputCallbackMetrics,
         device_info: AudioDeviceInfo,
         options: InputStreamOptions,
+        fixed_buffer_frames: Option<u32>,
     ) -> Result<Self, AudioError>
     where
         T: SizedSample,
@@ -800,6 +859,7 @@ impl AudioInput {
         Ok(Self {
             stream,
             device_info,
+            fixed_buffer_frames,
         })
     }
 
@@ -920,7 +980,18 @@ impl AudioInput {
         let (device, supported_config, device_info) = Self::select_device(device)?;
         let device_sample_rate = supported_config.sample_rate().0;
         let sample_format = supported_config.sample_format();
-        let stream_config = supported_config.config();
+        let mut stream_config = supported_config.config();
+        let mut fixed_buffer_frames = None;
+        if let Some(frames) = Self::requested_fixed_buffer_frames() {
+            if Self::supported_fixed_buffer_frames(frames, supported_config.buffer_size()) {
+                let mut candidate = stream_config.clone();
+                candidate.buffer_size = BufferSize::Fixed(frames);
+                if Self::preflight_sample_format(&device, sample_format, &candidate) {
+                    stream_config = candidate;
+                    fixed_buffer_frames = Some(frames);
+                }
+            }
+        }
         let callback_metrics =
             InputCallbackMetrics::new(last_callback_time_us, error_count, rt_error_code);
 
@@ -939,6 +1010,7 @@ impl AudioInput {
                 callback_metrics,
                 device_info,
                 options,
+                fixed_buffer_frames,
             ),
             SampleFormat::F32 => Self::build_stream::<f32>(
                 device,
@@ -947,6 +1019,7 @@ impl AudioInput {
                 callback_metrics,
                 device_info,
                 options,
+                fixed_buffer_frames,
             ),
             SampleFormat::F64 => Self::build_stream::<f64>(
                 device,
@@ -955,6 +1028,7 @@ impl AudioInput {
                 callback_metrics,
                 device_info,
                 options,
+                fixed_buffer_frames,
             ),
             SampleFormat::I16 => Self::build_stream::<i16>(
                 device,
@@ -963,6 +1037,7 @@ impl AudioInput {
                 callback_metrics,
                 device_info,
                 options,
+                fixed_buffer_frames,
             ),
             SampleFormat::I32 => Self::build_stream::<i32>(
                 device,
@@ -971,6 +1046,7 @@ impl AudioInput {
                 callback_metrics,
                 device_info,
                 options,
+                fixed_buffer_frames,
             ),
             SampleFormat::I64 => Self::build_stream::<i64>(
                 device,
@@ -979,6 +1055,7 @@ impl AudioInput {
                 callback_metrics,
                 device_info,
                 options,
+                fixed_buffer_frames,
             ),
             SampleFormat::U8 => Self::build_stream::<u8>(
                 device,
@@ -987,6 +1064,7 @@ impl AudioInput {
                 callback_metrics,
                 device_info,
                 options,
+                fixed_buffer_frames,
             ),
             SampleFormat::U16 => Self::build_stream::<u16>(
                 device,
@@ -995,6 +1073,7 @@ impl AudioInput {
                 callback_metrics,
                 device_info,
                 options,
+                fixed_buffer_frames,
             ),
             SampleFormat::U32 => Self::build_stream::<u32>(
                 device,
@@ -1003,6 +1082,7 @@ impl AudioInput {
                 callback_metrics,
                 device_info,
                 options,
+                fixed_buffer_frames,
             ),
             SampleFormat::U64 => Self::build_stream::<u64>(
                 device,
@@ -1011,6 +1091,7 @@ impl AudioInput {
                 callback_metrics,
                 device_info,
                 options,
+                fixed_buffer_frames,
             ),
             other => Err(AudioError::UnsupportedSampleFormat(other.to_string())),
         }
@@ -1033,6 +1114,10 @@ impl AudioInput {
     /// Get device information
     pub fn device_info(&self) -> &AudioDeviceInfo {
         &self.device_info
+    }
+
+    pub fn fixed_buffer_frames(&self) -> Option<u32> {
+        self.fixed_buffer_frames
     }
 }
 
@@ -1122,6 +1207,32 @@ mod tests {
     fn test_preferred_sample_rate_falls_back_to_default_when_target_missing() {
         let chosen = preferred_sample_rate_from_ranges(44_100, &[(44_100, 44_100)], 48_000);
         assert_eq!(chosen, 44_100);
+    }
+
+    #[test]
+    fn test_fixed_buffer_request_parser_is_bounded_and_fail_closed() {
+        assert_eq!(AudioInput::parse_fixed_buffer_frames(None), None);
+        assert_eq!(AudioInput::parse_fixed_buffer_frames(Some("bad")), None);
+        assert_eq!(AudioInput::parse_fixed_buffer_frames(Some("15")), None);
+        assert_eq!(
+            AudioInput::parse_fixed_buffer_frames(Some("128")),
+            Some(128)
+        );
+        assert_eq!(AudioInput::parse_fixed_buffer_frames(Some("9000")), None);
+    }
+
+    #[test]
+    fn test_fixed_buffer_request_respects_reported_driver_range() {
+        let range = SupportedBufferSize::Range { min: 32, max: 2048 };
+        assert!(!AudioInput::supported_fixed_buffer_frames(16, &range));
+        assert!(AudioInput::supported_fixed_buffer_frames(32, &range));
+        assert!(AudioInput::supported_fixed_buffer_frames(512, &range));
+        assert!(AudioInput::supported_fixed_buffer_frames(2048, &range));
+        assert!(!AudioInput::supported_fixed_buffer_frames(4096, &range));
+        assert!(AudioInput::supported_fixed_buffer_frames(
+            256,
+            &SupportedBufferSize::Unknown
+        ));
     }
 
     #[test]

@@ -6,7 +6,7 @@ AudioForge - Low-latency microphone audio processor
 Provides real-time noise suppression and equalization for voice communication.
 """
 
-__version__ = "1.10.0"
+__version__ = "1.10.1"
 
 from typing import TYPE_CHECKING
 
@@ -16,9 +16,12 @@ if TYPE_CHECKING:
         DeviceInfo,
         analyze_vad_probabilities,
         configure_deepfilter_runtime_paths,
+        eq_magnitude_response,
         list_input_devices,
         list_output_devices,
         simulate_auto_eq_chain,
+        simulate_auto_makeup_control,
+        simulate_gate_suppressor_order,
     )
 
     CORE_AVAILABLE: bool
@@ -71,6 +74,28 @@ else:
             "simulate_auto_eq_chain",
             _raise_missing_simulation_helper,
         )
+        simulate_auto_makeup_control = getattr(
+            _core_module,
+            "simulate_auto_makeup_control",
+            _raise_missing_simulation_helper,
+        )
+        simulate_gate_suppressor_order = getattr(
+            _core_module,
+            "simulate_gate_suppressor_order",
+            _raise_missing_simulation_helper,
+        )
+
+        def _raise_missing_eq_response(*args, **kwargs):
+            raise ImportError(
+                "mic_eq_core was imported, but eq_magnitude_response is missing. "
+                "Rebuild with: maturin develop --release"
+            )
+
+        eq_magnitude_response = getattr(
+            _core_module,
+            "eq_magnitude_response",
+            _raise_missing_eq_response,
+        )
     else:
         CORE_AVAILABLE = False
 
@@ -91,11 +116,21 @@ else:
         def simulate_auto_eq_chain(*args, **kwargs):
             _raise_core_import_error()
 
+        def simulate_auto_makeup_control(*args, **kwargs):
+            _raise_core_import_error()
+
+        def simulate_gate_suppressor_order(*args, **kwargs):
+            _raise_core_import_error()
+
         def configure_deepfilter_runtime_paths(*args, **kwargs):
             _raise_core_import_error()
 
         def analyze_vad_probabilities(*args, **kwargs):
             _raise_core_import_error()
+
+        def eq_magnitude_response(*args, **kwargs):
+            _raise_core_import_error()
+
 
 __all__ = [
     "AudioProcessor",
@@ -103,6 +138,9 @@ __all__ = [
     "list_input_devices",
     "list_output_devices",
     "simulate_auto_eq_chain",
+    "simulate_auto_makeup_control",
+    "simulate_gate_suppressor_order",
+    "eq_magnitude_response",
     "analyze_vad_probabilities",
     "configure_deepfilter_runtime_paths",
     "CORE_AVAILABLE",

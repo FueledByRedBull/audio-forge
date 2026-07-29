@@ -54,6 +54,13 @@ impl AudioProcessor {
         latency_us as f32 / 1000.0
     }
 
+    /// Get engine latency excluding measured external route compensation.
+    pub fn get_engine_latency_ms(&self) -> f32 {
+        let latency_us = self.latency_us.load(Ordering::Relaxed);
+        let compensation_us = self.latency_compensation_us.load(Ordering::Relaxed);
+        latency_us.saturating_sub(compensation_us) as f32 / 1000.0
+    }
+
     /// Set user latency compensation in milliseconds (added to reported latency).
     pub fn set_latency_compensation_ms(&self, compensation_ms: f32) {
         let clamped_ms = compensation_ms.clamp(0.0, 5000.0);
@@ -94,6 +101,16 @@ impl AudioProcessor {
     /// Get active output device sample rate in Hz.
     pub fn output_sample_rate(&self) -> u32 {
         self.output_sample_rate.load(Ordering::Relaxed)
+    }
+
+    /// Negotiated fixed CPAL output buffer size, or zero for driver default.
+    pub fn output_fixed_buffer_frames(&self) -> u32 {
+        self.output_fixed_buffer_frames.load(Ordering::Relaxed)
+    }
+
+    /// Negotiated fixed CPAL input buffer size, or zero for driver default.
+    pub fn input_fixed_buffer_frames(&self) -> u32 {
+        self.input_fixed_buffer_frames.load(Ordering::Relaxed)
     }
 
     /// Get noise suppressor buffer fill level in samples

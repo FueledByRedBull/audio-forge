@@ -72,6 +72,11 @@ def test_preset_migration_to_v17_adds_deesser_defaults():
     assert preset.deesser.max_reduction_db == 6.0
     assert preset.compressor.sidechain_highpass_enabled is True
     assert preset.limiter.careful_output_enabled is True
+    assert preset.value_provenance["gate.enabled"] == "explicit"
+    assert preset.value_provenance["deesser.enabled"] == "migration_default"
+    assert preset.value_provenance["compressor.sidechain_highpass_enabled"] == (
+        "migration_default"
+    )
 
 
 def test_app_config_latency_profiles_round_trip():
@@ -82,6 +87,10 @@ def test_app_config_latency_profiles_round_trip():
         confidence=0.92,
         sample_rate=48000,
         timestamp_utc="2026-02-16T00:00:00Z",
+        route_latency_ms=36.5,
+        engine_latency_ms=24.0,
+        total_latency_ms=60.5,
+        engine_config_signature='{"noise_model":"rnnoise"}',
     )
     input_identity = DeviceIdentity(name="Mic A", is_default=False)
     output_identity = DeviceIdentity(name="Out B", is_default=True)
@@ -114,6 +123,9 @@ def test_app_config_latency_profiles_round_trip():
     assert restored_profile.estimated_one_way_ms == 18.25
     assert restored_profile.applied_compensation_ms == 18.25
     assert restored_profile.route_latency_ms == 36.5
+    assert restored_profile.engine_latency_ms == 24.0
+    assert restored_profile.total_latency_ms == 60.5
+    assert restored_profile.engine_config_signature == '{"noise_model":"rnnoise"}'
     assert restored_profile.confidence == 0.92
 
 
@@ -172,7 +184,9 @@ def test_app_config_normalizes_invalid_input_channel_mode(value):
     assert restored.input_channel_mode == "average"
 
 
-@pytest.mark.parametrize("value", ["average", "left", "right", "max_rms", "phase_safe_mono"])
+@pytest.mark.parametrize(
+    "value", ["average", "left", "right", "max_rms", "phase_safe_mono"]
+)
 def test_app_config_preserves_valid_input_channel_mode(value):
     restored = AppConfig.from_dict({"input_channel_mode": value})
 
@@ -180,7 +194,9 @@ def test_app_config_preserves_valid_input_channel_mode(value):
 
 
 @pytest.mark.parametrize("payload", [[], "bad", 123, True, None])
-def test_load_config_falls_back_to_defaults_for_non_object_json(payload, monkeypatch, tmp_path):
+def test_load_config_falls_back_to_defaults_for_non_object_json(
+    payload, monkeypatch, tmp_path
+):
     config_path = tmp_path / "config.json"
     with open(config_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle)
@@ -193,13 +209,20 @@ def test_load_config_falls_back_to_defaults_for_non_object_json(payload, monkeyp
 
 
 def test_app_config_ignores_invalid_window_geometry_values():
-    for value in (["not", "a", "dict"], "invalid", {"x": 1, "y": 2}, {"x": 1, "y": 2, "width": math.inf, "height": 700}):
+    for value in (
+        ["not", "a", "dict"],
+        "invalid",
+        {"x": 1, "y": 2},
+        {"x": 1, "y": 2, "width": math.inf, "height": 700},
+    ):
         restored = AppConfig.from_dict({"window_geometry": value})
 
         assert restored.window_geometry is None
 
 
-@pytest.mark.parametrize("value", [123, ["builtin:voice"], {"preset": "voice"}, True, None])
+@pytest.mark.parametrize(
+    "value", [123, ["builtin:voice"], {"preset": "voice"}, True, None]
+)
 def test_app_config_normalizes_invalid_last_preset_values_to_safe_string(value):
     restored = AppConfig.from_dict({"last_preset": value})
 
@@ -247,17 +270,26 @@ def test_app_config_migrates_legacy_device_names_and_profile_keys():
         DeviceIdentity(name="Out B", is_default=False),
     )
 
-    assert restored.last_input_device_identity == DeviceIdentity(name="Mic A", is_default=False)
-    assert restored.last_output_device_identity == DeviceIdentity(name="Out B", is_default=False)
+    assert restored.last_input_device_identity == DeviceIdentity(
+        name="Mic A", is_default=False
+    )
+    assert restored.last_output_device_identity == DeviceIdentity(
+        name="Out B", is_default=False
+    )
     assert expected_key in restored.latency_calibration_profiles
     assert legacy_key not in restored.latency_calibration_profiles
     restored_profile = restored.latency_calibration_profiles[expected_key]
     assert restored_profile.measured_round_trip_ms == 28.0
     assert restored_profile.route_latency_ms == 28.0
+    assert restored_profile.engine_latency_ms == 0.0
+    assert restored_profile.total_latency_ms == 28.0
 
 
 def test_load_preset_rejects_path_outside_allowlisted_roots():
-    with tempfile.TemporaryDirectory() as appdata_dir, tempfile.TemporaryDirectory() as outside_dir:
+    with (
+        tempfile.TemporaryDirectory() as appdata_dir,
+        tempfile.TemporaryDirectory() as outside_dir,
+    ):
         old_appdata = os.environ.get("APPDATA")
         os.environ["APPDATA"] = appdata_dir
         try:
@@ -267,7 +299,9 @@ def test_load_preset_rejects_path_outside_allowlisted_roots():
 
             try:
                 config.load_preset(outside_path)
-                assert False, "Expected PresetValidationError for outside allowlisted roots"
+                assert False, (
+                    "Expected PresetValidationError for outside allowlisted roots"
+                )
             except config.PresetValidationError as e:
                 assert "allowed preset roots" in str(e)
         finally:
@@ -320,7 +354,18 @@ def test_preset_rejects_string_booleans():
 
 def test_eq_band_frequencies_round_trip():
     data = Preset(name="Auto EQ").to_dict()
-    data["eq"]["band_freqs"] = [72.0, 144.0, 300.0, 650.0, 1300.0, 2600.0, 5100.0, 8200.0, 11800.0, 15500.0]
+    data["eq"]["band_freqs"] = [
+        72.0,
+        144.0,
+        300.0,
+        650.0,
+        1300.0,
+        2600.0,
+        5100.0,
+        8200.0,
+        11800.0,
+        15500.0,
+    ]
 
     preset = Preset.from_dict(data)
 
@@ -332,13 +377,37 @@ def test_saved_auto_eq_preset_round_trips_dynamic_band_frequencies():
         old_appdata = os.environ.get("APPDATA")
         os.environ["APPDATA"] = appdata_dir
         try:
-            dynamic_freqs = [83.0, 205.0, 310.0, 490.0, 760.0, 2300.0, 3650.0, 5800.0, 8400.0, 15600.0]
+            dynamic_freqs = [
+                83.0,
+                205.0,
+                310.0,
+                490.0,
+                760.0,
+                2300.0,
+                3650.0,
+                5800.0,
+                8400.0,
+                15600.0,
+            ]
             preset = Preset(name="Auto EQ Dynamic")
             preset.eq.band_freqs = dynamic_freqs
-            preset.eq.band_gains = [-1.0, 0.0, 0.5, -0.3, 1.0, 2.4, -1.2, 0.7, -0.4, 1.1]
+            preset.eq.band_gains = [
+                -1.0,
+                0.0,
+                0.5,
+                -0.3,
+                1.0,
+                2.4,
+                -1.2,
+                0.7,
+                -0.4,
+                1.1,
+            ]
             preset.eq.band_qs = [1.0, 1.4, 1.6, 1.8, 2.1, 4.8, 2.4, 1.9, 1.3, 0.8]
 
-            path = config.save_preset(preset, config.get_presets_dir() / "auto_eq_dynamic.json")
+            path = config.save_preset(
+                preset, config.get_presets_dir() / "auto_eq_dynamic.json"
+            )
             loaded = config.load_preset(path)
 
             assert loaded.eq.band_freqs == dynamic_freqs

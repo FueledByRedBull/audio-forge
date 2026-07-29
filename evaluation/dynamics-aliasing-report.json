@@ -1,0 +1,93 @@
+{
+  "schema_version": 2,
+  "audible_change": false,
+  "generated_at_utc": "2026-07-29T15:24:56.600773+00:00",
+  "experiment": "48 kHz dynamics aliasing against aligned 192 kHz reference",
+  "predefined_materiality_gate": {
+    "worst_folded_out_of_expected_error_db_max": -30.0
+  },
+  "material_artifact_detected": false,
+  "high_rate_control_law_mismatch_detected": true,
+  "decision": "retain current dynamics path; no oversampling justified",
+  "metrics": {
+    "median_relative_waveform_error_db": -22.69060662518921,
+    "worst_relative_waveform_error_db": -19.001835719980615,
+    "median_folded_out_of_expected_error_db": -45.95564596963321,
+    "worst_folded_out_of_expected_error_db": -43.454789994894405
+  },
+  "cases": [
+    {
+      "id": "carrier_8k",
+      "carrier_hz": 8000.0,
+      "modulation_hz": 37.0,
+      "alignment_lag_samples": 0,
+      "relative_waveform_error_db": -19.001835719980615,
+      "folded_out_of_expected_error_db": -43.454789994894405,
+      "base_runtime_ms": 63.75699999999999,
+      "reference_runtime_ms": 247.03240000000002,
+      "base_peak_gain_reduction_db": 16.455915451049805,
+      "reference_peak_gain_reduction_db": 17.137773513793945
+    },
+    {
+      "id": "carrier_11k",
+      "carrier_hz": 11000.0,
+      "modulation_hz": 73.0,
+      "alignment_lag_samples": 0,
+      "relative_waveform_error_db": -34.82294332702055,
+      "folded_out_of_expected_error_db": -53.30385886557906,
+      "base_runtime_ms": 63.2032,
+      "reference_runtime_ms": 292.4113,
+      "base_peak_gain_reduction_db": 16.86142921447754,
+      "reference_peak_gain_reduction_db": 17.001239776611328
+    },
+    {
+      "id": "carrier_15k",
+      "carrier_hz": 15000.0,
+      "modulation_hz": 113.0,
+      "alignment_lag_samples": 0,
+      "relative_waveform_error_db": -25.511439358287017,
+      "folded_out_of_expected_error_db": -47.70959094355128,
+      "base_runtime_ms": 81.4441,
+      "reference_runtime_ms": 417.26000000000005,
+      "base_peak_gain_reduction_db": 16.1809024810791,
+      "reference_peak_gain_reduction_db": 16.64676856994629
+    },
+    {
+      "id": "carrier_18k",
+      "carrier_hz": 18000.0,
+      "modulation_hz": 157.0,
+      "alignment_lag_samples": 0,
+      "relative_waveform_error_db": -19.869773892091406,
+      "folded_out_of_expected_error_db": -44.20170099571515,
+      "base_runtime_ms": 102.8802,
+      "reference_runtime_ms": 406.68539999999996,
+      "base_peak_gain_reduction_db": 15.484599113464355,
+      "reference_peak_gain_reduction_db": 16.35672378540039
+    }
+  ],
+  "configuration": {
+    "deesser_enabled": false,
+    "compressor_enabled": true,
+    "compressor_threshold_db": -24.0,
+    "compressor_ratio": 8.0,
+    "compressor_attack_ms": 0.5,
+    "compressor_release_ms": 50.0,
+    "compressor_makeup_gain_db": 0.0,
+    "compressor_adaptive_release": false,
+    "compressor_sidechain_highpass_enabled": false,
+    "limiter_enabled": false,
+    "return_output_audio": true,
+    "base_sample_rate": 48000,
+    "reference_sample_rate": 192000,
+    "reference_downsampler": "scipy.signal.resample_poly"
+  },
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
+  },
+  "limitations": [
+    "This is a focused worst-case diagnostic, not a perceptual listening result.",
+    "The 192 kHz render is a high-rate implementation reference, not an analytic alias-free compressor.",
+    "Broadband waveform error is reported separately because it includes sample-peak detector and envelope differences, not only folded inharmonic energy."
+  ]
+}

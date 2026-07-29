@@ -63,6 +63,8 @@ jobs:
         run: python python/tools/check_versions.py
       - name: Workflow definition check
         run: python python/tools/check_workflows.py
+      - name: Evaluation evidence hygiene
+        run: python python/tools/check_evaluation_hygiene.py
       - name: Package source smoke
         run: python python/tools/package_smoke.py --source-only
       - name: Pytest

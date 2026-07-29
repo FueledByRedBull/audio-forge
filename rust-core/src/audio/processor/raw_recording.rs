@@ -95,4 +95,73 @@ impl AudioProcessor {
     pub fn set_output_mute(&self, muted: bool) {
         self.output_muted.store(muted, Ordering::Release);
     }
+
+    /// Queue a mono calibration probe for the selected output stream.
+    ///
+    /// The output callback duplicates the mono samples across the active
+    /// endpoint's channels and temporarily drains the normal monitor path.
+    pub fn queue_output_probe(&self, samples: &[f32]) -> Result<(), String> {
+        if !self.is_running() {
+            return Err("Audio processor must be running before queuing a probe".to_string());
+        }
+        if samples.is_empty() {
+            return Err("Output probe must contain at least one sample".to_string());
+        }
+        if samples.iter().any(|sample| !sample.is_finite()) {
+            return Err("Output probe contains non-finite samples".to_string());
+        }
+        if self.output_probe_active.load(Ordering::Acquire)
+            || self
+                .output_probe_cancel_requested
+                .load(Ordering::Acquire)
+        {
+            return Err("An output probe is already active".to_string());
+        }
+
+        let max_samples =
+            self.output_sample_rate() as usize * MAX_OUTPUT_PROBE_SECONDS;
+        if samples.len() > max_samples {
+            return Err(format!(
+                "Output probe exceeds the {} second limit",
+                MAX_OUTPUT_PROBE_SECONDS
+            ));
+        }
+
+        let mut producer_guard = self
+            .output_probe_producer
+            .lock()
+            .map_err(|_| "Failed to access output probe buffer".to_string())?;
+        let producer = producer_guard
+            .as_mut()
+            .ok_or_else(|| "Output probe buffer is unavailable".to_string())?;
+        if producer.free_len() != producer.capacity() {
+            return Err("Output probe buffer still contains stale samples".to_string());
+        }
+        let written = producer.write(samples);
+        if written != samples.len() {
+            return Err(format!(
+                "Output probe write was incomplete ({written}/{})",
+                samples.len()
+            ));
+        }
+
+        self.output_probe_complete.store(false, Ordering::Release);
+        self.output_probe_cancel_requested
+            .store(false, Ordering::Release);
+        self.output_probe_active.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Whether the last queued selected-route probe has finished rendering.
+    pub fn is_output_probe_complete(&self) -> bool {
+        self.output_probe_complete.load(Ordering::Acquire)
+    }
+
+    /// Cancel the selected-route probe and ask the output callback to drain it.
+    pub fn cancel_output_probe(&self) {
+        if self.output_probe_active.load(Ordering::Acquire) {
+            self.output_probe_cancel_requested
+                .store(true, Ordering::Release);
+        }
+    }
 }

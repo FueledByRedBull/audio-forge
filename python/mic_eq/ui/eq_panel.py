@@ -14,17 +14,27 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QPushButton,
     QDoubleSpinBox,
+    QComboBox,
     QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
+from .auto_eq_explanation import explain_auto_eq
 from .eq_curve import EQCurveWidget
 from .rate_limiter import RateLimiter
+from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
     SPACING_TIGHT,
     PRIMARY_LABEL_STYLE,
     status_chip_style,
 )
-from ..config import EQ_FREQUENCIES
+from .theme import COMPACT_CONTROL_STYLE
+from ..config import (
+    EQBandSettings,
+    EQSettings,
+    EQ_FREQUENCIES,
+    EQ_SCHEMA_VERSION,
+    EQ_SLOPES_DB_PER_OCTAVE,
+)
 
 
 # Default frequencies for each band
@@ -43,6 +53,26 @@ BAND_FREQUENCIES = [
 
 # Numeric frequencies in Hz for curve calculation (single source of truth from config)
 BAND_FREQUENCIES_HZ = list(EQ_FREQUENCIES)
+
+EQ_FILTER_OPTIONS = (
+    ("Bell", "bell"),
+    ("Notch", "notch"),
+    ("Low shelf", "low_shelf"),
+    ("High shelf", "high_shelf"),
+    ("High-pass", "high_pass"),
+    ("Low-pass", "low_pass"),
+)
+PASS_FILTER_TYPES = frozenset({"high_pass", "low_pass"})
+GAIN_FILTER_TYPES = frozenset({"bell", "low_shelf", "high_shelf"})
+Q_FILTER_TYPES = frozenset({"bell", "notch", "low_shelf", "high_shelf"})
+
+
+def _default_filter_type(band_index: int) -> str:
+    if band_index == 0:
+        return "low_shelf"
+    if band_index == 9:
+        return "high_shelf"
+    return "bell"
 
 
 def _format_frequency_label(freq_hz: float) -> str:
@@ -84,6 +114,7 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
     if not diagnostics:
         return "Auto-EQ: no calibration diagnostics", "idle", ""
 
+    explanation = explain_auto_eq(diagnostics)
     confidence = float(diagnostics.get("analysis_confidence", 0.0) or 0.0)
     eq_confidence = float(diagnostics.get("eq_confidence", confidence) or 0.0)
     capture_confidence = float(diagnostics.get("capture_confidence", confidence) or 0.0)
@@ -92,37 +123,22 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
     after = diagnostics.get("validation_after_error_db")
     scale = diagnostics.get("validation_gain_scale")
     used_fallback = bool(diagnostics.get("used_spectrum_fallback", False))
-    band_confidences = diagnostics.get("band_confidences") or []
-    band_gains = diagnostics.get("band_gains") or []
-    low_confidence = diagnostics.get("low_confidence_active_bands")
+    low_confidence = diagnostics.get("low_confidence_active_bands", 0)
     headroom = diagnostics.get("headroom_validation") or {}
     headroom_after = headroom.get("after") if isinstance(headroom, dict) else None
     headroom_safe = bool(headroom.get("safe", True)) if isinstance(headroom, dict) else True
     headroom_advisory = bool(headroom.get("advisory", False)) if isinstance(headroom, dict) else False
     headroom_scale = headroom.get("gain_scale") if isinstance(headroom, dict) else None
-    if isinstance(band_confidences, list):
-        if low_confidence is None and isinstance(band_gains, list) and len(band_gains) == len(band_confidences):
-            low_confidence = sum(
-                1
-                for gain, value in zip(band_gains, band_confidences)
-                if abs(float(gain)) >= 0.25 and float(value) < 0.45
-            )
-        elif low_confidence is None:
-            low_confidence = sum(1 for value in band_confidences if float(value) < 0.45)
-    if low_confidence is None:
+    if not isinstance(low_confidence, int) or isinstance(low_confidence, bool):
         low_confidence = 0
 
-    if confidence >= 0.72:
-        state = "ok"
-    elif confidence >= 0.45:
-        state = "warn"
-    else:
-        state = "bad"
+    state = explanation.state
     if not headroom_safe:
         state = "warn" if state == "ok" else state
 
     text = (
-        f"Auto-EQ: overall {_percent(confidence)} | "
+        f"Auto-EQ: {explanation.summary} | "
+        f"overall {_percent(confidence)} | "
         f"EQ {_percent(eq_confidence)} | "
         f"capture {_percent(capture_confidence)} | "
         f"validation {_percent(validation_confidence)} | "
@@ -156,8 +172,16 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
     else:
         tooltip_extra = ""
 
+    explanation_details = "\n".join(
+        f"- {detail}" for detail in explanation.details
+    )
     tooltip = (
         "Auto-EQ calibration diagnostics\n"
+        f"Result: {explanation.summary}\n"
+        f"Reason code: {explanation.outcome_code}\n"
+        f"{explanation_details}\n"
+        f"Raw recommendation status: "
+        f"{diagnostics.get('recommendation_status', '--')}\n"
         f"Overall confidence: {_percent(confidence)}\n"
         f"EQ confidence: {_percent(eq_confidence)}\n"
         f"Capture confidence: {_percent(capture_confidence)}\n"
@@ -190,6 +214,15 @@ class EQBandSlider(QWidget):
         self.processor = processor
         self.curve_callback = curve_callback
         self.frequency_callback = frequency_callback
+        self.bandwidth_mode = "q"
+        self.bandwidth_octaves: float | None = None
+        self.stage = "combined"
+        # Controls intentionally display coarse, useful increments. Keep exact
+        # programmatic values so native DSP, graph rendering, and preset
+        # round-trips agree until the user edits the corresponding control.
+        self._frequency_hz = float(frequency_hz)
+        self._gain_db = 0.0
+        self._q = 1.41
         self._rate_limiter = RateLimiter(interval_ms=33)  # ~30Hz
         self._frequency_rate_limiter = RateLimiter(interval_ms=33)
         self._setup_ui(label, frequency_hz)
@@ -202,6 +235,29 @@ class EQBandSlider(QWidget):
 
         # Set size policy to allow horizontal expansion
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        self.band_enabled_checkbox = QCheckBox("On")
+        self.band_enabled_checkbox.setChecked(True)
+        self.band_enabled_checkbox.setToolTip("Enable this EQ band")
+        self.band_enabled_checkbox.toggled.connect(self._on_band_enabled_changed)
+        layout.addWidget(
+            self.band_enabled_checkbox,
+            alignment=Qt.AlignmentFlag.AlignCenter,
+        )
+
+        self.filter_type_combo = QComboBox()
+        for display_name, filter_type in EQ_FILTER_OPTIONS:
+            self.filter_type_combo.addItem(display_name, filter_type)
+        self.filter_type_combo.setMaximumWidth(100)
+        self.filter_type_combo.setMinimumWidth(60)
+        self.filter_type_combo.setToolTip("Filter type")
+        self.filter_type_combo.currentIndexChanged.connect(
+            self._on_filter_type_changed
+        )
+        layout.addWidget(
+            self.filter_type_combo,
+            alignment=Qt.AlignmentFlag.AlignCenter,
+        )
 
         # Gain value label
         self.gain_label = QLabel("0")
@@ -226,7 +282,7 @@ class EQBandSlider(QWidget):
         # Frequency label
         self.freq_label = QLabel(_format_frequency_label(frequency_hz))
         self.freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.freq_label.setStyleSheet("font-size: 9px;")
+        self.freq_label.setStyleSheet(COMPACT_CONTROL_STYLE)
         self.freq_label.setToolTip(f"{label} band center frequency")
         layout.addWidget(self.freq_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -236,7 +292,7 @@ class EQBandSlider(QWidget):
         freq_layout.setSpacing(2)
 
         freq_label = QLabel("Hz:")
-        freq_label.setStyleSheet("font-size: 8px;")
+        freq_label.setStyleSheet(COMPACT_CONTROL_STYLE)
         freq_layout.addWidget(freq_label)
 
         self.frequency_spinbox = QDoubleSpinBox()
@@ -247,7 +303,7 @@ class EQBandSlider(QWidget):
         self.frequency_spinbox.setMaximumWidth(100)
         self.frequency_spinbox.setMinimumWidth(60)
         self.frequency_spinbox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.frequency_spinbox.setStyleSheet("font-size: 8px;")
+        self.frequency_spinbox.setStyleSheet(COMPACT_CONTROL_STYLE)
         self.frequency_spinbox.setToolTip("Center frequency in Hz")
         self.frequency_spinbox.valueChanged.connect(self._on_frequency_changed)
         freq_layout.addWidget(self.frequency_spinbox)
@@ -259,9 +315,9 @@ class EQBandSlider(QWidget):
         q_layout.setContentsMargins(0, 0, 0, 0)
         q_layout.setSpacing(2)
 
-        q_label = QLabel("Q:")
-        q_label.setStyleSheet("font-size: 8px;")
-        q_layout.addWidget(q_label)
+        self.q_label = QLabel("Q:")
+        self.q_label.setStyleSheet(COMPACT_CONTROL_STYLE)
+        q_layout.addWidget(self.q_label)
 
         self.q_spinbox = QDoubleSpinBox()
         self.q_spinbox.setRange(0.1, 10.0)
@@ -271,15 +327,60 @@ class EQBandSlider(QWidget):
         self.q_spinbox.setMaximumWidth(100)
         self.q_spinbox.setMinimumWidth(60)
         self.q_spinbox.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.q_spinbox.setStyleSheet("font-size: 8px;")
+        self.q_spinbox.setStyleSheet(COMPACT_CONTROL_STYLE)
         self.q_spinbox.valueChanged.connect(self._on_q_changed)
         q_layout.addWidget(self.q_spinbox)
 
         layout.addLayout(q_layout)
 
+        slope_layout = QHBoxLayout()
+        slope_layout.setContentsMargins(0, 0, 0, 0)
+        slope_layout.setSpacing(2)
+
+        self.slope_label = QLabel("Slope:")
+        self.slope_label.setStyleSheet(COMPACT_CONTROL_STYLE)
+        slope_layout.addWidget(self.slope_label)
+
+        self.slope_combo = QComboBox()
+        for slope in sorted(EQ_SLOPES_DB_PER_OCTAVE):
+            self.slope_combo.addItem(f"{slope}", slope)
+        self.slope_combo.setMaximumWidth(100)
+        self.slope_combo.setMinimumWidth(60)
+        self.slope_combo.setToolTip("Pass-filter slope in dB per octave")
+        self.slope_combo.currentIndexChanged.connect(self._on_slope_changed)
+        slope_layout.addWidget(self.slope_combo)
+
+        layout.addLayout(slope_layout)
+        band_name = f"EQ band {self.band_index + 1}"
+        bind_label(
+            freq_label,
+            self.frequency_spinbox,
+            name=f"{band_name} center frequency",
+        )
+        bind_label(
+            self.q_label,
+            self.q_spinbox,
+            name=f"{band_name} Q",
+        )
+        bind_label(
+            self.slope_label,
+            self.slope_combo,
+            name=f"{band_name} pass-filter slope",
+        )
+        set_accessible_group(
+            (
+                (self.band_enabled_checkbox, f"Enable {band_name}", None),
+                (self.filter_type_combo, f"{band_name} filter type", None),
+                (self.slider, f"{band_name} gain", "Gain from minus 12 to plus 12 decibels."),
+            )
+        )
+        self.set_filter_type(_default_filter_type(self.band_index))
+        self._set_parameter_availability()
+
     def _on_slider_changed(self, value):
         """Handle slider value change."""
         gain_db = value / 10.0
+        self._gain_db = gain_db
         self.gain_label.setText(f"{gain_db:+.1f}" if gain_db != 0 else "0")
         # Rate-limit the processor update
         self._rate_limiter.call(
@@ -298,6 +399,9 @@ class EQBandSlider(QWidget):
 
     def _on_q_changed(self, value):
         """Handle Q spinbox value change."""
+        self._q = float(value)
+        self.bandwidth_mode = "q"
+        self.bandwidth_octaves = None
         # Rate-limit the processor update
         self._rate_limiter.call(
             lambda q=value: self._update_q(q)
@@ -309,8 +413,56 @@ class EQBandSlider(QWidget):
         if self.curve_callback:
             self.curve_callback()
 
+    def _on_filter_type_changed(self) -> None:
+        """Apply a manual filter-type change."""
+        filter_type = self.filter_type()
+        self.bandwidth_mode = "q"
+        self.bandwidth_octaves = None
+        self._set_parameter_availability()
+        self.processor.set_eq_band_filter_type(self.band_index, filter_type)
+        if self.curve_callback:
+            self.curve_callback()
+
+    def _on_slope_changed(self) -> None:
+        """Apply an even-order pass-filter slope."""
+        slope = self.slope_db_per_octave()
+        self.processor.set_eq_band_slope(self.band_index, slope)
+        if self.curve_callback:
+            self.curve_callback()
+
+    def _on_band_enabled_changed(self, enabled: bool) -> None:
+        """Apply one band's click-safe bypass state."""
+        self.processor.set_eq_band_enabled(self.band_index, enabled)
+        if self.curve_callback:
+            self.curve_callback()
+
+    def _set_parameter_availability(self) -> None:
+        filter_type = self.filter_type()
+        gain_enabled = filter_type in GAIN_FILTER_TYPES
+        q_enabled = filter_type in Q_FILTER_TYPES
+        slope_enabled = filter_type in PASS_FILTER_TYPES
+        self.slider.setEnabled(gain_enabled)
+        self.gain_label.setEnabled(gain_enabled)
+        self.q_spinbox.setEnabled(q_enabled)
+        self.q_label.setEnabled(q_enabled)
+        self.slope_combo.setEnabled(slope_enabled)
+        self.slope_label.setEnabled(slope_enabled)
+        if filter_type == "notch":
+            self.filter_type_combo.setToolTip(
+                "Notch: gain is ignored; Q controls rejection width"
+            )
+        elif slope_enabled:
+            self.filter_type_combo.setToolTip(
+                "Pass filter: gain and Q are ignored; slope controls order"
+            )
+        else:
+            self.filter_type_combo.setToolTip("Filter type")
+
     def _on_frequency_changed(self, value):
         """Handle frequency spinbox changes."""
+        self._frequency_hz = float(value)
+        self.bandwidth_mode = "q"
+        self.bandwidth_octaves = None
         self.set_frequency_label(value)
         self._frequency_rate_limiter.call(
             lambda freq=value: self._update_frequency(freq)
@@ -327,23 +479,31 @@ class EQBandSlider(QWidget):
 
     def set_gain(self, gain_db: float):
         """Set gain value programmatically."""
+        self._gain_db = min(12.0, max(-12.0, float(gain_db)))
         self.slider.blockSignals(True)
-        self.slider.setValue(int(gain_db * 10))
+        self.slider.setValue(int(round(self._gain_db * 10.0)))
         self.slider.blockSignals(False)
-        self.gain_label.setText(f"{gain_db:+.1f}" if gain_db != 0 else "0")
+        displayed_gain = self.slider.value() / 10.0
+        self.gain_label.setText(
+            f"{displayed_gain:+.1f}" if displayed_gain != 0 else "0"
+        )
 
     def set_q(self, q: float):
         """Set Q value programmatically."""
+        self._q = min(10.0, max(0.1, float(q)))
         self.q_spinbox.blockSignals(True)
-        self.q_spinbox.setValue(q)
+        self.q_spinbox.setValue(self._q)
         self.q_spinbox.blockSignals(False)
+        self.bandwidth_mode = "q"
+        self.bandwidth_octaves = None
 
     def set_frequency(self, frequency_hz: float):
         """Set center frequency programmatically."""
+        self._frequency_hz = min(20_000.0, max(20.0, float(frequency_hz)))
         self.frequency_spinbox.blockSignals(True)
-        self.frequency_spinbox.setValue(frequency_hz)
+        self.frequency_spinbox.setValue(self._frequency_hz)
         self.frequency_spinbox.blockSignals(False)
-        self.set_frequency_label(frequency_hz)
+        self.set_frequency_label(self._frequency_hz)
 
     def set_frequency_label(self, frequency_hz: float) -> None:
         """Set displayed center frequency."""
@@ -351,13 +511,101 @@ class EQBandSlider(QWidget):
 
     def frequency_hz(self) -> float:
         """Return current center frequency."""
-        return float(self.frequency_spinbox.value())
+        return self._frequency_hz
+
+    def filter_type(self) -> str:
+        """Return the stable serialized filter type."""
+        value = self.filter_type_combo.currentData()
+        return str(value) if value is not None else "bell"
+
+    def slope_db_per_octave(self) -> int:
+        """Return the selected pass-filter slope."""
+        value = self.slope_combo.currentData()
+        return int(value) if value is not None else 12
+
+    def band_enabled(self) -> bool:
+        """Return whether this band participates in the response."""
+        return self.band_enabled_checkbox.isChecked()
+
+    def set_filter_type(self, filter_type: str) -> None:
+        """Set filter type without producing a control callback."""
+        index = self.filter_type_combo.findData(filter_type)
+        if index < 0:
+            raise ValueError(f"Unsupported EQ filter type: {filter_type}")
+        self.filter_type_combo.blockSignals(True)
+        self.filter_type_combo.setCurrentIndex(index)
+        self.filter_type_combo.blockSignals(False)
+        self._set_parameter_availability()
+
+    def set_slope(self, slope_db_per_octave: int) -> None:
+        """Set pass-filter slope without producing a control callback."""
+        index = self.slope_combo.findData(int(slope_db_per_octave))
+        if index < 0:
+            raise ValueError(
+                f"Unsupported EQ slope: {slope_db_per_octave}"
+            )
+        self.slope_combo.blockSignals(True)
+        self.slope_combo.setCurrentIndex(index)
+        self.slope_combo.blockSignals(False)
+
+    def set_band_enabled(self, enabled: bool) -> None:
+        """Set per-band bypass without producing a control callback."""
+        self.band_enabled_checkbox.blockSignals(True)
+        self.band_enabled_checkbox.setChecked(bool(enabled))
+        self.band_enabled_checkbox.blockSignals(False)
+
+    def native_config(self) -> tuple[str, float, float, float, int, bool]:
+        """Return the exact native v2 tuple for this band."""
+        return (
+            self.filter_type(),
+            self.frequency_hz(),
+            self._gain_db,
+            self._q,
+            self.slope_db_per_octave(),
+            self.band_enabled(),
+        )
+
+    def settings(self) -> EQBandSettings:
+        """Return this band's immutable serialized settings."""
+        filter_type, frequency, gain, q, slope, enabled = self.native_config()
+        return EQBandSettings(
+            filter_type=filter_type,
+            frequency_hz=frequency,
+            gain_db=gain,
+            q=q,
+            bandwidth_mode=self.bandwidth_mode,
+            bandwidth_octaves=self.bandwidth_octaves,
+            slope_db_per_octave=slope,
+            stage=self.stage,
+            enabled=enabled,
+        )
+
+    def set_settings(self, settings: EQBandSettings) -> None:
+        """Load an immutable typed band without callback feedback."""
+        self.set_filter_type(settings.filter_type)
+        self.set_frequency(settings.frequency_hz)
+        self.set_gain(settings.gain_db)
+        self.set_q(settings.q)
+        self.set_slope(settings.slope_db_per_octave)
+        self.set_band_enabled(settings.enabled)
+        self.bandwidth_mode = settings.bandwidth_mode
+        self.bandwidth_octaves = settings.bandwidth_octaves
+        self.stage = settings.stage
 
     def reset(self, frequency_hz: float):
         """Reset to 0 dB, default Q, and default frequency."""
+        self.set_filter_type(_default_filter_type(self.band_index))
+        self.set_slope(12)
+        self.set_band_enabled(True)
         self.set_gain(0.0)
         self.set_q(1.41)
         self.set_frequency(frequency_hz)
+        self.processor.set_eq_band_filter_type(
+            self.band_index,
+            _default_filter_type(self.band_index),
+        )
+        self.processor.set_eq_band_slope(self.band_index, 12)
+        self.processor.set_eq_band_enabled(self.band_index, True)
         self.processor.set_eq_band_gain(self.band_index, 0.0)
         self.processor.set_eq_band_q(self.band_index, 1.41)
         self.processor.set_eq_band_frequency(self.band_index, frequency_hz)
@@ -366,12 +614,16 @@ class EQBandSlider(QWidget):
 class EQPanel(QWidget):
     """10-Band Parametric EQ control panel."""
 
+    configurationEditStarted = pyqtSignal()
+    configurationEditFinished = pyqtSignal(str)
+
     def __init__(self, processor):
         super().__init__()
         self.processor = processor
         self.band_sliders = []
         self.band_freqs_hz = list(BAND_FREQUENCIES_HZ)
         self._auto_eq_diagnostics: dict | None = None
+        self._curve_rate_limiter = RateLimiter(interval_ms=33)
         self._setup_ui()
 
     def _setup_ui(self):
@@ -407,6 +659,20 @@ class EQPanel(QWidget):
         self.curve_widget = EQCurveWidget()
         self.curve_widget.setFixedHeight(100)
         self.curve_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.curve_widget.setToolTip(
+            "Drag a handle to edit frequency and gain. Notch and pass filters "
+            "move horizontally only. Use [ and ] plus arrow keys for keyboard editing."
+        )
+        self.curve_widget.bandDragStarted.connect(
+            self._on_curve_drag_started
+        )
+        self.curve_widget.bandDragged.connect(self._on_curve_band_dragged)
+        self.curve_widget.bandDragFinished.connect(
+            self._on_curve_drag_finished
+        )
+        self.curve_widget.bandDragCancelled.connect(
+            self._on_curve_drag_cancelled
+        )
         eq_layout.addWidget(self.curve_widget)
 
         self.auto_eq_diag_label = QLabel("Auto-EQ: no calibration diagnostics")
@@ -482,11 +748,10 @@ class EQPanel(QWidget):
 
     def _reset_all(self):
         """Reset all bands to 0 dB."""
-        for i, slider in enumerate(self.band_sliders):
-            slider.reset(BAND_FREQUENCIES_HZ[i])
+        defaults = EQSettings()
+        self._apply_typed_bands(defaults.bands)
         self.curve_widget.clear_band_markers()
         self.set_auto_eq_diagnostics(None)
-        self._update_curve()
 
     def _on_band_frequency_changed(self, band_index: int, frequency_hz: float) -> None:
         """Synchronize manual frequency edits with panel state."""
@@ -496,15 +761,73 @@ class EQPanel(QWidget):
         if self.curve_widget.band_markers:
             self.curve_widget.set_band_markers(self.band_freqs_hz)
 
+    def _on_curve_drag_started(self, _band_index: int) -> None:
+        """Begin one history transaction for the whole drag/key gesture."""
+        self.configurationEditStarted.emit()
+
+    def _on_curve_band_dragged(
+        self,
+        band_index: int,
+        frequency_hz: float,
+        gain_db: float,
+    ) -> None:
+        """Rate-limit graph edits while the curve itself tracks immediately."""
+        self._curve_rate_limiter.call(
+            lambda: self._apply_curve_band_edit(
+                band_index,
+                frequency_hz,
+                gain_db,
+            )
+        )
+
+    def _apply_curve_band_edit(
+        self,
+        band_index: int,
+        frequency_hz: float,
+        gain_db: float,
+    ) -> None:
+        if not 0 <= band_index < len(self.band_sliders):
+            raise ValueError(f"Invalid EQ band index: {band_index}")
+        slider = self.band_sliders[band_index]
+        slider.set_frequency(min(20_000.0, max(20.0, frequency_hz)))
+        if slider.filter_type() in GAIN_FILTER_TYPES:
+            slider.set_gain(min(12.0, max(-12.0, gain_db)))
+        slider.bandwidth_mode = "q"
+        slider.bandwidth_octaves = None
+        self.band_freqs_hz[band_index] = slider.frequency_hz()
+        native_bands = [band.native_config() for band in self.band_sliders]
+        self.processor.apply_eq_settings_v2(native_bands)
+        self.curve_widget.set_all_params(native_bands)
+        if self.curve_widget.band_markers:
+            self.curve_widget.set_band_markers(self.band_freqs_hz)
+
+    def _on_curve_drag_finished(
+        self,
+        band_index: int,
+        frequency_hz: float,
+        gain_db: float,
+    ) -> None:
+        self._on_curve_band_dragged(band_index, frequency_hz, gain_db)
+        self._curve_rate_limiter.flush()
+        self.configurationEditFinished.emit("EQ graph edit")
+
+    def _on_curve_drag_cancelled(
+        self,
+        band_index: int,
+        frequency_hz: float,
+        gain_db: float,
+    ) -> None:
+        self._on_curve_band_dragged(band_index, frequency_hz, gain_db)
+        self._curve_rate_limiter.flush()
+        self.configurationEditFinished.emit("Cancelled EQ graph edit")
+
     def _update_curve(self):
         """Update frequency response curve based on current band parameters."""
         bands = []
         for i, slider in enumerate(self.band_sliders):
             freq = slider.frequency_hz()
             self.band_freqs_hz[i] = freq
-            gain = slider.slider.value() / 10.0
-            q = slider.q_spinbox.value()
-            bands.append((freq, gain, q))
+            bands.append(slider.native_config())
         self.curve_widget.set_all_params(bands)
 
     def _preset_voice(self):
@@ -546,29 +869,24 @@ class EQPanel(QWidget):
         if freqs is None:
             freqs = list(BAND_FREQUENCIES_HZ)
 
-        # Build band parameter list
+        # Build typed historical-layout bands.
         bands = []
         for i in range(min(len(gains), len(self.band_sliders))):
             freq = freqs[i] if i < len(freqs) else BAND_FREQUENCIES_HZ[i]
             gain = gains[i]
             q = qs[i] if i < len(qs) else 1.41
-            bands.append((freq, gain, q))
+            bands.append(
+                EQBandSettings(
+                    filter_type=_default_filter_type(i),
+                    frequency_hz=float(freq),
+                    gain_db=float(gain),
+                    q=float(q),
+                )
+            )
 
-        # Apply to processor atomically using batch method
-        self.processor.apply_eq_settings(bands)
+        self._apply_typed_bands(tuple(bands))
         if len(bands) == len(self.band_freqs_hz):
-            self.band_freqs_hz = [freq for freq, _gain, _q in bands]
-
-        # Update UI sliders
-        for i, (freq, gain, q) in enumerate(bands):
-            if i < len(self.band_sliders):
-                slider = self.band_sliders[i]
-                slider.set_gain(gain)
-                slider.set_q(q)
-                slider.set_frequency(float(freq))
-
-        # Update curve
-        self._update_curve()
+            self.band_freqs_hz = [band.frequency_hz for band in bands]
         if show_markers:
             self.curve_widget.set_band_markers(self.band_freqs_hz)
         else:
@@ -591,34 +909,44 @@ class EQPanel(QWidget):
         if len(bands) != 10:
             raise ValueError(f"Expected 10 bands, got {len(bands)}")
 
-        # Update processor atomically using new batch method from plan 20-01
-        self.processor.apply_eq_settings(bands)
-        self.band_freqs_hz = [float(freq) for freq, _gain, _q in bands]
-
-        # Update UI sliders without triggering valueChanged signals
-        for i, (freq, gain, q) in enumerate(bands):
-            if i < len(self.band_sliders):
-                slider = self.band_sliders[i]
-
-                # Block signals to prevent feedback loops
-                slider.slider.blockSignals(True)
-                slider.q_spinbox.blockSignals(True)
-                slider.frequency_spinbox.blockSignals(True)
-
-                # Update slider and spinbox
-                slider.set_gain(gain)
-                slider.set_q(q)
-                slider.set_frequency(float(freq))
-
-                # Unblock signals
-                slider.slider.blockSignals(False)
-                slider.q_spinbox.blockSignals(False)
-                slider.frequency_spinbox.blockSignals(False)
-
-        # Update frequency response graph
-        self._update_curve()
+        typed_bands = tuple(
+            EQBandSettings(
+                filter_type=_default_filter_type(index),
+                frequency_hz=float(freq),
+                gain_db=float(gain),
+                q=float(q),
+            )
+            for index, (freq, gain, q) in enumerate(bands)
+        )
+        self._apply_typed_bands(typed_bands)
         self.curve_widget.set_band_markers(self.band_freqs_hz)
         self.set_auto_eq_diagnostics(diagnostics)
+
+    def _apply_typed_bands(
+        self,
+        bands: tuple[EQBandSettings, ...],
+    ) -> None:
+        """Apply one immutable typed snapshot to native DSP and controls."""
+        if len(bands) != len(self.band_sliders):
+            raise ValueError(
+                f"Expected {len(self.band_sliders)} bands, got {len(bands)}"
+            )
+        native_bands = [
+            (
+                band.filter_type,
+                band.frequency_hz,
+                band.gain_db,
+                band.q,
+                band.slope_db_per_octave,
+                band.enabled,
+            )
+            for band in bands
+        ]
+        self.processor.apply_eq_settings_v2(native_bands)
+        for slider, band in zip(self.band_sliders, bands):
+            slider.set_settings(band)
+        self.band_freqs_hz = [band.frequency_hz for band in bands]
+        self._update_curve()
 
     def set_auto_eq_diagnostics(self, diagnostics: dict | None) -> None:
         """Show the last Auto-EQ confidence and validation diagnostics."""
@@ -630,19 +958,22 @@ class EQPanel(QWidget):
 
     def get_settings(self) -> dict:
         """Get current EQ settings as a dictionary."""
-        gains = []
-        qs = []
-        freqs = []
-        for slider in self.band_sliders:
-            freqs.append(slider.frequency_hz())
-            gains.append(slider.slider.value() / 10.0)
-            qs.append(slider.q_spinbox.value())
+        settings = self.get_eq_settings()
         return {
-            'enabled': self.enabled_checkbox.isChecked(),
-            'band_freqs': freqs,
-            'band_gains': gains,
-            'band_qs': qs,
+            "schema_version": EQ_SCHEMA_VERSION,
+            "enabled": settings.enabled,
+            "bands": [band.to_dict() for band in settings.bands],
+            "band_freqs": settings.band_freqs,
+            "band_gains": settings.band_gains,
+            "band_qs": settings.band_qs,
         }
+
+    def get_eq_settings(self) -> EQSettings:
+        """Return the sole typed preset representation for the panel."""
+        return EQSettings(
+            enabled=self.enabled_checkbox.isChecked(),
+            bands=tuple(slider.settings() for slider in self.band_sliders),
+        )
 
     def get_current_band_params(self) -> list:
         """
@@ -653,9 +984,9 @@ class EQPanel(QWidget):
         """
         params = []
         for slider in self.band_sliders:
-            freq = slider.frequency_hz()
-            gain = slider.slider.value() / 10.0
-            q = slider.q_spinbox.value()
+            _filter_type, freq, gain, q, _slope, _enabled = (
+                slider.native_config()
+            )
             params.append((freq, gain, q))
         return params
 
@@ -671,19 +1002,7 @@ class EQPanel(QWidget):
         Returns:
             Dictionary with current band gains, Q values, and enabled state
         """
-        gains = []
-        qs = []
-        freqs = []
-        for slider in self.band_sliders:
-            freqs.append(slider.frequency_hz())
-            gains.append(slider.slider.value() / 10.0)
-            qs.append(slider.q_spinbox.value())
-        return {
-            'enabled': self.enabled_checkbox.isChecked(),
-            'band_freqs': freqs,
-            'band_gains': gains,
-            'band_qs': qs,
-        }
+        return self.get_settings()
 
     def restore_state(self, state: dict) -> None:
         """
@@ -692,26 +1011,27 @@ class EQPanel(QWidget):
         Args:
             state: Dictionary with 'enabled', 'band_gains', and 'band_qs' keys
         """
-        # Restore enabled state
-        if 'enabled' in state:
-            self.enabled_checkbox.setChecked(state['enabled'])
-
-        # Restore band settings
-        if 'band_gains' in state:
-            gains = state['band_gains']
-            qs = state.get('band_qs', [1.41] * len(gains))
-            freqs = state.get('band_freqs', BAND_FREQUENCIES_HZ)
-            self._apply_preset(gains, qs, freqs)
+        self.set_settings(state)
 
     def set_settings(self, settings: dict) -> None:
         """Apply settings from a dictionary."""
-        if 'enabled' in settings:
-            self.enabled_checkbox.setChecked(settings['enabled'])
-        if 'band_gains' in settings:
-            gains = settings['band_gains']
+        if "enabled" in settings:
+            self.enabled_checkbox.setChecked(bool(settings["enabled"]))
+        raw_bands = settings.get("bands")
+        if raw_bands is not None:
+            bands = tuple(
+                band
+                if isinstance(band, EQBandSettings)
+                else EQBandSettings.from_dict(band, index=index)
+                for index, band in enumerate(raw_bands)
+            )
+            self._apply_typed_bands(bands)
+            self.set_auto_eq_diagnostics(None)
+        elif "band_gains" in settings:
+            gains = settings["band_gains"]
             # Default to 1.41 Q for backwards compatibility with old presets
-            qs = settings.get('band_qs', [1.41] * len(gains))
-            freqs = settings.get('band_freqs', BAND_FREQUENCIES_HZ)
+            qs = settings.get("band_qs", [1.41] * len(gains))
+            freqs = settings.get("band_freqs", BAND_FREQUENCIES_HZ)
             show_markers = any(
                 abs(float(freq) - float(default_freq)) > 1e-6
                 for freq, default_freq in zip(freqs, BAND_FREQUENCIES_HZ)

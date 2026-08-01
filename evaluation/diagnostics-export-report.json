@@ -1,0 +1,43 @@
+{
+  "checks": {
+    "deterministic_for_fixed_inputs": true,
+    "forbidden_values_absent": true,
+    "non_finite_values_removed": true,
+    "privacy_contract_declared": true,
+    "raw_errors_reduced_to_presence": true,
+    "report_local_pseudonyms": true,
+    "schema": true,
+    "size_bounded": true
+  },
+  "generated_at": "2026-08-01T16:18:38.667264+00:00",
+  "limitations": [
+    "The snapshot is intentionally a coherent allowlisted state sample, not a raw application log.",
+    "Report-local device pseudonyms cannot correlate devices across exports.",
+    "Automated privacy checks cannot prove support completeness for every future diagnostic field; new fields require explicit allowlisting and tests."
+  ],
+  "metrics": {
+    "maximum_bytes": 131072,
+    "processing_section_count": 3,
+    "runtime_allowlisted_field_count": 7,
+    "serialized_bytes": 2258
+  },
+  "privacy_contract": {
+    "arbitrary_paths_included": false,
+    "environment_variables_included": false,
+    "pseudonyms_are_report_local": true,
+    "raw_audio_included": false,
+    "raw_device_names_included": false,
+    "secrets_included": false
+  },
+  "provenance": {
+    "fixture_contains_only_synthetic_identifiers": true,
+    "source_hashes": {
+      "python/mic_eq/diagnostics_export.py": "b3523a50262777fef975b60f768f0d85e9c46f6290896035682176a43b13082e",
+      "python/mic_eq/ui/main_window.py": "df9d2819ae1696a38a48d0fa34ea47b9413d227beccb6e9c175699e4f1f8d2a0",
+      "python/tests/test_diagnostics_export.py": "cbab4fef471abb010e8157a60d7f778cba995eff02c9857ee03ea41d00780d47",
+      "python/tools/evaluate_diagnostics_export.py": "bcca8a32189c4a6542e862979bb3fad9f0c09cf3e4d38d9dda7787aa37d88b5c"
+    }
+  },
+  "schema_version": 1,
+  "status": "passed"
+}

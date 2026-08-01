@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -110,6 +111,18 @@ def _download_asset(tag: str, repo: str, pattern: str, destination_dir: Path) ->
 
 
 def _download_direct_url(url: str, destination: Path) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "raw.githubusercontent.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in {None, 443}
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "direct release assets must use trusted raw.githubusercontent.com HTTPS"
+        )
     request = urllib.request.Request(
         url,
         headers={"User-Agent": "AudioForge-release-assets"},

@@ -175,6 +175,36 @@ mod tests {
     }
 
     #[test]
+    fn strength_smoothing_is_independent_of_backlog_chunking() {
+        let frame = [0.0; DEEPFILTER_FRAME_SIZE];
+        let frames = 4;
+
+        let batched_strength = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
+        let mut batched = DeepFilterProcessor::new(
+            batched_strength.clone(),
+            DeepFilterModel::LowLatency,
+        );
+        batched_strength.store(1.0_f32.to_bits(), Ordering::Relaxed);
+        for _ in 0..frames {
+            assert_eq!(batched.push_samples(&frame), DEEPFILTER_FRAME_SIZE);
+        }
+        batched.process_frames();
+
+        let streamed_strength = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
+        let mut streamed = DeepFilterProcessor::new(
+            streamed_strength.clone(),
+            DeepFilterModel::LowLatency,
+        );
+        streamed_strength.store(1.0_f32.to_bits(), Ordering::Relaxed);
+        for _ in 0..frames {
+            assert_eq!(streamed.push_samples(&frame), DEEPFILTER_FRAME_SIZE);
+            streamed.process_frames();
+        }
+
+        assert!((batched.smoothed_strength - streamed.smoothed_strength).abs() < 1.0e-6);
+    }
+
+    #[test]
     fn test_enable_disable() {
         let mut processor = DeepFilterProcessor::default();
         assert!(processor.is_enabled());

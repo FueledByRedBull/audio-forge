@@ -17,6 +17,17 @@ impl AudioProcessor {
         input_device: Option<&str>,
         output_device: Option<&str>,
     ) -> Result<String, String> {
+        self.start_with_device_ordinals(input_device, 0, output_device, 0)
+    }
+
+    /// Start audio processing with deterministic duplicate-name selection.
+    pub fn start_with_device_ordinals(
+        &mut self,
+        input_device: Option<&str>,
+        input_device_name_ordinal: u32,
+        output_device: Option<&str>,
+        output_device_name_ordinal: u32,
+    ) -> Result<String, String> {
         self.ensure_supervisor();
         self.restart_requested.store(false, Ordering::Release);
         if !self.recovering.load(Ordering::Acquire) {
@@ -145,8 +156,9 @@ impl AudioProcessor {
             Arc::clone(&self.input_phase_polarity_flipped),
         );
         let input = match input_device {
-            Some(name) => AudioInput::from_device_name_with_options(
+            Some(name) => AudioInput::from_device_name_ordinal_with_options(
                 name,
+                input_device_name_ordinal,
                 input_producer,
                 last_input_callback_time_us,
                 input_callback_error_count,
@@ -171,7 +183,9 @@ impl AudioProcessor {
         let input_sample_rate_for_thread = input.device_info().sample_rate;
 
         let output_setup = match output_device {
-            Some(name) => AudioOutput::from_named_device_setup(name),
+            Some(name) => {
+                AudioOutput::from_named_device_ordinal_setup(name, output_device_name_ordinal)
+            }
             None => AudioOutput::from_default_device_setup(),
         };
         let output_setup = match output_setup {
@@ -251,11 +265,12 @@ impl AudioProcessor {
         let output_producer = prod;
 
         self.input_device_name = Some(input_device_name.clone());
+        self.input_device_name_ordinal = input_device_name_ordinal;
         self.output_device_name = Some(output_device_name.clone());
+        self.output_device_name_ordinal = output_device_name_ordinal;
         self.audio_input = Some(input);
         self.audio_output = Some(output);
 
-        const RESAMPLER_CHUNK_SIZE: usize = 1024;
         let input_resampler = if input_sample_rate_for_thread != self.sample_rate {
             Some(
                 build_sinc_resampler(
@@ -769,7 +784,7 @@ impl AudioProcessor {
             let output_target_high_samples =
                 duration_samples(output_sample_rate_for_latency, OUTPUT_TARGET_HIGH_MS);
             let output_target_center_samples =
-                (output_target_low_samples + output_target_high_samples) / 2;
+                (output_target_low_samples + output_target_high_samples).div_ceil(2);
             let output_hard_backlog_samples =
                 duration_samples(output_sample_rate_for_latency, OUTPUT_HARD_BACKLOG_MS);
             const OUTPUT_MAX_CATCHUP_RATIO: f32 = 1.03;

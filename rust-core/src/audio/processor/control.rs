@@ -321,14 +321,14 @@ impl AtomicSuppressorControlState {
 #[derive(Clone, Copy)]
 struct EqControlSnapshot {
     enabled: bool,
-    bands: [(f64, f64, f64); NUM_BANDS],
+    bands: [EqBandConfig; NUM_BANDS],
 }
 
 impl EqControlSnapshot {
     fn new() -> Self {
         Self {
             enabled: true,
-            bands: std::array::from_fn(|index| (DEFAULT_FREQUENCIES[index], 0.0, DEFAULT_Q)),
+            bands: std::array::from_fn(EqBandConfig::default_for_index),
         }
     }
 }
@@ -340,6 +340,9 @@ struct EqControlState {
     frequency_bits: [AtomicU64; NUM_BANDS],
     gain_bits: [AtomicU64; NUM_BANDS],
     q_bits: [AtomicU64; NUM_BANDS],
+    filter_type: [AtomicU8; NUM_BANDS],
+    slope_db_per_octave: [AtomicU8; NUM_BANDS],
+    band_enabled: [AtomicBool; NUM_BANDS],
 }
 
 impl EqControlState {
@@ -350,12 +353,23 @@ impl EqControlState {
             seq: AtomicU64::new(0),
             enabled: AtomicBool::new(snapshot.enabled),
             frequency_bits: std::array::from_fn(|index| {
-                AtomicU64::new(snapshot.bands[index].0.to_bits())
+                AtomicU64::new(snapshot.bands[index].frequency_hz.to_bits())
             }),
             gain_bits: std::array::from_fn(|index| {
-                AtomicU64::new(snapshot.bands[index].1.to_bits())
+                AtomicU64::new(snapshot.bands[index].gain_db.to_bits())
             }),
-            q_bits: std::array::from_fn(|index| AtomicU64::new(snapshot.bands[index].2.to_bits())),
+            q_bits: std::array::from_fn(|index| {
+                AtomicU64::new(snapshot.bands[index].q.to_bits())
+            }),
+            filter_type: std::array::from_fn(|index| {
+                AtomicU8::new(snapshot.bands[index].filter_type as u8)
+            }),
+            slope_db_per_octave: std::array::from_fn(|index| {
+                AtomicU8::new(snapshot.bands[index].slope_db_per_octave)
+            }),
+            band_enabled: std::array::from_fn(|index| {
+                AtomicBool::new(snapshot.bands[index].enabled)
+            }),
         }
     }
 
@@ -373,7 +387,18 @@ impl EqControlState {
                 let frequency = f64::from_bits(self.frequency_bits[index].load(Ordering::Relaxed));
                 let gain = f64::from_bits(self.gain_bits[index].load(Ordering::Relaxed));
                 let q = f64::from_bits(self.q_bits[index].load(Ordering::Relaxed));
-                (frequency, gain, q)
+                let filter_type =
+                    EqFilterType::from_id(self.filter_type[index].load(Ordering::Relaxed))
+                        .unwrap_or_else(|| EqBandConfig::default_for_index(index).filter_type);
+                EqBandConfig {
+                    filter_type,
+                    frequency_hz: frequency,
+                    gain_db: gain,
+                    q,
+                    slope_db_per_octave: self.slope_db_per_octave[index]
+                        .load(Ordering::Relaxed),
+                    enabled: self.band_enabled[index].load(Ordering::Relaxed),
+                }
             });
 
             EqControlSnapshot { enabled, bands }
@@ -404,12 +429,35 @@ impl EqControlState {
         });
     }
 
-    fn set_bands(&self, bands: &[(f64, f64, f64); NUM_BANDS]) {
+    fn set_band_filter_type(&self, band: usize, filter_type: EqFilterType) {
         self.update(|state| {
-            for (index, (frequency, gain, q)) in bands.iter().copied().enumerate() {
-                state.frequency_bits[index].store(frequency.to_bits(), Ordering::Relaxed);
-                state.gain_bits[index].store(gain.to_bits(), Ordering::Relaxed);
-                state.q_bits[index].store(q.to_bits(), Ordering::Relaxed);
+            state.filter_type[band].store(filter_type as u8, Ordering::Relaxed);
+        });
+    }
+
+    fn set_band_slope(&self, band: usize, slope_db_per_octave: u8) {
+        self.update(|state| {
+            state.slope_db_per_octave[band].store(slope_db_per_octave, Ordering::Relaxed);
+        });
+    }
+
+    fn set_band_enabled(&self, band: usize, enabled: bool) {
+        self.update(|state| {
+            state.band_enabled[band].store(enabled, Ordering::Relaxed);
+        });
+    }
+
+    fn set_bands(&self, bands: &[EqBandConfig; NUM_BANDS]) {
+        self.update(|state| {
+            for (index, band) in bands.iter().copied().enumerate() {
+                state.frequency_bits[index]
+                    .store(band.frequency_hz.to_bits(), Ordering::Relaxed);
+                state.gain_bits[index].store(band.gain_db.to_bits(), Ordering::Relaxed);
+                state.q_bits[index].store(band.q.to_bits(), Ordering::Relaxed);
+                state.filter_type[index].store(band.filter_type as u8, Ordering::Relaxed);
+                state.slope_db_per_octave[index]
+                    .store(band.slope_db_per_octave, Ordering::Relaxed);
+                state.band_enabled[index].store(band.enabled, Ordering::Relaxed);
             }
         });
     }
@@ -795,10 +843,8 @@ impl AtomicLimiterControlState {
 
 fn apply_eq_control(eq: &mut ParametricEQ, control: &EqControlSnapshot) {
     eq.set_enabled(control.enabled);
-    for (index, (frequency, gain_db, q)) in control.bands.iter().copied().enumerate() {
-        eq.set_band_frequency(index, frequency);
-        eq.set_band_gain(index, gain_db);
-        eq.set_band_q(index, q);
+    for (index, config) in control.bands.iter().copied().enumerate() {
+        eq.set_band_config(index, config);
     }
 }
 

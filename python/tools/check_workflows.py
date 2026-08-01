@@ -12,7 +12,9 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
-ACTION_REF = re.compile(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE)
+ACTION_REF = re.compile(
+    r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE
+)
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
 RUSTSEC_NODE24_SHA = "858dc40f52ca2b8570b7a997c1c4e35c6fc9a432"
 
@@ -37,10 +39,27 @@ def _check_permissions(
     for job_name, raw_job in jobs.items():
         job = _mapping(raw_job, f"{name}: job {job_name}", errors)
         permissions = job.get("permissions")
-        if job_name == "publish-release":
-            if permissions != {"contents": "write"}:
+        if name == "release-promote.yml" and job_name == "promote-release":
+            if permissions != {"actions": "read", "contents": "write"}:
                 errors.append(
-                    f"{name}: publish-release must have only contents: write"
+                    f"{name}: promote-release must have only actions: read and "
+                    "contents: write"
+                )
+            continue
+        if (
+            name == "release-hardware-qualify.yml"
+            and job_name == "qualify-hardware"
+        ):
+            if permissions != {"actions": "read", "contents": "read"}:
+                errors.append(
+                    f"{name}: qualify-hardware must have only actions: read and "
+                    "contents: read"
+                )
+            continue
+        if name == "release-hardware-matrix.yml" and job_name == "assemble":
+            if permissions != {"actions": "read", "contents": "read"}:
+                errors.append(
+                    f"{name}: assemble must have only actions: read and contents: read"
                 )
             continue
         if isinstance(permissions, dict) and any(
@@ -50,6 +69,66 @@ def _check_permissions(
 
 
 def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
+    if name == "release-promote.yml":
+        required = (
+            "actions/download-artifact@",
+            "release_tag must be an exact vMAJOR.MINOR.PATCH tag",
+            "git rev-list -n 1 --",
+            "release_provenance.py verify",
+            "--expected-archive-sha256",
+            "--expected-commit",
+            "--report validation/release-qualification.json",
+            "--report hardware-matrix/release-hardware-matrix.json",
+            "package_smoke.py --dist",
+            "gh release upload",
+        )
+        for needle in required:
+            if needle not in source:
+                errors.append(
+                    f"{name}: missing required promotion gate {needle!r}"
+                )
+        if "--clobber" in source:
+            errors.append(
+                f"{name}: promotion must not overwrite published release assets"
+            )
+        return
+    if name == "release-hardware-matrix.yml":
+        required = (
+            "gh run download",
+            "release_tag must be an exact vMAJOR.MINOR.PATCH tag",
+            "git rev-list -n 1 --",
+            "evaluate_hardware_matrix.py",
+            "--expected-archive-sha256",
+            "--expected-source-revision",
+            "audioforge-release-hardware-matrix-",
+        )
+        for needle in required:
+            if needle not in source:
+                errors.append(f"{name}: missing required matrix gate {needle!r}")
+        return
+    if name == "release-hardware-qualify.yml":
+        required = (
+            "runs-on: [self-hosted, windows, x64, audioforge-hardware]",
+            "actions/download-artifact@",
+            "release_tag must be an exact vMAJOR.MINOR.PATCH tag",
+            "git rev-list -n 1 --",
+            "release_provenance.py verify",
+            "--expected-archive-sha256",
+            "--expected-commit",
+            "evaluate_hardware_validation.py",
+            "--confirm-scenario-observed",
+            "explicit operator attestation",
+            "--health-duration",
+            "$duration -lt 1800",
+            "audioforge-release-hardware-validation-",
+        )
+        for needle in required:
+            if needle not in source:
+                errors.append(
+                    f"{name}: missing required hardware gate {needle!r}"
+                )
+        return
+
     shared = (
         "pip_audit --require-hashes -r requirements/runtime.txt",
         "pip_audit --require-hashes -r requirements/dev.txt",
@@ -64,7 +143,14 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
             "python/tools/check_versions.py",
             "python/tools/package_smoke.py --source-only",
             "python/tools/verify_release_assets.py",
+            "release_provenance.py create",
+            "release_provenance.py verify",
+            "release-bundle-path-baseline.json",
         )
+        if "--allow-dirty" in source:
+            errors.append(
+                f"{name}: release candidates must fail closed on dirty source trees"
+            )
     for needle in required:
         if needle not in source:
             errors.append(f"{name}: missing required release gate {needle!r}")

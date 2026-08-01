@@ -6,7 +6,7 @@ AudioForge - Low-latency microphone audio processor
 Provides real-time noise suppression and equalization for voice communication.
 """
 
-__version__ = "1.10.1"
+__version__ = "1.11.0"
 
 from typing import TYPE_CHECKING
 
@@ -17,11 +17,16 @@ if TYPE_CHECKING:
         analyze_vad_probabilities,
         configure_deepfilter_runtime_paths,
         eq_magnitude_response,
+        eq_magnitude_response_v2,
         list_input_devices,
         list_output_devices,
+        measure_integrated_loudness,
+        product_resampler_configuration,
         simulate_auto_eq_chain,
         simulate_auto_makeup_control,
         simulate_gate_suppressor_order,
+        simulate_eq_v2,
+        simulate_product_resampler,
     )
 
     CORE_AVAILABLE: bool
@@ -84,6 +89,16 @@ else:
             "simulate_gate_suppressor_order",
             _raise_missing_simulation_helper,
         )
+        simulate_product_resampler = getattr(
+            _core_module,
+            "simulate_product_resampler",
+            _raise_missing_simulation_helper,
+        )
+        product_resampler_configuration = getattr(
+            _core_module,
+            "product_resampler_configuration",
+            _raise_missing_simulation_helper,
+        )
 
         def _raise_missing_eq_response(*args, **kwargs):
             raise ImportError(
@@ -95,6 +110,21 @@ else:
             _core_module,
             "eq_magnitude_response",
             _raise_missing_eq_response,
+        )
+        eq_magnitude_response_v2 = getattr(
+            _core_module,
+            "eq_magnitude_response_v2",
+            _raise_missing_eq_response,
+        )
+        simulate_eq_v2 = getattr(
+            _core_module,
+            "simulate_eq_v2",
+            _raise_missing_simulation_helper,
+        )
+        measure_integrated_loudness = getattr(
+            _core_module,
+            "measure_integrated_loudness",
+            _raise_missing_simulation_helper,
         )
     else:
         CORE_AVAILABLE = False
@@ -122,6 +152,15 @@ else:
         def simulate_gate_suppressor_order(*args, **kwargs):
             _raise_core_import_error()
 
+        def simulate_eq_v2(*args, **kwargs):
+            _raise_core_import_error()
+
+        def simulate_product_resampler(*args, **kwargs):
+            _raise_core_import_error()
+
+        def product_resampler_configuration(*args, **kwargs):
+            _raise_core_import_error()
+
         def configure_deepfilter_runtime_paths(*args, **kwargs):
             _raise_core_import_error()
 
@@ -129,6 +168,12 @@ else:
             _raise_core_import_error()
 
         def eq_magnitude_response(*args, **kwargs):
+            _raise_core_import_error()
+
+        def eq_magnitude_response_v2(*args, **kwargs):
+            _raise_core_import_error()
+
+        def measure_integrated_loudness(*args, **kwargs):
             _raise_core_import_error()
 
 
@@ -140,7 +185,12 @@ __all__ = [
     "simulate_auto_eq_chain",
     "simulate_auto_makeup_control",
     "simulate_gate_suppressor_order",
+    "simulate_eq_v2",
+    "simulate_product_resampler",
+    "product_resampler_configuration",
     "eq_magnitude_response",
+    "eq_magnitude_response_v2",
+    "measure_integrated_loudness",
     "analyze_vad_probabilities",
     "configure_deepfilter_runtime_paths",
     "CORE_AVAILABLE",

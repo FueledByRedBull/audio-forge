@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .config_parts.app_config import AppConfig, load_config, save_config
+from .config_parts.app_config import AppConfig, DevicePresetBinding, load_config, save_config
 from .config_parts.catalogs import build_builtin_presets, build_target_curves
 from .config_parts.presets import (
     Preset,
@@ -19,13 +19,22 @@ from .config_parts.settings import (
     AUTO_EQ_DEFAULT_Q,
     CompressorSettings,
     DeEsserSettings,
+    EQBandSettings,
     EQSettings,
+    EQ_BANDWIDTH_MODES,
+    EQ_BAND_COUNT,
+    EQ_FILTER_TYPES,
     EQ_FREQUENCIES,
+    EQ_RUNTIME_SAMPLE_RATE,
+    EQ_SCHEMA_VERSION,
+    EQ_SLOPES_DB_PER_OCTAVE,
+    EQ_STAGES,
     GateSettings,
     LatencyCalibrationProfile,
     LimiterSettings,
     RNNoiseSettings,
     TargetCurve,
+    q_from_bandwidth_octaves,
 )
 from .config_parts.shared import (
     APPDATA_DIR_NAME,
@@ -34,6 +43,7 @@ from .config_parts.shared import (
     LEGACY_APPDATA_DIR_NAME,
     PresetValidationError,
     build_latency_profile_key,
+    build_device_route_key,
     coerce_device_identity,
     get_config_file,
     get_preset_imports_dir,
@@ -74,8 +84,17 @@ __all__ = [
     "CompressorSettings",
     "DeEsserSettings",
     "DeviceIdentity",
+    "DevicePresetBinding",
+    "EQBandSettings",
     "EQSettings",
+    "EQ_BANDWIDTH_MODES",
+    "EQ_BAND_COUNT",
+    "EQ_FILTER_TYPES",
     "EQ_FREQUENCIES",
+    "EQ_RUNTIME_SAMPLE_RATE",
+    "EQ_SCHEMA_VERSION",
+    "EQ_SLOPES_DB_PER_OCTAVE",
+    "EQ_STAGES",
     "GateSettings",
     "LatencyCalibrationProfile",
     "LEGACY_APPDATA_DIR_NAME",
@@ -92,6 +111,7 @@ __all__ = [
     "_validate_fixed_float_list",
     "_validate_range",
     "build_latency_profile_key",
+    "build_device_route_key",
     "coerce_device_identity",
     "generate_auto_eq_preset_name",
     "get_config_file",
@@ -102,6 +122,7 @@ __all__ = [
     "load_config",
     "load_preset",
     "parse_latency_profile_key",
+    "q_from_bandwidth_octaves",
     "save_config",
     "save_preset",
 ]

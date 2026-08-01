@@ -9,6 +9,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from prune_bundle import is_app_local_system_ucrt
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_BUNDLE_FILES = (
@@ -110,6 +112,8 @@ def check_source_packaging() -> list[str]:
         ("build_exe.ps1", "verify_release_assets.py"),
         ("build_exe.ps1", "prune_bundle.py"),
         ("build_exe.ps1", "audioforge-build.json"),
+        ("python/tools/prune_bundle.py", "is_app_local_system_ucrt"),
+        ("python/tools/release_provenance.py", "build_bundle_manifest"),
     ]
     runtime_expectations = [
         (
@@ -130,7 +134,31 @@ def check_source_packaging() -> list[str]:
         (".github/workflows/release-package.yml", "actions/upload-artifact@"),
         (".github/workflows/release-package.yml", "AudioForge-v$version-win64-ultra.7z"),
         (".github/workflows/release-package.yml", "fetch_release_assets.py"),
-        (".github/workflows/release-package.yml", "gh release upload"),
+        (".github/workflows/release-package.yml", "release_provenance.py create"),
+        (".github/workflows/release-package.yml", "release_provenance.py verify"),
+        (".github/workflows/release-promote.yml", "actions/download-artifact@"),
+        (".github/workflows/release-promote.yml", "release_provenance.py verify"),
+        (
+            ".github/workflows/release-promote.yml",
+            "release-hardware-matrix.json",
+        ),
+        (".github/workflows/release-promote.yml", "gh release upload"),
+        (
+            ".github/workflows/release-hardware-qualify.yml",
+            "evaluate_hardware_validation.py",
+        ),
+        (
+            ".github/workflows/release-hardware-qualify.yml",
+            "audioforge-release-hardware-validation-",
+        ),
+        (
+            ".github/workflows/release-hardware-matrix.yml",
+            "evaluate_hardware_matrix.py",
+        ),
+        (
+            ".github/workflows/release-hardware-matrix.yml",
+            "audioforge-release-hardware-matrix-",
+        ),
     ]
 
     for path, needle in [
@@ -157,7 +185,9 @@ def check_source_packaging() -> list[str]:
                 f"paths directly instead of writing {forbidden!r}"
             )
 
-    action_ref_pattern = re.compile(r"^\s*uses:\s*[^@\s]+@([^\s#]+)", re.MULTILINE)
+    action_ref_pattern = re.compile(
+        r"^\s*(?:-\s*)?uses:\s*[^@\s]+@([^\s#]+)", re.MULTILINE
+    )
     sha_pattern = re.compile(r"[0-9a-f]{40}")
     for workflow_path in (REPO_ROOT / ".github/workflows").glob("*.yml"):
         workflow_source = workflow_path.read_text(encoding="utf-8")
@@ -215,15 +245,25 @@ def _expected_version() -> str:
         return str(tomllib.load(handle)["project"]["version"])
 
 
+def _bundle_version(dist: Path) -> str | None:
+    build_info_path = dist / "_internal" / "audioforge-build.json"
+    if not build_info_path.is_file():
+        return None
+    try:
+        build_info = json.loads(build_info_path.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    actual = build_info.get("version")
+    return actual if isinstance(actual, str) else None
+
+
 def _check_bundle_identity(dist: Path) -> list[str]:
     build_info_path = dist / "_internal" / "audioforge-build.json"
     if not build_info_path.is_file():
         return []
-    try:
-        build_info = json.loads(build_info_path.read_text(encoding="utf-8-sig"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        return [f"{build_info_path} is invalid JSON: {exc}"]
-    actual = build_info.get("version")
+    actual = _bundle_version(dist)
+    if actual is None:
+        return [f"{build_info_path} is invalid or lacks a string version"]
     expected = _expected_version()
     if actual != expected:
         return [
@@ -232,7 +272,11 @@ def _check_bundle_identity(dist: Path) -> list[str]:
     return []
 
 
-def check_dist_bundle(dist: Path | None = None) -> list[str]:
+def check_dist_bundle(
+    dist: Path | None = None,
+    *,
+    allow_historical_ucrt_for_version: str | None = None,
+) -> list[str]:
     if dist is None:
         dist = REPO_ROOT / "dist" / "AudioForge"
     errors: list[str] = []
@@ -250,6 +294,23 @@ def check_dist_bundle(dist: Path | None = None) -> list[str]:
     if _has_duplicate_native_extension(dist):
         errors.append(f"{dist} contains duplicate _internal/mic_eq_core/mic_eq_core*.pyd")
 
+    forbidden_ucrt = sorted(
+        path.relative_to(dist).as_posix()
+        for path in dist.rglob("*")
+        if path.is_file() and is_app_local_system_ucrt(path)
+    )
+    if forbidden_ucrt:
+        historical_exception = (
+            allow_historical_ucrt_for_version == "1.10.1"
+            and _bundle_version(dist) == allow_historical_ucrt_for_version
+            and len(forbidden_ucrt) == 46
+        )
+        if not historical_exception:
+            errors.append(
+                f"{dist} contains OS-provided app-local UCRT/API-set payloads: "
+                + ", ".join(forbidden_ucrt)
+            )
+
     errors.extend(_check_bundle_identity(dist))
 
     return errors
@@ -262,11 +323,31 @@ def main() -> int:
         action="store_true",
         help="Check packaging source files without requiring a built dist/AudioForge bundle.",
     )
+    parser.add_argument(
+        "--dist",
+        type=Path,
+        help="validate this extracted bundle instead of dist/AudioForge",
+    )
+    parser.add_argument(
+        "--allow-historical-ucrt-for-version",
+        choices=("1.10.1",),
+        help=(
+            "qualification-only exception for the exact historical v1.10.1 "
+            "bundle's 46 inert app-local UCRT/API-set files"
+        ),
+    )
     args = parser.parse_args()
 
     errors = check_source_packaging()
     if not args.source_only:
-        errors.extend(check_dist_bundle())
+        errors.extend(
+            check_dist_bundle(
+                args.dist.resolve() if args.dist else None,
+                allow_historical_ucrt_for_version=(
+                    args.allow_historical_ucrt_for_version
+                ),
+            )
+        )
 
     if errors:
         print("Package smoke check failed:")

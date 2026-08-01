@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import platform
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 from scipy.io import wavfile
@@ -29,20 +30,33 @@ SAMPLE_RATE = 48_000
 FRAME_SIZE = 480
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _read_mono(path: Path) -> tuple[int, np.ndarray]:
     sample_rate, raw = wavfile.read(path)
     audio = np.asarray(raw)
+    if np.issubdtype(audio.dtype, np.unsignedinteger):
+        info = np.iinfo(audio.dtype)
+        midpoint = float(info.max + 1) / 2.0
+        audio = (audio.astype(np.float64) - midpoint) / midpoint
+    elif np.issubdtype(audio.dtype, np.signedinteger):
+        info = np.iinfo(audio.dtype)
+        scale = float(max(abs(int(info.min)), int(info.max)))
+        audio = audio.astype(np.float64) / scale
+    else:
+        audio = audio.astype(np.float64)
     if audio.ndim == 2:
-        audio = np.mean(audio.astype(np.float64), axis=1)
-    if np.issubdtype(audio.dtype, np.integer):
-        bits = audio.dtype.itemsize * 8
-        full_scale = (
-            2 ** (bits - 1)
-            if np.issubdtype(audio.dtype, np.signedinteger)
-            else 2**bits - 1
-        )
-        audio = audio.astype(np.float64) / float(full_scale)
-    return int(sample_rate), np.asarray(audio, dtype=np.float64)
+        audio = np.mean(audio, axis=1)
+    converted = np.asarray(audio, dtype=np.float64)
+    if converted.ndim != 1 or not np.all(np.isfinite(converted)):
+        raise ValueError(f"{path.name} must contain finite mono/stereo PCM")
+    return int(sample_rate), converted
 
 
 def _resample(audio: np.ndarray, source_rate: int) -> np.ndarray:
@@ -100,13 +114,55 @@ def _pumping(trace: np.ndarray) -> float:
     )
 
 
+def _step_outlier_count(audio: np.ndarray) -> int:
+    difference = np.abs(np.diff(np.asarray(audio, dtype=np.float64), prepend=0.0))
+    if difference.size < 8:
+        return 0
+    floor = float(np.median(difference))
+    threshold = max(0.08, 12.0 * floor)
+    active = difference >= threshold
+    return int(np.count_nonzero(active & ~np.roll(active, 1)))
+
+
 def _paired_paths(root: Path) -> list[tuple[Path, Path]]:
+    root = root.resolve(strict=True)
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries = {str(entry["path"]): entry for entry in manifest["files"]}
+
+    def verified(entry: Mapping[str, Any]) -> Path:
+        relative = Path(str(entry["path"]))
+        path = (root / relative).resolve(strict=True)
+        if not path.is_relative_to(root):
+            raise ValueError(f"Corpus path escapes its root: {relative}")
+        if path.stat().st_size != int(entry["size_bytes"]):
+            raise ValueError(f"Corpus size mismatch for {relative}")
+        if _sha256(path) != str(entry["sha256"]):
+            raise ValueError(f"Corpus hash mismatch for {relative}")
+        return path
+
     selected: dict[str, tuple[Path, Path]] = {}
-    for clean in sorted((root / "Clean").glob("*_clean.wav")):
-        language = clean.name.split("_", 1)[0]
-        noisy = root / "Noisy" / clean.name.replace("_clean.wav", "_noisy.wav")
-        if language not in selected and noisy.is_file():
-            selected[language] = (clean, noisy)
+    clean_entries = sorted(
+        (
+            entry
+            for entry in manifest["files"]
+            if str(entry.get("model_name")) == "Clean"
+        ),
+        key=lambda entry: str(entry["path"]),
+    )
+    for clean_entry in clean_entries:
+        clean_relative = str(clean_entry["path"])
+        language = str(clean_entry["language"])
+        noisy_relative = clean_relative.replace("Clean/", "Noisy/", 1).replace(
+            "_clean.wav", "_noisy.wav"
+        )
+        noisy_entry = entries.get(noisy_relative)
+        if noisy_entry is None:
+            raise ValueError(f"Manifest lacks paired noisy file for {clean_relative}")
+        if language not in selected:
+            selected[language] = (verified(clean_entry), verified(noisy_entry))
+    if not selected:
+        raise RuntimeError(f"No manifest-backed clean/noisy pairs under {root}")
     return list(selected.values())
 
 
@@ -119,6 +175,10 @@ def _gate_case(
     noisy = _resample(noisy, noisy_rate)
     clip_samples = int(round(clip_seconds * SAMPLE_RATE))
     count = min(clean.size, noisy.size)
+    if count < clip_samples:
+        raise ValueError(
+            f"{clean_path.name} is shorter than {clip_seconds:.1f} seconds"
+        )
     offset = min(15 * SAMPLE_RATE, max(0, (count - clip_samples) // 2))
     clean = clean[offset : offset + clip_samples]
     noisy = noisy[offset : offset + clip_samples]
@@ -155,6 +215,8 @@ def _gate_case(
     return {
         "id": clean_path.name.removesuffix("_mixture_clean.wav"),
         "language": clean_path.name.split("_", 1)[0],
+        "clean_sha256": _sha256(clean_path),
+        "noisy_sha256": _sha256(noisy_path),
         "active_ratio": float(np.mean(active)),
         "tail_ratio": float(np.mean(tail)),
         "baseline_false_closure_rate": float(np.mean(baseline_gain[active] < 0.1)),
@@ -196,6 +258,41 @@ def _gate_decision(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "median_runtime_ratio": median("candidate_runtime_ms")
         / max(median("baseline_runtime_ms"), 1e-9),
     }
+    if rows and "baseline_step_outliers" in rows[0]:
+        metrics.update(
+            {
+                "baseline_step_outliers": sum(
+                    int(row["baseline_step_outliers"]) for row in rows
+                ),
+                "candidate_step_outliers": sum(
+                    int(row["candidate_step_outliers"]) for row in rows
+                ),
+                "median_baseline_pause_open_ratio": median("baseline_pause_open_ratio"),
+                "median_candidate_pause_open_ratio": median(
+                    "candidate_pause_open_ratio"
+                ),
+                "baseline_active_retention_p10": float(
+                    np.percentile(
+                        [row["baseline_active_retained_ratio"] for row in rows], 10.0
+                    )
+                ),
+                "candidate_active_retention_p10": float(
+                    np.percentile(
+                        [row["candidate_active_retained_ratio"] for row in rows], 10.0
+                    )
+                ),
+                "baseline_tail_retention_p10": float(
+                    np.percentile(
+                        [row["baseline_tail_retained_ratio"] for row in rows], 10.0
+                    )
+                ),
+                "candidate_tail_retention_p10": float(
+                    np.percentile(
+                        [row["candidate_tail_retained_ratio"] for row in rows], 10.0
+                    )
+                ),
+            }
+        )
     non_regression = {
         "false_closure": (
             metrics["median_candidate_false_closure_rate"]
@@ -215,6 +312,17 @@ def _gate_decision(rows: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "runtime": metrics["median_runtime_ratio"] <= 1.10,
     }
+    if "candidate_step_outliers" in metrics:
+        non_regression.update(
+            {
+                "step_outliers": metrics["candidate_step_outliers"]
+                <= metrics["baseline_step_outliers"] + 1,
+                "active_retention_p10": metrics["candidate_active_retention_p10"]
+                >= metrics["baseline_active_retention_p10"] * 0.98,
+                "tail_retention_p10": metrics["candidate_tail_retention_p10"]
+                >= metrics["baseline_tail_retention_p10"] * 0.98,
+            }
+        )
     material_win = bool(
         candidate_chatter <= baseline_chatter * 0.90
         or metrics["median_candidate_false_closure_rate"]
@@ -223,6 +331,29 @@ def _gate_decision(rows: list[dict[str, Any]]) -> dict[str, Any]:
         >= metrics["median_baseline_tail_retained_ratio"] * 1.05
     )
     retain_candidate = material_win and all(non_regression.values())
+    conditions: dict[str, Any] = {}
+    if rows and "condition" in rows[0]:
+        for condition in sorted({str(row["condition"]) for row in rows}):
+            subset = [row for row in rows if row["condition"] == condition]
+            conditions[condition] = {
+                "cases": len(subset),
+                "baseline_false_closure_rate_median": float(
+                    np.median([row["baseline_false_closure_rate"] for row in subset])
+                ),
+                "candidate_false_closure_rate_median": float(
+                    np.median([row["candidate_false_closure_rate"] for row in subset])
+                ),
+                "baseline_tail_retention_p10": float(
+                    np.percentile(
+                        [row["baseline_tail_retained_ratio"] for row in subset], 10.0
+                    )
+                ),
+                "candidate_tail_retention_p10": float(
+                    np.percentile(
+                        [row["candidate_tail_retained_ratio"] for row in subset], 10.0
+                    )
+                ),
+            }
     return {
         "predefined_gates": {
             "material_win": ">=10% chatter reduction, >=1 point false-closure reduction, or >=5% tail retention improvement",
@@ -233,6 +364,8 @@ def _gate_decision(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "metrics": metrics,
         "non_regression": non_regression,
         "material_win": material_win,
+        "per_condition": conditions,
+        "objective_candidate_passes": retain_candidate,
         "decision": "suppressor_before_gate"
         if retain_candidate
         else "retain_gate_before_suppressor",
@@ -397,23 +530,101 @@ def main() -> int:
         _gate_case(clean, noisy, args.clip_seconds)
         for clean, noisy in _paired_paths(args.corpus_root)
     ]
+    source_paths = (
+        Path(__file__).resolve(),
+        REPO_ROOT / "rust-core/src/audio/processor/block_processor.rs",
+        REPO_ROOT / "rust-core/src/audio/processor/python_api.rs",
+        REPO_ROOT / "rust-core/src/dsp/deesser.rs",
+        REPO_ROOT / "rust-core/src/dsp/eq.rs",
+        REPO_ROOT / "rust-core/src/dsp/gate.rs",
+        REPO_ROOT / "rust-core/src/dsp/noise_suppressor.rs",
+        REPO_ROOT / "rust-core/src/dsp/rnnoise.rs",
+        REPO_ROOT / "models/silero_vad.onnx",
+        args.corpus_root.resolve() / "manifest.json",
+    )
+    gate_proxy = {**_gate_decision(gate_rows), "cases": gate_rows}
+    eq_proxy = _eq_deesser_decision()
+    source_hashes = {
+        (
+            path.relative_to(REPO_ROOT).as_posix()
+            if path.is_relative_to(REPO_ROOT)
+            else path.name
+        ): _sha256(path)
+        for path in source_paths
+    }
     report = {
-        "schema_version": 2,
-        "audible_change": False,
+        "schema_version": 4,
+        "audible_change": True,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "gate_suppressor": {**_gate_decision(gate_rows), "cases": gate_rows},
-        "eq_deesser": _eq_deesser_decision(),
+        "status": "incumbents-retained-objective-gates-failed",
+        "decision": {
+            "product_chain_changed": False,
+            "gate_suppressor": "retain_gate_before_suppressor",
+            "eq_deesser": "retain_deesser_before_eq",
+            "reason": (
+                "Both candidates fail their predefined objective gates, so the "
+                "shipping processing order remains unchanged."
+            ),
+        },
+        "gate_suppressor": gate_proxy,
+        "eq_deesser": eq_proxy,
         "environment": {
             "platform": platform.platform(),
             "processor": platform.processor(),
         },
-        "listening_status": {
-            "status": "not_run",
-            "reason": "The autonomous hardening scope excludes human listening; ambiguous candidates retain the incumbent.",
+        "provenance": {
+            "source_hashes": source_hashes,
+            "proxy_corpus_pair_count": len(gate_rows),
+            "proxy_corpus_license": "Apache-2.0",
+            "native_simulation_backend": "mic_eq_core",
         },
+        "evaluation_contract": {
+            "configuration": {
+                "sample_rate": SAMPLE_RATE,
+                "frame_size": FRAME_SIZE,
+                "comparisons": [
+                    "gate-before-suppressor vs suppressor-before-gate",
+                    "deesser-before-EQ vs EQ-before-deesser",
+                ],
+                "product_defaults_changed": False,
+            },
+            "asset_hashes": {
+                "source": source_hashes,
+                "proxy_corpus_manifest": _sha256(
+                    args.corpus_root.resolve() / "manifest.json"
+                ),
+            },
+            "runtime": {
+                "gate_suppressor_median_runtime_ratio": gate_proxy["metrics"][
+                    "median_runtime_ratio"
+                ],
+                "max_p99_frame_seconds": None,
+                "max_p99_frame_seconds_reason": (
+                    "The native simulators report whole-clip timing; the ordering "
+                    "candidate is rejected before realtime callback qualification."
+                ),
+                "platform": platform.platform(),
+            },
+            "latency": {
+                "algorithmic_latency_delta_samples": 0,
+                "reason": "Each comparison reorders the same processing components.",
+            },
+            "clean_preservation": {
+                "gate_suppressor_non_regression": gate_proxy["non_regression"],
+                "eq_deesser_gates": eq_proxy["gates"],
+            },
+        },
+        "limitations": [
+            "The gate/suppressor comparison uses the pinned multilingual paired corpus.",
+            "The EQ/de-esser comparison uses deterministic proxy cases; because the candidate fails those objective gates, no product-order change is justified.",
+        ],
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
-    args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    args.report.write_text(
+        json.dumps(report, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     print(
         json.dumps(
             {

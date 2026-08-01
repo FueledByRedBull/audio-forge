@@ -14,8 +14,9 @@ from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
-from scipy.io import wavfile
 from scipy.signal import correlate, correlation_lags, resample_poly, stft
+
+from mic_eq.analysis.wav_io import read_mono_wav
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -46,19 +47,7 @@ def _relative(path: Path) -> str:
 
 
 def _read_mono(path: Path) -> tuple[int, np.ndarray]:
-    sample_rate, raw = wavfile.read(path)
-    audio = np.asarray(raw)
-    if audio.ndim == 2:
-        audio = np.mean(audio.astype(np.float64), axis=1)
-    if np.issubdtype(audio.dtype, np.integer):
-        bits = audio.dtype.itemsize * 8
-        full_scale = (
-            2 ** (bits - 1)
-            if np.issubdtype(audio.dtype, np.signedinteger)
-            else 2**bits - 1
-        )
-        audio = audio.astype(np.float64) / float(full_scale)
-    return int(sample_rate), np.asarray(audio, dtype=np.float64)
+    return read_mono_wav(path, dtype=np.float64)
 
 
 def _resample(audio: np.ndarray, source_rate: int) -> np.ndarray:

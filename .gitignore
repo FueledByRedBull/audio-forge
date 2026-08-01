@@ -134,3 +134,5 @@ ROADMAP.md
 AudioForge.7z
 AudioForge-v*.7z
 AudioForge-v*.7z.sha256
+AudioForge-v*.7z.manifest.json
+AudioForge-v*.7z.metadata.json

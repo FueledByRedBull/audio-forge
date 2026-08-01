@@ -53,26 +53,29 @@ def _semgrep_executable() -> str:
     return executable
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--sarif", type=Path, default=Path("semgrep-results.sarif"))
-    args = parser.parse_args()
-    sarif_path = args.sarif.resolve()
-    if sarif_path.is_file():
-        sarif_path.unlink()
-    scan_output = REPO_ROOT / ".semgrep-results.sarif"
-    if scan_output.is_file():
-        scan_output.unlink()
+def _prepare_sarif_path(path: Path) -> Path:
+    resolved = path.resolve()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    if resolved.is_file():
+        resolved.unlink()
+    return resolved
 
+
+def _scan_command(scan_output: Path) -> list[str]:
     command = [
         _semgrep_executable(),
         "scan",
         "--metrics=off",
+        # Release CI runs from a clean clone, but local pre-commit audits must
+        # also cover newly added source files before they become Git-tracked.
+        "--no-git-ignore",
         "--sarif",
         "--output",
         str(scan_output),
         "--exclude",
         ".venv",
+        "--exclude",
+        ".git",
         "--exclude",
         "build",
         "--exclude",
@@ -80,11 +83,40 @@ def main() -> int:
         "--exclude",
         "target",
         "--exclude",
+        "models",
+        "--exclude",
+        "downloads",
+        "--exclude",
+        "__pycache__",
+        "--exclude",
+        ".pytest_cache",
+        "--exclude",
+        ".ruff_cache",
+        "--exclude",
+        ".pyright",
+        "--exclude",
         "static_analysis_semgrep_*",
+        # Never feed a previous scanner report back into the next scan. SARIF
+        # embeds matched examples and can therefore look like source secrets.
+        "--exclude",
+        "*.sarif",
     ]
     for ruleset in _rulesets():
         command.extend(("--config", ruleset))
     command.append(str(REPO_ROOT))
+    return command
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sarif", type=Path, default=Path("semgrep-results.sarif"))
+    args = parser.parse_args()
+    sarif_path = _prepare_sarif_path(args.sarif)
+    scan_output = REPO_ROOT / ".semgrep-results.sarif"
+    if scan_output.is_file():
+        scan_output.unlink()
+
+    command = _scan_command(scan_output)
 
     child_env = os.environ.copy()
     child_env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1")

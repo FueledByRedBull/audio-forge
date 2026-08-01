@@ -28,6 +28,7 @@ from ..analysis.voice_setup import (
     validate_voice_setup_verification,
 )
 from ..config import EQ_FREQUENCIES, TARGET_CURVES
+from .accessibility import bind_label, set_accessible_group
 from .calibration_dialog import (
     RAINBOW_PASSAGE,
     TOO_LOUD_DB,
@@ -41,9 +42,17 @@ from .calibration_dialog import (
     _format_percent,
     _processor_sample_rate,
     _selected_device_pair,
+    _start_selected_route,
 )
 from .layout_constants import SUBDUED_TEXT_STYLE, status_chip_style
 from .level_meter import LevelMeter
+from .theme import (
+    DESCRIPTION_LABEL_STYLE,
+    PRIMARY_ACTION_BUTTON_STYLE,
+    PROGRESS_BAR_STYLE,
+    PROGRESS_LABEL_STYLE,
+    message_text_style,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -141,24 +150,27 @@ class VoiceSetupDialog(QDialog):
         curve_layout = QVBoxLayout(curve_group)
 
         curve_input = QHBoxLayout()
-        curve_input.addWidget(QLabel("Target Curve:"))
+        curve_label = QLabel("Target Curve:")
+        curve_input.addWidget(curve_label)
         self.curve_combo = QComboBox()
         for key, curve in TARGET_CURVES.items():
             self.curve_combo.addItem(curve.name, key)
         self.curve_combo.currentIndexChanged.connect(self._on_curve_changed)
         curve_input.addWidget(self.curve_combo)
+        bind_label(curve_label, self.curve_combo)
         curve_layout.addLayout(curve_input)
 
         self.curve_description = QLabel()
         self.curve_description.setWordWrap(True)
-        self.curve_description.setStyleSheet("color: gray; font-size: 11px; padding: 5px;")
+        self.curve_description.setStyleSheet(DESCRIPTION_LABEL_STYLE)
         curve_layout.addWidget(self.curve_description)
         layout.addWidget(curve_group)
 
         dynamics_group = QGroupBox("Step 2: Select Dynamics Intensity")
         dynamics_layout = QVBoxLayout(dynamics_group)
         dynamics_row = QHBoxLayout()
-        dynamics_row.addWidget(QLabel("Compression:"))
+        dynamics_label = QLabel("Compression:")
+        dynamics_row.addWidget(dynamics_label)
         self.dynamics_combo = QComboBox()
         for label, key in (
             ("Gentle", "gentle"),
@@ -172,6 +184,7 @@ class VoiceSetupDialog(QDialog):
         configured_index = self.dynamics_combo.findData(configured)
         self.dynamics_combo.setCurrentIndex(max(0, configured_index))
         dynamics_row.addWidget(self.dynamics_combo)
+        bind_label(dynamics_label, self.dynamics_combo)
         self.custom_p95_spin = QDoubleSpinBox()
         self.custom_p95_spin.setRange(1.0, 8.0)
         self.custom_p95_spin.setSuffix(" dB p95")
@@ -179,6 +192,7 @@ class VoiceSetupDialog(QDialog):
             float(getattr(config, "voice_setup_custom_p95_db", 3.5))
         )
         dynamics_row.addWidget(self.custom_p95_spin)
+        self.custom_p95_spin.setAccessibleName("Target compressor p95 gain reduction")
         self.custom_peak_spin = QDoubleSpinBox()
         self.custom_peak_spin.setRange(1.5, 12.0)
         self.custom_peak_spin.setSuffix(" dB peak cap")
@@ -186,6 +200,7 @@ class VoiceSetupDialog(QDialog):
             float(getattr(config, "voice_setup_custom_peak_cap_db", 8.0))
         )
         dynamics_row.addWidget(self.custom_peak_spin)
+        self.custom_peak_spin.setAccessibleName("Compressor peak gain-reduction cap")
         dynamics_layout.addLayout(dynamics_row)
         dynamics_hint = QLabel(
             "This controls compression density only; target loudness remains "
@@ -222,6 +237,10 @@ class VoiceSetupDialog(QDialog):
         passage_text.setPlainText(RAINBOW_PASSAGE)
         passage_text.setReadOnly(True)
         passage_text.setMaximumHeight(150)
+        passage_text.setAccessibleName("Voice Setup passage")
+        passage_text.setAccessibleDescription(
+            "Read-only passage to speak during Auto Voice Setup."
+        )
         voice_layout.addWidget(passage_text)
         layout.addWidget(voice_group)
 
@@ -231,7 +250,8 @@ class VoiceSetupDialog(QDialog):
 
         self.phase_label = QLabel("Ready to start setup")
         self.phase_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.phase_label.setStyleSheet("font-size: 12pt; color: #4a90d9; font-weight: bold;")
+        self.phase_label.setStyleSheet(PROGRESS_LABEL_STYLE)
+        self.phase_label.setAccessibleName("Voice Setup phase")
         recording_layout.addWidget(self.phase_label)
 
         self.progress_bar = QProgressBar()
@@ -239,24 +259,14 @@ class VoiceSetupDialog(QDialog):
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setMinimumHeight(25)
-        self.progress_bar.setStyleSheet(
-            """
-            QProgressBar {
-                border: 2px solid #555;
-                border-radius: 5px;
-                background-color: #2a2a2a;
-            }
-            QProgressBar::chunk {
-                background-color: #4CAF50;
-                border-radius: 3px;
-            }
-            """
-        )
+        self.progress_bar.setStyleSheet(PROGRESS_BAR_STYLE)
+        self.progress_bar.setAccessibleName("Voice Setup progress")
         recording_layout.addWidget(self.progress_bar)
 
         self.time_label = QLabel("Time remaining: 2s")
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.time_label.setStyleSheet("font-size: 12pt; color: #4a90d9; font-weight: bold;")
+        self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
+        self.time_label.setAccessibleName("Voice Setup time remaining")
         recording_layout.addWidget(self.time_label)
 
         meter_layout = QHBoxLayout()
@@ -267,7 +277,8 @@ class VoiceSetupDialog(QDialog):
 
         self.warning_label = QLabel("Ready to record")
         self.warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.warning_label.setStyleSheet("color: gray; font-size: 11pt;")
+        self.warning_label.setStyleSheet(message_text_style("idle"))
+        self.warning_label.setAccessibleName("Voice Setup status")
         recording_layout.addWidget(self.warning_label)
 
         self.summary_group = QGroupBox("Recommended Settings")
@@ -309,12 +320,24 @@ class VoiceSetupDialog(QDialog):
         layout.addWidget(self.recording_group)
 
         self.start_button = QPushButton("Start Voice Setup")
-        self.start_button.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; "
-            "padding: 10px 20px; font-weight: bold; font-size: 14px; }"
-        )
+        self.start_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
         self.start_button.clicked.connect(self._on_start_clicked)
         layout.addWidget(self.start_button)
+
+        set_accessible_group(
+            (
+                (self.start_button, "Start Auto Voice Setup", None),
+                (self.retake_btn, "Retake Voice Setup recording", None),
+                (self.cancel_btn, "Cancel Auto Voice Setup", None),
+                (self.level_meter, "Voice Setup input level", None),
+            )
+        )
+        self.setTabOrder(self.curve_combo, self.dynamics_combo)
+        self.setTabOrder(self.dynamics_combo, self.custom_p95_spin)
+        self.setTabOrder(self.custom_p95_spin, self.custom_peak_spin)
+        self.setTabOrder(self.custom_peak_spin, self.start_button)
+        self.setTabOrder(self.start_button, self.retake_btn)
+        self.setTabOrder(self.retake_btn, self.cancel_btn)
 
         self._on_curve_changed(0)
 
@@ -366,13 +389,13 @@ class VoiceSetupDialog(QDialog):
             self.start_button.setText("Recording Noise...")
             self.phase_label.setText("Capturing room noise")
             self.warning_label.setText("Stay quiet and keep the room as it normally is.")
-            self.warning_label.setStyleSheet("color: blue; font-weight: bold; font-size: 11pt;")
+            self.warning_label.setStyleSheet(message_text_style("info", strong=True))
         elif phase == "voice_recording":
             self._recording_duration = VOICE_RECORDING_DURATION
             self.start_button.setText("Recording Voice...")
             self.phase_label.setText("Capturing speech")
             self.warning_label.setText("Speak naturally into the microphone.")
-            self.warning_label.setStyleSheet("color: blue; font-weight: bold; font-size: 11pt;")
+            self.warning_label.setStyleSheet(message_text_style("info", strong=True))
         else:
             self._recording_duration = VOICE_RECORDING_DURATION
             self.start_button.setText("Recording Verification...")
@@ -381,9 +404,7 @@ class VoiceSetupDialog(QDialog):
                 "Read naturally again. The raw passage will be rendered through "
                 "the proposed native chain and compared with the first capture."
             )
-            self.warning_label.setStyleSheet(
-                "color: blue; font-weight: bold; font-size: 11pt;"
-            )
+            self.warning_label.setStyleSheet(message_text_style("info", strong=True))
 
         self.progress_bar.setValue(0)
         self.time_label.setText(f"Time remaining: {self._recording_duration:.0f}s")
@@ -419,7 +440,7 @@ class VoiceSetupDialog(QDialog):
                 )
                 if reply != QMessageBox.StandardButton.Yes:
                     self.warning_label.setText("Setup canceled: using current stream devices.")
-                    self.warning_label.setStyleSheet("color: orange; font-size: 11pt;")
+                    self.warning_label.setStyleSheet(message_text_style("warn"))
                     self.start_button.setEnabled(True)
                     self.curve_combo.setEnabled(True)
                     self.setup_state = "idle" if self.noise_audio is None else "noise_ready"
@@ -430,7 +451,7 @@ class VoiceSetupDialog(QDialog):
 
                 try:
                     parent.processor.stop()
-                    parent.processor.start(selected_input, selected_output)
+                    _start_selected_route(parent)
                     parent.processor.set_output_mute(False)
                 except Exception as exc:
                     QMessageBox.critical(
@@ -442,7 +463,7 @@ class VoiceSetupDialog(QDialog):
             return True
 
         try:
-            parent.processor.start(selected_input, selected_output)
+            _start_selected_route(parent)
             self._started_processor = True
             return True
         except Exception as exc:
@@ -522,7 +543,7 @@ class VoiceSetupDialog(QDialog):
             self.time_label.setText(f"Time remaining: {seconds:.0f}s")
         else:
             self.time_label.setText("Complete!")
-            self.time_label.setStyleSheet("font-size: 12pt; color: #4CAF50; font-weight: bold;")
+            self.time_label.setStyleSheet(message_text_style("ok", strong=True))
 
     def _update_level(self, rms_db: float) -> None:
         self.level_meter.set_levels(rms_db, rms_db + 6.0)
@@ -530,26 +551,26 @@ class VoiceSetupDialog(QDialog):
         if self.setup_state == "noise_recording":
             if rms_db > -35.0:
                 self.warning_label.setText("Room noise is fairly loud. Results may be conservative.")
-                self.warning_label.setStyleSheet("color: orange; font-weight: bold; font-size: 11pt;")
+                self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
             else:
                 self.warning_label.setText("Noise floor capture looks usable.")
-                self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
+                self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
             return
 
         if rms_db < TOO_QUIET_DB:
             self.warning_label.setText("Too quiet. Move closer to the mic.")
-            self.warning_label.setStyleSheet("color: orange; font-weight: bold; font-size: 11pt;")
+            self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
         elif rms_db > TOO_LOUD_DB:
             self.warning_label.setText("Too loud. Back off slightly to avoid clipping.")
-            self.warning_label.setStyleSheet("color: red; font-weight: bold; font-size: 11pt;")
+            self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
         else:
             self.warning_label.setText("Voice level looks good.")
-            self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
+            self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
 
     def _on_recording_complete(self, audio_data: np.ndarray) -> None:
         self.start_button.setEnabled(True)
         self.retake_btn.setVisible(True)
-        self.time_label.setStyleSheet("font-size: 12pt; color: #4a90d9; font-weight: bold;")
+        self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
 
         if self.setup_state == "noise_recording":
             self.noise_audio = audio_data
@@ -572,15 +593,13 @@ class VoiceSetupDialog(QDialog):
                     "Keep quiet and record steady room tone again.",
                 )
                 self.warning_label.setText(" ".join(guidance))
-                self.warning_label.setStyleSheet(
-                    "color: red; font-weight: bold; font-size: 11pt;"
-                )
+                self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
                 return
             self.setup_state = "noise_ready"
             self.start_button.setText("Record Voice")
             self.phase_label.setText("Room noise captured")
             self.warning_label.setText("Now read the passage aloud for the full 10 seconds.")
-            self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
+            self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
             self.progress_bar.setValue(0)
             self.time_label.setText(f"Time remaining: {VOICE_RECORDING_DURATION:.0f}s")
             return
@@ -596,7 +615,7 @@ class VoiceSetupDialog(QDialog):
         self.start_button.setText("Analyzing...")
         self.phase_label.setText("Analyzing recordings")
         self.warning_label.setText("Building recommendations for your voice chain.")
-        self.warning_label.setStyleSheet("color: blue; font-weight: bold; font-size: 11pt;")
+        self.warning_label.setStyleSheet(message_text_style("info", strong=True))
         self._start_analysis()
 
     def _start_analysis(self) -> None:
@@ -647,16 +666,14 @@ class VoiceSetupDialog(QDialog):
         diagnostics = setup_result["diagnostics"]
         if diagnostics.get("apply_recommended", False):
             self.warning_label.setText("Review the validated settings and apply them.")
-            color = "#4CAF50"
+            state = "ok"
         else:
             reasons = diagnostics.get("uncertainty_reasons") or ["capture confidence is weak"]
             self.warning_label.setText(
                 "Advisory recommendations only: " + "; ".join(str(reason) for reason in reasons)
             )
-            color = "#FFB74D"
-        self.warning_label.setStyleSheet(
-            f"color: {color}; font-weight: bold; font-size: 11pt;"
-        )
+            state = "warn"
+        self.warning_label.setStyleSheet(message_text_style(state, strong=True))
         self.progress_bar.setValue(100)
         self._show_summary(setup_result)
 
@@ -750,9 +767,7 @@ class VoiceSetupDialog(QDialog):
             "Read the passage once more to accept, reduce, retry, or roll back "
             "using exact native-chain measurements."
         )
-        self.warning_label.setStyleSheet(
-            "color: #4a90d9; font-weight: bold; font-size: 11pt;"
-        )
+        self.warning_label.setStyleSheet(message_text_style("info", strong=True))
 
     def _apply_candidate_panels(self, parent: Any) -> None:
         if self.setup_result is None:
@@ -878,9 +893,7 @@ class VoiceSetupDialog(QDialog):
         self.start_button.setEnabled(True)
         self.phase_label.setText(f"Verification decision: {decision.upper()}")
         self.warning_label.setText(f"{reason} {metrics_text}")
-        self.warning_label.setStyleSheet(
-            "color: #FFB74D; font-weight: bold; font-size: 11pt;"
-        )
+        self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
 
     def _on_analysis_failed(self, error: str) -> None:
         self.analysis_worker = None
@@ -893,7 +906,7 @@ class VoiceSetupDialog(QDialog):
         )
         self.curve_combo.setEnabled(True)
         self.warning_label.setText(error)
-        self.warning_label.setStyleSheet("color: orange; font-weight: bold; font-size: 11pt;")
+        self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
         self.phase_label.setText("Analysis failed")
         self.summary_group.setVisible(False)
 
@@ -903,7 +916,7 @@ class VoiceSetupDialog(QDialog):
         self.start_button.setEnabled(True)
         self.curve_combo.setEnabled(True)
         self.warning_label.setText(error)
-        self.warning_label.setStyleSheet("color: red; font-weight: bold; font-size: 11pt;")
+        self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
         if verification_failed:
             self._restore_pre_setup_snapshot()
             self.start_button.setText("Apply & Verify Again")
@@ -957,9 +970,9 @@ class VoiceSetupDialog(QDialog):
         self.level_meter.set_levels(-120.0, -120.0)
         self.phase_label.setText("Ready to start setup")
         self.time_label.setText(f"Time remaining: {NOISE_RECORDING_DURATION:.0f}s")
-        self.time_label.setStyleSheet("font-size: 12pt; color: #4a90d9; font-weight: bold;")
+        self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
         self.warning_label.setText("Ready to record")
-        self.warning_label.setStyleSheet("color: gray; font-size: 11pt;")
+        self.warning_label.setStyleSheet(message_text_style("idle"))
         self.start_button.setText("Start Voice Setup")
         self.start_button.setEnabled(True)
         self.curve_combo.setEnabled(True)
@@ -985,6 +998,9 @@ class VoiceSetupDialog(QDialog):
 
         try:
             parent.processor.stop_raw_recording()
+        except RuntimeError as exc:
+            if "No recording in progress" not in str(exc):
+                logger.warning("Failed to stop raw recording during cleanup: %s", exc)
         except Exception as exc:
             logger.warning("Failed to stop raw recording during cleanup: %s", exc)
 

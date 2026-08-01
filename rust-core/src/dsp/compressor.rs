@@ -14,6 +14,7 @@ const SPEECH_ACTIVE_RMS_MIN_DB: f64 = -55.0;
 const SPEECH_ACTIVE_RMS_MAX_DB: f64 = -6.0;
 const AUTO_MAKEUP_ACTIVE_MIN: f64 = 0.20;
 const AUTO_MAKEUP_RELIABILITY_MIN: f64 = 0.35;
+const AUTO_MAKEUP_ACTIVITY_SMOOTH_MS: f64 = 200.0;
 const NOISE_RELATIVE_ACTIVITY_START_DB: f64 = 3.0;
 const NOISE_RELATIVE_ACTIVITY_FULL_DB: f64 = 15.0;
 const MAKEUP_SILENCE_RELAX_MS: f64 = 1500.0;
@@ -99,6 +100,8 @@ pub struct Compressor {
     current_lufs: f64,
     /// Smoothed speech activity score for auto makeup.
     speech_activity_score: f64,
+    /// Speech-activity smoothing coefficient, expressed per sample.
+    speech_activity_smoothing_coeff: f64,
     /// Reliability of the most recent auto-makeup activity estimate.
     auto_makeup_activity_reliability: f64,
     /// Reliability of the room-noise reference supplied by Auto Voice Setup.
@@ -173,6 +176,10 @@ impl Compressor {
             makeup_smoothing_coeff,
             current_lufs: -100.0,
             speech_activity_score: 0.0,
+            speech_activity_smoothing_coeff: util::time_constant_to_coeff(
+                AUTO_MAKEUP_ACTIVITY_SMOOTH_MS,
+                sample_rate,
+            ),
             auto_makeup_activity_reliability: 0.0,
             noise_reference_reliability: 0.0,
             makeup_silence_relax_coeff: util::time_constant_to_coeff(
@@ -621,8 +628,9 @@ impl Compressor {
 
         if let Some(meter) = &self.loudness_meter {
             self.current_lufs = meter.loudness_momentary() as f64;
-            self.speech_activity_score =
-                0.95 * self.speech_activity_score + 0.05 * speech_activity.clamp(0.0, 1.0);
+            let activity_coeff = self.speech_activity_smoothing_coeff.powf(elapsed_samples);
+            self.speech_activity_score = activity_coeff * self.speech_activity_score
+                + (1.0 - activity_coeff) * speech_activity.clamp(0.0, 1.0);
             self.auto_makeup_activity_reliability = reliability.clamp(0.0, 1.0);
             if self.speech_activity_score < AUTO_MAKEUP_ACTIVE_MIN {
                 self.smoothed_makeup_gain = silence_relax_coeff * self.smoothed_makeup_gain
@@ -1070,6 +1078,30 @@ mod tests {
 
         assert!(transient.target_release_ms < sustained.target_release_ms);
         assert!(sustained.target_release_ms > ADAPTIVE_FAST_RELEASE_MS);
+    }
+
+    #[test]
+    fn test_auto_makeup_activity_smoothing_is_block_size_invariant() {
+        fn activity_after_one_second(block_size: usize) -> f64 {
+            let mut compressor = Compressor::default_voice(48_000.0);
+            compressor.set_auto_makeup_enabled(true);
+            let mut remaining = 48_000;
+            while remaining > 0 {
+                let elapsed = remaining.min(block_size);
+                compressor.update_auto_makeup_gain(1.0, 1.0, elapsed);
+                remaining -= elapsed;
+            }
+            compressor.auto_makeup_activity()
+        }
+
+        let reference = activity_after_one_second(480);
+        for block_size in [1, 48, 240, 960, 4_096, 48_000] {
+            let candidate = activity_after_one_second(block_size);
+            assert!(
+                (candidate - reference).abs() < 1e-10,
+                "block size {block_size} changed activity from {reference} to {candidate}"
+            );
+        }
     }
 
     #[test]

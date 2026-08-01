@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -19,8 +20,31 @@ AUDIBLE_CONTRACT_FIELDS = {
     "runtime",
     "latency",
     "clean_preservation",
-    "listening_status",
 }
+DEVICE_PSEUDONYM = re.compile(r"^device-[0-9a-f]{16}$")
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _declared_source_hashes(report: dict[str, Any]) -> list[tuple[str, str]]:
+    containers: list[Any] = [report.get("source_sha256")]
+    provenance = report.get("provenance")
+    if isinstance(provenance, dict):
+        containers.append(provenance.get("source_hashes"))
+    found: list[tuple[str, str]] = []
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for raw_path, expected in container.items():
+            if isinstance(raw_path, str) and isinstance(expected, str):
+                found.append((raw_path, expected))
+    return found
 
 
 def _walk_strings(value: Any, location: str = "$") -> list[tuple[str, str]]:
@@ -50,6 +74,20 @@ def validate_report(path: Path) -> list[str]:
         if WINDOWS_ABSOLUTE.match(value) or POSIX_HOME.match(value):
             errors.append(f"{path}:{location}: machine-local absolute path: {value!r}")
 
+    declared_source_hashes = _declared_source_hashes(report)
+    for raw_path, expected in declared_source_hashes:
+        source_path = Path(raw_path)
+        if source_path.is_absolute() or ".." in source_path.parts:
+            errors.append(f"{path}: non-portable source hash path: {raw_path!r}")
+            continue
+        resolved = REPO_ROOT / source_path
+        if not resolved.is_file():
+            errors.append(f"{path}: declared source file is missing: {raw_path}")
+        elif not re.fullmatch(r"[0-9a-f]{64}", expected):
+            errors.append(f"{path}: invalid source SHA-256 for {raw_path}")
+        elif _sha256(resolved) != expected:
+            errors.append(f"{path}: stale source SHA-256 for {raw_path}")
+
     if report.get("audible_change") is True:
         if int(report.get("schema_version", 0)) < 2:
             errors.append(f"{path}: audible-change reports require schema_version >= 2")
@@ -67,23 +105,40 @@ def validate_report(path: Path) -> list[str]:
                 errors.append(
                     f"{path}: evaluation_contract.runtime lacks max_p99_frame_seconds"
                 )
-            listening = contract.get("listening_status")
-            if not isinstance(listening, dict) or listening.get("status") not in {
-                "passed",
-                "failed",
-                "not_run",
-            }:
+        if not declared_source_hashes:
+            errors.append(
+                f"{path}: audible-change report lacks verifiable source SHA-256 hashes"
+            )
+    if path.name.startswith("hardware-validation"):
+        errors.extend(_validate_hardware_report_privacy(path, report))
+    return errors
+
+
+def _validate_hardware_report_privacy(
+    path: Path | str,
+    report: dict[str, Any],
+) -> list[str]:
+    routes = report.get("routes")
+    if not isinstance(routes, dict):
+        return []
+    errors: list[str] = []
+    for route_name, route in routes.items():
+        if not isinstance(route, dict):
+            errors.append(f"{path}: routes.{route_name} must be an object")
+            continue
+        for direction in ("input", "output"):
+            value = route.get(direction)
+            if not isinstance(value, str) or DEVICE_PSEUDONYM.fullmatch(value) is None:
                 errors.append(
-                    f"{path}: listening_status must explicitly be passed, failed, or not_run"
+                    f"{path}: routes.{route_name}.{direction} must use a "
+                    "report-local device pseudonym"
                 )
-            if (
-                isinstance(listening, dict)
-                and listening.get("status") == "not_run"
-                and not listening.get("reason")
-            ):
-                errors.append(
-                    f"{path}: listening_status not_run requires an explanatory reason"
-                )
+    if int(report.get("schema_version", 0)) < 3:
+        redaction = report.get("privacy_redaction")
+        if not isinstance(redaction, dict) or redaction.get("applied") is not True:
+            errors.append(
+                f"{path}: historical hardware report lacks privacy-redaction provenance"
+            )
     return errors
 
 
@@ -118,6 +173,13 @@ def validate_release_trends(path: Path) -> list[str]:
             errors.append(f"{location}: duplicate version {version}")
         else:
             versions.add(version)
+        release_status = release.get("status")
+        if release_status not in {"candidate", "published"}:
+            errors.append(f"{location}: status must be candidate or published")
+        if release_status == "published" and not re.fullmatch(
+            r"[0-9a-f]{40}", str(release.get("commit", ""))
+        ):
+            errors.append(f"{location}: published rows require an exact commit")
         for category in ("package", "runtime", "quality", "hardware"):
             if category not in release:
                 errors.append(f"{location}: missing {category}")
@@ -130,6 +192,20 @@ def validate_release_trends(path: Path) -> list[str]:
             elif status == "not_measured" and not metric.get("reason"):
                 errors.append(
                     f"{location}.{metric_location}: not_measured requires a reason"
+                )
+        hardware_metric = release.get("hardware")
+        if (
+            isinstance(hardware_metric, dict)
+            and hardware_metric.get("status") == "measured"
+        ):
+            hardware_value = hardware_metric.get("value")
+            if not isinstance(hardware_value, dict):
+                errors.append(f"{location}.hardware: measured value must be an object")
+            else:
+                errors.extend(
+                    _validate_hardware_report_privacy(
+                        f"{location}.hardware.value", hardware_value
+                    )
                 )
     return errors
 

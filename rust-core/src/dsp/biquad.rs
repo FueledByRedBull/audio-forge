@@ -19,13 +19,15 @@ fn coefficient_crossfade_samples(sample_rate: f64) -> usize {
 }
 
 /// Biquad filter types
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BiquadType {
     LowShelf,
     HighShelf,
     Peaking,
+    Notch,
     HighPass,
     LowPass,
+    Bypass,
 }
 
 /// IIR Biquad filter using Direct Form II Transposed
@@ -143,6 +145,15 @@ impl Biquad {
                 let a2 = (a + 1.0) - (a - 1.0) * cos_omega - two_sqrt_a_alpha;
                 (b0, b1, b2, a0, a1, a2)
             }
+            BiquadType::Notch => {
+                let b0 = 1.0;
+                let b1 = -2.0 * cos_omega;
+                let b2 = 1.0;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_omega;
+                let a2 = 1.0 - alpha;
+                (b0, b1, b2, a0, a1, a2)
+            }
             BiquadType::HighPass => {
                 // High-pass filter - cuts frequencies below the cutoff
                 let b0 = (1.0 + cos_omega) / 2.0;
@@ -163,6 +174,7 @@ impl Biquad {
                 let a2 = 1.0 - alpha;
                 (b0, b1, b2, a0, a1, a2)
             }
+            BiquadType::Bypass => (1.0, 0.0, 0.0, 1.0, 0.0, 0.0),
         };
 
         // Normalize coefficients
@@ -327,12 +339,11 @@ impl Biquad {
 
     /// Reset filter state
     pub fn reset(&mut self) {
-        self.z1 = 0.0;
-        self.z2 = 0.0;
-        self.pending_z1 = 0.0;
-        self.pending_z2 = 0.0;
-        self.crossfade_total = 0;
-        self.crossfade_remaining = 0;
+        // A stream discontinuity must start from the configured target, not
+        // whichever coefficients happened to be active partway through a UI
+        // crossfade. Committing immediately also clears both state histories.
+        let target = self.calculate_coefficients_values();
+        self.set_coefficients_immediate(target);
     }
 
     /// Set filter frequency and recalculate coefficients
@@ -362,6 +373,45 @@ impl Biquad {
         self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
     }
 
+    /// Set the filter type and recalculate coefficients.
+    pub fn set_filter_type(&mut self, filter_type: BiquadType) {
+        self.filter_type = filter_type;
+        self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
+    }
+
+    /// Set every coefficient-driving parameter in one click-safe update.
+    pub fn set_parameters(
+        &mut self,
+        filter_type: BiquadType,
+        frequency: f64,
+        gain_db: f64,
+        q: f64,
+    ) {
+        self.filter_type = filter_type;
+        self.frequency = frequency;
+        self.gain_db = gain_db;
+        self.q = q.max(MIN_BIQUAD_Q);
+        self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
+    }
+
+    /// Set every coefficient-driving parameter without a transition.
+    ///
+    /// Intended for stream reset and construction paths where no prior audio
+    /// should be blended into the next stream.
+    pub fn set_parameters_immediate(
+        &mut self,
+        filter_type: BiquadType,
+        frequency: f64,
+        gain_db: f64,
+        q: f64,
+    ) {
+        self.filter_type = filter_type;
+        self.frequency = frequency;
+        self.gain_db = gain_db;
+        self.q = q.max(MIN_BIQUAD_Q);
+        self.set_coefficients_immediate(self.calculate_coefficients_values());
+    }
+
     /// Enable or disable the filter
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
@@ -385,6 +435,16 @@ impl Biquad {
     /// Get current Q factor
     pub fn q(&self) -> f64 {
         self.q
+    }
+
+    /// Get the configured filter type.
+    pub fn filter_type(&self) -> BiquadType {
+        self.filter_type
+    }
+
+    /// Whether a live coefficient transition is still in progress.
+    pub fn is_crossfading(&self) -> bool {
+        self.crossfade_remaining != 0
     }
 }
 
@@ -440,6 +500,23 @@ mod tests {
     }
 
     #[test]
+    fn test_notch_nulls_its_center_frequency() {
+        let filter = Biquad::new(BiquadType::Notch, 1_000.0, 0.0, 4.0, 48_000.0);
+        assert!(filter.magnitude_response_db(1_000.0) < -150.0);
+        assert!(filter.magnitude_response_db(100.0).abs() < 0.1);
+        assert!(filter.magnitude_response_db(10_000.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_bypass_is_exactly_flat() {
+        let mut filter = Biquad::new(BiquadType::Bypass, 1_000.0, 12.0, 10.0, 48_000.0);
+        for sample in [-1.0_f32, -0.25, 0.0, 0.25, 1.0] {
+            assert_eq!(filter.process_sample(sample), sample);
+        }
+        assert_eq!(filter.magnitude_response_db(1_000.0), 0.0);
+    }
+
+    #[test]
     fn test_biquad_q_zero_guard() {
         let mut filter = Biquad::new(BiquadType::Peaking, 1000.0, 0.0, 0.0, 48000.0);
         let output = filter.process_sample(0.25);
@@ -482,6 +559,9 @@ mod tests {
         filter.reset();
 
         assert_eq!(filter.crossfade_remaining, 0);
+        assert!((filter.magnitude_response_db(1_000.0) - 12.0).abs() < 1.0e-9);
+        assert_eq!(filter.z1, 0.0);
+        assert_eq!(filter.z2, 0.0);
     }
 
     #[test]

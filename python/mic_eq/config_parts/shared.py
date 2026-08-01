@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
-CURRENT_VERSION = "1.10.1"
+CURRENT_VERSION = "1.11.0"
 APPDATA_DIR_NAME = "AudioForge"
 LEGACY_APPDATA_DIR_NAME = "MicEq"
 
@@ -77,16 +78,52 @@ class DeviceIdentity:
     """Persisted audio device identity used by the UI/config layer."""
 
     name: str = ""
-    is_default: bool = False
+    # Default-route status is transient policy, not part of endpoint identity.
+    is_default: bool = field(default=False, compare=False)
+    endpoint_id: str = ""
+    host_api: str = ""
+    direction: str = ""
+    # Mutable Windows format fields are diagnostic evidence, not route-key
+    # material; changing endpoint format must not orphan a binding.
+    sample_rate: int | None = None
+    channels: int | None = None
+    name_ordinal: int | None = None
 
     def to_dict(self) -> dict:
         return {
             "name": self.name,
             "is_default": self.is_default,
+            "endpoint_id": self.endpoint_id,
+            "host_api": self.host_api,
+            "direction": self.direction,
+            "sample_rate": self.sample_rate,
+            "channels": self.channels,
+            "name_ordinal": self.name_ordinal,
         }
 
+    def stable_dict(self) -> dict:
+        """Return rename-stable fields suitable for route/profile keys."""
+        if self.endpoint_id:
+            return {
+                "endpoint_id": self.endpoint_id,
+                "host_api": self.host_api.casefold(),
+                "direction": self.direction.casefold(),
+            }
+        result: dict[str, object] = {
+            "name": " ".join(self.name.casefold().split()),
+        }
+        if self.host_api:
+            result["host_api"] = self.host_api.casefold()
+        if self.direction:
+            result["direction"] = self.direction.casefold()
+        if self.name_ordinal is not None:
+            result["name_ordinal"] = self.name_ordinal
+        return result
+
     @classmethod
-    def from_dict(cls, data: dict | str | DeviceIdentity | None) -> DeviceIdentity | None:
+    def from_dict(
+        cls, data: dict | str | DeviceIdentity | None
+    ) -> DeviceIdentity | None:
         if isinstance(data, cls):
             return data if data.name else None
         if isinstance(data, str):
@@ -95,10 +132,54 @@ class DeviceIdentity:
         if not isinstance(data, dict):
             return None
 
-        name = str(data.get("name", "")).strip()
+        raw_name = data.get("name", "")
+        if not isinstance(raw_name, str):
+            return None
+        name = raw_name.strip()
         if not name:
             return None
-        return cls(name=name, is_default=bool(data.get("is_default", False)))
+
+        def optional_non_negative_int(
+            value: object,
+            maximum: int,
+        ) -> int | None:
+            if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+                return None
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if not math.isfinite(numeric) or not numeric.is_integer():
+                return None
+            parsed = int(numeric)
+            return parsed if 0 <= parsed <= maximum else None
+
+        raw_direction = data.get("direction", "")
+        direction = (
+            raw_direction.strip().casefold()
+            if isinstance(raw_direction, str)
+            else ""
+        )
+        if direction not in {"", "input", "output"}:
+            direction = ""
+        endpoint_id = data.get("endpoint_id", "")
+        host_api = data.get("host_api", "")
+        return cls(
+            name=name,
+            is_default=(
+                data.get("is_default", False)
+                if isinstance(data.get("is_default", False), bool)
+                else False
+            ),
+            endpoint_id=(endpoint_id.strip() if isinstance(endpoint_id, str) else ""),
+            host_api=(host_api.strip() if isinstance(host_api, str) else ""),
+            direction=direction,
+            sample_rate=optional_non_negative_int(data.get("sample_rate"), 0xFFFFFFFF),
+            channels=optional_non_negative_int(data.get("channels"), 0xFFFF),
+            name_ordinal=optional_non_negative_int(
+                data.get("name_ordinal"), 0xFFFFFFFF
+            ),
+        )
 
 
 def coerce_device_identity(data: object) -> DeviceIdentity | None:
@@ -113,16 +194,24 @@ def legacy_latency_profile_key(input_name: str, output_name: str) -> str:
     return f"{input_name}||{output_name}"
 
 
+def build_device_route_key(
+    input_device: DeviceIdentity | None,
+    output_device: DeviceIdentity | None,
+) -> str:
+    """Build a deterministic key for an input/output endpoint pair."""
+    payload = {
+        "input": input_device.stable_dict() if input_device is not None else None,
+        "output": output_device.stable_dict() if output_device is not None else None,
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
 def build_latency_profile_key(
     input_device: DeviceIdentity | None,
     output_device: DeviceIdentity | None,
 ) -> str:
-    """Build a deterministic latency profile key from structured device identities."""
-    payload = {
-        "input": input_device.to_dict() if input_device is not None else None,
-        "output": output_device.to_dict() if output_device is not None else None,
-    }
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    """Build a deterministic latency key without transient default-route state."""
+    return build_device_route_key(input_device, output_device)
 
 
 def parse_latency_profile_key(
@@ -132,23 +221,49 @@ def parse_latency_profile_key(
     text = str(key)
     if "||" in text:
         input_name, output_name = text.split("||", 1)
-        return (
-            coerce_device_identity(input_name),
-            coerce_device_identity(output_name),
-        )
+        input_device = coerce_device_identity(input_name)
+        output_device = coerce_device_identity(output_name)
+        if input_device is None or output_device is None:
+            return None
+        return input_device, output_device
 
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
         return None
 
-    if not isinstance(payload, dict):
+    if not isinstance(payload, dict) or set(payload) != {"input", "output"}:
         return None
 
-    return (
-        coerce_device_identity(payload.get("input")),
-        coerce_device_identity(payload.get("output")),
-    )
+    def parse_route_identity(value: object) -> tuple[DeviceIdentity | None, bool]:
+        if value is None:
+            return None, True
+        candidate = value
+        if (
+            isinstance(value, dict)
+            and value.get("endpoint_id")
+            and not value.get("name")
+        ):
+            # Stable endpoint route keys intentionally omit rename-prone names.
+            # Supply a non-persisted placeholder so the ordinary identity
+            # validator can canonicalize the endpoint fields again.
+            candidate = {
+                **value,
+                "name": f"endpoint:{value['endpoint_id']}",
+            }
+        parsed = coerce_device_identity(candidate)
+        return parsed, parsed is not None
+
+    input_device, input_valid = parse_route_identity(payload.get("input"))
+    output_device, output_valid = parse_route_identity(payload.get("output"))
+    if (
+        not input_valid
+        or not output_valid
+        or input_device is None
+        or output_device is None
+    ):
+        return None
+    return input_device, output_device
 
 
 __all__ = [
@@ -160,6 +275,7 @@ __all__ = [
     "_reject_json_constant",
     "_version_tuple",
     "build_latency_profile_key",
+    "build_device_route_key",
     "coerce_device_identity",
     "get_config_file",
     "get_preset_imports_dir",

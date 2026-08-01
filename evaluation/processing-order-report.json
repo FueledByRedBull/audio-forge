@@ -1,7 +1,14 @@
 {
-  "schema_version": 2,
-  "audible_change": false,
-  "generated_at_utc": "2026-07-29T15:25:15.041585+00:00",
+  "schema_version": 4,
+  "audible_change": true,
+  "generated_at_utc": "2026-08-01T19:47:19.244784+00:00",
+  "status": "incumbents-retained-objective-gates-failed",
+  "decision": {
+    "product_chain_changed": false,
+    "gate_suppressor": "retain_gate_before_suppressor",
+    "eq_deesser": "retain_deesser_before_eq",
+    "reason": "Both candidates fail their predefined objective gates, so the shipping processing order remains unchanged."
+  },
   "gate_suppressor": {
     "predefined_gates": {
       "material_win": ">=10% chatter reduction, >=1 point false-closure reduction, or >=5% tail retention improvement",
@@ -20,7 +27,7 @@
       "median_candidate_tail_retained_ratio": 0.006257929727191633,
       "median_baseline_pumping_score": 5.245177218607963e-05,
       "median_candidate_pumping_score": 0.20303470444391258,
-      "median_runtime_ratio": 1.0644998847325358
+      "median_runtime_ratio": 1.0751528784176108
     },
     "non_regression": {
       "false_closure": true,
@@ -30,11 +37,15 @@
       "runtime": true
     },
     "material_win": false,
+    "per_condition": {},
+    "objective_candidate_passes": false,
     "decision": "retain_gate_before_suppressor",
     "cases": [
       {
         "id": "arabic_airport_snr0_rt60none_0",
         "language": "arabic",
+        "clean_sha256": "ae072fbba115d65bec8c2690a055d5a65c5912749cd1a3a24367ba82a863f792",
+        "noisy_sha256": "aa144f4ada2f02b1fc0c570114ffbc5711d34bc4ea7ad9a2685b6bd7fc60de47",
         "active_ratio": 0.286,
         "tail_ratio": 0.0325,
         "baseline_false_closure_rate": 0.0,
@@ -47,12 +58,14 @@
         "candidate_pumping_score": 0.23289862038482947,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 3,
-        "baseline_runtime_ms": 108.32809999999999,
-        "candidate_runtime_ms": 116.5036
+        "baseline_runtime_ms": 93.86659999999999,
+        "candidate_runtime_ms": 99.0316
       },
       {
         "id": "dutch_pub_snr0_rt60none_0",
         "language": "dutch",
+        "clean_sha256": "c4c7cadbd3757ac308ceefa8c7eac933328c1755fd0ef078182a906c21719e40",
+        "noisy_sha256": "70bf5090a65d5dd568988dc2a380f73dca98aad73ea1dddf2cc1da9bf769ff7b",
         "active_ratio": 0.378,
         "tail_ratio": 0.02,
         "baseline_false_closure_rate": 0.0,
@@ -65,12 +78,14 @@
         "candidate_pumping_score": 0.19582827530674504,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 5,
-        "baseline_runtime_ms": 106.4086,
-        "candidate_runtime_ms": 113.9107
+        "baseline_runtime_ms": 99.5736,
+        "candidate_runtime_ms": 104.27749999999999
       },
       {
         "id": "french_street_snr0_rt60none_0",
         "language": "french",
+        "clean_sha256": "137cd8da59c95f8a3ba8155caf29357e9eca5614b36cc824bef1626a2972ba49",
+        "noisy_sha256": "02837fb3a2a4e1cc6581f4fd162907c80beba0bf1374a1fbc808f301bd59fc79",
         "active_ratio": 0.485,
         "tail_ratio": 0.04,
         "baseline_false_closure_rate": 0.0,
@@ -83,12 +98,14 @@
         "candidate_pumping_score": 0.2102411335810801,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 5,
-        "baseline_runtime_ms": 109.5283,
-        "candidate_runtime_ms": 107.0994
+        "baseline_runtime_ms": 99.2765,
+        "candidate_runtime_ms": 106.3885
       },
       {
         "id": "german_airport_snr0_rt60none_0",
         "language": "german",
+        "clean_sha256": "d39b73f45e6ad4ef2d3c6da11dbdccf2d6c2e7dca6a7c08eff98ea9c3ec00603",
+        "noisy_sha256": "beb418daf4f5426a145bfeacca6917115ebf6b3f318d662581a6ef3f39b12810",
         "active_ratio": 0.4945,
         "tail_ratio": 0.03,
         "baseline_false_closure_rate": 0.0,
@@ -101,12 +118,14 @@
         "candidate_pumping_score": 0.23563957791495235,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 1,
-        "baseline_runtime_ms": 102.24289999999999,
-        "candidate_runtime_ms": 106.7621
+        "baseline_runtime_ms": 99.5322,
+        "candidate_runtime_ms": 104.30879999999999
       },
       {
         "id": "hungarian_pub_snr0_rt60none_0",
         "language": "hungarian",
+        "clean_sha256": "f65693f8ebc836a98fd19023201b45773a677d8bf3d56c70d40ff2da08902a58",
+        "noisy_sha256": "e181ce07851858fc448bb55e709e824f8d6ebcca8be4317486260239afef5c0f",
         "active_ratio": 0.261,
         "tail_ratio": 0.01,
         "baseline_false_closure_rate": 0.0,
@@ -119,12 +138,14 @@
         "candidate_pumping_score": 0.19162594857872836,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 4,
-        "baseline_runtime_ms": 114.1412,
-        "candidate_runtime_ms": 149.846
+        "baseline_runtime_ms": 94.1844,
+        "candidate_runtime_ms": 99.33250000000001
       },
       {
         "id": "korean_street_snr0_rt60none_0",
         "language": "korean",
+        "clean_sha256": "6184cf1befe2c15538386b7495219cead76a478969f0acb659fe894df443f0e8",
+        "noisy_sha256": "c836414c1424ce042fc7fdd39c83db757af22dcaad6b1559e079af8739cb7268",
         "active_ratio": 0.3105,
         "tail_ratio": 0.02,
         "baseline_false_closure_rate": 0.0,
@@ -137,12 +158,14 @@
         "candidate_pumping_score": 0.15001338467060285,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 1,
-        "baseline_runtime_ms": 113.48179999999999,
-        "candidate_runtime_ms": 138.7299
+        "baseline_runtime_ms": 93.985,
+        "candidate_runtime_ms": 103.5479
       },
       {
         "id": "polish_airport_snr0_rt60none_0",
         "language": "polish",
+        "clean_sha256": "7fc23ed423102b9d6af16485640c61bf09e273dd38a1920faf99d5e2cf2df3f0",
+        "noisy_sha256": "c4aac8ad357d8ca61c6771fad0677ed959d90d2a8851b47da4582b7468721390",
         "active_ratio": 0.177,
         "tail_ratio": 0.02,
         "baseline_false_closure_rate": 0.0,
@@ -155,12 +178,14 @@
         "candidate_pumping_score": 0.187701551889651,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 4,
-        "baseline_runtime_ms": 108.125,
-        "candidate_runtime_ms": 110.29759999999999
+        "baseline_runtime_ms": 94.18360000000001,
+        "candidate_runtime_ms": 102.0307
       },
       {
         "id": "portuguese_pub_snr0_rt60none_0",
         "language": "portuguese",
+        "clean_sha256": "5e6903fd7b60375bbb7d5d65dddd3c5758a76ac3401d566b3b03cb984d01e9d7",
+        "noisy_sha256": "1906a2b59c08fc8531217d1423621998d7570d45c1ef54d28c2edf9ff2d87cf4",
         "active_ratio": 0.3035,
         "tail_ratio": 0.017,
         "baseline_false_closure_rate": 0.0,
@@ -173,12 +198,14 @@
         "candidate_pumping_score": 0.16925566209355805,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 1,
-        "baseline_runtime_ms": 103.5393,
-        "candidate_runtime_ms": 123.594
+        "baseline_runtime_ms": 93.28920000000001,
+        "candidate_runtime_ms": 102.2196
       },
       {
         "id": "russian_street_snr0_rt60none_0",
         "language": "russian",
+        "clean_sha256": "5cbc815f2a935e82d1291a7e69cce5c87686eecea97ff58f65891bb8d158d1b6",
+        "noisy_sha256": "6a8b4217d0fcdb006f29ba643777a2e588979ad174953a0e26658511e64b4a64",
         "active_ratio": 0.248,
         "tail_ratio": 0.02,
         "baseline_false_closure_rate": 0.0,
@@ -191,12 +218,14 @@
         "candidate_pumping_score": 0.09381529796619383,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 2,
-        "baseline_runtime_ms": 120.4691,
-        "candidate_runtime_ms": 139.7505
+        "baseline_runtime_ms": 96.072,
+        "candidate_runtime_ms": 103.3199
       },
       {
         "id": "spanish_airport_snr0_rt60none_0",
         "language": "spanish",
+        "clean_sha256": "33a5832e8104f9e96753b2293334b43714a24c9061cbcf371b481ae4b4ca7ead",
+        "noisy_sha256": "e30e13a2620dfbedab4e36be36e850dcf2f37484eeb757be90939a7a4b9ef1e1",
         "active_ratio": 0.3305,
         "tail_ratio": 0.01,
         "baseline_false_closure_rate": 0.0,
@@ -209,12 +238,14 @@
         "candidate_pumping_score": 0.22695170634671763,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 2,
-        "baseline_runtime_ms": 136.09029999999998,
-        "candidate_runtime_ms": 131.1305
+        "baseline_runtime_ms": 97.99040000000001,
+        "candidate_runtime_ms": 106.8404
       },
       {
         "id": "turkish_pub_snr0_rt60none_0",
         "language": "turkish",
+        "clean_sha256": "c6ab474e5ba4cb1c9960f687c5ae2d41b8bc3ad403c59fa68958021cd3996f7f",
+        "noisy_sha256": "c3195ad2d067a6b4cc9139d685b2e6cee6130be4d2365ac856cda5386d134e6a",
         "active_ratio": 0.1705,
         "tail_ratio": 0.02,
         "baseline_false_closure_rate": 0.0,
@@ -227,12 +258,14 @@
         "candidate_pumping_score": 0.4042471956497087,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 3,
-        "baseline_runtime_ms": 98.5271,
-        "candidate_runtime_ms": 108.02879999999999
+        "baseline_runtime_ms": 97.039,
+        "candidate_runtime_ms": 104.0884
       },
       {
         "id": "vietnamese_street_snr0_rt60none_0",
         "language": "vietnamese",
+        "clean_sha256": "605cc29a041e92b71f01eea5e56037efc6e171246da17f0099a4548e4aa80a8b",
+        "noisy_sha256": "4098a5959ee4ad10208e774f125c428c445d9851f245aff9b14fe524dcbc2b57",
         "active_ratio": 0.3975,
         "tail_ratio": 0.08,
         "baseline_false_closure_rate": 0.0,
@@ -245,8 +278,8 @@
         "candidate_pumping_score": 0.22140642843850028,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 3,
-        "baseline_runtime_ms": 105.6528,
-        "candidate_runtime_ms": 113.338
+        "baseline_runtime_ms": 96.3358,
+        "candidate_runtime_ms": 102.5522
       }
     ]
   },
@@ -1141,8 +1174,75 @@
     "platform": "Windows-11-10.0.26200-SP0",
     "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
   },
-  "listening_status": {
-    "status": "not_run",
-    "reason": "The autonomous hardening scope excludes human listening; ambiguous candidates retain the incumbent."
-  }
+  "provenance": {
+    "source_hashes": {
+      "python/tools/evaluate_processing_order.py": "8d048a788d06205706232e21666f1668e125321441ac72b7b9802031538d12cb",
+      "rust-core/src/audio/processor/block_processor.rs": "ad3abde795ea0b7bb62a34f400bbd6122ac9676e9e09fb4a37142f494c3a0822",
+      "rust-core/src/audio/processor/python_api.rs": "8cd60e45c244c3ff6149a140b9776d6a4907bb6b3a4424a5b62c661f7fb6f7f3",
+      "rust-core/src/dsp/deesser.rs": "de99b52fb53dff272c4378d6c28f9a158ca79b85bb8092cb3f6b455c49956fea",
+      "rust-core/src/dsp/eq.rs": "075733d4f7475fd2886e3ddfec969c70243d491a845406714a1f7dad6f5993a7",
+      "rust-core/src/dsp/gate.rs": "ac1844fc9cbf0db6cb6f57f9c92d60e51969d9276484d8afab920ec3edc66b5a",
+      "rust-core/src/dsp/noise_suppressor.rs": "cc12d54b76e8c448240b5fd26b18d0649df81595470f0eedac7e30b4d38a9607",
+      "rust-core/src/dsp/rnnoise.rs": "8b06dd7d210ff79d24a08358e79a0f843e865e300125bea4b9122ebc20214912",
+      "models/silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+      "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
+    },
+    "proxy_corpus_pair_count": 12,
+    "proxy_corpus_license": "Apache-2.0",
+    "native_simulation_backend": "mic_eq_core"
+  },
+  "evaluation_contract": {
+    "configuration": {
+      "sample_rate": 48000,
+      "frame_size": 480,
+      "comparisons": [
+        "gate-before-suppressor vs suppressor-before-gate",
+        "deesser-before-EQ vs EQ-before-deesser"
+      ],
+      "product_defaults_changed": false
+    },
+    "asset_hashes": {
+      "source": {
+        "python/tools/evaluate_processing_order.py": "8d048a788d06205706232e21666f1668e125321441ac72b7b9802031538d12cb",
+        "rust-core/src/audio/processor/block_processor.rs": "ad3abde795ea0b7bb62a34f400bbd6122ac9676e9e09fb4a37142f494c3a0822",
+        "rust-core/src/audio/processor/python_api.rs": "8cd60e45c244c3ff6149a140b9776d6a4907bb6b3a4424a5b62c661f7fb6f7f3",
+        "rust-core/src/dsp/deesser.rs": "de99b52fb53dff272c4378d6c28f9a158ca79b85bb8092cb3f6b455c49956fea",
+        "rust-core/src/dsp/eq.rs": "075733d4f7475fd2886e3ddfec969c70243d491a845406714a1f7dad6f5993a7",
+        "rust-core/src/dsp/gate.rs": "ac1844fc9cbf0db6cb6f57f9c92d60e51969d9276484d8afab920ec3edc66b5a",
+        "rust-core/src/dsp/noise_suppressor.rs": "cc12d54b76e8c448240b5fd26b18d0649df81595470f0eedac7e30b4d38a9607",
+        "rust-core/src/dsp/rnnoise.rs": "8b06dd7d210ff79d24a08358e79a0f843e865e300125bea4b9122ebc20214912",
+        "models/silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+        "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
+      },
+      "proxy_corpus_manifest": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
+    },
+    "runtime": {
+      "gate_suppressor_median_runtime_ratio": 1.0751528784176108,
+      "max_p99_frame_seconds": null,
+      "max_p99_frame_seconds_reason": "The native simulators report whole-clip timing; the ordering candidate is rejected before realtime callback qualification.",
+      "platform": "Windows-11-10.0.26200-SP0"
+    },
+    "latency": {
+      "algorithmic_latency_delta_samples": 0,
+      "reason": "Each comparison reorders the same processing components."
+    },
+    "clean_preservation": {
+      "gate_suppressor_non_regression": {
+        "false_closure": true,
+        "active_retention": true,
+        "tail_retention": false,
+        "pumping": false,
+        "runtime": true
+      },
+      "eq_deesser_gates": {
+        "positive_reduction_improves_by_0_25_db": false,
+        "negative_reduction_regression_at_most_0_10_db": false,
+        "bright_hf_attenuation_regression_at_most_0_25_db": true
+      }
+    }
+  },
+  "limitations": [
+    "The gate/suppressor comparison uses the pinned multilingual paired corpus.",
+    "The EQ/de-esser comparison uses deterministic proxy cases; because the candidate fails those objective gates, no product-order change is justified."
+  ]
 }

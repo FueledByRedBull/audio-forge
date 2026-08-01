@@ -13,6 +13,8 @@ import numpy as np
 from scipy.io import wavfile
 from scipy.signal import butter, resample_poly, sosfilt
 
+from mic_eq.analysis.wav_io import read_mono_wav
+
 SPEECH_LICENSE = "CC BY-SA 4.0"
 SPEECH_SOURCE = (
     "https://github.com/Jakobovski/free-spoken-digit-dataset/tree/v1.0.10"
@@ -59,21 +61,7 @@ def _sha256(path: Path) -> str:
 
 
 def _load_mono(path: Path) -> tuple[int, np.ndarray]:
-    sample_rate, raw = wavfile.read(path)
-    audio = np.asarray(raw)
-    if audio.ndim == 2:
-        audio = np.mean(audio.astype(np.float64), axis=1)
-    if audio.ndim != 1:
-        raise ValueError(f"{path} is not mono/interleaved PCM")
-    if np.issubdtype(audio.dtype, np.floating):
-        normalized = audio.astype(np.float64)
-    elif np.issubdtype(audio.dtype, np.signedinteger):
-        info = np.iinfo(audio.dtype.name)
-        scale = float(max(abs(info.min), info.max))
-        normalized = audio.astype(np.float64) / scale
-    else:
-        raise ValueError(f"unsupported WAV dtype in {path}: {audio.dtype}")
-    return int(sample_rate), np.nan_to_num(normalized)
+    return read_mono_wav(path, dtype=np.float64)
 
 
 def _resample(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:

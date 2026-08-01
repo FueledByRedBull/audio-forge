@@ -21,7 +21,10 @@ pub mod deepfilter_ffi;
 pub use biquad::{Biquad, BiquadType};
 pub use compressor::{AutoMakeupActivityInput, Compressor};
 pub use deesser::DeEsser;
-pub use eq::{ParametricEQ, DEFAULT_FREQUENCIES, DEFAULT_Q, NUM_BANDS};
+pub use eq::{
+    EqBandConfig, EqFilterType, ParametricEQ, DEFAULT_FREQUENCIES, DEFAULT_Q, NUM_BANDS,
+    SUPPORTED_PASS_SLOPES_DB_PER_OCTAVE,
+};
 pub use gate::NoiseGate;
 pub use limiter::Limiter;
 pub use loudness::{LoudnessError, LoudnessMeter};

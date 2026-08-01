@@ -10,14 +10,35 @@ import pytest
 
 from mic_eq import config
 from mic_eq.config_parts import app_config as app_config_module
+from mic_eq.config_parts import presets as presets_module
 
 
 Preset = config.Preset
 AppConfig = config.AppConfig
 LatencyCalibrationProfile = config.LatencyCalibrationProfile
 DeviceIdentity = config.DeviceIdentity
+DevicePresetBinding = config.DevicePresetBinding
 build_latency_profile_key = config.build_latency_profile_key
 legacy_latency_profile_key = config.legacy_latency_profile_key
+
+
+def test_preset_save_is_atomic_and_preserves_existing_file_on_replace_failure(
+    tmp_path,
+    monkeypatch,
+):
+    destination = tmp_path / "voice.json"
+    destination.write_text("existing", encoding="utf-8")
+
+    def fail_replace(_source, _destination):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(presets_module.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="simulated replace failure"):
+        config.save_preset(Preset(name="Voice"), destination)
+
+    assert destination.read_text(encoding="utf-8") == "existing"
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 def test_preset_migration_to_v17_adds_deesser_defaults():
@@ -79,6 +100,18 @@ def test_preset_migration_to_v17_adds_deesser_defaults():
     )
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("name", {"not": "text"}, "preset name must be a string"),
+        ("description", ["not", "text"], "preset description must be a string"),
+    ],
+)
+def test_preset_rejects_non_string_metadata(field, value, message):
+    with pytest.raises(config.PresetValidationError, match=message):
+        Preset.from_dict({field: value})
+
+
 def test_app_config_latency_profiles_round_trip():
     profile = LatencyCalibrationProfile(
         measured_round_trip_ms=36.5,
@@ -127,6 +160,262 @@ def test_app_config_latency_profiles_round_trip():
     assert restored_profile.total_latency_ms == 60.5
     assert restored_profile.engine_config_signature == '{"noise_model":"rnnoise"}'
     assert restored_profile.confidence == 0.92
+
+
+def test_invalid_latency_profile_is_dropped_without_discarding_other_config():
+    route_key = build_latency_profile_key(
+        DeviceIdentity(name="Mic"),
+        DeviceIdentity(name="Output"),
+    )
+
+    restored = AppConfig.from_dict(
+        {
+            "input_channel_mode": "left",
+            "latency_calibration_profiles": {
+                route_key: {
+                    "measured_round_trip_ms": 20.0,
+                    "estimated_one_way_ms": 0.0,
+                    "applied_compensation_ms": 20.0,
+                    "confidence": 0.9,
+                    "route_latency_ms": "nan",
+                }
+            },
+        }
+    )
+
+    assert restored.input_channel_mode == "left"
+    assert restored.latency_calibration_profiles == {}
+
+
+def test_latency_profile_total_is_derived_from_validated_components():
+    profile = LatencyCalibrationProfile.from_dict(
+        {
+            "measured_round_trip_ms": 20.0,
+            "estimated_one_way_ms": 0.0,
+            "applied_compensation_ms": 20.0,
+            "confidence": 0.9,
+            "route_latency_ms": 20.0,
+            "engine_latency_ms": 7.5,
+            "total_latency_ms": 9999.0,
+        }
+    )
+
+    assert profile.total_latency_ms == 27.5
+
+
+def test_device_route_keys_ignore_default_status_and_survive_endpoint_rename():
+    original_input = DeviceIdentity(
+        name="Old Mic Name",
+        is_default=False,
+        endpoint_id="endpoint-input",
+        host_api="WASAPI",
+        direction="input",
+    )
+    renamed_input = DeviceIdentity(
+        name="New Mic Name",
+        is_default=True,
+        endpoint_id="endpoint-input",
+        host_api="wasapi",
+        direction="input",
+    )
+    output = DeviceIdentity(
+        name="Cable",
+        endpoint_id="endpoint-output",
+        host_api="WASAPI",
+        direction="output",
+    )
+
+    assert build_latency_profile_key(
+        original_input, output
+    ) == build_latency_profile_key(renamed_input, output)
+
+
+def test_fallback_route_keys_survive_windows_format_changes():
+    original_input = DeviceIdentity(
+        name="Microphone",
+        host_api="WASAPI",
+        direction="input",
+        sample_rate=44_100,
+        channels=1,
+        name_ordinal=0,
+    )
+    changed_input = DeviceIdentity(
+        name="Microphone",
+        host_api="wasapi",
+        direction="input",
+        sample_rate=48_000,
+        channels=2,
+        name_ordinal=0,
+    )
+    output = DeviceIdentity(name="Cable", direction="output", name_ordinal=0)
+
+    assert build_latency_profile_key(
+        original_input, output
+    ) == build_latency_profile_key(changed_input, output)
+
+
+def test_device_identity_rejects_nonfinite_or_mistyped_persisted_fields():
+    identity = DeviceIdentity.from_dict(
+        {
+            "name": "Microphone",
+            "is_default": "false",
+            "endpoint_id": {"not": "an id"},
+            "host_api": ["WASAPI"],
+            "direction": 123,
+            "sample_rate": math.inf,
+            "channels": 1.5,
+            "name_ordinal": -1,
+        }
+    )
+
+    assert identity == DeviceIdentity(name="Microphone")
+    assert DeviceIdentity.from_dict({"name": {"not": "a name"}}) is None
+
+
+def test_endpoint_route_keys_round_trip_through_app_config_without_collapsing():
+    input_device = DeviceIdentity(
+        name="Microphone",
+        endpoint_id="endpoint-input",
+        host_api="WASAPI",
+        direction="input",
+    )
+    output_device = DeviceIdentity(
+        name="Cable",
+        endpoint_id="endpoint-output",
+        host_api="WASAPI",
+        direction="output",
+    )
+    route_key = build_latency_profile_key(input_device, output_device)
+    profile = LatencyCalibrationProfile(
+        measured_round_trip_ms=12.0,
+        estimated_one_way_ms=12.0,
+        applied_compensation_ms=12.0,
+        confidence=0.9,
+        route_latency_ms=12.0,
+    )
+    configured = AppConfig(
+        latency_calibration_profiles={route_key: profile},
+        device_preset_bindings={route_key: DevicePresetBinding("builtin:broadcast")},
+    )
+
+    restored = AppConfig.from_dict(configured.to_dict())
+
+    assert set(restored.latency_calibration_profiles) == {route_key}
+    assert set(restored.device_preset_bindings) == {route_key}
+    assert '{"input":null,"output":null}' not in restored.device_preset_bindings
+
+
+def test_malformed_route_keys_are_dropped_instead_of_collapsing_to_null_route():
+    profile = LatencyCalibrationProfile(
+        measured_round_trip_ms=12.0,
+        estimated_one_way_ms=12.0,
+        applied_compensation_ms=12.0,
+        confidence=0.9,
+    )
+    malformed_keys = ("{}", '{"input":null,"output":null}', "||")
+    restored = AppConfig.from_dict(
+        {
+            "latency_calibration_profiles": {
+                key: profile.to_dict() for key in malformed_keys
+            },
+            "device_preset_bindings": {
+                key: "builtin:broadcast" for key in malformed_keys
+            },
+        }
+    )
+
+    assert restored.latency_calibration_profiles == {}
+    assert restored.device_preset_bindings == {}
+
+
+def test_malformed_legacy_device_names_are_not_stringified():
+    restored = AppConfig.from_dict(
+        {
+            "last_input_device": {"unexpected": "object"},
+            "last_output_device": 42,
+        }
+    )
+
+    assert restored.last_input_device == ""
+    assert restored.last_output_device == ""
+    assert restored.last_input_device_identity is None
+    assert restored.last_output_device_identity is None
+
+
+def test_device_preset_bindings_round_trip_with_provenance_and_legacy_migration():
+    route_key = build_latency_profile_key(
+        DeviceIdentity(name="Mic", is_default=True),
+        DeviceIdentity(name="Cable", is_default=False),
+    )
+    config_value = AppConfig(
+        auto_apply_device_presets=False,
+        device_preset_bindings={
+            route_key: DevicePresetBinding("builtin:broadcast", "explicit_user")
+        },
+    )
+
+    restored = AppConfig.from_dict(config_value.to_dict())
+    assert restored.auto_apply_device_presets is False
+    assert restored.device_preset_bindings[route_key] == DevicePresetBinding(
+        "builtin:broadcast", "explicit_user"
+    )
+
+    migrated = AppConfig.from_dict(
+        {"device_preset_bindings": {"Mic||Cable": "custom:Voice.json"}}
+    )
+    migrated_key = build_latency_profile_key(
+        DeviceIdentity(name="Mic"), DeviceIdentity(name="Cable")
+    )
+    assert migrated.device_preset_bindings[migrated_key] == DevicePresetBinding(
+        "custom:Voice.json", "legacy_migration"
+    )
+
+
+def test_first_run_setup_progress_round_trips_and_invalid_values_fail_closed():
+    configured = AppConfig(
+        first_run_setup_state="in_progress",
+        first_run_setup_step="latency",
+        first_run_setup_steps={
+            "devices": "completed",
+            "route": "completed",
+            "latency": "pending",
+            "voice": "skipped",
+        },
+    )
+    restored = AppConfig.from_dict(configured.to_dict())
+    assert restored.first_run_setup_state == "in_progress"
+    assert restored.first_run_setup_step == "latency"
+    assert restored.first_run_setup_steps == configured.first_run_setup_steps
+
+    invalid = AppConfig.from_dict(
+        {
+            "first_run_setup_state": "magical",
+            "first_run_setup_step": "telemetry",
+            "first_run_setup_steps": {"devices": "unknown", "route": "completed"},
+        }
+    )
+    assert invalid.first_run_setup_state == "not_started"
+    assert invalid.first_run_setup_step == "devices"
+    assert invalid.first_run_setup_steps == {
+        "devices": "pending",
+        "route": "completed",
+        "latency": "pending",
+        "voice": "pending",
+    }
+
+
+def test_existing_pre_wizard_config_does_not_trigger_first_run_setup():
+    migrated = AppConfig.from_dict(
+        {
+            "last_input_device": "Existing Microphone",
+            "use_measured_latency": False,
+        }
+    )
+
+    assert migrated.first_run_setup_state == "completed_with_skips"
+    assert set(migrated.first_run_setup_steps.values()) == {"skipped"}
+
+    assert AppConfig.from_dict({}).first_run_setup_state == "not_started"
 
 
 def test_voice_setup_dynamics_preferences_round_trip_and_migrate():
@@ -236,6 +525,53 @@ def test_app_config_preserves_valid_last_preset_string():
     assert restored.last_preset == "builtin:voice"
 
 
+@pytest.mark.parametrize(
+    "field", ["last_preset", "startup_preset"]
+)
+@pytest.mark.parametrize(
+    "value", [123, ["builtin:voice"], {"preset": "voice"}, True, None]
+)
+def test_app_config_normalizes_invalid_preset_ids_to_safe_strings(field, value):
+    restored = AppConfig.from_dict({field: value})
+
+    assert getattr(restored, field) == ""
+    assert isinstance(getattr(restored, field), str)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ([420, 680], [420, 680]),
+        ([420.0, "680"], [420, 680]),
+        (None, None),
+        (123, None),
+        ([420], None),
+        ([420, math.inf], None),
+        ([420, -1], None),
+        ([420, 1_000_001], None),
+    ],
+)
+def test_app_config_validates_splitter_sizes_without_resetting_other_fields(
+    value, expected
+):
+    restored = AppConfig.from_dict(
+        {"main_splitter_sizes": value, "last_preset": "builtin:voice"}
+    )
+
+    assert restored.main_splitter_sizes == expected
+    assert restored.last_preset == "builtin:voice"
+
+
+@pytest.mark.parametrize("value", [math.inf, -1, 65, 1.5, "invalid", [], True])
+def test_app_config_invalid_tab_index_falls_back_without_resetting_other_fields(value):
+    restored = AppConfig.from_dict(
+        {"main_control_tab_index": value, "last_preset": "builtin:voice"}
+    )
+
+    assert restored.main_control_tab_index == 0
+    assert restored.last_preset == "builtin:voice"
+
+
 def test_app_config_accepts_and_clamps_valid_window_geometry():
     restored = AppConfig.from_dict(
         {"window_geometry": {"x": 10.2, "y": 20.7, "width": 300.0, "height": 200.0}}
@@ -332,7 +668,8 @@ def test_load_preset_allows_imports_root():
 
 def test_preset_rejects_non_finite_numeric_values():
     data = Preset(name="Bad").to_dict()
-    data["eq"]["band_gains"] = [math.nan] * 10
+    for band in data["eq"]["bands"]:
+        band["gain_db"] = math.nan
 
     try:
         Preset.from_dict(data)
@@ -354,7 +691,7 @@ def test_preset_rejects_string_booleans():
 
 def test_eq_band_frequencies_round_trip():
     data = Preset(name="Auto EQ").to_dict()
-    data["eq"]["band_freqs"] = [
+    frequencies = [
         72.0,
         144.0,
         300.0,
@@ -366,10 +703,12 @@ def test_eq_band_frequencies_round_trip():
         11800.0,
         15500.0,
     ]
+    for band, frequency in zip(data["eq"]["bands"], frequencies):
+        band["frequency_hz"] = frequency
 
     preset = Preset.from_dict(data)
 
-    assert preset.eq.band_freqs == data["eq"]["band_freqs"]
+    assert preset.eq.band_freqs == frequencies
 
 
 def test_saved_auto_eq_preset_round_trips_dynamic_band_frequencies():

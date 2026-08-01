@@ -4,18 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Git tag / GitHub Release to publish to. Defaults to v<pyproject version>."
+        description: "Git tag represented by this candidate. Defaults to v<pyproject version>."
         required: false
         type: string
       asset_source_tag:
         description: "Published release used only as a fallback for pinned runtime assets. Defaults to release-assets.json."
         required: false
         type: string
-      upload_to_release:
-        description: "Upload the generated archive and checksum to the GitHub Release."
-        required: false
-        default: false
-        type: boolean
   push:
     tags:
       - "v*"
@@ -34,7 +29,9 @@ jobs:
     timeout-minutes: 120
     outputs:
       archive: ${{ steps.package.outputs.archive }}
-      checksum: ${{ steps.package.outputs.checksum }}
+      checksum: ${{ steps.provenance.outputs.checksum }}
+      manifest: ${{ steps.provenance.outputs.manifest }}
+      metadata: ${{ steps.provenance.outputs.metadata }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
       version: ${{ steps.meta.outputs.version }}
     env:
@@ -201,67 +198,118 @@ jobs:
             throw "7-Zip failed with exit code $LASTEXITCODE."
           }
 
-          $checksum = "$archive.sha256"
-          $hash = Get-FileHash $archive -Algorithm SHA256
-          "$($hash.Hash)  $archive" | Set-Content -Path $checksum -Encoding ascii
           "archive=$archive" >> $env:GITHUB_OUTPUT
-          "checksum=$checksum" >> $env:GITHUB_OUTPUT
+
+      - name: Generate exact-artifact provenance
+        id: provenance
+        run: |
+          $archive = "${{ steps.package.outputs.archive }}"
+          .\.venv\Scripts\python.exe python/tools/release_provenance.py create `
+            --bundle dist/AudioForge `
+            --archive $archive `
+            --baseline evaluation/release-bundle-path-baseline.json `
+            --output-dir .
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release provenance generation failed."
+          }
+          "checksum=$archive.sha256" >> $env:GITHUB_OUTPUT
+          "manifest=$archive.manifest.json" >> $env:GITHUB_OUTPUT
+          "metadata=$archive.metadata.json" >> $env:GITHUB_OUTPUT
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ steps.meta.outputs.archive }}
+          name: audioforge-release-candidate-${{ steps.meta.outputs.release_tag }}
           path: |
             ${{ steps.package.outputs.archive }}
-            ${{ steps.package.outputs.checksum }}
+            ${{ steps.provenance.outputs.checksum }}
+            ${{ steps.provenance.outputs.manifest }}
+            ${{ steps.provenance.outputs.metadata }}
           if-no-files-found: error
           retention-days: 14
 
-  publish-release:
-    name: Publish GitHub Release assets
+  validate-candidate:
+    name: Validate the exact archived candidate
     needs: package-windows
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.upload_to_release == true)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: write
+    runs-on: windows-latest
+    timeout-minutes: 30
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ needs.package-windows.outputs.archive }}
-          path: release-artifacts
-      - name: Upload package to GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.package-windows.outputs.release_tag }}
-          VERSION: ${{ needs.package-windows.outputs.version }}
-          ARCHIVE: release-artifacts/${{ needs.package-windows.outputs.archive }}
-          CHECKSUM: release-artifacts/${{ needs.package-windows.outputs.checksum }}
+          name: audioforge-release-candidate-${{ needs.package-windows.outputs.release_tag }}
+          path: candidate
+
+      - name: Verify, extract, and smoke-test exact candidate
         run: |
-          $notesFile = "release-notes/release-notes-v$env:VERSION.md"
-          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
+          $archive = Resolve-Path "candidate/${{ needs.package-windows.outputs.archive }}"
+          $checksum = Resolve-Path "candidate/${{ needs.package-windows.outputs.checksum }}"
+          $manifest = Resolve-Path "candidate/${{ needs.package-windows.outputs.manifest }}"
+          $metadata = Resolve-Path "candidate/${{ needs.package-windows.outputs.metadata }}"
+          $extract = Join-Path $env:RUNNER_TEMP "audioforge-candidate"
+          New-Item -ItemType Directory -Force -Path $extract | Out-Null
+          $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
+          & $sevenZip x -y "-o$extract" $archive
           if ($LASTEXITCODE -ne 0) {
-            if (Test-Path -LiteralPath $notesFile) {
-              gh release create $env:RELEASE_TAG `
-                --repo $env:GITHUB_REPOSITORY `
-                --verify-tag `
-                --title "AudioForge $env:VERSION" `
-                --notes-file $notesFile
-            } else {
-              gh release create $env:RELEASE_TAG `
-                --repo $env:GITHUB_REPOSITORY `
-                --verify-tag `
-                --title "AudioForge $env:VERSION" `
-                --notes "Automated AudioForge Windows release package."
-            }
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to create GitHub Release '$env:RELEASE_TAG'."
-            }
+            throw "Candidate extraction failed with exit code $LASTEXITCODE."
           }
 
-          gh release upload $env:RELEASE_TAG $env:ARCHIVE $env:CHECKSUM `
-            --repo $env:GITHUB_REPOSITORY `
-            --clobber
+          python python/tools/release_provenance.py verify `
+            --bundle $extract `
+            --archive $archive `
+            --checksum $checksum `
+            --manifest $manifest `
+            --metadata $metadata `
+            --baseline evaluation/release-bundle-path-baseline.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "Exact-candidate provenance verification failed."
+          }
+          python python/tools/package_smoke.py --dist $extract
+          if ($LASTEXITCODE -ne 0) {
+            throw "Exact-candidate package smoke failed."
+          }
+
+          $exe = Join-Path $extract "AudioForge.exe"
+          $process = Start-Process -FilePath $exe `
+            -WorkingDirectory $extract `
+            -WindowStyle Hidden `
+            -PassThru
+          $process | Wait-Process -Timeout 12 -ErrorAction SilentlyContinue
+          $process.Refresh()
+          if ($process.HasExited) {
+            throw "Exact-candidate EXE exited early with code $($process.ExitCode)."
+          }
+          Stop-Process -Id $process.Id
+          $process | Wait-Process -Timeout 10
+
+          $metadataObject = Get-Content -LiteralPath $metadata -Raw | ConvertFrom-Json
+          @{
+            schema_version = 1
+            status = "passed"
+            passed = $true
+            artifact = @{
+              name = $metadataObject.archive.name
+              sha256 = $metadataObject.archive.sha256
+            }
+            commit = $metadataObject.commit
+            checks = @{
+              provenance = "passed"
+              package_smoke = "passed"
+              hidden_exe_startup = "passed"
+            }
+          } | ConvertTo-Json -Depth 5 |
+            Set-Content -LiteralPath "release-qualification.json" -Encoding utf8
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: audioforge-release-validation-${{ needs.package-windows.outputs.release_tag }}
+          path: release-qualification.json
+          if-no-files-found: error
+          retention-days: 14

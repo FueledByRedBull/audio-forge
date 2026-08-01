@@ -1,6 +1,6 @@
 """Internal configuration implementation helpers."""
 
-from .app_config import AppConfig, load_config, save_config
+from .app_config import AppConfig, DevicePresetBinding, load_config, save_config
 from .presets import Preset, generate_auto_eq_preset_name, list_presets, load_preset, save_preset
 from .settings import (
     ANALYSIS_MAX_SPECTRAL_FLATNESS,
@@ -10,13 +10,22 @@ from .settings import (
     AUTO_EQ_DEFAULT_Q,
     CompressorSettings,
     DeEsserSettings,
+    EQBandSettings,
     EQSettings,
+    EQ_BANDWIDTH_MODES,
+    EQ_BAND_COUNT,
+    EQ_FILTER_TYPES,
     EQ_FREQUENCIES,
+    EQ_RUNTIME_SAMPLE_RATE,
+    EQ_SCHEMA_VERSION,
+    EQ_SLOPES_DB_PER_OCTAVE,
+    EQ_STAGES,
     GateSettings,
     LatencyCalibrationProfile,
     LimiterSettings,
     RNNoiseSettings,
     TargetCurve,
+    q_from_bandwidth_octaves,
 )
 from .shared import (
     APPDATA_DIR_NAME,
@@ -25,6 +34,7 @@ from .shared import (
     LEGACY_APPDATA_DIR_NAME,
     PresetValidationError,
     build_latency_profile_key,
+    build_device_route_key,
     coerce_device_identity,
     get_config_file,
     get_preset_imports_dir,
@@ -46,8 +56,17 @@ __all__ = [
     "CompressorSettings",
     "DeEsserSettings",
     "DeviceIdentity",
+    "DevicePresetBinding",
+    "EQBandSettings",
     "EQSettings",
+    "EQ_BANDWIDTH_MODES",
+    "EQ_BAND_COUNT",
+    "EQ_FILTER_TYPES",
     "EQ_FREQUENCIES",
+    "EQ_RUNTIME_SAMPLE_RATE",
+    "EQ_SCHEMA_VERSION",
+    "EQ_SLOPES_DB_PER_OCTAVE",
+    "EQ_STAGES",
     "GateSettings",
     "LatencyCalibrationProfile",
     "LEGACY_APPDATA_DIR_NAME",
@@ -58,6 +77,7 @@ __all__ = [
     "TargetCurve",
     "VALIDATION_RANGES",
     "build_latency_profile_key",
+    "build_device_route_key",
     "coerce_device_identity",
     "generate_auto_eq_preset_name",
     "get_config_file",
@@ -68,6 +88,7 @@ __all__ = [
     "load_config",
     "load_preset",
     "parse_latency_profile_key",
+    "q_from_bandwidth_octaves",
     "save_config",
     "save_preset",
 ]

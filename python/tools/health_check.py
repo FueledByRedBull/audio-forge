@@ -10,8 +10,7 @@ import argparse
 import json
 import sys
 import time
-
-from mic_eq import AudioProcessor
+from pathlib import Path
 
 
 # Normal clock-drift retiming counters are observational, not failures. True
@@ -106,9 +105,22 @@ def main() -> int:
     parser.add_argument(
         "--output-device", type=str, default=None, help="Output device name."
     )
+    parser.add_argument(
+        "--bundle-root",
+        type=Path,
+        help="load the native runtime and model assets from this extracted bundle",
+    )
     args = parser.parse_args()
 
-    processor = AudioProcessor()
+    if args.bundle_root is None:
+        from mic_eq import AudioProcessor
+
+        processor_class = AudioProcessor
+    else:
+        from bundle_runtime import load_bundled_core
+
+        processor_class = load_bundled_core(args.bundle_root).AudioProcessor
+    processor = processor_class()
     try:
         result = processor.start(args.input_device, args.output_device)
         print(f"Started processor: {result}")

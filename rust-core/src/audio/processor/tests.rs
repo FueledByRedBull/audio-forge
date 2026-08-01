@@ -6,9 +6,35 @@ mod tests {
 
     #[test]
     fn test_duration_samples_for_44k1_output() {
-        assert_eq!(duration_samples(44_100, OUTPUT_PRIME_MS), 882);
-        assert_eq!(duration_samples(44_100, OUTPUT_TARGET_HIGH_MS), 1323);
+        assert_eq!(duration_samples(44_100, OUTPUT_PRIME_MS), 1323);
+        assert_eq!(duration_samples(44_100, OUTPUT_TARGET_HIGH_MS), 1764);
         assert_eq!(duration_samples(44_100, OUTPUT_HARD_BACKLOG_MS), 2646);
+    }
+
+    #[test]
+    fn test_output_queue_target_preserves_qualified_callback_headroom() {
+        const QUALIFIED_MAX_CALLBACK_MS: u32 = 20;
+        const MIN_STARTUP_RESERVE_MS: u32 = 10;
+        const MIN_STEADY_STATE_RESERVE_MS: u32 = 15;
+
+        for sample_rate in [44_100, 48_000, 96_000] {
+            let prime = duration_samples(sample_rate, OUTPUT_PRIME_MS);
+            let high = duration_samples(sample_rate, OUTPUT_TARGET_HIGH_MS);
+            let center = (prime + high).div_ceil(2);
+            let callback = duration_samples(sample_rate, QUALIFIED_MAX_CALLBACK_MS);
+
+            assert!(
+                prime >= callback + duration_samples(sample_rate, MIN_STARTUP_RESERVE_MS)
+            );
+            assert!(
+                center
+                    >= callback
+                        + duration_samples(sample_rate, MIN_STEADY_STATE_RESERVE_MS)
+            );
+            assert!(
+                duration_samples(sample_rate, OUTPUT_HARD_BACKLOG_MS) > high
+            );
+        }
     }
 
     #[test]
@@ -161,6 +187,74 @@ mod tests {
     fn test_build_sinc_resampler_for_valid_rates() {
         let resampler = build_sinc_resampler(44_100, 48_000, 1024);
         assert!(resampler.is_ok());
+    }
+
+    #[test]
+    fn product_resampler_offline_hook_reports_delay_count_and_timings() {
+        let input = vec![0.0; 44_100];
+        let (output, delay, expected, timings) =
+            simulate_product_resampler(input, 44_100, 48_000, 1024, None, None).unwrap();
+        let native_delay = build_sinc_resampler(44_100, 48_000, 1024)
+            .unwrap()
+            .output_delay();
+
+        assert_eq!(expected, 48_000);
+        assert_eq!(delay, native_delay);
+        assert!(output.len() >= delay + expected);
+        assert!(!timings.is_empty());
+    }
+
+    #[test]
+    fn product_resampler_metadata_matches_native_defaults() {
+        assert_eq!(
+            product_resampler_configuration(),
+            (
+                PRODUCT_RESAMPLER_SINC_LEN,
+                PRODUCT_RESAMPLER_WINDOW_NAME.to_string(),
+                "cubic".to_string(),
+                256,
+                RESAMPLER_CHUNK_SIZE,
+            )
+        );
+    }
+
+    #[test]
+    fn product_resampler_offline_hook_rejects_invalid_inputs() {
+        assert!(simulate_product_resampler(vec![0.0], 0, 48_000, 1024, None, None).is_err());
+        assert!(
+            simulate_product_resampler(vec![f64::NAN], 48_000, 44_100, 1024, None, None)
+                .is_err()
+        );
+        assert!(
+            simulate_product_resampler(vec![0.0], 48_000, 44_100, 0, None, None).is_err()
+        );
+        assert!(simulate_product_resampler(
+            vec![0.0],
+            48_000,
+            44_100,
+            RESAMPLER_CHUNK_SIZE + 1,
+            None,
+            None
+        )
+        .is_err());
+        assert!(simulate_product_resampler(
+            vec![0.0],
+            48_000,
+            44_100,
+            1024,
+            Some(96),
+            None
+        )
+        .is_err());
+        assert!(simulate_product_resampler(
+            vec![0.0],
+            48_000,
+            44_100,
+            1024,
+            None,
+            Some("unknown")
+        )
+        .is_err());
     }
 
     #[test]
@@ -1494,7 +1588,7 @@ mod tests {
             BiquadType::Peaking,
             1_000.0,
             3.0,
-            DEFAULT_Q,
+            crate::dsp::eq::DEFAULT_Q,
             TARGET_SAMPLE_RATE as f64,
         );
         biquad.process_block_inplace(&mut block);
@@ -1507,6 +1601,17 @@ mod tests {
         eq.process_block_inplace(&mut block);
         crate::test_alloc::assert_no_allocations("eq block", || {
             eq.process_block_inplace(&mut block);
+        });
+
+        let mut steep_eq = ParametricEQ::new(TARGET_SAMPLE_RATE as f64);
+        let mut steep = steep_eq.get_band_config(0).unwrap();
+        steep.filter_type = EqFilterType::HighPass;
+        steep.slope_db_per_octave = 48;
+        steep_eq.set_band_config(0, steep);
+        steep_eq.reset();
+        steep_eq.process_block_inplace(&mut block);
+        crate::test_alloc::assert_no_allocations("steep EQ block", || {
+            steep_eq.process_block_inplace(&mut block);
         });
 
         let mut gate = NoiseGate::new(-45.0, 5.0, 80.0, TARGET_SAMPLE_RATE as f64);
@@ -1941,6 +2046,90 @@ mod tests {
     }
 
     #[test]
+    fn test_typed_eq_controls_publish_one_stable_snapshot() {
+        let processor = AudioProcessor::new();
+        processor
+            .set_eq_band_filter_type(4, EqFilterType::HighPass)
+            .unwrap();
+        processor.set_eq_band_frequency(4, 1_200.0).unwrap();
+        processor.set_eq_band_slope(4, 48).unwrap();
+        processor.set_eq_band_enabled(4, false).unwrap();
+
+        let config = processor.get_eq_band_config(4).unwrap();
+        assert_eq!(config.filter_type, EqFilterType::HighPass);
+        assert_eq!(config.frequency_hz, 1_200.0);
+        assert_eq!(config.slope_db_per_octave, 48);
+        assert!(!config.enabled);
+
+        let snapshot = processor.eq_control.snapshot().expect("stable EQ state");
+        assert_eq!(snapshot.bands[4], config);
+    }
+
+    #[test]
+    fn test_typed_eq_rejects_odd_order_slope_without_mutating_state() {
+        let processor = AudioProcessor::new();
+        let original = processor.get_eq_band_config(4).unwrap();
+
+        let error = processor.set_eq_band_slope(4, 18).unwrap_err();
+
+        assert!(error.contains("expected one of"));
+        assert_eq!(processor.get_eq_band_config(4).unwrap(), original);
+    }
+
+    #[test]
+    fn test_legacy_batch_eq_api_restores_historical_filter_layout() {
+        let processor = AudioProcessor::new();
+        processor
+            .set_eq_band_filter_type(4, EqFilterType::Notch)
+            .unwrap();
+        processor.set_eq_band_enabled(4, false).unwrap();
+        let bands = (0..NUM_BANDS)
+            .map(|index| {
+                (
+                    crate::dsp::eq::DEFAULT_FREQUENCIES[index],
+                    0.0,
+                    crate::dsp::eq::DEFAULT_Q,
+                )
+            })
+            .collect();
+
+        processor.apply_eq_settings(bands).unwrap();
+
+        assert_eq!(
+            processor.get_eq_band_config(4).unwrap(),
+            EqBandConfig::default_for_index(4)
+        );
+    }
+
+    #[test]
+    fn test_typed_batch_eq_api_preserves_every_band_field() {
+        let processor = AudioProcessor::new();
+        let configs: Vec<_> = (0..NUM_BANDS)
+            .map(|index| {
+                let mut config = EqBandConfig::default_for_index(index);
+                if index == 0 {
+                    config.filter_type = EqFilterType::HighPass;
+                    config.frequency_hz = 70.0;
+                    config.slope_db_per_octave = 36;
+                } else if index == 4 {
+                    config.filter_type = EqFilterType::Notch;
+                    config.frequency_hz = 2_100.0;
+                    config.q = 7.5;
+                } else if index == 9 {
+                    config.enabled = false;
+                }
+                config
+            })
+            .collect();
+
+        processor.apply_eq_settings_v2(configs.clone()).unwrap();
+
+        for (index, expected) in configs.into_iter().enumerate() {
+            assert_eq!(processor.get_eq_band_config(index), Some(expected));
+        }
+    }
+
+    #[test]
     fn test_gate_control_validation_rejects_non_finite_and_clamps_ranges() {
         let processor = AudioProcessor::new();
         processor.set_gate_threshold(f64::NAN);
@@ -2048,7 +2237,11 @@ mod tests {
     fn test_apply_eq_settings_rejects_above_nyquist() {
         let processor = AudioProcessor::new();
         let mut bands = vec![(100.0, 0.0, 1.0); NUM_BANDS];
-        bands[NUM_BANDS - 1] = (processor.eq_nyquist_limit_hz() + 100.0, 0.0, 1.0);
+        bands[NUM_BANDS - 1] = (
+            crate::dsp::eq::eq_max_frequency_hz(processor.sample_rate as f64).unwrap() + 100.0,
+            0.0,
+            1.0,
+        );
 
         Python::initialize();
         let err = processor.apply_eq_settings(bands).unwrap_err();

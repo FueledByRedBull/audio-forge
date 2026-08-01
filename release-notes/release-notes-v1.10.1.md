@@ -78,7 +78,13 @@ selected-route correlation measured 118.29 ms at 0.869 confidence. The
 underrun, callback/drop/recovery error, RT overflow, backend failure, or
 non-finite suppressor output.
 
-The tested portable folder is 301,731,513 bytes across 209 files. Its solid
-LZMA2 archive is 112,014,644 bytes with SHA-256
-`199453a3a18d39ca9d2864e9f7ac6cff0f5254244c9c845b851f2950156e5994`.
-This is objective release-machine evidence, not a controlled listening claim.
+The distinct published CI artifact was subsequently downloaded from the public
+release and qualified without rebuilding. It passed its own package,
+model-discovery and hidden-startup checks, measured 112.29 ms selected-route
+correlation at 0.867 confidence, and completed a separate 30-minute
+physical-microphone run with no post-warmup underrun, restart, drop, recovery,
+backend, realtime-buffer, or non-finite regression. The exact archive/tree and
+machine details are bound in
+`evaluation/hardware-validation-v1.10.1-published.json`; use the checksum
+sidecar attached to the GitHub Release for the archive identity. This remains
+objective release-machine evidence, not a controlled listening claim.

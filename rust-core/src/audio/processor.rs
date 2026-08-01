@@ -27,7 +27,10 @@ use super::input::{AudioInput, InputChannelMode, InputStreamOptions, TARGET_SAMP
 use super::output::{AudioOutput, OutputProbeControl};
 use super::rt::{store_rt_error, FixedAudioBuffer, RtCommandQueue, RtErrorCode};
 use crate::dsp::biquad::{Biquad, BiquadType};
-use crate::dsp::eq::{DEFAULT_FREQUENCIES, DEFAULT_Q, NUM_BANDS};
+use crate::dsp::eq::{
+    validate_eq_frequency_hz, validate_eq_gain_db, validate_eq_q, validate_eq_slope, EqBandConfig,
+    EqFilterType, NUM_BANDS,
+};
 use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressionEngine, NoiseSuppressor};
 use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
 use crate::dsp::{
@@ -45,12 +48,21 @@ const RT_SUPPRESSOR_OUTPUT_CAPACITY: usize = RT_PROCESS_BUFFER_CAPACITY + RNNOIS
 const RT_OUTPUT_SCRATCH_CAPACITY: usize = RT_SUPPRESSOR_OUTPUT_CAPACITY;
 const RT_SUPPRESSOR_COMMAND_CAPACITY: usize = 2;
 const RT_SUPPRESSOR_RETIRE_CAPACITY: usize = 8;
+const RESAMPLER_CHUNK_SIZE: usize = 1024;
+const PRODUCT_RESAMPLER_SINC_LEN: usize = 128;
+const PRODUCT_RESAMPLER_WINDOW_NAME: &str = "blackman";
 const PROCESS_IDLE_SLEEP_US: u64 = 100;
 const PROCESS_IDLE_MAX_SLEEP_US: u64 = 1_600;
 const PROCESS_IDLE_RECENT_INPUT_WINDOW_US: u64 = 2_000;
 const COMPRESSOR_DEFAULT_RELEASE_TENTH_MS: u64 = 2000; // 200ms * 10
-const OUTPUT_PRIME_MS: u32 = 20;
-const OUTPUT_TARGET_HIGH_MS: u32 = 30;
+
+// The Windows default-buffer path produced 10/20 ms callbacks during sustained
+// qualification. Keep at least 10 ms beyond a 20 ms callback at startup and a
+// 15 ms reserve at the steady-state center so ordinary scheduler jitter cannot
+// drain the queue between DSP writes. This intentionally trades 10 ms of
+// engine latency for deterministic callback headroom.
+const OUTPUT_PRIME_MS: u32 = 30;
+const OUTPUT_TARGET_HIGH_MS: u32 = 40;
 const OUTPUT_HARD_BACKLOG_MS: u32 = 60;
 const OUTPUT_DRIFT_MAX_RATIO_ADJUST: f32 = 0.008;
 const OUTPUT_DRIFT_MAX_EXPANSION_RATIO: f32 = 0.96;
@@ -60,12 +72,6 @@ const MAX_OUTPUT_PROBE_SECONDS: usize = 2;
 const INPUT_DC_BLOCK_COEFF: f32 = 0.995;
 const INPUT_PREFILTER_HZ: f64 = 80.0;
 const INPUT_PREFILTER_Q: f64 = 0.707;
-const EQ_GAIN_MIN_DB: f64 = -12.0;
-const EQ_GAIN_MAX_DB: f64 = 12.0;
-const EQ_Q_MIN: f64 = 0.1;
-const EQ_Q_MAX: f64 = 10.0;
-const EQ_FREQ_MIN_HZ: f64 = 20.0;
-const EQ_NYQUIST_MARGIN_HZ: f64 = 1.0;
 const GATE_THRESHOLD_MIN_DB: f64 = -80.0;
 const GATE_THRESHOLD_MAX_DB: f64 = -10.0;
 const GATE_ATTACK_MIN_MS: f64 = 0.1;
@@ -253,8 +259,14 @@ pub struct AudioProcessor {
     /// Input device name
     input_device_name: Option<String>,
 
+    /// Zero-based occurrence of the selected input friendly name.
+    input_device_name_ordinal: u32,
+
     /// Output device name
     output_device_name: Option<String>,
+
+    /// Zero-based occurrence of the selected output friendly name.
+    output_device_name_ordinal: u32,
 
     // === Level Metering (lock-free atomics) ===
     // Stored as f32 bits via to_bits()/from_bits()
@@ -451,10 +463,6 @@ impl AudioProcessor {
             .unwrap_or(false)
     }
 
-    fn eq_nyquist_limit_hz(&self) -> f64 {
-        (self.sample_rate as f64 / 2.0 - EQ_NYQUIST_MARGIN_HZ).max(EQ_FREQ_MIN_HZ)
-    }
-
     fn validate_eq_band_index(&self, band: usize) -> Result<(), String> {
         if band >= NUM_BANDS {
             return Err(format!("Band {} out of range [0, {})", band, NUM_BANDS));
@@ -463,43 +471,25 @@ impl AudioProcessor {
     }
 
     fn validate_eq_frequency(&self, band: usize, frequency: f64) -> Result<(), String> {
-        if !frequency.is_finite() {
-            return Err(format!("Band {}: frequency must be finite", band));
-        }
-        let max_frequency = self.eq_nyquist_limit_hz();
-        if !(EQ_FREQ_MIN_HZ..=max_frequency).contains(&frequency) {
-            return Err(format!(
-                "Band {}: frequency {} Hz out of range [{}, {}]",
-                band, frequency, EQ_FREQ_MIN_HZ, max_frequency
-            ));
-        }
-        Ok(())
+        validate_eq_frequency_hz(frequency, self.sample_rate as f64)
+            .map_err(|message| format!("Band {band}: {message}"))
     }
 
     fn validate_eq_gain(&self, band: usize, gain_db: f64) -> Result<(), String> {
-        if !gain_db.is_finite() {
-            return Err(format!("Band {}: gain must be finite", band));
-        }
-        if !(EQ_GAIN_MIN_DB..=EQ_GAIN_MAX_DB).contains(&gain_db) {
-            return Err(format!(
-                "Band {}: gain {} dB out of range [{}, {}]",
-                band, gain_db, EQ_GAIN_MIN_DB, EQ_GAIN_MAX_DB
-            ));
-        }
-        Ok(())
+        validate_eq_gain_db(gain_db).map_err(|message| format!("Band {band}: {message}"))
     }
 
     fn validate_eq_q(&self, band: usize, q: f64) -> Result<(), String> {
-        if !q.is_finite() {
-            return Err(format!("Band {}: Q must be finite", band));
-        }
-        if !(EQ_Q_MIN..=EQ_Q_MAX).contains(&q) {
-            return Err(format!(
-                "Band {}: Q {} out of range [{}, {}]",
-                band, q, EQ_Q_MIN, EQ_Q_MAX
-            ));
-        }
-        Ok(())
+        validate_eq_q(q).map_err(|message| format!("Band {band}: {message}"))
+    }
+
+    fn validate_eq_slope(&self, band: usize, slope_db_per_octave: u8) -> Result<(), String> {
+        validate_eq_slope(slope_db_per_octave).map_err(|message| format!("Band {band}: {message}"))
+    }
+
+    fn validate_eq_band_config(&self, band: usize, config: EqBandConfig) -> Result<(), String> {
+        self.validate_eq_band_index(band)?;
+        config.validate(band, self.sample_rate as f64)
     }
 
     /// Create a new audio processor
@@ -608,7 +598,9 @@ impl AudioProcessor {
                 (INPUT_PREFILTER_HZ as f32).to_bits(),
             )),
             input_device_name: None,
+            input_device_name_ordinal: 0,
             output_device_name: None,
+            output_device_name_ordinal: 0,
             // Initialize metering atomics with -infinity (no signal)
             input_peak: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             input_rms: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),

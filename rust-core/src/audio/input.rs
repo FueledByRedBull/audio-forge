@@ -293,6 +293,17 @@ impl AudioInput {
         Self::parse_fixed_buffer_frames(value.as_deref())
     }
 
+    fn named_input_device(name: &str, name_ordinal: u32) -> Result<Device, AudioError> {
+        let host = cpal::default_host();
+        host.input_devices()
+            .map_err(|error| AudioError::DeviceName(error.to_string()))?
+            .filter(|device| device.name().map(|value| value == name).unwrap_or(false))
+            .nth(name_ordinal as usize)
+            .ok_or_else(|| {
+                AudioError::DeviceNotFound(format!("{name} (occurrence {name_ordinal})"))
+            })
+    }
+
     fn supported_fixed_buffer_frames(frames: u32, supported: &SupportedBufferSize) -> bool {
         match supported {
             SupportedBufferSize::Range { min, max } => (*min..=*max).contains(&frames),
@@ -910,12 +921,7 @@ impl AudioInput {
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
     ) -> Result<Self, AudioError> {
-        let host = cpal::default_host();
-        let device = host
-            .input_devices()
-            .map_err(|e| AudioError::DeviceName(e.to_string()))?
-            .find(|d| d.name().map(|n| n == name).unwrap_or(false))
-            .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))?;
+        let device = Self::named_input_device(name, 0)?;
 
         Self::from_device(
             device,
@@ -934,12 +940,29 @@ impl AudioInput {
         rt_error_code: Arc<AtomicU32>,
         options: InputStreamOptions,
     ) -> Result<Self, AudioError> {
-        let host = cpal::default_host();
-        let device = host
-            .input_devices()
-            .map_err(|e| AudioError::DeviceName(e.to_string()))?
-            .find(|d| d.name().map(|n| n == name).unwrap_or(false))
-            .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))?;
+        Self::from_device_name_ordinal_with_options(
+            name,
+            0,
+            producer,
+            last_callback_time_us,
+            error_count,
+            rt_error_code,
+            options,
+        )
+    }
+
+    /// Create audio input from an exact occurrence of a duplicate friendly name.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_device_name_ordinal_with_options(
+        name: &str,
+        name_ordinal: u32,
+        producer: AudioProducer,
+        last_callback_time_us: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
+        options: InputStreamOptions,
+    ) -> Result<Self, AudioError> {
+        let device = Self::named_input_device(name, name_ordinal)?;
 
         Self::from_device_with_options(
             device,

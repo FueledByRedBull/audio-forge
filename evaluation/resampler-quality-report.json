@@ -1,0 +1,904 @@
+{
+  "alternatives": [
+    {
+      "checks": {
+        "delay_accounting": true,
+        "downsample_alias": true,
+        "impulse_location": true,
+        "long_stream_count": true,
+        "max_realtime": true,
+        "offline_reference_magnitude": false,
+        "p99_realtime": true,
+        "passband_absolute_error": false,
+        "passband_ripple": false,
+        "roundtrip": false,
+        "upsample_image": true
+      },
+      "configuration": {
+        "identifier": "legacy-blackman-harris-squared-128",
+        "interpolation": "cubic",
+        "native_default": false,
+        "oversampling_factor": 256,
+        "sinc_len": 128,
+        "window": "blackman_harris_squared"
+      },
+      "decision": {
+        "reason": "Rejected because predefined gates failed: passband_absolute_error, passband_ripple, offline_reference_magnitude, roundtrip.",
+        "retained": false
+      },
+      "measurements": {
+        "downsample_alias": {
+          "swept_noise": {
+            "attenuation_db": -164.37766866692397,
+            "input_band_hz": [
+              22500.0,
+              23900.0
+            ]
+          },
+          "tones": [
+            {
+              "attenuation_db": -150.82457091294864,
+              "input_frequency_hz": 22500.0
+            },
+            {
+              "attenuation_db": -172.7588349352659,
+              "input_frequency_hz": 23000.0
+            },
+            {
+              "attenuation_db": -173.91219551157232,
+              "input_frequency_hz": 23500.0
+            }
+          ],
+          "worst_alias_db": -150.82457091294864
+        },
+        "impulse": [
+          {
+            "expected_impulse_location": 24000.0,
+            "impulse_peak_index": 24000,
+            "input_rate": 44100,
+            "location_error_samples": 0.0,
+            "output_rate": 48000,
+            "reported_output_delay_ms": 1.4375,
+            "reported_output_delay_samples": 69
+          },
+          {
+            "expected_impulse_location": 22050.0,
+            "impulse_peak_index": 22050,
+            "input_rate": 48000,
+            "location_error_samples": 0.0,
+            "output_rate": 44100,
+            "reported_output_delay_ms": 1.3151927437641724,
+            "reported_output_delay_samples": 58
+          }
+        ],
+        "long_stream_and_timing": [
+          {
+            "block_time_ns": {
+              "max": 103900.0,
+              "median": 60900,
+              "p95": 66800.0,
+              "p99": 79395.99999999991
+            },
+            "blocks": 2585,
+            "count_error_samples": 0,
+            "deadline_ns": 23219954.648526076,
+            "duration_seconds": 60,
+            "expected_output_frames": 2880000,
+            "input_frames": 2646000,
+            "input_rate": 44100,
+            "max_deadline_fraction": 0.004474599609375,
+            "output_frames": 2880000,
+            "output_rate": 48000,
+            "p99_deadline_fraction": 0.0034193003906249964,
+            "reported_output_delay_samples": 69
+          },
+          {
+            "block_time_ns": {
+              "max": 78900.0,
+              "median": 51200,
+              "p95": 55500.0,
+              "p99": 67400.0
+            },
+            "blocks": 2813,
+            "count_error_samples": 0,
+            "deadline_ns": 21333333.333333332,
+            "duration_seconds": 60,
+            "expected_output_frames": 2646000,
+            "input_frames": 2880000,
+            "input_rate": 48000,
+            "max_deadline_fraction": 0.0036984375000000003,
+            "output_frames": 2646000,
+            "output_rate": 44100,
+            "p99_deadline_fraction": 0.0031593750000000003,
+            "reported_output_delay_samples": 58
+          }
+        ],
+        "passband_and_offline_reference": [
+          {
+            "input_rate": 44100,
+            "max_absolute_error_db": 10.311107450553438,
+            "max_offline_reference_magnitude_delta_db": 10.31110646634119,
+            "output_rate": 48000,
+            "responses": [
+              {
+                "frequency_hz": 50.0,
+                "gain_db": -6.459065370976319e-12,
+                "offline_reference_gain_db": 1.931279444592477e-08,
+                "offline_reference_magnitude_delta_db": -1.9319253511295746e-08
+              },
+              {
+                "frequency_hz": 100.0,
+                "gain_db": -2.4258621748648367e-11,
+                "offline_reference_gain_db": 7.326673847579024e-08,
+                "offline_reference_magnitude_delta_db": -7.32909970975389e-08
+              },
+              {
+                "frequency_hz": 1000.0,
+                "gain_db": -1.2232686778807897e-10,
+                "offline_reference_gain_db": 3.6843940313762574e-07,
+                "offline_reference_magnitude_delta_db": -3.685617300054138e-07
+              },
+              {
+                "frequency_hz": 5000.0,
+                "gain_db": -5.507467026996594e-11,
+                "offline_reference_gain_db": 2.425751166184024e-07,
+                "offline_reference_magnitude_delta_db": -2.426301912886724e-07
+              },
+              {
+                "frequency_hz": 10000.0,
+                "gain_db": -3.43063353542973e-10,
+                "offline_reference_gain_db": 3.6562587951144374e-07,
+                "offline_reference_magnitude_delta_db": -3.659689428649867e-07
+              },
+              {
+                "frequency_hz": 15000.0,
+                "gain_db": -2.712054316481069e-09,
+                "offline_reference_gain_db": -1.3215945251179518e-07,
+                "offline_reference_magnitude_delta_db": 1.2944739819531412e-07
+              },
+              {
+                "frequency_hz": 18000.0,
+                "gain_db": -0.002286725091477156,
+                "offline_reference_gain_db": 6.660229514680022e-07,
+                "offline_reference_magnitude_delta_db": -0.002287391114428624
+              },
+              {
+                "frequency_hz": 20000.0,
+                "gain_db": -10.311107450553438,
+                "offline_reference_gain_db": -9.842122468661795e-07,
+                "offline_reference_magnitude_delta_db": -10.31110646634119
+              }
+            ],
+            "ripple_db": 10.311107450546979
+          },
+          {
+            "input_rate": 48000,
+            "max_absolute_error_db": 9.90248543722519,
+            "max_offline_reference_magnitude_delta_db": 9.902484453012882,
+            "output_rate": 44100,
+            "responses": [
+              {
+                "frequency_hz": 50.0,
+                "gain_db": -2.9440917553876846e-12,
+                "offline_reference_gain_db": 1.9312796374579698e-08,
+                "offline_reference_magnitude_delta_db": -1.9315740466335087e-08
+              },
+              {
+                "frequency_hz": 100.0,
+                "gain_db": -1.1316382820010196e-11,
+                "offline_reference_gain_db": 7.326673847579024e-08,
+                "offline_reference_magnitude_delta_db": -7.327805485861026e-08
+              },
+              {
+                "frequency_hz": 1000.0,
+                "gain_db": -5.395508608129054e-11,
+                "offline_reference_gain_db": 3.6843940313762574e-07,
+                "offline_reference_magnitude_delta_db": -3.6849335822370706e-07
+              },
+              {
+                "frequency_hz": 5000.0,
+                "gain_db": -3.098384150041238e-11,
+                "offline_reference_gain_db": 2.4257511468974756e-07,
+                "offline_reference_magnitude_delta_db": -2.4260609853124795e-07
+              },
+              {
+                "frequency_hz": 10000.0,
+                "gain_db": -3.421491711046444e-10,
+                "offline_reference_gain_db": 3.656258775827889e-07,
+                "offline_reference_magnitude_delta_db": -3.6596802675389355e-07
+              },
+              {
+                "frequency_hz": 15000.0,
+                "gain_db": 7.167460327608238e-10,
+                "offline_reference_gain_db": -1.3215945829776007e-07,
+                "offline_reference_magnitude_delta_db": 1.328762043305209e-07
+              },
+              {
+                "frequency_hz": 18000.0,
+                "gain_db": -0.007179287071460484,
+                "offline_reference_gain_db": 6.66022936038764e-07,
+                "offline_reference_magnitude_delta_db": -0.007179953094396522
+              },
+              {
+                "frequency_hz": 20000.0,
+                "gain_db": -9.90248543722519,
+                "offline_reference_gain_db": -9.842123076188168e-07,
+                "offline_reference_magnitude_delta_db": -9.902484453012882
+              }
+            ],
+            "ripple_db": 9.902485437941936
+          }
+        ],
+        "roundtrip": {
+          "input_frames": 352800,
+          "max_absolute_error": 0.049637234587301904,
+          "reported_down_delay_samples": 58,
+          "reported_up_delay_samples": 69,
+          "roundtrip_frames": 352800,
+          "roundtrip_snr_db": 25.095141026990298,
+          "stimulus": "deterministic 50 Hz-20 kHz equal-energy-per-octave noise",
+          "upsampled_frames": 384000
+        },
+        "upsample_image": {
+          "tones": [
+            {
+              "image_frequency_hz": 23600.0,
+              "image_relative_db": -158.3575102698292,
+              "input_frequency_hz": 20500.0
+            },
+            {
+              "image_frequency_hz": 23100.0,
+              "image_relative_db": -133.1889194284864,
+              "input_frequency_hz": 21000.0
+            }
+          ],
+          "worst_image_db": -133.1889194284864
+        }
+      },
+      "status": "failed"
+    },
+    {
+      "checks": {
+        "delay_accounting": true,
+        "downsample_alias": true,
+        "impulse_location": true,
+        "long_stream_count": true,
+        "max_realtime": true,
+        "offline_reference_magnitude": true,
+        "p99_realtime": true,
+        "passband_absolute_error": true,
+        "passband_ripple": true,
+        "roundtrip": true,
+        "upsample_image": true
+      },
+      "configuration": {
+        "identifier": "high-rejection-blackman-harris-squared-256",
+        "interpolation": "cubic",
+        "native_default": false,
+        "oversampling_factor": 256,
+        "sinc_len": 256,
+        "window": "blackman_harris_squared"
+      },
+      "decision": {
+        "reason": "Rejected because the exact product configuration already clears every quality and realtime gate, while this alternative increases delay.",
+        "retained": false
+      },
+      "measurements": {
+        "downsample_alias": {
+          "swept_noise": {
+            "attenuation_db": -178.3617174144137,
+            "input_band_hz": [
+              22500.0,
+              23900.0
+            ]
+          },
+          "tones": [
+            {
+              "attenuation_db": -184.36530705678823,
+              "input_frequency_hz": 22500.0
+            },
+            {
+              "attenuation_db": -182.75039327741862,
+              "input_frequency_hz": 23000.0
+            },
+            {
+              "attenuation_db": -188.36538662874898,
+              "input_frequency_hz": 23500.0
+            }
+          ],
+          "worst_alias_db": -178.3617174144137
+        },
+        "impulse": [
+          {
+            "expected_impulse_location": 24000.0,
+            "impulse_peak_index": 24000,
+            "input_rate": 44100,
+            "location_error_samples": 0.0,
+            "output_rate": 48000,
+            "reported_output_delay_ms": 2.8958333333333335,
+            "reported_output_delay_samples": 139
+          },
+          {
+            "expected_impulse_location": 22050.0,
+            "impulse_peak_index": 22050,
+            "input_rate": 48000,
+            "location_error_samples": 0.0,
+            "output_rate": 44100,
+            "reported_output_delay_ms": 2.6530612244897958,
+            "reported_output_delay_samples": 117
+          }
+        ],
+        "long_stream_and_timing": [
+          {
+            "block_time_ns": {
+              "max": 187900.0,
+              "median": 110000,
+              "p95": 158979.99999999997,
+              "p99": 165647.99999999994
+            },
+            "blocks": 2585,
+            "count_error_samples": 0,
+            "deadline_ns": 23219954.648526076,
+            "duration_seconds": 60,
+            "expected_output_frames": 2880000,
+            "input_frames": 2646000,
+            "input_rate": 44100,
+            "max_deadline_fraction": 0.008092177734375,
+            "output_frames": 2880000,
+            "output_rate": 48000,
+            "p99_deadline_fraction": 0.0071338640624999975,
+            "reported_output_delay_samples": 139
+          },
+          {
+            "block_time_ns": {
+              "max": 160500.0,
+              "median": 91000,
+              "p95": 103240.00000000001,
+              "p99": 136264.00000000003
+            },
+            "blocks": 2813,
+            "count_error_samples": 0,
+            "deadline_ns": 21333333.333333332,
+            "duration_seconds": 60,
+            "expected_output_frames": 2646000,
+            "input_frames": 2880000,
+            "input_rate": 48000,
+            "max_deadline_fraction": 0.007523437500000001,
+            "output_frames": 2646000,
+            "output_rate": 44100,
+            "p99_deadline_fraction": 0.0063873750000000016,
+            "reported_output_delay_samples": 117
+          }
+        ],
+        "passband_and_offline_reference": [
+          {
+            "input_rate": 44100,
+            "max_absolute_error_db": 0.0016585785389151583,
+            "max_offline_reference_magnitude_delta_db": 0.001657594326668292,
+            "output_rate": 48000,
+            "responses": [
+              {
+                "frequency_hz": 50.0,
+                "gain_db": -1.4709851174816297e-11,
+                "offline_reference_gain_db": 1.931279444592477e-08,
+                "offline_reference_magnitude_delta_db": -1.9327504297099586e-08
+              },
+              {
+                "frequency_hz": 100.0,
+                "gain_db": -4.716429206178277e-11,
+                "offline_reference_gain_db": 7.326673847579024e-08,
+                "offline_reference_magnitude_delta_db": -7.331390276785202e-08
+              },
+              {
+                "frequency_hz": 1000.0,
+                "gain_db": -7.731013299361144e-12,
+                "offline_reference_gain_db": 3.6843940313762574e-07,
+                "offline_reference_magnitude_delta_db": -3.684471341509251e-07
+              },
+              {
+                "frequency_hz": 5000.0,
+                "gain_db": -8.535937435731675e-11,
+                "offline_reference_gain_db": 2.425751166184024e-07,
+                "offline_reference_magnitude_delta_db": -2.4266047599275973e-07
+              },
+              {
+                "frequency_hz": 10000.0,
+                "gain_db": -1.1282727791493394e-10,
+                "offline_reference_gain_db": 3.6562587951144374e-07,
+                "offline_reference_magnitude_delta_db": -3.657387067893587e-07
+              },
+              {
+                "frequency_hz": 15000.0,
+                "gain_db": -7.577231998596954e-10,
+                "offline_reference_gain_db": -1.3215945251179518e-07,
+                "offline_reference_magnitude_delta_db": 1.314017293119355e-07
+              },
+              {
+                "frequency_hz": 18000.0,
+                "gain_db": -3.8647159012422563e-10,
+                "offline_reference_gain_db": 6.660229514680022e-07,
+                "offline_reference_magnitude_delta_db": -6.664094230581264e-07
+              },
+              {
+                "frequency_hz": 20000.0,
+                "gain_db": -0.0016585785389151583,
+                "offline_reference_gain_db": -9.842122468661795e-07,
+                "offline_reference_magnitude_delta_db": -0.001657594326668292
+              }
+            ],
+            "ripple_db": 0.001658578531184145
+          },
+          {
+            "input_rate": 48000,
+            "max_absolute_error_db": 0.005540499361419052,
+            "max_offline_reference_magnitude_delta_db": 0.005539515149111433,
+            "output_rate": 44100,
+            "responses": [
+              {
+                "frequency_hz": 50.0,
+                "gain_db": -6.647109226954352e-12,
+                "offline_reference_gain_db": 1.9312796374579698e-08,
+                "offline_reference_magnitude_delta_db": -1.9319443483806652e-08
+              },
+              {
+                "frequency_hz": 100.0,
+                "gain_db": -2.248811652005177e-11,
+                "offline_reference_gain_db": 7.326673847579024e-08,
+                "offline_reference_magnitude_delta_db": -7.32892265923103e-08
+              },
+              {
+                "frequency_hz": 1000.0,
+                "gain_db": -3.265309234502223e-11,
+                "offline_reference_gain_db": 3.6843940313762574e-07,
+                "offline_reference_magnitude_delta_db": -3.684720562299708e-07
+              },
+              {
+                "frequency_hz": 5000.0,
+                "gain_db": -2.7768773726912843e-11,
+                "offline_reference_gain_db": 2.4257511468974756e-07,
+                "offline_reference_magnitude_delta_db": -2.4260288346347445e-07
+              },
+              {
+                "frequency_hz": 10000.0,
+                "gain_db": -1.4526725389026848e-10,
+                "offline_reference_gain_db": 3.656258775827889e-07,
+                "offline_reference_magnitude_delta_db": -3.657711448366792e-07
+              },
+              {
+                "frequency_hz": 15000.0,
+                "gain_db": -4.208768654775128e-10,
+                "offline_reference_gain_db": -1.3215945829776007e-07,
+                "offline_reference_magnitude_delta_db": 1.3173858143228255e-07
+              },
+              {
+                "frequency_hz": 18000.0,
+                "gain_db": 6.779607820829771e-11,
+                "offline_reference_gain_db": 6.66022936038764e-07,
+                "offline_reference_magnitude_delta_db": -6.659551399605556e-07
+              },
+              {
+                "frequency_hz": 20000.0,
+                "gain_db": -0.005540499361419052,
+                "offline_reference_gain_db": -9.842123076188168e-07,
+                "offline_reference_magnitude_delta_db": -0.005539515149111433
+              }
+            ],
+            "ripple_db": 0.0055404994292151295
+          }
+        ],
+        "roundtrip": {
+          "input_frames": 352800,
+          "max_absolute_error": 0.005829650271132653,
+          "reported_down_delay_samples": 117,
+          "reported_up_delay_samples": 139,
+          "roundtrip_frames": 352800,
+          "roundtrip_snr_db": 44.24399271736495,
+          "stimulus": "deterministic 50 Hz-20 kHz equal-energy-per-octave noise",
+          "upsampled_frames": 384000
+        },
+        "upsample_image": {
+          "tones": [
+            {
+              "image_frequency_hz": 23600.0,
+              "image_relative_db": -195.23230564381277,
+              "input_frequency_hz": 20500.0
+            },
+            {
+              "image_frequency_hz": 23100.0,
+              "image_relative_db": -176.81540635599032,
+              "input_frequency_hz": 21000.0
+            }
+          ],
+          "worst_image_db": -176.81540635599032
+        }
+      },
+      "status": "passed"
+    }
+  ],
+  "audible_change": true,
+  "configuration": {
+    "chunk_size": 1024,
+    "long_stream_duration_seconds": 60,
+    "offline_reference": {
+      "filter_half_length_per_phase": 64,
+      "implementation": "scipy.signal.resample_poly",
+      "window": "Kaiser beta=14"
+    },
+    "product_source_sha256": {
+      "python/tools/evaluate_resampler_quality.py": "7405f914b4231ead7509791425c166df3cd3c7099f03fc1d5930c2f6d3a6b254",
+      "rust-core/src/audio/processor/dsp_loop.rs": "add29eb87af42d7554cd78b742ade75a734250b28671aac3a6b75398dcb86543",
+      "rust-core/src/audio/processor/resampling.rs": "954cf6e5863b124e34928b3345911b9528db09685f6cdfc7330e7af85da96880"
+    },
+    "rates": [
+      [
+        44100,
+        48000
+      ],
+      [
+        48000,
+        44100
+      ]
+    ]
+  },
+  "decision": {
+    "reason": "The 128-tap Blackman product resampler passed every predefined quality, offline-reference, sample-count, delay-accounting, and realtime gate. The former 128-tap Blackman-Harris-squared configuration failed passband, offline-reference, and round-trip gates; the passing 256-tap alternative increased delay in both directions.",
+    "retained": true,
+    "selected_configuration": "product"
+  },
+  "environment": {
+    "numpy": "2.5.1",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.10",
+    "scipy": "1.18.0"
+  },
+  "evaluation_contract": {
+    "asset_hashes": {
+      "python/tools/evaluate_resampler_quality.py": "7405f914b4231ead7509791425c166df3cd3c7099f03fc1d5930c2f6d3a6b254",
+      "rust-core/src/audio/processor/dsp_loop.rs": "add29eb87af42d7554cd78b742ade75a734250b28671aac3a6b75398dcb86543",
+      "rust-core/src/audio/processor/resampling.rs": "954cf6e5863b124e34928b3345911b9528db09685f6cdfc7330e7af85da96880"
+    },
+    "clean_preservation": {
+      "metric": "44.1->48->44.1 kHz pink-noise round-trip SNR",
+      "minimum_db": 40.0,
+      "passed": true,
+      "value_db": 44.243956065656576
+    },
+    "configuration": {
+      "identifier": "product",
+      "interpolation": "cubic",
+      "native_default": true,
+      "oversampling_factor": 256,
+      "sinc_len": 128,
+      "window": "blackman"
+    },
+    "latency": {
+      "output_delay_ms": [
+        1.4375,
+        1.3151927437641724
+      ],
+      "output_delay_samples": [
+        69,
+        58
+      ]
+    },
+    "runtime": {
+      "max_deadline_fraction": 0.004586572265625,
+      "max_p99_frame_seconds": 7.734799999999995e-05
+    }
+  },
+  "gates": {
+    "max_block_deadline_fraction": 0.5,
+    "max_downsample_alias_db": -60.0,
+    "max_impulse_location_error_samples": 1.0,
+    "max_long_stream_count_error_samples": 0,
+    "max_offline_reference_magnitude_delta_db": 0.25,
+    "max_p99_deadline_fraction": 0.25,
+    "max_passband_absolute_error_db": 0.25,
+    "max_passband_ripple_db": 0.25,
+    "max_upsample_image_db": -60.0,
+    "min_roundtrip_snr_db": 40.0
+  },
+  "higher_rejection_comparison": {
+    "candidate_delay_samples": [
+      139,
+      117
+    ],
+    "configuration": {
+      "identifier": "high-rejection-blackman-harris-squared-256",
+      "interpolation": "cubic",
+      "native_default": false,
+      "oversampling_factor": 256,
+      "sinc_len": 256,
+      "window": "blackman_harris_squared"
+    },
+    "product_delay_samples": [
+      69,
+      58
+    ],
+    "selected": false,
+    "status": "passed"
+  },
+  "incumbent_comparison": {
+    "configuration": {
+      "identifier": "legacy-blackman-harris-squared-128",
+      "interpolation": "cubic",
+      "native_default": false,
+      "oversampling_factor": 256,
+      "sinc_len": 128,
+      "window": "blackman_harris_squared"
+    },
+    "failed_checks": [
+      "passband_absolute_error",
+      "passband_ripple",
+      "offline_reference_magnitude",
+      "roundtrip"
+    ],
+    "replacement_justified": true,
+    "status": "failed"
+  },
+  "limitations": [
+    "Objective synthetic measurements do not replace device-route testing.",
+    "Timing is machine-specific and must be trended rather than treated as universal.",
+    "The offline reference gate compares magnitude at fixed tones; raw waveform subtraction is intentionally not used because valid linear-phase resamplers can use different transition-band kernels."
+  ],
+  "product": {
+    "checks": {
+      "delay_accounting": true,
+      "downsample_alias": true,
+      "impulse_location": true,
+      "long_stream_count": true,
+      "max_realtime": true,
+      "offline_reference_magnitude": true,
+      "p99_realtime": true,
+      "passband_absolute_error": true,
+      "passband_ripple": true,
+      "roundtrip": true,
+      "upsample_image": true
+    },
+    "configuration": {
+      "identifier": "product",
+      "interpolation": "cubic",
+      "native_default": true,
+      "oversampling_factor": 256,
+      "sinc_len": 128,
+      "window": "blackman"
+    },
+    "measurements": {
+      "downsample_alias": {
+        "swept_noise": {
+          "attenuation_db": -83.09635020039164,
+          "input_band_hz": [
+            22500.0,
+            23900.0
+          ]
+        },
+        "tones": [
+          {
+            "attenuation_db": -75.29346303851365,
+            "input_frequency_hz": 22500.0
+          },
+          {
+            "attenuation_db": -83.68057806083199,
+            "input_frequency_hz": 23000.0
+          },
+          {
+            "attenuation_db": -93.1189314042271,
+            "input_frequency_hz": 23500.0
+          }
+        ],
+        "worst_alias_db": -75.29346303851365
+      },
+      "impulse": [
+        {
+          "expected_impulse_location": 24000.0,
+          "impulse_peak_index": 24000,
+          "input_rate": 44100,
+          "location_error_samples": 0.0,
+          "output_rate": 48000,
+          "reported_output_delay_ms": 1.4375,
+          "reported_output_delay_samples": 69
+        },
+        {
+          "expected_impulse_location": 22050.0,
+          "impulse_peak_index": 22050,
+          "input_rate": 48000,
+          "location_error_samples": 0.0,
+          "output_rate": 44100,
+          "reported_output_delay_ms": 1.3151927437641724,
+          "reported_output_delay_samples": 58
+        }
+      ],
+      "long_stream_and_timing": [
+        {
+          "block_time_ns": {
+            "max": 106500.0,
+            "median": 60400,
+            "p95": 64900.0,
+            "p99": 77347.99999999996
+          },
+          "blocks": 2585,
+          "count_error_samples": 0,
+          "deadline_ns": 23219954.648526076,
+          "duration_seconds": 60,
+          "expected_output_frames": 2880000,
+          "input_frames": 2646000,
+          "input_rate": 44100,
+          "max_deadline_fraction": 0.004586572265625,
+          "output_frames": 2880000,
+          "output_rate": 48000,
+          "p99_deadline_fraction": 0.003331100390624998,
+          "reported_output_delay_samples": 69
+        },
+        {
+          "block_time_ns": {
+            "max": 97600.0,
+            "median": 52000,
+            "p95": 58340.00000000001,
+            "p99": 75900.0
+          },
+          "blocks": 2813,
+          "count_error_samples": 0,
+          "deadline_ns": 21333333.333333332,
+          "duration_seconds": 60,
+          "expected_output_frames": 2646000,
+          "input_frames": 2880000,
+          "input_rate": 48000,
+          "max_deadline_fraction": 0.004575,
+          "output_frames": 2646000,
+          "output_rate": 44100,
+          "p99_deadline_fraction": 0.0035578125,
+          "reported_output_delay_samples": 58
+        }
+      ],
+      "passband_and_offline_reference": [
+        {
+          "input_rate": 44100,
+          "max_absolute_error_db": 0.0010799827358544403,
+          "max_offline_reference_magnitude_delta_db": 0.001078998523607574,
+          "output_rate": 48000,
+          "responses": [
+            {
+              "frequency_hz": 50.0,
+              "gain_db": 1.4234181684650645e-07,
+              "offline_reference_gain_db": 1.931279444592477e-08,
+              "offline_reference_magnitude_delta_db": 1.230290224005817e-07
+            },
+            {
+              "frequency_hz": 100.0,
+              "gain_db": 5.402487007962943e-07,
+              "offline_reference_gain_db": 7.326673847579024e-08,
+              "offline_reference_magnitude_delta_db": 4.66981962320504e-07
+            },
+            {
+              "frequency_hz": 1000.0,
+              "gain_db": 2.7388435550850265e-06,
+              "offline_reference_gain_db": 3.6843940313762574e-07,
+              "offline_reference_magnitude_delta_db": 2.370404151947401e-06
+            },
+            {
+              "frequency_hz": 5000.0,
+              "gain_db": 1.5830489955885783e-06,
+              "offline_reference_gain_db": 2.425751166184024e-07,
+              "offline_reference_magnitude_delta_db": 1.3404738789701759e-06
+            },
+            {
+              "frequency_hz": 10000.0,
+              "gain_db": 6.358650465311776e-06,
+              "offline_reference_gain_db": 3.6562587951144374e-07,
+              "offline_reference_magnitude_delta_db": 5.993024585800332e-06
+            },
+            {
+              "frequency_hz": 15000.0,
+              "gain_db": -5.769530586048065e-06,
+              "offline_reference_gain_db": -1.3215945251179518e-07,
+              "offline_reference_magnitude_delta_db": -5.63737113353627e-06
+            },
+            {
+              "frequency_hz": 18000.0,
+              "gain_db": -0.00012805963220941636,
+              "offline_reference_gain_db": 6.660229514680022e-07,
+              "offline_reference_magnitude_delta_db": -0.00012872565516088436
+            },
+            {
+              "frequency_hz": 20000.0,
+              "gain_db": -0.0010799827358544403,
+              "offline_reference_gain_db": -9.842122468661795e-07,
+              "offline_reference_magnitude_delta_db": -0.001078998523607574
+            }
+          ],
+          "ripple_db": 0.001086341386319752
+        },
+        {
+          "input_rate": 48000,
+          "max_absolute_error_db": 0.002621931676020459,
+          "max_offline_reference_magnitude_delta_db": 0.00262094746371284,
+          "output_rate": 44100,
+          "responses": [
+            {
+              "frequency_hz": 50.0,
+              "gain_db": -1.5502678057847517e-07,
+              "offline_reference_gain_db": 1.9312796374579698e-08,
+              "offline_reference_magnitude_delta_db": -1.7433957695305485e-07
+            },
+            {
+              "frequency_hz": 100.0,
+              "gain_db": -5.933933153914417e-07,
+              "offline_reference_gain_db": 7.326673847579024e-08,
+              "offline_reference_magnitude_delta_db": -6.666600538672319e-07
+            },
+            {
+              "frequency_hz": 1000.0,
+              "gain_db": -2.696814641331595e-06,
+              "offline_reference_gain_db": 3.6843940313762574e-07,
+              "offline_reference_magnitude_delta_db": -3.0652540444692205e-06
+            },
+            {
+              "frequency_hz": 5000.0,
+              "gain_db": -3.106947866114262e-06,
+              "offline_reference_gain_db": 2.4257511468974756e-07,
+              "offline_reference_magnitude_delta_db": -3.3495229808040094e-06
+            },
+            {
+              "frequency_hz": 10000.0,
+              "gain_db": -4.8636590034543825e-06,
+              "offline_reference_gain_db": 3.656258775827889e-07,
+              "offline_reference_magnitude_delta_db": -5.229284881037172e-06
+            },
+            {
+              "frequency_hz": 15000.0,
+              "gain_db": 3.612235074951142e-05,
+              "offline_reference_gain_db": -1.3215945829776007e-07,
+              "offline_reference_magnitude_delta_db": 3.6254510207809183e-05
+            },
+            {
+              "frequency_hz": 18000.0,
+              "gain_db": 0.00027949673113600114,
+              "offline_reference_gain_db": 6.66022936038764e-07,
+              "offline_reference_magnitude_delta_db": 0.00027883070819996236
+            },
+            {
+              "frequency_hz": 20000.0,
+              "gain_db": -0.002621931676020459,
+              "offline_reference_gain_db": -9.842123076188168e-07,
+              "offline_reference_magnitude_delta_db": -0.00262094746371284
+            }
+          ],
+          "ripple_db": 0.00290142840715646
+        }
+      ],
+      "roundtrip": {
+        "input_frames": 352800,
+        "max_absolute_error": 0.005826296307681545,
+        "reported_down_delay_samples": 58,
+        "reported_up_delay_samples": 69,
+        "roundtrip_frames": 352800,
+        "roundtrip_snr_db": 44.243956065656576,
+        "stimulus": "deterministic 50 Hz-20 kHz equal-energy-per-octave noise",
+        "upsampled_frames": 384000
+      },
+      "upsample_image": {
+        "tones": [
+          {
+            "image_frequency_hz": 23600.0,
+            "image_relative_db": -114.59005732439755,
+            "input_frequency_hz": 20500.0
+          },
+          {
+            "image_frequency_hz": 23100.0,
+            "image_relative_db": -77.38062148494558,
+            "input_frequency_hz": 21000.0
+          }
+        ],
+        "worst_image_db": -77.38062148494558
+      }
+    },
+    "status": "passed"
+  },
+  "schema_version": 2,
+  "source_sha256": {
+    "python/tools/evaluate_resampler_quality.py": "7405f914b4231ead7509791425c166df3cd3c7099f03fc1d5930c2f6d3a6b254",
+    "rust-core/src/audio/processor/dsp_loop.rs": "add29eb87af42d7554cd78b742ade75a734250b28671aac3a6b75398dcb86543",
+    "rust-core/src/audio/processor/resampling.rs": "954cf6e5863b124e34928b3345911b9528db09685f6cdfc7330e7af85da96880"
+  },
+  "status": "passed"
+}

@@ -811,18 +811,19 @@ impl DeepFilterProcessor {
 
     /// Process frames through FFI or fallback
     pub fn process_frames_internal(&mut self) {
-        // Update smoothed strength with 15ms EMA
+        // Advance the 15 ms strength EMA once per processed 10 ms frame so
+        // backlog size and callback chunking cannot change the ramp duration.
         let target_strength = f32::from_bits(self.strength.load(Ordering::Relaxed));
         const TAU_MS: f32 = 15.0;
         const SAMPLE_RATE: f32 = 48000.0;
         let alpha =
             1.0 - (-1.0 / (TAU_MS / 1000.0 * SAMPLE_RATE / DEEPFILTER_FRAME_SIZE as f32)).exp();
-        self.smoothed_strength += alpha * (target_strength - self.smoothed_strength);
 
         // Process complete frames (480 samples each)
         while self.input_buffer.len() >= DEEPFILTER_FRAME_SIZE
             && self.output_buffer.remaining() >= DEEPFILTER_FRAME_SIZE
         {
+            self.smoothed_strength += alpha * (target_strength - self.smoothed_strength);
             let read = self.input_buffer.pop_into(&mut self.dry_frame);
             if read != DEEPFILTER_FRAME_SIZE {
                 break;

@@ -1,0 +1,106 @@
+name: Assemble release hardware matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing Git tag whose exact candidate was qualified."
+        required: true
+        type: string
+      expected_archive_sha256:
+        description: "SHA-256 shared by every exact-artifact case."
+        required: true
+        type: string
+      hardware_run_ids:
+        description: "Comma- or whitespace-separated hardware qualification run IDs."
+        required: true
+        type: string
+
+concurrency:
+  group: release-hardware-matrix-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  assemble:
+    name: Verify complete Windows hardware coverage
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Download exact-artifact case reports
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HARDWARE_RUN_IDS: ${{ inputs.hardware_run_ids }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "release_tag must be an exact vMAJOR.MINOR.PATCH tag."
+          }
+          $runIds = @(
+            $env:HARDWARE_RUN_IDS -split '[,\s]+' |
+              Where-Object { $_ -ne '' }
+          )
+          $invalidRunIds = @($runIds | Where-Object { $_ -notmatch '^\d+$' })
+          if ($runIds.Count -eq 0 -or $invalidRunIds.Count -gt 0) {
+            throw "hardware_run_ids must contain only numeric GitHub Actions run IDs."
+          }
+          New-Item -ItemType Directory -Force -Path case-reports | Out-Null
+          foreach ($runId in $runIds) {
+            $destination = Join-Path "case-reports" $runId
+            gh run download $runId `
+              --repo $env:GITHUB_REPOSITORY `
+              --pattern "audioforge-release-hardware-validation-$($env:RELEASE_TAG)-*" `
+              --dir $destination
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to download hardware report from run $runId."
+            }
+          }
+
+      - name: Assemble and gate the matrix
+        env:
+          EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          if ($env:EXPECTED_SHA256 -notmatch '^[0-9a-fA-F]{64}$') {
+            throw "expected_archive_sha256 must contain exactly 64 hexadecimal characters."
+          }
+          $reports = @(Get-ChildItem -LiteralPath case-reports -Recurse -Filter "release-hardware-qualification.json" -File)
+          if ($reports.Count -eq 0) {
+            throw "No hardware case reports were downloaded."
+          }
+          $tagCommit = git rev-list -n 1 -- $env:RELEASE_TAG
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tagCommit)) {
+            throw "Unable to resolve release tag '$env:RELEASE_TAG'."
+          }
+          python python/tools/evaluate_hardware_matrix.py `
+            @($reports.FullName) `
+            --expected-archive-sha256 ($env:EXPECTED_SHA256).ToLowerInvariant() `
+            --expected-source-revision $tagCommit.Trim() `
+            --output release-hardware-matrix.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "The release hardware matrix is incomplete or invalid."
+          }
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: audioforge-release-hardware-matrix-${{ inputs.release_tag }}
+          path: release-hardware-matrix.json
+          if-no-files-found: error
+          retention-days: 14

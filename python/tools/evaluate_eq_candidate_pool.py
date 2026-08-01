@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import platform
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
@@ -32,6 +35,23 @@ CASES = (
 )
 POOL_SIZES = (12, 14, 16)
 SEED = 991
+RUNTIME_REPEATS = 3
+REPO_ROOT = Path(__file__).resolve().parents[2]
+GATE = {
+    "required_median_relative_improvement": 0.05,
+    "required_improved_fraction": 0.60,
+    "maximum_lower_decile_regression": -0.02,
+    "maximum_p95_runtime_ratio": 2.0,
+    "maximum_risk_score_delta": 0.0,
+}
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _spectrum(freqs: np.ndarray, kind: str) -> np.ndarray:
@@ -80,7 +100,10 @@ def _candidate_pool_selector(pool_size: int) -> Callable:
             if abs(residual_db[index]) >= abs(residual_db[index - 1])
             and abs(residual_db[index]) >= abs(residual_db[index + 1])
         ]
-        extrema.sort(key=lambda index: abs(float(residual_db[index])) * weights[index], reverse=True)
+        extrema.sort(
+            key=lambda index: abs(float(residual_db[index])) * weights[index],
+            reverse=True,
+        )
         candidates = [float(dense_freqs[index]) for index in extrema]
         candidates.extend(
             float(value)
@@ -208,6 +231,19 @@ def _run(
     return result, (time.perf_counter() - started) * 1000.0
 
 
+def _bench_run(
+    freqs: np.ndarray,
+    measured: np.ndarray,
+    target: np.ndarray,
+    selector: Callable,
+) -> tuple[dict, float]:
+    _run(freqs, measured, target, selector)
+    results: list[tuple[dict, float]] = [
+        _run(freqs, measured, target, selector) for _ in range(RUNTIME_REPEATS)
+    ]
+    return results[-1][0], float(np.median([row[1] for row in results]))
+
+
 def _error(
     freqs: np.ndarray,
     measured: np.ndarray,
@@ -223,7 +259,9 @@ def _error(
         result["band_freqs"],
     )
     weights = np.where(voice, 1.0, 0.25)
-    return float(np.sqrt(np.average((normalized + response - target) ** 2, weights=weights)))
+    return float(
+        np.sqrt(np.average((normalized + response - target) ** 2, weights=weights))
+    )
 
 
 def _risk(result: dict) -> float:
@@ -235,100 +273,183 @@ def _risk(result: dict) -> float:
     )
 
 
-def evaluate() -> dict:
-    freqs = np.geomspace(20.0, 20_000.0, 1000)
-    rng = np.random.default_rng(SEED)
-    rows = []
-    for response_kind, target_name in CASES:
-        measured = _spectrum(freqs, response_kind)
-        target = auto_eq.get_target_curve(freqs, target_name)
-        perturbation = _smooth_perturbation(freqs, rng)
-        baseline, baseline_ms = _run(
-            freqs,
-            measured,
-            target,
-            _select_dynamic_band_layout,
-        )
-        baseline_error = _error(freqs, measured + perturbation, target, baseline)
-        candidates = []
-        for pool_size in POOL_SIZES:
-            result, runtime_ms = _run(
-                freqs,
-                measured,
-                target,
-                _candidate_pool_selector(pool_size),
-            )
-            candidates.append(
-                (
-                    _error(freqs, measured + perturbation, target, result),
-                    pool_size,
-                    result,
-                    runtime_ms,
-                )
-            )
-        candidate_error, pool_size, candidate, candidate_ms = min(
-            candidates,
-            key=lambda item: (item[0], item[1]),
-        )
-        relative = (baseline_error - candidate_error) / max(baseline_error, 1.0e-9)
-        rows.append(
-            {
-                "case": f"{response_kind}/{target_name}",
-                "selected_pool_size": pool_size,
-                "baseline_error_db": baseline_error,
-                "candidate_error_db": candidate_error,
-                "relative_improvement": relative,
-                "baseline_runtime_ms": baseline_ms,
-                "candidate_runtime_ms": candidate_ms,
-                "runtime_ratio": candidate_ms / max(baseline_ms, 1.0e-9),
-                "risk_score_delta": _risk(candidate) - _risk(baseline),
-                "candidate_active_bands": candidate["active_band_count"],
-                "candidate_constraint_passed": candidate["constraint_solver_success"],
-            }
-        )
-
+def _summary(rows: list[dict]) -> dict[str, float]:
     improvements = np.asarray([row["relative_improvement"] for row in rows])
     runtime_ratios = np.asarray([row["runtime_ratio"] for row in rows])
     risk_deltas = np.asarray([row["risk_score_delta"] for row in rows])
-    summary = {
+    return {
         "median_relative_improvement": float(np.median(improvements)),
         "improved_fraction": float(np.mean(improvements > 0.0)),
         "lower_decile_relative_improvement": float(np.quantile(improvements, 0.10)),
         "p95_runtime_ratio": float(np.quantile(runtime_ratios, 0.95)),
         "maximum_risk_score_delta": float(np.max(risk_deltas)),
     }
-    retained = bool(
-        summary["median_relative_improvement"] >= 0.05
-        and summary["improved_fraction"] >= 0.60
-        and summary["lower_decile_relative_improvement"] >= -0.02
-        and summary["p95_runtime_ratio"] <= 2.0
-        and summary["maximum_risk_score_delta"] <= 0.0
-        and all(row["candidate_constraint_passed"] for row in rows)
+
+
+def _gate(rows: list[dict], summary: dict[str, float]) -> dict[str, bool]:
+    return {
+        "median_improvement": summary["median_relative_improvement"]
+        >= GATE["required_median_relative_improvement"],
+        "improved_fraction": summary["improved_fraction"]
+        >= GATE["required_improved_fraction"],
+        "lower_tail": summary["lower_decile_relative_improvement"]
+        >= GATE["maximum_lower_decile_regression"],
+        "runtime": summary["p95_runtime_ratio"] <= GATE["maximum_p95_runtime_ratio"],
+        "risk": summary["maximum_risk_score_delta"] <= GATE["maximum_risk_score_delta"],
+        "constraints": all(row["candidate_constraint_passed"] for row in rows),
+    }
+
+
+def _select_fixed_variant(variants: dict[str, dict]) -> int | None:
+    passing = sorted(
+        int(pool_size)
+        for pool_size, result in variants.items()
+        if all(result["checks"].values())
+    )
+    return passing[0] if passing else None
+
+
+def evaluate() -> dict:
+    freqs = np.geomspace(20.0, 20_000.0, 1000)
+    rng = np.random.default_rng(SEED)
+    rows_by_pool: dict[int, list[dict]] = {pool_size: [] for pool_size in POOL_SIZES}
+    for response_kind, target_name in CASES:
+        measured = _spectrum(freqs, response_kind)
+        target = auto_eq.get_target_curve(freqs, target_name)
+        perturbation = _smooth_perturbation(freqs, rng)
+        baseline, baseline_ms = _bench_run(
+            freqs,
+            measured,
+            target,
+            _select_dynamic_band_layout,
+        )
+        baseline_error = _error(freqs, measured + perturbation, target, baseline)
+        for pool_size in POOL_SIZES:
+            candidate, candidate_ms = _bench_run(
+                freqs,
+                measured,
+                target,
+                _candidate_pool_selector(pool_size),
+            )
+            candidate_error = _error(
+                freqs,
+                measured + perturbation,
+                target,
+                candidate,
+            )
+            relative = (baseline_error - candidate_error) / max(baseline_error, 1.0e-9)
+            rows_by_pool[pool_size].append(
+                {
+                    "case": f"{response_kind}/{target_name}",
+                    "pool_size": pool_size,
+                    "baseline_error_db": baseline_error,
+                    "candidate_error_db": candidate_error,
+                    "relative_improvement": relative,
+                    "baseline_runtime_median_ms": baseline_ms,
+                    "candidate_runtime_median_ms": candidate_ms,
+                    "runtime_ratio": candidate_ms / max(baseline_ms, 1.0e-9),
+                    "risk_score_delta": _risk(candidate) - _risk(baseline),
+                    "candidate_active_bands": candidate["active_band_count"],
+                    "candidate_constraint_passed": candidate[
+                        "constraint_solver_success"
+                    ],
+                }
+            )
+
+    variants: dict[str, dict] = {}
+    for pool_size, rows in rows_by_pool.items():
+        summary = _summary(rows)
+        variants[str(pool_size)] = {
+            "summary": summary,
+            "checks": _gate(rows, summary),
+            "rows": rows,
+        }
+    selected_pool_size = _select_fixed_variant(variants)
+    retained = selected_pool_size is not None
+    source_paths = (
+        Path(__file__).resolve(),
+        REPO_ROOT / "python/mic_eq/analysis/auto_eq_parts/constants.py",
+        REPO_ROOT / "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py",
+        REPO_ROOT / "python/mic_eq/analysis/auto_eq_parts/optimizer.py",
+        REPO_ROOT / "python/mic_eq/analysis/auto_eq_parts/response.py",
+    )
+    source_hashes = {
+        path.relative_to(REPO_ROOT).as_posix(): _sha256(path)
+        for path in source_paths
+    }
+    worst_runtime_ratio = max(
+        float(variant["summary"]["p95_runtime_ratio"])
+        for variant in variants.values()
     )
     return {
-        "schema_version": 2,
-        "experiment": "12/14/16-candidate sparse selection versus corrected dynamic ten-band baseline",
+        "schema_version": 3,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "audible_change": True,
+        "experiment": "Fixed 12/14/16-candidate sparse selectors versus corrected dynamic ten-band baseline",
         "retained": retained,
+        "selected_pool_size": selected_pool_size,
         "method": {
             "cases": [f"{left}/{right}" for left, right in CASES],
-            "held_out_perturbation": "independent deterministic smooth 0.25 dB perturbation per case",
+            "held_out_perturbation": "one deterministic 0.25 dB perturbation per case, never used to choose a different pool size per case",
+            "variant_selection": "smallest fixed pool size passing every aggregate gate",
+            "runtime_repeats": RUNTIME_REPEATS,
+            "runtime_warmup_runs": 1,
             "seed": SEED,
-            "confidence_model": "single-application bounded fit with separate uncertainty and coverage",
+            "confidence_model": "single in-solver gain feasibility with separate uncertainty and coverage",
         },
-        "gate": {
-            "required_median_relative_improvement": 0.05,
-            "required_improved_fraction": 0.60,
-            "maximum_lower_decile_regression": -0.02,
-            "maximum_p95_runtime_ratio": 2.0,
-            "maximum_risk_score_delta": 0.0,
-        },
-        "summary": summary,
-        "rows": rows,
+        "gate": GATE,
+        "variants": variants,
         "decision": (
-            "Retain candidate-pool selector."
+            f"Retain fixed {selected_pool_size}-candidate selector."
             if retained
-            else "Reject candidate-pool selector; keep corrected dynamic ten-band optimizer."
+            else "Reject every fixed candidate-pool selector; keep corrected dynamic ten-band optimizer."
         ),
+        "evaluation_contract": {
+            "configuration": {
+                "cases": [f"{left}/{right}" for left, right in CASES],
+                "pool_sizes": list(POOL_SIZES),
+                "runtime_repeats": RUNTIME_REPEATS,
+                "runtime_warmup_runs": 1,
+                "seed": SEED,
+                "scope": "evaluation-only synthetic response fitting",
+            },
+            "asset_hashes": {
+                "source": source_hashes,
+                "corpus": "deterministic in-process synthetic response family",
+            },
+            "runtime": {
+                "maximum_candidate_p95_runtime_ratio": worst_runtime_ratio,
+                "max_p99_frame_seconds": None,
+                "max_p99_frame_seconds_reason": (
+                    "The optimizer is an offline whole-fit operation, not a realtime "
+                    "audio callback; median fit times and P95 ratios are measured."
+                ),
+                "platform": platform.platform(),
+                "python": platform.python_version(),
+            },
+            "latency": {
+                "algorithmic_latency_samples": 0,
+                "reason": "The experiment fits static EQ coefficients offline.",
+            },
+            "clean_preservation": {
+                "audio_rendered": False,
+                "maximum_risk_score_delta": max(
+                    float(variant["summary"]["maximum_risk_score_delta"])
+                    for variant in variants.values()
+                ),
+                "constraint_checks_recorded_per_variant": True,
+            },
+        },
+        "provenance": {
+            "platform": platform.platform(),
+            "python": platform.python_version(),
+            "numpy": np.__version__,
+            "source_hashes": source_hashes,
+        },
+        "limitations": [
+            "The synthetic response family is a deterministic algorithmic regression set, not a perceptual listening panel.",
+            "The same fixed variant is assessed across every case; no per-case oracle selection is permitted.",
+        ],
     }
 
 
@@ -345,9 +466,22 @@ def main() -> int:
     args.output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
-    print(json.dumps(report, indent=2, sort_keys=True))
-    return 0 if report["retained"] else 1
+    print(
+        json.dumps(
+            {
+                "retained": report["retained"],
+                "selected_pool_size": report["selected_pool_size"],
+                "summaries": {
+                    key: value["summary"] for key, value in report["variants"].items()
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
 
 
 if __name__ == "__main__":

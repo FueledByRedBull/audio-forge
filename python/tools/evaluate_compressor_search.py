@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.io import wavfile
 
 from mic_eq.analysis.voice_setup import (
     _COMPRESSOR_OBJECTIVE_NORMALIZERS,
@@ -17,6 +16,7 @@ from mic_eq.analysis.voice_setup import (
     _COMPRESSOR_SEARCH_BUDGET,
     _calibrate_compressor_threshold,
 )
+from mic_eq.analysis.wav_io import read_mono_wav
 
 
 def _portable_path(path: Path) -> str:
@@ -57,9 +57,7 @@ def _sha256(path: Path) -> str:
 
 
 def _load_audio(path: Path) -> tuple[int, np.ndarray]:
-    sample_rate, raw = wavfile.read(path)
-    scale = 32768.0 if np.issubdtype(raw.dtype, np.integer) else 1.0
-    return int(sample_rate), np.asarray(raw, dtype=np.float32) / scale
+    return read_mono_wav(path, allow_stereo=False, dtype=np.float32)
 
 
 def evaluate(manifest_path: Path, limit: int) -> dict[str, Any]:

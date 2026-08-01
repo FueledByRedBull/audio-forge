@@ -3,6 +3,7 @@ Comprehensive pytest suite for Auto-EQ behavior.
 """
 
 import numpy as np
+import pytest
 
 from mic_eq import config
 from mic_eq.analysis import auto_eq
@@ -23,6 +24,81 @@ apply_headroom_validation = auto_eq.apply_headroom_validation
 simulate_candidate_chain = auto_eq.simulate_candidate_chain
 EQ_FREQUENCIES = config.EQ_FREQUENCIES
 AUTO_EQ_DEFAULT_Q = config.AUTO_EQ_DEFAULT_Q
+
+
+@pytest.mark.parametrize(
+    ("keyword", "value", "message"),
+    [
+        ("analysis_confidence", float("nan"), "analysis confidence"),
+        ("phonetic_coverage", float("inf"), "phonetic coverage"),
+        ("noise_reference_quality", float("nan"), "noise-reference quality"),
+        ("noise_reference_status", "trusted", "unknown noise-reference status"),
+    ],
+)
+def test_auto_eq_rejects_invalid_measurement_metadata(keyword, value, message):
+    frequencies = np.geomspace(20.0, 20_000.0, 128)
+    measured = np.zeros_like(frequencies)
+    target = np.ones_like(frequencies)
+
+    with pytest.raises(ValueError, match=message):
+        calculate_eq_bands(
+            frequencies,
+            measured,
+            target,
+            **{keyword: value},
+        )
+
+
+def test_auto_eq_accepts_positive_infinite_uncertainty_as_unavailable_evidence():
+    frequencies = np.geomspace(20.0, 20_000.0, 128)
+
+    result = calculate_eq_bands(
+        frequencies,
+        np.zeros_like(frequencies),
+        np.ones_like(frequencies),
+        spectral_repeatability=np.zeros_like(frequencies),
+        spectral_uncertainty_db=np.full_like(frequencies, np.inf),
+    )
+
+    assert result["spectral_uncertainty_available"] is True
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("-inf"), -0.1])
+def test_auto_eq_rejects_malformed_spectral_uncertainty(bad_value):
+    frequencies = np.geomspace(20.0, 20_000.0, 128)
+    uncertainty = np.full_like(frequencies, 0.3)
+    uncertainty[17] = bad_value
+
+    with pytest.raises(ValueError, match="spectral uncertainty"):
+        calculate_eq_bands(
+            frequencies,
+            np.zeros_like(frequencies),
+            np.ones_like(frequencies),
+            spectral_uncertainty_db=uncertainty,
+        )
+
+
+@pytest.mark.parametrize(
+    ("series_name", "series"),
+    [
+        ("frequencies", np.asarray([20.0, 100.0, 100.0, 1_000.0])),
+        ("measured", np.asarray([0.0, 0.0, float("nan"), 0.0])),
+        ("target", np.asarray([0.0, 0.0, float("inf"), 0.0])),
+    ],
+)
+def test_auto_eq_rejects_invalid_spectrum_inputs(series_name, series):
+    frequencies = np.asarray([20.0, 100.0, 500.0, 1_000.0])
+    measured = np.zeros_like(frequencies)
+    target = np.ones_like(frequencies)
+    if series_name == "frequencies":
+        frequencies = series
+    elif series_name == "measured":
+        measured = series
+    else:
+        target = series
+
+    with pytest.raises(ValueError):
+        calculate_eq_bands(frequencies, measured, target)
 
 
 def test_constrained_gain_projection_preserves_feasible_material_correction():
@@ -77,6 +153,104 @@ def test_constrained_refinement_can_recover_from_an_undersized_initial_fit():
     assert success is True
     assert np.max(refined) > np.max(undersized) + 2.0
     assert np.linalg.norm(refined - desired) < np.linalg.norm(undersized - desired)
+
+
+def test_validation_is_final_and_reported_metrics_match_returned_curve(monkeypatch):
+    freqs = np.geomspace(20.0, 20_000.0, 512)
+    log_freqs = np.log10(freqs)
+    measured = np.full_like(freqs, -70.0) - 9.0 * np.exp(
+        -((log_freqs - np.log10(2200.0)) ** 2) / (2 * 0.08**2)
+    )
+    target = get_target_curve(freqs, "flat")
+    observed: dict[str, np.ndarray] = {}
+    original = optimizer_module._validate_and_attenuate_solution
+
+    def attenuate(*args, **kwargs):
+        validated = original(*args, **kwargs)
+        observed["validated"] = np.asarray(validated[0], dtype=float).copy()
+        return validated
+
+    monkeypatch.setattr(
+        optimizer_module,
+        "_validate_and_attenuate_solution",
+        attenuate,
+    )
+
+    result = calculate_eq_bands(freqs, measured, target)
+    returned = np.asarray(result["band_gains"], dtype=float)
+    metrics = evaluate_eq_quality(
+        result["band_freqs"],
+        returned,
+        result["band_qs"],
+    ).to_dict()
+
+    np.testing.assert_allclose(returned, observed["validated"], atol=1.0e-12)
+    assert result["eq_quality"] == metrics
+
+
+def test_validation_failure_abstains_instead_of_applying_a_flat_curve(monkeypatch):
+    freqs = np.geomspace(20.0, 20_000.0, 256)
+    measured = generate_test_spectrum(freqs, "harsh")
+    target = get_target_curve(freqs, "flat")
+
+    def reject_solution(
+        _dense_freqs,
+        _measured_dense_db,
+        _target_dense_db,
+        gains,
+        qs,
+        centers_hz,
+        _weights,
+    ):
+        flat = np.zeros_like(gains)
+        return (
+            flat,
+            1.0,
+            1.0,
+            0.0,
+            evaluate_eq_quality(centers_hz, flat, qs).to_dict(),
+        )
+
+    monkeypatch.setattr(
+        optimizer_module,
+        "_validate_and_attenuate_solution",
+        reject_solution,
+    )
+
+    result = calculate_eq_bands(freqs, measured, target)
+
+    assert result["recommendation_status"] == "abstain"
+    assert result["apply_recommended"] is False
+    assert result["validation_gain_scale"] == 0.0
+    assert result["abstention_reasons"] == [
+        "no validated correction improved the target safely"
+    ]
+    assert np.allclose(result["band_gains"], 0.0)
+
+
+def test_constraint_solver_failure_abstains_instead_of_applying_fallback(monkeypatch):
+    freqs = np.geomspace(20.0, 20_000.0, 256)
+    measured = generate_test_spectrum(freqs, "harsh")
+    target = get_target_curve(freqs, "flat")
+
+    def fail_refinement(gains, *_args, **_kwargs):
+        return np.zeros_like(gains), False
+
+    monkeypatch.setattr(
+        optimizer_module,
+        "_constrained_gain_refinement",
+        fail_refinement,
+    )
+
+    result = calculate_eq_bands(freqs, measured, target)
+
+    assert result["recommendation_status"] == "abstain"
+    assert result["apply_recommended"] is False
+    assert result["constraint_solver_success"] is False
+    assert "constrained gain solve produced no safe correction" in result[
+        "abstention_reasons"
+    ]
+    assert np.allclose(result["band_gains"], 0.0)
 
 
 def _seed_for_response(response_type: str) -> int:
@@ -383,6 +557,36 @@ def test_15f_log_frequency_curvature_is_zero_for_linear_tilt():
     assert np.max(np.abs(curvature)) < 1e-10
 
 
+def test_15g_log_frequency_curvature_is_grid_density_stable():
+    penalties = []
+    for point_count in (9, 17, 33):
+        log_centers = np.linspace(0.0, 4.0, point_count)
+        centers = np.exp2(log_centers)
+        gains = np.square(log_centers)
+        curvature = _log_frequency_gain_curvature(gains, centers)
+        penalties.append(float(np.sum(np.square(curvature))))
+
+    assert np.allclose(penalties, np.full(3, 4.0), atol=1e-10)
+
+
+def test_15h_unknown_evidence_cannot_authorize_narrow_q_or_large_boosts():
+    freqs = _default_freqs()
+    log_freqs = np.log10(freqs)
+    measured = np.full_like(freqs, -70.0) - 12.0 * np.exp(
+        -((log_freqs - np.log10(3000.0)) ** 2) / (2 * 0.03**2)
+    )
+    target = get_target_curve(freqs, "flat")
+
+    eq = calculate_eq_bands(freqs, measured, target)
+    gains = np.asarray(eq["band_gains"], dtype=float)
+    qs = np.asarray(eq["band_qs"], dtype=float)
+    active = np.abs(gains) >= 0.25
+
+    assert np.max(gains) <= 3.0 + 1e-9
+    assert np.all(qs[active] <= 2.8 + 1e-9)
+    assert eq["q_confidence_binding_location"] == "joint_solver_bounds"
+
+
 def test_16_snr_aware_boost_caps_are_bounded_and_monotonic():
     snr_db = np.array([-5.0, 0.0, 3.0, 8.0, 12.0, 18.0, 30.0], dtype=float)
     caps = _snr_aware_gain_upper_bounds(snr_db)
@@ -396,9 +600,7 @@ def test_16a_frequency_dependent_snr_caps_only_unsupported_boosts():
     freqs = _default_freqs()
     log_freqs = np.log10(freqs)
     measured_db = np.full_like(freqs, -70.0)
-    measured_db -= 10.0 * np.exp(
-        -((log_freqs - np.log10(6000.0)) ** 2) / (2 * 0.08**2)
-    )
+    measured_db -= 10.0 * np.exp(-((log_freqs - np.log10(6000.0)) ** 2) / (2 * 0.08**2))
     target_db = get_target_curve(freqs, "flat", target_mode="static")
     spectral_snr = np.full_like(freqs, 24.0)
     spectral_snr[(freqs >= 4500.0) & (freqs <= 8000.0)] = 0.0
@@ -444,16 +646,34 @@ def test_16b_low_quality_capture_abstains_instead_of_applying_eq():
     assert max(eq["band_confidences"]) < 0.75
 
 
+def test_16b_questionable_noise_reference_records_reduced_reason():
+    freqs = _default_freqs()
+    measured_db = generate_test_spectrum(freqs, "harsh")
+    target_db = get_target_curve(freqs, "flat", target_mode="static")
+
+    eq = calculate_eq_bands(
+        freqs,
+        measured_db,
+        target_db,
+        spectral_repeatability=np.ones_like(freqs),
+        spectral_uncertainty_db=np.full_like(freqs, 0.3),
+        phonetic_coverage=0.9,
+        voiced_window_ratio=0.9,
+        analysis_confidence=0.95,
+        noise_reference_quality=0.6,
+        noise_reference_status="questionable",
+    )
+
+    assert eq["recommendation_status"] == "reduced"
+    assert "room-noise reference is questionable" in eq["recommendation_reasons"]
+
+
 def test_16c_unsupported_band_abstains_locally_and_response_is_reprojected():
     freqs = _default_freqs()
     log_freqs = np.log10(freqs)
     measured_db = np.full_like(freqs, -70.0)
-    measured_db -= 7.0 * np.exp(
-        -((log_freqs - np.log10(550.0)) ** 2) / (2 * 0.10**2)
-    )
-    measured_db -= 10.0 * np.exp(
-        -((log_freqs - np.log10(6200.0)) ** 2) / (2 * 0.07**2)
-    )
+    measured_db -= 7.0 * np.exp(-((log_freqs - np.log10(550.0)) ** 2) / (2 * 0.10**2))
+    measured_db -= 10.0 * np.exp(-((log_freqs - np.log10(6200.0)) ** 2) / (2 * 0.07**2))
     target_db = get_target_curve(freqs, "flat", target_mode="static")
     reliability = np.ones_like(freqs)
     reliability[freqs >= 4500.0] = 0.0
@@ -489,9 +709,7 @@ def test_17_dynamic_center_tracks_non_default_problem_frequency():
     freqs = _default_freqs()
     log_freqs = np.log10(freqs)
     spectrum_db = np.full_like(freqs, -70.0)
-    spectrum_db -= 8.0 * np.exp(
-        -((log_freqs - np.log10(2300.0)) ** 2) / (2 * 0.045**2)
-    )
+    spectrum_db -= 8.0 * np.exp(-((log_freqs - np.log10(2300.0)) ** 2) / (2 * 0.045**2))
     target_db = get_target_curve(freqs, "flat")
 
     eq = calculate_eq_bands(freqs, spectrum_db, target_db)
@@ -543,8 +761,12 @@ def test_18a_conservative_smoothing_limits_narrow_artifact_correction():
         -((log_freqs - np.log10(2300.0)) ** 2) / (2 * 0.015**2)
     )
 
-    notch_eq = calculate_eq_bands(freqs, narrow_notch, target_db, smoothing_strength="conservative")
-    peak_eq = calculate_eq_bands(freqs, narrow_peak, target_db, smoothing_strength="conservative")
+    notch_eq = calculate_eq_bands(
+        freqs, narrow_notch, target_db, smoothing_strength="conservative"
+    )
+    peak_eq = calculate_eq_bands(
+        freqs, narrow_peak, target_db, smoothing_strength="conservative"
+    )
     notch_gains = np.asarray(notch_eq["band_gains"], dtype=float)
     peak_gains = np.asarray(peak_eq["band_gains"], dtype=float)
 
@@ -601,7 +823,7 @@ def test_19_diagnostics_and_validation_are_present_and_valid():
     assert 0.0 <= eq["validation_confidence"] <= 1.0
     assert eq["low_confidence_active_bands"] <= eq["active_band_count"] <= 10
     assert eq["validation_after_error_db"] <= eq["validation_before_error_db"] * 1.05
-    assert 0.0 < eq["validation_gain_scale"] <= 1.0
+    assert 0.0 <= eq["validation_gain_scale"] <= 1.0
     assert eq["target_profile"]
     assert eq["smoothing_strength"] == "conservative"
     assert "max_regularized_correction_db" in eq["residual_regularization"]
@@ -611,9 +833,7 @@ def test_20_low_confidence_boosts_are_capped_aggressively():
     freqs = _default_freqs()
     spectrum_db = np.full_like(freqs, -70.0)
     log_freqs = np.log10(freqs)
-    spectrum_db -= 12.0 * np.exp(
-        -((log_freqs - np.log10(3000.0)) ** 2) / (2 * 0.04**2)
-    )
+    spectrum_db -= 12.0 * np.exp(-((log_freqs - np.log10(3000.0)) ** 2) / (2 * 0.04**2))
     target_db = get_target_curve(freqs, "flat")
     repeatability = np.full_like(freqs, 0.05)
 
@@ -723,7 +943,9 @@ def test_24_fallback_analysis_reports_explicit_fallback_diagnostics():
 
     spectrum_result = analyze_voice_spectrum(audio.astype(np.float32), sample_rate)
     freqs = spectrum_result.freqs
-    spectrum_smoothed = smooth_spectrum_perceptual(freqs, spectrum_result.median_spectrum_db)
+    spectrum_smoothed = smooth_spectrum_perceptual(
+        freqs, spectrum_result.median_spectrum_db
+    )
     target_db = get_target_curve(freqs, "broadcast", measured_db=spectrum_smoothed)
     eq = calculate_eq_bands(
         freqs,
@@ -759,10 +981,16 @@ def test_25_headroom_validation_reduces_boosts_when_peak_headroom_is_insufficien
     chain_settings = {
         "compressor": {"enabled": False},
         "deesser": {"enabled": False},
-        "limiter": {"enabled": True, "ceiling_db": -0.5, "careful_output_enabled": True},
+        "limiter": {
+            "enabled": True,
+            "ceiling_db": -0.5,
+            "careful_output_enabled": True,
+        },
     }
 
-    validated = apply_headroom_validation(audio, sample_rate, eq_settings, chain_settings)
+    validated = apply_headroom_validation(
+        audio, sample_rate, eq_settings, chain_settings
+    )
 
     assert validated["headroom_gain_scale"] < 1.0
     assert max(validated["band_gains"]) < 9.0
@@ -777,8 +1005,7 @@ def test_26_headroom_validation_preserves_safe_correction():
     sample_rate = 48_000
     t = np.arange(sample_rate, dtype=float) / sample_rate
     audio = (
-        0.05 * np.sin(2.0 * np.pi * 180.0 * t)
-        + 0.02 * np.sin(2.0 * np.pi * 1200.0 * t)
+        0.05 * np.sin(2.0 * np.pi * 180.0 * t) + 0.02 * np.sin(2.0 * np.pi * 1200.0 * t)
     ).astype(np.float32)
     eq_settings = {
         "band_freqs": list(EQ_FREQUENCIES),
@@ -811,7 +1038,9 @@ def test_27_validation_rejects_remaining_headroom_risk():
 
 
 def test_28_python_headroom_fallback_is_explicitly_advisory(monkeypatch):
-    monkeypatch.setattr(headroom_module, "_native_simulate", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        headroom_module, "_native_simulate", lambda *_args, **_kwargs: None
+    )
     audio = np.zeros(4096, dtype=np.float32)
     eq_settings = {
         "band_freqs": list(EQ_FREQUENCIES),
@@ -844,7 +1073,9 @@ def test_28_python_headroom_fallback_is_explicitly_advisory(monkeypatch):
 
 
 def test_29_fallback_cannot_report_risky_capture_as_safe(monkeypatch):
-    monkeypatch.setattr(headroom_module, "_native_simulate", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        headroom_module, "_native_simulate", lambda *_args, **_kwargs: None
+    )
     t = np.arange(48_000, dtype=float) / 48_000.0
     audio = (0.95 * np.sin(2.0 * np.pi * 5000.0 * t)).astype(np.float32)
     eq_settings = {

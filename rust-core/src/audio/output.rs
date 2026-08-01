@@ -150,12 +150,22 @@ impl AudioOutput {
     }
 
     pub(crate) fn from_named_device_setup(name: &str) -> Result<OutputStreamSetup, AudioError> {
+        Self::from_named_device_ordinal_setup(name, 0)
+    }
+
+    pub(crate) fn from_named_device_ordinal_setup(
+        name: &str,
+        name_ordinal: u32,
+    ) -> Result<OutputStreamSetup, AudioError> {
         let host = cpal::default_host();
         let device = host
             .output_devices()
-            .map_err(|e| AudioError::DeviceName(e.to_string()))?
-            .find(|d| d.name().map(|n| n == name).unwrap_or(false))
-            .ok_or_else(|| AudioError::DeviceNotFound(name.to_string()))?;
+            .map_err(|error| AudioError::DeviceName(error.to_string()))?
+            .filter(|device| device.name().map(|value| value == name).unwrap_or(false))
+            .nth(name_ordinal as usize)
+            .ok_or_else(|| {
+                AudioError::DeviceNotFound(format!("{name} (occurrence {name_ordinal})"))
+            })?;
         Self::select_device(device)
     }
 

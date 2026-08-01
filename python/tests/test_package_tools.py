@@ -24,12 +24,13 @@ def _load_tool(name: str):
     return module
 
 
-package_smoke = _load_tool("package_smoke")
 prune_bundle = _load_tool("prune_bundle")
+package_smoke = _load_tool("package_smoke")
 verify_release_assets = _load_tool("verify_release_assets")
 fetch_release_assets = _load_tool("fetch_release_assets")
 check_versions = _load_tool("check_versions")
 run_semgrep = _load_tool("run_semgrep")
+check_workflows = _load_tool("check_workflows")
 
 
 def _write_bundle_file(bundle: Path, relative_path: str) -> None:
@@ -38,17 +39,59 @@ def _write_bundle_file(bundle: Path, relative_path: str) -> None:
     path.write_bytes(b"x")
 
 
-def _write_valid_build_info(bundle: Path) -> None:
+def _write_valid_build_info(bundle: Path, *, version: str | None = None) -> None:
     path = bundle / "_internal" / "audioforge-build.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"schema_version": 1, "version": package_smoke._expected_version()}),
+        json.dumps(
+            {
+                "schema_version": 1,
+                "version": version or package_smoke._expected_version(),
+            }
+        ),
         encoding="utf-8",
     )
 
 
 def test_package_smoke_source_packaging_checks_pass():
     assert package_smoke.check_source_packaging() == []
+
+
+def test_workflow_action_parser_covers_inline_and_named_steps():
+    source = (
+        "      - uses: actions/checkout@" + "a" * 40 + "\n"
+        "      - name: Audit\n"
+        "        uses: rustsec/audit-check@" + "b" * 40 + "\n"
+    )
+
+    assert check_workflows.ACTION_REF.findall(source) == [
+        ("actions/checkout", "a" * 40),
+        ("rustsec/audit-check", "b" * 40),
+    ]
+
+
+def test_repository_workflow_release_gates_are_current():
+    assert check_workflows.check_workflows() == []
+
+
+def test_release_workflow_checker_rejects_dirty_source_override():
+    path = check_workflows.WORKFLOW_DIR / "release-package.yml"
+    source = path.read_text(encoding="utf-8") + "\n--allow-dirty\n"
+    errors: list[str] = []
+
+    check_workflows._check_required_gates(path.name, source, errors)
+
+    assert any("must fail closed on dirty source trees" in error for error in errors)
+
+
+def test_release_workflow_checker_rejects_asset_clobbering():
+    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
+    source = path.read_text(encoding="utf-8") + "\n--clobber\n"
+    errors: list[str] = []
+
+    check_workflows._check_required_gates(path.name, source, errors)
+
+    assert any("must not overwrite published release assets" in error for error in errors)
 
 
 def test_semgrep_gate_uses_rule_default_severity_when_result_omits_level(
@@ -86,6 +129,39 @@ def test_semgrep_gate_uses_rule_default_severity_when_result_omits_level(
     )
 
     assert run_semgrep._error_findings(sarif) == ["error-rule"]
+
+
+def test_semgrep_output_path_creates_parent_and_removes_stale_file(tmp_path):
+    sarif = tmp_path / "nested" / "results.sarif"
+    sarif.parent.mkdir()
+    sarif.write_text("stale", encoding="utf-8")
+
+    prepared = run_semgrep._prepare_sarif_path(sarif)
+
+    assert prepared == sarif.resolve()
+    assert prepared.parent.is_dir()
+    assert not prepared.exists()
+
+
+def test_semgrep_scan_includes_untracked_source_and_excludes_generated_reports(
+    tmp_path,
+    monkeypatch,
+):
+    rulesets = tmp_path / "semgrep-rulesets.txt"
+    rulesets.write_text("p/default\n", encoding="utf-8")
+    monkeypatch.setattr(run_semgrep, "RULESET_FILE", rulesets)
+    monkeypatch.setattr(run_semgrep, "_semgrep_executable", lambda: "semgrep")
+
+    command = run_semgrep._scan_command(tmp_path / "results.sarif")
+
+    assert "--no-git-ignore" in command
+    exclusions = [
+        command[index + 1]
+        for index, value in enumerate(command[:-1])
+        if value == "--exclude"
+    ]
+    assert "*.sarif" in exclusions
+    assert "models" in exclusions
 
 
 def test_package_smoke_rejects_empty_models_directory(tmp_path):
@@ -155,6 +231,64 @@ def test_prune_bundle_keeps_top_level_native_extension_without_packaged_copy(tmp
     assert (
         bundle / "_internal" / "mic_eq_core" / "mic_eq_core.cp312-win_amd64.pyd"
     ).is_file()
+
+
+def test_prune_bundle_removes_system_ucrt_and_package_smoke_rejects_it(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    ucrt = bundle / "_internal" / "ucrtbase.dll"
+    api_set = bundle / "_internal" / "api-ms-win-crt-runtime-l1-1-0.dll"
+    unrelated = bundle / "_internal" / "runtime.dll"
+    for path in (ucrt, api_set, unrelated):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    errors = package_smoke.check_dist_bundle(bundle)
+    assert any("app-local UCRT/API-set" in error for error in errors)
+
+    removed = prune_bundle.prune_bundle(bundle)
+
+    assert sorted(path.as_posix() for path in removed) == [
+        "_internal/api-ms-win-crt-runtime-l1-1-0.dll",
+        "_internal/ucrtbase.dll",
+    ]
+    assert not ucrt.exists()
+    assert not api_set.exists()
+    assert unrelated.is_file()
+
+
+def test_package_smoke_historical_ucrt_exception_is_exact_and_version_bound(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(package_smoke, "_expected_version", lambda: "1.10.1")
+    bundle = tmp_path / "AudioForge"
+    _write_bundle_file(bundle, "AudioForge.exe")
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        _write_bundle_file(bundle, relative_path)
+    _write_valid_build_info(bundle, version="1.10.1")
+    _write_bundle_file(
+        bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd"
+    )
+    for index in range(45):
+        _write_bundle_file(
+            bundle,
+            f"_internal/api-ms-win-crt-historical-{index:02d}.dll",
+        )
+    _write_bundle_file(bundle, "_internal/ucrtbase.dll")
+
+    assert (
+        package_smoke.check_dist_bundle(
+            bundle,
+            allow_historical_ucrt_for_version="1.10.1",
+        )
+        == []
+    )
+    (bundle / "_internal/api-ms-win-crt-historical-00.dll").unlink()
+    errors = package_smoke.check_dist_bundle(
+        bundle,
+        allow_historical_ucrt_for_version="1.10.1",
+    )
+    assert any("app-local UCRT/API-set" in error for error in errors)
 
 
 def test_package_smoke_rejects_misplaced_decoy_assets(tmp_path):
@@ -298,11 +432,19 @@ def test_fetch_release_assets_direct_download_writes_response(tmp_path, monkeypa
     destination = tmp_path / "silero_vad.onnx"
 
     fetch_release_assets._download_direct_url(
-        "https://example.invalid/silero_vad.onnx",
+        "https://raw.githubusercontent.com/example/project/revision/silero_vad.onnx",
         destination,
     )
 
     assert destination.read_bytes() == b"pinned-model"
+
+
+def test_fetch_release_assets_rejects_untrusted_direct_download_url(tmp_path):
+    with pytest.raises(ValueError, match="trusted raw.githubusercontent.com HTTPS"):
+        fetch_release_assets._download_direct_url(
+            "https://example.invalid/silero_vad.onnx",
+            tmp_path / "silero_vad.onnx",
+        )
 
 
 def test_fetch_release_assets_default_tag_comes_from_manifest(tmp_path, monkeypatch):
@@ -375,3 +517,34 @@ def test_version_check_rejects_stale_releasing_hydration_tag(
 
     with pytest.raises(ValueError, match="RELEASING.md.*stale fallback tag"):
         check_versions._check_release_asset_hydration()
+
+
+def test_version_check_rejects_static_current_archive_claims(tmp_path, monkeypatch):
+    (tmp_path / "release-notes").mkdir()
+    (tmp_path / "README.md").write_text(
+        "The exact release archive is 123,456 bytes.\n", encoding="utf-8"
+    )
+    (tmp_path / "release-notes" / "release-notes-v9.8.7.md").write_text(
+        "Use the generated checksum sidecar.\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
+
+    with pytest.raises(ValueError, match="exact release archive"):
+        check_versions._check_no_static_current_archive_claims("9.8.7")
+
+
+def test_version_check_accepts_generated_archive_sidecar_references(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "release-notes").mkdir()
+    for path in (
+        tmp_path / "README.md",
+        tmp_path / "release-notes" / "release-notes-v9.8.7.md",
+    ):
+        path.write_text(
+            "Use generated archive metadata and checksum sidecars.\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
+
+    check_versions._check_no_static_current_archive_claims("9.8.7")

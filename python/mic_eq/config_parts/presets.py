@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -12,7 +14,6 @@ from .settings import (
     CompressorSettings,
     DeEsserSettings,
     EQSettings,
-    EQ_FREQUENCIES,
     GateSettings,
     LimiterSettings,
     RNNoiseSettings,
@@ -28,7 +29,6 @@ from .shared import (
 from .validation import (
     VALIDATION_RANGES,
     _validate_bool,
-    _validate_fixed_float_list,
     _validate_range,
 )
 
@@ -53,7 +53,17 @@ def _preset_value_paths(data: dict) -> set[str]:
     for section in _PRESET_SETTING_SECTIONS:
         values = data.get(section)
         if isinstance(values, dict):
-            paths.update(f"{section}.{key}" for key in values)
+            if section == "eq" and isinstance(values.get("bands"), list):
+                if "enabled" in values:
+                    paths.add("eq.enabled")
+                for index, band in enumerate(values["bands"]):
+                    if isinstance(band, dict):
+                        paths.update(
+                            f"eq.bands.{index}.{key}"
+                            for key in band
+                        )
+            else:
+                paths.update(f"{section}.{key}" for key in values)
     if "bypass" in data:
         paths.add("bypass")
     return paths
@@ -96,7 +106,7 @@ class Preset:
             "description": self.description,
             "version": self.version,
             "gate": asdict(self.gate),
-            "eq": asdict(self.eq),
+            "eq": self.eq.to_dict(),
             "rnnoise": asdict(self.rnnoise),
             "deesser": asdict(self.deesser),
             "compressor": asdict(self.compressor),
@@ -118,11 +128,21 @@ class Preset:
     def from_dict(cls, data: dict) -> "Preset":
         try:
             data = deepcopy(data)
+            if not isinstance(data, dict):
+                raise ValueError("preset root must be an object")
+            if not isinstance(data.get("name", "Unnamed"), str):
+                raise ValueError("preset name must be a string")
+            if not isinstance(data.get("description", ""), str):
+                raise ValueError("preset description must be a string")
             provenance = _validated_value_provenance(data.get("value_provenance"))
             original_value_paths = _preset_value_paths(data)
             for path in original_value_paths:
                 provenance.setdefault(path, _PROVENANCE_EXPLICIT)
             version_tuple = _version_tuple(data.get("version", "1.0.0"))
+            if version_tuple > _version_tuple(CURRENT_VERSION):
+                raise ValueError(
+                    "preset version is newer than this AudioForge build"
+                )
 
             if version_tuple < _version_tuple("1.1.0"):
                 if "rnnoise" in data:
@@ -234,6 +254,7 @@ class Preset:
                 "1.9.0",
                 "1.10.0",
                 "1.10.1",
+                "1.11.0",
             ):
                 if version_tuple < _version_tuple(version):
                     data["version"] = version
@@ -303,31 +324,7 @@ class Preset:
             )
 
             eq_data = data.get("eq", {})
-            eq_ranges = VALIDATION_RANGES["eq"]
-            validated_eq = EQSettings(
-                enabled=_validate_bool(eq_data.get("enabled", True), "enabled", "eq"),
-                band_freqs=_validate_fixed_float_list(
-                    eq_data.get("band_freqs", list(EQ_FREQUENCIES)),
-                    10,
-                    *eq_ranges["band_freq"],
-                    "band_freqs",
-                    "eq",
-                ),
-                band_gains=_validate_fixed_float_list(
-                    eq_data.get("band_gains", [0.0] * 10),
-                    10,
-                    *eq_ranges["band_gain"],
-                    "band_gains",
-                    "eq",
-                ),
-                band_qs=_validate_fixed_float_list(
-                    eq_data.get("band_qs", [1.41] * 10),
-                    10,
-                    *eq_ranges["band_q"],
-                    "band_qs",
-                    "eq",
-                ),
-            )
+            validated_eq = EQSettings.from_dict(eq_data)
 
             comp_data = data.get("compressor", {})
             comp_ranges = VALIDATION_RANGES["compressor"]
@@ -498,15 +495,38 @@ class Preset:
             )
             validated_values = {
                 "gate": asdict(validated_gate),
-                "eq": asdict(validated_eq),
+                "eq": validated_eq.to_dict(),
                 "rnnoise": asdict(validated_rnnoise),
                 "deesser": asdict(validated_deesser),
                 "compressor": asdict(validated_comp),
                 "limiter": asdict(validated_lim),
                 "bypass": data.get("bypass", False),
             }
+            if isinstance(eq_data, dict) and "bands" not in eq_data:
+                legacy_fields = {
+                    "band_freqs": "frequency_hz",
+                    "band_gains": "gain_db",
+                    "band_qs": "q",
+                }
+                for legacy_name, band_name in legacy_fields.items():
+                    legacy_path = f"eq.{legacy_name}"
+                    source = provenance.pop(legacy_path, None)
+                    if source is None or legacy_name not in eq_data:
+                        continue
+                    for index in range(len(validated_eq.bands)):
+                        provenance.setdefault(
+                            f"eq.bands.{index}.{band_name}",
+                            source,
+                        )
             for path in _preset_value_paths(validated_values):
                 provenance.setdefault(path, _PROVENANCE_MIGRATION_DEFAULT)
+            valid_paths = _preset_value_paths(validated_values)
+            unknown_provenance = set(provenance) - valid_paths
+            if unknown_provenance:
+                raise ValueError(
+                    "value_provenance contains unknown paths: "
+                    + ", ".join(sorted(unknown_provenance))
+                )
 
             return cls(
                 name=data.get("name", "Unnamed"),
@@ -534,8 +554,23 @@ def save_preset(preset: Preset, filepath: Optional[Path] = None) -> Path:
         filepath = get_presets_dir() / f"{safe_name}.json"
 
     filepath = Path(filepath)
-    with open(filepath, "w", encoding="utf-8") as handle:
-        json.dump(preset.to_dict(), handle, indent=2)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{filepath.name}.",
+        suffix=".tmp",
+        dir=filepath.parent,
+        text=True,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(preset.to_dict(), handle, indent=2, allow_nan=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, filepath)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
     return filepath
 
 

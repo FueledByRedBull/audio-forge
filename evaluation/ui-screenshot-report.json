@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-08-01T20:04:51.866626+00:00",
+  "candidate": "repository-ui-screenshots",
+  "audible_change": false,
+  "decision": {
+    "retained": true,
+    "reason": "All required stable UI views were captured at fixed logical scaling from sanitized in-memory state."
+  },
+  "capture_contract": {
+    "qt_platform": "offscreen",
+    "qt_style": "Fusion",
+    "font": "Segoe UI 9pt",
+    "font_filename": "segoeui.ttf",
+    "font_sha256": "8134dbcd09e7b123c9a7f229d49cffbcb01352cc72ea5e1076b65d0dca9f73cd",
+    "logical_dpi": 96,
+    "scale_factor": 1,
+    "main_viewport": [
+      1600,
+      960
+    ],
+    "reads_user_config": false,
+    "enumerates_real_devices": false,
+    "sanitized_input_devices": [
+      "Studio Microphone",
+      "USB Headset Microphone"
+    ],
+    "sanitized_output_devices": [
+      "CABLE Input (Virtual Route)",
+      "Studio Headphones"
+    ]
+  },
+  "checks": {
+    "routing_shown": true,
+    "eq_shown": true,
+    "processing_shown": true,
+    "auto_voice_setup_shown": true,
+    "alt_text_present": true,
+    "all_pngs_nonempty": true,
+    "all_pngs_compressed": true,
+    "processing_scrolled_to_limiter": true,
+    "sanitized_sources_only": true
+  },
+  "view_state": {
+    "processing_scroll_position": 569,
+    "processing_scroll_maximum": 569
+  },
+  "screenshots": [
+    {
+      "filename": "audioforge-routing-eq.png",
+      "view": "routing_eq",
+      "alt": "AudioForge main window showing sanitized input and virtual-route output selection, cleanup controls, and the editable ten-band EQ.",
+      "path": "docs/images/audioforge-routing-eq.png",
+      "width": 1600,
+      "height": 960,
+      "bytes": 109566,
+      "sha256": "e8d6a895a0d8e73bf2e26e1d5e2f4593cdffbc910ddf4b8a3b49ff345eb64182"
+    },
+    {
+      "filename": "audioforge-processing.png",
+      "view": "processing",
+      "alt": "AudioForge dynamics view showing compressor and limiter controls, health indicators, and the editable EQ.",
+      "path": "docs/images/audioforge-processing.png",
+      "width": 1600,
+      "height": 960,
+      "bytes": 105973,
+      "sha256": "68216431dc43e7fa3e7c7b140fdc90c67a2de4fb5229d2836224f0bd95f0458a"
+    },
+    {
+      "filename": "audioforge-auto-voice-setup.png",
+      "view": "voice_setup",
+      "alt": "AudioForge Auto Voice Setup dialog showing target and dynamics choices plus sanitized validated recommendation summaries.",
+      "path": "docs/images/audioforge-auto-voice-setup.png",
+      "width": 780,
+      "height": 1026,
+      "bytes": 73405,
+      "sha256": "bf186eeb99d7ab4aae4b4932fd0902896b7d7cdc08741d8e9b5845a1b4eba13e"
+    }
+  ],
+  "source_sha256": {
+    "python/tools/capture_repository_screenshots.py": "3e6efb045f4d6dc8ea80ef2ce9e8229e76168b3d3e5ebf47f22fe5e6502d8c29",
+    "python/mic_eq/ui/theme.py": "87e4d3d8dc9ef68c12156a35bdcd55bbf7c47d982f49d470866259f36b12f6ad",
+    "python/mic_eq/ui/main_window.py": "df9d2819ae1696a38a48d0fa34ea47b9413d227beccb6e9c175699e4f1f8d2a0",
+    "python/mic_eq/ui/eq_panel.py": "393d8d53dca02c6ffb25f9528001bb543bb4e8993e226372c9cf681a30bd45db",
+    "python/mic_eq/ui/eq_curve.py": "5f7100f3b29d87fda7b42be07b679b3ee210a3ae8bee6fb020d96e37d378039b",
+    "python/mic_eq/ui/voice_setup_dialog.py": "6e94b30cc6eacc99a96cb7c4d68c38796932d03251f8fc7e8bfe01442f68df01"
+  },
+  "limitations": [
+    "Offscreen Fusion rendering omits Windows title-bar chrome by design.",
+    "The screenshots demonstrate layout and product surface, not live hardware activity.",
+    "A release UI or semantic-theme change requires regeneration and visual review."
+  ]
+}

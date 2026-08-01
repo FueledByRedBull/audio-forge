@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from .rate_limiter import RateLimiter
+from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
     SPACING_NORMAL, MARGIN_PANEL,
     PRIMARY_LABEL_STYLE, INFO_LABEL_STYLE
@@ -278,6 +279,42 @@ class GatePanel(QWidget):
         gate_layout.addWidget(info_label, 16, 1, 1, 2)
 
         layout.addWidget(gate_group)
+
+        bind_label(
+            self.threshold_label,
+            self.threshold_spinbox,
+            name="Gate manual threshold",
+        )
+        bind_label(attack_label, self.attack_spinbox, name="Gate attack time")
+        bind_label(release_label, self.release_spinbox, name="Gate release time")
+        bind_label(mode_label, self.gate_mode_combo, name="Gate operating mode")
+        bind_label(
+            vad_threshold_label,
+            self.vad_threshold_spinbox,
+            name="Voice activity threshold",
+        )
+        bind_label(
+            hold_time_label,
+            self.vad_hold_spinbox,
+            name="Voice activity hold time",
+        )
+        bind_label(
+            vad_pre_gain_label,
+            self.vad_pre_gain_spinbox,
+            name="Voice activity pre-gain",
+        )
+        bind_label(margin_label, self.margin_spinbox, name="Automatic gate margin")
+        set_accessible_group(
+            (
+                (self.enabled_checkbox, "Enable noise gate", None),
+                (self.threshold_slider, "Gate manual threshold", None),
+                (self.vad_threshold_slider, "Voice activity threshold", None),
+                (self.vad_pre_gain_slider, "Voice activity pre-gain", None),
+                (self.auto_threshold_checkbox, "Enable automatic gate threshold", None),
+                (self.margin_slider, "Automatic gate margin", None),
+                (self.confidence_meter, "Voice activity confidence", None),
+            )
+        )
 
     def _connect_signals(self):
         """Connect signals to slots."""

@@ -30,7 +30,9 @@ from ..analysis.latency_calibration import (
     result_to_profile,
 )
 from ..config import coerce_device_identity
+from .accessibility import set_accessible_group
 from .level_meter import LevelMeter
+from .device_selection import start_processor_for_route
 
 
 logger = logging.getLogger(__name__)
@@ -249,12 +251,15 @@ class LatencyCalibrationDialog(QDialog):
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
+        self.progress.setAccessibleName("Latency calibration progress")
         layout.addWidget(self.progress)
 
         self.status_label = QLabel("Ready")
+        self.status_label.setAccessibleName("Latency calibration status")
         layout.addWidget(self.status_label)
 
         self.level_meter = LevelMeter("CAP", show_scale=True)
+        self.level_meter.setAccessibleName("Latency calibration capture level")
         self.level_meter.setMinimumHeight(120)
         layout.addWidget(self.level_meter)
 
@@ -277,6 +282,18 @@ class LatencyCalibrationDialog(QDialog):
         self.close_button.clicked.connect(self._on_close_clicked)
         button_row.addWidget(self.close_button)
 
+        set_accessible_group(
+            (
+                (self.run_button, "Run latency calibration", None),
+                (self.accept_button, "Accept latency calibration", None),
+                (self.reset_button, "Reset latency calibration", None),
+                (self.close_button, "Close latency calibration", None),
+            )
+        )
+        self.setTabOrder(self.run_button, self.accept_button)
+        self.setTabOrder(self.accept_button, self.reset_button)
+        self.setTabOrder(self.reset_button, self.close_button)
+
         layout.addLayout(button_row)
 
         if existing_profile:
@@ -298,13 +315,11 @@ class LatencyCalibrationDialog(QDialog):
             if not owner.processor.is_running():
                 input_device = getattr(owner, "input_combo", None)
                 output_device = getattr(owner, "output_combo", None)
-                selected_input = (
-                    _device_name(input_device.currentData()) if input_device else None
+                start_processor_for_route(
+                    owner.processor,
+                    input_device.currentData() if input_device else None,
+                    output_device.currentData() if output_device else None,
                 )
-                selected_output = (
-                    _device_name(output_device.currentData()) if output_device else None
-                )
-                owner.processor.start(selected_input, selected_output)
                 self._started_processor = True
             else:
                 self._started_processor = False
@@ -343,7 +358,7 @@ class LatencyCalibrationDialog(QDialog):
         self._played_probe = False
         self._probe_started = False
         self._probe_started_at = None
-        self._capture_started_at = time.time()
+        self._capture_started_at = time.monotonic()
         self._capture_timer.start()
 
     def _poll_capture(self):
@@ -353,14 +368,14 @@ class LatencyCalibrationDialog(QDialog):
             return
 
         try:
-            elapsed = time.time() - self._capture_started_at
+            elapsed = time.monotonic() - self._capture_started_at
             engine_latency = float(owner.processor.get_engine_latency_ms())
             if np.isfinite(engine_latency) and engine_latency >= 0.0:
                 self._engine_latency_samples.append(engine_latency)
             if (not self._probe_started) and elapsed >= self._playback_delay_s:
                 self.status_label.setText("Playing probe signal...")
                 self._probe_started = True
-                self._probe_started_at = time.time()
+                self._probe_started_at = time.monotonic()
                 if self._playback_probe is None:
                     self._on_worker_failed("Probe signal is unavailable.")
                     return
@@ -567,12 +582,6 @@ class LatencyCalibrationDialog(QDialog):
                 pass
         self._probe_started = False
         self._played_probe = False
-        owner = self._get_processor_owner()
-        if owner is not None:
-            try:
-                owner.processor.set_recovery_suppressed(False)
-            except Exception:
-                pass
 
     def closeEvent(self, event):
         self._teardown_worker()

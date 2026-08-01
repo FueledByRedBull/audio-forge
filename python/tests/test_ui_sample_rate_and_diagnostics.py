@@ -17,7 +17,9 @@ from mic_eq.ui.latency_calibration_dialog import (
 from mic_eq.ui.device_selection import (
     default_device_index,
     find_identity_index,
+    identity_is_persistable,
     preferred_output_index,
+    start_processor_for_route,
 )
 from mic_eq.ui.main_window import (
     INPUT_CHANNEL_MODE_OPTIONS,
@@ -29,8 +31,10 @@ from mic_eq.ui.main_window import (
 from mic_eq.ui.stream_recovery import StreamRecoveryManager
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from mic_eq.config import (
+    AppConfig,
     CompressorSettings,
     DeviceIdentity,
+    DevicePresetBinding,
     LimiterSettings,
     Preset,
     build_latency_profile_key,
@@ -796,7 +800,7 @@ def test_input_phase_warning_marks_diagnostics_warn():
     assert window.dropped_label.state == "warn"
 
 
-def test_device_selection_policy_matches_exact_then_name():
+def test_device_selection_policy_matches_exact_then_unique_name():
     identities = [
         DeviceIdentity(name="Mic A", is_default=False),
         DeviceIdentity(name="Mic B", is_default=True),
@@ -816,6 +820,143 @@ def test_device_selection_policy_matches_exact_then_name():
         )
         == -1
     )
+
+
+def test_device_selection_policy_uses_endpoint_id_across_rename_and_rejects_ambiguity():
+    identities = [
+        DeviceIdentity(
+            name="USB Audio",
+            endpoint_id="endpoint-a",
+            direction="input",
+            name_ordinal=0,
+        ),
+        DeviceIdentity(
+            name="USB Audio",
+            endpoint_id="endpoint-b",
+            direction="input",
+            name_ordinal=1,
+        ),
+    ]
+
+    assert (
+        find_identity_index(
+            identities,
+            DeviceIdentity(
+                name="Old Microphone Name",
+                endpoint_id="endpoint-b",
+                direction="input",
+                name_ordinal=0,
+            ),
+        )
+        == 1
+    )
+    assert find_identity_index(identities, DeviceIdentity(name="USB Audio")) == -1
+    assert (
+        find_identity_index(
+            identities,
+            DeviceIdentity(name="USB Audio", direction="input", name_ordinal=1),
+        )
+        == -1
+    )
+
+
+def test_endpoint_identity_does_not_fall_back_to_replacement_with_same_name():
+    identities = [
+        DeviceIdentity(
+            name="USB Audio",
+            endpoint_id="replacement-endpoint",
+            direction="input",
+        )
+    ]
+
+    assert (
+        find_identity_index(
+            identities,
+            DeviceIdentity(
+                name="USB Audio",
+                endpoint_id="disconnected-endpoint",
+                direction="input",
+            ),
+        )
+        == -1
+    )
+
+
+def test_duplicate_name_without_endpoint_id_is_not_persistable():
+    identities = [
+        DeviceIdentity(name="USB Audio", direction="input", name_ordinal=0),
+        DeviceIdentity(name="USB Audio", direction="input", name_ordinal=1),
+    ]
+
+    assert identity_is_persistable(identities, identities[0]) is False
+    assert identity_is_persistable([identities[0]], identities[0]) is True
+
+
+def test_start_processor_for_route_forwards_duplicate_name_ordinals():
+    class Processor:
+        def __init__(self):
+            self.args = None
+
+        def start(self, *args):
+            self.args = args
+            return "started"
+
+    processor = Processor()
+    result = start_processor_for_route(
+        processor,
+        DeviceIdentity(name="USB Audio", name_ordinal=1),
+        DeviceIdentity(name="USB Audio", name_ordinal=2),
+    )
+
+    assert result == "started"
+    assert processor.args == ("USB Audio", "USB Audio", 1, 2)
+
+
+def test_route_preset_binding_applies_only_to_exact_stable_route(qapp):
+    input_identity = DeviceIdentity(
+        name="Mic",
+        endpoint_id="input-id",
+        host_api="WASAPI",
+        direction="input",
+        name_ordinal=0,
+    )
+    output_identity = DeviceIdentity(
+        name="Cable",
+        endpoint_id="output-id",
+        host_api="WASAPI",
+        direction="output",
+        name_ordinal=0,
+    )
+    window = MainWindow.__new__(MainWindow)
+    window.input_combo = _FakeCombo([("Mic", input_identity)])
+    window.output_combo = _FakeCombo([("Cable", output_identity)])
+    window.status_bar = _FakeStatusBar()
+    route_key = build_latency_profile_key(input_identity, output_identity)
+    window.config = AppConfig(
+        device_preset_bindings={route_key: DevicePresetBinding("builtin:broadcast")}
+    )
+    loaded: list[str] = []
+    window._load_device_preset_id = lambda preset_id: loaded.append(preset_id) or True
+
+    assert window._apply_bound_preset_for_current_route() is True
+    assert loaded == ["builtin:broadcast"]
+
+    window.output_combo = _FakeCombo(
+        [
+            (
+                "Other",
+                DeviceIdentity(
+                    name="Other",
+                    endpoint_id="other-output",
+                    host_api="WASAPI",
+                    direction="output",
+                    name_ordinal=0,
+                ),
+            )
+        ]
+    )
+    assert window._apply_bound_preset_for_current_route() is False
+    assert loaded == ["builtin:broadcast"]
 
 
 def test_device_selection_policy_prefers_default_and_virtual_output():
@@ -880,15 +1021,15 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
     window._refresh_devices()
 
     assert window.output_combo.currentData() == DeviceIdentity(
-        name="Out A", is_default=False
+        name="Out A", is_default=False, direction="output"
     )
     assert window.input_combo.currentData() == DeviceIdentity(
-        name="Mic A", is_default=False
+        name="Mic A", is_default=False, direction="input"
     )
     assert window.status_bar.messages == []
 
 
-def test_refresh_devices_clears_missing_output_selection(qapp, monkeypatch):
+def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.input_combo = _FakeCombo(
         [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
@@ -925,13 +1066,15 @@ def test_refresh_devices_clears_missing_output_selection(qapp, monkeypatch):
 
     window._refresh_devices()
 
-    assert window.config.last_output_device == ""
-    assert window.config.last_output_device_identity is None
+    assert window.config.last_output_device == "Out Old"
+    assert window.config.last_output_device_identity == DeviceIdentity(
+        name="Out Old", is_default=False
+    )
     assert window.output_combo.currentData() == DeviceIdentity(
-        name="Out New", is_default=True
+        name="Out New", is_default=True, direction="output"
     )
     assert any(
-        "Previous output device 'Out Old' not found" in message
+        "Previous output device 'Out Old' is disconnected" in message
         for message, _ in window.status_bar.messages
     )
 
@@ -1275,7 +1418,8 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
     window.compressor_panel = _PresetPanel()
     window.rnnoise_checkbox = _FakeControl()
     window.strength_slider = _FakeControl()
-    window.model_combo = _FakeCombo([])
+    window.model_combo = _FakeCombo([("RNNoise", "rnnoise")])
+    window.rnnoise_latency_label = _FakeLabel()
     window.bypass_checkbox = _FakeControl()
     window.processor = _PresetProcessor()
     window.status_bar = _FakeStatusBar()
@@ -1322,7 +1466,13 @@ class _LatencyProcessor:
     def is_running(self):
         return self.running
 
-    def start(self, _input_device=None, _output_device=None):
+    def start(
+        self,
+        _input_device=None,
+        _output_device=None,
+        _input_device_name_ordinal=0,
+        _output_device_name_ordinal=0,
+    ):
         self.running = True
         self.started += 1
 

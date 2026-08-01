@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .level_meter import GainReductionMeter
+from .accessibility import bind_label, set_accessible_group
 from .layout_constants import INFO_LABEL_STYLE, MARGIN_PANEL, PRIMARY_LABEL_STYLE, SPACING_NORMAL
 from .rate_limiter import RateLimiter
 
@@ -226,6 +227,44 @@ class DeEsserPanel(QWidget):
         grid.addWidget(info, 11, 0, 1, 2)
 
         layout.addWidget(group)
+
+        bind_label(
+            amount_label,
+            self.auto_amount_spinbox,
+            name="Automatic de-esser amount",
+        )
+        bind_label(low_label, self.low_cut_spinbox, name="De-esser low cutoff")
+        bind_label(high_label, self.high_cut_spinbox, name="De-esser high cutoff")
+        bind_label(
+            threshold_label,
+            self.threshold_spinbox,
+            name="De-esser threshold",
+        )
+        bind_label(ratio_label, self.ratio_spinbox, name="De-esser ratio")
+        bind_label(attack_label, self.attack_spinbox, name="De-esser attack time")
+        bind_label(
+            release_label,
+            self.release_spinbox,
+            name="De-esser release time",
+        )
+        bind_label(
+            max_red_label,
+            self.max_reduction_spinbox,
+            name="De-esser maximum reduction",
+        )
+        set_accessible_group(
+            (
+                (self.enabled_checkbox, "Enable de-esser", None),
+                (self.auto_checkbox, "Enable automatic de-esser", None),
+                (self.auto_amount_slider, "Automatic de-esser amount", None),
+                (self.low_cut_slider, "De-esser low cutoff", None),
+                (self.high_cut_slider, "De-esser high cutoff", None),
+                (self.threshold_slider, "De-esser threshold", None),
+                (self.ratio_slider, "De-esser ratio", None),
+                (self.max_reduction_slider, "De-esser maximum reduction", None),
+                (self.gr_meter, "De-esser gain reduction", None),
+            )
+        )
 
     def _connect_signals(self):
         self.enabled_checkbox.toggled.connect(self._update_deesser)

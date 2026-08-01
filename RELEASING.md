@@ -24,15 +24,26 @@ For local release prep from a clean clone, you can mirror that behavior with:
 
 Then run the workflow with:
 
-- `release_tag`: the target tag, for example `v1.10.1`.
+- `release_tag`: the target tag, for example `v1.11.0`.
 - `asset_source_tag`: optional published release override for pinned
   DeepFilter/DirectML assets. Leave blank to use the repository
   `AUDIOFORGE_ASSET_SOURCE_TAG` override when configured, then the
   `fallback_release_tag` pinned in `release-assets.json`. Silero v6.2.1 comes
   from its immutable direct URL.
-- `upload_to_release`: enabled when running manually and the generated archive should be uploaded to the GitHub Release.
 
-On `v*` tag pushes, the workflow builds the Windows package, uploads the `.7z` plus `.sha256` as workflow artifacts, and uploads them to the matching GitHub Release. Set `AUDIOFORGE_ASSET_SOURCE_TAG` when tag-push builds should pull raw assets or an existing package archive from a standing asset-source release. The workflow still verifies all downloaded/extracted assets against `release-assets.json` before packaging.
+On `v*` tag pushes, the workflow builds and validates a Windows candidate and
+retains the archive plus generated checksum, metadata, and per-file manifest
+as one immutable Actions artifact. The separately dispatched
+`Qualify release candidate on hardware` workflow downloads those exact bytes
+onto the labelled AudioForge Windows audio runner, verifies provenance, and
+binds selected-route plus 30-minute physical-hardware evidence to the archive
+SHA-256. Publication is a third, explicit promotion step: it downloads those
+same bytes and both qualification reports, verifies every sidecar and report
+against the archive SHA-256, and uploads without rebuilding. Set
+`AUDIOFORGE_ASSET_SOURCE_TAG` when candidate builds should pull raw assets or
+an existing package archive from a standing asset-source release. The workflow
+still verifies all downloaded/extracted assets against `release-assets.json`
+before packaging.
 
 ### Local fallback
 
@@ -92,7 +103,7 @@ Create the distributable archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.10.1-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.11.0-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This setting is retained from a final-bundle comparison against ZIP/Deflate,
@@ -103,15 +114,46 @@ filtering was smallest; the exact measurements are recorded in
 Compute the checksum:
 
 ```powershell
-Get-FileHash .\AudioForge-v1.10.1-win64-ultra.7z -Algorithm SHA256
+Get-FileHash .\AudioForge-v1.11.0-win64-ultra.7z -Algorithm SHA256
 ```
 
-Manual publish:
+For a real candidate, generate and verify all provenance sidecars instead of
+writing release facts manually:
+
+```powershell
+.\.venv\Scripts\python.exe python\tools\release_provenance.py create `
+  --bundle .\dist\AudioForge `
+  --archive .\AudioForge-v1.11.0-win64-ultra.7z `
+  --baseline .\evaluation\release-bundle-path-baseline.json `
+  --output-dir .
+
+.\.venv\Scripts\python.exe python\tools\release_provenance.py verify `
+  --bundle .\dist\AudioForge `
+  --archive .\AudioForge-v1.11.0-win64-ultra.7z `
+  --checksum .\AudioForge-v1.11.0-win64-ultra.7z.sha256 `
+  --manifest .\AudioForge-v1.11.0-win64-ultra.7z.manifest.json `
+  --metadata .\AudioForge-v1.11.0-win64-ultra.7z.metadata.json `
+  --baseline .\evaluation\release-bundle-path-baseline.json
+```
+
+Candidate and promotion:
 
 1. Commit tracked source/doc/version changes.
-2. Create annotated tag `v1.10.1`.
+2. Create annotated tag `v1.11.0`.
 3. Upload the raw runtime assets listed above to the GitHub Release or to the configured `asset_source_tag` release. An existing verified `AudioForge-*-win64-ultra.7z` on that release can also be used as the asset source.
-4. Push `master` and `v1.10.1`, or run the `Release package` workflow manually with `upload_to_release` enabled.
+4. Push `master` and `v1.11.0`, or run the `Release package` workflow manually
+   to create a candidate.
+5. Record the candidate workflow run ID and generated archive SHA-256.
+6. On a self-hosted runner labelled `self-hosted`, `windows`, `x64`, and
+   `audioforge-hardware`, run `Qualify release candidate on hardware` with that
+   candidate run ID and digest, the intended physical microphone/output route,
+   and the loopback correlation route. The workflow refuses a health duration
+   below 1,800 seconds and uploads a digest-bound hardware report.
+7. Run `Promote release candidate` with the candidate workflow run ID, hardware
+   qualification workflow run ID, release tag, and approved archive SHA-256.
+   Promotion downloads the candidate plus both the automated and hardware
+   qualification reports, verifies all three against the tag commit and
+   digest, then uploads those same bytes without rebuilding.
 
 ## Packaging notes
 
@@ -124,6 +166,16 @@ Manual publish:
 - `build_exe.ps1` fails before PyInstaller if a required asset is missing, hash mismatched, or the local `mic_eq_core*.pyd` is older than Rust sources.
 - `python/tools/package_smoke.py` verifies exact bundled DLL/model/native-extension and license-notice presence, rejects duplicate top-level native-extension payloads, and rejects a stale bundle-version manifest.
 - `python/tools/prune_bundle.py` must not remove dependency `.dist-info` directories; license/metadata retention is part of the release gate. It may remove duplicate native-extension payloads only when the canonical `_internal/mic_eq/mic_eq_core*.pyd` copy is present.
+- AudioForge supports Windows 10 and Windows 11 and relies on the system UCRT.
+  Microsoft documents the UCRT as an operating-system component on Windows 10
+  and later, states that the system copy is always used on Windows 10/11, and
+  does not recommend local deployment for performance and security reasons:
+  <https://learn.microsoft.com/en-us/cpp/windows/universal-crt-deployment>.
+  `prune_bundle.py` removes app-local `ucrtbase.dll` and `api-ms-win-*.dll`;
+  package smoke must fail if they return.
+- `evaluation/release-bundle-path-baseline.json` controls reviewed bundle path
+  additions/removals. Binary hashes are recorded for provenance, but are not
+  treated as reproducible-build expectations.
 - The release profile strips native symbols without changing optimization level. The package spec excludes only unused SciPy namespaces, while the prune step removes unused Qt SVG payloads; keep both NumPy/SciPy BLAS DLLs, `opengl32sw.dll`, all required models, DirectML, and df.dll because they are runtime dependencies.
 - Obtain `DirectML.dll` from the pinned Microsoft DirectML redistributable package, `df.dll` from the pinned DeepFilter runtime build/artifact, and model files from the pinned model artifacts documented in `release-assets.json`.
 

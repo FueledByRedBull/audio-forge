@@ -1,0 +1,242 @@
+{
+  "schema_version": 3,
+  "status": "passed",
+  "qualification_kind": "exact-artifact-hardware",
+  "generated_at": "2026-08-01T21:01:45.585745+00:00",
+  "project_version": "1.11.0",
+  "source_revision": "b0f181c318b10b0505b7c8a8f3f7085933c6c2d5+uncommitted",
+  "runtime_provenance": {
+    "native_extension": {
+      "path": "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd",
+      "bytes": 22665728,
+      "sha256": "42d7e63a06d9597393945ece9a7e23b41eeb76f6733249768fd5224d6716dd84"
+    },
+    "self_test": {
+      "path": "python/tools/self_test.py",
+      "bytes": 9854,
+      "sha256": "3453697fa5b8b2477dd47799105c1eb2a5b88821507a4cf19562663a89d34edd"
+    },
+    "health_check": {
+      "path": "python/tools/health_check.py",
+      "bytes": 8936,
+      "sha256": "10f12976825bcf416225323f63557329dbb1505fc99c4571ed0900d200410497"
+    },
+    "latency_analysis": {
+      "path": "python/mic_eq/analysis/latency_calibration.py",
+      "bytes": 19721,
+      "sha256": "43e1888d0d9645a9936586b2fb6fa99a9f98f6d3a5fd914eb5510bbc660980d2"
+    }
+  },
+  "machine": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "system": "Windows",
+    "release": "11",
+    "version": "10.0.26200",
+    "machine": "AMD64",
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "logical_cpu_count": 16
+  },
+  "audible_change": false,
+  "case": {
+    "id": "virtual-cable-baseline",
+    "device_class": "virtual",
+    "nominal_sample_rate_hz": 48000,
+    "scenario": "baseline",
+    "evidence_kind": "automated",
+    "automated_measurements": true,
+    "operator_observation_required": false,
+    "operator_attestation": false,
+    "scenario_evidence_valid": true
+  },
+  "purpose": "Exact extracted release-artifact route and sustained callback health gate.",
+  "artifact": {
+    "archive_name": "AudioForge-v1.11.0-win64-ultra.7z",
+    "archive_bytes": 112148372,
+    "archive_sha256": "7a9357a7da95a8db00028f52ab93d7bafde15af7f1169056522335e0a3bded4c",
+    "sha256": "7a9357a7da95a8db00028f52ab93d7bafde15af7f1169056522335e0a3bded4c",
+    "checksum_name": "AudioForge-v1.11.0-win64-ultra.7z.sha256",
+    "checksum_sha256": "3af5d68dc8abec72ced71902e34c94d656120b2bfb4814826f938c0b095b601d",
+    "bundle": {
+      "file_count": 209,
+      "total_bytes": 301942571,
+      "normalized_tree_sha256": "ddd86dcbea356b0b72ed0b3a4a9aa9b3ce606f8b53afc6dbf3a9e1bb8c56ea7b"
+    },
+    "build": {
+      "version": "1.11.0",
+      "schema_version": 1
+    }
+  },
+  "package_smoke": {
+    "return_code": 0,
+    "elapsed_seconds": 0.06833569999798783,
+    "stdout": [
+      "Package smoke check passed"
+    ],
+    "stderr": [],
+    "passed": true,
+    "historical_ucrt_exception": null
+  },
+  "executable_startup": {
+    "passed": true,
+    "probe_seconds": 12.0,
+    "elapsed_seconds": 12.027374200002669,
+    "exited_early": false,
+    "early_exit_code": null,
+    "mode": "QT_QPA_PLATFORM=offscreen"
+  },
+  "model_discovery": {
+    "passed": true,
+    "models": [
+      {
+        "id": "rnnoise",
+        "name": "RNNoise (Low Latency)"
+      },
+      {
+        "id": "deepfilter-ll",
+        "name": "DeepFilterNet LL (Fast)"
+      },
+      {
+        "id": "deepfilter",
+        "name": "DeepFilterNet (Best Quality)"
+      }
+    ],
+    "expected_model_ids": [
+      "deepfilter",
+      "deepfilter-ll",
+      "rnnoise"
+    ],
+    "missing_model_ids": []
+  },
+  "routes": {
+    "correlation": {
+      "input": "device-74281ebbec1a0acd",
+      "output": "device-a7aba58b0773007b"
+    },
+    "sustained_health": {
+      "input": "device-74281ebbec1a0acd",
+      "output": "device-a7aba58b0773007b"
+    }
+  },
+  "requested_health_duration_seconds": 1800.0,
+  "selected_route_correlation": {
+    "passed": true,
+    "route_latency_ms": 116.91,
+    "confidence": 0.869,
+    "run": {
+      "return_code": 0,
+      "elapsed_seconds": 4.32679950000238,
+      "stdout": [
+        "Started processor: Started: device-74281ebbec1a0acd -> device-a7aba58b0773007b",
+        "Selected route: input='device-74281ebbec1a0acd' output='device-a7aba58b0773007b'",
+        "Capture sample rate: 48000 Hz; output sample rate: 48000 Hz",
+        "Warming up for 0.30s...",
+        "Queueing probe on selected AudioForge output...",
+        "Attempt 1: delay=450ms rt=116.91ms confidence=0.869 message=ok backend=rnnoise failed=False dropped_in=0 underruns=2 restarts=0 non_finite=0",
+        "Self-test passed: rt=116.91ms confidence=0.869"
+      ],
+      "stderr": []
+    }
+  },
+  "sustained_health": {
+    "passed": true,
+    "max_input_callback_age_ms": 20,
+    "max_output_callback_age_ms": 20,
+    "stream_restarts": 0,
+    "output_underrun_baseline": 2,
+    "runtime_diagnostics": {
+      "clip_event_count": 0,
+      "clip_peak_db": -120.0,
+      "deesser_detector_confidence": 0.0,
+      "dsp_idle_sleep_us": 1600,
+      "dsp_idle_wakeup_count": 1135021,
+      "engine_latency_ms": 54.31100082397461,
+      "gate_auto_relax_active": false,
+      "gate_chatter_event_count": 0,
+      "gate_fused_score": 0.0,
+      "input_backlog_dropped_samples": 0,
+      "input_backlog_recovery_count": 0,
+      "input_callback_error_count": 0,
+      "input_channel_mode": "average",
+      "input_cleanup_high_pass_hz": 80.0,
+      "input_cleanup_hum_detected": false,
+      "input_cleanup_mode": "off",
+      "input_cleanup_rumble_detected": false,
+      "input_crest_factor_db": 0.0,
+      "input_dropped_samples": 0,
+      "input_fixed_buffer_frames": 0,
+      "input_phase_estimated_delay_samples": 0.0,
+      "input_phase_polarity_flipped": false,
+      "input_phase_rescue_strategy": "none",
+      "input_phase_warning_count": 0,
+      "input_resampler_active": false,
+      "input_stereo_correlation": 1.0,
+      "jitter_dropped_samples": 6976,
+      "last_restart_reason": null,
+      "last_stream_error": null,
+      "limiter_careful_output_enabled": true,
+      "limiter_effective_ceiling_db": -1.5,
+      "limiter_gain_reduction_db": 0.0,
+      "limiter_gain_reduction_history_db": 0.0,
+      "limiter_peak_gain_reduction_db": 0.0,
+      "lock_contention_count": 0,
+      "noise_attenuation_limit_db": null,
+      "noise_backend_available": true,
+      "noise_backend_error": null,
+      "noise_backend_failed": false,
+      "noise_model": "rnnoise",
+      "noise_post_filter_beta": null,
+      "output_callback_error_count": 0,
+      "output_clip_event_count": 0,
+      "output_clip_peak_db": -120.0,
+      "output_crest_factor_db": 0.0,
+      "output_fixed_buffer_frames": 0,
+      "output_recovery_count": 0,
+      "output_recovery_event_count": 0,
+      "output_resampler_active": false,
+      "output_retime_adjustment_count": 14777,
+      "output_sample_rate": 48000,
+      "output_short_term_lufs": -120.0,
+      "output_short_write_dropped_samples": 0,
+      "output_true_peak_db": -200.0,
+      "output_true_peak_event_count": 0,
+      "output_true_peak_gain_reduction_db": 0.0,
+      "output_true_peak_gain_reduction_history_db": 0.0,
+      "output_true_peak_headroom_db": 198.5,
+      "output_true_peak_input_db": -200.0,
+      "output_underrun_streak": 0,
+      "output_underrun_total": 2,
+      "raw_monitor_enabled": false,
+      "recovery_suppressed": false,
+      "rt_buffer_overflow_count": 0,
+      "rt_error_code": 0,
+      "rt_error_name": "none",
+      "stream_restart_count": 0,
+      "suppressor_non_finite_count": 0,
+      "total_latency_ms": 54.31100082397461
+    },
+    "run": {
+      "return_code": 0,
+      "elapsed_seconds": 1800.2872435000027,
+      "stdout": [
+        "Started processor: Started: device-74281ebbec1a0acd -> device-a7aba58b0773007b",
+        "Health summary: max_input_age_ms=20 max_output_age_ms=20 restarts=0 underrun_baseline=2 diagnostics={\"clip_event_count\":0,\"clip_peak_db\":-120.0,\"deesser_detector_confidence\":0.0,\"dsp_idle_sleep_us\":1600,\"dsp_idle_wakeup_count\":1135021,\"engine_latency_ms\":54.31100082397461,\"gate_auto_relax_active\":false,\"gate_chatter_event_count\":0,\"gate_fused_score\":0.0,\"input_backlog_dropped_samples\":0,\"input_backlog_recovery_count\":0,\"input_callback_error_count\":0,\"input_channel_mode\":\"average\",\"input_cleanup_high_pass_hz\":80.0,\"input_cleanup_hum_detected\":false,\"input_cleanup_mode\":\"off\",\"input_cleanup_rumble_detected\":false,\"input_crest_factor_db\":0.0,\"input_dropped_samples\":0,\"input_fixed_buffer_frames\":0,\"input_phase_estimated_delay_samples\":0.0,\"input_phase_polarity_flipped\":false,\"input_phase_rescue_strategy\":\"none\",\"input_phase_warning_count\":0,\"input_resampler_active\":false,\"input_stereo_correlation\":1.0,\"jitter_dropped_samples\":6976,\"last_restart_reason\":null,\"last_stream_error\":null,\"limiter_careful_output_enabled\":true,\"limiter_effective_ceiling_db\":-1.5,\"limiter_gain_reduction_db\":0.0,\"limiter_gain_reduction_history_db\":0.0,\"limiter_peak_gain_reduction_db\":0.0,\"lock_contention_count\":0,\"noise_attenuation_limit_db\":null,\"noise_backend_available\":true,\"noise_backend_error\":null,\"noise_backend_failed\":false,\"noise_model\":\"rnnoise\",\"noise_post_filter_beta\":null,\"output_callback_error_count\":0,\"output_clip_event_count\":0,\"output_clip_peak_db\":-120.0,\"output_crest_factor_db\":0.0,\"output_fixed_buffer_frames\":0,\"output_recovery_count\":0,\"output_recovery_event_count\":0,\"output_resampler_active\":false,\"output_retime_adjustment_count\":14777,\"output_sample_rate\":48000,\"output_short_term_lufs\":-120.0,\"output_short_write_dropped_samples\":0,\"output_true_peak_db\":-200.0,\"output_true_peak_event_count\":0,\"output_true_peak_gain_reduction_db\":0.0,\"output_true_peak_gain_reduction_history_db\":0.0,\"output_true_peak_headroom_db\":198.5,\"output_true_peak_input_db\":-200.0,\"output_underrun_streak\":0,\"output_underrun_total\":2,\"raw_monitor_enabled\":false,\"recovery_suppressed\":false,\"rt_buffer_overflow_count\":0,\"rt_error_code\":0,\"rt_error_name\":\"none\",\"stream_restart_count\":0,\"suppressor_non_finite_count\":0,\"total_latency_ms\":54.31100082397461}",
+        "Health check passed."
+      ],
+      "stderr": []
+    }
+  },
+  "latency": {
+    "route_round_trip_ms": 116.91,
+    "engine_ms": 54.31100082397461,
+    "total_ms": 54.31100082397461,
+    "configured_compensation_ms": 0.0
+  },
+  "passed": true,
+  "limitations": [
+    "One Windows machine and one virtual device-route case.",
+    "Both checks use the explicitly selected routes; physical topology is not inferred from device names.",
+    "This is objective device/runtime evidence, not a perceptual listening session.",
+    "Device names are replaced with report-local HMAC pseudonyms in routes and logs.",
+    "For extracted bundles, external source-controlled harnesses load the exact bundled native extension/DLL/models; a separate offscreen launch checks the bundled Python/UI executable."
+  ]
+}

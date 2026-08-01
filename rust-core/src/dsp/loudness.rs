@@ -25,6 +25,53 @@ pub enum LoudnessError {
 
     #[error("Invalid sample rate: {0}")]
     InvalidSampleRate(u32),
+
+    #[error("Invalid audio: {0}")]
+    InvalidAudio(String),
+
+    #[error("Loudness measurement failed: {0}")]
+    MeasurementError(String),
+}
+
+fn validate_sample_rate(sample_rate: u32) -> Result<(), LoudnessError> {
+    if ![8000, 16000, 32000, 44100, 48000, 88200, 96000].contains(&sample_rate) {
+        return Err(LoudnessError::InvalidSampleRate(sample_rate));
+    }
+    Ok(())
+}
+
+/// Measure gated mono integrated loudness according to ITU-R BS.1770/EBU R128.
+///
+/// This is an offline helper. The library's absolute and relative gates omit
+/// inactive material naturally, making it suitable for loudness-matching
+/// speech renders without changing their internal dynamics.
+pub fn integrated_loudness_lufs(samples: &[f32], sample_rate: u32) -> Result<f64, LoudnessError> {
+    validate_sample_rate(sample_rate)?;
+    if samples.is_empty() {
+        return Err(LoudnessError::InvalidAudio(
+            "at least one sample is required".to_string(),
+        ));
+    }
+    if samples.iter().any(|sample| !sample.is_finite()) {
+        return Err(LoudnessError::InvalidAudio(
+            "samples must be finite".to_string(),
+        ));
+    }
+
+    let mut meter = EbuR128::new(1, sample_rate, Mode::I | Mode::HISTOGRAM)
+        .map_err(|error| LoudnessError::InitError(error.to_string()))?;
+    meter
+        .add_frames_f32(samples)
+        .map_err(|error| LoudnessError::MeasurementError(error.to_string()))?;
+    let loudness = meter
+        .loudness_global()
+        .map_err(|error| LoudnessError::MeasurementError(error.to_string()))?;
+    if !loudness.is_finite() {
+        return Err(LoudnessError::MeasurementError(
+            "audio did not produce a finite gated loudness".to_string(),
+        ));
+    }
+    Ok(loudness)
 }
 
 /// EBU R128 loudness meter
@@ -51,9 +98,7 @@ impl LoudnessMeter {
     /// * `Err(LoudnessError)` - If initialization fails
     pub fn new(sample_rate: u32) -> Result<Self, LoudnessError> {
         // Validate sample rate (EBU R128 supports common rates)
-        if ![8000, 16000, 32000, 44100, 48000, 88200, 96000].contains(&sample_rate) {
-            return Err(LoudnessError::InvalidSampleRate(sample_rate));
-        }
+        validate_sample_rate(sample_rate)?;
 
         // Create EBU R128 meter with momentary mode
         // Use mode M (momentary) for real-time control
@@ -172,5 +217,39 @@ mod tests {
         meter.reset().unwrap();
 
         assert_eq!(meter.loudness_momentary(), -100.0);
+    }
+
+    #[test]
+    fn integrated_loudness_is_level_consistent_and_silence_gated() {
+        let sample_rate = 48_000;
+        // Use a programme-length fixture: the 400 ms BS.1770 blocks that
+        // straddle a short clip's silence boundaries are intentionally part of
+        // the measurement and can bias a two-second fixture by about 0.6 dB.
+        let tone = (0..sample_rate * 8)
+            .map(|index| {
+                let phase =
+                    2.0 * std::f32::consts::PI * 1_000.0 * index as f32 / sample_rate as f32;
+                0.1 * phase.sin()
+            })
+            .collect::<Vec<_>>();
+        let mut padded = vec![0.0_f32; sample_rate as usize];
+        padded.extend_from_slice(&tone);
+        padded.extend(std::iter::repeat_n(0.0_f32, sample_rate as usize));
+
+        let tone_loudness = integrated_loudness_lufs(&tone, sample_rate).unwrap();
+        let padded_loudness = integrated_loudness_lufs(&padded, sample_rate).unwrap();
+
+        let difference = (tone_loudness - padded_loudness).abs();
+        assert!(
+            difference < 0.2,
+            "silence-gated loudness changed by {difference:.3} dB "
+        );
+    }
+
+    #[test]
+    fn integrated_loudness_rejects_invalid_audio() {
+        assert!(integrated_loudness_lufs(&[], 48_000).is_err());
+        assert!(integrated_loudness_lufs(&[f32::NAN], 48_000).is_err());
+        assert!(integrated_loudness_lufs(&[0.1], 12_345).is_err());
     }
 }

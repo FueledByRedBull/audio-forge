@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.io import wavfile
 from scipy.optimize import minimize
+
+from mic_eq.analysis.wav_io import read_mono_wav
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,28 +48,7 @@ def _parse_model(value: str) -> tuple[str, Path]:
 
 
 def _load_mono_audio(path: Path) -> tuple[int, np.ndarray]:
-    sample_rate, raw_audio = wavfile.read(path)
-    audio = np.asarray(raw_audio)
-    if audio.ndim == 2:
-        audio = np.mean(audio.astype(np.float64), axis=1)
-    if audio.ndim != 1:
-        raise ValueError(f"{path} must contain mono or interleaved PCM audio")
-
-    if np.issubdtype(audio.dtype, np.floating):
-        normalized = audio.astype(np.float32)
-    elif np.issubdtype(audio.dtype, np.signedinteger):
-        info = np.iinfo(audio.dtype.name)
-        scale = float(max(abs(info.min), info.max))
-        normalized = audio.astype(np.float32) / scale
-    elif np.issubdtype(audio.dtype, np.unsignedinteger):
-        info = np.iinfo(audio.dtype.name)
-        midpoint = (float(info.max) + 1.0) / 2.0
-        normalized = ((audio.astype(np.float64) - midpoint) / midpoint).astype(np.float32)
-    else:
-        raise ValueError(f"unsupported WAV sample type: {audio.dtype}")
-
-    normalized = np.nan_to_num(normalized, nan=0.0, posinf=1.0, neginf=-1.0)
-    return int(sample_rate), np.ascontiguousarray(np.clip(normalized, -1.0, 1.0))
+    return read_mono_wav(path, dtype=np.float32)
 
 
 def _quantile(values: np.ndarray, probability: float) -> float:

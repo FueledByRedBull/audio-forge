@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy.io import wavfile
 from scipy.signal import resample_poly
 
 from mic_eq import analyze_vad_probabilities, simulate_auto_makeup_control
+from mic_eq.analysis.wav_io import read_mono_wav
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,19 +39,7 @@ def _relative(path: Path) -> str:
 
 
 def _read_mono(path: Path) -> tuple[int, np.ndarray]:
-    sample_rate, raw = wavfile.read(path)
-    audio = np.asarray(raw)
-    if audio.ndim == 2:
-        audio = np.mean(audio.astype(np.float64), axis=1)
-    if np.issubdtype(audio.dtype, np.integer):
-        bits = audio.dtype.itemsize * 8
-        full_scale = (
-            2 ** (bits - 1)
-            if np.issubdtype(audio.dtype, np.signedinteger)
-            else 2**bits - 1
-        )
-        audio = audio.astype(np.float64) / float(full_scale)
-    return int(sample_rate), np.asarray(audio, dtype=np.float64)
+    return read_mono_wav(path, dtype=np.float64)
 
 
 def _resample(audio: np.ndarray, source_rate: int) -> np.ndarray:
@@ -65,12 +53,58 @@ def _resample(audio: np.ndarray, source_rate: int) -> np.ndarray:
 
 
 def _pairs(corpus_root: Path, max_languages: int) -> list[tuple[Path, Path]]:
+    corpus_root = corpus_root.resolve(strict=True)
+    manifest_path = corpus_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    records = manifest.get("files") if isinstance(manifest, dict) else None
+    if not isinstance(records, list):
+        raise ValueError("corpus manifest must contain a files list")
+    indexed: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+            raise ValueError("corpus manifest contains an invalid file record")
+        relative = Path(record["path"])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"unsafe corpus manifest path: {relative}")
+        key = relative.as_posix()
+        if key in indexed:
+            raise ValueError(f"duplicate corpus manifest path: {key}")
+        indexed[key] = record
+
+    def verified(relative: Path, expected_model: str) -> Path:
+        key = relative.as_posix()
+        record = indexed.get(key)
+        if record is None or record.get("model_name") != expected_model:
+            raise ValueError(f"missing {expected_model} manifest record: {key}")
+        path = (corpus_root / relative).resolve(strict=True)
+        if not path.is_relative_to(corpus_root):
+            raise ValueError(f"corpus path escapes root: {key}")
+        if path.stat().st_size != record.get("size_bytes"):
+            raise ValueError(f"corpus size mismatch: {key}")
+        if _sha256(path) != record.get("sha256"):
+            raise ValueError(f"corpus hash mismatch: {key}")
+        return path
+
     selected: dict[str, tuple[Path, Path]] = {}
-    for clean in sorted((corpus_root / "Clean").glob("*_clean.wav")):
-        language = clean.name.split("_", 1)[0]
-        noisy = corpus_root / "Noisy" / clean.name.replace("_clean.wav", "_noisy.wav")
-        if language not in selected and noisy.is_file():
-            selected[language] = (clean, noisy)
+    clean_records = sorted(
+        (
+            record
+            for record in records
+            if isinstance(record, dict) and record.get("model_name") == "Clean"
+        ),
+        key=lambda record: str(record["path"]),
+    )
+    for record in clean_records:
+        clean_relative = Path(str(record["path"]))
+        language = str(record.get("language") or clean_relative.name.split("_", 1)[0])
+        noisy_relative = Path("Noisy") / clean_relative.name.replace(
+            "_clean.wav", "_noisy.wav"
+        )
+        if language not in selected:
+            selected[language] = (
+                verified(clean_relative, "Clean"),
+                verified(noisy_relative, "Noisy"),
+            )
     pairs = list(selected.values())[:max_languages]
     if not pairs:
         raise RuntimeError(f"No clean/noisy pairs found under {corpus_root}")
@@ -216,6 +250,8 @@ def _run_clip(
         "language": clean_path.name.split("_", 1)[0],
         "clean_path": _relative(clean_path),
         "noisy_path": _relative(noisy_path),
+        "clean_sha256": _sha256(clean_path),
+        "noisy_sha256": _sha256(noisy_path),
         "source_offset_samples": int(round(offset * clean_rate / SAMPLE_RATE)),
         "duration_seconds": noisy.size / SAMPLE_RATE,
         "active_block_ratio": float(np.mean(active)),
@@ -337,6 +373,15 @@ def main() -> int:
         for asset in manifest["assets"]
         if asset["path"] == "models/silero_vad.onnx"
     )
+    source_paths = (
+        "python/tools/evaluate_auto_makeup_real_speech.py",
+        "python/mic_eq/analysis/wav_io.py",
+        "rust-core/src/audio/processor/python_api.rs",
+        "rust-core/src/dsp/compressor.rs",
+        "rust-core/src/dsp/vad.rs",
+    )
+    source_hashes = {path: _sha256(REPO_ROOT / path) for path in source_paths}
+    corpus_manifest = args.corpus_root / "manifest.json"
     report = {
         "schema_version": 2,
         "audible_change": True,
@@ -357,6 +402,7 @@ def main() -> int:
         "metrics": metrics,
         "gates": gates,
         "cases": rows,
+        "source_sha256": source_hashes,
         "evaluation_contract": {
             "configuration": {
                 "sample_rate": SAMPLE_RATE,
@@ -373,6 +419,7 @@ def main() -> int:
             },
             "asset_hashes": {
                 silero["path"]: silero["sha256"],
+                _relative(corpus_manifest): _sha256(corpus_manifest),
             },
             "runtime": {
                 "max_p99_frame_seconds": (
@@ -396,18 +443,11 @@ def main() -> int:
                     - metrics["median_candidate_active_makeup_db"]
                 ),
             },
-            "listening_status": {
-                "status": "not_run",
-                "reason": (
-                    "This hardening goal excludes human involvement; the VAD controller "
-                    "is retained only if every predefined real-speech objective gate passes."
-                ),
-            },
         },
         "limitations": [
             "The supplied corpus contains simulated mixtures rather than native 48 kHz close-mic captures.",
             "Clean-reference Silero posteriors define active/inactive evaluation masks; the controller consumes noisy-mixture posteriors.",
-            "The 12-language sample is one 30-second segment per language and does not replace controlled listening.",
+            "The 12-language sample is one 30-second segment per language, so condition and speaker breadth remain limited.",
         ],
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)

@@ -37,6 +37,48 @@ fn py_dict_f64(
     Ok(default)
 }
 
+fn py_dict_eq_bands_v2(
+    settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+    sample_rate: f64,
+) -> PyResult<Option<Vec<EqBandConfig>>> {
+    let Some(settings) = settings else {
+        return Ok(None);
+    };
+    let Some(value) = settings.get_item("eq_bands_v2")? else {
+        return Ok(None);
+    };
+    let bands = value.extract::<Vec<(String, f64, f64, f64, u8, bool)>>()?;
+    if bands.len() != NUM_BANDS {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected {NUM_BANDS} typed EQ bands, got {}",
+            bands.len()
+        )));
+    }
+    let mut configs = Vec::with_capacity(NUM_BANDS);
+    for (index, (filter_type, frequency_hz, gain_db, q, slope, enabled)) in
+        bands.into_iter().enumerate()
+    {
+        let filter_type = EqFilterType::from_name(&filter_type).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Band {index}: unsupported EQ filter type: {filter_type}"
+            ))
+        })?;
+        let config = EqBandConfig {
+            filter_type,
+            frequency_hz,
+            gain_db,
+            q,
+            slope_db_per_octave: slope,
+            enabled,
+        };
+        config
+            .validate(index, sample_rate)
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+        configs.push(config);
+    }
+    Ok(Some(configs))
+}
+
 fn linear_to_db(value: f32) -> f32 {
     20.0 * value.max(1.0e-12).log10()
 }
@@ -385,10 +427,17 @@ pub fn simulate_auto_eq_chain(
 
     let mut processor = OfflineDspBlockProcessor::new(sample_rate);
     processor.set_eq_enabled(true);
-    for (index, (frequency, gain_db, q)) in bands.iter().copied().enumerate() {
-        processor.eq_mut().set_band_frequency(index, frequency);
-        processor.eq_mut().set_band_gain(index, gain_db);
-        processor.eq_mut().set_band_q(index, q);
+    if let Some(configs) = py_dict_eq_bands_v2(settings, sample_rate)? {
+        for (index, config) in configs.into_iter().enumerate() {
+            processor.eq_mut().set_band_config(index, config);
+        }
+        processor.eq_mut().reset();
+    } else {
+        for (index, (frequency, gain_db, q)) in bands.iter().copied().enumerate() {
+            processor.eq_mut().set_band_frequency(index, frequency);
+            processor.eq_mut().set_band_gain(index, gain_db);
+            processor.eq_mut().set_band_q(index, q);
+        }
     }
 
     let deesser_enabled = py_dict_bool(settings, "deesser_enabled", false)?;
@@ -785,14 +834,26 @@ impl PyAudioProcessor {
     }
 
     /// Start audio processing
-    #[pyo3(signature = (input_device=None, output_device=None))]
+    #[pyo3(signature = (
+        input_device=None,
+        output_device=None,
+        input_device_name_ordinal=0,
+        output_device_name_ordinal=0,
+    ))]
     fn start(
         &mut self,
         input_device: Option<&str>,
         output_device: Option<&str>,
+        input_device_name_ordinal: u32,
+        output_device_name_ordinal: u32,
     ) -> PyResult<String> {
         self.processor
-            .start(input_device, output_device)
+            .start_with_device_ordinals(
+                input_device,
+                input_device_name_ordinal,
+                output_device,
+                output_device_name_ordinal,
+            )
             .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
     }
 
@@ -1049,8 +1110,44 @@ impl PyAudioProcessor {
             .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
     }
 
+    fn set_eq_band_filter_type(&self, band: usize, filter_type: &str) -> PyResult<()> {
+        let parsed = EqFilterType::from_name(filter_type).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "unsupported EQ filter type: {filter_type}"
+            ))
+        })?;
+        self.processor
+            .set_eq_band_filter_type(band, parsed)
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
+    }
+
+    fn set_eq_band_slope(&self, band: usize, slope_db_per_octave: u8) -> PyResult<()> {
+        self.processor
+            .set_eq_band_slope(band, slope_db_per_octave)
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
+    }
+
+    fn set_eq_band_enabled(&self, band: usize, enabled: bool) -> PyResult<()> {
+        self.processor
+            .set_eq_band_enabled(band, enabled)
+            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)
+    }
+
     fn get_eq_band_params(&self, band: usize) -> Option<(f64, f64, f64)> {
         self.processor.get_eq_band_params(band)
+    }
+
+    fn get_eq_band_config(&self, band: usize) -> Option<(String, f64, f64, f64, u8, bool)> {
+        self.processor.get_eq_band_config(band).map(|config| {
+            (
+                config.filter_type.name().to_string(),
+                config.frequency_hz,
+                config.gain_db,
+                config.q,
+                config.slope_db_per_octave,
+                config.enabled,
+            )
+        })
     }
 
     /// Apply EQ settings for all 10 bands in a single atomic call
@@ -1062,6 +1159,35 @@ impl PyAudioProcessor {
     ///     ValueError: If band count is not 10 or parameters are out of range
     fn apply_eq_settings(&self, bands: Vec<(f64, f64, f64)>) -> PyResult<()> {
         self.processor.apply_eq_settings(bands)
+    }
+
+    /// Apply complete typed EQ settings for all 10 bands.
+    ///
+    /// Each tuple is (filter_type, frequency_hz, gain_db, q,
+    /// slope_db_per_octave, enabled).
+    fn apply_eq_settings_v2(
+        &self,
+        bands: Vec<(String, f64, f64, f64, u8, bool)>,
+    ) -> PyResult<()> {
+        let mut parsed = Vec::with_capacity(bands.len());
+        for (index, (filter_type, frequency_hz, gain_db, q, slope, enabled)) in
+            bands.into_iter().enumerate()
+        {
+            let filter_type = EqFilterType::from_name(&filter_type).ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "Band {index}: unsupported EQ filter type: {filter_type}"
+                ))
+            })?;
+            parsed.push(EqBandConfig {
+                filter_type,
+                frequency_hz,
+                gain_db,
+                q,
+                slope_db_per_octave: slope,
+                enabled,
+            });
+        }
+        self.processor.apply_eq_settings_v2(parsed)
     }
 
     // === De-Esser ===

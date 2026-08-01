@@ -1,0 +1,362 @@
+{
+  "candidate": "typed-manual-eq-v2",
+  "checks": {
+    "audio_output_finite": true,
+    "cut_only_rms_headroom": true,
+    "cutoff_math": true,
+    "default_audio_parity": true,
+    "default_realtime": true,
+    "default_response_parity": true,
+    "full_chain_output_finite": true,
+    "full_chain_true_peak_ceiling": true,
+    "notch_rejection": true,
+    "random_response_finite": true,
+    "response_prediction": true,
+    "stress_limiter_engages": true,
+    "worst_case_realtime": true,
+    "zero_algorithmic_latency": true
+  },
+  "corpus": {
+    "manifest": {
+      "path": "models/deepfilter_fullband_eval/manifest.json",
+      "sha256": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6"
+    },
+    "root": "models/deepfilter_fullband_eval/clean",
+    "segment_duration_seconds": 20.0,
+    "selection": "deterministic round-robin by filename speaker/language prefix"
+  },
+  "decision": {
+    "auto_eq_type_selection": "not evaluated; incumbent layout retained",
+    "reason": "Retained because every predefined math, parity, stability, headroom-observability, realtime, and latency gate passed.",
+    "retained": true
+  },
+  "incumbent": "fixed-low-shelf-eight-bell-high-shelf",
+  "limitations": [
+    "Human preference is not claimed by this objective filter-contract evaluation.",
+    "Auto-EQ filter-type selection is evaluated separately and cannot inherit this retention decision.",
+    "The worst-case CPU arm is deliberately pathological: ten active 48 dB/octave pass filters.",
+    "Boosting filters may consume pre-limiter headroom; the native response is the warning source rather than a hidden gain clamp.",
+    "Cut-only minimum-phase filters changed crest factor and raised true peak by up to the reported amount; this is recorded rather than misclassified as positive-gain response."
+  ],
+  "measurements": {
+    "analytic": {
+      "cutoff": [
+        {
+          "absolute_error_db": 8.881784197001252e-16,
+          "filter_type": "high_pass",
+          "measured_db": -3.0102999566398116,
+          "slope_db_per_octave": 12,
+          "target_db": -3.0102999566398125
+        },
+        {
+          "absolute_error_db": 1.7319479184152442e-14,
+          "filter_type": "high_pass",
+          "measured_db": -3.01029995663983,
+          "slope_db_per_octave": 24,
+          "target_db": -3.0102999566398125
+        },
+        {
+          "absolute_error_db": 1.1546319456101628e-14,
+          "filter_type": "high_pass",
+          "measured_db": -3.010299956639824,
+          "slope_db_per_octave": 36,
+          "target_db": -3.0102999566398125
+        },
+        {
+          "absolute_error_db": 2.6645352591003757e-14,
+          "filter_type": "high_pass",
+          "measured_db": -3.010299956639786,
+          "slope_db_per_octave": 48,
+          "target_db": -3.0102999566398125
+        },
+        {
+          "absolute_error_db": 1.2434497875801753e-14,
+          "filter_type": "low_pass",
+          "measured_db": -3.010299956639825,
+          "slope_db_per_octave": 12,
+          "target_db": -3.0102999566398125
+        },
+        {
+          "absolute_error_db": 1.554312234475219e-14,
+          "filter_type": "low_pass",
+          "measured_db": -3.010299956639828,
+          "slope_db_per_octave": 24,
+          "target_db": -3.0102999566398125
+        },
+        {
+          "absolute_error_db": 3.019806626980426e-14,
+          "filter_type": "low_pass",
+          "measured_db": -3.0102999566398427,
+          "slope_db_per_octave": 36,
+          "target_db": -3.0102999566398125
+        },
+        {
+          "absolute_error_db": 2.1316282072803006e-14,
+          "filter_type": "low_pass",
+          "measured_db": -3.010299956639834,
+          "slope_db_per_octave": 48,
+          "target_db": -3.0102999566398125
+        }
+      ],
+      "default_response_max_absolute_delta_db": 0.0,
+      "max_cutoff_absolute_error_db": 3.019806626980426e-14,
+      "notch": {
+        "center_response_db": -200.0,
+        "probe_frequencies_hz": [
+          100.0,
+          1000.0,
+          10000.0
+        ],
+        "response_db": [
+          -0.00069031219514453,
+          -200.0,
+          -0.0005023861794774316
+        ]
+      },
+      "random_boundary_stress": {
+        "cases": 250,
+        "max_absolute_response_db": 1206.650162779802,
+        "nonfinite_cases": 0,
+        "seed": "0xE041"
+      }
+    },
+    "corpus": {
+      "algorithmic_latency_samples": [
+        0
+      ],
+      "clip_count": 12,
+      "clips": [
+        {
+          "cut_only_rms_gain_db": -0.052626227062043285,
+          "cut_only_true_peak_gain_db": 1.0832376235815016,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.0012509104831183746,
+          "duration_seconds": 1.7412916666666667,
+          "full_chain_true_peak_overshoot_db": 0.0,
+          "path": "models/deepfilter_fullband_eval/clean/p232_001.wav",
+          "sample_rate": 48000,
+          "samples": 83582,
+          "sha256": "58976c41995f22917a143bf00654bf54e86525ee15e729c7a805b8eef28849c3",
+          "stress_limiter_gain_reduction_db": 1.978407859802246,
+          "worst_case_realtime_factor": 0.005042233973822114
+        },
+        {
+          "cut_only_rms_gain_db": -0.20749336313572303,
+          "cut_only_true_peak_gain_db": 0.8721854282377548,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.0012573198547010955,
+          "duration_seconds": 2.2195625,
+          "full_chain_true_peak_overshoot_db": 0.0,
+          "path": "models/deepfilter_fullband_eval/clean/p257_001.wav",
+          "sample_rate": 48000,
+          "samples": 106539,
+          "sha256": "7f6eed44c7831cf9aa979d7eb53c7a9f7e4e0b75576d2d0e7741ba4377724be0",
+          "stress_limiter_gain_reduction_db": 1.0176507234573364,
+          "worst_case_realtime_factor": 0.005270858558837609
+        },
+        {
+          "cut_only_rms_gain_db": -0.045009023862252674,
+          "cut_only_true_peak_gain_db": 2.677757366184541,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.0012499593339983118,
+          "duration_seconds": 2.7152083333333334,
+          "full_chain_true_peak_overshoot_db": 0.0,
+          "path": "models/deepfilter_fullband_eval/clean/p232_002.wav",
+          "sample_rate": 48000,
+          "samples": 130330,
+          "sha256": "034de7f89e16082e6aeae23746978d2a42add1d81c29d9f8c615b3e020d70643",
+          "stress_limiter_gain_reduction_db": 2.3755552768707275,
+          "worst_case_realtime_factor": 0.005668404818537558
+        },
+        {
+          "cut_only_rms_gain_db": -0.10625901633222354,
+          "cut_only_true_peak_gain_db": 0.42909410826023364,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.0012497636093475619,
+          "duration_seconds": 2.776125,
+          "full_chain_true_peak_overshoot_db": 0.0006989240646362305,
+          "path": "models/deepfilter_fullband_eval/clean/p257_002.wav",
+          "sample_rate": 48000,
+          "samples": 133254,
+          "sha256": "b9608fa621bf688a9c8f40fd6e6bf225ef5e06823b806eab3836f2d3a941ca92",
+          "stress_limiter_gain_reduction_db": 2.626110315322876,
+          "worst_case_realtime_factor": 0.005721032014048358
+        },
+        {
+          "cut_only_rms_gain_db": -0.04113545980868386,
+          "cut_only_true_peak_gain_db": 1.081181795241848,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.0012622246450142514,
+          "duration_seconds": 7.184854166666667,
+          "full_chain_true_peak_overshoot_db": 0.0,
+          "path": "models/deepfilter_fullband_eval/clean/p232_003.wav",
+          "sample_rate": 48000,
+          "samples": 344873,
+          "sha256": "85bd30db189b8abdde6719efb07b34965fb5fb9b6e476ae23f6e6b2d4fd720db",
+          "stress_limiter_gain_reduction_db": 3.1506967544555664,
+          "worst_case_realtime_factor": 0.0060953081279195515
+        },
+        {
+          "cut_only_rms_gain_db": -0.053038858029973025,
+          "cut_only_true_peak_gain_db": 1.146382174783076,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.0012538267654738366,
+          "duration_seconds": 5.521416666666667,
+          "full_chain_true_peak_overshoot_db": 0.0,
+          "path": "models/deepfilter_fullband_eval/clean/p257_003.wav",
+          "sample_rate": 48000,
+          "samples": 265028,
+          "sha256": "394acaaf0d1bf55678ed10e4ce5f09cc691dcd4e0e99d0d66809637dbb37e197",
+          "stress_limiter_gain_reduction_db": 3.2546706199645996,
+          "worst_case_realtime_factor": 0.005168075825950465
+        },
+        {
+          "cut_only_rms_gain_db": -0.04789294835298345,
+          "cut_only_true_peak_gain_db": 2.6592521201497505,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.001310819842715066,
+          "duration_seconds": 6.246625,
+          "full_chain_true_peak_overshoot_db": 0.0,
+          "path": "models/deepfilter_fullband_eval/clean/p232_005.wav",
+          "sample_rate": 48000,
+          "samples": 299838,
+          "sha256": "89b1ebdeabff150a3cc12629178e5b98a2366e052f3e8028ea853c2059f69494",
+          "stress_limiter_gain_reduction_db": 3.8455235958099365,
+          "worst_case_realtime_factor": 0.005909815300262142
+        },
+        {
+          "cut_only_rms_gain_db": -0.03048534097313529,
+          "cut_only_true_peak_gain_db": -0.07396021499248703,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.0012653188608669711,
+          "duration_seconds": 3.6314166666666665,
+          "full_chain_true_peak_overshoot_db": 0.0,
+          "path": "models/deepfilter_fullband_eval/clean/p257_004.wav",
+          "sample_rate": 48000,
+          "samples": 174308,
+          "sha256": "d2bb1c605d416df5fafa2aea4d4fb83df78bd3f9a46260606f5e3d1b58042f2e",
+          "stress_limiter_gain_reduction_db": 0.06713178008794785,
+          "worst_case_realtime_factor": 0.005165559813663171
+        },
+        {
+          "cut_only_rms_gain_db": -0.03617839831570549,
+          "cut_only_true_peak_gain_db": 2.520243554576271,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.00126585676496522,
+          "duration_seconds": 5.1035,
+          "full_chain_true_peak_overshoot_db": 0.0,
+          "path": "models/deepfilter_fullband_eval/clean/p232_006.wav",
+          "sample_rate": 48000,
+          "samples": 244968,
+          "sha256": "337d07d33650b223ec973413db1e455aa907dc21a94e49f0544f561e2bce600c",
+          "stress_limiter_gain_reduction_db": 3.016270160675049,
+          "worst_case_realtime_factor": 0.00522400313510336
+        },
+        {
+          "cut_only_rms_gain_db": -0.031333441423159,
+          "cut_only_true_peak_gain_db": 1.2280676113821962,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.0012628611533512693,
+          "duration_seconds": 4.2745,
+          "full_chain_true_peak_overshoot_db": 0.0,
+          "path": "models/deepfilter_fullband_eval/clean/p257_006.wav",
+          "sample_rate": 48000,
+          "samples": 205176,
+          "sha256": "336051b3e1eb146169c48d23e56ef4abae990c22f223fe11a43cec896419024e",
+          "stress_limiter_gain_reduction_db": 2.540527582168579,
+          "worst_case_realtime_factor": 0.005280149725114048
+        },
+        {
+          "cut_only_rms_gain_db": -0.03777578634247943,
+          "cut_only_true_peak_gain_db": 0.8626682550539365,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.0012612061111315915,
+          "duration_seconds": 3.9558958333333334,
+          "full_chain_true_peak_overshoot_db": 0.0,
+          "path": "models/deepfilter_fullband_eval/clean/p232_007.wav",
+          "sample_rate": 48000,
+          "samples": 189883,
+          "sha256": "74d3ecad4aacbb89cfc4d1bd6dde9bb2c12f6014aaced6e281ff961c421f48f7",
+          "stress_limiter_gain_reduction_db": 3.1529533863067627,
+          "worst_case_realtime_factor": 0.005164165301791103
+        },
+        {
+          "cut_only_rms_gain_db": -0.02740121678624568,
+          "cut_only_true_peak_gain_db": 0.5249917760846471,
+          "default_audio_max_absolute_delta": 0.0,
+          "default_realtime_factor": 0.001255361522613558,
+          "duration_seconds": 3.397666666666667,
+          "full_chain_true_peak_overshoot_db": 0.0,
+          "path": "models/deepfilter_fullband_eval/clean/p257_007.wav",
+          "sample_rate": 48000,
+          "samples": 163088,
+          "sha256": "422f5f0d43ad411d811188e2dc4dfafe8784ab793759f22dd3ee784089976587",
+          "stress_limiter_gain_reduction_db": 1.6514753103256226,
+          "worst_case_realtime_factor": 0.005120631806141469
+        }
+      ],
+      "cut_only_max_rms_gain_db": -0.02740121678624568,
+      "cut_only_max_true_peak_gain_db": 2.677757366184541,
+      "default_audio_max_absolute_delta": 0.0,
+      "default_realtime_factor": {
+        "max": 0.001310819842715066,
+        "median": 0.0012592629829163435
+      },
+      "full_chain_max_true_peak_overshoot_db": 0.0006989240646362305,
+      "full_chain_nonfinite_outputs": 0,
+      "nonfinite_outputs": 0,
+      "stress_max_limiter_gain_reduction_db": 3.8455235958099365,
+      "total_duration_seconds": 48.7680625,
+      "worst_case_realtime_factor": {
+        "max": 0.0060953081279195515,
+        "median": 0.005247430846970484
+      }
+    },
+    "headroom_prediction": {
+      "absolute_error_db": 0.0033685748567151563,
+      "frequency_hz": 1000.0,
+      "measured_gain_db": 11.996631425143294,
+      "predicted_gain_db": 12.000000000000009,
+      "reported_max_response_db": 11.99271646315594
+    },
+    "release_microbenchmark_ns_per_sample": {
+      "biquad_after": 6.52,
+      "biquad_baseline_before": 6.55,
+      "one_48_db_octave_pass": 41.02,
+      "one_48_db_octave_pass_ratio": 1.23,
+      "ten_band_default": 33.23
+    }
+  },
+  "retention_gates": {
+    "max_cut_only_rms_gain_db": 0.25,
+    "max_cutoff_error_db": 1e-07,
+    "max_default_audio_delta": 1e-07,
+    "max_default_realtime_factor": 0.05,
+    "max_default_response_delta_db": 1e-09,
+    "max_full_chain_nonfinite_outputs": 0,
+    "max_full_chain_true_peak_overshoot_db": 0.05,
+    "max_notch_center_db": -150.0,
+    "max_random_nonfinite_cases": 0,
+    "max_response_prediction_error_db": 0.1,
+    "max_worst_case_realtime_factor": 0.25,
+    "min_stress_limiter_gain_reduction_db": 0.1,
+    "required_algorithmic_latency_samples": 0
+  },
+  "runtime": {
+    "numpy": "2.5.1",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.12.10"
+  },
+  "schema_version": 1,
+  "source_sha256": {
+    "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
+    "python/mic_eq/config_parts/settings.py": "0c068183a3b5b82f165f0f1cf13cd80b2d505b2888c263aa9d490168f3247dff",
+    "python/mic_eq/ui/eq_curve.py": "5f7100f3b29d87fda7b42be07b679b3ee210a3ae8bee6fb020d96e37d378039b",
+    "python/mic_eq/ui/eq_panel.py": "393d8d53dca02c6ffb25f9528001bb543bb4e8993e226372c9cf681a30bd45db",
+    "python/tools/evaluate_eq_filter_types.py": "64a1e77af76aee85c15d6b06fcfb4d6a760bcb0f2c1a8e4203dda89d740d9561",
+    "rust-core/src/audio/processor/python_api.rs": "8cd60e45c244c3ff6149a140b9776d6a4907bb6b3a4424a5b62c661f7fb6f7f3",
+    "rust-core/src/dsp/biquad.rs": "75142c276444609335d3f2a426b7be8721854f9cb0792995012b5a2e02fcc74d",
+    "rust-core/src/dsp/eq.rs": "075733d4f7475fd2886e3ddfec969c70243d491a845406714a1f7dad6f5993a7",
+    "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
+  }
+}

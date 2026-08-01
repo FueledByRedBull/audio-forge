@@ -124,9 +124,27 @@ fn build_sinc_resampler(
     output_rate: u32,
     chunk_size: usize,
 ) -> Result<SincFixedIn<f64>, String> {
+    build_sinc_resampler_with_quality(
+        input_rate,
+        output_rate,
+        chunk_size,
+        PRODUCT_RESAMPLER_SINC_LEN,
+        product_resampler_window(),
+    )
+}
+
+fn product_resampler_window() -> WindowFunction {
+    WindowFunction::Blackman
+}
+
+fn build_sinc_resampler_with_quality(
+    input_rate: u32,
+    output_rate: u32,
+    chunk_size: usize,
+    sinc_len: usize,
+    window: WindowFunction,
+) -> Result<SincFixedIn<f64>, String> {
     let ratio = output_rate as f64 / input_rate as f64;
-    let sinc_len = 128;
-    let window = WindowFunction::BlackmanHarris2;
     let params = SincInterpolationParameters {
         sinc_len,
         f_cutoff: calculate_cutoff(sinc_len, window),
@@ -135,6 +153,122 @@ fn build_sinc_resampler(
         window,
     };
     SincFixedIn::<f64>::new(ratio, 1.2, params, chunk_size, 1).map_err(|e| e.to_string())
+}
+
+fn resampler_window_from_name(name: &str) -> Option<WindowFunction> {
+    match name {
+        "blackman_harris" => Some(WindowFunction::BlackmanHarris),
+        "blackman_harris_squared" => Some(WindowFunction::BlackmanHarris2),
+        "blackman" => Some(WindowFunction::Blackman),
+        "blackman_squared" => Some(WindowFunction::Blackman2),
+        "hann" => Some(WindowFunction::Hann),
+        "hann_squared" => Some(WindowFunction::Hann2),
+        _ => None,
+    }
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    samples,
+    input_rate,
+    output_rate,
+    chunk_size=1024,
+    sinc_len=None,
+    window=None
+))]
+pub fn simulate_product_resampler(
+    samples: Vec<f64>,
+    input_rate: u32,
+    output_rate: u32,
+    chunk_size: usize,
+    sinc_len: Option<usize>,
+    window: Option<&str>,
+) -> PyResult<(Vec<f64>, usize, usize, Vec<u64>)> {
+    if input_rate == 0 || output_rate == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "sample rates must be positive",
+        ));
+    }
+    if !(1..=RESAMPLER_CHUNK_SIZE).contains(&chunk_size) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "chunk_size must be between 1 and {RESAMPLER_CHUNK_SIZE}"
+        )));
+    }
+    let sinc_len = sinc_len.unwrap_or(PRODUCT_RESAMPLER_SINC_LEN);
+    if !(32..=2048).contains(&sinc_len) || !sinc_len.is_power_of_two() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "sinc_len must be a power of two between 32 and 2048",
+        ));
+    }
+    let window = match window {
+        Some(name) => resampler_window_from_name(name).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "unsupported resampler window {name:?}"
+            ))
+        })?,
+        None => product_resampler_window(),
+    };
+    if samples.iter().any(|sample| !sample.is_finite()) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "samples must be finite",
+        ));
+    }
+
+    let mut resampler =
+        build_sinc_resampler_with_quality(input_rate, output_rate, chunk_size, sinc_len, window)
+            .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    let delay = resampler.output_delay();
+    let expected_frames =
+        ((samples.len() as f64 * output_rate as f64) / input_rate as f64).round() as usize;
+    let mut output_buffer = resampler.output_buffer_allocate(true);
+    let mut output = Vec::with_capacity(expected_frames.saturating_add(delay));
+    let mut block_times_ns = Vec::new();
+    let mut remaining = samples.as_slice();
+
+    while remaining.len() >= resampler.input_frames_next() {
+        let started = Instant::now();
+        let (consumed, produced) = resampler
+            .process_into_buffer(&[remaining], &mut output_buffer, None)
+            .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+        block_times_ns.push(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+        output.extend_from_slice(&output_buffer[0][..produced]);
+        remaining = &remaining[consumed..];
+    }
+    if !remaining.is_empty() {
+        let started = Instant::now();
+        let (_consumed, produced) = resampler
+            .process_partial_into_buffer(Some(&[remaining]), &mut output_buffer, None)
+            .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+        block_times_ns.push(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+        output.extend_from_slice(&output_buffer[0][..produced]);
+    }
+    let flush_target = expected_frames.saturating_add(delay);
+    while output.len() < flush_target {
+        let started = Instant::now();
+        let (_consumed, produced) = resampler
+            .process_partial_into_buffer::<&[f64], _>(None, &mut output_buffer, None)
+            .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))?;
+        block_times_ns.push(started.elapsed().as_nanos().min(u64::MAX as u128) as u64);
+        if produced == 0 {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "resampler flush produced no frames before reaching the expected length",
+            ));
+        }
+        output.extend_from_slice(&output_buffer[0][..produced]);
+    }
+
+    Ok((output, delay, expected_frames, block_times_ns))
+}
+
+#[pyfunction]
+pub fn product_resampler_configuration() -> (usize, String, String, usize, usize) {
+    (
+        PRODUCT_RESAMPLER_SINC_LEN,
+        PRODUCT_RESAMPLER_WINDOW_NAME.to_string(),
+        "cubic".to_string(),
+        256,
+        RESAMPLER_CHUNK_SIZE,
+    )
 }
 
 #[inline]

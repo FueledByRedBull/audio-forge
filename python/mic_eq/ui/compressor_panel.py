@@ -21,6 +21,7 @@ from PyQt6.QtCore import Qt
 
 from .level_meter import GainReductionMeter
 from .rate_limiter import RateLimiter
+from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
     SPACING_NORMAL, MARGIN_PANEL,
     PRIMARY_LABEL_STYLE, METER_LABEL_STYLE, INFO_LABEL_STYLE
@@ -200,7 +201,8 @@ class CompressorPanel(QWidget):
         self.base_release_spinbox.setEnabled(False)
         self.base_release_spinbox.setMaximumWidth(100)
         self.base_release_spinbox.setMinimumWidth(60)
-        advanced_layout.addWidget(QLabel("Base Release:"), 1, 0)
+        base_release_label = QLabel("Base Release:")
+        advanced_layout.addWidget(base_release_label, 1, 0)
         advanced_layout.addWidget(self.base_release_spinbox, 1, 1)
 
         # Current release time display (with METER_LABEL_STYLE)
@@ -237,7 +239,8 @@ class CompressorPanel(QWidget):
         self.target_lufs_spinbox.setEnabled(False)  # Disabled when auto makeup off
         self.target_lufs_spinbox.setMaximumWidth(100)
         self.target_lufs_spinbox.setMinimumWidth(60)
-        advanced_layout.addWidget(QLabel("Target LUFS:"), 5, 0)
+        target_lufs_label = QLabel("Target LUFS:")
+        advanced_layout.addWidget(target_lufs_label, 5, 0)
         advanced_layout.addWidget(self.target_lufs_spinbox, 5, 1)
 
         # Current LUFS display (with METER_LABEL_STYLE)
@@ -307,7 +310,8 @@ class CompressorPanel(QWidget):
         self.ceiling_spinbox.setFixedWidth(80)
         ceiling_layout.addWidget(self.ceiling_spinbox)
 
-        limiter_layout.addWidget(QLabel("Ceiling:"), 2, 0)
+        ceiling_label = QLabel("Ceiling:")
+        limiter_layout.addWidget(ceiling_label, 2, 0)
         limiter_layout.addLayout(ceiling_layout, 2, 1, 1, 2)
 
         # Release time
@@ -319,7 +323,8 @@ class CompressorPanel(QWidget):
         self.limiter_release_spinbox.setToolTip("How fast the limiter recovers")
         self.limiter_release_spinbox.setMaximumWidth(100)
         self.limiter_release_spinbox.setMinimumWidth(60)
-        limiter_layout.addWidget(QLabel("Release:"), 3, 0)
+        limiter_release_label = QLabel("Release:")
+        limiter_layout.addWidget(limiter_release_label, 3, 0)
         limiter_layout.addWidget(self.limiter_release_spinbox, 3, 1, 1, 2)
 
         # Info label
@@ -332,6 +337,55 @@ class CompressorPanel(QWidget):
         limiter_layout.addWidget(info_label, 4, 1, 1, 2)
 
         layout.addWidget(limiter_group)
+
+        bind_label(
+            threshold_label,
+            self.threshold_spinbox,
+            name="Compressor threshold",
+        )
+        bind_label(ratio_label, self.ratio_spinbox, name="Compressor ratio")
+        bind_label(attack_label, self.attack_spinbox, name="Compressor attack time")
+        bind_label(
+            release_label,
+            self.release_spinbox,
+            name="Compressor release time",
+        )
+        bind_label(makeup_label, self.makeup_spinbox, name="Compressor makeup gain")
+        bind_label(
+            base_release_label,
+            self.base_release_spinbox,
+            name="Adaptive compressor base release",
+        )
+        bind_label(
+            target_lufs_label,
+            self.target_lufs_spinbox,
+            name="Automatic makeup target loudness",
+        )
+        bind_label(ceiling_label, self.ceiling_spinbox, name="Limiter ceiling")
+        bind_label(
+            limiter_release_label,
+            self.limiter_release_spinbox,
+            name="Limiter release time",
+        )
+        set_accessible_group(
+            (
+                (self.comp_enabled_checkbox, "Enable compressor", None),
+                (self.threshold_slider, "Compressor threshold", None),
+                (self.ratio_slider, "Compressor ratio", None),
+                (self.makeup_slider, "Compressor makeup gain", None),
+                (self.adaptive_release_checkbox, "Enable adaptive release", None),
+                (
+                    self.sidechain_highpass_checkbox,
+                    "Enable compressor sidechain high-pass",
+                    None,
+                ),
+                (self.auto_makeup_checkbox, "Enable automatic makeup gain", None),
+                (self.gr_meter, "Compressor gain reduction", None),
+                (self.limiter_enabled_checkbox, "Enable limiter", None),
+                (self.careful_output_checkbox, "Enable careful output mode", None),
+                (self.ceiling_slider, "Limiter ceiling", None),
+            )
+        )
 
     def _connect_signals(self):
         """Connect signals to slots."""

@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "qualification_kind": "exact-artifact-hardware-matrix",
+  "generated_at": "2026-08-01T21:02:05.172210+00:00",
+  "status": "incomplete",
+  "passed": false,
+  "artifact": {
+    "archive_sha256": "7a9357a7da95a8db00028f52ab93d7bafde15af7f1169056522335e0a3bded4c"
+  },
+  "source_revision": "b0f181c318b10b0505b7c8a8f3f7085933c6c2d5+uncommitted",
+  "coverage": {
+    "observed": {
+      "os_releases": [
+        "11"
+      ],
+      "device_classes": [
+        "virtual"
+      ],
+      "nominal_sample_rates_hz": [
+        48000
+      ],
+      "scenarios": [
+        "baseline"
+      ]
+    },
+    "required": {
+      "os_releases": [
+        "10",
+        "11"
+      ],
+      "device_classes": [
+        "built_in",
+        "usb",
+        "virtual"
+      ],
+      "nominal_sample_rates_hz": [
+        44100,
+        48000
+      ],
+      "scenarios": [
+        "baseline",
+        "buffer_negotiation",
+        "default_device_change",
+        "device_reconnect",
+        "route_change",
+        "sleep_resume"
+      ]
+    },
+    "missing": {
+      "os_releases": [
+        "10"
+      ],
+      "device_classes": [
+        "built_in",
+        "usb"
+      ],
+      "nominal_sample_rates_hz": [
+        44100
+      ],
+      "scenarios": [
+        "buffer_negotiation",
+        "default_device_change",
+        "device_reconnect",
+        "route_change",
+        "sleep_resume"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "id": "virtual-cable-baseline",
+      "report_file": "hardware-validation-v1.11.0-local.json",
+      "report_sha256": "fc4338ac54c526d95b5f5d478f1015c94123628063aeb296c1cd6eabdc13544b",
+      "os_release": "11",
+      "device_class": "virtual",
+      "nominal_sample_rate_hz": 48000,
+      "scenario": "baseline",
+      "evidence_kind": "automated"
+    }
+  ],
+  "errors": [],
+  "limitations": [
+    "Coverage is release-artifact and hardware specific; source-tree simulations do not satisfy this gate.",
+    "Non-baseline lifecycle cases combine automated health metrics with an explicit operator-observed event.",
+    "No device names or endpoint IDs are retained in case or matrix reports."
+  ]
+}

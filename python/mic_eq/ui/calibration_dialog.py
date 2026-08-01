@@ -18,8 +18,17 @@ import numpy as np
 
 from ..config import TARGET_CURVES, coerce_device_identity
 from .analysis_worker import AnalysisWorker
+from .accessibility import bind_label, set_accessible_group
 from .layout_constants import SUBDUED_TEXT_STYLE, status_chip_style
 from .level_meter import LevelMeter
+from .device_selection import start_processor_for_route
+from .theme import (
+    DESCRIPTION_LABEL_STYLE,
+    PRIMARY_ACTION_BUTTON_STYLE,
+    PROGRESS_BAR_STYLE,
+    PROGRESS_LABEL_STYLE,
+    message_text_style,
+)
 
 # Enable debug logging (set to False for production)
 DEBUG = False
@@ -94,6 +103,17 @@ def _selected_device_pair(owner: Any) -> tuple[str | None, str | None]:
     return _device_name(input_device), _device_name(output_device)
 
 
+def _start_selected_route(owner: Any) -> object:
+    """Start the processor on the exact identities selected by the owner UI."""
+    input_device = (
+        owner.input_combo.currentData() if hasattr(owner, "input_combo") else None
+    )
+    output_device = (
+        owner.output_combo.currentData() if hasattr(owner, "output_combo") else None
+    )
+    return start_processor_for_route(owner.processor, input_device, output_device)
+
+
 def _device_name(device: object) -> str | None:
     identity = coerce_device_identity(device)
     if identity is not None:
@@ -161,17 +181,20 @@ class CalibrationDialog(QDialog):
 
         # Curve dropdown
         curve_input_layout = QHBoxLayout()
-        curve_input_layout.addWidget(QLabel("Target Curve:"))
+        curve_label = QLabel("Target Curve:")
+        curve_input_layout.addWidget(curve_label)
 
         self.curve_combo = QComboBox()
         for key, curve in TARGET_CURVES.items():
             self.curve_combo.addItem(curve.name, key)
         self.curve_combo.currentIndexChanged.connect(self._on_curve_changed)
         curve_input_layout.addWidget(self.curve_combo)
+        bind_label(curve_label, self.curve_combo)
         curve_layout.addLayout(curve_input_layout)
 
         target_mode_layout = QHBoxLayout()
-        target_mode_layout.addWidget(QLabel("Target Mode:"))
+        target_mode_label = QLabel("Target Mode:")
+        target_mode_layout.addWidget(target_mode_label)
         self.target_mode_combo = QComboBox()
         self.target_mode_combo.addItem("Adaptive voice-aware", "adaptive")
         self.target_mode_combo.addItem("Static catalog curve", "static")
@@ -179,10 +202,12 @@ class CalibrationDialog(QDialog):
             "Adaptive mode applies bounded voice-aware target offsets. Static mode uses the selected curve exactly."
         )
         target_mode_layout.addWidget(self.target_mode_combo)
+        bind_label(target_mode_label, self.target_mode_combo)
         curve_layout.addLayout(target_mode_layout)
 
         smoothing_layout = QHBoxLayout()
-        smoothing_layout.addWidget(QLabel("Smoothing:"))
+        smoothing_label = QLabel("Smoothing:")
+        smoothing_layout.addWidget(smoothing_label)
         self.smoothing_combo = QComboBox()
         self.smoothing_combo.addItem("Conservative", "conservative")
         self.smoothing_combo.addItem("Balanced", "balanced")
@@ -191,12 +216,13 @@ class CalibrationDialog(QDialog):
             "Conservative smoothing resists narrow measurement artifacts. Broad is safest but less detailed."
         )
         smoothing_layout.addWidget(self.smoothing_combo)
+        bind_label(smoothing_label, self.smoothing_combo)
         curve_layout.addLayout(smoothing_layout)
 
         # Curve description (updates when selection changes)
         self.curve_description = QLabel()
         self.curve_description.setWordWrap(True)
-        self.curve_description.setStyleSheet("color: gray; font-size: 11px; padding: 5px;")
+        self.curve_description.setStyleSheet(DESCRIPTION_LABEL_STYLE)
         curve_layout.addWidget(self.curve_description)
 
         layout.addWidget(curve_group)
@@ -210,6 +236,10 @@ class CalibrationDialog(QDialog):
         passage_text.setPlainText(RAINBOW_PASSAGE)
         passage_text.setReadOnly(True)
         passage_text.setMaximumHeight(150)
+        passage_text.setAccessibleName("Calibration passage")
+        passage_text.setAccessibleDescription(
+            "Read-only passage to speak during Auto-EQ calibration."
+        )
         instructions_layout.addWidget(passage_text)
 
         layout.addWidget(instructions_group)
@@ -225,23 +255,15 @@ class CalibrationDialog(QDialog):
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(False)  # Hide "0%" text
         self.progress_bar.setMinimumHeight(25)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 2px solid #555;
-                border-radius: 5px;
-                background-color: #2a2a2a;
-            }
-            QProgressBar::chunk {
-                background-color: #4CAF50;
-                border-radius: 3px;
-            }
-        """)
+        self.progress_bar.setStyleSheet(PROGRESS_BAR_STYLE)
+        self.progress_bar.setAccessibleName("Calibration progress")
         recording_layout.addWidget(self.progress_bar)
 
         # Time remaining label below progress bar
         self.time_label = QLabel(f"Time remaining: {RECORDING_DURATION:.0f}s")
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.time_label.setStyleSheet("font-size: 12pt; color: #4a90d9; font-weight: bold;")
+        self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
+        self.time_label.setAccessibleName("Calibration time remaining")
         recording_layout.addWidget(self.time_label)
 
         # Level meter (vertical) for real-time validation
@@ -254,7 +276,8 @@ class CalibrationDialog(QDialog):
         # Validation warning label
         self.warning_label = QLabel("Ready to record")
         self.warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.warning_label.setStyleSheet("color: gray; font-size: 11pt;")
+        self.warning_label.setStyleSheet(message_text_style("idle"))
+        self.warning_label.setAccessibleName("Calibration status")
         recording_layout.addWidget(self.warning_label)
 
         self.diagnostics_group = QGroupBox("Analysis Diagnostics")
@@ -300,12 +323,23 @@ class CalibrationDialog(QDialog):
 
         # Start button (opens recording section)
         self.start_button = QPushButton("Start Calibration")
-        self.start_button.setStyleSheet(
-            "QPushButton { background-color: #4CAF50; color: white; "
-            "padding: 10px 20px; font-weight: bold; font-size: 14px; }"
-        )
+        self.start_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
         self.start_button.clicked.connect(self._on_start_clicked)
         layout.addWidget(self.start_button)
+
+        set_accessible_group(
+            (
+                (self.start_button, "Start Auto-EQ calibration", None),
+                (self.retake_btn, "Retake calibration recording", None),
+                (self.cancel_btn, "Cancel Auto-EQ calibration", None),
+                (self.level_meter, "Calibration input level", None),
+            )
+        )
+        self.setTabOrder(self.curve_combo, self.target_mode_combo)
+        self.setTabOrder(self.target_mode_combo, self.smoothing_combo)
+        self.setTabOrder(self.smoothing_combo, self.start_button)
+        self.setTabOrder(self.start_button, self.retake_btn)
+        self.setTabOrder(self.retake_btn, self.cancel_btn)
 
         # Initialize with first curve description
         self._on_curve_changed(0)
@@ -426,14 +460,14 @@ class CalibrationDialog(QDialog):
                 )
                 if reply != QMessageBox.StandardButton.Yes:
                     self.warning_label.setText("Calibration canceled: using current stream devices")
-                    self.warning_label.setStyleSheet("color: orange; font-size: 11pt;")
+                    self.warning_label.setStyleSheet(message_text_style("warn"))
                     return
 
                 try:
                     if DEBUG:
                         logger.debug("Restarting processor on selected devices")
                     parent.processor.stop()
-                    parent.processor.start(selected_input, selected_output)
+                    _start_selected_route(parent)
                     parent.processor.set_output_mute(False)
                     if DEBUG:
                         logger.debug("Processor restarted on selected devices")
@@ -451,7 +485,7 @@ class CalibrationDialog(QDialog):
             try:
                 if DEBUG:
                     logger.debug("Starting audio processor from main thread")
-                parent.processor.start(selected_input, selected_output)
+                _start_selected_route(parent)
                 self._started_processor = True  # Track that we started it
                 if DEBUG:
                     logger.debug("Audio processor started successfully")
@@ -476,7 +510,7 @@ class CalibrationDialog(QDialog):
         QTimer.singleShot(100, self._begin_recording_capture)
 
         self.warning_label.setText("Recording... Speak clearly into your microphone")
-        self.warning_label.setStyleSheet("color: blue; font-weight: bold; font-size: 11pt;")
+        self.warning_label.setStyleSheet(message_text_style("info", strong=True))
 
     def _begin_recording_capture(self):
         """Start Rust-side recording and poll progress from the main Qt thread."""
@@ -542,7 +576,7 @@ class CalibrationDialog(QDialog):
             self.time_label.setText(f"Time remaining: {seconds:.0f}s")
         else:
             self.time_label.setText("✓ Complete!")
-            self.time_label.setStyleSheet("font-size: 12pt; color: #4CAF50; font-weight: bold;")
+            self.time_label.setStyleSheet(message_text_style("ok", strong=True))
 
     def _on_level_update(self, rms_db: float):
         """Update level meter with validation warnings."""
@@ -552,13 +586,13 @@ class CalibrationDialog(QDialog):
         # Show validation warning
         if rms_db < TOO_QUIET_DB:
             self.warning_label.setText("⚠️ Too quiet! Move closer to mic")
-            self.warning_label.setStyleSheet("color: orange; font-weight: bold; font-size: 11pt;")
+            self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
         elif rms_db > TOO_LOUD_DB:
             self.warning_label.setText("⚠️ Too loud! Risk of clipping")
-            self.warning_label.setStyleSheet("color: red; font-weight: bold; font-size: 11pt;")
+            self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
         else:
             self.warning_label.setText("✓ Level is good")
-            self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
+            self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
 
     def _on_recording_complete(self, audio_data: np.ndarray):
         """Handle recording completion."""
@@ -585,7 +619,7 @@ class CalibrationDialog(QDialog):
 
         # Show completion message
         self.warning_label.setText(f"Recording complete! {len(audio_data)} samples captured")
-        self.warning_label.setStyleSheet("color: #4CAF50; font-weight: bold; font-size: 11pt;")
+        self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
 
         if DEBUG:
             logger.debug("Audio captured; starting analysis")
@@ -598,7 +632,7 @@ class CalibrationDialog(QDialog):
         """Handle recording failure."""
         self.recording_timer.stop()
         self.warning_label.setText(f"❌ Recording failed: {error}")
-        self.warning_label.setStyleSheet("color: red; font-weight: bold; font-size: 11pt;")
+        self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
         self._reset_recording_ui()
 
     def _start_analysis(self):
@@ -673,9 +707,7 @@ class CalibrationDialog(QDialog):
                 "Analysis complete! Max correction: "
                 f"{round(max(abs(g) for g in eq_settings['band_gains']), 1)} dB"
             )
-            self.warning_label.setStyleSheet(
-                "color: #4CAF50; font-weight: bold; font-size: 11pt;"
-            )
+            self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
         else:
             reasons = eq_settings.get("abstention_reasons") or [
                 "the recording did not support a safe correction"
@@ -683,9 +715,7 @@ class CalibrationDialog(QDialog):
             self.warning_label.setText(
                 "No EQ applied: " + "; ".join(str(reason) for reason in reasons)
             )
-            self.warning_label.setStyleSheet(
-                "color: #FFB74D; font-weight: bold; font-size: 11pt;"
-            )
+            self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
         self.progress_bar.setValue(100)
         self._show_analysis_diagnostics(eq_settings)
         self.analysis_worker = None
@@ -770,7 +800,7 @@ class CalibrationDialog(QDialog):
         if DEBUG:
             logger.debug("Analysis failed: %s", error)
         self.warning_label.setText(f"❌ {error}")
-        self.warning_label.setStyleSheet("color: orange; font-weight: bold; font-size: 11pt;")
+        self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
         self.diagnostics_group.setVisible(False)
         self.start_button.setText("Record Again")
         self.start_button.setEnabled(True)
@@ -818,10 +848,10 @@ class CalibrationDialog(QDialog):
         self.audio_data = None
         self.progress_bar.setValue(0)
         self.time_label.setText(f"Time remaining: {RECORDING_DURATION:.0f}s")
-        self.time_label.setStyleSheet("font-size: 12pt; color: #4a90d9; font-weight: bold;")
+        self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
         self.level_meter.set_levels(-120.0, -120.0)
         self.warning_label.setText("Ready to record")
-        self.warning_label.setStyleSheet("color: gray; font-size: 11pt;")
+        self.warning_label.setStyleSheet(message_text_style("idle"))
         self.diagnostics_group.setVisible(False)
         self.start_button.setText("Start Calibration")
         self.start_button.setEnabled(True)
@@ -855,6 +885,9 @@ class CalibrationDialog(QDialog):
 
         try:
             parent.processor.stop_raw_recording()
+        except RuntimeError as e:
+            if "No recording in progress" not in str(e):
+                logger.warning("Failed to stop raw recording during cleanup: %s", e)
         except Exception as e:
             logger.warning("Failed to stop raw recording during cleanup: %s", e)
 

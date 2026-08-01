@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
+import json
 import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
+from scipy.io import wavfile
 
 
 TOOL_PATH = Path(__file__).parent.parent / "tools" / "evaluate_deepfilter_hardening.py"
@@ -15,6 +19,30 @@ assert SPEC is not None and SPEC.loader is not None
 deepfilter_eval = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = deepfilter_eval
 SPEC.loader.exec_module(deepfilter_eval)
+
+
+def _write_pair_manifest(root: Path) -> tuple[Path, Path]:
+    clean = root / "Clean/english_room_snr0_0_mixture_clean.wav"
+    noisy = root / "Noisy/english_room_snr0_0_mixture_noisy.wav"
+    clean.parent.mkdir(parents=True)
+    noisy.parent.mkdir(parents=True)
+    wavfile.write(clean, 16_000, np.zeros(160, dtype=np.int16))
+    wavfile.write(noisy, 16_000, np.zeros(160, dtype=np.int16))
+    records = []
+    for path, model in ((clean, "Clean"), (noisy, "Noisy")):
+        records.append(
+            {
+                "path": path.relative_to(root).as_posix(),
+                "model_name": model,
+                "language": "english",
+                "size_bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    (root / "manifest.json").write_text(
+        json.dumps({"files": records}), encoding="utf-8"
+    )
+    return clean, noisy
 
 
 def test_speech_lsd_uses_matching_unpadded_frame_geometry():
@@ -30,6 +58,14 @@ def test_best_lag_recovers_known_sample_delay():
     output = np.concatenate((np.zeros(1_440), reference))
 
     assert deepfilter_eval._best_lag(reference, output) == 1_440
+
+
+def test_pair_selection_rejects_manifest_hash_mismatch(tmp_path: Path) -> None:
+    clean, _noisy = _write_pair_manifest(tmp_path)
+    clean.write_bytes(clean.read_bytes() + b"tampered")
+
+    with pytest.raises(ValueError, match="size mismatch|hash mismatch"):
+        deepfilter_eval._paired_paths(tmp_path, 1)
 
 
 def _case(

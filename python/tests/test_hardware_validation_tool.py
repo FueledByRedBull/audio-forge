@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 
 def _load_tool(name: str) -> ModuleType:
@@ -18,6 +21,7 @@ def _load_tool(name: str) -> ModuleType:
 
 TOOL = _load_tool("evaluate_hardware_validation")
 HEALTH_TOOL = _load_tool("health_check")
+MATRIX_TOOL = _load_tool("evaluate_hardware_matrix")
 
 
 def test_hardware_result_parsers_require_success_and_evidence() -> None:
@@ -50,7 +54,7 @@ def test_hardware_result_parsers_require_success_and_evidence() -> None:
 def test_hardware_report_provenance_uses_project_version_and_dirty_revision(
     monkeypatch,
 ) -> None:
-    assert TOOL._project_version() == "1.10.1"
+    assert TOOL._project_version() == "1.11.0"
 
     class Result:
         def __init__(self, stdout: str) -> None:
@@ -117,3 +121,206 @@ def test_health_gate_rejects_missing_or_nonzero_critical_diagnostics() -> None:
     assert "noise_backend_failed=true" in failures
     assert "last_stream_error=set" in failures
     assert "output_underrun_total=4 (baseline 3)" in failures
+
+
+def test_hardware_report_privacy_filter_removes_all_selected_device_names() -> None:
+    raw_names = ["Private USB Microphone", "Private Virtual Cable"]
+    runs, pseudonyms = TOOL._privacy_filter_runs(
+        [
+            {
+                "stdout": [
+                    "Selected Private USB Microphone -> Private Virtual Cable"
+                ],
+                "stderr": ["Private USB Microphone recovered"],
+                "return_code": 0,
+            }
+        ],
+        raw_names,
+        key=b"p" * 32,
+    )
+    serialized = json.dumps(runs)
+    assert all(name not in serialized for name in raw_names)
+    assert all(value.startswith("device-") for value in pseudonyms.values())
+    assert len(set(pseudonyms.values())) == 2
+
+    nested = TOOL._replace_private_strings(
+        {"routes": {"input": raw_names[0]}, "message": f"using {raw_names[1]}"},
+        pseudonyms,
+    )
+    assert nested["routes"]["input"] == pseudonyms[raw_names[0]]
+    assert nested["message"] == f"using {pseudonyms[raw_names[1]]}"
+
+
+def test_hardware_privacy_filter_handles_empty_overlapping_and_case_variant_names() -> None:
+    runs, pseudonyms = TOOL._privacy_filter_runs(
+        [{"stdout": ["MIC ARRAY selected after Mic"]}],
+        ["", "Mic", "Mic Array"],
+        key=b"q" * 32,
+    )
+
+    assert "" not in pseudonyms
+    assert set(pseudonyms) == {"Mic", "Mic Array"}
+    output = runs[0]["stdout"][0]
+    assert output == f"{pseudonyms['Mic Array']} selected after {pseudonyms['Mic']}"
+
+
+def test_hardware_evaluation_rejects_empty_device_names_before_running(tmp_path) -> None:
+    with pytest.raises(ValueError, match="health input"):
+        TOOL.evaluate(
+            health_input="",
+            health_output="Output",
+            correlation_input="Loopback",
+            correlation_output="Output",
+            health_duration=1.0,
+            report_path=tmp_path / "report.json",
+        )
+
+
+def _matrix_case(
+    *,
+    case_id: str,
+    os_release: str,
+    device_class: str,
+    sample_rate: int,
+    scenario: str,
+    archive_sha256: str,
+) -> dict:
+    return {
+        "schema_version": 3,
+        "qualification_kind": "exact-artifact-hardware",
+        "status": "passed",
+        "passed": True,
+        "source_revision": "a" * 40,
+        "artifact": {"archive_sha256": archive_sha256},
+        "machine": {"release": os_release},
+        "case": {
+            "id": case_id,
+            "device_class": device_class,
+            "nominal_sample_rate_hz": sample_rate,
+            "scenario": scenario,
+            "evidence_kind": (
+                "automated" if scenario == "baseline" else "operator_observed"
+            ),
+            "operator_attestation": scenario != "baseline",
+            "scenario_evidence_valid": True,
+        },
+        "requested_health_duration_seconds": 1800.0,
+        "package_smoke": {"passed": True},
+        "executable_startup": {"passed": True},
+        "model_discovery": {"passed": True},
+        "selected_route_correlation": {"passed": True},
+        "sustained_health": {"passed": True},
+        "routes": {
+            "correlation": {
+                "input": "device-0123456789abcdef",
+                "output": "device-fedcba9876543210",
+            },
+            "sustained_health": {
+                "input": "device-0123456789abcdef",
+                "output": "device-fedcba9876543210",
+            },
+        },
+    }
+
+
+def test_hardware_matrix_requires_all_os_device_rate_and_lifecycle_coverage(
+    tmp_path,
+) -> None:
+    archive_hash = "a" * 64
+    dimensions = [
+        ("win10-built-in", "10", "built_in", 44_100, "baseline"),
+        ("win11-usb", "11", "usb", 48_000, "device_reconnect"),
+        ("win11-virtual", "11", "virtual", 48_000, "default_device_change"),
+        ("win11-sleep", "11", "usb", 48_000, "sleep_resume"),
+        ("win11-buffer", "11", "usb", 44_100, "buffer_negotiation"),
+        ("win11-route", "11", "virtual", 48_000, "route_change"),
+    ]
+    paths = []
+    for case_id, os_release, device_class, sample_rate, scenario in dimensions:
+        path = tmp_path / f"{case_id}.json"
+        path.write_text(
+            json.dumps(
+                _matrix_case(
+                    case_id=case_id,
+                    os_release=os_release,
+                    device_class=device_class,
+                    sample_rate=sample_rate,
+                    scenario=scenario,
+                    archive_sha256=archive_hash,
+                )
+            ),
+            encoding="utf-8",
+        )
+        paths.append(path)
+
+    result = MATRIX_TOOL.aggregate(
+        paths,
+        expected_archive_sha256=archive_hash,
+        output=tmp_path / "matrix.json",
+    )
+
+    assert result["passed"] is True
+    assert all(not values for values in result["coverage"]["missing"].values())
+
+
+def test_hardware_matrix_reports_missing_coverage_without_fabrication(tmp_path) -> None:
+    archive_hash = "b" * 64
+    case_path = tmp_path / "baseline.json"
+    case_path.write_text(
+        json.dumps(
+            _matrix_case(
+                case_id="win11-usb-baseline",
+                os_release="11",
+                device_class="usb",
+                sample_rate=48_000,
+                scenario="baseline",
+                archive_sha256=archive_hash,
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = MATRIX_TOOL.aggregate(
+        [case_path],
+        expected_archive_sha256=archive_hash,
+        output=tmp_path / "matrix.json",
+        allow_incomplete=True,
+    )
+
+    assert result["passed"] is False
+    assert result["coverage"]["missing"]["os_releases"] == ["10"]
+    assert "device_reconnect" in result["coverage"]["missing"]["scenarios"]
+
+
+def test_hardware_matrix_rejects_forged_top_level_pass(tmp_path) -> None:
+    archive_hash = "c" * 64
+    case = _matrix_case(
+        case_id="forged",
+        os_release="11",
+        device_class="usb",
+        sample_rate=48_000,
+        scenario="device_reconnect",
+        archive_sha256=archive_hash,
+    )
+    case["requested_health_duration_seconds"] = 30.0
+    case["case"]["evidence_kind"] = "automated"
+    case["case"]["operator_attestation"] = False
+    case["case"]["scenario_evidence_valid"] = False
+    case["sustained_health"] = {"passed": False}
+    path = tmp_path / "forged.json"
+    path.write_text(json.dumps(case), encoding="utf-8")
+
+    result = MATRIX_TOOL.aggregate(
+        [path],
+        expected_archive_sha256=archive_hash,
+        expected_source_revision="d" * 40,
+        output=tmp_path / "matrix.json",
+        allow_incomplete=True,
+    )
+
+    assert result["passed"] is False
+    assert any("below 1800" in error for error in result["errors"])
+    assert any("operator evidence" in error for error in result["errors"])
+    assert any("operator attestation" in error for error in result["errors"])
+    assert any("sustained_health did not pass" in error for error in result["errors"])
+    assert any("source revision differs" in error for error in result["errors"])

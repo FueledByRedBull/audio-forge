@@ -36,6 +36,20 @@ def _resolve_url(kind: str, repo_id: str, revision: str, path: str) -> str:
     return f"https://huggingface.co/{prefix}{repo_id}/resolve/{revision}/{quoted_path}"
 
 
+def _validated_hugging_face_url(url: str) -> str:
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "huggingface.co"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in {None, 443}
+        or parsed.fragment
+    ):
+        raise ValueError("evaluation assets must use trusted Hugging Face HTTPS")
+    return url
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -47,7 +61,10 @@ def _sha256(path: Path) -> str:
 def _download(url: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".part")
-    request = urllib.request.Request(url, headers={"User-Agent": "AudioForge-evaluation/1"})
+    request = urllib.request.Request(
+        _validated_hugging_face_url(url),
+        headers={"User-Agent": "AudioForge-evaluation/1"},
+    )
     for attempt in range(8):
         try:
             with urllib.request.urlopen(request, timeout=120) as response:
@@ -74,7 +91,10 @@ def _load_metadata() -> tuple[str, list[dict[str, str]]]:
         DATASET_REVISION,
         "metadata.csv",
     )
-    request = urllib.request.Request(url, headers={"User-Agent": "AudioForge-evaluation/1"})
+    request = urllib.request.Request(
+        _validated_hugging_face_url(url),
+        headers={"User-Agent": "AudioForge-evaluation/1"},
+    )
     with urllib.request.urlopen(request, timeout=120) as response:
         payload = response.read().decode("utf-8")
     return payload, list(csv.DictReader(io.StringIO(payload)))

@@ -7,20 +7,22 @@ Color gradient: green → yellow → red
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
 from PyQt6.QtCore import Qt, QTimer, QRectF
-from PyQt6.QtGui import QPainter, QColor, QLinearGradient, QPen, QFont
+from PyQt6.QtGui import QPainter, QLinearGradient, QPen, QFont
+
+from .theme import PALETTE, qcolor
 
 
 class LevelMeter(QWidget):
     """OBS-style vertical level meter with peak hold and dB scale."""
 
     # Color constants
-    COLOR_GREEN = QColor(76, 175, 80)      # -inf to -20 dB
-    COLOR_YELLOW = QColor(255, 235, 59)    # -20 to -6 dB
-    COLOR_RED = QColor(244, 67, 54)        # -6 to 0 dB
-    COLOR_BACKGROUND = QColor(30, 30, 30)
-    COLOR_PEAK_HOLD = QColor(255, 255, 255)
-    COLOR_CLIP = QColor(255, 0, 0)
-    COLOR_SCALE = QColor(150, 150, 150)
+    COLOR_GREEN = qcolor(PALETTE.meter_safe)
+    COLOR_YELLOW = qcolor(PALETTE.meter_caution)
+    COLOR_RED = qcolor(PALETTE.meter_danger)
+    COLOR_BACKGROUND = qcolor(PALETTE.data_surface)
+    COLOR_PEAK_HOLD = qcolor(PALETTE.meter_peak)
+    COLOR_CLIP = qcolor(PALETTE.meter_clip)
+    COLOR_SCALE = qcolor(PALETTE.meter_scale)
 
     # dB scale
     DB_MIN = -60.0
@@ -159,7 +161,7 @@ class LevelMeter(QWidget):
 
         # Draw label at bottom
         if self.label_text:
-            painter.setPen(QPen(QColor(200, 200, 200)))
+            painter.setPen(QPen(qcolor(PALETTE.meter_scale)))
             font = QFont()
             font.setPointSize(9)
             font.setBold(True)
@@ -207,8 +209,8 @@ class StereoLevelMeter(QWidget):
 class GainReductionMeter(QWidget):
     """Horizontal gain reduction meter (shows compression amount)."""
 
-    COLOR_BACKGROUND = QColor(30, 30, 30)
-    COLOR_REDUCTION = QColor(255, 152, 0)  # Orange
+    COLOR_BACKGROUND = qcolor(PALETTE.data_surface)
+    COLOR_REDUCTION = qcolor(PALETTE.meter_reduction)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -240,7 +242,7 @@ class GainReductionMeter(QWidget):
             painter.fillRect(bar_rect, self.COLOR_REDUCTION)
 
         # Draw label
-        painter.setPen(QPen(QColor(200, 200, 200)))
+        painter.setPen(QPen(qcolor(PALETTE.meter_scale)))
         font = QFont()
         font.setPointSize(8)
         painter.setFont(font)
@@ -277,7 +279,7 @@ class ConfidenceMeter(QWidget):
         height = rect.height()
 
         # Background (dark gray)
-        painter.fillRect(rect, QColor(40, 40, 40))
+        painter.fillRect(rect, qcolor(PALETTE.data_surface_raised))
 
         # Fill based on confidence with color gradient
         fill_width = int(width * self.confidence)
@@ -285,15 +287,15 @@ class ConfidenceMeter(QWidget):
         if fill_width > 0:
             # Gradient from red (low) -> yellow (medium) -> green (high)
             gradient = QLinearGradient(0, 0, width, 0)
-            gradient.setColorAt(0.0, QColor(200, 50, 50))    # Red at 0.0
-            gradient.setColorAt(0.5, QColor(200, 200, 50))  # Yellow at 0.5
-            gradient.setColorAt(1.0, QColor(50, 200, 50))    # Green at 1.0
+            gradient.setColorAt(0.0, qcolor(PALETTE.meter_danger))
+            gradient.setColorAt(0.5, qcolor(PALETTE.meter_caution))
+            gradient.setColorAt(1.0, qcolor(PALETTE.meter_safe))
 
             painter.fillRect(0, 0, fill_width, height, gradient)
 
         # Threshold marker (default 0.5)
         threshold_x = int(width * 0.5)
-        painter.setPen(QPen(QColor(255, 255, 255), 2))
+        painter.setPen(QPen(qcolor(PALETTE.meter_peak), 2))
         painter.drawLine(threshold_x, 0, threshold_x, height)
 
         painter.end()

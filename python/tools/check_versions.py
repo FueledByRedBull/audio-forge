@@ -119,9 +119,32 @@ def _check_release_asset_hydration() -> None:
         )
 
 
+def _check_no_static_current_archive_claims(version: str) -> None:
+    paths = (
+        "README.md",
+        f"release-notes/release-notes-v{version}.md",
+    )
+    archive_term = r"(?:archive|portable\s+folder|bundle)"
+    exact_size = re.compile(
+        rf"(?is){archive_term}.{{0,160}}\b\d[\d,]*\s+bytes\b"
+    )
+    exact_hash = re.compile(
+        rf"(?is)(?:{archive_term}.{{0,200}}\b[0-9a-f]{{64}}\b|"
+        rf"\b[0-9a-f]{{64}}\b.{{0,200}}{archive_term})"
+    )
+    for path in paths:
+        contents = _read(path)
+        if exact_size.search(contents) or exact_hash.search(contents):
+            raise ValueError(
+                f"{path}: pre-tag prose must not contain exact release archive "
+                "size/hash claims; use generated provenance sidecars"
+            )
+
+
 def main() -> int:
     _check_release_asset_hydration()
     expected = _single_match("pyproject.toml", r'^version\s*=\s*"([^"]+)"', "pyproject")
+    _check_no_static_current_archive_claims(expected)
     package_version = _single_match(
         "python/mic_eq/__init__.py",
         r'^__version__\s*=\s*"([^"]+)"',

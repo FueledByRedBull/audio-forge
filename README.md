@@ -7,7 +7,7 @@
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
 
-Current version: `v1.10.1`
+Current version: `v1.11.0`
 
 ## Download
 
@@ -23,12 +23,29 @@ The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
 
 AudioForge sits between your microphone and your output/virtual routing path. It is built for voice work where reliability matters: streaming, calls, recording chains, monitoring, and calibration-heavy setups.
 
+### Routing and editable EQ
+
+![AudioForge main window showing sanitized input and virtual-route output selection, cleanup controls, and the editable ten-band EQ.](docs/images/audioforge-routing-eq.png)
+
+### Dynamics processing
+
+![AudioForge dynamics view showing compressor and limiter controls, health indicators, and the editable EQ.](docs/images/audioforge-processing.png)
+
+### Auto Voice Setup
+
+![AudioForge Auto Voice Setup dialog showing target and dynamics choices plus sanitized validated recommendation summaries.](docs/images/audioforge-auto-voice-setup.png)
+
+The screenshots use deterministic sanitized state; their capture and refresh
+contract is documented in [Repository screenshots](docs/repository-screenshots.md).
+
 User-facing tools:
 
 - AI noise suppression with RNNoise and optional DeepFilterNet backends.
 - Smart noise gate with threshold-only, VAD-assisted, and VAD-only modes, including smoothed continuous VAD-posterior gain control around uncertain speech.
 - Auto thresholding that tracks the live noise floor in VAD modes.
-- 10-band parametric EQ with gain, Q, and per-band center frequencies.
+- 10-band parametric EQ with per-band bell, notch, shelf, and pass filters,
+  click-safe bypass, selectable 12–48 dB/octave Butterworth pass slopes, and
+  constrained mouse/keyboard graph editing synchronized with numeric controls.
 - Auto-EQ calibration that combines energy and Silero speech posteriors, rejects shape outliers, uses matched noise-referenced per-band reliability when available, and abstains when a safe correction is unsupported.
 - Auto-EQ headroom validation through the native chain simulator; Python-only fallback results are visibly advisory.
 - Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, bounded multi-parameter native compressor calibration (threshold, ratio, attack, release), and guided second-passage verification.
@@ -37,6 +54,16 @@ User-facing tools:
 - Stateful phase-safe mono alignment and adaptive 49-61 Hz hum/harmonic tracking for difficult input sources.
 - Per device-pair route-aware latency calibration profiles; measured output-to-input route delay is applied directly instead of assuming symmetric one-way latency.
 - Raw monitor and bypass paths for troubleshooting.
+- Bounded full-processing undo/redo (`Ctrl+Z` / `Ctrl+Shift+Z`) for manual
+  edits, presets, Auto-EQ, and Auto Voice Setup, with realtime state excluded.
+
+The versioned preset fields, filter mathematics, migration rules, ignored
+parameters, and retention gates are defined in the
+[EQ preset and runtime contract](docs/eq-preset-schema.md).
+The immutable snapshot boundary and migration-provenance behavior are defined
+in the [processing configuration history contract](docs/configuration-history.md).
+Graph ranges, keyboard behavior, synchronization, and gesture-level undo are
+defined in the [EQ graph editing contract](docs/eq-graph-editing.md).
 
 Operational tools:
 
@@ -123,6 +150,11 @@ Useful behavior to know:
 - Voice Setup candidates remain temporary until a second passage produces an explicit accept, reduce, retry, or rollback decision from repeatability and exact downstream native-chain checks. This is engineering validation, not a listening-preference claim.
 - Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
 - Diagnostics separate input drops, backlog recovery, output recovery, output short-write loss, and active output underrun streaks. Historical output underrun and recovery totals stay visible without forcing the health chip into a warning state after the stream has recovered.
+- `Help > Export Diagnostics...` writes a versioned, size-bounded support
+  snapshot. It allowlists configuration and runtime health fields,
+  pseudonymizes device identities with report-local keys, and excludes raw
+  audio, raw device names, environment variables, secrets, and arbitrary
+  paths.
 
 ## Development Assets
 
@@ -190,8 +222,15 @@ Packaging script behavior:
 - Bundles the Python runtime with PyInstaller.
 - Bundles AudioForge, DeepFilterNet, Silero VAD, and DirectML license notices.
 - Writes `_internal/audioforge-build.json`; package smoke rejects a bundle whose version differs from the source tree.
-- Prunes unused Qt payload and duplicate native-extension payload with `python/tools/prune_bundle.py` while retaining dependency metadata and licenses.
-- The release profile strips native symbols, and packaging excludes only unused SciPy namespaces plus Qt SVG payloads. The verified v1.10.1 folder is 301,731,513 bytes across 209 files while retaining both DeepFilter models, Silero, DirectML, df.dll, SciPy signal/optimization support, the software OpenGL renderer, and explicit license notices.
+- Prunes unused Qt payload, duplicate native-extension payload, and app-local
+  UCRT/API-set files with `python/tools/prune_bundle.py` while retaining
+  dependency metadata and licenses. AudioForge supports Windows 10/11 and
+  relies on the operating system UCRT, which Windows always uses on those
+  versions even if a local copy is present.
+- The release profile strips native symbols, and packaging excludes only unused
+  SciPy namespaces plus Qt SVG payloads. Each candidate emits generated
+  artifact metadata and a per-file bundle manifest; do not copy candidate
+  sizes, file counts, or hashes into pre-release prose.
 - Keeps the application self-contained in `dist/AudioForge`.
 
 Portable output:
@@ -205,14 +244,15 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.10.1-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.11.0-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 The v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz, tar.zst,
 solid LZMA, and solid LZMA2. The command above was the smallest verified
-format. The exact v1.10.1 candidate archive is 112,014,644 bytes with SHA-256
-`199453a3a18d39ca9d2864e9f7ac6cff0f5254244c9c845b851f2950156e5994`.
-See `evaluation/archive-format-benchmark.json`.
+format. Treat the generated `.metadata.json`, `.manifest.json`, and `.sha256`
+sidecars beside a release archive as authoritative. See
+`evaluation/archive-format-benchmark.json` for the historical format
+comparison.
 
 ## Testing
 
@@ -272,6 +312,21 @@ Headless runtime checks:
 - `build_exe.ps1`: PyInstaller packaging script.
 - `AudioForge.spec`: canonical portable package definition.
 - `launcher.py`: PyInstaller/frozen-app launcher used by `AudioForge.spec`; source/development runs use `python -m mic_eq` or the `mic-eq` console entrypoint.
+
+## Roadmap
+
+Versioned [GitHub milestones](https://github.com/FueledByRedBull/audio-forge/milestones)
+and issues carrying the
+[`roadmap` label](https://github.com/FueledByRedBull/audio-forge/issues?q=is%3Aissue+label%3Aroadmap)
+are the source of truth for planned work and explicit holds. To produce a
+deterministic local Markdown index:
+
+```powershell
+.\.venv\Scripts\python.exe python\tools\generate_todo_index.py `
+  --output ..\TODO.md
+```
+
+Do not maintain a second hand-written roadmap.
 
 ## License
 

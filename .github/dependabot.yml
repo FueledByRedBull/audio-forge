@@ -12,14 +12,22 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    allow:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
     groups:
-      python-lock:
+      python-patches:
         patterns: ["*"]
+        update-types: ["patch"]
 
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+    allow:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
     groups:
-      rust-lock:
+      rust-patches:
         patterns: ["*"]
+        update-types: ["patch"]

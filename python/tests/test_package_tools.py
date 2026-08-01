@@ -74,6 +74,39 @@ def test_repository_workflow_release_gates_are_current():
     assert check_workflows.check_workflows() == []
 
 
+def test_dependabot_checker_rejects_grouped_breaking_updates(monkeypatch, tmp_path):
+    path = tmp_path / "dependabot.yml"
+    path.write_text(
+        """version: 2
+updates:
+  - package-ecosystem: pip
+    allow:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
+    groups:
+      python-lock:
+        patterns: ["*"]
+  - package-ecosystem: cargo
+    allow:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-patch"]
+    groups:
+      rust-lock:
+        patterns: ["*"]
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(check_workflows, "DEPENDABOT_PATH", path)
+    errors: list[str] = []
+
+    check_workflows._check_dependabot(errors)
+
+    assert errors == [
+        "dependabot.yml: pip patches must use a patch-only group",
+        "dependabot.yml: cargo patches must use a patch-only group",
+    ]
+
+
 def test_release_workflow_checker_rejects_dirty_source_override():
     path = check_workflows.WORKFLOW_DIR / "release-package.yml"
     source = path.read_text(encoding="utf-8") + "\n--allow-dirty\n"

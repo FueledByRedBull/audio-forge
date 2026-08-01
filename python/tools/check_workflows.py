@@ -12,6 +12,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
+DEPENDABOT_PATH = REPO_ROOT / ".github" / "dependabot.yml"
 ACTION_REF = re.compile(
     r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE
 )
@@ -177,6 +178,50 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
             )
 
 
+def _check_dependabot(errors: list[str]) -> None:
+    try:
+        document = yaml.safe_load(DEPENDABOT_PATH.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        errors.append(f"dependabot.yml: cannot load configuration: {error}")
+        return
+    document = _mapping(document, "dependabot.yml", errors)
+    updates = document.get("updates")
+    if not isinstance(updates, list):
+        errors.append("dependabot.yml: updates must be a list")
+        return
+    for ecosystem in ("pip", "cargo"):
+        matching = [
+            item
+            for item in updates
+            if isinstance(item, dict) and item.get("package-ecosystem") == ecosystem
+        ]
+        if len(matching) != 1:
+            errors.append(
+                f"dependabot.yml: expected one {ecosystem} update configuration"
+            )
+            continue
+        config = matching[0]
+        if config.get("allow") != [
+            {
+                "dependency-name": "*",
+                "update-types": ["version-update:semver-patch"],
+            }
+        ]:
+            errors.append(
+                f"dependabot.yml: {ecosystem} routine updates must be patch-only"
+            )
+        groups = config.get("groups")
+        if not isinstance(groups, dict) or not any(
+            isinstance(group, dict)
+            and group.get("patterns") == ["*"]
+            and group.get("update-types") == ["patch"]
+            for group in groups.values()
+        ):
+            errors.append(
+                f"dependabot.yml: {ecosystem} patches must use a patch-only group"
+            )
+
+
 def check_workflows() -> list[str]:
     errors: list[str] = []
     paths = sorted(WORKFLOW_DIR.glob("*.yml")) + sorted(WORKFLOW_DIR.glob("*.yaml"))
@@ -203,6 +248,8 @@ def check_workflows() -> list[str]:
                     f"{path.name}: {action}@{ref} is not pinned to a commit SHA"
                 )
 
+    _check_dependabot(errors)
+
     return errors
 
 
@@ -213,7 +260,10 @@ def main() -> int:
         for error in errors:
             print(f"  {error}", file=sys.stderr)
         return 1
-    print("Workflow YAML, action pins, permissions, and release gates are valid")
+    print(
+        "Workflow YAML, Dependabot policy, action pins, permissions, and "
+        "release gates are valid"
+    )
     return 0
 
 

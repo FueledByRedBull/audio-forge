@@ -162,6 +162,10 @@ Candidate and promotion:
 - Install `requirements/dev.txt` with `--require-hashes`; do not release from an environment resolved directly from open-ended `pyproject.toml` constraints.
 - Review every Semgrep warning in the generated SARIF. The CI gate fails reviewed ERROR-severity findings, while warning-level FFI and process-boundary findings require human triage.
 - A clean `cargo audit` is mandatory; do not add RustSec ignores merely to make a release pass.
+- Dependabot groups routine Python and Rust patch updates only. Minor, major,
+  pre-release-runtime, and 0.x API migrations must be scoped independently and
+  pass the applicable build, benchmark, hardware, and package gates; security
+  updates remain enabled independently of the routine version-update policy.
 - Keep `release-assets.json` current with the required `df.dll`, `target/release/DirectML.dll`, both DeepFilter model tarballs, and `models/silero_vad.onnx`.
 - `build_exe.ps1` fails before PyInstaller if a required asset is missing, hash mismatched, or the local `mic_eq_core*.pyd` is older than Rust sources.
 - `python/tools/package_smoke.py` verifies exact bundled DLL/model/native-extension and license-notice presence, rejects duplicate top-level native-extension payloads, and rejects a stale bundle-version manifest.

@@ -22,6 +22,20 @@ AUDIBLE_CONTRACT_FIELDS = {
     "clean_preservation",
 }
 DEVICE_PSEUDONYM = re.compile(r"^device-[0-9a-f]{16}$")
+PORTABLE_TEXT_SUFFIXES = {
+    ".bat",
+    ".c",
+    ".h",
+    ".json",
+    ".md",
+    ".ps1",
+    ".py",
+    ".pyi",
+    ".rs",
+    ".toml",
+    ".yaml",
+    ".yml",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -30,6 +44,17 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _portable_source_sha256(path: Path) -> set[str]:
+    data = path.read_bytes()
+    hashes = {hashlib.sha256(data).hexdigest()}
+    if path.suffix.casefold() not in PORTABLE_TEXT_SUFFIXES or b"\0" in data:
+        return hashes
+    lf = data.replace(b"\r\n", b"\n")
+    hashes.add(hashlib.sha256(lf).hexdigest())
+    hashes.add(hashlib.sha256(lf.replace(b"\n", b"\r\n")).hexdigest())
+    return hashes
 
 
 def _declared_source_hashes(report: dict[str, Any]) -> list[tuple[str, str]]:
@@ -85,7 +110,7 @@ def validate_report(path: Path) -> list[str]:
             errors.append(f"{path}: declared source file is missing: {raw_path}")
         elif not re.fullmatch(r"[0-9a-f]{64}", expected):
             errors.append(f"{path}: invalid source SHA-256 for {raw_path}")
-        elif _sha256(resolved) != expected:
+        elif expected not in _portable_source_sha256(resolved):
             errors.append(f"{path}: stale source SHA-256 for {raw_path}")
 
     if report.get("audible_change") is True:

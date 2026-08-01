@@ -163,6 +163,49 @@ def test_stale_declared_source_hash_is_rejected(tmp_path: Path, monkeypatch):
     assert any("stale source SHA-256" in error for error in errors)
 
 
+def test_declared_text_source_hash_is_portable_across_line_endings(
+    tmp_path: Path, monkeypatch
+):
+    source = tmp_path / "source.py"
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(hygiene, "REPO_ROOT", tmp_path)
+    for actual, recorded in (
+        (b"first\nsecond\n", b"first\r\nsecond\r\n"),
+        (b"first\r\nsecond\r\n", b"first\nsecond\n"),
+    ):
+        source.write_bytes(actual)
+        _write(
+            report,
+            {
+                "source_sha256": {
+                    "source.py": hashlib.sha256(recorded).hexdigest()
+                }
+            },
+        )
+        assert hygiene.validate_report(report) == []
+
+
+def test_declared_binary_source_hash_remains_byte_exact(
+    tmp_path: Path, monkeypatch
+):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"first\r\nsecond\r\n")
+    report = tmp_path / "report.json"
+    _write(
+        report,
+        {
+            "source_sha256": {
+                "source.bin": hashlib.sha256(b"first\nsecond\n").hexdigest()
+            }
+        },
+    )
+    monkeypatch.setattr(hygiene, "REPO_ROOT", tmp_path)
+
+    errors = hygiene.validate_report(report)
+
+    assert any("stale source SHA-256" in error for error in errors)
+
+
 def test_hardware_reports_require_pseudonymized_routes(tmp_path: Path):
     raw = tmp_path / "hardware-validation-raw.json"
     _write(

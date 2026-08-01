@@ -6,14 +6,14 @@
       "cross_take_abstention_rate": 0.0,
       "cross_take_headroom_safe_rate": 1.0,
       "cross_take_retry_rate": 0.0,
-      "cross_take_runtime_p95_seconds": 1.1145706050005173,
+      "cross_take_runtime_p95_seconds": 1.0897064499982663,
       "median_heldout_improvement_db": -1.676470453517249,
       "p10_heldout_improvement_db": -1.9251670218749548,
       "pair_count": 12,
-      "runtime_p95_ratio": 1.3747606940853276,
+      "runtime_p95_ratio": 1.2277401726405333,
       "single_abstention_rate": 0.0,
       "single_retry_rate": 0.0,
-      "single_runtime_p95_seconds": 0.8107379050010423,
+      "single_runtime_p95_seconds": 0.8875709000012647,
       "speaker_median_heldout_improvements_db": {
         "actor-19": -1.6606584293627566,
         "actor-20": -1.6922824776717413,
@@ -29,14 +29,14 @@
       "cross_take_abstention_rate": 0.0,
       "cross_take_headroom_safe_rate": 1.0,
       "cross_take_retry_rate": 0.0,
-      "cross_take_runtime_p95_seconds": 1.1148786399993695,
+      "cross_take_runtime_p95_seconds": 1.0550561899994135,
       "median_heldout_improvement_db": -0.9181900257821636,
       "p10_heldout_improvement_db": -1.7730540937628128,
       "pair_count": 12,
-      "runtime_p95_ratio": 1.3528895162359829,
+      "runtime_p95_ratio": 1.3286634496718996,
       "single_abstention_rate": 0.0,
       "single_retry_rate": 0.0,
-      "single_runtime_p95_seconds": 0.8240721999984089,
+      "single_runtime_p95_seconds": 0.7940733149993321,
       "speaker_median_heldout_improvements_db": {
         "actor-13": -0.6704382367070787,
         "actor-14": -1.1659418148572485,
@@ -101,7 +101,7 @@
     "min_median_heldout_improvement_db": 0.0,
     "min_p10_heldout_improvement_db": -0.5
   },
-  "generated_at": "2026-08-01T21:22:18.569553+00:00",
+  "generated_at": "2026-08-01T21:33:57.362283+00:00",
   "limitations": [
     "Actors use short fixed statements rather than the Rainbow Passage.",
     "Professional acted speech does not represent every conversational delivery.",
@@ -125,7 +125,7 @@
       "python/mic_eq/analysis/auto_eq_parts/cross_take.py": "82e41ae6cc39559bb919c20d8e24640e7d66d9fcdd9c0e0fdae9dac1c17358ca",
       "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "b0825a4810e5ff748648c2ae746f424076a289a8538b844952becff76e300d27",
       "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-      "python/tools/evaluate_cross_take_auto_eq.py": "b3fe95367e48968031667a5c95d06382331be48bfa607e4d38912055ca4d258f"
+      "python/tools/evaluate_cross_take_auto_eq.py": "1d1f671ab42620756d78d0f1e1e9be1235dd1418f6f7ee49dca669d694274245"
     },
     "validated_input_file_count": 144
   },
@@ -153,7 +153,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 15.970562054748,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.0814556000004814,
+          "runtime_seconds": 1.0890660999975807,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 8,
@@ -261,7 +261,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 14.274978038806733,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7785265000020445,
+          "runtime_seconds": 0.7638894000010623,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -368,7 +368,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 14.904511660778244,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.0350871999980882,
+          "runtime_seconds": 1.049888599998667,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 7,
@@ -476,7 +476,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 13.278778817993997,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.809512600000744,
+          "runtime_seconds": 0.7393789000016113,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -583,7 +583,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 9.926017066005361,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.965417499999603,
+          "runtime_seconds": 0.9568118999995932,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 6,
@@ -691,7 +691,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 7.067805591017311,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.6766969000018435,
+          "runtime_seconds": 0.6752000999986194,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -798,7 +798,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 8.104701248012113,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.9590621999996074,
+          "runtime_seconds": 0.9454108999998425,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 7,
@@ -906,7 +906,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 7.5783477676566795,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.6499179000020376,
+          "runtime_seconds": 0.6501854000016465,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -1013,7 +1013,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 15.962472435295815,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.0738791999974637,
+          "runtime_seconds": 1.0660480999977153,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -1121,7 +1121,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 15.695327882021312,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7956370000028983,
+          "runtime_seconds": 0.7946903000010934,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -1228,7 +1228,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 14.376966535588874,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.0456804000023112,
+          "runtime_seconds": 1.0457266000012169,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -1336,7 +1336,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 15.266352869201214,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7237631999996665,
+          "runtime_seconds": 0.761445599997387,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -1443,7 +1443,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 10.720748146170575,
           "recommendation_status": "apply",
-          "runtime_seconds": 1.003662399998575,
+          "runtime_seconds": 0.9652257000016107,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 6,
@@ -1551,7 +1551,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 9.135765299831478,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7809895000027609,
+          "runtime_seconds": 0.7675323000003118,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -1658,7 +1658,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 10.31919494418871,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.9659838999978092,
+          "runtime_seconds": 0.9931396000029054,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 8,
@@ -1766,7 +1766,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 8.125919768871963,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7771915999983321,
+          "runtime_seconds": 0.7703058999977657,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -1873,7 +1873,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 11.095699891956052,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.0913340000006428,
+          "runtime_seconds": 1.090489099999104,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -1981,7 +1981,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 10.968059136747968,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7650231000006897,
+          "runtime_seconds": 0.8424764000010327,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 8,
@@ -2088,7 +2088,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 12.082212671130964,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.0604303999971307,
+          "runtime_seconds": 1.0443015000018931,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -2196,7 +2196,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 12.922570926542555,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.800869499998953,
+          "runtime_seconds": 0.9426864000015485,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -2303,7 +2303,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 9.825251912048564,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.0545565000029455,
+          "runtime_seconds": 1.0655227999995986,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 8,
@@ -2411,7 +2411,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 8.511337243205038,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.8122355000014068,
+          "runtime_seconds": 0.8029454999996233,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -2518,7 +2518,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 11.099196738675317,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.142970900000364,
+          "runtime_seconds": 1.045012399998086,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 5,
@@ -2626,7 +2626,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 8.49070134167487,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7890370000022813,
+          "runtime_seconds": 0.7888457000008202,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 8,
@@ -2735,7 +2735,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 14.920906138748357,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.8770503000014287,
+          "runtime_seconds": 0.8297238999984984,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 8,
@@ -2843,7 +2843,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 14.52536407916718,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.6016945999981544,
+          "runtime_seconds": 0.5905821000014839,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -2950,7 +2950,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 15.914204966108413,
           "recommendation_status": "apply",
-          "runtime_seconds": 0.8197336000012001,
+          "runtime_seconds": 0.7563717999983055,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 7,
@@ -3058,7 +3058,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 14.968870552275433,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.66389479999998,
+          "runtime_seconds": 0.620564299999387,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -3165,7 +3165,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 8.247476761042819,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.1261641999990388,
+          "runtime_seconds": 1.0405840999992506,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 6,
@@ -3273,7 +3273,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 7.264296786393908,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7562456999985443,
+          "runtime_seconds": 0.6932127000000037,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -3380,7 +3380,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 8.95620398400127,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.1056449999996403,
+          "runtime_seconds": 0.9906942999987223,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 7,
@@ -3488,7 +3488,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 7.607500328935684,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7483021000007284,
+          "runtime_seconds": 0.7351280000002589,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -3595,7 +3595,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 13.281962392934126,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.967387200002122,
+          "runtime_seconds": 0.9523277000007511,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 7,
@@ -3703,7 +3703,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 13.288316266689701,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.6830276000000595,
+          "runtime_seconds": 0.6654474999995728,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 8,
@@ -3810,7 +3810,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 13.81540563421833,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.017483399999037,
+          "runtime_seconds": 1.024613199999294,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 8,
@@ -3918,7 +3918,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 13.5724573411061,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.8481753999985813,
+          "runtime_seconds": 0.8172858999969321,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -4025,7 +4025,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 10.115370958965762,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.0681365999989794,
+          "runtime_seconds": 1.0727442999996128,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 8,
@@ -4133,7 +4133,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 10.713148697280188,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7021243999988656,
+          "runtime_seconds": 0.7244742000002589,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -4240,7 +4240,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 12.565213707259433,
           "recommendation_status": "reduced",
-          "runtime_seconds": 1.0450744999980088,
+          "runtime_seconds": 1.0146165000005567,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 6,
@@ -4348,7 +4348,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 9.57686159689798,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.8043513999982679,
+          "runtime_seconds": 0.7739402000006521,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -4455,7 +4455,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 15.457954582946092,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.9694138999984716,
+          "runtime_seconds": 0.9627790999984427,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -4563,7 +4563,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 14.830520696074183,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7770390000005136,
+          "runtime_seconds": 0.7750812000012957,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -4670,7 +4670,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 15.487415861022116,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.9743564999989758,
+          "runtime_seconds": 0.9434236999986751,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -4778,7 +4778,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 15.0200564630794,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7335523000001558,
+          "runtime_seconds": 0.7339114999995218,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 9,
@@ -4885,7 +4885,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 14.68993427201648,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.9783454999997048,
+          "runtime_seconds": 0.9882928000006359,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 5,
@@ -4993,7 +4993,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 13.344731198101671,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.7414979999994102,
+          "runtime_seconds": 0.6735540000008768,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,
@@ -5100,7 +5100,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 14.600364791330882,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.9331552000003285,
+          "runtime_seconds": 0.9517450000021199,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 6,
@@ -5208,7 +5208,7 @@
           "headroom_safe": true,
           "heldout_target_error_db": 11.243925862241468,
           "recommendation_status": "reduced",
-          "runtime_seconds": 0.6769588999995904,
+          "runtime_seconds": 0.6830531000014162,
           "settings": {
             "abstention_reasons": [],
             "active_band_count": 10,

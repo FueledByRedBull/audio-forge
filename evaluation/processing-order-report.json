@@ -1,7 +1,7 @@
 {
   "schema_version": 4,
   "audible_change": true,
-  "generated_at_utc": "2026-08-01T21:22:52.667057+00:00",
+  "generated_at_utc": "2026-08-01T21:34:37.638300+00:00",
   "status": "incumbents-retained-objective-gates-failed",
   "decision": {
     "product_chain_changed": false,
@@ -27,7 +27,7 @@
       "median_candidate_tail_retained_ratio": 0.006257929727191633,
       "median_baseline_pumping_score": 5.245177218607963e-05,
       "median_candidate_pumping_score": 0.20303470444391258,
-      "median_runtime_ratio": 1.071856540445479
+      "median_runtime_ratio": 1.0702387394223853
     },
     "non_regression": {
       "false_closure": true,
@@ -58,8 +58,8 @@
         "candidate_pumping_score": 0.23289862038482947,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 3,
-        "baseline_runtime_ms": 95.43169999999999,
-        "candidate_runtime_ms": 100.7122
+        "baseline_runtime_ms": 94.2029,
+        "candidate_runtime_ms": 99.7454
       },
       {
         "id": "dutch_pub_snr0_rt60none_0",
@@ -78,8 +78,8 @@
         "candidate_pumping_score": 0.19582827530674504,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 5,
-        "baseline_runtime_ms": 93.5307,
-        "candidate_runtime_ms": 99.2547
+        "baseline_runtime_ms": 93.2993,
+        "candidate_runtime_ms": 99.67620000000001
       },
       {
         "id": "french_street_snr0_rt60none_0",
@@ -98,8 +98,8 @@
         "candidate_pumping_score": 0.2102411335810801,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 5,
-        "baseline_runtime_ms": 98.558,
-        "candidate_runtime_ms": 98.9651
+        "baseline_runtime_ms": 95.56240000000001,
+        "candidate_runtime_ms": 99.76780000000001
       },
       {
         "id": "german_airport_snr0_rt60none_0",
@@ -118,8 +118,8 @@
         "candidate_pumping_score": 0.23563957791495235,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 1,
-        "baseline_runtime_ms": 94.57419999999999,
-        "candidate_runtime_ms": 100.2556
+        "baseline_runtime_ms": 93.16760000000001,
+        "candidate_runtime_ms": 98.5445
       },
       {
         "id": "hungarian_pub_snr0_rt60none_0",
@@ -138,8 +138,8 @@
         "candidate_pumping_score": 0.19162594857872836,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 4,
-        "baseline_runtime_ms": 92.6853,
-        "candidate_runtime_ms": 99.1789
+        "baseline_runtime_ms": 102.13560000000001,
+        "candidate_runtime_ms": 98.7324
       },
       {
         "id": "korean_street_snr0_rt60none_0",
@@ -158,8 +158,8 @@
         "candidate_pumping_score": 0.15001338467060285,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 1,
-        "baseline_runtime_ms": 92.3124,
-        "candidate_runtime_ms": 100.6619
+        "baseline_runtime_ms": 93.47229999999999,
+        "candidate_runtime_ms": 102.67139999999999
       },
       {
         "id": "polish_airport_snr0_rt60none_0",
@@ -178,8 +178,8 @@
         "candidate_pumping_score": 0.187701551889651,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 4,
-        "baseline_runtime_ms": 104.1749,
-        "candidate_runtime_ms": 102.94019999999999
+        "baseline_runtime_ms": 97.6337,
+        "candidate_runtime_ms": 101.3133
       },
       {
         "id": "portuguese_pub_snr0_rt60none_0",
@@ -198,8 +198,8 @@
         "candidate_pumping_score": 0.16925566209355805,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 1,
-        "baseline_runtime_ms": 93.39959999999999,
-        "candidate_runtime_ms": 100.6014
+        "baseline_runtime_ms": 92.74010000000001,
+        "candidate_runtime_ms": 100.4037
       },
       {
         "id": "russian_street_snr0_rt60none_0",
@@ -218,8 +218,8 @@
         "candidate_pumping_score": 0.09381529796619383,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 2,
-        "baseline_runtime_ms": 95.3138,
-        "candidate_runtime_ms": 102.3299
+        "baseline_runtime_ms": 93.0441,
+        "candidate_runtime_ms": 103.7037
       },
       {
         "id": "spanish_airport_snr0_rt60none_0",
@@ -238,8 +238,8 @@
         "candidate_pumping_score": 0.22695170634671763,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 2,
-        "baseline_runtime_ms": 91.4471,
-        "candidate_runtime_ms": 99.8134
+        "baseline_runtime_ms": 92.7458,
+        "candidate_runtime_ms": 99.7963
       },
       {
         "id": "turkish_pub_snr0_rt60none_0",
@@ -258,8 +258,8 @@
         "candidate_pumping_score": 0.4042471956497087,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 3,
-        "baseline_runtime_ms": 91.5221,
-        "candidate_runtime_ms": 97.9318
+        "baseline_runtime_ms": 91.3221,
+        "candidate_runtime_ms": 98.3468
       },
       {
         "id": "vietnamese_street_snr0_rt60none_0",
@@ -278,8 +278,8 @@
         "candidate_pumping_score": 0.22140642843850028,
         "baseline_chatter_events": 0,
         "candidate_chatter_events": 3,
-        "baseline_runtime_ms": 93.4321,
-        "candidate_runtime_ms": 100.1417
+        "baseline_runtime_ms": 91.8142,
+        "candidate_runtime_ms": 100.2884
       }
     ]
   },
@@ -1176,14 +1176,14 @@
   },
   "provenance": {
     "source_hashes": {
-      "python/tools/evaluate_processing_order.py": "b5f2b75b17f3206cee567fa444975416e5789af53e3523e5ba63bc331700d299",
+      "python/tools/evaluate_processing_order.py": "ee3d0d01c13e143409ee5ac305ccfb23791ba572f9ee36604a9194a6c1f40026",
       "rust-core/src/audio/processor/block_processor.rs": "ad3abde795ea0b7bb62a34f400bbd6122ac9676e9e09fb4a37142f494c3a0822",
       "rust-core/src/audio/processor/python_api.rs": "8cd60e45c244c3ff6149a140b9776d6a4907bb6b3a4424a5b62c661f7fb6f7f3",
       "rust-core/src/dsp/deesser.rs": "de99b52fb53dff272c4378d6c28f9a158ca79b85bb8092cb3f6b455c49956fea",
       "rust-core/src/dsp/eq.rs": "075733d4f7475fd2886e3ddfec969c70243d491a845406714a1f7dad6f5993a7",
       "rust-core/src/dsp/gate.rs": "ac1844fc9cbf0db6cb6f57f9c92d60e51969d9276484d8afab920ec3edc66b5a",
       "rust-core/src/dsp/noise_suppressor.rs": "cc12d54b76e8c448240b5fd26b18d0649df81595470f0eedac7e30b4d38a9607",
-      "rust-core/src/dsp/rnnoise.rs": "8b06dd7d210ff79d24a08358e79a0f843e865e300125bea4b9122ebc20214912"
+      "rust-core/src/dsp/rnnoise.rs": "cb457902156f25599f3ccc908003a085f706cfeaf271578c308390b9804da911"
     },
     "asset_hashes": {
       "models/silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
@@ -1210,7 +1210,7 @@
       }
     },
     "runtime": {
-      "gate_suppressor_median_runtime_ratio": 1.071856540445479,
+      "gate_suppressor_median_runtime_ratio": 1.0702387394223853,
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native simulators report whole-clip timing; the ordering candidate is rejected before realtime callback qualification.",
       "platform": "Windows-11-10.0.26200-SP0"

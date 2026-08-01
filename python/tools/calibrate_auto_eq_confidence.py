@@ -42,6 +42,10 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _source_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def _relative(path: Path) -> str:
     return path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
 
@@ -441,7 +445,9 @@ def main() -> int:
         "python/mic_eq/analysis/auto_eq_parts/pipeline.py",
         "python/mic_eq/analysis/spectrum.py",
     )
-    source_hashes = {path: _sha256(REPO_ROOT / path) for path in source_paths}
+    source_hashes = {
+        path: _source_sha256(REPO_ROOT / path) for path in source_paths
+    }
     corpus_manifest = args.corpus_root / "manifest.json"
     report = {
         "schema_version": 3,

@@ -58,6 +58,10 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _source_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def _read_mono(path: Path) -> tuple[int, np.ndarray]:
     sample_rate, raw = wavfile.read(path)
     audio = np.asarray(raw)
@@ -701,7 +705,7 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
                     path.relative_to(REPO_ROOT).as_posix()
                     if path.is_relative_to(REPO_ROOT)
                     else path.name
-                ): _sha256(path)
+                ): _source_sha256(path)
                 for path in source_paths
             },
             "asset_hashes": {

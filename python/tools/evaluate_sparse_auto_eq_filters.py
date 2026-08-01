@@ -81,6 +81,10 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _source_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def _relative(path: Path) -> str:
     return path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
 
@@ -688,7 +692,7 @@ def _source_hashes() -> dict[str, str]:
         "rust-core/src/dsp/eq.rs",
         "rust-core/src/audio/processor/python_api.rs",
     )
-    return {path: _sha256(REPO_ROOT / path) for path in paths}
+    return {path: _source_sha256(REPO_ROOT / path) for path in paths}
 
 
 def evaluate(corpus_root: Path) -> dict[str, Any]:

@@ -74,7 +74,7 @@ def test_repository_workflow_release_gates_are_current():
     assert check_workflows.check_workflows() == []
 
 
-def test_dependabot_checker_rejects_grouped_breaking_updates(monkeypatch, tmp_path):
+def test_dependabot_checker_rejects_routine_version_updates(monkeypatch, tmp_path):
     path = tmp_path / "dependabot.yml"
     path.write_text(
         """version: 2
@@ -102,8 +102,10 @@ updates:
     check_workflows._check_dependabot(errors)
 
     assert errors == [
-        "dependabot.yml: pip patches must use a patch-only group",
-        "dependabot.yml: cargo patches must use a patch-only group",
+        "dependabot.yml: pip routine version updates must be disabled",
+        "dependabot.yml: pip must not define routine update groups",
+        "dependabot.yml: cargo routine version updates must be disabled",
+        "dependabot.yml: cargo must not define routine update groups",
     ]
 
 

@@ -201,24 +201,13 @@ def _check_dependabot(errors: list[str]) -> None:
             )
             continue
         config = matching[0]
-        if config.get("allow") != [
-            {
-                "dependency-name": "*",
-                "update-types": ["version-update:semver-patch"],
-            }
-        ]:
+        if config.get("open-pull-requests-limit") != 0:
             errors.append(
-                f"dependabot.yml: {ecosystem} routine updates must be patch-only"
+                f"dependabot.yml: {ecosystem} routine version updates must be disabled"
             )
-        groups = config.get("groups")
-        if not isinstance(groups, dict) or not any(
-            isinstance(group, dict)
-            and group.get("patterns") == ["*"]
-            and group.get("update-types") == ["patch"]
-            for group in groups.values()
-        ):
+        if "allow" in config or "groups" in config:
             errors.append(
-                f"dependabot.yml: {ecosystem} patches must use a patch-only group"
+                f"dependabot.yml: {ecosystem} must not define routine update groups"
             )
 
 

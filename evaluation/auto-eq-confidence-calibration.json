@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "audible_change": true,
-  "generated_at_utc": "2026-08-01T19:57:50.534311+00:00",
+  "generated_at_utc": "2026-08-01T21:24:06.840764+00:00",
   "experiment": "Corpus-derived calibration of remaining Auto-EQ confidence cutoffs",
   "decision": {
     "local_abstention": {
@@ -867,8 +867,8 @@
       "overall_confidence": 0.6344504282580712,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.2485134000016842,
-      "reference_runtime_seconds": 0.27443590000257245
+      "candidate_runtime_seconds": 0.2507968999998411,
+      "reference_runtime_seconds": 0.2710220999979356
     },
     {
       "id": "arabic_airport_snr0_rt60none_0-render-snr10",
@@ -892,8 +892,8 @@
       "overall_confidence": 0.6777618122177089,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.26965589999963413,
-      "reference_runtime_seconds": 0.3193576000012399
+      "candidate_runtime_seconds": 0.26956129999962286,
+      "reference_runtime_seconds": 0.3153588999994099
     },
     {
       "id": "arabic_airport_snr0_rt60none_0-render-snr30",
@@ -917,8 +917,8 @@
       "overall_confidence": 0.7022527383409076,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.26241789999767207,
-      "reference_runtime_seconds": 0.3072388000000501
+      "candidate_runtime_seconds": 0.2476719000005687,
+      "reference_runtime_seconds": 0.2984126000010292
     },
     {
       "id": "arabic_car_snr5_rt60none_0-render-snr0",
@@ -942,8 +942,8 @@
       "overall_confidence": 0.6729935286400778,
       "phonetic_coverage": 0.5220740645404284,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.25083040000026813,
-      "reference_runtime_seconds": 0.2656558999988192
+      "candidate_runtime_seconds": 0.24953269999969052,
+      "reference_runtime_seconds": 0.26343610000185436
     },
     {
       "id": "arabic_car_snr5_rt60none_0-render-snr10",
@@ -967,8 +967,8 @@
       "overall_confidence": 0.7230780321443909,
       "phonetic_coverage": 0.6316032458907276,
       "effective_blocks": 5.0,
-      "candidate_runtime_seconds": 0.28146769999875687,
-      "reference_runtime_seconds": 0.319098899999517
+      "candidate_runtime_seconds": 0.31672510000134935,
+      "reference_runtime_seconds": 0.3304934999978286
     },
     {
       "id": "arabic_car_snr5_rt60none_0-render-snr30",
@@ -992,8 +992,8 @@
       "overall_confidence": 0.6935849628404962,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.2514933000020392,
-      "reference_runtime_seconds": 0.27522079999835114
+      "candidate_runtime_seconds": 0.27432219999900553,
+      "reference_runtime_seconds": 0.3043911999993725
     },
     {
       "id": "arabic_office_snr10_rt60none_0-render-snr0",
@@ -1017,8 +1017,8 @@
       "overall_confidence": 0.6920614181290615,
       "phonetic_coverage": 0.7641947583333524,
       "effective_blocks": 8.844952621111304,
-      "candidate_runtime_seconds": 0.30002520000198274,
-      "reference_runtime_seconds": 0.33591489999889745
+      "candidate_runtime_seconds": 0.30027740000150516,
+      "reference_runtime_seconds": 0.3764617000015278
     },
     {
       "id": "arabic_office_snr10_rt60none_0-render-snr10",
@@ -1042,8 +1042,8 @@
       "overall_confidence": 0.7300649546082559,
       "phonetic_coverage": 0.7392345607010234,
       "effective_blocks": 6.8617043868393575,
-      "candidate_runtime_seconds": 0.3845617000006314,
-      "reference_runtime_seconds": 0.3647698999993736
+      "candidate_runtime_seconds": 0.42494040000019595,
+      "reference_runtime_seconds": 0.3791077999994741
     },
     {
       "id": "arabic_office_snr10_rt60none_0-render-snr30",
@@ -1067,8 +1067,8 @@
       "overall_confidence": 0.7254044835846535,
       "phonetic_coverage": 0.8152210412968056,
       "effective_blocks": 7.975024154076578,
-      "candidate_runtime_seconds": 0.31709609999961685,
-      "reference_runtime_seconds": 0.3692905000025348
+      "candidate_runtime_seconds": 0.31129690000307164,
+      "reference_runtime_seconds": 0.3337318999983836
     },
     {
       "id": "dutch_pub_snr0_rt60none_0-render-snr0",
@@ -1092,8 +1092,8 @@
       "overall_confidence": 0.683614798806307,
       "phonetic_coverage": 0.8660254037844386,
       "effective_blocks": 9.0,
-      "candidate_runtime_seconds": 0.3632657999987714,
-      "reference_runtime_seconds": 0.3217210000002524
+      "candidate_runtime_seconds": 0.37568889999965904,
+      "reference_runtime_seconds": 0.3169612000019697
     },
     {
       "id": "dutch_pub_snr0_rt60none_0-render-snr10",
@@ -1117,8 +1117,8 @@
       "overall_confidence": 0.7503322360873482,
       "phonetic_coverage": 0.9128709291752769,
       "effective_blocks": 10.0,
-      "candidate_runtime_seconds": 0.369271800002025,
-      "reference_runtime_seconds": 0.3290034999990894
+      "candidate_runtime_seconds": 0.3677516000025207,
+      "reference_runtime_seconds": 0.3241390000002866
     },
     {
       "id": "dutch_pub_snr0_rt60none_0-render-snr30",
@@ -1142,8 +1142,8 @@
       "overall_confidence": 0.7674827610599507,
       "phonetic_coverage": 0.9128709291752769,
       "effective_blocks": 10.0,
-      "candidate_runtime_seconds": 0.3450191999982053,
-      "reference_runtime_seconds": 0.3859798999983468
+      "candidate_runtime_seconds": 0.3448472000018228,
+      "reference_runtime_seconds": 0.3897176999998919
     },
     {
       "id": "dutch_rain_snr5_rt60none_0-render-snr0",
@@ -1167,8 +1167,8 @@
       "overall_confidence": 0.666910495919849,
       "phonetic_coverage": 0.7984685296663817,
       "effective_blocks": 7.650623914411122,
-      "candidate_runtime_seconds": 0.31695140000010724,
-      "reference_runtime_seconds": 0.3295077000002493
+      "candidate_runtime_seconds": 0.3204442999995081,
+      "reference_runtime_seconds": 0.3257913000015833
     },
     {
       "id": "dutch_rain_snr5_rt60none_0-render-snr10",
@@ -1192,8 +1192,8 @@
       "overall_confidence": 0.7141505292012552,
       "phonetic_coverage": 0.816496580927726,
       "effective_blocks": 8.0,
-      "candidate_runtime_seconds": 0.3487888000017847,
-      "reference_runtime_seconds": 0.35924010000235285
+      "candidate_runtime_seconds": 0.3488857000011194,
+      "reference_runtime_seconds": 0.3565697999983968
     },
     {
       "id": "dutch_rain_snr5_rt60none_0-render-snr30",
@@ -1217,8 +1217,8 @@
       "overall_confidence": 0.7853593138407527,
       "phonetic_coverage": 0.816496580927726,
       "effective_blocks": 8.0,
-      "candidate_runtime_seconds": 0.3284252999983437,
-      "reference_runtime_seconds": 0.3257102000025043
+      "candidate_runtime_seconds": 0.33438029999888386,
+      "reference_runtime_seconds": 0.32273300000088057
     },
     {
       "id": "dutch_restaurant_snr10_rt60none_0-render-snr0",
@@ -1242,8 +1242,8 @@
       "overall_confidence": 0.6822265981661335,
       "phonetic_coverage": 0.8165492411107419,
       "effective_blocks": 8.024029263975516,
-      "candidate_runtime_seconds": 0.32944859999770415,
-      "reference_runtime_seconds": 0.3437772999968729
+      "candidate_runtime_seconds": 0.33199919999970007,
+      "reference_runtime_seconds": 0.32747729999755393
     },
     {
       "id": "dutch_restaurant_snr10_rt60none_0-render-snr10",
@@ -1267,8 +1267,8 @@
       "overall_confidence": 0.7470960224266041,
       "phonetic_coverage": 0.9128709291752769,
       "effective_blocks": 10.0,
-      "candidate_runtime_seconds": 0.31958060000033583,
-      "reference_runtime_seconds": 0.33068640000055893
+      "candidate_runtime_seconds": 0.3183158000028925,
+      "reference_runtime_seconds": 0.33320370000001276
     },
     {
       "id": "dutch_restaurant_snr10_rt60none_0-render-snr30",
@@ -1292,8 +1292,8 @@
       "overall_confidence": 0.7317966725814135,
       "phonetic_coverage": 0.8660254037844386,
       "effective_blocks": 9.0,
-      "candidate_runtime_seconds": 0.33747179999772925,
-      "reference_runtime_seconds": 0.34172269999908167
+      "candidate_runtime_seconds": 0.33361520000107703,
+      "reference_runtime_seconds": 0.339912399998866
     },
     {
       "id": "french_street_snr0_rt60none_0-render-snr0",
@@ -1317,8 +1317,8 @@
       "overall_confidence": 0.5501990862302006,
       "phonetic_coverage": 0.5948172710874002,
       "effective_blocks": 5.274409357807137,
-      "candidate_runtime_seconds": 0.2851970999981859,
-      "reference_runtime_seconds": 0.31379720000040834
+      "candidate_runtime_seconds": 0.28346009999950184,
+      "reference_runtime_seconds": 0.31979710000086925
     },
     {
       "id": "french_street_snr0_rt60none_0-render-snr10",
@@ -1342,8 +1342,8 @@
       "overall_confidence": 0.6064359610857459,
       "phonetic_coverage": 0.7825433140588266,
       "effective_blocks": 8.0,
-      "candidate_runtime_seconds": 0.39575759999934235,
-      "reference_runtime_seconds": 0.2975071000000753
+      "candidate_runtime_seconds": 0.3843282999987423,
+      "reference_runtime_seconds": 0.29863509999995586
     },
     {
       "id": "french_street_snr0_rt60none_0-render-snr30",
@@ -1367,8 +1367,8 @@
       "overall_confidence": 0.7703564885462938,
       "phonetic_coverage": 0.816496580927726,
       "effective_blocks": 8.0,
-      "candidate_runtime_seconds": 0.35870749999958207,
-      "reference_runtime_seconds": 0.35860649999813177
+      "candidate_runtime_seconds": 0.39255209999828367,
+      "reference_runtime_seconds": 0.354695999998512
     },
     {
       "id": "french_subway_snr5_rt60none_0-render-snr0",
@@ -1392,8 +1392,8 @@
       "overall_confidence": 0.6498859674172571,
       "phonetic_coverage": 0.7637626158259734,
       "effective_blocks": 7.0,
-      "candidate_runtime_seconds": 0.31169620000218856,
-      "reference_runtime_seconds": 0.3305742000011378
+      "candidate_runtime_seconds": 0.32233090000227094,
+      "reference_runtime_seconds": 0.34379899999839836
     },
     {
       "id": "french_subway_snr5_rt60none_0-render-snr10",
@@ -1417,8 +1417,8 @@
       "overall_confidence": 0.7143915390061311,
       "phonetic_coverage": 0.7637626158259734,
       "effective_blocks": 7.0,
-      "candidate_runtime_seconds": 0.3398780999996234,
-      "reference_runtime_seconds": 0.295028699998511
+      "candidate_runtime_seconds": 0.3546160999976564,
+      "reference_runtime_seconds": 0.3449036999991222
     },
     {
       "id": "french_subway_snr5_rt60none_0-render-snr30",
@@ -1442,8 +1442,8 @@
       "overall_confidence": 0.7001807711667328,
       "phonetic_coverage": 0.7520513582362301,
       "effective_blocks": 6.7869749450995025,
-      "candidate_runtime_seconds": 0.33790940000108094,
-      "reference_runtime_seconds": 0.2689721999995527
+      "candidate_runtime_seconds": 0.3658515000024636,
+      "reference_runtime_seconds": 0.2748633000010159
     },
     {
       "id": "french_train_snr10_rt60none_0-render-snr0",
@@ -1467,8 +1467,8 @@
       "overall_confidence": 0.30088492790314936,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.17562940000061644,
-      "reference_runtime_seconds": 0.18686080000043148
+      "candidate_runtime_seconds": 0.17839900000035414,
+      "reference_runtime_seconds": 0.1999528000014834
     },
     {
       "id": "french_train_snr10_rt60none_0-render-snr10",
@@ -1492,8 +1492,8 @@
       "overall_confidence": 0.33213272711093306,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.1804121999994095,
-      "reference_runtime_seconds": 0.1894358999998076
+      "candidate_runtime_seconds": 0.22170009999899776,
+      "reference_runtime_seconds": 0.19550730000264593
     },
     {
       "id": "french_train_snr10_rt60none_0-render-snr30",
@@ -1517,8 +1517,8 @@
       "overall_confidence": 0.33262500000000006,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.1890547000002698,
-      "reference_runtime_seconds": 0.19447980000040843
+      "candidate_runtime_seconds": 0.20789899999726913,
+      "reference_runtime_seconds": 0.20299149999846122
     },
     {
       "id": "german_airport_snr0_rt60none_0-render-snr0",
@@ -1542,8 +1542,8 @@
       "overall_confidence": 0.547861664142699,
       "phonetic_coverage": 0.754874967577048,
       "effective_blocks": 6.871972233336427,
-      "candidate_runtime_seconds": 0.32315749999906984,
-      "reference_runtime_seconds": 0.40635740000288934
+      "candidate_runtime_seconds": 0.32068689999869093,
+      "reference_runtime_seconds": 0.41214559999934863
     },
     {
       "id": "german_airport_snr0_rt60none_0-render-snr10",
@@ -1567,8 +1567,8 @@
       "overall_confidence": 0.7112642406927657,
       "phonetic_coverage": 0.8340970391485109,
       "effective_blocks": 8.348614448595749,
-      "candidate_runtime_seconds": 0.39762299999711104,
-      "reference_runtime_seconds": 0.3649554999974498
+      "candidate_runtime_seconds": 0.3984056999979657,
+      "reference_runtime_seconds": 0.36059910000039963
     },
     {
       "id": "german_airport_snr0_rt60none_0-render-snr30",
@@ -1592,8 +1592,8 @@
       "overall_confidence": 0.7780108802230025,
       "phonetic_coverage": 0.9574271077563381,
       "effective_blocks": 11.0,
-      "candidate_runtime_seconds": 0.3772782999985793,
-      "reference_runtime_seconds": 0.3941047000007529
+      "candidate_runtime_seconds": 0.3751229000008607,
+      "reference_runtime_seconds": 0.3996530000003986
     },
     {
       "id": "german_car_snr5_rt60none_0-render-snr0",
@@ -1617,8 +1617,8 @@
       "overall_confidence": 0.2991520432850327,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.20440299999972922,
-      "reference_runtime_seconds": 0.18835810000018682
+      "candidate_runtime_seconds": 0.20880860000033863,
+      "reference_runtime_seconds": 0.2005524999985937
     },
     {
       "id": "german_car_snr5_rt60none_0-render-snr10",
@@ -1642,8 +1642,8 @@
       "overall_confidence": 0.32903791669408017,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.25506490000043414,
-      "reference_runtime_seconds": 0.20188559999951394
+      "candidate_runtime_seconds": 0.23379560000103083,
+      "reference_runtime_seconds": 0.20327570000154083
     },
     {
       "id": "german_car_snr5_rt60none_0-render-snr30",
@@ -1667,8 +1667,8 @@
       "overall_confidence": 0.34500000000000003,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.20938119999846094,
-      "reference_runtime_seconds": 0.20961979999992764
+      "candidate_runtime_seconds": 0.21563880000030622,
+      "reference_runtime_seconds": 0.21122729999842704
     },
     {
       "id": "german_office_snr10_rt60none_0-render-snr0",
@@ -1692,8 +1692,8 @@
       "overall_confidence": 0.21359352588039088,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.20804320000024745,
-      "reference_runtime_seconds": 0.17461639999964973
+      "candidate_runtime_seconds": 0.21372379999957047,
+      "reference_runtime_seconds": 0.1790822000002663
     },
     {
       "id": "german_office_snr10_rt60none_0-render-snr10",
@@ -1717,8 +1717,8 @@
       "overall_confidence": 0.24337529424606458,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.17798150000089663,
-      "reference_runtime_seconds": 0.18300030000318657
+      "candidate_runtime_seconds": 0.1792807999991055,
+      "reference_runtime_seconds": 0.1847347999973863
     },
     {
       "id": "german_office_snr10_rt60none_0-render-snr30",
@@ -1742,8 +1742,8 @@
       "overall_confidence": 0.3251736076008513,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.23129079999853275,
-      "reference_runtime_seconds": 0.19380499999897438
+      "candidate_runtime_seconds": 0.24437609999949927,
+      "reference_runtime_seconds": 0.2082023000002664
     },
     {
       "id": "hungarian_pub_snr0_rt60none_0-render-snr0",
@@ -1767,8 +1767,8 @@
       "overall_confidence": 0.6919994717466619,
       "phonetic_coverage": 0.5761654172089758,
       "effective_blocks": 4.255358784282749,
-      "candidate_runtime_seconds": 0.37933720000000903,
-      "reference_runtime_seconds": 0.3149145999996108
+      "candidate_runtime_seconds": 0.40430539999942994,
+      "reference_runtime_seconds": 0.33022519999940414
     },
     {
       "id": "hungarian_pub_snr0_rt60none_0-render-snr10",
@@ -1792,8 +1792,8 @@
       "overall_confidence": 0.7426220239228501,
       "phonetic_coverage": 0.5740292811967513,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.3590366000025824,
-      "reference_runtime_seconds": 0.2567744000007224
+      "candidate_runtime_seconds": 0.37115040000207955,
+      "reference_runtime_seconds": 0.26512780000120983
     },
     {
       "id": "hungarian_pub_snr0_rt60none_0-render-snr30",
@@ -1817,8 +1817,8 @@
       "overall_confidence": 0.7462695065910987,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.272215299999516,
-      "reference_runtime_seconds": 0.2839921000013419
+      "candidate_runtime_seconds": 0.2817943000009109,
+      "reference_runtime_seconds": 0.2914072000021406
     },
     {
       "id": "hungarian_rain_snr5_rt60none_0-render-snr0",
@@ -1842,8 +1842,8 @@
       "overall_confidence": 0.5600211372444039,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.3311585000010382,
-      "reference_runtime_seconds": 0.29233969999768306
+      "candidate_runtime_seconds": 0.32253359999958775,
+      "reference_runtime_seconds": 0.2893418000021484
     },
     {
       "id": "hungarian_rain_snr5_rt60none_0-render-snr10",
@@ -1867,8 +1867,8 @@
       "overall_confidence": 0.6579532401875549,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.23814750000019558,
-      "reference_runtime_seconds": 0.28071429999909014
+      "candidate_runtime_seconds": 0.26141310000093654,
+      "reference_runtime_seconds": 0.3173760999998194
     },
     {
       "id": "hungarian_rain_snr5_rt60none_0-render-snr30",
@@ -1892,8 +1892,8 @@
       "overall_confidence": 0.7142242221650345,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.2684482000004209,
-      "reference_runtime_seconds": 0.2889375000013388
+      "candidate_runtime_seconds": 0.3479181000002427,
+      "reference_runtime_seconds": 0.29538200000024517
     },
     {
       "id": "hungarian_restaurant_snr10_rt60none_0-render-snr0",
@@ -1917,8 +1917,8 @@
       "overall_confidence": 0.26287787368935167,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.20634310000241385,
-      "reference_runtime_seconds": 0.2610190000013972
+      "candidate_runtime_seconds": 0.2072703999983787,
+      "reference_runtime_seconds": 0.26712899999984074
     },
     {
       "id": "hungarian_restaurant_snr10_rt60none_0-render-snr10",
@@ -1942,8 +1942,8 @@
       "overall_confidence": 0.3175484782078862,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.25146939999831375,
-      "reference_runtime_seconds": 0.23400100000071689
+      "candidate_runtime_seconds": 0.25592170000163605,
+      "reference_runtime_seconds": 0.24685339999996359
     },
     {
       "id": "hungarian_restaurant_snr10_rt60none_0-render-snr30",
@@ -1967,8 +1967,8 @@
       "overall_confidence": 0.34500000000000003,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.2254639999991923,
-      "reference_runtime_seconds": 0.2160433999997622
+      "candidate_runtime_seconds": 0.22605660000044736,
+      "reference_runtime_seconds": 0.21535230000154115
     },
     {
       "id": "korean_street_snr0_rt60none_0-render-snr0",
@@ -1992,8 +1992,8 @@
       "overall_confidence": 0.5175869104070673,
       "phonetic_coverage": 0.5671637894712259,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.3581066999977338,
-      "reference_runtime_seconds": 0.2475096999987727
+      "candidate_runtime_seconds": 0.3604185000003781,
+      "reference_runtime_seconds": 0.2487275999992562
     },
     {
       "id": "korean_street_snr0_rt60none_0-render-snr10",
@@ -2017,8 +2017,8 @@
       "overall_confidence": 0.6831739782994352,
       "phonetic_coverage": 0.5724452981166834,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.2465412000019569,
-      "reference_runtime_seconds": 0.2585953000016161
+      "candidate_runtime_seconds": 0.24507310000262805,
+      "reference_runtime_seconds": 0.26117530000192346
     },
     {
       "id": "korean_street_snr0_rt60none_0-render-snr30",
@@ -2042,8 +2042,8 @@
       "overall_confidence": 0.7547237890331041,
       "phonetic_coverage": 0.5759348109814841,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.3174490999990667,
-      "reference_runtime_seconds": 0.35111479999977746
+      "candidate_runtime_seconds": 0.33607149999807007,
+      "reference_runtime_seconds": 0.3611678999986907
     },
     {
       "id": "korean_subway_snr5_rt60none_0-render-snr0",
@@ -2067,8 +2067,8 @@
       "overall_confidence": 0.5981721401222534,
       "phonetic_coverage": 0.4868863039871139,
       "effective_blocks": 2.844699276122787,
-      "candidate_runtime_seconds": 0.31730740000057267,
-      "reference_runtime_seconds": 0.3222009999990405
+      "candidate_runtime_seconds": 0.3299182999980985,
+      "reference_runtime_seconds": 0.2970260000001872
     },
     {
       "id": "korean_subway_snr5_rt60none_0-render-snr10",
@@ -2092,8 +2092,8 @@
       "overall_confidence": 0.6527538196074617,
       "phonetic_coverage": 0.5229328615263954,
       "effective_blocks": 3.2815053319702105,
-      "candidate_runtime_seconds": 0.2902819000009913,
-      "reference_runtime_seconds": 0.30637209999986226
+      "candidate_runtime_seconds": 0.2972378000013123,
+      "reference_runtime_seconds": 0.3114445999999589
     },
     {
       "id": "korean_subway_snr5_rt60none_0-render-snr30",
@@ -2117,8 +2117,8 @@
       "overall_confidence": 0.6299697213323854,
       "phonetic_coverage": 0.4807762134611488,
       "effective_blocks": 2.7737492091604814,
-      "candidate_runtime_seconds": 0.27309210000021267,
-      "reference_runtime_seconds": 0.3126778000005288
+      "candidate_runtime_seconds": 0.27135509999789065,
+      "reference_runtime_seconds": 0.29931139999825973
     },
     {
       "id": "korean_train_snr10_rt60none_0-render-snr0",
@@ -2142,8 +2142,8 @@
       "overall_confidence": 0.522351377754455,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.2632548000001407,
-      "reference_runtime_seconds": 0.27624329999889596
+      "candidate_runtime_seconds": 0.26115959999879124,
+      "reference_runtime_seconds": 0.2776598999989801
     },
     {
       "id": "korean_train_snr10_rt60none_0-render-snr10",
@@ -2167,8 +2167,8 @@
       "overall_confidence": 0.5957993357159076,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.31971970000086003,
-      "reference_runtime_seconds": 0.3017909999980475
+      "candidate_runtime_seconds": 0.2869124999997439,
+      "reference_runtime_seconds": 0.30472720000034315
     },
     {
       "id": "korean_train_snr10_rt60none_0-render-snr30",
@@ -2192,8 +2192,8 @@
       "overall_confidence": 0.6675458377429276,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.29462039999998524,
-      "reference_runtime_seconds": 0.3647476000005554
+      "candidate_runtime_seconds": 0.2698935000007623,
+      "reference_runtime_seconds": 0.33993589999954565
     },
     {
       "id": "polish_airport_snr0_rt60none_0-render-snr0",
@@ -2217,8 +2217,8 @@
       "overall_confidence": 0.6415340075646999,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.24503330000152346,
-      "reference_runtime_seconds": 0.29110790000049747
+      "candidate_runtime_seconds": 0.23416839999845251,
+      "reference_runtime_seconds": 0.2877708000014536
     },
     {
       "id": "polish_airport_snr0_rt60none_0-render-snr10",
@@ -2242,8 +2242,8 @@
       "overall_confidence": 0.6349898510203407,
       "phonetic_coverage": 0.6064919007168089,
       "effective_blocks": 4.413989107621051,
-      "candidate_runtime_seconds": 0.30644959999699495,
-      "reference_runtime_seconds": 0.25310199999876204
+      "candidate_runtime_seconds": 0.32200750000265543,
+      "reference_runtime_seconds": 0.2506400999991456
     },
     {
       "id": "polish_airport_snr0_rt60none_0-render-snr30",
@@ -2267,8 +2267,8 @@
       "overall_confidence": 0.6520578374685871,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.3359826999985671,
-      "reference_runtime_seconds": 0.3058655999993789
+      "candidate_runtime_seconds": 0.3351844999997411,
+      "reference_runtime_seconds": 0.30422290000205976
     },
     {
       "id": "polish_car_snr5_rt60none_0-render-snr0",
@@ -2292,8 +2292,8 @@
       "overall_confidence": 0.6668928162693948,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.28697209999882034,
-      "reference_runtime_seconds": 0.2574939000005543
+      "candidate_runtime_seconds": 0.28916899999967427,
+      "reference_runtime_seconds": 0.25764259999778005
     },
     {
       "id": "polish_car_snr5_rt60none_0-render-snr10",
@@ -2317,8 +2317,8 @@
       "overall_confidence": 0.673201515739641,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.22985920000064652,
-      "reference_runtime_seconds": 0.2910899000016798
+      "candidate_runtime_seconds": 0.23073619999922812,
+      "reference_runtime_seconds": 0.2897004000005836
     },
     {
       "id": "polish_car_snr5_rt60none_0-render-snr30",
@@ -2342,8 +2342,8 @@
       "overall_confidence": 0.6257838800447183,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.3910049000005529,
-      "reference_runtime_seconds": 0.3434839000001375
+      "candidate_runtime_seconds": 0.4045159999986936,
+      "reference_runtime_seconds": 0.36728819999916595
     },
     {
       "id": "polish_office_snr10_rt60none_0-render-snr0",
@@ -2367,8 +2367,8 @@
       "overall_confidence": 0.6822215072926061,
       "phonetic_coverage": 0.6296603892619519,
       "effective_blocks": 5.707846287784952,
-      "candidate_runtime_seconds": 0.29368049999902723,
-      "reference_runtime_seconds": 0.2828436999989208
+      "candidate_runtime_seconds": 0.29262050000033923,
+      "reference_runtime_seconds": 0.32679469999857247
     },
     {
       "id": "polish_office_snr10_rt60none_0-render-snr10",
@@ -2392,8 +2392,8 @@
       "overall_confidence": 0.6596692768872178,
       "phonetic_coverage": 0.5741568456998402,
       "effective_blocks": 4.387938636561448,
-      "candidate_runtime_seconds": 0.2992015000018,
-      "reference_runtime_seconds": 0.34593410000161384
+      "candidate_runtime_seconds": 0.30259229999865056,
+      "reference_runtime_seconds": 0.342040999999881
     },
     {
       "id": "polish_office_snr10_rt60none_0-render-snr30",
@@ -2417,8 +2417,8 @@
       "overall_confidence": 0.6712832508626965,
       "phonetic_coverage": 0.5873708183355545,
       "effective_blocks": 4.140053738786147,
-      "candidate_runtime_seconds": 0.3540471999986039,
-      "reference_runtime_seconds": 0.36477860000013607
+      "candidate_runtime_seconds": 0.3452106000004278,
+      "reference_runtime_seconds": 0.3698867999992217
     },
     {
       "id": "portuguese_pub_snr0_rt60none_0-render-snr0",
@@ -2442,8 +2442,8 @@
       "overall_confidence": 0.6242475512393255,
       "phonetic_coverage": 0.5635951298973318,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.24321190000046045,
-      "reference_runtime_seconds": 0.28947450000123354
+      "candidate_runtime_seconds": 0.25179759999809903,
+      "reference_runtime_seconds": 0.29708810000011
     },
     {
       "id": "portuguese_pub_snr0_rt60none_0-render-snr10",
@@ -2467,8 +2467,8 @@
       "overall_confidence": 0.7130748043652972,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.3058710000004794,
-      "reference_runtime_seconds": 0.28879930000039167
+      "candidate_runtime_seconds": 0.3180354000032821,
+      "reference_runtime_seconds": 0.270462000000407
     },
     {
       "id": "portuguese_pub_snr0_rt60none_0-render-snr30",
@@ -2492,8 +2492,8 @@
       "overall_confidence": 0.6720604219586985,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.25737280000248575,
-      "reference_runtime_seconds": 0.28895310000007157
+      "candidate_runtime_seconds": 0.2567338999979256,
+      "reference_runtime_seconds": 0.28895420000117156
     },
     {
       "id": "portuguese_rain_snr5_rt60none_0-render-snr0",
@@ -2517,8 +2517,8 @@
       "overall_confidence": 0.665177854198305,
       "phonetic_coverage": 0.49739571284719164,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.3046485999984725,
-      "reference_runtime_seconds": 0.3321804000006523
+      "candidate_runtime_seconds": 0.30990590000146767,
+      "reference_runtime_seconds": 0.32958009999856586
     },
     {
       "id": "portuguese_rain_snr5_rt60none_0-render-snr10",
@@ -2542,8 +2542,8 @@
       "overall_confidence": 0.7607666661045616,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.23084410000228672,
-      "reference_runtime_seconds": 0.3492638999996416
+      "candidate_runtime_seconds": 0.23234539999975823,
+      "reference_runtime_seconds": 0.3512596000000485
     },
     {
       "id": "portuguese_rain_snr5_rt60none_0-render-snr30",
@@ -2567,8 +2567,8 @@
       "overall_confidence": 0.776625543911549,
       "phonetic_coverage": 0.4957959728114351,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.24330639999971027,
-      "reference_runtime_seconds": 0.3828663000022061
+      "candidate_runtime_seconds": 0.24777009999888833,
+      "reference_runtime_seconds": 0.3874035000008007
     },
     {
       "id": "portuguese_restaurant_snr10_rt60none_0-render-snr0",
@@ -2592,8 +2592,8 @@
       "overall_confidence": 0.6428522141441542,
       "phonetic_coverage": 0.562996235118555,
       "effective_blocks": 4.071855413083836,
-      "candidate_runtime_seconds": 0.28177360000336193,
-      "reference_runtime_seconds": 0.24846399999660207
+      "candidate_runtime_seconds": 0.2801322999985132,
+      "reference_runtime_seconds": 0.24802269999781856
     },
     {
       "id": "portuguese_restaurant_snr10_rt60none_0-render-snr10",
@@ -2617,8 +2617,8 @@
       "overall_confidence": 0.44869961426186994,
       "phonetic_coverage": 0.4640320029588242,
       "effective_blocks": 2.5839083972397385,
-      "candidate_runtime_seconds": 0.2826477000016894,
-      "reference_runtime_seconds": 0.2470099999991362
+      "candidate_runtime_seconds": 0.2798368000003393,
+      "reference_runtime_seconds": 0.2467940999995335
     },
     {
       "id": "portuguese_restaurant_snr10_rt60none_0-render-snr30",
@@ -2642,8 +2642,8 @@
       "overall_confidence": 0.45052733228002917,
       "phonetic_coverage": 0.39303549845256414,
       "effective_blocks": 1.8537228365262666,
-      "candidate_runtime_seconds": 0.31340829999680864,
-      "reference_runtime_seconds": 0.3264649999982794
+      "candidate_runtime_seconds": 0.3376033999993524,
+      "reference_runtime_seconds": 0.3199421999997867
     },
     {
       "id": "russian_street_snr0_rt60none_0-render-snr0",
@@ -2667,8 +2667,8 @@
       "overall_confidence": 0.6775959719253426,
       "phonetic_coverage": 0.7071067811865476,
       "effective_blocks": 6.0,
-      "candidate_runtime_seconds": 0.32395940000060364,
-      "reference_runtime_seconds": 0.3007660000002943
+      "candidate_runtime_seconds": 0.30595399999947404,
+      "reference_runtime_seconds": 0.2875119000018458
     },
     {
       "id": "russian_street_snr0_rt60none_0-render-snr10",
@@ -2692,8 +2692,8 @@
       "overall_confidence": 0.704817253205867,
       "phonetic_coverage": 0.7071067811865476,
       "effective_blocks": 6.0,
-      "candidate_runtime_seconds": 0.34955769999942277,
-      "reference_runtime_seconds": 0.32807690000117873
+      "candidate_runtime_seconds": 0.350220200001786,
+      "reference_runtime_seconds": 0.3408001999996486
     },
     {
       "id": "russian_street_snr0_rt60none_0-render-snr30",
@@ -2717,8 +2717,8 @@
       "overall_confidence": 0.7311952027303195,
       "phonetic_coverage": 0.7071067811865476,
       "effective_blocks": 6.0,
-      "candidate_runtime_seconds": 0.26616500000091037,
-      "reference_runtime_seconds": 0.32409740000002785
+      "candidate_runtime_seconds": 0.26827849999972386,
+      "reference_runtime_seconds": 0.31274069999926724
     },
     {
       "id": "russian_subway_snr5_rt60none_0-render-snr0",
@@ -2742,8 +2742,8 @@
       "overall_confidence": 0.6698385638306718,
       "phonetic_coverage": 0.6784581836472583,
       "effective_blocks": 5.523666083495243,
-      "candidate_runtime_seconds": 0.30603469999914523,
-      "reference_runtime_seconds": 0.2860116999981983
+      "candidate_runtime_seconds": 0.29850919999807957,
+      "reference_runtime_seconds": 0.2836300000017218
     },
     {
       "id": "russian_subway_snr5_rt60none_0-render-snr10",
@@ -2767,8 +2767,8 @@
       "overall_confidence": 0.6839332480516732,
       "phonetic_coverage": 0.7259985913594269,
       "effective_blocks": 6.324887455870466,
-      "candidate_runtime_seconds": 0.3232432000004337,
-      "reference_runtime_seconds": 0.35701639999751933
+      "candidate_runtime_seconds": 0.33692499999961,
+      "reference_runtime_seconds": 0.3711918000008154
     },
     {
       "id": "russian_subway_snr5_rt60none_0-render-snr30",
@@ -2792,8 +2792,8 @@
       "overall_confidence": 0.7022016604271,
       "phonetic_coverage": 0.6711709100228407,
       "effective_blocks": 5.405644685530657,
-      "candidate_runtime_seconds": 0.3070823999987624,
-      "reference_runtime_seconds": 0.34517869999763207
+      "candidate_runtime_seconds": 0.3422863999985566,
+      "reference_runtime_seconds": 0.41055170000254293
     },
     {
       "id": "russian_train_snr10_rt60none_0-render-snr0",
@@ -2817,8 +2817,8 @@
       "overall_confidence": 0.4891731048424104,
       "phonetic_coverage": 0.5665002190461358,
       "effective_blocks": 3.851069978151839,
-      "candidate_runtime_seconds": 0.3126725999973132,
-      "reference_runtime_seconds": 0.2344104999974661
+      "candidate_runtime_seconds": 0.30894809999881545,
+      "reference_runtime_seconds": 0.2310297999974864
     },
     {
       "id": "russian_train_snr10_rt60none_0-render-snr10",
@@ -2842,8 +2842,8 @@
       "overall_confidence": 0.6722851732835966,
       "phonetic_coverage": 0.6454972243679028,
       "effective_blocks": 5.0,
-      "candidate_runtime_seconds": 0.2925790000008419,
-      "reference_runtime_seconds": 0.25551419999828795
+      "candidate_runtime_seconds": 0.2993900000001304,
+      "reference_runtime_seconds": 0.2769893000004231
     },
     {
       "id": "russian_train_snr10_rt60none_0-render-snr30",
@@ -2867,8 +2867,8 @@
       "overall_confidence": 0.6577569413568064,
       "phonetic_coverage": 0.6454972243679028,
       "effective_blocks": 5.0,
-      "candidate_runtime_seconds": 0.3269682999998622,
-      "reference_runtime_seconds": 0.31905819999883533
+      "candidate_runtime_seconds": 0.46090860000185785,
+      "reference_runtime_seconds": 0.3354386999999406
     },
     {
       "id": "spanish_airport_snr0_rt60none_0-render-snr0",
@@ -2892,8 +2892,8 @@
       "overall_confidence": 0.536963473649726,
       "phonetic_coverage": 0.5491099901488239,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.26574059999984456,
-      "reference_runtime_seconds": 0.24761750000106986
+      "candidate_runtime_seconds": 0.29219020000164164,
+      "reference_runtime_seconds": 0.25472000000081607
     },
     {
       "id": "spanish_airport_snr0_rt60none_0-render-snr10",
@@ -2917,8 +2917,8 @@
       "overall_confidence": 0.6652198332761282,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.268051099999866,
-      "reference_runtime_seconds": 0.2591463999997359
+      "candidate_runtime_seconds": 0.2530919000018912,
+      "reference_runtime_seconds": 0.3038226000026043
     },
     {
       "id": "spanish_airport_snr0_rt60none_0-render-snr30",
@@ -2942,8 +2942,8 @@
       "overall_confidence": 0.7068534253414468,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.28659939999852213,
-      "reference_runtime_seconds": 0.31322889999864856
+      "candidate_runtime_seconds": 0.2857408999989275,
+      "reference_runtime_seconds": 0.3102541999978712
     },
     {
       "id": "spanish_car_snr5_rt60none_0-render-snr0",
@@ -2967,8 +2967,8 @@
       "overall_confidence": 0.7272089415276266,
       "phonetic_coverage": 0.4971294649987412,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.21711620000132825,
-      "reference_runtime_seconds": 0.2982168999988062
+      "candidate_runtime_seconds": 0.21857449999879464,
+      "reference_runtime_seconds": 0.288569299998926
     },
     {
       "id": "spanish_car_snr5_rt60none_0-render-snr10",
@@ -2992,8 +2992,8 @@
       "overall_confidence": 0.6999873275793093,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.2573714000027394,
-      "reference_runtime_seconds": 0.23590709999916726
+      "candidate_runtime_seconds": 0.25897859999895445,
+      "reference_runtime_seconds": 0.2355686999981117
     },
     {
       "id": "spanish_car_snr5_rt60none_0-render-snr30",
@@ -3017,8 +3017,8 @@
       "overall_confidence": 0.7216737427057056,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.2798703000007663,
-      "reference_runtime_seconds": 0.23961039999994682
+      "candidate_runtime_seconds": 0.28223910000087926,
+      "reference_runtime_seconds": 0.24264019999827724
     },
     {
       "id": "spanish_office_snr10_rt60none_0-render-snr0",
@@ -3042,8 +3042,8 @@
       "overall_confidence": 0.7314094602263856,
       "phonetic_coverage": 0.8739861174561049,
       "effective_blocks": 10.701147182933386,
-      "candidate_runtime_seconds": 0.40153669999926933,
-      "reference_runtime_seconds": 0.4283458999998402
+      "candidate_runtime_seconds": 0.4164061999981641,
+      "reference_runtime_seconds": 0.42035300000134157
     },
     {
       "id": "spanish_office_snr10_rt60none_0-render-snr10",
@@ -3067,8 +3067,8 @@
       "overall_confidence": 0.7754717824701185,
       "phonetic_coverage": 0.924963808739179,
       "effective_blocks": 11.002120955804875,
-      "candidate_runtime_seconds": 0.36674760000096285,
-      "reference_runtime_seconds": 0.3360396000025503
+      "candidate_runtime_seconds": 0.3696276000009675,
+      "reference_runtime_seconds": 0.3255265000007057
     },
     {
       "id": "spanish_office_snr10_rt60none_0-render-snr30",
@@ -3092,8 +3092,8 @@
       "overall_confidence": 0.7376791015238557,
       "phonetic_coverage": 0.7990356207140736,
       "effective_blocks": 7.661495078039098,
-      "candidate_runtime_seconds": 0.4923543000004429,
-      "reference_runtime_seconds": 0.40162920000148006
+      "candidate_runtime_seconds": 0.4932666999993671,
+      "reference_runtime_seconds": 0.3951292000019748
     },
     {
       "id": "turkish_pub_snr0_rt60none_0-render-snr0",
@@ -3117,8 +3117,8 @@
       "overall_confidence": 0.6161399478425315,
       "phonetic_coverage": 0.6193900838720131,
       "effective_blocks": 4.603728911987752,
-      "candidate_runtime_seconds": 0.3233778000030725,
-      "reference_runtime_seconds": 0.2663907000023755
+      "candidate_runtime_seconds": 0.32121339999866905,
+      "reference_runtime_seconds": 0.25792379999984405
     },
     {
       "id": "turkish_pub_snr0_rt60none_0-render-snr10",
@@ -3142,8 +3142,8 @@
       "overall_confidence": 0.7124436582186583,
       "phonetic_coverage": 0.6408860515186892,
       "effective_blocks": 4.928819172374591,
-      "candidate_runtime_seconds": 0.37709950000134995,
-      "reference_runtime_seconds": 0.3190417999976489
+      "candidate_runtime_seconds": 0.3731812000005448,
+      "reference_runtime_seconds": 0.3202108000004955
     },
     {
       "id": "turkish_pub_snr0_rt60none_0-render-snr30",
@@ -3167,8 +3167,8 @@
       "overall_confidence": 0.7205652692370326,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.3242580999976781,
-      "reference_runtime_seconds": 0.28265900000042166
+      "candidate_runtime_seconds": 0.3242288999972516,
+      "reference_runtime_seconds": 0.285634800002299
     },
     {
       "id": "turkish_rain_snr5_rt60none_0-render-snr0",
@@ -3192,8 +3192,8 @@
       "overall_confidence": 0.4721436177748651,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.23228320000271196,
-      "reference_runtime_seconds": 0.28330730000016047
+      "candidate_runtime_seconds": 0.24850679999872227,
+      "reference_runtime_seconds": 0.2804087000004074
     },
     {
       "id": "turkish_rain_snr5_rt60none_0-render-snr10",
@@ -3217,8 +3217,8 @@
       "overall_confidence": 0.622316040177772,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.33239340000000084,
-      "reference_runtime_seconds": 0.23106560000087484
+      "candidate_runtime_seconds": 0.4058760000007169,
+      "reference_runtime_seconds": 0.30840990000069723
     },
     {
       "id": "turkish_rain_snr5_rt60none_0-render-snr30",
@@ -3242,8 +3242,8 @@
       "overall_confidence": 0.6453781504346082,
       "phonetic_coverage": 0.5773502691896257,
       "effective_blocks": 4.0,
-      "candidate_runtime_seconds": 0.41089670000292244,
-      "reference_runtime_seconds": 0.27382220000072266
+      "candidate_runtime_seconds": 0.4572818000015104,
+      "reference_runtime_seconds": 0.31269560000146157
     },
     {
       "id": "turkish_restaurant_snr10_rt60none_0-render-snr0",
@@ -3267,8 +3267,8 @@
       "overall_confidence": 0.22734431630135704,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.19882130000041798,
-      "reference_runtime_seconds": 0.21676469999874826
+      "candidate_runtime_seconds": 0.19827250000162167,
+      "reference_runtime_seconds": 0.2220465000027616
     },
     {
       "id": "turkish_restaurant_snr10_rt60none_0-render-snr10",
@@ -3292,8 +3292,8 @@
       "overall_confidence": 0.2993744769578348,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.21597280000059982,
-      "reference_runtime_seconds": 0.21638039999743341
+      "candidate_runtime_seconds": 0.2547618999997212,
+      "reference_runtime_seconds": 0.22173209999891696
     },
     {
       "id": "turkish_restaurant_snr10_rt60none_0-render-snr30",
@@ -3317,8 +3317,8 @@
       "overall_confidence": 0.33471414003675676,
       "phonetic_coverage": 0.0,
       "effective_blocks": 0.0,
-      "candidate_runtime_seconds": 0.21392099999866332,
-      "reference_runtime_seconds": 0.2219900999989477
+      "candidate_runtime_seconds": 0.23500789999889093,
+      "reference_runtime_seconds": 0.2568706000020029
     },
     {
       "id": "vietnamese_street_snr0_rt60none_0-render-snr0",
@@ -3342,8 +3342,8 @@
       "overall_confidence": 0.6746008936008546,
       "phonetic_coverage": 0.6673779927798856,
       "effective_blocks": 6.0,
-      "candidate_runtime_seconds": 0.289712599998893,
-      "reference_runtime_seconds": 0.30089719999887166
+      "candidate_runtime_seconds": 0.31728149999980815,
+      "reference_runtime_seconds": 0.2944600000009814
     },
     {
       "id": "vietnamese_street_snr0_rt60none_0-render-snr10",
@@ -3367,8 +3367,8 @@
       "overall_confidence": 0.7100454394055881,
       "phonetic_coverage": 0.6837729371679824,
       "effective_blocks": 6.0,
-      "candidate_runtime_seconds": 0.33679940000001807,
-      "reference_runtime_seconds": 0.38758299999972223
+      "candidate_runtime_seconds": 0.36439980000068317,
+      "reference_runtime_seconds": 0.4216907000009087
     },
     {
       "id": "vietnamese_street_snr0_rt60none_0-render-snr30",
@@ -3392,8 +3392,8 @@
       "overall_confidence": 0.756026275529079,
       "phonetic_coverage": 0.7429818138912921,
       "effective_blocks": 6.624263709278336,
-      "candidate_runtime_seconds": 0.3316024000014295,
-      "reference_runtime_seconds": 0.40494330000001355
+      "candidate_runtime_seconds": 0.34136639999996987,
+      "reference_runtime_seconds": 0.45011950000116485
     },
     {
       "id": "vietnamese_subway_snr5_rt60none_0-render-snr0",
@@ -3417,8 +3417,8 @@
       "overall_confidence": 0.4585079524223135,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.2464481999995769,
-      "reference_runtime_seconds": 0.2729005999972287
+      "candidate_runtime_seconds": 0.25607920000038575,
+      "reference_runtime_seconds": 0.2942530000000261
     },
     {
       "id": "vietnamese_subway_snr5_rt60none_0-render-snr10",
@@ -3442,8 +3442,8 @@
       "overall_confidence": 0.6099706726392311,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.2991705999993428,
-      "reference_runtime_seconds": 0.2486198999977205
+      "candidate_runtime_seconds": 0.2957115999997768,
+      "reference_runtime_seconds": 0.2392305999965174
     },
     {
       "id": "vietnamese_subway_snr5_rt60none_0-render-snr30",
@@ -3467,8 +3467,8 @@
       "overall_confidence": 0.6266246481935372,
       "phonetic_coverage": 0.5,
       "effective_blocks": 3.0,
-      "candidate_runtime_seconds": 0.25703079999948386,
-      "reference_runtime_seconds": 0.2602769000004628
+      "candidate_runtime_seconds": 0.24034340000071097,
+      "reference_runtime_seconds": 0.26439639999807696
     },
     {
       "id": "vietnamese_train_snr10_rt60none_0-render-snr0",
@@ -3492,8 +3492,8 @@
       "overall_confidence": 0.653665488970402,
       "phonetic_coverage": 0.7071067811865476,
       "effective_blocks": 6.0,
-      "candidate_runtime_seconds": 0.3075076999994053,
-      "reference_runtime_seconds": 0.32953720000296016
+      "candidate_runtime_seconds": 0.30400469999949564,
+      "reference_runtime_seconds": 0.31405540000196197
     },
     {
       "id": "vietnamese_train_snr10_rt60none_0-render-snr10",
@@ -3517,8 +3517,8 @@
       "overall_confidence": 0.6840087711947439,
       "phonetic_coverage": 0.7034073950513205,
       "effective_blocks": 5.937383560954614,
-      "candidate_runtime_seconds": 0.2962470000020403,
-      "reference_runtime_seconds": 0.32749820000026375
+      "candidate_runtime_seconds": 0.2910559000010835,
+      "reference_runtime_seconds": 0.3253268000007665
     },
     {
       "id": "vietnamese_train_snr10_rt60none_0-render-snr30",
@@ -3542,8 +3542,8 @@
       "overall_confidence": 0.6660666555702082,
       "phonetic_coverage": 0.6679334725066308,
       "effective_blocks": 5.353621484337193,
-      "candidate_runtime_seconds": 0.3178781999995408,
-      "reference_runtime_seconds": 0.3371735999971861
+      "candidate_runtime_seconds": 0.3140760999995109,
+      "reference_runtime_seconds": 0.33589669999855687
     }
   ],
   "band_observations": [
@@ -16342,8 +16342,8 @@
       "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
     },
     "runtime": {
-      "max_p99_frame_seconds": 0.4102415000026667,
-      "median_case_seconds": 0.2991860500005714,
+      "max_p99_frame_seconds": 0.4606547240018335,
+      "median_case_seconds": 0.30143485000007786,
       "platform": "Windows-11-10.0.26200-SP0",
       "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
     },

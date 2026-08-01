@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -21,6 +22,10 @@ assert SPEC is not None and SPEC.loader is not None
 TOOL = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = TOOL
 SPEC.loader.exec_module(TOOL)
+REPORT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "evaluation/cross-take-auto-eq-report.json"
+)
 
 
 def _row(improvement: float = 0.25, *, speaker: str = "actor-01") -> dict:
@@ -103,3 +108,15 @@ def test_manifest_take_rejects_substituted_audio(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Corpus hash mismatch"):
         TOOL._read_manifest_take(tmp_path, pair, "01", {})
+
+
+def test_report_separates_external_assets_from_source_freshness() -> None:
+    report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
+    source_paths = set(report["provenance"]["source_hashes"])
+    asset_paths = set(report["provenance"]["asset_hashes"])
+
+    assert all(not path.startswith("models/") for path in source_paths)
+    assert asset_paths == {
+        "models/cross_take_eval/manifest.json",
+        "models/silero_vad.onnx",
+    }

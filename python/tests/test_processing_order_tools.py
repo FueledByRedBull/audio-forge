@@ -47,6 +47,14 @@ def test_report_keeps_both_incumbent_product_orders() -> None:
     assert report["decision"]["gate_suppressor"] == "retain_gate_before_suppressor"
     assert report["decision"]["eq_deesser"] == "retain_deesser_before_eq"
 
+    source_paths = set(report["provenance"]["source_hashes"])
+    asset_paths = set(report["provenance"]["asset_hashes"])
+    assert all(not path.startswith("models/") for path in source_paths)
+    assert asset_paths == {
+        "models/dpdfnet_eval_subset/manifest.json",
+        "models/silero_vad.onnx",
+    }
+
 
 def test_pcm_reader_centers_unsigned_stereo(tmp_path: Path) -> None:
     path = tmp_path / "stereo.wav"

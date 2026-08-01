@@ -649,6 +649,8 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
         REPO_ROOT
         / "python/mic_eq/analysis/auto_eq_parts/optimizer.py",
         REPO_ROOT / "python/mic_eq/analysis/wav_io.py",
+    )
+    asset_paths = (
         manifest_path,
         REPO_ROOT / "models/silero_vad.onnx",
     )
@@ -701,6 +703,14 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
                     else path.name
                 ): _sha256(path)
                 for path in source_paths
+            },
+            "asset_hashes": {
+                (
+                    path.relative_to(REPO_ROOT).as_posix()
+                    if path.is_relative_to(REPO_ROOT)
+                    else path.name
+                ): _sha256(path)
+                for path in asset_paths
             },
             "corpus_license": manifest["license"],
             "corpus_redistribution": manifest["redistribution"],

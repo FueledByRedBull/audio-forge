@@ -539,6 +539,8 @@ def main() -> int:
         REPO_ROOT / "rust-core/src/dsp/gate.rs",
         REPO_ROOT / "rust-core/src/dsp/noise_suppressor.rs",
         REPO_ROOT / "rust-core/src/dsp/rnnoise.rs",
+    )
+    asset_paths = (
         REPO_ROOT / "models/silero_vad.onnx",
         args.corpus_root.resolve() / "manifest.json",
     )
@@ -551,6 +553,14 @@ def main() -> int:
             else path.name
         ): _sha256(path)
         for path in source_paths
+    }
+    asset_hashes = {
+        (
+            path.relative_to(REPO_ROOT).as_posix()
+            if path.is_relative_to(REPO_ROOT)
+            else path.name
+        ): _sha256(path)
+        for path in asset_paths
     }
     report = {
         "schema_version": 4,
@@ -574,6 +584,7 @@ def main() -> int:
         },
         "provenance": {
             "source_hashes": source_hashes,
+            "asset_hashes": asset_hashes,
             "proxy_corpus_pair_count": len(gate_rows),
             "proxy_corpus_license": "Apache-2.0",
             "native_simulation_backend": "mic_eq_core",
@@ -589,10 +600,7 @@ def main() -> int:
                 "product_defaults_changed": False,
             },
             "asset_hashes": {
-                "source": source_hashes,
-                "proxy_corpus_manifest": _sha256(
-                    args.corpus_root.resolve() / "manifest.json"
-                ),
+                "assets": asset_hashes,
             },
             "runtime": {
                 "gate_suppressor_median_runtime_ratio": gate_proxy["metrics"][

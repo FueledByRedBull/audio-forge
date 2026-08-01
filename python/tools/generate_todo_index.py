@@ -65,7 +65,7 @@ def _load_issues(repository: str) -> list[dict[str, Any]]:
             "--limit",
             "500",
             "--json",
-            "number,title,state,body,labels,milestone,url",
+            "number,title,state,stateReason,body,labels,milestone,url",
         )
     )
     value = json.loads(raw)
@@ -131,8 +131,12 @@ def _issue_line(issue: dict[str, Any]) -> str:
         ),
         None,
     )
-    suffix = f" — {priority}" if priority else ""
-    return f"- [{checked}] [#{number} — {title}]({url}){suffix}"
+    outcome = " — not planned" if issue.get("stateReason") == "NOT_PLANNED" else ""
+    priority_suffix = f" — {priority}" if priority else ""
+    return (
+        f"- [{checked}] [#{number} — {title}]({url})"
+        f"{outcome}{priority_suffix}"
+    )
 
 
 def render_index(issues: Sequence[dict[str, Any]], repository: str, version: str) -> str:
@@ -146,7 +150,16 @@ def render_index(issues: Sequence[dict[str, Any]], repository: str, version: str
     ]
     actionable = [issue for issue in ordered if issue not in decisions]
     open_count = sum(issue.get("state") == "OPEN" for issue in actionable)
-    closed_count = sum(issue.get("state") == "CLOSED" for issue in actionable)
+    not_planned_count = sum(
+        issue.get("state") == "CLOSED"
+        and issue.get("stateReason") == "NOT_PLANNED"
+        for issue in actionable
+    )
+    completed_count = sum(
+        issue.get("state") == "CLOSED"
+        and issue.get("stateReason") != "NOT_PLANNED"
+        for issue in actionable
+    )
 
     lines = [
         "# AudioForge roadmap index",
@@ -159,7 +172,9 @@ def render_index(issues: Sequence[dict[str, Any]], repository: str, version: str
         f"Roadmap source: [milestones](https://github.com/{repository}/milestones) · "
         f"[issues](https://github.com/{repository}/issues?q=is%3Aissue+label%3Aroadmap)",
         "",
-        f"Actionable status: **{open_count} open**, **{closed_count} completed**.",
+        f"Actionable status: **{open_count} open**, "
+        f"**{completed_count} completed**, "
+        f"**{not_planned_count} not planned**.",
         "",
         "Shipped behavior and release history live in "
         f"[CHANGELOG.md](https://github.com/{repository}/blob/master/CHANGELOG.md) "

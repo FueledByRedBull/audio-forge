@@ -23,6 +23,7 @@ def _issue(
     *,
     order: int,
     state: str = "OPEN",
+    state_reason: str | None = None,
     milestone_number: int | None = 1,
     milestone_title: str = "P0",
     labels: tuple[str, ...] = ("roadmap", "priority:p1"),
@@ -40,6 +41,7 @@ def _issue(
         "number": number,
         "title": title,
         "state": state,
+        "stateReason": state_reason,
         "body": f"<!-- audioforge-roadmap-order: {order} -->",
         "labels": [{"name": label} for label in labels],
         "milestone": milestone,
@@ -81,11 +83,38 @@ def test_render_index_groups_orders_and_separates_decisions():
     rendered = generate_todo_index.render_index(issues, "acme/audio-forge", "1.2.3")
 
     assert "Current source version: `v1.2.3`" in rendered
-    assert "Actionable status: **2 open**, **0 completed**." in rendered
+    assert (
+        "Actionable status: **2 open**, **0 completed**, **0 not planned**."
+        in rendered
+    )
     assert rendered.index("#2 — Earlier") < rendered.index("#3 — Later")
     assert "### P0" in rendered
     assert "- [x] [#4 — Held]" in rendered
     assert rendered.index("## Decisions and holds") < rendered.index("#4 — Held")
+
+
+def test_render_index_distinguishes_completed_from_not_planned() -> None:
+    issues = [
+        _issue(1, "Shipped", order=1, state="CLOSED", state_reason="COMPLETED"),
+        _issue(
+            2,
+            "Human study",
+            order=2,
+            state="CLOSED",
+            state_reason="NOT_PLANNED",
+        ),
+    ]
+
+    rendered = generate_todo_index.render_index(
+        issues, "acme/audio-forge", "1.2.3"
+    )
+
+    assert (
+        "Actionable status: **0 open**, **1 completed**, **1 not planned**."
+        in rendered
+    )
+    assert "[#2 — Human study]" in rendered
+    assert "[#2 — Human study](https://github.com/acme/audio-forge/issues/2) — not planned" in rendered
 
 
 def test_main_check_detects_stale_and_current_output(tmp_path, monkeypatch):

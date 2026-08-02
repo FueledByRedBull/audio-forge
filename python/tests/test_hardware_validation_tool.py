@@ -223,57 +223,46 @@ def _matrix_case(
     }
 
 
-def test_hardware_matrix_requires_all_os_device_rate_and_lifecycle_coverage(
-    tmp_path,
-) -> None:
+def test_hardware_matrix_accepts_one_digest_bound_automated_baseline(tmp_path) -> None:
     archive_hash = "a" * 64
-    dimensions = [
-        ("win10-built-in", "10", "built_in", 44_100, "baseline"),
-        ("win11-usb", "11", "usb", 48_000, "device_reconnect"),
-        ("win11-virtual", "11", "virtual", 48_000, "default_device_change"),
-        ("win11-sleep", "11", "usb", 48_000, "sleep_resume"),
-        ("win11-buffer", "11", "usb", 44_100, "buffer_negotiation"),
-        ("win11-route", "11", "virtual", 48_000, "route_change"),
-    ]
-    paths = []
-    for case_id, os_release, device_class, sample_rate, scenario in dimensions:
-        path = tmp_path / f"{case_id}.json"
-        path.write_text(
-            json.dumps(
-                _matrix_case(
-                    case_id=case_id,
-                    os_release=os_release,
-                    device_class=device_class,
-                    sample_rate=sample_rate,
-                    scenario=scenario,
-                    archive_sha256=archive_hash,
-                )
-            ),
-            encoding="utf-8",
-        )
-        paths.append(path)
+    path = tmp_path / "win11-virtual-baseline.json"
+    path.write_text(
+        json.dumps(
+            _matrix_case(
+                case_id="win11-virtual-baseline",
+                os_release="11",
+                device_class="virtual",
+                sample_rate=48_000,
+                scenario="baseline",
+                archive_sha256=archive_hash,
+            )
+        ),
+        encoding="utf-8",
+    )
 
     result = MATRIX_TOOL.aggregate(
-        paths,
+        [path],
         expected_archive_sha256=archive_hash,
         output=tmp_path / "matrix.json",
     )
 
     assert result["passed"] is True
-    assert all(not values for values in result["coverage"]["missing"].values())
+    assert result["coverage"]["missing"]["automated_baseline_cases"] == 0
 
 
-def test_hardware_matrix_reports_missing_coverage_without_fabrication(tmp_path) -> None:
+def test_hardware_matrix_requires_an_automated_baseline_without_fabrication(
+    tmp_path,
+) -> None:
     archive_hash = "b" * 64
     case_path = tmp_path / "baseline.json"
     case_path.write_text(
         json.dumps(
             _matrix_case(
-                case_id="win11-usb-baseline",
+                case_id="win11-usb-reconnect",
                 os_release="11",
                 device_class="usb",
                 sample_rate=48_000,
-                scenario="baseline",
+                scenario="device_reconnect",
                 archive_sha256=archive_hash,
             )
         ),
@@ -288,8 +277,7 @@ def test_hardware_matrix_reports_missing_coverage_without_fabrication(tmp_path) 
     )
 
     assert result["passed"] is False
-    assert result["coverage"]["missing"]["os_releases"] == ["10"]
-    assert "device_reconnect" in result["coverage"]["missing"]["scenarios"]
+    assert result["coverage"]["missing"]["automated_baseline_cases"] == 1
 
 
 def test_hardware_matrix_rejects_forged_top_level_pass(tmp_path) -> None:

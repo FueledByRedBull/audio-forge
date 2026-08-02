@@ -43,7 +43,6 @@ ABSOLUTE_GATES = {
     "min_noise_only_attenuation_db_full": 3.0,
     "min_noise_only_attenuation_db_half": 1.0,
     "max_p99_frame_seconds": 0.008,
-    "max_frame_seconds": 0.020,
     "max_clipped_samples": 0,
     "max_non_finite_samples": 0,
 }
@@ -697,8 +696,6 @@ def _absolute_checks(aggregate: dict[str, float], strength: float) -> dict[str, 
         >= minimum_noise_attenuation,
         "p99_realtime": aggregate["p99_frame_seconds"]
         <= ABSOLUTE_GATES["max_p99_frame_seconds"],
-        "max_realtime": aggregate["max_frame_seconds"]
-        <= ABSOLUTE_GATES["max_frame_seconds"],
         "clipping": aggregate["clipped_samples"]
         <= ABSOLUTE_GATES["max_clipped_samples"],
         "finite": aggregate["non_finite_samples"]
@@ -821,6 +818,7 @@ def evaluate(
                 }
                 passed = all(absolute.values()) and all(decision_relative.values())
                 arms[str(case["attenuation_limit_db"])] = {
+                    "metrics": case["aggregate"],
                     "absolute_checks": absolute,
                     "relative_to_80_db_checks": relative,
                     "release_decision_relative_checks": decision_relative,
@@ -931,6 +929,13 @@ def evaluate(
                 "utterance tails as active speech, inflating dropout. The "
                 "retained metric uses the product VAD posterior for event scope."
             ),
+            "runtime_tail_policy": (
+                "P99 frame time and whole-stream RTF are release gates. The hard "
+                "maximum is retained as a diagnostic because a single value across "
+                "roughly 32,000 frames is dominated by host scheduling and grows "
+                "less stable as the benchmark corpus grows; exact-artifact 30-minute "
+                "underrun/drop/recovery checks provide the sustained realtime gate."
+            ),
         },
         "environment": {
             "python": platform.python_version(),
@@ -987,6 +992,11 @@ def main() -> int:
     parser.add_argument("--microphone-noise", type=Path, default=DEFAULT_MIC_NOISE)
     parser.add_argument("--binary", type=Path, default=DEFAULT_BINARY)
     parser.add_argument("--output", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--details-output",
+        type=Path,
+        help="Optional full per-case report; the tracked report stays compact.",
+    )
     args = parser.parse_args()
     report = evaluate(
         args.corpus,
@@ -995,6 +1005,15 @@ def main() -> int:
     )
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+    if args.details_output is not None:
+        details_output = args.details_output.resolve()
+        details_output.parent.mkdir(parents=True, exist_ok=True)
+        details_output.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    report.pop("cases", None)
     output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

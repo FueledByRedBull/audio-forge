@@ -36,10 +36,12 @@ retains the archive plus generated checksum, metadata, and per-file manifest
 as one immutable Actions artifact. The separately dispatched
 `Qualify release candidate on hardware` workflow downloads those exact bytes
 onto the labelled AudioForge Windows audio runner, verifies provenance, and
-binds selected-route plus 30-minute physical-hardware evidence to the archive
-SHA-256. Publication is a third, explicit promotion step: it downloads those
-same bytes and both qualification reports, verifies every sidecar and report
-against the archive SHA-256, and uploads without rebuilding. Set
+binds selected-route plus a 30-minute automated baseline to the archive
+SHA-256. The hardware-gate workflow may aggregate additional cases, but release
+promotion requires one passing automated baseline rather than unavailable or
+operator-attested coverage. Publication is a third, explicit promotion step:
+it downloads those same bytes and both qualification reports, verifies every
+sidecar and report against the archive SHA-256, and uploads without rebuilding. Set
 `AUDIOFORGE_ASSET_SOURCE_TAG` when candidate builds should pull raw assets or
 an existing package archive from a standing asset-source release. The workflow
 still verifies all downloaded/extracted assets against `release-assets.json`
@@ -144,16 +146,20 @@ Candidate and promotion:
 4. Push `master` and `v1.11.0`, or run the `Release package` workflow manually
    to create a candidate.
 5. Record the candidate workflow run ID and generated archive SHA-256.
-6. On a self-hosted runner labelled `self-hosted`, `windows`, `x64`, and
-   `audioforge-hardware`, run `Qualify release candidate on hardware` with that
-   candidate run ID and digest, the intended physical microphone/output route,
-   and the loopback correlation route. The workflow refuses a health duration
-   below 1,800 seconds and uploads a digest-bound hardware report.
-7. Run `Promote release candidate` with the candidate workflow run ID, hardware
-   qualification workflow run ID, release tag, and approved archive SHA-256.
-   Promotion downloads the candidate plus both the automated and hardware
-   qualification reports, verifies all three against the tag commit and
-   digest, then uploads those same bytes without rebuilding.
+6. On a temporary or standing self-hosted runner labelled `self-hosted`,
+   `windows`, `x64`, and `audioforge-hardware`, run `Qualify release candidate
+   on hardware` with the candidate run ID and digest plus explicitly selected
+   health/correlation routes. Use the automated `baseline` scenario. The
+   workflow refuses a health duration below 1,800 seconds and uploads a
+   privacy-safe digest-bound report.
+7. Run `Assemble release hardware gate` with that qualification run ID. One
+   clean automated baseline is required; additional OS/device/rate/lifecycle
+   reports remain optional evidence and are never inferred.
+8. Run `Promote release candidate` with the candidate workflow run ID,
+   hardware-gate workflow run ID, release tag, and approved archive SHA-256.
+   Promotion downloads the candidate plus both qualification reports, verifies
+   all three against the tag commit and digest, then uploads those same bytes
+   without rebuilding.
 
 ## Packaging notes
 

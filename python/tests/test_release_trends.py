@@ -113,6 +113,12 @@ def test_published_entry_uses_exact_hardware_artifact_and_does_not_relabel_sourc
 
     assert entry["package"]["archive"]["value"]["sha256"] == archive_hash
     assert entry["package"]["bundle"]["value"] == {"bytes": 321, "file_count": 7}
+    hardware_value = entry["hardware"]["value"]
+    assert hardware_value["archive_sha256"] == archive_hash
+    assert hardware_value["report_sha256"] == hashlib.sha256(
+        hardware.read_bytes()
+    ).hexdigest()
+    assert "artifact" not in hardware_value
     assert entry["runtime"]["status"] == "not_measured"
     assert "not bound" in entry["runtime"]["reason"]
 

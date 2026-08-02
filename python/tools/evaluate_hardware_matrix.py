@@ -1,4 +1,4 @@
-"""Aggregate exact-artifact hardware cases into the Windows release matrix gate."""
+"""Aggregate exact-artifact hardware cases into the autonomous release gate."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any
 
 
-REQUIRED_OS_RELEASES = frozenset({"10", "11"})
-REQUIRED_DEVICE_CLASSES = frozenset({"built_in", "usb", "virtual"})
-REQUIRED_SAMPLE_RATES = frozenset({44_100, 48_000})
-REQUIRED_SCENARIOS = frozenset(
+SUPPORTED_OS_RELEASES = frozenset({"10", "11"})
+SUPPORTED_DEVICE_CLASSES = frozenset({"built_in", "usb", "virtual", "other"})
+SUPPORTED_SAMPLE_RATES = frozenset({44_100, 48_000})
+SUPPORTED_SCENARIOS = frozenset(
     {
         "baseline",
         "device_reconnect",
@@ -24,6 +24,7 @@ REQUIRED_SCENARIOS = frozenset(
         "route_change",
     }
 )
+MINIMUM_AUTOMATED_BASELINE_CASES = 1
 PSEUDONYM = re.compile(r"^device-[0-9a-f]{16}$")
 
 
@@ -70,14 +71,16 @@ def _load_case(
         sample_rate = case.get("nominal_sample_rate_hz")
         scenario = case.get("scenario")
         evidence_kind = case.get("evidence_kind")
-        if device_class not in REQUIRED_DEVICE_CLASSES | {"other"}:
+        if device_class not in SUPPORTED_DEVICE_CLASSES:
             errors.append(f"{path.name}: unsupported device class")
-        if sample_rate not in REQUIRED_SAMPLE_RATES:
+        if sample_rate not in SUPPORTED_SAMPLE_RATES:
             errors.append(f"{path.name}: unsupported nominal sample rate")
-        if scenario not in REQUIRED_SCENARIOS:
+        if scenario not in SUPPORTED_SCENARIOS:
             errors.append(f"{path.name}: unsupported lifecycle scenario")
         if evidence_kind not in {"automated", "operator_observed"}:
             errors.append(f"{path.name}: unsupported evidence kind")
+        if scenario == "baseline" and evidence_kind != "automated":
+            errors.append(f"{path.name}: baseline case must use automated evidence")
         if scenario != "baseline" and evidence_kind != "operator_observed":
             errors.append(f"{path.name}: lifecycle scenario lacks operator evidence")
         if scenario != "baseline" and case.get("operator_attestation") is not True:
@@ -85,10 +88,10 @@ def _load_case(
         if case.get("scenario_evidence_valid") is not True:
             errors.append(f"{path.name}: scenario evidence was not validated")
     machine = report.get("machine")
-    if not isinstance(machine, dict) or str(machine.get("release", "")) not in {
-        "10",
-        "11",
-    }:
+    if (
+        not isinstance(machine, dict)
+        or str(machine.get("release", "")) not in SUPPORTED_OS_RELEASES
+    ):
         errors.append(f"{path.name}: unsupported or missing Windows release")
     duration = report.get("requested_health_duration_seconds")
     if (
@@ -176,13 +179,18 @@ def aggregate(
         for _path, report in reports
         if isinstance(report.get("case"), dict)
     }
+    automated_baseline_cases = sum(
+        1
+        for _path, report in reports
+        if report.get("case", {}).get("scenario") == "baseline"
+        and report.get("case", {}).get("evidence_kind") == "automated"
+    )
     missing = {
-        "os_releases": sorted(REQUIRED_OS_RELEASES - os_releases),
-        "device_classes": sorted(REQUIRED_DEVICE_CLASSES - device_classes),
-        "nominal_sample_rates_hz": sorted(REQUIRED_SAMPLE_RATES - sample_rates),
-        "scenarios": sorted(REQUIRED_SCENARIOS - scenarios),
+        "automated_baseline_cases": max(
+            0, MINIMUM_AUTOMATED_BASELINE_CASES - automated_baseline_cases
+        )
     }
-    complete = not errors and all(not values for values in missing.values())
+    complete = not errors and missing["automated_baseline_cases"] == 0
     result = {
         "schema_version": 1,
         "qualification_kind": "exact-artifact-hardware-matrix",
@@ -203,10 +211,11 @@ def aggregate(
                 "scenarios": sorted(scenarios),
             },
             "required": {
-                "os_releases": sorted(REQUIRED_OS_RELEASES),
-                "device_classes": sorted(REQUIRED_DEVICE_CLASSES),
-                "nominal_sample_rates_hz": sorted(REQUIRED_SAMPLE_RATES),
-                "scenarios": sorted(REQUIRED_SCENARIOS),
+                "minimum_automated_baseline_cases": MINIMUM_AUTOMATED_BASELINE_CASES,
+                "minimum_health_duration_seconds": 1_800,
+                "supported_os_releases": sorted(SUPPORTED_OS_RELEASES),
+                "supported_device_classes": sorted(SUPPORTED_DEVICE_CLASSES),
+                "supported_nominal_sample_rates_hz": sorted(SUPPORTED_SAMPLE_RATES),
             },
             "missing": missing,
         },
@@ -232,7 +241,8 @@ def aggregate(
         "errors": errors,
         "limitations": [
             "Coverage is release-artifact and hardware specific; source-tree simulations do not satisfy this gate.",
-            "Non-baseline lifecycle cases combine automated health metrics with an explicit operator-observed event.",
+            "Promotion requires one digest-bound automated baseline; broader OS, device, rate, and lifecycle coverage is reported but is not inferred or required.",
+            "Optional non-baseline lifecycle cases combine automated health metrics with an explicit operator-observed event.",
             "No device names or endpoint IDs are retained in case or matrix reports.",
         ],
     }

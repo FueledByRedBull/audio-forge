@@ -12,7 +12,7 @@ on:
         required: true
         type: string
       hardware_matrix_run_id:
-        description: "Successful complete hardware-matrix workflow run for the exact candidate."
+        description: "Successful automated hardware-gate workflow run for the exact candidate."
         required: true
         type: string
       expected_archive_sha256:

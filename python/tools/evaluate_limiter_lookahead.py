@@ -613,8 +613,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     parser.add_argument("--real-manifest", type=Path, default=DEFAULT_REAL_MANIFEST)
+    parser.add_argument(
+        "--details-output",
+        type=Path,
+        help="Optional full per-case report; the tracked report stays compact.",
+    )
     args = parser.parse_args(argv)
     report = evaluate(args.real_manifest)
+    if args.details_output is not None:
+        args.details_output.parent.mkdir(parents=True, exist_ok=True)
+        args.details_output.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    report.pop("cases", None)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",

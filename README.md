@@ -35,8 +35,9 @@ AudioForge sits between your microphone and your output/virtual routing path. It
 
 ![AudioForge Auto Voice Setup dialog showing target and dynamics choices plus sanitized validated recommendation summaries.](docs/images/audioforge-auto-voice-setup.png)
 
-The screenshots use deterministic sanitized state; their capture and refresh
-contract is documented in [Repository screenshots](docs/repository-screenshots.md).
+The screenshots use deterministic sanitized state. Regenerate them with
+`python/tools/capture_repository_screenshots.py`; automated checks cover their
+dimensions, hashes, alt text, and privacy boundary.
 
 User-facing tools:
 
@@ -57,13 +58,12 @@ User-facing tools:
 - Bounded full-processing undo/redo (`Ctrl+Z` / `Ctrl+Shift+Z`) for manual
   edits, presets, Auto-EQ, and Auto Voice Setup, with realtime state excluded.
 
-The versioned preset fields, filter mathematics, migration rules, ignored
-parameters, and retention gates are defined in the
-[EQ preset and runtime contract](docs/eq-preset-schema.md).
-The immutable snapshot boundary and migration-provenance behavior are defined
-in the [processing configuration history contract](docs/configuration-history.md).
-Graph ranges, keyboard behavior, synchronization, and gesture-level undo are
-defined in the [EQ graph editing contract](docs/eq-graph-editing.md).
+Presets use a versioned typed-band schema; migration tests preserve explicit
+user values and response parity. The graph and numeric controls share that
+schema and the native Rust response renderer. Undo snapshots contain validated
+processing settings only—not audio, device handles, DSP delay state, or meter
+history. These contracts are enforced by the config, EQ, graph, and history
+tests rather than duplicated across separate design documents.
 
 Operational tools:
 
@@ -79,6 +79,11 @@ AudioForge currently supports Windows 10/11 only. Source builds, CI, portable `d
 
 DeepFilterNet support is intentionally opt-in for source runs. Packaged builds register and enable verified bundled assets during application bootstrap; RNNoise remains the safe default when those assets are absent. External DLL/model paths are ignored unless `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` is explicitly set.
 DeepFilter model/DLL initialization and Silero VAD inference are prepared off the realtime DSP loop; the audio path only swaps ready suppressor state and consumes cached VAD probabilities.
+
+Objective DSP decisions and release evidence are indexed in
+[`evaluation/README.md`](evaluation/README.md). Tracked reports contain compact
+aggregates, gates, hashes, decisions, and limitations; raw per-case details are
+optional ignored outputs, not repository content.
 
 ## DSP Chain
 

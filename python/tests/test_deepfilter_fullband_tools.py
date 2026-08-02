@@ -130,6 +130,31 @@ def test_noise_only_attenuation_is_diagnostic_not_a_default_selector() -> None:
     assert all(release_checks.values())
 
 
+def test_runtime_gate_uses_p99_not_scheduler_sensitive_hard_maximum() -> None:
+    aggregate = {
+        "clean_p10_si_sdr_db": 30.0,
+        "clean_p90_lsd_db": 1.0,
+        "clean_p90_hf_lsd_db": 2.0,
+        "clean_max_dropout_rate": 0.0,
+        "environmental_median_improvement_db": 4.0,
+        "environmental_p10_improvement_db": 1.0,
+        "hiss_median_improvement_db": 2.0,
+        "hiss_p10_improvement_db": 0.0,
+        "noise_only_median_attenuation_db": 6.0,
+        "p99_frame_seconds": 0.007,
+        "max_frame_seconds": 0.5,
+        "clipped_samples": 0.0,
+        "non_finite_samples": 0.0,
+    }
+
+    checks = TOOL._absolute_checks(aggregate, 1.0)
+
+    assert checks["p99_realtime"] is True
+    assert "max_realtime" not in checks
+    aggregate["p99_frame_seconds"] = 0.009
+    assert TOOL._absolute_checks(aggregate, 1.0)["p99_realtime"] is False
+
+
 def test_report_retains_30_db_under_objective_policy() -> None:
     report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
 

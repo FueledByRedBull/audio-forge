@@ -52,6 +52,15 @@ def test_portable_audible_report_passes(tmp_path: Path, monkeypatch):
     assert hygiene.validate_report(path) == []
 
 
+def test_oversized_tracked_report_is_rejected(tmp_path: Path):
+    path = tmp_path / "report.json"
+    _write(path, {"rows": ["x" * hygiene.MAX_TRACKED_REPORT_BYTES]})
+
+    errors = hygiene.validate_report(path)
+
+    assert any("tracked report exceeds" in error for error in errors)
+
+
 def test_audible_report_requires_source_hashes(tmp_path: Path):
     path = tmp_path / "report.json"
     _write(

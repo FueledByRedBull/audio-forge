@@ -17,6 +17,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TRENDS = REPO_ROOT / "evaluation" / "release-trends.json"
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+HARDWARE_FAILURE_COUNTERS = (
+    "input_dropped_samples",
+    "input_backlog_dropped_samples",
+    "input_backlog_recovery_count",
+    "input_callback_error_count",
+    "output_short_write_dropped_samples",
+    "output_recovery_event_count",
+    "output_callback_error_count",
+    "stream_restart_count",
+    "rt_buffer_overflow_count",
+    "suppressor_non_finite_count",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -76,6 +88,61 @@ def _report_archive_sha256(report: dict[str, Any]) -> str | None:
     if isinstance(value, str) and SHA256_PATTERN.fullmatch(value.casefold()):
         return value.casefold()
     return None
+
+
+def _hardware_summary(path: Path, report: dict[str, Any]) -> dict[str, Any]:
+    artifact = report.get("artifact")
+    case = report.get("case")
+    machine = report.get("machine")
+    correlation = report.get("selected_route_correlation")
+    health = report.get("sustained_health")
+    diagnostics = health.get("runtime_diagnostics") if isinstance(health, dict) else None
+    if not isinstance(artifact, dict):
+        artifact = {}
+    if not isinstance(case, dict):
+        case = {}
+    if not isinstance(machine, dict):
+        machine = {}
+    if not isinstance(correlation, dict):
+        correlation = {}
+    if not isinstance(health, dict):
+        health = {}
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+    underrun_baseline = health.get("output_underrun_baseline")
+    underrun_final = diagnostics.get("output_underrun_total")
+    underrun_delta = (
+        int(underrun_final) - int(underrun_baseline)
+        if isinstance(underrun_baseline, int) and isinstance(underrun_final, int)
+        else None
+    )
+    return {
+        "schema_version": 1,
+        "report_sha256": _sha256(path),
+        "qualification_kind": report.get("qualification_kind"),
+        "archive_sha256": _report_archive_sha256(report),
+        "os_release": machine.get("release"),
+        "case": {
+            "device_class": case.get("device_class", "unclassified_historical"),
+            "nominal_sample_rate_hz": case.get(
+                "nominal_sample_rate_hz", diagnostics.get("output_sample_rate")
+            ),
+            "scenario": case.get("scenario", "baseline"),
+        },
+        "health_duration_seconds": report.get(
+            "requested_health_duration_seconds"
+        ),
+        "route_latency_ms": correlation.get("route_latency_ms"),
+        "route_confidence": correlation.get("confidence"),
+        "max_input_callback_age_ms": health.get("max_input_callback_age_ms"),
+        "max_output_callback_age_ms": health.get("max_output_callback_age_ms"),
+        "output_underrun_delta": underrun_delta,
+        "engine_latency_ms": diagnostics.get("engine_latency_ms"),
+        "failure_counters": {
+            name: diagnostics.get(name) for name in HARDWARE_FAILURE_COUNTERS
+        },
+        "passed": True,
+    }
 
 
 def _deepfilter_metrics(
@@ -164,7 +231,7 @@ def build_entry(
         )
     else:
         archive_metric = _not_measured("No release-matched archive was supplied.")
-    if hardware is not None:
+    if hardware is not None and hardware_report is not None:
         hardware_hash = _report_archive_sha256(hardware)
         if archive_hash is not None and hardware_hash != archive_hash:
             raise ValueError("hardware report does not match the supplied archive")
@@ -182,7 +249,7 @@ def build_entry(
                 bundle_metric = _measurement(
                     {"bytes": bundle_bytes, "file_count": file_count}
                 )
-        hardware_metric = _measurement(hardware)
+        hardware_metric = _measurement(_hardware_summary(hardware_report, hardware))
     else:
         hardware_metric = _not_measured(
             "No release-matched hardware health report was supplied."
@@ -212,13 +279,15 @@ def update_trends(path: Path, entry: dict[str, Any]) -> dict[str, Any]:
         trends = json.loads(path.read_text(encoding="utf-8"))
     else:
         trends = {
-            "schema_version": 1,
+            "schema_version": 2,
             "policy": (
                 "Only compare values with status=measured and release-matched inputs; "
-                "missing historical evidence stays explicit rather than inferred."
+                "missing historical evidence stays explicit rather than inferred; "
+                "full logs and diagnostics stay in exact release artifacts."
             ),
             "releases": [],
         }
+    trends["schema_version"] = 2
     releases = [
         release
         for release in trends["releases"]

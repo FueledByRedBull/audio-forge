@@ -297,6 +297,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus-root", type=Path, default=DEFAULT_CORPUS_ROOT)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--details-output",
+        type=Path,
+        help="Optional full per-case report; the tracked report stays compact.",
+    )
     parser.add_argument("--clip-seconds", type=float, default=30.0)
     parser.add_argument("--max-languages", type=int, default=12)
     args = parser.parse_args()
@@ -450,6 +455,12 @@ def main() -> int:
             "The 12-language sample is one 30-second segment per language, so condition and speaker breadth remain limited.",
         ],
     }
+    if args.details_output is not None:
+        args.details_output.parent.mkdir(parents=True, exist_ok=True)
+        args.details_output.write_text(
+            json.dumps(report, indent=2) + "\n", encoding="utf-8"
+        )
+    report.pop("cases", None)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"retained": retained, "metrics": metrics}, sort_keys=True))

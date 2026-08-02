@@ -684,7 +684,6 @@ def _gate(aggregate: dict[str, Any]) -> dict[str, bool]:
 
 def _source_hashes() -> dict[str, str]:
     paths = (
-        "docs/sparse-auto-eq-evaluation.md",
         "python/tools/evaluate_sparse_auto_eq_filters.py",
         "python/mic_eq/analysis/wav_io.py",
         "python/mic_eq/analysis/auto_eq_parts/optimizer.py",
@@ -763,7 +762,7 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
                 "separator_seconds": SEPARATOR_SECONDS,
                 "timing_repeats": TIMING_REPEATS,
                 "manifest_split_policy": "validation and test actors only",
-                "pre_registration": "docs/sparse-auto-eq-evaluation.md",
+                "pre_registration": "https://github.com/FueledByRedBull/audio-forge/issues/42",
             },
             "asset_hashes": {
                 "corpus_manifest": _sha256(manifest_path),
@@ -818,12 +817,27 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus-root", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--details-output",
+        type=Path,
+        help="Optional full per-case report; the tracked report stays compact.",
+    )
     args = parser.parse_args()
     report = evaluate(args.corpus_root)
     report_path = args.report
     if not report_path.is_absolute():
         report_path = REPO_ROOT / report_path
     report_path.parent.mkdir(parents=True, exist_ok=True)
+    if args.details_output is not None:
+        details_path = args.details_output
+        if not details_path.is_absolute():
+            details_path = REPO_ROOT / details_path
+        details_path.parent.mkdir(parents=True, exist_ok=True)
+        details_path.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    report.pop("cases", None)
     report_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

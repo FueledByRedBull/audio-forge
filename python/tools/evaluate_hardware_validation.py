@@ -22,7 +22,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REPORT = REPO_ROOT / "evaluation" / "hardware-validation.json"
+DEFAULT_REPORT = REPO_ROOT / "models" / "evaluation-details" / "hardware-validation.json"
 SELF_TEST_RESULT = re.compile(
     r"Self-test passed: rt=(?P<latency>[0-9.]+)ms confidence=(?P<confidence>[0-9.]+)"
 )

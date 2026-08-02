@@ -15,6 +15,8 @@ LICENSE text eol=lf
 *.yaml text eol=lf
 *.ps1 text eol=crlf
 *.bat text eol=crlf
+*.c text eol=lf
+*.h text eol=lf
 
 *.dll binary
 *.exe binary

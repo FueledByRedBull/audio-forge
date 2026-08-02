@@ -390,6 +390,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus-root", type=Path, default=DEFAULT_CORPUS_ROOT)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--details-output",
+        type=Path,
+        help="Optional full per-capture report; the tracked report stays compact.",
+    )
     parser.add_argument("--clip-seconds", type=float, default=15.0)
     args = parser.parse_args()
     captures: list[dict[str, Any]] = []
@@ -509,6 +514,15 @@ def main() -> int:
             "Multiple deterministic SNR renders from one source are correlated; language-disjoint validation prevents source overlap across threshold fitting and validation but does not create more speakers.",
         ],
     }
+    if args.details_output is not None:
+        args.details_output.parent.mkdir(parents=True, exist_ok=True)
+        args.details_output.write_text(
+            json.dumps(report, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    report.pop("captures", None)
+    report.pop("band_observations", None)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(
         json.dumps(report, indent=2) + "\n",

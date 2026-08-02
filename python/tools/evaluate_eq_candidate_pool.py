@@ -460,8 +460,22 @@ def main() -> int:
         type=Path,
         default=Path("evaluation/eq-candidate-pool-report.json"),
     )
+    parser.add_argument(
+        "--details-output",
+        type=Path,
+        help="Optional full per-case report; the tracked report stays compact.",
+    )
     args = parser.parse_args()
     report = evaluate()
+    if args.details_output is not None:
+        args.details_output.parent.mkdir(parents=True, exist_ok=True)
+        args.details_output.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    for variant in report["variants"].values():
+        variant.pop("rows", None)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",

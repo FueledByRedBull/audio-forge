@@ -709,7 +709,22 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=REPO_ROOT / "evaluation/resampler-quality-report.json",
     )
+    parser.add_argument(
+        "--details-output",
+        type=Path,
+        help="Optional full per-tone report; the tracked report stays compact.",
+    )
     return parser
+
+
+def _remove_measurement_details(report: dict[str, Any]) -> None:
+    arms = [report["product"], *report["alternatives"]]
+    for arm in arms:
+        measurements = arm["measurements"]
+        measurements["downsample_alias"].pop("tones", None)
+        measurements["upsample_image"].pop("tones", None)
+        for comparison in measurements["passband_and_offline_reference"]:
+            comparison.pop("responses", None)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -719,6 +734,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = evaluate(args.duration_seconds)
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
+    if args.details_output is not None:
+        details_output = args.details_output.resolve()
+        details_output.parent.mkdir(parents=True, exist_ok=True)
+        details_output.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    _remove_measurement_details(report)
     output.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

@@ -528,6 +528,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus-root", type=Path, default=DEFAULT_CORPUS_ROOT)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--details-output",
+        type=Path,
+        help="Optional full per-case report; the tracked report stays compact.",
+    )
     parser.add_argument("--clip-seconds", type=float, default=20.0)
     args = parser.parse_args()
     gate_rows = [
@@ -631,6 +636,15 @@ def main() -> int:
             "The EQ/de-esser comparison uses deterministic proxy cases; because the candidate fails those objective gates, no product-order change is justified.",
         ],
     }
+    if args.details_output is not None:
+        args.details_output.parent.mkdir(parents=True, exist_ok=True)
+        args.details_output.write_text(
+            json.dumps(report, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    report["gate_suppressor"].pop("cases", None)
+    report["eq_deesser"].pop("cases", None)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(
         json.dumps(report, indent=2) + "\n",

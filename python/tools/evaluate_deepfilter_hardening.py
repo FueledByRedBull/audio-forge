@@ -645,6 +645,11 @@ def main() -> int:
     parser.add_argument("--corpus-root", type=Path, default=DEFAULT_CORPUS_ROOT)
     parser.add_argument("--binary", type=Path, default=DEFAULT_BINARY)
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument(
+        "--details-output",
+        type=Path,
+        help="Optional full per-case report; the tracked report stays compact.",
+    )
     parser.add_argument("--clip-seconds", type=float, default=10.0)
     parser.add_argument("--max-languages", type=int, default=12)
     args = parser.parse_args()
@@ -812,6 +817,13 @@ def main() -> int:
             "median_dropout_rate": selected_aggregate["median_clean_dropout_rate"],
         },
     }
+    if args.details_output is not None:
+        args.details_output.parent.mkdir(parents=True, exist_ok=True)
+        args.details_output.write_text(
+            json.dumps(report, indent=2) + "\n", encoding="utf-8"
+        )
+    report.pop("cases", None)
+    report["corpus"].pop("segments", None)
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report["selected_runtime_config"], sort_keys=True))

@@ -3,6 +3,22 @@
  *
  * Input and output are raw mono little-endian float32 samples at 48 kHz.
  * The metadata path receives a compact JSON object with frame timing data.
+ *
+ * Pinned reproduction build (from repository root, with Xiph RNNoise commit
+ * 70f1d256acd4b34a572f999a05c87bf00b67730d under
+ * models/benchmarks/upstream-rnnoise):
+ *
+ *   zig cc -O3 -DRNNOISE_BUILD -I<rnnoise>/include -I<rnnoise>/src \
+ *     python/tools/rnnoise_upstream_benchmark.c \
+ *     <rnnoise>/src/denoise.c <rnnoise>/src/rnn.c \
+ *     <rnnoise>/src/pitch.c <rnnoise>/src/kiss_fft.c \
+ *     <rnnoise>/src/celt_lpc.c <rnnoise>/src/nnet.c \
+ *     <rnnoise>/src/nnet_default.c <rnnoise>/src/parse_lpcnet_weights.c \
+ *     <rnnoise>/src/rnnoise_data.c <rnnoise>/src/rnnoise_tables.c \
+ *     -o models/benchmarks/rnnoise-upstream-benchmark.exe
+ *
+ * This is the scalar comparison path; it deliberately omits x86 RTCD/SIMD
+ * translation units. The recorded Zig archive hash remains in the report.
  */
 
 #include <math.h>

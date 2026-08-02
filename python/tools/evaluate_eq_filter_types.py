@@ -597,6 +597,11 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=REPO_ROOT / "evaluation" / "eq-filter-types-report.json",
     )
+    parser.add_argument(
+        "--details-output",
+        type=Path,
+        help="Optional full per-clip report; the tracked report stays compact.",
+    )
     return parser.parse_args()
 
 
@@ -609,6 +614,16 @@ def main() -> int:
     if not report_path.is_absolute():
         report_path = REPO_ROOT / report_path
     report_path.parent.mkdir(parents=True, exist_ok=True)
+    if args.details_output is not None:
+        details_path = args.details_output
+        if not details_path.is_absolute():
+            details_path = REPO_ROOT / details_path
+        details_path.parent.mkdir(parents=True, exist_ok=True)
+        details_path.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    report["measurements"]["corpus"].pop("clips", None)
     report_path.write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

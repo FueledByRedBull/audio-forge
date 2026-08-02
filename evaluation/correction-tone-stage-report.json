@@ -1,17 +1,17 @@
 {
   "aggregate": {
     "all_outputs_finite": true,
-    "candidate_p95_realtime_factor": 0.0014165302701390707,
+    "candidate_p95_realtime_factor": 0.0014840170309613591,
     "case_count": 12,
     "failed_cases": 0,
-    "incumbent_p95_realtime_factor": 0.0012521421491641187,
+    "incumbent_p95_realtime_factor": 0.0013447805378813435,
     "latency_samples": [
       0
     ],
     "max_response_parity_delta_db": 0.0,
     "max_true_peak_overshoot_db": 0.0,
     "p95_limiter_gr_db": 0.0,
-    "p95_runtime_ratio": 3881.4883442016485,
+    "p95_runtime_ratio": 4095.239958801691,
     "schema_roundtrip": true,
     "tone_payload_preserved": true,
     "tone_profiles": [
@@ -33,344 +33,6 @@
     ],
     "scope": "evaluation_only"
   },
-  "cases": [
-    {
-      "duration_seconds": 4.7065,
-      "hashes": [
-        "58976c41995f22917a143bf00654bf54e86525ee15e729c7a805b8eef28849c3",
-        "034de7f89e16082e6aeae23746978d2a42add1d81c29d9f8c615b3e020d70643"
-      ],
-      "id": "p232_001+p232_002",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p232_001.wav",
-        "models/deepfilter_fullband_eval/clean/p232_002.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.001248634866673749,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 0.0012486136194624455,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 1.0000170166422762
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "flat"
-    },
-    {
-      "duration_seconds": 13.681479166666668,
-      "hashes": [
-        "85bd30db189b8abdde6719efb07b34965fb5fb9b6e476ae23f6e6b2d4fd720db",
-        "89b1ebdeabff150a3cc12629178e5b98a2366e052f3e8028ea853c2059f69494"
-      ],
-      "id": "p232_003+p232_005",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p232_003.wav",
-        "models/deepfilter_fullband_eval/clean/p232_005.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.0014006965012006805,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 0.0011510670599396082,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 1.2168678524031167
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "presence"
-    },
-    {
-      "duration_seconds": 9.309395833333333,
-      "hashes": [
-        "337d07d33650b223ec973413db1e455aa907dc21a94e49f0544f561e2bce600c",
-        "74d3ecad4aacbb89cfc4d1bd6dde9bb2c12f6014aaced6e281ff961c421f48f7"
-      ],
-      "id": "p232_006+p232_007",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p232_006.wav",
-        "models/deepfilter_fullband_eval/clean/p232_007.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.0014358826543971032,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 0.0011849963410622334,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 1.211719061604844
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "warm"
-    },
-    {
-      "duration_seconds": 7.172,
-      "hashes": [
-        "a659b948b1f4f79dcd9f8282bcb9b05587fddfd577ed9a8ccbe582a915ab5c16",
-        "3b0c7a3e675b557133a8919ddf9823496f8dab4108942bfa4cdca9e5e8b0bfcb"
-      ],
-      "id": "p232_009+p232_010",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p232_009.wav",
-        "models/deepfilter_fullband_eval/clean/p232_010.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.001378694924707195,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 0.0012539598438371447,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 1.0994729468276736
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "bass_cut"
-    },
-    {
-      "duration_seconds": 11.123791666666667,
-      "hashes": [
-        "b21765d847cc1ddf3ba05cf6fe5016d3d24f96ab3a6c7ce47e2feb79f7875617",
-        "4af0f8d29bcf281cc731632ace842206ede9f1fa6a4afad21b2c741321eacac2"
-      ],
-      "id": "p232_011+p232_012",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p232_011.wav",
-        "models/deepfilter_fullband_eval/clean/p232_012.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.0011442051758430688,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 0.0011441961861026102,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 1.0000078568173605
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "flat"
-    },
-    {
-      "duration_seconds": 8.810291666666666,
-      "hashes": [
-        "d7a51b4fdfb02657cf9410dbd34b4ea165acbec48581a8a074e1d45fdd3b3334",
-        "54c19a5eccdb614e646e58ff6df7561c5e43ae6aafcb06cd4839d66269eddc09"
-      ],
-      "id": "p232_013+p232_014",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p232_013.wav",
-        "models/deepfilter_fullband_eval/clean/p232_014.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.0013916111365968778,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 0.0011406886832161251,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 1.2199745268562558
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "presence"
-    },
-    {
-      "duration_seconds": 5.2456875,
-      "hashes": [
-        "7f6eed44c7831cf9aa979d7eb53c7a9f7e4e0b75576d2d0e7741ba4377724be0",
-        "b9608fa621bf688a9c8f40fd6e6bf225ef5e06823b806eab3836f2d3a941ca92"
-      ],
-      "id": "p257_001+p257_002",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p257_001.wav",
-        "models/deepfilter_fullband_eval/clean/p257_002.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.0012512754524549928,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 0.0009997926868499124,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 1.251534912100065
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "warm"
-    },
-    {
-      "duration_seconds": 9.402833333333334,
-      "hashes": [
-        "394acaaf0d1bf55678ed10e4ce5f09cc691dcd4e0e99d0d66809637dbb37e197",
-        "d2bb1c605d416df5fafa2aea4d4fb83df78bd3f9a46260606f5e3d1b58042f2e"
-      ],
-      "id": "p257_003+p257_004",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p257_003.wav",
-        "models/deepfilter_fullband_eval/clean/p257_004.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.0013771912721342856,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 0.0012506549444316428,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 1.1011760504094492
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "bass_cut"
-    },
-    {
-      "duration_seconds": 7.922166666666667,
-      "hashes": [
-        "336051b3e1eb146169c48d23e56ef4abae990c22f223fe11a43cec896419024e",
-        "422f5f0d43ad411d811188e2dc4dfafe8784ab793759f22dd3ee784089976587"
-      ],
-      "id": "p257_006+p257_007",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p257_006.wav",
-        "models/deepfilter_fullband_eval/clean/p257_007.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.0011367723476321714,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 0.0011367597248227548,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 1.00001110420183
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "flat"
-    },
-    {
-      "duration_seconds": 9.285729166666666,
-      "hashes": [
-        "e4d93c15e49a577b7db5c58cec7e02a18d18bdf6c4896fc250c3588849d64c20",
-        "d7157be0fdc8a3719ec53fadd592c8fdb2e3593b2642858722b7a06803a2cc54"
-      ],
-      "id": "p257_008+p257_009",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p257_008.wav",
-        "models/deepfilter_fullband_eval/clean/p257_009.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.001386557777952279,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 0.0011367120244999609,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 1.2197968773685008
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "presence"
-    },
-    {
-      "duration_seconds": 7.7275625,
-      "hashes": [
-        "6141f7339ece44a6c6ac001443ef21ed1257926f1eb55c63bbff9a1ba5dfc846",
-        "8d7e165b15a2805c8d7ccd0e677c2da4212bc9079cbc8fa8acf48a804d29baab"
-      ],
-      "id": "p257_010+p257_011",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p257_010.wav",
-        "models/deepfilter_fullband_eval/clean/p257_011.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.0013839551605050104,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 0.001132271657459904,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 1.2222819068082336
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "warm"
-    },
-    {
-      "duration_seconds": 6.845770833333333,
-      "hashes": [
-        "4f3c69bc8a9442f4b18d406511f56e7b836a86cbd59c491234f124f8cfdc9e59",
-        "61f1b6fef318c7591af6bd53cd14ca6ea3881cb56d4afe0f1236e085ca7dc5d4"
-      ],
-      "id": "p257_012+p257_013",
-      "paths": [
-        "models/deepfilter_fullband_eval/clean/p257_012.wav",
-        "models/deepfilter_fullband_eval/clean/p257_013.wav"
-      ],
-      "render": {
-        "candidate_realtime_factor": 0.00012597558711735044,
-        "finite": true,
-        "full_chain_limiter_gr_db": 0.0,
-        "full_chain_true_peak_overshoot_db": 0.0,
-        "incumbent_realtime_factor": 1.4607558803032284e-08,
-        "latency_samples": [
-          0,
-          0
-        ],
-        "runtime_ratio": 8624.0
-      },
-      "response_parity_delta_db": 0.0,
-      "schema_roundtrip": true,
-      "tone_payload_preserved": true,
-      "tone_profile": "bass_cut"
-    }
-  ],
   "checks": {
     "all_tone_profiles": true,
     "enough_cases": true,
@@ -397,9 +59,8 @@
     "asset_hashes": {
       "corpus_manifest": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6",
       "source": {
-        "docs/correction-tone-stage-evaluation.md": "2effb01d72d6b5786a700b3061d0712fc5fd72c56fb82ac88565f6504a12e7ae",
         "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-        "python/tools/evaluate_correction_tone_stages.py": "6d37e9660b7d685e942902779fb027686aac7e3cb13859b39003e7fd6ff0304d",
+        "python/tools/evaluate_correction_tone_stages.py": "b77cffcb8ef36a00e923fdd5a8b74cee8409144944d43aea3a53bfb30272aade",
         "rust-core/src/dsp/eq.rs": "075733d4f7475fd2886e3ddfec969c70243d491a845406714a1f7dad6f5993a7",
         "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
       }
@@ -411,7 +72,7 @@
     },
     "configuration": {
       "input_peak_normalization": 0.5,
-      "pre_registration": "docs/correction-tone-stage-evaluation.md",
+      "pre_registration": "https://github.com/FueledByRedBull/audio-forge/issues/28",
       "sample_rate": 48000,
       "tone_profiles": [
         "flat",
@@ -427,18 +88,18 @@
       "sample_rate": 48000
     },
     "runtime": {
-      "candidate_p95_realtime_factor": 0.0014165302701390707,
-      "incumbent_p95_realtime_factor": 0.0012521421491641187,
+      "candidate_p95_realtime_factor": 0.0014840170309613591,
+      "incumbent_p95_realtime_factor": 0.0013447805378813435,
       "machine": "Windows-11-10.0.26200-SP0",
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native offline API reports whole-clip runtime; realtime factor is measured for both one- and two-stage paths.",
-      "p95_runtime_ratio": 3881.4883442016485,
+      "p95_runtime_ratio": 4095.239958801691,
       "python": "3.12.10"
     }
   },
   "experiment": "Separate Auto-EQ correction and user tone stages",
   "failures": [],
-  "generated_at_utc": "2026-08-01T19:59:49.567604+00:00",
+  "generated_at_utc": "2026-08-02T13:57:11.701923+00:00",
   "incumbent": {
     "bands": 10,
     "stages": 1
@@ -461,9 +122,8 @@
   },
   "schema_version": 2,
   "source_sha256": {
-    "docs/correction-tone-stage-evaluation.md": "2effb01d72d6b5786a700b3061d0712fc5fd72c56fb82ac88565f6504a12e7ae",
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-    "python/tools/evaluate_correction_tone_stages.py": "6d37e9660b7d685e942902779fb027686aac7e3cb13859b39003e7fd6ff0304d",
+    "python/tools/evaluate_correction_tone_stages.py": "b77cffcb8ef36a00e923fdd5a8b74cee8409144944d43aea3a53bfb30272aade",
     "rust-core/src/dsp/eq.rs": "075733d4f7475fd2886e3ddfec969c70243d491a845406714a1f7dad6f5993a7",
     "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
   }

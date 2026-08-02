@@ -12,6 +12,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_EVALUATION_ROOT = REPO_ROOT / "evaluation"
+MAX_TRACKED_REPORT_BYTES = 100_000
 WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[/\\]")
 POSIX_HOME = re.compile(r"^/(?:Users|home)/[^/]+(?:/|$)")
 AUDIBLE_CONTRACT_FIELDS = {
@@ -87,6 +88,11 @@ def _walk_strings(value: Any, location: str = "$") -> list[tuple[str, str]]:
 
 def validate_report(path: Path) -> list[str]:
     errors: list[str] = []
+    if path.stat().st_size > MAX_TRACKED_REPORT_BYTES:
+        errors.append(
+            f"{path}: tracked report exceeds {MAX_TRACKED_REPORT_BYTES} bytes; "
+            "move per-case detail to an ignored --details-output artifact"
+        )
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:

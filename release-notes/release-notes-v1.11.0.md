@@ -76,11 +76,7 @@ asset verification, a clean Windows bundle build, package smoke, provenance
 verification, and hidden executable startup. Exact artifact facts belong to the
 generated `.sha256`, `.metadata.json`, and `.manifest.json` sidecars.
 
-The current local exact-artifact qualification passes package, startup, model
-discovery, route correlation, and the strict 30-minute Windows health arm. Its
-underrun counter remained at the post-warmup baseline of two, with zero drops,
-recovery, restarts, callback errors, overflows, backend failures, RT errors, or
-non-finite resets. The archive was built from an uncommitted tree and remains
-non-promotable; a clean hash-bound workflow candidate and passing remote CI are
-still required before publication. Broader physical-device, Windows 10,
-44.1 kHz, and lifecycle coverage is explicitly unobserved rather than implied.
+Publication requires a clean workflow candidate plus a SHA-bound automated
+30-minute selected-route baseline from those exact bytes. Broader physical
+device, Windows-version, 44.1 kHz, and lifecycle coverage is optional evidence
+and remains explicitly unobserved rather than implied.

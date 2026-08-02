@@ -10,7 +10,10 @@
       "package": {
         "bundle": {
           "status": "measured",
-          "value": {"bytes": 301611876, "file_count": 211}
+          "value": {
+            "bytes": 301611876,
+            "file_count": 211
+          }
         },
         "archive": {
           "status": "measured",
@@ -42,7 +45,10 @@
       "package": {
         "bundle": {
           "status": "measured",
-          "value": {"bytes": 304128908, "file_count": 255}
+          "value": {
+            "bytes": 304128908,
+            "file_count": 255
+          }
         },
         "archive": {
           "status": "measured",
@@ -81,6 +87,72 @@
           "max_output_callback_age_ms": 19,
           "output_underrun_delta": 0,
           "engine_latency_ms": 38.43600082397461,
+          "failure_counters": {
+            "input_dropped_samples": 0,
+            "input_backlog_dropped_samples": 0,
+            "input_backlog_recovery_count": 0,
+            "input_callback_error_count": 0,
+            "output_short_write_dropped_samples": 0,
+            "output_recovery_event_count": 0,
+            "output_callback_error_count": 0,
+            "stream_restart_count": 0,
+            "rt_buffer_overflow_count": 0,
+            "suppressor_non_finite_count": 0
+          },
+          "passed": true
+        }
+      }
+    },
+    {
+      "version": "1.11.0",
+      "status": "published",
+      "commit": "86e00a18b4fd1d746a5283c44d47f741165a6d06",
+      "recorded_at_utc": "2026-08-02T22:14:13.205187+00:00",
+      "package": {
+        "bundle": {
+          "status": "measured",
+          "value": {
+            "bytes": 301904934,
+            "file_count": 209
+          }
+        },
+        "archive": {
+          "status": "measured",
+          "value": {
+            "bytes": 112138777,
+            "sha256": "e5664fdbf3cbe8201d7ea08664cc65c23156f76e580457d72336b15032cf18a8",
+            "format": "7z"
+          }
+        }
+      },
+      "runtime": {
+        "status": "not_measured",
+        "reason": "No release-matched DeepFilter hardening report was supplied."
+      },
+      "quality": {
+        "status": "not_measured",
+        "reason": "No release-matched DeepFilter hardening report was supplied."
+      },
+      "hardware": {
+        "status": "measured",
+        "value": {
+          "schema_version": 1,
+          "report_sha256": "bd942b3a589ea132f04e8e57332446cc0462172313f6351ba6b2faf1e25e727c",
+          "qualification_kind": "exact-artifact-hardware",
+          "archive_sha256": "e5664fdbf3cbe8201d7ea08664cc65c23156f76e580457d72336b15032cf18a8",
+          "os_release": "11",
+          "case": {
+            "device_class": "usb",
+            "nominal_sample_rate_hz": 48000,
+            "scenario": "baseline"
+          },
+          "health_duration_seconds": 1800.0,
+          "route_latency_ms": 118.09,
+          "route_confidence": 0.869,
+          "max_input_callback_age_ms": 10,
+          "max_output_callback_age_ms": 19,
+          "output_underrun_delta": 0,
+          "engine_latency_ms": 52.85300064086914,
           "failure_counters": {
             "input_dropped_samples": 0,
             "input_backlog_dropped_samples": 0,

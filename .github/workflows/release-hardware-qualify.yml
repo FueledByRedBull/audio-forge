@@ -165,7 +165,7 @@ jobs:
             throw "Candidate extraction failed with exit code $LASTEXITCODE."
           }
 
-          $tagCommit = git rev-list -n 1 -- $env:RELEASE_TAG
+          $tagCommit = git rev-list -n 1 $env:RELEASE_TAG --
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tagCommit)) {
             throw "Unable to resolve release tag '$env:RELEASE_TAG'."
           }

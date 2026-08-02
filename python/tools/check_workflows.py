@@ -74,7 +74,7 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
         required = (
             "actions/download-artifact@",
             "release_tag must be an exact vMAJOR.MINOR.PATCH tag",
-            "git rev-list -n 1 --",
+            "git rev-list -n 1 $env:RELEASE_TAG --",
             "release_provenance.py verify",
             "--expected-archive-sha256",
             "--expected-commit",
@@ -97,7 +97,7 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
         required = (
             "gh run download",
             "release_tag must be an exact vMAJOR.MINOR.PATCH tag",
-            "git rev-list -n 1 --",
+            "git rev-list -n 1 $env:RELEASE_TAG --",
             "evaluate_hardware_matrix.py",
             "--expected-archive-sha256",
             "--expected-source-revision",
@@ -112,7 +112,7 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
             "runs-on: [self-hosted, windows, x64, audioforge-hardware]",
             "actions/download-artifact@",
             "release_tag must be an exact vMAJOR.MINOR.PATCH tag",
-            "git rev-list -n 1 --",
+            "git rev-list -n 1 $env:RELEASE_TAG --",
             "release_provenance.py verify",
             "--expected-archive-sha256",
             "--expected-commit",

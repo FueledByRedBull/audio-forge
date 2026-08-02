@@ -129,6 +129,27 @@ def test_release_workflow_checker_rejects_asset_clobbering():
     assert any("must not overwrite published release assets" in error for error in errors)
 
 
+@pytest.mark.parametrize(
+    "workflow_name",
+    (
+        "release-hardware-qualify.yml",
+        "release-hardware-matrix.yml",
+        "release-promote.yml",
+    ),
+)
+def test_release_workflow_checker_rejects_tag_after_path_separator(workflow_name):
+    path = check_workflows.WORKFLOW_DIR / workflow_name
+    source = path.read_text(encoding="utf-8").replace(
+        "git rev-list -n 1 $env:RELEASE_TAG --",
+        "git rev-list -n 1 -- $env:RELEASE_TAG",
+    )
+    errors: list[str] = []
+
+    check_workflows._check_required_gates(path.name, source, errors)
+
+    assert any("git rev-list" in error for error in errors)
+
+
 def test_semgrep_gate_uses_rule_default_severity_when_result_omits_level(
     tmp_path,
 ):

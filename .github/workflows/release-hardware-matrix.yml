@@ -84,7 +84,7 @@ jobs:
           if ($reports.Count -eq 0) {
             throw "No hardware case reports were downloaded."
           }
-          $tagCommit = git rev-list -n 1 -- $env:RELEASE_TAG
+          $tagCommit = git rev-list -n 1 $env:RELEASE_TAG --
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tagCommit)) {
             throw "Unable to resolve release tag '$env:RELEASE_TAG'."
           }

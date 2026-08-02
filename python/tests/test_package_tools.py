@@ -150,6 +150,27 @@ def test_release_workflow_checker_rejects_tag_after_path_separator(workflow_name
     assert any("git rev-list" in error for error in errors)
 
 
+@pytest.mark.parametrize(
+    "required_environment",
+    (
+        "PYTHONPATH: ${{ github.workspace }}/python",
+        "VAD_MODEL_PATH: ${{ steps.candidate.outputs.vad_model }}",
+        "${{ runner.temp }}/audioforge-release-candidate",
+        "${{ runner.temp }}/release-hardware-qualification.json",
+    ),
+)
+def test_release_workflow_checker_requires_isolated_hardware_harness(
+    required_environment,
+):
+    path = check_workflows.WORKFLOW_DIR / "release-hardware-qualify.yml"
+    source = path.read_text(encoding="utf-8").replace(required_environment, "removed", 1)
+    errors: list[str] = []
+
+    check_workflows._check_required_gates(path.name, source, errors)
+
+    assert any(required_environment in error for error in errors)
+
+
 def test_semgrep_gate_uses_rule_default_severity_when_result_omits_level(
     tmp_path,
 ):

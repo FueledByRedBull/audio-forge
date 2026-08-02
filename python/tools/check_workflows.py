@@ -121,6 +121,10 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
             "explicit operator attestation",
             "--health-duration",
             "$duration -lt 1800",
+            "PYTHONPATH: ${{ github.workspace }}/python",
+            "VAD_MODEL_PATH: ${{ steps.candidate.outputs.vad_model }}",
+            "${{ runner.temp }}/audioforge-release-candidate",
+            "${{ runner.temp }}/release-hardware-qualification.json",
             "audioforge-release-hardware-validation-",
         )
         for needle in required:

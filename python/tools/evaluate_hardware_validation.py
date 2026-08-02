@@ -187,10 +187,19 @@ def _runtime_provenance(bundle_root: Path | None = None) -> dict[str, Any]:
 
 
 def _run(command: list[str]) -> dict[str, Any]:
+    environment = os.environ.copy()
+    source_python = str(REPO_ROOT / "python")
+    inherited_pythonpath = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        os.pathsep.join((source_python, inherited_pythonpath))
+        if inherited_pythonpath
+        else source_python
+    )
     started = time.perf_counter()
     completed = subprocess.run(
         command,
         cwd=REPO_ROOT,
+        env=environment,
         capture_output=True,
         text=True,
         check=False,

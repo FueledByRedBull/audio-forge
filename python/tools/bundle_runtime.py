@@ -17,6 +17,7 @@ def resolve_bundle_layout(bundle_root: Path) -> dict[str, Path]:
     executable = root / "AudioForge.exe"
     library = internal / "df.dll"
     model_root = internal / "models"
+    vad_model = model_root / "silero_vad.onnx"
     native_candidates = sorted(
         (internal / "mic_eq").glob("mic_eq_core*.pyd"),
         key=lambda path: path.name.casefold(),
@@ -29,6 +30,8 @@ def resolve_bundle_layout(bundle_root: Path) -> dict[str, Path]:
         raise FileNotFoundError(f"bundle DeepFilter library is missing: {library}")
     if not model_root.is_dir():
         raise FileNotFoundError(f"bundle model directory is missing: {model_root}")
+    if not vad_model.is_file():
+        raise FileNotFoundError(f"bundle VAD model is missing: {vad_model}")
     if len(native_candidates) != 1:
         raise FileNotFoundError(
             "bundle must contain exactly one _internal/mic_eq/mic_eq_core*.pyd"
@@ -39,6 +42,7 @@ def resolve_bundle_layout(bundle_root: Path) -> dict[str, Path]:
         "executable": executable,
         "library": library,
         "model_root": model_root,
+        "vad_model": vad_model,
         "native_extension": native_candidates[0],
     }
 
@@ -47,6 +51,7 @@ def load_bundled_core(bundle_root: Path) -> ModuleType:
     layout = resolve_bundle_layout(bundle_root)
     if not hasattr(os, "add_dll_directory"):
         raise RuntimeError("loading a bundled runtime is supported only on Windows")
+    os.environ["VAD_MODEL_PATH"] = str(layout["vad_model"])
     _DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(layout["internal"])))
     spec = importlib.util.spec_from_file_location(
         "mic_eq_core",

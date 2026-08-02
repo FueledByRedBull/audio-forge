@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -22,6 +23,7 @@ def _load_tool(name: str) -> ModuleType:
 TOOL = _load_tool("evaluate_hardware_validation")
 HEALTH_TOOL = _load_tool("health_check")
 MATRIX_TOOL = _load_tool("evaluate_hardware_matrix")
+BUNDLE_RUNTIME = _load_tool("bundle_runtime")
 
 
 def test_hardware_result_parsers_require_success_and_evidence() -> None:
@@ -64,6 +66,74 @@ def test_hardware_report_provenance_uses_project_version_and_dirty_revision(
     monkeypatch.setattr(TOOL.subprocess, "run", lambda *args, **kwargs: next(outputs))
 
     assert TOOL._source_revision() == "abc123+uncommitted"
+
+
+def test_hardware_subprocess_uses_source_python_path(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["environment"] = kwargs["env"]
+        return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(TOOL.subprocess, "run", fake_run)
+    monkeypatch.setenv("PYTHONPATH", "inherited")
+
+    result = TOOL._run(["python", "probe.py"])
+
+    environment = captured["environment"]
+    assert isinstance(environment, dict)
+    assert environment["PYTHONPATH"].split(os.pathsep) == [
+        str(TOOL.REPO_ROOT / "python"),
+        "inherited",
+    ]
+    assert result["return_code"] == 0
+
+
+def test_bundle_runtime_pins_the_bundled_vad_model(tmp_path, monkeypatch) -> None:
+    internal = tmp_path / "_internal"
+    model_root = internal / "models"
+    native_root = internal / "mic_eq"
+    model_root.mkdir(parents=True)
+    native_root.mkdir()
+    (tmp_path / "AudioForge.exe").write_bytes(b"exe")
+    (internal / "df.dll").write_bytes(b"dll")
+    vad_model = model_root / "silero_vad.onnx"
+    vad_model.write_bytes(b"vad")
+    (native_root / "mic_eq_core.test.pyd").write_bytes(b"native")
+
+    module = ModuleType("mic_eq_core")
+    configured: list[tuple[str, str]] = []
+    setattr(
+        module,
+        "configure_deepfilter_runtime_paths",
+        lambda library, models: configured.append((library, models)),
+    )
+
+    class Loader:
+        @staticmethod
+        def exec_module(_module) -> None:
+            return None
+
+    spec = SimpleNamespace(loader=Loader())
+    monkeypatch.setattr(BUNDLE_RUNTIME.os, "add_dll_directory", lambda _path: object())
+    monkeypatch.setattr(
+        BUNDLE_RUNTIME.importlib.util,
+        "spec_from_file_location",
+        lambda *_args: spec,
+    )
+    monkeypatch.setattr(
+        BUNDLE_RUNTIME.importlib.util,
+        "module_from_spec",
+        lambda _spec: module,
+    )
+    monkeypatch.delenv("VAD_MODEL_PATH", raising=False)
+
+    loaded = BUNDLE_RUNTIME.load_bundled_core(tmp_path)
+
+    assert loaded is module
+    assert BUNDLE_RUNTIME.os.environ["VAD_MODEL_PATH"] == str(vad_model.resolve())
+    assert configured == [(str((internal / "df.dll").resolve()), str(model_root.resolve()))]
 
 
 def test_hardware_runtime_provenance_is_portable_and_hashes_exact_binary() -> None:

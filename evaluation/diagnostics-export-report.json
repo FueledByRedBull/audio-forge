@@ -9,7 +9,7 @@
     "schema": true,
     "size_bounded": true
   },
-  "generated_at": "2026-08-01T16:18:38.667264+00:00",
+  "generated_at": "2026-08-03T20:06:02.585064+00:00",
   "limitations": [
     "The snapshot is intentionally a coherent allowlisted state sample, not a raw application log.",
     "Report-local device pseudonyms cannot correlate devices across exports.",
@@ -33,7 +33,7 @@
     "fixture_contains_only_synthetic_identifiers": true,
     "source_hashes": {
       "python/mic_eq/diagnostics_export.py": "b3523a50262777fef975b60f768f0d85e9c46f6290896035682176a43b13082e",
-      "python/mic_eq/ui/main_window.py": "76b9af73256eeb22445f03d840360d3e578792467eee27cae52fef7c3a825ff8",
+      "python/mic_eq/ui/main_window.py": "31a2893d3fc151f3f15c02d61f6f20a4e3cdff4f239ff52f08d25159587268a6",
       "python/tests/test_diagnostics_export.py": "cbab4fef471abb010e8157a60d7f778cba995eff02c9857ee03ea41d00780d47",
       "python/tools/evaluate_diagnostics_export.py": "bcca8a32189c4a6542e862979bb3fad9f0c09cf3e4d38d9dda7787aa37d88b5c"
     }

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at_utc": "2026-08-03T16:10:32.986672+00:00",
+  "generated_at_utc": "2026-08-03T20:08:25.962565+00:00",
   "candidate": "repository-ui-screenshots",
   "audible_change": false,
   "decision": {
@@ -53,8 +53,8 @@
       "path": "docs/images/audioforge-routing-eq.png",
       "width": 1600,
       "height": 960,
-      "bytes": 117152,
-      "sha256": "7a7eea60fd435ef6f2be125b3b8c9fab670f938e90b12e5827dd74fc4be0d033"
+      "bytes": 117161,
+      "sha256": "a52f6bf2ebf7f8c3070d5779cf91af0987f9f43376265a425d7a5592a3af04fb"
     },
     {
       "filename": "audioforge-processing.png",
@@ -63,8 +63,8 @@
       "path": "docs/images/audioforge-processing.png",
       "width": 1600,
       "height": 960,
-      "bytes": 107814,
-      "sha256": "640b1cfe8feb79535b10b23f0ea5f6467d583d4275df50585c5426fd676b5b6e"
+      "bytes": 107827,
+      "sha256": "74a573db3eb54cd8e63d16e6c21c59a83e487c1dc661ee32a2b266b5e2264a35"
     },
     {
       "filename": "audioforge-auto-voice-setup.png",
@@ -73,14 +73,14 @@
       "path": "docs/images/audioforge-auto-voice-setup.png",
       "width": 780,
       "height": 940,
-      "bytes": 68990,
-      "sha256": "ab915e818acc1f45cc3646392544b7ffa65e4dcf3f2c6a18f7b8e519b59f2f04"
+      "bytes": 68999,
+      "sha256": "27df7ce89a4771a45d332c102f35b90f9ea8abb7437cabcb963558c4dd46f72b"
     }
   ],
   "source_sha256": {
     "python/tools/capture_repository_screenshots.py": "1c8bb90ef364b9d5ea6a11e038806c39585fdda3401de0b553cf34db3d2791e0",
     "python/mic_eq/ui/theme.py": "6b6d1f3bdc9281d2171b1dc78fe663884fd0ae4f9979061aca313ebf7cd05a51",
-    "python/mic_eq/ui/main_window.py": "76b9af73256eeb22445f03d840360d3e578792467eee27cae52fef7c3a825ff8",
+    "python/mic_eq/ui/main_window.py": "31a2893d3fc151f3f15c02d61f6f20a4e3cdff4f239ff52f08d25159587268a6",
     "python/mic_eq/ui/eq_panel.py": "960068acc4373b66a0568e61fdffe5fc9ae6db6aa15d35cacb9af84278dfb3e6",
     "python/mic_eq/ui/eq_curve.py": "5f7100f3b29d87fda7b42be07b679b3ee210a3ae8bee6fb020d96e37d378039b",
     "python/mic_eq/ui/voice_setup_dialog.py": "0ea6f27d8b86ad2944007a8df084741cac80c2658bce9cea2e09816299f50d12"

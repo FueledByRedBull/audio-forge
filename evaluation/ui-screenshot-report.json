@@ -81,7 +81,7 @@
     "python/tools/capture_repository_screenshots.py": "1c8bb90ef364b9d5ea6a11e038806c39585fdda3401de0b553cf34db3d2791e0",
     "python/mic_eq/ui/theme.py": "6b6d1f3bdc9281d2171b1dc78fe663884fd0ae4f9979061aca313ebf7cd05a51",
     "python/mic_eq/ui/main_window.py": "76b9af73256eeb22445f03d840360d3e578792467eee27cae52fef7c3a825ff8",
-    "python/mic_eq/ui/eq_panel.py": "9c015a629a91c4faceadea5128d21201d3f014bfeefe8b9f0029981e1c01a341",
+    "python/mic_eq/ui/eq_panel.py": "960068acc4373b66a0568e61fdffe5fc9ae6db6aa15d35cacb9af84278dfb3e6",
     "python/mic_eq/ui/eq_curve.py": "5f7100f3b29d87fda7b42be07b679b3ee210a3ae8bee6fb020d96e37d378039b",
     "python/mic_eq/ui/voice_setup_dialog.py": "0ea6f27d8b86ad2944007a8df084741cac80c2658bce9cea2e09816299f50d12"
   },

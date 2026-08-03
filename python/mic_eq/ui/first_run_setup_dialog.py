@@ -8,7 +8,7 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QDialog,
-    QHBoxLayout,
+    QGridLayout,
     QLabel,
     QMessageBox,
     QProgressBar,
@@ -24,6 +24,7 @@ from .layout_constants import (
     SECONDARY_ACTION_BUTTON_STYLE,
     SPACING_NORMAL,
     SPACING_SECTION,
+    configure_resizable_dialog,
 )
 from .theme import DESCRIPTION_LABEL_STYLE, message_text_style
 
@@ -77,9 +78,15 @@ def route_health_reason(processor: object) -> tuple[bool, str]:
             int(diagnostics.get(field, 0) or 0) > 0 for field in error_fields
         )
     except (TypeError, ValueError, OverflowError):
-        return False, "Audio callback diagnostics were invalid. Restart AudioForge and retry."
+        return (
+            False,
+            "Audio callback diagnostics were invalid. Restart AudioForge and retry.",
+        )
     if callback_error_present:
-        return False, "A Windows audio callback reported an error. Retry after checking the route."
+        return (
+            False,
+            "A Windows audio callback reported an error. Retry after checking the route.",
+        )
 
     for label, getter_name in (
         ("input", "get_input_callback_age_ms"),
@@ -87,11 +94,17 @@ def route_health_reason(processor: object) -> tuple[bool, str]:
     ):
         getter = getattr(processor, getter_name, None)
         if not callable(getter):
-            return False, f"The {label} callback heartbeat is unavailable. Retry the route."
+            return (
+                False,
+                f"The {label} callback heartbeat is unavailable. Retry the route.",
+            )
         try:
             raw_age = getter()
         except (TypeError, ValueError, OverflowError):
-            return False, f"The {label} callback heartbeat could not be read. Retry the route."
+            return (
+                False,
+                f"The {label} callback heartbeat could not be read. Retry the route.",
+            )
         if (
             isinstance(raw_age, bool)
             or not isinstance(raw_age, (int, float))
@@ -100,8 +113,14 @@ def route_health_reason(processor: object) -> tuple[bool, str]:
             return False, f"The {label} callback heartbeat is invalid. Retry the route."
         age_ms = float(raw_age)
         if age_ms > 2_000.0:
-            return False, f"The {label} callback is stale ({age_ms:.0f} ms). Retry the route."
-    return True, "Both native audio streams are active without reported callback errors."
+            return (
+                False,
+                f"The {label} callback is stale ({age_ms:.0f} ms). Retry the route.",
+            )
+    return (
+        True,
+        "Both native audio streams are active without reported callback errors.",
+    )
 
 
 class FirstRunSetupDialog(QDialog):
@@ -114,7 +133,6 @@ class FirstRunSetupDialog(QDialog):
         self._finalized = False
         self.setWindowTitle("AudioForge Setup")
         self.setModal(True)
-        self.setMinimumWidth(620)
 
         if restart_completed and self.config.first_run_setup_state == "completed":
             self.config.first_run_setup_steps = {
@@ -162,28 +180,29 @@ class FirstRunSetupDialog(QDialog):
         self.status_label.setStyleSheet(message_text_style("info"))
         layout.addWidget(self.status_label)
 
-        button_row = QHBoxLayout()
+        button_row = QGridLayout()
         button_row.setSpacing(SPACING_NORMAL)
         self.back_button = QPushButton("Back")
         self.back_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
         self.back_button.clicked.connect(self._go_back)
-        button_row.addWidget(self.back_button)
+        button_row.addWidget(self.back_button, 0, 0)
 
         self.skip_button = QPushButton("Skip This Step")
         self.skip_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
         self.skip_button.clicked.connect(self._skip_step)
-        button_row.addWidget(self.skip_button)
-        button_row.addStretch()
+        button_row.addWidget(self.skip_button, 0, 1)
 
         self.pause_button = QPushButton("Pause and Close")
         self.pause_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
         self.pause_button.clicked.connect(self.reject)
-        button_row.addWidget(self.pause_button)
+        button_row.addWidget(self.pause_button, 1, 0)
 
         self.action_button = QPushButton()
         self.action_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
         self.action_button.clicked.connect(self._run_current_step)
-        button_row.addWidget(self.action_button)
+        button_row.addWidget(self.action_button, 1, 1)
+        button_row.setColumnStretch(0, 1)
+        button_row.setColumnStretch(1, 1)
         layout.addLayout(button_row)
 
         set_accessible_group(
@@ -199,6 +218,13 @@ class FirstRunSetupDialog(QDialog):
         self.setTabOrder(self.skip_button, self.pause_button)
         self.setTabOrder(self.pause_button, self.action_button)
         self._render_step()
+        configure_resizable_dialog(
+            self,
+            preferred_width=620,
+            preferred_height=340,
+            minimum_width=440,
+            minimum_height=280,
+        )
 
     def _initial_step_index(self) -> int:
         current = self.config.first_run_setup_step
@@ -224,8 +250,7 @@ class FirstRunSetupDialog(QDialog):
         title, description, action = STEP_CONTENT[step]
         state = self.config.first_run_setup_steps.get(step, "pending")
         completed_count = sum(
-            value == "completed"
-            for value in self.config.first_run_setup_steps.values()
+            value == "completed" for value in self.config.first_run_setup_steps.values()
         )
         self.progress.setValue(completed_count)
         self.progress.setFormat(
@@ -256,14 +281,17 @@ class FirstRunSetupDialog(QDialog):
         if step == "devices":
             if not self._selected_devices_ready():
                 self._set_status(
-                    "Both an input and output endpoint must be available and selected.", "error"
+                    "Both an input and output endpoint must be available and selected.",
+                    "error",
                 )
                 return
             self._complete_step("Selected input and output endpoints are available.")
             return
         if step == "route":
             if not self._selected_devices_ready():
-                self._set_status("The selected route is unavailable. Return to step 1.", "error")
+                self._set_status(
+                    "The selected route is unavailable. Return to step 1.", "error"
+                )
                 return
             if not self.owner.processor.is_running():
                 self.owner._start_processing()
@@ -278,7 +306,9 @@ class FirstRunSetupDialog(QDialog):
             finally:
                 self.show()
             if saved:
-                self._complete_step("A measured latency profile was saved for this route.")
+                self._complete_step(
+                    "A measured latency profile was saved for this route."
+                )
             else:
                 self._set_status(
                     "No latency result was saved. Retry, or skip this optional step honestly.",

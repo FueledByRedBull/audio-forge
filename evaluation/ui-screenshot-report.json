@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at_utc": "2026-08-01T20:04:51.866626+00:00",
+  "generated_at_utc": "2026-08-03T16:10:32.986672+00:00",
   "candidate": "repository-ui-screenshots",
   "audible_change": false,
   "decision": {
@@ -42,8 +42,8 @@
     "sanitized_sources_only": true
   },
   "view_state": {
-    "processing_scroll_position": 569,
-    "processing_scroll_maximum": 569
+    "processing_scroll_position": 635,
+    "processing_scroll_maximum": 635
   },
   "screenshots": [
     {
@@ -53,8 +53,8 @@
       "path": "docs/images/audioforge-routing-eq.png",
       "width": 1600,
       "height": 960,
-      "bytes": 109566,
-      "sha256": "e8d6a895a0d8e73bf2e26e1d5e2f4593cdffbc910ddf4b8a3b49ff345eb64182"
+      "bytes": 117152,
+      "sha256": "7a7eea60fd435ef6f2be125b3b8c9fab670f938e90b12e5827dd74fc4be0d033"
     },
     {
       "filename": "audioforge-processing.png",
@@ -63,8 +63,8 @@
       "path": "docs/images/audioforge-processing.png",
       "width": 1600,
       "height": 960,
-      "bytes": 105973,
-      "sha256": "68216431dc43e7fa3e7c7b140fdc90c67a2de4fb5229d2836224f0bd95f0458a"
+      "bytes": 107814,
+      "sha256": "640b1cfe8feb79535b10b23f0ea5f6467d583d4275df50585c5426fd676b5b6e"
     },
     {
       "filename": "audioforge-auto-voice-setup.png",
@@ -72,18 +72,18 @@
       "alt": "AudioForge Auto Voice Setup dialog showing target and dynamics choices plus sanitized validated recommendation summaries.",
       "path": "docs/images/audioforge-auto-voice-setup.png",
       "width": 780,
-      "height": 1026,
-      "bytes": 73405,
-      "sha256": "bf186eeb99d7ab4aae4b4932fd0902896b7d7cdc08741d8e9b5845a1b4eba13e"
+      "height": 940,
+      "bytes": 68990,
+      "sha256": "ab915e818acc1f45cc3646392544b7ffa65e4dcf3f2c6a18f7b8e519b59f2f04"
     }
   ],
   "source_sha256": {
-    "python/tools/capture_repository_screenshots.py": "3e6efb045f4d6dc8ea80ef2ce9e8229e76168b3d3e5ebf47f22fe5e6502d8c29",
-    "python/mic_eq/ui/theme.py": "87e4d3d8dc9ef68c12156a35bdcd55bbf7c47d982f49d470866259f36b12f6ad",
-    "python/mic_eq/ui/main_window.py": "df9d2819ae1696a38a48d0fa34ea47b9413d227beccb6e9c175699e4f1f8d2a0",
-    "python/mic_eq/ui/eq_panel.py": "393d8d53dca02c6ffb25f9528001bb543bb4e8993e226372c9cf681a30bd45db",
+    "python/tools/capture_repository_screenshots.py": "1c8bb90ef364b9d5ea6a11e038806c39585fdda3401de0b553cf34db3d2791e0",
+    "python/mic_eq/ui/theme.py": "6b6d1f3bdc9281d2171b1dc78fe663884fd0ae4f9979061aca313ebf7cd05a51",
+    "python/mic_eq/ui/main_window.py": "76b9af73256eeb22445f03d840360d3e578792467eee27cae52fef7c3a825ff8",
+    "python/mic_eq/ui/eq_panel.py": "9c015a629a91c4faceadea5128d21201d3f014bfeefe8b9f0029981e1c01a341",
     "python/mic_eq/ui/eq_curve.py": "5f7100f3b29d87fda7b42be07b679b3ee210a3ae8bee6fb020d96e37d378039b",
-    "python/mic_eq/ui/voice_setup_dialog.py": "6e94b30cc6eacc99a96cb7c4d68c38796932d03251f8fc7e8bfe01442f68df01"
+    "python/mic_eq/ui/voice_setup_dialog.py": "0ea6f27d8b86ad2944007a8df084741cac80c2658bce9cea2e09816299f50d12"
   },
   "limitations": [
     "Offscreen Fusion rendering omits Windows title-bar chrome by design.",

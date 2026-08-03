@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QApplication, QMainWindow
 
 from .. import configure_deepfilter_runtime_paths
 from ..app_logging import configure_app_logging
+from .theme import application_palette
 
 
 WINDOWS_APP_USER_MODEL_ID = "FueledByRedBull.AudioForge"
@@ -190,6 +191,7 @@ def run_qt_app(window_cls: Type[QMainWindow]) -> int:
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setPalette(application_palette())
 
     app_icon = _application_icon()
     if not app_icon.isNull():

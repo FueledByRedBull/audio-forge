@@ -1,50 +1,47 @@
 # Changelog
 
-## v1.11.0 - Unreleased
+## v1.11.1 - 2026-08-03
 
-- Added a versioned typed-EQ and preset schema with manual bell, notch, shelf,
-  high-pass, and low-pass bands; selectable 12-48 dB/octave pass slopes;
-  exact native response rendering; click-safe runtime updates; migration; and
-  constrained mouse/keyboard graph editing.
-- Added robust route-bound presets backed by stable Windows endpoint identity,
-  duplicate-name ordinals, reconnect-safe resolution, and explicit migration
-  provenance. Added a resumable first-run shell over the existing route,
-  latency-calibration, and Auto Voice Setup flows.
-- Added bounded full-processing undo/redo, semantic theme and accessibility
-  contracts, explainable Auto-EQ abstention, privacy-safe versioned diagnostics
-  export, and deterministic sanitized repository screenshots.
-- Reworked release qualification into hash-bound build, exact-artifact
-  validation, hardware qualification, and no-rebuild promotion workflows. Added
-  system-UCRT enforcement, bundle manifests and metadata, exact archive
-  provenance, 44.1/48 kHz resampler gates, and native 48 kHz DeepFilter
-  operating-point evidence.
-- Revalidated processing order and limiter lookahead with reproducible objective
-  benchmarks. Both order candidates fail their predefined gates, while shorter
-  limiter settings do not provide the required material latency reduction; the
-  incumbent chain and 2 ms limiter therefore remain selected.
-- Rejected cross-take Auto-EQ confidence injection, sparse Auto-EQ filter-type
-  selection, and separate correction/tone stages after held-out or
-  clean-preservation gates failed. Manual typed filters ship, while Auto-EQ
-  remains one combined ten-band correction and the limiter remains at 2 ms.
-- Hardened evaluation freshness and security tooling so source-hash drift fails
-  evidence checks and Semgrep can write SARIF into a new output directory.
-- Hardened malformed-input and lifecycle boundaries: Auto-EQ now rejects
-  invalid spectra and metadata while preserving the analyzer's explicit
-  unavailable-evidence sentinel; endpoint-ID presets no longer bind to
-  same-name replacement hardware; unavailable preset backends resolve
-  explicitly to RNNoise; latency timing is monotonic; and closing or pausing
-  first-run setup cancels its pending route check.
-- Increased the output queue's startup and control reserve by 10 ms so a normal
-  20 ms Windows callback cannot exhaust the former 5 ms steady-state margin.
-  The exact local package then completed the strict 30-minute route test with
-  no post-warmup underrun, drop, recovery, restart, callback, overflow, RT, or
-  non-finite regression.
-- Re-ran all source-bound Auto-EQ, DeepFilter, diagnostics, filter-type, and UI
-  evidence after the final implementation changes. The 12-16-band placement,
-  cross-take, and sparse/type-selecting Auto-EQ candidates remain rejected.
-  Both the broad multilingual and native-full-band comparisons retain
-  DeepFilter at 30 dB/beta 0.0 when silence-only attenuation is kept diagnostic
-  and clean/noisy speech preservation remains load-bearing.
+- Clamped restored and default window geometry to one available display.
+- Added responsive device, processing, status, splitter, EQ-band, and preset
+  layouts. The UI no longer requires an ultra-wide or multi-monitor window.
+- Removed hidden horizontal clipping from the Cleanup, Dynamics, Auto-EQ,
+  Auto Voice Setup, latency, and first-run workflows.
+- Sized numeric controls for their legal values and let long labels, diagnostics,
+  and combo-box options wrap or elide safely.
+- Applied one explicit dark application palette with automated contrast checks.
+- Added layout regression coverage from 900 to 1920 pixels wide and refreshed
+  the deterministic screenshot path to use the production palette.
+
+## v1.11.0 - 2026-08-02
+
+- Added versioned manual bell, notch, shelf, high-pass, and low-pass EQ bands.
+  Added selectable 12-48 dB/octave pass slopes and exact native curve rendering.
+- Added constrained mouse and keyboard graph editing with click-safe runtime
+  updates and preset migration.
+- Added route-bound presets using stable Windows endpoint identity,
+  duplicate-name ordinals, reconnect-safe resolution, and migration provenance.
+- Added a resumable first-run shell over route setup, latency calibration, and
+  Auto Voice Setup.
+- Added full-processing undo/redo, explainable Auto-EQ abstention, privacy-safe
+  diagnostics export, accessibility contracts, and sanitized screenshots.
+- Reworked release qualification around one hash-bound build, exact-artifact
+  validation, hardware qualification, and promotion without rebuilding.
+- Added system-UCRT enforcement, bundle manifests, archive provenance,
+  44.1/48 kHz resampler gates, and native 48 kHz DeepFilter evidence.
+- Revalidated processing order with reproducible objective benchmarks. Neither
+  candidate passed its predefined gate, so the incumbent order remains.
+- Revalidated limiter lookahead. Shorter settings did not provide the required
+  material latency reduction, so the 2 ms limiter remains.
+- Rejected cross-take confidence injection, sparse type-selecting Auto-EQ, and
+  separate correction/tone stages after their held-out gates failed.
+- Hardened evidence freshness, malformed-input handling, preset endpoint and
+  backend resolution, monotonic latency timing, and setup cancellation.
+- Increased output-queue reserve by 10 ms. The exact package then passed the
+  strict 30-minute route test without post-warmup loss or recovery events.
+- Re-ran source-bound Auto-EQ, DeepFilter, diagnostics, filter-type, and UI
+  evidence. Rejected candidates stayed rejected, and DeepFilter retained its
+  30 dB attenuation and zero-beta production setting.
 
 ## v1.10.1 - 2026-07-29
 

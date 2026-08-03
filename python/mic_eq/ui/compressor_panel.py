@@ -23,8 +23,12 @@ from .level_meter import GainReductionMeter
 from .rate_limiter import RateLimiter
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
-    SPACING_NORMAL, MARGIN_PANEL,
-    PRIMARY_LABEL_STYLE, METER_LABEL_STYLE, INFO_LABEL_STYLE
+    SPACING_NORMAL,
+    MARGIN_PANEL,
+    PRIMARY_LABEL_STYLE,
+    METER_LABEL_STYLE,
+    INFO_LABEL_STYLE,
+    fit_spinbox_to_contents,
 )
 
 
@@ -51,14 +55,12 @@ class CompressorPanel(QWidget):
         comp_group = QGroupBox("Compressor")
         comp_layout = QGridLayout(comp_group)
         comp_layout.setSpacing(SPACING_NORMAL)
-        comp_layout.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
-        # Two-column layout: columns 0,1 for left; columns 2,3 for right
+        comp_layout.setContentsMargins(
+            MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL
+        )
         comp_layout.setColumnStretch(0, 0)  # Label column - fixed width
         comp_layout.setColumnStretch(1, 1)  # Control column - stretches
-        comp_layout.setColumnStretch(2, 0)  # Label column - fixed width
-        comp_layout.setColumnStretch(3, 1)  # Control column - stretches
         comp_layout.setColumnMinimumWidth(0, 75)  # Ensure "Threshold:" fits
-        comp_layout.setColumnMinimumWidth(2, 75)  # Ensure "Ratio:" fits
 
         # Row 0: Enable checkbox (span full width)
         self.comp_enabled_checkbox = QCheckBox("Enable Compressor")
@@ -67,7 +69,7 @@ class CompressorPanel(QWidget):
             "Reduces dynamic range by attenuating loud signals.\n"
             "Helps maintain consistent volume levels."
         )
-        comp_layout.addWidget(self.comp_enabled_checkbox, 0, 0, 1, 4)
+        comp_layout.addWidget(self.comp_enabled_checkbox, 0, 0, 1, 2)
 
         # Row 1: Threshold (left) and Ratio (right) with PRIMARY_LABEL_STYLE
         # Threshold slider with spinbox
@@ -85,7 +87,7 @@ class CompressorPanel(QWidget):
         self.threshold_spinbox.setValue(-20.0)
         self.threshold_spinbox.setSuffix(" dB")
         self.threshold_spinbox.setToolTip("Level above which compression begins")
-        self.threshold_spinbox.setFixedWidth(80)
+        fit_spinbox_to_contents(self.threshold_spinbox)
         threshold_layout.addWidget(self.threshold_spinbox)
 
         threshold_label = QLabel("Threshold:")
@@ -108,13 +110,13 @@ class CompressorPanel(QWidget):
         self.ratio_spinbox.setValue(4.0)
         self.ratio_spinbox.setSuffix(":1")
         self.ratio_spinbox.setToolTip("Compression ratio (higher = more compression)")
-        self.ratio_spinbox.setFixedWidth(80)
+        fit_spinbox_to_contents(self.ratio_spinbox)
         ratio_layout.addWidget(self.ratio_spinbox)
 
         ratio_label = QLabel("Ratio:")
         ratio_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        comp_layout.addWidget(ratio_label, 1, 2)
-        comp_layout.addLayout(ratio_layout, 1, 3)
+        comp_layout.addWidget(ratio_label, 2, 0)
+        comp_layout.addLayout(ratio_layout, 2, 1)
 
         # Row 2: Attack (left) and Release (right) with PRIMARY_LABEL_STYLE
         self.attack_spinbox = QDoubleSpinBox()
@@ -122,28 +124,30 @@ class CompressorPanel(QWidget):
         self.attack_spinbox.setSingleStep(1.0)
         self.attack_spinbox.setValue(10.0)
         self.attack_spinbox.setSuffix(" ms")
-        self.attack_spinbox.setToolTip("How fast the compressor responds to loud signals")
-        self.attack_spinbox.setMaximumWidth(100)
-        self.attack_spinbox.setMinimumWidth(60)
+        self.attack_spinbox.setToolTip(
+            "How fast the compressor responds to loud signals"
+        )
+        fit_spinbox_to_contents(self.attack_spinbox)
 
         attack_label = QLabel("Attack:")
         attack_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        comp_layout.addWidget(attack_label, 2, 0)
-        comp_layout.addWidget(self.attack_spinbox, 2, 1)
+        comp_layout.addWidget(attack_label, 3, 0)
+        comp_layout.addWidget(self.attack_spinbox, 3, 1)
 
         self.release_spinbox = QDoubleSpinBox()
         self.release_spinbox.setRange(10.0, 1000.0)
         self.release_spinbox.setSingleStep(10.0)
         self.release_spinbox.setValue(200.0)
         self.release_spinbox.setSuffix(" ms")
-        self.release_spinbox.setToolTip("How fast the compressor recovers after loud signals")
-        self.release_spinbox.setMaximumWidth(100)
-        self.release_spinbox.setMinimumWidth(60)
+        self.release_spinbox.setToolTip(
+            "How fast the compressor recovers after loud signals"
+        )
+        fit_spinbox_to_contents(self.release_spinbox)
 
         release_label = QLabel("Release:")
         release_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        comp_layout.addWidget(release_label, 2, 2)
-        comp_layout.addWidget(self.release_spinbox, 2, 3)
+        comp_layout.addWidget(release_label, 4, 0)
+        comp_layout.addWidget(self.release_spinbox, 4, 1)
 
         # Row 3: Makeup Gain (span full width) with PRIMARY_LABEL_STYLE
         makeup_layout = QHBoxLayout()
@@ -160,24 +164,26 @@ class CompressorPanel(QWidget):
         self.makeup_spinbox.setValue(0.0)
         self.makeup_spinbox.setSuffix(" dB")
         self.makeup_spinbox.setToolTip("Gain added after compression to restore volume")
-        self.makeup_spinbox.setFixedWidth(80)
+        fit_spinbox_to_contents(self.makeup_spinbox)
         makeup_layout.addWidget(self.makeup_spinbox)
 
         makeup_label = QLabel("Makeup Gain:")
         makeup_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        comp_layout.addWidget(makeup_label, 3, 0)
-        comp_layout.addLayout(makeup_layout, 3, 1, 1, 3)
+        comp_layout.addWidget(makeup_label, 5, 0)
+        comp_layout.addLayout(makeup_layout, 5, 1)
 
         # Row 4: Separator line
         separator = QLabel("")
         separator.setFrameStyle(QLabel.Shape.HLine | QLabel.Shadow.Sunken)
-        comp_layout.addWidget(separator, 4, 0, 1, 4)
+        comp_layout.addWidget(separator, 6, 0, 1, 2)
 
         # Row 5: Advanced Settings GroupBox
         advanced_group = QGroupBox("Advanced Settings")
         advanced_layout = QGridLayout(advanced_group)
         advanced_layout.setSpacing(SPACING_NORMAL)
-        advanced_layout.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
+        advanced_layout.setContentsMargins(
+            MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL
+        )
         advanced_layout.setColumnStretch(0, 0)
         advanced_layout.setColumnStretch(1, 1)
 
@@ -197,10 +203,11 @@ class CompressorPanel(QWidget):
         self.base_release_spinbox.setSingleStep(5.0)
         self.base_release_spinbox.setValue(50.0)
         self.base_release_spinbox.setSuffix(" ms")
-        self.base_release_spinbox.setToolTip("Base release time when adaptive mode is enabled")
+        self.base_release_spinbox.setToolTip(
+            "Base release time when adaptive mode is enabled"
+        )
         self.base_release_spinbox.setEnabled(False)
-        self.base_release_spinbox.setMaximumWidth(100)
-        self.base_release_spinbox.setMinimumWidth(60)
+        fit_spinbox_to_contents(self.base_release_spinbox)
         base_release_label = QLabel("Base Release:")
         advanced_layout.addWidget(base_release_label, 1, 0)
         advanced_layout.addWidget(self.base_release_spinbox, 1, 1)
@@ -208,7 +215,9 @@ class CompressorPanel(QWidget):
         # Current release time display (with METER_LABEL_STYLE)
         self.current_release_label = QLabel("200 ms")
         self.current_release_label.setStyleSheet(METER_LABEL_STYLE)
-        self.current_release_label.setToolTip("Current release time (adaptive or manual)")
+        self.current_release_label.setToolTip(
+            "Current release time (adaptive or manual)"
+        )
         advanced_layout.addWidget(QLabel("Current Release:"), 2, 0)
         advanced_layout.addWidget(self.current_release_label, 2, 1)
 
@@ -237,8 +246,7 @@ class CompressorPanel(QWidget):
         self.target_lufs_spinbox.setSuffix(" LUFS")
         self.target_lufs_spinbox.setToolTip("Target loudness level (-24 to -12 LUFS)")
         self.target_lufs_spinbox.setEnabled(False)  # Disabled when auto makeup off
-        self.target_lufs_spinbox.setMaximumWidth(100)
-        self.target_lufs_spinbox.setMinimumWidth(60)
+        fit_spinbox_to_contents(self.target_lufs_spinbox)
         target_lufs_label = QLabel("Target LUFS:")
         advanced_layout.addWidget(target_lufs_label, 5, 0)
         advanced_layout.addWidget(self.target_lufs_spinbox, 5, 1)
@@ -246,7 +254,9 @@ class CompressorPanel(QWidget):
         # Current LUFS display (with METER_LABEL_STYLE)
         self.current_lufs_label = QLabel("-18.0 LUFS")
         self.current_lufs_label.setStyleSheet(METER_LABEL_STYLE)
-        self.current_lufs_label.setToolTip("Current measured loudness (EBU R128 momentary)")
+        self.current_lufs_label.setToolTip(
+            "Current measured loudness (EBU R128 momentary)"
+        )
         advanced_layout.addWidget(QLabel("Current LUFS:"), 6, 0)
         advanced_layout.addWidget(self.current_lufs_label, 6, 1)
 
@@ -257,11 +267,11 @@ class CompressorPanel(QWidget):
         advanced_layout.addWidget(QLabel("Auto Gain:"), 7, 0)
         advanced_layout.addWidget(self.current_makeup_gain_label, 7, 1)
 
-        comp_layout.addWidget(advanced_group, 5, 0, 1, 4)
+        comp_layout.addWidget(advanced_group, 7, 0, 1, 2)
 
         # Row 6: Gain Reduction Meter
         self.gr_meter = GainReductionMeter()
-        comp_layout.addWidget(self.gr_meter, 6, 0, 1, 4)
+        comp_layout.addWidget(self.gr_meter, 8, 0, 1, 2)
 
         layout.addWidget(comp_group)
 
@@ -269,7 +279,9 @@ class CompressorPanel(QWidget):
         limiter_group = QGroupBox("Hard Limiter")
         limiter_layout = QGridLayout(limiter_group)
         limiter_layout.setSpacing(SPACING_NORMAL)
-        limiter_layout.setContentsMargins(MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL)
+        limiter_layout.setContentsMargins(
+            MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL
+        )
         limiter_layout.setColumnStretch(0, 0)  # Label column - fixed width
         limiter_layout.setColumnStretch(1, 1)  # Control column - stretches
         limiter_layout.setColumnMinimumWidth(0, 70)  # Ensure labels fit
@@ -281,16 +293,14 @@ class CompressorPanel(QWidget):
             "Prevents signal from exceeding ceiling level.\n"
             "Acts as a safety net to prevent clipping."
         )
-        limiter_layout.addWidget(QLabel(""), 0, 0)
-        limiter_layout.addWidget(self.limiter_enabled_checkbox, 0, 1, 1, 2)
+        limiter_layout.addWidget(self.limiter_enabled_checkbox, 0, 0, 1, 3)
 
         self.careful_output_checkbox = QCheckBox("Careful output mode")
         self.careful_output_checkbox.setChecked(True)
         self.careful_output_checkbox.setToolTip(
             "Adds conservative output headroom by limiting the effective ceiling to -1.5 dB."
         )
-        limiter_layout.addWidget(QLabel(""), 1, 0)
-        limiter_layout.addWidget(self.careful_output_checkbox, 1, 1, 1, 2)
+        limiter_layout.addWidget(self.careful_output_checkbox, 1, 0, 1, 3)
 
         # Ceiling slider with spinbox
         ceiling_layout = QHBoxLayout()
@@ -307,7 +317,7 @@ class CompressorPanel(QWidget):
         self.ceiling_spinbox.setValue(-0.5)
         self.ceiling_spinbox.setSuffix(" dB")
         self.ceiling_spinbox.setToolTip("Maximum output level (brick-wall ceiling)")
-        self.ceiling_spinbox.setFixedWidth(80)
+        fit_spinbox_to_contents(self.ceiling_spinbox)
         ceiling_layout.addWidget(self.ceiling_spinbox)
 
         ceiling_label = QLabel("Ceiling:")
@@ -321,8 +331,7 @@ class CompressorPanel(QWidget):
         self.limiter_release_spinbox.setValue(50.0)
         self.limiter_release_spinbox.setSuffix(" ms")
         self.limiter_release_spinbox.setToolTip("How fast the limiter recovers")
-        self.limiter_release_spinbox.setMaximumWidth(100)
-        self.limiter_release_spinbox.setMinimumWidth(60)
+        fit_spinbox_to_contents(self.limiter_release_spinbox)
         limiter_release_label = QLabel("Release:")
         limiter_layout.addWidget(limiter_release_label, 3, 0)
         limiter_layout.addWidget(self.limiter_release_spinbox, 3, 1, 1, 2)
@@ -333,8 +342,8 @@ class CompressorPanel(QWidget):
             "to catch transients before final output."
         )
         info_label.setStyleSheet(INFO_LABEL_STYLE)
-        limiter_layout.addWidget(QLabel(""), 4, 0)
-        limiter_layout.addWidget(info_label, 4, 1, 1, 2)
+        info_label.setWordWrap(True)
+        limiter_layout.addWidget(info_label, 4, 0, 1, 3)
 
         layout.addWidget(limiter_group)
 
@@ -497,7 +506,9 @@ class CompressorPanel(QWidget):
             self.processor.set_compressor_release(release)
             self.processor.set_compressor_makeup_gain(makeup)
             if hasattr(self.processor, "set_compressor_sidechain_highpass_enabled"):
-                self.processor.set_compressor_sidechain_highpass_enabled(sidechain_highpass)
+                self.processor.set_compressor_sidechain_highpass_enabled(
+                    sidechain_highpass
+                )
 
         self._comp_rate_limiter.call(apply)
 
@@ -573,59 +584,61 @@ class CompressorPanel(QWidget):
     def get_compressor_settings(self) -> dict:
         """Get current compressor settings as a dictionary."""
         return {
-            'enabled': self.comp_enabled_checkbox.isChecked(),
-            'threshold_db': self.threshold_spinbox.value(),
-            'ratio': self.ratio_spinbox.value(),
-            'attack_ms': self.attack_spinbox.value(),
-            'release_ms': self.release_spinbox.value(),
-            'makeup_gain_db': self.makeup_spinbox.value(),
-            'adaptive_release': self.adaptive_release_checkbox.isChecked(),
-            'base_release_ms': self.base_release_spinbox.value(),
-            'auto_makeup_enabled': self.auto_makeup_checkbox.isChecked(),
-            'target_lufs': self.target_lufs_spinbox.value(),
-            'sidechain_highpass_enabled': self.sidechain_highpass_checkbox.isChecked(),
+            "enabled": self.comp_enabled_checkbox.isChecked(),
+            "threshold_db": self.threshold_spinbox.value(),
+            "ratio": self.ratio_spinbox.value(),
+            "attack_ms": self.attack_spinbox.value(),
+            "release_ms": self.release_spinbox.value(),
+            "makeup_gain_db": self.makeup_spinbox.value(),
+            "adaptive_release": self.adaptive_release_checkbox.isChecked(),
+            "base_release_ms": self.base_release_spinbox.value(),
+            "auto_makeup_enabled": self.auto_makeup_checkbox.isChecked(),
+            "target_lufs": self.target_lufs_spinbox.value(),
+            "sidechain_highpass_enabled": self.sidechain_highpass_checkbox.isChecked(),
         }
 
     def get_limiter_settings(self) -> dict:
         """Get current limiter settings as a dictionary."""
         return {
-            'enabled': self.limiter_enabled_checkbox.isChecked(),
-            'ceiling_db': self.ceiling_spinbox.value(),
-            'release_ms': self.limiter_release_spinbox.value(),
-            'careful_output_enabled': self.careful_output_checkbox.isChecked(),
+            "enabled": self.limiter_enabled_checkbox.isChecked(),
+            "ceiling_db": self.ceiling_spinbox.value(),
+            "release_ms": self.limiter_release_spinbox.value(),
+            "careful_output_enabled": self.careful_output_checkbox.isChecked(),
         }
 
     def set_compressor_settings(self, settings: dict) -> None:
         """Apply compressor settings from a dictionary."""
-        if 'enabled' in settings:
-            self.comp_enabled_checkbox.setChecked(settings['enabled'])
-        if 'threshold_db' in settings:
-            self.threshold_spinbox.setValue(settings['threshold_db'])
-            self.threshold_slider.setValue(int(settings['threshold_db']))
-        if 'ratio' in settings:
-            self.ratio_spinbox.setValue(settings['ratio'])
-            self.ratio_slider.setValue(int(settings['ratio'] * 10))
-        if 'attack_ms' in settings:
-            self.attack_spinbox.setValue(settings['attack_ms'])
-        if 'release_ms' in settings:
-            self.release_spinbox.setValue(settings['release_ms'])
-        if 'makeup_gain_db' in settings:
-            self.makeup_spinbox.setValue(settings['makeup_gain_db'])
-            self.makeup_slider.setValue(int(settings['makeup_gain_db']))
+        if "enabled" in settings:
+            self.comp_enabled_checkbox.setChecked(settings["enabled"])
+        if "threshold_db" in settings:
+            self.threshold_spinbox.setValue(settings["threshold_db"])
+            self.threshold_slider.setValue(int(settings["threshold_db"]))
+        if "ratio" in settings:
+            self.ratio_spinbox.setValue(settings["ratio"])
+            self.ratio_slider.setValue(int(settings["ratio"] * 10))
+        if "attack_ms" in settings:
+            self.attack_spinbox.setValue(settings["attack_ms"])
+        if "release_ms" in settings:
+            self.release_spinbox.setValue(settings["release_ms"])
+        if "makeup_gain_db" in settings:
+            self.makeup_spinbox.setValue(settings["makeup_gain_db"])
+            self.makeup_slider.setValue(int(settings["makeup_gain_db"]))
 
         # Adaptive release settings (v1.2.0+)
-        if 'adaptive_release' in settings:
-            self.adaptive_release_checkbox.setChecked(settings['adaptive_release'])
-        if 'base_release_ms' in settings:
-            self.base_release_spinbox.setValue(settings['base_release_ms'])
+        if "adaptive_release" in settings:
+            self.adaptive_release_checkbox.setChecked(settings["adaptive_release"])
+        if "base_release_ms" in settings:
+            self.base_release_spinbox.setValue(settings["base_release_ms"])
 
         # Auto makeup gain settings (v1.3.0+)
-        if 'auto_makeup_enabled' in settings:
-            self.auto_makeup_checkbox.setChecked(settings['auto_makeup_enabled'])
-        if 'target_lufs' in settings:
-            self.target_lufs_spinbox.setValue(settings['target_lufs'])
-        if 'sidechain_highpass_enabled' in settings:
-            self.sidechain_highpass_checkbox.setChecked(settings['sidechain_highpass_enabled'])
+        if "auto_makeup_enabled" in settings:
+            self.auto_makeup_checkbox.setChecked(settings["auto_makeup_enabled"])
+        if "target_lufs" in settings:
+            self.target_lufs_spinbox.setValue(settings["target_lufs"])
+        if "sidechain_highpass_enabled" in settings:
+            self.sidechain_highpass_checkbox.setChecked(
+                settings["sidechain_highpass_enabled"]
+            )
 
         self._update_compressor()
         self._update_adaptive_release()
@@ -635,18 +648,18 @@ class CompressorPanel(QWidget):
             "set_compressor_noise_reference_reliability",
         ):
             self.processor.set_compressor_noise_reference_reliability(
-                settings.get('noise_reference_reliability', 0.0)
+                settings.get("noise_reference_reliability", 0.0)
             )
 
     def set_limiter_settings(self, settings: dict) -> None:
         """Apply limiter settings from a dictionary."""
-        if 'enabled' in settings:
-            self.limiter_enabled_checkbox.setChecked(settings['enabled'])
-        if 'careful_output_enabled' in settings:
-            self.careful_output_checkbox.setChecked(settings['careful_output_enabled'])
-        if 'ceiling_db' in settings:
-            self.ceiling_spinbox.setValue(settings['ceiling_db'])
-            self.ceiling_slider.setValue(int(settings['ceiling_db'] * 10))
-        if 'release_ms' in settings:
-            self.limiter_release_spinbox.setValue(settings['release_ms'])
+        if "enabled" in settings:
+            self.limiter_enabled_checkbox.setChecked(settings["enabled"])
+        if "careful_output_enabled" in settings:
+            self.careful_output_checkbox.setChecked(settings["careful_output_enabled"])
+        if "ceiling_db" in settings:
+            self.ceiling_spinbox.setValue(settings["ceiling_db"])
+            self.ceiling_slider.setValue(int(settings["ceiling_db"] * 10))
+        if "release_ms" in settings:
+            self.limiter_release_spinbox.setValue(settings["release_ms"])
         self._update_limiter()

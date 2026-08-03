@@ -21,7 +21,13 @@ from PyQt6.QtWidgets import (
 
 from .level_meter import GainReductionMeter
 from .accessibility import bind_label, set_accessible_group
-from .layout_constants import INFO_LABEL_STYLE, MARGIN_PANEL, PRIMARY_LABEL_STYLE, SPACING_NORMAL
+from .layout_constants import (
+    INFO_LABEL_STYLE,
+    MARGIN_PANEL,
+    PRIMARY_LABEL_STYLE,
+    SPACING_NORMAL,
+    fit_spinbox_to_contents,
+)
 from .rate_limiter import RateLimiter
 
 
@@ -79,7 +85,7 @@ class DeEsserPanel(QWidget):
         self.auto_amount_spinbox.setSingleStep(0.05)
         self.auto_amount_spinbox.setValue(0.5)
         self.auto_amount_spinbox.setDecimals(2)
-        self.auto_amount_spinbox.setFixedWidth(80)
+        fit_spinbox_to_contents(self.auto_amount_spinbox)
         amount_layout.addWidget(self.auto_amount_spinbox)
 
         amount_label = QLabel("Amount:")
@@ -100,7 +106,7 @@ class DeEsserPanel(QWidget):
         self.low_cut_spinbox.setSingleStep(100.0)
         self.low_cut_spinbox.setValue(4000.0)
         self.low_cut_spinbox.setSuffix(" Hz")
-        self.low_cut_spinbox.setFixedWidth(100)
+        fit_spinbox_to_contents(self.low_cut_spinbox)
         low_layout.addWidget(self.low_cut_spinbox)
 
         low_label = QLabel("Low Cut:")
@@ -121,7 +127,7 @@ class DeEsserPanel(QWidget):
         self.high_cut_spinbox.setSingleStep(100.0)
         self.high_cut_spinbox.setValue(11000.0)
         self.high_cut_spinbox.setSuffix(" Hz")
-        self.high_cut_spinbox.setFixedWidth(100)
+        fit_spinbox_to_contents(self.high_cut_spinbox)
         high_layout.addWidget(self.high_cut_spinbox)
 
         high_label = QLabel("High Cut:")
@@ -142,7 +148,7 @@ class DeEsserPanel(QWidget):
         self.threshold_spinbox.setSingleStep(1.0)
         self.threshold_spinbox.setValue(-28.0)
         self.threshold_spinbox.setSuffix(" dB")
-        self.threshold_spinbox.setFixedWidth(80)
+        fit_spinbox_to_contents(self.threshold_spinbox)
         threshold_layout.addWidget(self.threshold_spinbox)
 
         threshold_label = QLabel("Threshold:")
@@ -163,7 +169,7 @@ class DeEsserPanel(QWidget):
         self.ratio_spinbox.setSingleStep(0.5)
         self.ratio_spinbox.setValue(4.0)
         self.ratio_spinbox.setSuffix(":1")
-        self.ratio_spinbox.setFixedWidth(80)
+        fit_spinbox_to_contents(self.ratio_spinbox)
         ratio_layout.addWidget(self.ratio_spinbox)
 
         ratio_label = QLabel("Ratio:")
@@ -176,8 +182,7 @@ class DeEsserPanel(QWidget):
         self.attack_spinbox.setSingleStep(0.1)
         self.attack_spinbox.setValue(2.0)
         self.attack_spinbox.setSuffix(" ms")
-        self.attack_spinbox.setMaximumWidth(100)
-        self.attack_spinbox.setMinimumWidth(70)
+        fit_spinbox_to_contents(self.attack_spinbox)
         attack_label = QLabel("Attack:")
         attack_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         grid.addWidget(attack_label, 7, 0)
@@ -188,8 +193,7 @@ class DeEsserPanel(QWidget):
         self.release_spinbox.setSingleStep(5.0)
         self.release_spinbox.setValue(80.0)
         self.release_spinbox.setSuffix(" ms")
-        self.release_spinbox.setMaximumWidth(100)
-        self.release_spinbox.setMinimumWidth(70)
+        fit_spinbox_to_contents(self.release_spinbox)
         release_label = QLabel("Release:")
         release_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         grid.addWidget(release_label, 8, 0)
@@ -208,7 +212,7 @@ class DeEsserPanel(QWidget):
         self.max_reduction_spinbox.setSingleStep(0.5)
         self.max_reduction_spinbox.setValue(6.0)
         self.max_reduction_spinbox.setSuffix(" dB")
-        self.max_reduction_spinbox.setFixedWidth(80)
+        fit_spinbox_to_contents(self.max_reduction_spinbox)
         max_red_layout.addWidget(self.max_reduction_spinbox)
 
         max_red_label = QLabel("Max Red:")
@@ -447,30 +451,30 @@ class DeEsserPanel(QWidget):
 
     def get_settings(self) -> dict:
         return {
-            'enabled': self.enabled_checkbox.isChecked(),
-            'auto_enabled': self.auto_checkbox.isChecked(),
-            'auto_amount': self.auto_amount_spinbox.value(),
-            'low_cut_hz': self.low_cut_spinbox.value(),
-            'high_cut_hz': self.high_cut_spinbox.value(),
-            'threshold_db': self.threshold_spinbox.value(),
-            'ratio': self.ratio_spinbox.value(),
-            'attack_ms': self.attack_spinbox.value(),
-            'release_ms': self.release_spinbox.value(),
-            'max_reduction_db': self.max_reduction_spinbox.value(),
+            "enabled": self.enabled_checkbox.isChecked(),
+            "auto_enabled": self.auto_checkbox.isChecked(),
+            "auto_amount": self.auto_amount_spinbox.value(),
+            "low_cut_hz": self.low_cut_spinbox.value(),
+            "high_cut_hz": self.high_cut_spinbox.value(),
+            "threshold_db": self.threshold_spinbox.value(),
+            "ratio": self.ratio_spinbox.value(),
+            "attack_ms": self.attack_spinbox.value(),
+            "release_ms": self.release_spinbox.value(),
+            "max_reduction_db": self.max_reduction_spinbox.value(),
         }
 
     def set_settings(self, settings: dict):
-        self.enabled_checkbox.setChecked(settings.get('enabled', False))
-        auto_enabled = bool(settings.get('auto_enabled', True))
+        self.enabled_checkbox.setChecked(settings.get("enabled", False))
+        auto_enabled = bool(settings.get("auto_enabled", True))
 
-        low = float(settings.get('low_cut_hz', 4000.0))
-        high = float(settings.get('high_cut_hz', 11000.0))
-        auto_amount = float(settings.get('auto_amount', 0.5))
-        threshold = float(settings.get('threshold_db', -28.0))
-        ratio = float(settings.get('ratio', 4.0))
-        attack = float(settings.get('attack_ms', 2.0))
-        release = float(settings.get('release_ms', 80.0))
-        max_red = float(settings.get('max_reduction_db', 6.0))
+        low = float(settings.get("low_cut_hz", 4000.0))
+        high = float(settings.get("high_cut_hz", 11000.0))
+        auto_amount = float(settings.get("auto_amount", 0.5))
+        threshold = float(settings.get("threshold_db", -28.0))
+        ratio = float(settings.get("ratio", 4.0))
+        attack = float(settings.get("attack_ms", 2.0))
+        release = float(settings.get("release_ms", 80.0))
+        max_red = float(settings.get("max_reduction_db", 6.0))
 
         self.low_cut_slider.blockSignals(True)
         self.low_cut_spinbox.blockSignals(True)

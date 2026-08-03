@@ -46,7 +46,7 @@ class LevelMeter(QWidget):
 
         # Minimum size - wider to accommodate scale
         self.setMinimumWidth(50 if show_scale else 25)
-        self.setMinimumHeight(200)
+        self.setMinimumHeight(120)
 
         # Peak hold decay timer
         self.decay_timer = QTimer(self)
@@ -122,16 +122,18 @@ class LevelMeter(QWidget):
 
             # Create gradient
             gradient = QLinearGradient(0, meter_height + 4, 0, 4)
-            gradient.setColorAt(0.0, self.COLOR_GREEN)      # Bottom (quiet)
-            gradient.setColorAt(0.67, self.COLOR_YELLOW)    # -20 dB
-            gradient.setColorAt(0.9, self.COLOR_RED)        # -6 dB
-            gradient.setColorAt(1.0, self.COLOR_RED)        # 0 dB
+            gradient.setColorAt(0.0, self.COLOR_GREEN)  # Bottom (quiet)
+            gradient.setColorAt(0.67, self.COLOR_YELLOW)  # -20 dB
+            gradient.setColorAt(0.9, self.COLOR_RED)  # -6 dB
+            gradient.setColorAt(1.0, self.COLOR_RED)  # 0 dB
 
             painter.fillRect(bar_rect, gradient)
 
         # Draw peak hold line
         if self.peak_hold_db > self.DB_MIN:
-            peak_color = self.COLOR_CLIP if self.peak_hold_db >= -0.5 else self.COLOR_PEAK_HOLD
+            peak_color = (
+                self.COLOR_CLIP if self.peak_hold_db >= -0.5 else self.COLOR_PEAK_HOLD
+            )
             pen = QPen(peak_color, 2)
             painter.setPen(pen)
             painter.drawLine(4, int(peak_hold_y), meter_width - 2, int(peak_hold_y))
@@ -153,7 +155,11 @@ class LevelMeter(QWidget):
                 # Draw dB value
                 db_text = f"{db:d}" if db != 0 else "0"
                 text_rect = QRectF(meter_width + 4, y - 6, scale_width - 6, 12)
-                painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, db_text)
+                painter.drawText(
+                    text_rect,
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    db_text,
+                )
 
         # Draw clipping indicator at top
         if self.is_clipping and self.clip_flash_counter % 2 == 0:
@@ -167,9 +173,12 @@ class LevelMeter(QWidget):
             font.setBold(True)
             painter.setFont(font)
             painter.drawText(
-                0, height - label_height, width, label_height,
+                0,
+                height - label_height,
+                width,
+                label_height,
                 Qt.AlignmentFlag.AlignCenter,
-                self.label_text
+                self.label_text,
             )
 
         painter.end()
@@ -247,11 +256,7 @@ class GainReductionMeter(QWidget):
         font.setPointSize(8)
         painter.setFont(font)
         text = f"GR: {self.gain_reduction_db:.1f} dB"
-        painter.drawText(
-            0, 0, width, height,
-            Qt.AlignmentFlag.AlignCenter,
-            text
-        )
+        painter.drawText(0, 0, width, height, Qt.AlignmentFlag.AlignCenter, text)
 
         painter.end()
 

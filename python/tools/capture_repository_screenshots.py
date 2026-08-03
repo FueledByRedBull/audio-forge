@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import QApplication, QScrollArea, QWidget
 from mic_eq.config import AppConfig
 from mic_eq.ui import main_window as main_window_module
 from mic_eq.ui.main_window import MainWindow
-from mic_eq.ui.theme import message_text_style
+from mic_eq.ui.theme import application_palette, message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
 
@@ -124,7 +124,9 @@ def _load_capture_font(app: QApplication) -> dict[str, str]:
     windows_root = Path(os.environ.get("WINDIR", "C:/Windows"))
     font_path = windows_root / "Fonts" / CAPTURE_FONT_FILENAME
     if not font_path.is_file():
-        raise RuntimeError(f"Required capture font is unavailable: {CAPTURE_FONT_FILENAME}")
+        raise RuntimeError(
+            f"Required capture font is unavailable: {CAPTURE_FONT_FILENAME}"
+        )
     font_id = QFontDatabase.addApplicationFont(str(font_path))
     families = QFontDatabase.applicationFontFamilies(font_id) if font_id >= 0 else []
     if not families:
@@ -271,6 +273,7 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
     existing_app = QApplication.instance()
     app = QApplication([]) if existing_app is None else cast(QApplication, existing_app)
     app.setStyle("Fusion")
+    app.setPalette(application_palette())
     font = _load_capture_font(app)
 
     window = _prepare_main_window()
@@ -361,8 +364,12 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
             "main_viewport": [CAPTURE_WIDTH, CAPTURE_HEIGHT],
             "reads_user_config": False,
             "enumerates_real_devices": False,
-            "sanitized_input_devices": [device.name for device in SANITIZED_INPUT_DEVICES],
-            "sanitized_output_devices": [device.name for device in SANITIZED_OUTPUT_DEVICES],
+            "sanitized_input_devices": [
+                device.name for device in SANITIZED_INPUT_DEVICES
+            ],
+            "sanitized_output_devices": [
+                device.name for device in SANITIZED_OUTPUT_DEVICES
+            ],
         },
         "checks": {
             "routing_shown": True,
@@ -372,8 +379,7 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
             "alt_text_present": all(bool(item["alt"].strip()) for item in outputs),
             "all_pngs_nonempty": all(item["bytes"] > 0 for item in outputs),
             "all_pngs_compressed": all(
-                item["bytes"] < item["width"] * item["height"]
-                for item in outputs
+                item["bytes"] < item["width"] * item["height"] for item in outputs
             ),
             "processing_scrolled_to_limiter": (
                 processing_scroll_maximum > 0

@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -44,7 +45,14 @@ from .calibration_dialog import (
     _selected_device_pair,
     _start_selected_route,
 )
-from .layout_constants import SUBDUED_TEXT_STYLE, status_chip_style
+from .layout_constants import (
+    SUBDUED_TEXT_STYLE,
+    configure_resizable_dialog,
+    configure_responsive_combo,
+    create_scrollable_dialog_body,
+    fit_spinbox_to_contents,
+    status_chip_style,
+)
 from .level_meter import LevelMeter
 from .theme import (
     DESCRIPTION_LABEL_STYLE,
@@ -123,7 +131,6 @@ class VoiceSetupDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Auto Voice Setup")
         self.setModal(True)
-        self.setMinimumWidth(640)
 
         self.setup_state = "idle"
         self.noise_audio: np.ndarray | None = None
@@ -142,9 +149,20 @@ class VoiceSetupDialog(QDialog):
         self.recording_timer.timeout.connect(self._poll_recording_progress)
 
         self._setup_ui()
+        configure_resizable_dialog(
+            self,
+            preferred_width=760,
+            preferred_height=820,
+            minimum_width=500,
+            minimum_height=380,
+        )
 
     def _setup_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_scroll_area, layout = create_scrollable_dialog_body(self)
+        self.content_scroll_area.setAccessibleName("Auto Voice Setup content")
+        outer_layout.addWidget(self.content_scroll_area)
 
         curve_group = QGroupBox("Step 1: Select Target Curve")
         curve_layout = QVBoxLayout(curve_group)
@@ -156,6 +174,7 @@ class VoiceSetupDialog(QDialog):
         for key, curve in TARGET_CURVES.items():
             self.curve_combo.addItem(curve.name, key)
         self.curve_combo.currentIndexChanged.connect(self._on_curve_changed)
+        configure_responsive_combo(self.curve_combo)
         curve_input.addWidget(self.curve_combo)
         bind_label(curve_label, self.curve_combo)
         curve_layout.addLayout(curve_input)
@@ -168,9 +187,12 @@ class VoiceSetupDialog(QDialog):
 
         dynamics_group = QGroupBox("Step 2: Select Dynamics Intensity")
         dynamics_layout = QVBoxLayout(dynamics_group)
-        dynamics_row = QHBoxLayout()
+        dynamics_row = QFormLayout()
+        dynamics_row.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        dynamics_row.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
         dynamics_label = QLabel("Compression:")
-        dynamics_row.addWidget(dynamics_label)
         self.dynamics_combo = QComboBox()
         for label, key in (
             ("Gentle", "gentle"),
@@ -183,7 +205,8 @@ class VoiceSetupDialog(QDialog):
         configured = getattr(config, "voice_setup_dynamics_intensity", "balanced")
         configured_index = self.dynamics_combo.findData(configured)
         self.dynamics_combo.setCurrentIndex(max(0, configured_index))
-        dynamics_row.addWidget(self.dynamics_combo)
+        configure_responsive_combo(self.dynamics_combo)
+        dynamics_row.addRow(dynamics_label, self.dynamics_combo)
         bind_label(dynamics_label, self.dynamics_combo)
         self.custom_p95_spin = QDoubleSpinBox()
         self.custom_p95_spin.setRange(1.0, 8.0)
@@ -191,16 +214,28 @@ class VoiceSetupDialog(QDialog):
         self.custom_p95_spin.setValue(
             float(getattr(config, "voice_setup_custom_p95_db", 3.5))
         )
-        dynamics_row.addWidget(self.custom_p95_spin)
-        self.custom_p95_spin.setAccessibleName("Target compressor p95 gain reduction")
+        fit_spinbox_to_contents(self.custom_p95_spin)
+        custom_p95_label = QLabel("Target p95 reduction:")
+        dynamics_row.addRow(custom_p95_label, self.custom_p95_spin)
         self.custom_peak_spin = QDoubleSpinBox()
         self.custom_peak_spin.setRange(1.5, 12.0)
         self.custom_peak_spin.setSuffix(" dB peak cap")
         self.custom_peak_spin.setValue(
             float(getattr(config, "voice_setup_custom_peak_cap_db", 8.0))
         )
-        dynamics_row.addWidget(self.custom_peak_spin)
-        self.custom_peak_spin.setAccessibleName("Compressor peak gain-reduction cap")
+        fit_spinbox_to_contents(self.custom_peak_spin)
+        custom_peak_label = QLabel("Peak reduction cap:")
+        dynamics_row.addRow(custom_peak_label, self.custom_peak_spin)
+        bind_label(
+            custom_p95_label,
+            self.custom_p95_spin,
+            name="Target compressor p95 gain reduction",
+        )
+        bind_label(
+            custom_peak_label,
+            self.custom_peak_spin,
+            name="Compressor peak gain-reduction cap",
+        )
         dynamics_layout.addLayout(dynamics_row)
         dynamics_hint = QLabel(
             "This controls compression density only; target loudness remains "
@@ -213,12 +248,8 @@ class VoiceSetupDialog(QDialog):
         self.dynamics_combo.currentIndexChanged.connect(
             self._on_dynamics_intensity_changed
         )
-        self.custom_p95_spin.valueChanged.connect(
-            self._on_dynamics_intensity_changed
-        )
-        self.custom_peak_spin.valueChanged.connect(
-            self._on_dynamics_intensity_changed
-        )
+        self.custom_p95_spin.valueChanged.connect(self._on_dynamics_intensity_changed)
+        self.custom_peak_spin.valueChanged.connect(self._on_dynamics_intensity_changed)
         self._on_dynamics_intensity_changed(self.dynamics_combo.currentIndex())
 
         noise_group = QGroupBox("Step 3: Capture Room Noise")
@@ -236,7 +267,7 @@ class VoiceSetupDialog(QDialog):
         passage_text = QTextEdit()
         passage_text.setPlainText(RAINBOW_PASSAGE)
         passage_text.setReadOnly(True)
-        passage_text.setMaximumHeight(150)
+        passage_text.setMaximumHeight(130)
         passage_text.setAccessibleName("Voice Setup passage")
         passage_text.setAccessibleDescription(
             "Read-only passage to speak during Auto Voice Setup."
@@ -271,7 +302,7 @@ class VoiceSetupDialog(QDialog):
 
         meter_layout = QHBoxLayout()
         self.level_meter = LevelMeter(label="Level", show_scale=True)
-        self.level_meter.setMinimumHeight(150)
+        self.level_meter.setMinimumHeight(120)
         meter_layout.addWidget(self.level_meter)
         recording_layout.addLayout(meter_layout)
 
@@ -279,6 +310,7 @@ class VoiceSetupDialog(QDialog):
         self.warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.warning_label.setStyleSheet(message_text_style("idle"))
         self.warning_label.setAccessibleName("Voice Setup status")
+        self.warning_label.setWordWrap(True)
         recording_layout.addWidget(self.warning_label)
 
         self.summary_group = QGroupBox("Recommended Settings")
@@ -297,6 +329,7 @@ class VoiceSetupDialog(QDialog):
             self.compressor_label,
         ):
             label.setStyleSheet(status_chip_style("idle"))
+            label.setWordWrap(True)
             summary_layout.addWidget(label)
         hint = QLabel(
             "This wizard tunes EQ, gate/VAD, de-esser, and compressor. "
@@ -371,7 +404,9 @@ class VoiceSetupDialog(QDialog):
         elif self.setup_state == "verification_ready":
             self._start_recording_phase("verification_recording")
         elif self.setup_state in {"noise_recording", "voice_recording"}:
-            QMessageBox.information(self, "Recording", "Please let the recording finish.")
+            QMessageBox.information(
+                self, "Recording", "Please let the recording finish."
+            )
 
     def _start_recording_phase(self, phase: str) -> None:
         self._stop_analysis_worker()
@@ -388,7 +423,9 @@ class VoiceSetupDialog(QDialog):
             self._recording_duration = NOISE_RECORDING_DURATION
             self.start_button.setText("Recording Noise...")
             self.phase_label.setText("Capturing room noise")
-            self.warning_label.setText("Stay quiet and keep the room as it normally is.")
+            self.warning_label.setText(
+                "Stay quiet and keep the room as it normally is."
+            )
             self.warning_label.setStyleSheet(message_text_style("info", strong=True))
         elif phase == "voice_recording":
             self._recording_duration = VOICE_RECORDING_DURATION
@@ -420,11 +457,19 @@ class VoiceSetupDialog(QDialog):
         selected_input, selected_output = _selected_device_pair(parent)
 
         if processor_was_running:
-            get_active_input = getattr(parent.processor, "get_active_input_device", None)
-            get_active_output = getattr(parent.processor, "get_active_output_device", None)
+            get_active_input = getattr(
+                parent.processor, "get_active_input_device", None
+            )
+            get_active_output = getattr(
+                parent.processor, "get_active_output_device", None
+            )
             active_pair = (
-                _device_name(get_active_input() if callable(get_active_input) else None),
-                _device_name(get_active_output() if callable(get_active_output) else None),
+                _device_name(
+                    get_active_input() if callable(get_active_input) else None
+                ),
+                _device_name(
+                    get_active_output() if callable(get_active_output) else None
+                ),
             )
             if active_pair != (selected_input, selected_output):
                 reply = QMessageBox.question(
@@ -439,13 +484,19 @@ class VoiceSetupDialog(QDialog):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
                 if reply != QMessageBox.StandardButton.Yes:
-                    self.warning_label.setText("Setup canceled: using current stream devices.")
+                    self.warning_label.setText(
+                        "Setup canceled: using current stream devices."
+                    )
                     self.warning_label.setStyleSheet(message_text_style("warn"))
                     self.start_button.setEnabled(True)
                     self.curve_combo.setEnabled(True)
-                    self.setup_state = "idle" if self.noise_audio is None else "noise_ready"
+                    self.setup_state = (
+                        "idle" if self.noise_audio is None else "noise_ready"
+                    )
                     self.start_button.setText(
-                        "Start Voice Setup" if self.noise_audio is None else "Record Voice"
+                        "Start Voice Setup"
+                        if self.noise_audio is None
+                        else "Record Voice"
                     )
                     return False
 
@@ -524,7 +575,9 @@ class VoiceSetupDialog(QDialog):
             progress = float(parent.processor.recording_progress())
             progress_pct = int(progress * 100)
             self.progress_bar.setValue(progress_pct)
-            self._update_time_remaining(max(0.0, self._recording_duration * (1.0 - progress)))
+            self._update_time_remaining(
+                max(0.0, self._recording_duration * (1.0 - progress))
+            )
             self._update_level(float(parent.processor.recording_level_db()))
 
             if progress_pct >= 100 or parent.processor.is_recording_complete():
@@ -550,8 +603,12 @@ class VoiceSetupDialog(QDialog):
 
         if self.setup_state == "noise_recording":
             if rms_db > -35.0:
-                self.warning_label.setText("Room noise is fairly loud. Results may be conservative.")
-                self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
+                self.warning_label.setText(
+                    "Room noise is fairly loud. Results may be conservative."
+                )
+                self.warning_label.setStyleSheet(
+                    message_text_style("warn", strong=True)
+                )
             else:
                 self.warning_label.setText("Noise floor capture looks usable.")
                 self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
@@ -598,7 +655,9 @@ class VoiceSetupDialog(QDialog):
             self.setup_state = "noise_ready"
             self.start_button.setText("Record Voice")
             self.phase_label.setText("Room noise captured")
-            self.warning_label.setText("Now read the passage aloud for the full 10 seconds.")
+            self.warning_label.setText(
+                "Now read the passage aloud for the full 10 seconds."
+            )
             self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
             self.progress_bar.setValue(0)
             self.time_label.setText(f"Time remaining: {VOICE_RECORDING_DURATION:.0f}s")
@@ -668,9 +727,12 @@ class VoiceSetupDialog(QDialog):
             self.warning_label.setText("Review the validated settings and apply them.")
             state = "ok"
         else:
-            reasons = diagnostics.get("uncertainty_reasons") or ["capture confidence is weak"]
+            reasons = diagnostics.get("uncertainty_reasons") or [
+                "capture confidence is weak"
+            ]
             self.warning_label.setText(
-                "Advisory recommendations only: " + "; ".join(str(reason) for reason in reasons)
+                "Advisory recommendations only: "
+                + "; ".join(str(reason) for reason in reasons)
             )
             state = "warn"
         self.warning_label.setStyleSheet(message_text_style(state, strong=True))
@@ -722,7 +784,11 @@ class VoiceSetupDialog(QDialog):
         self.deesser_label.setStyleSheet(status_chip_style(deesser_state))
 
         compressor = setup_result["compressor_settings"]
-        makeup_text = "auto makeup" if compressor["auto_makeup_enabled"] else f"{compressor['makeup_gain_db']:.1f} dB makeup"
+        makeup_text = (
+            "auto makeup"
+            if compressor["auto_makeup_enabled"]
+            else f"{compressor['makeup_gain_db']:.1f} dB makeup"
+        )
         self.compressor_label.setText(
             "Compressor: "
             f"{compressor['ratio']:.1f}:1 @ {_format_db(compressor['threshold_db'])} | "
@@ -739,7 +805,9 @@ class VoiceSetupDialog(QDialog):
 
         diagnostics = self.setup_result.get("diagnostics") or {}
         if not diagnostics.get("apply_recommended", False):
-            reasons = diagnostics.get("uncertainty_reasons") or ["capture confidence is weak"]
+            reasons = diagnostics.get("uncertainty_reasons") or [
+                "capture confidence is weak"
+            ]
             reply = QMessageBox.question(
                 self,
                 "Apply Advisory Settings?",
@@ -819,7 +887,9 @@ class VoiceSetupDialog(QDialog):
             or self.voice_audio is None
         ):
             self._restore_pre_setup_snapshot()
-            self._on_analysis_failed("Verification context is incomplete; settings restored.")
+            self._on_analysis_failed(
+                "Verification context is incomplete; settings restored."
+            )
             return
         self.phase_label.setText("Validating exact native chain")
         self.warning_label.setText("Comparing the second passage...")

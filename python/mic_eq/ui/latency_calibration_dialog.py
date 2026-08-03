@@ -15,7 +15,6 @@ from PyQt6.QtWidgets import (
     QDialog,
     QGridLayout,
     QGroupBox,
-    QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -33,6 +32,7 @@ from ..config import coerce_device_identity
 from .accessibility import set_accessible_group
 from .level_meter import LevelMeter
 from .device_selection import start_processor_for_route
+from .layout_constants import configure_resizable_dialog, create_scrollable_dialog_body
 
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,6 @@ class LatencyCalibrationDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Latency Calibration")
         self.setModal(True)
-        self.setMinimumWidth(560)
 
         self.worker: LatencyCalibrationWorker | None = None
         self._started_processor = False
@@ -199,9 +198,20 @@ class LatencyCalibrationDialog(QDialog):
         self._engine_signature = ""
 
         self._setup_ui(existing_profile)
+        configure_resizable_dialog(
+            self,
+            preferred_width=620,
+            preferred_height=700,
+            minimum_width=460,
+            minimum_height=360,
+        )
 
     def _setup_ui(self, existing_profile: dict | None):
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_scroll_area, layout = create_scrollable_dialog_body(self)
+        self.content_scroll_area.setAccessibleName("Latency calibration content")
+        outer_layout.addWidget(self.content_scroll_area)
 
         instructions = QLabel(
             "Run calibration with your current input/output device pair.\n"
@@ -256,6 +266,7 @@ class LatencyCalibrationDialog(QDialog):
 
         self.status_label = QLabel("Ready")
         self.status_label.setAccessibleName("Latency calibration status")
+        self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
         self.level_meter = LevelMeter("CAP", show_scale=True)
@@ -263,24 +274,26 @@ class LatencyCalibrationDialog(QDialog):
         self.level_meter.setMinimumHeight(120)
         layout.addWidget(self.level_meter)
 
-        button_row = QHBoxLayout()
+        button_row = QGridLayout()
 
         self.run_button = QPushButton("Run Calibration")
         self.run_button.clicked.connect(self._on_run_clicked)
-        button_row.addWidget(self.run_button)
+        button_row.addWidget(self.run_button, 0, 0)
 
         self.accept_button = QPushButton("Accept")
         self.accept_button.setEnabled(existing_profile is not None)
         self.accept_button.clicked.connect(self._on_accept_clicked)
-        button_row.addWidget(self.accept_button)
+        button_row.addWidget(self.accept_button, 0, 1)
 
         self.reset_button = QPushButton("Reset")
         self.reset_button.clicked.connect(self._on_reset_clicked)
-        button_row.addWidget(self.reset_button)
+        button_row.addWidget(self.reset_button, 1, 0)
 
         self.close_button = QPushButton("Close")
         self.close_button.clicked.connect(self._on_close_clicked)
-        button_row.addWidget(self.close_button)
+        button_row.addWidget(self.close_button, 1, 1)
+        button_row.setColumnStretch(0, 1)
+        button_row.setColumnStretch(1, 1)
 
         set_accessible_group(
             (

@@ -24,7 +24,7 @@ For local release prep from a clean clone, you can mirror that behavior with:
 
 Then run the workflow with:
 
-- `release_tag`: the target tag, for example `v1.11.0`.
+- `release_tag`: the target tag, for example `v1.11.1`.
 - `asset_source_tag`: optional published release override for pinned
   DeepFilter/DirectML assets. Leave blank to use the repository
   `AUDIOFORGE_ASSET_SOURCE_TAG` override when configured, then the
@@ -105,7 +105,7 @@ Create the distributable archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.11.0-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.11.1-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This setting is retained from a final-bundle comparison against ZIP/Deflate,
@@ -116,7 +116,7 @@ filtering was smallest; the exact measurements are recorded in
 Compute the checksum:
 
 ```powershell
-Get-FileHash .\AudioForge-v1.11.0-win64-ultra.7z -Algorithm SHA256
+Get-FileHash .\AudioForge-v1.11.1-win64-ultra.7z -Algorithm SHA256
 ```
 
 For a real candidate, generate and verify all provenance sidecars instead of
@@ -125,25 +125,25 @@ writing release facts manually:
 ```powershell
 .\.venv\Scripts\python.exe python\tools\release_provenance.py create `
   --bundle .\dist\AudioForge `
-  --archive .\AudioForge-v1.11.0-win64-ultra.7z `
+  --archive .\AudioForge-v1.11.1-win64-ultra.7z `
   --baseline .\evaluation\release-bundle-path-baseline.json `
   --output-dir .
 
 .\.venv\Scripts\python.exe python\tools\release_provenance.py verify `
   --bundle .\dist\AudioForge `
-  --archive .\AudioForge-v1.11.0-win64-ultra.7z `
-  --checksum .\AudioForge-v1.11.0-win64-ultra.7z.sha256 `
-  --manifest .\AudioForge-v1.11.0-win64-ultra.7z.manifest.json `
-  --metadata .\AudioForge-v1.11.0-win64-ultra.7z.metadata.json `
+  --archive .\AudioForge-v1.11.1-win64-ultra.7z `
+  --checksum .\AudioForge-v1.11.1-win64-ultra.7z.sha256 `
+  --manifest .\AudioForge-v1.11.1-win64-ultra.7z.manifest.json `
+  --metadata .\AudioForge-v1.11.1-win64-ultra.7z.metadata.json `
   --baseline .\evaluation\release-bundle-path-baseline.json
 ```
 
 Candidate and promotion:
 
 1. Commit tracked source/doc/version changes.
-2. Create annotated tag `v1.11.0`.
+2. Create annotated tag `v1.11.1`.
 3. Upload the raw runtime assets listed above to the GitHub Release or to the configured `asset_source_tag` release. An existing verified `AudioForge-*-win64-ultra.7z` on that release can also be used as the asset source.
-4. Push `master` and `v1.11.0`, or run the `Release package` workflow manually
+4. Push `master` and `v1.11.1`, or run the `Release package` workflow manually
    to create a candidate.
 5. Record the candidate workflow run ID and generated archive SHA-256.
 6. On a temporary or standing self-hosted runner labelled `self-hosted`,

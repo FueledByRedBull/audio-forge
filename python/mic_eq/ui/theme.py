@@ -1,8 +1,8 @@
-"""Semantic visual tokens for the current AudioForge light interface.
+"""Semantic visual tokens for AudioForge's explicit dark interface.
 
 The token names describe intent rather than a particular widget.  Keeping the
-palette here prevents dialogs and custom-painted widgets from drifting apart,
-while deliberately leaving a future dark-theme redesign as separate work.
+palette here prevents dialogs, native Qt controls, and custom-painted widgets
+from drifting apart across different Windows appearance settings.
 """
 
 from __future__ import annotations
@@ -11,52 +11,54 @@ from dataclasses import dataclass
 import os
 import sys
 
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QPalette
 
 
 @dataclass(frozen=True)
 class SemanticPalette:
-    """Colors used by the current light UI and its dark data canvases."""
+    """Colors used by the application chrome and its data canvases."""
 
-    app_surface: str = "#ffffff"
-    text_primary: str = "#1f2933"
-    text_muted: str = "#475569"
+    app_surface: str = "#191c20"
+    control_surface: str = "#2b3139"
+    control_surface_alt: str = "#20242a"
+    text_primary: str = "#f1f5f9"
+    text_muted: str = "#b8c0cc"
     text_on_emphasis: str = "#ffffff"
-    accent: str = "#1d4ed8"
+    accent: str = "#7db7ff"
 
     action_primary: str = "#2563eb"
-    action_primary_border: str = "#1d4ed8"
-    action_destructive: str = "#dc2626"
-    action_destructive_border: str = "#b91c1c"
-    action_secondary: str = "#eef2f7"
-    action_secondary_border: str = "#c8cdd4"
-    action_disabled: str = "#cbd5e1"
-    action_disabled_text: str = "#64748b"
-    action_disabled_surface: str = "#f8fafc"
-    action_disabled_border: str = "#e2e8f0"
+    action_primary_border: str = "#60a5fa"
+    action_destructive: str = "#b91c1c"
+    action_destructive_border: str = "#ef4444"
+    action_secondary: str = "#2b3139"
+    action_secondary_border: str = "#566170"
+    action_disabled: str = "#343a43"
+    action_disabled_text: str = "#a4adba"
+    action_disabled_surface: str = "#252a31"
+    action_disabled_border: str = "#4b5563"
 
-    status_ok_surface: str = "#ecfdf5"
-    status_ok_text: str = "#047857"
-    status_ok_border: str = "#a7f3d0"
-    status_warn_surface: str = "#fffbeb"
-    status_warn_text: str = "#92400e"
-    status_warn_border: str = "#fcd34d"
-    status_bad_surface: str = "#fef2f2"
-    status_bad_text: str = "#b91c1c"
-    status_bad_border: str = "#fecaca"
-    status_info_surface: str = "#eff6ff"
-    status_info_text: str = "#1d4ed8"
-    status_info_border: str = "#bfdbfe"
-    status_idle_surface: str = "#f8fafc"
-    status_idle_text: str = "#475569"
-    status_idle_border: str = "#cbd5e1"
+    status_ok_surface: str = "#16352b"
+    status_ok_text: str = "#86efac"
+    status_ok_border: str = "#2f855a"
+    status_warn_surface: str = "#3b2e14"
+    status_warn_text: str = "#fcd34d"
+    status_warn_border: str = "#a16207"
+    status_bad_surface: str = "#401d24"
+    status_bad_text: str = "#fda4af"
+    status_bad_border: str = "#be123c"
+    status_info_surface: str = "#172d4d"
+    status_info_text: str = "#93c5fd"
+    status_info_border: str = "#2563eb"
+    status_idle_surface: str = "#262b33"
+    status_idle_text: str = "#cbd5e1"
+    status_idle_border: str = "#566170"
 
-    warning_banner_surface: str = "#f59e0b"
+    warning_banner_surface: str = "#d97706"
     warning_banner_text: str = "#111827"
 
-    data_surface: str = "#20242a"
-    data_surface_raised: str = "#2a3038"
-    data_grid: str = "#66707d"
+    data_surface: str = "#15181c"
+    data_surface_raised: str = "#20252b"
+    data_grid: str = "#59636f"
     data_text: str = "#d6dde7"
     data_text_muted: str = "#aeb8c5"
     data_curve: str = "#22d3ee"
@@ -79,6 +81,47 @@ class SemanticPalette:
 
 
 PALETTE = SemanticPalette()
+
+
+def application_palette() -> QPalette:
+    """Return the palette used by both the live app and screenshot harness."""
+
+    palette = QPalette()
+    role = QPalette.ColorRole
+    palette.setColor(role.Window, qcolor(PALETTE.app_surface))
+    palette.setColor(role.WindowText, qcolor(PALETTE.text_primary))
+    palette.setColor(role.Base, qcolor(PALETTE.control_surface_alt))
+    palette.setColor(role.AlternateBase, qcolor(PALETTE.control_surface))
+    palette.setColor(role.ToolTipBase, qcolor(PALETTE.control_surface))
+    palette.setColor(role.ToolTipText, qcolor(PALETTE.text_primary))
+    palette.setColor(role.Text, qcolor(PALETTE.text_primary))
+    palette.setColor(role.Button, qcolor(PALETTE.action_secondary))
+    palette.setColor(role.ButtonText, qcolor(PALETTE.text_primary))
+    palette.setColor(role.BrightText, qcolor(PALETTE.text_on_emphasis))
+    palette.setColor(role.Highlight, qcolor(PALETTE.action_primary))
+    palette.setColor(role.HighlightedText, qcolor(PALETTE.text_on_emphasis))
+    palette.setColor(role.Link, qcolor(PALETTE.accent))
+    palette.setColor(role.LinkVisited, qcolor("#c4b5fd"))
+    palette.setColor(role.PlaceholderText, qcolor(PALETTE.text_muted))
+    palette.setColor(role.Light, qcolor("#3b424c"))
+    palette.setColor(role.Midlight, qcolor("#333a44"))
+    palette.setColor(role.Mid, qcolor("#252a31"))
+    palette.setColor(role.Dark, qcolor("#111318"))
+    palette.setColor(role.Shadow, qcolor("#0d0f12"))
+
+    disabled = QPalette.ColorGroup.Disabled
+    for disabled_role in (
+        role.WindowText,
+        role.Text,
+        role.ButtonText,
+        role.PlaceholderText,
+    ):
+        palette.setColor(disabled, disabled_role, qcolor(PALETTE.action_disabled_text))
+    palette.setColor(disabled, role.Button, qcolor(PALETTE.action_disabled_surface))
+    palette.setColor(disabled, role.Base, qcolor(PALETTE.control_surface_alt))
+    palette.setColor(disabled, role.Highlight, qcolor("#38465c"))
+    palette.setColor(disabled, role.HighlightedText, qcolor("#d1d5db"))
+    return palette
 
 
 def qcolor(value: str, *, alpha: int | None = None) -> QColor:
@@ -129,6 +172,11 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
         PALETTE.action_destructive,
     ),
     ("secondary action", PALETTE.text_primary, PALETTE.action_secondary),
+    (
+        "disabled action",
+        PALETTE.action_disabled_text,
+        PALETTE.action_disabled_surface,
+    ),
     ("warning banner", PALETTE.warning_banner_text, PALETTE.warning_banner_surface),
     ("success status", PALETTE.status_ok_text, PALETTE.status_ok_surface),
     ("warning status", PALETTE.status_warn_text, PALETTE.status_warn_surface),
@@ -171,17 +219,11 @@ def prefers_reduced_motion() -> bool:
 
 PRIMARY_LABEL_STYLE = "font-size: 11pt;"
 COMPACT_CONTROL_STYLE = "font-size: 9pt;"
-METER_LABEL_STYLE = (
-    f"font-size: 10pt; font-weight: bold; color: {PALETTE.accent};"
-)
+METER_LABEL_STYLE = f"font-size: 10pt; font-weight: bold; color: {PALETTE.accent};"
 INFO_LABEL_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
 SUBDUED_TEXT_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
-DESCRIPTION_LABEL_STYLE = (
-    f"color: {PALETTE.text_muted}; font-size: 9pt; padding: 5px;"
-)
-PROGRESS_LABEL_STYLE = (
-    f"font-size: 12pt; color: {PALETTE.accent}; font-weight: bold;"
-)
+DESCRIPTION_LABEL_STYLE = f"color: {PALETTE.text_muted}; font-size: 9pt; padding: 5px;"
+PROGRESS_LABEL_STYLE = f"font-size: 12pt; color: {PALETTE.accent}; font-weight: bold;"
 
 PRIMARY_ACTION_BUTTON_STYLE = (
     f"QPushButton {{ background-color: {PALETTE.action_primary}; "

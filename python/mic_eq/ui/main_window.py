@@ -142,6 +142,10 @@ DEFAULT_WINDOW_WIDTH = 1280
 DEFAULT_WINDOW_HEIGHT = 850
 MINIMUM_WINDOW_WIDTH = 900
 MINIMUM_WINDOW_HEIGHT = 640
+DROPPED_DIAGNOSTICS_TOOLTIP = (
+    "Dropped samples and warning-signaling runtime counters.\n"
+    "Right-click to reset dropped samples."
+)
 
 
 def _fit_window_geometry_to_screens(
@@ -197,7 +201,7 @@ class MainWindow(QMainWindow):
 
     LEFT_PANE_MIN_WIDTH = 290
     RIGHT_PANE_MIN_WIDTH = 340
-    COMPACT_LAYOUT_BREAKPOINT = 1400
+    COMPACT_LAYOUT_BREAKPOINT = 1200
     VERTICAL_SPLITTER_BREAKPOINT = 1160
 
     def __init__(self):
@@ -598,10 +602,7 @@ class MainWindow(QMainWindow):
         )
 
         self.dropped_label = QLabel("Drops: --")
-        self.dropped_label.setToolTip(
-            "Dropped samples and warning-signaling runtime counters.\n"
-            "Right-click to reset dropped samples."
-        )
+        self.dropped_label.setToolTip(DROPPED_DIAGNOSTICS_TOOLTIP)
         self.dropped_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.dropped_label.customContextMenuRequested.connect(
             self._on_dropped_context_menu
@@ -930,6 +931,8 @@ class MainWindow(QMainWindow):
         self._set_health_chip(self.dropped_label, "Drops: --", "idle")
         self._set_health_chip(self.backend_diag_label, "Backend: --", "idle")
         self._set_health_chip(self.recovery_diag_label, "Recovery: --", "idle")
+        self.dropped_label.setToolTip(DROPPED_DIAGNOSTICS_TOOLTIP)
+        self.dropped_label.setAccessibleDescription("")
 
     @staticmethod
     def _diag_token(label: str, value) -> str | None:
@@ -2971,11 +2974,19 @@ class MainWindow(QMainWindow):
             )
             else "warn"
         )
+        dropped_detail = " | ".join(dropped_bits)
+        dropped_summary = dropped_bits[:5]
+        if dropped_state != "ok":
+            dropped_summary.append("WARN")
         self._set_health_chip(
             self.dropped_label,
-            " | ".join(dropped_bits),
+            " | ".join(dropped_summary),
             dropped_state,
         )
+        self.dropped_label.setToolTip(
+            f"{DROPPED_DIAGNOSTICS_TOOLTIP}\n\nCurrent counters:\n{dropped_detail}"
+        )
+        self.dropped_label.setAccessibleDescription(dropped_detail)
 
         backend_available = diagnostics.get("noise_backend_available", True)
         backend_failed = diagnostics.get("noise_backend_failed", False)

@@ -164,6 +164,8 @@ class _FakeLabel:
         self.stylesheet = ""
         self.visible = True
         self.state = ""
+        self.tooltip = ""
+        self.accessible_description = ""
 
     def setText(self, text: str):
         self.text = text
@@ -173,6 +175,12 @@ class _FakeLabel:
 
     def setVisible(self, visible: bool):
         self.visible = visible
+
+    def setToolTip(self, tooltip: str):
+        self.tooltip = tooltip
+
+    def setAccessibleDescription(self, description: str):
+        self.accessible_description = description
 
 
 class _FakeStatusBar:
@@ -795,8 +803,9 @@ def test_input_phase_warning_marks_diagnostics_warn():
         rnnoise_buf=0,
     )
 
-    assert "PH:1" in window.dropped_label.text
-    assert "COR:-0.91" in window.dropped_label.text
+    assert "WARN" in window.dropped_label.text
+    assert "PH:1" in window.dropped_label.tooltip
+    assert "COR:-0.91" in window.dropped_label.tooltip
     assert window.dropped_label.state == "warn"
 
 
@@ -1125,10 +1134,10 @@ def test_update_diagnostics_surfaces_output_recovery_and_reuses_diagnostics(qapp
     assert "ORE:4" in window.recovery_diag_label.text
     assert "R:2" in window.recovery_diag_label.text
     assert "R:4" not in window.dropped_label.text
-    assert "RTO:8" in window.dropped_label.text
-    assert "ICE:9" in window.dropped_label.text
-    assert "OCE:10" in window.dropped_label.text
-    assert "RT:fixed real-time buffer overflow" in window.dropped_label.text
+    assert "RTO:8" in window.dropped_label.tooltip
+    assert "ICE:9" in window.dropped_label.tooltip
+    assert "OCE:10" in window.dropped_label.tooltip
+    assert "RT:fixed real-time buffer overflow" in window.dropped_label.tooltip
     assert not window.status_bar.messages
 
 
@@ -1267,9 +1276,9 @@ def test_new_output_clip_event_warns_once():
         rnnoise_buf=0,
     )
 
-    assert "OCL:1" in window.dropped_label.text
-    assert "OPK:-0.2" in window.dropped_label.text
-    assert "LIM:-1.5" in window.dropped_label.text
+    assert "OCL:1" in window.dropped_label.tooltip
+    assert "OPK:-0.2" in window.dropped_label.tooltip
+    assert "LIM:-1.5" in window.dropped_label.tooltip
     assert window.dropped_label.state == "warn"
 
     window._update_diagnostic_labels(
@@ -1327,8 +1336,8 @@ def test_new_output_true_peak_event_warns_once():
 
     assert "Output: TRUE PEAK" in window.output_health_label.text
     assert window.output_health_label.state == "warn"
-    assert "OTP:1" in window.dropped_label.text
-    assert "TPK:0.4" in window.dropped_label.text
+    assert "OTP:1" in window.dropped_label.tooltip
+    assert "TPK:0.4" in window.dropped_label.tooltip
     assert window.dropped_label.state == "warn"
 
     window._update_diagnostic_labels(
@@ -1384,7 +1393,7 @@ def test_new_gate_chatter_event_warns_once():
         rnnoise_buf=0,
     )
 
-    assert "GCH:1" in window.dropped_label.text
+    assert "GCH:1" in window.dropped_label.tooltip
     assert window.dropped_label.state == "warn"
 
     window._update_diagnostic_labels(

@@ -17,6 +17,7 @@ from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.first_run_setup_dialog import FirstRunSetupDialog
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
 from mic_eq.ui.main_window import MainWindow, _fit_window_geometry_to_screens
+from mic_eq.ui.level_meter import SCALE_TEXT_GAP, _scale_mark_geometry
 from mic_eq.ui.theme import (
     PALETTE,
     TEXT_CONTRAST_PAIRS,
@@ -85,6 +86,13 @@ def test_saved_geometry_is_fitted_to_exactly_one_available_screen() -> None:
     )
     assert offscreen is not None
     assert screens[0].contains(offscreen)
+
+
+def test_level_meter_scale_text_is_separated_from_its_tick() -> None:
+    tick_end, text_rect = _scale_mark_geometry(20, 12.0, 28)
+
+    assert text_rect.left() - tick_end == SCALE_TEXT_GAP
+    assert text_rect.right() <= 48
 
 
 def test_theme_color_alpha_is_clamped_and_invalid_tokens_fail() -> None:
@@ -198,7 +206,6 @@ def test_main_keyboard_order_and_small_viewport_are_operable(
         window.eq_scroll_area.widget().width()
         <= window.eq_scroll_area.viewport().width()
     )
-
     window.content_scroll_area.ensureWidgetVisible(window.start_btn)
     qapp.processEvents()
     viewport_rect = window.content_scroll_area.viewport().rect()
@@ -206,6 +213,32 @@ def test_main_keyboard_order_and_small_viewport_are_operable(
         window.content_scroll_area.viewport(), window.start_btn.rect().topLeft()
     )
     assert viewport_rect.contains(start_top_left)
+
+
+def test_default_window_uses_wide_controls_without_outer_scrolling(
+    isolated_main_window,
+    qapp,
+) -> None:
+    window = isolated_main_window
+    window.resize(1280, 850)
+    window.show()
+    qapp.processEvents()
+    qapp.processEvents()
+
+    assert window._responsive_layout_compact is False
+    assert window.content_scroll_area.horizontalScrollBar().maximum() == 0
+    assert window.content_scroll_area.verticalScrollBar().maximum() == 0
+    viewport = window.content_scroll_area.viewport()
+    dropped_top_left = window.dropped_label.mapTo(
+        viewport,
+        window.dropped_label.rect().topLeft(),
+    )
+    dropped_bottom_right = window.dropped_label.mapTo(
+        viewport,
+        window.dropped_label.rect().bottomRight(),
+    )
+    assert viewport.rect().contains(dropped_top_left)
+    assert viewport.rect().contains(dropped_bottom_right)
 
 
 @pytest.mark.parametrize(

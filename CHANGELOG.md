@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.11.2 - 2026-08-03
+
+- Restored the one-row device, action, and health layouts at the default window
+  width. The default 1280x850 window no longer needs an outer scrollbar.
+- Kept the ten EQ bands in a responsive 5x2 layout at ordinary widths, with no
+  horizontal scrolling or clipped controls.
+- Separated level-meter ticks from their labels so the top mark reads `0`
+  instead of looking like `-0`.
+- Made the visible runtime-counter chip concise while retaining every detailed
+  counter in its tooltip and accessibility description.
+- Added regression coverage for the default viewport, minimum-size scrolling,
+  meter geometry, and runtime-diagnostic presentation.
+
 ## v1.11.1 - 2026-08-03
 
 - Clamped restored and default window geometry to one available display.

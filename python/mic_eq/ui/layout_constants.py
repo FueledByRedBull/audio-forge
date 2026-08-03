@@ -58,21 +58,24 @@ SPACING_SECTION = 16  # Between major sections
 MARGIN_PANEL = 12  # Panel content margins
 
 
+def _spinbox_text_from_value(
+    spinbox: QDoubleSpinBox | QSpinBox,
+    value: float | int,
+) -> str:
+    if isinstance(spinbox, QDoubleSpinBox):
+        return spinbox.textFromValue(float(value))
+    return spinbox.textFromValue(int(value))
+
+
 def fit_spinbox_to_contents(spinbox: QDoubleSpinBox | QSpinBox) -> int:
     """Give a numeric spin box enough room for its widest legal value and unit."""
 
-    if isinstance(spinbox, QDoubleSpinBox):
-        values = (spinbox.minimum(), spinbox.maximum(), spinbox.value())
-        texts = (
-            f"{spinbox.prefix()}{spinbox.textFromValue(value)}{spinbox.suffix()}"
-            for value in values
-        )
-    else:
-        integer_values = (spinbox.minimum(), spinbox.maximum(), spinbox.value())
-        texts = (
-            f"{spinbox.prefix()}{spinbox.textFromValue(value)}{spinbox.suffix()}"
-            for value in integer_values
-        )
+    values = (spinbox.minimum(), spinbox.maximum(), spinbox.value())
+    texts = (
+        f"{spinbox.prefix()}{_spinbox_text_from_value(spinbox, value)}"
+        f"{spinbox.suffix()}"
+        for value in values
+    )
     text_width = max(spinbox.fontMetrics().horizontalAdvance(text) for text in texts)
     option = QStyleOptionSpinBox()
     option.initFrom(spinbox)

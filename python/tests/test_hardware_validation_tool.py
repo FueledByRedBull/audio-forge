@@ -56,7 +56,7 @@ def test_hardware_result_parsers_require_success_and_evidence() -> None:
 def test_hardware_report_provenance_uses_project_version_and_dirty_revision(
     monkeypatch,
 ) -> None:
-    assert TOOL._project_version() == "1.11.1"
+    assert TOOL._project_version() == "1.11.2"
 
     class Result:
         def __init__(self, stdout: str) -> None:

@@ -12,6 +12,23 @@ from PyQt6.QtGui import QPainter, QLinearGradient, QPen, QFont
 from .theme import PALETTE, qcolor
 
 
+SCALE_TICK_LENGTH = 3
+SCALE_TEXT_GAP = 7
+
+
+def _scale_mark_geometry(
+    meter_width: int,
+    y: float,
+    scale_width: int,
+) -> tuple[int, QRectF]:
+    """Return separated tick and label geometry for one meter scale mark."""
+
+    tick_end = meter_width + SCALE_TICK_LENGTH
+    text_left = tick_end + SCALE_TEXT_GAP
+    text_width = max(0, meter_width + scale_width - text_left)
+    return tick_end, QRectF(text_left, y - 6, text_width, 12)
+
+
 class LevelMeter(QWidget):
     """OBS-style vertical level meter with peak hold and dB scale."""
 
@@ -148,13 +165,17 @@ class LevelMeter(QWidget):
 
             for db in self.SCALE_MARKS:
                 y = self._db_to_y(db, meter_height) + 4
+                tick_end, text_rect = _scale_mark_geometry(
+                    meter_width,
+                    y,
+                    scale_width,
+                )
 
                 # Draw tick mark
-                painter.drawLine(meter_width, int(y), meter_width + 3, int(y))
+                painter.drawLine(meter_width, int(y), tick_end, int(y))
 
                 # Draw dB value
                 db_text = f"{db:d}" if db != 0 else "0"
-                text_rect = QRectF(meter_width + 4, y - 6, scale_width - 6, 12)
                 painter.drawText(
                     text_rect,
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,

@@ -223,7 +223,7 @@
         "controlled-impulses",
         "controlled-sine-bursts"
       ],
-      "generator_sha256": "a93854699815baf781145c6842395e76347832b3e12c26d6b145639a38ecd822"
+      "generator_sha256": "88851641f6bfd42836544ead1f7df6b292255f0136ccecd24c5f22eb27ea0c8f"
     },
     "real_speech": {
       "case_count": 12,
@@ -259,8 +259,8 @@
       "real_manifest": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc",
       "source": {
         "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-        "python/tools/evaluate_limiter_lookahead.py": "a93854699815baf781145c6842395e76347832b3e12c26d6b145639a38ecd822",
-        "rust-core/src/audio/processor/python_api.rs": "8cd60e45c244c3ff6149a140b9776d6a4907bb6b3a4424a5b62c661f7fb6f7f3",
+        "python/tools/evaluate_limiter_lookahead.py": "88851641f6bfd42836544ead1f7df6b292255f0136ccecd24c5f22eb27ea0c8f",
+        "rust-core/src/audio/processor/python_api.rs": "3ad0f1f26686b63d48dfaf6d743371478ff857825dc2d5eb4661451c4a394482",
         "rust-core/src/dsp/limiter.rs": "73108d34af1c05ed1d88025f3c251c312af165918adccc175e40c73a0c34eeb0",
         "rust-core/src/dsp/true_peak.rs": "002d0d9e7e29482678617332cb7ba50f8617c582167b9f01fb717261e372a45e"
       }
@@ -371,8 +371,8 @@
   "selected_lookahead_ms": 2.0,
   "source_sha256": {
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-    "python/tools/evaluate_limiter_lookahead.py": "a93854699815baf781145c6842395e76347832b3e12c26d6b145639a38ecd822",
-    "rust-core/src/audio/processor/python_api.rs": "8cd60e45c244c3ff6149a140b9776d6a4907bb6b3a4424a5b62c661f7fb6f7f3",
+    "python/tools/evaluate_limiter_lookahead.py": "88851641f6bfd42836544ead1f7df6b292255f0136ccecd24c5f22eb27ea0c8f",
+    "rust-core/src/audio/processor/python_api.rs": "3ad0f1f26686b63d48dfaf6d743371478ff857825dc2d5eb4661451c4a394482",
     "rust-core/src/dsp/limiter.rs": "73108d34af1c05ed1d88025f3c251c312af165918adccc175e40c73a0c34eeb0",
     "rust-core/src/dsp/true_peak.rs": "002d0d9e7e29482678617332cb7ba50f8617c582167b9f01fb717261e372a45e"
   }

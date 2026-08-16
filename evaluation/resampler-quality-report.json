@@ -273,8 +273,8 @@
       "window": "Kaiser beta=14"
     },
     "product_source_sha256": {
-      "python/tools/evaluate_resampler_quality.py": "1956693325c20c5a4a5f3bf110dc4fcdce78dca5b05630f30af449f554081427",
-      "rust-core/src/audio/processor/dsp_loop.rs": "add29eb87af42d7554cd78b742ade75a734250b28671aac3a6b75398dcb86543",
+      "python/tools/evaluate_resampler_quality.py": "6f781c01daf919c8ef40d3493ec2fbc8b11f7758f44a15bc4fc63827c8121c4e",
+      "rust-core/src/audio/processor/dsp_loop.rs": "579dd8a631851cdac993323bd9e889c78fbb4708a698612d2f9a09b189c5cabe",
       "rust-core/src/audio/processor/resampling.rs": "954cf6e5863b124e34928b3345911b9528db09685f6cdfc7330e7af85da96880"
     },
     "rates": [
@@ -301,8 +301,8 @@
   },
   "evaluation_contract": {
     "asset_hashes": {
-      "python/tools/evaluate_resampler_quality.py": "1956693325c20c5a4a5f3bf110dc4fcdce78dca5b05630f30af449f554081427",
-      "rust-core/src/audio/processor/dsp_loop.rs": "add29eb87af42d7554cd78b742ade75a734250b28671aac3a6b75398dcb86543",
+      "python/tools/evaluate_resampler_quality.py": "6f781c01daf919c8ef40d3493ec2fbc8b11f7758f44a15bc4fc63827c8121c4e",
+      "rust-core/src/audio/processor/dsp_loop.rs": "579dd8a631851cdac993323bd9e889c78fbb4708a698612d2f9a09b189c5cabe",
       "rust-core/src/audio/processor/resampling.rs": "954cf6e5863b124e34928b3345911b9528db09685f6cdfc7330e7af85da96880"
     },
     "clean_preservation": {
@@ -518,8 +518,8 @@
   },
   "schema_version": 2,
   "source_sha256": {
-    "python/tools/evaluate_resampler_quality.py": "1956693325c20c5a4a5f3bf110dc4fcdce78dca5b05630f30af449f554081427",
-    "rust-core/src/audio/processor/dsp_loop.rs": "add29eb87af42d7554cd78b742ade75a734250b28671aac3a6b75398dcb86543",
+    "python/tools/evaluate_resampler_quality.py": "6f781c01daf919c8ef40d3493ec2fbc8b11f7758f44a15bc4fc63827c8121c4e",
+    "rust-core/src/audio/processor/dsp_loop.rs": "579dd8a631851cdac993323bd9e889c78fbb4708a698612d2f9a09b189c5cabe",
     "rust-core/src/audio/processor/resampling.rs": "954cf6e5863b124e34928b3345911b9528db09685f6cdfc7330e7af85da96880"
   },
   "status": "passed"

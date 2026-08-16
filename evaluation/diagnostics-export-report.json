@@ -33,9 +33,9 @@
     "fixture_contains_only_synthetic_identifiers": true,
     "source_hashes": {
       "python/mic_eq/diagnostics_export.py": "b3523a50262777fef975b60f768f0d85e9c46f6290896035682176a43b13082e",
-      "python/mic_eq/ui/main_window.py": "31a2893d3fc151f3f15c02d61f6f20a4e3cdff4f239ff52f08d25159587268a6",
+      "python/mic_eq/ui/main_window.py": "3b8ccaca943a5563bfc4b8f8d38a33db35ac51646996edfe54d9ed5ffbd61735",
       "python/tests/test_diagnostics_export.py": "cbab4fef471abb010e8157a60d7f778cba995eff02c9857ee03ea41d00780d47",
-      "python/tools/evaluate_diagnostics_export.py": "bcca8a32189c4a6542e862979bb3fad9f0c09cf3e4d38d9dda7787aa37d88b5c"
+      "python/tools/evaluate_diagnostics_export.py": "f37f7421a0228b2dda8512340c486f2d717a3c29a80cbc90d5da245ea48bb55b"
     }
   },
   "schema_version": 1,

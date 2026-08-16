@@ -823,9 +823,9 @@
       "models/deepfilter_fullband_eval/microphone-noise.json": "7de302495fe4dbb6f5d8c456b2ec6beb3efd15f4f89cef6b548b098f6a8b3164",
       "models/deepfilter_fullband_eval/microphone-noise.wav": "43c06e764f5b000509c76c5f895a14edcd174f98b1e9fb76a099baff2f62af27",
       "models/silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
-      "python/tools/evaluate_deepfilter_fullband.py": "9202668f5c835921819e4d0d8b91d748fee1dad2c03941846b7d7f7bbaf4c120",
+      "python/tools/evaluate_deepfilter_fullband.py": "6eb69d47dd8f24ada20afc39e5bb8bf3718920d92c3e6b5a448939b4ff2c6485",
       "rust-core/src/bin/deepfilter_benchmark.rs": "37065ca117d093beaf3e35e1656abc483bd847ba1c54ba81d644a6f5a8513e46",
-      "rust-core/src/dsp/deepfilter_ffi.rs": "ce0709032b242998b3cb58bfdfa80c165fc3383a8c23dcabd94d951cfa6d28a1",
+      "rust-core/src/dsp/deepfilter_ffi.rs": "746ca1ef0c481d7ee9bafa7b920d81bf3f572e9545b271e31c6eceb3f77e0270",
       "target/release/deepfilter_benchmark.exe": "eac4aca0c9a01d2f8181844d7defe9440f258b4acf4cfd1c389450d0fda147d4"
     },
     "clean_preservation": {
@@ -895,9 +895,9 @@
   },
   "schema_version": 3,
   "source_sha256": {
-    "python/tools/evaluate_deepfilter_fullband.py": "9202668f5c835921819e4d0d8b91d748fee1dad2c03941846b7d7f7bbaf4c120",
+    "python/tools/evaluate_deepfilter_fullband.py": "6eb69d47dd8f24ada20afc39e5bb8bf3718920d92c3e6b5a448939b4ff2c6485",
     "rust-core/src/bin/deepfilter_benchmark.rs": "37065ca117d093beaf3e35e1656abc483bd847ba1c54ba81d644a6f5a8513e46",
-    "rust-core/src/dsp/deepfilter_ffi.rs": "ce0709032b242998b3cb58bfdfa80c165fc3383a8c23dcabd94d951cfa6d28a1"
+    "rust-core/src/dsp/deepfilter_ffi.rs": "746ca1ef0c481d7ee9bafa7b920d81bf3f572e9545b271e31c6eceb3f77e0270"
   },
   "status": "objective-retained-incumbent"
 }

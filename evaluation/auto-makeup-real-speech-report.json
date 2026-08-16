@@ -37,11 +37,11 @@
     "p99_control_work_within_10ms_deadline": true
   },
   "source_sha256": {
-    "python/tools/evaluate_auto_makeup_real_speech.py": "dba9d68009ba3e92e39adcda734df52cca22551e569a226df515dfd6929e1db6",
+    "python/tools/evaluate_auto_makeup_real_speech.py": "0b2fa477ae26bb28f5ce35c3b48c3c9893f663bd07b148330a2d8a85ab779637",
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-    "rust-core/src/audio/processor/python_api.rs": "8cd60e45c244c3ff6149a140b9776d6a4907bb6b3a4424a5b62c661f7fb6f7f3",
-    "rust-core/src/dsp/compressor.rs": "7aefe536391fd6a95b5d2f7c08bab53efa4126086ecb968025b5032aa3642680",
-    "rust-core/src/dsp/vad.rs": "cd44e193e3e20df49099ecd5ff997973f39792cf0bd1fc9379d7e30e880f995a"
+    "rust-core/src/audio/processor/python_api.rs": "3ad0f1f26686b63d48dfaf6d743371478ff857825dc2d5eb4661451c4a394482",
+    "rust-core/src/dsp/compressor.rs": "5078a464f69ffd6770610d511e64aaed22337c7c2bc90644d95dd7c287bcc806",
+    "rust-core/src/dsp/vad.rs": "3e80412a80260e3dbccf6a3e6a440d2ce10a191c59c8894fdb12474d2d64fbce"
   },
   "evaluation_contract": {
     "configuration": {

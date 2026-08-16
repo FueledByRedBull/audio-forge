@@ -48,35 +48,7 @@ fn py_dict_eq_bands_v2(
         return Ok(None);
     };
     let bands = value.extract::<Vec<(String, f64, f64, f64, u8, bool)>>()?;
-    if bands.len() != NUM_BANDS {
-        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-            "expected {NUM_BANDS} typed EQ bands, got {}",
-            bands.len()
-        )));
-    }
-    let mut configs = Vec::with_capacity(NUM_BANDS);
-    for (index, (filter_type, frequency_hz, gain_db, q, slope, enabled)) in
-        bands.into_iter().enumerate()
-    {
-        let filter_type = EqFilterType::from_name(&filter_type).ok_or_else(|| {
-            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Band {index}: unsupported EQ filter type: {filter_type}"
-            ))
-        })?;
-        let config = EqBandConfig {
-            filter_type,
-            frequency_hz,
-            gain_db,
-            q,
-            slope_db_per_octave: slope,
-            enabled,
-        };
-        config
-            .validate(index, sample_rate)
-            .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
-        configs.push(config);
-    }
-    Ok(Some(configs))
+    crate::parse_eq_v2_bands(&bands, sample_rate).map(Some)
 }
 
 fn linear_to_db(value: f32) -> f32 {
@@ -346,7 +318,7 @@ pub fn simulate_gate_suppressor_order(
     );
     gate.set_gate_mode(GateMode::VadAssisted);
     let strength = Arc::new(AtomicU32::new(suppressor_strength.to_bits()));
-    let mut suppressor = NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength);
+    let mut suppressor = new_noise_suppression_engine(NoiseModel::RNNoise, strength);
     let mut output = Vec::with_capacity(audio.len());
     let mut gate_gain = Vec::with_capacity(block_count);
     let started = Instant::now();

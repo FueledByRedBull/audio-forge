@@ -9,11 +9,12 @@ not by utterance or frame.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from release_provenance import sha256_file
 
 import numpy as np
 
@@ -248,11 +249,10 @@ def _paired_bootstrap(
 
 
 def _hash_model(path: Path) -> dict[str, Any]:
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
     return {
         "path": _portable_path(path),
         "size": path.stat().st_size,
-        "sha256": digest,
+        "sha256": sha256_file(path),
     }
 
 

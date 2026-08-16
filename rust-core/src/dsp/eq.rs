@@ -446,15 +446,6 @@ impl ParametricEQ {
         }
     }
 
-    /// Check if a specific band is enabled
-    pub fn is_band_enabled(&self, band_index: usize) -> bool {
-        if band_index < NUM_BANDS {
-            self.bands[band_index].config.enabled
-        } else {
-            false
-        }
-    }
-
     /// Set the public filter type for a specific band.
     pub fn set_band_filter_type(&mut self, band_index: usize, filter_type: EqFilterType) {
         if band_index < NUM_BANDS {
@@ -508,11 +499,6 @@ impl ParametricEQ {
     /// Get the sample rate
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
-    }
-
-    /// Get the number of bands
-    pub fn num_bands(&self) -> usize {
-        NUM_BANDS
     }
 
     /// Get default frequency for a band

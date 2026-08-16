@@ -8,7 +8,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
     BufferSize, Device, FromSample, SampleFormat, SizedSample, Stream, StreamConfig,
-    SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
+    SupportedStreamConfig,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -17,6 +17,7 @@ use super::buffer::AudioConsumer;
 use super::clock::now_micros;
 use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
 use super::rt::{store_rt_error, RtErrorCode};
+use super::{find_48khz_config, parse_fixed_buffer_frames, supported_fixed_buffer_frames};
 
 pub(crate) struct OutputProbeControl {
     pub(crate) consumer: AudioConsumer,
@@ -39,26 +40,9 @@ pub(crate) struct OutputStreamSetup {
 }
 
 impl AudioOutput {
-    const MIN_FIXED_BUFFER_FRAMES: u32 = 16;
-    const MAX_FIXED_BUFFER_FRAMES: u32 = 8192;
-
-    fn parse_fixed_buffer_frames(value: Option<&str>) -> Option<u32> {
-        let frames = value?.trim().parse::<u32>().ok()?;
-        (Self::MIN_FIXED_BUFFER_FRAMES..=Self::MAX_FIXED_BUFFER_FRAMES)
-            .contains(&frames)
-            .then_some(frames)
-    }
-
     fn requested_fixed_buffer_frames() -> Option<u32> {
         let value = std::env::var("AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES").ok();
-        Self::parse_fixed_buffer_frames(value.as_deref())
-    }
-
-    fn supported_fixed_buffer_frames(frames: u32, supported: &SupportedBufferSize) -> bool {
-        match supported {
-            SupportedBufferSize::Range { min, max } => (*min..=*max).contains(&frames),
-            SupportedBufferSize::Unknown => true,
-        }
+        parse_fixed_buffer_frames(value.as_deref())
     }
 
     fn preflight_config<T>(device: &Device, config: &StreamConfig) -> bool
@@ -122,9 +106,10 @@ impl AudioOutput {
                                 && config.sample_format() == default.sample_format()
                         })
                         .cloned(),
+                    TARGET_SAMPLE_RATE,
                 )
             })
-            .or_else(|| find_48khz_config(supported_configs.iter().cloned()))
+            .or_else(|| find_48khz_config(supported_configs.iter().cloned(), TARGET_SAMPLE_RATE))
             .or(default_config)
             .ok_or_else(|| {
                 AudioError::DefaultConfig("No suitable output config found".to_string())
@@ -147,10 +132,6 @@ impl AudioOutput {
         let host = cpal::default_host();
         let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
         Self::select_device(device)
-    }
-
-    pub(crate) fn from_named_device_setup(name: &str) -> Result<OutputStreamSetup, AudioError> {
-        Self::from_named_device_ordinal_setup(name, 0)
     }
 
     pub(crate) fn from_named_device_ordinal_setup(
@@ -488,61 +469,6 @@ impl AudioOutput {
         })
     }
 
-    /// Create audio output from default device
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_default_device(
-        consumer: AudioConsumer,
-        recording_active: Arc<AtomicBool>,
-        output_muted: Arc<AtomicBool>,
-        last_callback_time_us: Arc<AtomicU64>,
-        underrun_streak: Arc<AtomicU32>,
-        total_underruns: Arc<AtomicU64>,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
-    ) -> Result<Self, AudioError> {
-        let setup = Self::from_default_device_setup()?;
-        Self::from_setup(
-            setup,
-            consumer,
-            recording_active,
-            output_muted,
-            last_callback_time_us,
-            underrun_streak,
-            total_underruns,
-            error_count,
-            rt_error_code,
-            None,
-        )
-    }
-
-    /// Create audio output from device by name
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_device_name(
-        name: &str,
-        consumer: AudioConsumer,
-        recording_active: Arc<AtomicBool>,
-        output_muted: Arc<AtomicBool>,
-        last_callback_time_us: Arc<AtomicU64>,
-        underrun_streak: Arc<AtomicU32>,
-        total_underruns: Arc<AtomicU64>,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
-    ) -> Result<Self, AudioError> {
-        let setup = Self::from_named_device_setup(name)?;
-        Self::from_setup(
-            setup,
-            consumer,
-            recording_active,
-            output_muted,
-            last_callback_time_us,
-            underrun_streak,
-            total_underruns,
-            error_count,
-            rt_error_code,
-            None,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_setup(
         setup: OutputStreamSetup,
@@ -560,7 +486,7 @@ impl AudioOutput {
         let mut stream_config = setup.supported_config.config();
         let mut fixed_buffer_frames = None;
         if let Some(frames) = Self::requested_fixed_buffer_frames() {
-            if Self::supported_fixed_buffer_frames(frames, setup.supported_config.buffer_size()) {
+            if supported_fixed_buffer_frames(frames, setup.supported_config.buffer_size()) {
                 let mut candidate = stream_config.clone();
                 candidate.buffer_size = BufferSize::Fixed(frames);
                 if Self::preflight_sample_format(&setup.device, sample_format, &candidate) {
@@ -749,37 +675,6 @@ impl AudioOutput {
     }
 }
 
-/// Find a config that supports 48kHz
-fn preferred_sample_rate_from_ranges(
-    default_rate: u32,
-    ranges: &[(u32, u32)],
-    target_rate: u32,
-) -> u32 {
-    if ranges
-        .iter()
-        .any(|(min_rate, max_rate)| *min_rate <= target_rate && target_rate <= *max_rate)
-    {
-        target_rate
-    } else {
-        default_rate
-    }
-}
-
-fn find_48khz_config(
-    configs: impl Iterator<Item = SupportedStreamConfigRange>,
-) -> Option<cpal::SupportedStreamConfig> {
-    for config in configs {
-        let min_rate = config.min_sample_rate().0;
-        let max_rate = config.max_sample_rate().0;
-        if preferred_sample_rate_from_ranges(0, &[(min_rate, max_rate)], TARGET_SAMPLE_RATE)
-            == TARGET_SAMPLE_RATE
-        {
-            return Some(config.with_sample_rate(cpal::SampleRate(TARGET_SAMPLE_RATE)));
-        }
-    }
-    None
-}
-
 /// List available audio output devices
 pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
     let host = cpal::default_host();
@@ -936,44 +831,5 @@ mod tests {
         assert!(!active.load(Ordering::Acquire));
         assert!(complete.load(Ordering::Acquire));
         assert!(!cancel_requested.load(Ordering::Acquire));
-    }
-
-    #[test]
-    fn test_preferred_sample_rate_uses_target_when_supported() {
-        let chosen = preferred_sample_rate_from_ranges(44_100, &[(44_100, 48_000)], 48_000);
-        assert_eq!(chosen, 48_000);
-    }
-
-    #[test]
-    fn test_preferred_sample_rate_falls_back_to_default_when_target_missing() {
-        let chosen = preferred_sample_rate_from_ranges(44_100, &[(44_100, 44_100)], 48_000);
-        assert_eq!(chosen, 44_100);
-    }
-
-    #[test]
-    fn test_fixed_buffer_request_parser_is_bounded_and_fail_closed() {
-        assert_eq!(AudioOutput::parse_fixed_buffer_frames(None), None);
-        assert_eq!(AudioOutput::parse_fixed_buffer_frames(Some("")), None);
-        assert_eq!(AudioOutput::parse_fixed_buffer_frames(Some("abc")), None);
-        assert_eq!(AudioOutput::parse_fixed_buffer_frames(Some("15")), None);
-        assert_eq!(
-            AudioOutput::parse_fixed_buffer_frames(Some("256")),
-            Some(256)
-        );
-        assert_eq!(AudioOutput::parse_fixed_buffer_frames(Some("8193")), None);
-    }
-
-    #[test]
-    fn test_fixed_buffer_request_respects_reported_driver_range() {
-        let range = SupportedBufferSize::Range { min: 64, max: 1024 };
-        assert!(!AudioOutput::supported_fixed_buffer_frames(32, &range));
-        assert!(AudioOutput::supported_fixed_buffer_frames(64, &range));
-        assert!(AudioOutput::supported_fixed_buffer_frames(512, &range));
-        assert!(AudioOutput::supported_fixed_buffer_frames(1024, &range));
-        assert!(!AudioOutput::supported_fixed_buffer_frames(2048, &range));
-        assert!(AudioOutput::supported_fixed_buffer_frames(
-            256,
-            &SupportedBufferSize::Unknown
-        ));
     }
 }

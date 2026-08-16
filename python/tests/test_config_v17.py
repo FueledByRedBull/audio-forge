@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from mic_eq import config
+from mic_eq.config_parts.presets import MAX_PRESET_FILE_BYTES
 from mic_eq.config_parts import app_config as app_config_module
 from mic_eq.config_parts import presets as presets_module
 
@@ -664,6 +665,15 @@ def test_load_preset_allows_imports_root():
                 os.environ.pop("APPDATA", None)
             else:
                 os.environ["APPDATA"] = old_appdata
+
+
+def test_load_preset_rejects_oversized_file_before_json_parse(tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    preset_path = config.get_presets_dir() / "oversized.json"
+    preset_path.write_bytes(b"{" + b" " * MAX_PRESET_FILE_BYTES)
+
+    with pytest.raises(config.PresetValidationError, match="file too large"):
+        config.load_preset(preset_path)
 
 
 def test_preset_rejects_non_finite_numeric_values():

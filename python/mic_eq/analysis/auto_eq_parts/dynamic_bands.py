@@ -14,7 +14,6 @@ from .constants import (
     DYNAMIC_PEAK_RANGE_HZ,
     DYNAMIC_SHELF_CENTER_REFINE_PCT,
     GAIN_MAX_DB,
-    GAIN_MIN_DB,
     LOW_BAND_Q_MAX,
     LOW_BAND_Q_MAX_HZ,
     NUM_EQ_BANDS,
@@ -273,30 +272,6 @@ def _select_dynamic_band_layout(
         dtype=float,
     )
     return centers, q_prior
-
-
-def _enforce_adjacent_gain_limit(
-    gains: np.ndarray,
-    max_diff_db: float | np.ndarray,
-) -> np.ndarray:
-    bounded = np.asarray(gains, dtype=float).copy()
-    bounded = np.clip(bounded, GAIN_MIN_DB, GAIN_MAX_DB)
-    limits = np.broadcast_to(
-        np.asarray(max_diff_db, dtype=float),
-        (max(0, bounded.size - 1),),
-    )
-
-    for i in range(1, bounded.size):
-        lo = bounded[i - 1] - limits[i - 1]
-        hi = bounded[i - 1] + limits[i - 1]
-        bounded[i] = np.clip(bounded[i], lo, hi)
-
-    for i in range(bounded.size - 2, -1, -1):
-        lo = bounded[i + 1] - limits[i]
-        hi = bounded[i + 1] + limits[i]
-        bounded[i] = np.clip(bounded[i], lo, hi)
-
-    return np.clip(bounded, GAIN_MIN_DB, GAIN_MAX_DB)
 
 
 def _spectral_tilt_fit(

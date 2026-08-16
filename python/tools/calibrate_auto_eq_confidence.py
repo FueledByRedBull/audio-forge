@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from release_provenance import sha256_file as _sha256
 
 import numpy as np
 from scipy.io import wavfile
@@ -32,14 +33,6 @@ DEFAULT_CORPUS_ROOT = REPO_ROOT / "models" / "dpdfnet_eval_subset"
 DEFAULT_REPORT = REPO_ROOT / "evaluation" / "auto-eq-confidence-calibration.json"
 THRESHOLD_GRID = np.round(np.arange(0.20, 0.801, 0.025), 3)
 EVALUATION_SNRS_DB = (0.0, 10.0, 30.0)
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _source_sha256(path: Path) -> str:

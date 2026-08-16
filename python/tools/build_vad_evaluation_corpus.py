@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 from typing import Any
+from release_provenance import sha256_file as _sha256
 
 import numpy as np
 from scipy.io import wavfile
@@ -50,18 +51,6 @@ def _portable_path(path: Path) -> str:
         return resolved.relative_to(REPO_ROOT).as_posix()
     except ValueError:
         return resolved.name
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _load_mono(path: Path) -> tuple[int, np.ndarray]:
-    return read_mono_wav(path, dtype=np.float64)
 
 
 def _resample(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
@@ -171,7 +160,7 @@ def build_corpus(source_root: Path, output_root: Path) -> Path:
 
     noise_sources = []
     for noise_path in noise_paths:
-        source_rate, noise = _load_mono(noise_path)
+        source_rate, noise = read_mono_wav(noise_path, dtype=np.float64)
         noise_sources.append((noise_path, source_rate, noise))
 
     captures: list[dict[str, Any]] = []
@@ -197,7 +186,7 @@ def build_corpus(source_root: Path, output_root: Path) -> Path:
 
     for speech_index, speech_path in enumerate(speech_paths):
         speaker, split = _speech_identity(speech_path)
-        source_rate, source_speech = _load_mono(speech_path)
+        source_rate, source_speech = read_mono_wav(speech_path, dtype=np.float64)
         noise_path, noise_rate, source_noise = noise_sources[
             speech_index % len(noise_sources)
         ]

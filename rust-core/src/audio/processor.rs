@@ -31,7 +31,9 @@ use crate::dsp::eq::{
     validate_eq_frequency_hz, validate_eq_gain_db, validate_eq_q, validate_eq_slope, EqBandConfig,
     EqFilterType, NUM_BANDS,
 };
-use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressionEngine, NoiseSuppressor};
+use crate::dsp::noise_suppressor::{
+    new_noise_suppression_engine, NoiseModel, NoiseSuppressionEngine,
+};
 use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
 use crate::dsp::{
     AutoMakeupActivityInput, Compressor, DeEsser, Limiter, NoiseGate, ParametricEQ,
@@ -453,16 +455,6 @@ pub struct AudioProcessor {
 }
 
 impl AudioProcessor {
-    #[cfg(feature = "deepfilter")]
-    fn deepfilter_experimental_enabled() -> bool {
-        std::env::var("AUDIOFORGE_ENABLE_DEEPFILTER")
-            .map(|v| {
-                let normalized = v.trim().to_ascii_lowercase();
-                normalized == "1" || normalized == "true" || normalized == "yes"
-            })
-            .unwrap_or(false)
-    }
-
     fn validate_eq_band_index(&self, band: usize) -> Result<(), String> {
         if band >= NUM_BANDS {
             return Err(format!("Band {} out of range [0, {})", band, NUM_BANDS));
@@ -504,7 +496,7 @@ impl AudioProcessor {
 
         // Create noise suppression engine (default to RNNoise)
         let suppressor =
-            NoiseSuppressionEngine::new(NoiseModel::RNNoise, suppressor_strength.clone());
+            new_noise_suppression_engine(NoiseModel::RNNoise, suppressor_strength.clone());
 
         Self {
             gate: {

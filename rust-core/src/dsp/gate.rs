@@ -783,11 +783,6 @@ impl NoiseGate {
         }
     }
 
-    /// Get current envelope level (0.0 to 1.0)
-    pub fn current_envelope(&self) -> f64 {
-        self.current_gain
-    }
-
     /// Get current gain applied by the gate.
     pub fn current_gain(&self) -> f32 {
         self.current_gain as f32

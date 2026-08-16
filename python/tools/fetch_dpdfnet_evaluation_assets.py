@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import io
 import json
 import os
@@ -14,6 +13,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
+from release_provenance import sha256_file as _sha256
 
 DATASET_ID = "Ceva-IP/DPDFNet_EvalSet"
 DATASET_REVISION = "24866d8ae065f0518aef0f5f0c6200f31166af98"
@@ -48,14 +48,6 @@ def _validated_hugging_face_url(url: str) -> str:
     ):
         raise ValueError("evaluation assets must use trusted Hugging Face HTTPS")
     return url
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _download(url: str, destination: Path) -> None:

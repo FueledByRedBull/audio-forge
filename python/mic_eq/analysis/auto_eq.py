@@ -12,7 +12,6 @@ from .auto_eq_parts.constants import (
 from .auto_eq_parts.dynamic_bands import (
     _build_dense_log_grid,
     _center_bounds,
-    _enforce_adjacent_gain_limit,
     _estimate_band_snr_db,
     _q_bounds,
     _remove_spectral_tilt,
@@ -39,7 +38,6 @@ __all__ = [
     "SAMPLE_RATE",
     "_build_dense_log_grid",
     "_center_bounds",
-    "_enforce_adjacent_gain_limit",
     "_estimate_band_snr_db",
     "_predict_eq_response",
     "_q_bounds",

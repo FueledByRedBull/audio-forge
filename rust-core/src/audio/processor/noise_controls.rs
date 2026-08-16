@@ -50,7 +50,7 @@ impl AudioProcessor {
             if matches!(
                 model,
                 NoiseModel::DeepFilterNetLL | NoiseModel::DeepFilterNet
-            ) && !Self::deepfilter_experimental_enabled()
+            ) && !crate::dsp::noise_suppressor::deepfilter_experimental_enabled()
             {
                 return false;
             }
@@ -58,7 +58,7 @@ impl AudioProcessor {
 
         // Create new suppressor engine with current strength
         let strength = Arc::clone(&self.suppressor_strength);
-        let new_engine = NoiseSuppressionEngine::new(model, strength);
+        let new_engine = new_noise_suppression_engine(model, strength);
         let backend_diagnostics = noise_backend_diagnostics(&new_engine);
 
         if model != NoiseModel::RNNoise && !backend_diagnostics.available {
@@ -131,11 +131,11 @@ impl AudioProcessor {
 
         #[cfg(feature = "deepfilter")]
         {
-            if Self::deepfilter_experimental_enabled() {
+            if crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
                 let strength = Arc::clone(&self.suppressor_strength);
 
                 let ll =
-                    NoiseSuppressionEngine::new(NoiseModel::DeepFilterNetLL, Arc::clone(&strength));
+                    new_noise_suppression_engine(NoiseModel::DeepFilterNetLL, Arc::clone(&strength));
                 if ll.backend_available() {
                     models.push((
                         NoiseModel::DeepFilterNetLL.id().to_string(),
@@ -143,7 +143,7 @@ impl AudioProcessor {
                     ));
                 }
 
-                let std = NoiseSuppressionEngine::new(NoiseModel::DeepFilterNet, strength);
+                let std = new_noise_suppression_engine(NoiseModel::DeepFilterNet, strength);
                 if std.backend_available() {
                     models.push((
                         NoiseModel::DeepFilterNet.id().to_string(),

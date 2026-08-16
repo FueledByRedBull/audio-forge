@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
 #[cfg(feature = "deepfilter")]
-fn deepfilter_experimental_enabled() -> bool {
+pub(crate) fn deepfilter_experimental_enabled() -> bool {
     std::env::var("AUDIOFORGE_ENABLE_DEEPFILTER")
         .map(|v| {
             let normalized = v.trim().to_ascii_lowercase();
@@ -53,17 +53,6 @@ impl NoiseModel {
         }
     }
 
-    /// Get latency description for UI
-    pub fn latency_description(&self) -> &'static str {
-        match self {
-            NoiseModel::RNNoise => "~10ms",
-            #[cfg(feature = "deepfilter")]
-            NoiseModel::DeepFilterNetLL => "~10ms",
-            #[cfg(feature = "deepfilter")]
-            NoiseModel::DeepFilterNet => "~30ms",
-        }
-    }
-
     /// Parse model from string identifier
     pub fn from_id(id: &str) -> Option<Self> {
         match id.to_lowercase().as_str() {
@@ -95,8 +84,8 @@ impl NoiseModel {
 
 /// Common interface for noise suppression models
 ///
-/// Both RNNoise and DeepFilterNet implement this trait, allowing
-/// runtime model selection through the `NoiseSuppressionEngine` enum.
+/// Both RNNoise and DeepFilterNet implement this trait, allowing runtime model
+/// selection through a boxed trait object.
 pub trait NoiseSuppressor: Send {
     /// Push input samples into the processor's input buffer.
     ///
@@ -162,187 +151,45 @@ pub trait NoiseSuppressor: Send {
 
     /// Get expected latency in samples
     fn latency_samples(&self) -> usize;
-}
 
-/// Enum wrapper for runtime model selection
-///
-/// This allows switching between noise suppression models at runtime
-/// while maintaining a common interface.
-pub enum NoiseSuppressionEngine {
-    RNNoise(Box<super::RNNoiseProcessor>),
-    #[cfg(feature = "deepfilter")]
-    DeepFilterLL(super::DeepFilterProcessor),
-    #[cfg(feature = "deepfilter")]
-    DeepFilter(super::DeepFilterProcessor),
-}
+    /// Whether the underlying backend is operational.
+    fn backend_available(&self) -> bool;
 
-impl NoiseSuppressionEngine {
-    /// Create a new noise suppression engine with the specified model
-    pub fn new(model: NoiseModel, strength: Arc<AtomicU32>) -> Self {
-        match model {
-            NoiseModel::RNNoise => {
-                NoiseSuppressionEngine::RNNoise(Box::new(super::RNNoiseProcessor::new(strength)))
-            }
-            #[cfg(feature = "deepfilter")]
-            NoiseModel::DeepFilterNetLL => {
-                use super::deepfilter_ffi::DeepFilterModel;
-                NoiseSuppressionEngine::DeepFilterLL(super::DeepFilterProcessor::new(
-                    strength,
-                    DeepFilterModel::LowLatency,
-                ))
-            }
-            #[cfg(feature = "deepfilter")]
-            NoiseModel::DeepFilterNet => {
-                use super::deepfilter_ffi::DeepFilterModel;
-                NoiseSuppressionEngine::DeepFilter(super::DeepFilterProcessor::new(
-                    strength,
-                    DeepFilterModel::Standard,
-                ))
-            }
-        }
-    }
-
-    /// Get the current model type
-    pub fn model_type(&self) -> NoiseModel {
-        match self {
-            NoiseSuppressionEngine::RNNoise(_) => NoiseModel::RNNoise,
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(_) => NoiseModel::DeepFilterNetLL,
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(_) => NoiseModel::DeepFilterNet,
-        }
-    }
-
-    /// Whether the underlying backend is actually operational.
-    ///
-    /// For DeepFilter, construction may fall back to passthrough if df.dll/model
-    /// are unavailable; this returns false in that case.
-    pub fn backend_available(&self) -> bool {
-        match self {
-            NoiseSuppressionEngine::RNNoise(_) => true,
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.is_ffi_available(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.is_ffi_available(),
-        }
-    }
-
-    /// Human-readable backend name for diagnostics.
-    pub fn backend_name(&self) -> &'static str {
-        match self {
-            NoiseSuppressionEngine::RNNoise(_) => "RNNoise",
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(_) => "DeepFilterNet LL",
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(_) => "DeepFilterNet",
-        }
-    }
-
-    /// Backend load/runtime error if one is available.
-    pub fn backend_error(&self) -> Option<&str> {
-        match self {
-            NoiseSuppressionEngine::RNNoise(_) => None,
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.backend_error(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.backend_error(),
-        }
-    }
+    /// Backend load/runtime error, when one is available.
+    fn backend_error(&self) -> Option<&str>;
 
     /// Whether the backend permanently failed and is in passthrough fallback.
-    pub fn backend_failed(&self) -> bool {
-        match self {
-            NoiseSuppressionEngine::RNNoise(_) => false,
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d.backend_failed(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d.backend_failed(),
-        }
-    }
-
-    #[inline]
-    fn as_suppressor(&self) -> &dyn NoiseSuppressor {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.as_ref(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d,
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d,
-        }
-    }
-
-    #[inline]
-    fn as_suppressor_mut(&mut self) -> &mut dyn NoiseSuppressor {
-        match self {
-            NoiseSuppressionEngine::RNNoise(r) => r.as_mut(),
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilterLL(d) => d,
-            #[cfg(feature = "deepfilter")]
-            NoiseSuppressionEngine::DeepFilter(d) => d,
-        }
-    }
+    fn backend_failed(&self) -> bool;
 }
 
-// Implement NoiseSuppressor for the enum by delegating to inner type
-impl NoiseSuppressor for NoiseSuppressionEngine {
-    fn push_samples(&mut self, samples: &[f32]) -> usize {
-        self.as_suppressor_mut().push_samples(samples)
-    }
+/// Runtime-selected noise suppressor. The box is created off the RT path and
+/// moved through the existing command/retirement queues without dropping it in
+/// the audio callback.
+pub type NoiseSuppressionEngine = Box<dyn NoiseSuppressor>;
 
-    fn process_frames(&mut self) {
-        self.as_suppressor_mut().process_frames();
-    }
-
-    fn available_samples(&self) -> usize {
-        self.as_suppressor().available_samples()
-    }
-
-    fn pop_samples(&mut self, count: usize) -> Vec<f32> {
-        self.as_suppressor_mut().pop_samples(count)
-    }
-
-    fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize {
-        self.as_suppressor_mut().pop_samples_into(buffer)
-    }
-
-    fn pop_all_samples(&mut self) -> Vec<f32> {
-        self.as_suppressor_mut().pop_all_samples()
-    }
-
-    fn set_strength(&self, value: f32) {
-        self.as_suppressor().set_strength(value);
-    }
-
-    fn get_strength(&self) -> f32 {
-        self.as_suppressor().get_strength()
-    }
-
-    fn set_enabled(&mut self, enabled: bool) {
-        self.as_suppressor_mut().set_enabled(enabled);
-    }
-
-    fn is_enabled(&self) -> bool {
-        self.as_suppressor().is_enabled()
-    }
-
-    fn soft_reset(&mut self) {
-        self.as_suppressor_mut().soft_reset();
-    }
-
-    fn pending_input(&self) -> usize {
-        self.as_suppressor().pending_input()
-    }
-
-    fn drain_pending_input(&mut self) -> Vec<f32> {
-        self.as_suppressor_mut().drain_pending_input()
-    }
-
-    fn model_type(&self) -> NoiseModel {
-        self.as_suppressor().model_type()
-    }
-
-    fn latency_samples(&self) -> usize {
-        self.as_suppressor().latency_samples()
+/// Create a runtime-selected noise suppressor.
+pub fn new_noise_suppression_engine(
+    model: NoiseModel,
+    strength: Arc<AtomicU32>,
+) -> NoiseSuppressionEngine {
+    match model {
+        NoiseModel::RNNoise => Box::new(super::RNNoiseProcessor::new(strength)),
+        #[cfg(feature = "deepfilter")]
+        NoiseModel::DeepFilterNetLL => {
+            use super::deepfilter_ffi::DeepFilterModel;
+            Box::new(super::DeepFilterProcessor::new(
+                strength,
+                DeepFilterModel::LowLatency,
+            ))
+        }
+        #[cfg(feature = "deepfilter")]
+        NoiseModel::DeepFilterNet => {
+            use super::deepfilter_ffi::DeepFilterModel;
+            Box::new(super::DeepFilterProcessor::new(
+                strength,
+                DeepFilterModel::Standard,
+            ))
+        }
     }
 }
 

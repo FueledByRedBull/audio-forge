@@ -313,6 +313,18 @@ impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
     fn latency_samples(&self) -> usize {
         RNNOISE_FRAME_SIZE // 480 samples = 10ms at 48kHz
     }
+
+    fn backend_available(&self) -> bool {
+        true
+    }
+
+    fn backend_error(&self) -> Option<&str> {
+        None
+    }
+
+    fn backend_failed(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

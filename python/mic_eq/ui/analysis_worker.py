@@ -8,7 +8,7 @@ import threading
 import time
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from mic_eq.analysis import analyze_auto_eq
+from ..analysis.auto_eq import analyze_auto_eq
 
 
 logger = logging.getLogger(__name__)

@@ -134,31 +134,10 @@ def _validate_range(value: object, *args: object) -> float:
     return max(min_val, min(max_val, numeric_value))
 
 
-def _validate_fixed_float_list(
-    values: object,
-    expected_len: int,
-    *args: object,
-) -> list[float]:
-    min_val, max_val, param_name, section = _parse_range_args(args)
-    if not isinstance(values, (list, tuple)):
-        raise PresetValidationError(
-            f"Invalid {param_name} in {section}: expected list of {expected_len} values"
-        )
-    if len(values) != expected_len:
-        raise PresetValidationError(
-            f"Invalid {param_name} in {section}: expected {expected_len} values, got {len(values)}"
-        )
-    return [
-        _validate_range(value, min_val, max_val, f"{param_name}[{index}]", section)
-        for index, value in enumerate(values)
-    ]
-
-
 __all__ = [
     "VALIDATION_RANGES",
     "_coerce_config_bool",
     "_coerce_window_geometry",
     "_validate_bool",
-    "_validate_fixed_float_list",
     "_validate_range",
 ]

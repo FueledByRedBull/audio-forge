@@ -120,6 +120,7 @@ from ..config import (
     legacy_latency_profile_key,
     LatencyCalibrationProfile,
 )
+from ..config_parts.presets import validate_preset_file_size
 
 # Enable debug logging
 DEBUG = False
@@ -2451,9 +2452,6 @@ class MainWindow(QMainWindow):
         """
         from ..config import generate_auto_eq_preset_name
 
-        # Reset curve overlay mode (hide "Current vs New" comparison)
-        self.eq_panel.reset_curve_overlay()
-
         self._commit_pending_configuration_snapshot(
             label=f"Auto-EQ ({target_curve.title()})",
             source="auto_eq",
@@ -3536,6 +3534,7 @@ class MainWindow(QMainWindow):
                 if requested_path.resolve(strict=True) != imported_path.resolve(
                     strict=False
                 ):
+                    validate_preset_file_size(requested_path)
                     shutil.copy2(requested_path, imported_path)
                 preset = load_preset(imported_path)
                 preset_path = imported_path

@@ -7,6 +7,5 @@ p/github-actions
 
 # Third-party rule collections included in the reviewed 2026-07-10 audit.
 https://github.com/trailofbits/semgrep-rules
-https://github.com/Decurity/semgrep-smart-contracts
 https://github.com/elttam/semgrep-rules
 https://github.com/apiiro/malicious-code-ruleset

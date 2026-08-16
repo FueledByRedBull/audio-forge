@@ -296,12 +296,6 @@ impl SileroVAD {
         Ok(calibrate_silero_probability(self.smoothed_prob))
     }
 
-    /// Quick check if speech is detected
-    pub fn is_speech(&mut self, samples: &[f32]) -> Result<bool, VadError> {
-        let prob = self.process(samples)?;
-        Ok(prob > self.threshold)
-    }
-
     /// Get current speech probability (smoothed)
     pub fn probability(&self) -> f32 {
         self.current_probability()
@@ -1002,11 +996,6 @@ impl VadAutoGate {
     /// Set manual threshold used when auto-threshold is disabled
     pub fn set_manual_threshold(&mut self, threshold_db: f32) {
         self.manual_threshold_db = threshold_db.clamp(self.min_threshold, self.max_threshold);
-    }
-
-    /// Get manual threshold used when auto-threshold is disabled
-    pub fn manual_threshold(&self) -> f32 {
-        self.manual_threshold_db
     }
 
     /// Enable/disable auto-threshold mode

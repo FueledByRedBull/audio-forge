@@ -79,11 +79,6 @@ impl AudioProducer {
         written
     }
 
-    /// Check if buffer has space for n samples
-    pub fn has_space(&self, n: usize) -> bool {
-        self.free_len() >= n
-    }
-
     /// Get number of free slots
     pub fn free_len(&self) -> usize {
         self.capacity - self.producer.len()
@@ -131,11 +126,6 @@ impl AudioConsumer {
             self.last_sample = buffer[count - 1];
         }
         count
-    }
-
-    /// Check if buffer has n samples available
-    pub fn has_data(&self, n: usize) -> bool {
-        self.consumer.len() >= n
     }
 
     /// Get number of available samples

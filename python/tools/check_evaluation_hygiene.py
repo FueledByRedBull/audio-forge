@@ -39,14 +39,6 @@ PORTABLE_TEXT_SUFFIXES = {
 }
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _portable_source_sha256(path: Path) -> set[str]:
     data = path.read_bytes()
     hashes = {hashlib.sha256(data).hexdigest()}

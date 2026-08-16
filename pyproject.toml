@@ -46,6 +46,7 @@ features = ["extension-module", "vad", "deepfilter"]
 manifest-path = "rust-core/Cargo.toml"
 
 [tool.pytest.ini_options]
+pythonpath = ["python/tools"]
 norecursedirs = [
     ".git",
     ".venv",

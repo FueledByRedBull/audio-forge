@@ -87,15 +87,6 @@ impl Default for DeepFilterRuntimeConfig {
     }
 }
 
-fn deepfilter_runtime_enabled() -> bool {
-    env::var("AUDIOFORGE_ENABLE_DEEPFILTER")
-        .map(|value| {
-            let normalized = value.trim().to_ascii_lowercase();
-            normalized == "1" || normalized == "true" || normalized == "yes"
-        })
-        .unwrap_or(false)
-}
-
 fn external_deepfilter_paths_allowed() -> bool {
     env::var("AUDIOFORGE_ALLOW_EXTERNAL_DF")
         .map(|value| {
@@ -535,11 +526,6 @@ impl DeepFilterFFI {
         }
     }
 
-    /// Get frame size
-    pub fn frame_size(&self) -> usize {
-        self.frame_size
-    }
-
     /// Process a frame of audio samples
     ///
     /// # Arguments
@@ -652,7 +638,6 @@ pub struct DeepFilterProcessor {
     dry_delay_index: usize,
     load_error: Option<String>, // Store load error for reporting
     model: DeepFilterModel,     // Track which model variant we're using
-    runtime_config: DeepFilterRuntimeConfig,
     backend_failed: bool,
     runtime_error: Option<DeepFilterProcessError>,
 }
@@ -668,7 +653,7 @@ impl DeepFilterProcessor {
         runtime_config: DeepFilterRuntimeConfig,
     ) -> Self {
         let initial_strength = f32::from_bits(strength.load(Ordering::Relaxed)).clamp(0.0, 1.0);
-        if !deepfilter_runtime_enabled() {
+        if !crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
             return Self {
                 df: None,
                 _lib: None,
@@ -688,7 +673,6 @@ impl DeepFilterProcessor {
                         .to_string(),
                 ),
                 model,
-                runtime_config,
                 backend_failed: false,
                 runtime_error: None,
             };
@@ -773,7 +757,6 @@ impl DeepFilterProcessor {
             dry_delay_index: 0,
             load_error,
             model,
-            runtime_config,
             backend_failed: false,
             runtime_error: None,
         }
@@ -879,10 +862,6 @@ impl DeepFilterProcessor {
 
     pub fn backend_failed(&self) -> bool {
         self.backend_failed
-    }
-
-    pub fn runtime_config(&self) -> DeepFilterRuntimeConfig {
-        self.runtime_config
     }
 
     fn effective_latency_samples(&self) -> usize {
@@ -991,6 +970,18 @@ impl NoiseSuppressor for DeepFilterProcessor {
 
     fn latency_samples(&self) -> usize {
         self.effective_latency_samples()
+    }
+
+    fn backend_available(&self) -> bool {
+        self.is_ffi_available()
+    }
+
+    fn backend_error(&self) -> Option<&str> {
+        DeepFilterProcessor::backend_error(self)
+    }
+
+    fn backend_failed(&self) -> bool {
+        DeepFilterProcessor::backend_failed(self)
     }
 }
 

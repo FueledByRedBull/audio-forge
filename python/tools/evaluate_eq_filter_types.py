@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import platform
 import sys
 from pathlib import Path
 from typing import Any
+from release_provenance import sha256_file as _sha256
 
 import numpy as np
 
@@ -51,14 +51,6 @@ FILTER_TYPES = (
 )
 SLOPES = (12, 24, 36, 48)
 TypedBand = tuple[str, float, float, float, int, bool]
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _relative(path: Path) -> str:

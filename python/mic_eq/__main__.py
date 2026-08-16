@@ -10,7 +10,7 @@ import sys
 def main():
     """Main entry point for the AudioForge application."""
     try:
-        from .ui import run_app
+        from .ui.main_window import run_app
         return run_app()
     except ImportError as e:
         print(f"Error: {e}")

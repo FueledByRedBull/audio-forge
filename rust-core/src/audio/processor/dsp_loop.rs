@@ -492,7 +492,7 @@ impl AudioProcessor {
             let suppressor_initial_control = suppressor_rt_control
                 .snapshot()
                 .unwrap_or_else(SuppressorControlState::new);
-            let mut suppressor_rt = NoiseSuppressionEngine::new(
+            let mut suppressor_rt = new_noise_suppression_engine(
                 suppressor_initial_control.model,
                 Arc::clone(&suppressor_strength),
             );
@@ -1851,7 +1851,7 @@ impl AudioProcessor {
         if let Ok(mut s) = self.suppressor.lock() {
             let was_enabled = s.is_enabled();
             let model = s.model_type();
-            *s = NoiseSuppressionEngine::new(model, Arc::clone(&self.suppressor_strength));
+            *s = new_noise_suppression_engine(model, Arc::clone(&self.suppressor_strength));
             s.set_enabled(was_enabled);
             update_backend_diagnostics(
                 &self.noise_backend_available,

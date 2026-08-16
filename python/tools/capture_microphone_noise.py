@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import json
 import math
@@ -11,6 +10,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
+from release_provenance import sha256_file as _sha256
 
 import numpy as np
 from scipy.io import wavfile
@@ -23,14 +23,6 @@ DEFAULT_OUTPUT = (
 MAX_ACTIVE_FRACTION = 0.02
 MAX_VAD_P95 = 0.30
 MAX_PEAK_DBFS = -12.0
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _dbfs(value: float) -> float:

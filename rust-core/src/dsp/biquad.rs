@@ -373,12 +373,6 @@ impl Biquad {
         self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
     }
 
-    /// Set the filter type and recalculate coefficients.
-    pub fn set_filter_type(&mut self, filter_type: BiquadType) {
-        self.filter_type = filter_type;
-        self.schedule_coefficients_crossfade(self.calculate_coefficients_values());
-    }
-
     /// Set every coefficient-driving parameter in one click-safe update.
     pub fn set_parameters(
         &mut self,
@@ -422,24 +416,9 @@ impl Biquad {
         self.enabled
     }
 
-    /// Get current frequency
-    pub fn frequency(&self) -> f64 {
-        self.frequency
-    }
-
     /// Get current gain in dB
     pub fn gain_db(&self) -> f64 {
         self.gain_db
-    }
-
-    /// Get current Q factor
-    pub fn q(&self) -> f64 {
-        self.q
-    }
-
-    /// Get the configured filter type.
-    pub fn filter_type(&self) -> BiquadType {
-        self.filter_type
     }
 
     /// Whether a live coefficient transition is still in progress.

@@ -10,6 +10,7 @@ import platform
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from release_provenance import sha256_file as _sha256
 
 import numpy as np
 from scipy.io import wavfile
@@ -28,14 +29,6 @@ DEFAULT_CORPUS_ROOT = REPO_ROOT / "models" / "dpdfnet_eval_subset"
 DEFAULT_REPORT = REPO_ROOT / "evaluation" / "processing-order-report.json"
 SAMPLE_RATE = 48_000
 FRAME_SIZE = 480
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _source_sha256(path: Path) -> str:
@@ -116,16 +109,6 @@ def _pumping(trace: np.ndarray) -> float:
         if total > 1e-12
         else 0.0
     )
-
-
-def _step_outlier_count(audio: np.ndarray) -> int:
-    difference = np.abs(np.diff(np.asarray(audio, dtype=np.float64), prepend=0.0))
-    if difference.size < 8:
-        return 0
-    floor = float(np.median(difference))
-    threshold = max(0.08, 12.0 * floor)
-    active = difference >= threshold
-    return int(np.count_nonzero(active & ~np.roll(active, 1)))
 
 
 def _paired_paths(root: Path) -> list[tuple[Path, Path]]:

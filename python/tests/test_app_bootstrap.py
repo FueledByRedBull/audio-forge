@@ -238,15 +238,15 @@ def test_app_logging_uses_audioforge_rotating_log(tmp_path, monkeypatch):
                 handler.close()
 
 
-def test_launcher_preserves_explicit_vad_override_in_frozen_bundle(tmp_path, monkeypatch):
+def test_launcher_leaves_model_discovery_to_app_bootstrap(tmp_path, monkeypatch):
     exe_dir = tmp_path / "dist" / "AudioForge"
     meipass = tmp_path / "meipass"
-    external = tmp_path / "external" / "silero_vad.onnx"
     exe_dir.mkdir(parents=True)
-    external.parent.mkdir()
-    external.write_bytes(b"x")
     _write_vad_asset(meipass / "_internal")
-    monkeypatch.setenv("VAD_MODEL_PATH", str(external))
+    monkeypatch.delenv("VAD_MODEL_PATH", raising=False)
+    monkeypatch.delenv("DEEPFILTER_LIB_PATH", raising=False)
+    monkeypatch.delenv("DEEPFILTER_MODEL_PATH", raising=False)
+    monkeypatch.delenv("AUDIOFORGE_ENABLE_DEEPFILTER", raising=False)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
     monkeypatch.setattr(sys, "executable", str(exe_dir / "AudioForge.exe"))
@@ -254,4 +254,4 @@ def test_launcher_preserves_explicit_vad_override_in_frozen_bundle(tmp_path, mon
     launcher_path = Path(__file__).resolve().parents[2] / "launcher.py"
     runpy.run_path(str(launcher_path))
 
-    assert app_bootstrap.os.environ["VAD_MODEL_PATH"] == str(external)
+    assert "VAD_MODEL_PATH" not in app_bootstrap.os.environ

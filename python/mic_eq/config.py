@@ -56,7 +56,6 @@ from .config_parts.validation import (
     _coerce_config_bool,
     _coerce_window_geometry,
     _validate_bool,
-    _validate_fixed_float_list,
     _validate_range,
 )
 
@@ -108,7 +107,6 @@ __all__ = [
     "_coerce_config_bool",
     "_coerce_window_geometry",
     "_validate_bool",
-    "_validate_fixed_float_list",
     "_validate_range",
     "build_latency_profile_key",
     "build_device_route_key",

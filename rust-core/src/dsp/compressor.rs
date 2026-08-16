@@ -299,16 +299,6 @@ impl Compressor {
         }
     }
 
-    /// Get makeup gain in dB
-    pub fn makeup_gain_db(&self) -> f64 {
-        self.makeup_gain_db
-    }
-
-    /// Set knee width in dB
-    pub fn set_knee(&mut self, knee_db: f64) {
-        self.knee_db = knee_db.max(0.0);
-    }
-
     /// Enable or disable the compressor
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;

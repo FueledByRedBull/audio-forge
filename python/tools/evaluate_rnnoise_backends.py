@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import platform
@@ -12,6 +11,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
+from release_provenance import sha256_file as _sha256
 
 import numpy as np
 from scipy.signal import correlate, correlation_lags, resample_poly, stft
@@ -34,20 +34,8 @@ UPSTREAM_COMMIT = "70f1d256acd4b34a572f999a05c87bf00b67730d"
 UPSTREAM_MODEL_HASH = "0a8755f8e2d834eff6a54714ecc7d75f9932e845df35f8b59bc52a7cfe6e8b37"
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _relative(path: Path) -> str:
     return path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
-
-
-def _read_mono(path: Path) -> tuple[int, np.ndarray]:
-    return read_mono_wav(path, dtype=np.float64)
 
 
 def _resample(audio: np.ndarray, source_rate: int) -> np.ndarray:
@@ -85,8 +73,8 @@ def _build_streams(
     segments: list[dict[str, Any]] = []
     cursor = 0
     for clean_path, noisy_path in pairs:
-        clean_rate, clean = _read_mono(clean_path)
-        noisy_rate, noisy = _read_mono(noisy_path)
+        clean_rate, clean = read_mono_wav(clean_path, dtype=np.float64)
+        noisy_rate, noisy = read_mono_wav(noisy_path, dtype=np.float64)
         clean = _resample(clean, clean_rate)
         noisy = _resample(noisy, noisy_rate)
         common = min(clean.size, noisy.size)
@@ -145,16 +133,6 @@ def _delay_samples(reference: np.ndarray, estimate: np.ndarray) -> int:
     lags = correlation_lags(left.size, right.size, mode="full")
     allowed = np.abs(lags) <= 2 * FRAME_SIZE
     return int(lags[allowed][np.argmax(correlation[allowed])])
-
-
-def _aligned(
-    reference: np.ndarray, estimate: np.ndarray, delay: int
-) -> tuple[np.ndarray, np.ndarray]:
-    if delay > 0:
-        return reference[:-delay], estimate[delay:]
-    if delay < 0:
-        return reference[-delay:], estimate[:delay]
-    return reference, estimate
 
 
 def _si_sdr(reference: np.ndarray, estimate: np.ndarray) -> float:

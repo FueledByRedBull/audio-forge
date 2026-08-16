@@ -1,8 +1,3 @@
-/// Pure block-processing boundary for offline/file-based tests and tools.
-pub trait AudioBlockProcessor<const N: usize> {
-    fn process_block(&mut self, input: &mut [f32], output: &mut FixedAudioBuffer<f32, N>);
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct OfflineDspBlockStats {
     pub input_sample_peak: f32,
@@ -164,10 +159,12 @@ impl OfflineDspBlockProcessor {
         stats.output_true_peak = self.true_peak_detector.process_block(block);
         stats
     }
-}
 
-impl<const N: usize> AudioBlockProcessor<N> for OfflineDspBlockProcessor {
-    fn process_block(&mut self, input: &mut [f32], output: &mut FixedAudioBuffer<f32, N>) {
+    pub fn process_block<const N: usize>(
+        &mut self,
+        input: &mut [f32],
+        output: &mut FixedAudioBuffer<f32, N>,
+    ) {
         let _stats = self.process_block_with_stats(input, output);
     }
 }

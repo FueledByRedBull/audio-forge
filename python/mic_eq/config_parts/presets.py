@@ -46,6 +46,23 @@ _VALID_PROVENANCE_VALUES = {
     _PROVENANCE_EXPLICIT,
     _PROVENANCE_MIGRATION_DEFAULT,
 }
+MAX_PRESET_FILE_BYTES = 1 << 20
+
+
+def validate_preset_file_size(filepath: Path) -> None:
+    """Reject oversized preset files before copying or parsing them."""
+    path = Path(filepath)
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise PresetValidationError(
+            f"Invalid preset file: '{path.name}' - cannot read file size: {exc}"
+        ) from exc
+    if size > MAX_PRESET_FILE_BYTES:
+        raise PresetValidationError(
+            f"Preset file too large: '{path.name}' is {size:,} bytes; "
+            f"maximum is {MAX_PRESET_FILE_BYTES:,} bytes"
+        )
 
 
 def _preset_value_paths(data: dict) -> set[str]:
@@ -611,6 +628,7 @@ def load_preset(filepath: Path) -> Preset:
             f"path must be inside allowed preset roots: {allowed_display}"
         )
 
+    validate_preset_file_size(resolved_path)
     with open(resolved_path, "r", encoding="utf-8") as handle:
         data = json.load(handle, parse_constant=_reject_json_constant)
     return Preset.from_dict(data)
@@ -645,4 +663,5 @@ __all__ = [
     "list_presets",
     "load_preset",
     "save_preset",
+    "validate_preset_file_size",
 ]

@@ -5,7 +5,7 @@ Shows RMS level as a filled bar with peak hold indicator.
 Color gradient: green → yellow → red
 """
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
+from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QTimer, QRectF
 from PyQt6.QtGui import QPainter, QLinearGradient, QPen, QFont
 
@@ -203,37 +203,6 @@ class LevelMeter(QWidget):
             )
 
         painter.end()
-
-
-class StereoLevelMeter(QWidget):
-    """Dual level meter for input/output display."""
-
-    def __init__(self, left_label: str = "IN", right_label: str = "OUT", parent=None):
-        super().__init__(parent)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-
-        # Horizontal layout for the two meters
-        meters_layout = QHBoxLayout()
-        meters_layout.setSpacing(4)
-
-        self.left_meter = LevelMeter(left_label, show_scale=True)
-        self.right_meter = LevelMeter(right_label, show_scale=True)
-
-        meters_layout.addWidget(self.left_meter)
-        meters_layout.addWidget(self.right_meter)
-
-        layout.addLayout(meters_layout)
-
-    def set_input_levels(self, rms_db: float, peak_db: float):
-        """Update input meter."""
-        self.left_meter.set_levels(rms_db, peak_db)
-
-    def set_output_levels(self, rms_db: float, peak_db: float):
-        """Update output meter."""
-        self.right_meter.set_levels(rms_db, peak_db)
 
 
 class GainReductionMeter(QWidget):

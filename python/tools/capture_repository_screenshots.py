@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hashlib
 import json
 import os
 from pathlib import Path
 from typing import Any, cast
+from release_provenance import sha256_file as _sha256
 
 # These must be fixed before QApplication is created.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -78,14 +78,6 @@ SCREENSHOTS: tuple[dict[str, str], ...] = (
         ),
     },
 )
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _source_hashes() -> dict[str, str]:

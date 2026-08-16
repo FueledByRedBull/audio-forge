@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsp::noise_suppressor::NoiseSuppressor;
     use pyo3::types::PyDict;
     use pyo3::Python;
 
@@ -354,7 +355,7 @@ mod tests {
 
         let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
         let (mut tx, _rx) = queue.split();
-        let queued_engine = NoiseSuppressionEngine::new(
+        let queued_engine = new_noise_suppression_engine(
             NoiseModel::RNNoise,
             Arc::clone(&processor.suppressor_strength),
         );
@@ -1672,7 +1673,7 @@ mod tests {
         });
 
         let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
-        let mut suppressor = NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength);
+        let mut suppressor = new_noise_suppression_engine(NoiseModel::RNNoise, strength);
         let rnnoise_frame = [0.0_f32; RNNOISE_FRAME_SIZE];
         let mut suppressor_output = [0.0_f32; RNNOISE_FRAME_SIZE];
         suppressor.push_samples(&rnnoise_frame);
@@ -1886,7 +1887,7 @@ mod tests {
     #[test]
     fn test_rnnoise_accepts_full_rt_block_without_short_write() {
         let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
-        let mut suppressor = NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength);
+        let mut suppressor = new_noise_suppression_engine(NoiseModel::RNNoise, strength);
         let input = [0.0_f32; RT_PROCESS_BUFFER_CAPACITY];
         let accepted = suppressor.push_samples(&input);
 
@@ -1914,7 +1915,7 @@ mod tests {
     #[test]
     fn test_disabled_rnnoise_accepts_full_rt_block_without_short_write() {
         let strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
-        let mut suppressor = NoiseSuppressionEngine::new(NoiseModel::RNNoise, strength);
+        let mut suppressor = new_noise_suppression_engine(NoiseModel::RNNoise, strength);
         suppressor.set_enabled(false);
         let input = [0.0_f32; RT_PROCESS_BUFFER_CAPACITY];
         let accepted = suppressor.push_samples(&input);

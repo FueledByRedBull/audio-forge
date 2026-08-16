@@ -7,33 +7,13 @@ import sys
 from pathlib import Path
 
 
-def _first_existing_path(candidates):
-    for path in candidates:
-        if path and path.exists():
-            return path
-    return None
-
-
-def _has_deepfilter_model(model_dir: Path) -> bool:
-    return (
-        (model_dir / "DeepFilterNet3_ll_onnx.tar.gz").exists()
-        or (model_dir / "DeepFilterNet3_onnx.tar.gz").exists()
-    )
-
-
 def _configure_frozen_runtime():
-    """Configure paths/env so bundled models and DLLs are discoverable."""
+    """Configure frozen-runtime paths and DLL search directories before imports."""
     if not getattr(sys, "frozen", False):
         return
 
     exe_dir = Path(sys.executable).resolve().parent
     meipass = Path(getattr(sys, "_MEIPASS", "")) if hasattr(sys, "_MEIPASS") else None
-
-    # Ensure relative model lookups in Rust (./models) resolve from bundle root.
-    try:
-        os.chdir(exe_dir)
-    except Exception:
-        pass
 
     # Improve DLL resolution for df.dll and ORT/Qt dependencies in bundled runtime.
     for dll_dir in [exe_dir, meipass, (meipass / "_internal") if meipass else None]:
@@ -45,46 +25,11 @@ def _configure_frozen_runtime():
             # Best-effort only; keep startup resilient on older Python/Windows modes.
             pass
 
-    model_dirs = [
-        (meipass / "_internal" / "models") if meipass else None,
-        (meipass / "models") if meipass else None,
-    ]
-    model_dir = _first_existing_path(model_dirs)
-
-    allow_external_df = os.environ.get("AUDIOFORGE_ALLOW_EXTERNAL_DF", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
-
-    if model_dir:
-        vad_model = model_dir / "silero_vad.onnx"
-        if vad_model.exists():
-            os.environ.setdefault("VAD_MODEL_PATH", str(vad_model))
-        if _has_deepfilter_model(model_dir):
-            if allow_external_df:
-                os.environ.setdefault("DEEPFILTER_MODEL_PATH", str(model_dir))
-            else:
-                os.environ["DEEPFILTER_MODEL_PATH"] = str(model_dir)
-
-        df_candidates = [
-            (meipass / "_internal" / "df.dll") if meipass else None,
-            (meipass / "df.dll") if meipass else None,
-        ]
-        df_path = _first_existing_path(df_candidates)
-        if df_path:
-            if allow_external_df:
-                os.environ.setdefault("DEEPFILTER_LIB_PATH", str(df_path))
-            else:
-                os.environ["DEEPFILTER_LIB_PATH"] = str(df_path)
-
-        if df_path and _has_deepfilter_model(model_dir):
-            os.environ["AUDIOFORGE_ENABLE_DEEPFILTER"] = "1"
-
-
 _configure_frozen_runtime()
 
-from mic_eq.ui import run_app  # noqa: E402 - frozen runtime paths must be configured first
+from mic_eq.ui.main_window import (  # noqa: E402 - frozen paths must be configured first
+    run_app,
+)
 
 if __name__ == "__main__":
     sys.exit(run_app())

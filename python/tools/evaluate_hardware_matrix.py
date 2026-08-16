@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from release_provenance import sha256_file
 
 
 SUPPORTED_OS_RELEASES = frozenset({"10", "11"})
@@ -26,10 +27,6 @@ SUPPORTED_SCENARIOS = frozenset(
 )
 MINIMUM_AUTOMATED_BASELINE_CASES = 1
 PSEUDONYM = re.compile(r"^device-[0-9a-f]{16}$")
-
-
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _load_case(
@@ -223,7 +220,7 @@ def aggregate(
             {
                 "id": str(report.get("case", {}).get("id", "")),
                 "report_file": path.name,
-                "report_sha256": _sha256(path),
+                "report_sha256": sha256_file(path),
                 "os_release": str(report.get("machine", {}).get("release", "")),
                 "device_class": str(
                     report.get("case", {}).get("device_class", "")

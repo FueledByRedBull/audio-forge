@@ -55,10 +55,8 @@ class EQCurveWidget(QWidget):
             )
             for band in EQSettings().bands
         ]
-        self.overlay_bands = []  # Optional second curve for comparison
         self.band_markers = []
         self.interaction_warnings = []
-        self.show_overlay = False
         self._selected_band_index: int | None = None
         self._drag_band_index: int | None = None
         self._drag_origin: tuple[float, float] | None = None
@@ -438,42 +436,6 @@ class EQCurveWidget(QWidget):
         self._update_response()
         self.update()  # Trigger repaint
 
-    def set_overlay_params(self, bands):
-        """
-        Set overlay curve parameters for before/after comparison.
-
-        Args:
-            bands: List of (frequency_hz, gain_db, q) tuples for overlay curve
-        """
-        self.overlay_bands = []
-        for i, (freq, gain_db, q) in enumerate(bands):
-            filter_type = (
-                "low_shelf"
-                if i == 0
-                else "high_shelf"
-                if i == 9
-                else "bell"
-            )
-            self.overlay_bands.append(
-                (
-                    filter_type,
-                    float(freq),
-                    float(gain_db),
-                    float(q),
-                    12,
-                    True,
-                )
-            )
-        self.show_overlay = True
-        self._update_overlay_response()
-        self.update()
-
-    def clear_overlay(self):
-        """Remove overlay curve and return to single curve mode."""
-        self.overlay_bands = []
-        self.show_overlay = False
-        self.update()
-
     def set_band_markers(self, frequencies_hz):
         """Show markers for dynamically placed EQ bands."""
         self.band_markers = [float(freq) for freq in frequencies_hz]
@@ -483,10 +445,6 @@ class EQCurveWidget(QWidget):
         """Hide dynamic band markers."""
         self.band_markers = []
         self.update()
-
-    def _update_overlay_response(self):
-        """Calculate frequency response for overlay curve."""
-        self.overlay_response_db = self._native_response(self.overlay_bands)
 
     def paintEvent(self, event):
         """Draw the frequency response curve."""
@@ -606,34 +564,6 @@ class EQCurveWidget(QWidget):
                 marker_height = max(8, int(10 + warning.severity * 12))
                 painter.drawRect(x - 2, margin_top, 4, marker_height)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-
-        # Draw overlay curve if enabled
-        if self.show_overlay and self.overlay_bands:
-            overlay_pen = QPen(qcolor(PALETTE.data_curve_overlay), 2)
-            painter.setPen(overlay_pen)
-
-            overlay_points = []
-            for i, freq in enumerate(self.freq_points):
-                x = freq_to_x(freq)
-                y = db_to_y(self.overlay_response_db[i])
-                overlay_points.append((int(x), int(y)))
-
-            for i in range(len(overlay_points) - 1):
-                x1, y1 = overlay_points[i]
-                x2, y2 = overlay_points[i + 1]
-                painter.drawLine(x1, y1, x2, y2)
-
-            # Add legend when overlay is shown
-            legend_x = width - 120
-            legend_y = 20
-
-            # Main curve label (Current)
-            painter.setPen(QPen(qcolor(PALETTE.data_curve_current), 2))
-            painter.drawText(legend_x, legend_y, "Current")
-
-            # Overlay curve label (New)
-            painter.setPen(QPen(qcolor(PALETTE.data_curve_overlay), 2))
-            painter.drawText(legend_x, legend_y + 18, "New")
 
         # Draw keyboard/mouse-editable handles last so they remain discoverable.
         for index, band in enumerate(self.bands):

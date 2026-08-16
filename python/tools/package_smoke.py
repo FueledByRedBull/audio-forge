@@ -124,7 +124,7 @@ def check_source_packaging() -> list[str]:
             "rust-core/src/dsp/deepfilter_ffi.rs",
             'env::var("AUDIOFORGE_ALLOW_EXTERNAL_DF")',
         ),
-        ("launcher.py", 'os.environ.setdefault("VAD_MODEL_PATH", str(vad_model))'),
+        ("launcher.py", "os.add_dll_directory(str(dll_dir))"),
     ]
     workflow_expectations = [
         (".github/workflows/release-package.yml", "maturin develop --release"),

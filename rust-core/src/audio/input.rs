@@ -8,7 +8,7 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
     BufferSize, Device, FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig,
-    SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
+    SupportedStreamConfig,
 };
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
@@ -17,6 +17,7 @@ use thiserror::Error;
 use super::buffer::AudioProducer;
 use super::clock::now_micros;
 use super::rt::{store_rt_error, RtErrorCode};
+use super::{find_48khz_config, parse_fixed_buffer_frames, supported_fixed_buffer_frames};
 
 /// Target sample rate for internal processing
 pub const TARGET_SAMPLE_RATE: u32 = 48000;
@@ -278,19 +279,9 @@ pub struct AudioInput {
 }
 
 impl AudioInput {
-    const MIN_FIXED_BUFFER_FRAMES: u32 = 16;
-    const MAX_FIXED_BUFFER_FRAMES: u32 = 8192;
-
-    fn parse_fixed_buffer_frames(value: Option<&str>) -> Option<u32> {
-        let frames = value?.trim().parse::<u32>().ok()?;
-        (Self::MIN_FIXED_BUFFER_FRAMES..=Self::MAX_FIXED_BUFFER_FRAMES)
-            .contains(&frames)
-            .then_some(frames)
-    }
-
     fn requested_fixed_buffer_frames() -> Option<u32> {
         let value = std::env::var("AUDIOFORGE_FIXED_INPUT_BUFFER_FRAMES").ok();
-        Self::parse_fixed_buffer_frames(value.as_deref())
+        parse_fixed_buffer_frames(value.as_deref())
     }
 
     fn named_input_device(name: &str, name_ordinal: u32) -> Result<Device, AudioError> {
@@ -302,13 +293,6 @@ impl AudioInput {
             .ok_or_else(|| {
                 AudioError::DeviceNotFound(format!("{name} (occurrence {name_ordinal})"))
             })
-    }
-
-    fn supported_fixed_buffer_frames(frames: u32, supported: &SupportedBufferSize) -> bool {
-        match supported {
-            SupportedBufferSize::Range { min, max } => (*min..=*max).contains(&frames),
-            SupportedBufferSize::Unknown => true,
-        }
     }
 
     fn preflight_config<T>(device: &Device, config: &StreamConfig) -> bool
@@ -370,9 +354,10 @@ impl AudioInput {
                                 && config.sample_format() == default.sample_format()
                         })
                         .cloned(),
+                    TARGET_SAMPLE_RATE,
                 )
             })
-            .or_else(|| find_48khz_config(supported_configs.iter().cloned()))
+            .or_else(|| find_48khz_config(supported_configs.iter().cloned(), TARGET_SAMPLE_RATE))
             .or(default_config)
             .ok_or_else(|| {
                 AudioError::DefaultConfig("No suitable input config found".to_string())
@@ -874,25 +859,6 @@ impl AudioInput {
         })
     }
 
-    /// Create audio input from default device
-    pub fn from_default_device(
-        producer: AudioProducer,
-        last_callback_time_us: Arc<AtomicU64>,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
-    ) -> Result<Self, AudioError> {
-        let host = cpal::default_host();
-        let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
-
-        Self::from_device(
-            device,
-            producer,
-            last_callback_time_us,
-            error_count,
-            rt_error_code,
-        )
-    }
-
     pub fn from_default_device_with_options(
         producer: AudioProducer,
         last_callback_time_us: Arc<AtomicU64>,
@@ -905,44 +871,6 @@ impl AudioInput {
 
         Self::from_device_with_options(
             device,
-            producer,
-            last_callback_time_us,
-            error_count,
-            rt_error_code,
-            options,
-        )
-    }
-
-    /// Create audio input from device by name
-    pub fn from_device_name(
-        name: &str,
-        producer: AudioProducer,
-        last_callback_time_us: Arc<AtomicU64>,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
-    ) -> Result<Self, AudioError> {
-        let device = Self::named_input_device(name, 0)?;
-
-        Self::from_device(
-            device,
-            producer,
-            last_callback_time_us,
-            error_count,
-            rt_error_code,
-        )
-    }
-
-    pub fn from_device_name_with_options(
-        name: &str,
-        producer: AudioProducer,
-        last_callback_time_us: Arc<AtomicU64>,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
-        options: InputStreamOptions,
-    ) -> Result<Self, AudioError> {
-        Self::from_device_name_ordinal_with_options(
-            name,
-            0,
             producer,
             last_callback_time_us,
             error_count,
@@ -974,24 +902,6 @@ impl AudioInput {
         )
     }
 
-    /// Create audio input from specific device
-    pub fn from_device(
-        device: Device,
-        producer: AudioProducer,
-        last_callback_time_us: Arc<AtomicU64>,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
-    ) -> Result<Self, AudioError> {
-        Self::from_device_with_options(
-            device,
-            producer,
-            last_callback_time_us,
-            error_count,
-            rt_error_code,
-            InputStreamOptions::default(),
-        )
-    }
-
     pub fn from_device_with_options(
         device: Device,
         producer: AudioProducer,
@@ -1006,7 +916,7 @@ impl AudioInput {
         let mut stream_config = supported_config.config();
         let mut fixed_buffer_frames = None;
         if let Some(frames) = Self::requested_fixed_buffer_frames() {
-            if Self::supported_fixed_buffer_frames(frames, supported_config.buffer_size()) {
+            if supported_fixed_buffer_frames(frames, supported_config.buffer_size()) {
                 let mut candidate = stream_config.clone();
                 candidate.buffer_size = BufferSize::Fixed(frames);
                 if Self::preflight_sample_format(&device, sample_format, &candidate) {
@@ -1168,39 +1078,11 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
     Ok(devices)
 }
 
-fn preferred_sample_rate_from_ranges(
-    default_rate: u32,
-    ranges: &[(u32, u32)],
-    target_rate: u32,
-) -> u32 {
-    if ranges
-        .iter()
-        .any(|(min_rate, max_rate)| *min_rate <= target_rate && target_rate <= *max_rate)
-    {
-        target_rate
-    } else {
-        default_rate
-    }
-}
-
-fn find_48khz_config(
-    configs: impl Iterator<Item = SupportedStreamConfigRange>,
-) -> Option<SupportedStreamConfig> {
-    for config in configs {
-        let min_rate = config.min_sample_rate().0;
-        let max_rate = config.max_sample_rate().0;
-        if preferred_sample_rate_from_ranges(0, &[(min_rate, max_rate)], TARGET_SAMPLE_RATE)
-            == TARGET_SAMPLE_RATE
-        {
-            return Some(config.with_sample_rate(cpal::SampleRate(TARGET_SAMPLE_RATE)));
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::preferred_sample_rate_from_ranges;
     use super::*;
+    use cpal::SupportedBufferSize;
 
     #[test]
     #[ignore = "requires a Windows audio endpoint"]
@@ -1234,25 +1116,22 @@ mod tests {
 
     #[test]
     fn test_fixed_buffer_request_parser_is_bounded_and_fail_closed() {
-        assert_eq!(AudioInput::parse_fixed_buffer_frames(None), None);
-        assert_eq!(AudioInput::parse_fixed_buffer_frames(Some("bad")), None);
-        assert_eq!(AudioInput::parse_fixed_buffer_frames(Some("15")), None);
-        assert_eq!(
-            AudioInput::parse_fixed_buffer_frames(Some("128")),
-            Some(128)
-        );
-        assert_eq!(AudioInput::parse_fixed_buffer_frames(Some("9000")), None);
+        assert_eq!(parse_fixed_buffer_frames(None), None);
+        assert_eq!(parse_fixed_buffer_frames(Some("bad")), None);
+        assert_eq!(parse_fixed_buffer_frames(Some("15")), None);
+        assert_eq!(parse_fixed_buffer_frames(Some("128")), Some(128));
+        assert_eq!(parse_fixed_buffer_frames(Some("9000")), None);
     }
 
     #[test]
     fn test_fixed_buffer_request_respects_reported_driver_range() {
         let range = SupportedBufferSize::Range { min: 32, max: 2048 };
-        assert!(!AudioInput::supported_fixed_buffer_frames(16, &range));
-        assert!(AudioInput::supported_fixed_buffer_frames(32, &range));
-        assert!(AudioInput::supported_fixed_buffer_frames(512, &range));
-        assert!(AudioInput::supported_fixed_buffer_frames(2048, &range));
-        assert!(!AudioInput::supported_fixed_buffer_frames(4096, &range));
-        assert!(AudioInput::supported_fixed_buffer_frames(
+        assert!(!supported_fixed_buffer_frames(16, &range));
+        assert!(supported_fixed_buffer_frames(32, &range));
+        assert!(supported_fixed_buffer_frames(512, &range));
+        assert!(supported_fixed_buffer_frames(2048, &range));
+        assert!(!supported_fixed_buffer_frames(4096, &range));
+        assert!(supported_fixed_buffer_frames(
             256,
             &SupportedBufferSize::Unknown
         ));

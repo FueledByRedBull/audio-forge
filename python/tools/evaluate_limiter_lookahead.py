@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import platform
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from release_provenance import sha256_file as _sha256
 
 import numpy as np
 
@@ -29,14 +29,6 @@ RUNTIME_REPETITIONS = 7
 REAL_MAIN_LIMITER_GAIN_REDUCTION_TARGET_DB = 3.0
 REAL_MAIN_LIMITER_GAIN_REDUCTION_TOLERANCE_DB = 0.10
 MIN_MATERIAL_LOOKAHEAD_REDUCTION_MS = 1.5
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _cases() -> dict[str, np.ndarray]:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import platform
@@ -12,6 +11,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
+from release_provenance import sha256_file as _sha256
 
 import numpy as np
 from scipy.signal import correlate, correlation_lags, resample_poly, stft
@@ -30,20 +30,8 @@ POST_FILTER_CANDIDATES = (0.0, 0.02, 0.05)
 MODELS = ("ll", "standard")
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _relative(path: Path) -> str:
     return path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
-
-
-def _read_mono(path: Path) -> tuple[int, np.ndarray]:
-    return read_mono_wav(path, dtype=np.float64)
 
 
 def _resample(audio: np.ndarray, source_rate: int) -> np.ndarray:
@@ -127,8 +115,8 @@ def _build_streams(
     clip_samples = int(round(clip_seconds * SAMPLE_RATE))
 
     for clean_path, noisy_path in pairs:
-        clean_rate, clean = _read_mono(clean_path)
-        noisy_rate, noisy = _read_mono(noisy_path)
+        clean_rate, clean = read_mono_wav(clean_path, dtype=np.float64)
+        noisy_rate, noisy = read_mono_wav(noisy_path, dtype=np.float64)
         clean = _resample(clean, clean_rate)
         noisy = _resample(noisy, noisy_rate)
         common = min(clean.size, noisy.size)

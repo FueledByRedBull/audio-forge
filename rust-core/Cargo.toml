@@ -82,10 +82,3 @@ vad = ["dep:ndarray", "dep:ort"]
 # Note: Does NOT require DeepFilterNet C library to be present at compile time
 # See: rust-core/src/dsp/deepfilter_ffi.rs for runtime library loading
 deepfilter = ["dep:libloading"]
-
-# DeepFilterNet real implementation (requires C library at runtime)
-# Same as deepfilter feature, kept for backward compatibility
-deepfilter-real = ["deepfilter"]
-
-[dev-dependencies]
-approx = "0.5"

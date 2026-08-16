@@ -1030,24 +1030,6 @@ class EQPanel(QWidget):
             bands=tuple(slider.settings() for slider in self.band_sliders),
         )
 
-    def get_current_band_params(self) -> list:
-        """
-        Get current EQ band parameters for auto-EQ comparison.
-
-        Returns:
-            List of (frequency_hz, gain_db, q) tuples for all 10 bands
-        """
-        params = []
-        for slider in self.band_sliders:
-            _filter_type, freq, gain, q, _slope, _enabled = slider.native_config()
-            params.append((freq, gain, q))
-        return params
-
-    def reset_curve_overlay(self):
-        """Clear overlay mode from curve widget after auto-EQ apply."""
-        self.curve_widget.clear_overlay()
-        self._update_curve()
-
     def capture_state(self) -> dict:
         """
         Capture current EQ state for undo functionality.

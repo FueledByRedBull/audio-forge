@@ -62,8 +62,6 @@ class SemanticPalette:
     data_text: str = "#d6dde7"
     data_text_muted: str = "#aeb8c5"
     data_curve: str = "#22d3ee"
-    data_curve_overlay: str = "#fb923c"
-    data_curve_current: str = "#86efac"
     data_marker: str = "#facc15"
     data_warning: str = "#fbbf24"
     data_handle_disabled: str = "#9ca3af"

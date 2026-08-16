@@ -227,7 +227,7 @@ pub fn run_seeded_control_dsp_stress(
                 let model = NoiseModel::RNNoise;
 
                 let mut candidate =
-                    NoiseSuppressionEngine::new(model, Arc::clone(&control_strength));
+                    new_noise_suppression_engine(model, Arc::clone(&control_strength));
                 loop {
                     match command_tx.push(candidate) {
                         Ok(()) => break,
@@ -267,7 +267,7 @@ pub fn run_seeded_control_dsp_stress(
     let dsp_thread = std::thread::spawn(move || -> Result<ControlDspStressReport, String> {
         let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, TARGET_SAMPLE_RATE as f64);
         let mut suppressor =
-            NoiseSuppressionEngine::new(NoiseModel::RNNoise, Arc::clone(&dsp_strength));
+            new_noise_suppression_engine(NoiseModel::RNNoise, Arc::clone(&dsp_strength));
         let mut chain = OfflineDspBlockProcessor::new(TARGET_SAMPLE_RATE as f64);
         let mut output = FixedAudioBuffer::<f32, BLOCK_SIZE>::new();
         let mut input = [0.0_f32; BLOCK_SIZE];

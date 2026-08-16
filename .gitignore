@@ -104,6 +104,7 @@ test_output.txt
 *.log
 
 # Temporary files
+logs/**
 *.tmp
 .tmp/
 target-local/

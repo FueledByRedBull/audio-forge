@@ -56,13 +56,21 @@ def _adaptive_voice_offsets(
     sibilance_offset = np.clip(-1.2 * sibilance_ratio, -1.8, 1.2)
 
     safe_freqs = np.clip(freqs, 20.0, None)
-    offsets += warmth_offset * np.exp(-((np.log2(safe_freqs / 350.0)) ** 2) / (2 * 0.8**2))
-    offsets += presence_offset * np.exp(-((np.log2(safe_freqs / 2200.0)) ** 2) / (2 * 0.9**2))
-    offsets += sibilance_offset * np.exp(-((np.log2(safe_freqs / 7000.0)) ** 2) / (2 * 0.65**2))
+    offsets += warmth_offset * np.exp(
+        -((np.log2(safe_freqs / 350.0)) ** 2) / (2 * 0.8**2)
+    )
+    offsets += presence_offset * np.exp(
+        -((np.log2(safe_freqs / 2200.0)) ** 2) / (2 * 0.9**2)
+    )
+    offsets += sibilance_offset * np.exp(
+        -((np.log2(safe_freqs / 7000.0)) ** 2) / (2 * 0.65**2)
+    )
     return np.clip(offsets, -2.0, 2.0)
 
 
-def get_target_curve(freqs, target_preset='broadcast', measured_db=None, target_mode="adaptive"):
+def get_target_curve(
+    freqs, target_preset="broadcast", measured_db=None, target_mode="adaptive"
+):
     """
     Get target curve values at specified frequencies.
 
@@ -90,7 +98,7 @@ def get_target_curve(freqs, target_preset='broadcast', measured_db=None, target_
         EQ_FREQUENCIES,
         target_curve.band_targets,
         left=target_curve.band_targets[0],
-        right=target_curve.band_targets[-1]
+        right=target_curve.band_targets[-1],
     )
     if target_mode == "adaptive" and measured_db is not None:
         measured_arr = np.asarray(measured_db, dtype=float)

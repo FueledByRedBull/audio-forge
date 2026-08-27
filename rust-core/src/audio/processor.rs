@@ -294,9 +294,12 @@ pub struct AudioProcessor {
     deesser_detector_confidence: Arc<AtomicU32>,
     /// Last known gate gain (0.0-1.0) for metering.
     gate_gain_meter: Arc<AtomicU32>,
-    /// VAD speech probability (0.0-1.0) for metering
+    /// Latest raw VAD speech probability (0.0-1.0), written only by the worker.
     #[cfg_attr(not(feature = "vad"), allow(dead_code))]
-    vad_probability: Arc<AtomicU32>,
+    vad_raw_probability: Arc<AtomicU32>,
+    /// Smoothed VAD speech probability (0.0-1.0) for metering.
+    #[cfg_attr(not(feature = "vad"), allow(dead_code))]
+    vad_meter_probability: Arc<AtomicU32>,
     /// Latest gate noise-floor estimate in dB.
     #[cfg_attr(not(feature = "vad"), allow(dead_code))]
     gate_noise_floor_db: Arc<AtomicU32>,
@@ -307,7 +310,10 @@ pub struct AudioProcessor {
     gate_auto_relax_active: Arc<AtomicBool>,
     /// Lifetime count of detected rapid gate open/close chatter.
     gate_chatter_event_count: Arc<AtomicU64>,
-    /// Whether the current VAD backend is available.
+    /// Whether the current VAD backend is loaded, written only by the worker.
+    #[cfg_attr(not(feature = "vad"), allow(dead_code))]
+    vad_backend_available: Arc<AtomicBool>,
+    /// Whether a fresh VAD result is available to the realtime gate.
     #[cfg_attr(not(feature = "vad"), allow(dead_code))]
     vad_available: Arc<AtomicBool>,
     #[cfg(feature = "vad")]
@@ -343,6 +349,8 @@ pub struct AudioProcessor {
     suppressor_buffer_len: Arc<AtomicU32>,
     /// Suppressor latency + pending samples mirrored from the processing thread.
     suppressor_latency_samples: Arc<AtomicU32>,
+    /// Successful external suppressor inference frames mirrored from the processing thread.
+    suppressor_successful_inference_frames: Arc<AtomicU64>,
     /// Last successful output write time (for detecting stalled processing)
     last_output_write_time: Arc<AtomicU64>,
     /// Last input callback heartbeat timestamp (unix micros)
@@ -573,7 +581,7 @@ impl AudioProcessor {
             running: Arc::new(AtomicBool::new(false)),
             bypass: Arc::new(AtomicBool::new(false)),
             raw_monitor_enabled: Arc::new(AtomicBool::new(false)),
-            input_channel_mode: Arc::new(AtomicU8::new(InputChannelMode::Average as u8)),
+            input_channel_mode: Arc::new(AtomicU8::new(InputChannelMode::PhaseSafeMono as u8)),
             input_cleanup_mode: Arc::new(AtomicU8::new(InputCleanupMode::Off as u8)),
             sample_rate,
             output_sample_rate: Arc::new(AtomicU32::new(sample_rate)),
@@ -605,11 +613,13 @@ impl AudioProcessor {
             deesser_gain_reduction: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             deesser_detector_confidence: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             gate_gain_meter: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
-            vad_probability: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            vad_raw_probability: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
+            vad_meter_probability: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             gate_noise_floor_db: Arc::new(AtomicU32::new((-60.0_f32).to_bits())),
             gate_fused_score: Arc::new(AtomicU32::new(0.0_f32.to_bits())),
             gate_auto_relax_active: Arc::new(AtomicBool::new(false)),
             gate_chatter_event_count: Arc::new(AtomicU64::new(0)),
+            vad_backend_available: Arc::new(AtomicBool::new(false)),
             vad_available: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "vad")]
             vad_worker_thread: None,
@@ -631,6 +641,7 @@ impl AudioProcessor {
             output_buffer_len: Arc::new(AtomicU32::new(0)),
             suppressor_buffer_len: Arc::new(AtomicU32::new(0)),
             suppressor_latency_samples: Arc::new(AtomicU32::new(0)),
+            suppressor_successful_inference_frames: Arc::new(AtomicU64::new(0)),
             last_output_write_time: Arc::new(AtomicU64::new(0)),
             last_input_callback_time_us: Arc::new(AtomicU64::new(0)),
             last_output_callback_time_us: Arc::new(AtomicU64::new(0)),

@@ -640,6 +640,7 @@ pub struct DeepFilterProcessor {
     model: DeepFilterModel,     // Track which model variant we're using
     backend_failed: bool,
     runtime_error: Option<DeepFilterProcessError>,
+    successful_inference_frames: u64,
 }
 
 impl DeepFilterProcessor {
@@ -675,6 +676,7 @@ impl DeepFilterProcessor {
                 model,
                 backend_failed: false,
                 runtime_error: None,
+                successful_inference_frames: 0,
             };
         }
 
@@ -759,6 +761,7 @@ impl DeepFilterProcessor {
             model,
             backend_failed: false,
             runtime_error: None,
+            successful_inference_frames: 0,
         }
     }
 
@@ -822,6 +825,8 @@ impl DeepFilterProcessor {
                 if let Some(ref mut df) = self.df {
                     match df.process_into(&mut self.frame_scratch, &mut self.output_frame) {
                         Ok(_lsnr) => {
+                            self.successful_inference_frames =
+                                self.successful_inference_frames.saturating_add(1);
                             mix_wet_with_aligned_dry(
                                 &mut self.output_frame,
                                 &self.aligned_dry_frame,
@@ -905,20 +910,9 @@ impl NoiseSuppressor for DeepFilterProcessor {
         self.output_buffer.len()
     }
 
-    fn pop_samples(&mut self, count: usize) -> Vec<f32> {
-        let actual = count.min(self.available_samples());
-        let mut out = vec![0.0; actual];
-        self.output_buffer.pop_into(&mut out);
-        out
-    }
-
     fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize {
         let count = buffer.len().min(self.available_samples());
         self.output_buffer.pop_into(&mut buffer[..count])
-    }
-
-    fn pop_all_samples(&mut self) -> Vec<f32> {
-        self.output_buffer.pop_all_vec()
     }
 
     fn set_strength(&self, value: f32) {
@@ -957,10 +951,6 @@ impl NoiseSuppressor for DeepFilterProcessor {
         self.input_buffer.len()
     }
 
-    fn drain_pending_input(&mut self) -> Vec<f32> {
-        self.input_buffer.pop_all_vec()
-    }
-
     fn model_type(&self) -> NoiseModel {
         match self.model {
             DeepFilterModel::LowLatency => NoiseModel::DeepFilterNetLL,
@@ -982,6 +972,10 @@ impl NoiseSuppressor for DeepFilterProcessor {
 
     fn backend_failed(&self) -> bool {
         DeepFilterProcessor::backend_failed(self)
+    }
+
+    fn successful_inference_frames(&self) -> u64 {
+        self.successful_inference_frames
     }
 }
 

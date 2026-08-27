@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "audible_change": true,
-  "generated_at_utc": "2026-08-02T13:56:45.866256+00:00",
+  "generated_at_utc": "2026-08-27T21:48:28.282596+00:00",
   "experiment": "VAD/noise-reliability auto-makeup versus RMS-only fallback",
   "retained": true,
   "predefined_gates": {
@@ -24,7 +24,7 @@
     "median_baseline_pumping_score": 0.09354038299621031,
     "p95_candidate_p99_boundary_excess_linear": 0.013264153255848208,
     "p95_baseline_p99_boundary_excess_linear": 0.015430391722824422,
-    "max_candidate_p99_block_runtime_ms": 0.1604650616645813,
+    "max_candidate_p99_block_runtime_ms": 0.49974435567855835,
     "minimum_active_block_ratio": 0.19033333333333333,
     "minimum_inactive_block_ratio": 0.49733333333333335
   },
@@ -37,11 +37,11 @@
     "p99_control_work_within_10ms_deadline": true
   },
   "source_sha256": {
-    "python/tools/evaluate_auto_makeup_real_speech.py": "0b2fa477ae26bb28f5ce35c3b48c3c9893f663bd07b148330a2d8a85ab779637",
+    "python/tools/evaluate_auto_makeup_real_speech.py": "8fbacc0ebbf1ede63ccb2efb6787850c6b9a8368645e94b7a873660f7d918d82",
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-    "rust-core/src/audio/processor/python_api.rs": "3ad0f1f26686b63d48dfaf6d743371478ff857825dc2d5eb4661451c4a394482",
-    "rust-core/src/dsp/compressor.rs": "5078a464f69ffd6770610d511e64aaed22337c7c2bc90644d95dd7c287bcc806",
-    "rust-core/src/dsp/vad.rs": "3e80412a80260e3dbccf6a3e6a440d2ce10a191c59c8894fdb12474d2d64fbce"
+    "rust-core/src/audio/processor/python_api.rs": "7071ff86b21247b04d040115567cdc50b5d10e1b09e04b70ae5912af5199abd5",
+    "rust-core/src/dsp/compressor.rs": "32fbb9204bc38233a6523cbbb65f77ce25e9be9d574c326d94e3a4adf2015216",
+    "rust-core/src/dsp/vad.rs": "49dde57fd86dac27b1571cb187097991ecc7c9de777b7c159f0b5e5d3fdf6c67"
   },
   "evaluation_contract": {
     "configuration": {
@@ -62,7 +62,7 @@
       "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
     },
     "runtime": {
-      "max_p99_frame_seconds": 0.0001604650616645813,
+      "max_p99_frame_seconds": 0.0004997443556785583,
       "control_deadline_seconds": 0.01,
       "platform": "Windows-11-10.0.26200-SP0",
       "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"

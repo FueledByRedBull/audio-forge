@@ -233,18 +233,6 @@ impl<T: Copy + Default, const N: usize> FixedAudioRing<T, N> {
         }
         moved
     }
-
-    pub fn pop_all_vec(&mut self) -> Vec<T> {
-        let mut out = Vec::with_capacity(self.len);
-        while self.len > 0 {
-            let idx = self.head;
-            out.push(self.data[idx]);
-            self.head = (self.head + 1) % N;
-            self.len -= 1;
-        }
-        self.head = 0;
-        out
-    }
 }
 
 impl<T: Copy + Default, const N: usize> Default for FixedAudioRing<T, N> {

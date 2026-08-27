@@ -108,14 +108,3 @@ class AnalysisWorker(QThread):
         except Exception as e:
             # Catch any unexpected errors
             self.failed.emit(str(e))
-
-    def estimated_duration(self) -> float:
-        """
-        Estimate analysis duration based on audio length.
-
-        Returns:
-            Estimated seconds (typically 0.1-0.5s for 10s recording)
-        """
-        audio_duration = len(self.audio_data) / self.sample_rate
-        # Analysis is typically 5-10% of recording duration
-        return audio_duration * 0.1

@@ -56,7 +56,7 @@ def test_hardware_result_parsers_require_success_and_evidence() -> None:
 def test_hardware_report_provenance_uses_project_version_and_dirty_revision(
     monkeypatch,
 ) -> None:
-    assert TOOL._project_version() == "1.11.2"
+    assert TOOL._project_version() == "1.11.3"
 
     class Result:
         def __init__(self, stdout: str) -> None:
@@ -191,6 +191,37 @@ def test_health_gate_rejects_missing_or_nonzero_critical_diagnostics() -> None:
     assert "noise_backend_failed=true" in failures
     assert "last_stream_error=set" in failures
     assert "output_underrun_total=4 (baseline 3)" in failures
+
+
+def test_health_gate_requires_standard_deepfilter_inference_and_output() -> None:
+    clean = {
+        "noise_model": "deepfilter",
+        "suppressor_latency_samples": 1_440,
+        "suppressor_successful_inference_frames": 12,
+        "output_true_peak_db": -18.0,
+    }
+
+    assert (
+        HEALTH_TOOL._selected_noise_model_failures(
+            clean, expected_model="deepfilter"
+        )
+        == []
+    )
+
+    broken = dict(clean)
+    broken.update(
+        noise_model="rnnoise",
+        suppressor_latency_samples=480,
+        suppressor_successful_inference_frames=0,
+        output_true_peak_db=-120.0,
+    )
+    failures = HEALTH_TOOL._selected_noise_model_failures(
+        broken, expected_model="deepfilter"
+    )
+    assert "noise_model='rnnoise'" in failures
+    assert "suppressor_latency_samples=480" in failures
+    assert "suppressor_successful_inference_frames=0" in failures
+    assert "output_true_peak_db=-120.0" in failures
 
 
 def test_hardware_report_privacy_filter_removes_all_selected_device_names() -> None:

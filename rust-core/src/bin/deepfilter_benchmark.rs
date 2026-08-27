@@ -115,6 +115,7 @@ fn main() -> Result<(), String> {
 
     let processing_started = Instant::now();
     let mut output = Vec::with_capacity(input.len());
+    let mut produced = vec![0.0_f32; DEEPFILTER_FRAME_SIZE];
     let mut frame_durations = Vec::with_capacity(input.len().div_ceil(DEEPFILTER_FRAME_SIZE));
     for frame in input.chunks_exact(DEEPFILTER_FRAME_SIZE) {
         let frame_started = Instant::now();
@@ -122,15 +123,14 @@ fn main() -> Result<(), String> {
             return Err("DeepFilter input buffer rejected a complete frame".to_string());
         }
         processor.process_frames();
-        let produced = processor.pop_all_samples();
-        if produced.len() != DEEPFILTER_FRAME_SIZE {
+        let produced_len = processor.pop_samples_into(&mut produced);
+        if produced_len != DEEPFILTER_FRAME_SIZE {
             return Err(format!(
                 "DeepFilter produced {} samples for a {}-sample frame",
-                produced.len(),
-                DEEPFILTER_FRAME_SIZE
+                produced_len, DEEPFILTER_FRAME_SIZE
             ));
         }
-        output.extend_from_slice(&produced);
+        output.extend_from_slice(&produced[..produced_len]);
         frame_durations.push(frame_started.elapsed());
     }
     let processing_seconds = processing_started.elapsed().as_secs_f64();

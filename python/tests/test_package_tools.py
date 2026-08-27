@@ -74,6 +74,13 @@ def test_repository_workflow_release_gates_are_current():
     assert check_workflows.check_workflows() == []
 
 
+def test_build_script_propagates_pyinstaller_failure_code():
+    source = (check_workflows.REPO_ROOT / "build_exe.ps1").read_text(encoding="utf-8")
+
+    assert "$pyinstallerExitCode = $LASTEXITCODE" in source
+    assert "exit $pyinstallerExitCode" in source
+
+
 def test_dependabot_checker_rejects_routine_version_updates(monkeypatch, tmp_path):
     path = tmp_path / "dependabot.yml"
     path.write_text(

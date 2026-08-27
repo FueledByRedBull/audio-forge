@@ -91,7 +91,7 @@ def test_candidate_schema_rejects_malformed_or_short_stages() -> None:
         TOOL._decode_candidate(payload)
 
 
-def test_gate_rejects_candidate_without_material_objective_benefit() -> None:
+def test_gate_rejects_failed_cases_without_requiring_impossible_speedup() -> None:
     aggregate = {
         "case_count": 12,
         "tone_profiles": ["flat", "presence", "warm", "bass_cut"],
@@ -104,16 +104,17 @@ def test_gate_rejects_candidate_without_material_objective_benefit() -> None:
         "candidate_p95_realtime_factor": 0.001,
         "p95_runtime_ratio": 2.0,
         "latency_samples": [0],
+        "failed_cases": 1,
     }
 
     aggregate["incumbent_p95_realtime_factor"] = 0.0008
     checks = TOOL._gate(aggregate)
 
-    assert checks["material_objective_benefit"] is False
+    assert checks["zero_failed_cases"] is False
     assert all(
         passed
         for name, passed in checks.items()
-        if name != "material_objective_benefit"
+        if name != "zero_failed_cases"
     )
 
 

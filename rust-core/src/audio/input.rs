@@ -209,7 +209,7 @@ impl InputStreamOptions {
 impl Default for InputStreamOptions {
     fn default() -> Self {
         Self {
-            channel_mode: Arc::new(AtomicU8::new(InputChannelMode::Average as u8)),
+            channel_mode: Arc::new(AtomicU8::new(InputChannelMode::PhaseSafeMono as u8)),
             stereo_correlation: Arc::new(AtomicU32::new(1.0_f32.to_bits())),
             phase_warning_count: Arc::new(AtomicU64::new(0)),
             phase_rescue_strategy: Arc::new(AtomicU8::new(PhaseRescueStrategy::None as u8)),
@@ -813,7 +813,7 @@ impl AudioInput {
                             let interleaved = &data[start..end];
                             let mode =
                                 InputChannelMode::from_u8(channel_mode.load(Ordering::Relaxed))
-                                    .unwrap_or(InputChannelMode::Average);
+                                    .unwrap_or(InputChannelMode::PhaseSafeMono);
                             let (written_frames, correlation, phase_diagnostics) =
                                 Self::mix_interleaved_to_mono_with_mode_and_state(
                                     interleaved,
@@ -1100,6 +1100,16 @@ mod tests {
     fn test_normalize_u16_input_sample() {
         let normalized = AudioInput::normalize_input_sample(0_u16);
         assert!(normalized <= -0.99);
+    }
+
+    #[test]
+    fn test_input_stream_defaults_to_phase_safe_mono() {
+        let options = InputStreamOptions::default();
+
+        assert_eq!(
+            InputChannelMode::from_u8(options.channel_mode.load(Ordering::Relaxed)),
+            Some(InputChannelMode::PhaseSafeMono)
+        );
     }
 
     #[test]

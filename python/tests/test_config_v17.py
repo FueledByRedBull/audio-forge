@@ -471,7 +471,12 @@ def test_app_config_rejects_corrupt_boolean_to_default():
 def test_app_config_normalizes_invalid_input_channel_mode(value):
     restored = AppConfig.from_dict({"input_channel_mode": value})
 
-    assert restored.input_channel_mode == "average"
+    assert restored.input_channel_mode == "phase_safe_mono"
+
+
+def test_app_config_uses_phase_safe_input_for_new_config():
+    assert AppConfig().input_channel_mode == "phase_safe_mono"
+    assert AppConfig.from_dict({}).input_channel_mode == "phase_safe_mono"
 
 
 @pytest.mark.parametrize(

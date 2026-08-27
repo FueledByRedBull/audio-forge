@@ -482,6 +482,7 @@ def evaluate(
             health_input,
             "--output-device",
             health_output,
+            *(["--noise-model", "deepfilter"] if bundle_root is not None else []),
             *bundle_arguments,
         ]
     )
@@ -534,7 +535,7 @@ def evaluate(
         "source_revision": _source_revision(),
         "runtime_provenance": _runtime_provenance(bundle_root),
         "machine": machine,
-        "audible_change": False,
+        "audible_change": None,
         "case": {
             "id": case_id,
             "device_class": device_class,

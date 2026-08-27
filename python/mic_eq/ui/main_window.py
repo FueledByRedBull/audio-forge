@@ -961,7 +961,7 @@ class MainWindow(QMainWindow):
         )
 
     def _select_input_channel_mode(self, mode: str) -> None:
-        target = mode if self._is_valid_input_channel_mode(mode) else "average"
+        target = mode if self._is_valid_input_channel_mode(mode) else "phase_safe_mono"
         for index in range(self.input_channel_mode_combo.count()):
             if self.input_channel_mode_combo.itemData(index) == target:
                 self.input_channel_mode_combo.setCurrentIndex(index)
@@ -969,7 +969,7 @@ class MainWindow(QMainWindow):
         self.input_channel_mode_combo.setCurrentIndex(0)
 
     def _apply_input_channel_mode(self, mode: str) -> None:
-        target = mode if self._is_valid_input_channel_mode(mode) else "average"
+        target = mode if self._is_valid_input_channel_mode(mode) else "phase_safe_mono"
         try:
             if hasattr(self.processor, "set_input_channel_mode"):
                 self.processor.set_input_channel_mode(target)
@@ -2006,7 +2006,9 @@ class MainWindow(QMainWindow):
         self._restore_ui_state()
         self._apply_latency_compensation_for_current_devices()
         if "input_channel_mode_combo" in self.__dict__:
-            input_channel_mode = getattr(self.config, "input_channel_mode", "average")
+            input_channel_mode = getattr(
+                self.config, "input_channel_mode", "phase_safe_mono"
+            )
             self._select_input_channel_mode(input_channel_mode)
             self._apply_input_channel_mode(input_channel_mode)
         if "input_cleanup_mode_combo" in self.__dict__:
@@ -2077,7 +2079,7 @@ class MainWindow(QMainWindow):
         input_device = self._device_selection_to_name(self.input_combo) or None
         output_device = self._device_selection_to_name(self.output_combo) or None
         self._apply_input_channel_mode(
-            getattr(self.config, "input_channel_mode", "average")
+            getattr(self.config, "input_channel_mode", "phase_safe_mono")
         )
         self._apply_input_cleanup_mode(
             getattr(self.config, "input_cleanup_mode", "off")
@@ -2481,10 +2483,6 @@ class MainWindow(QMainWindow):
                 f"and compressor tuned for the {target_curve.title()} target"
             ),
         )
-
-    def undo_auto_eq(self):
-        """Compatibility alias for the former one-slot Auto-EQ undo."""
-        self.undo_configuration()
 
     def _on_bypass_toggled(self, checked):
         """Handle bypass toggle."""

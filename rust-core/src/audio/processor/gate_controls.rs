@@ -90,7 +90,7 @@ impl AudioProcessor {
     #[cfg(feature = "vad")]
     /// Get VAD speech probability (0.0-1.0)
     pub fn get_vad_probability(&self) -> f32 {
-        f32::from_bits(self.vad_probability.load(Ordering::Relaxed))
+        f32::from_bits(self.vad_meter_probability.load(Ordering::Relaxed))
     }
 
     #[cfg(feature = "vad")]

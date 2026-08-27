@@ -39,6 +39,7 @@ struct OutputWriteContext<
     true_peak_detector: &'a mut TruePeakDetector,
     true_peak_limiter: &'a mut TruePeakLimiter,
     drift_error_ema: &'a mut f32,
+    drift_retimer: &'a mut DriftRetimer,
     discontinuity_fade_remaining: &'a Cell<usize>,
     limiter_enabled: &'a AtomicBool,
     output_ceiling_linear: &'a Cell<f32>,
@@ -72,10 +73,10 @@ impl<
         if !clean_path {
             write_slice = Self::apply_drift_retime(
                 write_source,
-                fill,
-                capacity,
+                (fill, capacity),
                 self.drift_error_ema,
                 self.output_queue_control_scratch,
+                self.drift_retimer,
                 &self.counters,
                 self.limits,
             );
@@ -86,6 +87,8 @@ impl<
                 self.limits.discontinuity_fade_samples,
                 &self.counters,
             );
+        } else {
+            self.drift_retimer.reset();
         }
 
         let pending_slice = Self::sanitize_and_limit(
@@ -111,13 +114,14 @@ impl<
 
     fn apply_drift_retime<'b>(
         write_source: &'b [f32],
-        fill: usize,
-        producer_capacity: usize,
+        queue: (usize, usize),
         drift_error_ema: &mut f32,
         output_queue_control_scratch: &'b mut FixedAudioBuffer<f32, OUTPUT_QUEUE_CONTROL_CAPACITY>,
+        drift_retimer: &mut DriftRetimer,
         counters: &OutputWriteCounters<'_>,
         limits: OutputWriteLimits,
     ) -> &'b [f32] {
+        let (fill, producer_capacity) = queue;
         let error = fill as f32 - limits.output_target_center_samples as f32;
         *drift_error_ema = *drift_error_ema * 0.85 + error * 0.15;
         let positive_zone = limits
@@ -143,6 +147,7 @@ impl<
                 .max(1)
                 .min(output_queue_control_scratch.capacity()),
             output_queue_control_scratch,
+            drift_retimer,
         );
         if adjusted_slice.len() != write_source.len() {
             let delta = write_source.len().abs_diff(adjusted_slice.len());

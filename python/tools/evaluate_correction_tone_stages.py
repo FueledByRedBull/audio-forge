@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import platform
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -13,8 +14,8 @@ from release_provenance import sha256_file as _sha256
 
 import numpy as np
 
-from mic_eq import (
-    eq_magnitude_response_v2,
+from mic_eq import eq_magnitude_response_v2
+from mic_eq.mic_eq_core import (
     simulate_auto_eq_chain,
     simulate_eq_v2,
 )
@@ -28,6 +29,7 @@ DEFAULT_CORPUS = REPO_ROOT / "models" / "deepfilter_fullband_eval" / "clean"
 DEFAULT_REPORT = REPO_ROOT / "evaluation" / "correction-tone-stage-report.json"
 SAMPLE_RATE = 48_000
 SEPARATOR_SECONDS = 0.25
+TIMING_REPEATS = 5
 GATES: dict[str, float | int] = {
     "min_corpus_cases": 8,
     "max_response_parity_delta_db": 1.0e-9,
@@ -35,7 +37,6 @@ GATES: dict[str, float | int] = {
     "max_p95_limiter_gr_db": 3.0,
     "max_candidate_p95_realtime_factor": 0.01,
     "max_p95_runtime_ratio": 2.25,
-    "min_p95_runtime_improvement_fraction": 0.05,
     "required_tone_profiles": 4,
 }
 
@@ -43,7 +44,11 @@ TypedBand: TypeAlias = tuple[str, float, float, float, int, bool]
 
 
 def _relative(path: Path) -> str:
-    return path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        return resolved.as_posix()
 
 
 def _default_bands(*, enabled: bool = True) -> list[TypedBand]:
@@ -292,19 +297,27 @@ def _render_case(
     tone: list[TypedBand],
 ) -> dict[str, Any]:
     normalized = _normalized(audio)
-    incumbent = simulate_eq_v2(
-        normalized,
-        float(SAMPLE_RATE),
-        correction,
-        return_output_audio=True,
-    )
-    correction_audio = np.asarray(incumbent["output_audio"], dtype=np.float32)
-    tone_result = simulate_eq_v2(
-        correction_audio,
-        float(SAMPLE_RATE),
-        tone,
-        return_output_audio=True,
-    )
+    def render() -> tuple[dict[str, Any], dict[str, Any]]:
+        incumbent_result = simulate_eq_v2(
+            normalized,
+            float(SAMPLE_RATE),
+            correction,
+            return_output_audio=True,
+        )
+        correction_audio = np.asarray(
+            incumbent_result["output_audio"], dtype=np.float32
+        )
+        tone_result = simulate_eq_v2(
+            correction_audio,
+            float(SAMPLE_RATE),
+            tone,
+            return_output_audio=True,
+        )
+        return incumbent_result, tone_result
+
+    render()
+    renders = [render() for _ in range(TIMING_REPEATS)]
+    incumbent, tone_result = renders[-1]
     candidate_audio = np.asarray(tone_result["output_audio"], dtype=np.float32)
     chain = simulate_auto_eq_chain(
         candidate_audio,
@@ -319,8 +332,14 @@ def _render_case(
         },
     )
     duration_seconds = normalized.size / SAMPLE_RATE
-    incumbent_runtime_ms = float(incumbent["runtime_ms"])
-    candidate_runtime_ms = incumbent_runtime_ms + float(tone_result["runtime_ms"])
+    incumbent_runtime_ms = float(
+        np.median([result[0]["runtime_ms"] for result in renders])
+    )
+    candidate_runtime_ms = float(
+        np.median(
+            [result[0]["runtime_ms"] + result[1]["runtime_ms"] for result in renders]
+        )
+    )
     return {
         "incumbent_realtime_factor": incumbent_runtime_ms
         / max(duration_seconds * 1000.0, 1.0e-12),
@@ -353,7 +372,6 @@ def _percentile(values: list[float], percentile: float) -> float | None:
 def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     incumbent_rtfs = [float(row["render"]["incumbent_realtime_factor"]) for row in rows]
     candidate_rtfs = [float(row["render"]["candidate_realtime_factor"]) for row in rows]
-    runtime_ratios = [float(row["render"]["runtime_ratio"]) for row in rows]
     limiter = [float(row["render"]["full_chain_limiter_gr_db"]) for row in rows]
     return {
         "case_count": len(rows),
@@ -372,7 +390,10 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "p95_limiter_gr_db": _percentile(limiter, 95),
         "incumbent_p95_realtime_factor": _percentile(incumbent_rtfs, 95),
         "candidate_p95_realtime_factor": _percentile(candidate_rtfs, 95),
-        "p95_runtime_ratio": _percentile(runtime_ratios, 95),
+        "p95_runtime_ratio": (
+            (_percentile(candidate_rtfs, 95) or math.inf)
+            / max(_percentile(incumbent_rtfs, 95) or 0.0, 1.0e-12)
+        ),
         "latency_samples": sorted(
             {
                 int(value)
@@ -403,13 +424,7 @@ def _gate(aggregate: dict[str, Any]) -> dict[str, bool]:
         "runtime_ratio": aggregate["p95_runtime_ratio"] is not None
         and aggregate["p95_runtime_ratio"] <= GATES["max_p95_runtime_ratio"],
         "zero_added_latency": aggregate["latency_samples"] == [0],
-        "material_objective_benefit": (
-            aggregate["candidate_p95_realtime_factor"] is not None
-            and aggregate["incumbent_p95_realtime_factor"] is not None
-            and aggregate["candidate_p95_realtime_factor"]
-            <= aggregate["incumbent_p95_realtime_factor"]
-            * (1.0 - GATES["min_p95_runtime_improvement_fraction"])
-        ),
+        "zero_failed_cases": aggregate["failed_cases"] == 0,
     }
 
 
@@ -424,6 +439,12 @@ def _source_hashes() -> dict[str, str]:
 
 
 def evaluate(corpus_root: Path) -> dict[str, Any]:
+    native_file = sys.modules[simulate_eq_v2.__module__].__file__
+    if native_file is None:
+        raise RuntimeError("native extension has no filesystem path")
+    native_path = Path(native_file).resolve(strict=True)
+    if native_path.suffix.lower() != ".pyd":
+        raise RuntimeError("evaluation requires the loaded native extension")
     corpus_root = corpus_root.resolve(strict=True)
     cases = _corpus_cases(corpus_root)
     tones = _tone_profiles()
@@ -496,7 +517,7 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
     manifest = corpus_root.parent / "manifest.json"
     source_hashes = _source_hashes()
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "audible_change": True,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "experiment": "Separate Auto-EQ correction and user tone stages",
@@ -509,13 +530,10 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
         "retention_gates": GATES,
         "checks": checks,
         "decision": {
-            "retained": not failed_checks,
+            "retained": False,
+            "safety_and_cost_eligible": not failed_checks,
             "failed_checks": failed_checks,
-            "product_action": (
-                "integrate two stages"
-                if not failed_checks
-                else "retain one combined stage and reject non-combined stage tokens"
-            ),
+            "product_action": "retain one combined stage; no measured product benefit justifies a second stage",
         },
         "aggregate": aggregate,
         "failures": failures,
@@ -524,12 +542,17 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
             "configuration": {
                 "sample_rate": SAMPLE_RATE,
                 "tone_profiles": list(tone_names),
+                "timing_repeats": TIMING_REPEATS,
                 "pre_registration": "https://github.com/FueledByRedBull/audio-forge/issues/28",
                 "input_peak_normalization": 0.5,
             },
             "asset_hashes": {
                 "corpus_manifest": _sha256(manifest),
                 "source": source_hashes,
+                "native_extension": {
+                    "path": _relative(native_path),
+                    "sha256": _sha256(native_path),
+                },
             },
             "runtime": {
                 "incumbent_p95_realtime_factor": aggregate[
@@ -563,7 +586,7 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
         "limitations": [
             "The 48 kHz clean subset contains only two VoiceBank test speakers.",
             "Frozen tone profiles are representative fixtures, not preference labels.",
-            "Response parity proves safety but not benefit; the candidate must therefore provide a predefined measurable runtime benefit to justify doubling the stage architecture.",
+            "Response parity and bounded cost establish eligibility, not user benefit; no measured product benefit justifies doubling the stage architecture.",
             "The candidate is not a production preset or realtime DSP path.",
         ],
     }

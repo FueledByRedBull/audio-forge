@@ -1,6 +1,6 @@
 {
   "audible_change": true,
-  "decision": "Reject every fixed candidate-pool selector; keep corrected dynamic ten-band optimizer.",
+  "decision": "Reject the three tested nested selectors; keep the dynamic ten-band optimizer.",
   "evaluation_contract": {
     "asset_hashes": {
       "corpus": "deterministic in-process synthetic response family",
@@ -9,13 +9,13 @@
         "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "c7d31f975fc3a55fdbef5531be1afea8ff03035de42d67b15c6309869cebab6d",
         "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "b0825a4810e5ff748648c2ae746f424076a289a8538b844952becff76e300d27",
         "python/mic_eq/analysis/auto_eq_parts/response.py": "749da9d5ec64ce4c5461311db1c0150040692c0af448926c5de61ebfe7f6f857",
-        "python/tools/evaluate_eq_candidate_pool.py": "15c56f09445f10121b8db6cf761b1f85d325066ad785a46d4738211c8ce87059"
+        "python/tools/evaluate_eq_candidate_pool.py": "5a4cced34561852cbb2e728e30e49c97fbd548d42e8d0eb9449c8a2110b7d54b"
       }
     },
     "clean_preservation": {
       "audio_rendered": false,
       "constraint_checks_recorded_per_variant": true,
-      "maximum_risk_score_delta": 0.3267445309405209
+      "maximum_risk_score_delta": 0.11990830538894937
     },
     "configuration": {
       "cases": [
@@ -45,12 +45,12 @@
     "runtime": {
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The optimizer is an offline whole-fit operation, not a realtime audio callback; median fit times and P95 ratios are measured.",
-      "maximum_candidate_p95_runtime_ratio": 1.8300327681269284,
+      "maximum_candidate_p95_runtime_ratio": 2.5197429257802915,
       "platform": "Windows-11-10.0.26200-SP0",
       "python": "3.12.10"
     }
   },
-  "experiment": "Fixed 12/14/16-candidate sparse selectors versus corrected dynamic ten-band baseline",
+  "experiment": "Nested 12/14/16-candidate sparse selectors containing the dynamic ten-band baseline",
   "gate": {
     "maximum_lower_decile_regression": -0.02,
     "maximum_p95_runtime_ratio": 2.0,
@@ -58,12 +58,14 @@
     "required_improved_fraction": 0.6,
     "required_median_relative_improvement": 0.05
   },
-  "generated_at": "2026-08-02T13:54:09.353893+00:00",
+  "generated_at": "2026-08-17T18:52:17.793269+00:00",
   "limitations": [
     "The synthetic response family is a deterministic algorithmic regression set, not a perceptual listening panel.",
-    "The same fixed variant is assessed across every case; no per-case oracle selection is permitted."
+    "The same fixed variant is assessed across every case; no per-case oracle selection is permitted.",
+    "This result applies only to the tested nested selectors, not every possible larger candidate-pool design."
   ],
   "method": {
+    "candidate_space": "each larger pool is a prefix extension and contains all eight incumbent interior centers",
     "cases": [
       "bassy/broadcast",
       "bright/flat",
@@ -90,62 +92,68 @@
       "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "c7d31f975fc3a55fdbef5531be1afea8ff03035de42d67b15c6309869cebab6d",
       "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "b0825a4810e5ff748648c2ae746f424076a289a8538b844952becff76e300d27",
       "python/mic_eq/analysis/auto_eq_parts/response.py": "749da9d5ec64ce4c5461311db1c0150040692c0af448926c5de61ebfe7f6f857",
-      "python/tools/evaluate_eq_candidate_pool.py": "15c56f09445f10121b8db6cf761b1f85d325066ad785a46d4738211c8ce87059"
+      "python/tools/evaluate_eq_candidate_pool.py": "5a4cced34561852cbb2e728e30e49c97fbd548d42e8d0eb9449c8a2110b7d54b"
     }
   },
   "retained": false,
-  "schema_version": 3,
+  "schema_version": 4,
   "selected_pool_size": null,
   "variants": {
     "12": {
       "checks": {
-        "constraints": false,
-        "improved_fraction": false,
-        "lower_tail": false,
-        "median_improvement": false,
-        "risk": false,
-        "runtime": true
-      },
-      "summary": {
-        "improved_fraction": 0.125,
-        "lower_decile_relative_improvement": -1.0020642315215462,
-        "maximum_risk_score_delta": 0.2853615198785491,
-        "median_relative_improvement": -0.5044450036326378,
-        "p95_runtime_ratio": 1.7502863634393617
-      }
-    },
-    "14": {
-      "checks": {
+        "baseline_containment": true,
         "constraints": true,
         "improved_fraction": false,
         "lower_tail": false,
         "median_improvement": false,
+        "nested_candidate_spaces": true,
         "risk": false,
         "runtime": true
       },
       "summary": {
-        "improved_fraction": 0.25,
-        "lower_decile_relative_improvement": -0.8944965121791582,
-        "maximum_risk_score_delta": 0.2574697237940041,
-        "median_relative_improvement": -0.19239693577289882,
-        "p95_runtime_ratio": 1.554245172413021
+        "improved_fraction": 0.5,
+        "lower_decile_relative_improvement": -0.5293229133819765,
+        "maximum_risk_score_delta": 0.04992079867845278,
+        "median_relative_improvement": 0.001227495131582005,
+        "p95_runtime_ratio": 1.9374305593865226
+      }
+    },
+    "14": {
+      "checks": {
+        "baseline_containment": true,
+        "constraints": true,
+        "improved_fraction": true,
+        "lower_tail": false,
+        "median_improvement": false,
+        "nested_candidate_spaces": true,
+        "risk": false,
+        "runtime": true
+      },
+      "summary": {
+        "improved_fraction": 0.625,
+        "lower_decile_relative_improvement": -0.2200054355162944,
+        "maximum_risk_score_delta": 0.11990830538894925,
+        "median_relative_improvement": 0.03690726064317678,
+        "p95_runtime_ratio": 1.9956165285525933
       }
     },
     "16": {
       "checks": {
-        "constraints": false,
-        "improved_fraction": false,
-        "lower_tail": false,
-        "median_improvement": false,
+        "baseline_containment": true,
+        "constraints": true,
+        "improved_fraction": true,
+        "lower_tail": true,
+        "median_improvement": true,
+        "nested_candidate_spaces": true,
         "risk": false,
-        "runtime": true
+        "runtime": false
       },
       "summary": {
-        "improved_fraction": 0.125,
-        "lower_decile_relative_improvement": -1.0119624401857061,
-        "maximum_risk_score_delta": 0.3267445309405209,
-        "median_relative_improvement": -0.2586857224046018,
-        "p95_runtime_ratio": 1.8300327681269284
+        "improved_fraction": 0.625,
+        "lower_decile_relative_improvement": -0.007169588892590121,
+        "maximum_risk_score_delta": 0.11990830538894937,
+        "median_relative_improvement": 0.055653937956135706,
+        "p95_runtime_ratio": 2.5197429257802915
       }
     }
   }

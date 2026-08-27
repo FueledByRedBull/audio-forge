@@ -1,17 +1,17 @@
 {
   "aggregate": {
     "all_outputs_finite": true,
-    "candidate_p95_realtime_factor": 0.0014840170309613591,
+    "candidate_p95_realtime_factor": 0.001556319968390559,
     "case_count": 12,
     "failed_cases": 0,
-    "incumbent_p95_realtime_factor": 0.0013447805378813435,
+    "incumbent_p95_realtime_factor": 0.001361112079819209,
     "latency_samples": [
       0
     ],
     "max_response_parity_delta_db": 0.0,
     "max_true_peak_overshoot_db": 0.0,
     "p95_limiter_gr_db": 0.0,
-    "p95_runtime_ratio": 4095.239958801691,
+    "p95_runtime_ratio": 1.1434179385119252,
     "schema_roundtrip": true,
     "tone_payload_preserved": true,
     "tone_profiles": [
@@ -38,29 +38,31 @@
     "enough_cases": true,
     "finite_output": true,
     "limiter_load": true,
-    "material_objective_benefit": false,
     "response_parity": true,
     "runtime_absolute": true,
-    "runtime_ratio": false,
+    "runtime_ratio": true,
     "schema_and_undo_shape": true,
     "tone_ownership": true,
     "true_peak_ceiling": true,
-    "zero_added_latency": true
+    "zero_added_latency": true,
+    "zero_failed_cases": true
   },
   "decision": {
-    "failed_checks": [
-      "material_objective_benefit",
-      "runtime_ratio"
-    ],
-    "product_action": "retain one combined stage and reject non-combined stage tokens",
-    "retained": false
+    "failed_checks": [],
+    "product_action": "retain one combined stage; no measured product benefit justifies a second stage",
+    "retained": false,
+    "safety_and_cost_eligible": true
   },
   "evaluation_contract": {
     "asset_hashes": {
       "corpus_manifest": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6",
+      "native_extension": {
+        "path": "python/mic_eq/mic_eq_core.cp312-win_amd64.pyd",
+        "sha256": "fa21c980eb15e902950d93b20b26943b6c0dfc804d07b4612f041d0f6ec8e621"
+      },
       "source": {
         "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-        "python/tools/evaluate_correction_tone_stages.py": "298072bce11ad9ceac8627d7a6db05fef40ee6538ef260d0d8ab7a205bc1ec2a",
+        "python/tools/evaluate_correction_tone_stages.py": "d6a3c32e33a26fd00eb2a3218da71fb8b5eda5667330ec9502bafe7ae06c219b",
         "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
         "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
       }
@@ -74,6 +76,7 @@
       "input_peak_normalization": 0.5,
       "pre_registration": "https://github.com/FueledByRedBull/audio-forge/issues/28",
       "sample_rate": 48000,
+      "timing_repeats": 5,
       "tone_profiles": [
         "flat",
         "presence",
@@ -88,18 +91,18 @@
       "sample_rate": 48000
     },
     "runtime": {
-      "candidate_p95_realtime_factor": 0.0014840170309613591,
-      "incumbent_p95_realtime_factor": 0.0013447805378813435,
+      "candidate_p95_realtime_factor": 0.001556319968390559,
+      "incumbent_p95_realtime_factor": 0.001361112079819209,
       "machine": "Windows-11-10.0.26200-SP0",
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native offline API reports whole-clip runtime; realtime factor is measured for both one- and two-stage paths.",
-      "p95_runtime_ratio": 4095.239958801691,
+      "p95_runtime_ratio": 1.1434179385119252,
       "python": "3.12.10"
     }
   },
   "experiment": "Separate Auto-EQ correction and user tone stages",
   "failures": [],
-  "generated_at_utc": "2026-08-02T13:57:11.701923+00:00",
+  "generated_at_utc": "2026-08-27T22:18:09.842792+00:00",
   "incumbent": {
     "bands": 10,
     "stages": 1
@@ -107,7 +110,7 @@
   "limitations": [
     "The 48 kHz clean subset contains only two VoiceBank test speakers.",
     "Frozen tone profiles are representative fixtures, not preference labels.",
-    "Response parity proves safety but not benefit; the candidate must therefore provide a predefined measurable runtime benefit to justify doubling the stage architecture.",
+    "Response parity and bounded cost establish eligibility, not user benefit; no measured product benefit justifies doubling the stage architecture.",
     "The candidate is not a production preset or realtime DSP path."
   ],
   "retention_gates": {
@@ -117,13 +120,12 @@
     "max_response_parity_delta_db": 1e-09,
     "max_true_peak_overshoot_db": 0.05,
     "min_corpus_cases": 8,
-    "min_p95_runtime_improvement_fraction": 0.05,
     "required_tone_profiles": 4
   },
-  "schema_version": 2,
+  "schema_version": 3,
   "source_sha256": {
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-    "python/tools/evaluate_correction_tone_stages.py": "298072bce11ad9ceac8627d7a6db05fef40ee6538ef260d0d8ab7a205bc1ec2a",
+    "python/tools/evaluate_correction_tone_stages.py": "d6a3c32e33a26fd00eb2a3218da71fb8b5eda5667330ec9502bafe7ae06c219b",
     "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
     "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
   }

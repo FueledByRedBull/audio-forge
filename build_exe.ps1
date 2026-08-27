@@ -92,8 +92,9 @@ if ($Clean) {
 }
 $pyinstallerArgs += (Join-Path $ProjectRoot "AudioForge.spec")
 & $venvPython -m PyInstaller @pyinstallerArgs
+$pyinstallerExitCode = $LASTEXITCODE
 
-if ($LASTEXITCODE -eq 0) {
+if ($pyinstallerExitCode -eq 0) {
     & $venvPython (Join-Path $ProjectRoot "python\tools\prune_bundle.py") (Join-Path $ProjectRoot "dist\AudioForge")
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Bundle pruning failed!" -ForegroundColor Red
@@ -122,6 +123,7 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "NOTE: DeepFilterNet assets stay bundled under the PyInstaller runtime directory."
 } else {
     Write-Host "Build failed!" -ForegroundColor Red
+    exit $pyinstallerExitCode
 }
 } finally {
     Pop-Location

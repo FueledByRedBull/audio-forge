@@ -324,8 +324,10 @@ impl AdaptiveInputCleanupState {
         self.hum_phase_valid = false;
         self.hum_strength = 0.0;
         self.harmonic_strength = 0.0;
+        self.adaptive_highpass
+            .set_frequency(INPUT_PREFILTER_HZ);
         self.adaptive_highpass.reset();
-        self.adaptive_highpass_hz = f32::NAN;
+        self.adaptive_highpass_hz = INPUT_PREFILTER_HZ as f32;
         self.hum_notch.reset();
         self.harmonic_notch.reset();
         self.hum_detected = false;
@@ -553,12 +555,22 @@ impl AdaptiveInputCleanupState {
             self.adaptive_highpass_hz = self.selected_high_pass_hz;
         }
 
-        let hum_attack = match self.mode {
+        let hum_attack_per_10ms = match self.mode {
             InputCleanupMode::Off => 0.0,
             InputCleanupMode::Gentle => 0.22,
             InputCleanupMode::Strong => 0.34,
         };
-        let hum_release = 0.035;
+        let hum_release_per_10ms = 0.035;
+        let hum_attack = smoothing_amount_for_samples(
+            hum_attack_per_10ms,
+            buffer.len(),
+            self.sample_rate,
+        );
+        let hum_release = smoothing_amount_for_samples(
+            hum_release_per_10ms,
+            buffer.len(),
+            self.sample_rate,
+        );
         let target_hum = if self.hum_detected {
             match self.mode {
                 InputCleanupMode::Off => 0.0,
@@ -639,12 +651,58 @@ mod adaptive_cleanup_tests {
             state.hum_line_hz
         );
     }
+
+    #[test]
+    fn hum_strength_smoothing_is_chunk_invariant() {
+        let sample_rate = 48_000.0_f32;
+        let mut one_block = AdaptiveInputCleanupState::new(sample_rate);
+        let mut split_blocks = AdaptiveInputCleanupState::new(sample_rate);
+        one_block.set_mode(InputCleanupMode::Gentle);
+        split_blocks.set_mode(InputCleanupMode::Gentle);
+        one_block.hum_hold_samples = 48_000;
+        split_blocks.hum_hold_samples = 48_000;
+
+        one_block.process_block(&mut [0.0; 480]);
+        for _ in 0..4 {
+            split_blocks.process_block(&mut [0.0; 120]);
+        }
+
+        assert!((one_block.hum_strength - split_blocks.hum_strength).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn cleanup_reset_restores_highpass_and_allows_future_retuning() {
+        let mut state = AdaptiveInputCleanupState::new(48_000.0);
+        state.set_mode(InputCleanupMode::Gentle);
+        state.adaptive_highpass.set_frequency(100.0);
+        state.adaptive_highpass.reset();
+        state.adaptive_highpass_hz = 100.0;
+
+        state.reset_dynamic_state();
+
+        assert_eq!(state.adaptive_highpass_hz, INPUT_PREFILTER_HZ as f32);
+        assert!((state.adaptive_highpass.magnitude_response_db(80.0) + 3.0).abs() < 0.1);
+
+        state.rumble_hold_samples = 480;
+        state.process_block(&mut [0.0; 480]);
+        assert_eq!(state.adaptive_highpass_hz, 100.0);
+    }
 }
 
 #[inline]
 fn smooth_toward(current: f32, target: f32, attack: f32, release: f32) -> f32 {
     let coeff = if target > current { attack } else { release };
     current + coeff * (target - current)
+}
+
+#[inline]
+fn smoothing_amount_for_samples(amount_per_10ms: f32, samples: usize, sample_rate: f32) -> f32 {
+    if samples == 0 || amount_per_10ms <= 0.0 {
+        return 0.0;
+    }
+    let ten_ms_samples = (sample_rate.max(1.0) * 0.010).max(1.0);
+    let elapsed_steps = samples as f32 / ten_ms_samples;
+    1.0 - (1.0 - amount_per_10ms.clamp(0.0, 1.0)).powf(elapsed_steps)
 }
 
 #[inline]

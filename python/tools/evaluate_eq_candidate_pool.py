@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import platform
 import time
 from contextlib import contextmanager
@@ -16,7 +17,14 @@ import numpy as np
 
 from mic_eq.analysis import auto_eq
 from mic_eq.analysis.auto_eq_parts import optimizer
-from mic_eq.analysis.auto_eq_parts.constants import NUM_EQ_BANDS, Q_MAX, Q_MIN
+from mic_eq.analysis.auto_eq_parts.constants import (
+    GAIN_MAX_DB,
+    MAX_ADJ_GAIN_DIFF_DB,
+    MAX_GAIN_SLOPE_DB_PER_OCTAVE,
+    NUM_EQ_BANDS,
+    Q_MAX,
+    Q_MIN,
+)
 from mic_eq.analysis.auto_eq_parts.dynamic_bands import (
     _estimate_q_from_residual,
     _select_dynamic_band_layout,
@@ -73,7 +81,10 @@ def _smooth_perturbation(freqs: np.ndarray, rng: np.random.Generator) -> np.ndar
     return np.interp(np.log(freqs), np.log(knots), values)
 
 
-def _candidate_pool_selector(pool_size: int) -> Callable:
+def _candidate_pool_selector(
+    pool_size: int,
+    audit: list[dict[str, object]] | None = None,
+) -> Callable:
     def select(
         dense_freqs: np.ndarray,
         residual_db: np.ndarray,
@@ -99,18 +110,26 @@ def _candidate_pool_selector(pool_size: int) -> Callable:
         candidates = [float(dense_freqs[index]) for index in extrema]
         candidates.extend(
             float(value)
-            for value in np.geomspace(200.0, 9000.0, max(10, pool_size * 2))
+            for value in np.geomspace(200.0, 9000.0, max(10, max(POOL_SIZES) * 2))
         )
-        unique: list[float] = []
+        production_interiors = [float(value) for value in production_centers[1:-1]]
+        unique = list(production_interiors)
         for center in candidates:
             if all(abs(np.log2(center / existing)) >= 0.08 for existing in unique):
                 unique.append(center)
-            if len(unique) >= pool_size - 2:
+            if len(unique) >= max(POOL_SIZES) - 2:
                 break
-        for center in production_centers[1:-1]:
-            if all(abs(np.log2(center / existing)) >= 0.02 for existing in unique):
-                unique.append(float(center))
-        unique = unique[: max(pool_size - 2, NUM_EQ_BANDS - 2)]
+        unique = unique[: pool_size - 2]
+        if audit is not None:
+            audit.append(
+                {
+                    "baseline_contained": all(
+                        any(math.isclose(center, value) for value in unique)
+                        for center in production_interiors
+                    ),
+                    "pool_centers_hz": list(unique),
+                }
+            )
 
         candidate_q = np.asarray(
             [
@@ -165,6 +184,30 @@ def _candidate_pool_selector(pool_size: int) -> Callable:
                     best_index = candidate_index
             selected.append(best_index)
             remaining.remove(best_index)
+
+        def fit_error(indices_to_fit: list[int]) -> float:
+            gains, *_ = np.linalg.lstsq(
+                weighted_basis[:, indices_to_fit],
+                weighted_target,
+                rcond=None,
+            )
+            gains = np.clip(gains, -GAIN_MAX_DB, GAIN_MAX_DB)
+            return float(
+                np.sqrt(
+                    np.average(
+                        (
+                            residual_db
+                            - basis[:, indices_to_fit] @ gains
+                        )
+                        ** 2,
+                        weights=weights,
+                    )
+                )
+            )
+
+        incumbent_indices = list(range(NUM_EQ_BANDS - 2))
+        if fit_error(selected) >= fit_error(incumbent_indices):
+            selected = incumbent_indices
 
         interiors = sorted(float(unique[index]) for index in selected)
         centers = np.asarray(
@@ -265,6 +308,23 @@ def _risk(result: dict) -> float:
     )
 
 
+def _constraints_passed(result: dict) -> bool:
+    gains = np.asarray(result["band_gains"], dtype=float)
+    qs = np.asarray(result["band_qs"], dtype=float)
+    q_upper_bounds = np.asarray(result["q_upper_bounds"], dtype=float)
+    return bool(
+        np.all(np.isfinite(gains))
+        and np.all(np.isfinite(qs))
+        and np.all(np.abs(gains) <= GAIN_MAX_DB + 1.0e-9)
+        and np.all(qs >= Q_MIN - 1.0e-9)
+        and np.all(qs <= q_upper_bounds + 1.0e-9)
+        and float(result["max_adjacent_gain_difference_db"])
+        <= MAX_ADJ_GAIN_DIFF_DB + 1.0e-9
+        and float(result["max_adjacent_gain_slope_db_per_octave"])
+        <= MAX_GAIN_SLOPE_DB_PER_OCTAVE + 1.0e-9
+    )
+
+
 def _summary(rows: list[dict]) -> dict[str, float]:
     improvements = np.asarray([row["relative_improvement"] for row in rows])
     runtime_ratios = np.asarray([row["runtime_ratio"] for row in rows])
@@ -289,6 +349,10 @@ def _gate(rows: list[dict], summary: dict[str, float]) -> dict[str, bool]:
         "runtime": summary["p95_runtime_ratio"] <= GATE["maximum_p95_runtime_ratio"],
         "risk": summary["maximum_risk_score_delta"] <= GATE["maximum_risk_score_delta"],
         "constraints": all(row["candidate_constraint_passed"] for row in rows),
+        "baseline_containment": all(row["baseline_contained"] for row in rows),
+        "nested_candidate_spaces": all(
+            row["nested_candidate_spaces"] for row in rows
+        ),
     }
 
 
@@ -317,12 +381,14 @@ def evaluate() -> dict:
         )
         baseline_error = _error(freqs, measured + perturbation, target, baseline)
         for pool_size in POOL_SIZES:
+            audit: list[dict[str, object]] = []
             candidate, candidate_ms = _bench_run(
                 freqs,
                 measured,
                 target,
-                _candidate_pool_selector(pool_size),
+                _candidate_pool_selector(pool_size, audit),
             )
+            structure = audit[-1]
             candidate_error = _error(
                 freqs,
                 measured + perturbation,
@@ -342,11 +408,21 @@ def evaluate() -> dict:
                     "runtime_ratio": candidate_ms / max(baseline_ms, 1.0e-9),
                     "risk_score_delta": _risk(candidate) - _risk(baseline),
                     "candidate_active_bands": candidate["active_band_count"],
-                    "candidate_constraint_passed": candidate[
-                        "constraint_solver_success"
-                    ],
+                    "candidate_constraint_passed": _constraints_passed(candidate),
+                    "solver_reported_success": candidate["constraint_solver_success"],
+                    "baseline_contained": structure["baseline_contained"],
+                    "pool_centers_hz": structure["pool_centers_hz"],
                 }
             )
+        case_rows = [rows_by_pool[size][-1] for size in POOL_SIZES]
+        nested = all(
+            set(case_rows[index]["pool_centers_hz"]).issubset(
+                case_rows[index + 1]["pool_centers_hz"]
+            )
+            for index in range(len(case_rows) - 1)
+        )
+        for row in case_rows:
+            row["nested_candidate_spaces"] = nested
 
     variants: dict[str, dict] = {}
     for pool_size, rows in rows_by_pool.items():
@@ -374,16 +450,17 @@ def evaluate() -> dict:
         for variant in variants.values()
     )
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "audible_change": True,
-        "experiment": "Fixed 12/14/16-candidate sparse selectors versus corrected dynamic ten-band baseline",
+        "experiment": "Nested 12/14/16-candidate sparse selectors containing the dynamic ten-band baseline",
         "retained": retained,
         "selected_pool_size": selected_pool_size,
         "method": {
             "cases": [f"{left}/{right}" for left, right in CASES],
             "held_out_perturbation": "one deterministic 0.25 dB perturbation per case, never used to choose a different pool size per case",
             "variant_selection": "smallest fixed pool size passing every aggregate gate",
+            "candidate_space": "each larger pool is a prefix extension and contains all eight incumbent interior centers",
             "runtime_repeats": RUNTIME_REPEATS,
             "runtime_warmup_runs": 1,
             "seed": SEED,
@@ -394,7 +471,7 @@ def evaluate() -> dict:
         "decision": (
             f"Retain fixed {selected_pool_size}-candidate selector."
             if retained
-            else "Reject every fixed candidate-pool selector; keep corrected dynamic ten-band optimizer."
+            else "Reject the three tested nested selectors; keep the dynamic ten-band optimizer."
         ),
         "evaluation_contract": {
             "configuration": {
@@ -441,6 +518,7 @@ def evaluate() -> dict:
         "limitations": [
             "The synthetic response family is a deterministic algorithmic regression set, not a perceptual listening panel.",
             "The same fixed variant is assessed across every case; no per-case oracle selection is permitted.",
+            "This result applies only to the tested nested selectors, not every possible larger candidate-pool design.",
         ],
     }
 

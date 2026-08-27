@@ -66,11 +66,15 @@ def test_report_uses_real_speech_and_applies_objective_materiality_gate():
 
     report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
 
-    assert report["schema_version"] == 4
+    assert report["schema_version"] == 5
     assert report["corpus"]["real_speech"]["case_count"] == 12
     assert report["aggregates"]["2.0"]["all"]["all_finite"] is True
-    assert report["selected_lookahead_ms"] == 2.0
-    assert report["objective_candidate_lookahead_ms"] is None
+    assert report["selected_lookahead_ms"] == 0.5
+    assert report["objective_candidate_lookahead_ms"] == 0.5
+    assert (
+        report["candidate_checks"]["0.5"]["paired_event_deltas"]["maximum"]
+        <= 1
+    )
     assert (
         report["candidate_checks"]["1.0"]["checks"][
             "material_latency_reduction_at_least_1_5_ms"

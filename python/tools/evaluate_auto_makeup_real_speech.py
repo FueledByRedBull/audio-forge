@@ -14,7 +14,8 @@ from release_provenance import sha256_file as _sha256
 import numpy as np
 from scipy.signal import resample_poly
 
-from mic_eq import analyze_vad_probabilities, simulate_auto_makeup_control
+from mic_eq import analyze_vad_probabilities
+from mic_eq.mic_eq_core import simulate_auto_makeup_control
 from mic_eq.analysis.wav_io import read_mono_wav
 
 

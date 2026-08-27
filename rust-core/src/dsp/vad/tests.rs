@@ -31,18 +31,12 @@ mod tests {
         let (open, _) = gate.process_with_probability(&frame, 0.9);
         assert!(open);
 
-        // Hold should keep gate open for ~100ms after raw close.
-        for _ in 0..5 {
+        // Hold keeps exactly ten complete 10ms closed frames open.
+        for _ in 0..10 {
             let (held_open, _) = gate.process_with_probability(&frame, 0.0);
             assert!(held_open);
         }
-
-        let mut final_state = true;
-        for _ in 0..6 {
-            let (state, _) = gate.process_with_probability(&frame, 0.0);
-            final_state = state;
-        }
-        assert!(!final_state);
+        assert!(!gate.process_with_probability(&frame, 0.0).0);
     }
 
     #[test]
@@ -453,6 +447,28 @@ mod tests {
         vad.reset();
         assert!(vad.state.iter().all(|sample| *sample == 0.0));
         assert!(vad.context_audio.iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn test_pinned_silero_process_latest_drains_complete_backlog() {
+        let mut vad = SileroVAD::new(SILERO_SAMPLE_RATE, 0.5)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let window_size = vad.window_size();
+        let samples = vec![0.0_f32; window_size * 3 + window_size / 2];
+
+        let probability = vad.process_latest(&samples).unwrap().unwrap();
+
+        assert!(probability.is_finite());
+        assert_eq!(vad.available_samples(), window_size / 2);
+    }
+
+    #[test]
+    fn test_pinned_silero_process_latest_does_not_publish_partial_window() {
+        let mut vad = SileroVAD::new(SILERO_SAMPLE_RATE, 0.5)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let samples = vec![0.0_f32; vad.window_size() - 1];
+
+        assert_eq!(vad.process_latest(&samples).unwrap(), None);
     }
 
     #[test]

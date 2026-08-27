@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import platform
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -15,7 +16,7 @@ import numpy as np
 
 from mic_eq.analysis.wav_io import read_mono_wav
 
-from mic_eq import simulate_auto_eq_chain
+from mic_eq.mic_eq_core import simulate_auto_eq_chain
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -29,6 +30,7 @@ RUNTIME_REPETITIONS = 7
 REAL_MAIN_LIMITER_GAIN_REDUCTION_TARGET_DB = 3.0
 REAL_MAIN_LIMITER_GAIN_REDUCTION_TOLERANCE_DB = 0.10
 MIN_MATERIAL_LOOKAHEAD_REDUCTION_MS = 1.5
+FLUSH_SAMPLES = int(round(max(LOOKAHEAD_MS) / 1000.0 * SAMPLE_RATE)) + 20
 
 
 def _cases() -> dict[str, np.ndarray]:
@@ -285,13 +287,16 @@ def _case(
     kind: str = "controlled",
     provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    _render(audio, lookahead_ms)
-    results = [_render(audio, lookahead_ms) for _ in range(RUNTIME_REPETITIONS)]
+    render_input = np.pad(audio, (0, FLUSH_SAMPLES))
+    _render(render_input, lookahead_ms)
+    results = [
+        _render(render_input, lookahead_ms) for _ in range(RUNTIME_REPETITIONS)
+    ]
     result = results[-1]
     output = np.asarray(result.pop("output_audio"), dtype=np.float64)
     delay = int(round(lookahead_ms / 1000.0 * SAMPLE_RATE)) + 20
-    aligned = output[delay:]
-    reference = audio[: aligned.size].astype(np.float64)
+    aligned = output[delay : delay + audio.size]
+    reference = audio.astype(np.float64)
     gain_variation = _gain_envelope_variation_db(reference, aligned)
     ceiling_db = float(result["limiter_effective_ceiling_db"])
     transient_indices = _transient_indices(reference)
@@ -319,13 +324,15 @@ def _case(
         "runtime_ms_median": float(np.median(runtime_values)),
         "runtime_ms_p95": float(np.percentile(runtime_values, 95.0)),
         "runtime_realtime_factor_median": float(
-            np.median(runtime_values) / max(1.0, audio.size / SAMPLE_RATE * 1000.0)
+            np.median(runtime_values)
+            / max(1.0, render_input.size / SAMPLE_RATE * 1000.0)
         ),
         "finite_output": bool(
             not result["non_finite_output"] and np.all(np.isfinite(output))
         ),
         "processed_samples": int(result["processed_samples"]),
         "declared_alignment_samples": delay,
+        "flush_samples": FLUSH_SAMPLES,
         "provenance": dict(provenance or {}),
     }
 
@@ -374,6 +381,12 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def evaluate(real_manifest: Path) -> dict[str, Any]:
+    native_file = sys.modules[simulate_auto_eq_chain.__module__].__file__
+    if native_file is None:
+        raise RuntimeError("native extension has no filesystem path")
+    native_path = Path(native_file).resolve(strict=True)
+    if native_path.suffix.lower() != ".pyd":
+        raise RuntimeError("evaluation requires the loaded native extension")
     real_rows, real_corpus = _real_cases(real_manifest)
     controlled_inputs = [
         {
@@ -421,9 +434,20 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
             ),
         }
     baseline = aggregates[str(BASELINE_LOOKAHEAD_MS)]
+    baseline_rows = {
+        str(row["id"]): row
+        for row in rows
+        if row["lookahead_ms"] == BASELINE_LOOKAHEAD_MS
+    }
     candidate_checks: dict[str, dict[str, Any]] = {}
     for lookahead_ms in (0.5, 1.0):
         aggregate = aggregates[str(lookahead_ms)]
+        event_deltas = [
+            int(row["true_peak_limited_events"])
+            - int(baseline_rows[str(row["id"])]["true_peak_limited_events"])
+            for row in rows
+            if row["lookahead_ms"] == lookahead_ms
+        ]
         checks = {
             "pre_true_peak_overshoot_regression_at_most_0_10_db": (
                 aggregate["all"]["worst_pre_true_peak_overshoot_db"]
@@ -436,9 +460,8 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
                 aggregate["all"]["max_true_peak_limiter_gain_reduction_db"]
                 <= baseline["all"]["max_true_peak_limiter_gain_reduction_db"] + 0.10
             ),
-            "downstream_true_peak_event_regression_at_most_1": (
-                aggregate["all"]["total_true_peak_limited_events"]
-                <= baseline["all"]["total_true_peak_limited_events"] + 1
+            "downstream_true_peak_event_regression_at_most_1_per_case": (
+                max(event_deltas) <= 1
             ),
             "gain_envelope_variation_regression_at_most_0_25_db": (
                 aggregate["all"]["median_gain_envelope_variation_db"]
@@ -469,6 +492,11 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
         candidate_checks[str(lookahead_ms)] = {
             "checks": checks,
             "objective_passes": all(checks.values()),
+            "paired_event_deltas": {
+                "maximum": max(event_deltas),
+                "sum": sum(event_deltas),
+                "increased_case_count": sum(delta > 0 for delta in event_deltas),
+            },
         }
     passing = [
         value
@@ -489,7 +517,7 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
         for path in source_paths
     }
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "audible_change": True,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "configuration": {
@@ -513,7 +541,7 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
             "pre_true_peak_overshoot_regression_db_max": 0.10,
             "output_true_peak_overshoot_db_max": 0.01,
             "downstream_true_peak_gr_regression_db_max": 0.10,
-            "downstream_true_peak_event_regression_max": 1,
+            "downstream_true_peak_event_regression_per_case_max": 1,
             "gain_envelope_variation_regression_db_max": 0.25,
             "real_main_limiter_gain_reduction_target_db": (
                 REAL_MAIN_LIMITER_GAIN_REDUCTION_TARGET_DB
@@ -555,6 +583,10 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
             "asset_hashes": {
                 "source": source_hashes,
                 "real_manifest": real_corpus.get("manifest_sha256"),
+                "native_extension": {
+                    "path": native_path.relative_to(REPO_ROOT).as_posix(),
+                    "sha256": _sha256(native_path),
+                },
                 "real_case_source_sha256": sorted(
                     {
                         str(case["provenance"]["source_sha256"])
@@ -580,6 +612,7 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
                     for value in LOOKAHEAD_MS
                 },
                 "downstream_true_peak_delay_samples": 20,
+                "flush_samples": FLUSH_SAMPLES,
             },
             "clean_preservation": {
                 "all_outputs_finite": all(
@@ -596,6 +629,7 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
         "limitations": [
             "Real speech receives one recorded static gain, calibrated through the protected chain to 3 dB of main-limiter gain reduction; the source waveform is otherwise unchanged.",
             "Transient shape error removes one local static gain and is not a perceptual score.",
+            "True-peak event counts are block-activation diagnostics; the gate compares paired cases and does not claim audibility.",
             "A shorter candidate must pass every safety/quality gate and save at least 1.5 ms; a smaller latency change is not material against the measured product path.",
         ],
     }

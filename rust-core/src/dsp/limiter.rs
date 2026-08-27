@@ -1,6 +1,6 @@
 //! Lookahead hard limiter with transparent post safety clamping.
 //!
-//! Uses a fixed lookahead window (~2ms) computed from runtime sample rate.
+//! Uses a fixed lookahead window (~0.5ms) computed from runtime sample rate.
 
 use crate::dsp::util;
 
@@ -99,7 +99,7 @@ pub struct Limiter {
 impl Limiter {
     /// Create a new limiter
     pub fn new(ceiling_db: f64, release_ms: f64, sample_rate: f64) -> Self {
-        Self::new_with_lookahead_ms(ceiling_db, release_ms, sample_rate, 2.0)
+        Self::new_with_lookahead_ms(ceiling_db, release_ms, sample_rate, 0.5)
     }
 
     /// Create a limiter with an explicit lookahead for offline evaluation.
@@ -317,11 +317,11 @@ mod tests {
         let lim_192 = Limiter::new(-0.5, 50.0, 192_000.0);
         let lim_384 = Limiter::new(-0.5, 50.0, 384_000.0);
 
-        assert_eq!(lim_44.lookahead_samples(), 88);
-        assert_eq!(lim_48.lookahead_samples(), 96);
-        assert_eq!(lim_96.lookahead_samples(), 192);
-        assert_eq!(lim_192.lookahead_samples(), 384);
-        assert_eq!(lim_384.lookahead_samples(), 768);
+        assert_eq!(lim_44.lookahead_samples(), 22);
+        assert_eq!(lim_48.lookahead_samples(), 24);
+        assert_eq!(lim_96.lookahead_samples(), 48);
+        assert_eq!(lim_192.lookahead_samples(), 96);
+        assert_eq!(lim_384.lookahead_samples(), 192);
     }
 
     #[test]

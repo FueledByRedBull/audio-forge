@@ -85,7 +85,11 @@ class DevicePresetBinding:
 
 
 def _coerce_input_channel_mode(value: object) -> str:
-    return value if isinstance(value, str) and value in INPUT_CHANNEL_MODES else "average"
+    return (
+        value
+        if isinstance(value, str) and value in INPUT_CHANNEL_MODES
+        else "phase_safe_mono"
+    )
 
 
 def _coerce_input_cleanup_mode(value: object) -> str:
@@ -159,7 +163,7 @@ class AppConfig:
     last_output_device: str = ""
     last_input_device_identity: DeviceIdentity | None = None
     last_output_device_identity: DeviceIdentity | None = None
-    input_channel_mode: str = "average"
+    input_channel_mode: str = "phase_safe_mono"
     input_cleanup_mode: str = "off"
     last_preset: str = ""
     startup_preset: str = ""

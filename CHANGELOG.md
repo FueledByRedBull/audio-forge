@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+## v1.11.3 - 2026-08-28
+
+- Reduced limiter lookahead from 2 ms to 0.5 ms after a corrected paired,
+  delay-flushed evaluation passed every predefined safety and quality gate.
+- Made multichannel input phase-safe by default for new and invalid settings
+  while preserving saved explicit channel choices.
+- Replaced block-reset output drift interpolation with a stateful retimer that
+  preserves fractional phase and sample history across callbacks.
+- Corrected filter reset state, adaptive-cleanup timing and reset behavior,
+  RNNoise initial strength, final true-peak limiter release propagation, and
+  VAD backlog, freshness, ownership, and hold timing.
+- Strengthened exact-artifact health qualification to select Standard
+  DeepFilter and require its expected latency, successful inference, and
+  finite non-silent output.
+- Made PyInstaller failures terminate the build, added a native
+  production-output regression harness, and refreshed all source-bound
+  evaluation evidence. The corrected limiter evaluation now selects 0.5 ms;
+  other retained/rejected decisions are unchanged.
+- Removed unused Rust and Python APIs, obsolete package-root evaluation
+  exports, and the retired local TODO-index generator.
+
 ## v1.11.2 - 2026-08-03
 
 - Restored the one-row device, action, and health layouts at the default window

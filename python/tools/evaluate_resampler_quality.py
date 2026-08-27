@@ -19,7 +19,7 @@ import numpy as np
 from scipy import __version__ as scipy_version
 from scipy.signal import firwin, resample_poly
 
-from mic_eq import product_resampler_configuration, simulate_product_resampler
+from mic_eq.mic_eq_core import product_resampler_configuration, simulate_product_resampler
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

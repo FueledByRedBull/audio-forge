@@ -917,3 +917,10 @@ fn apply_limiter_control(limiter: &mut Limiter, control: &LimiterControlState) {
     limiter.set_release_time(control.release_ms);
     limiter.set_enabled(control.enabled);
 }
+
+fn apply_true_peak_limiter_control(
+    limiter: &mut TruePeakLimiter,
+    control: &LimiterControlState,
+) {
+    limiter.set_release_ms(control.release_ms as f32);
+}

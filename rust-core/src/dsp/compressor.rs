@@ -56,8 +56,6 @@ pub struct Compressor {
     detector_release_coeff: f64,
     /// Makeup gain in dB to compensate for gain reduction
     makeup_gain_db: f64,
-    /// Makeup gain as linear multiplier (cached)
-    makeup_gain_linear: f64,
     /// Knee width in dB for soft-knee transition
     knee_db: f64,
     /// AR-smoothed log-domain peak detector (dBFS)
@@ -154,7 +152,6 @@ impl Compressor {
             release_coeff,
             detector_release_coeff: release_coeff,
             makeup_gain_db,
-            makeup_gain_linear: util::db_to_linear(makeup_gain_db),
             knee_db: knee_db.max(0.0),
             peak_envelope_db: -120.0,
             rms_envelope_sq: 0.0,
@@ -293,7 +290,6 @@ impl Compressor {
     /// Set makeup gain in dB
     pub fn set_makeup_gain(&mut self, makeup_gain_db: f64) {
         self.makeup_gain_db = makeup_gain_db;
-        self.makeup_gain_linear = util::db_to_linear(makeup_gain_db);
         if !self.auto_makeup_enabled {
             self.smoothed_makeup_gain = makeup_gain_db;
         }

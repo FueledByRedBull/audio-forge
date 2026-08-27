@@ -1030,24 +1030,6 @@ class EQPanel(QWidget):
             bands=tuple(slider.settings() for slider in self.band_sliders),
         )
 
-    def capture_state(self) -> dict:
-        """
-        Capture current EQ state for undo functionality.
-
-        Returns:
-            Dictionary with current band gains, Q values, and enabled state
-        """
-        return self.get_settings()
-
-    def restore_state(self, state: dict) -> None:
-        """
-        Restore EQ state from captured snapshot.
-
-        Args:
-            state: Dictionary with 'enabled', 'band_gains', and 'band_qs' keys
-        """
-        self.set_settings(state)
-
     def set_settings(self, settings: dict) -> None:
         """Apply settings from a dictionary."""
         if "enabled" in settings:

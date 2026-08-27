@@ -474,7 +474,7 @@ pub fn simulate_auto_eq_chain(
     if limiter_enabled {
         processor
             .limiter_mut()
-            .set_lookahead_ms(py_dict_f64(settings, "limiter_lookahead_ms", 2.0)?);
+            .set_lookahead_ms(py_dict_f64(settings, "limiter_lookahead_ms", 0.5)?);
         processor
             .limiter_mut()
             .set_ceiling(effective_ceiling_db as f64);
@@ -1621,6 +1621,18 @@ impl PyAudioProcessor {
             self.processor.noise_backend_failed(),
         )?;
         diagnostics.set_item("noise_backend_error", self.processor.noise_backend_error())?;
+        diagnostics.set_item(
+            "suppressor_latency_samples",
+            self.processor
+                .suppressor_latency_samples
+                .load(Ordering::Relaxed),
+        )?;
+        diagnostics.set_item(
+            "suppressor_successful_inference_frames",
+            self.processor
+                .suppressor_successful_inference_frames
+                .load(Ordering::Relaxed),
+        )?;
         diagnostics.set_item(
             "input_dropped_samples",
             self.processor.get_dropped_samples(),

@@ -63,6 +63,18 @@ mod tests {
     }
 
     #[test]
+    fn successful_inference_count_excludes_passthrough_frames() {
+        let mut processor = DeepFilterProcessor::default();
+        processor.push_samples(&[0.1; DEEPFILTER_FRAME_SIZE]);
+        processor.process_frames();
+
+        assert_eq!(
+            processor.successful_inference_frames(),
+            u64::from(processor.is_ffi_available())
+        );
+    }
+
+    #[test]
     fn test_latency_samples() {
         assert_eq!(
             DeepFilterModel::LowLatency.latency_samples(),
@@ -234,11 +246,12 @@ mod tests {
         processor.push_samples(&input);
         processor.process_frames();
 
-        let output = processor.pop_all_samples();
-        assert!(!output.is_empty(), "Should produce output");
+        let mut output = vec![0.0_f32; processor.available_samples()];
+        let output_len = processor.pop_samples_into(&mut output);
+        assert!(output_len > 0, "Should produce output");
 
         // Output should contain complete frames (1000 samples = 2 frames of 480 + 40 remaining)
-        assert_eq!(output.len(), 960); // Two complete frames
+        assert_eq!(output_len, 960); // Two complete frames
     }
 
     #[test]

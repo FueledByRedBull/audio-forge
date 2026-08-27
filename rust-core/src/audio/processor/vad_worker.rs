@@ -7,8 +7,8 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
 
     self.vad_worker_running.store(true, Ordering::Release);
     let running = Arc::clone(&self.vad_worker_running);
-    let probability = Arc::clone(&self.vad_probability);
-    let available = Arc::clone(&self.vad_available);
+    let probability = Arc::clone(&self.vad_raw_probability);
+    let available = Arc::clone(&self.vad_backend_available);
     let last_update_us = Arc::clone(&self.vad_last_update_us);
     let sample_rate = self.sample_rate;
     let threshold = self
@@ -45,12 +45,13 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
             }
 
             if !local.is_empty() {
-                match vad.process(&local) {
-                    Ok(prob) => {
+                match vad.process_latest(&local) {
+                    Ok(Some(prob)) => {
                         probability.store(prob.clamp(0.0, 1.0).to_bits(), Ordering::Release);
                         last_update_us.store(now_micros(), Ordering::Release);
                         available.store(true, Ordering::Release);
                     }
+                    Ok(None) => {}
                     Err(_) => {
                         available.store(false, Ordering::Release);
                     }
@@ -70,6 +71,8 @@ fn stop_vad_worker(&mut self) {
         let _ = handle.join();
     }
     self.vad_available.store(false, Ordering::Release);
+    self.vad_backend_available
+        .store(false, Ordering::Release);
     self.vad_last_update_us.store(0, Ordering::Release);
 }
 }

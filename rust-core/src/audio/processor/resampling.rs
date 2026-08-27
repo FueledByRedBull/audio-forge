@@ -78,43 +78,62 @@ fn total_reported_latency_us(components: LatencyComponents, compensation_us: u64
         .saturating_add(compensation_us)
 }
 
+#[derive(Default)]
+struct DriftRetimer {
+    next_source_position: f64,
+    previous_sample: Option<f32>,
+}
+
+impl DriftRetimer {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 fn retime_audio_block<'a, const N: usize>(
-    input: &'a [f32],
+    input: &[f32],
     speed_ratio: f32,
     max_output_len: usize,
     output: &'a mut FixedAudioBuffer<f32, N>,
+    state: &mut DriftRetimer,
 ) -> &'a [f32] {
     if input.is_empty() || max_output_len == 0 {
         output.clear();
         return output.as_slice();
     }
 
-    let clamped_ratio = speed_ratio.max(0.5);
-    let desired_len = ((input.len() as f32) / clamped_ratio).round().max(1.0) as usize;
-    let out_len = desired_len.min(max_output_len).min(output.capacity());
-    if out_len == input.len() {
-        return input;
-    }
-
+    let speed_ratio = speed_ratio.max(0.5) as f64;
+    let output_limit = max_output_len.min(output.capacity());
     output.clear();
-    if !output.set_len_zeroed(out_len) {
-        return output.as_slice();
+    loop {
+        let source_position = state.next_source_position;
+        let sample = if source_position < 0.0 {
+            let previous = state.previous_sample.unwrap_or(input[0]);
+            let fraction = (source_position + 1.0).clamp(0.0, 1.0) as f32;
+            previous + (input[0] - previous) * fraction
+        } else {
+            let index = source_position.floor() as usize;
+            if index >= input.len() {
+                break;
+            }
+            let fraction = (source_position - index as f64) as f32;
+            if fraction <= f32::EPSILON {
+                input[index]
+            } else if index + 1 < input.len() {
+                input[index] + (input[index + 1] - input[index]) * fraction
+            } else {
+                break;
+            }
+        };
+
+        if output.len() < output_limit {
+            let _ = output.push(sample);
+        }
+        state.next_source_position += speed_ratio;
     }
 
-    let max_src = (input.len() - 1) as f32;
-    for (i, out_sample) in output.as_mut_slice().iter_mut().enumerate() {
-        let src_pos = if out_len == 1 {
-            0.0
-        } else {
-            (i as f32 * clamped_ratio).min(max_src)
-        };
-        let idx0 = src_pos.floor() as usize;
-        let idx1 = (idx0 + 1).min(input.len() - 1);
-        let frac = src_pos - idx0 as f32;
-        let y0 = input[idx0];
-        let y1 = input[idx1];
-        *out_sample = y0 + (y1 - y0) * frac;
-    }
+    state.next_source_position -= input.len() as f64;
+    state.previous_sample = input.last().copied();
 
     output.as_slice()
 }

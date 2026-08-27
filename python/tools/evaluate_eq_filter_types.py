@@ -16,6 +16,8 @@ import numpy as np
 from mic_eq import (
     eq_magnitude_response,
     eq_magnitude_response_v2,
+)
+from mic_eq.mic_eq_core import (
     simulate_auto_eq_chain,
     simulate_eq_v2,
 )

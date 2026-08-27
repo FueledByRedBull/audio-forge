@@ -136,11 +136,6 @@ class Preset:
         payload["value_provenance"] = dict(sorted(provenance.items()))
         return payload
 
-    def mark_value_explicit(self, path: str) -> None:
-        if path not in _preset_value_paths(self.to_dict()):
-            raise ValueError(f"Unknown preset value path: {path}")
-        self.value_provenance[path] = _PROVENANCE_EXPLICIT
-
     @classmethod
     def from_dict(cls, data: dict) -> "Preset":
         try:
@@ -274,6 +269,7 @@ class Preset:
                 "1.11.0",
                 "1.11.1",
                 "1.11.2",
+                "1.11.3",
             ):
                 if version_tuple < _version_tuple(version):
                     data["version"] = version

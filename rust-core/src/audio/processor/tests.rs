@@ -47,7 +47,7 @@ mod tests {
     #[test]
     fn test_total_reported_latency_includes_limiter_lookahead_across_sample_rates() {
         for (sample_rate, expected_us) in
-            [(44_100_u32, 1_995_u64), (48_000, 2_000), (96_000, 2_000)]
+            [(44_100_u32, 498_u64), (48_000, 500), (96_000, 500)]
         {
             let limiter = Limiter::default_settings(sample_rate as f64);
             let lookahead_samples = limiter.lookahead_samples() as u64;
@@ -69,6 +69,47 @@ mod tests {
                 expected_us + samples_to_micros(20, sample_rate)
             );
         }
+    }
+
+    #[test]
+    fn test_limiter_control_updates_final_true_peak_release() {
+        let mut control = LimiterControlState::new();
+        control.release_ms = 10.0;
+        let mut final_limiter = TruePeakLimiter::default_settings(48_000.0);
+        let default_coefficient = final_limiter.release_coefficient();
+
+        apply_true_peak_limiter_control(&mut final_limiter, &control);
+
+        assert_ne!(final_limiter.release_coefficient(), default_coefficient);
+        let expected = TruePeakLimiter::new(48_000.0, -1.5, control.release_ms as f32);
+        assert_eq!(
+            final_limiter.release_coefficient(),
+            expected.release_coefficient()
+        );
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_worker_state_is_separate_from_dsp_meter_state() {
+        let processor = AudioProcessor::new();
+        processor
+            .vad_raw_probability
+            .store(0.9_f32.to_bits(), Ordering::Release);
+        processor
+            .vad_meter_probability
+            .store(0.4_f32.to_bits(), Ordering::Release);
+        processor
+            .vad_backend_available
+            .store(true, Ordering::Release);
+        processor.vad_available.store(false, Ordering::Release);
+
+        assert_eq!(
+            f32::from_bits(processor.vad_raw_probability.load(Ordering::Acquire)),
+            0.9
+        );
+        assert_eq!(processor.get_vad_probability(), 0.4);
+        assert!(processor.vad_backend_available.load(Ordering::Acquire));
+        assert!(!processor.is_vad_available());
     }
 
     #[test]
@@ -830,11 +871,13 @@ mod tests {
     fn test_retime_audio_block_can_expand_and_compress() {
         let input = [0.0_f32, 0.25, 0.5, 0.75, 1.0, 0.5];
         let mut scratch = FixedAudioBuffer::<f32, 32>::new();
+        let mut state = DriftRetimer::default();
 
-        let expanded = retime_audio_block(&input, 0.5, 32, &mut scratch);
+        let expanded = retime_audio_block(&input, 0.5, 32, &mut scratch, &mut state);
         assert!(expanded.len() > input.len());
 
-        let compressed = retime_audio_block(&input, 2.0, 32, &mut scratch);
+        state.reset();
+        let compressed = retime_audio_block(&input, 2.0, 32, &mut scratch, &mut state);
         assert!(compressed.len() < input.len());
     }
 
@@ -842,12 +885,51 @@ mod tests {
     fn test_retime_audio_block_linear_interpolation_does_not_overshoot_neighbors() {
         let input = [0.0_f32, 0.5, 1.0, 0.5, 0.0];
         let mut scratch = FixedAudioBuffer::<f32, 32>::new();
+        let mut state = DriftRetimer::default();
 
-        let expanded = retime_audio_block(&input, 0.7, 32, &mut scratch);
+        let expanded = retime_audio_block(&input, 0.7, 32, &mut scratch, &mut state);
 
         for sample in expanded {
             assert!((*sample >= 0.0) && (*sample <= 1.0));
         }
+    }
+
+    #[test]
+    fn test_retime_audio_block_is_chunk_invariant() {
+        let input = (0..257)
+            .map(|index| (index as f32 * 0.071).sin())
+            .collect::<Vec<_>>();
+        let mut whole_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut whole_state = DriftRetimer::default();
+        let whole = retime_audio_block(
+            &input,
+            1.008,
+            1024,
+            &mut whole_scratch,
+            &mut whole_state,
+        )
+        .to_vec();
+
+        let mut chunk_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut chunk_state = DriftRetimer::default();
+        let mut chunked = Vec::new();
+        for chunk in input.chunks(37) {
+            chunked.extend_from_slice(retime_audio_block(
+                chunk,
+                1.008,
+                1024,
+                &mut chunk_scratch,
+                &mut chunk_state,
+            ));
+        }
+
+        assert_eq!(chunked.len(), whole.len());
+        assert!(
+            chunked
+                .iter()
+                .zip(&whole)
+                .all(|(chunked, whole)| (chunked - whole).abs() < 1.0e-5)
+        );
     }
 
     fn warmed_meter_stats(buffer: &[f32]) -> MeterBlockStats {
@@ -1040,7 +1122,9 @@ mod tests {
         let mut scratch = FixedAudioBuffer::<f32, 96_000>::new();
 
         for (speed_ratio, max_error_db, max_fundamental_delta_db) in cases {
-            let linear = retime_audio_block(&input, speed_ratio, 96_000, &mut scratch).to_vec();
+            let mut state = DriftRetimer::default();
+            let linear =
+                retime_audio_block(&input, speed_ratio, 96_000, &mut scratch, &mut state).to_vec();
             let reference = sinc_reference_retime(&input, speed_ratio);
             let compare_len = linear.len().min(reference.len());
             let linear = &linear[..compare_len];
@@ -1142,6 +1226,116 @@ mod tests {
         }
     }
 
+    fn run_production_output_harness(input_rate: u32, release_ms: f32) -> (Vec<f32>, u64) {
+        const PREFILL: usize = 140;
+        let input_len = input_rate as usize / 4;
+        let source: Vec<f32> = (0..input_len)
+            .map(|index| if index < input_rate as usize / 100 { 1.0 } else { 0.2 })
+            .collect();
+        let product_output = if input_rate == TARGET_SAMPLE_RATE {
+            source
+        } else {
+            let (resampled, delay, expected, _) = simulate_product_resampler(
+                source.into_iter().map(f64::from).collect(),
+                input_rate,
+                TARGET_SAMPLE_RATE,
+                RESAMPLER_CHUNK_SIZE,
+                None,
+                None,
+            )
+            .unwrap();
+            resampled[delay..delay + expected]
+                .iter()
+                .map(|sample| *sample as f32)
+                .collect()
+        };
+
+        let rb = AudioRingBuffer::new(4096);
+        let (mut producer, mut consumer) = rb.split();
+        assert_eq!(producer.write(&[0.0; PREFILL]), PREFILL);
+        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut drift_error_ema = 0.0_f32;
+        let mut drift_retimer = DriftRetimer::default();
+        let fade_remaining = Cell::new(0usize);
+        let limiter_enabled = AtomicBool::new(true);
+        let output_ceiling_linear = Cell::new(0.5_f32);
+        let jitter_dropped_samples = AtomicU64::new(0);
+        let output_retime_adjustment_count = AtomicU64::new(0);
+        let output_recovery_event_count = AtomicU64::new(0);
+        let output_short_write_dropped_samples = AtomicU64::new(0);
+        let rt_buffer_overflow_count = AtomicU64::new(0);
+        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+        let output_buffer_len = AtomicU32::new(PREFILL as u32);
+        let last_output_write_time = AtomicU64::new(0);
+        let mut true_peak_detector = TruePeakDetector::new();
+        let mut true_peak_limiter = TruePeakLimiter::default_settings(TARGET_SAMPLE_RATE as f32);
+        true_peak_limiter.set_release_ms(release_ms);
+        let mut writer = OutputWriteContext {
+            output_producer: &mut producer,
+            output_queue_control_scratch: &mut control_scratch,
+            discontinuity_fade_scratch: &mut fade_scratch,
+            output_safety_scratch: &mut safety_scratch,
+            true_peak_detector: &mut true_peak_detector,
+            true_peak_limiter: &mut true_peak_limiter,
+            drift_error_ema: &mut drift_error_ema,
+            drift_retimer: &mut drift_retimer,
+            discontinuity_fade_remaining: &fade_remaining,
+            limiter_enabled: &limiter_enabled,
+            output_ceiling_linear: &output_ceiling_linear,
+            counters: output_writer_counters(
+                (
+                    &jitter_dropped_samples,
+                    &output_retime_adjustment_count,
+                    &output_recovery_event_count,
+                ),
+                &output_short_write_dropped_samples,
+                &rt_buffer_overflow_count,
+                &rt_error_code,
+                &output_buffer_len,
+                &last_output_write_time,
+            ),
+            limits: test_output_writer_limits(128, 256, 4),
+        };
+
+        let mut rendered = Vec::with_capacity(product_output.len());
+        let mut drained = [0.0_f32; 4096];
+        for chunk in product_output.chunks(137) {
+            assert!(writer.write_chunk(chunk, false));
+            let read = consumer.read(&mut drained);
+            assert!(read >= PREFILL);
+            rendered.extend_from_slice(&drained[PREFILL..read]);
+            assert_eq!(writer.output_producer.write(&[0.0; PREFILL]), PREFILL);
+        }
+
+        assert_eq!(
+            output_short_write_dropped_samples.load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
+        (
+            rendered,
+            output_retime_adjustment_count.load(Ordering::Relaxed),
+        )
+    }
+
+    #[test]
+    fn production_output_harness_covers_resampling_retiming_and_limiter_release() {
+        for input_rate in [44_100, TARGET_SAMPLE_RATE] {
+            let (rendered, retime_adjustments) =
+                run_production_output_harness(input_rate, 50.0);
+            assert!(rendered.iter().all(|sample| sample.is_finite()));
+            assert!(rendered.iter().all(|sample| sample.abs() <= 0.500_001));
+            assert!(retime_adjustments > 0);
+        }
+
+        let (fast_release, _) = run_production_output_harness(TARGET_SAMPLE_RATE, 5.0);
+        let (slow_release, _) = run_production_output_harness(TARGET_SAMPLE_RATE, 500.0);
+        let probe = fast_release.len().min(slow_release.len()) * 3 / 4;
+        assert!(fast_release[probe].abs() > slow_release[probe].abs() + 0.04);
+    }
+
     #[test]
     fn test_output_writer_noop_write_returns_false() {
         let rb = AudioRingBuffer::new(32);
@@ -1150,6 +1344,7 @@ mod tests {
         let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
         let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
         let mut drift_error_ema = 0.0_f32;
+        let mut drift_retimer = DriftRetimer::default();
         let fade_remaining = Cell::new(0usize);
         let limiter_enabled = AtomicBool::new(true);
         let output_ceiling_linear = Cell::new(1.0_f32);
@@ -1172,6 +1367,7 @@ mod tests {
             true_peak_detector: &mut true_peak_detector,
             true_peak_limiter: &mut true_peak_limiter,
             drift_error_ema: &mut drift_error_ema,
+            drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
@@ -1204,6 +1400,7 @@ mod tests {
         let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
         let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
         let mut drift_error_ema = 0.0_f32;
+        let mut drift_retimer = DriftRetimer::default();
         let fade_remaining = Cell::new(0usize);
         let limiter_enabled = AtomicBool::new(true);
         let output_ceiling_linear = Cell::new(1.0_f32);
@@ -1226,6 +1423,7 @@ mod tests {
             true_peak_detector: &mut true_peak_detector,
             true_peak_limiter: &mut true_peak_limiter,
             drift_error_ema: &mut drift_error_ema,
+            drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
@@ -1244,7 +1442,7 @@ mod tests {
             limits: test_output_writer_limits(2, 4, 4),
         };
 
-        assert!(writer.write_chunk(&[0.1, 0.2, 0.3, 0.4], false));
+        assert!(writer.write_chunk(&[0.1, 0.2, 0.3, 0.4], true));
 
         assert_eq!(
             output_short_write_dropped_samples.load(Ordering::Relaxed),
@@ -1269,6 +1467,7 @@ mod tests {
         let mut expand_fade_scratch = FixedAudioBuffer::<f32, 512>::new();
         let mut expand_safety_scratch = FixedAudioBuffer::<f32, 512>::new();
         let mut expand_drift_error_ema = -10_000.0_f32;
+        let mut expand_drift_retimer = DriftRetimer::default();
         let expand_fade_remaining = Cell::new(0usize);
         let limiter_enabled = AtomicBool::new(false);
         let output_ceiling_linear = Cell::new(1.0_f32);
@@ -1290,6 +1489,7 @@ mod tests {
             true_peak_detector: &mut expand_true_peak_detector,
             true_peak_limiter: &mut expand_true_peak_limiter,
             drift_error_ema: &mut expand_drift_error_ema,
+            drift_retimer: &mut expand_drift_retimer,
             discontinuity_fade_remaining: &expand_fade_remaining,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
@@ -1328,6 +1528,7 @@ mod tests {
         let mut compress_fade_scratch = FixedAudioBuffer::<f32, 512>::new();
         let mut compress_safety_scratch = FixedAudioBuffer::<f32, 512>::new();
         let mut compress_drift_error_ema = 10_000.0_f32;
+        let mut compress_drift_retimer = DriftRetimer::default();
         let compress_fade_remaining = Cell::new(0usize);
         let compress_jitter_dropped_samples = AtomicU64::new(0);
         let compress_output_retime_adjustment_count = AtomicU64::new(0);
@@ -1347,6 +1548,7 @@ mod tests {
             true_peak_detector: &mut compress_true_peak_detector,
             true_peak_limiter: &mut compress_true_peak_limiter,
             drift_error_ema: &mut compress_drift_error_ema,
+            drift_retimer: &mut compress_drift_retimer,
             discontinuity_fade_remaining: &compress_fade_remaining,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
@@ -1390,6 +1592,7 @@ mod tests {
         let mut fade_scratch = FixedAudioBuffer::<f32, 64>::new();
         let mut safety_scratch = FixedAudioBuffer::<f32, 64>::new();
         let mut drift_error_ema = 0.0_f32;
+        let mut drift_retimer = DriftRetimer::default();
         let fade_remaining = Cell::new(0usize);
         let limiter_enabled = AtomicBool::new(false);
         let output_ceiling_linear = Cell::new(1.0_f32);
@@ -1411,6 +1614,7 @@ mod tests {
             true_peak_detector: &mut true_peak_detector,
             true_peak_limiter: &mut true_peak_limiter,
             drift_error_ema: &mut drift_error_ema,
+            drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
@@ -1452,6 +1656,7 @@ mod tests {
         let mut fade_scratch = FixedAudioBuffer::<f32, 32>::new();
         let mut safety_scratch = FixedAudioBuffer::<f32, 32>::new();
         let mut drift_error_ema = 0.0_f32;
+        let mut drift_retimer = DriftRetimer::default();
         let fade_remaining = Cell::new(0usize);
         let limiter_enabled = AtomicBool::new(true);
         let output_ceiling_linear = Cell::new(0.5_f32);
@@ -1473,6 +1678,7 @@ mod tests {
             true_peak_detector: &mut true_peak_detector,
             true_peak_limiter: &mut true_peak_limiter,
             drift_error_ema: &mut drift_error_ema,
+            drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
@@ -1508,6 +1714,7 @@ mod tests {
         let mut safety_scratch = FixedAudioBuffer::<f32, 32>::new();
         let mut true_peak_detector = TruePeakDetector::new();
         let mut drift_error_ema = 0.0_f32;
+        let mut drift_retimer = DriftRetimer::default();
         let fade_remaining = Cell::new(0usize);
         let limiter_enabled = AtomicBool::new(true);
         let output_ceiling_linear = Cell::new(1.0_f32);
@@ -1536,6 +1743,7 @@ mod tests {
             true_peak_detector: &mut true_peak_detector,
             true_peak_limiter: &mut true_peak_limiter,
             drift_error_ema: &mut drift_error_ema,
+            drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
@@ -1665,10 +1873,23 @@ mod tests {
         });
 
         let mut scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut retime_state = DriftRetimer::default();
         let retime_input = [0.1_f32; 256];
-        let _ = retime_audio_block(&retime_input, 0.98, 512, &mut scratch);
+        let _ = retime_audio_block(
+            &retime_input,
+            0.98,
+            512,
+            &mut scratch,
+            &mut retime_state,
+        );
         crate::test_alloc::assert_no_allocations("retime block", || {
-            let output = retime_audio_block(&retime_input, 0.98, 512, &mut scratch);
+            let output = retime_audio_block(
+                &retime_input,
+                0.98,
+                512,
+                &mut scratch,
+                &mut retime_state,
+            );
             assert!(!output.is_empty());
         });
 
@@ -1870,14 +2091,14 @@ mod tests {
         }
 
         let rms = (square_sum / sample_count as f64).sqrt();
-        assert!((rms - 0.185_715_270_552).abs() <= 1.0e-6);
-        assert!((peak - 0.500_814_14).abs() <= 2.0e-6);
-        assert!((weighted_sum - (-4_246.481_547_342)).abs() <= 0.05);
+        assert!((rms - 0.186_373_597_569).abs() <= 1.0e-6);
+        assert!((peak - 0.500_791_97).abs() <= 2.0e-6);
+        assert!((weighted_sum - 8_009.884_380_498).abs() <= 0.05);
         assert!((max_compressor_gr - 8.687_991).abs() <= 0.001);
         assert!((max_deesser_gr - 10.0).abs() <= 0.001);
         assert!((max_limiter_gr - 4.348_602).abs() <= 0.001);
         assert!((20..=24).contains(&limited_events));
-        let expected = [-0.038_492_45, 0.185_469_2, 0.200_082_9, -0.093_881_376];
+        let expected = [-0.123_054_266, 0.113_739_1, 0.093_703_43, 0.023_518_747];
         assert_eq!(checkpoints.len(), expected.len());
         for (actual, expected) in checkpoints.into_iter().zip(expected) {
             assert!((actual - expected).abs() <= 2.0e-5);

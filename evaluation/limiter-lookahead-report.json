@@ -6,13 +6,13 @@
         "cases": 15,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
         "median_gain_envelope_variation_db": 3.5260893797049615,
-        "median_runtime_ms": 137.1618,
+        "median_runtime_ms": 144.50560000000002,
         "median_transient_shape_error_db": -42.38433618920259,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -35.76311657894777,
-        "p95_runtime_ms": 200.2121159999999,
-        "p95_runtime_realtime_factor": 0.04310515034279741,
+        "p95_runtime_ms": 175.91443599999994,
+        "p95_runtime_realtime_factor": 0.0486332618914584,
         "total_true_peak_limited_events": 20,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -21,14 +21,14 @@
         "all_finite": true,
         "cases": 3,
         "max_true_peak_limiter_gain_reduction_db": 0.5307239890098572,
-        "median_gain_envelope_variation_db": 1.3906075587952735,
-        "median_runtime_ms": 141.3055,
+        "median_gain_envelope_variation_db": 1.3905135570099076,
+        "median_runtime_ms": 143.8237,
         "median_transient_shape_error_db": -44.837684744690314,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -25.537891219961008,
-        "p95_runtime_ms": 148.502211,
-        "p95_runtime_realtime_factor": 0.0359503225,
+        "p95_runtime_ms": 149.117657,
+        "p95_runtime_realtime_factor": 0.03608754960544671,
         "total_true_peak_limited_events": 1,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.5220339298248291
@@ -37,14 +37,14 @@
         "all_finite": true,
         "cases": 12,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
-        "median_gain_envelope_variation_db": 3.6098187515824542,
-        "median_runtime_ms": 135.54155000000003,
+        "median_gain_envelope_variation_db": 3.609503536007529,
+        "median_runtime_ms": 146.24644999999998,
         "median_transient_shape_error_db": -42.09723767171563,
         "minimum_main_peak_gain_reduction_db": 2.999488353729248,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -37.09183834261715,
-        "p95_runtime_ms": 211.0729139999999,
-        "p95_runtime_realtime_factor": 0.045445906723567776,
+        "p95_runtime_ms": 182.33257899999995,
+        "p95_runtime_realtime_factor": 0.04942557794100137,
         "total_true_peak_limited_events": 19,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -56,13 +56,13 @@
         "cases": 15,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
         "median_gain_envelope_variation_db": 3.5221693462282313,
-        "median_runtime_ms": 133.6845,
+        "median_runtime_ms": 144.4196,
         "median_transient_shape_error_db": -42.38433636662107,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -35.75890893538358,
-        "p95_runtime_ms": 169.100246,
-        "p95_runtime_realtime_factor": 0.03807842193955508,
+        "p95_runtime_ms": 238.28990099999984,
+        "p95_runtime_realtime_factor": 0.04981087652408984,
         "total_true_peak_limited_events": 18,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -71,14 +71,14 @@
         "all_finite": true,
         "cases": 3,
         "max_true_peak_limiter_gain_reduction_db": 0.5307239890098572,
-        "median_gain_envelope_variation_db": 1.3907007605410124,
-        "median_runtime_ms": 142.7315,
+        "median_gain_envelope_variation_db": 1.3905135570099076,
+        "median_runtime_ms": 140.72490000000002,
         "median_transient_shape_error_db": -44.837684744690314,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -26.614800451807007,
-        "p95_runtime_ms": 149.69628,
-        "p95_runtime_realtime_factor": 0.0362684825,
+        "p95_runtime_ms": 149.521707,
+        "p95_runtime_realtime_factor": 0.036214527889400154,
         "total_true_peak_limited_events": 1,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.5220339298248291
@@ -87,14 +87,14 @@
         "all_finite": true,
         "cases": 12,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
-        "median_gain_envelope_variation_db": 3.610850239566609,
-        "median_runtime_ms": 132.03795000000002,
+        "median_gain_envelope_variation_db": 3.6105349773204365,
+        "median_runtime_ms": 145.01635,
         "median_transient_shape_error_db": -42.106053636775115,
         "minimum_main_peak_gain_reduction_db": 2.999488353729248,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -37.09076405730925,
-        "p95_runtime_ms": 170.561714,
-        "p95_runtime_realtime_factor": 0.038690559982259703,
+        "p95_runtime_ms": 258.9386564999999,
+        "p95_runtime_realtime_factor": 0.05023611422344499,
         "total_true_peak_limited_events": 17,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -106,13 +106,13 @@
         "cases": 15,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
         "median_gain_envelope_variation_db": 3.5183596809648887,
-        "median_runtime_ms": 130.5591,
+        "median_runtime_ms": 138.76260000000002,
         "median_transient_shape_error_db": -42.3843358722997,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -35.86649468163838,
-        "p95_runtime_ms": 167.788243,
-        "p95_runtime_realtime_factor": 0.0382778414141943,
+        "p95_runtime_ms": 228.1408459999999,
+        "p95_runtime_realtime_factor": 0.047271704704015,
         "total_true_peak_limited_events": 18,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -121,14 +121,14 @@
         "all_finite": true,
         "cases": 3,
         "max_true_peak_limiter_gain_reduction_db": 0.5307239890098572,
-        "median_gain_envelope_variation_db": 1.3907917598661823,
-        "median_runtime_ms": 140.9111,
+        "median_gain_envelope_variation_db": 1.3905135570099076,
+        "median_runtime_ms": 138.6579,
         "median_transient_shape_error_db": -44.837684744690314,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -27.740017908805214,
-        "p95_runtime_ms": 152.85891599999997,
-        "p95_runtime_realtime_factor": 0.035696765,
+        "p95_runtime_ms": 156.15497499999998,
+        "p95_runtime_realtime_factor": 0.035653341939245034,
         "total_true_peak_limited_events": 1,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.5220339298248291
@@ -137,14 +137,14 @@
         "all_finite": true,
         "cases": 12,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
-        "median_gain_envelope_variation_db": 3.612571525068754,
-        "median_runtime_ms": 127.93925,
+        "median_gain_envelope_variation_db": 3.61193904150773,
+        "median_runtime_ms": 142.25435,
         "median_transient_shape_error_db": -42.12350305837935,
         "minimum_main_peak_gain_reduction_db": 2.999488353729248,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -37.34803242739015,
-        "p95_runtime_ms": 170.3564845,
-        "p95_runtime_realtime_factor": 0.038580548413046485,
+        "p95_runtime_ms": 246.06073399999994,
+        "p95_runtime_realtime_factor": 0.047321986427314174,
         "total_true_peak_limited_events": 17,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -155,7 +155,7 @@
   "candidate_checks": {
     "0.5": {
       "checks": {
-        "downstream_true_peak_event_regression_at_most_1": false,
+        "downstream_true_peak_event_regression_at_most_1_per_case": true,
         "downstream_true_peak_gr_regression_at_most_0_10_db": true,
         "finite_output": true,
         "gain_envelope_variation_regression_at_most_0_25_db": true,
@@ -167,11 +167,16 @@
         "real_speech_exercises_main_limiter_within_0_10_db": true,
         "real_transient_shape_p90_regression_at_most_1_db": true
       },
-      "objective_passes": false
+      "objective_passes": true,
+      "paired_event_deltas": {
+        "increased_case_count": 2,
+        "maximum": 1,
+        "sum": 2
+      }
     },
     "1.0": {
       "checks": {
-        "downstream_true_peak_event_regression_at_most_1": true,
+        "downstream_true_peak_event_regression_at_most_1_per_case": true,
         "downstream_true_peak_gr_regression_at_most_0_10_db": true,
         "finite_output": true,
         "gain_envelope_variation_regression_at_most_0_25_db": true,
@@ -183,7 +188,12 @@
         "real_speech_exercises_main_limiter_within_0_10_db": true,
         "real_transient_shape_p90_regression_at_most_1_db": true
       },
-      "objective_passes": false
+      "objective_passes": false,
+      "paired_event_deltas": {
+        "increased_case_count": 0,
+        "maximum": 0,
+        "sum": 0
+      }
     }
   },
   "configuration": {
@@ -223,7 +233,7 @@
         "controlled-impulses",
         "controlled-sine-bursts"
       ],
-      "generator_sha256": "88851641f6bfd42836544ead1f7df6b292255f0136ccecd24c5f22eb27ea0c8f"
+      "generator_sha256": "08fdba9a64d62298fb925d43e6b09b4f1ef2e085caba2b31298d54b60609e32d"
     },
     "real_speech": {
       "case_count": 12,
@@ -235,13 +245,17 @@
       "selection": "Twelve unique speakers across the frozen split, alternating fixed statements/deliveries and source takes before metrics are viewed."
     }
   },
-  "decision": "retain_2ms",
+  "decision": "adopt_0.5ms",
   "environment": {
     "platform": "Windows-11-10.0.26200-SP0",
     "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
   },
   "evaluation_contract": {
     "asset_hashes": {
+      "native_extension": {
+        "path": "python/mic_eq/mic_eq_core.cp312-win_amd64.pyd",
+        "sha256": "fa21c980eb15e902950d93b20b26943b6c0dfc804d07b4612f041d0f6ec8e621"
+      },
       "real_case_source_sha256": [
         "099f330317e03d0d97c9a9e572863d9db3f514d7c28bd2b4f050c5bddabaae04",
         "0cc836606d00aa0a8650050cdee26a062e1df2c899e036f130cd29b705d4bab6",
@@ -259,10 +273,10 @@
       "real_manifest": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc",
       "source": {
         "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-        "python/tools/evaluate_limiter_lookahead.py": "88851641f6bfd42836544ead1f7df6b292255f0136ccecd24c5f22eb27ea0c8f",
-        "rust-core/src/audio/processor/python_api.rs": "3ad0f1f26686b63d48dfaf6d743371478ff857825dc2d5eb4661451c4a394482",
-        "rust-core/src/dsp/limiter.rs": "73108d34af1c05ed1d88025f3c251c312af165918adccc175e40c73a0c34eeb0",
-        "rust-core/src/dsp/true_peak.rs": "002d0d9e7e29482678617332cb7ba50f8617c582167b9f01fb717261e372a45e"
+        "python/tools/evaluate_limiter_lookahead.py": "08fdba9a64d62298fb925d43e6b09b4f1ef2e085caba2b31298d54b60609e32d",
+        "rust-core/src/audio/processor/python_api.rs": "7071ff86b21247b04d040115567cdc50b5d10e1b09e04b70ae5912af5199abd5",
+        "rust-core/src/dsp/limiter.rs": "e7e7df92b682c3f8b8a56f8ba66263d2a29822ba4b206c670a3ac76b6cdb7285",
+        "rust-core/src/dsp/true_peak.rs": "945631c2b249c354c29cd9bde5b2c624ecbede1f737435347ae8315bb30b7354"
       }
     },
     "clean_preservation": {
@@ -270,7 +284,7 @@
       "candidate_checks": {
         "0.5": {
           "checks": {
-            "downstream_true_peak_event_regression_at_most_1": false,
+            "downstream_true_peak_event_regression_at_most_1_per_case": true,
             "downstream_true_peak_gr_regression_at_most_0_10_db": true,
             "finite_output": true,
             "gain_envelope_variation_regression_at_most_0_25_db": true,
@@ -282,11 +296,16 @@
             "real_speech_exercises_main_limiter_within_0_10_db": true,
             "real_transient_shape_p90_regression_at_most_1_db": true
           },
-          "objective_passes": false
+          "objective_passes": true,
+          "paired_event_deltas": {
+            "increased_case_count": 2,
+            "maximum": 1,
+            "sum": 2
+          }
         },
         "1.0": {
           "checks": {
-            "downstream_true_peak_event_regression_at_most_1": true,
+            "downstream_true_peak_event_regression_at_most_1_per_case": true,
             "downstream_true_peak_gr_regression_at_most_0_10_db": true,
             "finite_output": true,
             "gain_envelope_variation_regression_at_most_0_25_db": true,
@@ -298,7 +317,12 @@
             "real_speech_exercises_main_limiter_within_0_10_db": true,
             "real_transient_shape_p90_regression_at_most_1_db": true
           },
-          "objective_passes": false
+          "objective_passes": false,
+          "paired_event_deltas": {
+            "increased_case_count": 0,
+            "maximum": 0,
+            "sum": 0
+          }
         }
       },
       "incumbent_real_transient_shape_p90_db": -37.34803242739015
@@ -333,6 +357,7 @@
     },
     "latency": {
       "downstream_true_peak_delay_samples": 20,
+      "flush_samples": 116,
       "lookahead_samples": {
         "0.5": 24,
         "1.0": 48,
@@ -340,21 +365,22 @@
       }
     },
     "runtime": {
-      "candidate_p95_realtime_factor": 0.04310515034279741,
+      "candidate_p95_realtime_factor": 0.04981087652408984,
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native simulator reports whole-render timing; seven timed renders plus warmup are recorded instead of callback P99.",
       "platform": "Windows-11-10.0.26200-SP0"
     }
   },
-  "generated_at_utc": "2026-08-02T13:55:42.031910+00:00",
+  "generated_at_utc": "2026-08-27T22:18:49.595028+00:00",
   "limitations": [
     "Real speech receives one recorded static gain, calibrated through the protected chain to 3 dB of main-limiter gain reduction; the source waveform is otherwise unchanged.",
     "Transient shape error removes one local static gain and is not a perceptual score.",
+    "True-peak event counts are block-activation diagnostics; the gate compares paired cases and does not claim audibility.",
     "A shorter candidate must pass every safety/quality gate and save at least 1.5 ms; a smaller latency change is not material against the measured product path."
   ],
-  "objective_candidate_lookahead_ms": null,
+  "objective_candidate_lookahead_ms": 0.5,
   "predefined_gates": {
-    "downstream_true_peak_event_regression_max": 1,
+    "downstream_true_peak_event_regression_per_case_max": 1,
     "downstream_true_peak_gr_regression_db_max": 0.1,
     "finite_output_required": true,
     "gain_envelope_variation_regression_db_max": 0.25,
@@ -367,13 +393,13 @@
     "real_main_limiter_gain_reduction_tolerance_db": 0.1,
     "real_transient_shape_p90_regression_db_max": 1.0
   },
-  "schema_version": 4,
-  "selected_lookahead_ms": 2.0,
+  "schema_version": 5,
+  "selected_lookahead_ms": 0.5,
   "source_sha256": {
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-    "python/tools/evaluate_limiter_lookahead.py": "88851641f6bfd42836544ead1f7df6b292255f0136ccecd24c5f22eb27ea0c8f",
-    "rust-core/src/audio/processor/python_api.rs": "3ad0f1f26686b63d48dfaf6d743371478ff857825dc2d5eb4661451c4a394482",
-    "rust-core/src/dsp/limiter.rs": "73108d34af1c05ed1d88025f3c251c312af165918adccc175e40c73a0c34eeb0",
-    "rust-core/src/dsp/true_peak.rs": "002d0d9e7e29482678617332cb7ba50f8617c582167b9f01fb717261e372a45e"
+    "python/tools/evaluate_limiter_lookahead.py": "08fdba9a64d62298fb925d43e6b09b4f1ef2e085caba2b31298d54b60609e32d",
+    "rust-core/src/audio/processor/python_api.rs": "7071ff86b21247b04d040115567cdc50b5d10e1b09e04b70ae5912af5199abd5",
+    "rust-core/src/dsp/limiter.rs": "e7e7df92b682c3f8b8a56f8ba66263d2a29822ba4b206c670a3ac76b6cdb7285",
+    "rust-core/src/dsp/true_peak.rs": "945631c2b249c354c29cd9bde5b2c624ecbede1f737435347ae8315bb30b7354"
   }
 }

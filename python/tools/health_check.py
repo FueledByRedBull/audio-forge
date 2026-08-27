@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import sys
 import time
 from pathlib import Path
@@ -68,6 +70,37 @@ def _critical_diagnostic_failures(
     return failures
 
 
+def _selected_noise_model_failures(
+    diagnostics: dict, *, expected_model: str | None
+) -> list[str]:
+    if expected_model is None:
+        return []
+    failures: list[str] = []
+    if diagnostics.get("noise_model") != expected_model:
+        failures.append(f"noise_model={diagnostics.get('noise_model')!r}")
+    if expected_model == "deepfilter":
+        if diagnostics.get("suppressor_latency_samples") != 1_440:
+            failures.append(
+                "suppressor_latency_samples="
+                f"{diagnostics.get('suppressor_latency_samples')!r}"
+            )
+        inference_frames = diagnostics.get("suppressor_successful_inference_frames")
+        if (
+            not isinstance(inference_frames, (int, float))
+            or not math.isfinite(float(inference_frames))
+            or float(inference_frames) <= 0
+        ):
+            failures.append("suppressor_successful_inference_frames=0")
+        output_true_peak_db = diagnostics.get("output_true_peak_db")
+        if (
+            not isinstance(output_true_peak_db, (int, float))
+            or not math.isfinite(float(output_true_peak_db))
+            or float(output_true_peak_db) <= -119.0
+        ):
+            failures.append(f"output_true_peak_db={output_true_peak_db!r}")
+    return failures
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="AudioForge headless health check.")
     parser.add_argument(
@@ -110,8 +143,15 @@ def main() -> int:
         type=Path,
         help="load the native runtime and model assets from this extracted bundle",
     )
+    parser.add_argument(
+        "--noise-model",
+        choices=("rnnoise", "deepfilter-ll", "deepfilter"),
+        help="require this suppressor model for the sustained run",
+    )
     args = parser.parse_args()
 
+    if args.noise_model in {"deepfilter-ll", "deepfilter"}:
+        os.environ["AUDIOFORGE_ENABLE_DEEPFILTER"] = "1"
     if args.bundle_root is None:
         from mic_eq import AudioProcessor
 
@@ -122,6 +162,11 @@ def main() -> int:
         processor_class = load_bundled_core(args.bundle_root).AudioProcessor
     processor = processor_class()
     try:
+        if args.noise_model is not None and not processor.set_noise_model(
+            args.noise_model
+        ):
+            print(f"Health check failed: cannot select {args.noise_model}.")
+            return 8
         result = processor.start(args.input_device, args.output_device)
         print(f"Started processor: {result}")
 
@@ -236,6 +281,12 @@ def main() -> int:
         diagnostic_failures = _critical_diagnostic_failures(
             diagnostics,
             output_underrun_baseline=output_underrun_baseline,
+        )
+        diagnostic_failures.extend(
+            _selected_noise_model_failures(
+                diagnostics,
+                expected_model=args.noise_model,
+            )
         )
         if diagnostic_failures:
             print(

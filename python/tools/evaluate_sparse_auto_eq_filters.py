@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import math
 import platform
+import sys
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -17,8 +17,8 @@ from release_provenance import sha256_file as _sha256
 
 import numpy as np
 
-from mic_eq import (
-    eq_magnitude_response_v2,
+from mic_eq import eq_magnitude_response_v2
+from mic_eq.mic_eq_core import (
     simulate_auto_eq_chain,
     simulate_eq_v2,
 )
@@ -74,12 +74,12 @@ class AnalysisView:
     weights: np.ndarray
 
 
-def _source_sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-
-
 def _relative(path: Path) -> str:
-    return path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        return resolved.as_posix()
 
 
 def _read_mono(path: Path) -> tuple[int, np.ndarray]:
@@ -132,6 +132,12 @@ def _grouped_cases(
         for pair in sorted(pairs, key=lambda item: str(item["delivery"])):
             first_path = corpus_root / pair["takes"]["01"]["path"]
             second_path = corpus_root / pair["takes"]["02"]["path"]
+            for path, take in (
+                (first_path, pair["takes"]["01"]),
+                (second_path, pair["takes"]["02"]),
+            ):
+                if _sha256(path) != str(take["sha256"]):
+                    raise ValueError(f"source hash mismatch: {path.name}")
             first_rate, first_part = _read_mono(first_path)
             second_rate, second_part = _read_mono(second_path)
             if first_rate != SAMPLE_RATE or second_rate != SAMPLE_RATE:
@@ -635,6 +641,13 @@ def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
             }
         ),
         "selected_filter_type_counts": dict(sorted(type_counts.items())),
+        "vad_backends": sorted(
+            {
+                str(backend)
+                for row in rows
+                for backend in row["vad_backends"]
+            }
+        ),
     }
 
 
@@ -672,6 +685,7 @@ def _gate(aggregate: dict[str, Any]) -> dict[str, bool]:
         <= GATES["max_candidate_p95_realtime_factor"],
         "zero_added_latency": aggregate["latency_samples"] == [0],
         "native_constraints": bool(aggregate["native_constraints_valid"]),
+        "silero_vad": aggregate["vad_backends"] == ["silero"],
     }
 
 
@@ -680,14 +694,24 @@ def _source_hashes() -> dict[str, str]:
         "python/tools/evaluate_sparse_auto_eq_filters.py",
         "python/mic_eq/analysis/wav_io.py",
         "python/mic_eq/analysis/auto_eq_parts/optimizer.py",
+        "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py",
         "python/mic_eq/analysis/auto_eq_parts/target.py",
+        "python/mic_eq/analysis/spectrum.py",
+        "python/mic_eq/analysis/vad.py",
         "rust-core/src/dsp/eq.rs",
         "rust-core/src/audio/processor/python_api.rs",
+        "rust-core/src/lib.rs",
     )
-    return {path: _source_sha256(REPO_ROOT / path) for path in paths}
+    return {path: _sha256(REPO_ROOT / path) for path in paths}
 
 
 def evaluate(corpus_root: Path) -> dict[str, Any]:
+    native_file = sys.modules[simulate_eq_v2.__module__].__file__
+    if native_file is None:
+        raise RuntimeError("native extension has no filesystem path")
+    native_path = Path(native_file).resolve(strict=True)
+    if native_path.suffix.lower() != ".pyd":
+        raise RuntimeError("evaluation requires the loaded native extension")
     corpus_root = corpus_root.resolve(strict=True)
     cases, manifest = _grouped_cases(corpus_root)
     rows: list[dict[str, Any]] = []
@@ -710,7 +734,7 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
     source_hashes = _source_hashes()
     manifest_path = corpus_root / "manifest.json"
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "audible_change": True,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "experiment": "Sparse and typed Auto-EQ selection against the incumbent",
@@ -761,6 +785,10 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
                 "corpus_manifest": _sha256(manifest_path),
                 "source": source_hashes,
                 "dataset_archive": str(manifest["archive"]["sha256"]),
+                "native_extension": {
+                    "path": _relative(native_path),
+                    "sha256": _sha256(native_path),
+                },
             },
             "runtime": {
                 "measurement": "native whole-clip simulator, warm plus five repeats",

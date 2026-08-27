@@ -6,6 +6,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import numpy as np
 
 TOOL_PATH = Path(__file__).parents[1] / "tools" / "evaluate_eq_candidate_pool.py"
 SPEC = importlib.util.spec_from_file_location("evaluate_eq_candidate_pool", TOOL_PATH)
@@ -46,3 +47,23 @@ def test_no_fixed_variant_pass_keeps_incumbent() -> None:
     }
 
     assert TOOL._select_fixed_variant(variants) is None
+
+
+def test_candidate_pools_contain_incumbent_and_are_nested() -> None:
+    frequencies = np.geomspace(20.0, 20_000.0, 1000)
+    residual = 4.0 * np.sin(np.log(frequencies / 100.0))
+    weights = np.ones_like(frequencies)
+    pools = []
+
+    for size in TOOL.POOL_SIZES:
+        audit = []
+        centers, _qs = TOOL._candidate_pool_selector(size, audit)(
+            frequencies,
+            residual,
+            weights,
+        )
+        assert centers.size == TOOL.NUM_EQ_BANDS
+        assert audit[-1]["baseline_contained"] is True
+        pools.append(set(audit[-1]["pool_centers_hz"]))
+
+    assert pools[0] <= pools[1] <= pools[2]

@@ -312,6 +312,11 @@ impl TruePeakLimiter {
         ) as f32;
     }
 
+    #[cfg(test)]
+    pub(crate) fn release_coefficient(&self) -> f32 {
+        self.release_coeff
+    }
+
     pub fn current_gain_reduction_db(&self) -> f32 {
         if self.gain_reduction >= 1.0 {
             0.0

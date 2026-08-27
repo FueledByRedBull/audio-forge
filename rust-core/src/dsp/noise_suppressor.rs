@@ -64,22 +64,6 @@ impl NoiseModel {
             _ => None,
         }
     }
-
-    /// Get all available models
-    pub fn available() -> Vec<NoiseModel> {
-        #[cfg_attr(not(feature = "deepfilter"), allow(unused_mut))]
-        let mut models = vec![NoiseModel::RNNoise];
-        #[cfg(feature = "deepfilter")]
-        {
-            // DeepFilter uses upstream C FFI and can hard-crash on some systems.
-            // Keep it opt-in so RNNoise remains the safe default.
-            if deepfilter_experimental_enabled() {
-                models.push(NoiseModel::DeepFilterNetLL);
-                models.push(NoiseModel::DeepFilterNet);
-            }
-        }
-        models
-    }
 }
 
 /// Common interface for noise suppression models
@@ -101,22 +85,10 @@ pub trait NoiseSuppressor: Send {
     /// Get available output samples count
     fn available_samples(&self) -> usize;
 
-    /// Pop processed samples from output buffer.
-    ///
-    /// Non-RT convenience API: this allocates the returned `Vec`. CPAL
-    /// callbacks and the DSP processing loop must use `pop_samples_into`.
-    fn pop_samples(&mut self, count: usize) -> Vec<f32>;
-
     /// Pop processed samples into caller-provided buffer.
     ///
     /// Returns the number of samples written into `buffer`.
     fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize;
-
-    /// Pop all available samples from output buffer.
-    ///
-    /// Non-RT convenience API: this allocates the returned `Vec`. CPAL
-    /// callbacks and the DSP processing loop must use caller-provided buffers.
-    fn pop_all_samples(&mut self) -> Vec<f32>;
 
     /// Set wet/dry mix strength (0.0 = dry/original, 1.0 = wet/processed)
     fn set_strength(&self, value: f32);
@@ -138,14 +110,6 @@ pub trait NoiseSuppressor: Send {
     /// Get pending input samples count (waiting for frame completion)
     fn pending_input(&self) -> usize;
 
-    /// Drain and return pending input samples without processing.
-    ///
-    /// This is used when bypassing the suppressor to output raw audio.
-    /// Returns pending samples that haven't been processed yet.
-    ///
-    /// Non-RT convenience API: this allocates the returned `Vec`.
-    fn drain_pending_input(&mut self) -> Vec<f32>;
-
     /// Get the model type
     fn model_type(&self) -> NoiseModel;
 
@@ -160,6 +124,11 @@ pub trait NoiseSuppressor: Send {
 
     /// Whether the backend permanently failed and is in passthrough fallback.
     fn backend_failed(&self) -> bool;
+
+    /// Number of frames successfully processed by an external inference backend.
+    fn successful_inference_frames(&self) -> u64 {
+        0
+    }
 }
 
 /// Runtime-selected noise suppressor. The box is created off the RT path and
@@ -208,11 +177,5 @@ mod tests {
         assert_eq!(NoiseModel::from_id("rnnoise"), Some(NoiseModel::RNNoise));
         assert_eq!(NoiseModel::from_id("RNNOISE"), Some(NoiseModel::RNNoise));
         assert_eq!(NoiseModel::from_id("invalid"), None);
-    }
-
-    #[test]
-    fn test_available_models() {
-        let models = NoiseModel::available();
-        assert!(models.contains(&NoiseModel::RNNoise));
     }
 }

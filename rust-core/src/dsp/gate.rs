@@ -7,8 +7,6 @@ use crate::dsp::util;
 #[cfg(feature = "vad")]
 use crate::dsp::vad::{GateMode, VadAutoGate};
 
-/// Enable debug output for gate operations
-const GATE_DEBUG: bool = false;
 const MIN_LEVEL_LINEAR: f64 = 1e-10;
 const EXPANDER_RATIO: f64 = 4.0;
 const EXPANDER_RANGE_DB: f64 = 36.0;
@@ -60,20 +58,6 @@ enum ProbabilisticGateState {
     Releasing,
 }
 
-#[cfg(debug_assertions)]
-macro_rules! gate_debug_log {
-    ($($arg:tt)*) => {
-        if GATE_DEBUG {
-            eprintln!($($arg)*);
-        }
-    };
-}
-
-#[cfg(not(debug_assertions))]
-macro_rules! gate_debug_log {
-    ($($arg:tt)*) => {};
-}
-
 /// Noise gate processor implemented as a downward expander.
 pub struct NoiseGate {
     /// Threshold in dB (e.g., -40.0)
@@ -98,16 +82,6 @@ pub struct NoiseGate {
     is_open: bool,
     /// Whether gate is enabled
     enabled: bool,
-    /// Previous gate state (for change detection in debug)
-    was_open: bool,
-    /// Sample counter for periodic debug output
-    #[cfg(feature = "vad")]
-    debug_counter: usize,
-    /// Peak level since last debug output
-    peak_level: f64,
-    /// Previous VAD gate state (for VAD-specific change detection)
-    #[cfg(feature = "vad")]
-    vad_was_open: bool,
     /// Last final gate-open state used for chatter detection.
     effective_gate_open: bool,
     /// Whether `effective_gate_open` has been initialized.
@@ -162,15 +136,6 @@ impl NoiseGate {
         let release_coeff = util::time_constant_to_coeff(release_ms, sample_rate);
         let rms_coeff = util::time_constant_to_coeff(DETECTOR_RMS_MS, sample_rate);
 
-        if GATE_DEBUG {
-            gate_debug_log!(
-                "[GATE] Initialized: threshold={}dB, attack={}ms, release={}ms",
-                threshold_db,
-                attack_ms,
-                release_ms
-            );
-        }
-
         Self {
             threshold_db,
             attack_coeff,
@@ -183,12 +148,6 @@ impl NoiseGate {
             sample_rate,
             is_open: false,
             enabled: true,
-            was_open: false,
-            #[cfg(feature = "vad")]
-            debug_counter: 0,
-            peak_level: f64::MIN,
-            #[cfg(feature = "vad")]
-            vad_was_open: false,
             effective_gate_open: false,
             has_effective_gate_state: false,
             chatter_window_remaining_samples: 0,
@@ -277,10 +236,6 @@ impl NoiseGate {
             self.is_open = true;
         } else if self.detector_level_db <= self.threshold_db - DETECTOR_HYSTERESIS_DB {
             self.is_open = false;
-        }
-
-        if self.detector_level_db > self.peak_level {
-            self.peak_level = self.detector_level_db;
         }
     }
 
@@ -659,61 +614,33 @@ impl NoiseGate {
             if self.gate_mode != GateMode::ThresholdOnly {
                 if let Some(vad) = &mut self.vad_auto_gate {
                     if vad.is_enabled() {
-                        let (vad_gate_open, _probability) = vad.process_with_external_probability(
+                        let (vad_gate_open, probability) = vad.process_with_external_probability(
                             buffer,
                             self.vad_external_available
                                 .then_some(self.vad_external_probability),
                         );
                         let vad_threshold = vad.vad_threshold();
                         let vad_probability_available = self.vad_external_available;
-                        let probability_delta = _probability - self.previous_vad_probability;
-
-                        if GATE_DEBUG {
-                            self.debug_counter += buffer.len();
-                            if self.debug_counter >= 48_000 {
-                                let _mode_str = match self.gate_mode {
-                                    GateMode::VadAssisted => "VAD-Assisted",
-                                    GateMode::VadOnly => "VAD-Only",
-                                    GateMode::ThresholdOnly => "Threshold-Only",
-                                };
-                                gate_debug_log!(
-                                    "[GATE] mode={}, prob={:.4}, vad_gate={}",
-                                    _mode_str,
-                                    _probability,
-                                    if vad_gate_open { "OPEN" } else { "CLOSED" }
-                                );
-                                self.debug_counter = 0;
-                            }
-                        }
-
-                        if GATE_DEBUG && vad_gate_open != self.vad_was_open {
-                            gate_debug_log!(
-                                "[GATE] VAD transition: {} prob={:.4}",
-                                if vad_gate_open { "OPEN" } else { "CLOSED" },
-                                _probability
-                            );
-                            self.vad_was_open = vad_gate_open;
-                        }
+                        let probability_delta = probability - self.previous_vad_probability;
 
                         for sample in buffer.iter_mut() {
                             let input_f64 = *sample as f64;
                             self.vad_smoothed_probability = (self.vad_probability_smoothing_coeff
                                 * self.vad_smoothed_probability as f64
-                                + (1.0 - self.vad_probability_smoothing_coeff)
-                                    * _probability as f64)
+                                + (1.0 - self.vad_probability_smoothing_coeff) * probability as f64)
                                 .clamp(0.0, 1.0)
                                 as f32;
                             // Detector tracks continuously even when VAD blocks.
                             self.update_detector(input_f64);
                             self.update_fused_gate_score(
                                 self.gate_mode,
-                                _probability,
+                                probability,
                                 vad_probability_available,
                                 vad_gate_open,
                             );
                             let probabilistic_open = self.update_probabilistic_gate_state(
                                 self.gate_mode,
-                                _probability,
+                                probability,
                                 vad_probability_available,
                                 vad_gate_open,
                                 vad_threshold,
@@ -733,7 +660,7 @@ impl NoiseGate {
                             self.track_gate_transition(effective_open);
                             *sample = self.apply_gain(input_f64, target_gr_db);
                         }
-                        self.previous_vad_probability = _probability;
+                        self.previous_vad_probability = probability;
                         return;
                     }
                 }
@@ -742,16 +669,6 @@ impl NoiseGate {
 
         for sample in buffer.iter_mut() {
             *sample = self.process_sample(*sample);
-        }
-
-        if GATE_DEBUG && self.is_open != self.was_open {
-            gate_debug_log!(
-                "[GATE] {} detector={:.2}dB threshold={:.2}dB",
-                if self.is_open { "OPENED" } else { "CLOSED" },
-                self.detector_level_db,
-                self.threshold_db
-            );
-            self.was_open = self.is_open;
         }
     }
 
@@ -762,7 +679,6 @@ impl NoiseGate {
         self.detector_level_db = -120.0;
         self.hold_remaining_samples = 0;
         self.is_open = false;
-        self.was_open = false;
         self.effective_gate_open = false;
         self.has_effective_gate_state = false;
         self.chatter_window_remaining_samples = 0;
@@ -771,7 +687,6 @@ impl NoiseGate {
         self.chatter_event_count = 0;
         #[cfg(feature = "vad")]
         {
-            self.vad_was_open = false;
             self.vad_external_probability = 0.0;
             self.vad_external_available = false;
             self.fused_gate_score = 0.0;

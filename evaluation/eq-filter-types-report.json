@@ -129,8 +129,8 @@
       "cut_only_max_true_peak_gain_db": 2.677757366184541,
       "default_audio_max_absolute_delta": 0.0,
       "default_realtime_factor": {
-        "max": 0.0014877664823186544,
-        "median": 0.0013372462516997793
+        "max": 0.0018757914383479696,
+        "median": 0.0014956156082772472
       },
       "full_chain_max_true_peak_overshoot_db": 0.0006989240646362305,
       "full_chain_nonfinite_outputs": 0,
@@ -138,8 +138,8 @@
       "stress_max_limiter_gain_reduction_db": 3.8455235958099365,
       "total_duration_seconds": 48.7680625,
       "worst_case_realtime_factor": {
-        "max": 0.005753407504028236,
-        "median": 0.005330600782247643
+        "max": 0.006407524005293837,
+        "median": 0.006083355820824856
       }
     },
     "headroom_prediction": {
@@ -181,11 +181,11 @@
   "source_sha256": {
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
     "python/mic_eq/config_parts/settings.py": "0c068183a3b5b82f165f0f1cf13cd80b2d505b2888c263aa9d490168f3247dff",
-    "python/mic_eq/ui/eq_curve.py": "6cc3b658cf90f85acfa99f3eb5020d7beb0bde158b75dd127059df5869c0837b",
-    "python/mic_eq/ui/eq_panel.py": "c080c4e839a62e64feecb6f9992d1f4eb055cb8301a0bc295737f8d6a9e84523",
-    "python/tools/evaluate_eq_filter_types.py": "bce3312e5a72f3c742a86798ccdb7772a9e20aaaca32fa9344c7ceb35081c918",
-    "rust-core/src/audio/processor/python_api.rs": "3ad0f1f26686b63d48dfaf6d743371478ff857825dc2d5eb4661451c4a394482",
-    "rust-core/src/dsp/biquad.rs": "5bc9a139c95beec4c54d157de6d86769da2223cea9e562d6d86b20100782aaac",
+    "python/mic_eq/ui/eq_curve.py": "a49e1d4e063e63b9435770ea5a3f503dd83f8756a7fc9690457b6589f357e0ab",
+    "python/mic_eq/ui/eq_panel.py": "c588c02ad4334b3c2dfe334e9502de9d4c901de66c1efc5121adf48c77c559c8",
+    "python/tools/evaluate_eq_filter_types.py": "0389d71d3f8d97f88eef51e0c834d84860b37842c1d051266b37df0fcfba4316",
+    "rust-core/src/audio/processor/python_api.rs": "7071ff86b21247b04d040115567cdc50b5d10e1b09e04b70ae5912af5199abd5",
+    "rust-core/src/dsp/biquad.rs": "309c40b098ea80ea057f0b0703d98ab34ee583dcd023ea53cf8926a582b653e1",
     "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
     "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
   }

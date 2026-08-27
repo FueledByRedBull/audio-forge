@@ -15,13 +15,13 @@ Per-case detail is written only when an evaluator's optional
 | Auto-EQ confidence | `auto-eq-confidence-calibration.json` | Retain calibrated capture and per-band confidence gates. |
 | Compressor control | `auto-makeup-real-speech-report.json`, `compressor-control-report.json`, `compressor-search-report.json` | Retain VAD/reliability-driven makeup and bounded search. |
 | Processing order | `processing-order-report.json` | Retain gate before suppression and de-esser before EQ. |
-| Limiter | `limiter-lookahead-report.json` | Retain 2 ms lookahead. |
+| Limiter | `limiter-lookahead-report.json` | Adopt 0.5 ms lookahead after corrected paired, delay-flushed scoring. |
 | Resampling | `resampler-quality-report.json` | Retain the 128-tap Blackman product path. |
 | Manual typed EQ | `eq-filter-types-report.json` | Retain manual bell/notch/shelf/pass types and selectable slopes. |
-| Auto-EQ candidate pool | `eq-candidate-pool-report.json`, `sparse-auto-eq-filter-report.json` | Reject wider/sparse type-selecting candidates. |
-| EQ stage split | `correction-tone-stage-report.json` | Reject separate correction/tone stages. |
+| Auto-EQ candidate pool | `eq-candidate-pool-report.json`, `sparse-auto-eq-filter-report.json` | Reject the tested nested wider pools and sparse type-selecting candidate. |
+| EQ stage split | `correction-tone-stage-report.json` | Safe/cost-eligible, but closed because no product benefit was demonstrated. |
 | RNNoise | `rnnoise-backend-comparison.json` | Retain `nnnoiseless`; upstream Xiph was materially slower and regressed clean preservation. |
-| DPDFNet | `dpdfnet-vs-deepfilternet3-report.json`, `dpdfnet-official-evalset-report.json` | Rejected and absent from production. |
+| DPDFNet | `dpdfnet-vs-deepfilternet3-report.json`, `dpdfnet-official-evalset-report.json` | Rejected and absent; historical clean failures are not independently reproducible from this checkout. |
 | Release integrity | `release-bundle-path-baseline.json`, `release-trends.json` | Exact archive sidecars and digest-bound qualification own artifact facts. |
 
 The corresponding `python/tools/evaluate_*.py` command regenerates each

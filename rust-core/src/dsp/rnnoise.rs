@@ -48,6 +48,12 @@ impl RNNoiseProcessor {
         let smoothing_tau_s = smoothing_ms / 1000.0;
         let frame_dt_s = RNNOISE_FRAME_SIZE as f32 / sample_rate;
         let smoothing_coeff = 1.0 - (-(frame_dt_s / smoothing_tau_s)).exp();
+        let requested_strength = f32::from_bits(strength.load(Ordering::Relaxed));
+        let initial_strength = if requested_strength.is_finite() {
+            requested_strength.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
         Self {
             denoiser: DenoiseState::new(),
             input_buffer: FixedAudioRing::new(),
@@ -57,7 +63,7 @@ impl RNNoiseProcessor {
             output_frame: [0.0; RNNOISE_FRAME_SIZE],
             enabled: true,
             strength,
-            smoothed_strength: 1.0, // Default: full processing
+            smoothed_strength: initial_strength,
             smoothing_coeff,
         }
     }
@@ -168,19 +174,6 @@ impl RNNoiseProcessor {
         self.output_buffer.len()
     }
 
-    /// Pop samples from the output buffer
-    pub fn pop_samples(&mut self, count: usize) -> Vec<f32> {
-        let actual_count = count.min(self.available_samples());
-        let mut out = vec![0.0; actual_count];
-        self.output_buffer.pop_into(&mut out);
-        out
-    }
-
-    /// Pop all available samples from the output buffer
-    pub fn pop_all_samples(&mut self) -> Vec<f32> {
-        self.output_buffer.pop_all_vec()
-    }
-
     /// Read samples into provided buffer, returns actual count read
     pub fn read_samples(&mut self, buffer: &mut [f32]) -> usize {
         let count = buffer.len().min(self.available_samples());
@@ -234,14 +227,6 @@ impl RNNoiseProcessor {
     pub fn pending_input(&self) -> usize {
         self.input_buffer.len()
     }
-
-    /// Drain and return pending input samples without processing
-    ///
-    /// This is used when we want to bypass RNNoise and output raw audio.
-    /// Returns the pending samples that haven't been processed yet.
-    pub fn drain_pending_input(&mut self) -> Vec<f32> {
-        self.input_buffer.pop_all_vec()
-    }
 }
 
 impl Default for RNNoiseProcessor {
@@ -264,16 +249,8 @@ impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
         RNNoiseProcessor::available_samples(self)
     }
 
-    fn pop_samples(&mut self, count: usize) -> Vec<f32> {
-        RNNoiseProcessor::pop_samples(self, count)
-    }
-
     fn pop_samples_into(&mut self, buffer: &mut [f32]) -> usize {
         self.read_samples(buffer)
-    }
-
-    fn pop_all_samples(&mut self) -> Vec<f32> {
-        RNNoiseProcessor::pop_all_samples(self)
     }
 
     fn set_strength(&self, value: f32) {
@@ -300,10 +277,6 @@ impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
 
     fn pending_input(&self) -> usize {
         RNNoiseProcessor::pending_input(self)
-    }
-
-    fn drain_pending_input(&mut self) -> Vec<f32> {
-        RNNoiseProcessor::drain_pending_input(self)
     }
 
     fn model_type(&self) -> super::noise_suppressor::NoiseModel {
@@ -428,6 +401,22 @@ mod tests {
 
         // Should have 480 samples available (processed with mix)
         assert_eq!(processor.available_samples(), 480);
+    }
+
+    #[test]
+    fn test_rnnoise_honors_initial_dry_strength_on_first_frame() {
+        let strength = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
+        let mut processor = RNNoiseProcessor::new(strength);
+        let input: Vec<f32> = (0..RNNOISE_FRAME_SIZE)
+            .map(|index| (index as f32 * 0.017).sin() * 0.25)
+            .collect();
+
+        processor.push_samples(&input);
+        processor.process_frames();
+
+        let mut output = [0.0; RNNOISE_FRAME_SIZE];
+        assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+        assert_eq!(output.as_slice(), input.as_slice());
     }
 
     #[test]

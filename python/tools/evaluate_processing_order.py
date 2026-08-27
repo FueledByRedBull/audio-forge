@@ -16,8 +16,8 @@ import numpy as np
 from scipy.io import wavfile
 from scipy.signal import resample_poly
 
-from mic_eq import (
-    analyze_vad_probabilities,
+from mic_eq import analyze_vad_probabilities
+from mic_eq.mic_eq_core import (
     simulate_auto_eq_chain,
     simulate_gate_suppressor_order,
 )

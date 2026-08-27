@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 from scipy.signal import correlate, correlation_lags, resample_poly
 
-from mic_eq import simulate_auto_eq_chain
+from mic_eq.mic_eq_core import simulate_auto_eq_chain
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

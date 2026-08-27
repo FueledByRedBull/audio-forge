@@ -12,23 +12,6 @@ use std::env;
 use std::path::PathBuf;
 use thiserror::Error;
 
-/// Enable debug output for VAD gate operations
-const GATE_DEBUG: bool = false;
-
-#[cfg(debug_assertions)]
-macro_rules! vad_debug_log {
-    ($($arg:tt)*) => {
-        if GATE_DEBUG {
-            eprintln!($($arg)*);
-        }
-    };
-}
-
-#[cfg(not(debug_assertions))]
-macro_rules! vad_debug_log {
-    ($($arg:tt)*) => {};
-}
-
 /// Gate operating modes
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateMode {
@@ -257,6 +240,21 @@ impl SileroVAD {
             return Ok(self.current_probability());
         }
 
+        self.process_window(window_size)
+    }
+
+    /// Process every complete buffered window and return the newest probability.
+    pub fn process_latest(&mut self, samples: &[f32]) -> Result<Option<f32>, VadError> {
+        self.buffer.extend_from_slice(samples);
+        let window_size = self.window_size();
+        let mut probability = None;
+        while self.available_samples() >= window_size {
+            probability = Some(self.process_window(window_size)?);
+        }
+        Ok(probability)
+    }
+
+    fn process_window(&mut self, window_size: usize) -> Result<f32, VadError> {
         self.input_window.clear();
         self.input_window.extend_from_slice(
             &self.buffer[self.buffer_read_pos..self.buffer_read_pos + window_size],
@@ -745,19 +743,6 @@ impl VadAutoGate {
             self.noise_floor += delta.max(-NOISE_FLOOR_DOWN_SLEW_DB_PER_FRAME);
         }
         self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
-
-        if GATE_DEBUG {
-            let _auto_threshold =
-                (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold);
-            vad_debug_log!(
-                "[AUTO-THRESHOLD] floor={:.1}dB candidate={:.1}dB rms={:.1}dB prob={:.2} threshold={:.1}dB",
-                self.noise_floor,
-                candidate_floor,
-                current_rms,
-                prob,
-                _auto_threshold
-            );
-        }
     }
 
     fn push_noise_floor_sample(&mut self, sample_db: f32) {
@@ -830,81 +815,15 @@ impl VadAutoGate {
 
         let vad_speech_detected = prob > self.vad_threshold;
         self.update_noise_floor_estimate(compute_rms_db(samples), prob);
-
-        // Debug: Log VAD decision
-        if GATE_DEBUG && (prob > 0.0 || prob < 0.01) {
-            // Only log when probability is very low (to see oscillation)
-            static DEBUG_COUNT: std::sync::atomic::AtomicUsize =
-                std::sync::atomic::AtomicUsize::new(0);
-            let count = DEBUG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if count < 50 {
-                // Only log first 50 times to avoid spam
-                vad_debug_log!("[VAD-DEBUG] prob={:.6}, threshold={:.2}, prob > threshold = {}, vad_speech_detected={}",
-                    prob, self.vad_threshold, prob > self.vad_threshold, vad_speech_detected);
-            }
-        }
-
         let level_above_threshold = self.level_above_threshold(samples);
 
         let gate_open = match self.gate_mode {
             GateMode::ThresholdOnly => level_above_threshold,
-            GateMode::VadAssisted => {
-                // In VadAssisted mode, explain WHY gate opened
-                if GATE_DEBUG && (level_above_threshold || vad_speech_detected) {
-                    let _level_db = compute_rms_db(samples);
-                    let _threshold = (self.noise_floor + self.margin)
-                        .clamp(self.min_threshold, self.max_threshold);
-                    if level_above_threshold && vad_speech_detected {
-                        vad_debug_log!("[GATE] VAD-Assisted OPEN: BOTH level={:.1}dB>={:.1}dB AND VAD prob={:.2}>={:.2}",
-                            _level_db, _threshold, prob, self.vad_threshold);
-                    } else if level_above_threshold {
-                        vad_debug_log!("[GATE] VAD-Assisted OPEN: level={:.1}dB>={:.1}dB (VAD prob={:.2}<{:.2} - ignored)",
-                            _level_db, _threshold, prob, self.vad_threshold);
-                    } else if vad_speech_detected {
-                        vad_debug_log!("[GATE] VAD-Assisted OPEN: VAD prob={:.2}>={:.2} (level={:.1}dB<{:.1}dB - ignored)",
-                            prob, self.vad_threshold, _level_db, _threshold);
-                    }
-                }
-                level_above_threshold || vad_speech_detected
-            }
-            GateMode::VadOnly => {
-                if GATE_DEBUG && vad_speech_detected {
-                    vad_debug_log!(
-                        "[GATE] VAD-Only OPEN: VAD prob={:.2}>={:.2}",
-                        prob,
-                        self.vad_threshold
-                    );
-                }
-                vad_speech_detected
-            }
+            GateMode::VadAssisted => level_above_threshold || vad_speech_detected,
+            GateMode::VadOnly => vad_speech_detected,
         };
 
         let smoothed_gate_open = self.apply_hold_time(gate_open, samples.len());
-
-        // Debug: Log gate decision vs smoothed gate
-        if GATE_DEBUG && gate_open != smoothed_gate_open {
-            static DEBUG_COUNT2: std::sync::atomic::AtomicUsize =
-                std::sync::atomic::AtomicUsize::new(0);
-            let count = DEBUG_COUNT2.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if count < 20 {
-                vad_debug_log!(
-                    "[VAD-HOLD] gate_open={}, smoothed_gate_open={}, prob={:.4}, timer_running={}",
-                    gate_open,
-                    smoothed_gate_open,
-                    prob,
-                    self.timer_running
-                );
-            }
-        }
-
-        // Debug: show final gate state after hold time
-        if GATE_DEBUG && smoothed_gate_open != gate_open {
-            vad_debug_log!(
-                "[GATE] HoldTime ACTIVE: raw_gate={}, held_gate={}",
-                if gate_open { "OPEN" } else { "CLOSED" },
-                if smoothed_gate_open { "OPEN" } else { "CLOSED" }
-            );
-        }
 
         (smoothed_gate_open, prob)
     }
@@ -935,34 +854,25 @@ impl VadAutoGate {
             gate_open
         };
 
+        let held_open = self.timer_running && self.hold_timer > 0.0;
         if debounced_gate_open {
             // Signal is valid (Open) -> Reset timer and keep running
             self.hold_timer = self.hold_time_ms / 1000.0 * self.sample_rate as f32;
-            self.timer_running = true;
+            self.timer_running = self.hold_timer > 0.0;
             self.closed_counter_samples = 0.0;
         } else {
             // Signal is invalid (Closed) -> Increment closed counter
             self.closed_counter_samples += num_samples as f32;
-        }
-
-        // Decrement timer if it is running
-        if self.timer_running {
-            self.hold_timer -= num_samples as f32;
-
-            // If timer expires, stop holding
-            if self.hold_timer <= 0.0 {
-                self.hold_timer = 0.0;
-                self.timer_running = false;
-                if GATE_DEBUG && self.prev_gate_open {
-                    vad_debug_log!("[GATE] HoldTimer EXPIRED (Closed)");
-                }
+            if held_open {
+                self.hold_timer = (self.hold_timer - num_samples as f32).max(0.0);
+                self.timer_running = self.hold_timer > 0.0;
             }
         }
 
         self.prev_gate_open = debounced_gate_open;
 
         // Gate is open if raw signal is open OR timer is still running
-        debounced_gate_open || self.timer_running
+        debounced_gate_open || held_open
     }
 
     pub fn is_available(&self) -> bool {

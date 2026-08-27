@@ -2,11 +2,11 @@
   "aggregate": {
     "all_outputs_finite": true,
     "candidate_p95_limiter_gr_db": 0.0,
-    "candidate_p95_realtime_factor": 0.00110183641969002,
+    "candidate_p95_realtime_factor": 0.001166455299650296,
     "comparable_cases": 24,
     "failed_cases": 0,
     "incumbent_p95_limiter_gr_db": 0.0,
-    "incumbent_p95_realtime_factor": 0.0014320632933702113,
+    "incumbent_p95_realtime_factor": 0.0017352662633828722,
     "latency_samples": [
       0
     ],
@@ -19,12 +19,15 @@
     "p10_heldout_improvement_db": -0.006883696835060071,
     "p90_stability_regression_db": 0.2692705733789638,
     "p95_limiter_gr_regression_db": 0.0,
-    "p95_runtime_ratio": 0.7694048334253183,
+    "p95_runtime_ratio": 0.6722053694378355,
     "selected_filter_type_counts": {
       "bell": 139,
       "high_shelf": 5,
       "low_shelf": 21
-    }
+    },
+    "vad_backends": [
+      "silero"
+    ]
   },
   "audible_change": true,
   "candidate": {
@@ -53,6 +56,7 @@
     "native_constraints": true,
     "runtime_absolute": true,
     "runtime_ratio": true,
+    "silero_vad": true,
     "upper_tail_cross_take_stability": false,
     "zero_added_latency": true
   },
@@ -68,13 +72,21 @@
     "asset_hashes": {
       "corpus_manifest": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc",
       "dataset_archive": "5d208e01632cc3e5242106fa2af3273e6dc5239fb8143131979ac74c4aa40657",
+      "native_extension": {
+        "path": "python/mic_eq/mic_eq_core.cp312-win_amd64.pyd",
+        "sha256": "fa21c980eb15e902950d93b20b26943b6c0dfc804d07b4612f041d0f6ec8e621"
+      },
       "source": {
+        "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "c7d31f975fc3a55fdbef5531be1afea8ff03035de42d67b15c6309869cebab6d",
         "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "b0825a4810e5ff748648c2ae746f424076a289a8538b844952becff76e300d27",
-        "python/mic_eq/analysis/auto_eq_parts/target.py": "be578d9a1e4c91500c8e8a0bf4ac8567b2fb9024ff9b5bd04cb0ed64190e7c48",
+        "python/mic_eq/analysis/auto_eq_parts/target.py": "504dbcef3cdee3caaf8f464e3478221df49f8c3131dc9c79e99d3a1de3c33af9",
+        "python/mic_eq/analysis/spectrum.py": "b93ed96b345ba4273780ed736782a38c34382a3b96b93fd07b78ea61c3d18e23",
+        "python/mic_eq/analysis/vad.py": "5d65531ed84727dd0e34fb8d1ccf6b1c41fd7ec66816543cc65786778613503e",
         "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-        "python/tools/evaluate_sparse_auto_eq_filters.py": "ed7acc9407fe109ef0a1067e991fb6d6df13568dc9b236d0b0a3a982988b180c",
-        "rust-core/src/audio/processor/python_api.rs": "3ad0f1f26686b63d48dfaf6d743371478ff857825dc2d5eb4661451c4a394482",
-        "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b"
+        "python/tools/evaluate_sparse_auto_eq_filters.py": "6ab6e4dffa61d4efb2062c58bc29edfcf5b933a5f15cca6fd45ab48296a6bb11",
+        "rust-core/src/audio/processor/python_api.rs": "7071ff86b21247b04d040115567cdc50b5d10e1b09e04b70ae5912af5199abd5",
+        "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
+        "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
       }
     },
     "clean_preservation": {
@@ -100,8 +112,8 @@
       "sample_rate": 48000
     },
     "runtime": {
-      "candidate_p95_realtime_factor": 0.00110183641969002,
-      "incumbent_p95_realtime_factor": 0.0014320632933702113,
+      "candidate_p95_realtime_factor": 0.001166455299650296,
+      "incumbent_p95_realtime_factor": 0.0017352662633828722,
       "machine": "Windows-11-10.0.26200-SP0",
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native evaluation API reports whole-clip time rather than per-callback P99; realtime factor and active sections are measured.",
@@ -111,7 +123,7 @@
   },
   "experiment": "Sparse and typed Auto-EQ selection against the incumbent",
   "failures": [],
-  "generated_at_utc": "2026-08-02T14:02:18.025581+00:00",
+  "generated_at_utc": "2026-08-27T22:20:15.796854+00:00",
   "incumbent": {
     "filter_layout": "low shelf, eight bells, high shelf",
     "product_path": "single-take ten-band Auto-EQ"
@@ -135,23 +147,27 @@
     "min_median_heldout_improvement_db": 0.0,
     "min_p10_heldout_improvement_db": -0.35
   },
-  "schema_version": 2,
+  "schema_version": 3,
   "source_sha256": {
+    "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "c7d31f975fc3a55fdbef5531be1afea8ff03035de42d67b15c6309869cebab6d",
     "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "b0825a4810e5ff748648c2ae746f424076a289a8538b844952becff76e300d27",
-    "python/mic_eq/analysis/auto_eq_parts/target.py": "be578d9a1e4c91500c8e8a0bf4ac8567b2fb9024ff9b5bd04cb0ed64190e7c48",
+    "python/mic_eq/analysis/auto_eq_parts/target.py": "504dbcef3cdee3caaf8f464e3478221df49f8c3131dc9c79e99d3a1de3c33af9",
+    "python/mic_eq/analysis/spectrum.py": "b93ed96b345ba4273780ed736782a38c34382a3b96b93fd07b78ea61c3d18e23",
+    "python/mic_eq/analysis/vad.py": "5d65531ed84727dd0e34fb8d1ccf6b1c41fd7ec66816543cc65786778613503e",
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-    "python/tools/evaluate_sparse_auto_eq_filters.py": "ed7acc9407fe109ef0a1067e991fb6d6df13568dc9b236d0b0a3a982988b180c",
-    "rust-core/src/audio/processor/python_api.rs": "3ad0f1f26686b63d48dfaf6d743371478ff857825dc2d5eb4661451c4a394482",
-    "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b"
+    "python/tools/evaluate_sparse_auto_eq_filters.py": "6ab6e4dffa61d4efb2062c58bc29edfcf5b933a5f15cca6fd45ab48296a6bb11",
+    "rust-core/src/audio/processor/python_api.rs": "7071ff86b21247b04d040115567cdc50b5d10e1b09e04b70ae5912af5199abd5",
+    "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
+    "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
   },
   "split_aggregates": {
     "test": {
       "all_outputs_finite": true,
       "candidate_p95_limiter_gr_db": 0.0,
-      "candidate_p95_realtime_factor": 0.0011213517803911992,
+      "candidate_p95_realtime_factor": 0.0011618331806916922,
       "comparable_cases": 12,
       "incumbent_p95_limiter_gr_db": 0.0,
-      "incumbent_p95_realtime_factor": 0.0014407580473740893,
+      "incumbent_p95_realtime_factor": 0.001528932352278766,
       "latency_samples": [
         0
       ],
@@ -163,20 +179,23 @@
       "p10_heldout_improvement_db": 0.00228560366289532,
       "p90_stability_regression_db": 0.24746187766109362,
       "p95_limiter_gr_regression_db": 0.0,
-      "p95_runtime_ratio": 0.7783067965054669,
+      "p95_runtime_ratio": 0.7598983558429264,
       "selected_filter_type_counts": {
         "bell": 69,
         "high_shelf": 4,
         "low_shelf": 9
-      }
+      },
+      "vad_backends": [
+        "silero"
+      ]
     },
     "validation": {
       "all_outputs_finite": true,
       "candidate_p95_limiter_gr_db": 0.0,
-      "candidate_p95_realtime_factor": 0.0010858249749283995,
+      "candidate_p95_realtime_factor": 0.0011475410385475223,
       "comparable_cases": 12,
       "incumbent_p95_limiter_gr_db": 0.0,
-      "incumbent_p95_realtime_factor": 0.001431631865107754,
+      "incumbent_p95_realtime_factor": 0.0018498427057398587,
       "latency_samples": [
         0
       ],
@@ -188,12 +207,15 @@
       "p10_heldout_improvement_db": -0.01837764190413189,
       "p90_stability_regression_db": 0.27111967135260645,
       "p95_limiter_gr_regression_db": 0.0,
-      "p95_runtime_ratio": 0.7584526451195421,
+      "p95_runtime_ratio": 0.6203451974521015,
       "selected_filter_type_counts": {
         "bell": 70,
         "high_shelf": 1,
         "low_shelf": 12
-      }
+      },
+      "vad_backends": [
+        "silero"
+      ]
     }
   }
 }

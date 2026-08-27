@@ -50,7 +50,7 @@ impl AudioProcessor {
     /// Get input channel mixdown mode.
     pub fn input_channel_mode(&self) -> InputChannelMode {
         InputChannelMode::from_u8(self.input_channel_mode.load(Ordering::Acquire))
-            .unwrap_or(InputChannelMode::Average)
+            .unwrap_or(InputChannelMode::PhaseSafeMono)
     }
 
     /// Set adaptive input cleanup mode.

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at_utc": "2026-08-03T20:08:25.962565+00:00",
+  "generated_at_utc": "2026-08-27T21:46:51.097227+00:00",
   "candidate": "repository-ui-screenshots",
   "audible_change": false,
   "decision": {
@@ -53,8 +53,8 @@
       "path": "docs/images/audioforge-routing-eq.png",
       "width": 1600,
       "height": 960,
-      "bytes": 117161,
-      "sha256": "a52f6bf2ebf7f8c3070d5779cf91af0987f9f43376265a425d7a5592a3af04fb"
+      "bytes": 117150,
+      "sha256": "f0c52873007b7d783c5f5614c63e5a9fdb2d8d56741a8d1031076f84660ae567"
     },
     {
       "filename": "audioforge-processing.png",
@@ -63,8 +63,8 @@
       "path": "docs/images/audioforge-processing.png",
       "width": 1600,
       "height": 960,
-      "bytes": 107827,
-      "sha256": "74a573db3eb54cd8e63d16e6c21c59a83e487c1dc661ee32a2b266b5e2264a35"
+      "bytes": 107454,
+      "sha256": "18b8f381a6364cfadee2320a624175b9bdca2e534a4684490ca82e53e76028c4"
     },
     {
       "filename": "audioforge-auto-voice-setup.png",
@@ -80,9 +80,9 @@
   "source_sha256": {
     "python/tools/capture_repository_screenshots.py": "b288a2f7e2702e484f9b9ba8b77c512d92de79f525f7ce22007bb659262979f3",
     "python/mic_eq/ui/theme.py": "5e1ab74af18de230c3286ceca53508744e4009fffbc787eb327613cbb38faede",
-    "python/mic_eq/ui/main_window.py": "3b8ccaca943a5563bfc4b8f8d38a33db35ac51646996edfe54d9ed5ffbd61735",
-    "python/mic_eq/ui/eq_panel.py": "c080c4e839a62e64feecb6f9992d1f4eb055cb8301a0bc295737f8d6a9e84523",
-    "python/mic_eq/ui/eq_curve.py": "6cc3b658cf90f85acfa99f3eb5020d7beb0bde158b75dd127059df5869c0837b",
+    "python/mic_eq/ui/main_window.py": "335fdc399bde2db4bbf0db4f37dc8da2a0d6e6096b7d4403b454d856d13f7ab1",
+    "python/mic_eq/ui/eq_panel.py": "c588c02ad4334b3c2dfe334e9502de9d4c901de66c1efc5121adf48c77c559c8",
+    "python/mic_eq/ui/eq_curve.py": "a49e1d4e063e63b9435770ea5a3f503dd83f8756a7fc9690457b6589f357e0ab",
     "python/mic_eq/ui/voice_setup_dialog.py": "0ea6f27d8b86ad2944007a8df084741cac80c2658bce9cea2e09816299f50d12"
   },
   "limitations": [

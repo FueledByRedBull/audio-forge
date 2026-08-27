@@ -306,7 +306,8 @@ pub fn run_seeded_control_dsp_stress(
                 apply_deesser_control(chain.deesser_mut(), &snapshot)
             });
             apply_snapshot!(limiter_dirty, dsp_limiter, |snapshot| {
-                apply_limiter_control(chain.limiter_mut(), &snapshot)
+                apply_limiter_control(chain.limiter_mut(), &snapshot);
+                apply_true_peak_limiter_control(chain.true_peak_limiter_mut(), &snapshot)
             });
 
             if let Some(retired) = deferred_retire.take() {

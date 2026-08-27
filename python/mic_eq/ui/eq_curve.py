@@ -356,44 +356,6 @@ class EQCurveWidget(QWidget):
         warnings.sort(key=lambda warning: warning.severity, reverse=True)
         self.interaction_warnings = warnings
 
-    def set_band_params(self, band_index, freq, gain_db, q):
-        """Update parameters for a single band and redraw."""
-        if 0 <= band_index < len(self.bands):
-            filter_type, _, _, _, slope, enabled = self.bands[band_index]
-            self.bands[band_index] = (
-                filter_type,
-                float(freq),
-                float(gain_db),
-                float(q),
-                slope,
-                enabled,
-            )
-            self._update_response()
-            self.update()  # Trigger repaint
-
-    def set_band_config(
-        self,
-        band_index,
-        filter_type,
-        freq,
-        gain_db,
-        q,
-        slope,
-        enabled,
-    ):
-        """Update one complete typed band and redraw."""
-        if 0 <= band_index < len(self.bands):
-            self.bands[band_index] = (
-                str(filter_type),
-                float(freq),
-                float(gain_db),
-                float(q),
-                int(slope),
-                bool(enabled),
-            )
-            self._update_response()
-            self.update()
-
     def set_all_params(self, bands):
         """
         Update all bands at once.

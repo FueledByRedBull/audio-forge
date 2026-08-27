@@ -246,6 +246,15 @@ impl Biquad {
         self.crossfade_remaining = 0;
     }
 
+    fn clear_state(&mut self) {
+        self.z1 = 0.0;
+        self.z2 = 0.0;
+        self.pending_z1 = 0.0;
+        self.pending_z2 = 0.0;
+        self.crossfade_total = 0;
+        self.crossfade_remaining = 0;
+    }
+
     fn schedule_coefficients_crossfade(&mut self, coeffs: (f64, f64, f64, f64, f64)) {
         let (b0, b1, b2, a1, a2) = coeffs;
         self.pending_b0 = b0;
@@ -341,9 +350,10 @@ impl Biquad {
     pub fn reset(&mut self) {
         // A stream discontinuity must start from the configured target, not
         // whichever coefficients happened to be active partway through a UI
-        // crossfade. Committing immediately also clears both state histories.
+        // crossfade.
         let target = self.calculate_coefficients_values();
         self.set_coefficients_immediate(target);
+        self.clear_state();
     }
 
     /// Set filter frequency and recalculate coefficients
@@ -535,12 +545,20 @@ mod tests {
         filter.set_gain_db(12.0);
         assert!(filter.crossfade_remaining > 0);
 
+        for _ in 0..256 {
+            let _ = filter.process_sample(1.0);
+        }
+        assert!(filter.z1.abs() > 1.0e-9 || filter.z2.abs() > 1.0e-9);
+
         filter.reset();
 
         assert_eq!(filter.crossfade_remaining, 0);
         assert!((filter.magnitude_response_db(1_000.0) - 12.0).abs() < 1.0e-9);
         assert_eq!(filter.z1, 0.0);
         assert_eq!(filter.z2, 0.0);
+        for _ in 0..256 {
+            assert_eq!(filter.process_sample(0.0), 0.0);
+        }
     }
 
     #[test]

@@ -100,6 +100,7 @@ def test_gate_accepts_a_fully_passing_objective_candidate() -> None:
         "candidate_p95_realtime_factor": 0.001,
         "latency_samples": [0],
         "native_constraints_valid": True,
+        "vad_backends": ["silero"],
     }
 
     checks = TOOL._gate(aggregate)
@@ -123,6 +124,7 @@ def test_gate_rejects_heldout_lower_tail_regression() -> None:
         "candidate_p95_realtime_factor": 0.001,
         "latency_samples": [0],
         "native_constraints_valid": True,
+        "vad_backends": ["silero"],
     }
 
     checks = TOOL._gate(aggregate)
@@ -147,6 +149,7 @@ def test_gate_rejects_native_validation_failures() -> None:
         "candidate_p95_realtime_factor": 0.001,
         "latency_samples": [0],
         "native_constraints_valid": False,
+        "vad_backends": ["silero"],
     }
 
     checks = TOOL._gate(aggregate)

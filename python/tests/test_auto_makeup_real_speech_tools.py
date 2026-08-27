@@ -12,7 +12,8 @@ import numpy as np
 import pytest
 from scipy.io import wavfile
 
-from mic_eq import CORE_AVAILABLE, simulate_auto_makeup_control
+from mic_eq import CORE_AVAILABLE
+from mic_eq.mic_eq_core import simulate_auto_makeup_control
 
 
 TOOL_PATH = (

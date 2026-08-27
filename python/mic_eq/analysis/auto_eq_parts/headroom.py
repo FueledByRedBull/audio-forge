@@ -103,7 +103,8 @@ def _native_simulate(
     flat_settings: dict[str, Any],
 ) -> dict[str, Any] | None:
     try:
-        from mic_eq import CORE_AVAILABLE, simulate_auto_eq_chain
+        from mic_eq import CORE_AVAILABLE
+        from mic_eq.mic_eq_core import simulate_auto_eq_chain
     except ImportError:
         return None
     if not CORE_AVAILABLE:

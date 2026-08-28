@@ -63,8 +63,10 @@ fn read_f32_le(path: &Path) -> Result<Vec<f32>, String> {
         ));
     }
     Ok(bytes
-        .chunks_exact(size_of::<f32>())
-        .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("four-byte chunk")))
+        .as_chunks::<{ size_of::<f32>() }>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect())
 }
 
@@ -117,7 +119,7 @@ fn main() -> Result<(), String> {
     let mut output = Vec::with_capacity(input.len());
     let mut produced = vec![0.0_f32; DEEPFILTER_FRAME_SIZE];
     let mut frame_durations = Vec::with_capacity(input.len().div_ceil(DEEPFILTER_FRAME_SIZE));
-    for frame in input.chunks_exact(DEEPFILTER_FRAME_SIZE) {
+    for frame in input.as_chunks::<DEEPFILTER_FRAME_SIZE>().0 {
         let frame_started = Instant::now();
         if processor.push_samples(frame) != DEEPFILTER_FRAME_SIZE {
             return Err("DeepFilter input buffer rejected a complete frame".to_string());

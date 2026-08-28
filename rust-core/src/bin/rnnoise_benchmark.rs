@@ -42,8 +42,8 @@ fn read_f32_frame(
     }
     let sample_count = filled / 4;
     frame.fill(0.0);
-    for (sample, chunk) in frame.iter_mut().zip(bytes[..filled].chunks_exact(4)) {
-        *sample = f32::from_le_bytes(chunk.try_into().expect("four-byte chunk"));
+    for (sample, chunk) in frame.iter_mut().zip(bytes[..filled].as_chunks::<4>().0) {
+        *sample = f32::from_le_bytes(*chunk);
     }
     Ok(sample_count)
 }

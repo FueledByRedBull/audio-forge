@@ -418,7 +418,7 @@ impl AudioInput {
         let mut sum_lr = 0.0_f32;
         let mut sum_l2 = 0.0_f32;
         let mut sum_r2 = 0.0_f32;
-        for frame in interleaved.chunks_exact(2).take(frame_count) {
+        for frame in interleaved.as_chunks::<2>().0.iter().take(frame_count) {
             let left = Self::normalize_input_sample(frame[0]);
             let right = Self::normalize_input_sample(frame[1]);
             sum_lr += left * right;
@@ -559,7 +559,12 @@ impl AudioInput {
         let Some(candidate) = candidate else {
             if current_correlation < INPUT_PHASE_WARNING_CORRELATION {
                 let channel = Self::strongest_channel_index(interleaved, 2, frame_count);
-                for (frame_idx, chunk) in interleaved.chunks_exact(2).take(frame_count).enumerate()
+                for (frame_idx, chunk) in interleaved
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .take(frame_count)
+                    .enumerate()
                 {
                     mono[frame_idx] = Self::normalize_input_sample(chunk[channel]);
                 }
@@ -570,7 +575,13 @@ impl AudioInput {
                 };
             }
 
-            for (frame_idx, chunk) in interleaved.chunks_exact(2).take(frame_count).enumerate() {
+            for (frame_idx, chunk) in interleaved
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .take(frame_count)
+                .enumerate()
+            {
                 let left = Self::normalize_input_sample(chunk[0]);
                 let right = Self::normalize_input_sample(chunk[1]);
                 mono[frame_idx] = 0.5 * (left + right);

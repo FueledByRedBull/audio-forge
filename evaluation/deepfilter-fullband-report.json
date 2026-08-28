@@ -71,11 +71,11 @@
             "environmental_p10_improvement_db": 0.3431830378966451,
             "hiss_median_improvement_db": 3.4616044672326796,
             "hiss_p10_improvement_db": 3.2225986390843517,
-            "max_frame_seconds": 0.0157926,
+            "max_frame_seconds": 0.0031028,
             "noise_only_median_attenuation_db": 3.7412386817231136,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.004856,
-            "rtf": 0.20000194908463292
+            "p99_frame_seconds": 0.0013499,
+            "rtf": 0.08979278462676447
           },
           "passed": false,
           "relative_to_80_db_checks": {
@@ -117,11 +117,11 @@
             "environmental_p10_improvement_db": 0.4124976304173686,
             "hiss_median_improvement_db": 4.350441783785247,
             "hiss_p10_improvement_db": 3.9799419839659573,
-            "max_frame_seconds": 0.0112095,
+            "max_frame_seconds": 0.0034498,
             "noise_only_median_attenuation_db": 4.722791964005289,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0032777,
-            "rtf": 0.16019319885347963
+            "p99_frame_seconds": 0.0014017,
+            "rtf": 0.09252165721506504
           },
           "passed": false,
           "relative_to_80_db_checks": {
@@ -163,11 +163,11 @@
             "environmental_p10_improvement_db": 0.44383034097655527,
             "hiss_median_improvement_db": 4.7808713679972055,
             "hiss_p10_improvement_db": 4.331503339389317,
-            "max_frame_seconds": 0.0105271,
+            "max_frame_seconds": 0.0046121,
             "noise_only_median_attenuation_db": 5.202395469428879,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0027655,
-            "rtf": 0.1394582645010171
+            "p99_frame_seconds": 0.0015777,
+            "rtf": 0.09789024348147692
           },
           "passed": true,
           "relative_to_80_db_checks": {
@@ -209,11 +209,11 @@
             "environmental_p10_improvement_db": 0.4582707034974501,
             "hiss_median_improvement_db": 4.985801355603281,
             "hiss_p10_improvement_db": 4.49499986298294,
-            "max_frame_seconds": 0.0334374,
+            "max_frame_seconds": 0.0090761,
             "noise_only_median_attenuation_db": 5.431840587764433,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0033286,
-            "rtf": 0.13618886118473772
+            "p99_frame_seconds": 0.001526,
+            "rtf": 0.09608291869567898
           },
           "passed": true,
           "relative_to_80_db_checks": {
@@ -262,11 +262,11 @@
             "environmental_p10_improvement_db": 0.6856702096642188,
             "hiss_median_improvement_db": 8.843184711583316,
             "hiss_p10_improvement_db": 7.029184064920771,
-            "max_frame_seconds": 0.0062751,
+            "max_frame_seconds": 0.0027305,
             "noise_only_median_attenuation_db": 10.002410729593885,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.003176,
-            "rtf": 0.14934805060716266
+            "p99_frame_seconds": 0.0014697,
+            "rtf": 0.0964091176107995
           },
           "passed": false,
           "relative_to_80_db_checks": {
@@ -308,11 +308,11 @@
             "environmental_p10_improvement_db": 0.8229434210453855,
             "hiss_median_improvement_db": 11.552897267362408,
             "hiss_p10_improvement_db": 7.580058126143479,
-            "max_frame_seconds": 0.0048222,
+            "max_frame_seconds": 0.0052634,
             "noise_only_median_attenuation_db": 14.300857640153483,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0026451,
-            "rtf": 0.13614596807002405
+            "p99_frame_seconds": 0.0014088,
+            "rtf": 0.09194139585773285
           },
           "passed": false,
           "relative_to_80_db_checks": {
@@ -354,11 +354,11 @@
             "environmental_p10_improvement_db": 0.8847117992456941,
             "hiss_median_improvement_db": 12.542052003364425,
             "hiss_p10_improvement_db": 7.444603725129041,
-            "max_frame_seconds": 0.0033109,
+            "max_frame_seconds": 0.0033781,
             "noise_only_median_attenuation_db": 17.36898859605412,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0018532,
-            "rtf": 0.11899594002342355
+            "p99_frame_seconds": 0.0014461,
+            "rtf": 0.0939131110152253
           },
           "passed": true,
           "relative_to_80_db_checks": {
@@ -400,11 +400,11 @@
             "environmental_p10_improvement_db": 0.9131097775873216,
             "hiss_median_improvement_db": 12.818935823945612,
             "hiss_p10_improvement_db": 7.305740849826859,
-            "max_frame_seconds": 0.0040186,
+            "max_frame_seconds": 0.0035064,
             "noise_only_median_attenuation_db": 19.502232635975915,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0023249,
-            "rtf": 0.12516813998643903
+            "p99_frame_seconds": 0.0015244,
+            "rtf": 0.09824946125870679
           },
           "passed": true,
           "relative_to_80_db_checks": {
@@ -453,11 +453,11 @@
             "environmental_p10_improvement_db": 1.1323052779570453,
             "hiss_median_improvement_db": 3.436955173231425,
             "hiss_p10_improvement_db": 3.1230319320558566,
-            "max_frame_seconds": 0.0021111,
+            "max_frame_seconds": 0.0014248,
             "noise_only_median_attenuation_db": 4.023576944237521,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0011922,
-            "rtf": 0.059078224235700194
+            "p99_frame_seconds": 0.000856,
+            "rtf": 0.04942481724605523
           },
           "passed": false,
           "relative_to_80_db_checks": {
@@ -499,11 +499,11 @@
             "environmental_p10_improvement_db": 1.2953636686608572,
             "hiss_median_improvement_db": 4.227475875385112,
             "hiss_p10_improvement_db": 3.870834171976683,
-            "max_frame_seconds": 0.0017236,
+            "max_frame_seconds": 0.0016026,
             "noise_only_median_attenuation_db": 5.122158899764951,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.001086,
-            "rtf": 0.056816957593688364
+            "p99_frame_seconds": 0.0008097,
+            "rtf": 0.04748318694526627
           },
           "passed": false,
           "relative_to_80_db_checks": {
@@ -545,11 +545,11 @@
             "environmental_p10_improvement_db": 1.3362133594979484,
             "hiss_median_improvement_db": 4.593509770797307,
             "hiss_p10_improvement_db": 4.179223696415456,
-            "max_frame_seconds": 0.0026046,
+            "max_frame_seconds": 0.0020205,
             "noise_only_median_attenuation_db": 5.668293276332656,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0012227,
-            "rtf": 0.05836527490138067
+            "p99_frame_seconds": 0.0007795,
+            "rtf": 0.04714620408037475
           },
           "passed": true,
           "relative_to_80_db_checks": {
@@ -591,11 +591,11 @@
             "environmental_p10_improvement_db": 1.3516080188119528,
             "hiss_median_improvement_db": 4.772728170777788,
             "hiss_p10_improvement_db": 4.32683770558872,
-            "max_frame_seconds": 0.0406714,
+            "max_frame_seconds": 0.0018329,
             "noise_only_median_attenuation_db": 5.932027946152449,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0013573,
-            "rtf": 0.06311622133875738
+            "p99_frame_seconds": 0.0008517,
+            "rtf": 0.048729875493096646
           },
           "passed": true,
           "relative_to_80_db_checks": {
@@ -644,11 +644,11 @@
             "environmental_p10_improvement_db": 1.3767186006292045,
             "hiss_median_improvement_db": 8.06162278110949,
             "hiss_p10_improvement_db": 6.60576745219008,
-            "max_frame_seconds": 0.0484177,
+            "max_frame_seconds": 0.002202,
             "noise_only_median_attenuation_db": 11.695854589111322,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0025714,
-            "rtf": 0.07642001879930967
+            "p99_frame_seconds": 0.0008677,
+            "rtf": 0.04948219397189349
           },
           "passed": false,
           "relative_to_80_db_checks": {
@@ -690,11 +690,11 @@
             "environmental_p10_improvement_db": 1.5187503499630919,
             "hiss_median_improvement_db": 10.307856452052398,
             "hiss_p10_improvement_db": 7.025171878718621,
-            "max_frame_seconds": 0.0029713,
+            "max_frame_seconds": 0.0012868,
             "noise_only_median_attenuation_db": 18.83438162559827,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0015509,
-            "rtf": 0.06587073286489152
+            "p99_frame_seconds": 0.0009106,
+            "rtf": 0.05178498952169625
           },
           "passed": false,
           "relative_to_80_db_checks": {
@@ -736,11 +736,11 @@
             "environmental_p10_improvement_db": 1.5619372923053922,
             "hiss_median_improvement_db": 11.140025754551996,
             "hiss_p10_improvement_db": 6.7249129199217474,
-            "max_frame_seconds": 0.0031473,
+            "max_frame_seconds": 0.0168376,
             "noise_only_median_attenuation_db": 25.809026380127698,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0013885,
-            "rtf": 0.06139837832840237
+            "p99_frame_seconds": 0.000927,
+            "rtf": 0.05187221307938856
           },
           "passed": true,
           "relative_to_80_db_checks": {
@@ -782,11 +782,11 @@
             "environmental_p10_improvement_db": 1.5774665525296927,
             "hiss_median_improvement_db": 11.384323494857075,
             "hiss_p10_improvement_db": 6.553157027921561,
-            "max_frame_seconds": 0.0028196,
+            "max_frame_seconds": 0.0026526,
             "noise_only_median_attenuation_db": 33.03126097504391,
             "non_finite_samples": 0.0,
-            "p99_frame_seconds": 0.0012249,
-            "rtf": 0.05622018922583826
+            "p99_frame_seconds": 0.0009167,
+            "rtf": 0.05314138067061144
           },
           "passed": true,
           "relative_to_80_db_checks": {
@@ -824,9 +824,9 @@
       "models/deepfilter_fullband_eval/microphone-noise.wav": "43c06e764f5b000509c76c5f895a14edcd174f98b1e9fb76a099baff2f62af27",
       "models/silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
       "python/tools/evaluate_deepfilter_fullband.py": "6eb69d47dd8f24ada20afc39e5bb8bf3718920d92c3e6b5a448939b4ff2c6485",
-      "rust-core/src/bin/deepfilter_benchmark.rs": "9a7b8a9b4cea29715ffdab4abbc0baab7512a48039814600c9767fa19ea7af40",
+      "rust-core/src/bin/deepfilter_benchmark.rs": "ed7f006433c3c919420ac49eba61f6292d9b6938497ae7172990c2a61133cb08",
       "rust-core/src/dsp/deepfilter_ffi.rs": "7785dd862a350c31da4b09ca621b24d59f876a153a72601d712a76101946d9d5",
-      "target/release/deepfilter_benchmark.exe": "a50c3923ac5fa3755f62b1e16685ece07eb030f370e2b5f107b4784b5ed471e6"
+      "target/release/deepfilter_benchmark.exe": "e1b47ffc77eb10c5dbe4431a1fe6452d2b2cc400fa06dbc0d3f7cda7b9bee47e"
     },
     "clean_preservation": {
       "metric": "per-stratum lower-tail SI-SDR, P90 full/HF LSD, and dropout",
@@ -847,7 +847,7 @@
       "standard_1": 1440
     },
     "runtime": {
-      "max_p99_frame_seconds": 0.004856
+      "max_p99_frame_seconds": 0.0015777
     }
   },
   "gates": {
@@ -882,7 +882,7 @@
       "hiss_median"
     ]
   },
-  "generated_at": "2026-08-27T21:59:34.726541+00:00",
+  "generated_at": "2026-08-28T17:30:48.018624+00:00",
   "limitations": [
     "Two official VoiceBank-DEMAND test speakers do not represent every voice.",
     "The local quiet capture contains microphone, preamp, and room noise; it is not a laboratory-isolated self-noise measurement.",
@@ -896,7 +896,7 @@
   "schema_version": 3,
   "source_sha256": {
     "python/tools/evaluate_deepfilter_fullband.py": "6eb69d47dd8f24ada20afc39e5bb8bf3718920d92c3e6b5a448939b4ff2c6485",
-    "rust-core/src/bin/deepfilter_benchmark.rs": "9a7b8a9b4cea29715ffdab4abbc0baab7512a48039814600c9767fa19ea7af40",
+    "rust-core/src/bin/deepfilter_benchmark.rs": "ed7f006433c3c919420ac49eba61f6292d9b6938497ae7172990c2a61133cb08",
     "rust-core/src/dsp/deepfilter_ffi.rs": "7785dd862a350c31da4b09ca621b24d59f876a153a72601d712a76101946d9d5"
   },
   "status": "objective-retained-incumbent"

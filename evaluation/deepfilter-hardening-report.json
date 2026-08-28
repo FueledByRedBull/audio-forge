@@ -1,13 +1,13 @@
 {
   "schema_version": 2,
   "audible_change": true,
-  "generated_at_utc": "2026-08-27T21:56:46.071697+00:00",
+  "generated_at_utc": "2026-08-28T17:23:34.579582+00:00",
   "purpose": "Select AudioForge DeepFilter runtime controls and verify LL/Standard wet-dry alignment; no DPDFNet candidate is evaluated.",
   "environment": {
     "platform": "Windows-11-10.0.26200-SP0",
     "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
     "python": "3.12.10",
-    "binary_sha256": "a50c3923ac5fa3755f62b1e16685ece07eb030f370e2b5f107b4784b5ed471e6"
+    "binary_sha256": "e1b47ffc77eb10c5dbe4431a1fe6452d2b2cc400fa06dbc0d3f7cda7b9bee47e"
   },
   "assets": {
     "df.dll": "270d14b92143c18c5f7e14e9eba3192d7843ec52fb9d1ade2fd9173d03a71656",
@@ -17,7 +17,7 @@
   "source_sha256": {
     "python/tools/evaluate_deepfilter_hardening.py": "b2dccce85d975fde015708c02f1965e0fdd74777340b67f288fff2bae38cbb43",
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-    "rust-core/src/bin/deepfilter_benchmark.rs": "9a7b8a9b4cea29715ffdab4abbc0baab7512a48039814600c9767fa19ea7af40",
+    "rust-core/src/bin/deepfilter_benchmark.rs": "ed7f006433c3c919420ac49eba61f6292d9b6938497ae7172990c2a61133cb08",
     "rust-core/src/dsp/deepfilter_ffi.rs": "7785dd862a350c31da4b09ca621b24d59f876a153a72601d712a76101946d9d5"
   },
   "corpus": {
@@ -67,9 +67,9 @@
           "median_clean_si_sdr_db": 40.230666707334436,
           "median_clean_speech_lsd_db": 0.466396088920712,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.21958096658995316,
-          "max_p99_frame_seconds": 0.0055968,
-          "max_frame_seconds": 0.0207119
+          "max_realtime_factor": 0.0949016339973018,
+          "max_p99_frame_seconds": 0.0012863,
+          "max_frame_seconds": 0.0029724
         },
         "checks": {
           "clean_dropout_at_most_1_percent": true,
@@ -88,9 +88,9 @@
           "median_clean_si_sdr_db": 38.607896643318504,
           "median_clean_speech_lsd_db": 0.5556658198857465,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.16365388143798112,
-          "max_p99_frame_seconds": 0.0033076,
-          "max_frame_seconds": 0.0093043
+          "max_realtime_factor": 0.10715320768193,
+          "max_p99_frame_seconds": 0.0017012,
+          "max_frame_seconds": 0.0175392
         },
         "checks": {
           "clean_dropout_at_most_1_percent": true,
@@ -109,9 +109,9 @@
           "median_clean_si_sdr_db": 37.96036721630091,
           "median_clean_speech_lsd_db": 0.5956377161062862,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.1439155130545195,
-          "max_p99_frame_seconds": 0.0029883,
-          "max_frame_seconds": 0.017303
+          "max_realtime_factor": 0.11887490595984446,
+          "max_p99_frame_seconds": 0.0019155,
+          "max_frame_seconds": 0.0193415
         },
         "checks": {
           "clean_dropout_at_most_1_percent": true,
@@ -130,9 +130,9 @@
           "median_clean_si_sdr_db": 37.67681517320091,
           "median_clean_speech_lsd_db": 0.6130385489373065,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.17216568367589874,
-          "max_p99_frame_seconds": 0.0047337,
-          "max_frame_seconds": 0.0342744
+          "max_realtime_factor": 0.11342806761368146,
+          "max_p99_frame_seconds": 0.0017133,
+          "max_frame_seconds": 0.0030084
         },
         "checks": {
           "clean_dropout_at_most_1_percent": true,
@@ -165,9 +165,9 @@
           "median_clean_si_sdr_db": 37.96036721630091,
           "median_clean_speech_lsd_db": 0.5956377161062862,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.1439155130545195,
-          "max_p99_frame_seconds": 0.0029883,
-          "max_frame_seconds": 0.017303
+          "max_realtime_factor": 0.11887490595984446,
+          "max_p99_frame_seconds": 0.0019155,
+          "max_frame_seconds": 0.0193415
         },
         "checks": {
           "baseline": true
@@ -181,9 +181,9 @@
           "median_clean_si_sdr_db": 37.94671678648628,
           "median_clean_speech_lsd_db": 0.6008421335924912,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.1538920347591461,
-          "max_p99_frame_seconds": 0.0032573,
-          "max_frame_seconds": 0.0055211
+          "max_realtime_factor": 0.09021147131180066,
+          "max_p99_frame_seconds": 0.001359,
+          "max_frame_seconds": 0.0029149
         },
         "checks": {
           "noisy_si_sdr_improves_by_0_15_db": true,
@@ -202,9 +202,9 @@
           "median_clean_si_sdr_db": 37.92735809583468,
           "median_clean_speech_lsd_db": 0.6054280978282482,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.1285683882231569,
-          "max_p99_frame_seconds": 0.0024035,
-          "max_frame_seconds": 0.0037925
+          "max_realtime_factor": 0.08931082215697166,
+          "max_p99_frame_seconds": 0.0012773,
+          "max_frame_seconds": 0.0020751
         },
         "checks": {
           "noisy_si_sdr_improves_by_0_15_db": true,
@@ -240,13 +240,13 @@
       "df.dll": "270d14b92143c18c5f7e14e9eba3192d7843ec52fb9d1ade2fd9173d03a71656",
       "models/DeepFilterNet3_ll_onnx.tar.gz": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
       "models/DeepFilterNet3_onnx.tar.gz": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
-      "target/release/deepfilter_benchmark.exe": "a50c3923ac5fa3755f62b1e16685ece07eb030f370e2b5f107b4784b5ed471e6",
+      "target/release/deepfilter_benchmark.exe": "e1b47ffc77eb10c5dbe4431a1fe6452d2b2cc400fa06dbc0d3f7cda7b9bee47e",
       "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
     },
     "runtime": {
-      "max_realtime_factor": 0.1439155130545195,
-      "max_p99_frame_seconds": 0.0029883,
-      "max_frame_seconds": 0.017303,
+      "max_realtime_factor": 0.11887490595984446,
+      "max_p99_frame_seconds": 0.0019155,
+      "max_frame_seconds": 0.0193415,
       "frame_deadline_seconds": 0.01
     },
     "latency": {

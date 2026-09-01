@@ -605,6 +605,7 @@ def analyze_voice_spectrum(
     if voiced_frames.shape[0] < MIN_VOICED_FRAMES or voiced_ratio < MIN_VOICED_FRAME_RATIO:
         freqs, spectrum_db = compute_voice_spectrum(audio_arr, fs, nperseg)
         aligned_noise_spectrum: np.ndarray | None = None
+        aligned_speech_spectrum: np.ndarray | None = None
         aligned_spectral_snr: np.ndarray | None = None
         if (
             reference_freqs is not None
@@ -625,7 +626,9 @@ def analyze_voice_spectrum(
             voiced_window_ratio=max(voiced_ratio, 1.0 / max(1, frames.shape[0])),
             snr_db=_estimate_snr_from_spectrum(
                 freqs,
-                spectrum_db,
+                aligned_speech_spectrum
+                if aligned_speech_spectrum is not None
+                else spectrum_db,
                 aligned_noise_spectrum,
             ),
             spectral_repeatability=repeatability,
@@ -931,13 +934,16 @@ def smooth_spectrum_octave(freqs, spectrum_db, fraction=6):
     # This preserves the FFT frequency grid for downstream processing
     valid = ~np.isnan(smoothed_bands)
     if np.sum(valid) > 1:
-        # Use nearest value extrapolation for frequencies outside band limits
-        smoothed_db = np.interp(
-            freqs,
-            f_center[valid],
-            np.array(smoothed_bands)[valid],
-            left=np.array(smoothed_bands)[valid][0],  # Extrapolate with lowest band value
-            right=np.array(smoothed_bands)[valid][-1]  # Extrapolate with highest band value
+        valid_bands = np.asarray(smoothed_bands)[valid]
+        valid_centers = f_center[valid]
+        smoothed_db = np.full_like(freqs, valid_bands[0], dtype=float)
+        positive = freqs > 0.0
+        smoothed_db[positive] = np.interp(
+            np.log(freqs[positive]),
+            np.log(valid_centers),
+            valid_bands,
+            left=valid_bands[0],
+            right=valid_bands[-1],
         )
     else:
         # Fallback: return original spectrum if smoothing failed
@@ -951,6 +957,10 @@ def smooth_spectrum_perceptual(freqs, spectrum_db, strength="balanced"):
     freqs = np.asarray(freqs, dtype=float)
     spectrum_db = np.asarray(spectrum_db, dtype=float)
     strength = str(strength or "balanced").lower()
+    if strength == "off":
+        return spectrum_db.copy()
+    if strength not in {"balanced", "conservative", "broad"}:
+        raise ValueError(f"Unknown spectrum smoothing strength: {strength}")
     wide = smooth_spectrum_octave(freqs, spectrum_db, fraction=3)
     medium = smooth_spectrum_octave(freqs, spectrum_db, fraction=6)
     fine = smooth_spectrum_octave(freqs, spectrum_db, fraction=12)

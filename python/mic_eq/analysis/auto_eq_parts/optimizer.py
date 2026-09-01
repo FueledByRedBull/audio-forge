@@ -21,6 +21,7 @@ from .constants import (
     MAX_GAIN_SLOPE_DB_PER_OCTAVE,
     NUM_EQ_BANDS,
     REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD,
+    SNR_MIN_DB,
     UNKNOWN_EVIDENCE_MAX_BOOST_DB,
     UNKNOWN_EVIDENCE_Q_MAX,
     debug_log,
@@ -713,11 +714,12 @@ def calculate_eq_bands(
         spectral_snr_dense,
         base_centers_hz,
     )
-    snr_available = bool(np.any(np.isfinite(band_snr_db)))
+    band_snr_available = np.isfinite(band_snr_db)
+    snr_available = bool(np.any(band_snr_available))
     effective_band_snr_db = np.where(
-        np.isfinite(band_snr_db),
+        band_snr_available,
         band_snr_db,
-        18.0,
+        SNR_MIN_DB,
     )
     measurement_metadata_available = bool(
         spectral_repeatability is not None
@@ -741,6 +743,11 @@ def calculate_eq_bands(
         if snr_available
         else np.full(NUM_EQ_BANDS, GAIN_MAX_DB, dtype=float)
     )
+    if snr_available:
+        dynamic_gain_upper[~band_snr_available] = np.minimum(
+            dynamic_gain_upper[~band_snr_available],
+            UNKNOWN_EVIDENCE_MAX_BOOST_DB,
+        )
     reference_quality = noise_reference_quality
     if reference_status == "invalid":
         dynamic_gain_upper = np.minimum(dynamic_gain_upper, 0.0)
@@ -1067,6 +1074,7 @@ def calculate_eq_bands(
         "band_snr_db": [
             float(value) if np.isfinite(value) else None for value in band_snr_db
         ],
+        "band_snr_available": band_snr_available.tolist(),
         "noise_referenced_snr_db": (
             float(global_snr_db)
             if snr_available and global_snr_db is not None

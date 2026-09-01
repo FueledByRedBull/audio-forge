@@ -9,6 +9,7 @@ from mic_eq.analysis.voice_setup import (
     _calibrate_compressor_threshold,
     _recommend_compressor_settings,
     _recommend_gate_settings,
+    _vad_masked_speech_features,
     analyze_voice_setup,
     validate_voice_setup_verification,
 )
@@ -48,6 +49,18 @@ def _make_voice(
     )
     noise = noise_amplitude * rng.normal(size=t.size)
     return (level * envelope * voiced + noise).astype(np.float32)
+
+
+def test_short_capture_keeps_short_term_unavailable_and_labels_fallback():
+    sample_rate = 48_000
+    t = np.arange(sample_rate * 2, dtype=float) / sample_rate
+    speech = (0.1 * np.sin(2.0 * np.pi * 220.0 * t)).astype(np.float32)
+
+    features = _vad_masked_speech_features(speech, sample_rate, -80.0)
+
+    assert features["short_term_window_count"] == 0
+    assert features["short_term_lufs_source"] == "momentary_400ms_fallback"
+    assert np.isfinite(features["short_term_lufs"])
 
 
 def test_voice_setup_uses_vad_assisted_when_available():

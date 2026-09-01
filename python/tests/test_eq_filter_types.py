@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -12,8 +14,10 @@ from mic_eq import (
     eq_magnitude_response_v2,
 )
 from mic_eq.mic_eq_core import (
+    configure_deepfilter_runtime_paths,
     simulate_auto_eq_chain,
     simulate_eq_v2,
+    simulate_gate_suppressor_order,
 )
 from mic_eq.config import EQSettings
 
@@ -197,3 +201,117 @@ def test_typed_eq_full_chain_engages_limiter_and_respects_true_peak_ceiling() ->
     assert result["output_true_peak_db"] <= (
         result["limiter_effective_ceiling_db"] + 0.05
     )
+
+
+def test_full_chain_flushes_latency_and_returns_source_aligned_audio() -> None:
+    audio = np.zeros(4096, dtype=np.float32)
+    audio[0] = 0.25
+    bands = [
+        (band.frequency_hz, band.gain_db, band.q)
+        for band in EQSettings().bands
+    ]
+
+    result = simulate_auto_eq_chain(
+        audio,
+        48_000.0,
+        bands,
+        {
+            "deesser_enabled": False,
+            "compressor_enabled": False,
+            "limiter_enabled": True,
+            "return_output_audio": True,
+        },
+    )
+    output = np.asarray(result["output_audio"], dtype=np.float32)
+
+    assert output.size == audio.size
+    assert result["processed_samples"] == audio.size
+    assert result["chain_latency_samples"] > 0
+    assert result["tail_flush_samples"] > result["chain_latency_samples"]
+    assert int(np.argmax(np.abs(output))) == 0
+    assert output[0] == pytest.approx(audio[0], abs=1e-6)
+
+
+@pytest.mark.parametrize("suppressor_before_gate", [False, True])
+def test_gate_suppressor_simulator_preserves_source_alignment(
+    suppressor_before_gate: bool,
+) -> None:
+    audio = np.zeros(4 * 480 + 123, dtype=np.float32)
+    audio[500:700] = 0.1
+    vad_probabilities = [0.9] * math.ceil(audio.size / 480)
+
+    result = simulate_gate_suppressor_order(
+        audio,
+        vad_probabilities,
+        suppressor_before_gate,
+        0.0,
+        {"gate_threshold_db": -100.0},
+    )
+
+    assert len(result["output_audio"]) == audio.size
+    assert len(result["gate_gain"]) == len(vad_probabilities)
+    assert result["suppressor_latency_samples"] == 480
+
+
+def test_yell_pause_speech_recovers_for_every_gate_and_suppressor(monkeypatch) -> None:
+    root = Path(__file__).resolve().parents[2]
+    library = root / "df.dll"
+    model_dir = root / "models"
+    if not library.exists() or not (model_dir / "DeepFilterNet3_onnx.tar.gz").exists():
+        pytest.skip("local DeepFilter runtime assets are unavailable")
+
+    dll_handle = None
+    runtime_dir = root / "target" / "release"
+    if os.name == "nt" and runtime_dir.exists():
+        dll_handle = os.add_dll_directory(str(runtime_dir))
+    monkeypatch.setenv("AUDIOFORGE_ENABLE_DEEPFILTER", "1")
+    configure_deepfilter_runtime_paths(str(library), str(model_dir))
+
+    sample_rate = 48_000
+    time = np.arange(sample_rate, dtype=np.float32) / sample_rate
+    normal = (
+        0.07 * np.sin(2.0 * np.pi * 180.0 * time)
+        + 0.025 * np.sin(2.0 * np.pi * 720.0 * time)
+    ).astype(np.float32)
+    yell = np.clip(normal[: sample_rate // 2] * 12.0, -0.98, 0.98)
+    audio = np.concatenate((yell, np.zeros(sample_rate * 2, np.float32), normal))
+    block_count = math.ceil(audio.size / 480)
+    vad = [0.01] * block_count
+    for index in range(math.ceil(yell.size / 480)):
+        vad[index] = 0.99
+    normal_start = yell.size + sample_rate * 2
+    for index in range(normal_start // 480, block_count):
+        vad[index] = 0.99
+
+    for model, latency in (
+        ("rnnoise", 480),
+        ("deepfilter-ll", 480),
+        ("deepfilter", 1440),
+    ):
+        for gate_mode in range(3):
+            try:
+                result = simulate_gate_suppressor_order(
+                    audio,
+                    vad,
+                    False,
+                    1.0,
+                    {
+                        "noise_model": model,
+                        "gate_mode": gate_mode,
+                        "gate_threshold_db": -45.0,
+                    },
+                )
+            except RuntimeError as error:
+                pytest.skip(f"{model} runtime unavailable: {error}")
+            output = np.asarray(result["output_audio"], dtype=np.float32)
+            resumed = output[-sample_rate // 2 :]
+            assert output.size == audio.size
+            assert np.all(np.isfinite(output))
+            assert np.sqrt(np.mean(resumed.astype(np.float64) ** 2)) > 1.0e-4
+            assert len(result["gate_gain"]) == block_count
+            assert result["suppressor_latency_samples"] == latency
+            assert result["noise_model"] == model
+            assert result["gate_mode"] == gate_mode
+
+    if dll_handle is not None:
+        dll_handle.close()

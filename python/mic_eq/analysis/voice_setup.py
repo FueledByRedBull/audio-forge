@@ -247,10 +247,16 @@ def _vad_masked_speech_features(
             [float(-0.691 + 10.0 * np.log10(mean_square + 1e-12))],
             dtype=float,
         )
-    if short_term_loudness.size == 0:
-        short_term_loudness = momentary_loudness
     momentary_lufs = float(np.median(momentary_loudness))
-    short_term_lufs = float(np.median(short_term_loudness))
+    short_term_window_count = int(short_term_loudness.size)
+    short_term_lufs = (
+        float(np.median(short_term_loudness))
+        if short_term_window_count
+        else momentary_lufs
+    )
+    short_term_lufs_source = (
+        "short_term_3s" if short_term_window_count else "momentary_400ms_fallback"
+    )
     active_loudness_spread_db = (
         float(
             np.percentile(momentary_loudness, 95.0)
@@ -445,7 +451,8 @@ def _vad_masked_speech_features(
             else 0.0
         ),
         "short_term_lufs": short_term_lufs,
-        "short_term_window_count": int(short_term_loudness.size),
+        "short_term_window_count": short_term_window_count,
+        "short_term_lufs_source": short_term_lufs_source,
         "momentary_lufs": momentary_lufs,
         "active_loudness_spread_db": active_loudness_spread_db,
         # Compatibility key retained for persisted/UI consumers. The value is
@@ -1169,6 +1176,8 @@ def analyze_voice_setup(
     snr_confidence = _clamp((noise_referenced_snr_db - 6.0) / 12.0, 0.0, 1.0)
     active_duration_confidence = _clamp(float(features["active_duration_s"]) / 3.0, 0.0, 1.0)
     loudness_confidence = _clamp(float(features["loudness_window_count"]) / 8.0, 0.0, 1.0)
+    if int(features["short_term_window_count"]) == 0:
+        loudness_confidence *= 0.6
     capture_confidence = _bounded_quality_score(
         [
             (spectral_confidence, 0.30),
@@ -1400,6 +1409,7 @@ def analyze_voice_setup(
             "short_term_loudness_window_count": features[
                 "short_term_window_count"
             ],
+            "short_term_lufs_source": features["short_term_lufs_source"],
             "momentary_lufs": features["momentary_lufs"],
             "active_loudness_spread_db": features[
                 "active_loudness_spread_db"

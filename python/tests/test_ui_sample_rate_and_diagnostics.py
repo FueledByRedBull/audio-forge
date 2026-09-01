@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import Mock
+
 import numpy as np
 from PyQt6.QtWidgets import QWidget
 
@@ -40,6 +43,20 @@ from mic_eq.config import (
     build_latency_profile_key,
     legacy_latency_profile_key,
 )
+
+
+def test_setup_level_warnings_use_actual_peak_not_rms_estimate():
+    calibration = SimpleNamespace(level_meter=Mock(), warning_label=Mock())
+    CalibrationDialog._on_level_update(calibration, -20.0, -1.0)
+    calibration.level_meter.set_levels.assert_called_once_with(-20.0, -1.0)
+    assert "Too loud" in calibration.warning_label.setText.call_args.args[0]
+
+    voice_setup = SimpleNamespace(
+        level_meter=Mock(), warning_label=Mock(), setup_state="voice_recording"
+    )
+    VoiceSetupDialog._update_level(voice_setup, -20.0, -1.0)
+    voice_setup.level_meter.set_levels.assert_called_once_with(-20.0, -1.0)
+    assert "Too loud" in voice_setup.warning_label.setText.call_args.args[0]
 
 
 class _SignalStub:

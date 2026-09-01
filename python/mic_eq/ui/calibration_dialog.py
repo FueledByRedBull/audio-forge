@@ -605,7 +605,10 @@ class CalibrationDialog(QDialog):
             self._on_time_remaining(
                 max(0.0, RECORDING_DURATION * (1.0 - progress_float))
             )
-            self._on_level_update(float(parent.processor.recording_level_db()))
+            self._on_level_update(
+                float(parent.processor.recording_level_db()),
+                float(parent.processor.get_input_peak_db()),
+            )
 
             if progress_pct >= 100 or parent.processor.is_recording_complete():
                 self.recording_timer.stop()
@@ -631,16 +634,15 @@ class CalibrationDialog(QDialog):
             self.time_label.setText("✓ Complete!")
             self.time_label.setStyleSheet(message_text_style("ok", strong=True))
 
-    def _on_level_update(self, rms_db: float):
+    def _on_level_update(self, rms_db: float, peak_db: float):
         """Update level meter with validation warnings."""
-        # Update level meter (estimate peak as RMS + 6dB)
-        self.level_meter.set_levels(rms_db, rms_db + 6)
+        self.level_meter.set_levels(rms_db, peak_db)
 
         # Show validation warning
         if rms_db < TOO_QUIET_DB:
             self.warning_label.setText("⚠️ Too quiet! Move closer to mic")
             self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
-        elif rms_db > TOO_LOUD_DB:
+        elif peak_db > TOO_LOUD_DB:
             self.warning_label.setText("⚠️ Too loud! Risk of clipping")
             self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
         else:

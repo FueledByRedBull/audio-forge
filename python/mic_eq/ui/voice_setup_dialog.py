@@ -578,7 +578,10 @@ class VoiceSetupDialog(QDialog):
             self._update_time_remaining(
                 max(0.0, self._recording_duration * (1.0 - progress))
             )
-            self._update_level(float(parent.processor.recording_level_db()))
+            self._update_level(
+                float(parent.processor.recording_level_db()),
+                float(parent.processor.get_input_peak_db()),
+            )
 
             if progress_pct >= 100 or parent.processor.is_recording_complete():
                 self.recording_timer.stop()
@@ -598,8 +601,8 @@ class VoiceSetupDialog(QDialog):
             self.time_label.setText("Complete!")
             self.time_label.setStyleSheet(message_text_style("ok", strong=True))
 
-    def _update_level(self, rms_db: float) -> None:
-        self.level_meter.set_levels(rms_db, rms_db + 6.0)
+    def _update_level(self, rms_db: float, peak_db: float) -> None:
+        self.level_meter.set_levels(rms_db, peak_db)
 
         if self.setup_state == "noise_recording":
             if rms_db > -35.0:
@@ -617,7 +620,7 @@ class VoiceSetupDialog(QDialog):
         if rms_db < TOO_QUIET_DB:
             self.warning_label.setText("Too quiet. Move closer to the mic.")
             self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
-        elif rms_db > TOO_LOUD_DB:
+        elif peak_db > TOO_LOUD_DB:
             self.warning_label.setText("Too loud. Back off slightly to avoid clipping.")
             self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
         else:

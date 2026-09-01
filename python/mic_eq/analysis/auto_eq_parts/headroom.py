@@ -9,7 +9,10 @@ from typing import Any
 import numpy as np
 from scipy.signal import lfilter, resample_poly
 
-from .constants import NUM_EQ_BANDS
+from ..eq_quality import evaluate_eq_quality, weighted_target_error
+from .constants import NUM_EQ_BANDS, REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD
+from .dynamic_bands import _voice_weights
+from .optimizer import _overall_confidence, _validation_confidence
 
 HEADROOM_TARGET_DB = 1.0
 LIMITER_GAIN_REDUCTION_WARN_DB = 1.0
@@ -290,11 +293,92 @@ def _is_headroom_safe(simulation: dict[str, Any]) -> bool:
     )
 
 
+def _refresh_scaled_eq_metadata(
+    result: dict[str, Any],
+    analysis_freqs: np.ndarray | None,
+    measured_db: np.ndarray | None,
+    target_db: np.ndarray | None,
+) -> None:
+    gains = np.asarray(result["band_gains"], dtype=float)
+    centers = np.asarray(result.get("band_freqs", []), dtype=float)
+    qs = np.asarray(result.get("band_qs", []), dtype=float)
+    if not (gains.size == centers.size == qs.size == NUM_EQ_BANDS):
+        return
+
+    result["active_band_count"] = int(np.count_nonzero(np.abs(gains) >= 0.25))
+    result["eq_quality"] = evaluate_eq_quality(centers, gains, qs).to_dict()
+    result["max_adjacent_gain_difference_db"] = float(np.max(np.abs(np.diff(gains))))
+    octave_gaps = np.maximum(np.diff(np.log2(np.clip(centers, 1e-6, None))), 1e-6)
+    result["max_adjacent_gain_slope_db_per_octave"] = float(
+        np.max(np.abs(np.diff(gains)) / octave_gaps)
+    )
+
+    arrays = (analysis_freqs, measured_db, target_db)
+    if all(value is not None for value in arrays):
+        freqs = np.asarray(analysis_freqs, dtype=float)
+        measured = np.asarray(measured_db, dtype=float)
+        target = np.asarray(target_db, dtype=float)
+        if freqs.shape == measured.shape == target.shape and freqs.size:
+            weights = _voice_weights(freqs)
+            before_error = weighted_target_error(
+                freqs, measured, target, np.zeros_like(gains), qs, centers, weights
+            )
+            after_error = weighted_target_error(
+                freqs, measured, target, gains, qs, centers, weights
+            )
+            result["validation_before_error_db"] = before_error
+            result["validation_after_error_db"] = after_error
+            validation_confidence = _validation_confidence(
+                before_error,
+                after_error,
+                _as_float(result.get("validation_gain_scale"), 1.0),
+            )
+            result["validation_confidence"] = validation_confidence
+            band_confidences = np.asarray(result.get("band_confidences", []), dtype=float)
+            if band_confidences.size == NUM_EQ_BANDS:
+                overall, eq_confidence, capture_confidence = _overall_confidence(
+                    band_confidences,
+                    gains,
+                    _as_float(result.get("capture_confidence"), 1.0),
+                    validation_confidence,
+                )
+                result["analysis_confidence"] = overall
+                result["eq_confidence"] = eq_confidence
+                result["capture_confidence"] = capture_confidence
+
+    status = str(result.get("recommendation_status", "apply"))
+    reasons = list(result.get("recommendation_reasons") or [])
+    abstention_reasons = list(result.get("abstention_reasons") or [])
+    scale = _as_float(result.get("validation_gain_scale"), 1.0)
+    if not np.any(np.abs(gains) >= 0.25):
+        status = "abstain"
+        reason = "headroom validation removed the usable correction"
+        if reason not in abstention_reasons:
+            abstention_reasons.append(reason)
+    elif status == "apply" and (
+        scale < 0.70
+        or _as_float(result.get("analysis_confidence"), 1.0)
+        < REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD
+    ):
+        status = "reduced"
+        reason = "headroom validation reduced the fitted correction"
+        if reason not in reasons:
+            reasons.append(reason)
+    result["recommendation_status"] = status
+    result["apply_recommended"] = status != "abstain"
+    result["recommendation_reasons"] = reasons
+    result["abstention_reasons"] = abstention_reasons
+
+
 def apply_headroom_validation(
     audio_data: np.ndarray,
     sample_rate: int,
     eq_settings: dict[str, Any],
     chain_settings: dict[str, Any] | None = None,
+    *,
+    analysis_freqs: np.ndarray | None = None,
+    measured_db: np.ndarray | None = None,
+    target_db: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Scale Auto-EQ boosts/cuts when offline chain simulation predicts headroom risk."""
 
@@ -323,6 +407,7 @@ def apply_headroom_validation(
     result["band_gains"] = selected_gains.tolist()
     existing_scale = _as_float(result.get("validation_gain_scale"), 1.0)
     result["validation_gain_scale"] = float(existing_scale * selected_scale)
+    _refresh_scaled_eq_metadata(result, analysis_freqs, measured_db, target_db)
 
     meets_thresholds = _is_headroom_safe(selected)
     authoritative = selected.get("simulation_backend") == "rust"

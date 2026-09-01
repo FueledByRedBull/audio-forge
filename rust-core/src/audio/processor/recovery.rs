@@ -14,6 +14,20 @@ pub fn service_recovery(&mut self) -> Option<bool> {
         return None;
     }
 
+    let rt_error = RtErrorCode::from_u32(self.rt_error_code.load(Ordering::Acquire));
+    if matches!(
+        rt_error,
+        RtErrorCode::SuppressorBackendFailed | RtErrorCode::SuppressorNonFinite
+    ) && self.rebuild_noise_suppressor()
+    {
+        self.restart_requested.store(false, Ordering::Release);
+        if let Ok(mut state) = self.recovery_state.lock() {
+            state.last_error = None;
+            state.last_reason = Some(format!("{}; suppressor engine rebuilt", rt_error.as_str()));
+        }
+        return Some(true);
+    }
+
     let now = now_micros();
     let last_attempt = self.last_restart_attempt_us.load(Ordering::Acquire);
     let backoff_idx = self.restart_backoff_index.load(Ordering::Acquire);

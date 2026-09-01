@@ -623,6 +623,33 @@ def test_16a_frequency_dependent_snr_caps_only_unsupported_boosts():
     assert gains[high_band] <= 1.5
 
 
+def test_16a_partial_missing_snr_stays_unknown_and_conservative():
+    freqs = _default_freqs()
+    log_freqs = np.log10(freqs)
+    measured_db = np.full_like(freqs, -70.0)
+    measured_db -= 10.0 * np.exp(-((log_freqs - np.log10(6000.0)) ** 2) / (2 * 0.08**2))
+    target_db = get_target_curve(freqs, "flat", target_mode="static")
+    spectral_snr = np.full_like(freqs, 24.0)
+    spectral_snr[(freqs >= 4200.0) & (freqs <= 8500.0)] = np.nan
+
+    eq = calculate_eq_bands(
+        freqs,
+        measured_db,
+        target_db,
+        spectral_repeatability=np.ones_like(freqs),
+        spectral_snr_db=spectral_snr,
+        noise_reference_source="explicit_capture",
+        analysis_confidence=0.95,
+    )
+    centers = np.asarray(eq["band_freqs"], dtype=float)
+    high_band = int(np.argmin(np.abs(centers - 6000.0)))
+
+    assert eq["snr_reference_available"] is True
+    assert eq["band_snr_available"][high_band] is False
+    assert eq["band_snr_db"][high_band] is None
+    assert eq["band_gains"][high_band] <= 1.5 + 1e-9
+
+
 def test_16b_low_quality_capture_abstains_instead_of_applying_eq():
     freqs = _default_freqs()
     measured_db = generate_test_spectrum(freqs, "harsh")
@@ -977,6 +1004,11 @@ def test_25_headroom_validation_reduces_boosts_when_peak_headroom_is_insufficien
         "validation_gain_scale": 1.0,
         "validation_confidence": 0.95,
         "analysis_confidence": 0.95,
+        "capture_confidence": 0.95,
+        "band_confidences": [0.9] * 10,
+        "recommendation_status": "apply",
+        "validation_after_error_db": 999.0,
+        "eq_quality": {"stale": True},
     }
     chain_settings = {
         "compressor": {"enabled": False},
@@ -988,13 +1020,25 @@ def test_25_headroom_validation_reduces_boosts_when_peak_headroom_is_insufficien
         },
     }
 
+    analysis_freqs = np.geomspace(80.0, 8_000.0, 128)
+    measured_db = np.zeros_like(analysis_freqs)
+    target_db = np.full_like(analysis_freqs, 3.0)
     validated = apply_headroom_validation(
-        audio, sample_rate, eq_settings, chain_settings
+        audio,
+        sample_rate,
+        eq_settings,
+        chain_settings,
+        analysis_freqs=analysis_freqs,
+        measured_db=measured_db,
+        target_db=target_db,
     )
 
     assert validated["headroom_gain_scale"] < 1.0
     assert max(validated["band_gains"]) < 9.0
     assert validated["headroom_validation"]["safe"]
+    assert validated["validation_after_error_db"] != 999.0
+    assert "stale" not in validated["eq_quality"]
+    assert validated["recommendation_status"] in {"reduced", "abstain"}
     assert (
         validated["headroom_validation"]["after"]["pre_limiter_true_peak_headroom_db"]
         >= 1.0
@@ -1021,6 +1065,78 @@ def test_26_headroom_validation_preserves_safe_correction():
     assert validated["headroom_gain_scale"] == 1.0
     assert np.allclose(validated["band_gains"], eq_settings["band_gains"])
     assert validated["headroom_validation"]["safe"]
+
+
+def test_headroom_zero_scale_clears_stale_apply_metadata():
+    sample_rate = 48_000
+    audio = np.ones(sample_rate // 4, dtype=np.float32)
+    eq_settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [6.0] * 10,
+        "band_qs": [1.41] * 10,
+        "band_confidences": [0.95] * 10,
+        "validation_gain_scale": 1.0,
+        "validation_confidence": 0.95,
+        "analysis_confidence": 0.95,
+        "capture_confidence": 0.95,
+        "recommendation_status": "apply",
+        "apply_recommended": True,
+    }
+    freqs = np.geomspace(80.0, 8_000.0, 128)
+
+    validated = apply_headroom_validation(
+        audio,
+        sample_rate,
+        eq_settings,
+        {
+            "compressor": {"enabled": False},
+            "deesser": {"enabled": False},
+            "limiter": {"enabled": True, "ceiling_db": -20.0},
+        },
+        analysis_freqs=freqs,
+        measured_db=np.zeros_like(freqs),
+        target_db=np.full_like(freqs, 3.0),
+    )
+
+    assert validated["headroom_gain_scale"] == 0.0
+    assert validated["band_gains"] == [0.0] * 10
+    assert validated["active_band_count"] == 0
+    assert validated["recommendation_status"] == "abstain"
+    assert validated["apply_recommended"] is False
+
+
+def test_headroom_nonzero_scale_recomputes_active_band_threshold(monkeypatch):
+    def fake_simulation(_audio, _sample_rate, settings, _chain_settings):
+        maximum_gain = max(abs(value) for value in settings["band_gains"])
+        return {
+            "simulation_backend": "rust",
+            "pre_limiter_true_peak_headroom_db": 2.0 if maximum_gain <= 0.2 else 0.0,
+            "limiter_gain_reduction_db": 0.0,
+            "true_peak_limiter_gain_reduction_db": 0.0,
+        }
+
+    monkeypatch.setattr(headroom_module, "simulate_candidate_chain", fake_simulation)
+    settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.8] + [0.0] * 9,
+        "band_qs": [1.41] * 10,
+        "band_confidences": [0.9] * 10,
+        "validation_gain_scale": 1.0,
+        "recommendation_status": "apply",
+        "apply_recommended": True,
+    }
+
+    validated = apply_headroom_validation(
+        np.zeros(480, dtype=np.float32),
+        48_000,
+        settings,
+    )
+
+    assert validated["headroom_gain_scale"] == 0.25
+    assert validated["band_gains"][0] == pytest.approx(0.2)
+    assert validated["active_band_count"] == 0
+    assert validated["recommendation_status"] == "abstain"
+    assert validated["apply_recommended"] is False
 
 
 def test_27_validation_rejects_remaining_headroom_risk():

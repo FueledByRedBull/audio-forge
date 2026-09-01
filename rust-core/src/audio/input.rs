@@ -27,6 +27,7 @@ const PHASE_SAFE_MIN_CORRELATION: f32 = 0.35;
 const PHASE_SAFE_MIN_IMPROVEMENT: f32 = 0.04;
 const PHASE_SAFE_HISTORY_SAMPLES: usize = 16;
 const PHASE_SAFE_INTERPOLATION_LATENCY: f32 = 2.0;
+const PHASE_SAFE_TRANSITION_SAMPLES: usize = 48;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseRescueStrategy {
@@ -91,6 +92,11 @@ struct PhaseSafeMonoState {
     right_history: [f32; PHASE_SAFE_HISTORY_SAMPLES],
     filled: usize,
     last_candidate: Option<PhaseAlignmentCandidate>,
+    last_diagnostics: PhaseSafeMixDiagnostics,
+    last_output: f32,
+    has_output: bool,
+    transition_offset: f32,
+    transition_remaining: usize,
 }
 
 impl Default for PhaseSafeMonoState {
@@ -100,6 +106,11 @@ impl Default for PhaseSafeMonoState {
             right_history: [0.0; PHASE_SAFE_HISTORY_SAMPLES],
             filled: 0,
             last_candidate: None,
+            last_diagnostics: PhaseSafeMixDiagnostics::default(),
+            last_output: 0.0,
+            has_output: false,
+            transition_offset: 0.0,
+            transition_remaining: 0,
         }
     }
 }
@@ -114,6 +125,36 @@ impl PhaseSafeMonoState {
         self.left_history[0] = left;
         self.right_history[0] = right;
         self.filled = (self.filled + 1).min(PHASE_SAFE_HISTORY_SAMPLES);
+    }
+
+    fn smooth_strategy_transition(
+        &mut self,
+        mono: &mut [f32],
+        diagnostics: PhaseSafeMixDiagnostics,
+    ) {
+        if mono.is_empty() {
+            return;
+        }
+        let candidate_changed = diagnostics.strategy != self.last_diagnostics.strategy
+            || (diagnostics.estimated_delay_samples
+                - self.last_diagnostics.estimated_delay_samples)
+                .abs()
+                > 0.5
+            || diagnostics.polarity_flipped != self.last_diagnostics.polarity_flipped;
+        if self.has_output && candidate_changed {
+            self.transition_offset = self.last_output - mono[0];
+            self.transition_remaining = PHASE_SAFE_TRANSITION_SAMPLES;
+        }
+        for sample in mono.iter_mut() {
+            if self.transition_remaining > 0 {
+                let mix = self.transition_remaining as f32 / PHASE_SAFE_TRANSITION_SAMPLES as f32;
+                *sample += self.transition_offset * mix;
+                self.transition_remaining -= 1;
+            }
+            self.last_output = *sample;
+            self.has_output = true;
+        }
+        self.last_diagnostics = diagnostics;
     }
 
     #[inline]
@@ -415,12 +456,23 @@ impl AudioInput {
             return None;
         }
 
+        let mut sum_l = 0.0_f32;
+        let mut sum_r = 0.0_f32;
+        for frame in interleaved.as_chunks::<2>().0.iter().take(frame_count) {
+            let left = Self::normalize_input_sample(frame[0]);
+            let right = Self::normalize_input_sample(frame[1]);
+            sum_l += left;
+            sum_r += right;
+        }
+        let mean_l = sum_l / frame_count as f32;
+        let mean_r = sum_r / frame_count as f32;
+
         let mut sum_lr = 0.0_f32;
         let mut sum_l2 = 0.0_f32;
         let mut sum_r2 = 0.0_f32;
         for frame in interleaved.as_chunks::<2>().0.iter().take(frame_count) {
-            let left = Self::normalize_input_sample(frame[0]);
-            let right = Self::normalize_input_sample(frame[1]);
+            let left = Self::normalize_input_sample(frame[0]) - mean_l;
+            let right = Self::normalize_input_sample(frame[1]) - mean_r;
             sum_lr += left * right;
             sum_l2 += left * left;
             sum_r2 += right * right;
@@ -454,13 +506,27 @@ impl AudioInput {
             return None;
         }
 
+        let count = end - start;
+        let mut sum_l = 0.0_f32;
+        let mut sum_r = 0.0_f32;
+        for left_idx in start..end {
+            let right_idx = (left_idx as i32 + delay) as usize;
+            let left = Self::normalize_input_sample(interleaved[left_idx * 2]);
+            let right = Self::normalize_input_sample(interleaved[right_idx * 2 + 1]) * polarity;
+            sum_l += left;
+            sum_r += right;
+        }
+        let mean_l = sum_l / count as f32;
+        let mean_r = sum_r / count as f32;
+
         let mut sum_lr = 0.0_f32;
         let mut sum_l2 = 0.0_f32;
         let mut sum_r2 = 0.0_f32;
         for left_idx in start..end {
             let right_idx = (left_idx as i32 + delay) as usize;
-            let left = Self::normalize_input_sample(interleaved[left_idx * 2]);
-            let right = Self::normalize_input_sample(interleaved[right_idx * 2 + 1]) * polarity;
+            let left = Self::normalize_input_sample(interleaved[left_idx * 2]) - mean_l;
+            let right =
+                Self::normalize_input_sample(interleaved[right_idx * 2 + 1]) * polarity - mean_r;
             sum_lr += left * right;
             sum_l2 += left * left;
             sum_r2 += right * right;
@@ -568,11 +634,13 @@ impl AudioInput {
                 {
                     mono[frame_idx] = Self::normalize_input_sample(chunk[channel]);
                 }
-                return PhaseSafeMixDiagnostics {
+                let diagnostics = PhaseSafeMixDiagnostics {
                     strategy: PhaseRescueStrategy::MaxRmsFallback,
                     estimated_delay_samples: 0.0,
                     polarity_flipped: false,
                 };
+                state.smooth_strategy_transition(&mut mono[..frame_count], diagnostics);
+                return diagnostics;
             }
 
             for (frame_idx, chunk) in interleaved
@@ -586,7 +654,9 @@ impl AudioInput {
                 let right = Self::normalize_input_sample(chunk[1]);
                 mono[frame_idx] = 0.5 * (left + right);
             }
-            return PhaseSafeMixDiagnostics::default();
+            let diagnostics = PhaseSafeMixDiagnostics::default();
+            state.smooth_strategy_transition(&mut mono[..frame_count], diagnostics);
+            return diagnostics;
         };
 
         let mix_gain = (1.0 / (2.0 * (0.5 + 0.5 * candidate.correlation.max(0.0)).sqrt()))
@@ -639,11 +709,13 @@ impl AudioInput {
             mono[frame_idx] = (aligned_left + aligned_right * candidate.polarity) * mix_gain;
         }
 
-        PhaseSafeMixDiagnostics {
+        let diagnostics = PhaseSafeMixDiagnostics {
             strategy: candidate.strategy,
             estimated_delay_samples: candidate.delay_samples,
             polarity_flipped: candidate.polarity < 0.0,
-        }
+        };
+        state.smooth_strategy_transition(&mut mono[..frame_count], diagnostics);
+        diagnostics
     }
 
     #[cfg(test)]
@@ -727,7 +799,17 @@ impl AudioInput {
                     phase_state,
                 );
             }
-            InputChannelMode::Average | InputChannelMode::PhaseSafeMono => {
+            InputChannelMode::PhaseSafeMono => {
+                let channel = Self::strongest_channel_index(interleaved, num_channels, frame_count);
+                for (frame_idx, chunk) in interleaved
+                    .chunks_exact(num_channels)
+                    .take(frame_count)
+                    .enumerate()
+                {
+                    mono[frame_idx] = Self::normalize_input_sample(chunk[channel]);
+                }
+            }
+            InputChannelMode::Average => {
                 let inv_channel_count = 1.0 / num_channels as f32;
                 for (frame_idx, chunk) in interleaved
                     .chunks_exact(num_channels)
@@ -1248,6 +1330,22 @@ mod tests {
     }
 
     #[test]
+    fn test_phase_safe_multichannel_fallback_preserves_single_active_channel() {
+        let interleaved = [0.0_f32, 0.75, 0.0, 0.0, -0.5, 0.0];
+        let mut mono = [0.0_f32; 2];
+
+        let (written, _, _) = AudioInput::mix_interleaved_to_mono_with_mode(
+            &interleaved,
+            3,
+            InputChannelMode::PhaseSafeMono,
+            &mut mono,
+        );
+
+        assert_eq!(written, 2);
+        assert_eq!(mono, [0.75, -0.5]);
+    }
+
+    #[test]
     fn test_mix_interleaved_reports_negative_stereo_correlation() {
         let interleaved = [1.0_f32, -1.0, 0.5, -0.5, -0.25, 0.25];
         let mut mono = [0.0_f32; 3];
@@ -1261,6 +1359,16 @@ mod tests {
 
         assert_eq!(written, 3);
         assert!(correlation.unwrap() < INPUT_PHASE_WARNING_CORRELATION);
+    }
+
+    #[test]
+    fn test_phase_correlation_ignores_common_dc_offset() {
+        let interleaved = [0.6_f32, 0.4, 0.4, 0.6, 0.6, 0.4, 0.4, 0.6];
+        let direct = AudioInput::stereo_correlation(&interleaved, 4).unwrap();
+        let delayed = AudioInput::delayed_correlation(&interleaved, 4, 0, 1.0).unwrap();
+
+        assert!(direct < -0.99, "direct={direct}");
+        assert!(delayed < -0.99, "delayed={delayed}");
     }
 
     #[test]
@@ -1447,6 +1555,59 @@ mod tests {
         assert!(
             max_boundary_error < 0.12,
             "max_boundary_error={max_boundary_error}"
+        );
+    }
+
+    #[test]
+    fn test_phase_safe_strategy_change_has_no_added_boundary_jump() {
+        let sample_rate = TARGET_SAMPLE_RATE as f32;
+        let frames = 256usize;
+        let frequency = 3_700.0_f32;
+        let delay = 3.4_f32;
+        let source = |position: f32| {
+            0.25 * (2.0 * std::f32::consts::PI * frequency * position / sample_rate).sin()
+        };
+        let mut state = PhaseSafeMonoState::default();
+        let mut delayed = vec![0.0_f32; frames * 2];
+        let mut normal = vec![0.0_f32; frames * 2];
+        for index in 0..frames {
+            delayed[index * 2] = source(index as f32);
+            delayed[index * 2 + 1] = source(index as f32 - delay);
+            normal[index * 2] = source((frames + index) as f32);
+            normal[index * 2 + 1] = normal[index * 2];
+        }
+        let mut before = vec![0.0_f32; frames];
+        let mut after = vec![0.0_f32; frames];
+        let (_, _, before_diagnostics) = AudioInput::mix_interleaved_to_mono_with_mode_and_state(
+            &delayed,
+            2,
+            InputChannelMode::PhaseSafeMono,
+            &mut before,
+            &mut state,
+        );
+        let (_, _, after_diagnostics) = AudioInput::mix_interleaved_to_mono_with_mode_and_state(
+            &normal,
+            2,
+            InputChannelMode::PhaseSafeMono,
+            &mut after,
+            &mut state,
+        );
+
+        let boundary_step = (after[0] - before[frames - 1]).abs();
+        let natural_max_step = normal
+            .as_chunks::<2>()
+            .0
+            .windows(2)
+            .map(|pair| (pair[1][0] - pair[0][0]).abs())
+            .fold(0.0_f32, f32::max);
+        assert_eq!(
+            before_diagnostics.strategy,
+            PhaseRescueStrategy::FractionalDelay
+        );
+        assert_eq!(after_diagnostics.strategy, PhaseRescueStrategy::None);
+        assert!(
+            boundary_step <= natural_max_step * 1.25 + 1.0e-3,
+            "boundary_step={boundary_step} natural_max_step={natural_max_step}"
         );
     }
 

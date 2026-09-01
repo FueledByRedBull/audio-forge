@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "audible_change": true,
-  "generated_at_utc": "2026-08-27T21:48:28.282596+00:00",
+  "generated_at_utc": "2026-09-01T17:49:23.792588+00:00",
   "experiment": "VAD/noise-reliability auto-makeup versus RMS-only fallback",
   "retained": true,
   "predefined_gates": {
@@ -24,7 +24,7 @@
     "median_baseline_pumping_score": 0.09354038299621031,
     "p95_candidate_p99_boundary_excess_linear": 0.013264153255848208,
     "p95_baseline_p99_boundary_excess_linear": 0.015430391722824422,
-    "max_candidate_p99_block_runtime_ms": 0.49974435567855835,
+    "max_candidate_p99_block_runtime_ms": 0.3821922838687897,
     "minimum_active_block_ratio": 0.19033333333333333,
     "minimum_inactive_block_ratio": 0.49733333333333335
   },
@@ -39,8 +39,8 @@
   "source_sha256": {
     "python/tools/evaluate_auto_makeup_real_speech.py": "8fbacc0ebbf1ede63ccb2efb6787850c6b9a8368645e94b7a873660f7d918d82",
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-    "rust-core/src/audio/processor/python_api.rs": "7071ff86b21247b04d040115567cdc50b5d10e1b09e04b70ae5912af5199abd5",
-    "rust-core/src/dsp/compressor.rs": "32fbb9204bc38233a6523cbbb65f77ce25e9be9d574c326d94e3a4adf2015216",
+    "rust-core/src/audio/processor/python_api.rs": "ba7f30ca011f71a580f4a7ce034064bd123b06d1e340a038e29cbdc84be43847",
+    "rust-core/src/dsp/compressor.rs": "03a3fc8ea093a129eec994edb198abdd8687a76a3d1dbf7ed23b87d5491ad860",
     "rust-core/src/dsp/vad.rs": "49dde57fd86dac27b1571cb187097991ecc7c9de777b7c159f0b5e5d3fdf6c67"
   },
   "evaluation_contract": {
@@ -62,7 +62,7 @@
       "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
     },
     "runtime": {
-      "max_p99_frame_seconds": 0.0004997443556785583,
+      "max_p99_frame_seconds": 0.0003821922838687897,
       "control_deadline_seconds": 0.01,
       "platform": "Windows-11-10.0.26200-SP0",
       "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"

@@ -525,8 +525,6 @@ impl DeEsser {
             }
         }
 
-        let mut processed = input;
-        let mut total_reduction = 0.0_f64;
         for (band, target_reduction) in self.bands.iter_mut().zip(target_reductions) {
             band.reduction_db = Self::smooth_value(
                 band.reduction_db,
@@ -534,6 +532,18 @@ impl DeEsser {
                 self.attack_coeff,
                 self.release_coeff,
             );
+        }
+        let smoothed_sum: f64 = self.bands.iter().map(|band| band.reduction_db).sum();
+        if smoothed_sum > self.max_reduction_db && smoothed_sum > 0.0 {
+            let scale = self.max_reduction_db / smoothed_sum;
+            for band in &mut self.bands {
+                band.reduction_db *= scale;
+            }
+        }
+
+        let mut processed = input;
+        let mut total_reduction = 0.0_f64;
+        for band in &mut self.bands {
             total_reduction += band.reduction_db;
             let dynamic_gain_db = -band.reduction_db;
             if (band.dynamic_eq.gain_db() - dynamic_gain_db).abs() > 0.001 {
@@ -887,6 +897,26 @@ mod tests {
             deesser.detector_confidence() < 0.85,
             "broadband bright voice should not look like fully narrow sibilance"
         );
+    }
+
+    #[test]
+    fn test_smoothed_moving_band_reduction_never_exceeds_budget() {
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        deesser.set_auto_enabled(true);
+        deesser.set_auto_amount(1.0);
+        deesser.set_max_reduction_db(4.0);
+
+        for &frequency in &[4_800.0, 7_000.0, 9_500.0, 4_800.0] {
+            for n in 0..4_800 {
+                let t = n as f64 / 48_000.0;
+                let body = (2.0 * std::f64::consts::PI * 420.0 * t).sin() as f32 * 0.08;
+                let sibilance = (2.0 * std::f64::consts::PI * frequency * t).sin() as f32 * 0.40;
+                deesser.process_sample(body + sibilance);
+                let total: f32 = deesser.band_gain_reductions_db().iter().sum();
+                assert!(total <= 4.001, "smoothed band budget exceeded: {total}");
+            }
+        }
     }
 
     #[test]

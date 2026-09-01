@@ -6,21 +6,21 @@
       "cross_take_abstention_rate": 0.0,
       "cross_take_headroom_safe_rate": 1.0,
       "cross_take_retry_rate": 0.0,
-      "cross_take_runtime_p95_seconds": 1.357292355000004,
-      "median_heldout_improvement_db": -1.676470453517249,
-      "p10_heldout_improvement_db": -1.9251670218749548,
+      "cross_take_runtime_p95_seconds": 1.8130010699997001,
+      "median_heldout_improvement_db": -1.3411526187353697,
+      "p10_heldout_improvement_db": -1.819669722622817,
       "pair_count": 12,
-      "runtime_p95_ratio": 1.4100670618291429,
+      "runtime_p95_ratio": 1.4532725691012678,
       "single_abstention_rate": 0.0,
       "single_retry_rate": 0.0,
-      "single_runtime_p95_seconds": 0.962572909999983,
+      "single_runtime_p95_seconds": 1.2475299599997924,
       "speaker_median_heldout_improvements_db": {
-        "actor-19": -1.6606584293627566,
-        "actor-20": -1.6922824776717413,
-        "actor-21": 0.311120890168918,
-        "actor-22": -1.8891290108279222,
-        "actor-23": 0.35635875010175333,
-        "actor-24": -1.9612050329219874
+        "actor-19": -1.7131606578548828,
+        "actor-20": -1.5680215564864328,
+        "actor-21": 0.39051598710120405,
+        "actor-22": -1.926178787390751,
+        "actor-23": -0.2448911585321616,
+        "actor-24": -1.1142836809843066
       }
     },
     "validation": {
@@ -29,21 +29,21 @@
       "cross_take_abstention_rate": 0.0,
       "cross_take_headroom_safe_rate": 1.0,
       "cross_take_retry_rate": 0.0,
-      "cross_take_runtime_p95_seconds": 1.4119265850000147,
-      "median_heldout_improvement_db": -0.9181900257821636,
-      "p10_heldout_improvement_db": -1.7730540937628128,
+      "cross_take_runtime_p95_seconds": 1.922319860000425,
+      "median_heldout_improvement_db": -0.3212052368676157,
+      "p10_heldout_improvement_db": -1.7551888943876506,
       "pair_count": 12,
-      "runtime_p95_ratio": 1.3841127764717334,
-      "single_abstention_rate": 0.0,
+      "runtime_p95_ratio": 1.565742934577247,
+      "single_abstention_rate": 0.08333333333333333,
       "single_retry_rate": 0.0,
-      "single_runtime_p95_seconds": 1.020095045000005,
+      "single_runtime_p95_seconds": 1.2277365700005247,
       "speaker_median_heldout_improvements_db": {
-        "actor-13": -0.6704382367070787,
-        "actor-14": -1.1659418148572485,
-        "actor-15": -0.11829720967832724,
-        "actor-16": -1.1952871860235144,
-        "actor-17": -0.5473966424073131,
-        "actor-18": -2.350821001502111
+        "actor-13": -0.15215224006833594,
+        "actor-14": 0.7991058756333302,
+        "actor-15": -0.06610188145834606,
+        "actor-16": -1.3553957849461975,
+        "actor-17": -0.49025823366689547,
+        "actor-18": -2.1549820038291037
       }
     }
   },
@@ -101,7 +101,7 @@
     "min_median_heldout_improvement_db": 0.0,
     "min_p10_heldout_improvement_db": -0.5
   },
-  "generated_at": "2026-08-02T14:04:23.419135+00:00",
+  "generated_at": "2026-09-01T17:51:23.113657+00:00",
   "limitations": [
     "Actors use short fixed statements rather than the Rainbow Passage.",
     "Professional acted speech does not represent every conversational delivery.",
@@ -123,7 +123,7 @@
     "python": "3.12.10",
     "source_hashes": {
       "python/mic_eq/analysis/auto_eq_parts/cross_take.py": "82e41ae6cc39559bb919c20d8e24640e7d66d9fcdd9c0e0fdae9dac1c17358ca",
-      "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "b0825a4810e5ff748648c2ae746f424076a289a8538b844952becff76e300d27",
+      "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "99f09b3f868f103464eee22b70bcd5c485427e79a3a770170df7b527838a533c",
       "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
       "python/tools/evaluate_cross_take_auto_eq.py": "37504d4503706185e30b29c166904fda17ed06bbbdf3c3883096b512fac2efea"
     },

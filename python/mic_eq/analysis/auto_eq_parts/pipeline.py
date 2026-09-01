@@ -147,6 +147,9 @@ def analyze_auto_eq(
         sample_rate,
         eq_settings,
         chain_settings=chain_settings,
+        analysis_freqs=freqs,
+        measured_db=spectrum_smoothed,
+        target_db=target_db,
     )
 
     # Step 5: Validate results

@@ -108,6 +108,41 @@ impl AudioProcessor {
         true
     }
 
+    fn rebuild_noise_suppressor(&self) -> bool {
+        self.drain_retired_suppressors();
+        let model = self.get_noise_model();
+        let engine = new_noise_suppression_engine(model, Arc::clone(&self.suppressor_strength));
+        let diagnostics = noise_backend_diagnostics(&engine);
+        if model != NoiseModel::RNNoise && !diagnostics.available {
+            store_backend_diagnostics(
+                &self.noise_backend_available,
+                &self.noise_backend_failed,
+                self.noise_backend_error.as_ref(),
+                diagnostics,
+            );
+            return false;
+        }
+
+        let queued = self
+            .pending_suppressor_tx
+            .lock()
+            .ok()
+            .and_then(|mut tx| tx.as_mut().map(|tx| tx.push(engine).is_ok()))
+            .unwrap_or(false);
+        if !queued {
+            return false;
+        }
+
+        store_backend_diagnostics(
+            &self.noise_backend_available,
+            &self.noise_backend_failed,
+            self.noise_backend_error.as_ref(),
+            diagnostics,
+        );
+        self.suppressor_dirty.store(true, Ordering::Release);
+        true
+    }
+
     /// Get current noise suppression model
     pub fn get_noise_model(&self) -> NoiseModel {
         let model_u8 = self.current_model.load(Ordering::Acquire);

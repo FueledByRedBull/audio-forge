@@ -3059,11 +3059,19 @@ class MainWindow(QMainWindow):
         output_buf: int,
     ) -> None:
         """Service UI-side and Rust-side stream recovery."""
+        gate_mode_combo = getattr(getattr(self, "gate_panel", None), "gate_mode_combo", None)
+        gate_mode = gate_mode_combo.currentIndex() if gate_mode_combo is not None else 0
         if self._stream_recovery.maybe_recover_output_stall(
             input_rms=input_rms,
             output_rms=output_rms,
             output_buf=output_buf,
             calibration_dialog_open=self._calibration_dialog_open,
+            recovery_suppressed=bool(diagnostics.get("recovery_suppressed", False)),
+            intentional_mute=bool(diagnostics.get("output_muted", False)),
+            expected_gate_closed=(
+                gate_mode == 2
+                and float(diagnostics.get("gate_fused_score", 1.0)) < 0.12
+            ),
         ):
             self._recover_output_path()
 

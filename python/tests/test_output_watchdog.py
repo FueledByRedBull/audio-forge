@@ -1,5 +1,7 @@
 """Tests for output callback watchdog logic."""
 
+import pytest
+
 from mic_eq.ui.stream_recovery import StreamRecoveryManager, update_callback_stall_state
 
 
@@ -114,6 +116,40 @@ def test_output_stall_sets_timer_then_recovers():
     assert recover is True
     assert manager.output_stall_started_at is None
     assert manager.last_output_recovery_at == 101.6
+
+
+def test_output_stall_recovery_does_not_require_a_large_output_queue():
+    manager = StreamRecoveryManager(processing_started_at=0.0)
+
+    assert not manager.maybe_recover_output_stall(
+        input_rms=-20.0,
+        output_rms=-90.0,
+        output_buf=0,
+        calibration_dialog_open=False,
+        now=100.0,
+    )
+    assert manager.maybe_recover_output_stall(
+        input_rms=-20.0,
+        output_rms=-90.0,
+        output_buf=0,
+        calibration_dialog_open=False,
+        now=101.6,
+    )
+
+
+@pytest.mark.parametrize("exclusion", ["intentional_mute", "expected_gate_closed"])
+def test_output_stall_ignores_intentional_silence(exclusion):
+    manager = StreamRecoveryManager(output_stall_started_at=90.0)
+
+    assert not manager.maybe_recover_output_stall(
+        input_rms=-20.0,
+        output_rms=-90.0,
+        output_buf=0,
+        calibration_dialog_open=False,
+        now=100.0,
+        **{exclusion: True},
+    )
+    assert manager.output_stall_started_at is None
 
 
 def test_output_stall_ignores_calibration_and_cooldown():

@@ -2,28 +2,28 @@
   "aggregate": {
     "all_outputs_finite": true,
     "candidate_p95_limiter_gr_db": 0.0,
-    "candidate_p95_realtime_factor": 0.0010557853314740275,
+    "candidate_p95_realtime_factor": 0.0010809166718259934,
     "comparable_cases": 24,
     "failed_cases": 0,
     "incumbent_p95_limiter_gr_db": 0.0,
-    "incumbent_p95_realtime_factor": 0.001379389831371788,
+    "incumbent_p95_realtime_factor": 0.0014146565716980945,
     "latency_samples": [
       0
     ],
     "max_full_chain_true_peak_overshoot_db": 0.0,
-    "max_true_peak_regression_db": 2.6811699162474962,
-    "median_active_section_reduction": 3.0,
-    "median_heldout_improvement_db": 0.0533512200147932,
-    "median_stability_regression_db": 0.07169658310322738,
+    "max_true_peak_regression_db": 1.7944129012826457,
+    "median_active_section_reduction": 2.0,
+    "median_heldout_improvement_db": 0.024966561756227357,
+    "median_stability_regression_db": 0.1058809248212593,
     "native_constraints_valid": true,
-    "p10_heldout_improvement_db": -0.006883696835060071,
-    "p90_stability_regression_db": 0.2692705733789638,
+    "p10_heldout_improvement_db": -0.007920976969400325,
+    "p90_stability_regression_db": 0.28904066843221615,
     "p95_limiter_gr_regression_db": 0.0,
-    "p95_runtime_ratio": 0.7654002570281823,
+    "p95_runtime_ratio": 0.7640841554417029,
     "selected_filter_type_counts": {
-      "bell": 139,
-      "high_shelf": 5,
-      "low_shelf": 21
+      "bell": 132,
+      "high_shelf": 6,
+      "low_shelf": 25
     },
     "vad_backends": [
       "silero"
@@ -51,7 +51,7 @@
     "headroom_true_peak_ceiling": true,
     "lower_decile_heldout_noninferior": true,
     "material_sparsity": true,
-    "median_cross_take_stability": true,
+    "median_cross_take_stability": false,
     "median_heldout_noninferior": true,
     "native_constraints": true,
     "runtime_absolute": true,
@@ -63,6 +63,7 @@
   "decision": {
     "failed_checks": [
       "clean_true_peak",
+      "median_cross_take_stability",
       "upper_tail_cross_take_stability"
     ],
     "product_action": "retain incumbent; candidate remains evaluation-only",
@@ -74,17 +75,17 @@
       "dataset_archive": "5d208e01632cc3e5242106fa2af3273e6dc5239fb8143131979ac74c4aa40657",
       "native_extension": {
         "path": "python/mic_eq/mic_eq_core.cp312-win_amd64.pyd",
-        "sha256": "fa21c980eb15e902950d93b20b26943b6c0dfc804d07b4612f041d0f6ec8e621"
+        "sha256": "bc54f5b601bd22595f217d6486dcc501e0b888b9dd364843cbbd78181f782820"
       },
       "source": {
         "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "c7d31f975fc3a55fdbef5531be1afea8ff03035de42d67b15c6309869cebab6d",
-        "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "b0825a4810e5ff748648c2ae746f424076a289a8538b844952becff76e300d27",
+        "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "99f09b3f868f103464eee22b70bcd5c485427e79a3a770170df7b527838a533c",
         "python/mic_eq/analysis/auto_eq_parts/target.py": "55ebd6dc14c8d6f93fc839a0a8792ad82817a9dd357053397ed8deff0c7bd1a8",
-        "python/mic_eq/analysis/spectrum.py": "b93ed96b345ba4273780ed736782a38c34382a3b96b93fd07b78ea61c3d18e23",
+        "python/mic_eq/analysis/spectrum.py": "6ce282b21c0e5131d14949876e64fd630b548fdb019de6aa1a9dd69c8c58dc25",
         "python/mic_eq/analysis/vad.py": "5d65531ed84727dd0e34fb8d1ccf6b1c41fd7ec66816543cc65786778613503e",
         "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
         "python/tools/evaluate_sparse_auto_eq_filters.py": "6ab6e4dffa61d4efb2062c58bc29edfcf5b933a5f15cca6fd45ab48296a6bb11",
-        "rust-core/src/audio/processor/python_api.rs": "7071ff86b21247b04d040115567cdc50b5d10e1b09e04b70ae5912af5199abd5",
+        "rust-core/src/audio/processor/python_api.rs": "ba7f30ca011f71a580f4a7ce034064bd123b06d1e340a038e29cbdc84be43847",
         "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
         "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
       }
@@ -92,7 +93,7 @@
     "clean_preservation": {
       "all_outputs_finite": true,
       "max_full_chain_true_peak_overshoot_db": 0.0,
-      "max_true_peak_regression_db": 2.6811699162474962,
+      "max_true_peak_regression_db": 1.7944129012826457,
       "p95_limiter_gr_regression_db": 0.0
     },
     "configuration": {
@@ -112,8 +113,8 @@
       "sample_rate": 48000
     },
     "runtime": {
-      "candidate_p95_realtime_factor": 0.0010557853314740275,
-      "incumbent_p95_realtime_factor": 0.001379389831371788,
+      "candidate_p95_realtime_factor": 0.0010809166718259934,
+      "incumbent_p95_realtime_factor": 0.0014146565716980945,
       "machine": "Windows-11-10.0.26200-SP0",
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native evaluation API reports whole-clip time rather than per-callback P99; realtime factor and active sections are measured.",
@@ -123,7 +124,7 @@
   },
   "experiment": "Sparse and typed Auto-EQ selection against the incumbent",
   "failures": [],
-  "generated_at_utc": "2026-08-27T22:39:38.118332+00:00",
+  "generated_at_utc": "2026-09-01T17:54:32.265015+00:00",
   "incumbent": {
     "filter_layout": "low shelf, eight bells, high shelf",
     "product_path": "single-take ten-band Auto-EQ"
@@ -150,13 +151,13 @@
   "schema_version": 3,
   "source_sha256": {
     "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "c7d31f975fc3a55fdbef5531be1afea8ff03035de42d67b15c6309869cebab6d",
-    "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "b0825a4810e5ff748648c2ae746f424076a289a8538b844952becff76e300d27",
+    "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "99f09b3f868f103464eee22b70bcd5c485427e79a3a770170df7b527838a533c",
     "python/mic_eq/analysis/auto_eq_parts/target.py": "55ebd6dc14c8d6f93fc839a0a8792ad82817a9dd357053397ed8deff0c7bd1a8",
-    "python/mic_eq/analysis/spectrum.py": "b93ed96b345ba4273780ed736782a38c34382a3b96b93fd07b78ea61c3d18e23",
+    "python/mic_eq/analysis/spectrum.py": "6ce282b21c0e5131d14949876e64fd630b548fdb019de6aa1a9dd69c8c58dc25",
     "python/mic_eq/analysis/vad.py": "5d65531ed84727dd0e34fb8d1ccf6b1c41fd7ec66816543cc65786778613503e",
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
     "python/tools/evaluate_sparse_auto_eq_filters.py": "6ab6e4dffa61d4efb2062c58bc29edfcf5b933a5f15cca6fd45ab48296a6bb11",
-    "rust-core/src/audio/processor/python_api.rs": "7071ff86b21247b04d040115567cdc50b5d10e1b09e04b70ae5912af5199abd5",
+    "rust-core/src/audio/processor/python_api.rs": "ba7f30ca011f71a580f4a7ce034064bd123b06d1e340a038e29cbdc84be43847",
     "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
     "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
   },
@@ -164,26 +165,26 @@
     "test": {
       "all_outputs_finite": true,
       "candidate_p95_limiter_gr_db": 0.0,
-      "candidate_p95_realtime_factor": 0.0010716305060974524,
+      "candidate_p95_realtime_factor": 0.001072043790398584,
       "comparable_cases": 12,
       "incumbent_p95_limiter_gr_db": 0.0,
-      "incumbent_p95_realtime_factor": 0.0013555433938967736,
+      "incumbent_p95_realtime_factor": 0.0014207170669673786,
       "latency_samples": [
         0
       ],
       "max_full_chain_true_peak_overshoot_db": 0.0,
-      "max_true_peak_regression_db": 2.6811699162474962,
+      "max_true_peak_regression_db": 1.7944129012826457,
       "median_active_section_reduction": 2.0,
-      "median_heldout_improvement_db": 0.07358898203762365,
-      "median_stability_regression_db": 0.06797280272575332,
-      "p10_heldout_improvement_db": 0.00228560366289532,
-      "p90_stability_regression_db": 0.24746187766109362,
+      "median_heldout_improvement_db": 0.04296669818497101,
+      "median_stability_regression_db": 0.07689832846979897,
+      "p10_heldout_improvement_db": -0.009360874376488401,
+      "p90_stability_regression_db": 0.262769793346586,
       "p95_limiter_gr_regression_db": 0.0,
-      "p95_runtime_ratio": 0.7905541872893067,
+      "p95_runtime_ratio": 0.7545793707447589,
       "selected_filter_type_counts": {
-        "bell": 69,
-        "high_shelf": 4,
-        "low_shelf": 9
+        "bell": 67,
+        "high_shelf": 5,
+        "low_shelf": 12
       },
       "vad_backends": [
         "silero"
@@ -192,26 +193,26 @@
     "validation": {
       "all_outputs_finite": true,
       "candidate_p95_limiter_gr_db": 0.0,
-      "candidate_p95_realtime_factor": 0.0010546428226777093,
+      "candidate_p95_realtime_factor": 0.0010793461979812808,
       "comparable_cases": 12,
       "incumbent_p95_limiter_gr_db": 0.0,
-      "incumbent_p95_realtime_factor": 0.0013793527606940509,
+      "incumbent_p95_realtime_factor": 0.0013868555045433329,
       "latency_samples": [
         0
       ],
       "max_full_chain_true_peak_overshoot_db": 0.0,
-      "max_true_peak_regression_db": 0.7886110703885132,
-      "median_active_section_reduction": 3.0,
-      "median_heldout_improvement_db": 0.025397247834075376,
-      "median_stability_regression_db": 0.09174390523094897,
-      "p10_heldout_improvement_db": -0.01837764190413189,
-      "p90_stability_regression_db": 0.27111967135260645,
+      "max_true_peak_regression_db": 0.8066166462241318,
+      "median_active_section_reduction": 2.0,
+      "median_heldout_improvement_db": 0.01932153771947487,
+      "median_stability_regression_db": 0.11939294799998146,
+      "p10_heldout_improvement_db": 0.00010749313133295866,
+      "p90_stability_regression_db": 0.2907965748104573,
       "p95_limiter_gr_regression_db": 0.0,
-      "p95_runtime_ratio": 0.7645925340715911,
+      "p95_runtime_ratio": 0.7782686764737545,
       "selected_filter_type_counts": {
-        "bell": 70,
+        "bell": 65,
         "high_shelf": 1,
-        "low_shelf": 12
+        "low_shelf": 13
       },
       "vad_backends": [
         "silero"

@@ -72,12 +72,20 @@ class StreamRecoveryManager:
         output_rms: float,
         output_buf: int,
         calibration_dialog_open: bool,
+        recovery_suppressed: bool = False,
+        intentional_mute: bool = False,
+        expected_gate_closed: bool = False,
         now: float | None = None,
         cooldown_s: float = 20.0,
         grace_s: float = 1.5,
     ) -> bool:
         """Return True when output-stall recovery should run."""
-        if calibration_dialog_open:
+        if (
+            calibration_dialog_open
+            or recovery_suppressed
+            or intentional_mute
+            or expected_gate_closed
+        ):
             self.output_stall_started_at = None
             return False
 
@@ -86,7 +94,9 @@ class StreamRecoveryManager:
             self.output_stall_started_at = None
             return False
 
-        suspicious = input_rms > -50.0 and output_rms < -85.0 and output_buf > 20000
+        # A clearly active input must produce something even when queues and
+        # callbacks continue moving; zero-valued writes are otherwise invisible.
+        suspicious = input_rms > -35.0 and output_rms < -85.0
         if not suspicious:
             self.output_stall_started_at = None
             return False

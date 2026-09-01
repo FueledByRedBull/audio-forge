@@ -1,6 +1,6 @@
 """AudioForge low-latency microphone processing."""
 
-__version__ = "1.11.3"
+__version__ = "1.11.4"
 
 try:
     from .mic_eq_core import (

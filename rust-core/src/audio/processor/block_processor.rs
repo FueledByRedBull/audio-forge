@@ -103,6 +103,14 @@ impl OfflineDspBlockProcessor {
         &mut self.true_peak_limiter
     }
 
+    pub fn latency_samples(&self) -> usize {
+        if self.limiter_enabled {
+            self.limiter.lookahead_samples() + self.true_peak_limiter.lookahead_samples()
+        } else {
+            0
+        }
+    }
+
     pub fn process_block_with_stats<const N: usize>(
         &mut self,
         input: &mut [f32],
@@ -141,7 +149,8 @@ impl OfflineDspBlockProcessor {
         }
         if self.compressor_enabled {
             self.compressor.process_block_inplace(block);
-            stats.compressor_gain_reduction_db = self.compressor.current_gain_reduction() as f32;
+            stats.compressor_gain_reduction_db =
+                self.compressor.block_peak_gain_reduction() as f32;
         }
         if self.limiter_enabled {
             self.limiter.process_block_inplace(block);

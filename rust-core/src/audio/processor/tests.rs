@@ -344,6 +344,31 @@ mod tests {
     }
 
     #[test]
+    fn test_suppressor_failure_rebuilds_same_model_without_stream_restart() {
+        let mut processor = AudioProcessor::new();
+        let queue = RtCommandQueue::<NoiseSuppressionEngine, 1>::new();
+        let (tx, mut rx) = queue.split();
+        *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
+        processor.restart_requested.store(true, Ordering::Release);
+        store_rt_error(
+            processor.rt_error_code.as_ref(),
+            RtErrorCode::SuppressorNonFinite,
+        );
+
+        assert_eq!(processor.service_recovery(), Some(true));
+        assert!(!processor.restart_requested.load(Ordering::Acquire));
+        assert!(processor.suppressor_dirty.load(Ordering::Acquire));
+        assert_eq!(
+            rx.pop().expect("rebuilt suppressor").model_type(),
+            NoiseModel::RNNoise
+        );
+        assert_eq!(processor.get_stream_restart_count(), 0);
+        assert!(processor
+            .get_last_restart_reason()
+            .is_some_and(|reason| reason.contains("suppressor engine rebuilt")));
+    }
+
+    #[test]
     fn test_start_publishes_processing_thread_before_starting_streams() {
         let source = include_str!("dsp_loop.rs");
         let start_fn = source_between(source, "    pub fn start(", "    /// Stop audio processing");
@@ -431,6 +456,61 @@ mod tests {
 
         assert_eq!(snapshot.model, NoiseModel::RNNoise);
         assert!(snapshot.enabled);
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_worker_restarts_after_exit_and_inference_error() {
+        let mut processor = AudioProcessor::new();
+        let finished = std::thread::spawn(|| {});
+        let finished_id = finished.thread().id();
+        while !finished.is_finished() {
+            std::thread::yield_now();
+        }
+        processor.vad_worker_thread = Some(finished);
+
+        let (mut producer, consumer) =
+            AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES).split();
+        processor.ensure_vad_worker(consumer);
+        let replacement_id = processor
+            .vad_worker_thread
+            .as_ref()
+            .expect("replacement VAD worker")
+            .thread()
+            .id();
+        assert_ne!(finished_id, replacement_id);
+
+        let wait_until = |predicate: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while Instant::now() < deadline {
+                if predicate() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            false
+        };
+        assert!(wait_until(&|| processor
+            .vad_backend_available
+            .load(Ordering::Acquire)));
+
+        VAD_WORKER_FORCE_INFERENCE_ERROR.store(true, Ordering::Release);
+        assert_eq!(producer.write(&[0.1; 4096]), 4096);
+        assert!(wait_until(&|| !processor
+            .vad_backend_available
+            .load(Ordering::Acquire)));
+        assert!(wait_until(&|| processor
+            .vad_backend_available
+            .load(Ordering::Acquire)));
+
+        assert_eq!(producer.write(&[0.1; 4096]), 4096);
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(processor
+            .vad_worker_thread
+            .as_ref()
+            .is_some_and(|worker| !worker.is_finished()));
+        assert!(processor.vad_backend_available.load(Ordering::Acquire));
+        processor.stop_vad_worker();
     }
 
     fn install_raw_recording_consumer(processor: &AudioProcessor) {
@@ -2002,6 +2082,36 @@ mod tests {
     }
 
     #[test]
+    fn test_offline_block_processor_reports_flushable_chain_latency() {
+        let mut processor = OfflineDspBlockProcessor::new(TARGET_SAMPLE_RATE as f64);
+        processor.set_deesser_enabled(false);
+        processor.set_eq_enabled(false);
+        processor.set_compressor_enabled(false);
+        processor.set_limiter_enabled(true);
+        let latency = processor.latency_samples();
+        assert!(latency > 0);
+
+        let mut input = [0.0_f32; 128];
+        input[0] = 0.25;
+        let mut output = FixedAudioBuffer::<f32, 512>::new();
+        processor.process_block(&mut input, &mut output);
+        let mut rendered = output.as_slice().to_vec();
+
+        let mut flush = vec![0.0_f32; latency];
+        processor.process_block(&mut flush, &mut output);
+        rendered.extend_from_slice(output.as_slice());
+
+        let peak_index = rendered
+            .iter()
+            .enumerate()
+            .max_by(|left, right| left.1.abs().total_cmp(&right.1.abs()))
+            .map(|(index, _)| index)
+            .unwrap();
+        assert_eq!(peak_index, latency);
+        assert!((rendered[peak_index] - 0.25).abs() < 1e-4);
+    }
+
+    #[test]
     fn test_full_downstream_chain_matches_golden_tolerance() {
         let sample_rate = TARGET_SAMPLE_RATE as f64;
         let mut processor = OfflineDspBlockProcessor::new(sample_rate);
@@ -2091,14 +2201,14 @@ mod tests {
         }
 
         let rms = (square_sum / sample_count as f64).sqrt();
-        assert!((rms - 0.186_373_597_569).abs() <= 1.0e-6);
-        assert!((peak - 0.500_791_97).abs() <= 2.0e-6);
-        assert!((weighted_sum - 8_009.884_380_498).abs() <= 0.05);
-        assert!((max_compressor_gr - 8.687_991).abs() <= 0.001);
+        assert!((rms - 0.186_422_464_189).abs() <= 1.0e-6);
+        assert!((peak - 0.500_788_75).abs() <= 2.0e-6);
+        assert!((weighted_sum - 8_034.768_291_836).abs() <= 0.05);
+        assert!((max_compressor_gr - 8.746_429).abs() <= 0.001);
         assert!((max_deesser_gr - 10.0).abs() <= 0.001);
         assert!((max_limiter_gr - 4.348_602).abs() <= 0.001);
         assert!((20..=24).contains(&limited_events));
-        let expected = [-0.123_054_266, 0.113_739_1, 0.093_703_43, 0.023_518_747];
+        let expected = [-0.123_054_266, 0.113_739_1, 0.093_510_956, 0.024_921_212];
         assert_eq!(checkpoints.len(), expected.len());
         for (actual, expected) in checkpoints.into_iter().zip(expected) {
             assert!((actual - expected).abs() <= 2.0e-5);
@@ -2946,4 +3056,11 @@ mod tests {
             );
         });
     }
+}
+
+#[test]
+fn test_auto_makeup_control_block_is_ten_ms_at_supported_rates() {
+    assert_eq!(ten_ms_control_block_size(44_100.0), 441);
+    assert_eq!(ten_ms_control_block_size(48_000.0), 480);
+    assert_eq!(ten_ms_control_block_size(96_000.0), 960);
 }

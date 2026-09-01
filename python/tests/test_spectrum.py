@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 SPECTRUM_PATH = Path(__file__).parent.parent / "mic_eq" / "analysis" / "spectrum.py"
@@ -18,6 +19,8 @@ compute_voice_spectrum = spectrum.compute_voice_spectrum
 analyze_voice_spectrum = spectrum.analyze_voice_spectrum
 evaluate_spectrum_estimators = spectrum.evaluate_spectrum_estimators
 find_octave_spaced_peaks = spectrum.find_octave_spaced_peaks
+smooth_spectrum_octave = spectrum.smooth_spectrum_octave
+smooth_spectrum_perceptual = spectrum.smooth_spectrum_perceptual
 _window_spectrum_db = spectrum._window_spectrum_db
 _measurement_reliability = spectrum._measurement_reliability
 
@@ -88,6 +91,39 @@ def test_explicit_noise_capture_produces_frequency_dependent_snr():
     assert result.noise_spectrum_db is not None
     assert result.spectral_snr_db.shape == result.freqs.shape
     assert result.snr_db > 10.0
+
+
+def test_sparse_fallback_snr_uses_the_same_power_scale_as_noise_reference():
+    fs = 48_000
+    seconds = 4
+    rng = np.random.default_rng(90210)
+    t = np.arange(fs * seconds, dtype=float) / fs
+    noise = 0.002 * rng.normal(size=t.size)
+    voiced = 0.05 * np.sin(2.0 * np.pi * 220.0 * t)
+    sparse = noise.copy()
+    burst_samples = fs // 4
+    sparse[fs : fs + burst_samples] += voiced[fs : fs + burst_samples]
+    vad = np.zeros(int(np.ceil(sparse.size / 1536)), dtype=float)
+    vad[30:40] = 1.0
+
+    sparse_result = analyze_voice_spectrum(
+        sparse.astype(np.float32),
+        fs,
+        vad_probabilities=vad,
+        noise_audio=noise.astype(np.float32),
+    )
+
+    assert sparse_result.used_single_spectrum_fallback is True
+    assert sparse_result.noise_reference_source == "explicit_capture"
+    assert sparse_result.spectral_snr_db is not None
+    assert sparse_result.noise_spectrum_db is not None
+    mask = (sparse_result.freqs >= 80.0) & (sparse_result.freqs <= 8000.0)
+    noise_power = np.power(10.0, sparse_result.noise_spectrum_db[mask] / 10.0)
+    signal_power = noise_power * np.power(
+        10.0, sparse_result.spectral_snr_db[mask] / 10.0
+    )
+    matched_snr = 10.0 * np.log10(np.sum(signal_power) / np.sum(noise_power))
+    assert sparse_result.snr_db == pytest.approx(matched_snr, abs=1e-3)
 
 
 def test_missing_noise_reference_is_reported_as_unavailable():
@@ -175,6 +211,36 @@ def test_find_octave_spaced_peaks_handles_degenerate_frequency_grids():
         peak_freqs, peak_values = find_octave_spaced_peaks(np.zeros(len(freqs)), freqs)
         assert peak_freqs.size == 0
         assert peak_values.size == 0
+
+
+def test_perceptual_smoothing_off_is_exact_and_unknown_mode_fails():
+    freqs = np.array([100.0, 200.0, 400.0])
+    values = np.array([0.0, 12.0, -3.0])
+
+    result = smooth_spectrum_perceptual(freqs, values, strength="off")
+
+    assert np.array_equal(result, values)
+    assert result is not values
+    with pytest.raises(ValueError, match="Unknown spectrum smoothing strength"):
+        smooth_spectrum_perceptual(freqs, values, strength="typo")
+
+
+def test_octave_reconstruction_interpolates_on_log_frequency(monkeypatch):
+    monkeypatch.setattr(
+        spectrum,
+        "get_octave_frequencies",
+        lambda _fraction: (
+            np.array([100.0, 400.0]),
+            np.array([90.0, 350.0]),
+            np.array([150.0, 450.0]),
+        ),
+    )
+    freqs = np.array([100.0, 200.0, 400.0])
+    values = np.array([0.0, 99.0, 10.0])
+
+    result = smooth_spectrum_octave(freqs, values)
+
+    assert result[1] == pytest.approx(5.0)
 
 
 def test_multiresolution_experiment_keeps_welch_without_material_all_band_gain():

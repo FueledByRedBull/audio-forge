@@ -66,6 +66,8 @@ pub struct Compressor {
     rms_coeff: f64,
     /// Current gain reduction in dB (for metering)
     current_gain_reduction_db: f64,
+    /// Maximum gain reduction observed in the most recently processed block.
+    block_peak_gain_reduction_db: f64,
     /// Sample rate
     sample_rate: f64,
     /// Whether compressor is enabled
@@ -157,6 +159,7 @@ impl Compressor {
             rms_envelope_sq: 0.0,
             rms_coeff,
             current_gain_reduction_db: 0.0,
+            block_peak_gain_reduction_db: 0.0,
             sample_rate,
             enabled: true,
             adaptive_release: false,
@@ -308,6 +311,11 @@ impl Compressor {
     /// Get current gain reduction in dB (for metering)
     pub fn current_gain_reduction(&self) -> f64 {
         self.current_gain_reduction_db
+    }
+
+    /// Maximum gain reduction reached during the most recent block.
+    pub fn block_peak_gain_reduction(&self) -> f64 {
+        self.block_peak_gain_reduction_db
     }
 
     /// Enable or disable auto makeup gain
@@ -684,6 +692,7 @@ impl Compressor {
     /// Process a single sample
     #[inline]
     pub fn process_sample(&mut self, input: f32) -> f32 {
+        self.block_peak_gain_reduction_db = 0.0;
         self.process_sample_impl(input, true)
     }
 
@@ -698,6 +707,7 @@ impl Compressor {
         buffer: &mut [f32],
         evidence: Option<AutoMakeupActivityInput>,
     ) {
+        self.block_peak_gain_reduction_db = 0.0;
         if !self.enabled {
             self.current_gain_reduction_db = 0.0;
             return;
@@ -758,6 +768,9 @@ impl Compressor {
 
         let target_gain_reduction_db = self.compute_gain_reduction(detector_db);
         self.smooth_gain_reduction(target_gain_reduction_db);
+        self.block_peak_gain_reduction_db = self
+            .block_peak_gain_reduction_db
+            .max(self.current_gain_reduction_db);
 
         if update_makeup_gain {
             let speech_activity = Self::speech_activity_from_rms_db(detector_db);
@@ -774,6 +787,7 @@ impl Compressor {
         self.peak_envelope_db = -120.0;
         self.rms_envelope_sq = 0.0;
         self.current_gain_reduction_db = 0.0;
+        self.block_peak_gain_reduction_db = 0.0;
         self.fast_release_env_db = 0.0;
         self.slow_release_env_db = 0.0;
         self.current_release_ms = self.base_release_ms;
@@ -1323,6 +1337,22 @@ mod tests {
         }
 
         assert!((comp.current_makeup_gain() - 6.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_block_peak_gain_reduction_preserves_transient_maximum() {
+        let mut comp = Compressor::new(-30.0, 6.0, 0.1, 3.0, 0.0, 0.0, 48_000.0);
+        let mut block = vec![0.0_f32; 2_400];
+        block[..240].fill(0.8);
+
+        comp.process_block_inplace(&mut block);
+
+        assert!(
+            comp.block_peak_gain_reduction() > comp.current_gain_reduction() + 0.5,
+            "peak={} endpoint={}",
+            comp.block_peak_gain_reduction(),
+            comp.current_gain_reduction()
+        );
     }
 
     #[test]

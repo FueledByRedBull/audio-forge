@@ -1,8 +1,15 @@
+#[cfg(all(test, feature = "vad"))]
+static VAD_WORKER_FORCE_INFERENCE_ERROR: AtomicBool = AtomicBool::new(false);
+
 impl AudioProcessor {
 #[cfg(feature = "vad")]
 fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
-    if self.vad_worker_thread.is_some() {
-        return;
+    if let Some(handle) = self.vad_worker_thread.take() {
+        if !handle.is_finished() {
+            self.vad_worker_thread = Some(handle);
+            return;
+        }
+        let _ = handle.join();
     }
 
     self.vad_worker_running.store(true, Ordering::Release);
@@ -19,22 +26,23 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
 
     self.vad_worker_thread = Some(std::thread::spawn(move || {
         let mut worker_consumer = vad_consumer;
-        let mut vad = match SileroVAD::new(sample_rate, threshold) {
-            Ok(vad) => {
-                available.store(true, Ordering::Release);
-                vad
-            }
-            Err(_) => {
-                available.store(false, Ordering::Release);
-                while running.load(Ordering::Acquire) {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                return;
-            }
-        };
-
+        let mut vad = None;
         let mut local = Vec::with_capacity(VAD_WORKER_MAX_BUFFER_SAMPLES);
         while running.load(Ordering::Acquire) {
+            if vad.is_none() {
+                match SileroVAD::new(sample_rate, threshold) {
+                    Ok(candidate) => {
+                        available.store(true, Ordering::Release);
+                        vad = Some(candidate);
+                    }
+                    Err(_) => {
+                        available.store(false, Ordering::Release);
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        continue;
+                    }
+                }
+            }
+
             local.clear();
             let available_samples = worker_consumer.len();
             if available_samples > 0 {
@@ -45,15 +53,27 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
             }
 
             if !local.is_empty() {
-                match vad.process_latest(&local) {
-                    Ok(Some(prob)) => {
+                #[cfg(test)]
+                if VAD_WORKER_FORCE_INFERENCE_ERROR.swap(false, Ordering::AcqRel) {
+                    available.store(false, Ordering::Release);
+                    vad = None;
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    continue;
+                }
+                let inference = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    vad.as_mut().expect("VAD backend initialized").process_latest(&local)
+                }));
+                match inference {
+                    Ok(Ok(Some(prob))) => {
                         probability.store(prob.clamp(0.0, 1.0).to_bits(), Ordering::Release);
                         last_update_us.store(now_micros(), Ordering::Release);
                         available.store(true, Ordering::Release);
                     }
-                    Ok(None) => {}
-                    Err(_) => {
+                    Ok(Ok(None)) => {}
+                    Ok(Err(_)) | Err(_) => {
                         available.store(false, Ordering::Release);
+                        vad = None;
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                     }
                 }
                 local.clear();

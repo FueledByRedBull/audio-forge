@@ -347,6 +347,7 @@ impl AudioProcessor {
         let suppressor_rt_control = Arc::clone(&self.suppressor_rt_control);
         let suppressor_dirty = Arc::clone(&self.suppressor_dirty);
         let suppressor_reset_requested = Arc::clone(&self.suppressor_reset_requested);
+        let restart_requested_for_dsp = Arc::clone(&self.restart_requested);
         let eq_enabled = Arc::clone(&self.eq_enabled);
         let eq_control = Arc::clone(&self.eq_control);
         let eq_dirty = Arc::clone(&self.eq_dirty);
@@ -573,13 +574,10 @@ impl AudioProcessor {
             let mut last_heartbeat = Instant::now();
             let latency_update_interval = std::time::Duration::from_millis(100); // Update every 100ms
             const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
-            const SUPPRESSOR_STARVATION_MS: u64 = 400; // Reset suppressor if no output this long
-            const SUPPRESSOR_RECOVERY_COOLDOWN_MS: u64 = 2000;
+            const SUPPRESSOR_STARVATION_MS: u64 = 400;
             const NON_FINITE_REBUILD_THRESHOLD: u32 = 3;
             const NON_FINITE_REBUILD_WINDOW_MS: u64 = 2000;
-            let mut last_suppressor_recovery =
-                Instant::now() - std::time::Duration::from_millis(SUPPRESSOR_RECOVERY_COOLDOWN_MS);
-            let mut suppressor_soft_reset_pending = false;
+            let mut last_suppressor_output = Instant::now();
             let mut non_finite_window_started_at: Option<Instant> = None;
             let mut non_finite_window_count: u32 = 0;
 
@@ -719,7 +717,7 @@ impl AudioProcessor {
                         #[cfg(not(feature = "vad"))]
                         compressor_rt.process_block_inplace($buffer);
                         compressor_gain_reduction.store(
-                            (compressor_rt.current_gain_reduction() as f32).to_bits(),
+                            (compressor_rt.block_peak_gain_reduction() as f32).to_bits(),
                             Ordering::Relaxed,
                         );
                         let current_release = compressor_rt.current_release_time();
@@ -1485,9 +1483,7 @@ impl AudioProcessor {
                                                     break;
                                                 };
 
-                                                if candidate_matches
-                                                    && suppressor_rt.model_type() != control.model
-                                                {
+                                                if candidate_matches {
                                                     let retired = std::mem::replace(
                                                         &mut suppressor_rt,
                                                         candidate,
@@ -1582,44 +1578,8 @@ impl AudioProcessor {
                                         smoothed_buffer_len.store(smoothed, Ordering::Relaxed);
 
                                         let available = suppressor_rt.available_samples();
-                                        if available == 0 {
-                                            let pending = suppressor_rt.pending_input();
-                                            if pending >= RNNOISE_FRAME_SIZE
-                                                && !recording_active_thread.load(Ordering::Relaxed)
-                                            {
-                                                let last_write =
-                                                    last_output_write_time.load(Ordering::Relaxed);
-                                                if last_write > 0 {
-                                                    let now = now_micros();
-                                                    let since_write_ms =
-                                                        now.saturating_sub(last_write) / 1000;
-                                                    if since_write_ms > SUPPRESSOR_STARVATION_MS
-                                                        && last_suppressor_recovery
-                                                            .elapsed()
-                                                            .as_millis()
-                                                            as u64
-                                                            > SUPPRESSOR_RECOVERY_COOLDOWN_MS
-                                                    {
-                                                        if suppressor_soft_reset_pending {
-                                                            suppressor_rt.soft_reset();
-                                                            suppressor_soft_reset_pending = false;
-                                                        } else {
-                                                            suppressor_rt.soft_reset();
-                                                            suppressor_soft_reset_pending = true;
-                                                        }
-                                                        update_backend_status_rt(
-                                                            &noise_backend_available,
-                                                            &noise_backend_failed,
-                                                            rt_error_code.as_ref(),
-                                                            &suppressor_rt,
-                                                        );
-                                                        last_suppressor_recovery = Instant::now();
-                                                    }
-                                                }
-                                            }
-                                        }
                                         if available > 0 {
-                                            suppressor_soft_reset_pending = false;
+                                            last_suppressor_output = Instant::now();
                                             rnnoise_output.clear();
                                             let count = available.min(rnnoise_output.capacity());
                                             let _ = rnnoise_output.set_len_zeroed(count);
@@ -1658,7 +1618,8 @@ impl AudioProcessor {
                                                 if non_finite_window_count
                                                     >= NON_FINITE_REBUILD_THRESHOLD
                                                 {
-                                                    suppressor_rt.soft_reset();
+                                                    restart_requested_for_dsp
+                                                        .store(true, Ordering::Release);
                                                     non_finite_window_started_at = None;
                                                     non_finite_window_count = 0;
                                                 }
@@ -1690,6 +1651,18 @@ impl AudioProcessor {
 
                                             // Send processed samples to output
                                             write_output(output_slice, false);
+                                        } else if accepted > 0
+                                            && !recording_active_thread.load(Ordering::Relaxed)
+                                            && last_suppressor_output.elapsed().as_millis() as u64
+                                                > SUPPRESSOR_STARVATION_MS
+                                        {
+                                            store_rt_error(
+                                                rt_error_code.as_ref(),
+                                                RtErrorCode::SuppressorBackendFailed,
+                                            );
+                                            restart_requested_for_dsp
+                                                .store(true, Ordering::Release);
+                                            last_suppressor_output = Instant::now();
                                         }
 
                                         // Record DSP processing time

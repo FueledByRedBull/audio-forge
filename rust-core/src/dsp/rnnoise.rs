@@ -27,6 +27,7 @@ pub struct RNNoiseProcessor {
     input_buffer: FixedAudioRing<f32, RNNOISE_BUFFER_CAPACITY>,
     output_buffer: FixedAudioRing<f32, RNNOISE_BUFFER_CAPACITY>,
     dry_scratch: [f32; RNNOISE_FRAME_SIZE],
+    dry_delay_frame: [f32; RNNOISE_FRAME_SIZE],
     frame_scratch: [f32; RNNOISE_FRAME_SIZE],
     output_frame: [f32; RNNOISE_FRAME_SIZE],
     enabled: bool,
@@ -59,6 +60,7 @@ impl RNNoiseProcessor {
             input_buffer: FixedAudioRing::new(),
             output_buffer: FixedAudioRing::new(),
             dry_scratch: [0.0; RNNOISE_FRAME_SIZE],
+            dry_delay_frame: [0.0; RNNOISE_FRAME_SIZE],
             frame_scratch: [0.0; RNNOISE_FRAME_SIZE],
             output_frame: [0.0; RNNOISE_FRAME_SIZE],
             enabled: true,
@@ -157,13 +159,14 @@ impl RNNoiseProcessor {
             let strength = self.update_smoothing();
 
             if strength < 1.0 {
-                // Linear interpolation: output = strength * wet + (1.0 - strength) * dry
+                // RNNoise emits one frame late, so mix against the matching dry frame.
                 for i in 0..RNNOISE_FRAME_SIZE {
                     let wet = self.output_frame[i];
-                    let dry = self.dry_scratch[i];
+                    let dry = self.dry_delay_frame[i];
                     self.output_frame[i] = (strength * wet) + ((1.0 - strength) * dry);
                 }
             }
+            self.dry_delay_frame.copy_from_slice(&self.dry_scratch);
 
             self.output_buffer.push_slice(&self.output_frame);
         }
@@ -202,6 +205,7 @@ impl RNNoiseProcessor {
         self.denoiser = DenoiseState::new();
         self.input_buffer.clear();
         self.output_buffer.clear();
+        self.dry_delay_frame.fill(0.0);
     }
 
     /// Flush internal buffers without resetting DenoiseState
@@ -212,6 +216,7 @@ impl RNNoiseProcessor {
     pub fn flush_buffers(&mut self) {
         self.input_buffer.clear();
         self.output_buffer.clear();
+        self.dry_delay_frame.fill(0.0);
     }
 
     /// Soft reset: clear buffers without resetting model state
@@ -404,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn test_rnnoise_honors_initial_dry_strength_on_first_frame() {
+    fn test_rnnoise_dry_mix_matches_reported_frame_latency() {
         let strength = Arc::new(AtomicU32::new(0.0_f32.to_bits()));
         let mut processor = RNNoiseProcessor::new(strength);
         let input: Vec<f32> = (0..RNNOISE_FRAME_SIZE)
@@ -416,7 +421,43 @@ mod tests {
 
         let mut output = [0.0; RNNOISE_FRAME_SIZE];
         assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+        assert_eq!(output, [0.0; RNNOISE_FRAME_SIZE]);
+
+        processor.push_samples(&[0.0; RNNOISE_FRAME_SIZE]);
+        processor.process_frames();
+        assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
         assert_eq!(output.as_slice(), input.as_slice());
+    }
+
+    #[test]
+    fn test_rnnoise_partial_strength_uses_the_aligned_dry_frame() {
+        let input: Vec<f32> = (0..RNNOISE_FRAME_SIZE)
+            .map(|index| {
+                let phase = 2.0 * std::f32::consts::PI * index as f32 / 73.0;
+                0.18 * phase.sin() + 0.07 * (phase * 2.37).sin()
+            })
+            .collect();
+        let render = |strength: f32| {
+            let mut processor = RNNoiseProcessor::new(Arc::new(AtomicU32::new(strength.to_bits())));
+            let mut output = [0.0; RNNOISE_FRAME_SIZE];
+            processor.push_samples(&input);
+            processor.process_frames();
+            assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+            processor.push_samples(&[0.0; RNNOISE_FRAME_SIZE]);
+            processor.process_frames();
+            assert_eq!(processor.read_samples(&mut output), RNNOISE_FRAME_SIZE);
+            output
+        };
+
+        let dry = render(0.0);
+        let wet = render(1.0);
+        for strength in [0.25_f32, 0.5, 0.75] {
+            let mixed = render(strength);
+            for index in 0..RNNOISE_FRAME_SIZE {
+                let expected = dry[index] * (1.0 - strength) + wet[index] * strength;
+                assert!((mixed[index] - expected).abs() < 1.0e-6);
+            }
+        }
     }
 
     #[test]

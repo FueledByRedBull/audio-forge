@@ -1,7 +1,7 @@
 {
   "schema_version": 4,
   "audible_change": true,
-  "generated_at_utc": "2026-08-27T21:50:26.751062+00:00",
+  "generated_at_utc": "2026-09-01T17:42:07.872653+00:00",
   "status": "incumbents-retained-objective-gates-failed",
   "decision": {
     "product_chain_changed": false,
@@ -21,13 +21,13 @@
       "candidate_chatter_events": 34,
       "median_baseline_false_closure_rate": 0.0,
       "median_candidate_false_closure_rate": 0.0,
-      "median_baseline_active_retained_ratio": 0.3542837275633804,
-      "median_candidate_active_retained_ratio": 0.36365202881886205,
-      "median_baseline_tail_retained_ratio": 0.01473669302796269,
-      "median_candidate_tail_retained_ratio": 0.006257929727191633,
+      "median_baseline_active_retained_ratio": 0.36597799613231585,
+      "median_candidate_active_retained_ratio": 0.36882477115334733,
+      "median_baseline_tail_retained_ratio": 0.016242299294253554,
+      "median_candidate_tail_retained_ratio": 0.00731529608144042,
       "median_baseline_pumping_score": 5.245177218607963e-05,
-      "median_candidate_pumping_score": 0.20303470444391258,
-      "median_runtime_ratio": 1.0850879147350905
+      "median_candidate_pumping_score": 0.20301037781192355,
+      "median_runtime_ratio": 1.0744885593486595
     },
     "non_regression": {
       "false_closure": true,
@@ -69,13 +69,13 @@
   "provenance": {
     "source_hashes": {
       "python/tools/evaluate_processing_order.py": "7a178ac9dc8551820e46ef3cfb612b04239a94f5c6b9e3ec20a5412a5ef82a12",
-      "rust-core/src/audio/processor/block_processor.rs": "52dea906b9b3bb24fd4bd58a6baa971272551f1d89b784e201b206041e1f637a",
-      "rust-core/src/audio/processor/python_api.rs": "7071ff86b21247b04d040115567cdc50b5d10e1b09e04b70ae5912af5199abd5",
-      "rust-core/src/dsp/deesser.rs": "de99b52fb53dff272c4378d6c28f9a158ca79b85bb8092cb3f6b455c49956fea",
+      "rust-core/src/audio/processor/block_processor.rs": "9ec56ab58c1f6a2070246ac3b676de61bd9c63fe3bde735f8d58acd1485b484b",
+      "rust-core/src/audio/processor/python_api.rs": "ba7f30ca011f71a580f4a7ce034064bd123b06d1e340a038e29cbdc84be43847",
+      "rust-core/src/dsp/deesser.rs": "17f3fc098e7a0da074915c26ce0ec833a0fa71e778fb3c9618289cf31edddac3",
       "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
-      "rust-core/src/dsp/gate.rs": "55b37e51f7ab83b7795c5165d7ada1f8440b55116b49e9c174a4eda90c7221b2",
+      "rust-core/src/dsp/gate.rs": "4d2cfc3761e162d362eeb8735bdd8a46c224bd9f2dd3f482f0f6bf8365d97f4c",
       "rust-core/src/dsp/noise_suppressor.rs": "6c81089b03d0bc276cbb2ea975df51df6ade2e0cf57c01ef060fc514db58bb09",
-      "rust-core/src/dsp/rnnoise.rs": "e4e5f5e690df215b5863f47edfa8b75cb893251d4d6836ef20226017e0fbc53a"
+      "rust-core/src/dsp/rnnoise.rs": "4f473389c120de55be1754c97fd4f0db235a496ee416ae6fe1beb9a9de8a54ae"
     },
     "asset_hashes": {
       "models/silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
@@ -102,7 +102,7 @@
       }
     },
     "runtime": {
-      "gate_suppressor_median_runtime_ratio": 1.0850879147350905,
+      "gate_suppressor_median_runtime_ratio": 1.0744885593486595,
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native simulators report whole-clip timing; the ordering candidate is rejected before realtime callback qualification.",
       "platform": "Windows-11-10.0.26200-SP0"

@@ -7,7 +7,7 @@
       "source": {
         "python/mic_eq/analysis/auto_eq_parts/constants.py": "2dda97dcc188e3e0f8305eca11681033dd8674ec35bd60a4cd80259460f52161",
         "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "c7d31f975fc3a55fdbef5531be1afea8ff03035de42d67b15c6309869cebab6d",
-        "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "b0825a4810e5ff748648c2ae746f424076a289a8538b844952becff76e300d27",
+        "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "99f09b3f868f103464eee22b70bcd5c485427e79a3a770170df7b527838a533c",
         "python/mic_eq/analysis/auto_eq_parts/response.py": "749da9d5ec64ce4c5461311db1c0150040692c0af448926c5de61ebfe7f6f857",
         "python/tools/evaluate_eq_candidate_pool.py": "5a4cced34561852cbb2e728e30e49c97fbd548d42e8d0eb9449c8a2110b7d54b"
       }
@@ -45,7 +45,7 @@
     "runtime": {
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The optimizer is an offline whole-fit operation, not a realtime audio callback; median fit times and P95 ratios are measured.",
-      "maximum_candidate_p95_runtime_ratio": 2.5197429257802915,
+      "maximum_candidate_p95_runtime_ratio": 2.8884941268367728,
       "platform": "Windows-11-10.0.26200-SP0",
       "python": "3.12.10"
     }
@@ -58,7 +58,7 @@
     "required_improved_fraction": 0.6,
     "required_median_relative_improvement": 0.05
   },
-  "generated_at": "2026-08-17T18:52:17.793269+00:00",
+  "generated_at": "2026-09-01T17:51:54.962039+00:00",
   "limitations": [
     "The synthetic response family is a deterministic algorithmic regression set, not a perceptual listening panel.",
     "The same fixed variant is assessed across every case; no per-case oracle selection is permitted.",
@@ -90,7 +90,7 @@
     "source_hashes": {
       "python/mic_eq/analysis/auto_eq_parts/constants.py": "2dda97dcc188e3e0f8305eca11681033dd8674ec35bd60a4cd80259460f52161",
       "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "c7d31f975fc3a55fdbef5531be1afea8ff03035de42d67b15c6309869cebab6d",
-      "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "b0825a4810e5ff748648c2ae746f424076a289a8538b844952becff76e300d27",
+      "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "99f09b3f868f103464eee22b70bcd5c485427e79a3a770170df7b527838a533c",
       "python/mic_eq/analysis/auto_eq_parts/response.py": "749da9d5ec64ce4c5461311db1c0150040692c0af448926c5de61ebfe7f6f857",
       "python/tools/evaluate_eq_candidate_pool.py": "5a4cced34561852cbb2e728e30e49c97fbd548d42e8d0eb9449c8a2110b7d54b"
     }
@@ -115,7 +115,7 @@
         "lower_decile_relative_improvement": -0.5293229133819765,
         "maximum_risk_score_delta": 0.04992079867845278,
         "median_relative_improvement": 0.001227495131582005,
-        "p95_runtime_ratio": 1.9374305593865226
+        "p95_runtime_ratio": 1.9222457054016406
       }
     },
     "14": {
@@ -134,7 +134,7 @@
         "lower_decile_relative_improvement": -0.2200054355162944,
         "maximum_risk_score_delta": 0.11990830538894925,
         "median_relative_improvement": 0.03690726064317678,
-        "p95_runtime_ratio": 1.9956165285525933
+        "p95_runtime_ratio": 1.9181021021267897
       }
     },
     "16": {
@@ -153,7 +153,7 @@
         "lower_decile_relative_improvement": -0.007169588892590121,
         "maximum_risk_score_delta": 0.11990830538894937,
         "median_relative_improvement": 0.055653937956135706,
-        "p95_runtime_ratio": 2.5197429257802915
+        "p95_runtime_ratio": 2.8884941268367728
       }
     }
   }

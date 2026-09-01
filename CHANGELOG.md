@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v1.11.4 - 2026-09-01
+
+- Aligned RNNoise wet/dry frames at partial strength and added bounded recovery
+  for stale VAD, failed suppressors, and active-input/silent-output stalls.
+- Corrected multichannel phase-safe routing, DC-invariant phase correlation,
+  de-esser reduction limits, compressor block-peak metering, and setup peak
+  warnings.
+- Corrected spectrum smoothing, partial-SNR confidence, headroom-derived
+  metadata, sparse loudness labeling, and fallback SNR scaling.
+- Flushed and aligned offline DSP simulations, corrected processing-order and
+  sample-rate timing evidence, and refreshed every affected evaluation report.
+
 ## v1.11.3 - 2026-08-28
 
 - Reduced limiter lookahead from 2 ms to 0.5 ms after a corrected paired,

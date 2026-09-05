@@ -14,7 +14,12 @@ or UI rewrite. The current candidate has passed the local software gates and a
 fresh portable build and MSI lifecycle validation, but it is not release
 complete. Microphone and device qualification remains pending, corresponding
 source is incomplete because of the restricted DirectML runtime, and no remote
-CI or publication run has been independently verified.
+publication run has been independently verified for the tagged candidate.
+Python/Rust CI is green only on revision `356a26e` so far: run
+`33993248535` passed, while tagged-candidate package validation, source
+publication, hardware qualification, and promotion remain pending.
+Its hosted Python job recorded 633 passed and one skipped in 162.32 seconds;
+Ruff and Pyright reported no errors.
 
 The latest local evidence is 626 Python tests, 320 Rust unit tests plus one
 stress test and one doc test, six hardware tests explicitly ignored, passing
@@ -28,26 +33,26 @@ promotion gates, not a completed v2.0 qualification claim.
 
 | Item | Review and required disposition |
 |---|---|
-| AF-01: failure propagation | **Implemented locally.** `build_exe.ps1`, `build_msi.ps1`, and the release workflows check each native command's exit code; `python/tools/check_workflows.py` parses the executable steps. The local workflow check passes; a remote run is still required for release evidence. |
+| AF-01: failure propagation | **Implemented locally.** `build_exe.ps1`, `build_msi.ps1`, and the release workflows check each native command's exit code; `python/tools/check_workflows.py` parses the executable steps. The local workflow check passes, and Python/Rust CI run `33993248535` passed for revision `356a26e`; a tagged-candidate run is still required for release evidence. |
 | AF-02: licensing | **Partly implemented; publication pending.** GPLv3 distribution and MIT original-source terms are recorded in `licenses/THIRD_PARTY_NOTICES.md`; `license_inventory.py` and the source manifest retain versioned notices. The source manifest remains incomplete for restricted DirectML, so this is not a release approval. |
 | AF-03 / F01 / F13: analysis lifetime | **Implemented locally.** Calibration and Voice Setup stop delayed capture timers, cancel workers cooperatively, retain active workers, and reject obsolete generations. `test_ui_sample_rate_and_diagnostics.py` covers delayed-capture cancellation, stale generations, and worker cancellation. |
 | AF-04 / F09: GIL | **Implemented and measured.** Native offline work uses `py.detach` in `rust-core/src/audio/processor/python_api.rs`; `test_native_regressions.py` verifies a concurrent Python heartbeat. The measured local gaps are recorded above; this is not a hardware claim. |
 | AF-05: allocation instrumentation | **Implemented.** `rust-core/src/lib.rs` uses thread-local nested allocation scopes, with concurrent and nested-scope regressions; steady-state DSP allocation tests remain in `rust-core/src/audio/processor/tests.rs`. |
 | AF-06: configuration recovery | **Implemented.** Invalid and future-schema configuration is preserved, save is blocked when recovery is unavailable, and migration state is exposed. `test_config_v17.py` covers preservation, collision-safe backups, and blocked saves. |
-| AF-07: supported tools | **Implemented as a support boundary.** `requirements/*.txt`, `rust-toolchain.toml`, `check_versions.py`, and the source recipe pin CPython 3.12.10, NumPy/SciPy, and Rust 1.94.0. No broader Python/Rust support is claimed. |
+| AF-07: supported tools | **Implemented as a support boundary.** `requirements/*.txt`, `rust-toolchain.toml`, `check_versions.py`, and the source recipe pin CPython 3.12.10, NumPy/SciPy, and Rust 1.94.0. The embedded-runtime cross-check below recommends a maintained CPython/OpenSSL decision before public release. No broader Python/Rust support is claimed. |
 | AF-08: asset origins | **Partly implemented; DirectML pending.** Models and Silero are pinned, and the inherited `df.dll` was replaced by the verified DeepFilter source recipe, lock, patch record, and attestation. DirectML is correctly classified as Microsoft Software License Terms; a CPU-only replacement and qualification are still pending. |
 | AF-09: hardware coverage | **Pending by decision.** The maintainer deferred microphone testing and no hardware runner is registered. Six hardware cases remain ignored; hosted software tests cannot close device lifecycle or route qualification. |
-| AF-10 / F11: qualification origin | **Implemented as validators; evidence pending.** `release_provenance.py` and the qualification workflows bind reports to repository, revision, workflow, event, attempt, and typed status. No successful remote qualification run has been verified for this candidate. |
+| AF-10 / F11: qualification origin | **Implemented as validators; evidence pending.** `release_provenance.py` and the qualification workflows bind reports to repository, revision, workflow, event, attempt, and typed status. Python/Rust CI run `33993248535` passed for revision `356a26e`; no tagged-candidate qualification run has been verified. |
 | AF-11 / F12: publication | **Workflow implemented; publication pending.** Promotion now handles drafts, digest-checked retries, exact asset sets, final-state checks, and publication last in `.github/workflows/release-promote.yml`. No release was published in this review. |
 | AF-12: durable evidence | **Implemented in the release path; candidate evidence pending.** The package and promotion workflows produce privacy-safe provenance, source, MSI, and qualification sidecars for release assets. They have not yet been reconciled against a published candidate. |
 | AF-13: prereleases | **Implemented.** `python/tools/release_version.py` and package/promotion workflows validate canonical final/RC tags, Cargo versions, artifact names, and MSI versions; release-version tests pass. Immutable tag rules remain the remote control. |
 | AF-14: native freshness | **Implemented locally.** `build_exe.ps1` rebuilds the Rust extension with `maturin develop --release --locked` before PyInstaller. The fresh clean build and exact EXE smoke passed; remote candidate execution is pending. |
 | AF-15: reduced build flag | **Implemented.** The unsupported reduced packaging path is absent; full asset verification is required by `build_exe.ps1` and the package smoke checks. |
-| AF-16: workflow checks | **Implemented locally.** `python/tools/check_workflows.py` inspects parsed executable steps and failure propagation, and the current workflow check passes. It does not replace an actual remote run. |
+| AF-16: workflow checks | **Implemented locally.** `python/tools/check_workflows.py` inspects parsed executable steps and failure propagation, and the current workflow check passes. Run `33993248535` is the successful Python/Rust software check for revision `356a26e`; it does not replace tagged-candidate, hardware, source, or promotion evidence. |
 | AF-17: native fallback cause | **Implemented.** Native headroom and DeepFilter paths distinguish unavailable, invalid, and runtime failures; Python fallback output is labeled advisory while Rust output is authoritative. Regression tests cover these labels and safety gates. |
 | AF-18: ownership refactor | **Retained as targeted maintenance.** The changes isolate demonstrated ownership boundaries in configuration, analysis cancellation, UI lifecycle, and native DSP; the evidence does not justify a broad rewrite. |
-| AF-19: CI time | **Implemented in configuration; remote timing pending.** RustSec uses a pinned, cached `cargo-audit` executable and advisory database in the CI workflows. The local audit passes; hosted timing must be observed after the next run. |
-| AF-20: repository hygiene | **Implemented locally.** Contributor/security guidance, issue/PR templates, version checks, and `test_repository_hygiene.py` are present. The release branch still needs the normal reviewed commit and remote checks. |
+| AF-19: CI time | **Implemented and measured.** RustSec uses a pinned, cached `cargo-audit` executable and advisory database in the CI workflows. Remote run `33992733096` measured 262 seconds for the audit-tool install and 5 seconds for the audit; cached run `33993248535` measured 0 seconds for install and 2 seconds for the audit. Both Rust audits succeeded; release package qualification is tracked under AF-10 through AF-12. |
+| AF-20: repository hygiene | **Implemented and reviewed.** Contributor/security guidance, issue/PR templates, version checks, and `test_repository_hygiene.py` are present. Branch `release/v2.0.0` is committed and pushed at revision `356a26e` with draft PR #62; both CI jobs pass. Tagged-candidate package, source, hardware, and promotion evidence remains pending. |
 | F02: preset collision | **Implemented.** Default preset creation refuses an occupied sanitized path, explicit overwrite is separate, and temporary-file plus exclusive-link publication is atomic in `config_parts/presets.py`; config tests cover it. |
 | F03: stopped recovery | **Implemented locally.** Stopped diagnostics continue pending native recovery and reconcile controls; `test_stopped_diagnostics_continue_native_recovery_and_reconcile_controls` passes. |
 | F04: malformed presets | **Implemented.** Parser, type, and recursion failures normalize at the preset boundary to `PresetValidationError`; malformed files are covered by configuration tests. |
@@ -97,6 +102,71 @@ promotion gates, not a completed v2.0 qualification claim.
   enabled without replacing those settings. Active ruleset `22336761` now
   prohibits updating or deleting `v*` tags with no bypass actors. Administrators
   can still change repository policy; this is not an immutable external ledger.
+
+## Embedded runtime security cross-check
+
+The local portable bundle contains the following measured components:
+
+| Component | Bundle path | Product identity | SHA-256 |
+|---|---|---|---|
+| CPython | `_internal/python312.dll` | 3.12.10 | `9a0e3435aaa680d868150f87ab3e388ad2eebc22f87e036155c7b4eda8cd2120` |
+| OpenSSL libssl | `_internal/libssl-3.dll` | 3.0.16 | `007142039f04d04e0ed607bda53de095e5bc6a8a10d26ecedde94ea7d2d7eefe` |
+| OpenSSL libcrypto | `_internal/libcrypto-3.dll` | 3.0.16 | `ccfffddcd3defb8d899026298af9af43bc186130f8483d77e97c93233d5f27d7` |
+| Qt Core | `_internal/PyQt6/Qt6/bin/Qt6Core.dll` | 6.11.1.0 | `fae4778a42e93adc82b831c879c886a05147e9cc26760808d21116be5547259b` |
+| Qt GUI | `_internal/PyQt6/Qt6/bin/Qt6Gui.dll` | 6.11.1.0 | `8fceee959a670372aaa5763287c2ef7924cd9ecdbe2c29cf4b6c12a63079c503` |
+| Qt Network | `_internal/PyQt6/Qt6/bin/Qt6Network.dll` | 6.11.1.0 | `0232076731e386b6cc353bdf743d5fb17e95a3493c2d02afac984db87ed47b96` |
+| Qt Widgets | `_internal/PyQt6/Qt6/bin/Qt6Widgets.dll` | 6.11.1.0 | `4d603bff620ae0830d15c25a787f9f10ed3f972d998f1f17c9c4f83937280399` |
+
+The current `launcher.py` and `python/mic_eq` source path uses local audio,
+configuration, and Qt Core/GUI/Widgets APIs. It has no demonstrated
+`PyQt6.QtNetwork`, TLS, CMS, or HTTP call path. `Qt6Network.dll` and Python's
+`_ssl.pyd` are nevertheless present in the PyInstaller bundle; the Python
+build graph also contains standard-library network modules used by optional
+support code. This bounded review did not trace every importer to a complete
+call graph, so it does not claim that every bundled Python module is
+unreachable. No vulnerable-function execution or exploit was demonstrated in
+the offline UI.
+
+CPython 3.12.10 predates security-only releases. Python 3.12.11 documents
+tarfile filter bypass fixes, a unicode decoder use-after-free fix, and long
+IPv6 memory-consumption protection ([release notes](https://www.python.org/downloads/release/python-31211/));
+3.12.13 documents an SSL use-after-free fix and HTTP/CGI hardening
+([release notes](https://www.python.org/downloads/release/python-31213/));
+3.12.14 is the current 3.12 security source release as of this review
+([release notes](https://www.python.org/downloads/release/python-31214/)). Python
+states that 3.12.10 was the last 3.12 Windows binary installer, so moving the
+embedded runtime to a maintained 3.12 security release requires a source-built
+Windows runtime or an explicit compatibility decision. The later fixes are
+affected-version evidence, not proof of an exploit through this offline UI;
+the release tooling's archive handling remains a separate, checked path. The
+source-distribution tool reads verified archive bytes in memory, the license
+inventory uses digest-checked `extractfile`, and corpus extraction uses
+controlled member names; no UI extraction path was found.
+
+OpenSSL 3.0.16 is in affected ranges for fixes shipped in later 3.0 patch
+releases. The upstream 3.0 notes record CVE-2025-9230 and CVE-2025-9232 in
+3.0.18, a high-severity CMS fix in 3.0.19, additional fixes in 3.0.20 and
+3.0.21, and 3.0.22 as the latest 3.0 security patch at this review date
+([OpenSSL 3.0 release notes](https://openssl-library.org/news/openssl-3.0-notes/index.html)).
+The cited CMS, OpenSSL HTTP, TLS, DTLS, CMP, and certificate entry points were
+not demonstrated in the current offline UI. Updating the maintained OpenSSL
+runtime before public release is recommended; this finding alone does not
+establish an exploitable AudioForge UI path.
+
+Qt 6.11.1 is one patch behind Qt 6.11.2, released August 18, 2026 with bug
+fixes and security improvements ([Qt 6.11.2 release](https://www.qt.io/blog/qt-6.11.2-released)).
+The checked Qt advisories do not demonstrate exposure in the shipped modules:
+CVE-2026-9499 is in Qt5Compat and is fixed in 6.11.1
+([advisory](https://www.qt.io/blog/security-advisory-out-of-bounds-read-vulnerability-in-qtextcodeccodecforname));
+CVE-2026-15037 is in QtXml/QDom and the bundle has no QtXml
+([advisory](https://www.qt.io/blog/security-advisory-cve-2026-15037-xml-injection));
+CVE-2025-14575 is limited to older Unix Qt OpenSSL backends
+([advisory](https://www.qt.io/blog/security-advisory-untrusted-search-path-vulnerability-in-openssl));
+and CVE-2026-6210 is in older Qt SVG versions while SVG is absent from the
+pruned bundle
+([advisory](https://www.qt.io/blog/security-advisory-type-confusion-and-heap-buffer-overflow-vulnerability-in-qt-svg-marker-handling)).
+Qt 6.11.2 is a maintained-runtime upgrade recommendation; its availability
+alone is not a release blocker.
 
 ## Measured native responsiveness
 
@@ -166,9 +236,10 @@ The standing dependency source in `release-assets.json` remains pinned until
 the asset set changes. The promotion path now generates the sizes, hashes,
 inventory, and qualification sidecars as release assets, so documentation can
 refer to the same candidate instead of requiring a post-release fallback commit.
-Build, qualification, and promotion remain separately verifiable gates; remote
-CI, hardware qualification, source publication, and final artifact promotion
-are still open in this candidate.
+Build, qualification, and promotion remain separately verifiable gates. Python/Rust
+CI run `33993248535` passed for revision `356a26e` only; tagged-candidate CI,
+hardware qualification, source publication, and final artifact promotion remain
+open.
 
 This register reflects the implemented candidate and its remaining release
 gaps; it is closed only after those gates produce evidence for the tagged

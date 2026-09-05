@@ -49,7 +49,7 @@ TRUSTED_SOURCE_HOSTS = frozenset(
         "pypi.org",
     }
 )
-EXPECTED_CPYTHON_VERSION = "3.12.10"
+EXPECTED_CPYTHON_VERSION = "3.13.15"
 PYPI_SDIST_PACKAGES = (
     ("pyqt6", "PyQt6"),
     ("pyqt6-sip", "PyQt6-sip"),
@@ -80,7 +80,7 @@ PYTHON_SOURCE = {
     "filename_template": "Python-{version}.tar.xz",
     "url_template": "https://www.python.org/ftp/python/{version}/Python-{version}.tar.xz",
     "sha256_by_version": {
-        "3.12.10": "07ab697474595e06f06647417d3c7fa97ded07afc1a7e4454c5639919b46eaea",
+        "3.13.15": "1e66a7945a48390ee4c2a4268a0e4185884059a13c4aab6d148aa208deea4a76",
     },
 }
 
@@ -136,23 +136,312 @@ DEEPFILTER_TRACT_SOURCE = {
 }
 
 CPYTHON_EXTERNAL_SOURCES = (
-    ("bzip2", "1.0.8", "ab8d1b0cc087c20d4c32c0e4fcf7d0c733a95da12cedc6d63b3f0a9af07427e2"),
-    ("libffi", "3.4.4", "9d802681adfea27d84cae0487a785fb9caa925bdad44c401b364c59ab2b8edda"),
-    ("openssl", "3.0.16", "6bb739ecddbd2cfb6d255eb5898437a9b5739277dee931338d3275bac5d96ba2"),
-    ("sqlite", "3.49.1.0", "e335aeb44fa36cde60ecbb6a9f8be6f5d449d645ce9b0199ee53a7e6728d19d2"),
-    ("xz", "5.2.5", "a15c168e39e87d750c3dc766edc7f19bdda57dacf01e509678467eace91ad282"),
-    ("zlib", "1.3.1", "e3f3fb32564952006eb18b091ca8464740e5eca29d328cfb0b2da22768e0b638"),
+    {
+        "name": "bzip2",
+        "version": "1.0.8",
+        "sha256": "ab8d1b0cc087c20d4c32c0e4fcf7d0c733a95da12cedc6d63b3f0a9af07427e2",
+        "license": "bzip2-1.0.8 license",
+        "license_paths": ["cpython-source-deps-bzip2-1.0.8/LICENSE"],
+    },
+    {
+        "name": "libffi",
+        "version": "3.4.4",
+        "sha256": "9d802681adfea27d84cae0487a785fb9caa925bdad44c401b364c59ab2b8edda",
+        "license": "MIT",
+        "license_paths": [
+            "cpython-source-deps-libffi-3.4.4/LICENSE",
+            "cpython-source-deps-libffi-3.4.4/LICENSE-BUILDTOOLS",
+        ],
+    },
+    {
+        "name": "openssl",
+        "version": "3.0.21",
+        "sha256": "0349aef1ff9ded3eb23be12c2586e026be5cec3fd40df859e388671d7844fced",
+        "license": "Apache-2.0",
+        "license_paths": ["cpython-source-deps-openssl-3.0.21/LICENSE.txt"],
+    },
+    {
+        "name": "mpdecimal",
+        "version": "4.0.0",
+        "sha256": "338fac3fb8cdd60f406b6326431338756f58a8af94229ffd9bf1e7c2b1ad71ca",
+        "license": "BSD-2-Clause",
+        "license_paths": ["cpython-source-deps-mpdecimal-4.0.0/COPYRIGHT.txt"],
+    },
+    {
+        "name": "sqlite",
+        "version": "3.50.4.0",
+        "sha256": "fb5ab81f27612b0a7b4861ba655906c76dc85ee969e7a4905d2075aff931e8d0",
+        "license": "Public Domain",
+    },
+    {
+        "name": "xz",
+        "version": "5.2.5",
+        "sha256": "a15c168e39e87d750c3dc766edc7f19bdda57dacf01e509678467eace91ad282",
+        "license": "Public Domain, LGPL-2.1-or-later, GPL-2.0-or-later, GPL-3.0-or-later",
+        "license_paths": [
+            "cpython-source-deps-xz-5.2.5/COPYING",
+            "cpython-source-deps-xz-5.2.5/COPYING.GPLv2",
+            "cpython-source-deps-xz-5.2.5/COPYING.GPLv3",
+            "cpython-source-deps-xz-5.2.5/COPYING.LGPLv2.1",
+        ],
+    },
+    {
+        "name": "zlib",
+        "version": "1.3.1",
+        "sha256": "e3f3fb32564952006eb18b091ca8464740e5eca29d328cfb0b2da22768e0b638",
+        "license": "Zlib",
+        "license_paths": ["cpython-source-deps-zlib-1.3.1/LICENSE"],
+    },
 )
 
-OPENSSL_UPSTREAM_SOURCE = {
-    "name": "OpenSSL",
-    "version": "3.0.16",
-    "filename": "openssl-3.0.16.tar.gz",
-    "url": "https://www.openssl.org/source/openssl-3.0.16.tar.gz",
-    "sha256": "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86",
-    "source_of_truth": "https://www.openssl.org/source/openssl-3.0.16.tar.gz.sha256",
-    "license_paths": ["openssl-3.0.16/LICENSE.txt"],
+# The official CPython 3.13.15 Windows build resolves these exact source-deps
+# tags from PCbuild/get_externals.bat.  OpenSSL belongs to that graph; a
+# separate older OpenSSL archive would falsely describe the shipped runtime.
+
+ONNXRUNTIME_SOURCE = {
+    "id": "onnxruntime-source-a83fc4d58cb4",
+    "name": "ONNX Runtime",
+    "version": "1.23.2",
+    "filename": "onnxruntime-a83fc4d58cb48eb68890dd689f94f28288cf2278.tar.gz",
+    "url": "https://codeload.github.com/microsoft/onnxruntime/tar.gz/a83fc4d58cb48eb68890dd689f94f28288cf2278",
+    "sha256": "7270fab0d96d964959b35648014230c00fa2a9cb98df087e5fd5c2b2c24c8085",
+    "source_of_truth": "https://github.com/microsoft/onnxruntime/commit/a83fc4d58cb48eb68890dd689f94f28288cf2278",
+    "license": "MIT",
+    "license_paths": [
+        "onnxruntime-a83fc4d58cb48eb68890dd689f94f28288cf2278/LICENSE",
+        "onnxruntime-a83fc4d58cb48eb68890dd689f94f28288cf2278/ThirdPartyNotices.txt",
+    ],
+    "build_role": "exact CPU ONNX Runtime source corresponding to the pinned Windows package",
 }
+
+ONNXRUNTIME_SUBMODULE_SOURCES = (
+    {
+        "id": "onnxruntime-submodule-onnx-e709452ef2bb",
+        "name": "ONNX",
+        "version": "e709452ef2bbc1d113faf678c24e6d3467696e83",
+        "filename": "onnx-e709452ef2bbc1d113faf678c24e6d3467696e83.tar.gz",
+        "url": "https://codeload.github.com/onnx/onnx/tar.gz/e709452ef2bbc1d113faf678c24e6d3467696e83",
+        "sha256": "3001af7fb316cefd02c3b586139167d43eb3cf79b78aed47645831593dfbd015",
+        "source_of_truth": "https://github.com/onnx/onnx/commit/e709452ef2bbc1d113faf678c24e6d3467696e83",
+        "license": "Apache-2.0",
+        "license_paths": ["onnx-e709452ef2bbc1d113faf678c24e6d3467696e83/LICENSE"],
+        "build_role": "ONNX Runtime CPU external submodule",
+    },
+    {
+        "id": "onnxruntime-submodule-libprotobuf-mutator-7a2ed51a6b68",
+        "name": "libprotobuf-mutator",
+        "version": "7a2ed51a6b682a83e345ff49fc4cfd7ca47550db",
+        "filename": "libprotobuf-mutator-7a2ed51a6b682a83e345ff49fc4cfd7ca47550db.tar.gz",
+        "url": "https://codeload.github.com/google/libprotobuf-mutator/tar.gz/7a2ed51a6b682a83e345ff49fc4cfd7ca47550db",
+        "sha256": "d51365191580c4bf5e9ff104eebcfe34f7ff5f471006d7a460c15dcb3657501c",
+        "source_of_truth": "https://github.com/google/libprotobuf-mutator/commit/7a2ed51a6b682a83e345ff49fc4cfd7ca47550db",
+        "license": "Apache-2.0",
+        "license_paths": ["libprotobuf-mutator-7a2ed51a6b682a83e345ff49fc4cfd7ca47550db/LICENSE"],
+        "build_role": "optional ONNX Runtime fuzz/test submodule retained for a complete pinned source graph",
+    },
+    {
+        "id": "onnxruntime-submodule-emsdk-419021fa0404",
+        "name": "Emscripten SDK",
+        "version": "419021fa040428bc69ef1559b325addb8e10211f",
+        "filename": "emsdk-419021fa040428bc69ef1559b325addb8e10211f.tar.gz",
+        "url": "https://codeload.github.com/emscripten-core/emsdk/tar.gz/419021fa040428bc69ef1559b325addb8e10211f",
+        "sha256": "26c3ef13fc8285a209fde5ac3e6eec17e2a24e59d6af76f92f54e6bf62998a72",
+        "source_of_truth": "https://github.com/emscripten-core/emsdk/commit/419021fa040428bc69ef1559b325addb8e10211f",
+        "license": "MIT",
+        "license_paths": ["emsdk-419021fa040428bc69ef1559b325addb8e10211f/LICENSE"],
+        "build_role": "optional ONNX Runtime web submodule retained from the pinned repository graph",
+    },
+)
+
+# CPU CMake's FetchContent graph from ONNX Runtime cmake/deps.txt and
+# onnxruntime_external_deps.cmake.  GPU, WebGPU, training, and benchmark-only
+# inputs are deliberately excluded; the release uses the x64 CPU provider.
+ONNXRUNTIME_CPU_SOURCES = (
+    {
+        "id": "onnxruntime-dependency-abseil-20250512.0",
+        "name": "abseil-cpp",
+        "version": "20250512.0",
+        "filename": "abseil-cpp-20250512.0.zip",
+        "url": "https://github.com/abseil/abseil-cpp/archive/refs/tags/20250512.0.zip",
+        "sha256": "520551a68a57f58be691151d59918a7ddcd8d727f81c0bb530bca272f985e674",
+        "source_of_truth": "https://github.com/abseil/abseil-cpp/releases/tag/20250512.0",
+        "license": "Apache-2.0",
+        "license_paths": ["abseil-cpp-20250512.0/LICENSE"],
+        "upstream_sha1": "3d6ff7e7ce144d9a53a53bef1f1bf79e1da4b8e1",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+    {
+        "id": "onnxruntime-dependency-date-3.0.1",
+        "name": "date",
+        "version": "3.0.1",
+        "filename": "date-3.0.1.zip",
+        "url": "https://github.com/HowardHinnant/date/archive/refs/tags/v3.0.1.zip",
+        "sha256": "f4300b96f7a304d4ef9bf6e0fa3ded72159f7f2d0f605bdde3e030a0dba7cf9f",
+        "source_of_truth": "https://github.com/HowardHinnant/date/releases/tag/v3.0.1",
+        "license": "MIT",
+        "license_paths": ["date-3.0.1/LICENSE.txt"],
+        "upstream_sha1": "2dac0c81dc54ebdd8f8d073a75c053b04b56e159",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+    {
+        "id": "onnxruntime-dependency-eigen-1d8b82b07408",
+        "name": "Eigen",
+        "version": "1d8b82b0740839c0de7f1242a3585e3390ff5f33",
+        "filename": "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip",
+        "url": "https://github.com/eigen-mirror/eigen/archive/1d8b82b0740839c0de7f1242a3585e3390ff5f33/eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip",
+        "sha256": "6a60d76351f97132669daeeb721d6bf14b008101883ad2d687a3201c5c461eb0",
+        "source_of_truth": "https://github.com/eigen-mirror/eigen/commit/1d8b82b0740839c0de7f1242a3585e3390ff5f33",
+        "license": "MPL-2.0",
+        "license_paths": [
+            "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/LICENSE",
+            "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/COPYING.APACHE",
+            "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/COPYING.BSD",
+            "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/COPYING.MINPACK",
+            "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/COPYING.MPL2",
+            "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/COPYING.README",
+        ],
+        "upstream_sha1": "05b19b49e6fbb91246be711d801160528c135e34",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+    {
+        "id": "onnxruntime-dependency-flatbuffers-23.5.26",
+        "name": "flatbuffers",
+        "version": "23.5.26",
+        "filename": "flatbuffers-23.5.26.zip",
+        "url": "https://github.com/google/flatbuffers/archive/refs/tags/v23.5.26.zip",
+        "sha256": "57bd580c0772fd1a726c34ab8bf05325293bc5f9c165060a898afa1feeeb95e1",
+        "source_of_truth": "https://github.com/google/flatbuffers/releases/tag/v23.5.26",
+        "license": "Apache-2.0",
+        "license_paths": ["flatbuffers-23.5.26/LICENSE"],
+        "upstream_sha1": "59422c3b5e573dd192fead2834d25951f1c1670c",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+    {
+        "id": "onnxruntime-dependency-json-3.11.3",
+        "name": "nlohmann-json",
+        "version": "3.11.3",
+        "filename": "json-3.11.3.zip",
+        "url": "https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip",
+        "sha256": "04022b05d806eb5ff73023c280b68697d12b93e1b7267a0b22a1a39ec7578069",
+        "source_of_truth": "https://github.com/nlohmann/json/releases/tag/v3.11.3",
+        "license": "MIT",
+        "license_paths": ["json-3.11.3/LICENSE.MIT"],
+        "upstream_sha1": "5e88795165cc8590138d1f47ce94ee567b85b4d6",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+    {
+        "id": "onnxruntime-dependency-gsl-4.0.0",
+        "name": "microsoft-gsl",
+        "version": "4.0.0",
+        "filename": "GSL-4.0.0.zip",
+        "url": "https://github.com/microsoft/GSL/archive/refs/tags/v4.0.0.zip",
+        "sha256": "eb91fcb10a6aa5ccb1d224e07a56c8ecffe9a1bb601fa1848276ec46a2200bfb",
+        "source_of_truth": "https://github.com/microsoft/GSL/releases/tag/v4.0.0",
+        "license": "MIT",
+        "license_paths": ["GSL-4.0.0/LICENSE"],
+        "upstream_sha1": "cf368104cd22a87b4dd0c80228919bb2df3e2a14",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+    {
+        "id": "onnxruntime-dependency-wil-1.0.230629.1",
+        "name": "microsoft-wil",
+        "version": "1.0.230629.1",
+        "filename": "wil-1.0.230629.1.zip",
+        "url": "https://github.com/microsoft/wil/archive/refs/tags/v1.0.230629.1.zip",
+        "sha256": "f116af6cd96b8404d5e3cd6ef18853f7baa9c7d96930e741591fea8b5a3ef919",
+        "source_of_truth": "https://github.com/microsoft/wil/releases/tag/v1.0.230629.1",
+        "license": "MIT",
+        "license_paths": ["wil-1.0.230629.1/LICENSE"],
+        "upstream_sha1": "e4a542a323c070376f7c2d1973d0f7ddbc1d2fa5",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+    {
+        "id": "onnxruntime-dependency-mp11-boost-1.82.0",
+        "name": "Boost.MP11",
+        "version": "1.82.0",
+        "filename": "mp11-boost-1.82.0.zip",
+        "url": "https://github.com/boostorg/mp11/archive/refs/tags/boost-1.82.0.zip",
+        "sha256": "81431bdc44c439a324e02c07ed067f8f556419fd86f2d8b486ff568df6aac899",
+        "source_of_truth": "https://github.com/boostorg/mp11/releases/tag/boost-1.82.0",
+        "license": "BSL-1.0",
+        "upstream_sha1": "9bc9e01dffb64d9e0773b2e44d2f22c51aace063",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+    {
+        "id": "onnxruntime-dependency-onnx-1.18.0",
+        "name": "ONNX",
+        "version": "1.18.0",
+        "filename": "onnx-1.18.0.zip",
+        "url": "https://github.com/onnx/onnx/archive/refs/tags/v1.18.0.zip",
+        "sha256": "23b6f113b05ac7aa7fac0128df69aca2eabd8c8f92d2ebe39fa741a47addec6f",
+        "source_of_truth": "https://github.com/onnx/onnx/releases/tag/v1.18.0",
+        "license": "Apache-2.0",
+        "license_paths": ["onnx-1.18.0/LICENSE"],
+        "upstream_sha1": "f156d032a3af91b66d554e11158b33ca77bbb1f2",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+    {
+        "id": "onnxruntime-dependency-protobuf-21.12",
+        "name": "protobuf",
+        "version": "21.12",
+        "filename": "protobuf-21.12.zip",
+        "url": "https://github.com/protocolbuffers/protobuf/archive/refs/tags/v21.12.zip",
+        "sha256": "6a31b662deaeb0ac35e6287bda2f3369b19836e6c9f8828d4da444346f420298",
+        "source_of_truth": "https://github.com/protocolbuffers/protobuf/releases/tag/v21.12",
+        "license": "BSD-3-Clause",
+        "license_paths": [
+            "protobuf-21.12/LICENSE",
+            "protobuf-21.12/third_party/utf8_range/LICENSE",
+        ],
+        "upstream_sha1": "7cf2733949036c7d52fda017badcab093fe73bfa",
+        "build_role": "ONNX Runtime CPU dependency and protoc build source",
+    },
+    {
+        "id": "onnxruntime-dependency-cpuinfo-8a1772",
+        "name": "cpuinfo",
+        "version": "8a1772a0c5c447df2d18edf33ec4603a8c9c04a6",
+        "filename": "cpuinfo-8a1772a0c5c447df2d18edf33ec4603a8c9c04a6.zip",
+        "url": "https://github.com/pytorch/cpuinfo/archive/8a1772a0c5c447df2d18edf33ec4603a8c9c04a6.zip",
+        "sha256": "4bf314b3f04db2fd984fef38a7e278e702b74297ef0af592b73296edba02b9d4",
+        "source_of_truth": "https://github.com/pytorch/cpuinfo/commit/8a1772a0c5c447df2d18edf33ec4603a8c9c04a6",
+        "license": "BSD-2-Clause",
+        "license_paths": [
+            "cpuinfo-8a1772a0c5c447df2d18edf33ec4603a8c9c04a6/LICENSE",
+            "cpuinfo-8a1772a0c5c447df2d18edf33ec4603a8c9c04a6/deps/clog/LICENSE",
+        ],
+        "upstream_sha1": "85bf8a60dae026b99b6ccd78606c85ed83bfb2cd",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+    {
+        "id": "onnxruntime-dependency-re2-2024-07-02",
+        "name": "re2",
+        "version": "2024-07-02",
+        "filename": "re2-2024-07-02.zip",
+        "url": "https://github.com/google/re2/archive/refs/tags/2024-07-02.zip",
+        "sha256": "a835fe55fbdcd8e80f38584ab22d0840662c67f2feb36bd679402da9641dc71e",
+        "source_of_truth": "https://github.com/google/re2/releases/tag/2024-07-02",
+        "license": "BSD-3-Clause",
+        "license_paths": ["re2-2024-07-02/LICENSE"],
+        "upstream_sha1": "646e1728269cde7fcef990bf4a8e87b047882e88",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+    {
+        "id": "onnxruntime-dependency-safeint-3.0.28",
+        "name": "SafeInt",
+        "version": "3.0.28",
+        "filename": "SafeInt-3.0.28.zip",
+        "url": "https://github.com/dcleblanc/SafeInt/archive/refs/tags/3.0.28.zip",
+        "sha256": "3ffbd9a2fdff45da77da3e7269e9aa512ea43bed5c38ce8fd8f3d1068a032c3f",
+        "source_of_truth": "https://github.com/dcleblanc/SafeInt/releases/tag/3.0.28",
+        "license": "MIT",
+        "license_paths": [
+            "SafeInt-3.0.28/LICENSE",
+            "SafeInt-3.0.28/Archive/license/license.json",
+        ],
+        "upstream_sha1": "23f252040ff6cb9f1fd18575b32fa8fb5928daac",
+        "build_role": "ONNX Runtime CPU dependency",
+    },
+)
 
 OPENBLAS_SOURCES = (
     {
@@ -511,11 +800,14 @@ def _native_asset_entries() -> tuple[list[dict[str, Any]], list[str]]:
             "version": str(origin.get("version") or origin.get("commit") or "pinned"),
             "filename": source_filename,
             "url": source_url,
-            # A package URL (for example DirectML's NuGet archive) hashes the
-            # package, while release-assets.json also records the extracted
-            # file hash.  Verify the bytes fetched from the URL here and keep
-            # the extracted identity separately.
-            "sha256": origin.get("package_sha256") or asset.get("sha256"),
+            # A package URL hashes the archive, while release-assets.json also
+            # records each extracted file hash. Verify the bytes fetched from
+            # the URL and keep the extracted identity separately.
+            "sha256": (
+                origin.get("archive_sha256")
+                or origin.get("package_sha256")
+                or asset.get("sha256")
+            ),
             "asset_sha256": asset.get("sha256"),
             "status": "blocked" if unresolved or restricted else "available",
             "source_role": "runtime asset, not application source",
@@ -599,7 +891,7 @@ def build_manifest() -> dict[str, Any]:
         raise SourceDistributionError("Required pin is missing for pyqt6-qt6")
     for module in QT_MODULE_SOURCES:
         module_name = str(module["module"])
-        source = {
+        source: dict[str, Any] = {
             "filename": f"{module_name}-everywhere-src-{qt_version}.tar.xz",
             "url": (
                 "https://download.qt.io/official_releases/qt/"
@@ -634,12 +926,22 @@ def build_manifest() -> dict[str, Any]:
             )
         )
 
-    for name, version, digest in CPYTHON_EXTERNAL_SOURCES:
-        source = {
+    for source_spec in CPYTHON_EXTERNAL_SOURCES:
+        name = str(source_spec["name"])
+        version = str(source_spec["version"])
+        source: dict[str, Any] = {
             "filename": f"cpython-source-deps-{name}-{version}.tar.gz",
             "url": f"https://github.com/python/cpython-source-deps/archive/refs/tags/{name}-{version}.tar.gz",
-            "sha256": digest,
+            "sha256": str(source_spec["sha256"]),
         }
+        if "license_paths" in source_spec:
+            source["license_paths"] = source_spec["license_paths"]
+        extras: dict[str, Any] = {
+            "source_of_truth": f"https://github.com/python/cpython-source-deps/tree/{name}-{version}",
+            "build_role": f"source dependency used by CPython {EXPECTED_CPYTHON_VERSION} Windows build",
+        }
+        if source_spec.get("license"):
+            extras["license"] = source_spec["license"]
         entries.append(
             _source_entry(
                 identifier=f"cpython-external-{name}-{version}",
@@ -647,20 +949,15 @@ def build_manifest() -> dict[str, Any]:
                 name=f"CPython external dependency: {name}",
                 version=version,
                 source=source,
-                source_of_truth=f"https://github.com/python/cpython-source-deps/tree/{name}-{version}",
-                build_role="source dependency used by CPython 3.12.10 Windows build",
+                **extras,
             )
         )
-    entries.append(
-        _source_entry(
-            identifier="openssl-upstream-3.0.16",
-            kind="cpython-build-source",
-            name=OPENSSL_UPSTREAM_SOURCE["name"],
-            version=OPENSSL_UPSTREAM_SOURCE["version"],
-            source=OPENSSL_UPSTREAM_SOURCE,
-            source_of_truth=OPENSSL_UPSTREAM_SOURCE["source_of_truth"],
-            build_role="upstream OpenSSL source corresponding to Python's libcrypto/libssl",
-        )
+    entries.extend(
+        {
+            **source,
+            "kind": "native-build-source",
+        }
+        for source in (ONNXRUNTIME_SOURCE, *ONNXRUNTIME_SUBMODULE_SOURCES, *ONNXRUNTIME_CPU_SOURCES)
     )
     for source in OPENBLAS_SOURCES:
         entries.append(
@@ -725,6 +1022,11 @@ def build_manifest() -> dict[str, Any]:
                 "sha256": python_hash,
                 "source_of_truth": f"https://www.python.org/downloads/release/python-{python_version.replace('.', '')}/",
                 "build_role": "locked interpreter used by the release workflow",
+                "license": "PSF-2.0; Microsoft Distributable Code terms for Windows runtime",
+                "license_paths": [
+                    f"Python-{python_version}/LICENSE",
+                    f"Python-{python_version}/PC/crtlicense.txt",
+                ],
             }
         )
 
@@ -745,7 +1047,7 @@ def build_manifest() -> dict[str, Any]:
         "blockers": sorted(set(blockers)),
         "scope": (
             "Exact sources for the release Python runtime, PyQt/Qt binding stack, "
-            "PyInstaller bootloader, CPython, and resolved Windows Cargo graph. "
+            "PyInstaller bootloader, CPython, CPU ONNX Runtime graph, and resolved Windows Cargo graph. "
             "Runtime models and redistributable binaries are recorded separately."
         ),
         "recipes": [
@@ -870,23 +1172,26 @@ def _expected_static_source_entries(runtime: dict[str, str]) -> dict[str, dict[s
                 "source_of_truth": "https://download.qt.io/official_releases/qt/",
             }
 
-    for name, version, digest in CPYTHON_EXTERNAL_SOURCES:
+    for source_spec in CPYTHON_EXTERNAL_SOURCES:
+        name = str(source_spec["name"])
+        version = str(source_spec["version"])
         expected[f"cpython-external-{name}-{version}"] = {
             "filename": f"cpython-source-deps-{name}-{version}.tar.gz",
             "url": f"https://github.com/python/cpython-source-deps/archive/refs/tags/{name}-{version}.tar.gz",
-            "sha256": digest,
+            "sha256": str(source_spec["sha256"]),
             "source_of_truth": f"https://github.com/python/cpython-source-deps/tree/{name}-{version}",
         }
 
     static_sources = [
-        (
-            "openssl-upstream-3.0.16",
-            OPENSSL_UPSTREAM_SOURCE,
-        ),
         ("mesa-llvmpipe-11.2.2", MESA_SOURCE),
         (f"deepfilter-upstream-{DEEPFILTER_SOURCE['version'][:12]}", DEEPFILTER_SOURCE),
         ("deepfilter-tract-linalg-0.21.17", DEEPFILTER_TRACT_SOURCE),
         *[(str(source["id"]), source) for source in OPENBLAS_SOURCES],
+        (str(ONNXRUNTIME_SOURCE["id"]), ONNXRUNTIME_SOURCE),
+        *[
+            (str(source["id"]), source)
+            for source in (*ONNXRUNTIME_SUBMODULE_SOURCES, *ONNXRUNTIME_CPU_SOURCES)
+        ],
     ]
     for identifier, source in static_sources:
         expected[identifier] = {
@@ -1128,7 +1433,11 @@ def _validate_manifest(manifest: dict[str, Any], *, release: bool = False) -> No
             if isinstance(expected_asset.get("origin"), dict)
             else {}
         )
-        expected_sha = origin.get("package_sha256") or expected_asset.get("sha256")
+        expected_sha = (
+            origin.get("archive_sha256")
+            or origin.get("package_sha256")
+            or expected_asset.get("sha256")
+        )
         expected_status = (
             "blocked"
             if origin.get("status") in {
@@ -1176,12 +1485,17 @@ def _validate_manifest(manifest: dict[str, Any], *, release: bool = False) -> No
 
     required_ids = {
         *(f"qt-{module['module']}-{qt_version}" for module in QT_MODULE_SOURCES),
-        *(f"cpython-external-{name}-{version}" for name, version, _ in CPYTHON_EXTERNAL_SOURCES),
-        "openssl-upstream-3.0.16",
+        *(
+            f"cpython-external-{source['name']}-{source['version']}"
+            for source in CPYTHON_EXTERNAL_SOURCES
+        ),
         "mesa-llvmpipe-11.2.2",
         f"deepfilter-upstream-{DEEPFILTER_SOURCE['version'][:12]}",
         "deepfilter-tract-linalg-0.21.17",
         *(source["id"] for source in OPENBLAS_SOURCES),
+        ONNXRUNTIME_SOURCE["id"],
+        *(source["id"] for source in ONNXRUNTIME_SUBMODULE_SOURCES),
+        *(source["id"] for source in ONNXRUNTIME_CPU_SOURCES),
     }
     actual_ids = _manifest_entry_ids(manifest)
     missing_ids = required_ids - actual_ids

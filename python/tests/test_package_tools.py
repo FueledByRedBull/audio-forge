@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
+import stat
+import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -37,6 +41,10 @@ def _write_bundle_file(bundle: Path, relative_path: str) -> None:
     path = bundle / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"x")
+
+
+def _native_extension_name() -> str:
+    return "mic_eq_core" + package_smoke._expected_extension_suffix()
 
 
 def _write_valid_build_info(bundle: Path, *, version: str | None = None) -> None:
@@ -79,6 +87,60 @@ def test_build_script_propagates_pyinstaller_failure_code():
 
     assert "$pyinstallerExitCode = $LASTEXITCODE" in source
     assert "exit $pyinstallerExitCode" in source
+
+
+def test_msi_builder_accepts_explicit_python_path():
+    source = (check_workflows.REPO_ROOT / "build_msi.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert '[string]$PythonPath = ""' in source
+    assert "Resolve-Path -LiteralPath $buildPython" in source
+    assert "& $buildPython -c" in source
+
+
+def test_release_build_selects_python_313_and_pinned_cpu_ort_explicitly():
+    workflow = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
+        encoding="utf-8"
+    )
+    errors: list[str] = []
+
+    check_workflows._check_python_runtime("release-package.yml", workflow, errors)
+
+    assert errors == []
+
+
+def test_ci_workflow_hydrates_cpu_ort_before_both_build_jobs():
+    source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    errors: list[str] = []
+
+    check_workflows._check_required_gates("ci.yml", source, errors)
+
+    assert errors == []
+    assert source.count("fetch_release_assets.py --only-cpu-runtime --force") == 2
+
+
+def test_release_workflow_binds_existing_tag_to_checked_out_commit():
+    source = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
+        encoding="utf-8"
+    )
+    errors: list[str] = []
+
+    check_workflows._check_required_gates("release-package.yml", source, errors)
+
+    assert errors == []
+
+
+def test_workflow_checker_rejects_legacy_python_pin():
+    errors: list[str] = []
+
+    check_workflows._check_python_runtime(
+        "ci.yml",
+        'python-version: "3.12.10"\n',
+        errors,
+    )
+
+    assert any("must pin CPython 3.13.15" in error for error in errors)
 
 
 def test_dependabot_checker_rejects_routine_version_updates(monkeypatch, tmp_path):
@@ -305,12 +367,71 @@ def test_semgrep_scan_includes_untracked_source_and_excludes_generated_reports(
 
     assert "--no-git-ignore" in command
     exclusions = [
-        command[index + 1]
-        for index, value in enumerate(command[:-1])
-        if value == "--exclude"
+        value.removeprefix("--exclude=")
+        for value in command
+        if value.startswith("--exclude=")
     ]
     assert "*.sarif" in exclusions
     assert "models" in exclusions
+    assert ".venv*" in exclusions
+    assert ".venv" not in exclusions
+    for secret_pattern in (".env", ".env.*", "credentials.*", "secrets.*"):
+        assert secret_pattern in exclusions
+
+
+def test_cpython313_offline_imports_work_without_ssl(tmp_path):
+    if sys.version_info < (3, 13):
+        pytest.skip("portable runtime is CPython 3.13+")
+
+    code = r'''
+import importlib.abc
+import logging
+import os
+import sys
+import tempfile
+
+
+class BlockSSL(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in {"_hashlib", "ssl", "_ssl"}:
+            raise ModuleNotFoundError(f"blocked test import: {fullname}")
+        return None
+
+
+sys.meta_path.insert(0, BlockSSL())
+sys.path.insert(0, "python")
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+
+with tempfile.TemporaryDirectory(prefix="audioforge-ssl-regression-") as root:
+    os.environ["APPDATA"] = root
+    import PyQt6.QtCore
+    import PyQt6.QtGui
+    import PyQt6.QtWidgets
+    import logging.handlers
+    import hashlib
+    import hmac
+    import mic_eq.ui.app_bootstrap
+    from mic_eq.app_logging import configure_app_logging
+
+    assert hashlib.sha256(b"audioforge").hexdigest() == (
+        "45c955234cd1a7df4065ce3e6c962fb24ae7bd0131330dd85ba8ee9d634418be"
+    )
+    assert hmac.new(b"key", b"audioforge", hashlib.sha256).hexdigest() == (
+        "3a84935d64d89fb8cf1fb3f0688e33b9b5c299d07cf16acbf7c51bb354cb8b46"
+    )
+    log_file = configure_app_logging()
+    assert log_file.is_file()
+    for handler in list(logging.getLogger().handlers):
+        handler.close()
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=package_smoke.REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_package_smoke_rejects_empty_models_directory(tmp_path):
@@ -318,8 +439,9 @@ def test_package_smoke_rejects_empty_models_directory(tmp_path):
     (bundle / "_internal" / "models").mkdir(parents=True)
     (bundle / "AudioForge.exe").write_bytes(b"x")
     _write_bundle_file(bundle, "_internal/df.dll")
-    _write_bundle_file(bundle, "_internal/DirectML.dll")
-    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, "_internal/onnxruntime.dll")
+    _write_bundle_file(bundle, "_internal/onnxruntime_providers_shared.dll")
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
     (bundle / "_internal" / "example.dist-info").mkdir()
 
     errors = package_smoke.check_dist_bundle(bundle)
@@ -336,7 +458,7 @@ def test_package_smoke_accepts_required_assets_and_metadata(tmp_path):
     for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
         _write_bundle_file(bundle, relative_path)
     _write_valid_build_info(bundle)
-    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
 
     assert package_smoke.check_dist_bundle(bundle) == []
 
@@ -347,8 +469,8 @@ def test_package_smoke_rejects_duplicate_native_extension(tmp_path):
     (bundle / "AudioForge.exe").write_bytes(b"x")
     for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
         _write_bundle_file(bundle, relative_path)
-    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
-    _write_bundle_file(bundle, "_internal/mic_eq_core/mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+    _write_bundle_file(bundle, f"_internal/mic_eq_core/{_native_extension_name()}")
     (bundle / "_internal" / "example.dist-info").mkdir()
 
     errors = package_smoke.check_dist_bundle(bundle)
@@ -356,30 +478,120 @@ def test_package_smoke_rejects_duplicate_native_extension(tmp_path):
     assert any("_internal/mic_eq_core/mic_eq_core*.pyd" in error for error in errors)
 
 
+def test_package_smoke_rejects_foreign_python_abi_extension(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
+    (bundle / "AudioForge.exe").write_bytes(b"x")
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        _write_bundle_file(bundle, relative_path)
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.foreign.pyd")
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert any("foreign Python ABI extensions" in error for error in errors)
+
+
+def test_package_smoke_rejects_retired_directml_payload(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
+    (bundle / "AudioForge.exe").write_bytes(b"x")
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        _write_bundle_file(bundle, relative_path)
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+    _write_bundle_file(bundle, "_internal/DirectML.dll")
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert any("retired DirectML payload" in error for error in errors)
+
+
+def test_package_smoke_rejects_retired_directml_notice(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
+    (bundle / "AudioForge.exe").write_bytes(b"x")
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        _write_bundle_file(bundle, relative_path)
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+    _write_bundle_file(bundle, "_internal/licenses/DirectML-LICENSE.txt")
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert any("retired DirectML license notice" in error for error in errors)
+
+
+def test_package_smoke_rejects_excluded_openssl_payload(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
+    (bundle / "AudioForge.exe").write_bytes(b"x")
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        _write_bundle_file(bundle, relative_path)
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+    for relative_path in (
+        "_internal/_ssl.pyd",
+        "_internal/_hashlib.pyd",
+        "_internal/libssl-3.dll",
+        "_internal/libcrypto-3.dll",
+    ):
+        _write_bundle_file(bundle, relative_path)
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert any("excluded OpenSSL payload" in error for error in errors)
+
+
 def test_prune_bundle_removes_duplicate_native_extension_only_when_packaged_copy_exists(
     tmp_path,
 ):
     bundle = tmp_path / "AudioForge"
-    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
-    _write_bundle_file(bundle, "_internal/mic_eq_core/mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+    _write_bundle_file(bundle, f"_internal/mic_eq_core/{_native_extension_name()}")
 
     prune_bundle.prune_bundle(bundle)
 
     assert (
-        bundle / "_internal" / "mic_eq" / "mic_eq_core.cp312-win_amd64.pyd"
+        bundle / "_internal" / "mic_eq" / _native_extension_name()
     ).is_file()
     assert not (bundle / "_internal" / "mic_eq_core").exists()
 
 
+def test_prune_bundle_removes_foreign_python_abi_extension(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+    foreign = bundle / "_internal" / "mic_eq" / "mic_eq_core.foreign.pyd"
+    foreign.write_bytes(b"x")
+
+    prune_bundle.prune_bundle(bundle)
+
+    assert not foreign.exists()
+
+
 def test_prune_bundle_keeps_top_level_native_extension_without_packaged_copy(tmp_path):
     bundle = tmp_path / "AudioForge"
-    _write_bundle_file(bundle, "_internal/mic_eq_core/mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, f"_internal/mic_eq_core/{_native_extension_name()}")
 
     prune_bundle.prune_bundle(bundle)
 
     assert (
-        bundle / "_internal" / "mic_eq_core" / "mic_eq_core.cp312-win_amd64.pyd"
+        bundle / "_internal" / "mic_eq_core" / _native_extension_name()
     ).is_file()
+
+
+def test_prune_bundle_removes_excluded_openssl_payload(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    relative_paths = (
+        "_internal/_ssl.pyd",
+        "_internal/_hashlib.pyd",
+        "_internal/libssl-3.dll",
+        "_internal/libcrypto-3.dll",
+    )
+    for relative_path in relative_paths:
+        _write_bundle_file(bundle, relative_path)
+
+    removed = prune_bundle.prune_bundle(bundle)
+
+    assert sorted(path.as_posix() for path in removed) == sorted(relative_paths)
+    assert not any((bundle / relative_path).exists() for relative_path in relative_paths)
 
 
 def test_package_smoke_rejects_external_windows_icu(tmp_path):
@@ -432,7 +644,7 @@ def test_package_smoke_historical_ucrt_exception_is_exact_and_version_bound(
         _write_bundle_file(bundle, relative_path)
     _write_valid_build_info(bundle, version="1.10.1")
     _write_bundle_file(
-        bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd"
+        bundle, f"_internal/mic_eq/{_native_extension_name()}"
     )
     for index in range(45):
         _write_bundle_file(
@@ -464,13 +676,13 @@ def test_package_smoke_rejects_misplaced_decoy_assets(tmp_path):
         decoy_path = bundle / "_internal" / "decoys" / Path(relative_path).name
         decoy_path.parent.mkdir(parents=True, exist_ok=True)
         decoy_path.write_bytes(b"x")
-    _write_bundle_file(bundle, "_internal/decoys/mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, "_internal/decoys/mic_eq_core.foreign.pyd")
     (bundle / "_internal" / "example.dist-info").mkdir()
 
     errors = package_smoke.check_dist_bundle(bundle)
 
     assert any("_internal/df.dll" in error for error in errors)
-    assert any("_internal/mic_eq/mic_eq_core*.pyd" in error for error in errors)
+    assert any("does not contain _internal/mic_eq/mic_eq_core" in error for error in errors)
 
 
 def test_package_smoke_rejects_bundle_without_required_license_notice(tmp_path):
@@ -478,15 +690,15 @@ def test_package_smoke_rejects_bundle_without_required_license_notice(tmp_path):
     (bundle / "AudioForge.exe").parent.mkdir(parents=True)
     (bundle / "AudioForge.exe").write_bytes(b"x")
     for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
-        if relative_path == "_internal/licenses/DirectML-LICENSE.txt":
+        if relative_path == "_internal/licenses/ONNXRuntime-LICENSE.txt":
             continue
         _write_bundle_file(bundle, relative_path)
     _write_valid_build_info(bundle)
-    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
 
     errors = package_smoke.check_dist_bundle(bundle)
 
-    assert any("DirectML-LICENSE.txt" in error for error in errors)
+    assert any("ONNXRuntime-LICENSE.txt" in error for error in errors)
 
 
 def test_package_smoke_rejects_stale_bundle_version(tmp_path):
@@ -498,7 +710,7 @@ def test_package_smoke_rejects_stale_bundle_version(tmp_path):
         json.dumps({"schema_version": 1, "version": "0.0.0"}),
         encoding="utf-8",
     )
-    _write_bundle_file(bundle, "_internal/mic_eq/mic_eq_core.cp312-win_amd64.pyd")
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
 
     errors = package_smoke.check_dist_bundle(bundle)
 
@@ -533,6 +745,61 @@ def test_verify_release_assets_reports_missing_and_hash_mismatch(tmp_path, monke
 
     assert any("sha256 mismatch" in error for error in errors)
     assert any("missing.bin: missing" in error for error in errors)
+
+
+def test_verify_release_assets_can_limit_to_hydrated_runtime(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime.dll"
+    runtime.write_bytes(b"runtime")
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "assets": [
+                    {
+                        "path": "runtime.dll",
+                        "size": runtime.stat().st_size,
+                        "sha256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
+                    },
+                    {"path": "source-build.dll", "sha256": "0" * 64},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify_release_assets, "REPO_ROOT", tmp_path)
+
+    assert verify_release_assets.verify_assets(manifest, {"runtime.dll"}) == []
+
+
+def test_verify_release_assets_selected_paths_require_manifest_entries(
+    tmp_path, monkeypatch
+):
+    runtime = tmp_path / "runtime.dll"
+    runtime.write_bytes(b"runtime")
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "assets": [
+                    {
+                        "path": "runtime.dll",
+                        "size": runtime.stat().st_size,
+                        "sha256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify_release_assets, "REPO_ROOT", tmp_path)
+
+    errors = verify_release_assets.verify_assets(
+        manifest, {"runtime.dll", "target/onnxruntime-cpu/lib/onnxruntime.dll"}
+    )
+
+    assert errors == [
+        "target/onnxruntime-cpu/lib/onnxruntime.dll: manifest entry missing"
+    ]
 
 
 def test_verify_release_assets_rejects_absolute_and_traversal_paths(
@@ -703,6 +970,96 @@ def test_fetch_release_assets_rejects_untrusted_direct_download_url(tmp_path):
             "https://example.invalid/silero_vad.onnx",
             tmp_path / "silero_vad.onnx",
         )
+
+
+def test_fetch_pinned_archive_rejects_oversized_response(tmp_path, monkeypatch):
+    payload = b"too-large"
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+        def geturl(self):
+            return "https://github.com/example/project/releases/download/v1/runtime.zip"
+
+    class Opener:
+        def open(self, request, timeout):
+            return Response(payload)
+
+    monkeypatch.setattr(fetch_release_assets.urllib.request, "build_opener", lambda *_: Opener())
+    entry = {
+        "source": "https://github.com/example/project/releases/download/v1/runtime.zip",
+        "origin": {
+            "archive_sha256": hashlib.sha256(payload).hexdigest(),
+            "archive_size": len(payload) - 1,
+        },
+    }
+
+    with pytest.raises(RuntimeError, match="exceeded its declared size"):
+        fetch_release_assets._download_pinned_archive(entry, tmp_path, {})
+
+
+def test_fetch_pinned_archive_rejects_unsafe_or_symlink_members(tmp_path):
+    archive = tmp_path / "runtime.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("../escape.dll", b"escape")
+
+    with pytest.raises(RuntimeError, match="unsafe member path"):
+        fetch_release_assets._extract_pinned_zip_member(
+            archive, tmp_path / "extract", "package/runtime.dll"
+        )
+
+    symlink_archive = tmp_path / "symlink.zip"
+    symlink = zipfile.ZipInfo("package/runtime.dll")
+    symlink.create_system = 3
+    symlink.external_attr = stat.S_IFLNK << 16
+    with zipfile.ZipFile(symlink_archive, "w") as output:
+        output.writestr(symlink, b"target")
+
+    with pytest.raises(RuntimeError, match="symlink member"):
+        fetch_release_assets._extract_pinned_zip_member(
+            symlink_archive, tmp_path / "extract-symlink", "package/runtime.dll"
+        )
+
+
+def test_verify_release_assets_validates_pinned_archive_contract(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime.dll"
+    runtime.write_bytes(b"runtime")
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "assets": [
+                    {
+                        "path": "runtime.dll",
+                        "size": runtime.stat().st_size,
+                        "sha256": hashlib.sha256(runtime.read_bytes()).hexdigest(),
+                        "source": "https://github.com/example/project/releases/download/v1/runtime.zip",
+                        "origin": {
+                            "status": "verified-upstream-archive",
+                            "runtime": "CPU-only Windows x64",
+                            "archive_sha256": "a" * 64,
+                            "archive_size": 123,
+                            "archive_member": "package/runtime.dll",
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify_release_assets, "REPO_ROOT", tmp_path)
+
+    assert verify_release_assets.verify_assets(manifest) == []
+
+    invalid = json.loads(manifest.read_text(encoding="utf-8"))
+    invalid["assets"][0]["origin"]["runtime"] = 1
+    manifest.write_text(json.dumps(invalid), encoding="utf-8")
+    errors = verify_release_assets.verify_assets(manifest)
+    assert any("CPU-only runtime" in error for error in errors)
 
 
 def test_fetch_release_assets_default_tag_comes_from_manifest(tmp_path, monkeypatch):

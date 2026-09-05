@@ -102,6 +102,32 @@ def test_path_baseline_reports_additions_and_removals(tmp_path):
     assert removals == ["old.dll"]
 
 
+def test_cpu_ort_bundle_assets_match_release_manifest(tmp_path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    manifest_assets = []
+    for manifest_path, bundle_path in release_provenance.CPU_ORT_BUNDLE_ASSETS.items():
+        target = bundle / bundle_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(manifest_path.encode("ascii"))
+        manifest_assets.append(
+            {
+                "path": manifest_path,
+                "sha256": release_provenance.sha256_file(target),
+            }
+        )
+    (tmp_path / "release-assets.json").write_text(
+        json.dumps({"assets": manifest_assets}), encoding="utf-8"
+    )
+    monkeypatch.setattr(release_provenance, "REPO_ROOT", tmp_path)
+
+    assert release_provenance._cpu_ort_asset_errors(bundle) == []
+    (bundle / "_internal" / "onnxruntime.dll").write_bytes(b"tampered")
+    assert any(
+        "does not match release-assets.json" in error
+        for error in release_provenance._cpu_ort_asset_errors(bundle)
+    )
+
+
 def test_create_and_verify_sidecars_bind_exact_archive_and_bundle(
     tmp_path, monkeypatch
 ):

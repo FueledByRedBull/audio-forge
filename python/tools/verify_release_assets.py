@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import sys
+import urllib.parse
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from release_provenance import sha256_file as _sha256
@@ -25,6 +26,15 @@ SOURCE_RECIPE_FILES = (
 )
 SOURCE_RECIPE_TEXT_SUFFIXES = frozenset({".json", ".lock", ".ps1", ".toml"})
 HEX_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+PINNED_ARCHIVE_STATUS = "verified-upstream-archive"
+PINNED_ARCHIVE_HOSTS = frozenset(
+    {
+        "github.com",
+        "github-releases.githubusercontent.com",
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+    }
+)
 
 
 def _load_manifest(path: Path = MANIFEST_PATH) -> list[dict[str, Any]]:
@@ -68,6 +78,42 @@ def _recipe_sha256(path: Path) -> str:
         return _sha256(path)
     canonical = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _verify_pinned_archive_metadata(asset: dict[str, Any], raw_path: str) -> list[str]:
+    origin = asset.get("origin")
+    if not isinstance(origin, dict):
+        return [f"{raw_path}: pinned archive asset must contain an origin object"]
+    errors: list[str] = []
+    source = asset.get("source")
+    if not isinstance(source, str) or not source:
+        errors.append(f"{raw_path}: pinned archive asset must declare source URL")
+    else:
+        parsed = urllib.parse.urlsplit(source)
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname not in PINNED_ARCHIVE_HOSTS
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port not in {None, 443}
+            or parsed.fragment
+        ):
+            errors.append(f"{raw_path}: pinned archive source URL is not trusted GitHub HTTPS")
+    archive_sha = origin.get("archive_sha256")
+    if not isinstance(archive_sha, str) or not HEX_SHA256.fullmatch(archive_sha):
+        errors.append(f"{raw_path}: pinned archive SHA-256 is invalid")
+    archive_size = origin.get("archive_size")
+    if type(archive_size) is not int or archive_size <= 0:
+        errors.append(f"{raw_path}: pinned archive byte count is invalid")
+    archive_member = origin.get("archive_member")
+    if not isinstance(archive_member, str) or not archive_member:
+        errors.append(f"{raw_path}: pinned archive member is missing")
+    elif path_error := _validate_manifest_path(archive_member, "pinned archive member"):
+        errors.append(path_error)
+    runtime = origin.get("runtime")
+    if not isinstance(runtime, str) or "cpu-only" not in runtime.casefold():
+        errors.append(f"{raw_path}: pinned archive must explicitly declare CPU-only runtime")
+    return errors
 
 
 def _verify_source_build_attestation(
@@ -214,8 +260,17 @@ def _verify_source_build_attestation(
     return errors
 
 
-def verify_assets(manifest_path: Path = MANIFEST_PATH) -> list[str]:
+def verify_assets(
+    manifest_path: Path = MANIFEST_PATH,
+    selected_paths: set[str] | None = None,
+) -> list[str]:
     errors: list[str] = []
+    normalized_selected = (
+        {path.replace("\\", "/") for path in selected_paths}
+        if selected_paths is not None
+        else None
+    )
+    seen_selected: set[str] = set()
     for asset in _load_manifest(manifest_path):
         if not isinstance(asset, dict):
             errors.append("asset entry must be an object")
@@ -224,6 +279,11 @@ def verify_assets(manifest_path: Path = MANIFEST_PATH) -> list[str]:
         if not isinstance(raw_path, str) or not raw_path:
             errors.append("asset entry missing path")
             continue
+        normalized_path = raw_path.replace("\\", "/")
+        if normalized_selected is not None and normalized_path not in normalized_selected:
+            continue
+        if normalized_selected is not None:
+            seen_selected.add(normalized_path)
         if path_error := _validate_manifest_path(raw_path, "asset path"):
             errors.append(path_error)
             continue
@@ -240,6 +300,8 @@ def verify_assets(manifest_path: Path = MANIFEST_PATH) -> list[str]:
 
         origin = asset.get("origin")
         source_built = isinstance(origin, dict) and origin.get("status") == SOURCE_BUILD_STATUS
+        if isinstance(origin, dict) and origin.get("status") == PINNED_ARCHIVE_STATUS:
+            errors.extend(_verify_pinned_archive_metadata(asset, raw_path))
         expected_size = asset.get("size")
         if expected_size is not None and type(expected_size) is not int:
             errors.append(f"{raw_path}: manifest size must be an integer")
@@ -263,6 +325,9 @@ def verify_assets(manifest_path: Path = MANIFEST_PATH) -> list[str]:
             if actual_sha.lower() != expected_sha.lower():
                 errors.append(f"{raw_path}: sha256 mismatch, expected {expected_sha}, got {actual_sha}")
 
+    if normalized_selected is not None:
+        for missing_path in sorted(normalized_selected - seen_selected):
+            errors.append(f"{missing_path}: manifest entry missing")
     return errors
 
 

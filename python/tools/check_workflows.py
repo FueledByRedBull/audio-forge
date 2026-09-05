@@ -17,6 +17,7 @@ ACTION_REF = re.compile(
     r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE
 )
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
+PYTHON_VERSION = "3.13.15"
 RUN_REQUIRED_MARKERS = frozenset(
     {
         "pip_audit --require-hashes",
@@ -314,6 +315,8 @@ def _check_required_gates(
             "--upgrade-from",
             "--native-attestation",
             "--file build-support/deepfilter/Cargo.lock",
+            "git fetch --no-tags origin $tagFetchSpec",
+            "$tagCommit -ne $currentCommit",
         )
         if "--allow-dirty" in source:
             errors.append(
@@ -340,6 +343,12 @@ def _check_required_gates(
         if asset_fetch < 0 or asset_fetch > extension_build:
             errors.append(
                 f"{name}: verified runtime assets must be fetched before extension build"
+            )
+    if name == "ci.yml":
+        cpu_hydration = "fetch_release_assets.py --only-cpu-runtime --force"
+        if source.count(cpu_hydration) < 2:
+            errors.append(
+                f"{name}: both Python and Rust jobs must hydrate the pinned CPU ONNX Runtime"
             )
 
 
@@ -371,8 +380,32 @@ def _check_dependabot(errors: list[str]) -> None:
                 f"dependabot.yml: {ecosystem} routine version updates must be disabled"
             )
         if "allow" in config or "groups" in config:
+                errors.append(
+                    f"dependabot.yml: {ecosystem} must not define routine update groups"
+                )
+
+
+def _check_python_runtime(name: str, source: str, errors: list[str]) -> None:
+    versions = re.findall(r"(?m)^\s*python-version:\s*[\"']([^\"']+)[\"']", source)
+    for version in versions:
+        if version != PYTHON_VERSION:
             errors.append(
-                f"dependabot.yml: {ecosystem} must not define routine update groups"
+                f"{name}: actions/setup-python must pin CPython {PYTHON_VERSION}, found {version}"
+            )
+    if "py -3.12" in source or "Python 3.12" in source:
+        errors.append(f"{name}: legacy Python 3.12 runtime reference remains")
+    if name == "release-package.yml":
+        if "-PythonPath .\\.venv\\Scripts\\python.exe" not in source:
+            errors.append(
+                f"{name}: build_exe.ps1 must receive the project .venv interpreter explicitly"
+            )
+        if "ORT_LIB_LOCATION=$ortLib" not in source:
+            errors.append(
+                f"{name}: release package must export the pinned CPU ORT library path"
+            )
+        if "ORT_PREFER_DYNAMIC_LINK=1" not in source:
+            errors.append(
+                f"{name}: release package must require dynamic CPU ORT linking"
             )
 
 
@@ -392,6 +425,7 @@ def check_workflows() -> list[str]:
         document = _mapping(document, path.name, errors)
         _check_permissions(path.name, document, errors)
         _check_required_gates(path.name, source, errors, document=document)
+        _check_python_runtime(path.name, source, errors)
 
         action_refs = ACTION_REF.findall(source)
         if not action_refs:

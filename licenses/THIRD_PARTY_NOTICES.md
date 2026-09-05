@@ -34,15 +34,22 @@ included:
 |---|---|---|---|
 | `df.dll`, `DeepFilterNet3_ll_onnx.tar.gz`, `DeepFilterNet3_onnx.tar.gz` | DeepFilterNet | `DeepFilterNet-LICENSE.txt` (MIT option) | https://github.com/Rikorose/DeepFilterNet |
 | `silero_vad.onnx` | Silero VAD | `Silero-VAD-LICENSE.txt` | https://github.com/snakers4/silero-vad |
-| `DirectML.dll` | Microsoft DirectML redistributable | Microsoft Software License Terms in `DirectML-LICENSE.txt`; the repository's MIT code license does not cover this DLL | https://www.nuget.org/packages/Microsoft.AI.DirectML/1.15.4 |
+| `onnxruntime.dll`, `onnxruntime_providers_shared.dll` | ONNX Runtime 1.23.2 CPU package | `ONNXRuntime-LICENSE.txt` and complete `ONNXRuntime-ThirdPartyNotices.txt` | https://github.com/microsoft/onnxruntime/commit/a83fc4d58cb48eb68890dd689f94f28288cf2278 |
 
 AudioForge's own license is included as `LICENSE`.
 
-The inherited DirectML-linked runtime is not cleared for the selected GPLv3
-distribution. Its actual redistributable terms restrict platform use and reverse
-engineering. Release preparation is evaluating a CPU-only ONNX Runtime package
-to remove this unused DirectML dependency; source-manifest completion must remain
-blocked until the runtime and its notices are corrected.
+The release uses the official CPU-only ONNX Runtime package and does not ship
+DirectML. Its complete upstream notice file is retained beside the MIT license,
+and the corresponding-source manifest records the exact ORT source commit,
+submodules, and CPU FetchContent inputs used to rebuild the package.
+The `.lib` import library is a build input retained in the corresponding-source
+runtime archive for rebuilding; it is not a portable payload file.
+
+The packaged Python and Qt distributions may carry Microsoft Visual C++ runtime
+DLLs. When those files are present in the bundle, retain the Microsoft Visual C++
+redistribution terms supplied by the originating runtime; they are not covered
+by AudioForge's MIT license. Windows system UCRT files are treated as operating
+system components and are not claimed as project source.
 
 ## Corresponding source and release approval
 
@@ -53,9 +60,7 @@ required dependency modifications. An inventory or an unversioned upstream link
 alone is not fulfillment of that obligation. Preserve upstream source archives
 and notices for the exact component versions before publishing a final release.
 
-`release-assets.json` records verified upstream model blobs and the exact
-Microsoft DirectML redistributable package. The inherited `df.dll` is verified
-against the existing released bytes, but its original upstream commit, compiler,
-and build recipe remain unresolved. Do not describe that DLL as reproducibly
-built or the source-distribution review as complete until those inputs have
-been recovered or it has been replaced by a qualified, documented build.
+`release-assets.json` records the verified upstream model blobs and exact CPU
+ONNX Runtime archive. The `df.dll` source, patch, lockfile, and build recipe are
+recorded separately in the corresponding-source manifest and its build
+attestation; the candidate-specific DLL itself is not a source archive.

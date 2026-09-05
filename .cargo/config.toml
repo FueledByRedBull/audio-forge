@@ -1,0 +1,5 @@
+[env]
+# The release asset hydrator populates this directory before ORT-enabled builds.
+# `force = false` lets CI or an explicit command override the local default.
+ORT_LIB_LOCATION = { value = "target/onnxruntime-cpu/lib", relative = true, force = false }
+ORT_PREFER_DYNAMIC_LINK = { value = "1", force = false }

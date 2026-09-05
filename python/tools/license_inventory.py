@@ -14,6 +14,7 @@ import sys
 import tarfile
 import tomllib
 from typing import Any
+import zipfile
 
 from source_distribution import (
     SourceDistributionError,
@@ -65,6 +66,81 @@ def _copy_notice_bytes(
     return {"file": f"{destination.name}/{name}", "sha256": digest}
 
 
+def _archive_member_name(name: str) -> str:
+    """Normalize an archive member without permitting traversal."""
+    normalized = name.replace("\\", "/")
+    if not normalized or normalized.startswith("/") or ".." in Path(normalized).parts:
+        raise SourceDistributionError(f"Unsafe source archive member {name!r}")
+    return normalized
+
+
+def _read_declared_archive_members(
+    archive_path: Path,
+    entry_id: str,
+    license_paths: list[Any],
+) -> list[tuple[str, bytes]]:
+    """Read declared notices from either a tar archive or a ZIP archive."""
+    if zipfile.is_zipfile(archive_path):
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                members = {
+                    _archive_member_name(info.filename): info
+                    for info in archive.infolist()
+                    if not info.is_dir()
+                }
+                result: list[tuple[str, bytes]] = []
+                for relative in license_paths:
+                    if not isinstance(relative, str) or not relative:
+                        raise SourceDistributionError(
+                            f"Source archive {entry_id} lacks declared license {relative!r}"
+                        )
+                    relative = _archive_member_name(relative)
+                    info = members.get(relative)
+                    if info is None:
+                        raise SourceDistributionError(
+                            f"Source archive {entry_id} lacks declared license {relative!r}"
+                        )
+                    result.append((relative, archive.read(info)))
+                return result
+        except (OSError, KeyError, RuntimeError, zipfile.BadZipFile) as exc:
+            if isinstance(exc, SourceDistributionError):
+                raise
+            raise SourceDistributionError(
+                f"Could not read source license archive {entry_id}: {exc}"
+            ) from exc
+
+    try:
+        with tarfile.open(archive_path, mode="r:*") as archive:
+            members = {
+                _archive_member_name(str(member.name)): member
+                for member in archive.getmembers()
+                if member.isfile()
+            }
+            result = []
+            for relative in license_paths:
+                if not isinstance(relative, str) or not relative:
+                    raise SourceDistributionError(
+                        f"Source archive {entry_id} lacks declared license {relative!r}"
+                    )
+                relative = _archive_member_name(relative)
+                member = members.get(relative)
+                if member is None:
+                    raise SourceDistributionError(
+                        f"Source archive {entry_id} lacks declared license {relative!r}"
+                    )
+                handle = archive.extractfile(member)
+                if handle is None:
+                    raise SourceDistributionError(
+                        f"Source archive {entry_id} license is unreadable: {relative}"
+                    )
+                result.append((relative, handle.read()))
+            return result
+    except (OSError, tarfile.TarError) as exc:
+        raise SourceDistributionError(
+            f"Could not read source license archive {entry_id}: {exc}"
+        ) from exc
+
+
 def _source_archive_notices(
     manifest: dict[str, Any],
     source_dir: Path,
@@ -79,38 +155,22 @@ def _source_archive_notices(
         if not isinstance(license_paths, list) or not license_paths:
             continue
         archive_path = _archive_target(source_dir, entry)
-        try:
-            with tarfile.open(archive_path, mode="r:*") as archive:
-                members = {
-                    str(member.name).replace("\\", "/"): member
-                    for member in archive.getmembers()
-                    if member.isfile()
-                }
-                component_notices: list[dict[str, str]] = []
-                seen: set[str] = set()
-                for relative in license_paths:
-                    if not isinstance(relative, str) or not relative or relative not in members:
-                        raise SourceDistributionError(
-                            f"Source archive {entry['id']} lacks declared license {relative!r}"
-                        )
-                    handle = archive.extractfile(members[relative])
-                    if handle is None:
-                        raise SourceDistributionError(
-                            f"Source archive {entry['id']} license is unreadable: {relative}"
-                        )
-                    record = _copy_notice_bytes(
-                        handle.read(),
-                        Path(relative).name,
-                        output / f"source-{entry['id']}",
-                        seen,
-                    )
-                    if record is not None:
-                        component_notices.append(record)
-                notices[str(entry["id"])] = component_notices
-        except (OSError, tarfile.TarError) as exc:
-            raise SourceDistributionError(
-                f"Could not read source license archive {entry['id']}: {exc}"
-            ) from exc
+        component_notices: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for relative, data in _read_declared_archive_members(
+            archive_path,
+            str(entry["id"]),
+            license_paths,
+        ):
+            record = _copy_notice_bytes(
+                data,
+                Path(relative).name,
+                output / f"source-{entry['id']}",
+                seen,
+            )
+            if record is not None:
+                component_notices.append(record)
+        notices[str(entry["id"])] = component_notices
     return notices
 
 

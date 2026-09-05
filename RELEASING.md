@@ -32,15 +32,12 @@ installer identity; app and release metadata retain the public `2.0.0` version.
 RC promotion creates or verifies a GitHub prerelease; final promotion rejects a
 prerelease state.
 
-Because runtime binaries and models are intentionally not stored in Git, make these assets available on a GitHub Release first:
-
-- `df.dll`
-- `DirectML.dll`
-- `DeepFilterNet3_ll_onnx.tar.gz`
-- `DeepFilterNet3_onnx.tar.gz`
-- `silero_vad.onnx`
-
-Raw assets are preferred. If the asset-source release only has an existing `AudioForge-*-win64-ultra.7z`, the workflow can extract those same runtime assets from that archive and still verifies them against `release-assets.json` before packaging.
+Runtime binaries and models are intentionally not stored in Git. The asset
+fetcher builds `df.dll` from the pinned DeepFilter recipe, downloads CPU-only
+ONNX Runtime and Silero from their recorded upstream inputs, and obtains both
+DeepFilter model archives from the standing asset-source release. Every input
+is checked against `release-assets.json`. The model fallback can use raw assets
+or extract the exact models from an existing portable archive.
 
 For local release prep from a clean clone, you can mirror that behavior with:
 
@@ -52,7 +49,7 @@ Then run the workflow with:
 
 - `release_tag`: the target tag, for example `v2.0.0`.
 - `asset_source_tag`: optional published release override for pinned
-  DeepFilter/DirectML assets. Leave blank to use the repository
+  DeepFilter model assets. Leave blank to use the repository
   `AUDIOFORGE_ASSET_SOURCE_TAG` override when configured, then the
   `fallback_release_tag` pinned in `release-assets.json`. Silero v6.2.1 comes
   from its immutable direct URL.
@@ -128,9 +125,9 @@ Validate extraction plus per-user installation/uninstallation with
 
 Run the release validation checks:
 
-The current Semgrep release pins `mcp==1.23.3` for its optional MCP server;
+The currently locked Semgrep version pins `mcp==1.23.3` for its optional MCP server;
 AudioForge only invokes `semgrep scan`, so the three upstream MCP advisories
-are listed explicitly below until Semgrep publishes a compatible pin. Runtime
+are listed explicitly below pending validation of the developer-tool update. Runtime
 dependencies remain unignored.
 
 ```powershell
@@ -230,7 +227,7 @@ Candidate and promotion:
   security updates remain enabled. Dependency refreshes must be scoped
   independently and pass the applicable build, benchmark, hardware, and
   package gates instead of arriving as lockfile batches.
-- Keep `release-assets.json` current with the required `df.dll`, `target/release/DirectML.dll`, both DeepFilter model tarballs, and `models/silero_vad.onnx`.
+- Keep `release-assets.json` current with the source-built `df.dll`, CPU-only ONNX Runtime DLLs, both DeepFilter model tarballs, and `models/silero_vad.onnx`.
 - `build_exe.ps1` fails before PyInstaller if a required asset is missing or hash
   mismatched, or the current-source native rebuild fails. File timestamps are not
   source provenance. Reduced builds without models are not a supported edition.
@@ -246,16 +243,16 @@ Candidate and promotion:
 - `evaluation/release-bundle-path-baseline.json` controls reviewed bundle path
   additions/removals. Binary hashes are recorded for provenance, but are not
   treated as reproducible-build expectations.
-- The release profile strips native symbols without changing optimization level. The package spec excludes only unused SciPy namespaces, while the prune step removes unused Qt SVG payloads; keep both NumPy/SciPy BLAS DLLs, `opengl32sw.dll`, all required models, DirectML, and df.dll because they are runtime dependencies.
+- The release profile strips native symbols without changing optimization level. The package spec excludes only unused SciPy namespaces, while the prune step removes unused Qt SVG payloads; keep both NumPy/SciPy BLAS DLLs, `opengl32sw.dll`, all required models, CPU-only ONNX Runtime, and df.dll because they are runtime dependencies.
 - CI audits both Cargo graphs: the application lockfile and the independent
   `build-support/deepfilter/Cargo.lock` graph used for `df.dll`. The DeepFilter
   audit ignores only its two reviewed unmaintained-crate notices
   (`RUSTSEC-2024-0436` and `RUSTSEC-2024-0370`); vulnerability findings remain
   release blockers.
-- Obtain `DirectML.dll` and model files from the exact upstream package/blob
-  identities in `release-assets.json`. The inherited `df.dll` artifact is pinned
-  by hash, but its build origin remains unresolved; do not describe it as a
-  reproducible source build.
+- Obtain CPU-only ONNX Runtime and model files from the exact upstream
+  package/blob identities in `release-assets.json`. Build `df.dll` with the
+  pinned recipe and retain its per-build attestation; matching source and
+  settings do not by themselves promise byte-identical output across machines.
 - Original AudioForge source stays MIT; combined PyQt6 distributions use GPLv3.
   Before final publication, complete the corresponding-source arrangements and
   component review in `licenses/THIRD_PARTY_NOTICES.md`. Generated license

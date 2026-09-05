@@ -1,22 +1,74 @@
 param(
-    [switch]$Clean
+    [switch]$Clean,
+    [string]$PythonPath = ""
 )
 
 $ErrorActionPreference = "Stop"
 # Final working build script
 $ProjectRoot = $PSScriptRoot
 Push-Location $ProjectRoot
+$previousVirtualEnv = [Environment]::GetEnvironmentVariable("VIRTUAL_ENV", "Process")
+$previousOrtLibLocation = [Environment]::GetEnvironmentVariable("ORT_LIB_LOCATION", "Process")
+$previousOrtPreferDynamicLink = [Environment]::GetEnvironmentVariable("ORT_PREFER_DYNAMIC_LINK", "Process")
 
 try {
 Write-Host "AudioForge Executable Builder" -ForegroundColor Green
 Write-Host ""
 
 # Rebuild the Rust extension so the bundle cannot use a semantically stale
-# source-tree extension whose modification time happens to be newer.
-$venvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-if (-not (Test-Path $venvPython)) {
-    Write-Host "ERROR: venv Python not found: $venvPython" -ForegroundColor Red
+# source-tree extension whose modification time happens to be newer. Release
+# workflows pass their isolated interpreter explicitly; local builds keep the
+# established .venv default.
+$venvPython = if ([string]::IsNullOrWhiteSpace($PythonPath)) {
+    Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+} else {
+    $PythonPath
+}
+if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
+    Write-Host "ERROR: build Python not found: $venvPython" -ForegroundColor Red
     exit 1
+}
+$venvPython = (Resolve-Path -LiteralPath $venvPython).Path
+Write-Host "Using build Python: $venvPython" -ForegroundColor Cyan
+$pythonPrefixes = @(
+    & $venvPython -c "import sys; from pathlib import Path; print(Path(sys.prefix).resolve()); print(Path(sys.base_prefix).resolve())"
+)
+if ($LASTEXITCODE -ne 0 -or $pythonPrefixes.Count -lt 2) {
+    Write-Host "ERROR: unable to resolve the selected Python environment." -ForegroundColor Red
+    exit 1
+}
+$selectedVenvRoot = (Resolve-Path -LiteralPath $pythonPrefixes[0].Trim()).Path
+$basePythonRoot = (Resolve-Path -LiteralPath $pythonPrefixes[1].Trim()).Path
+if ($selectedVenvRoot -eq $basePythonRoot) {
+    Write-Host "ERROR: build Python must be inside a virtual environment: $venvPython" -ForegroundColor Red
+    exit 1
+}
+$env:VIRTUAL_ENV = $selectedVenvRoot
+Write-Host "Using build virtual environment: $env:VIRTUAL_ENV" -ForegroundColor Cyan
+
+$ortLibDirectory = Join-Path $ProjectRoot "target\onnxruntime-cpu\lib"
+$requiredOrtFiles = @(
+    "onnxruntime.dll",
+    "onnxruntime.lib",
+    "onnxruntime_providers_shared.dll"
+)
+$missingOrtFiles = @(
+    $requiredOrtFiles |
+        Where-Object { -not (Test-Path -LiteralPath (Join-Path $ortLibDirectory $_) -PathType Leaf) }
+)
+if ($missingOrtFiles.Count -gt 0) {
+    Write-Host "ERROR: CPU ONNX Runtime files are missing from ${ortLibDirectory}:" -ForegroundColor Red
+    $missingOrtFiles | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    exit 1
+}
+$env:ORT_LIB_LOCATION = (Resolve-Path -LiteralPath $ortLibDirectory).Path
+$env:ORT_PREFER_DYNAMIC_LINK = "1"
+Write-Host "Using CPU ONNX Runtime from $env:ORT_LIB_LOCATION" -ForegroundColor Cyan
+
+$null = & $venvPython (Join-Path $ProjectRoot "python\tools\verify_release_assets.py")
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Release asset verification failed. Packaging will not use stale dist/ contents as source assets." -ForegroundColor Red
+    exit $LASTEXITCODE
 }
 
 $null = & $venvPython -m maturin develop --release --locked
@@ -30,16 +82,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $localPyd = Get-ChildItem -Path (Join-Path $ProjectRoot "python\mic_eq") -Filter "mic_eq_core*$expectedSuffix" | Select-Object -First 1
 if (-not $localPyd) {
     Write-Host "ERROR: python\\mic_eq\\mic_eq_core*$expectedSuffix not found." -ForegroundColor Red
-    Write-Host "Run: .\\.venv\\Scripts\\python.exe -m maturin develop --release" -ForegroundColor Yellow
+    Write-Host "Run: $venvPython -m maturin develop --release" -ForegroundColor Yellow
     exit 1
 }
 Write-Host "Using local mic_eq_core: $($localPyd.FullName)" -ForegroundColor Cyan
-
-& $venvPython (Join-Path $ProjectRoot "python\tools\verify_release_assets.py")
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Release asset verification failed. Packaging will not use stale dist/ contents as source assets." -ForegroundColor Red
-    exit $LASTEXITCODE
-}
 
 if (Test-Path "df.dll") {
     Write-Host "DeepFilterNet support: df.dll will be bundled via AudioForge.spec" -ForegroundColor Green
@@ -57,13 +103,6 @@ $missingModels = @($requiredModels | Where-Object { -not (Test-Path $_) })
 if ($missingModels.Count -gt 0) {
     Write-Host "Missing model assets:" -ForegroundColor Red
     $missingModels | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
-    exit 1
-}
-
-if (Test-Path "target\release\DirectML.dll") {
-    Write-Host "DirectML runtime will be bundled via AudioForge.spec" -ForegroundColor Green
-} else {
-    Write-Host "ERROR: target\\release\\DirectML.dll not found. Build the Rust extension in release mode first." -ForegroundColor Red
     exit 1
 }
 
@@ -134,5 +173,20 @@ if ($pyinstallerExitCode -eq 0) {
     exit $pyinstallerExitCode
 }
 } finally {
+    if ($null -eq $previousVirtualEnv) {
+        Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+    } else {
+        $env:VIRTUAL_ENV = $previousVirtualEnv
+    }
+    if ($null -eq $previousOrtLibLocation) {
+        Remove-Item Env:ORT_LIB_LOCATION -ErrorAction SilentlyContinue
+    } else {
+        $env:ORT_LIB_LOCATION = $previousOrtLibLocation
+    }
+    if ($null -eq $previousOrtPreferDynamicLink) {
+        Remove-Item Env:ORT_PREFER_DYNAMIC_LINK -ErrorAction SilentlyContinue
+    } else {
+        $env:ORT_PREFER_DYNAMIC_LINK = $previousOrtPreferDynamicLink
+    }
     Pop-Location
 }

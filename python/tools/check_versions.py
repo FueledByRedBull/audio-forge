@@ -12,10 +12,21 @@ from pathlib import Path
 from release_version import ReleaseVersion, parse_tag, parse_version
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+EXPECTED_PYTHON_MINOR = (3, 13)
 
 
 def _read(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+def _check_python_runtime() -> None:
+    actual = (sys.version_info.major, sys.version_info.minor)
+    if sys.implementation.name != "cpython" or actual != EXPECTED_PYTHON_MINOR:
+        rendered = ".".join(str(part) for part in actual)
+        raise ValueError(
+            "release checks require CPython 3.13, "
+            f"got {sys.implementation.name} {rendered}"
+        )
 
 
 def _single_match(path: str, pattern: str, label: str) -> str:
@@ -158,6 +169,7 @@ def _check_no_static_current_archive_claims(version: ReleaseVersion | str) -> No
 
 
 def main() -> int:
+    _check_python_runtime()
     _check_release_asset_hydration()
     expected_text = _single_match(
         "pyproject.toml", r'^version\s*=\s*"([^"]+)"', "pyproject"

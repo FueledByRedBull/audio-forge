@@ -42,6 +42,12 @@ DEEPFILTER_RECIPE_FILES = (
     "models/DeepFilterNet3_ll_onnx.tar.gz",
 )
 DEEPFILTER_TEXT_RECIPE_SUFFIXES = frozenset({".json", ".lock", ".ps1", ".toml"})
+CPU_ORT_BUNDLE_ASSETS = {
+    "target/onnxruntime-cpu/lib/onnxruntime.dll": "_internal/onnxruntime.dll",
+    "target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll": (
+        "_internal/onnxruntime_providers_shared.dll"
+    ),
+}
 QUALIFICATION_KINDS = frozenset(
     {
         "exact-artifact-package",
@@ -216,6 +222,42 @@ def _deepfilter_recipe_sha256(path: Path) -> str:
         return sha256_file(path)
     canonical = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _cpu_ort_asset_errors(bundle: Path) -> list[str]:
+    """Bind every bundled CPU ORT DLL to the checked-in asset manifest."""
+    present = [
+        bundle / relative
+        for relative in CPU_ORT_BUNDLE_ASSETS.values()
+        if (bundle / relative).exists()
+    ]
+    if not present:
+        return []
+
+    manifest_path = REPO_ROOT / "release-assets.json"
+    try:
+        manifest = _load_json(manifest_path)
+    except (OSError, ValueError) as exc:
+        return [f"CPU ORT release asset manifest could not be loaded: {exc}"]
+    entries = {
+        str(asset.get("path")): asset
+        for asset in manifest.get("assets", [])
+        if isinstance(asset, dict) and isinstance(asset.get("path"), str)
+    }
+    errors: list[str] = []
+    for manifest_path_name, bundle_path_name in CPU_ORT_BUNDLE_ASSETS.items():
+        asset_path = bundle / bundle_path_name
+        if not asset_path.is_file():
+            errors.append(f"candidate bundle is missing CPU ORT asset: {bundle_path_name}")
+            continue
+        asset = entries.get(manifest_path_name)
+        expected = asset.get("sha256") if isinstance(asset, dict) else None
+        if not isinstance(expected, str) or SHA256_PATTERN.fullmatch(expected.casefold()) is None:
+            errors.append(f"CPU ORT release asset manifest lacks a valid hash: {manifest_path_name}")
+            continue
+        if sha256_file(asset_path) != expected.casefold():
+            errors.append(f"candidate CPU ORT asset does not match release-assets.json: {bundle_path_name}")
+    return errors
 
 
 def _deepfilter_attestation_errors(
@@ -727,6 +769,13 @@ def create_sidecars(
             "candidate source or pass --allow-dirty for a non-promotable local artifact"
         )
 
+    ort_errors = _cpu_ort_asset_errors(bundle)
+    if ort_errors:
+        raise ValueError(
+            "CPU ORT assets are not bound to release-assets.json:\n  "
+            + "\n  ".join(ort_errors)
+        )
+
     manifest = build_bundle_manifest(bundle)
     if baseline_path is not None:
         additions, removals = compare_path_baseline(
@@ -909,6 +958,7 @@ def verify_sidecars(
                     require_complete=require_source_distribution,
                 )
             )
+            errors.extend(_cpu_ort_asset_errors(bundle))
             actual_manifest = build_bundle_manifest(bundle)
             file_contract_fields = (
                 "schema_version",

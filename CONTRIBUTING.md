@@ -1,6 +1,6 @@
 # Contributing to AudioForge
 
-Use Windows x64, CPython 3.12 and the Rust compiler in `rust-toolchain.toml`.
+Use Windows x64, CPython 3.13.15 and the Rust compiler in `rust-toolchain.toml`.
 The supported source-build contract uses the checked-in dependency locks; newer
 Python or Rust releases are not implicitly qualified. See the [README](README.md)
 for setup and [RELEASING](RELEASING.md) for packaging and publication.

@@ -6,6 +6,7 @@ from pathlib import Path
 import runpy
 import tarfile
 from types import SimpleNamespace
+import zipfile
 
 import pytest
 
@@ -110,6 +111,33 @@ def test_source_archive_notice_extraction_uses_declared_members(tmp_path: Path):
         tmp_path / "notices",
     )
     record = notices["native-openssl"][0]
+    copied = tmp_path / "notices" / record["file"]
+    assert copied.read_bytes() == payload
+    assert record["sha256"] == hashlib.sha256(payload).hexdigest()
+
+
+def test_source_archive_notice_extraction_reads_zip_members(tmp_path: Path):
+    archive_path = tmp_path / "archives" / "native-ort--native.zip"
+    archive_path.parent.mkdir(parents=True)
+    member_name = "onnxruntime-1.23.2/LICENSE"
+    payload = b"ONNX Runtime license\n"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr(member_name, payload)
+
+    manifest = {
+        "entries": [{
+            "id": "native-ort",
+            "kind": "native-build-source",
+            "license_paths": [member_name],
+            "filename": "native.zip",
+        }]
+    }
+    notices = license_inventory._source_archive_notices(
+        manifest,
+        tmp_path,
+        tmp_path / "notices",
+    )
+    record = notices["native-ort"][0]
     copied = tmp_path / "notices" / record["file"]
     assert copied.read_bytes() == payload
     assert record["sha256"] == hashlib.sha256(payload).hexdigest()

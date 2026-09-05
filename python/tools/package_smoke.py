@@ -6,6 +6,7 @@ import argparse
 import json
 import re
 import sys
+import sysconfig
 import tomllib
 from pathlib import Path
 
@@ -16,7 +17,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_BUNDLE_FILES = (
     "AudioForge.exe",
     "_internal/df.dll",
-    "_internal/DirectML.dll",
+    "_internal/onnxruntime.dll",
+    "_internal/onnxruntime_providers_shared.dll",
     "_internal/models/DeepFilterNet3_ll_onnx.tar.gz",
     "_internal/models/DeepFilterNet3_onnx.tar.gz",
     "_internal/models/silero_vad.onnx",
@@ -25,13 +27,16 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/licenses/GPL-3.0.txt",
     "_internal/licenses/dependencies/inventory.json",
     "_internal/licenses/DeepFilterNet-LICENSE.txt",
-    "_internal/licenses/DirectML-LICENSE.txt",
+    "_internal/licenses/ONNXRuntime-LICENSE.txt",
+    "_internal/licenses/ONNXRuntime-ThirdPartyNotices.txt",
     "_internal/licenses/Silero-VAD-LICENSE.txt",
     "_internal/licenses/THIRD_PARTY_NOTICES.md",
 )
 REQUIRED_MANIFEST_ASSETS = (
     "df.dll",
-    "DirectML.dll",
+    "target/onnxruntime-cpu/lib/onnxruntime.dll",
+    "target/onnxruntime-cpu/lib/onnxruntime.lib",
+    "target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll",
     "models/DeepFilterNet3_ll_onnx.tar.gz",
     "models/DeepFilterNet3_onnx.tar.gz",
     "models/silero_vad.onnx",
@@ -98,16 +103,22 @@ def check_source_packaging() -> list[str]:
             )
 
     spec_expectations = [
-        ("AudioForge.spec", "DirectML.dll"),
+        ("AudioForge.spec", "onnxruntime.dll"),
         ("AudioForge.spec", "df.dll"),
         ("AudioForge.spec", "models"),
         ("AudioForge.spec", "licenses"),
         ("AudioForge.spec", "AudioForge.ico"),
+        ("AudioForge.spec", '"ssl",'),
+        ("AudioForge.spec", '"_ssl",'),
+        ("AudioForge.spec", '"_hashlib",'),
     ]
     script_expectations = [
         ("build_exe.ps1", "$PSScriptRoot"),
+        ("build_exe.ps1", "[string]$PythonPath"),
+        ("build_exe.ps1", "VIRTUAL_ENV"),
         ("build_exe.ps1", "EXT_SUFFIX"),
-        ("build_exe.ps1", "DirectML.dll"),
+        ("build_exe.ps1", "onnxruntime.dll"),
+        ("build_exe.ps1", "ORT_PREFER_DYNAMIC_LINK"),
         ("build_exe.ps1", "DeepFilterNet3_ll_onnx.tar.gz"),
         ("build_exe.ps1", "DeepFilterNet3_onnx.tar.gz"),
         ("build_exe.ps1", "silero_vad.onnx"),
@@ -116,7 +127,11 @@ def check_source_packaging() -> list[str]:
         ("build_exe.ps1", "prune_bundle.py"),
         ("build_exe.ps1", "audioforge-build.json"),
         ("python/tools/prune_bundle.py", "is_app_local_system_ucrt"),
+        ("python/tools/prune_bundle.py", "is_unused_openssl_payload"),
         ("python/tools/release_provenance.py", "build_bundle_manifest"),
+        ("build_msi.ps1", "[string]$PythonPath"),
+        ("python/tools/run_semgrep.py", '"--exclude=.venv*"'),
+        ("python/tools/run_semgrep.py", '"--exclude=credentials.*"'),
     ]
     runtime_expectations = [
         (
@@ -133,6 +148,8 @@ def check_source_packaging() -> list[str]:
         (".github/workflows/release-package.yml", "maturin develop --release"),
         (".github/workflows/release-package.yml", "python/tools/verify_release_assets.py"),
         (".github/workflows/release-package.yml", "powershell -ExecutionPolicy Bypass -File .\\build_exe.ps1"),
+        (".github/workflows/release-package.yml", "-PythonPath .\\.venv\\Scripts\\python.exe"),
+        (".github/workflows/release-package.yml", "ORT_LIB_LOCATION=$ortLib"),
         (".github/workflows/release-package.yml", "python/tools/package_smoke.py"),
         (".github/workflows/release-package.yml", "actions/upload-artifact@"),
         (".github/workflows/release-package.yml", "AudioForge-$expectedTag-win64-ultra.7z"),
@@ -229,12 +246,29 @@ def _has_bundle_file(dist: Path, relative_path: str) -> bool:
     return (dist / Path(relative_path)).is_file()
 
 
-def _has_native_extension(dist: Path) -> bool:
+def _expected_extension_suffix() -> str:
+    return str(sysconfig.get_config_var("EXT_SUFFIX") or ".pyd")
+
+
+def _packaged_extensions(dist: Path) -> list[Path]:
     extension_dir = dist / "_internal" / "mic_eq"
-    return any(
-        path.is_file() and path.name.startswith("mic_eq_core") and path.suffix == ".pyd"
+    return sorted(
+        path
         for path in extension_dir.glob("mic_eq_core*.pyd")
+        if path.is_file()
     )
+
+
+def _has_native_extension(dist: Path) -> bool:
+    expected = dist / "_internal" / "mic_eq" / (
+        "mic_eq_core" + _expected_extension_suffix()
+    )
+    return expected.is_file()
+
+
+def _foreign_native_extensions(dist: Path) -> list[Path]:
+    expected_name = "mic_eq_core" + _expected_extension_suffix()
+    return [path for path in _packaged_extensions(dist) if path.name != expected_name]
 
 
 def _has_duplicate_native_extension(dist: Path) -> bool:
@@ -294,10 +328,46 @@ def check_dist_bundle(
             errors.append(f"{dist} does not contain {relative_path}")
 
     if not _has_native_extension(dist):
-        errors.append(f"{dist} does not contain _internal/mic_eq/mic_eq_core*.pyd")
+        errors.append(
+            f"{dist} does not contain _internal/mic_eq/mic_eq_core{_expected_extension_suffix()}"
+        )
+
+    foreign_extensions = _foreign_native_extensions(dist)
+    if foreign_extensions:
+        names = ", ".join(path.relative_to(dist).as_posix() for path in foreign_extensions)
+        errors.append(f"{dist} contains foreign Python ABI extensions: {names}")
 
     if _has_duplicate_native_extension(dist):
         errors.append(f"{dist} contains duplicate _internal/mic_eq_core/mic_eq_core*.pyd")
+
+    directml_payloads = sorted(
+        path.relative_to(dist).as_posix()
+        for path in dist.rglob("*")
+        if path.is_file() and path.name.casefold() == "directml.dll"
+    )
+    if directml_payloads:
+        errors.append(
+            f"{dist} contains retired DirectML payload(s): " + ", ".join(directml_payloads)
+        )
+    retired_notice = dist / "_internal" / "licenses" / "DirectML-LICENSE.txt"
+    if retired_notice.is_file():
+        errors.append(f"{dist} contains the retired DirectML license notice")
+
+    openssl_payloads = sorted(
+        path.relative_to(dist).as_posix()
+        for path in dist.rglob("*")
+        if path.is_file()
+        and (
+            path.name.casefold() in {"_ssl.pyd", "_hashlib.pyd"}
+            or path.name.casefold().startswith("libssl-")
+            or path.name.casefold().startswith("libcrypto-")
+        )
+    )
+    if openssl_payloads:
+        errors.append(
+            f"{dist} contains excluded OpenSSL payload(s): "
+            + ", ".join(openssl_payloads)
+        )
 
     forbidden_ucrt = sorted(
         path.relative_to(dist).as_posix()

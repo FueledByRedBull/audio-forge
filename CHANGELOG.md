@@ -16,6 +16,8 @@
   coverage checks, and retry-safe draft publication of the tested artifacts.
 - Pin supported build tools and prepare release documentation before publication,
   using generated sidecars for artifact measurements.
+- Move the build runtime to CPython 3.13.15, replace the unused DirectML payload
+  with CPU-only ONNX Runtime, and build DeepFilter from pinned source.
 - Hardware microphone qualification and corresponding-source distribution remain
   publication gates; this entry does not certify a released v2.0 binary.
 

@@ -2,7 +2,8 @@ param(
     [string]$Payload = (Join-Path $PSScriptRoot "dist\AudioForge"),
     [string]$Output,
     [string]$WixPath,
-    [string]$Version
+    [string]$Version,
+    [string]$PythonPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,15 +11,24 @@ Push-Location $PSScriptRoot
 try {
     $publicTag = $null
     if ([string]::IsNullOrWhiteSpace($Version)) {
-        $sourceVersion = & ".\.venv\Scripts\python.exe" -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+        $buildPython = if ([string]::IsNullOrWhiteSpace($PythonPath)) {
+            Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
+        } else {
+            $PythonPath
+        }
+        if (-not (Test-Path -LiteralPath $buildPython -PathType Leaf)) {
+            throw "Python interpreter not found: $buildPython"
+        }
+        $buildPython = (Resolve-Path -LiteralPath $buildPython -ErrorAction Stop).Path
+        $sourceVersion = & $buildPython -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceVersion)) {
             throw "Unable to resolve the project version from pyproject.toml."
         }
-        $publicTag = (& ".\.venv\Scripts\python.exe" python/tools/release_version.py tag $sourceVersion.Trim()).Trim()
+        $publicTag = (& $buildPython python/tools/release_version.py tag $sourceVersion.Trim()).Trim()
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($publicTag)) {
             throw "Unable to resolve the canonical release tag from pyproject.toml."
         }
-        $version = & ".\.venv\Scripts\python.exe" python/tools/release_version.py msi $sourceVersion.Trim()
+        $version = & $buildPython python/tools/release_version.py msi $sourceVersion.Trim()
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
             throw "Unable to map the project version to a valid MSI version."
         }

@@ -20,6 +20,17 @@ mod tests {
         assert_ne!(GateMode::VadAssisted, GateMode::VadOnly);
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn test_uses_pinned_cpu_onnx_runtime_release() {
+        assert_eq!(ort::MINOR_VERSION, 23);
+        let build_info = ort::info();
+        assert!(
+            build_info.contains("1.23.2") || build_info.contains("a83fc4d"),
+            "unexpected ONNX Runtime build info: {build_info}"
+        );
+    }
+
     #[test]
     fn test_vad_commits_telemetry_opt_out_before_first_session() {
         if std::env::var_os("AUDIOFORGE_VAD_TELEMETRY_CHILD").is_some() {

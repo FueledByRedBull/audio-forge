@@ -27,22 +27,20 @@ Run these commands from the repository root with the locked Python environment:
   --output licenses/source-manifest.json
 .\.venv\Scripts\python.exe python/tools/source_distribution.py download `
   --manifest licenses/source-manifest.json `
-  --output build/source-distribution
+  --output build/source-distribution `
+  --include-runtime-assets
 .\.venv\Scripts\python.exe python/tools/source_distribution.py verify `
   --manifest licenses/source-manifest.json `
   --source-dir build/source-distribution `
-  --allow-incomplete
+  --include-runtime-assets
 ```
 
 `download` skips blocked entries, source-built outputs, and runtime assets by
-default. `verify` requires `--allow-incomplete` while any release blocker,
-such as restricted DirectML terms, remains. Use `--include-runtime-assets` when
-the release source bundle must also carry the verified model blobs listed in
+default. Use `--include-runtime-assets` when the release source bundle must
+also carry the pinned CPU ONNX Runtime archive and model blobs listed in
 `release-assets.json`; source-built outputs remain represented by their source
-archives and build attestations. For a packaged asset such as DirectML, the
-manifest verifies the downloaded package digest and records the extracted DLL
-digest separately, but a restricted asset remains blocked from a complete
-release manifest.
+archives and build attestations. The runtime entry verifies the archive digest
+and records each extracted DLL digest separately.
 
 `--require-receipt` is used for release promotion after `bundle`; it checks
 that the hydrated archive list, manifest digest, and resolved revision match
@@ -78,26 +76,35 @@ those files.
 
 The manifest currently covers:
 
-* CPython 3.12.10 and Python package sources for NumPy 2.5.1, SciPy 1.18.0,
+* CPython 3.13.15 and the exact Windows source-deps selected by
+  `PCbuild/get_externals.bat`, plus Python package sources for NumPy 2.5.1, SciPy 1.18.0,
   PyQt6 6.11.0, PyQt6-sip 13.11.1, PyInstaller 6.21.0, and pywin32 311.
+  The CPython source entry retains both its main license and `PC/crtlicense.txt`
+  for the Microsoft runtime DLLs bundled by the Windows distribution.
 * PyQt6's declared build sources, sip 6.16.1 and PyQt-builder 1.19.1.
 * Qt base 6.11.1, which supplies the Core, Gui, Network, Widgets, and Windows
   platform plugin libraries present in the PyQt6 runtime bundle, plus Qt's
   image-format plugin sources.
-* OpenSSL 3.0.16 and the CPython external dependency archives corresponding to
-  the bundled `libcrypto`/`libssl`, the pinned NumPy/SciPy OpenBLAS recipes and
-  upstream sources, and Mesa 11.2.2 for Qt's `opengl32sw.dll`.
+* CPU ONNX Runtime 1.23.2 source, its pinned repository submodules, and the
+  CPU FetchContent sources from `cmake/deps.txt` and
+  `onnxruntime_external_deps.cmake`. GPU, WebGPU, training, and benchmark-only
+  inputs are excluded because this release enables only the CPU provider.
+* The CPython external dependency archives retained by the official 3.13.15
+  source graph, including the OpenSSL 3.0.21 source input, the pinned
+  NumPy/SciPy OpenBLAS recipes and upstream sources, and Mesa 11.2.2 for Qt's
+  `opengl32sw.dll`. The portable package may exclude unused `libcrypto` and
+  `libssl` payloads when the packaging rules prove they are not loaded.
 * The pinned DeepFilterNet source, its resolved Cargo graph, the recorded
   `tract-linalg` patch, and the locked Windows C API build recipe under
   `build-support/deepfilter/` and `build_deepfilter.ps1`.
 * Every registry crate resolved by `cargo metadata --locked` for the Windows
   `extension-module` build, with checksums taken from `Cargo.lock`.
 
-Use CPython 3.12.10 x64, Rust 1.94.0, the archive digests in the manifest,
+Use CPython 3.13.15 x64, Rust 1.94.0, the archive digests in the manifest,
 and the locked requirements. Build the native extension with:
 
 ```powershell
-maturin develop --release --locked
+.\.venv\Scripts\python.exe -m maturin develop --release --locked
 ```
 
 Build PyQt6 from its sdist with the pinned sip and PyQt-builder sources and

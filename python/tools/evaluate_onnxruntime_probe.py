@@ -7,8 +7,10 @@ import hashlib
 import importlib
 import json
 import os
+import platform
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -21,7 +23,29 @@ TOOLS_ROOT = REPO_ROOT / "python" / "tools"
 CPU_ORT_ARCHIVE_SHA256 = (
     "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd"
 )
+CPU_ORT_RUNTIME_FILES = {
+    "onnxruntime.dll": {
+        "size": 14186016,
+        "sha256": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
+    },
+    "onnxruntime.lib": {
+        "size": 2124,
+        "sha256": "977263ca76e6a9d0f230a198d3b05b2a2bddfed66bc5c4d4fd25293b03cc78b5",
+    },
+    "onnxruntime_providers_shared.dll": {
+        "size": 22088,
+        "sha256": "a2b3a50956aa75a9879c8472bc7df4f7a8072bcd2db19a1b7d988e7688f293ef",
+    },
+}
 THRESHOLDS = (0.35, 0.36, 0.40, 0.48, 0.50, 0.65)
+SOFTWARE_GATE_NAMES = (
+    "finite_posteriors",
+    "max_abs_delta_le_1e-5",
+    "threshold_decisions_unchanged",
+    "hysteresis_decisions_unchanged",
+    "whole_clip_throughput_measured",
+    "distinct_native_extensions",
+)
 
 
 def _sha256(path: Path) -> str:
@@ -40,6 +64,11 @@ def _portable_path(path: Path) -> str:
         return resolved.name
 
 
+def _command_path(path: Path) -> str:
+    value = _portable_path(path)
+    return f'"{value}"' if any(character.isspace() for character in value) else value
+
+
 def _asset_record(path: Path) -> dict[str, Any]:
     path = path.resolve(strict=True)
     return {
@@ -47,6 +76,105 @@ def _asset_record(path: Path) -> dict[str, Any]:
         "size": path.stat().st_size,
         "sha256": _sha256(path),
     }
+
+
+def _runtime_identity() -> dict[str, Any]:
+    """Return the interpreter identity that actually ran one isolated probe."""
+    version_info = sys.version_info
+    return {
+        "executable": _portable_path(Path(sys.executable)),
+        "implementation": platform.python_implementation(),
+        "version": platform.python_version(),
+        "version_info": [
+            int(version_info.major),
+            int(version_info.minor),
+            int(version_info.micro),
+        ],
+        "extension_suffix": sysconfig.get_config_var("EXT_SUFFIX"),
+    }
+
+
+def _record_cpu_ort_runtime_files(paths: list[Path]) -> list[dict[str, Any]]:
+    """Validate the runtime files used by a probe against the pinned archive."""
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in paths:
+        record = _asset_record(path.resolve(strict=True))
+        name = path.name
+        expected = CPU_ORT_RUNTIME_FILES.get(name)
+        if expected is None:
+            raise ValueError(f"candidate runtime file is not a pinned CPU ORT asset: {name}")
+        if name in seen:
+            raise ValueError(f"candidate runtime file was supplied more than once: {name}")
+        seen.add(name)
+        if record["size"] != expected["size"] or record["sha256"] != expected["sha256"]:
+            raise ValueError(
+                f"candidate runtime file hash/size mismatch for {name}: "
+                f"expected {expected['size']} bytes/{expected['sha256']}, "
+                f"got {record['size']} bytes/{record['sha256']}"
+            )
+        records.append(record)
+    missing = sorted(set(CPU_ORT_RUNTIME_FILES) - seen)
+    if missing:
+        raise ValueError(
+            "candidate runtime file list is missing pinned CPU ORT assets: "
+            + ", ".join(missing)
+        )
+    return records
+
+
+def _software_gates_pass(gates: dict[str, Any]) -> bool:
+    """Return whether all numerical/software acceptance gates passed."""
+    return all(gates.get(name) is True for name in SOFTWARE_GATE_NAMES)
+
+
+def _reproduction_command(
+    args: argparse.Namespace,
+    *,
+    baseline_python: Path,
+    candidate_python: Path,
+    manifest: Path,
+    model: Path,
+    throughput_audio: Path,
+) -> str:
+    command = [
+        _command_path(baseline_python),
+        _command_path(Path(__file__)),
+        "--baseline-python",
+        _command_path(baseline_python),
+        "--candidate-python",
+        _command_path(candidate_python),
+        "--baseline-python-root",
+        _command_path(args.baseline_python_root),
+        "--candidate-python-root",
+        _command_path(args.candidate_python_root),
+    ]
+    for flag, roots in (
+        ("--baseline-dll-root", args.baseline_dll_root),
+        ("--candidate-dll-root", args.candidate_dll_root),
+    ):
+        for root in roots:
+            command.extend((flag, _command_path(root)))
+    command.extend(
+        (
+            "--manifest",
+            _command_path(manifest),
+            "--model",
+            _command_path(model),
+            "--throughput-audio",
+            _command_path(throughput_audio),
+            "--throughput-repetitions",
+            str(args.throughput_repetitions),
+            "--threshold",
+            str(args.threshold),
+        )
+    )
+    if args.cpu_archive is not None:
+        command.extend(("--cpu-archive", _command_path(args.cpu_archive)))
+    for runtime_file in args.candidate_runtime_file:
+        command.extend(("--candidate-runtime-file", _command_path(runtime_file)))
+    command.extend(("--report", _command_path(args.report)))
+    return " ".join(command)
 
 
 def _hysteresis(
@@ -203,6 +331,7 @@ def _measure_backend(
     quality = _aggregate_quality(captures, posteriors, threshold)
     audio_seconds = float(audio.size / sample_rate)
     result = {
+        "runtime": _runtime_identity(),
         "capture_count": len(captures),
         "frame_count": frame_count,
         "native_module": _asset_record(native_path),
@@ -222,6 +351,7 @@ def _measure_backend(
 def _run_backend(
     *,
     label: str,
+    python_executable: Path,
     python_root: Path,
     dll_roots: list[Path],
     manifest: Path,
@@ -233,7 +363,7 @@ def _run_backend(
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     output = temporary_root / f"{label}.json"
     command = [
-        sys.executable,
+        str(python_executable.resolve(strict=True)),
         str(Path(__file__).resolve()),
         "--child",
         "--python-root",
@@ -269,10 +399,13 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     manifest = args.manifest.resolve(strict=True)
     model = args.model.resolve(strict=True)
     throughput_audio = args.throughput_audio.resolve(strict=True)
+    baseline_python = args.baseline_python.resolve(strict=True)
+    candidate_python = args.candidate_python.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="audioforge-ort-probe-") as temporary:
         temporary_root = Path(temporary)
         baseline_result, baseline_posteriors = _run_backend(
             label="baseline",
+            python_executable=baseline_python,
             python_root=args.baseline_python_root,
             dll_roots=args.baseline_dll_root,
             manifest=manifest,
@@ -284,6 +417,7 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         )
         candidate_result, candidate_posteriors = _run_backend(
             label="candidate",
+            python_executable=candidate_python,
             python_root=args.candidate_python_root,
             dll_roots=args.candidate_dll_root,
             manifest=manifest,
@@ -312,26 +446,45 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
         * (candidate_throughput["realtime_factor"] - baseline_throughput["realtime_factor"])
         / baseline_throughput["realtime_factor"]
     )
+    gates = {
+        "finite_posteriors": True,
+        "max_abs_delta_le_1e-5": comparison["max_abs_delta"] <= 1e-5,
+        "threshold_decisions_unchanged": all(
+            value == 0 for value in comparison["threshold_changes"].values()
+        ),
+        "hysteresis_decisions_unchanged": comparison["hysteresis_surrogate"][
+            "decision_changes"
+        ]
+        == 0,
+        "whole_clip_throughput_measured": True,
+        "distinct_native_extensions": baseline_result["native_module"]["sha256"]
+        != candidate_result["native_module"]["sha256"],
+        "per_frame_jitter_or_deadline_measured": False,
+        "hardware_qualification_measured": False,
+    }
+    software_ready = _software_gates_pass(gates)
 
     report: dict[str, Any] = {
         "schema_version": 1,
         "experiment": "Isolated CPU-only ONNX Runtime 1.23.2 VAD compatibility probe",
         "decision": {
-            "production_adoption": "pending",
-            "reason": "Software parity passed; ORT replacement and packaging remain a separately approved change.",
+            "production_adoption": "ready" if software_ready else "blocked",
+            "reason": (
+                "The pinned CPU-only runtime passed the software parity and throughput gates; "
+                "hardware qualification remains a separate release gate."
+                if software_ready
+                else "One or more software parity gates failed; inspect the recorded results before adoption."
+            ),
         },
         "method": {
             "evaluator": "python/tools/evaluate_onnxruntime_probe.py",
-            "reproduction_command": (
-                ".\\.venv\\Scripts\\python.exe python/tools/evaluate_onnxruntime_probe.py "
-                "--baseline-python-root python --baseline-dll-root target/release "
-                "--candidate-python-root target/onnxruntime-cpu-probe/candidate "
-                "--candidate-dll-root target/onnxruntime-cpu-probe/candidate "
-                "--manifest models/vad_eval_corpus/manifest.json "
-                "--model models/silero_vad.onnx "
-                "--throughput-audio models/vad_eval_silero_test.wav "
-                "--throughput-repetitions 5 --threshold 0.48 "
-                "--report evaluation/onnxruntime-cpu-probe.json"
+            "reproduction_command": _reproduction_command(
+                args,
+                baseline_python=baseline_python,
+                candidate_python=candidate_python,
+                manifest=manifest,
+                model=model,
+                throughput_audio=throughput_audio,
             ),
             "manifest": _asset_record(manifest),
             "model": _asset_record(model),
@@ -344,6 +497,10 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             "native_extensions": {
                 "baseline": baseline_result["native_module"],
                 "candidate": candidate_result["native_module"],
+            },
+            "runtime_identities": {
+                "baseline": baseline_result["runtime"],
+                "candidate": candidate_result["runtime"],
             },
         },
         "results": {
@@ -362,27 +519,11 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
                 },
             },
         },
-        "gates": {
-            "finite_posteriors": True,
-            "max_abs_delta_le_1e-5": comparison["max_abs_delta"] <= 1e-5,
-            "threshold_decisions_unchanged": all(
-                value == 0 for value in comparison["threshold_changes"].values()
-            ),
-            "hysteresis_decisions_unchanged": comparison["hysteresis_surrogate"][
-                "decision_changes"
-            ]
-            == 0,
-            "whole_clip_throughput_measured": True,
-            "distinct_native_extensions": baseline_result["native_module"]["sha256"]
-            != candidate_result["native_module"]["sha256"],
-            "per_frame_jitter_or_deadline_measured": False,
-            "hardware_qualification_measured": False,
-        },
+        "gates": gates,
         "limitations": [
             "Throughput is a whole-clip software measurement; it does not establish per-frame jitter or realtime callback deadlines.",
             "No microphone, output route, or hardware qualification was performed.",
-            "The candidate was isolated from production and does not change the current runtime or package assets.",
-            "The isolated candidate extension predates the telemetry opt-out source edit; rebuild the candidate from the final source before adopting it.",
+            "The probe compares isolated software backends; it does not qualify microphone, output-route, or hardware behavior.",
         ],
         "source_sha256": {
             "python/tools/evaluate_onnxruntime_probe.py": _sha256(Path(__file__)),
@@ -396,10 +537,9 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
             )
         report["method"]["cpu_archive"] = archive
     if args.candidate_runtime_file:
-        report["method"]["candidate_runtime_files"] = [
-            _asset_record(path.resolve(strict=True))
-            for path in args.candidate_runtime_file
-        ]
+        report["method"]["candidate_runtime_files"] = _record_cpu_ort_runtime_files(
+            args.candidate_runtime_file
+        )
     return report
 
 
@@ -408,6 +548,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--baseline-python-root", type=Path)
     parser.add_argument("--candidate-python-root", type=Path)
+    parser.add_argument("--baseline-python", type=Path, default=Path(sys.executable))
+    parser.add_argument("--candidate-python", type=Path, default=Path(sys.executable))
     parser.add_argument("--baseline-dll-root", type=Path, action="append", default=[])
     parser.add_argument("--candidate-dll-root", type=Path, action="append", default=[])
     parser.add_argument("--python-root", type=Path, help=argparse.SUPPRESS)
@@ -458,7 +600,7 @@ def main() -> int:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(report_path)
-    return 0
+    return 0 if _software_gates_pass(report["gates"]) else 1
 
 
 if __name__ == "__main__":

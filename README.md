@@ -1,7 +1,7 @@
 # AudioForge
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
 [![Rust](https://img.shields.io/badge/rust-1.94.0-orange.svg)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)]()
 
@@ -110,7 +110,7 @@ Latency labels in the UI describe suppressor/DSP behavior, not a universal round
 ## Requirements
 
 - Windows 10 (1809 or later) or Windows 11, x64
-- CPython 3.12 x64 (the locked NumPy/SciPy versions require Python 3.12)
+- CPython 3.13.15 x64
 - Rust 1.94.0, selected by `rust-toolchain.toml`
 - `maturin`
 - A virtual environment in `.venv` is assumed by the packaging script.
@@ -127,8 +127,9 @@ distributed under GPLv3 together with its dependency notices.
 git clone https://github.com/FueledByRedBull/audio-forge.git
 cd audio-forge
 
-python -m venv .venv
+py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements/dev.txt
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
 .\.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
 
 .\.venv\Scripts\python.exe -m maturin develop --release
@@ -198,10 +199,10 @@ Create `models/` in the repo root for local runtime discovery:
 - `models/DeepFilterNet3_onnx.tar.gz`
 - `models/silero_vad.onnx`
 
-DeepFilter runtime library:
+Native runtime libraries:
 
 - `df.dll` in the repo root for development runs.
-- `target/release/DirectML.dll` from the pinned DirectML redistributable package for full-feature packaging.
+- `target/onnxruntime-cpu/lib/onnxruntime.dll` and `onnxruntime_providers_shared.dll` from the pinned CPU-only ONNX Runtime package.
 - Bundled under `dist/AudioForge/_internal` for portable builds.
 
 Environment variables:

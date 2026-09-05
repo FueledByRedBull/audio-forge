@@ -1,7 +1,5 @@
 {
-  "blockers": [
-    "target/release/DirectML.dll: upstream distribution terms are not cleared for the GPLv3 binary; remove it or record an approved license"
-  ],
+  "blockers": [],
   "distribution_license": "GPL-3.0-only",
   "entries": [
     {
@@ -45,32 +43,6 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "base64-0.22.1.crate",
-      "id": "cargo-base64-0.22.1",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "base64",
-      "sha256": "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6",
-      "source_of_truth": "https://crates.io/crates/base64/0.22.1",
-      "url": "https://crates.io/api/v1/crates/base64/0.22.1/download",
-      "version": "0.22.1"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "base64ct-1.8.3.crate",
-      "id": "cargo-base64ct-1.8.3",
-      "kind": "cargo-crate",
-      "license": "Apache-2.0 OR MIT",
-      "lock_file": "Cargo.lock",
-      "name": "base64ct",
-      "sha256": "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06",
-      "source_of_truth": "https://crates.io/crates/base64ct/1.8.3",
-      "url": "https://crates.io/api/v1/crates/base64ct/1.8.3/download",
-      "version": "1.8.3"
-    },
-    {
-      "build_role": "resolved Rust dependency",
       "filename": "bitflags-1.3.2.crate",
       "id": "cargo-bitflags-1.3.2",
       "kind": "cargo-crate",
@@ -94,32 +66,6 @@
       "source_of_truth": "https://crates.io/crates/bitflags/2.11.0",
       "url": "https://crates.io/api/v1/crates/bitflags/2.11.0/download",
       "version": "2.11.0"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "byteorder-1.5.0.crate",
-      "id": "cargo-byteorder-1.5.0",
-      "kind": "cargo-crate",
-      "license": "Unlicense OR MIT",
-      "lock_file": "Cargo.lock",
-      "name": "byteorder",
-      "sha256": "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b",
-      "source_of_truth": "https://crates.io/crates/byteorder/1.5.0",
-      "url": "https://crates.io/api/v1/crates/byteorder/1.5.0/download",
-      "version": "1.5.0"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "bytes-1.11.1.crate",
-      "id": "cargo-bytes-1.11.1",
-      "kind": "cargo-crate",
-      "license": "MIT",
-      "lock_file": "Cargo.lock",
-      "name": "bytes",
-      "sha256": "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33",
-      "source_of_truth": "https://crates.io/crates/bytes/1.11.1",
-      "url": "https://crates.io/api/v1/crates/bytes/1.11.1/download",
-      "version": "1.11.1"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -188,19 +134,6 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "der-0.7.10.crate",
-      "id": "cargo-der-0.7.10",
-      "kind": "cargo-crate",
-      "license": "Apache-2.0 OR MIT",
-      "lock_file": "Cargo.lock",
-      "name": "der",
-      "sha256": "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb",
-      "source_of_truth": "https://crates.io/crates/der/0.7.10",
-      "url": "https://crates.io/api/v1/crates/der/0.7.10/download",
-      "version": "0.7.10"
-    },
-    {
-      "build_role": "resolved Rust dependency",
       "filename": "easyfft-0.4.2.crate",
       "id": "cargo-easyfft-0.4.2",
       "kind": "cargo-crate",
@@ -250,58 +183,6 @@
       "source_of_truth": "https://crates.io/crates/heck/0.5.0",
       "url": "https://crates.io/api/v1/crates/heck/0.5.0/download",
       "version": "0.5.0"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "hmac-sha256-1.1.14.crate",
-      "id": "cargo-hmac-sha256-1.1.14",
-      "kind": "cargo-crate",
-      "license": "ISC",
-      "lock_file": "Cargo.lock",
-      "name": "hmac-sha256",
-      "sha256": "ec9d92d097f4749b64e8cc33d924d9f40a2d4eb91402b458014b781f5733d60f",
-      "source_of_truth": "https://crates.io/crates/hmac-sha256/1.1.14",
-      "url": "https://crates.io/api/v1/crates/hmac-sha256/1.1.14/download",
-      "version": "1.1.14"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "http-1.4.0.crate",
-      "id": "cargo-http-1.4.0",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "http",
-      "sha256": "e3ba2a386d7f85a81f119ad7498ebe444d2e22c2af0b86b069416ace48b3311a",
-      "source_of_truth": "https://crates.io/crates/http/1.4.0",
-      "url": "https://crates.io/api/v1/crates/http/1.4.0/download",
-      "version": "1.4.0"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "httparse-1.10.1.crate",
-      "id": "cargo-httparse-1.10.1",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "httparse",
-      "sha256": "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87",
-      "source_of_truth": "https://crates.io/crates/httparse/1.10.1",
-      "url": "https://crates.io/api/v1/crates/httparse/1.10.1/download",
-      "version": "1.10.1"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "itoa-1.0.17.crate",
-      "id": "cargo-itoa-1.0.17",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "itoa",
-      "sha256": "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2",
-      "source_of_truth": "https://crates.io/crates/itoa/1.0.17",
-      "url": "https://crates.io/api/v1/crates/itoa/1.0.17/download",
-      "version": "1.0.17"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -370,19 +251,6 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "lzma-rust2-0.15.7.crate",
-      "id": "cargo-lzma-rust2-0.15.7",
-      "kind": "cargo-crate",
-      "license": "Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "lzma-rust2",
-      "sha256": "1670343e58806300d87950e3401e820b519b9384281bbabfb15e3636689ffd69",
-      "source_of_truth": "https://crates.io/crates/lzma-rust2/0.15.7",
-      "url": "https://crates.io/api/v1/crates/lzma-rust2/0.15.7/download",
-      "version": "0.15.7"
-    },
-    {
-      "build_role": "resolved Rust dependency",
       "filename": "matrixmultiply-0.3.10.crate",
       "id": "cargo-matrixmultiply-0.3.10",
       "kind": "cargo-crate",
@@ -393,19 +261,6 @@
       "source_of_truth": "https://crates.io/crates/matrixmultiply/0.3.10",
       "url": "https://crates.io/api/v1/crates/matrixmultiply/0.3.10/download",
       "version": "0.3.10"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "native-tls-0.2.18.crate",
-      "id": "cargo-native-tls-0.2.18",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "native-tls",
-      "sha256": "465500e14ea162429d264d44189adc38b199b62b1c21eea9f69e4b73cb03bbf2",
-      "source_of_truth": "https://crates.io/crates/native-tls/0.2.18",
-      "url": "https://crates.io/api/v1/crates/native-tls/0.2.18/download",
-      "version": "0.2.18"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -562,32 +417,6 @@
       "source_of_truth": "https://crates.io/crates/parking_lot_core/0.9.12",
       "url": "https://crates.io/api/v1/crates/parking_lot_core/0.9.12/download",
       "version": "0.9.12"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "pem-rfc7468-0.7.0.crate",
-      "id": "cargo-pem-rfc7468-0.7.0",
-      "kind": "cargo-crate",
-      "license": "Apache-2.0 OR MIT",
-      "lock_file": "Cargo.lock",
-      "name": "pem-rfc7468",
-      "sha256": "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412",
-      "source_of_truth": "https://crates.io/crates/pem-rfc7468/0.7.0",
-      "url": "https://crates.io/api/v1/crates/pem-rfc7468/0.7.0/download",
-      "version": "0.7.0"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "percent-encoding-2.3.2.crate",
-      "id": "cargo-percent-encoding-2.3.2",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "percent-encoding",
-      "sha256": "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220",
-      "source_of_truth": "https://crates.io/crates/percent-encoding/2.3.2",
-      "url": "https://crates.io/api/v1/crates/percent-encoding/2.3.2/download",
-      "version": "2.3.2"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -786,19 +615,6 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "rustls-pki-types-1.14.0.crate",
-      "id": "cargo-rustls-pki-types-1.14.0",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "rustls-pki-types",
-      "sha256": "be040f8b0a225e40375822a563fa9524378b9d63112f53e19ffff34df5d33fdd",
-      "source_of_truth": "https://crates.io/crates/rustls-pki-types/1.14.0",
-      "url": "https://crates.io/api/v1/crates/rustls-pki-types/1.14.0/download",
-      "version": "1.14.0"
-    },
-    {
-      "build_role": "resolved Rust dependency",
       "filename": "rustversion-1.0.22.crate",
       "id": "cargo-rustversion-1.0.22",
       "kind": "cargo-crate",
@@ -809,19 +625,6 @@
       "source_of_truth": "https://crates.io/crates/rustversion/1.0.22",
       "url": "https://crates.io/api/v1/crates/rustversion/1.0.22/download",
       "version": "1.0.22"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "schannel-0.1.28.crate",
-      "id": "cargo-schannel-0.1.28",
-      "kind": "cargo-crate",
-      "license": "MIT",
-      "lock_file": "Cargo.lock",
-      "name": "schannel",
-      "sha256": "891d81b926048e76efe18581bf793546b4c0eaf8448d72be8de2bbee5fd166e1",
-      "source_of_truth": "https://crates.io/crates/schannel/0.1.28",
-      "url": "https://crates.io/api/v1/crates/schannel/0.1.28/download",
-      "version": "0.1.28"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -874,19 +677,6 @@
       "source_of_truth": "https://crates.io/crates/smallvec/1.15.1",
       "url": "https://crates.io/api/v1/crates/smallvec/1.15.1/download",
       "version": "1.15.1"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "socks-0.3.4.crate",
-      "id": "cargo-socks-0.3.4",
-      "kind": "cargo-crate",
-      "license": "MIT/Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "socks",
-      "sha256": "f0c3dbbd9ae980613c6dd8e28a9407b50509d3803b57624d5dfe8315218cd58b",
-      "source_of_truth": "https://crates.io/crates/socks/0.3.4",
-      "url": "https://crates.io/api/v1/crates/socks/0.3.4/download",
-      "version": "0.3.4"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -1017,58 +807,6 @@
       "source_of_truth": "https://crates.io/crates/unicode-ident/1.0.24",
       "url": "https://crates.io/api/v1/crates/unicode-ident/1.0.24/download",
       "version": "1.0.24"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "ureq-3.2.0.crate",
-      "id": "cargo-ureq-3.2.0",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "ureq",
-      "sha256": "fdc97a28575b85cfedf2a7e7d3cc64b3e11bd8ac766666318003abbacc7a21fc",
-      "source_of_truth": "https://crates.io/crates/ureq/3.2.0",
-      "url": "https://crates.io/api/v1/crates/ureq/3.2.0/download",
-      "version": "3.2.0"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "ureq-proto-0.5.3.crate",
-      "id": "cargo-ureq-proto-0.5.3",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "ureq-proto",
-      "sha256": "d81f9efa9df032be5934a46a068815a10a042b494b6a58cb0a1a97bb5467ed6f",
-      "source_of_truth": "https://crates.io/crates/ureq-proto/0.5.3",
-      "url": "https://crates.io/api/v1/crates/ureq-proto/0.5.3/download",
-      "version": "0.5.3"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "utf-8-0.7.6.crate",
-      "id": "cargo-utf-8-0.7.6",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "utf-8",
-      "sha256": "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9",
-      "source_of_truth": "https://crates.io/crates/utf-8/0.7.6",
-      "url": "https://crates.io/api/v1/crates/utf-8/0.7.6/download",
-      "version": "0.7.6"
-    },
-    {
-      "build_role": "resolved Rust dependency",
-      "filename": "webpki-root-certs-1.0.6.crate",
-      "id": "cargo-webpki-root-certs-1.0.6",
-      "kind": "cargo-crate",
-      "license": "CDLA-Permissive-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "webpki-root-certs",
-      "sha256": "804f18a4ac2676ffb4e8b5b5fa9ae38af06df08162314f96a68d2a363e21a8ca",
-      "source_of_truth": "https://crates.io/crates/webpki-root-certs/1.0.6",
-      "url": "https://crates.io/api/v1/crates/webpki-root-certs/1.0.6/download",
-      "version": "1.0.6"
     },
     {
       "build_role": "resolved Rust dependency",
@@ -1215,19 +953,6 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "windows-sys-0.61.2.crate",
-      "id": "cargo-windows-sys-0.61.2",
-      "kind": "cargo-crate",
-      "license": "MIT OR Apache-2.0",
-      "lock_file": "Cargo.lock",
-      "name": "windows-sys",
-      "sha256": "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc",
-      "source_of_truth": "https://crates.io/crates/windows-sys/0.61.2",
-      "url": "https://crates.io/api/v1/crates/windows-sys/0.61.2/download",
-      "version": "0.61.2"
-    },
-    {
-      "build_role": "resolved Rust dependency",
       "filename": "windows-threading-0.2.1.crate",
       "id": "cargo-windows-threading-0.2.1",
       "kind": "cargo-crate",
@@ -1240,34 +965,30 @@
       "version": "0.2.1"
     },
     {
-      "build_role": "resolved Rust dependency",
-      "filename": "zeroize-1.8.2.crate",
-      "id": "cargo-zeroize-1.8.2",
-      "kind": "cargo-crate",
-      "license": "Apache-2.0 OR MIT",
-      "lock_file": "Cargo.lock",
-      "name": "zeroize",
-      "sha256": "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0",
-      "source_of_truth": "https://crates.io/crates/zeroize/1.8.2",
-      "url": "https://crates.io/api/v1/crates/zeroize/1.8.2/download",
-      "version": "1.8.2"
-    },
-    {
       "build_role": "locked interpreter used by the release workflow",
-      "filename": "Python-3.12.10.tar.xz",
-      "id": "cpython-3.12.10",
+      "filename": "Python-3.13.15.tar.xz",
+      "id": "cpython-3.13.15",
       "kind": "cpython-source",
+      "license": "PSF-2.0; Microsoft Distributable Code terms for Windows runtime",
+      "license_paths": [
+        "Python-3.13.15/LICENSE",
+        "Python-3.13.15/PC/crtlicense.txt"
+      ],
       "name": "CPython",
-      "sha256": "07ab697474595e06f06647417d3c7fa97ded07afc1a7e4454c5639919b46eaea",
-      "source_of_truth": "https://www.python.org/downloads/release/python-31210/",
-      "url": "https://www.python.org/ftp/python/3.12.10/Python-3.12.10.tar.xz",
-      "version": "3.12.10"
+      "sha256": "1e66a7945a48390ee4c2a4268a0e4185884059a13c4aab6d148aa208deea4a76",
+      "source_of_truth": "https://www.python.org/downloads/release/python-31315/",
+      "url": "https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tar.xz",
+      "version": "3.13.15"
     },
     {
-      "build_role": "source dependency used by CPython 3.12.10 Windows build",
+      "build_role": "source dependency used by CPython 3.13.15 Windows build",
       "filename": "cpython-source-deps-bzip2-1.0.8.tar.gz",
       "id": "cpython-external-bzip2-1.0.8",
       "kind": "cpython-build-source",
+      "license": "bzip2-1.0.8 license",
+      "license_paths": [
+        "cpython-source-deps-bzip2-1.0.8/LICENSE"
+      ],
       "name": "CPython external dependency: bzip2",
       "sha256": "ab8d1b0cc087c20d4c32c0e4fcf7d0c733a95da12cedc6d63b3f0a9af07427e2",
       "source_of_truth": "https://github.com/python/cpython-source-deps/tree/bzip2-1.0.8",
@@ -1275,10 +996,15 @@
       "version": "1.0.8"
     },
     {
-      "build_role": "source dependency used by CPython 3.12.10 Windows build",
+      "build_role": "source dependency used by CPython 3.13.15 Windows build",
       "filename": "cpython-source-deps-libffi-3.4.4.tar.gz",
       "id": "cpython-external-libffi-3.4.4",
       "kind": "cpython-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "cpython-source-deps-libffi-3.4.4/LICENSE",
+        "cpython-source-deps-libffi-3.4.4/LICENSE-BUILDTOOLS"
+      ],
       "name": "CPython external dependency: libffi",
       "sha256": "9d802681adfea27d84cae0487a785fb9caa925bdad44c401b364c59ab2b8edda",
       "source_of_truth": "https://github.com/python/cpython-source-deps/tree/libffi-3.4.4",
@@ -1286,32 +1012,59 @@
       "version": "3.4.4"
     },
     {
-      "build_role": "source dependency used by CPython 3.12.10 Windows build",
-      "filename": "cpython-source-deps-openssl-3.0.16.tar.gz",
-      "id": "cpython-external-openssl-3.0.16",
+      "build_role": "source dependency used by CPython 3.13.15 Windows build",
+      "filename": "cpython-source-deps-mpdecimal-4.0.0.tar.gz",
+      "id": "cpython-external-mpdecimal-4.0.0",
       "kind": "cpython-build-source",
+      "license": "BSD-2-Clause",
+      "license_paths": [
+        "cpython-source-deps-mpdecimal-4.0.0/COPYRIGHT.txt"
+      ],
+      "name": "CPython external dependency: mpdecimal",
+      "sha256": "338fac3fb8cdd60f406b6326431338756f58a8af94229ffd9bf1e7c2b1ad71ca",
+      "source_of_truth": "https://github.com/python/cpython-source-deps/tree/mpdecimal-4.0.0",
+      "url": "https://github.com/python/cpython-source-deps/archive/refs/tags/mpdecimal-4.0.0.tar.gz",
+      "version": "4.0.0"
+    },
+    {
+      "build_role": "source dependency used by CPython 3.13.15 Windows build",
+      "filename": "cpython-source-deps-openssl-3.0.21.tar.gz",
+      "id": "cpython-external-openssl-3.0.21",
+      "kind": "cpython-build-source",
+      "license": "Apache-2.0",
+      "license_paths": [
+        "cpython-source-deps-openssl-3.0.21/LICENSE.txt"
+      ],
       "name": "CPython external dependency: openssl",
-      "sha256": "6bb739ecddbd2cfb6d255eb5898437a9b5739277dee931338d3275bac5d96ba2",
-      "source_of_truth": "https://github.com/python/cpython-source-deps/tree/openssl-3.0.16",
-      "url": "https://github.com/python/cpython-source-deps/archive/refs/tags/openssl-3.0.16.tar.gz",
-      "version": "3.0.16"
+      "sha256": "0349aef1ff9ded3eb23be12c2586e026be5cec3fd40df859e388671d7844fced",
+      "source_of_truth": "https://github.com/python/cpython-source-deps/tree/openssl-3.0.21",
+      "url": "https://github.com/python/cpython-source-deps/archive/refs/tags/openssl-3.0.21.tar.gz",
+      "version": "3.0.21"
     },
     {
-      "build_role": "source dependency used by CPython 3.12.10 Windows build",
-      "filename": "cpython-source-deps-sqlite-3.49.1.0.tar.gz",
-      "id": "cpython-external-sqlite-3.49.1.0",
+      "build_role": "source dependency used by CPython 3.13.15 Windows build",
+      "filename": "cpython-source-deps-sqlite-3.50.4.0.tar.gz",
+      "id": "cpython-external-sqlite-3.50.4.0",
       "kind": "cpython-build-source",
+      "license": "Public Domain",
       "name": "CPython external dependency: sqlite",
-      "sha256": "e335aeb44fa36cde60ecbb6a9f8be6f5d449d645ce9b0199ee53a7e6728d19d2",
-      "source_of_truth": "https://github.com/python/cpython-source-deps/tree/sqlite-3.49.1.0",
-      "url": "https://github.com/python/cpython-source-deps/archive/refs/tags/sqlite-3.49.1.0.tar.gz",
-      "version": "3.49.1.0"
+      "sha256": "fb5ab81f27612b0a7b4861ba655906c76dc85ee969e7a4905d2075aff931e8d0",
+      "source_of_truth": "https://github.com/python/cpython-source-deps/tree/sqlite-3.50.4.0",
+      "url": "https://github.com/python/cpython-source-deps/archive/refs/tags/sqlite-3.50.4.0.tar.gz",
+      "version": "3.50.4.0"
     },
     {
-      "build_role": "source dependency used by CPython 3.12.10 Windows build",
+      "build_role": "source dependency used by CPython 3.13.15 Windows build",
       "filename": "cpython-source-deps-xz-5.2.5.tar.gz",
       "id": "cpython-external-xz-5.2.5",
       "kind": "cpython-build-source",
+      "license": "Public Domain, LGPL-2.1-or-later, GPL-2.0-or-later, GPL-3.0-or-later",
+      "license_paths": [
+        "cpython-source-deps-xz-5.2.5/COPYING",
+        "cpython-source-deps-xz-5.2.5/COPYING.GPLv2",
+        "cpython-source-deps-xz-5.2.5/COPYING.GPLv3",
+        "cpython-source-deps-xz-5.2.5/COPYING.LGPLv2.1"
+      ],
       "name": "CPython external dependency: xz",
       "sha256": "a15c168e39e87d750c3dc766edc7f19bdda57dacf01e509678467eace91ad282",
       "source_of_truth": "https://github.com/python/cpython-source-deps/tree/xz-5.2.5",
@@ -1319,10 +1072,14 @@
       "version": "5.2.5"
     },
     {
-      "build_role": "source dependency used by CPython 3.12.10 Windows build",
+      "build_role": "source dependency used by CPython 3.13.15 Windows build",
       "filename": "cpython-source-deps-zlib-1.3.1.tar.gz",
       "id": "cpython-external-zlib-1.3.1",
       "kind": "cpython-build-source",
+      "license": "Zlib",
+      "license_paths": [
+        "cpython-source-deps-zlib-1.3.1/LICENSE"
+      ],
       "name": "CPython external dependency: zlib",
       "sha256": "e3f3fb32564952006eb18b091ca8464740e5eca29d328cfb0b2da22768e0b638",
       "source_of_truth": "https://github.com/python/cpython-source-deps/tree/zlib-1.3.1",
@@ -4019,6 +3776,280 @@
       "version": "11.2.2"
     },
     {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "abseil-cpp-20250512.0.zip",
+      "id": "onnxruntime-dependency-abseil-20250512.0",
+      "kind": "native-build-source",
+      "license": "Apache-2.0",
+      "license_paths": [
+        "abseil-cpp-20250512.0/LICENSE"
+      ],
+      "name": "abseil-cpp",
+      "sha256": "520551a68a57f58be691151d59918a7ddcd8d727f81c0bb530bca272f985e674",
+      "source_of_truth": "https://github.com/abseil/abseil-cpp/releases/tag/20250512.0",
+      "upstream_sha1": "3d6ff7e7ce144d9a53a53bef1f1bf79e1da4b8e1",
+      "url": "https://github.com/abseil/abseil-cpp/archive/refs/tags/20250512.0.zip",
+      "version": "20250512.0"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "cpuinfo-8a1772a0c5c447df2d18edf33ec4603a8c9c04a6.zip",
+      "id": "onnxruntime-dependency-cpuinfo-8a1772",
+      "kind": "native-build-source",
+      "license": "BSD-2-Clause",
+      "license_paths": [
+        "cpuinfo-8a1772a0c5c447df2d18edf33ec4603a8c9c04a6/LICENSE",
+        "cpuinfo-8a1772a0c5c447df2d18edf33ec4603a8c9c04a6/deps/clog/LICENSE"
+      ],
+      "name": "cpuinfo",
+      "sha256": "4bf314b3f04db2fd984fef38a7e278e702b74297ef0af592b73296edba02b9d4",
+      "source_of_truth": "https://github.com/pytorch/cpuinfo/commit/8a1772a0c5c447df2d18edf33ec4603a8c9c04a6",
+      "upstream_sha1": "85bf8a60dae026b99b6ccd78606c85ed83bfb2cd",
+      "url": "https://github.com/pytorch/cpuinfo/archive/8a1772a0c5c447df2d18edf33ec4603a8c9c04a6.zip",
+      "version": "8a1772a0c5c447df2d18edf33ec4603a8c9c04a6"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "date-3.0.1.zip",
+      "id": "onnxruntime-dependency-date-3.0.1",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "date-3.0.1/LICENSE.txt"
+      ],
+      "name": "date",
+      "sha256": "f4300b96f7a304d4ef9bf6e0fa3ded72159f7f2d0f605bdde3e030a0dba7cf9f",
+      "source_of_truth": "https://github.com/HowardHinnant/date/releases/tag/v3.0.1",
+      "upstream_sha1": "2dac0c81dc54ebdd8f8d073a75c053b04b56e159",
+      "url": "https://github.com/HowardHinnant/date/archive/refs/tags/v3.0.1.zip",
+      "version": "3.0.1"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip",
+      "id": "onnxruntime-dependency-eigen-1d8b82b07408",
+      "kind": "native-build-source",
+      "license": "MPL-2.0",
+      "license_paths": [
+        "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/LICENSE",
+        "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/COPYING.APACHE",
+        "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/COPYING.BSD",
+        "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/COPYING.MINPACK",
+        "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/COPYING.MPL2",
+        "eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33/COPYING.README"
+      ],
+      "name": "Eigen",
+      "sha256": "6a60d76351f97132669daeeb721d6bf14b008101883ad2d687a3201c5c461eb0",
+      "source_of_truth": "https://github.com/eigen-mirror/eigen/commit/1d8b82b0740839c0de7f1242a3585e3390ff5f33",
+      "upstream_sha1": "05b19b49e6fbb91246be711d801160528c135e34",
+      "url": "https://github.com/eigen-mirror/eigen/archive/1d8b82b0740839c0de7f1242a3585e3390ff5f33/eigen-1d8b82b0740839c0de7f1242a3585e3390ff5f33.zip",
+      "version": "1d8b82b0740839c0de7f1242a3585e3390ff5f33"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "flatbuffers-23.5.26.zip",
+      "id": "onnxruntime-dependency-flatbuffers-23.5.26",
+      "kind": "native-build-source",
+      "license": "Apache-2.0",
+      "license_paths": [
+        "flatbuffers-23.5.26/LICENSE"
+      ],
+      "name": "flatbuffers",
+      "sha256": "57bd580c0772fd1a726c34ab8bf05325293bc5f9c165060a898afa1feeeb95e1",
+      "source_of_truth": "https://github.com/google/flatbuffers/releases/tag/v23.5.26",
+      "upstream_sha1": "59422c3b5e573dd192fead2834d25951f1c1670c",
+      "url": "https://github.com/google/flatbuffers/archive/refs/tags/v23.5.26.zip",
+      "version": "23.5.26"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "GSL-4.0.0.zip",
+      "id": "onnxruntime-dependency-gsl-4.0.0",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "GSL-4.0.0/LICENSE"
+      ],
+      "name": "microsoft-gsl",
+      "sha256": "eb91fcb10a6aa5ccb1d224e07a56c8ecffe9a1bb601fa1848276ec46a2200bfb",
+      "source_of_truth": "https://github.com/microsoft/GSL/releases/tag/v4.0.0",
+      "upstream_sha1": "cf368104cd22a87b4dd0c80228919bb2df3e2a14",
+      "url": "https://github.com/microsoft/GSL/archive/refs/tags/v4.0.0.zip",
+      "version": "4.0.0"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "json-3.11.3.zip",
+      "id": "onnxruntime-dependency-json-3.11.3",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "json-3.11.3/LICENSE.MIT"
+      ],
+      "name": "nlohmann-json",
+      "sha256": "04022b05d806eb5ff73023c280b68697d12b93e1b7267a0b22a1a39ec7578069",
+      "source_of_truth": "https://github.com/nlohmann/json/releases/tag/v3.11.3",
+      "upstream_sha1": "5e88795165cc8590138d1f47ce94ee567b85b4d6",
+      "url": "https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip",
+      "version": "3.11.3"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "mp11-boost-1.82.0.zip",
+      "id": "onnxruntime-dependency-mp11-boost-1.82.0",
+      "kind": "native-build-source",
+      "license": "BSL-1.0",
+      "name": "Boost.MP11",
+      "sha256": "81431bdc44c439a324e02c07ed067f8f556419fd86f2d8b486ff568df6aac899",
+      "source_of_truth": "https://github.com/boostorg/mp11/releases/tag/boost-1.82.0",
+      "upstream_sha1": "9bc9e01dffb64d9e0773b2e44d2f22c51aace063",
+      "url": "https://github.com/boostorg/mp11/archive/refs/tags/boost-1.82.0.zip",
+      "version": "1.82.0"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "onnx-1.18.0.zip",
+      "id": "onnxruntime-dependency-onnx-1.18.0",
+      "kind": "native-build-source",
+      "license": "Apache-2.0",
+      "license_paths": [
+        "onnx-1.18.0/LICENSE"
+      ],
+      "name": "ONNX",
+      "sha256": "23b6f113b05ac7aa7fac0128df69aca2eabd8c8f92d2ebe39fa741a47addec6f",
+      "source_of_truth": "https://github.com/onnx/onnx/releases/tag/v1.18.0",
+      "upstream_sha1": "f156d032a3af91b66d554e11158b33ca77bbb1f2",
+      "url": "https://github.com/onnx/onnx/archive/refs/tags/v1.18.0.zip",
+      "version": "1.18.0"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency and protoc build source",
+      "filename": "protobuf-21.12.zip",
+      "id": "onnxruntime-dependency-protobuf-21.12",
+      "kind": "native-build-source",
+      "license": "BSD-3-Clause",
+      "license_paths": [
+        "protobuf-21.12/LICENSE",
+        "protobuf-21.12/third_party/utf8_range/LICENSE"
+      ],
+      "name": "protobuf",
+      "sha256": "6a31b662deaeb0ac35e6287bda2f3369b19836e6c9f8828d4da444346f420298",
+      "source_of_truth": "https://github.com/protocolbuffers/protobuf/releases/tag/v21.12",
+      "upstream_sha1": "7cf2733949036c7d52fda017badcab093fe73bfa",
+      "url": "https://github.com/protocolbuffers/protobuf/archive/refs/tags/v21.12.zip",
+      "version": "21.12"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "re2-2024-07-02.zip",
+      "id": "onnxruntime-dependency-re2-2024-07-02",
+      "kind": "native-build-source",
+      "license": "BSD-3-Clause",
+      "license_paths": [
+        "re2-2024-07-02/LICENSE"
+      ],
+      "name": "re2",
+      "sha256": "a835fe55fbdcd8e80f38584ab22d0840662c67f2feb36bd679402da9641dc71e",
+      "source_of_truth": "https://github.com/google/re2/releases/tag/2024-07-02",
+      "upstream_sha1": "646e1728269cde7fcef990bf4a8e87b047882e88",
+      "url": "https://github.com/google/re2/archive/refs/tags/2024-07-02.zip",
+      "version": "2024-07-02"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "SafeInt-3.0.28.zip",
+      "id": "onnxruntime-dependency-safeint-3.0.28",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "SafeInt-3.0.28/LICENSE",
+        "SafeInt-3.0.28/Archive/license/license.json"
+      ],
+      "name": "SafeInt",
+      "sha256": "3ffbd9a2fdff45da77da3e7269e9aa512ea43bed5c38ce8fd8f3d1068a032c3f",
+      "source_of_truth": "https://github.com/dcleblanc/SafeInt/releases/tag/3.0.28",
+      "upstream_sha1": "23f252040ff6cb9f1fd18575b32fa8fb5928daac",
+      "url": "https://github.com/dcleblanc/SafeInt/archive/refs/tags/3.0.28.zip",
+      "version": "3.0.28"
+    },
+    {
+      "build_role": "ONNX Runtime CPU dependency",
+      "filename": "wil-1.0.230629.1.zip",
+      "id": "onnxruntime-dependency-wil-1.0.230629.1",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "wil-1.0.230629.1/LICENSE"
+      ],
+      "name": "microsoft-wil",
+      "sha256": "f116af6cd96b8404d5e3cd6ef18853f7baa9c7d96930e741591fea8b5a3ef919",
+      "source_of_truth": "https://github.com/microsoft/wil/releases/tag/v1.0.230629.1",
+      "upstream_sha1": "e4a542a323c070376f7c2d1973d0f7ddbc1d2fa5",
+      "url": "https://github.com/microsoft/wil/archive/refs/tags/v1.0.230629.1.zip",
+      "version": "1.0.230629.1"
+    },
+    {
+      "build_role": "exact CPU ONNX Runtime source corresponding to the pinned Windows package",
+      "filename": "onnxruntime-a83fc4d58cb48eb68890dd689f94f28288cf2278.tar.gz",
+      "id": "onnxruntime-source-a83fc4d58cb4",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "onnxruntime-a83fc4d58cb48eb68890dd689f94f28288cf2278/LICENSE",
+        "onnxruntime-a83fc4d58cb48eb68890dd689f94f28288cf2278/ThirdPartyNotices.txt"
+      ],
+      "name": "ONNX Runtime",
+      "sha256": "7270fab0d96d964959b35648014230c00fa2a9cb98df087e5fd5c2b2c24c8085",
+      "source_of_truth": "https://github.com/microsoft/onnxruntime/commit/a83fc4d58cb48eb68890dd689f94f28288cf2278",
+      "url": "https://codeload.github.com/microsoft/onnxruntime/tar.gz/a83fc4d58cb48eb68890dd689f94f28288cf2278",
+      "version": "1.23.2"
+    },
+    {
+      "build_role": "optional ONNX Runtime web submodule retained from the pinned repository graph",
+      "filename": "emsdk-419021fa040428bc69ef1559b325addb8e10211f.tar.gz",
+      "id": "onnxruntime-submodule-emsdk-419021fa0404",
+      "kind": "native-build-source",
+      "license": "MIT",
+      "license_paths": [
+        "emsdk-419021fa040428bc69ef1559b325addb8e10211f/LICENSE"
+      ],
+      "name": "Emscripten SDK",
+      "sha256": "26c3ef13fc8285a209fde5ac3e6eec17e2a24e59d6af76f92f54e6bf62998a72",
+      "source_of_truth": "https://github.com/emscripten-core/emsdk/commit/419021fa040428bc69ef1559b325addb8e10211f",
+      "url": "https://codeload.github.com/emscripten-core/emsdk/tar.gz/419021fa040428bc69ef1559b325addb8e10211f",
+      "version": "419021fa040428bc69ef1559b325addb8e10211f"
+    },
+    {
+      "build_role": "optional ONNX Runtime fuzz/test submodule retained for a complete pinned source graph",
+      "filename": "libprotobuf-mutator-7a2ed51a6b682a83e345ff49fc4cfd7ca47550db.tar.gz",
+      "id": "onnxruntime-submodule-libprotobuf-mutator-7a2ed51a6b68",
+      "kind": "native-build-source",
+      "license": "Apache-2.0",
+      "license_paths": [
+        "libprotobuf-mutator-7a2ed51a6b682a83e345ff49fc4cfd7ca47550db/LICENSE"
+      ],
+      "name": "libprotobuf-mutator",
+      "sha256": "d51365191580c4bf5e9ff104eebcfe34f7ff5f471006d7a460c15dcb3657501c",
+      "source_of_truth": "https://github.com/google/libprotobuf-mutator/commit/7a2ed51a6b682a83e345ff49fc4cfd7ca47550db",
+      "url": "https://codeload.github.com/google/libprotobuf-mutator/tar.gz/7a2ed51a6b682a83e345ff49fc4cfd7ca47550db",
+      "version": "7a2ed51a6b682a83e345ff49fc4cfd7ca47550db"
+    },
+    {
+      "build_role": "ONNX Runtime CPU external submodule",
+      "filename": "onnx-e709452ef2bbc1d113faf678c24e6d3467696e83.tar.gz",
+      "id": "onnxruntime-submodule-onnx-e709452ef2bb",
+      "kind": "native-build-source",
+      "license": "Apache-2.0",
+      "license_paths": [
+        "onnx-e709452ef2bbc1d113faf678c24e6d3467696e83/LICENSE"
+      ],
+      "name": "ONNX",
+      "sha256": "3001af7fb316cefd02c3b586139167d43eb3cf79b78aed47645831593dfbd015",
+      "source_of_truth": "https://github.com/onnx/onnx/commit/e709452ef2bbc1d113faf678c24e6d3467696e83",
+      "url": "https://codeload.github.com/onnx/onnx/tar.gz/e709452ef2bbc1d113faf678c24e6d3467696e83",
+      "version": "e709452ef2bbc1d113faf678c24e6d3467696e83"
+    },
+    {
       "build_role": "exact NumPy 2.5.1 Windows OpenBLAS source and patch recipe",
       "filename": "openblas-libs-0.3.33.112.0.tar.gz",
       "id": "openblas-recipe-numpy-0.3.33.112.0",
@@ -4077,20 +4108,6 @@
       "source_of_truth": "https://github.com/OpenMathLib/OpenBLAS/commit/9bdf051b96e956f848dfcef89c23e1993b0e1b3e",
       "url": "https://github.com/OpenMathLib/OpenBLAS/archive/9bdf051b96e956f848dfcef89c23e1993b0e1b3e.tar.gz",
       "version": "9bdf051b96e956f848dfcef89c23e1993b0e1b3e"
-    },
-    {
-      "build_role": "upstream OpenSSL source corresponding to Python's libcrypto/libssl",
-      "filename": "openssl-3.0.16.tar.gz",
-      "id": "openssl-upstream-3.0.16",
-      "kind": "cpython-build-source",
-      "license_paths": [
-        "openssl-3.0.16/LICENSE.txt"
-      ],
-      "name": "OpenSSL",
-      "sha256": "57e03c50feab5d31b152af2b764f10379aecd8ee92f16c985983ce4a99f7ef86",
-      "source_of_truth": "https://www.openssl.org/source/openssl-3.0.16.tar.gz.sha256",
-      "url": "https://www.openssl.org/source/openssl-3.0.16.tar.gz",
-      "version": "3.0.16"
     },
     {
       "build_role": "PyQt6 binding build requirement declared by the PyQt6 sdist",
@@ -4243,17 +4260,43 @@
       "version": "d375b2d8309e0935d165700c91da9de862a99c31"
     },
     {
-      "asset_sha256": "9c9e6d822561c6c41b90e6994b3e8857cf1d66dbfb1e0c4c799c7c89b4e92da1",
-      "filename": "microsoft.ai.directml.1.15.4.nupkg",
-      "id": "runtime-DirectML.dll",
+      "asset_sha256": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
+      "filename": "onnxruntime-win-x64-1.23.2.zip",
+      "id": "runtime-onnxruntime.dll",
       "kind": "runtime-asset",
-      "license": "Microsoft Software License Terms; bundled notice: licenses/DirectML-LICENSE.txt",
-      "name": "target/release/DirectML.dll",
-      "sha256": "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9",
+      "license": "MIT; bundled notices: licenses/ONNXRuntime-LICENSE.txt and licenses/ONNXRuntime-ThirdPartyNotices.txt",
+      "name": "target/onnxruntime-cpu/lib/onnxruntime.dll",
+      "sha256": "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd",
       "source_role": "runtime asset, not application source",
-      "status": "blocked",
-      "url": "https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/1.15.4/microsoft.ai.directml.1.15.4.nupkg",
-      "version": "1.15.4"
+      "status": "available",
+      "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip",
+      "version": "1.23.2"
+    },
+    {
+      "asset_sha256": "977263ca76e6a9d0f230a198d3b05b2a2bddfed66bc5c4d4fd25293b03cc78b5",
+      "filename": "onnxruntime-win-x64-1.23.2.zip",
+      "id": "runtime-onnxruntime.lib",
+      "kind": "runtime-asset",
+      "license": "MIT; bundled notices: licenses/ONNXRuntime-LICENSE.txt and licenses/ONNXRuntime-ThirdPartyNotices.txt",
+      "name": "target/onnxruntime-cpu/lib/onnxruntime.lib",
+      "sha256": "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd",
+      "source_role": "runtime asset, not application source",
+      "status": "available",
+      "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip",
+      "version": "1.23.2"
+    },
+    {
+      "asset_sha256": "a2b3a50956aa75a9879c8472bc7df4f7a8072bcd2db19a1b7d988e7688f293ef",
+      "filename": "onnxruntime-win-x64-1.23.2.zip",
+      "id": "runtime-onnxruntime_providers_shared.dll",
+      "kind": "runtime-asset",
+      "license": "MIT; bundled notices: licenses/ONNXRuntime-LICENSE.txt and licenses/ONNXRuntime-ThirdPartyNotices.txt",
+      "name": "target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll",
+      "sha256": "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd",
+      "source_role": "runtime asset, not application source",
+      "status": "available",
+      "url": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip",
+      "version": "1.23.2"
     },
     {
       "asset_sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
@@ -4297,6 +4340,6 @@
     }
   ],
   "schema_version": 1,
-  "scope": "Exact sources for the release Python runtime, PyQt/Qt binding stack, PyInstaller bootloader, CPython, and resolved Windows Cargo graph. Runtime models and redistributable binaries are recorded separately.",
-  "status": "incomplete"
+  "scope": "Exact sources for the release Python runtime, PyQt/Qt binding stack, PyInstaller bootloader, CPython, CPU ONNX Runtime graph, and resolved Windows Cargo graph. Runtime models and redistributable binaries are recorded separately.",
+  "status": "complete"
 }

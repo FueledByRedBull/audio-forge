@@ -19,7 +19,9 @@ Original AudioForge source remains MIT licensed. The combined PyQt6 application
 is distributed under GPLv3; dependency terms and notices accompany the bundle.
 Corresponding-source arrangements must be complete before final publication.
 
-Source builds use CPython 3.12 x64 and Rust 1.94.0. Published checksum, manifest,
+Source builds use CPython 3.13.15 x64 and Rust 1.94.0. VAD uses the pinned
+CPU-only ONNX Runtime; DeepFilter uses a verified source build.
+Published checksum, manifest,
 metadata, and qualification files describe the exact downloadable artifacts.
 The release workflow validates a candidate once and promotes those same bytes.
 

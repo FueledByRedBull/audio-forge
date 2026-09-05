@@ -306,12 +306,14 @@ def test_manifest_records_current_incomplete_status():
         for entry in manifest["entries"]
         if entry.get("kind") == "runtime-asset"
     )
-    directml = next(
-        entry for entry in manifest["entries"] if entry["id"] == "runtime-DirectML.dll"
+    ort = next(
+        entry for entry in manifest["entries"] if entry["id"] == "runtime-onnxruntime.dll"
     )
-    assert directml["sha256"] == (
-        "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9"
+    assert ort["sha256"] == (
+        "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd"
     )
-    assert directml["asset_sha256"] == (
-        "9c9e6d822561c6c41b90e6994b3e8857cf1d66dbfb1e0c4c799c7c89b4e92da1"
+    assert ort["asset_sha256"] == (
+        "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea"
     )
+    assert not any(entry["id"].startswith("runtime-DirectML") for entry in manifest["entries"])
+    assert any(entry["id"] == "onnxruntime-source-a83fc4d58cb4" for entry in manifest["entries"])

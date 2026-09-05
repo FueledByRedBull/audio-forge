@@ -102,23 +102,6 @@ def test_gate_vad_threshold_stays_in_calibrated_narrow_snr_range():
     assert all(0.42 <= threshold <= 0.50 for threshold in thresholds)
 
 
-def test_voice_setup_falls_back_without_vad_and_can_enable_deesser():
-    sample_rate = 48_000
-    result = analyze_voice_setup(
-        _make_noise(sample_rate),
-        _make_voice(sample_rate, sibilant=True),
-        sample_rate,
-        "broadcast",
-        vad_available=False,
-    )
-
-    assert result["gate_settings"]["gate_mode"] == 0
-    assert result["gate_settings"]["auto_threshold_enabled"] is False
-    assert result["deesser_settings"]["enabled"] is True
-    assert result["deesser_settings"]["high_cut_hz"] > result["deesser_settings"]["low_cut_hz"]
-    assert result["diagnostics"]["deesser_temporal_contrast_db"] > 0.75
-
-
 def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp():
     sample_rate = 48_000
     fixtures = [
@@ -159,6 +142,8 @@ def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp(
         fixture_results[label] = result
         diagnostics = result["diagnostics"]
 
+        assert result["gate_settings"]["gate_mode"] == 0, label
+        assert result["gate_settings"]["auto_threshold_enabled"] is False, label
         assert np.isfinite(diagnostics["short_term_lufs"]), label
         assert diagnostics["loudness_range_db"] >= 0.0, label
         assert diagnostics["vad_active_duration_s"] >= 0.0, label
@@ -190,7 +175,13 @@ def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp(
                 diagnostics["setup_confidence"],
             )
 
-    assert fixture_results["sibilant"]["deesser_settings"]["enabled"] is True
+    sibilant = fixture_results["sibilant"]
+    assert sibilant["deesser_settings"]["enabled"] is True
+    assert (
+        sibilant["deesser_settings"]["high_cut_hz"]
+        > sibilant["deesser_settings"]["low_cut_hz"]
+    )
+    assert sibilant["diagnostics"]["deesser_temporal_contrast_db"] > 0.75
     assert (
         fixture_results["sibilant"]["diagnostics"]["offline_validation"][
             "deesser_gain_reduction_db"

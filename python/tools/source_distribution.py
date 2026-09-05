@@ -1274,12 +1274,14 @@ def _validate_project_archive(path: Path, manifest: dict[str, Any], revision: st
             if not members:
                 raise SourceDistributionError("Project source archive is empty")
             prefix = f"AudioForge-{manifest['project_version']}-{revision[:12]}/"
+            root_name = prefix.rstrip("/")
             names = [member.name for member in members]
             if any(
-                not name.startswith(prefix)
+                (name == root_name and not member.isdir())
+                or (name != root_name and not name.startswith(prefix))
                 or Path(name).is_absolute()
                 or ".." in Path(name).parts
-                for name in names
+                for member, name in zip(members, names, strict=True)
             ):
                 raise SourceDistributionError("Project source archive contains an unsafe member")
             pyproject_name = prefix + "pyproject.toml"

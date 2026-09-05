@@ -1,8 +1,11 @@
 """Offline checks for corresponding-source manifest hydration."""
 
 import hashlib
+import io
 import json
 from pathlib import Path
+import tarfile
+import tomllib
 from typing import Any, cast
 import urllib.error
 import urllib.request
@@ -168,6 +171,29 @@ def test_release_manifest_rejects_stale_qt_source_identity():
 
     with pytest.raises(SourceDistributionError, match="stale: qt-"):
         source_tool._validate_manifest(manifest, release=True)
+
+
+def test_validate_project_archive_accepts_real_git_archive(tmp_path: Path):
+    revision = source_tool._git_text("rev-parse", "--verify", "HEAD^{commit}")
+    project_version = tomllib.loads(
+        source_tool._git_text("show", f"{revision}:pyproject.toml")
+    )["project"]["version"]
+    archive_bytes = source_tool._git_archive_bytes(revision, project_version)
+
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:") as archive:
+        root = archive.getmembers()[0]
+        assert root.name == f"AudioForge-{project_version}-{revision[:12]}"
+        assert root.isdir()
+
+    archive_path = tmp_path / "AudioForge-project-source.tar"
+    archive_path.write_bytes(archive_bytes)
+    digest = source_tool._validate_project_archive(
+        archive_path,
+        {"project_version": project_version},
+        revision,
+    )
+
+    assert digest == hashlib.sha256(archive_bytes).hexdigest()
 
 
 def test_source_receipt_binds_manifest_and_revision(tmp_path: Path, monkeypatch):

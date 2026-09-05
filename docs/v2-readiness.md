@@ -81,6 +81,14 @@ promotion gates, not a completed v2.0 qualification claim.
   during that review.
 - After the CPAL upgrade, `cargo audit --deny warnings` passed against the
   refreshed RustSec database for the 203-package application lock.
+- GitHub's advisory feed separately reports eight alerts for OpenSSL 0.10.75
+  still present in the application lock and three for the developer-only MCP
+  pin. `cargo tree --target x86_64-pc-windows-msvc -i openssl` resolves no
+  package; the all-target graph places it under `native-tls` / `ureq` in
+  `ort-sys` build dependencies. It is not compiled into the Windows runtime,
+  but the lockfile alerts remain open. The proposed CPU runtime integration
+  can remove that unused download dependency chain. The clean RustSec result
+  alone does not close GitHub's alerts.
 - GitHub vulnerability alerts and automatic security updates were disabled
   despite the documentation. They were enabled and the resulting settings
   verified. Secret scanning and push protection were already enabled.

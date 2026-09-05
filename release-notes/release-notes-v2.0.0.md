@@ -1,8 +1,8 @@
 # AudioForge 2.0.0
 
 Release candidate: software and packaging validation is in progress. Hardware
-microphone qualification is pending. See [the readiness register](../docs/v2-readiness.md)
-for evidence and remaining publication gates.
+microphone qualification is pending. See [the release workflow](../RELEASING.md)
+for the remaining publication gates.
 
 ## Reliability
 

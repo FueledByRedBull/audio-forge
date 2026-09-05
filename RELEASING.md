@@ -15,9 +15,9 @@ unchanged. Advance it only when a new dependency-asset source has been verified.
 Do not move a released tag to reconcile documentation.
 
 The current v2.0 work is software preparation. Hardware qualification and
-corresponding-source completion remain explicit publication gates; see
-[docs/v2-readiness.md](docs/v2-readiness.md). A passing hosted build cannot replace
-either gate.
+corresponding-source completion remain explicit publication gates. The workflows
+below produce the exact candidate evidence and sidecars; a passing hosted build
+cannot replace either gate.
 
 ### Release candidates
 

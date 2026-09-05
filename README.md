@@ -80,7 +80,8 @@ Operational tools:
 AudioForge targets Windows 10 (1809 or later) and Windows 11 x64. Hosted Windows CI validates software and
 packaging; it does not qualify every microphone, driver, virtual route, or OS
 version. Exact-artifact hardware reports define the tested coverage. The v2.0
-hardware matrix remains pending; see [v2 readiness](docs/v2-readiness.md).
+hardware matrix remains pending; see the [release workflow](RELEASING.md#automated-workflow)
+for the qualification gates.
 Linux and macOS builds are not supported.
 
 DeepFilterNet support is intentionally opt-in for source runs. Packaged builds register and enable verified bundled assets during application bootstrap; RNNoise remains the safe default when those assets are absent. External DLL/model paths are ignored unless `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` is explicitly set.

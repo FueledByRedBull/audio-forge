@@ -37,30 +37,29 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-python-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+            target/release
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-python-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('rust-core/**/*.rs', 'rust-core/Cargo.toml', 'Cargo.toml', 'pyproject.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-python-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-cargo-python-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-python-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
       - name: Hydrate pinned CPU ONNX Runtime
         run: |
           python python/tools/fetch_release_assets.py --only-cpu-runtime --force
           if ($LASTEXITCODE -ne 0) { throw "CPU ONNX Runtime hydration failed with exit code $LASTEXITCODE." }
       - name: Install Python dependencies
         run: |
-          python -m pip install --require-hashes -r requirements/dev.txt
+          python -m pip install --require-hashes -r requirements/dev.txt --no-compile
           if ($LASTEXITCODE -ne 0) { throw "Dependency install failed with exit code $LASTEXITCODE." }
           python -m pip install --no-deps --no-build-isolation -e .
           if ($LASTEXITCODE -ne 0) { throw "Editable install failed with exit code $LASTEXITCODE." }
       - name: Audit locked Python dependencies
         run: |
-          python -m pip_audit --require-hashes -r requirements/runtime.txt
+          python -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
           if ($LASTEXITCODE -ne 0) { throw "Runtime dependency audit failed with exit code $LASTEXITCODE." }
           # Semgrep 1.171.0 currently pins mcp==1.23.3 for its optional
           # `semgrep mcp` server. This repository only invokes `semgrep scan`;
           # keep the upstream IDs explicit pending validation of the developer
           # tool update rather than hiding unrelated audit results.
-          python -m pip_audit --require-hashes -r requirements/dev.txt `
+          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip `
             --ignore-vuln PYSEC-2026-3481 `
             --ignore-vuln PYSEC-2026-3482 `
             --ignore-vuln PYSEC-2026-3483
@@ -78,7 +77,7 @@ jobs:
       - name: Package source smoke
         run: python python/tools/package_smoke.py --source-only
       - name: Pytest
-        run: python -m pytest python/tests -q
+        run: python -m pytest python/tests -q --durations=15
       - name: Semgrep
         run: python python/tools/run_semgrep.py --sarif semgrep-results.sarif
       - name: Upload Semgrep SARIF
@@ -106,11 +105,11 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-rust-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+            target/debug
+            target/release
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-rust-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('rust-core/**/*.rs', 'rust-core/Cargo.toml', 'Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-rust-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-cargo-rust-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-rust-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
       - name: Hydrate pinned CPU ONNX Runtime
         run: |
           python python/tools/fetch_release_assets.py --only-cpu-runtime --force

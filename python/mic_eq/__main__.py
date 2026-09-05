@@ -10,6 +10,13 @@ import sys
 def main():
     """Main entry point for the AudioForge application."""
     try:
+        if "--smoke-test" in sys.argv:
+            sys.argv = [arg for arg in sys.argv if arg != "--smoke-test"]
+            from .ui.app_bootstrap import run_smoke_test
+            from .ui.main_window import MainWindow
+
+            return run_smoke_test(MainWindow)
+
         from .ui.main_window import run_app
         return run_app()
     except ImportError as e:

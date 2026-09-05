@@ -1,7 +1,8 @@
 [package]
 name = "mic_eq_core"
-version = "1.11.4"
+version = "2.0.0"
 edition = "2021"
+rust-version = "1.94"
 description = "High-performance DSP engine for AudioForge - real-time noise suppression and equalization"
 
 [lib]
@@ -10,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # Audio I/O
-cpal = "0.16"
+cpal = "=0.17.3"
 rubato = "0.14"  # High-quality resampling
 
 # Noise suppression (RNNoise)
@@ -37,18 +38,6 @@ libloading = { version = "0.8", optional = true }
 # Audio thread optimization
 no_denormals = "0.3"
 thread-priority = "1.0"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-# CPAL intentionally exposes only friendly device names. AudioForge uses the
-# Core Audio endpoint ID for rename-stable persistence and still opens streams
-# through CPAL, preserving one audio backend and one callback implementation.
-windows = { version = "0.54.0", features = [
-    "Win32_Devices_FunctionDiscovery",
-    "Win32_Foundation",
-    "Win32_Media_Audio",
-    "Win32_System_Com",
-    "Win32_UI_Shell_PropertiesSystem",
-] }
 
 # Utilities
 thiserror = "1.0"

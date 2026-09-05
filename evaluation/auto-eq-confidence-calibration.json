@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "audible_change": true,
-  "generated_at_utc": "2026-09-01T17:50:54.334858+00:00",
+  "generated_at_utc": "2026-09-05T20:26:13.436343+00:00",
   "experiment": "Corpus-derived calibration of remaining Auto-EQ confidence cutoffs",
   "decision": {
     "local_abstention": {
@@ -846,10 +846,10 @@
   "active_band_observation_count": 1067,
   "source_sha256": {
     "python/tools/calibrate_auto_eq_confidence.py": "1eb9610ceeeed91a05b794fbe66625cc37693393a01ec2771b33e619b3dd2a49",
-    "python/mic_eq/analysis/auto_eq.py": "836cf92e1543c5f02e03bc3df6152859fde017cf464095b5506da94de2460540",
+    "python/mic_eq/analysis/auto_eq.py": "b43dfa2f415f3813e367bcdfa994b93c23d074c95bb5d306112120d945668c98",
     "python/mic_eq/analysis/auto_eq_parts/constants.py": "2dda97dcc188e3e0f8305eca11681033dd8674ec35bd60a4cd80259460f52161",
-    "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "99f09b3f868f103464eee22b70bcd5c485427e79a3a770170df7b527838a533c",
-    "python/mic_eq/analysis/auto_eq_parts/pipeline.py": "8f32cdff2c4c93e7dbad15273b592ba4e794838fc729698aa903c7bab33e6aca",
+    "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "e028f811c0a68adc8effd65cac7470fa75abfefb041b24d4602b21bc71a7b493",
+    "python/mic_eq/analysis/auto_eq_parts/pipeline.py": "e494bee10dd4dc7d11fb122328d5f77800434199a377f5f7c7bc689ef6b103b4",
     "python/mic_eq/analysis/spectrum.py": "6ce282b21c0e5131d14949876e64fd630b548fdb019de6aa1a9dd69c8c58dc25"
   },
   "evaluation_contract": {
@@ -882,8 +882,8 @@
       "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
     },
     "runtime": {
-      "max_p99_frame_seconds": 0.7915492319993426,
-      "median_case_seconds": 0.480399550000584,
+      "max_p99_frame_seconds": 0.5749351609990844,
+      "median_case_seconds": 0.3853681000018696,
       "platform": "Windows-11-10.0.26200-SP0",
       "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
     },

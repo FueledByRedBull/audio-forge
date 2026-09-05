@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## v2.0.0 - release candidate
+
+- Keep analysis workers alive until completion, cancel obsolete work cooperatively,
+  and release the Python GIL during offline native processing.
+- Preserve damaged configuration and incomplete migrations, prevent accidental
+  preset replacement, and handle malformed presets at their shared load boundary.
+- Validate offline DSP inputs, isolate real-time allocation test accounting, and
+  apply click-safe EQ bypass transitions through the production processing path.
+- Add per-user Windows MSI packaging alongside the portable distribution, explicit
+  Windows runtime dependencies, and bundled dependency license inventories.
+- Strengthen release failure propagation, provenance verification, hardware
+  coverage checks, and retry-safe draft publication of the tested artifacts.
+- Pin supported build tools and prepare release documentation before publication,
+  using generated sidecars for artifact measurements.
+- Hardware microphone qualification and corresponding-source distribution remain
+  publication gates; this entry does not certify a released v2.0 binary.
+
 ## v1.11.4 - 2026-09-01
 
 - Aligned RNNoise wet/dry frames at partial strength and added bounded recovery

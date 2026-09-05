@@ -9,7 +9,7 @@ const MIN_BIQUAD_Q: f64 = 1e-6;
 const COEFF_CROSSFADE_MS: f64 = 1.5;
 const MAX_COEFF_CROSSFADE_SAMPLES: usize = 4096;
 
-fn coefficient_crossfade_samples(sample_rate: f64) -> usize {
+pub(super) fn coefficient_crossfade_samples(sample_rate: f64) -> usize {
     let samples = (sample_rate * COEFF_CROSSFADE_MS / 1000.0).round();
     if samples.is_finite() {
         (samples as usize).clamp(1, MAX_COEFF_CROSSFADE_SAMPLES)

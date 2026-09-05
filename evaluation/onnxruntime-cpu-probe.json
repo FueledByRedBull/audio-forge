@@ -1,0 +1,210 @@
+{
+  "decision": {
+    "production_adoption": "pending",
+    "reason": "Software parity passed; ORT replacement and packaging remain a separately approved change."
+  },
+  "experiment": "Isolated CPU-only ONNX Runtime 1.23.2 VAD compatibility probe",
+  "gates": {
+    "distinct_native_extensions": true,
+    "finite_posteriors": true,
+    "hardware_qualification_measured": false,
+    "hysteresis_decisions_unchanged": true,
+    "max_abs_delta_le_1e-5": true,
+    "per_frame_jitter_or_deadline_measured": false,
+    "threshold_decisions_unchanged": true,
+    "whole_clip_throughput_measured": true
+  },
+  "limitations": [
+    "Throughput is a whole-clip software measurement; it does not establish per-frame jitter or realtime callback deadlines.",
+    "No microphone, output route, or hardware qualification was performed.",
+    "The candidate was isolated from production and does not change the current runtime or package assets.",
+    "The isolated candidate extension predates the telemetry opt-out source edit; rebuild the candidate from the final source before adopting it."
+  ],
+  "method": {
+    "candidate_runtime_files": [
+      {
+        "path": "target/onnxruntime-cpu-probe/candidate/onnxruntime.dll",
+        "sha256": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
+        "size": 14186016
+      },
+      {
+        "path": "target/onnxruntime-cpu-probe/candidate/onnxruntime_providers_shared.dll",
+        "sha256": "a2b3a50956aa75a9879c8472bc7df4f7a8072bcd2db19a1b7d988e7688f293ef",
+        "size": 22088
+      }
+    ],
+    "corpus_capture_count": 498,
+    "corpus_frame_count": 20908,
+    "cpu_archive": {
+      "path": "target/onnxruntime-cpu-probe/onnxruntime-win-x64-1.23.2.zip",
+      "sha256": "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd",
+      "size": 78127794
+    },
+    "evaluator": "python/tools/evaluate_onnxruntime_probe.py",
+    "manifest": {
+      "path": "models/vad_eval_corpus/manifest.json",
+      "sha256": "b38d35b7c5e3b8e5c4bb891b1703cb5c2e3cc497ffda3ea739d38ec265c97e2e",
+      "size": 292212
+    },
+    "model": {
+      "path": "models/silero_vad.onnx",
+      "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+      "size": 2327524
+    },
+    "native_extensions": {
+      "baseline": {
+        "path": "python/mic_eq/mic_eq_core.cp312-win_amd64.pyd",
+        "sha256": "7164a26004922353e1808dd58ac82d90b6c7e99c702b51864be2a0981526ee2e",
+        "size": 22746112
+      },
+      "candidate": {
+        "path": "target/onnxruntime-cpu-probe/candidate/mic_eq/mic_eq_core.cp312-win_amd64.pyd",
+        "sha256": "c27e1234378a636b85979a84f33ac001484265d26288db4b5a7b22424a486bc7",
+        "size": 3141632
+      }
+    },
+    "reproduction_command": ".\\.venv\\Scripts\\python.exe python/tools/evaluate_onnxruntime_probe.py --baseline-python-root python --baseline-dll-root target/release --candidate-python-root target/onnxruntime-cpu-probe/candidate --candidate-dll-root target/onnxruntime-cpu-probe/candidate --manifest models/vad_eval_corpus/manifest.json --model models/silero_vad.onnx --throughput-audio models/vad_eval_silero_test.wav --throughput-repetitions 5 --threshold 0.48 --report evaluation/onnxruntime-cpu-probe.json",
+    "threshold": 0.48,
+    "thresholds_checked": [
+      0.35,
+      0.36,
+      0.4,
+      0.48,
+      0.5,
+      0.65
+    ],
+    "throughput_fixture": {
+      "path": "models/vad_eval_silero_test.wav",
+      "sha256": "89f17d9c94c4b31eb320f424628bcbc920abaddbee6e2760fd868bfb1d9a2e47",
+      "size": 1920044
+    },
+    "throughput_repetitions": 5
+  },
+  "results": {
+    "posterior_parity": {
+      "capture_count": 498,
+      "exact_equal_frames": 20908,
+      "frame_count": 20908,
+      "hysteresis_surrogate": {
+        "close_margin": 0.12,
+        "decision_changes": 0,
+        "onset_velocity": 0.08,
+        "threshold": 0.48
+      },
+      "max_abs_delta": 0.0,
+      "mean_abs_delta": 0.0,
+      "p95_abs_delta": 0.0,
+      "threshold_changes": {
+        "0.35": 0,
+        "0.36": 0,
+        "0.40": 0,
+        "0.48": 0,
+        "0.50": 0,
+        "0.65": 0
+      }
+    },
+    "quality_overall": {
+      "baseline": {
+        "balanced_accuracy": 0.8309499532475041,
+        "brier_score": 0.11231643718762215,
+        "capture_count": 498,
+        "descriptive_best_balanced_accuracy": 0.8320913684456166,
+        "descriptive_best_balanced_threshold": 0.45000000000000007,
+        "events": {
+          "detected_event_count": 470,
+          "event_recall": 0.9670781893004116,
+          "false_opening_count": 1,
+          "false_openings_per_noise_minute": 0.13360410431808364,
+          "median_onset_delay_ms": 96.0,
+          "minimum_event_duration_ms": 250,
+          "p95_onset_delay_ms": 288.0,
+          "true_event_count": 486
+        },
+        "f1": 0.7768595041322314,
+        "false_negative": 1704,
+        "false_positive": 1266,
+        "false_positive_rate": 0.09020949123557076,
+        "frame_count": 20908,
+        "macro_f1": 0.7505363845342115,
+        "noise_frame_count": 14034,
+        "noise_p50": 0.055995283648371696,
+        "noise_p95": 0.6497636616230001,
+        "noise_p99": 0.9292799961566925,
+        "precision": 0.8032939714108142,
+        "recall": 0.7521093977305789,
+        "specificity": 0.9097905087644292,
+        "speech_frame_count": 6874,
+        "speech_p05": 0.055790164321661,
+        "speech_p50": 0.8146564960479736,
+        "speech_p95": 0.9835437834262848,
+        "true_negative": 12768,
+        "true_positive": 5170,
+        "worst_capture_f1": 0.0
+      },
+      "candidate": {
+        "balanced_accuracy": 0.8309499532475041,
+        "brier_score": 0.11231643718762215,
+        "capture_count": 498,
+        "descriptive_best_balanced_accuracy": 0.8320913684456166,
+        "descriptive_best_balanced_threshold": 0.45000000000000007,
+        "events": {
+          "detected_event_count": 470,
+          "event_recall": 0.9670781893004116,
+          "false_opening_count": 1,
+          "false_openings_per_noise_minute": 0.13360410431808364,
+          "median_onset_delay_ms": 96.0,
+          "minimum_event_duration_ms": 250,
+          "p95_onset_delay_ms": 288.0,
+          "true_event_count": 486
+        },
+        "f1": 0.7768595041322314,
+        "false_negative": 1704,
+        "false_positive": 1266,
+        "false_positive_rate": 0.09020949123557076,
+        "frame_count": 20908,
+        "macro_f1": 0.7505363845342115,
+        "noise_frame_count": 14034,
+        "noise_p50": 0.055995283648371696,
+        "noise_p95": 0.6497636616230001,
+        "noise_p99": 0.9292799961566925,
+        "precision": 0.8032939714108142,
+        "recall": 0.7521093977305789,
+        "specificity": 0.9097905087644292,
+        "speech_frame_count": 6874,
+        "speech_p05": 0.055790164321661,
+        "speech_p50": 0.8146564960479736,
+        "speech_p95": 0.9835437834262848,
+        "true_negative": 12768,
+        "true_positive": 5170,
+        "worst_capture_f1": 0.0
+      }
+    },
+    "whole_clip_throughput": {
+      "baseline": {
+        "audio_seconds": 60.0,
+        "frame_count": 1875,
+        "median_seconds": 0.3541103999996267,
+        "p95_seconds": 0.362240040001052,
+        "realtime_factor": 0.005852409333335042,
+        "repetitions": 5
+      },
+      "candidate": {
+        "audio_seconds": 60.0,
+        "frame_count": 1875,
+        "median_seconds": 0.27393819999997504,
+        "p95_seconds": 0.2752879000014218,
+        "realtime_factor": 0.004523026666671892,
+        "repetitions": 5
+      },
+      "candidate_delta_percent": {
+        "median_seconds": -22.640453372658968,
+        "p95_seconds": -24.004011262636148,
+        "realtime_factor": -22.7151347581081
+      }
+    }
+  },
+  "schema_version": 1,
+  "source_sha256": {
+    "python/tools/evaluate_onnxruntime_probe.py": "f7a7f54c92ac8073b31235172c4f3d50303b7f903a71b28cd662891270e577e5"
+  }
+}

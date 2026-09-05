@@ -90,7 +90,7 @@ def start_processor_for_route(
     input_device: object,
     output_device: object,
 ) -> object:
-    """Start the native processor on the exact selected duplicate-name occurrences."""
+    """Start the native processor on the exact selected route identities."""
     input_identity = coerce_device_identity(input_device)
     output_identity = coerce_device_identity(output_device)
     start = getattr(processor, "start")
@@ -99,6 +99,16 @@ def start_processor_for_route(
         output_identity.name if output_identity is not None else None,
         device_name_ordinal(input_identity),
         device_name_ordinal(output_identity),
+        input_device_endpoint_id=(
+            input_identity.endpoint_id or None
+            if input_identity is not None
+            else None
+        ),
+        output_device_endpoint_id=(
+            output_identity.endpoint_id or None
+            if output_identity is not None
+            else None
+        ),
     )
 
 

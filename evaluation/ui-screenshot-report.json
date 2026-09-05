@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at_utc": "2026-09-01T17:54:37.709448+00:00",
+  "generated_at_utc": "2026-09-05T20:25:47.473194+00:00",
   "candidate": "repository-ui-screenshots",
   "audible_change": false,
   "decision": {
@@ -80,10 +80,10 @@
   "source_sha256": {
     "python/tools/capture_repository_screenshots.py": "b288a2f7e2702e484f9b9ba8b77c512d92de79f525f7ce22007bb659262979f3",
     "python/mic_eq/ui/theme.py": "5e1ab74af18de230c3286ceca53508744e4009fffbc787eb327613cbb38faede",
-    "python/mic_eq/ui/main_window.py": "a4e67a2360d999c0fd51dedab991ffb79d7d472a9ebdcfce855f4bd9635b21db",
+    "python/mic_eq/ui/main_window.py": "08f71b6b3fdf78f0e8025d2da0f6b947f94832ea5c27adb3613e1235b1c58b82",
     "python/mic_eq/ui/eq_panel.py": "c588c02ad4334b3c2dfe334e9502de9d4c901de66c1efc5121adf48c77c559c8",
     "python/mic_eq/ui/eq_curve.py": "a49e1d4e063e63b9435770ea5a3f503dd83f8756a7fc9690457b6589f357e0ab",
-    "python/mic_eq/ui/voice_setup_dialog.py": "9d49bd2f042b2ec19c0aa0e9abd082abbcd29068ec24818219308d74bff79517"
+    "python/mic_eq/ui/voice_setup_dialog.py": "02be05efc6c53d617686245f15e9c55c5afab64b66be6b8b91f260b78dc30a69"
   },
   "limitations": [
     "Offscreen Fusion rendering omits Windows title-bar chrome by design.",

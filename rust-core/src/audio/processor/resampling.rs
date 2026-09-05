@@ -186,15 +186,6 @@ fn resampler_window_from_name(name: &str) -> Option<WindowFunction> {
     }
 }
 
-#[pyfunction]
-#[pyo3(signature = (
-    samples,
-    input_rate,
-    output_rate,
-    chunk_size=1024,
-    sinc_len=None,
-    window=None
-))]
 pub fn simulate_product_resampler(
     samples: Vec<f64>,
     input_rate: u32,
@@ -277,6 +268,37 @@ pub fn simulate_product_resampler(
     }
 
     Ok((output, delay, expected_frames, block_times_ns))
+}
+
+#[pyfunction(name = "simulate_product_resampler")]
+#[pyo3(signature = (
+    samples,
+    input_rate,
+    output_rate,
+    chunk_size=1024,
+    sinc_len=None,
+    window=None
+))]
+pub fn simulate_product_resampler_py(
+    py: Python<'_>,
+    samples: Vec<f64>,
+    input_rate: u32,
+    output_rate: u32,
+    chunk_size: usize,
+    sinc_len: Option<usize>,
+    window: Option<&str>,
+) -> PyResult<(Vec<f64>, usize, usize, Vec<u64>)> {
+    let window = window.map(str::to_owned);
+    py.detach(move || {
+        simulate_product_resampler(
+            samples,
+            input_rate,
+            output_rate,
+            chunk_size,
+            sinc_len,
+            window.as_deref(),
+        )
+    })
 }
 
 #[pyfunction]

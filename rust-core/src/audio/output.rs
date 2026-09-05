@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use super::buffer::AudioConsumer;
 use super::clock::now_micros;
+use super::device::{device_for_endpoint_id, device_name};
 use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
 use super::rt::{store_rt_error, RtErrorCode};
 use super::{find_48khz_config, parse_fixed_buffer_frames, supported_fixed_buffer_frames};
@@ -85,9 +86,7 @@ impl AudioOutput {
     }
 
     fn select_device(device: Device) -> Result<OutputStreamSetup, AudioError> {
-        let name = device
-            .name()
-            .map_err(|e| AudioError::DeviceName(e.to_string()))?;
+        let name = device_name(&device).map_err(AudioError::DeviceName)?;
 
         let supported_configs: Vec<_> = device
             .supported_output_configs()
@@ -117,7 +116,7 @@ impl AudioOutput {
 
         let device_info = AudioDeviceInfo {
             name,
-            sample_rate: supported_config.sample_rate().0,
+            sample_rate: supported_config.sample_rate(),
             channels: supported_config.channels(),
         };
 
@@ -134,19 +133,23 @@ impl AudioOutput {
         Self::select_device(device)
     }
 
-    pub(crate) fn from_named_device_ordinal_setup(
+    pub(crate) fn from_named_device_identity_setup(
         name: &str,
         name_ordinal: u32,
+        endpoint_id: Option<&str>,
     ) -> Result<OutputStreamSetup, AudioError> {
         let host = cpal::default_host();
-        let device = host
-            .output_devices()
-            .map_err(|error| AudioError::DeviceName(error.to_string()))?
-            .filter(|device| device.name().map(|value| value == name).unwrap_or(false))
-            .nth(name_ordinal as usize)
-            .ok_or_else(|| {
-                AudioError::DeviceNotFound(format!("{name} (occurrence {name_ordinal})"))
-            })?;
+        let device = if let Some(endpoint_id) = endpoint_id {
+            device_for_endpoint_id(endpoint_id, false).map_err(AudioError::DeviceNotFound)?
+        } else {
+            host.output_devices()
+                .map_err(|error| AudioError::DeviceName(error.to_string()))?
+                .filter(|device| device_name(device).is_ok_and(|value| value == name))
+                .nth(name_ordinal as usize)
+                .ok_or_else(|| {
+                    AudioError::DeviceNotFound(format!("{name} (occurrence {name_ordinal})"))
+                })?
+        };
         Self::select_device(device)
     }
 
@@ -685,11 +688,11 @@ pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
         .map_err(|e| AudioError::DeviceName(e.to_string()))?;
 
     for device in device_iter {
-        if let Ok(name) = device.name() {
+        if let Ok(name) = device_name(&device) {
             if let Ok(config) = device.default_output_config() {
                 devices.push(AudioDeviceInfo {
                     name,
-                    sample_rate: config.sample_rate().0,
+                    sample_rate: config.sample_rate(),
                     channels: config.channels(),
                 });
             }

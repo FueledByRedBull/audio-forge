@@ -22,6 +22,8 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/models/silero_vad.onnx",
     "_internal/audioforge-build.json",
     "_internal/licenses/LICENSE",
+    "_internal/licenses/GPL-3.0.txt",
+    "_internal/licenses/dependencies/inventory.json",
     "_internal/licenses/DeepFilterNet-LICENSE.txt",
     "_internal/licenses/DirectML-LICENSE.txt",
     "_internal/licenses/Silero-VAD-LICENSE.txt",
@@ -110,6 +112,7 @@ def check_source_packaging() -> list[str]:
         ("build_exe.ps1", "DeepFilterNet3_onnx.tar.gz"),
         ("build_exe.ps1", "silero_vad.onnx"),
         ("build_exe.ps1", "verify_release_assets.py"),
+        ("build_exe.ps1", "license_inventory.py"),
         ("build_exe.ps1", "prune_bundle.py"),
         ("build_exe.ps1", "audioforge-build.json"),
         ("python/tools/prune_bundle.py", "is_app_local_system_ucrt"),
@@ -132,7 +135,7 @@ def check_source_packaging() -> list[str]:
         (".github/workflows/release-package.yml", "powershell -ExecutionPolicy Bypass -File .\\build_exe.ps1"),
         (".github/workflows/release-package.yml", "python/tools/package_smoke.py"),
         (".github/workflows/release-package.yml", "actions/upload-artifact@"),
-        (".github/workflows/release-package.yml", "AudioForge-v$version-win64-ultra.7z"),
+        (".github/workflows/release-package.yml", "AudioForge-$expectedTag-win64-ultra.7z"),
         (".github/workflows/release-package.yml", "fetch_release_assets.py"),
         (".github/workflows/release-package.yml", "release_provenance.py create"),
         (".github/workflows/release-package.yml", "release_provenance.py verify"),
@@ -209,6 +212,8 @@ def check_source_packaging() -> list[str]:
         if not notice.startswith("_internal/licenses/"):
             continue
         source_name = notice.removeprefix("_internal/licenses/")
+        if source_name.startswith("dependencies/"):
+            continue  # Generated from the locked build environment.
         source_path = (
             REPO_ROOT / "LICENSE"
             if source_name == "LICENSE"
@@ -310,6 +315,20 @@ def check_dist_bundle(
                 f"{dist} contains OS-provided app-local UCRT/API-set payloads: "
                 + ", ".join(forbidden_ucrt)
             )
+
+    # Qt uses Windows' ICU C ABI. An unrelated ICU collected from build PATH
+    # can export different symbols under the same DLL name and break startup.
+    bundled_system_icu = sorted(
+        path.relative_to(dist).as_posix()
+        for path in dist.rglob("*")
+        if path.is_file() and path.name.casefold() in {"icu.dll", "icuuc.dll", "icuin.dll"}
+    )
+    if bundled_system_icu:
+        errors.append(f"{dist} contains app-local Windows ICU: " + ", ".join(bundled_system_icu))
+
+    for plugin in ("qpdf.dll", "qsvg.dll"):
+        if (dist / "_internal/PyQt6/Qt6/plugins/imageformats" / plugin).exists():
+            errors.append(f"{dist} contains unused image plugin without its Qt module: {plugin}")
 
     errors.extend(_check_bundle_identity(dist))
 

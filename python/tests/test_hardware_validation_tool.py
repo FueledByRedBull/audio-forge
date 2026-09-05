@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -56,7 +57,9 @@ def test_hardware_result_parsers_require_success_and_evidence() -> None:
 def test_hardware_report_provenance_uses_project_version_and_dirty_revision(
     monkeypatch,
 ) -> None:
-    assert TOOL._project_version() == "1.11.4"
+    with (TOOL.REPO_ROOT / "pyproject.toml").open("rb") as handle:
+        expected_version = tomllib.load(handle)["project"]["version"]
+    assert TOOL._project_version() == expected_version
 
     class Result:
         def __init__(self, stdout: str) -> None:
@@ -324,31 +327,68 @@ def _matrix_case(
     }
 
 
-def test_hardware_matrix_accepts_one_digest_bound_automated_baseline(tmp_path) -> None:
-    archive_hash = "a" * 64
-    path = tmp_path / "win11-virtual-baseline.json"
-    path.write_text(
-        json.dumps(
-            _matrix_case(
-                case_id="win11-virtual-baseline",
-                os_release="11",
-                device_class="virtual",
-                sample_rate=48_000,
-                scenario="baseline",
-                archive_sha256=archive_hash,
-            )
+def _complete_matrix_cases(archive_hash: str) -> list[dict]:
+    return [
+        _matrix_case(
+            case_id="win10-built-in-baseline",
+            os_release="10",
+            device_class="built_in",
+            sample_rate=44_100,
+            scenario="baseline",
+            archive_sha256=archive_hash,
         ),
-        encoding="utf-8",
-    )
+        _matrix_case(
+            case_id="win11-usb-reconnect",
+            os_release="11",
+            device_class="usb",
+            sample_rate=48_000,
+            scenario="device_reconnect",
+            archive_sha256=archive_hash,
+        ),
+        _matrix_case(
+            case_id="win11-virtual-default-device",
+            os_release="11",
+            device_class="virtual",
+            sample_rate=44_100,
+            scenario="default_device_change",
+            archive_sha256=archive_hash,
+        ),
+        _matrix_case(
+            case_id="win10-built-in-sleep-resume",
+            os_release="10",
+            device_class="built_in",
+            sample_rate=48_000,
+            scenario="sleep_resume",
+            archive_sha256=archive_hash,
+        ),
+        _matrix_case(
+            case_id="win11-usb-model-configuration",
+            os_release="11",
+            device_class="usb",
+            sample_rate=44_100,
+            scenario="model_configuration_change",
+            archive_sha256=archive_hash,
+        ),
+    ]
+
+
+def test_hardware_matrix_accepts_required_risk_based_coverage(tmp_path) -> None:
+    archive_hash = "a" * 64
+    paths = []
+    for index, case in enumerate(_complete_matrix_cases(archive_hash)):
+        path = tmp_path / f"case-{index}.json"
+        path.write_text(json.dumps(case), encoding="utf-8")
+        paths.append(path)
 
     result = MATRIX_TOOL.aggregate(
-        [path],
+        paths,
         expected_archive_sha256=archive_hash,
         output=tmp_path / "matrix.json",
     )
 
     assert result["passed"] is True
     assert result["coverage"]["missing"]["automated_baseline_cases"] == 0
+    assert result["coverage"]["missing"]["scenarios"] == []
 
 
 def test_hardware_matrix_requires_an_automated_baseline_without_fabrication(
@@ -379,6 +419,8 @@ def test_hardware_matrix_requires_an_automated_baseline_without_fabrication(
 
     assert result["passed"] is False
     assert result["coverage"]["missing"]["automated_baseline_cases"] == 1
+    assert result["coverage"]["missing"]["device_classes"] == ["built_in", "virtual"]
+    assert "model_configuration_change" in result["coverage"]["missing"]["scenarios"]
 
 
 def test_hardware_matrix_rejects_forged_top_level_pass(tmp_path) -> None:
@@ -391,7 +433,7 @@ def test_hardware_matrix_rejects_forged_top_level_pass(tmp_path) -> None:
         scenario="device_reconnect",
         archive_sha256=archive_hash,
     )
-    case["requested_health_duration_seconds"] = 30.0
+    case["requested_health_duration_seconds"] = float("nan")
     case["case"]["evidence_kind"] = "automated"
     case["case"]["operator_attestation"] = False
     case["case"]["scenario_evidence_valid"] = False

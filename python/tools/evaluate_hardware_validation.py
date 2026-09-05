@@ -19,6 +19,7 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from hardware_qualification import SUPPORTED_DEVICE_CLASSES, SUPPORTED_SCENARIOS
 from release_provenance import sha256_file as _sha256
 
 
@@ -33,15 +34,8 @@ HEALTH_SUMMARY = re.compile(
     r"underrun_baseline=(?P<underrun_baseline>\d+) "
     r"diagnostics=(?P<diagnostics>\{.*\})"
 )
-HARDWARE_SCENARIOS = (
-    "baseline",
-    "device_reconnect",
-    "default_device_change",
-    "sleep_resume",
-    "buffer_negotiation",
-    "route_change",
-)
-DEVICE_CLASSES = ("built_in", "usb", "virtual", "other")
+HARDWARE_SCENARIOS = tuple(sorted(SUPPORTED_SCENARIOS))
+DEVICE_CLASSES = tuple(sorted(SUPPORTED_DEVICE_CLASSES))
 EVIDENCE_KINDS = ("automated", "operator_observed")
 
 

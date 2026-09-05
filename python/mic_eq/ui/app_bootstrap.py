@@ -2,16 +2,21 @@
 
 import ctypes
 import importlib
+import logging
 import os
+import subprocess
 import sys
+import tempfile
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Type
 
+from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMainWindow
 
 from .. import configure_deepfilter_runtime_paths
-from ..app_logging import configure_app_logging
+from ..app_logging import configure_app_logging, get_log_file
 from .theme import application_palette
 
 
@@ -169,7 +174,7 @@ def apply_windows_taskbar_properties(window: QMainWindow) -> None:
         )
         store.SetValue(
             pscon.PKEY_AppUserModel_RelaunchCommand,
-            propsys.PROPVARIANTType(exe_path),
+            propsys.PROPVARIANTType(subprocess.list2cmdline([exe_path])),
         )
         store.SetValue(
             pscon.PKEY_AppUserModel_RelaunchDisplayNameResource,
@@ -184,8 +189,41 @@ def apply_windows_taskbar_properties(window: QMainWindow) -> None:
         pass
 
 
-def run_qt_app(window_cls: Type[QMainWindow]) -> int:
+def run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool = False) -> int:
     """Run the Qt application for the provided main window class."""
+    isolated_config = tempfile.TemporaryDirectory(prefix="audioforge-smoke-") if smoke_test else None
+    previous_config_env = {
+        name: os.environ.get(name)
+        for name in ("APPDATA", "XDG_CONFIG_HOME", "AUDIOFORGE_SMOKE_TEST")
+    }
+    if isolated_config is not None:
+        os.environ["APPDATA"] = isolated_config.name
+        os.environ["XDG_CONFIG_HOME"] = isolated_config.name
+        os.environ["AUDIOFORGE_SMOKE_TEST"] = "1"
+
+    try:
+        return _run_qt_app(window_cls, smoke_test=smoke_test)
+    finally:
+        if isolated_config is not None:
+            log_file = get_log_file()
+            root_logger = logging.getLogger()
+            for handler in list(root_logger.handlers):
+                if isinstance(handler, RotatingFileHandler) and Path(
+                    handler.baseFilename
+                ) == log_file:
+                    root_logger.removeHandler(handler)
+                    handler.close()
+        for name, value in previous_config_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        if isolated_config is not None:
+            isolated_config.cleanup()
+
+
+def _run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool) -> int:
+    """Create the app and event loop, optionally running a startup smoke test."""
     configure_app_logging()
     configure_windows_app_id()
 
@@ -207,4 +245,35 @@ def run_qt_app(window_cls: Type[QMainWindow]) -> int:
     apply_windows_taskbar_properties(window)
     window.show()
 
+    if smoke_test:
+
+        def finish_smoke_test() -> None:
+            try:
+                if not window.isVisible():
+                    raise RuntimeError("AudioForge main window did not become visible")
+                processor = getattr(window, "processor", None)
+                is_running = getattr(processor, "is_running", None)
+                if not callable(is_running):
+                    raise RuntimeError("AudioForge main window has no processor state")
+                if bool(is_running()):
+                    raise RuntimeError("startup smoke test unexpectedly started audio")
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "AudioForge packaged startup smoke test failed"
+                )
+                app.exit(1)
+                return
+
+            window.close()
+            app.exit(0)
+
+        # A zero-delay timer runs only after QApplication has dispatched the
+        # first event, proving that construction and the event loop both work.
+        QTimer.singleShot(0, finish_smoke_test)
+
     return app.exec()
+
+
+def run_smoke_test(window_cls: Type[QMainWindow]) -> int:
+    """Construct the real window and event loop using isolated user data."""
+    return run_qt_app(window_cls, smoke_test=True)

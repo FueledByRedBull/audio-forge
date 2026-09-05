@@ -22,6 +22,7 @@ Per-case detail is written only when an evaluator's optional
 | EQ stage split | `correction-tone-stage-report.json` | Safe/cost-eligible, but closed because no product benefit was demonstrated. |
 | RNNoise | `rnnoise-backend-comparison.json` | Retain `nnnoiseless`; upstream Xiph was materially slower and regressed clean preservation. |
 | DPDFNet | `dpdfnet-vs-deepfilternet3-report.json`, `dpdfnet-official-evalset-report.json` | Rejected and absent; historical clean failures are not independently reproducible from this checkout. |
+| ONNX Runtime backend | `onnxruntime-cpu-probe.json` | Official CPU-only 1.23.2 matches the current VAD software output in the isolated probe; production adoption remains pending packaging and approval. |
 | Release integrity | `release-bundle-path-baseline.json`, `release-trends.json` | Exact archive sidecars and digest-bound qualification own artifact facts. |
 
 The corresponding `python/tools/evaluate_*.py` command regenerates each

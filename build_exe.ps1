@@ -1,8 +1,8 @@
 param(
-    [switch]$AllowMissingModels,
     [switch]$Clean
 )
 
+$ErrorActionPreference = "Stop"
 # Final working build script
 $ProjectRoot = $PSScriptRoot
 Push-Location $ProjectRoot
@@ -11,15 +11,22 @@ try {
 Write-Host "AudioForge Executable Builder" -ForegroundColor Green
 Write-Host ""
 
-# Use the locally built Rust extension from source tree.
-# This avoids bundling stale site-packages binaries.
+# Rebuild the Rust extension so the bundle cannot use a semantically stale
+# source-tree extension whose modification time happens to be newer.
 $venvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
     Write-Host "ERROR: venv Python not found: $venvPython" -ForegroundColor Red
     exit 1
 }
 
+$null = & $venvPython -m maturin develop --release --locked
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Rust extension rebuild failed." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
 $expectedSuffix = & $venvPython -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX') or '.pyd')"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $localPyd = Get-ChildItem -Path (Join-Path $ProjectRoot "python\mic_eq") -Filter "mic_eq_core*$expectedSuffix" | Select-Object -First 1
 if (-not $localPyd) {
     Write-Host "ERROR: python\\mic_eq\\mic_eq_core*$expectedSuffix not found." -ForegroundColor Red
@@ -27,19 +34,6 @@ if (-not $localPyd) {
     exit 1
 }
 Write-Host "Using local mic_eq_core: $($localPyd.FullName)" -ForegroundColor Cyan
-
-$rustInputs = @(
-    Get-ChildItem -Path (Join-Path $ProjectRoot "rust-core\src") -Recurse -File -Include *.rs
-    Get-Item (Join-Path $ProjectRoot "rust-core\Cargo.toml")
-    Get-Item (Join-Path $ProjectRoot "Cargo.lock")
-)
-$newestRustInput = $rustInputs | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-if ($newestRustInput -and $localPyd.LastWriteTimeUtc -lt $newestRustInput.LastWriteTimeUtc) {
-    Write-Host "ERROR: local mic_eq_core extension is older than Rust sources." -ForegroundColor Red
-    Write-Host "Newest input: $($newestRustInput.FullName)" -ForegroundColor Red
-    Write-Host "Run: .\\.venv\\Scripts\\python.exe -m maturin develop --release" -ForegroundColor Yellow
-    exit 1
-}
 
 & $venvPython (Join-Path $ProjectRoot "python\tools\verify_release_assets.py")
 if ($LASTEXITCODE -ne 0) {
@@ -50,11 +44,8 @@ if ($LASTEXITCODE -ne 0) {
 if (Test-Path "df.dll") {
     Write-Host "DeepFilterNet support: df.dll will be bundled via AudioForge.spec" -ForegroundColor Green
 } else {
-    Write-Host "ERROR: df.dll not found. Use -AllowMissingModels only for intentional reduced builds." -ForegroundColor Red
-    if (-not $AllowMissingModels) {
-        exit 1
-    }
-    Write-Host "DeepFilterNet support: df.dll NOT found - RNNoise only" -ForegroundColor Yellow
+    Write-Host "ERROR: df.dll not found. Release bundles require DeepFilterNet support." -ForegroundColor Red
+    exit 1
 }
 
 $requiredModels = @(
@@ -66,11 +57,7 @@ $missingModels = @($requiredModels | Where-Object { -not (Test-Path $_) })
 if ($missingModels.Count -gt 0) {
     Write-Host "Missing model assets:" -ForegroundColor Red
     $missingModels | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
-    if (-not $AllowMissingModels) {
-        Write-Host "Use -AllowMissingModels only for intentional reduced builds." -ForegroundColor Yellow
-        exit 1
-    }
-    Write-Host "Continuing with missing models because -AllowMissingModels was set." -ForegroundColor Yellow
+    exit 1
 }
 
 if (Test-Path "target\release\DirectML.dll") {
@@ -86,13 +73,34 @@ if (Test-Path "AudioForge.ico") {
 
 Write-Host "Building executable from AudioForge.spec..." -ForegroundColor Cyan
 
+& $venvPython (Join-Path $ProjectRoot "python\tools\license_inventory.py")
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Dependency license collection failed." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
 $pyinstallerArgs = @("-y")
 if ($Clean) {
     $pyinstallerArgs += "--clean"
 }
 $pyinstallerArgs += (Join-Path $ProjectRoot "AudioForge.spec")
-& $venvPython -m PyInstaller @pyinstallerArgs
-$pyinstallerExitCode = $LASTEXITCODE
+# Do not collect unrelated native libraries from developer tools on PATH.
+# In particular, an external ICU can shadow Windows' ICU and prevent Qt loading.
+$basePythonDir = & $venvPython -c "import sys; from pathlib import Path; print(Path(sys._base_executable).parent)"
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$buildSearchPath = $env:PATH
+try {
+    $env:PATH = @(
+        (Split-Path -Parent $venvPython),
+        $basePythonDir.Trim(),
+        [Environment]::SystemDirectory,
+        [Environment]::GetFolderPath('Windows')
+    ) -join [IO.Path]::PathSeparator
+    & $venvPython -m PyInstaller @pyinstallerArgs
+    $pyinstallerExitCode = $LASTEXITCODE
+} finally {
+    $env:PATH = $buildSearchPath
+}
 
 if ($pyinstallerExitCode -eq 0) {
     & $venvPython (Join-Path $ProjectRoot "python\tools\prune_bundle.py") (Join-Path $ProjectRoot "dist\AudioForge")

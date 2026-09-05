@@ -9,12 +9,14 @@ before the UI offers to apply them.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any, Mapping
 
 import numpy as np
 from scipy.signal import lfilter, resample_poly
 
 from .auto_eq import analyze_auto_eq, simulate_candidate_chain
+from .cancellation import AnalysisCancelled, check_analysis_cancelled
 from .deesser_fusion import (
     CLIP_FEATURE_NAMES,
     ENABLE_PROBABILITY_THRESHOLD,
@@ -756,6 +758,7 @@ def _calibrate_compressor_threshold(
     target_p95_db: float,
     target_median_db: float,
     peak_cap_db: float,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Fit four compressor controls with a bounded deterministic native search."""
     calibrated = dict(compressor_settings)
@@ -787,6 +790,7 @@ def _calibrate_compressor_threshold(
         return tuple(round(float(candidate[key]), 6) for key in _COMPRESSOR_SEARCH_BOUNDS)
 
     def evaluate(candidate_values: Mapping[str, float]) -> None:
+        check_analysis_cancelled(cancel_check)
         if len(evaluated) >= _COMPRESSOR_SEARCH_BUDGET - 1:
             return
         candidate_key = key_for(candidate_values)
@@ -922,10 +926,12 @@ def _calibrate_compressor_threshold(
 
     evaluate(incumbent)
     for threshold in np.linspace(-55.0, -6.0, 33):
+        check_analysis_cancelled(cancel_check)
         threshold_candidate = dict(incumbent)
         threshold_candidate["threshold_db"] = float(threshold)
         evaluate(threshold_candidate)
     for index in range(1, 17):
+        check_analysis_cancelled(cancel_check)
         candidate = {}
         for key, base in zip(_COMPRESSOR_SEARCH_BOUNDS, (2, 3, 5, 7)):
             lower, upper = _COMPRESSOR_SEARCH_BOUNDS[key]
@@ -966,6 +972,7 @@ def _calibrate_compressor_threshold(
     else:
         refinement_seeds.extend(feasible[1:2])
     for _, _, seed in refinement_seeds:
+        check_analysis_cancelled(cancel_check)
         for key, step in local_steps.items():
             for direction in (-1.0, 1.0):
                 candidate = dict(seed)
@@ -1001,6 +1008,7 @@ def _calibrate_compressor_threshold(
             expanded if expanded_selected else threshold_only
         )
     calibrated.update(best_values)
+    check_analysis_cancelled(cancel_check)
     winner_verification = simulate_candidate_chain(
         speech_audio.astype(np.float32, copy=False),
         sample_rate,
@@ -1098,8 +1106,10 @@ def analyze_voice_setup(
     custom_peak_cap_db: float = 8.0,
     noise_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
     speech_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Analyze room noise plus speech and recommend a full voice chain."""
+    check_analysis_cancelled(cancel_check)
     noise_arr = np.asarray(noise_audio, dtype=float)
     speech_arr = np.asarray(speech_audio, dtype=float)
 
@@ -1119,6 +1129,7 @@ def analyze_voice_setup(
             speech_arr,
             sample_rate,
         )
+        check_analysis_cancelled(cancel_check)
     noise_vad_probabilities = None
     noise_vad_backend = "energy_fallback"
     if vad_available:
@@ -1126,6 +1137,7 @@ def analyze_voice_setup(
             noise_arr,
             sample_rate,
         )
+        check_analysis_cancelled(cancel_check)
     noise_reference = analyze_noise_reference(
         noise_arr,
         speech_arr,
@@ -1135,6 +1147,7 @@ def analyze_voice_setup(
         noise_vad_probabilities=noise_vad_probabilities,
         speech_vad_probabilities=vad_probabilities,
     )
+    check_analysis_cancelled(cancel_check)
     conservative_noise_spectrum = (
         noise_reference.frequencies,
         noise_reference.conservative_spectrum_db,
@@ -1147,6 +1160,7 @@ def analyze_voice_setup(
         vad_probabilities=vad_probabilities,
         noise_audio=noise_arr,
     )
+    check_analysis_cancelled(cancel_check)
     frame_rms = np.asarray(features["frame_db"], dtype=float)
     active_frames = frame_rms[np.asarray(features["active_frame_mask"], dtype=bool)]
     if active_frames.size < 6:
@@ -1167,10 +1181,12 @@ def analyze_voice_setup(
         noise_spectrum_override=conservative_noise_spectrum,
         noise_reference_source_override="validated_conservative",
     )
+    check_analysis_cancelled(cancel_check)
     smoothed_spectrum = smooth_spectrum_perceptual(
         spectrum_result.freqs,
         spectrum_result.median_spectrum_db,
     )
+    check_analysis_cancelled(cancel_check)
     spectral_confidence = float(spectrum_result.residual_confidence)
     noise_referenced_snr_db = float(spectrum_result.snr_db)
     snr_confidence = _clamp((noise_referenced_snr_db - 6.0) / 12.0, 0.0, 1.0)
@@ -1243,7 +1259,10 @@ def analyze_voice_setup(
             noise_reference_quality=noise_reference.quality_score,
             noise_reference_status=noise_reference.status,
             noise_reference_reasons=noise_reference.reasons,
+            cancel_check=cancel_check,
         )
+    except AnalysisCancelled:
+        raise
     except Exception as exc:  # pragma: no cover - exercised through return shape
         eq_error = str(exc)
 
@@ -1268,8 +1287,11 @@ def analyze_voice_setup(
                     compressor_diag["target_median_reduction_db"]
                 ),
                 peak_cap_db=float(compressor_diag["peak_reduction_cap_db"]),
+                cancel_check=cancel_check,
             )
         )
+
+    check_analysis_cancelled(cancel_check)
 
     dynamics_confidence = _clamp(speech_dynamic_range_db / 8.0, 0.0, 1.0)
     quiet_room_confidence = _clamp(

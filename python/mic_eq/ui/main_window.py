@@ -271,6 +271,14 @@ class MainWindow(QMainWindow):
         self._restore_from_config()
         self._initialize_configuration_history()
         self._connect_configuration_history_inputs()
+        if self.config.load_warning:
+            warning = self.config.load_warning
+            self.config_warning_banner.setText(warning)
+            self.config_warning_banner.setVisible(True)
+            QTimer.singleShot(
+                0,
+                lambda: self.status_bar.showMessage(warning),
+            )
         QTimer.singleShot(0, self._maybe_show_first_run_setup)
 
         # Meter update timer (60 FPS)
@@ -345,6 +353,13 @@ class MainWindow(QMainWindow):
         self.device_warning_banner.setWordWrap(True)
         self.device_warning_banner.setVisible(False)
         main_layout.addWidget(self.device_warning_banner)
+
+        self.config_warning_banner = QLabel()
+        self.config_warning_banner.setStyleSheet(WARNING_BANNER_STYLE)
+        self.config_warning_banner.setAccessibleName("Configuration warning")
+        self.config_warning_banner.setWordWrap(True)
+        self.config_warning_banner.setVisible(False)
+        main_layout.addWidget(self.config_warning_banner)
 
         # Top: Device selection
         device_group = QGroupBox("Audio Devices")
@@ -1394,7 +1409,9 @@ class MainWindow(QMainWindow):
                 break
 
     def _maybe_show_first_run_setup(self) -> None:
-        if os.environ.get("PYTEST_CURRENT_TEST"):
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get(
+            "AUDIOFORGE_SMOKE_TEST"
+        ):
             return
         if self.config.first_run_setup_state in {"not_started", "in_progress"}:
             self._show_first_run_setup(restart_completed=False)
@@ -1690,135 +1707,136 @@ class MainWindow(QMainWindow):
         )
 
         # Block signals to prevent spurious config saves during refresh
-        self.input_combo.blockSignals(True)
-        self.output_combo.blockSignals(True)
+        signal_widgets = [self.input_combo, self.output_combo]
         if "input_channel_mode_combo" in self.__dict__:
-            self.input_channel_mode_combo.blockSignals(True)
+            signal_widgets.append(self.input_channel_mode_combo)
         if "input_cleanup_mode_combo" in self.__dict__:
-            self.input_cleanup_mode_combo.blockSignals(True)
+            signal_widgets.append(self.input_cleanup_mode_combo)
+        signal_states = [widget.blockSignals(True) for widget in signal_widgets]
 
-        self.input_combo.clear()
-        self.output_combo.clear()
-
-        input_found = False
-        output_found = False
-        config_dirty = False
-
-        # Get input devices
         try:
-            input_devices = list_input_devices()
-            input_found = len(input_devices) > 0
-            for device in input_devices:
-                identity = self._identity_from_device_info(device, "input")
-                duplicate_suffix = (
-                    f" [#{identity.name_ordinal + 1}]"
-                    if sum(item.name == identity.name for item in input_devices) > 1
-                    and identity.name_ordinal is not None
-                    else ""
-                )
-                label = f"{device.name}{duplicate_suffix}" + (
-                    " (Default)" if device.is_default else ""
-                )
-                self.input_combo.addItem(
-                    label,
-                    identity,
-                )
-            if previous_input is not None:
-                if not self._select_combo_identity(self.input_combo, previous_input):
+            self.input_combo.clear()
+            self.output_combo.clear()
+
+            input_found = False
+            output_found = False
+            config_dirty = False
+
+            # Get input devices
+            try:
+                input_devices = list_input_devices()
+                input_found = len(input_devices) > 0
+                for device in input_devices:
+                    identity = self._identity_from_device_info(device, "input")
+                    duplicate_suffix = (
+                        f" [#{identity.name_ordinal + 1}]"
+                        if sum(item.name == identity.name for item in input_devices) > 1
+                        and identity.name_ordinal is not None
+                        else ""
+                    )
+                    label = f"{device.name}{duplicate_suffix}" + (
+                        " (Default)" if device.is_default else ""
+                    )
+                    self.input_combo.addItem(
+                        label,
+                        identity,
+                    )
+                if previous_input is not None:
+                    if not self._select_combo_identity(self.input_combo, previous_input):
+                        fallback_index = self._default_combo_index(self.input_combo)
+                        if fallback_index >= 0:
+                            self.input_combo.setCurrentIndex(fallback_index)
+                        if previous_input.name:
+                            self.status_bar.showMessage(
+                                f"Previous input device '{previous_input.name}' is disconnected; "
+                                "using the default until it returns"
+                            )
+                    else:
+                        resolved = self._combo_device_identity(self.input_combo)
+                        if (
+                            resolved is not None
+                            and resolved.to_dict() != previous_input.to_dict()
+                        ):
+                            self.config.last_input_device = resolved.name
+                            self.config.last_input_device_identity = resolved
+                            config_dirty = True
+                elif self.input_combo.count() > 0:
                     fallback_index = self._default_combo_index(self.input_combo)
                     if fallback_index >= 0:
                         self.input_combo.setCurrentIndex(fallback_index)
-                    if previous_input.name:
-                        self.status_bar.showMessage(
-                            f"Previous input device '{previous_input.name}' is disconnected; "
-                            "using the default until it returns"
-                        )
-                else:
-                    resolved = self._combo_device_identity(self.input_combo)
-                    if (
-                        resolved is not None
-                        and resolved.to_dict() != previous_input.to_dict()
-                    ):
-                        self.config.last_input_device = resolved.name
-                        self.config.last_input_device_identity = resolved
-                        config_dirty = True
-            elif self.input_combo.count() > 0:
-                fallback_index = self._default_combo_index(self.input_combo)
-                if fallback_index >= 0:
-                    self.input_combo.setCurrentIndex(fallback_index)
-        except (RuntimeError, OSError) as e:
-            self.input_combo.addItem(f"Error: {e}")
-            logger.warning("Input device enumeration failed", exc_info=True)
+            except (RuntimeError, OSError) as e:
+                self.input_combo.addItem(f"Error: {e}")
+                logger.warning("Input device enumeration failed", exc_info=True)
 
-        # Get output devices
-        try:
-            output_devices = list_output_devices()
-            output_found = len(output_devices) > 0
-            for device in output_devices:
-                identity = self._identity_from_device_info(device, "output")
-                duplicate_suffix = (
-                    f" [#{identity.name_ordinal + 1}]"
-                    if sum(item.name == identity.name for item in output_devices) > 1
-                    and identity.name_ordinal is not None
-                    else ""
+            # Get output devices
+            try:
+                output_devices = list_output_devices()
+                output_found = len(output_devices) > 0
+                for device in output_devices:
+                    identity = self._identity_from_device_info(device, "output")
+                    duplicate_suffix = (
+                        f" [#{identity.name_ordinal + 1}]"
+                        if sum(item.name == identity.name for item in output_devices) > 1
+                        and identity.name_ordinal is not None
+                        else ""
+                    )
+                    label = f"{device.name}{duplicate_suffix}" + (
+                        " (Default)" if device.is_default else ""
+                    )
+                    self.output_combo.addItem(
+                        label,
+                        identity,
+                    )
+                if previous_output is not None:
+                    if not self._select_combo_identity(self.output_combo, previous_output):
+                        fallback_index = self._default_combo_index(self.output_combo)
+                        if fallback_index >= 0:
+                            self.output_combo.setCurrentIndex(fallback_index)
+                        if previous_output.name:
+                            self.status_bar.showMessage(
+                                f"Previous output device '{previous_output.name}' is disconnected; "
+                                "using the default until it returns"
+                            )
+                    else:
+                        resolved = self._combo_device_identity(self.output_combo)
+                        if (
+                            resolved is not None
+                            and resolved.to_dict() != previous_output.to_dict()
+                        ):
+                            self.config.last_output_device = resolved.name
+                            self.config.last_output_device_identity = resolved
+                            config_dirty = True
+                elif self.output_combo.count() > 0:
+                    preferred_index = self._preferred_output_combo_index(self.output_combo)
+                    if preferred_index >= 0:
+                        self.output_combo.setCurrentIndex(preferred_index)
+
+            except (RuntimeError, OSError) as e:
+                self.output_combo.addItem(f"Error: {e}")
+                logger.warning("Output device enumeration failed", exc_info=True)
+
+            # Update warning banner visibility and text
+            if not input_found and not output_found:
+                self.device_warning_banner.setText(
+                    "Warning: No audio devices detected. Check your audio drivers and connections."
                 )
-                label = f"{device.name}{duplicate_suffix}" + (
-                    " (Default)" if device.is_default else ""
+                self.device_warning_banner.setVisible(True)
+            elif not input_found:
+                self.device_warning_banner.setText(
+                    "Warning: No input devices detected. Check your microphone connections."
                 )
-                self.output_combo.addItem(
-                    label,
-                    identity,
+                self.device_warning_banner.setVisible(True)
+            elif not output_found:
+                self.device_warning_banner.setText(
+                    "Warning: No output devices detected. Check your audio output connections."
                 )
-            if previous_output is not None:
-                if not self._select_combo_identity(self.output_combo, previous_output):
-                    fallback_index = self._default_combo_index(self.output_combo)
-                    if fallback_index >= 0:
-                        self.output_combo.setCurrentIndex(fallback_index)
-                    if previous_output.name:
-                        self.status_bar.showMessage(
-                            f"Previous output device '{previous_output.name}' is disconnected; "
-                            "using the default until it returns"
-                        )
-                else:
-                    resolved = self._combo_device_identity(self.output_combo)
-                    if (
-                        resolved is not None
-                        and resolved.to_dict() != previous_output.to_dict()
-                    ):
-                        self.config.last_output_device = resolved.name
-                        self.config.last_output_device_identity = resolved
-                        config_dirty = True
-            elif self.output_combo.count() > 0:
-                preferred_index = self._preferred_output_combo_index(self.output_combo)
-                if preferred_index >= 0:
-                    self.output_combo.setCurrentIndex(preferred_index)
+                self.device_warning_banner.setVisible(True)
+            else:
+                self.device_warning_banner.setVisible(False)
 
-        except (RuntimeError, OSError) as e:
-            self.output_combo.addItem(f"Error: {e}")
-            logger.warning("Output device enumeration failed", exc_info=True)
-
-        # Update warning banner visibility and text
-        if not input_found and not output_found:
-            self.device_warning_banner.setText(
-                "Warning: No audio devices detected. Check your audio drivers and connections."
-            )
-            self.device_warning_banner.setVisible(True)
-        elif not input_found:
-            self.device_warning_banner.setText(
-                "Warning: No input devices detected. Check your microphone connections."
-            )
-            self.device_warning_banner.setVisible(True)
-        elif not output_found:
-            self.device_warning_banner.setText(
-                "Warning: No output devices detected. Check your audio output connections."
-            )
-            self.device_warning_banner.setVisible(True)
-        else:
-            self.device_warning_banner.setVisible(False)
-
-        # Restore signals
-        self.input_combo.blockSignals(False)
-        self.output_combo.blockSignals(False)
+        finally:
+            for widget, blocked in zip(signal_widgets, signal_states):
+                widget.blockSignals(blocked)
 
         if config_dirty:
             save_config(self.config)
@@ -2134,10 +2152,20 @@ class MainWindow(QMainWindow):
                 f"Failed to start audio processing:\n\n{e}\n\n{guidance}",
             )
             self.status_bar.showMessage(f"Error: {e}")
+            self._sync_processing_controls()
+
+    def _sync_processing_controls(self) -> None:
+        """Reflect the native processor state after recovery or a failed start."""
+        running = bool(self.processor.is_running())
+        self.start_btn.setEnabled(not running)
+        self.stop_btn.setEnabled(running)
+        self.input_combo.setEnabled(not running)
+        self.output_combo.setEnabled(not running)
 
     def _stop_processing(self):
         """Stop audio processing."""
         if not self.processor.is_running():
+            self._sync_processing_controls()
             if DEBUG:
                 logger.debug("Stop processing clicked, but processor is not running")
             return
@@ -2419,24 +2447,42 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        existing_presets = list_presets()
-        existing_names = [name.lower() for name, _ in existing_presets]
-        if preset_name.lower() in existing_names:
+        preset = self._get_current_preset()
+        preset.name = preset_name
+        preset.description = description
+        preset.version = __version__
+        try:
+            save_preset(preset, overwrite=False)
+        except FileExistsError:
             confirm_reply = QMessageBox.question(
                 self,
                 "Overwrite Preset?",
-                f"Preset '{preset_name}' already exists. Overwrite?",
+                f"A preset file for '{preset_name}' already exists. Overwrite?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
             if confirm_reply != QMessageBox.StandardButton.Yes:
                 return
-
-        preset = self._get_current_preset()
-        preset.name = preset_name
-        preset.description = description
-        preset.version = __version__
-        save_preset(preset)
+            try:
+                save_preset(preset, overwrite=True)
+            except (IOError, OSError, ValueError) as exc:
+                logger.warning("Preset save failed", exc_info=True)
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"Failed to save preset:\n{exc}\n\n"
+                    "Check you have write permission to the presets folder.",
+                )
+                return
+        except (IOError, OSError, ValueError) as exc:
+            logger.warning("Preset save failed", exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to save preset:\n{exc}\n\n"
+                "Check you have write permission to the presets folder.",
+            )
+            return
         QMessageBox.information(
             self,
             "Preset Saved",
@@ -2621,6 +2667,15 @@ class MainWindow(QMainWindow):
             self._stream_recovery.mark_processing_stopped()
             self._last_backend_warning = None
             self._reset_health_labels()
+            # A failed native restart intentionally leaves recovery pending
+            # while the stream is stopped. Keep servicing that request here.
+            self._service_stream_recovery(
+                diagnostics={},
+                input_rms=-120.0,
+                output_rms=-120.0,
+                output_buf=0,
+            )
+            self._sync_processing_controls()
             return
 
         diagnostics = self.processor.get_runtime_diagnostics()
@@ -3123,6 +3178,7 @@ class MainWindow(QMainWindow):
                             "Auto-recovery failed",
                             6000,
                         )
+                self._sync_processing_controls()
         except Exception:
             logger.debug("Rust recovery service failed", exc_info=True)
 
@@ -3141,6 +3197,7 @@ class MainWindow(QMainWindow):
                 f"Recovered output path automatically: {result}",
                 4000,
             )
+            self._sync_processing_controls()
         except Exception as e:
             logger.exception("Auto-recovery failed")
             self.status_bar.showMessage(
@@ -3502,11 +3559,27 @@ class MainWindow(QMainWindow):
 
         # Save to file
         try:
-            filepath = save_preset(preset)
-            self.status_bar.showMessage(f"Preset saved: {filepath}")
-            QMessageBox.information(
-                self, "Preset Saved", f"Preset '{name}' saved to:\n{filepath}"
+            filepath = save_preset(preset, overwrite=False)
+        except FileExistsError:
+            reply = QMessageBox.question(
+                self,
+                "Overwrite Preset?",
+                f"A preset file for '{name.strip()}' already exists. Overwrite?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
             )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                filepath = save_preset(preset, overwrite=True)
+            except (IOError, OSError, ValueError) as e:
+                logger.warning("Preset save failed", exc_info=True)
+                QMessageBox.critical(
+                    self,
+                    "Error",
+                    f"Failed to save preset:\n{e}\n\nCheck you have write permission to the presets folder.",
+                )
+                return
         except (IOError, OSError, ValueError) as e:
             logger.warning("Preset save failed", exc_info=True)
             QMessageBox.critical(
@@ -3514,6 +3587,11 @@ class MainWindow(QMainWindow):
                 "Error",
                 f"Failed to save preset:\n{e}\n\nCheck you have write permission to the presets folder.",
             )
+            return
+        self.status_bar.showMessage(f"Preset saved: {filepath}")
+        QMessageBox.information(
+            self, "Preset Saved", f"Preset '{name}' saved to:\n{filepath}"
+        )
 
     def _load_preset(self):
         """Load a preset from file."""

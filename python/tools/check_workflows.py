@@ -17,7 +17,32 @@ ACTION_REF = re.compile(
     r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE
 )
 COMMIT_SHA = re.compile(r"[0-9a-f]{40}")
-RUSTSEC_NODE24_SHA = "858dc40f52ca2b8570b7a997c1c4e35c6fc9a432"
+RUN_REQUIRED_MARKERS = frozenset(
+    {
+        "pip_audit --require-hashes",
+        "run_semgrep.py",
+        "cargo test",
+        "cargo clippy",
+        "cargo install cargo-audit",
+        "cargo audit",
+        "python/tools/check_versions.py",
+        "python/tools/package_smoke.py",
+        "package_smoke.py",
+        "python/tools/verify_release_assets.py",
+        "build_exe.ps1",
+        "build_msi.ps1",
+        "msi_smoke.py",
+        "release_provenance.py",
+        "gh release upload",
+        "gh release create",
+        "gh release edit",
+        "gh run download",
+        "evaluate_hardware_matrix.py",
+        "evaluate_hardware_validation.py",
+        "--smoke-test",
+        "--upgrade-from",
+    }
+)
 
 
 def _mapping(value: Any, context: str, errors: list[str]) -> dict[str, Any]:
@@ -69,26 +94,154 @@ def _check_permissions(
             errors.append(f"{name}: job {job_name} must not request write permission")
 
 
-def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
+def _is_boolean_expression(value: Any, expected: bool) -> bool:
+    if value is expected:
+        return True
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().lower()
+    word = "true" if expected else "false"
+    return normalized in {word, f"${{{{ {word} }}}}"}
+
+
+def _active_run_lines(document: dict[str, Any]) -> list[str]:
+    """Return executable run lines after excluding disabled/non-blocking jobs."""
+    active: list[str] = []
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict):
+        return active
+    for raw_job in jobs.values():
+        if not isinstance(raw_job, dict) or not isinstance(raw_job.get("steps"), list):
+            continue
+        if _is_boolean_expression(raw_job.get("if"), False) or _is_boolean_expression(
+            raw_job.get("continue-on-error"), True
+        ):
+            continue
+        for step in raw_job["steps"]:
+            if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+                continue
+            if _is_boolean_expression(step.get("if"), False):
+                continue
+            if _is_boolean_expression(step.get("continue-on-error"), True):
+                continue
+            active.extend(
+                line
+                for line in step["run"].splitlines()
+                if not line.lstrip().startswith("#")
+            )
+    return active
+
+
+def _active_run_source(document: dict[str, Any]) -> str:
+    """Return executable run text after excluding disabled or non-blocking jobs."""
+    active = _active_run_lines(document)
+    return "\n".join(active)
+
+
+def _active_run_has_marker(lines: list[str], marker: str) -> bool:
+    """Match required commands as executable tokens, rather than printed text."""
+    if marker.startswith("cargo "):
+        command = marker.removeprefix("cargo ")
+        return any(
+            re.search(
+                rf"(?i)(?:^\s*|[;&|]\s*)(?:&\s*)?(?:[^\s]+[/\\])?cargo(?:\.exe)?\s+{re.escape(command)}(?:\s|$)",
+                line,
+            )
+            is not None
+            for line in lines
+        )
+    if marker.startswith("gh "):
+        command = marker.removeprefix("gh ")
+        return any(
+            re.search(
+                rf"(?i)(?:^\s*|[;&|]\s*)(?:&\s*)?(?:[^\s]+[/\\])?gh(?:\.exe)?\s+{re.escape(command)}(?:\s|$)",
+                line,
+            )
+            is not None
+            for line in lines
+        )
+    if marker.startswith("pip_audit "):
+        return any(
+            re.search(
+                r"(?i)(?:^\s*|[;&|]\s*)(?:&\s*)?(?:[^\s]+[/\\])?(?:python|python\.exe|py)(?:\s|$)",
+                line,
+            )
+            and marker in line
+            for line in lines
+        )
+    if marker.endswith(".ps1"):
+        return any(
+            re.search(r"(?i)(?:^\s*|[;&|]\s*)(?:&\s*)?(?:powershell|pwsh)(?:\.exe)?\b", line)
+            and marker in line
+            for line in lines
+        )
+    if ".py" in marker:
+        return any(
+            re.search(
+                r"(?i)(?:^\s*|[;&|]\s*)(?:&\s*)?(?:[^\s]+[/\\])?(?:python|python\.exe|py)(?:\s|$)",
+                line,
+            )
+            is not None
+            and marker in line
+            for line in lines
+        )
+    return any(marker in line for line in lines)
+
+
+def _check_required_gates(
+    name: str,
+    source: str,
+    errors: list[str],
+    *,
+    document: dict[str, Any] | None = None,
+) -> None:
+    if document is None:
+        try:
+            document = _mapping(yaml.safe_load(source), name, errors)
+        except yaml.YAMLError:
+            document = {}
+    active_run_lines = _active_run_lines(document)
+
+    def has_gate(needle: str) -> bool:
+        if any(marker in needle for marker in RUN_REQUIRED_MARKERS):
+            return _active_run_has_marker(active_run_lines, needle)
+        return needle in source
+
     if name == "release-promote.yml":
         required = (
             "actions/download-artifact@",
-            "release_tag must be an exact vMAJOR.MINOR.PATCH tag",
+            "release_tag must be the canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N tag",
             "git rev-list -n 1 $env:RELEASE_TAG --",
             "release_provenance.py verify",
             "--expected-archive-sha256",
             "--expected-commit",
+            "--require-source-distribution",
             "--report validation/release-qualification.json",
             "--report hardware-matrix/release-hardware-matrix.json",
+            "--matrix-report-root hardware-matrix/case-reports",
+            "--native-attestation",
+            "source_distribution.py verify",
+            "--require-receipt",
+            "validation/release-qualification.json",
+            "hardware-matrix/case-reports",
+            "evidenceArchive",
+            "evidenceChecksum",
+            "release-evidence",
             "package_smoke.py --dist",
+            "--smoke-test",
             "gh release upload",
         )
         for needle in required:
-            if needle not in source:
+            if not has_gate(needle):
                 errors.append(
                     f"{name}: missing required promotion gate {needle!r}"
                 )
-        if "--clobber" in source:
+        upload_lines = (
+            line
+            for line in source.splitlines()
+            if re.search(r"\bgh\s+release\s+upload\b", line)
+        )
+        if any("--clobber" in line for line in upload_lines):
             errors.append(
                 f"{name}: promotion must not overwrite published release assets"
             )
@@ -96,7 +249,7 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
     if name == "release-hardware-matrix.yml":
         required = (
             "gh run download",
-            "release_tag must be an exact vMAJOR.MINOR.PATCH tag",
+            "release_tag must be the canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N tag",
             "git rev-list -n 1 $env:RELEASE_TAG --",
             "evaluate_hardware_matrix.py",
             "--expected-archive-sha256",
@@ -104,18 +257,20 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
             "audioforge-release-hardware-matrix-",
         )
         for needle in required:
-            if needle not in source:
+            if not has_gate(needle):
                 errors.append(f"{name}: missing required matrix gate {needle!r}")
         return
     if name == "release-hardware-qualify.yml":
         required = (
             "runs-on: [self-hosted, windows, x64, audioforge-hardware]",
             "actions/download-artifact@",
-            "release_tag must be an exact vMAJOR.MINOR.PATCH tag",
+            "release_tag must be the canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N tag",
             "git rev-list -n 1 $env:RELEASE_TAG --",
             "release_provenance.py verify",
             "--expected-archive-sha256",
             "--expected-commit",
+            "--require-source-distribution",
+            "--native-attestation",
             "evaluate_hardware_validation.py",
             "--confirm-scenario-observed",
             "explicit operator attestation",
@@ -128,7 +283,7 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
             "audioforge-release-hardware-validation-",
         )
         for needle in required:
-            if needle not in source:
+            if not has_gate(needle):
                 errors.append(
                     f"{name}: missing required hardware gate {needle!r}"
                 )
@@ -140,7 +295,8 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
         "run_semgrep.py",
         "cargo test --release -p mic_eq_core --test stress_tests",
         "cargo clippy -p mic_eq_core --all-targets -- -D warnings",
-        "rustsec/audit-check@",
+        "cargo install cargo-audit --version 0.22.2 --locked --force",
+        "cargo audit --deny warnings",
     )
     required = shared
     if name == "release-package.yml":
@@ -150,18 +306,23 @@ def _check_required_gates(name: str, source: str, errors: list[str]) -> None:
             "python/tools/verify_release_assets.py",
             "release_provenance.py create",
             "release_provenance.py verify",
+            "source_distribution.py bundle",
+            "--include-runtime-assets",
+            "--require-receipt",
             "release-bundle-path-baseline.json",
+            "--smoke-test",
+            "--upgrade-from",
+            "--native-attestation",
+            "--file build-support/deepfilter/Cargo.lock",
         )
         if "--allow-dirty" in source:
             errors.append(
                 f"{name}: release candidates must fail closed on dirty source trees"
             )
     for needle in required:
-        if needle not in source:
+        if not has_gate(needle):
             errors.append(f"{name}: missing required release gate {needle!r}")
 
-    if f"rustsec/audit-check@{RUSTSEC_NODE24_SHA}" not in source:
-        errors.append(f"{name}: RustSec must use the pinned Node 24 action revision")
     if "cargo test -p mic_eq_core" in source:
         model_step = source.find(
             "fetch_release_assets.py"
@@ -230,7 +391,7 @@ def check_workflows() -> list[str]:
             continue
         document = _mapping(document, path.name, errors)
         _check_permissions(path.name, document, errors)
-        _check_required_gates(path.name, source, errors)
+        _check_required_gates(path.name, source, errors, document=document)
 
         action_refs = ACTION_REF.findall(source)
         if not action_refs:

@@ -27,9 +27,20 @@ def _configure_frozen_runtime():
 
 _configure_frozen_runtime()
 
-from mic_eq.ui.main_window import (  # noqa: E402 - frozen paths must be configured first
-    run_app,
-)
+_SMOKE_TEST_FLAG = "--smoke-test"
+
+
+def _run() -> int:
+    if _SMOKE_TEST_FLAG in sys.argv:
+        sys.argv = [arg for arg in sys.argv if arg != _SMOKE_TEST_FLAG]
+        from mic_eq.ui.app_bootstrap import run_smoke_test  # noqa: E402
+        from mic_eq.ui.main_window import MainWindow  # noqa: E402
+
+        return run_smoke_test(MainWindow)
+
+    from mic_eq.ui.main_window import run_app  # noqa: E402
+
+    return run_app()
 
 if __name__ == "__main__":
-    sys.exit(run_app())
+    sys.exit(_run())

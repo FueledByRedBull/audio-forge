@@ -5,6 +5,7 @@ import math
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -12,6 +13,7 @@ from mic_eq import config
 from mic_eq.config_parts.presets import MAX_PRESET_FILE_BYTES
 from mic_eq.config_parts import app_config as app_config_module
 from mic_eq.config_parts import presets as presets_module
+from mic_eq.config_parts import shared as shared_module
 
 
 Preset = config.Preset
@@ -36,10 +38,172 @@ def test_preset_save_is_atomic_and_preserves_existing_file_on_replace_failure(
     monkeypatch.setattr(presets_module.os, "replace", fail_replace)
 
     with pytest.raises(OSError, match="simulated replace failure"):
-        config.save_preset(Preset(name="Voice"), destination)
+        config.save_preset(Preset(name="Voice"), destination, overwrite=True)
 
     assert destination.read_text(encoding="utf-8") == "existing"
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_auto_preset_paths_reject_sanitization_collisions_without_overwrite(
+    tmp_path, monkeypatch
+):
+    presets_dir = tmp_path / "presets"
+    monkeypatch.setattr(presets_module, "get_presets_dir", lambda: presets_dir)
+    first_path = config.save_preset(Preset(name="A/B"))
+
+    with pytest.raises(FileExistsError):
+        config.save_preset(Preset(name="A:B"), overwrite=False)
+
+    assert config.load_preset(first_path).name == "A/B"
+
+
+def test_list_presets_skips_recursively_malformed_json(tmp_path, monkeypatch):
+    presets_dir = tmp_path / "presets"
+    presets_dir.mkdir()
+    monkeypatch.setattr(presets_module, "get_presets_dir", lambda: presets_dir)
+    depth = 1200
+    malformed = "{" + '"nested":{' * depth + "0" + "}" * depth + "\n"
+    (presets_dir / "deep.json").write_text(malformed, encoding="utf-8")
+
+    assert config.list_presets() == []
+
+
+def test_load_preset_normalizes_deep_malformed_json(tmp_path, monkeypatch):
+    presets_dir = tmp_path / "presets"
+    imports_dir = tmp_path / "imports"
+    presets_dir.mkdir()
+    imports_dir.mkdir()
+    monkeypatch.setattr(presets_module, "get_presets_dir", lambda: presets_dir)
+    monkeypatch.setattr(presets_module, "get_preset_imports_dir", lambda: imports_dir)
+    depth = 1200
+    filepath = presets_dir / "deep.json"
+    filepath.write_text(
+        "{" + '"nested":{' * depth + "0" + "}" * depth + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(config.PresetValidationError, match="invalid or corrupted"):
+        config.load_preset(filepath)
+
+
+def test_exclusive_preset_creation_wins_against_a_competing_writer(
+    tmp_path, monkeypatch
+):
+    destination = tmp_path / "race.json"
+
+    def competing_writer(_source, target):
+        Path(target).write_text("occupied", encoding="utf-8")
+        raise FileExistsError("destination appeared during publication")
+
+    monkeypatch.setattr(presets_module.os, "link", competing_writer)
+
+    with pytest.raises(FileExistsError):
+        config.save_preset(Preset(name="Race"), destination)
+
+    assert destination.read_text(encoding="utf-8") == "occupied"
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_invalid_config_is_preserved_before_falling_back_to_defaults(
+    tmp_path, monkeypatch
+):
+    filepath = tmp_path / "config.json"
+    source = '{"window_geometry":'
+    filepath.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(app_config_module, "get_config_file", lambda: filepath)
+
+    assert app_config_module.load_config() == AppConfig()
+    assert filepath.read_text(encoding="utf-8") == source
+    assert filepath.with_name("config.json.corrupt").read_text(encoding="utf-8") == source
+
+
+def test_newer_config_schema_is_preserved_before_falling_back_to_defaults(
+    tmp_path, monkeypatch
+):
+    filepath = tmp_path / "config.json"
+    source = json.dumps({"schema_version": config.CONFIG_SCHEMA_VERSION + 1})
+    filepath.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(app_config_module, "get_config_file", lambda: filepath)
+
+    loaded = app_config_module.load_config()
+    assert loaded == AppConfig()
+    assert loaded.save_blocked_reason
+    assert app_config_module.save_config(loaded) is False
+    assert filepath.read_text(encoding="utf-8") == source
+    assert filepath.with_name("config.json.corrupt").read_text(encoding="utf-8") == source
+
+
+def test_invalid_config_backup_collision_uses_exclusive_next_slot(tmp_path, monkeypatch):
+    filepath = tmp_path / "config.json"
+    filepath.write_text('{"broken":', encoding="utf-8")
+    existing_backup = filepath.with_name("config.json.corrupt")
+    existing_backup.write_text("keep this recovery copy", encoding="utf-8")
+    monkeypatch.setattr(app_config_module, "get_config_file", lambda: filepath)
+
+    app_config_module.load_config()
+
+    assert existing_backup.read_text(encoding="utf-8") == "keep this recovery copy"
+    assert filepath.with_name("config.json.corrupt.1").read_text(encoding="utf-8") == (
+        '{"broken":'
+    )
+
+
+def test_negative_config_schema_is_rejected():
+    with pytest.raises(config.PresetValidationError, match="cannot be negative"):
+        AppConfig.from_dict({"schema_version": -1})
+
+
+def test_config_write_is_blocked_when_recovery_copy_cannot_be_created(
+    tmp_path, monkeypatch
+):
+    filepath = tmp_path / "config.json"
+    filepath.write_text('{"broken":', encoding="utf-8")
+    monkeypatch.setattr(app_config_module, "get_config_file", lambda: filepath)
+    monkeypatch.setattr(
+        app_config_module.shutil,
+        "copyfileobj",
+        Mock(side_effect=OSError("read-only")),
+    )
+
+    loaded = app_config_module.load_config()
+
+    assert loaded.save_blocked_reason
+    assert app_config_module.save_config(loaded) is False
+    assert filepath.read_text(encoding="utf-8") == '{"broken":'
+    assert not filepath.with_name("config.json.corrupt").exists()
+
+
+def test_legacy_config_migration_retries_after_a_staged_copy_failure(
+    tmp_path, monkeypatch
+):
+    base_dir = tmp_path / "appdata"
+    legacy_dir = base_dir / shared_module.LEGACY_APPDATA_DIR_NAME
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(shared_module, "_config_base_dir", lambda: base_dir)
+
+    real_copytree = shared_module.shutil.copytree
+    attempts = 0
+
+    def fail_once(source, destination, *args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            Path(destination).mkdir()
+            (Path(destination) / "partial").write_text("x", encoding="utf-8")
+            raise OSError("simulated migration failure")
+        return real_copytree(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(shared_module.shutil, "copytree", fail_once)
+
+    config_dir = base_dir / shared_module.APPDATA_DIR_NAME
+    assert shared_module._config_dir() == config_dir
+    assert not config_dir.exists()
+    assert app_config_module.save_config(AppConfig()) is False
+    assert not config_dir.exists()
+    assert shared_module._config_dir() == config_dir
+    assert attempts == 2
+    assert (config_dir / "config.json").read_text(encoding="utf-8") == "{}"
 
 
 def test_preset_migration_to_v17_adds_deesser_defaults():
@@ -143,6 +307,7 @@ def test_app_config_latency_profiles_round_trip():
     )
 
     raw = cfg.to_dict()
+    assert raw["schema_version"] == config.CONFIG_SCHEMA_VERSION
     restored = AppConfig.from_dict(raw)
 
     assert restored.use_measured_latency is True
@@ -304,6 +469,36 @@ def test_endpoint_route_keys_round_trip_through_app_config_without_collapsing():
     assert set(restored.latency_calibration_profiles) == {route_key}
     assert set(restored.device_preset_bindings) == {route_key}
     assert '{"input":null,"output":null}' not in restored.device_preset_bindings
+
+
+def test_structured_route_keys_preserve_delimiters_in_device_names():
+    input_device = DeviceIdentity(
+        name="USB Mic || Desk",
+        host_api="WASAPI",
+        direction="input",
+    )
+    output_device = DeviceIdentity(name="Speakers", direction="output")
+    route_key = build_latency_profile_key(input_device, output_device)
+    profile = LatencyCalibrationProfile(
+        measured_round_trip_ms=12.0,
+        estimated_one_way_ms=12.0,
+        applied_compensation_ms=12.0,
+        confidence=0.9,
+    )
+
+    restored = AppConfig.from_dict(
+        {"latency_calibration_profiles": {route_key: profile.to_dict()}}
+    )
+
+    assert set(restored.latency_calibration_profiles) == {route_key}
+    parsed = config.parse_latency_profile_key(route_key)
+    assert parsed is not None
+    parsed_input, parsed_output = parsed
+    assert parsed_input is not None
+    assert parsed_output is not None
+    assert parsed_input.name == input_device.name.lower()
+    assert parsed_input.host_api == input_device.host_api.lower()
+    assert parsed_output.name == output_device.name.lower()
 
 
 def test_malformed_route_keys_are_dropped_instead_of_collapsing_to_null_route():

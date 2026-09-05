@@ -14,16 +14,18 @@ pub mod dsp;
 
 #[cfg(test)]
 pub(crate) mod test_alloc {
+    // This measures Rust global allocations on the calling thread. Allocations
+    // performed inside foreign libraries are outside this instrumentation.
     use std::alloc::{GlobalAlloc, Layout, System};
     use std::cell::Cell;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Barrier;
+    use std::thread;
 
     pub struct CountingAllocator;
 
-    static ALLOCATION_COUNT: AtomicUsize = AtomicUsize::new(0);
-
     thread_local! {
         static COUNTING_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
+        static ALLOCATION_COUNT: Cell<usize> = const { Cell::new(0) };
     }
 
     unsafe impl GlobalAlloc for CountingAllocator {
@@ -53,42 +55,116 @@ pub(crate) mod test_alloc {
     fn count_allocation() {
         COUNTING_ALLOCATIONS.with(|enabled| {
             if enabled.get() {
-                ALLOCATION_COUNT.fetch_add(1, Ordering::Relaxed);
+                ALLOCATION_COUNT.with(|count| count.set(count.get().saturating_add(1)));
             }
         });
     }
 
     struct AllocationScope {
         previous: bool,
+        previous_count: usize,
     }
 
     impl AllocationScope {
         fn enter() -> Self {
-            ALLOCATION_COUNT.store(0, Ordering::SeqCst);
             let previous = COUNTING_ALLOCATIONS.with(|enabled| {
                 let previous = enabled.get();
                 enabled.set(true);
                 previous
             });
-            Self { previous }
+            let previous_count = ALLOCATION_COUNT.with(|count| {
+                let previous_count = count.get();
+                count.set(0);
+                previous_count
+            });
+            Self {
+                previous,
+                previous_count,
+            }
         }
     }
 
     impl Drop for AllocationScope {
         fn drop(&mut self) {
+            let nested_count = ALLOCATION_COUNT.with(Cell::get);
             COUNTING_ALLOCATIONS.with(|enabled| enabled.set(self.previous));
+            ALLOCATION_COUNT.with(|count| {
+                count.set(self.previous_count.saturating_add(nested_count));
+            });
         }
     }
 
     pub fn allocation_count_during(function: impl FnOnce()) -> usize {
         let _scope = AllocationScope::enter();
         function();
-        ALLOCATION_COUNT.load(Ordering::SeqCst)
+        ALLOCATION_COUNT.with(Cell::get)
     }
 
     pub fn assert_no_allocations(label: &str, function: impl FnOnce()) {
         let allocations = allocation_count_during(function);
         assert_eq!(allocations, 0, "{label} allocated {allocations} time(s)");
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn concurrent_scope_cannot_reset_another_thread() {
+            let allocated = std::sync::Arc::new(Barrier::new(2));
+            let release = std::sync::Arc::new(Barrier::new(2));
+            let thread_allocated = allocated.clone();
+            let thread_release = release.clone();
+            let handle = thread::spawn(move || {
+                let _scope = AllocationScope::enter();
+                std::hint::black_box(vec![0_u8; 17]);
+                thread_allocated.wait();
+                thread_release.wait();
+                ALLOCATION_COUNT.with(Cell::get)
+            });
+
+            allocated.wait();
+            let _other_scope = AllocationScope::enter();
+            release.wait();
+            assert!(handle.join().unwrap() > 0);
+        }
+
+        #[test]
+        fn nonallocating_scope_ignores_concurrent_thread_allocations() {
+            let start = std::sync::Arc::new(Barrier::new(2));
+            let finished = std::sync::Arc::new(Barrier::new(2));
+            let thread_start = start.clone();
+            let thread_finished = finished.clone();
+            let handle = thread::spawn(move || {
+                thread_start.wait();
+                let count = allocation_count_during(|| {
+                    std::hint::black_box(vec![0_u8; 23]);
+                });
+                thread_finished.wait();
+                count
+            });
+
+            let main_count = allocation_count_during(|| {
+                start.wait();
+                finished.wait();
+            });
+
+            assert_eq!(main_count, 0);
+            assert!(handle.join().unwrap() > 0);
+        }
+
+        #[test]
+        fn nested_scope_count_isolated_and_included_by_outer_scope() {
+            let outer = allocation_count_during(|| {
+                let inner = allocation_count_during(|| {
+                    std::hint::black_box(vec![0_u8; 11]);
+                });
+                assert!(inner > 0);
+                std::hint::black_box(vec![0_u8; 13]);
+            });
+
+            assert!(outer >= 2);
+        }
     }
 }
 
@@ -220,67 +296,99 @@ fn simulate_eq_v2(
     bands: Vec<PyEqBandV2>,
     return_output_audio: bool,
 ) -> PyResult<Py<PyAny>> {
+    if !sample_rate.is_finite() || !(8_000.0..=768_000.0).contains(&sample_rate) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "sample_rate must be finite and between 8000 and 768000 Hz",
+        ));
+    }
     let configs = parse_eq_v2_bands(&bands, sample_rate)?;
-    let input = audio.as_slice()?;
+    let input = audio.as_slice()?.to_vec();
     if input.iter().any(|sample| !sample.is_finite()) {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "audio must contain only finite samples",
         ));
     }
+    let sample_count = input.len();
 
-    let mut eq = ParametricEQ::new(sample_rate);
-    for (index, config) in configs.into_iter().enumerate() {
-        eq.set_band_config(index, config);
-    }
-    eq.reset();
+    let (
+        output,
+        input_peak,
+        output_peak,
+        input_true_peak,
+        output_true_peak,
+        input_rms,
+        output_rms,
+        max_response_db,
+        runtime_ms,
+        non_finite_output,
+    ) = py.detach(move || {
+        let mut eq = ParametricEQ::new(sample_rate);
+        for (index, config) in configs.into_iter().enumerate() {
+            eq.set_band_config(index, config);
+        }
+        eq.reset();
 
-    let mut output = input.to_vec();
-    let started = Instant::now();
-    eq.process_block_inplace(&mut output);
-    let runtime_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let mut output = input.clone();
+        let started = Instant::now();
+        eq.process_block_inplace(&mut output);
+        let runtime_ms = started.elapsed().as_secs_f64() * 1000.0;
 
-    let input_square_sum = input
-        .iter()
-        .map(|sample| f64::from(*sample) * f64::from(*sample))
-        .sum::<f64>();
-    let output_square_sum = output
-        .iter()
-        .map(|sample| f64::from(*sample) * f64::from(*sample))
-        .sum::<f64>();
-    let divisor = input.len().max(1) as f64;
-    let input_peak = input
-        .iter()
-        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
-    let output_peak = output
-        .iter()
-        .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
-    let mut input_true_peak_detector = dsp::TruePeakDetector::new();
-    let mut output_true_peak_detector = dsp::TruePeakDetector::new();
-    let input_true_peak = input_true_peak_detector.process_block(input);
-    let output_true_peak = output_true_peak_detector.process_block(&output);
-    let response_frequencies = (0..512)
-        .map(|index| 20.0 * (20_000.0_f64 / 20.0).powf(index as f64 / 511.0))
-        .collect::<Vec<_>>();
-    let max_response_db = eq
-        .magnitude_response_db(&response_frequencies)
-        .into_iter()
-        .fold(f64::NEG_INFINITY, f64::max);
+        let input_square_sum = input
+            .iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum::<f64>();
+        let output_square_sum = output
+            .iter()
+            .map(|sample| f64::from(*sample) * f64::from(*sample))
+            .sum::<f64>();
+        let divisor = input.len().max(1) as f64;
+        let input_peak = input
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        let output_peak = output
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        let mut input_true_peak_detector = dsp::TruePeakDetector::new();
+        let mut output_true_peak_detector = dsp::TruePeakDetector::new();
+        let input_true_peak = input_true_peak_detector.process_block(&input);
+        let output_true_peak = output_true_peak_detector.process_block(&output);
+        let response_frequencies = (0..512)
+            .map(|index| 20.0 * (20_000.0_f64 / 20.0).powf(index as f64 / 511.0))
+            .collect::<Vec<_>>();
+        let max_response_db = eq
+            .magnitude_response_db(&response_frequencies)
+            .into_iter()
+            .fold(f64::NEG_INFINITY, f64::max);
+        let input_rms = (input_square_sum / divisor).sqrt();
+        let output_rms = (output_square_sum / divisor).sqrt();
+        let non_finite_output = output.iter().any(|sample| !sample.is_finite());
+
+        (
+            output,
+            input_peak,
+            output_peak,
+            input_true_peak,
+            output_true_peak,
+            input_rms,
+            output_rms,
+            max_response_db,
+            runtime_ms,
+            non_finite_output,
+        )
+    });
 
     let diagnostics = pyo3::types::PyDict::new(py);
     diagnostics.set_item("input_sample_peak", input_peak)?;
     diagnostics.set_item("output_sample_peak", output_peak)?;
     diagnostics.set_item("input_true_peak", input_true_peak)?;
     diagnostics.set_item("output_true_peak", output_true_peak)?;
-    diagnostics.set_item("input_rms", (input_square_sum / divisor).sqrt())?;
-    diagnostics.set_item("output_rms", (output_square_sum / divisor).sqrt())?;
+    diagnostics.set_item("input_rms", input_rms)?;
+    diagnostics.set_item("output_rms", output_rms)?;
     diagnostics.set_item("max_response_db", max_response_db)?;
     diagnostics.set_item("runtime_ms", runtime_ms)?;
-    diagnostics.set_item("sample_count", input.len())?;
+    diagnostics.set_item("sample_count", sample_count)?;
     diagnostics.set_item("algorithmic_latency_samples", 0)?;
-    diagnostics.set_item(
-        "non_finite_output",
-        output.iter().any(|sample| !sample.is_finite()),
-    )?;
+    diagnostics.set_item("non_finite_output", non_finite_output)?;
     if return_output_audio {
         diagnostics.set_item("output_audio", output)?;
     }
@@ -289,11 +397,12 @@ fn simulate_eq_v2(
 
 #[pyfunction]
 fn measure_integrated_loudness(
+    py: Python<'_>,
     audio: numpy::PyReadonlyArray1<'_, f32>,
     sample_rate: u32,
 ) -> PyResult<f64> {
-    let samples = audio.as_slice()?;
-    dsp::loudness::integrated_loudness_lufs(samples, sample_rate)
+    let samples = audio.as_slice()?.to_vec();
+    py.detach(move || dsp::loudness::integrated_loudness_lufs(&samples, sample_rate))
         .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
 }
 
@@ -320,7 +429,7 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
-        audio::processor::simulate_product_resampler,
+        audio::processor::simulate_product_resampler_py,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,9 +20,16 @@ from .shared import (
     build_latency_profile_key,
     coerce_device_identity,
     get_config_file,
+    migration_pending,
     parse_latency_profile_key,
 )
 from .validation import _coerce_config_bool, _coerce_window_geometry
+
+
+logger = logging.getLogger(__name__)
+
+CONFIG_SCHEMA_VERSION = 1
+_last_blocked_save_reason: str | None = None
 
 INPUT_CHANNEL_MODES = frozenset(
     {"average", "left", "right", "max_rms", "phase_safe_mono"}
@@ -182,9 +191,17 @@ class AppConfig:
     first_run_setup_steps: dict[str, str] = field(
         default_factory=lambda: {step: "pending" for step in FIRST_RUN_SETUP_STEPS}
     )
+    # Runtime-only load state.  These fields deliberately never enter the
+    # persisted schema; they keep a damaged/newer config from being silently
+    # replaced and give the UI a visible recovery message.
+    load_warning: str | None = field(default=None, init=False, repr=False, compare=False)
+    save_blocked_reason: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def to_dict(self) -> dict:
         return {
+            "schema_version": CONFIG_SCHEMA_VERSION,
             "last_input_device": self.last_input_device,
             "last_output_device": self.last_output_device,
             "last_input_device_identity": (
@@ -226,6 +243,8 @@ class AppConfig:
     def from_dict(cls, data: object) -> "AppConfig":
         if not isinstance(data, dict):
             return cls()
+
+        data = _migrate_config_data(data)
 
         migrated_existing_install = (
             "first_run_setup_state" not in data
@@ -343,7 +362,39 @@ class AppConfig:
         )
 
 
-def save_config(config: AppConfig) -> None:
+def _migrate_config_data(data: dict) -> dict:
+    """Normalize persisted config versions before field migration."""
+    raw_version = data.get("schema_version", 0)
+    if isinstance(raw_version, bool) or not isinstance(raw_version, int):
+        raise PresetValidationError("Configuration schema_version must be an integer")
+    if raw_version < 0:
+        raise PresetValidationError("Configuration schema_version cannot be negative")
+    if raw_version > CONFIG_SCHEMA_VERSION:
+        raise PresetValidationError(
+            "Configuration was written by a newer AudioForge build"
+        )
+
+    migrated = dict(data)
+    if raw_version < 1:
+        # Pre-schema files used the same field names and are treated as v1.
+        migrated["schema_version"] = 1
+    return migrated
+
+
+def save_config(config: AppConfig) -> bool:
+    global _last_blocked_save_reason
+    blocked_reason = getattr(config, "save_blocked_reason", None)
+    if blocked_reason is None and migration_pending():
+        blocked_reason = "legacy config migration is still pending"
+    if blocked_reason:
+        if blocked_reason != _last_blocked_save_reason:
+            logger.warning(
+                "Refusing to replace protected AudioForge config: %s",
+                blocked_reason,
+            )
+            _last_blocked_save_reason = blocked_reason
+        return False
+    _last_blocked_save_reason = None
     filepath = get_config_file()
     filepath.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(
@@ -364,16 +415,28 @@ def save_config(config: AppConfig) -> None:
             temp_path.unlink(missing_ok=True)
         finally:
             raise
+    return True
 
 
 def load_config() -> AppConfig:
     filepath = get_config_file()
     if not filepath.exists():
+        if migration_pending():
+            config = AppConfig()
+            config.load_warning = (
+                "AudioForge could not complete its config migration. "
+                "Settings changes cannot be saved until the migration succeeds."
+            )
+            config.save_blocked_reason = "legacy config migration is still pending"
+            return config
         return AppConfig()
 
+    data: object = None
     try:
         with open(filepath, "r", encoding="utf-8") as handle:
             data = json.load(handle, parse_constant=_reject_json_constant)
+        if not isinstance(data, dict):
+            raise PresetValidationError("Configuration root must be an object")
         return AppConfig.from_dict(data)
     except (
         OSError,
@@ -383,12 +446,96 @@ def load_config() -> AppConfig:
         TypeError,
         ValueError,
         PresetValidationError,
-    ):
-        return AppConfig()
+        RecursionError,
+        UnicodeError,
+    ) as exc:
+        preserved = _preserve_invalid_config(filepath)
+        newer_schema = (
+            isinstance(data, dict)
+            and isinstance(data.get("schema_version"), int)
+            and not isinstance(data.get("schema_version"), bool)
+            and data["schema_version"] > CONFIG_SCHEMA_VERSION
+        )
+        config = AppConfig()
+        if newer_schema:
+            config.load_warning = (
+                "AudioForge found a newer config format. It was preserved; "
+                "settings changes cannot be saved until this build is upgraded."
+            )
+            config.save_blocked_reason = "config was written by a newer build"
+        elif not preserved:
+            config.load_warning = (
+                "AudioForge could not read or preserve config.json. "
+                "Settings changes cannot be saved while the original file is protected."
+            )
+            config.save_blocked_reason = "invalid config could not be preserved"
+        else:
+            config.load_warning = (
+                "AudioForge found an invalid config.json and preserved a recovery copy. "
+                "Defaults are in use until settings are saved."
+            )
+        logger.warning("Loading AudioForge config failed: %s", exc, exc_info=True)
+        return config
+
+
+def _preserve_invalid_config(filepath: Path) -> bool:
+    """Keep a recoverable copy before the next save can replace bad input."""
+    for index in range(1000):
+        suffix = ".corrupt" if index == 0 else f".corrupt.{index}"
+        backup = filepath.with_name(filepath.name + suffix)
+        source = None
+        destination = None
+        descriptor = None
+        created = False
+        try:
+            source = filepath.open("rb")
+            descriptor = os.open(
+                backup,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            created = True
+            destination = os.fdopen(descriptor, "wb")
+            descriptor = None
+            shutil.copyfileobj(source, destination)
+            destination.flush()
+            os.fsync(destination.fileno())
+            logger.warning("Preserved invalid AudioForge config at %s", backup)
+            return True
+        except FileExistsError:
+            # Another process won the destination race; try the next slot.
+            continue
+        except OSError:
+            if destination is not None:
+                destination.close()
+                destination = None
+            if descriptor is not None:
+                os.close(descriptor)
+                descriptor = None
+            if created:
+                try:
+                    backup.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning(
+                        "Could not clean an incomplete invalid-config recovery copy",
+                        exc_info=True,
+                    )
+            logger.warning("Could not preserve invalid AudioForge config", exc_info=True)
+            return False
+        finally:
+            if destination is not None:
+                destination.close()
+            if descriptor is not None:
+                os.close(descriptor)
+            if source is not None:
+                source.close()
+    logger.warning("Could not find an unused recovery path for invalid AudioForge config")
+    return False
 
 
 __all__ = [
     "AppConfig",
+    "CONFIG_SCHEMA_VERSION",
     "DevicePresetBinding",
     "INPUT_CHANNEL_MODES",
     "INPUT_CLEANUP_MODES",

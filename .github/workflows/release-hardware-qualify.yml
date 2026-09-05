@@ -67,6 +67,7 @@ on:
           - sleep_resume
           - buffer_negotiation
           - route_change
+          - model_configuration_change
       evidence_kind:
         description: "Non-baseline scenarios require an operator-observed event."
         required: true
@@ -139,24 +140,27 @@ jobs:
           EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
-            throw "release_tag must be an exact vMAJOR.MINOR.PATCH tag."
+          $canonicalTag = (python python/tools/release_version.py tag $env:RELEASE_TAG).Trim()
+          if ($LASTEXITCODE -ne 0 -or $canonicalTag -ne $env:RELEASE_TAG) {
+            throw "release_tag must be the canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N tag."
           }
           if ($env:EXPECTED_SHA256 -notmatch '^[0-9a-fA-F]{64}$') {
             throw "expected_archive_sha256 must contain exactly 64 hexadecimal characters."
           }
           $candidate = Join-Path $env:RUNNER_TEMP "audioforge-release-candidate"
-          $archive = Get-ChildItem -LiteralPath $candidate -Filter "*.7z" -File
-          $checksum = Get-ChildItem -LiteralPath $candidate -Filter "*.7z.sha256" -File
-          $manifest = Get-ChildItem -LiteralPath $candidate -Filter "*.7z.manifest.json" -File
-          $metadata = Get-ChildItem -LiteralPath $candidate -Filter "*.7z.metadata.json" -File
+          $archive = Get-ChildItem -LiteralPath $candidate -Filter "*-win64-ultra.7z" -File
+          $checksum = Get-ChildItem -LiteralPath $candidate -Filter "*-win64-ultra.7z.sha256" -File
+          $manifest = Get-ChildItem -LiteralPath $candidate -Filter "*-win64-ultra.7z.manifest.json" -File
+          $metadata = Get-ChildItem -LiteralPath $candidate -Filter "*-win64-ultra.7z.metadata.json" -File
+          $nativeAttestation = Get-ChildItem -LiteralPath $candidate -Filter "*-deepfilter.provenance.json" -File
           if (
             @($archive).Count -ne 1 -or
             @($checksum).Count -ne 1 -or
             @($manifest).Count -ne 1 -or
-            @($metadata).Count -ne 1
+            @($metadata).Count -ne 1 -or
+            @($nativeAttestation).Count -ne 1
           ) {
-            throw "Candidate artifact must contain exactly one archive and each provenance sidecar."
+            throw "Candidate artifact must contain exactly one archive, DeepFilter attestation, and each provenance sidecar."
           }
 
           $extract = Join-Path $env:RUNNER_TEMP "audioforge-hardware-candidate"
@@ -183,7 +187,9 @@ jobs:
             --metadata $metadata.FullName `
             --baseline evaluation/release-bundle-path-baseline.json `
             --expected-archive-sha256 ($env:EXPECTED_SHA256).ToLowerInvariant() `
-            --expected-commit $tagCommit.Trim()
+            --expected-commit $tagCommit.Trim() `
+            --require-source-distribution `
+            --native-attestation $nativeAttestation.FullName
           if ($LASTEXITCODE -ne 0) {
             throw "Exact-candidate provenance verification failed."
           }
@@ -209,6 +215,7 @@ jobs:
           CASE_ID: ${{ inputs.case_id }}
           DEVICE_CLASS: ${{ inputs.device_class }}
           NOMINAL_SAMPLE_RATE_HZ: ${{ inputs.nominal_sample_rate_hz }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
           SCENARIO: ${{ inputs.scenario }}
           EVIDENCE_KIND: ${{ inputs.evidence_kind }}
           CONFIRM_SCENARIO_OBSERVED: ${{ inputs.confirm_scenario_observed }}
@@ -256,6 +263,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Exact-artifact hardware qualification failed."
           }
+          $reportObject = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          $producerHeadSha = (git rev-list -n 1 $env:RELEASE_TAG --).Trim()
+          if ($LASTEXITCODE -ne 0 -or $producerHeadSha -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Unable to resolve the release tag commit for qualification provenance."
+          }
+          $reportObject | Add-Member -NotePropertyName producer -NotePropertyValue ([ordered]@{
+            repository = $env:GITHUB_REPOSITORY
+            workflow = $env:GITHUB_WORKFLOW
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            event = $env:GITHUB_EVENT_NAME
+            head_sha = $producerHeadSha
+            ref = $env:GITHUB_REF
+          }) -Force
+          $reportObject | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $report -Encoding utf8
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()

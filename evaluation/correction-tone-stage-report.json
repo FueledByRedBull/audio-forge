@@ -1,17 +1,17 @@
 {
   "aggregate": {
     "all_outputs_finite": true,
-    "candidate_p95_realtime_factor": 0.001556319968390559,
+    "candidate_p95_realtime_factor": 0.0016452491276163455,
     "case_count": 12,
     "failed_cases": 0,
-    "incumbent_p95_realtime_factor": 0.001361112079819209,
+    "incumbent_p95_realtime_factor": 0.001410547269223885,
     "latency_samples": [
       0
     ],
     "max_response_parity_delta_db": 0.0,
     "max_true_peak_overshoot_db": 0.0,
     "p95_limiter_gr_db": 0.0,
-    "p95_runtime_ratio": 1.1434179385119252,
+    "p95_runtime_ratio": 1.1663906368211245,
     "schema_roundtrip": true,
     "tone_payload_preserved": true,
     "tone_profiles": [
@@ -58,13 +58,13 @@
       "corpus_manifest": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6",
       "native_extension": {
         "path": "python/mic_eq/mic_eq_core.cp312-win_amd64.pyd",
-        "sha256": "fa21c980eb15e902950d93b20b26943b6c0dfc804d07b4612f041d0f6ec8e621"
+        "sha256": "aab0e115cf68bec3e8839ec04e043193316c4da960a221353b9b33c4a06c7c14"
       },
       "source": {
         "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
         "python/tools/evaluate_correction_tone_stages.py": "d6a3c32e33a26fd00eb2a3218da71fb8b5eda5667330ec9502bafe7ae06c219b",
-        "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
-        "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
+        "rust-core/src/dsp/eq.rs": "3dc1fd2c14496a7d76b34840011a2eb9a90e2d6a12ec2f67c5ace0be869855c9",
+        "rust-core/src/lib.rs": "468348d29dd64ced4340ab1b19ba1a117fcf92017ab8eb10d650145a83072535"
       }
     },
     "clean_preservation": {
@@ -91,18 +91,18 @@
       "sample_rate": 48000
     },
     "runtime": {
-      "candidate_p95_realtime_factor": 0.001556319968390559,
-      "incumbent_p95_realtime_factor": 0.001361112079819209,
+      "candidate_p95_realtime_factor": 0.0016452491276163455,
+      "incumbent_p95_realtime_factor": 0.001410547269223885,
       "machine": "Windows-11-10.0.26200-SP0",
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native offline API reports whole-clip runtime; realtime factor is measured for both one- and two-stage paths.",
-      "p95_runtime_ratio": 1.1434179385119252,
+      "p95_runtime_ratio": 1.1663906368211245,
       "python": "3.12.10"
     }
   },
   "experiment": "Separate Auto-EQ correction and user tone stages",
   "failures": [],
-  "generated_at_utc": "2026-08-27T22:18:09.842792+00:00",
+  "generated_at_utc": "2026-09-05T20:26:50.651770+00:00",
   "incumbent": {
     "bands": 10,
     "stages": 1
@@ -126,7 +126,7 @@
   "source_sha256": {
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
     "python/tools/evaluate_correction_tone_stages.py": "d6a3c32e33a26fd00eb2a3218da71fb8b5eda5667330ec9502bafe7ae06c219b",
-    "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
-    "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
+    "rust-core/src/dsp/eq.rs": "3dc1fd2c14496a7d76b34840011a2eb9a90e2d6a12ec2f67c5ace0be869855c9",
+    "rust-core/src/lib.rs": "468348d29dd64ced4340ab1b19ba1a117fcf92017ab8eb10d650145a83072535"
   }
 }

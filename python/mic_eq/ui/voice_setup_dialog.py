@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any
 
 import numpy as np
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -24,6 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from ..analysis.noise_reference import CaptureMetadata, analyze_noise_reference
+from ..analysis.cancellation import AnalysisCancelled
 from ..analysis.voice_setup import (
     analyze_voice_setup,
     validate_voice_setup_verification,
@@ -72,7 +75,7 @@ class VoiceSetupWorker(QThread):
     """Background worker for multi-stage voice setup analysis."""
 
     step_progress = pyqtSignal(str, int)
-    finished = pyqtSignal(dict)
+    result_ready = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -100,9 +103,19 @@ class VoiceSetupWorker(QThread):
         self.custom_peak_cap_db = custom_peak_cap_db
         self.noise_metadata = noise_metadata
         self.voice_metadata = voice_metadata
+        self._stop_event = threading.Event()
+
+    def stop(self) -> None:
+        """Request cooperative cancellation."""
+        self._stop_event.set()
+
+    def _should_stop(self) -> bool:
+        return self._stop_event.is_set()
 
     def run(self) -> None:
         try:
+            if self._should_stop():
+                return
             self.step_progress.emit("Analyzing room noise and speech...", 20)
             result = analyze_voice_setup(
                 self.noise_audio,
@@ -115,9 +128,14 @@ class VoiceSetupWorker(QThread):
                 custom_peak_cap_db=self.custom_peak_cap_db,
                 noise_metadata=self.noise_metadata,
                 speech_metadata=self.voice_metadata,
+                cancel_check=self._should_stop,
             )
+            if self._should_stop():
+                return
             self.step_progress.emit("Finalizing recommendations...", 95)
-            self.finished.emit(result)
+            self.result_ready.emit(result)
+        except AnalysisCancelled:
+            return
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -141,12 +159,22 @@ class VoiceSetupDialog(QDialog):
         self._pre_setup_snapshot: dict[str, Any] | None = None
         self.setup_result: dict[str, Any] | None = None
         self.analysis_worker: VoiceSetupWorker | None = None
+        self._analysis_workers: list[VoiceSetupWorker] = []
+        self._analysis_generation = 0
+        self._close_requested = False
+        self._close_result = False
         self._started_processor = False
         self._recording_duration = NOISE_RECORDING_DURATION
 
+        self._capture_start_timer = QTimer(self)
+        self._capture_start_timer.setSingleShot(True)
+        self._capture_start_timer.timeout.connect(self._begin_recording_capture)
         self.recording_timer = QTimer(self)
         self.recording_timer.setInterval(100)
         self.recording_timer.timeout.connect(self._poll_recording_progress)
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._wait_for_analysis_workers)
 
         self._setup_ui()
         configure_resizable_dialog(
@@ -445,7 +473,7 @@ class VoiceSetupDialog(QDialog):
 
         self.progress_bar.setValue(0)
         self.time_label.setText(f"Time remaining: {self._recording_duration:.0f}s")
-        QTimer.singleShot(100, self._begin_recording_capture)
+        self._capture_start_timer.start(100)
 
     def _ensure_processor_ready(self) -> bool:
         parent = _find_processor_owner(self.parent())
@@ -527,6 +555,7 @@ class VoiceSetupDialog(QDialog):
             return False
 
     def _begin_recording_capture(self) -> None:
+        self._capture_start_timer.stop()
         if self.setup_state not in {
             "noise_recording",
             "voice_recording",
@@ -696,7 +725,10 @@ class VoiceSetupDialog(QDialog):
         except Exception:
             vad_available = False
 
-        self.analysis_worker = VoiceSetupWorker(
+        self._cancel_analysis_workers()
+        generation = self._analysis_generation + 1
+        self._analysis_generation = generation
+        worker = VoiceSetupWorker(
             self.noise_audio,
             self.voice_audio,
             _processor_sample_rate(parent),
@@ -708,17 +740,46 @@ class VoiceSetupDialog(QDialog):
             noise_metadata=self.noise_metadata,
             voice_metadata=self.voice_metadata,
         )
-        self.analysis_worker.step_progress.connect(self._on_analysis_step)
-        self.analysis_worker.finished.connect(self._on_analysis_complete)
-        self.analysis_worker.failed.connect(self._on_analysis_failed)
-        self.analysis_worker.start()
+        self.analysis_worker = worker
+        self._analysis_workers.append(worker)
+        worker.step_progress.connect(
+            lambda step_name, percentage, token=generation: self._on_analysis_step(
+                step_name, percentage, token
+            )
+        )
+        worker.result_ready.connect(
+            lambda result, token=generation: self._on_analysis_complete(result, token)
+        )
+        worker.failed.connect(
+            lambda error, token=generation: self._on_analysis_failed(error, token)
+        )
+        worker.finished.connect(
+            lambda token=generation, finished_worker=worker: self._on_analysis_thread_finished(
+                token, finished_worker
+            )
+        )
+        worker.start()
 
-    def _on_analysis_step(self, step_name: str, percentage: int) -> None:
+    def _on_analysis_step(
+        self,
+        step_name: str,
+        percentage: int,
+        generation: int | None = None,
+    ) -> None:
+        if generation is not None and generation != self._analysis_generation:
+            return
+        if self._close_requested:
+            return
         self.warning_label.setText(step_name)
         self.progress_bar.setValue(percentage)
 
-    def _on_analysis_complete(self, setup_result: dict[str, Any]) -> None:
-        self.analysis_worker = None
+    def _on_analysis_complete(
+        self, setup_result: dict[str, Any], generation: int | None = None
+    ) -> None:
+        if generation is not None and generation != self._analysis_generation:
+            return
+        if self._close_requested:
+            return
         self.setup_result = setup_result
         self.setup_state = "completed"
         self.start_button.setText("Apply Voice Setup")
@@ -968,8 +1029,11 @@ class VoiceSetupDialog(QDialog):
         self.warning_label.setText(f"{reason} {metrics_text}")
         self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
 
-    def _on_analysis_failed(self, error: str) -> None:
-        self.analysis_worker = None
+    def _on_analysis_failed(self, error: str, generation: int | None = None) -> None:
+        if generation is not None and generation != self._analysis_generation:
+            return
+        if self._close_requested:
+            return
         self.voice_audio = None
         self.setup_result = None
         self.setup_state = "noise_ready" if self.noise_audio is not None else "idle"
@@ -1027,8 +1091,9 @@ class VoiceSetupDialog(QDialog):
 
     def _reset_setup_ui(self) -> None:
         self._restore_pre_setup_snapshot()
+        self._capture_start_timer.stop()
         self.recording_timer.stop()
-        self._stop_analysis_worker()
+        self._cancel_analysis_workers()
         self._cleanup_recording_tap()
         self._stop_owned_processor()
 
@@ -1088,33 +1153,83 @@ class VoiceSetupDialog(QDialog):
             logger.warning("Failed to re-enable recovery after cleanup: %s", exc)
 
     def _stop_analysis_worker(self) -> None:
-        if self.analysis_worker and self.analysis_worker.isRunning():
-            self.analysis_worker.wait(1500)
+        self._cancel_analysis_workers()
+
+    def _cancel_analysis_workers(self) -> None:
+        """Cancel work without dropping ownership of a running QThread."""
+        self._analysis_generation += 1
+        for worker in tuple(self._analysis_workers):
+            if worker.isRunning():
+                worker.stop()
         self.analysis_worker = None
+
+    def _on_analysis_thread_finished(
+        self, _generation: int, worker: VoiceSetupWorker
+    ) -> None:
+        if worker in self._analysis_workers:
+            self._analysis_workers.remove(worker)
+        if self.analysis_worker is worker:
+            self.analysis_worker = None
+        delete_later = getattr(worker, "deleteLater", None)
+        if callable(delete_later):
+            delete_later()
+        if self._close_requested:
+            self._finish_close()
+
+    def _finish_close(self) -> None:
+        if not self._close_requested or any(
+            worker.isRunning() for worker in self._analysis_workers
+        ):
+            return
+        for worker in tuple(self._analysis_workers):
+            delete_later = getattr(worker, "deleteLater", None)
+            if callable(delete_later):
+                delete_later()
+        self._analysis_workers.clear()
+        self._close_requested = False
+        QDialog.done(self, int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected))
+
+    def _wait_for_analysis_workers(self) -> None:
+        """Keep application shutdown from destroying a running QThread."""
+        self._request_close(False)
+        for worker in tuple(self._analysis_workers):
+            if worker.isRunning():
+                worker.stop()
+                worker.wait()
+        self._analysis_workers.clear()
+        self.analysis_worker = None
+
+    def _request_close(self, accepted: bool) -> None:
+        if self._close_requested:
+            return
+        self._close_requested = True
+        self._close_result = accepted
+        self.setup_state = "idle"
+        self._capture_start_timer.stop()
+        self.recording_timer.stop()
+        self._cancel_analysis_workers()
+        self._cleanup_recording_tap()
+        self._stop_owned_processor()
+        if any(worker.isRunning() for worker in self._analysis_workers):
+            self.start_button.setEnabled(False)
+            self.retake_btn.setEnabled(False)
+            self.warning_label.setText("Canceling analysis...")
+            self.warning_label.setStyleSheet(message_text_style("info", strong=True))
+            return
+        self._finish_close()
 
     def get_selected_curve(self) -> str:
         return str(self.curve_combo.currentData() or "broadcast")
 
     def closeEvent(self, event) -> None:
         self._restore_pre_setup_snapshot()
-        self.recording_timer.stop()
-        self._stop_analysis_worker()
-        self._cleanup_recording_tap()
-        self._stop_owned_processor()
-        super().closeEvent(event)
+        self._request_close(False)
+        event.ignore()
 
     def accept(self) -> None:
-        self.recording_timer.stop()
-        self._stop_analysis_worker()
-        self._cleanup_recording_tap()
-        self._stop_owned_processor()
-        super().accept()
+        self._request_close(True)
 
     def reject(self) -> None:
         """Never leave a temporary candidate active when the dialog closes."""
         self._restore_pre_setup_snapshot()
-        self.recording_timer.stop()
-        self._stop_analysis_worker()
-        self._cleanup_recording_tap()
-        self._stop_owned_processor()
-        super().reject()
+        self._request_close(False)

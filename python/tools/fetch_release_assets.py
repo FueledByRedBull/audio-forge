@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -49,6 +50,7 @@ ASSETS = [
         ),
     },
 ]
+SOURCE_BUILD_STATUS = "verified-source-build"
 
 
 def _default_asset_source_tag() -> str:
@@ -59,6 +61,31 @@ def _default_asset_source_tag() -> str:
             "release-assets.json must define a non-empty fallback_release_tag"
         )
     return tag
+
+
+def _manifest_entries() -> dict[str, dict[str, object]]:
+    raw = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    assets = raw.get("assets")
+    if not isinstance(assets, list):
+        raise RuntimeError("release-assets.json must contain an assets list")
+    entries: dict[str, dict[str, object]] = {}
+    for entry in assets:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            continue
+        entries[entry["path"].replace("\\", "/")] = entry
+    return entries
+
+
+def _source_build_entry(
+    asset: dict[str, object], entries: dict[str, dict[str, object]]
+) -> dict[str, object] | None:
+    manifest_entry = entries.get(str(asset["destination"]).replace("\\", "/"))
+    if not manifest_entry:
+        return None
+    origin = manifest_entry.get("origin")
+    if isinstance(origin, dict) and origin.get("status") == SOURCE_BUILD_STATUS:
+        return manifest_entry
+    return None
 
 
 def _run(command: list[str], *, capture: bool = False) -> str:
@@ -152,6 +179,59 @@ def _extract_archive_asset(
     return extracted_asset
 
 
+def _build_source_asset(
+    asset: dict[str, object], manifest_entry: dict[str, object], temporary: Path
+) -> Path:
+    origin = manifest_entry.get("origin")
+    if not isinstance(origin, dict):
+        raise RuntimeError(f"{asset['name']} source-build manifest entry has no origin object")
+    raw_attestation = origin.get("attestation_path")
+    if not isinstance(raw_attestation, str) or not raw_attestation:
+        raise RuntimeError(
+            f"{asset['name']} source-build manifest entry has no attestation_path"
+        )
+    attestation_relative = Path(raw_attestation.replace("\\", "/"))
+    if attestation_relative.is_absolute() or ".." in attestation_relative.parts:
+        raise RuntimeError("source-build attestation_path must stay inside the repository")
+    attestation = REPO_ROOT / attestation_relative
+    output = temporary / str(asset["name"])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    if not powershell:
+        raise RuntimeError("PowerShell is required to build the pinned DeepFilter source asset.")
+    _run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "build_deepfilter.ps1"),
+            "-OutputPath",
+            str(output),
+            "-AttestationPath",
+            str(attestation),
+        ]
+    )
+    if not output.is_file():
+        raise RuntimeError(f"Source build completed without producing {output}")
+    if not attestation.is_file():
+        raise RuntimeError(f"Source build completed without producing {raw_attestation}")
+    return output
+
+
+def _atomic_copy(source: Path, destination: Path) -> None:
+    staged = destination.with_name(f".{destination.name}.copy-{os.getpid()}")
+    try:
+        if staged.exists():
+            staged.unlink()
+        shutil.copy2(source, staged)
+        os.replace(staged, destination)
+    finally:
+        if staged.exists():
+            staged.unlink()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Download AudioForge runtime assets from a GitHub release."
@@ -177,9 +257,29 @@ def main() -> int:
     args = parser.parse_args()
 
     if shutil.which("gh") is None:
-        raise RuntimeError("GitHub CLI 'gh' is required for fetch_release_assets.py.")
+        pending_release_assets = [
+            asset
+            for asset in ASSETS
+            if not (
+                (REPO_ROOT / asset["destination"]).exists() and not args.force
+            )
+            and not asset.get("direct_url")
+            and _source_build_entry(asset, _manifest_entries()) is None
+        ]
+        if pending_release_assets:
+            raise RuntimeError("GitHub CLI 'gh' is required for release asset hydration.")
 
-    asset_names = _release_asset_names(args.release_tag, args.repo)
+    manifest_entries = _manifest_entries()
+    pending_release_assets = [
+        asset
+        for asset in ASSETS
+        if not ((REPO_ROOT / asset["destination"]).exists() and not args.force)
+        and not asset.get("direct_url")
+        and _source_build_entry(asset, manifest_entries) is None
+    ]
+    asset_names = (
+        _release_asset_names(args.release_tag, args.repo) if pending_release_assets else set()
+    )
     archive_name = next(
         (name for name in sorted(asset_names) if name.startswith("AudioForge-") and name.endswith("-win64-ultra.7z")),
         None,
@@ -190,10 +290,21 @@ def main() -> int:
         extracted_root = temp_dir / "archive-extract"
         archive_path: Path | None = None
 
-        for asset in ASSETS:
+        ordered_assets = [
+            asset for asset in ASSETS if _source_build_entry(asset, manifest_entries) is None
+        ] + [asset for asset in ASSETS if _source_build_entry(asset, manifest_entries) is not None]
+        for asset in ordered_assets:
             destination = REPO_ROOT / asset["destination"]
             if destination.exists() and not args.force:
                 print(f"Skipping existing {destination.relative_to(REPO_ROOT)}")
+                continue
+
+            source_build_entry = _source_build_entry(asset, manifest_entries)
+            if source_build_entry is not None:
+                source = _build_source_asset(asset, source_build_entry, temp_dir)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                _atomic_copy(source, destination)
+                print(f"Built {asset['name']} from pinned source -> {destination.relative_to(REPO_ROOT)}")
                 continue
 
             direct_url = asset.get("direct_url")
@@ -215,7 +326,7 @@ def main() -> int:
                 source = _extract_archive_asset(archive_path, extracted_root, asset["archive_path"])
 
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+            _atomic_copy(source, destination)
             print(f"Installed {asset['name']} -> {destination.relative_to(REPO_ROOT)}")
 
     verification_errors = verify_assets()

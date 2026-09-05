@@ -1,0 +1,329 @@
+{
+  "benchmark": {
+    "args": "--attenuation-db 80 --post-filter-beta 0 --strength 1",
+    "hashes": {
+      "binary": {
+        "target/release/deepfilter_benchmark.exe": "86b29ebaf580ca7a6388c79c28e09d20188a695f1a153c67c8cccd0a1d8f1843"
+      },
+      "corpus_manifest": {
+        "models/deepfilter_fullband_eval/manifest.json": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6"
+      }
+    }
+  },
+  "command": "python/tools/evaluate_deepfilter_source_build.py --reference-library target/deepfilter/df-inherited-before-adoption.dll --candidate-library df.dll --benchmark target/release/deepfilter_benchmark.exe --corpus models/deepfilter_fullband_eval --model-dir models --output evaluation/deepfilter-source-build-report.json",
+  "limitations": [
+    "Microphone and physical output qualification remain pending by maintainer direction.",
+    "The original inherited DLL's build identity was not recoverable; parity establishes behavior on this held-out corpus, not provenance."
+  ],
+  "output": {
+    "attestation_output_bytes": 13767680,
+    "attestation_output_sha256": "5F666380BD0F69B6DEF04D7AEB6D38C8C1C5780E2CB3C3F9602F05564AA948A5",
+    "attestation_path": "target/deepfilter/df.dll.provenance.json",
+    "attestation_sha256": "e1370015954b88363d0c06d8677d5bd1897f3a76ecd673087d584d69305a32f3",
+    "bytes": 13767680,
+    "hash_note": "Native linker metadata can vary between approved toolchains; each build publishes its own attestation.",
+    "manifest_sha256_is_reference_only": true,
+    "path": "df.dll",
+    "sha256": "5f666380bd0f69b6def04d7aeb6d38c8c1c5780e2cb3c3f9602f05564aa948a5"
+  },
+  "parity": {
+    "cases": 8,
+    "comparisons": [
+      {
+        "candidate_latency_samples": 480,
+        "candidate_p99_frame_ms": 1.2606,
+        "expected_latency_samples": 480,
+        "finite": true,
+        "input": {
+          "input_sha256": "71669e5391a202e3f04371baa3c97685d18d3cf05ed7a65e66b064ef5b5c6b5a",
+          "offset": 0,
+          "path": "noisy/p232_001.wav",
+          "sha256": "b573339154dd3f05d971ca9f721c0e25867426ef39afc7806c31bc7f7fb36050"
+        },
+        "max_abs": 0.0,
+        "model": "ll",
+        "reference_latency_samples": 480,
+        "reference_p99_frame_ms": 1.4893,
+        "rmse": 0.0,
+        "samples": 48480,
+        "segment": "p232_001@0"
+      },
+      {
+        "candidate_latency_samples": 480,
+        "candidate_p99_frame_ms": 1.4005999999999998,
+        "expected_latency_samples": 480,
+        "finite": true,
+        "input": {
+          "input_sha256": "03686a1b5064931000f1c3868649d3a5f9d2a9571efabb567ecc740390ca5d7a",
+          "offset": 24000,
+          "path": "noisy/p232_006.wav",
+          "sha256": "53b9be9b754b28c4907469333a1d938bc3d6ae7e513e7b371c999f337720d095"
+        },
+        "max_abs": 0.0,
+        "model": "ll",
+        "reference_latency_samples": 480,
+        "reference_p99_frame_ms": 1.3336999999999999,
+        "rmse": 0.0,
+        "samples": 48480,
+        "segment": "p232_006@24000"
+      },
+      {
+        "candidate_latency_samples": 480,
+        "candidate_p99_frame_ms": 1.2107,
+        "expected_latency_samples": 480,
+        "finite": true,
+        "input": {
+          "input_sha256": "8e5ed446583178f86d9147e23a70738315fb9bcfd0070e82ffb23d7030983fab",
+          "offset": 0,
+          "path": "noisy/p257_001.wav",
+          "sha256": "0e12d64b868c8ad885237b01f32757b31ed38d3f0745acf3df22603273ef5c82"
+        },
+        "max_abs": 0.0,
+        "model": "ll",
+        "reference_latency_samples": 480,
+        "reference_p99_frame_ms": 1.5116,
+        "rmse": 0.0,
+        "samples": 48480,
+        "segment": "p257_001@0"
+      },
+      {
+        "candidate_latency_samples": 480,
+        "candidate_p99_frame_ms": 1.1378,
+        "expected_latency_samples": 480,
+        "finite": true,
+        "input": {
+          "input_sha256": "14e1d7a9f5f3164132f28f6502c5f1dfaa66cf751c8121912b03811857d44431",
+          "offset": 24000,
+          "path": "noisy/p257_006.wav",
+          "sha256": "d398fbcd9e293d17200daea25075dce94c5908b9bff6c6d6f76e3e44d66a7499"
+        },
+        "max_abs": 0.0,
+        "model": "ll",
+        "reference_latency_samples": 480,
+        "reference_p99_frame_ms": 1.3531000000000002,
+        "rmse": 0.0,
+        "samples": 48480,
+        "segment": "p257_006@24000"
+      },
+      {
+        "candidate_latency_samples": 1440,
+        "candidate_p99_frame_ms": 0.7111,
+        "expected_latency_samples": 1440,
+        "finite": true,
+        "input": {
+          "input_sha256": "71669e5391a202e3f04371baa3c97685d18d3cf05ed7a65e66b064ef5b5c6b5a",
+          "offset": 0,
+          "path": "noisy/p232_001.wav",
+          "sha256": "b573339154dd3f05d971ca9f721c0e25867426ef39afc7806c31bc7f7fb36050"
+        },
+        "max_abs": 0.0,
+        "model": "standard",
+        "reference_latency_samples": 1440,
+        "reference_p99_frame_ms": 0.6232,
+        "rmse": 0.0,
+        "samples": 49440,
+        "segment": "p232_001@0"
+      },
+      {
+        "candidate_latency_samples": 1440,
+        "candidate_p99_frame_ms": 0.6084,
+        "expected_latency_samples": 1440,
+        "finite": true,
+        "input": {
+          "input_sha256": "03686a1b5064931000f1c3868649d3a5f9d2a9571efabb567ecc740390ca5d7a",
+          "offset": 24000,
+          "path": "noisy/p232_006.wav",
+          "sha256": "53b9be9b754b28c4907469333a1d938bc3d6ae7e513e7b371c999f337720d095"
+        },
+        "max_abs": 0.0,
+        "model": "standard",
+        "reference_latency_samples": 1440,
+        "reference_p99_frame_ms": 0.7972,
+        "rmse": 0.0,
+        "samples": 49440,
+        "segment": "p232_006@24000"
+      },
+      {
+        "candidate_latency_samples": 1440,
+        "candidate_p99_frame_ms": 0.5589,
+        "expected_latency_samples": 1440,
+        "finite": true,
+        "input": {
+          "input_sha256": "8e5ed446583178f86d9147e23a70738315fb9bcfd0070e82ffb23d7030983fab",
+          "offset": 0,
+          "path": "noisy/p257_001.wav",
+          "sha256": "0e12d64b868c8ad885237b01f32757b31ed38d3f0745acf3df22603273ef5c82"
+        },
+        "max_abs": 0.0,
+        "model": "standard",
+        "reference_latency_samples": 1440,
+        "reference_p99_frame_ms": 0.6848,
+        "rmse": 0.0,
+        "samples": 49440,
+        "segment": "p257_001@0"
+      },
+      {
+        "candidate_latency_samples": 1440,
+        "candidate_p99_frame_ms": 0.8476999999999999,
+        "expected_latency_samples": 1440,
+        "finite": true,
+        "input": {
+          "input_sha256": "14e1d7a9f5f3164132f28f6502c5f1dfaa66cf751c8121912b03811857d44431",
+          "offset": 24000,
+          "path": "noisy/p257_006.wav",
+          "sha256": "d398fbcd9e293d17200daea25075dce94c5908b9bff6c6d6f76e3e44d66a7499"
+        },
+        "max_abs": 0.0,
+        "model": "standard",
+        "reference_latency_samples": 1440,
+        "reference_p99_frame_ms": 0.7257,
+        "rmse": 0.0,
+        "samples": 49440,
+        "segment": "p257_006@24000"
+      }
+    ],
+    "finite_cases": 8,
+    "latency_samples": {
+      "ll": 480,
+      "standard": 1440
+    },
+    "max_abs": 0.0,
+    "models": [
+      "ll",
+      "standard"
+    ],
+    "rmse": 0.0
+  },
+  "purpose": "Compact evidence for the pinned DeepFilter source build used by the v2.0 release candidate.",
+  "recipe": {
+    "lockfile": "build-support/deepfilter/Cargo.lock",
+    "manifest": "build-support/deepfilter/Cargo.toml",
+    "provenance": "build-support/deepfilter/provenance.json",
+    "recipe_hashing": "Recipe text hashes are UTF-8 with CRLF/CR normalized to LF; model and archive hashes cover raw bytes.",
+    "script": "build_deepfilter.ps1",
+    "toolchain": "Rust 1.94.0 x86_64-pc-windows-msvc; release-lto; capi feature; default features disabled",
+    "tract_linalg": "0.21.17; crates.io archive SHA-256 5A4F0F9C134FAF99E3CF78B46D797398982E04AD46A3AD5223BCF8C0BD4AF360",
+    "validation": "Full pinned libDF tree and tract-linalg patch tree are checked before build; required C exports are checked before atomic publication."
+  },
+  "reference": {
+    "bytes": 16614912,
+    "expected_sha256": "270d14b92143c18c5f7e14e9eba3192d7843ec52fb9d1ade2fd9173d03a71656",
+    "path": "target/deepfilter/df-inherited-before-adoption.dll",
+    "sha256": "270d14b92143c18c5f7e14e9eba3192d7843ec52fb9d1ade2fd9173d03a71656"
+  },
+  "runtime": {
+    "deterministic_gate_cases": 18,
+    "finite_cases": 18,
+    "gate_p99_frame_ms": 10.0,
+    "latency_cases": 18,
+    "max_p99_frame_ms": 1.4005999999999998,
+    "max_rtf": 0.09273138613861386,
+    "repeats": "5 per model plus the 8 parity cases",
+    "runs": [
+      {
+        "expected_latency_samples": 480,
+        "finite": true,
+        "latency_samples": 480,
+        "model": "ll",
+        "p99_frame_ms": 1.1251,
+        "repeat": 1,
+        "rtf": 0.08600158415841584
+      },
+      {
+        "expected_latency_samples": 480,
+        "finite": true,
+        "latency_samples": 480,
+        "model": "ll",
+        "p99_frame_ms": 1.0344,
+        "repeat": 2,
+        "rtf": 0.0826029702970297
+      },
+      {
+        "expected_latency_samples": 480,
+        "finite": true,
+        "latency_samples": 480,
+        "model": "ll",
+        "p99_frame_ms": 1.2194,
+        "repeat": 3,
+        "rtf": 0.08801069306930694
+      },
+      {
+        "expected_latency_samples": 480,
+        "finite": true,
+        "latency_samples": 480,
+        "model": "ll",
+        "p99_frame_ms": 1.3027,
+        "repeat": 4,
+        "rtf": 0.08554881188118812
+      },
+      {
+        "expected_latency_samples": 480,
+        "finite": true,
+        "latency_samples": 480,
+        "model": "ll",
+        "p99_frame_ms": 1.2712999999999999,
+        "repeat": 5,
+        "rtf": 0.09273138613861386
+      },
+      {
+        "expected_latency_samples": 1440,
+        "finite": true,
+        "latency_samples": 1440,
+        "model": "standard",
+        "p99_frame_ms": 0.5185,
+        "repeat": 1,
+        "rtf": 0.04247592233009709
+      },
+      {
+        "expected_latency_samples": 1440,
+        "finite": true,
+        "latency_samples": 1440,
+        "model": "standard",
+        "p99_frame_ms": 0.9840999999999999,
+        "repeat": 2,
+        "rtf": 0.044435533980582524
+      },
+      {
+        "expected_latency_samples": 1440,
+        "finite": true,
+        "latency_samples": 1440,
+        "model": "standard",
+        "p99_frame_ms": 0.716,
+        "repeat": 3,
+        "rtf": 0.04387310679611651
+      },
+      {
+        "expected_latency_samples": 1440,
+        "finite": true,
+        "latency_samples": 1440,
+        "model": "standard",
+        "p99_frame_ms": 0.6987,
+        "repeat": 4,
+        "rtf": 0.0445026213592233
+      },
+      {
+        "expected_latency_samples": 1440,
+        "finite": true,
+        "latency_samples": 1440,
+        "model": "standard",
+        "p99_frame_ms": 0.7607999999999999,
+        "repeat": 5,
+        "rtf": 0.044214854368932036
+      }
+    ]
+  },
+  "schema_version": 2,
+  "source": {
+    "commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+    "models": {
+      "DeepFilterNet3_ll_onnx.tar.gz": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
+      "DeepFilterNet3_onnx.tar.gz": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616"
+    },
+    "repository": "https://github.com/Rikorose/DeepFilterNet.git"
+  },
+  "source_sha256": {
+    "python/tools/evaluate_deepfilter_source_build.py": "4550537b1ac165cce915b0c3b325cabc6e9eac419bb1daeb3cd3fd8f9071e6fa",
+    "rust-core/src/bin/deepfilter_benchmark.rs": "ed7f006433c3c919420ac49eba61f6292d9b6938497ae7172990c2a61133cb08",
+    "rust-core/src/dsp/deepfilter_ffi.rs": "7785dd862a350c31da4b09ca621b24d59f876a153a72601d712a76101946d9d5"
+  }
+}

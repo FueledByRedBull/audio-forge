@@ -26,10 +26,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.12.10"
           cache: pip
           cache-dependency-path: requirements/dev.txt
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+        with:
+          toolchain: 1.94.0
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -43,10 +45,13 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --require-hashes -r requirements/dev.txt
+          if ($LASTEXITCODE -ne 0) { throw "Dependency install failed with exit code $LASTEXITCODE." }
           python -m pip install --no-deps --no-build-isolation -e .
+          if ($LASTEXITCODE -ne 0) { throw "Editable install failed with exit code $LASTEXITCODE." }
       - name: Audit locked Python dependencies
         run: |
           python -m pip_audit --require-hashes -r requirements/runtime.txt
+          if ($LASTEXITCODE -ne 0) { throw "Runtime dependency audit failed with exit code $LASTEXITCODE." }
           # Semgrep 1.171.0 currently pins mcp==1.23.3 for its optional
           # `semgrep mcp` server. This repository only invokes `semgrep scan`;
           # keep the upstream IDs explicit until Semgrep publishes a compatible
@@ -55,6 +60,7 @@ jobs:
             --ignore-vuln PYSEC-2026-3481 `
             --ignore-vuln PYSEC-2026-3482 `
             --ignore-vuln PYSEC-2026-3483
+          if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
       - name: Ruff
         run: python -m ruff check python/mic_eq python/tests python/tools
       - name: Pyright
@@ -85,7 +91,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+        with:
+          toolchain: 1.94.0
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -98,10 +106,28 @@ jobs:
             ${{ runner.os }}-cargo-rust-
       - name: Rust format
         run: cargo fmt --check
-      - name: RustSec audit
-        uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # master, Node 24
+      - name: Cache pinned cargo-audit and advisory database
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          path: |
+            ~/.cargo/bin/cargo-audit.exe
+            ~/.cargo/advisory-db
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2
+      - name: Install pinned cargo-audit
+        run: |
+          $audit = Join-Path $env:USERPROFILE ".cargo/bin/cargo-audit.exe"
+          $version = ""
+          if (Test-Path -LiteralPath $audit) { $version = & $audit --version | Out-String }
+          if ($version -notmatch "0\.22\.2") {
+            cargo install cargo-audit --version 0.22.2 --locked --force
+            if ($LASTEXITCODE -ne 0) { throw "cargo-audit installation failed with exit code $LASTEXITCODE." }
+          }
+          $version = & $audit --version | Out-String
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch "0\.22\.2") { throw "cargo-audit 0.22.2 is not available." }
+      - name: RustSec audit
+        run: |
+          cargo audit --deny warnings
+          if ($LASTEXITCODE -ne 0) { throw "RustSec audit failed with exit code $LASTEXITCODE." }
       - name: Download pinned Silero contract model
         run: |
           $asset = (Get-Content release-assets.json | ConvertFrom-Json).assets |

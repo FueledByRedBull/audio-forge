@@ -1,13 +1,13 @@
 # AudioForge
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![Rust](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](https://www.rust-lang.org/)
+[![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Rust](https://img.shields.io/badge/rust-1.94.0-orange.svg)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)]()
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
 
-Current version: `v1.11.4`
+Current version: `v2.0.0`
 
 ## Download
 
@@ -15,6 +15,8 @@ Download the latest published Windows build from the
 [latest AudioForge release](https://github.com/FueledByRedBull/audio-forge/releases/latest):
 
 - Published archive: `AudioForge-v<version>-win64-ultra.7z`
+- Per-user installer: `AudioForge-v<version>-win64.msi`
+- Corresponding source: `AudioForge-v<version>-source.7z`
 - Checksum: use the matching `.7z.sha256` sidecar published by the release workflow.
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
@@ -75,7 +77,11 @@ Operational tools:
 
 ## Status
 
-AudioForge currently supports Windows 10/11 only. Source builds, CI, portable `dist/AudioForge` packaging, runtime assets, device recovery behavior, and desktop identity integration are validated on Windows. Linux and macOS builds are not supported today, even though parts of the Rust audio stack use cross-platform libraries.
+AudioForge targets Windows 10 (1809 or later) and Windows 11 x64. Hosted Windows CI validates software and
+packaging; it does not qualify every microphone, driver, virtual route, or OS
+version. Exact-artifact hardware reports define the tested coverage. The v2.0
+hardware matrix remains pending; see [v2 readiness](docs/v2-readiness.md).
+Linux and macOS builds are not supported.
 
 DeepFilterNet support is intentionally opt-in for source runs. Packaged builds register and enable verified bundled assets during application bootstrap; RNNoise remains the safe default when those assets are absent. External DLL/model paths are ignored unless `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` is explicitly set.
 DeepFilter model/DLL initialization and Silero VAD inference are prepared off the realtime DSP loop; the audio path only swaps ready suppressor state and consumes cached VAD probabilities.
@@ -103,13 +109,19 @@ Latency labels in the UI describe suppressor/DSP behavior, not a universal round
 
 ## Requirements
 
-- Windows 10/11
-- Python 3.10+
-- Rust 1.83+
+- Windows 10 (1809 or later) or Windows 11, x64
+- CPython 3.12 x64 (the locked NumPy/SciPy versions require Python 3.12)
+- Rust 1.94.0, selected by `rust-toolchain.toml`
 - `maturin`
 - A virtual environment in `.venv` is assumed by the packaging script.
 
 ## Quick Start From Source
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for checks and contribution guidance,
+[SECURITY.md](SECURITY.md) for vulnerability reporting, and
+[third-party notices](licenses/THIRD_PARTY_NOTICES.md) for binary distribution
+terms. AudioForge's original source is MIT; the PyQt6-based application is
+distributed under GPLv3 together with its dependency notices.
 
 ```powershell
 git clone https://github.com/FueledByRedBull/audio-forge.git
@@ -210,22 +222,20 @@ range; AudioForge preflights the request and otherwise keeps the driver default.
 
 ## Build Portable EXE
 
-Build the Rust extension first, then package:
+The packaging entry point rebuilds the Rust extension before freezing:
 
 ```powershell
 .\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
-.\.venv\Scripts\python.exe -m maturin develop --release
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
 
 Packaging script behavior:
 
-- Uses the locally built `python/mic_eq/mic_eq_core*.pyd`.
-- Fails if the local native extension is older than Rust sources.
+- Rebuilds `python/mic_eq/mic_eq_core*.pyd` from the current source and lockfile.
 - Validates required full-feature runtime assets against `release-assets.json`.
 - Reuses PyInstaller's analysis cache by default; pass `-Clean` for a cold PyInstaller rebuild.
 - Bundles the Python runtime with PyInstaller.
-- Bundles AudioForge, DeepFilterNet, Silero VAD, and DirectML license notices.
+- Bundles GPLv3 distribution terms, dependency inventory, and retained license notices.
 - Writes `_internal/audioforge-build.json`; package smoke rejects a bundle whose version differs from the source tree.
 - Prunes unused Qt payload, duplicate native-extension payload, and app-local
   UCRT/API-set files with `python/tools/prune_bundle.py` while retaining
@@ -243,13 +253,27 @@ Portable output:
 - `dist/AudioForge/AudioForge.exe`
 - Bundled assets and runtime files under `dist/AudioForge/_internal`
 
+## Build the MSI installer
+
+After building the portable payload, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_msi.ps1
+```
+
+The installer uses the same portable payload and installs for the current user.
+The script acquires and verifies its pinned WiX tooling. CI compares the
+extracted and installed file tree with the portable bundle and checks uninstall
+preserves user configuration. MSI candidates are published only after the same
+release qualification gates as the portable archive.
+
 ## Create Release Archive
 
 The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.11.4-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v2.0.0-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 The v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz, tar.zst,
@@ -328,7 +352,11 @@ working notes outside the repository and do not treat them as authoritative.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+The original AudioForge source is MIT; see [LICENSE](LICENSE). Portable and MSI
+distributions that include PyQt6 are distributed under GPLv3 together with the
+notices in [licenses/THIRD_PARTY_NOTICES.md](licenses/THIRD_PARTY_NOTICES.md)
+and the corresponding source materials described in
+[licenses/SOURCE_DISTRIBUTION.md](licenses/SOURCE_DISTRIBUTION.md).
 
 ## Acknowledgments
 

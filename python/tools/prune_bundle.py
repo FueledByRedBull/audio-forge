@@ -47,6 +47,8 @@ def prune_bundle(bundle_root: Path) -> list[Path]:
         Path("_internal/PyQt6/QtPdf.pyd"),
         Path("_internal/PyQt6/QtPdfWidgets.pyd"),
         Path("_internal/PyQt6/Qt6/plugins/iconengines/qsvgicon.dll"),
+        Path("_internal/PyQt6/Qt6/plugins/imageformats/qsvg.dll"),
+        Path("_internal/PyQt6/Qt6/plugins/imageformats/qpdf.dll"),
     ):
         candidate = bundle_root / relative_path
         if candidate.exists():

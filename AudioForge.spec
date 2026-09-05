@@ -1,6 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import hashlib
+import json
 
 
 repo_root = Path(globals().get("SPECPATH", ".")).resolve()
@@ -19,6 +21,25 @@ if licenses_dir.exists():
     for license_file in sorted(licenses_dir.iterdir()):
         if license_file.is_file():
             datas.append((str(license_file), "licenses"))
+
+# Bundle only notices named by this build's inventory, not stale cache files.
+dependency_licenses = repo_root / "build" / "dependency-licenses"
+inventory_file = dependency_licenses / "inventory.json"
+inventory = json.loads(inventory_file.read_text(encoding="utf-8"))
+datas.append((str(inventory_file), "licenses/dependencies"))
+components = [
+    inventory["python"],
+    *inventory["python_components"],
+    *inventory["rust_components"],
+    *inventory["native_components"],
+]
+for component in components:
+    for notice in component["notices"]:
+        path = (dependency_licenses / notice["file"]).resolve()
+        relative = path.relative_to(dependency_licenses.resolve())
+        if hashlib.sha256(path.read_bytes()).hexdigest() != notice["sha256"]:
+            raise ValueError(f"Dependency notice digest mismatch: {relative}")
+        datas.append((str(path), (Path("licenses/dependencies") / relative.parent).as_posix()))
 
 df_dll = repo_root / "df.dll"
 if df_dll.exists():

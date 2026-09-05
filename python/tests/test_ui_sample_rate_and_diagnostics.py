@@ -3,13 +3,18 @@
 
 from __future__ import annotations
 
+import time
+import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
+from PyQt6.QtCore import QEventLoop, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QWidget
 
+from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.ui.calibration_dialog import CalibrationDialog, _selected_device_pair
+from mic_eq.ui.analysis_worker import AnalysisWorker
 from mic_eq.ui.latency_calibration_dialog import (
     LatencyCalibrationDialog,
     _capture_sample_rate,
@@ -91,6 +96,7 @@ class _CaptureWorkerStub:
             "chain_settings": chain_settings,
         }
         self.step_progress = _SignalStub()
+        self.result_ready = _SignalStub()
         self.finished = _SignalStub()
         self.failed = _SignalStub()
 
@@ -105,6 +111,27 @@ class _CaptureWorkerStub:
 
     def wait(self, _timeout=None):
         return True
+
+
+class _SlowAnalysisWorker(QThread):
+    """Non-cooperative worker used to verify asynchronous dialog teardown."""
+
+    step_progress = pyqtSignal(str, int)
+    result_ready = pyqtSignal(dict)
+    failed = pyqtSignal(str)
+    instances: list["_SlowAnalysisWorker"] = []
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.stop_requested = False
+        self.instances.append(self)
+
+    def stop(self):
+        self.stop_requested = True
+
+    def run(self):
+        time.sleep(1.6)
+        self.result_ready.emit({})
 
 
 class _FakeProcessor:
@@ -130,9 +157,15 @@ class _FakeCombo:
         self._items = list(items or [])
         self._index = 0 if self._items else -1
         self._signals_blocked = False
+        self.enabled = True
 
     def blockSignals(self, blocked: bool):
+        previous = self._signals_blocked
         self._signals_blocked = blocked
+        return previous
+
+    def setEnabled(self, enabled: bool):
+        self.enabled = bool(enabled)
 
     def clear(self):
         self._items.clear()
@@ -164,6 +197,7 @@ class _FakeCombo:
 class _FakeControl:
     def __init__(self, value=None):
         self.value = value
+        self.enabled = True
 
     def setChecked(self, value):
         self.value = bool(value)
@@ -173,6 +207,9 @@ class _FakeControl:
 
     def setValue(self, value):
         self.value = value
+
+    def setEnabled(self, value):
+        self.enabled = bool(value)
 
 
 class _FakeLabel:
@@ -374,9 +411,26 @@ class _MeterProcessor:
         return None
 
 
-class _RecoveryWindow:
+class _StoppedRecoveryProcessor(_MeterProcessor):
     def __init__(self):
-        self.processor = _MeterProcessor()
+        super().__init__()
+        self.running = False
+        self.recovery_calls = 0
+
+    def is_running(self) -> bool:
+        return self.running
+
+    def service_recovery(self):
+        self.recovery_calls += 1
+        if self.recovery_calls == 2:
+            self.running = True
+            return True
+        return False
+
+
+class _RecoveryWindow:
+    def __init__(self, processor=None):
+        self.processor = processor or _MeterProcessor()
         self.input_meter = _FakeMeter()
         self.output_meter = _FakeMeter()
         self.compressor_panel = _FakePanel()
@@ -393,6 +447,10 @@ class _RecoveryWindow:
         self.backend_diag_label = _FakeLabel()
         self.recovery_diag_label = _FakeLabel()
         self.status_bar = _FakeStatusBar()
+        self.start_btn = _FakeControl()
+        self.stop_btn = _FakeControl()
+        self.input_combo = _FakeControl()
+        self.output_combo = _FakeControl()
         self._last_backend_warning = None
         self._last_output_underrun_total = 0
         self._last_input_clip_event_count = 0
@@ -428,6 +486,9 @@ class _RecoveryWindow:
 
     def _service_stream_recovery(self, **kwargs) -> None:
         MainWindow._service_stream_recovery(self, **kwargs)
+
+    def _sync_processing_controls(self) -> None:
+        MainWindow._sync_processing_controls(self)
 
 
 def _healthy_runtime_diagnostics(**overrides):
@@ -499,6 +560,117 @@ def test_calibration_recorded_audio_reports_processor_rate(qapp):
 
     dialog.close()
     owner.close()
+
+
+def _process_events_for(qapp, duration_ms: int) -> None:
+    loop = QEventLoop()
+    QTimer.singleShot(duration_ms, loop.quit)
+    loop.exec()
+
+
+def test_calibration_cancel_invalidates_delayed_capture_start(qapp):
+    processor = Mock()
+    processor.sample_rate.return_value = 48_000
+    owner = _FakeOwner(processor)
+    dialog = CalibrationDialog(parent=owner)
+    dialog.recording_state = "recording"
+    dialog._capture_start_timer.start(1)
+
+    dialog.reject()
+    _process_events_for(qapp, 25)
+
+    processor.start_raw_recording.assert_not_called()
+    assert not dialog._capture_start_timer.isActive()
+    owner.close()
+
+
+def test_voice_setup_cancel_invalidates_delayed_capture_start(qapp):
+    processor = Mock()
+    processor.sample_rate.return_value = 48_000
+    owner = _FakeOwner(processor)
+    dialog = VoiceSetupDialog(parent=owner)
+    dialog.setup_state = "voice_recording"
+    dialog._capture_start_timer.start(1)
+
+    dialog.reject()
+    _process_events_for(qapp, 25)
+
+    processor.start_raw_recording.assert_not_called()
+    assert not dialog._capture_start_timer.isActive()
+    owner.close()
+
+
+def test_calibration_ignores_stale_analysis_generation(qapp):
+    owner = _FakeOwner(_FakeProcessor())
+    dialog = CalibrationDialog(parent=owner)
+    dialog._analysis_generation = 2
+    previous_step = dialog.warning_label.text()
+
+    dialog._on_analysis_step("stale step", 55, generation=1)
+
+    assert dialog.warning_label.text() == previous_step
+
+    dialog._on_analysis_complete(
+        {"band_gains": [0.0] * 10, "apply_recommended": True},
+        generation=1,
+    )
+
+    assert not hasattr(dialog, "eq_settings")
+    dialog.close()
+    owner.close()
+
+
+def test_analysis_close_waits_for_a_slow_worker_and_ignores_its_result(
+    qapp, monkeypatch
+):
+    _SlowAnalysisWorker.instances.clear()
+    monkeypatch.setattr(
+        "mic_eq.ui.calibration_dialog.AnalysisWorker", _SlowAnalysisWorker
+    )
+    owner = _FakeOwner(_FakeProcessor())
+    dialog = CalibrationDialog(parent=owner)
+    dialog.audio_data = np.ones(256, dtype=np.float32)
+    dialog._start_analysis()
+    worker = dialog.analysis_worker
+    assert worker is not None and worker.isRunning()
+
+    dialog.reject()
+    assert dialog._close_requested is True
+    assert worker.stop_requested is True
+    _process_events_for(qapp, 2_100)
+
+    assert dialog._analysis_workers == []
+    assert dialog._close_requested is False
+    assert not hasattr(dialog, "eq_settings")
+    owner.close()
+
+
+def test_analysis_worker_passes_cooperative_cancellation_into_pipeline(
+    qapp, monkeypatch
+):
+    entered = threading.Event()
+    callbacks: list[object] = []
+
+    def blocking_analysis(*_args, cancel_check=None, **_kwargs):
+        callbacks.append(cancel_check)
+        entered.set()
+        if not callable(cancel_check):
+            raise AssertionError("worker did not provide a cancellation callback")
+        while not cancel_check():
+            time.sleep(0.005)
+        raise AnalysisCancelled("sentinel")
+
+    monkeypatch.setattr(
+        "mic_eq.ui.analysis_worker.analyze_auto_eq", blocking_analysis
+    )
+    worker = AnalysisWorker(np.zeros(256, dtype=np.float32), 48_000)
+    worker.start()
+    assert entered.wait(1.0)
+
+    worker.stop()
+    assert worker.wait(2_000)
+    assert len(callbacks) == 1
+    assert callable(callbacks[0])
 
 
 def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
@@ -922,9 +1094,11 @@ def test_start_processor_for_route_forwards_duplicate_name_ordinals():
     class Processor:
         def __init__(self):
             self.args = None
+            self.kwargs = None
 
-        def start(self, *args):
+        def start(self, *args, **kwargs):
             self.args = args
+            self.kwargs = kwargs
             return "started"
 
     processor = Processor()
@@ -936,6 +1110,33 @@ def test_start_processor_for_route_forwards_duplicate_name_ordinals():
 
     assert result == "started"
     assert processor.args == ("USB Audio", "USB Audio", 1, 2)
+    assert processor.kwargs == {
+        "input_device_endpoint_id": None,
+        "output_device_endpoint_id": None,
+    }
+
+
+def test_start_processor_for_route_forwards_endpoint_ids():
+    class Processor:
+        def __init__(self):
+            self.kwargs = None
+
+        def start(self, *_args, **kwargs):
+            self.kwargs = kwargs
+            return "started"
+
+    processor = Processor()
+    result = start_processor_for_route(
+        processor,
+        DeviceIdentity(name="USB Audio", endpoint_id="input-endpoint"),
+        DeviceIdentity(name="USB Audio", endpoint_id="output-endpoint"),
+    )
+
+    assert result == "started"
+    assert processor.kwargs == {
+        "input_device_endpoint_id": "input-endpoint",
+        "output_device_endpoint_id": "output-endpoint",
+    }
 
 
 def test_route_preset_binding_applies_only_to_exact_stable_route(qapp):
@@ -1055,6 +1256,48 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
     assert window.status_bar.messages == []
 
 
+def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
+    window = MainWindow.__new__(MainWindow)
+    window.input_combo = _FakeCombo(
+        [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
+    )
+    window.output_combo = _FakeCombo(
+        [("Out A", DeviceIdentity(name="Out A", is_default=True))]
+    )
+    window.input_channel_mode_combo = _FakeCombo([("Average", "average")])
+    window.input_cleanup_mode_combo = _FakeCombo([("Off", "off")])
+    window.input_combo._signals_blocked = True
+    window.input_channel_mode_combo._signals_blocked = True
+    window.device_warning_banner = _FakeLabel()
+    window.status_bar = _FakeStatusBar()
+    window.config = type(
+        "Cfg",
+        (),
+        {
+            "last_input_device_identity": DeviceIdentity(name="Mic A"),
+            "last_output_device_identity": DeviceIdentity(name="Out A"),
+            "last_input_device": "Mic A",
+            "last_output_device": "Out A",
+        },
+    )()
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.list_input_devices",
+        lambda: [type("Dev", (), {"name": "Mic A", "is_default": True})()],
+    )
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.list_output_devices",
+        lambda: [type("Dev", (), {"name": "Out A", "is_default": True})()],
+    )
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _cfg: None)
+
+    window._refresh_devices()
+
+    assert window.input_combo._signals_blocked
+    assert not window.output_combo._signals_blocked
+    assert window.input_channel_mode_combo._signals_blocked
+    assert not window.input_cleanup_mode_combo._signals_blocked
+
+
 def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.input_combo = _FakeCombo(
@@ -1156,6 +1399,25 @@ def test_update_diagnostics_surfaces_output_recovery_and_reuses_diagnostics(qapp
     assert "OCE:10" in window.dropped_label.tooltip
     assert "RT:fixed real-time buffer overflow" in window.dropped_label.tooltip
     assert not window.status_bar.messages
+
+
+def test_stopped_diagnostics_continue_native_recovery_and_reconcile_controls(qapp):
+    processor = _StoppedRecoveryProcessor()
+    window = _RecoveryWindow(processor)
+
+    MainWindow._update_diagnostics(window)
+
+    assert processor.diagnostics_calls == 0
+    assert processor.recovery_calls == 1
+    assert window.start_btn.enabled is True
+    assert window.stop_btn.enabled is False
+
+    MainWindow._update_diagnostics(window)
+
+    assert processor.recovery_calls == 2
+    assert processor.is_running() is True
+    assert window.start_btn.enabled is False
+    assert window.stop_btn.enabled is True
 
 
 def test_stale_output_underrun_and_recovery_totals_do_not_warn():
@@ -1498,6 +1760,8 @@ class _LatencyProcessor:
         _output_device=None,
         _input_device_name_ordinal=0,
         _output_device_name_ordinal=0,
+        input_device_endpoint_id=None,
+        output_device_endpoint_id=None,
     ):
         self.running = True
         self.started += 1

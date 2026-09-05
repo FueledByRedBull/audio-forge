@@ -16,6 +16,7 @@ use thiserror::Error;
 
 use super::buffer::AudioProducer;
 use super::clock::now_micros;
+use super::device::{device_for_endpoint_id, device_name};
 use super::rt::{store_rt_error, RtErrorCode};
 use super::{find_48khz_config, parse_fixed_buffer_frames, supported_fixed_buffer_frames};
 
@@ -325,11 +326,19 @@ impl AudioInput {
         parse_fixed_buffer_frames(value.as_deref())
     }
 
-    fn named_input_device(name: &str, name_ordinal: u32) -> Result<Device, AudioError> {
+    fn named_input_device(
+        name: &str,
+        name_ordinal: u32,
+        endpoint_id: Option<&str>,
+    ) -> Result<Device, AudioError> {
+        if let Some(endpoint_id) = endpoint_id {
+            return device_for_endpoint_id(endpoint_id, true).map_err(AudioError::DeviceNotFound);
+        }
+
         let host = cpal::default_host();
         host.input_devices()
             .map_err(|error| AudioError::DeviceName(error.to_string()))?
-            .filter(|device| device.name().map(|value| value == name).unwrap_or(false))
+            .filter(|device| device_name(device).is_ok_and(|value| value == name))
             .nth(name_ordinal as usize)
             .ok_or_else(|| {
                 AudioError::DeviceNotFound(format!("{name} (occurrence {name_ordinal})"))
@@ -374,9 +383,7 @@ impl AudioInput {
     fn select_device(
         device: Device,
     ) -> Result<(Device, SupportedStreamConfig, AudioDeviceInfo), AudioError> {
-        let name = device
-            .name()
-            .map_err(|e| AudioError::DeviceName(e.to_string()))?;
+        let name = device_name(&device).map_err(AudioError::DeviceName)?;
 
         let supported_configs: Vec<_> = device
             .supported_input_configs()
@@ -406,7 +413,7 @@ impl AudioInput {
 
         let device_info = AudioDeviceInfo {
             name,
-            sample_rate: supported_config.sample_rate().0,
+            sample_rate: supported_config.sample_rate(),
             channels: supported_config.channels(),
         };
 
@@ -983,7 +990,33 @@ impl AudioInput {
         rt_error_code: Arc<AtomicU32>,
         options: InputStreamOptions,
     ) -> Result<Self, AudioError> {
-        let device = Self::named_input_device(name, name_ordinal)?;
+        Self::from_device_identity_with_options(
+            name,
+            name_ordinal,
+            None,
+            producer,
+            last_callback_time_us,
+            error_count,
+            rt_error_code,
+            options,
+        )
+    }
+
+    /// Create an input stream using a stable platform endpoint ID when one is
+    /// available, falling back to the legacy friendly-name occurrence only
+    /// when no ID was persisted.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_device_identity_with_options(
+        name: &str,
+        name_ordinal: u32,
+        endpoint_id: Option<&str>,
+        producer: AudioProducer,
+        last_callback_time_us: Arc<AtomicU64>,
+        error_count: Arc<AtomicU64>,
+        rt_error_code: Arc<AtomicU32>,
+        options: InputStreamOptions,
+    ) -> Result<Self, AudioError> {
+        let device = Self::named_input_device(name, name_ordinal, endpoint_id)?;
 
         Self::from_device_with_options(
             device,
@@ -1004,7 +1037,7 @@ impl AudioInput {
         options: InputStreamOptions,
     ) -> Result<Self, AudioError> {
         let (device, supported_config, device_info) = Self::select_device(device)?;
-        let device_sample_rate = supported_config.sample_rate().0;
+        let device_sample_rate = supported_config.sample_rate();
         let sample_format = supported_config.sample_format();
         let mut stream_config = supported_config.config();
         let mut fixed_buffer_frames = None;
@@ -1157,11 +1190,11 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
         .map_err(|e| AudioError::DeviceName(e.to_string()))?;
 
     for device in device_iter {
-        if let Ok(name) = device.name() {
+        if let Ok(name) = device_name(&device) {
             if let Ok(config) = device.default_input_config() {
                 devices.push(AudioDeviceInfo {
                     name,
-                    sample_rate: config.sample_rate().0,
+                    sample_rate: config.sample_rate(),
                     channels: config.channels(),
                 });
             }

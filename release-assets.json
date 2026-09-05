@@ -3,9 +3,19 @@
   "assets": [
     {
       "path": "df.dll",
-      "size": 16614912,
-      "sha256": "270d14b92143c18c5f7e14e9eba3192d7843ec52fb9d1ade2fd9173d03a71656",
-      "source": "DeepFilterNet C runtime built or obtained for the release; do not copy from dist/",
+      "size": 13767680,
+      "sha256": "5f666380bd0f69b6def04d7aeb6d38c8c1c5780e2cb3c3f9602f05564aa948a5",
+      "source": "https://github.com/Rikorose/DeepFilterNet/tree/d375b2d8309e0935d165700c91da9de862a99c31",
+      "origin": {
+        "status": "verified-source-build",
+        "attestation_path": "target/deepfilter/df.dll.provenance.json",
+        "provenance": "build-support/deepfilter/provenance.json",
+        "repository": "https://github.com/Rikorose/DeepFilterNet.git",
+        "commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+        "build_recipe": "build_deepfilter.ps1",
+        "abi": "Windows x64 DeepFilter C API; runtime export validation in deepfilter_ffi.rs",
+        "rebuild": "Run build_deepfilter.ps1. It verifies the complete pinned libDF tree, the recorded compatibility patches, the locked Rust graph, model hashes, required exports, and writes a per-build output attestation. Native linker metadata may vary between approved toolchains, so the manifest sha256 is a reference build digest rather than a clean-build gate."
+      },
       "license": "MIT option; bundled notice: licenses/DeepFilterNet-LICENSE.txt"
     },
     {
@@ -13,28 +23,57 @@
       "bundle_path": "DirectML.dll",
       "size": 18527776,
       "sha256": "9c9e6d822561c6c41b90e6994b3e8857cf1d66dbfb1e0c4c799c7c89b4e92da1",
-      "source": "Microsoft DirectML redistributable from the pinned Microsoft.AI.DirectML package; do not copy from dist/",
-      "license": "MIT; bundled notice: licenses/DirectML-LICENSE.txt"
+      "source": "https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/1.15.4/microsoft.ai.directml.1.15.4.nupkg",
+      "origin": {
+        "status": "license-restricted",
+        "package": "Microsoft.AI.DirectML",
+        "version": "1.15.4",
+        "package_sha256": "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9",
+        "archive_path": "bin/x64-win/DirectML.dll",
+        "abi": "Windows x64",
+        "rebuild": "Extract the official redistributable; both package and extracted DLL hashes were verified. The package carries Microsoft's Software License Terms."
+      },
+      "license": "Microsoft Software License Terms; bundled notice: licenses/DirectML-LICENSE.txt"
     },
     {
       "path": "models/DeepFilterNet3_ll_onnx.tar.gz",
       "size": 36359660,
       "sha256": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
-      "source": "DeepFilterNet3 low-latency ONNX model artifact pinned for this release",
+      "source": "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/d375b2d8309e0935d165700c91da9de862a99c31/models/DeepFilterNet3_ll_onnx.tar.gz",
+      "origin": {
+        "status": "verified-upstream-git-blob",
+        "commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+        "git_blob_sha1": "f30e825f523c4ef52e54aa3706bbee100cd6f719",
+        "abi": "ONNX encoder/ERB decoder/DF decoder; 48000 Hz, 480-sample hop, zero lookahead",
+        "rebuild": "Use the checked-in upstream export at this commit. Retraining and bit-identical re-export are not claimed."
+      },
       "license": "MIT option; bundled notice: licenses/DeepFilterNet-LICENSE.txt"
     },
     {
       "path": "models/DeepFilterNet3_onnx.tar.gz",
       "size": 7983136,
       "sha256": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
-      "source": "DeepFilterNet3 standard ONNX model artifact pinned for this release",
+      "source": "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/d375b2d8309e0935d165700c91da9de862a99c31/models/DeepFilterNet3_onnx.tar.gz",
+      "origin": {
+        "status": "verified-upstream-git-blob",
+        "commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+        "git_blob_sha1": "1c4f4ffe1015fbb4541433cf291234ca32338871",
+        "abi": "ONNX encoder/ERB decoder/DF decoder; 48000 Hz, 480-sample hop, two-frame lookahead",
+        "rebuild": "Use the checked-in upstream export at this commit. Retraining and bit-identical re-export are not claimed."
+      },
       "license": "MIT option; bundled notice: licenses/DeepFilterNet-LICENSE.txt"
     },
     {
       "path": "models/silero_vad.onnx",
       "size": 2327524,
       "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
-      "source": "https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.1/src/silero_vad/data/silero_vad.onnx",
+      "source": "https://raw.githubusercontent.com/snakers4/silero-vad/7e30209a3e901f9842f81b225f3e93d8199902b1/src/silero_vad/data/silero_vad.onnx",
+      "origin": {
+        "status": "pinned-upstream-model",
+        "version": "6.2.1",
+        "commit": "7e30209a3e901f9842f81b225f3e93d8199902b1",
+        "abi": "ONNX, 16000 Hz, 64 context plus 512 new samples, recurrent output stateN"
+      },
       "license": "MIT; bundled notice: licenses/Silero-VAD-LICENSE.txt"
     }
   ]

@@ -1,5 +1,8 @@
 """High-level Auto-EQ analysis pipeline."""
 
+from collections.abc import Callable
+
+from ..cancellation import check_analysis_cancelled
 from .optimizer import calculate_eq_bands
 from .target import get_target_curve
 from .headroom import apply_headroom_validation
@@ -19,6 +22,7 @@ def analyze_auto_eq(
     noise_reference_status="usable",
     noise_reference_reasons=None,
     tilt_policy="preserve",
+    cancel_check: Callable[[], bool] | None = None,
 ):
     """
     Complete auto-EQ analysis pipeline.
@@ -52,12 +56,14 @@ def analyze_auto_eq(
     from ..failure_detection import validate_analysis
     from ..vad import analyze_offline_vad
 
+    check_analysis_cancelled(cancel_check)
     vad_backend = "provided"
     if vad_probabilities is None:
         vad_probabilities, vad_backend = analyze_offline_vad(
             audio_data,
             int(sample_rate),
         )
+    check_analysis_cancelled(cancel_check)
 
     # Step 1: Compute repeatability-aware voiced spectrum.
     spectrum_result = analyze_voice_spectrum(
@@ -72,6 +78,7 @@ def analyze_auto_eq(
             else None
         ),
     )
+    check_analysis_cancelled(cancel_check)
     freqs = spectrum_result.freqs
     spectrum_db = spectrum_result.median_spectrum_db
 
@@ -81,6 +88,7 @@ def analyze_auto_eq(
         spectrum_db,
         strength=smoothing_strength,
     )
+    check_analysis_cancelled(cancel_check)
 
     # Step 3: Get voice-aware bounded target curve.
     target_profile = (
@@ -94,6 +102,7 @@ def analyze_auto_eq(
         measured_db=spectrum_smoothed,
         target_mode=target_mode,
     )
+    check_analysis_cancelled(cancel_check)
 
     # Step 4: Calculate optimal EQ bands using least-squares
     eq_settings = calculate_eq_bands(
@@ -115,7 +124,9 @@ def analyze_auto_eq(
         used_spectrum_fallback=spectrum_result.used_single_spectrum_fallback,
         smoothing_strength=smoothing_strength,
         tilt_policy=tilt_policy,
+        cancel_check=cancel_check,
     )
+    check_analysis_cancelled(cancel_check)
     eq_settings["target_mode"] = target_mode
     eq_settings["measurement_coverage"] = spectrum_result.measurement_coverage
     eq_settings["measurement_outlier_rejection_ratio"] = (
@@ -150,7 +161,9 @@ def analyze_auto_eq(
         analysis_freqs=freqs,
         measured_db=spectrum_smoothed,
         target_db=target_db,
+        cancel_check=cancel_check,
     )
+    check_analysis_cancelled(cancel_check)
 
     # Step 5: Validate results
     validation = validate_analysis(eq_settings, spectrum_smoothed, freqs)

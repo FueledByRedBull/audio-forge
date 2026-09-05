@@ -128,12 +128,77 @@ def test_release_workflow_checker_rejects_dirty_source_override():
 
 def test_release_workflow_checker_rejects_asset_clobbering():
     path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
-    source = path.read_text(encoding="utf-8") + "\n--clobber\n"
+    source = path.read_text(encoding="utf-8") + "\ngh release upload --clobber\n"
     errors: list[str] = []
 
     check_workflows._check_required_gates(path.name, source, errors)
 
     assert any("must not overwrite published release assets" in error for error in errors)
+
+
+def test_release_workflow_checker_requires_active_package_smoke_gate():
+    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
+    source = path.read_text(encoding="utf-8").replace(
+        "python python/tools/package_smoke.py --dist $extract",
+        "# python python/tools/package_smoke.py --dist $extract",
+        1,
+    )
+    errors: list[str] = []
+
+    check_workflows._check_required_gates(path.name, source, errors)
+
+    assert any("package_smoke.py --dist" in error for error in errors)
+
+
+def test_release_workflow_checker_requires_source_distribution_publication_gate():
+    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
+    source = path.read_text(encoding="utf-8").replace(
+        "--require-source-distribution",
+        "--removed-source-distribution-gate",
+    )
+    errors: list[str] = []
+
+    check_workflows._check_required_gates(path.name, source, errors)
+
+    assert any("--require-source-distribution" in error for error in errors)
+
+
+def test_workflow_gate_parser_excludes_disabled_and_non_blocking_steps():
+    document = {
+        "jobs": {
+            "job": {
+                "steps": [
+                    {"run": "python enabled.py"},
+                    {"if": False, "run": "python disabled.py"},
+                    {"continue-on-error": True, "run": "python tolerated.py"},
+                    {
+                        "continue-on-error": "${{ true }}",
+                        "run": "python expression-tolerated.py",
+                    },
+                    {"run": "# python comment.py\npython active.py"},
+                ],
+            },
+            "disabled-job": {
+                "if": "${{ false }}",
+                "steps": [{"run": "python disabled-job.py"}],
+            },
+            "tolerated-job": {
+                "continue-on-error": "${{ true }}",
+                "steps": [{"run": "python tolerated-job.py"}],
+            },
+        }
+    }
+
+    active = check_workflows._active_run_source(document)
+
+    assert "enabled.py" in active
+    assert "active.py" in active
+    assert "disabled.py" not in active
+    assert "tolerated.py" not in active
+    assert "expression-tolerated.py" not in active
+    assert "disabled-job.py" not in active
+    assert "tolerated-job.py" not in active
+    assert "comment.py" not in active
 
 
 @pytest.mark.parametrize(
@@ -315,6 +380,22 @@ def test_prune_bundle_keeps_top_level_native_extension_without_packaged_copy(tmp
     assert (
         bundle / "_internal" / "mic_eq_core" / "mic_eq_core.cp312-win_amd64.pyd"
     ).is_file()
+
+
+def test_package_smoke_rejects_external_windows_icu(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    _write_bundle_file(bundle, "_internal/ICUUC.dll")
+    assert any("app-local Windows ICU" in error for error in package_smoke.check_dist_bundle(bundle))
+
+
+def test_prune_removes_image_plugins_with_excluded_qt_modules(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    for plugin in ("qpdf.dll", "qsvg.dll", "qico.dll"):
+        _write_bundle_file(bundle, f"_internal/PyQt6/Qt6/plugins/imageformats/{plugin}")
+    assert any("without its Qt module" in error for error in package_smoke.check_dist_bundle(bundle))
+    prune_bundle.prune_bundle(bundle)
+    assert not any("without its Qt module" in error for error in package_smoke.check_dist_bundle(bundle))
+    assert (bundle / "_internal/PyQt6/Qt6/plugins/imageformats/qico.dll").is_file()
 
 
 def test_prune_bundle_removes_system_ucrt_and_package_smoke_rejects_it(tmp_path):
@@ -507,6 +588,99 @@ def test_verify_release_assets_rejects_absolute_and_traversal_paths(
     assert any(r"models\..\bundle.bin" in error for error in errors)
 
 
+def test_verify_release_assets_accepts_attested_source_build(tmp_path, monkeypatch):
+    dll = tmp_path / "df.dll"
+    dll.write_bytes(b"verified-source-build")
+    for relative in verify_release_assets.SOURCE_RECIPE_FILES:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if relative != "build-support/deepfilter/provenance.json":
+            path.write_bytes(relative.encode("utf-8"))
+
+    provenance = {
+        "schema_version": 1,
+        "upstream": {
+            "repository": "https://github.com/Rikorose/DeepFilterNet.git",
+            "commit": "a" * 40,
+        },
+        "build": {
+            "target": "x86_64-pc-windows-msvc",
+            "profile": "release-lto",
+            "features": ["capi"],
+            "default_features": False,
+            "required_exports": ["df_create"],
+            "tested_rust": "1.94.0 (x86_64-pc-windows-msvc)",
+        },
+        "tract_linalg_patch": {
+            "archive_sha256": "b" * 64,
+            "patched_cargo_toml_sha256": "c" * 64,
+            "build_rs_sha256": "d" * 64,
+        },
+    }
+    (tmp_path / "build-support/deepfilter/provenance.json").write_text(
+        json.dumps(provenance), encoding="utf-8"
+    )
+    recipe_files = {
+        relative: verify_release_assets._sha256(tmp_path / relative)
+        for relative in verify_release_assets.SOURCE_RECIPE_FILES
+    }
+    attestation = {
+        "schema_version": 1,
+        "kind": "audioforge.deepfilter.build",
+        "output": {
+            "name": "df.dll",
+            "bytes": dll.stat().st_size,
+            "sha256": verify_release_assets._sha256(dll),
+        },
+        "source": {
+            "repository": provenance["upstream"]["repository"],
+            "commit": provenance["upstream"]["commit"],
+        },
+        "recipe": {
+            "files": recipe_files,
+            "tract_linalg_archive_sha256": provenance["tract_linalg_patch"]["archive_sha256"],
+            "tract_linalg_patched_manifest_sha256": provenance["tract_linalg_patch"]["patched_cargo_toml_sha256"],
+            "tract_linalg_build_rs_sha256": provenance["tract_linalg_patch"]["build_rs_sha256"],
+            "target": provenance["build"]["target"],
+            "profile": provenance["build"]["profile"],
+            "features": provenance["build"]["features"],
+            "default_features": provenance["build"]["default_features"],
+        },
+        "toolchain": {"rustc": "rustc 1.94.0 (test)"},
+        "abi": {"required_exports": provenance["build"]["required_exports"]},
+    }
+    (tmp_path / "attestation.json").write_text(
+        json.dumps(attestation), encoding="utf-8"
+    )
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "assets": [
+                    {
+                        "path": "df.dll",
+                        "size": 1,
+                        "sha256": "0" * 64,
+                        "origin": {
+                            "status": "verified-source-build",
+                            "attestation_path": "attestation.json",
+                            "provenance": "build-support/deepfilter/provenance.json",
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify_release_assets, "REPO_ROOT", tmp_path)
+
+    assert verify_release_assets.verify_assets(manifest) == []
+
+    (tmp_path / "models/DeepFilterNet3_onnx.tar.gz").write_bytes(b"tampered")
+    errors = verify_release_assets.verify_assets(manifest)
+    assert any("recipe hash mismatch" in error for error in errors)
+
+
 def test_fetch_release_assets_direct_download_writes_response(tmp_path, monkeypatch):
     monkeypatch.setattr(
         fetch_release_assets.urllib.request,
@@ -540,6 +714,40 @@ def test_fetch_release_assets_default_tag_comes_from_manifest(tmp_path, monkeypa
     monkeypatch.setattr(fetch_release_assets, "MANIFEST_PATH", manifest)
 
     assert fetch_release_assets._default_asset_source_tag() == "v9.8.7"
+
+
+def test_fetch_source_asset_invokes_pinned_builder_without_release_fallback(
+    tmp_path, monkeypatch
+):
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        output = Path(command[command.index("-OutputPath") + 1])
+        attestation = Path(command[command.index("-AttestationPath") + 1])
+        output.write_bytes(b"source-built")
+        attestation.parent.mkdir(parents=True, exist_ok=True)
+        attestation.write_text("{}", encoding="utf-8")
+        return ""
+
+    monkeypatch.setattr(fetch_release_assets, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(fetch_release_assets.shutil, "which", lambda name: "pwsh.exe")
+    monkeypatch.setattr(fetch_release_assets, "_run", fake_run)
+    asset = {"name": "df.dll", "destination": Path("df.dll")}
+    entry = {
+        "path": "df.dll",
+        "origin": {
+            "status": "verified-source-build",
+            "attestation_path": "target/deepfilter/df.dll.provenance.json",
+        },
+    }
+
+    output = fetch_release_assets._build_source_asset(asset, entry, tmp_path / "tmp")
+
+    assert output.read_bytes() == b"source-built"
+    assert len(commands) == 1
+    assert "build_deepfilter.ps1" in " ".join(commands[0])
+    assert "gh" not in commands[0]
 
 
 def test_version_check_rejects_stale_readme_hydration_tag(tmp_path, monkeypatch):

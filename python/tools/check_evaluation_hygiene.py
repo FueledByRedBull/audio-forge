@@ -41,13 +41,14 @@ PORTABLE_TEXT_SUFFIXES = {
 
 def _portable_source_sha256(path: Path) -> set[str]:
     data = path.read_bytes()
-    hashes = {hashlib.sha256(data).hexdigest()}
     if path.suffix.casefold() not in PORTABLE_TEXT_SUFFIXES or b"\0" in data:
-        return hashes
-    lf = data.replace(b"\r\n", b"\n")
-    hashes.add(hashlib.sha256(lf).hexdigest())
-    hashes.add(hashlib.sha256(lf.replace(b"\n", b"\r\n")).hexdigest())
-    return hashes
+        return {hashlib.sha256(data).hexdigest()}
+    lf = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    crlf = lf.replace(b"\n", b"\r\n")
+    return {
+        hashlib.sha256(lf).hexdigest(),
+        hashlib.sha256(crlf).hexdigest(),
+    }
 
 
 def _declared_source_hashes(report: dict[str, Any]) -> list[tuple[str, str]]:

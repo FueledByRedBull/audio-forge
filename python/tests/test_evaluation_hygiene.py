@@ -194,6 +194,38 @@ def test_declared_text_source_hash_is_portable_across_line_endings(
         assert hygiene.validate_report(report) == []
 
 
+def test_mixed_text_source_hash_must_use_canonical_line_endings(
+    tmp_path: Path, monkeypatch
+):
+    source = tmp_path / "source.py"
+    source.write_bytes(b"first\r\nsecond\n")
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(hygiene, "REPO_ROOT", tmp_path)
+
+    _write(
+        report,
+        {
+            "source_sha256": {
+                "source.py": hashlib.sha256(source.read_bytes()).hexdigest()
+            }
+        },
+    )
+    assert any(
+        "stale source SHA-256" in error for error in hygiene.validate_report(report)
+    )
+
+    canonical = b"first\nsecond\n"
+    _write(
+        report,
+        {
+            "source_sha256": {
+                "source.py": hashlib.sha256(canonical).hexdigest()
+            }
+        },
+    )
+    assert hygiene.validate_report(report) == []
+
+
 def test_declared_binary_source_hash_remains_byte_exact(
     tmp_path: Path, monkeypatch
 ):

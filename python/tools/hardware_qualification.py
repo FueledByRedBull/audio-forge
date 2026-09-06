@@ -34,10 +34,72 @@ REQUIRED_SCENARIOS = frozenset(
         "model_configuration_change",
     }
 )
+PHYSICAL_SCENARIOS = frozenset(
+    {"device_reconnect", "default_device_change", "sleep_resume"}
+)
 MINIMUM_AUTOMATED_BASELINE_CASES = 1
 PSEUDONYM = re.compile(r"^device-[0-9a-f]{16}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _lifecycle_evidence_errors(
+    scenario: str, evidence: Any
+) -> list[str]:
+    if not isinstance(evidence, dict):
+        return ["lifecycle evidence is missing"]
+    errors: list[str] = []
+    if evidence.get("scenario") != scenario:
+        errors.append("lifecycle evidence scenario does not match case")
+    if evidence.get("passed") is not True:
+        errors.append("lifecycle evidence did not pass")
+    event = evidence.get("event")
+    if not isinstance(event, dict) or event.get("observed") is not True:
+        errors.append("lifecycle event was not observed")
+    else:
+        required_event_fields = {
+            "device_reconnect": (
+                "backend_observed",
+                "selected_endpoint_absent",
+                "selected_endpoint_reappeared",
+            ),
+            "default_device_change": (
+                "backend_observed",
+                "default_endpoint_changed",
+                "selected_route_correct",
+            ),
+            "sleep_resume": (
+                "backend_observed",
+                "os_suspend_event",
+                "os_resume_event",
+            ),
+            "model_configuration_change": (
+                "backend_observed",
+                "model_switched",
+                "model_restored",
+                "diagnostics_healthy",
+            ),
+        }.get(scenario, ("backend_observed",))
+        for field in required_event_fields:
+            if event.get(field) is not True:
+                errors.append(f"lifecycle event lacks {field}")
+
+    recovery = evidence.get("recovery")
+    if not isinstance(recovery, dict):
+        errors.append("lifecycle recovery evidence is missing")
+    else:
+        for field in ("bounded", "recovered", "settled_clean"):
+            if recovery.get(field) is not True:
+                errors.append(f"lifecycle recovery lacks {field}")
+
+    diagnostics = evidence.get("diagnostics")
+    if (
+        not isinstance(diagnostics, dict)
+        or not isinstance(diagnostics.get("before"), dict)
+        or not isinstance(diagnostics.get("after"), dict)
+    ):
+        errors.append("lifecycle diagnostics before/after evidence is missing")
+    return errors
 
 
 def validate_case(
@@ -90,6 +152,15 @@ def validate_case(
             or sample_rate not in SUPPORTED_SAMPLE_RATES
         ):
             errors.append("unsupported nominal sample rate")
+        observed_sample_rate = case.get("observed_input_sample_rate_hz")
+        if (
+            not isinstance(observed_sample_rate, int)
+            or isinstance(observed_sample_rate, bool)
+            or observed_sample_rate not in SUPPORTED_SAMPLE_RATES
+        ):
+            errors.append("observed input sample rate is missing or unsupported")
+        elif isinstance(sample_rate, int) and observed_sample_rate != sample_rate:
+            errors.append("observed input sample rate differs from nominal rate")
         if not isinstance(scenario, str) or scenario not in SUPPORTED_SCENARIOS:
             errors.append("unsupported lifecycle scenario")
         if not isinstance(evidence_kind, str) or evidence_kind not in {
@@ -99,12 +170,16 @@ def validate_case(
             errors.append("unsupported evidence kind")
         if scenario == "baseline" and evidence_kind != "automated":
             errors.append("baseline case must use automated evidence")
-        if scenario != "baseline" and evidence_kind != "operator_observed":
+        if scenario in PHYSICAL_SCENARIOS and evidence_kind != "operator_observed":
             errors.append("lifecycle scenario lacks operator evidence")
-        if scenario != "baseline" and case.get("operator_attestation") is not True:
+        if (
+            scenario in PHYSICAL_SCENARIOS or evidence_kind == "operator_observed"
+        ) and case.get("operator_attestation") is not True:
             errors.append("lifecycle scenario lacks operator attestation")
         if case.get("scenario_evidence_valid") is not True:
             errors.append("scenario evidence was not validated")
+        if isinstance(scenario, str) and scenario != "baseline":
+            errors.extend(_lifecycle_evidence_errors(scenario, report.get("lifecycle_evidence")))
 
     machine = report.get("machine")
     if (

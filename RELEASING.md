@@ -66,8 +66,9 @@ onto the labelled AudioForge Windows audio runner, verifies provenance, and
 binds selected-route plus a 30-minute automated baseline to the archive
 SHA-256. The hardware gate requires evidence covering Windows 10 and 11,
 built-in/USB/virtual devices, 44.1/48 kHz, and baseline, reconnect, default-device
-change, sleep/resume, and model-configuration changes. Lifecycle cases require
-explicit operator observation; coverage is never inferred from a baseline.
+change, sleep/resume, and model-configuration changes. Physical lifecycle cases
+require explicit operator observation and measured events; model changes are exercised automatically. Coverage is never inferred
+from a baseline.
 This is coverage of the required dimensions, not every possible combination.
 Publication is a third, explicit promotion step:
 it downloads those same bytes and both qualification reports, verifies every
@@ -197,8 +198,9 @@ Candidate and promotion:
 6. On a temporary or standing self-hosted runner labelled `self-hosted`,
    `windows`, `x64`, and `audioforge-hardware`, run `Qualify release candidate
    on hardware` with the candidate run ID and digest plus explicitly selected
-   health/correlation routes. Run the automated `baseline` and the required
-   operator-observed lifecycle scenarios across the supported dimensions. The
+   health/correlation routes. Run the automated `baseline` and
+   `model_configuration_change` scenarios, plus operator-observed physical
+   lifecycle scenarios across the supported dimensions. The
    workflow refuses a health duration below 1,800 seconds and uploads a
    privacy-safe digest-bound report.
 7. Run `Assemble release hardware gate` with all qualification run IDs. It checks

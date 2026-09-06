@@ -36,10 +36,15 @@ _ZERO_REQUIRED_DIAGNOSTICS = (
 
 
 def _critical_diagnostic_failures(
-    diagnostics: dict, *, output_underrun_baseline: int
+    diagnostics: dict,
+    *,
+    output_underrun_baseline: int | None,
+    ignored_zero_diagnostics: frozenset[str] = frozenset(),
 ) -> list[str]:
     failures: list[str] = []
     for key in _ZERO_REQUIRED_DIAGNOSTICS:
+        if key in ignored_zero_diagnostics:
+            continue
         if key not in diagnostics:
             failures.append(f"{key}=missing")
             continue
@@ -57,16 +62,17 @@ def _critical_diagnostic_failures(
         failures.append("noise_backend_failed=true")
     if diagnostics.get("last_stream_error"):
         failures.append("last_stream_error=set")
-    final_underruns = diagnostics.get("output_underrun_total")
-    if not isinstance(final_underruns, (int, float)):
-        failures.append("output_underrun_total=missing_or_invalid")
-    else:
-        final_underrun_count = int(final_underruns)
-        if final_underrun_count != output_underrun_baseline:
-            failures.append(
-                "output_underrun_total="
-                f"{final_underrun_count} (baseline {output_underrun_baseline})"
-            )
+    if output_underrun_baseline is not None:
+        final_underruns = diagnostics.get("output_underrun_total")
+        if not isinstance(final_underruns, (int, float)):
+            failures.append("output_underrun_total=missing_or_invalid")
+        else:
+            final_underrun_count = int(final_underruns)
+            if final_underrun_count != output_underrun_baseline:
+                failures.append(
+                    "output_underrun_total="
+                    f"{final_underrun_count} (baseline {output_underrun_baseline})"
+                )
     return failures
 
 
@@ -79,7 +85,9 @@ def _selected_noise_model_failures(
     if diagnostics.get("noise_model") != expected_model:
         failures.append(f"noise_model={diagnostics.get('noise_model')!r}")
     if expected_model == "deepfilter":
-        if diagnostics.get("suppressor_latency_samples") != 1_440:
+        if not _suppressor_latency_is_valid(
+            diagnostics.get("suppressor_latency_samples"), 1_440
+        ):
             failures.append(
                 "suppressor_latency_samples="
                 f"{diagnostics.get('suppressor_latency_samples')!r}"
@@ -99,6 +107,16 @@ def _selected_noise_model_failures(
         ):
             failures.append(f"output_true_peak_db={output_true_peak_db!r}")
     return failures
+
+
+def _suppressor_latency_is_valid(value: object, base_samples: int) -> bool:
+    """Allow the bounded input-frame remainder added to model latency."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and base_samples <= float(value) < base_samples + 480
+    )
 
 
 def main() -> int:

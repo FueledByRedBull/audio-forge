@@ -69,14 +69,14 @@ on:
           - route_change
           - model_configuration_change
       evidence_kind:
-        description: "Non-baseline scenarios require an operator-observed event."
+        description: "Physical lifecycle scenarios require an operator-observed event."
         required: true
         type: choice
         options:
           - automated
           - operator_observed
       confirm_scenario_observed:
-        description: "Attest that the selected non-baseline lifecycle event was actually performed during the run."
+        description: "Attest that the selected physical lifecycle event was actually performed during the run."
         required: true
         default: false
         type: boolean
@@ -239,12 +239,12 @@ jobs:
           }
           $scenarioConfirmation = @()
           $report = Join-Path $env:RUNNER_TEMP "release-hardware-qualification.json"
-          if ($env:SCENARIO -ne "baseline") {
+          if ($env:SCENARIO -in @("device_reconnect", "default_device_change", "sleep_resume")) {
             if (
               $env:EVIDENCE_KIND -ne "operator_observed" -or
               $env:CONFIRM_SCENARIO_OBSERVED -ne "true"
             ) {
-              throw "Non-baseline qualification requires explicit operator attestation."
+              throw "Physical lifecycle qualification requires explicit operator attestation."
             }
             $scenarioConfirmation = @("--confirm-scenario-observed")
           }

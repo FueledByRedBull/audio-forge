@@ -7,6 +7,7 @@ import sys
 import tomllib
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -210,6 +211,17 @@ def test_health_gate_requires_standard_deepfilter_inference_and_output() -> None
         )
         == []
     )
+    clean["suppressor_latency_samples"] = 1_919
+    assert (
+        HEALTH_TOOL._selected_noise_model_failures(
+            clean, expected_model="deepfilter"
+        )
+        == []
+    )
+    clean["suppressor_latency_samples"] = 1_920
+    assert "suppressor_latency_samples=1920" in HEALTH_TOOL._selected_noise_model_failures(
+        clean, expected_model="deepfilter"
+    )
 
     broken = dict(clean)
     broken.update(
@@ -225,6 +237,154 @@ def test_health_gate_requires_standard_deepfilter_inference_and_output() -> None
     assert "suppressor_latency_samples=480" in failures
     assert "suppressor_successful_inference_frames=0" in failures
     assert "output_true_peak_db=-120.0" in failures
+
+
+def test_lifecycle_model_probe_requires_new_inference_frames() -> None:
+    diagnostics = {
+        "noise_model": "deepfilter",
+        "suppressor_latency_samples": 1_440,
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "suppressor_successful_inference_frames": 12,
+        "output_true_peak_db": -18.0,
+    }
+
+    assert TOOL._model_diagnostics_healthy(
+        diagnostics, "deepfilter", minimum_inference_frames=12
+    ) is False
+    diagnostics["suppressor_successful_inference_frames"] = 13
+    assert TOOL._model_diagnostics_healthy(
+        diagnostics, "deepfilter", minimum_inference_frames=12
+    ) is True
+
+
+def test_lifecycle_settle_rejects_diagnostic_counter_growth() -> None:
+    baseline: dict[str, Any] = {
+        key: 0 for key in HEALTH_TOOL._ZERO_REQUIRED_DIAGNOSTICS
+    }
+    baseline.update(
+        {
+            "output_underrun_total": 0,
+            "noise_backend_available": True,
+            "noise_backend_failed": False,
+            "last_stream_error": None,
+        }
+    )
+    current = dict(baseline)
+    current["output_recovery_count"] = 1
+
+    assert "output_recovery_count changed" in TOOL._stable_diagnostic_failures(
+        baseline, current
+    )
+
+
+@pytest.mark.parametrize("new_underruns", [0, 1])
+def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
+    monkeypatch, tmp_path, new_underruns
+) -> None:
+    input_device = SimpleNamespace(
+        name="Input", endpoint_id="input-endpoint", is_default=True, sample_rate=48_000
+    )
+    output_device = SimpleNamespace(
+        name="Output", endpoint_id="output-endpoint", is_default=True, sample_rate=48_000
+    )
+    environment_seen: list[str | None] = []
+
+    def diagnostics(model: str, frames: int) -> dict[str, object]:
+        result: dict[str, Any] = {
+            key: 0 for key in HEALTH_TOOL._ZERO_REQUIRED_DIAGNOSTICS
+        }
+        result.update(
+            {
+                "output_underrun_total": new_underruns if model == "deepfilter" else 0,
+                "noise_backend_available": True,
+                "noise_backend_failed": False,
+                "last_stream_error": None,
+                "noise_model": model,
+                "suppressor_latency_samples": (
+                    1_440 if model == "deepfilter" else 480
+                ),
+                "suppressor_successful_inference_frames": frames,
+                "output_true_peak_db": -18.0,
+            }
+        )
+        return result
+
+    class Processor:
+        def __init__(self) -> None:
+            self.model = "rnnoise"
+            self.deepfilter_reads = 0
+
+        def start(self, _input: str, _output: str) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def get_active_input_device(self) -> str:
+            return "Input"
+
+        def get_active_output_device(self) -> str:
+            return "Output"
+
+        def get_input_callback_age_ms(self) -> int:
+            return 1
+
+        def get_output_callback_age_ms(self) -> int:
+            return 1
+
+        def get_runtime_diagnostics(self) -> dict[str, object]:
+            if self.model == "deepfilter":
+                self.deepfilter_reads += 1
+                return diagnostics("deepfilter", max(0, self.deepfilter_reads - 1))
+            return diagnostics("rnnoise", 0)
+
+        def service_recovery(self) -> None:
+            return None
+
+        def list_noise_models(self) -> list[tuple[str, str]]:
+            return [("rnnoise", "RNNoise"), ("deepfilter", "DeepFilter")]
+
+        def get_noise_model(self) -> str:
+            return self.model
+
+        def set_noise_model(self, model: str) -> bool:
+            self.model = model
+            self.deepfilter_reads = 0
+            return True
+
+    def runtime_api(_bundle_root: Path | None):
+        environment_seen.append(os.environ.get("AUDIOFORGE_ENABLE_DEEPFILTER"))
+        return (
+            Processor,
+            lambda: [input_device],
+            lambda: [output_device],
+        )
+
+    monkeypatch.delenv("AUDIOFORGE_ENABLE_DEEPFILTER", raising=False)
+    monkeypatch.setattr(TOOL, "_runtime_api", runtime_api)
+    monkeypatch.setattr(TOOL, "LIFECYCLE_POLL_SECONDS", 0.001)
+    result = TOOL._run_lifecycle_probe(
+        scenario="model_configuration_change",
+        health_input="Input",
+        health_output="Output",
+        bundle_root=tmp_path,
+        timeout_seconds=0.5,
+        settle_seconds=0.0,
+    )
+
+    if new_underruns:
+        assert result["passed"] is False
+        assert result["event"]["reason"] == "model_switch_not_observed"
+        return
+
+    assert result["passed"] is True, json.dumps(result, indent=2)
+    assert result["event"]["alternate_inference_frames"] == 1
+    assert result["event"]["latency_samples_before"] == 480
+    assert result["event"]["latency_samples_alternate"] == 1_440
+    assert result["event"]["latency_samples_restored"] == 480
+    assert environment_seen == ["1"]
+    assert "AUDIOFORGE_ENABLE_DEEPFILTER" not in os.environ
 
 
 def test_hardware_report_privacy_filter_removes_all_selected_device_names() -> None:
@@ -268,6 +428,16 @@ def test_hardware_privacy_filter_handles_empty_overlapping_and_case_variant_name
     assert output == f"{pseudonyms['Mic Array']} selected after {pseudonyms['Mic']}"
 
 
+def test_hardware_privacy_filter_redacts_windows_endpoint_ids() -> None:
+    endpoint_id = "{0.0.1.00000000}.{12345678-1234-1234-1234-123456789abc}"
+    runs, _pseudonyms = TOOL._privacy_filter_runs(
+        [{"stderr": [f"WASAPI endpoint {endpoint_id} failed"]}], []
+    )
+
+    assert endpoint_id not in json.dumps(runs)
+    assert "endpoint-redacted" in runs[0]["stderr"][0]
+
+
 def test_hardware_evaluation_rejects_empty_device_names_before_running(tmp_path) -> None:
     with pytest.raises(ValueError, match="health input"):
         TOOL.evaluate(
@@ -278,6 +448,43 @@ def test_hardware_evaluation_rejects_empty_device_names_before_running(tmp_path)
             health_duration=1.0,
             report_path=tmp_path / "report.json",
         )
+
+
+def _lifecycle_evidence(scenario: str) -> dict:
+    event = {
+        "observed": True,
+        "backend_observed": True,
+    }
+    if scenario == "device_reconnect":
+        event.update(
+            selected_endpoint_absent=True,
+            selected_endpoint_reappeared=True,
+        )
+    elif scenario == "default_device_change":
+        event.update(
+            default_endpoint_changed=True,
+            selected_route_correct=True,
+        )
+    elif scenario == "sleep_resume":
+        event.update(os_suspend_event=True, os_resume_event=True)
+    else:
+        event.update(
+            model_switched=True,
+            model_restored=True,
+            diagnostics_healthy=True,
+        )
+    return {
+        "scenario": scenario,
+        "passed": True,
+        "bounded": True,
+        "event": event,
+        "recovery": {
+            "bounded": True,
+            "recovered": True,
+            "settled_clean": True,
+        },
+        "diagnostics": {"before": {}, "after": {}},
+    }
 
 
 def _matrix_case(
@@ -301,6 +508,7 @@ def _matrix_case(
             "id": case_id,
             "device_class": device_class,
             "nominal_sample_rate_hz": sample_rate,
+            "observed_input_sample_rate_hz": sample_rate,
             "scenario": scenario,
             "evidence_kind": (
                 "automated" if scenario == "baseline" else "operator_observed"
@@ -314,6 +522,9 @@ def _matrix_case(
         "model_discovery": {"passed": True},
         "selected_route_correlation": {"passed": True},
         "sustained_health": {"passed": True},
+        "lifecycle_evidence": (
+            None if scenario == "baseline" else _lifecycle_evidence(scenario)
+        ),
         "routes": {
             "correlation": {
                 "input": "device-0123456789abcdef",

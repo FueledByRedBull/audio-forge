@@ -150,7 +150,7 @@ def validate_msi(
                 msiexec,
                 ["/a", str(upgrade_from), f"TARGETDIR={old_admin_root}", "/qn", "/norestart"],
             )
-            _compare_payload(payload, _find_bundle(old_admin_root))
+            old_payload = _find_bundle(old_admin_root)
 
         local_appdata = os.environ.get("LOCALAPPDATA")
         appdata = os.environ.get("APPDATA")
@@ -178,7 +178,7 @@ def validate_msi(
                 _run_msiexec(msiexec, ["/i", str(upgrade_from), "/qn", "/norestart"])
                 if not install_root.is_dir():
                     raise RuntimeError(f"Upgrade baseline MSI did not install to {install_root}")
-                _compare_payload(payload, install_root)
+                _compare_payload(old_payload, install_root)
                 _assert_shortcut(shortcut)
 
             attempted_current = True

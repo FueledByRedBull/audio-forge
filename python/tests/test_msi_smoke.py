@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import sys
 from pathlib import Path
 
@@ -44,6 +45,94 @@ def test_compare_payload_rejects_changed_file(tmp_path: Path) -> None:
     actual = _bundle(tmp_path / "actual", marker=b"changed")
     with pytest.raises(RuntimeError, match="differs"):
         msi_smoke._compare_payload(expected, actual)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="MSI flow is Windows-only")
+def test_validate_msi_accepts_distinct_upgrade_payload_and_checks_current_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_payload = _bundle(tmp_path / "old", marker=b"old-payload")
+    current_payload = _bundle(tmp_path / "current", marker=b"new-payload")
+    old_msi = tmp_path / "AudioForge-old.msi"
+    current_msi = tmp_path / "AudioForge-current.msi"
+    old_msi.write_bytes(b"old-msi")
+    current_msi.write_bytes(b"current-msi")
+    local_appdata = tmp_path / "local-appdata"
+    appdata = tmp_path / "appdata"
+    monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+    monkeypatch.setenv("APPDATA", str(appdata))
+    monkeypatch.setattr(msi_smoke, "_msiexec", lambda: "fake-msiexec")
+    comparisons: list[tuple[Path, Path, bytes]] = []
+    original_compare = msi_smoke._compare_payload
+
+    def record_compare(expected: Path, actual: Path) -> None:
+        marker = (actual / "_internal" / "asset.bin").read_bytes()
+        comparisons.append((expected.resolve(), actual.resolve(), marker))
+        original_compare(expected, actual)
+
+    monkeypatch.setattr(msi_smoke, "_compare_payload", record_compare)
+
+    def fake_msiexec(
+        _executable: str,
+        args: list[str],
+        *,
+        allowed_exit_codes: tuple[int, ...] = (0, 3010),
+    ) -> int:
+        del allowed_exit_codes
+        action = args[0]
+        if action == "/a":
+            target = Path(next(value.split("=", 1)[1] for value in args if value.startswith("TARGETDIR=")))
+            source = old_payload if str(old_msi) in args else current_payload
+            shutil.copytree(source, target, dirs_exist_ok=True)
+            return 0
+        if action == "/i":
+            install_root = local_appdata / "AudioForge"
+            if "/l*v" in args:
+                log_path = Path(args[args.index("/l*v") + 1])
+                log_path.write_text(
+                    "Product: AudioForge -- A newer version of AudioForge is already installed.\n",
+                    encoding="utf-8",
+                )
+                raise msi_smoke.MsiCommandError(args, 1638, "downgrade")
+            source = old_payload if str(old_msi) in args else current_payload
+            shutil.rmtree(install_root, ignore_errors=True)
+            shutil.copytree(source, install_root)
+            shortcut = msi_smoke._shortcut_path()
+            shortcut.parent.mkdir(parents=True, exist_ok=True)
+            shortcut.write_bytes(b"shortcut")
+            return 0
+        if action == "/x":
+            shutil.rmtree(local_appdata / "AudioForge", ignore_errors=True)
+            msi_smoke._shortcut_path().unlink(missing_ok=True)
+            return 0
+        raise AssertionError(f"unexpected fake msiexec action: {args}")
+
+    monkeypatch.setattr(msi_smoke, "_run_msiexec", fake_msiexec)
+    monkeypatch.setattr(msi_smoke, "check_dist_bundle", lambda _payload: [])
+
+    msi_smoke.validate_msi(
+        current_msi,
+        current_payload,
+        upgrade_from=old_msi,
+    )
+
+    assert [marker for _, _, marker in comparisons] == [
+        b"new-payload",
+        b"old-payload",
+        b"new-payload",
+        b"new-payload",
+    ]
+    install_root = (local_appdata / "AudioForge").resolve()
+    assert any(
+        actual == install_root and marker == b"old-payload"
+        for _, actual, marker in comparisons
+    )
+    assert any(
+        expected == current_payload.resolve()
+        and actual == install_root
+        and marker == b"new-payload"
+        for expected, actual, marker in comparisons
+    )
 
 
 def test_msi_command_error_preserves_exit_code() -> None:

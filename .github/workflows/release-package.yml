@@ -387,10 +387,20 @@ jobs:
         id: installer
         run: |
           $installer = "AudioForge-${{ steps.meta.outputs.release_tag }}-win64.msi"
-          $upgradeBaseline = Join-Path $env:RUNNER_TEMP "AudioForge-v1.99.0-upgrade-baseline.msi"
+          $upgradeBaselineRoot = Join-Path $env:RUNNER_TEMP ("AudioForge-msi-upgrade-baseline-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Force -Path $upgradeBaselineRoot | Out-Null
+          Copy-Item -LiteralPath ".\dist\AudioForge" -Destination $upgradeBaselineRoot -Recurse
+          $upgradeBaselinePayload = Join-Path $upgradeBaselineRoot "AudioForge"
+          $baselineBuildInfo = Join-Path $upgradeBaselinePayload "_internal\audioforge-build.json"
+          @{
+            schema_version = 1
+            version = "0.0.0"
+          } | ConvertTo-Json | Set-Content -LiteralPath $baselineBuildInfo -Encoding utf8
+          Set-Content -LiteralPath (Join-Path $upgradeBaselinePayload "_internal\msi-upgrade-baseline-only.marker") -Value "baseline" -Encoding utf8
+          $upgradeBaseline = Join-Path $env:RUNNER_TEMP "AudioForge-upgrade-baseline.msi"
           powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
-            -Payload .\dist\AudioForge `
-            -Version 1.99.0 `
+            -Payload $upgradeBaselinePayload `
+            -Version 0.0.0 `
             -Output $upgradeBaseline
           if ($LASTEXITCODE -ne 0) {
             throw "MSI upgrade-baseline build failed with exit code $LASTEXITCODE."

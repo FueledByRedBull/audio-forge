@@ -36,7 +36,14 @@ def _error_findings(sarif_path: Path) -> list[str]:
         for result in run.get("results", []):
             rule_id = str(result.get("ruleId", "unknown-rule"))
             severity = str(result.get("level") or rules.get(rule_id, ""))
-            if severity == "error":
+            suppressions = result.get("suppressions")
+            suppressed_in_source = isinstance(suppressions, list) and any(
+                isinstance(suppression, dict)
+                and suppression.get("kind") == "inSource"
+                and suppression.get("status") in (None, "accepted")
+                for suppression in suppressions
+            )
+            if severity == "error" and not suppressed_in_source:
                 findings.append(str(result.get("ruleId", "unknown-rule")))
     return findings
 

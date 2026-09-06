@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import importlib.util
 import json
 import os
@@ -53,6 +54,40 @@ def test_hardware_result_parsers_require_success_and_evidence() -> None:
     assert parsed_health["stream_restarts"] == 0
     assert parsed_health["output_underrun_baseline"] == 3
     assert parsed_health["runtime_diagnostics"]["input_dropped_samples"] == 0
+
+
+def test_power_event_reader_rejects_unbounded_or_entity_xml(monkeypatch) -> None:
+    valid_xml = """
+    <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+      <System>
+        <Provider Name="Microsoft-Windows-Kernel-Power" />
+        <EventID>42</EventID>
+        <TimeCreated SystemTime="2026-09-06T14:00:00Z" />
+      </System>
+    </Event>
+    """
+    entity_xml = '<!DOCTYPE Event [<!ENTITY unused "expanded">]>' + valid_xml
+    oversized_xml = valid_xml.replace(
+        "</Event>", "<EventData>" + ("x" * 32) + "</EventData></Event>"
+    )
+    outputs = iter((valid_xml, entity_xml, oversized_xml))
+
+    monkeypatch.setattr(TOOL.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        TOOL, "MAX_POWER_EVENT_FRAGMENT_CHARS", len(valid_xml) + 1
+    )
+    monkeypatch.setattr(
+        TOOL.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout=next(outputs), stderr=""
+        ),
+    )
+
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert len(TOOL._read_power_events(since)) == 1
+    assert TOOL._read_power_events(since) == []
+    assert TOOL._read_power_events(since) == []
 
 
 def test_hardware_report_provenance_uses_project_version_and_dirty_revision(

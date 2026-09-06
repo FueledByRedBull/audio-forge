@@ -16,7 +16,7 @@ import subprocess
 import sys
 import time
 import tomllib
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as ET  # nosemgrep: python.lang.security.use-defused-xml.use-defused-xml
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -64,6 +64,9 @@ POWER_EVENT_QUERY = (
     "and (Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] or "
     "Provider[@Name='Microsoft-Windows-Kernel-Power'])]]"
 )
+MAX_POWER_EVENT_OUTPUT_CHARS = 16 * 1024 * 1024
+MAX_POWER_EVENT_FRAGMENT_CHARS = 1 * 1024 * 1024
+POWER_EVENT_DTD_MARKER = re.compile(r"<!\s*(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 
 
 def _project_version() -> str:
@@ -621,10 +624,20 @@ def _read_power_events(since: datetime) -> list[dict[str, Any]]:
         return []
     if result.returncode != 0:
         return []
+    if (
+        len(result.stdout) > MAX_POWER_EVENT_OUTPUT_CHARS
+        or POWER_EVENT_DTD_MARKER.search(result.stdout)
+    ):
+        return []
     events: list[dict[str, Any]] = []
     for match in re.finditer(r"<Event\b.*?</Event>", result.stdout, re.DOTALL):
+        fragment = match.group(0)
+        if len(fragment) > MAX_POWER_EVENT_FRAGMENT_CHARS:
+            continue
         try:
-            root = ET.fromstring(match.group(0))
+            # Fixed local wevtutil XML is bounded; DTD/entity declarations are
+            # rejected.
+            root = ET.fromstring(fragment)
             system = next(
                 child for child in root if child.tag.rsplit("}", 1)[-1] == "System"
             )

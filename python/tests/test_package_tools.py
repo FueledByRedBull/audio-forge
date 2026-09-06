@@ -414,6 +414,56 @@ def test_semgrep_gate_uses_rule_default_severity_when_result_omits_level(
     assert run_semgrep._error_findings(sarif) == ["error-rule"]
 
 
+def test_semgrep_error_findings_honor_only_in_source_suppressions(tmp_path):
+    sarif = tmp_path / "results.sarif"
+    sarif.write_text(
+        json.dumps(
+            {
+                "runs": [
+                    {
+                        "tool": {"driver": {"rules": []}},
+                        "results": [
+                            {
+                                "ruleId": "in-source-error",
+                                "level": "error",
+                                "suppressions": [{"kind": "inSource"}],
+                            },
+                            {
+                                "ruleId": "external-error",
+                                "level": "error",
+                                "suppressions": [{"kind": "external"}],
+                            },
+                            {
+                                "ruleId": "rejected-error",
+                                "level": "error",
+                                "suppressions": [
+                                    {"kind": "inSource", "status": "rejected"}
+                                ],
+                            },
+                            {
+                                "ruleId": "under-review-error",
+                                "level": "error",
+                                "suppressions": [
+                                    {"kind": "inSource", "status": "underReview"}
+                                ],
+                            },
+                            {"ruleId": "active-error", "level": "error"},
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert run_semgrep._error_findings(sarif) == [
+        "external-error",
+        "rejected-error",
+        "under-review-error",
+        "active-error",
+    ]
+
+
 def test_semgrep_output_path_creates_parent_and_removes_stale_file(tmp_path):
     sarif = tmp_path / "nested" / "results.sarif"
     sarif.parent.mkdir()

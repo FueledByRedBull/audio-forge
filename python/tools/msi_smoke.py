@@ -11,8 +11,9 @@ import sys
 import tempfile
 from pathlib import Path
 
-from package_smoke import check_dist_bundle
+from package_smoke import _bundle_version, check_dist_bundle
 from release_provenance import build_bundle_manifest
+from release_version import parse_version
 
 
 class MsiCommandError(RuntimeError):
@@ -69,6 +70,54 @@ def _compare_payload(expected: Path, actual: Path) -> None:
     for field in ("schema_version", "file_count", "total_bytes", "files"):
         if expected_manifest.get(field) != actual_manifest.get(field):
             raise RuntimeError("MSI payload differs from the portable bundle")
+
+
+def _read_msi_product_version(msi: Path) -> str:
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError as exc:
+        raise RuntimeError("MSI ProductVersion validation requires pywin32") from exc
+
+    installer = win32com.client.Dispatch("WindowsInstaller.Installer")
+    database = installer.OpenDatabase(str(msi), 0)
+    view = database.OpenView(
+        "SELECT Value FROM Property WHERE Property='ProductVersion'"
+    )
+    view.Execute()
+    record = view.Fetch()
+    if record is None:
+        raise RuntimeError(f"MSI ProductVersion property is missing: {msi}")
+    # StringData is an indexed COM property, not a method.
+    string_data_id = record._oleobj_.GetIDsOfNames(0, "StringData")
+    value = record._oleobj_.Invoke(
+        string_data_id,
+        0,
+        pythoncom.DISPATCH_PROPERTYGET,
+        True,
+        1,
+    )
+    if not value:
+        raise RuntimeError(f"MSI ProductVersion property is empty: {msi}")
+    return str(value)
+
+
+def _assert_msi_product_version(msi: Path, payload: Path) -> None:
+    bundle_version = _bundle_version(payload)
+    if bundle_version is None:
+        raise RuntimeError(f"Portable bundle version is missing: {payload}")
+    try:
+        expected = parse_version(bundle_version).msi
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Portable bundle version is invalid: {bundle_version!r}"
+        ) from exc
+    actual = _read_msi_product_version(msi)
+    if actual != expected:
+        raise RuntimeError(
+            f"MSI ProductVersion {actual!r} does not match portable bundle version "
+            f"{bundle_version!r} mapped to {expected!r}"
+        )
 
 
 def _shortcut_path() -> Path:
@@ -129,6 +178,7 @@ def validate_msi(
     errors = check_dist_bundle(payload)
     if errors:
         raise RuntimeError("Portable bundle is invalid:\n  " + "\n  ".join(errors))
+    _assert_msi_product_version(msi, payload)
 
     msiexec = _msiexec()
     with tempfile.TemporaryDirectory(prefix="audioforge-msi-smoke-") as temp_name:

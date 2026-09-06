@@ -47,6 +47,46 @@ def test_compare_payload_rejects_changed_file(tmp_path: Path) -> None:
         msi_smoke._compare_payload(expected, actual)
 
 
+def test_msi_product_version_uses_release_mapping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _bundle(tmp_path / "payload")
+    (payload / "_internal" / "audioforge-build.json").write_text(
+        '{"version": "1.12.0"}\n', encoding="utf-8"
+    )
+    msi = tmp_path / "AudioForge.msi"
+    msi.write_bytes(b"msi")
+    monkeypatch.setattr(msi_smoke, "_read_msi_product_version", lambda _msi: "1.12.0")
+
+    with pytest.raises(RuntimeError, match="mapped to '1.12.99'"):
+        msi_smoke._assert_msi_product_version(msi, payload)
+
+    monkeypatch.setattr(msi_smoke, "_read_msi_product_version", lambda _msi: "1.12.99")
+    msi_smoke._assert_msi_product_version(msi, payload)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="MSI flow is Windows-only")
+def test_validate_msi_rejects_wrong_product_version_before_msiexec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _bundle(tmp_path / "payload")
+    (payload / "_internal" / "audioforge-build.json").write_text(
+        '{"version": "1.12.0"}\n', encoding="utf-8"
+    )
+    msi = tmp_path / "AudioForge.msi"
+    msi.write_bytes(b"msi")
+    monkeypatch.setattr(msi_smoke, "check_dist_bundle", lambda _payload: [])
+    monkeypatch.setattr(msi_smoke, "_read_msi_product_version", lambda _msi: "1.12.0")
+    monkeypatch.setattr(
+        msi_smoke,
+        "_msiexec",
+        lambda: pytest.fail("ProductVersion mismatch must precede msiexec"),
+    )
+
+    with pytest.raises(RuntimeError, match="mapped to '1.12.99'"):
+        msi_smoke.validate_msi(msi, payload)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="MSI flow is Windows-only")
 def test_validate_msi_accepts_distinct_upgrade_payload_and_checks_current_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -109,6 +149,8 @@ def test_validate_msi_accepts_distinct_upgrade_payload_and_checks_current_tree(
 
     monkeypatch.setattr(msi_smoke, "_run_msiexec", fake_msiexec)
     monkeypatch.setattr(msi_smoke, "check_dist_bundle", lambda _payload: [])
+    monkeypatch.setattr(msi_smoke, "_bundle_version", lambda _payload: "1.12.0")
+    monkeypatch.setattr(msi_smoke, "_read_msi_product_version", lambda _msi: "1.12.99")
 
     msi_smoke.validate_msi(
         current_msi,

@@ -2,11 +2,11 @@
   "aggregate": {
     "all_outputs_finite": true,
     "candidate_p95_limiter_gr_db": 0.0,
-    "candidate_p95_realtime_factor": 0.001117270013495926,
+    "candidate_p95_realtime_factor": 0.0010702482555794135,
     "comparable_cases": 24,
     "failed_cases": 0,
     "incumbent_p95_limiter_gr_db": 0.0,
-    "incumbent_p95_realtime_factor": 0.0014388773477448128,
+    "incumbent_p95_realtime_factor": 0.0014011298764498793,
     "latency_samples": [
       0
     ],
@@ -19,7 +19,7 @@
     "p10_heldout_improvement_db": -0.007920976969400325,
     "p90_stability_regression_db": 0.28904066843221615,
     "p95_limiter_gr_regression_db": 0.0,
-    "p95_runtime_ratio": 0.7764873185661378,
+    "p95_runtime_ratio": 0.7638465738031088,
     "selected_filter_type_counts": {
       "bell": 132,
       "high_shelf": 6,
@@ -74,14 +74,14 @@
       "corpus_manifest": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc",
       "dataset_archive": "5d208e01632cc3e5242106fa2af3273e6dc5239fb8143131979ac74c4aa40657",
       "native_extension": {
-        "path": "python/mic_eq/mic_eq_core.cp312-win_amd64.pyd",
-        "sha256": "aab0e115cf68bec3e8839ec04e043193316c4da960a221353b9b33c4a06c7c14"
+        "path": "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd",
+        "sha256": "a4b4c442b50feaf56319bcc456cd7c5fa5ec1f405428e22ad133695a170c849e"
       },
       "source": {
         "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "c7d31f975fc3a55fdbef5531be1afea8ff03035de42d67b15c6309869cebab6d",
-        "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "e028f811c0a68adc8effd65cac7470fa75abfefb041b24d4602b21bc71a7b493",
+        "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "9547eb8b90d29fb6c9fb4778cb7254bba12f80438815e6bb9d403071a7fb65fa",
         "python/mic_eq/analysis/auto_eq_parts/target.py": "55ebd6dc14c8d6f93fc839a0a8792ad82817a9dd357053397ed8deff0c7bd1a8",
-        "python/mic_eq/analysis/spectrum.py": "6ce282b21c0e5131d14949876e64fd630b548fdb019de6aa1a9dd69c8c58dc25",
+        "python/mic_eq/analysis/spectrum.py": "0995607c678228b228a0246aa5b997f9d15fd85e8804e324292f3f7e1fd8381f",
         "python/mic_eq/analysis/vad.py": "5d65531ed84727dd0e34fb8d1ccf6b1c41fd7ec66816543cc65786778613503e",
         "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
         "python/tools/evaluate_sparse_auto_eq_filters.py": "6ab6e4dffa61d4efb2062c58bc29edfcf5b933a5f15cca6fd45ab48296a6bb11",
@@ -113,18 +113,18 @@
       "sample_rate": 48000
     },
     "runtime": {
-      "candidate_p95_realtime_factor": 0.001117270013495926,
-      "incumbent_p95_realtime_factor": 0.0014388773477448128,
+      "candidate_p95_realtime_factor": 0.0010702482555794135,
+      "incumbent_p95_realtime_factor": 0.0014011298764498793,
       "machine": "Windows-11-10.0.26200-SP0",
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native evaluation API reports whole-clip time rather than per-callback P99; realtime factor and active sections are measured.",
       "measurement": "native whole-clip simulator, warm plus five repeats",
-      "python": "3.12.10"
+      "python": "3.13.15"
     }
   },
   "experiment": "Sparse and typed Auto-EQ selection against the incumbent",
   "failures": [],
-  "generated_at_utc": "2026-09-05T20:31:43.922634+00:00",
+  "generated_at_utc": "2026-09-06T16:35:35.398535+00:00",
   "incumbent": {
     "filter_layout": "low shelf, eight bells, high shelf",
     "product_path": "single-take ten-band Auto-EQ"
@@ -151,7 +151,7 @@
   "schema_version": 3,
   "source_sha256": {
     "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "c7d31f975fc3a55fdbef5531be1afea8ff03035de42d67b15c6309869cebab6d",
-    "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "e028f811c0a68adc8effd65cac7470fa75abfefb041b24d4602b21bc71a7b493",
+    "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "9547eb8b90d29fb6c9fb4778cb7254bba12f80438815e6bb9d403071a7fb65fa",
     "python/mic_eq/analysis/auto_eq_parts/target.py": "55ebd6dc14c8d6f93fc839a0a8792ad82817a9dd357053397ed8deff0c7bd1a8",
     "python/mic_eq/analysis/spectrum.py": "0995607c678228b228a0246aa5b997f9d15fd85e8804e324292f3f7e1fd8381f",
     "python/mic_eq/analysis/vad.py": "5d65531ed84727dd0e34fb8d1ccf6b1c41fd7ec66816543cc65786778613503e",
@@ -165,10 +165,10 @@
     "test": {
       "all_outputs_finite": true,
       "candidate_p95_limiter_gr_db": 0.0,
-      "candidate_p95_realtime_factor": 0.0011339116542651844,
+      "candidate_p95_realtime_factor": 0.0010810458288931747,
       "comparable_cases": 12,
       "incumbent_p95_limiter_gr_db": 0.0,
-      "incumbent_p95_realtime_factor": 0.001443091529377751,
+      "incumbent_p95_realtime_factor": 0.0013888377247853918,
       "latency_samples": [
         0
       ],
@@ -180,7 +180,7 @@
       "p10_heldout_improvement_db": -0.009360874376488401,
       "p90_stability_regression_db": 0.262769793346586,
       "p95_limiter_gr_regression_db": 0.0,
-      "p95_runtime_ratio": 0.7857517220367288,
+      "p95_runtime_ratio": 0.778381670947354,
       "selected_filter_type_counts": {
         "bell": 67,
         "high_shelf": 5,
@@ -193,10 +193,10 @@
     "validation": {
       "all_outputs_finite": true,
       "candidate_p95_limiter_gr_db": 0.0,
-      "candidate_p95_realtime_factor": 0.0010834985468516033,
+      "candidate_p95_realtime_factor": 0.0010572061094177379,
       "comparable_cases": 12,
       "incumbent_p95_limiter_gr_db": 0.0,
-      "incumbent_p95_realtime_factor": 0.001414172350395926,
+      "incumbent_p95_realtime_factor": 0.0013879955950840957,
       "latency_samples": [
         0
       ],
@@ -208,7 +208,7 @@
       "p10_heldout_improvement_db": 0.00010749313133295866,
       "p90_stability_regression_db": 0.2907965748104573,
       "p95_limiter_gr_regression_db": 0.0,
-      "p95_runtime_ratio": 0.7661714970938698,
+      "p95_runtime_ratio": 0.7616782885782026,
       "selected_filter_type_counts": {
         "bell": 65,
         "high_shelf": 1,

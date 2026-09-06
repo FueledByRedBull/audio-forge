@@ -465,7 +465,7 @@ class CalibrationDialog(QDialog):
         if DEBUG:
             logger.debug("Start recording clicked")
 
-        self._stop_analysis_worker()
+        self._cancel_analysis_workers()
 
         # Get parent's processor (MainWindow has it)
         parent = _find_processor_owner(self.parent())
@@ -765,8 +765,8 @@ class CalibrationDialog(QDialog):
             lambda error, token=generation: self._on_analysis_failed(error, token)
         )
         worker.finished.connect(
-            lambda token=generation, finished_worker=worker: self._on_analysis_thread_finished(
-                token, finished_worker
+            lambda finished_worker=worker: self._on_analysis_thread_finished(
+                finished_worker
             )
         )
         worker.start()
@@ -955,20 +955,20 @@ class CalibrationDialog(QDialog):
             )
             if reply == QMessageBox.StandardButton.Yes:
                 self.recording_timer.stop()
-                self._stop_analysis_worker()
+                self._cancel_analysis_workers()
                 self._cleanup_recording_tap()
                 self.reject()
         else:
             self.recording_timer.stop()
-            self._stop_analysis_worker()
+            self._cancel_analysis_workers()
             self._cleanup_recording_tap()
             self.reject()
 
     def _reset_recording_ui(self):
         """Reset UI to initial idle state."""
-        self._cancel_capture_start()
+        self._capture_start_timer.stop()
         self.recording_timer.stop()
-        self._stop_analysis_worker()
+        self._cancel_analysis_workers()
         self._cleanup_recording_tap()
 
         # Stop processor if we started it ourselves
@@ -1031,9 +1031,6 @@ class CalibrationDialog(QDialog):
         except Exception as e:
             logger.warning("Failed to re-enable recovery after cleanup: %s", e)
 
-    def _cancel_capture_start(self) -> None:
-        self._capture_start_timer.stop()
-
     def _cancel_analysis_workers(self) -> None:
         """Cancel work without dropping ownership of a running QThread."""
         self._analysis_generation += 1
@@ -1042,22 +1039,14 @@ class CalibrationDialog(QDialog):
                 worker.stop()
         self.analysis_worker = None
 
-    def _on_analysis_thread_finished(
-        self, _generation: int, worker: AnalysisWorker
-    ) -> None:
+    def _on_analysis_thread_finished(self, worker: AnalysisWorker) -> None:
         if worker in self._analysis_workers:
             self._analysis_workers.remove(worker)
         if self.analysis_worker is worker:
             self.analysis_worker = None
-        delete_later = getattr(worker, "deleteLater", None)
-        if callable(delete_later):
-            delete_later()
+        worker.deleteLater()
         if self._close_requested:
             self._finish_close()
-
-    def _stop_analysis_worker(self) -> None:
-        """Compatibility wrapper for reset/teardown paths."""
-        self._cancel_analysis_workers()
 
     def _finish_close(self) -> None:
         if not self._close_requested or any(
@@ -1065,9 +1054,7 @@ class CalibrationDialog(QDialog):
         ):
             return
         for worker in tuple(self._analysis_workers):
-            delete_later = getattr(worker, "deleteLater", None)
-            if callable(delete_later):
-                delete_later()
+            worker.deleteLater()
         self._analysis_workers.clear()
         self._close_requested = False
         QDialog.done(self, int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected))
@@ -1088,7 +1075,7 @@ class CalibrationDialog(QDialog):
         self._close_requested = True
         self._close_result = accepted
         self.recording_state = "idle"
-        self._cancel_capture_start()
+        self._capture_start_timer.stop()
         self.recording_timer.stop()
         self._cancel_analysis_workers()
         self._cleanup_recording_tap()

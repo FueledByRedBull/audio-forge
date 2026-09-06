@@ -3,28 +3,24 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import sys
 import urllib.parse
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
-from release_provenance import sha256_file as _sha256
+from release_provenance import (
+    DEEPFILTER_RECIPE_FILES,
+    _deepfilter_attestation_contract_errors,
+    _deepfilter_recipe_sha256,
+    sha256_file as _sha256,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = REPO_ROOT / "release-assets.json"
 SOURCE_BUILD_STATUS = "verified-source-build"
-SOURCE_RECIPE_FILES = (
-    "build_deepfilter.ps1",
-    "build-support/deepfilter/Cargo.toml",
-    "build-support/deepfilter/Cargo.lock",
-    "build-support/deepfilter/provenance.json",
-    "models/DeepFilterNet3_onnx.tar.gz",
-    "models/DeepFilterNet3_ll_onnx.tar.gz",
-)
-SOURCE_RECIPE_TEXT_SUFFIXES = frozenset({".json", ".lock", ".ps1", ".toml"})
+SOURCE_RECIPE_FILES = DEEPFILTER_RECIPE_FILES
 HEX_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 PINNED_ARCHIVE_STATUS = "verified-upstream-archive"
 PINNED_ARCHIVE_HOSTS = frozenset(
@@ -70,14 +66,6 @@ def _read_json(path: Path, label: str) -> tuple[dict[str, Any] | None, str | Non
     if not isinstance(raw, dict):
         return None, f"{label}: JSON root must be an object"
     return raw, None
-
-
-def _recipe_sha256(path: Path) -> str:
-    """Hash recipe text after EOL normalization so archives and checkouts agree."""
-    if path.suffix.casefold() not in SOURCE_RECIPE_TEXT_SUFFIXES:
-        return _sha256(path)
-    canonical = path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _verify_pinned_archive_metadata(asset: dict[str, Any], raw_path: str) -> list[str]:
@@ -136,10 +124,6 @@ def _verify_source_build_attestation(
     if read_error:
         return [read_error]
     assert attestation is not None
-    if attestation.get("schema_version") != 1:
-        errors.append(f"{raw_path}: attestation schema_version must be 1")
-    if attestation.get("kind") != "audioforge.deepfilter.build":
-        errors.append(f"{raw_path}: attestation kind is not the DeepFilter build contract")
 
     output = attestation.get("output")
     if not isinstance(output, dict):
@@ -180,16 +164,13 @@ def _verify_source_build_attestation(
         errors.append(read_error)
         return errors
     assert provenance is not None
-
-    source = attestation.get("source")
-    expected_upstream = provenance.get("upstream")
-    if not isinstance(source, dict) or not isinstance(expected_upstream, dict):
-        errors.append(f"{raw_path}: attestation source/provenance upstream data is incomplete")
-    else:
-        if source.get("repository") != expected_upstream.get("repository"):
-            errors.append(f"{raw_path}: attestation source repository does not match provenance")
-        if source.get("commit") != expected_upstream.get("commit"):
-            errors.append(f"{raw_path}: attestation source commit does not match provenance")
+    errors.extend(
+        _deepfilter_attestation_contract_errors(
+            attestation,
+            provenance,
+            label=f"{raw_path}: attestation",
+        )
+    )
 
     recipe = attestation.get("recipe")
     recipe_files = recipe.get("files") if isinstance(recipe, dict) else None
@@ -214,49 +195,12 @@ def _verify_source_build_attestation(
             if not recipe_path.is_file():
                 errors.append(f"{raw_path}: attested recipe file is missing: {name}")
                 continue
-            actual_hash = _recipe_sha256(recipe_path)
+            actual_hash = _deepfilter_recipe_sha256(recipe_path)
             if actual_hash.lower() != expected_hash.lower():
                 errors.append(
                     f"{raw_path}: recipe hash mismatch for {name}, expected {expected_hash}, got {actual_hash}"
                 )
 
-    expected_build = provenance.get("build")
-    attested_abi = attestation.get("abi")
-    expected_exports = expected_build.get("required_exports") if isinstance(expected_build, dict) else None
-    actual_exports = attested_abi.get("required_exports") if isinstance(attested_abi, dict) else None
-    if not isinstance(expected_exports, list) or actual_exports != expected_exports:
-        errors.append(f"{raw_path}: attested required exports do not match provenance")
-    expected_patch = provenance.get("tract_linalg_patch")
-    if not isinstance(expected_patch, dict) or not isinstance(recipe, dict):
-        errors.append(f"{raw_path}: attested tract-linalg patch binding is incomplete")
-    else:
-        patch_bindings = {
-            "tract_linalg_archive_sha256": "archive_sha256",
-            "tract_linalg_patched_manifest_sha256": "patched_cargo_toml_sha256",
-            "tract_linalg_build_rs_sha256": "build_rs_sha256",
-        }
-        for attested_name, provenance_name in patch_bindings.items():
-            if recipe.get(attested_name) != expected_patch.get(provenance_name):
-                errors.append(
-                    f"{raw_path}: attested {attested_name} does not match provenance"
-                )
-    if isinstance(recipe, dict) and isinstance(expected_build, dict):
-        if recipe.get("target") != expected_build.get("target"):
-            errors.append(f"{raw_path}: attested target does not match provenance")
-        if recipe.get("profile") != expected_build.get("profile"):
-            errors.append(f"{raw_path}: attested build profile does not match provenance")
-        if recipe.get("features") != expected_build.get("features"):
-            errors.append(f"{raw_path}: attested features do not match provenance")
-        if recipe.get("default_features") != expected_build.get("default_features"):
-            errors.append(f"{raw_path}: attested default_features does not match provenance")
-    toolchain = attestation.get("toolchain")
-    tested_rust = expected_build.get("tested_rust") if isinstance(expected_build, dict) else None
-    if not isinstance(toolchain, dict) or not isinstance(toolchain.get("rustc"), str):
-        errors.append(f"{raw_path}: attested Rust toolchain is missing")
-    elif isinstance(tested_rust, str):
-        tested_release = tested_rust.split(maxsplit=1)[0]
-        if not toolchain["rustc"].startswith(f"rustc {tested_release} "):
-            errors.append(f"{raw_path}: attested Rust toolchain does not match provenance")
     return errors
 
 

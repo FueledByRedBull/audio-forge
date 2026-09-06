@@ -2451,29 +2451,29 @@ class MainWindow(QMainWindow):
         preset.name = preset_name
         preset.description = description
         preset.version = __version__
+        if self._save_preset_file(preset) is None:
+            return
+        QMessageBox.information(
+            self,
+            "Preset Saved",
+            f"Preset '{preset_name}' saved successfully.",
+        )
+
+    def _save_preset_file(self, preset: Preset) -> Path | None:
         try:
-            save_preset(preset, overwrite=False)
-        except FileExistsError:
-            confirm_reply = QMessageBox.question(
-                self,
-                "Overwrite Preset?",
-                f"A preset file for '{preset_name}' already exists. Overwrite?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if confirm_reply != QMessageBox.StandardButton.Yes:
-                return
             try:
-                save_preset(preset, overwrite=True)
-            except (IOError, OSError, ValueError) as exc:
-                logger.warning("Preset save failed", exc_info=True)
-                QMessageBox.critical(
+                return save_preset(preset, overwrite=False)
+            except FileExistsError:
+                confirm_reply = QMessageBox.question(
                     self,
-                    "Error",
-                    f"Failed to save preset:\n{exc}\n\n"
-                    "Check you have write permission to the presets folder.",
+                    "Overwrite Preset?",
+                    f"A preset file for '{preset.name}' already exists. Overwrite?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
                 )
-                return
+                if confirm_reply != QMessageBox.StandardButton.Yes:
+                    return None
+                return save_preset(preset, overwrite=True)
         except (IOError, OSError, ValueError) as exc:
             logger.warning("Preset save failed", exc_info=True)
             QMessageBox.critical(
@@ -2482,12 +2482,7 @@ class MainWindow(QMainWindow):
                 f"Failed to save preset:\n{exc}\n\n"
                 "Check you have write permission to the presets folder.",
             )
-            return
-        QMessageBox.information(
-            self,
-            "Preset Saved",
-            f"Preset '{preset_name}' saved successfully.",
-        )
+            return None
 
     def on_auto_eq_applied(self, target_curve: str):
         """
@@ -3557,36 +3552,8 @@ class MainWindow(QMainWindow):
         if ok:
             preset.description = description.strip()
 
-        # Save to file
-        try:
-            filepath = save_preset(preset, overwrite=False)
-        except FileExistsError:
-            reply = QMessageBox.question(
-                self,
-                "Overwrite Preset?",
-                f"A preset file for '{name.strip()}' already exists. Overwrite?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            try:
-                filepath = save_preset(preset, overwrite=True)
-            except (IOError, OSError, ValueError) as e:
-                logger.warning("Preset save failed", exc_info=True)
-                QMessageBox.critical(
-                    self,
-                    "Error",
-                    f"Failed to save preset:\n{e}\n\nCheck you have write permission to the presets folder.",
-                )
-                return
-        except (IOError, OSError, ValueError) as e:
-            logger.warning("Preset save failed", exc_info=True)
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to save preset:\n{e}\n\nCheck you have write permission to the presets folder.",
-            )
+        filepath = self._save_preset_file(preset)
+        if filepath is None:
             return
         self.status_bar.showMessage(f"Preset saved: {filepath}")
         QMessageBox.information(

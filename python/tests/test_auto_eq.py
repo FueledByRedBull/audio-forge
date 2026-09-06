@@ -203,6 +203,7 @@ def test_validation_failure_abstains_instead_of_applying_a_flat_curve(monkeypatc
         qs,
         centers_hz,
         _weights,
+        cancel_check=None,
     ):
         flat = np.zeros_like(gains)
         return (

@@ -65,8 +65,6 @@ on:
           - device_reconnect
           - default_device_change
           - sleep_resume
-          - buffer_negotiation
-          - route_change
           - model_configuration_change
       evidence_kind:
         description: "Physical lifecycle scenarios require an operator-observed event."

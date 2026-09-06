@@ -1909,6 +1909,36 @@ def _write_receipt(
     return output
 
 
+def verify_archive_sidecars(
+    archive: Path, checksum: Path, metadata_path: Path,
+    manifest_path: Path, source_dir: Path, *, version: str, revision: str,
+) -> None:
+    """Bind the distributed source archive and extracted receipt to the candidate."""
+    try:
+        digest = _sha256(archive)
+        if checksum.read_text(encoding="utf-8-sig").split() != [digest, archive.name]:
+            raise SourceDistributionError("Corresponding-source checksum mismatch")
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+        if not isinstance(metadata, dict):
+            raise SourceDistributionError("Corresponding-source metadata must be an object")
+        archived = metadata.get("archive")
+        if not isinstance(archived, dict) or archived.get("name") != archive.name or archived.get("sha256") != digest:
+            raise SourceDistributionError("Corresponding-source archive identity mismatch")
+        expected = {
+            "commit": _git_text("rev-parse", "--verify", f"{revision}^{{commit}}"),
+            "version": version,
+            "source_manifest_sha256": _sha256(manifest_path),
+            "source_receipt_sha256": _sha256(source_dir / "source-receipt.json"),
+            "project_source_sha256": _sha256(source_dir / "AudioForge-project-source.tar"),
+            "project_source_name": "AudioForge-project-source.tar",
+        }
+        for key, value in expected.items():
+            if metadata.get(key) != value:
+                raise SourceDistributionError(f"Corresponding-source metadata mismatch: {key}")
+    except (OSError, ValueError) as exc:
+        raise SourceDistributionError(f"Could not verify corresponding-source sidecars: {exc}") from exc
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1928,6 +1958,9 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--allow-incomplete", action="store_true")
     verify.add_argument("--require-receipt", action="store_true")
     verify.add_argument("--revision", help="revision recorded by a source receipt")
+    verify.add_argument("--expected-version", help="public version expected for the source archive")
+    for name in ("archive", "checksum", "metadata"):
+        verify.add_argument(f"--{name}", type=Path, help="source archive sidecar verification input")
 
     bundle = subparsers.add_parser("bundle", help="hydrate sources and archive the project")
     bundle.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
@@ -1965,6 +1998,15 @@ def main(argv: Iterable[str] | None = None) -> int:
             return 0
 
         if args.command == "verify":
+            if any((args.archive, args.checksum, args.metadata)):
+                if not all((args.archive, args.checksum, args.metadata, args.revision, args.require_receipt, args.expected_version)):
+                    raise SourceDistributionError(
+                        "Archive verification requires --archive, --checksum, --metadata, --revision, --expected-version and --require-receipt"
+                    )
+                verify_archive_sidecars(
+                    args.archive, args.checksum, args.metadata, args.manifest,
+                    args.source_dir, version=args.expected_version, revision=args.revision,
+                )
             verify_sources(
                 manifest,
                 args.source_dir.resolve(),

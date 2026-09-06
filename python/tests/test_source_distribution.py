@@ -317,3 +317,42 @@ def test_manifest_records_current_incomplete_status():
     )
     assert not any(entry["id"].startswith("runtime-DirectML") for entry in manifest["entries"])
     assert any(entry["id"] == "onnxruntime-source-a83fc4d58cb4" for entry in manifest["entries"])
+
+
+@pytest.mark.parametrize("damaged", [None, "checksum", "archive", "commit", "version", "source_manifest_sha256", "source_receipt_sha256", "project_source_sha256", "project_source_name"])
+def test_source_archive_sidecars_bind_every_release_input(tmp_path, monkeypatch, damaged):
+    archive = tmp_path / "source.7z"
+    checksum = tmp_path / "source.7z.sha256"
+    metadata_path = tmp_path / "source.7z.metadata.json"
+    manifest_path = tmp_path / "manifest.json"
+    receipt = tmp_path / "source-receipt.json"
+    project = tmp_path / "AudioForge-project-source.tar"
+    for path in (archive, manifest_path, receipt, project):
+        path.write_bytes(path.name.encode())
+    digest = source_tool._sha256(archive)
+    checksum.write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+    metadata = {
+        "archive": {"name": archive.name, "sha256": digest},
+        "commit": "a" * 40, "version": "1.12.0",
+        "source_manifest_sha256": source_tool._sha256(manifest_path),
+        "source_receipt_sha256": source_tool._sha256(receipt),
+        "project_source_sha256": source_tool._sha256(project),
+        "project_source_name": project.name,
+    }
+    monkeypatch.setattr(source_tool, "_git_text", lambda *args: "a" * 40)
+    if damaged == "checksum":
+        checksum.write_text(f"{digest}  wrong-name.7z\n", encoding="utf-8")
+    elif damaged:
+        metadata[damaged] = "wrong"
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8-sig")
+    args = (archive, checksum, metadata_path, manifest_path, tmp_path)
+    if damaged:
+        with pytest.raises(SourceDistributionError):
+            source_tool.verify_archive_sidecars(*args, version="1.12.0", revision="HEAD")
+    else:
+        source_tool.verify_archive_sidecars(*args, version="1.12.0", revision="HEAD")
+
+
+def test_archive_cli_requires_all_sidecars_and_receipt(tmp_path, monkeypatch):
+    monkeypatch.setattr(source_tool, "load_manifest", lambda path: {})
+    assert source_tool.main(["verify", "--archive", str(tmp_path / "source.7z")]) == 2

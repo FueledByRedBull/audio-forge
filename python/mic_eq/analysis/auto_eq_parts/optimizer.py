@@ -1004,13 +1004,10 @@ def calculate_eq_bands(
         optimal_centers_hz,
         weights,
     )
-    if cancel_check is None:
-        validation = _validate_and_attenuate_solution(*validation_args)
-    else:
-        validation = _validate_and_attenuate_solution(
-            *validation_args,
-            cancel_check=cancel_check,
-        )
+    validation = _validate_and_attenuate_solution(
+        *validation_args,
+        cancel_check=cancel_check,
+    )
     (
         optimal_gains,
         before_error,

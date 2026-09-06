@@ -17,8 +17,6 @@ SUPPORTED_SCENARIOS = frozenset(
         "device_reconnect",
         "default_device_change",
         "sleep_resume",
-        "buffer_negotiation",
-        "route_change",
         "model_configuration_change",
     }
 )

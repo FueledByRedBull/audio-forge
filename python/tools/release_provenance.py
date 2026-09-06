@@ -224,6 +224,67 @@ def _deepfilter_recipe_sha256(path: Path) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def _deepfilter_attestation_contract_errors(
+    attestation: dict[str, Any],
+    provenance: dict[str, Any],
+    *,
+    label: str = "DeepFilter attestation",
+) -> list[str]:
+    """Validate the shared DeepFilter attestation schema and build contract."""
+    errors: list[str] = []
+    if attestation.get("schema_version") != 1:
+        errors.append(f"{label} schema_version must be 1")
+    if attestation.get("kind") != "audioforge.deepfilter.build":
+        errors.append(f"{label} kind is invalid")
+
+    source = attestation.get("source")
+    expected_upstream = provenance.get("upstream")
+    if not isinstance(source, dict) or not isinstance(expected_upstream, dict):
+        errors.append(f"{label} source/provenance upstream data is incomplete")
+    else:
+        for field in ("repository", "commit"):
+            if source.get(field) != expected_upstream.get(field):
+                errors.append(f"{label} source {field} does not match provenance")
+
+    recipe = attestation.get("recipe")
+    expected_build = provenance.get("build")
+    if not isinstance(expected_build, dict) or not isinstance(recipe, dict):
+        errors.append(f"{label} build identity is incomplete")
+        return errors
+
+    for field in ("target", "profile", "features", "default_features"):
+        if recipe.get(field) != expected_build.get(field):
+            errors.append(f"{label} {field} does not match provenance")
+    abi = attestation.get("abi")
+    expected_exports = expected_build.get("required_exports")
+    actual_exports = abi.get("required_exports") if isinstance(abi, dict) else None
+    if not isinstance(expected_exports, list) or actual_exports != expected_exports:
+        errors.append(f"{label} ABI exports do not match provenance")
+
+    expected_patch = provenance.get("tract_linalg_patch")
+    if not isinstance(expected_patch, dict):
+        errors.append(f"{label} tract-linalg patch identity is missing from provenance")
+    else:
+        patch_bindings = {
+            "tract_linalg_archive_sha256": "archive_sha256",
+            "tract_linalg_patched_manifest_sha256": "patched_cargo_toml_sha256",
+            "tract_linalg_build_rs_sha256": "build_rs_sha256",
+        }
+        for attested_name, provenance_name in patch_bindings.items():
+            if recipe.get(attested_name) != expected_patch.get(provenance_name):
+                errors.append(f"{label} {attested_name} does not match provenance")
+
+    toolchain = attestation.get("toolchain")
+    tested_rust = expected_build.get("tested_rust")
+    if not isinstance(toolchain, dict) or not isinstance(toolchain.get("rustc"), str):
+        errors.append(f"{label} Rust toolchain is missing")
+    elif isinstance(tested_rust, str):
+        tested_release = tested_rust.split(maxsplit=1)[0]
+        if not toolchain["rustc"].startswith(f"rustc {tested_release} "):
+            errors.append(f"{label} Rust toolchain does not match provenance")
+    return errors
+
+
 def _cpu_ort_asset_errors(bundle: Path) -> list[str]:
     """Bind every bundled CPU ORT DLL to the checked-in asset manifest."""
     present = [
@@ -273,11 +334,6 @@ def _deepfilter_attestation_errors(
     except (OSError, ValueError) as exc:
         return [str(exc)]
 
-    if attestation.get("schema_version") != 1:
-        errors.append("DeepFilter attestation schema_version must be 1")
-    if attestation.get("kind") != "audioforge.deepfilter.build":
-        errors.append("DeepFilter attestation kind is invalid")
-
     output = attestation.get("output")
     output_sha: str | None = None
     output_bytes: int | None = None
@@ -322,6 +378,7 @@ def _deepfilter_attestation_errors(
     except (OSError, ValueError) as exc:
         errors.append(f"DeepFilter source identity could not be loaded: {exc}")
         return errors
+    errors.extend(_deepfilter_attestation_contract_errors(attestation, provenance))
     manifest_asset = next(
         (
             asset
@@ -332,15 +389,12 @@ def _deepfilter_attestation_errors(
     )
     origin = manifest_asset.get("origin") if isinstance(manifest_asset, dict) else None
     expected_upstream = provenance.get("upstream")
-    source = attestation.get("source")
     if not isinstance(origin, dict) or not isinstance(expected_upstream, dict):
         errors.append("DeepFilter release asset source identity is incomplete")
-    elif not isinstance(source, dict):
-        errors.append("DeepFilter attestation source is missing")
     else:
         for field in ("repository", "commit"):
             expected = expected_upstream.get(field)
-            if source.get(field) != expected or origin.get(field) != expected:
+            if origin.get(field) != expected:
                 errors.append(f"DeepFilter attestation source {field} does not match provenance")
 
     recipe = attestation.get("recipe")
@@ -385,36 +439,6 @@ def _deepfilter_attestation_errors(
                 elif recipe_file.is_file() and sha256_file(recipe_file) != expected_model_hash.casefold():
                     errors.append(f"candidate model does not match release-assets.json: {required}")
 
-    expected_build = provenance.get("build")
-    if not isinstance(expected_build, dict) or not isinstance(recipe, dict):
-        errors.append("DeepFilter build identity is incomplete")
-    else:
-        for field in ("target", "profile", "features", "default_features"):
-            if recipe.get(field) != expected_build.get(field):
-                errors.append(f"DeepFilter attestation {field} does not match provenance")
-        abi = attestation.get("abi")
-        if not isinstance(abi, dict) or abi.get("required_exports") != expected_build.get("required_exports"):
-            errors.append("DeepFilter attestation ABI exports do not match provenance")
-        expected_patch = provenance.get("tract_linalg_patch")
-        if not isinstance(expected_patch, dict):
-            errors.append("DeepFilter tract-linalg patch identity is missing from provenance")
-        else:
-            patch_bindings = {
-                "tract_linalg_archive_sha256": "archive_sha256",
-                "tract_linalg_patched_manifest_sha256": "patched_cargo_toml_sha256",
-                "tract_linalg_build_rs_sha256": "build_rs_sha256",
-            }
-            for attested_name, provenance_name in patch_bindings.items():
-                if recipe.get(attested_name) != expected_patch.get(provenance_name):
-                    errors.append(f"DeepFilter attestation {attested_name} does not match provenance")
-        toolchain = attestation.get("toolchain")
-        tested_rust = expected_build.get("tested_rust")
-        if not isinstance(toolchain, dict) or not isinstance(toolchain.get("rustc"), str):
-            errors.append("DeepFilter attested Rust toolchain is missing")
-        elif isinstance(tested_rust, str):
-            tested_release = tested_rust.split(maxsplit=1)[0]
-            if not toolchain["rustc"].startswith(f"rustc {tested_release} "):
-                errors.append("DeepFilter attested Rust toolchain does not match provenance")
     return errors
 
 

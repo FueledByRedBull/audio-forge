@@ -295,6 +295,13 @@ def test_sidecars_bind_deepfilter_attestation_to_candidate(tmp_path, monkeypatch
     assert any("output hash" in error for error in errors)
 
 
+def test_deepfilter_attestation_requires_required_exports():
+    errors = release_provenance._deepfilter_attestation_contract_errors(
+        {"recipe": {}, "abi": {}}, {"build": {}}
+    )
+    assert any("ABI exports" in error for error in errors)
+
+
 def test_source_distribution_completion_is_only_required_for_publication(
     tmp_path, monkeypatch
 ):

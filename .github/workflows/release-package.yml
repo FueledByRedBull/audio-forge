@@ -537,37 +537,11 @@ jobs:
           if ($tagCommit -notmatch '^[0-9a-f]{40}$') {
             throw "Release tag does not resolve to a full commit: $tagCommit"
           }
-          $sourceHash = (Get-FileHash -LiteralPath $sourceArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-          $sourceChecksumParts = (Get-Content -LiteralPath $sourceChecksum -Raw).Trim() -split '\s+'
-          if ($sourceChecksumParts.Count -ne 2 -or
-              $sourceChecksumParts[0] -ne $sourceHash -or
-              $sourceChecksumParts[1] -ne $sourceArchive.Name) {
-            throw "Corresponding-source checksum does not match the exact source archive."
-          }
-          $sourceMetadataObject = Get-Content -LiteralPath $sourceMetadata -Raw | ConvertFrom-Json
-          if ([string]$sourceMetadataObject.archive.name -ne $sourceArchive.Name -or
-              [string]$sourceMetadataObject.archive.sha256 -ne $sourceHash -or
-              [string]$sourceMetadataObject.commit -ne $tagCommit -or
-              [string]$sourceMetadataObject.version -ne "${{ needs.package-windows.outputs.version }}") {
-            throw "Corresponding-source metadata is not bound to this exact candidate."
-          }
-          $sourceManifestHash = (Get-FileHash -LiteralPath "licenses/source-manifest.json" -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ([string]$sourceMetadataObject.source_manifest_sha256 -ne $sourceManifestHash) {
-            throw "Corresponding-source metadata is bound to a different source manifest."
-          }
-          if (-not (Test-Path -LiteralPath (Join-Path $sourceExtract "AudioForge-project-source.tar") -PathType Leaf)) {
-            throw "Corresponding-source archive is missing the tracked project source archive."
-          }
-          $sourceReceiptPath = Join-Path $sourceExtract "source-receipt.json"
-          $sourceProjectPath = Join-Path $sourceExtract "AudioForge-project-source.tar"
-          $sourceReceiptHash = (Get-FileHash -LiteralPath $sourceReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          $sourceProjectHash = (Get-FileHash -LiteralPath $sourceProjectPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ([string]$sourceMetadataObject.source_receipt_sha256 -ne $sourceReceiptHash -or
-              [string]$sourceMetadataObject.project_source_sha256 -ne $sourceProjectHash -or
-              [string]$sourceMetadataObject.project_source_name -ne "AudioForge-project-source.tar") {
-            throw "Corresponding-source metadata does not match the extracted receipt and project source."
-          }
           python python/tools/source_distribution.py verify `
+            --archive $sourceArchive `
+            --checksum $sourceChecksum `
+            --metadata $sourceMetadata `
+            --expected-version "${{ needs.package-windows.outputs.version }}" `
             --manifest licenses/source-manifest.json `
             --source-dir $sourceExtract `
             --include-runtime-assets `

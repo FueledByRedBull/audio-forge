@@ -437,7 +437,7 @@ class VoiceSetupDialog(QDialog):
             )
 
     def _start_recording_phase(self, phase: str) -> None:
-        self._stop_analysis_worker()
+        self._cancel_analysis_workers()
         if not self._ensure_processor_ready():
             return
 
@@ -754,8 +754,8 @@ class VoiceSetupDialog(QDialog):
             lambda error, token=generation: self._on_analysis_failed(error, token)
         )
         worker.finished.connect(
-            lambda token=generation, finished_worker=worker: self._on_analysis_thread_finished(
-                token, finished_worker
+            lambda finished_worker=worker: self._on_analysis_thread_finished(
+                finished_worker
             )
         )
         worker.start()
@@ -1152,9 +1152,6 @@ class VoiceSetupDialog(QDialog):
         except Exception as exc:
             logger.warning("Failed to re-enable recovery after cleanup: %s", exc)
 
-    def _stop_analysis_worker(self) -> None:
-        self._cancel_analysis_workers()
-
     def _cancel_analysis_workers(self) -> None:
         """Cancel work without dropping ownership of a running QThread."""
         self._analysis_generation += 1
@@ -1163,16 +1160,12 @@ class VoiceSetupDialog(QDialog):
                 worker.stop()
         self.analysis_worker = None
 
-    def _on_analysis_thread_finished(
-        self, _generation: int, worker: VoiceSetupWorker
-    ) -> None:
+    def _on_analysis_thread_finished(self, worker: VoiceSetupWorker) -> None:
         if worker in self._analysis_workers:
             self._analysis_workers.remove(worker)
         if self.analysis_worker is worker:
             self.analysis_worker = None
-        delete_later = getattr(worker, "deleteLater", None)
-        if callable(delete_later):
-            delete_later()
+        worker.deleteLater()
         if self._close_requested:
             self._finish_close()
 
@@ -1182,9 +1175,7 @@ class VoiceSetupDialog(QDialog):
         ):
             return
         for worker in tuple(self._analysis_workers):
-            delete_later = getattr(worker, "deleteLater", None)
-            if callable(delete_later):
-                delete_later()
+            worker.deleteLater()
         self._analysis_workers.clear()
         self._close_requested = False
         QDialog.done(self, int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected))

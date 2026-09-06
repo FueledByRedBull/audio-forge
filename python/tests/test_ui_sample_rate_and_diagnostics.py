@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import time
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import numpy as np
+import pytest
 from PyQt6.QtCore import QEventLoop, QThread, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QMessageBox, QWidget
 
 from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.ui.calibration_dialog import CalibrationDialog, _selected_device_pair
@@ -111,6 +113,9 @@ class _CaptureWorkerStub:
 
     def wait(self, _timeout=None):
         return True
+
+    def deleteLater(self):
+        return None
 
 
 class _SlowAnalysisWorker(QThread):
@@ -277,6 +282,51 @@ class _PresetPanel:
 
     def set_limiter_settings(self, settings):
         self.limiter_settings = settings
+
+
+@pytest.mark.parametrize(
+    ("save_results", "overwrite_reply"),
+    [
+        ([Path("saved.json")], None),
+        ([FileExistsError("exists")], QMessageBox.StandardButton.No),
+        (
+            [FileExistsError("exists"), Path("saved.json")],
+            QMessageBox.StandardButton.Yes,
+        ),
+        (
+            [FileExistsError("exists"), OSError("cannot write")],
+            QMessageBox.StandardButton.Yes,
+        ),
+    ],
+    ids=("success", "collision-declined", "collision-accepted", "overwrite-failure"),
+)
+def test_save_preset_file_handles_collision_and_errors(monkeypatch, save_results, overwrite_reply):
+    save_mock = Mock(side_effect=save_results)
+    question = Mock(return_value=overwrite_reply)
+    critical = Mock()
+    monkeypatch.setattr("mic_eq.ui.main_window.save_preset", save_mock)
+    monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.question", question)
+    monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.critical", critical)
+
+    result = MainWindow._save_preset_file(
+        MainWindow.__new__(MainWindow), Preset(name="My Preset")
+    )
+
+    expected_path = save_results[-1] if isinstance(save_results[-1], Path) else None
+    overwrite_flags = [False] + (
+        [True] if overwrite_reply == QMessageBox.StandardButton.Yes else []
+    )
+    error = isinstance(save_results[-1], OSError) and not isinstance(
+        save_results[-1], FileExistsError
+    )
+    assert result == expected_path
+    assert [call.kwargs["overwrite"] for call in save_mock.call_args_list] == [
+        *overwrite_flags
+    ]
+    assert question.call_count == int(isinstance(save_results[0], FileExistsError))
+    assert critical.call_count == int(error)
+    if error:
+        assert "cannot write" in critical.call_args.args[2]
 
 
 class _FakeMeter:

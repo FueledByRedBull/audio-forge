@@ -12,6 +12,8 @@ import pytest
 from mic_eq.config import DeviceIdentity, Preset
 from mic_eq.diagnostics_export import (
     MAX_SERIALIZED_BYTES,
+    SCHEMA_NAME,
+    SCHEMA_VERSION,
     build_diagnostics_snapshot,
     diagnostics_filename,
     serialize_diagnostics_snapshot,
@@ -66,11 +68,13 @@ def _runtime() -> dict[str, object]:
 
 
 def _build(*, key: bytes = b"K" * 32) -> dict[str, Any]:
+    processing = Preset().to_dict()
+    processing["eq"]["bands"][0]["gain_db"] = float("inf")
     return build_diagnostics_snapshot(
         app_version="1.10.1",
         runtime_diagnostics=_runtime(),
         config=_config(),
-        processing_settings=Preset().to_dict(),
+        processing_settings=processing,
         input_device=DeviceIdentity(
             name="Private USB Microphone",
             is_default=True,
@@ -92,6 +96,15 @@ def test_snapshot_is_deterministic_finite_bounded_and_private() -> None:
     text = payload.decode("utf-8")
 
     assert first == second
+    assert first["schema"] == {"name": SCHEMA_NAME, "version": SCHEMA_VERSION}
+    assert first["privacy"] == {
+        "raw_audio_included": False,
+        "environment_variables_included": False,
+        "arbitrary_paths_included": False,
+        "raw_device_names_included": False,
+        "secrets_included": False,
+        "pseudonyms_are_report_local": True,
+    }
     assert len(payload) < MAX_SERIALIZED_BYTES
     assert first["runtime"]["output_short_term_lufs"] is None
     assert first["runtime"]["backend_error_present"] is True
@@ -101,6 +114,7 @@ def test_snapshot_is_deterministic_finite_bounded_and_private() -> None:
     assert first["configuration"]["device_preset_binding_count"] == 0
     assert first["processing"]["eq"]["schema_version"] == 2
     assert len(first["processing"]["eq"]["bands"]) == 10
+    assert "gain_db" not in first["processing"]["eq"]["bands"][0]
     assert "Private USB Microphone" not in text
     assert "Private Virtual Cable" not in text
     assert "C:\\Users" not in text

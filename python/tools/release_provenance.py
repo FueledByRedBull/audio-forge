@@ -717,6 +717,7 @@ def _distribution_inventory_errors(
     bundle: Path,
     *,
     require_complete: bool,
+    expected_revision: object,
 ) -> list[str]:
     inventory_path = bundle / "_internal" / "licenses" / "dependencies" / "inventory.json"
     if not inventory_path.is_file():
@@ -745,6 +746,12 @@ def _distribution_inventory_errors(
         ]
     if require_complete and blockers:
         return ["distribution source fulfillment still has blockers"]
+    if require_complete and (
+        not isinstance(expected_revision, str)
+        or re.fullmatch(r"[0-9a-f]{40}", expected_revision) is None
+        or source_distribution.get("revision") != expected_revision
+    ):
+        return ["distribution source inventory revision does not match the release commit"]
     return []
 
 
@@ -956,6 +963,7 @@ def verify_sidecars(
                 _distribution_inventory_errors(
                     bundle,
                     require_complete=require_source_distribution,
+                    expected_revision=metadata.get("commit"),
                 )
             )
             errors.extend(_cpu_ort_asset_errors(bundle))

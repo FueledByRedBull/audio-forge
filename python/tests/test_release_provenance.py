@@ -342,6 +342,37 @@ def test_source_distribution_completion_is_only_required_for_publication(
     assert any("publication is blocked" in error for error in errors)
 
 
+@pytest.mark.parametrize("revision", [None, "b" * 40, "a" * 40])
+def test_publication_requires_inventory_from_the_release_commit(
+    tmp_path, monkeypatch, revision
+):
+    bundle = _bundle(tmp_path)
+    inventory_path = bundle / "_internal" / "licenses" / "dependencies" / "inventory.json"
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    inventory["source_distribution"]["revision"] = revision
+    inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+    archive = tmp_path / "AudioForge-v1.2.3-win64-ultra.7z"
+    archive.write_bytes(b"archive")
+    monkeypatch.setattr(release_provenance, "_project_version", lambda: "1.2.3")
+    monkeypatch.setattr(release_provenance, "_git_commit", lambda: "a" * 40)
+    checksum, manifest, metadata = release_provenance.create_sidecars(
+        bundle, archive, tmp_path
+    )
+    errors = release_provenance.verify_sidecars(
+        archive,
+        checksum,
+        manifest,
+        metadata,
+        bundle=bundle,
+        expected_commit="a" * 40,
+        require_source_distribution=True,
+    )
+    if revision == "a" * 40:
+        assert errors == []
+    else:
+        assert any("source inventory revision" in error for error in errors)
+
+
 def test_sidecar_creation_rejects_dirty_source_unless_explicitly_local(
     tmp_path, monkeypatch
 ):

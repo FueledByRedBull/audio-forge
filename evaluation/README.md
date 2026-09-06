@@ -6,12 +6,15 @@ aggregate metrics, predefined gates, the resulting decision, and limitations.
 Per-case detail is written only when an evaluator's optional
 `--details-output` argument is supplied and should stay under ignored
 `models/evaluation-details/` or in a CI artifact.
+Routine test results and screenshot-generation reports belong under ignored
+`build/`, not in this directory.
 
 ## Current decisions
 
 | Area | Evidence | Outcome |
 | --- | --- | --- |
 | DeepFilter | `deepfilter-hardening-report.json`, `deepfilter-fullband-report.json` | Retain 30 dB attenuation and beta 0.0. |
+| VAD | `vad-model-selection-report.json`, `vad-v6.2.1-report.json` | Retain Silero v6.2.1 with independent calibration and multi-speaker validation. |
 | Auto-EQ confidence | `auto-eq-confidence-calibration.json` | Retain calibrated capture and per-band confidence gates. |
 | Compressor control | `auto-makeup-real-speech-report.json`, `compressor-control-report.json`, `compressor-search-report.json` | Retain VAD/reliability-driven makeup and bounded search. |
 | Processing order | `processing-order-report.json` | Retain gate before suppression and de-esser before EQ. |
@@ -22,11 +25,12 @@ Per-case detail is written only when an evaluator's optional
 | EQ stage split | `correction-tone-stage-report.json` | Safe/cost-eligible, but closed because no product benefit was demonstrated. |
 | RNNoise | `rnnoise-backend-comparison.json` | Retain `nnnoiseless`; upstream Xiph was materially slower and regressed clean preservation. |
 | DPDFNet | `dpdfnet-vs-deepfilternet3-report.json`, `dpdfnet-official-evalset-report.json` | Rejected and absent; historical clean failures are not independently reproducible from this checkout. |
-| ONNX Runtime backend | `onnxruntime-cpu-probe.json` | Official CPU-only 1.23.2 matches the preserved 3.12 baseline across 498 captures and 20,908 frames; software adoption is ready, while microphone/hardware qualification remains pending. |
-| Release integrity | `release-bundle-path-baseline.json`, `release-trends.json` | Exact archive sidecars and digest-bound qualification own artifact facts. |
+| ONNX Runtime backend | `onnxruntime-cpu-probe.json` | Official CPU-only 1.23.2 matched the preserved 3.12 baseline across 498 captures and 20,908 frames. |
+| Release integrity | `release-bundle-path-baseline.json` | Reviewed package paths gate the candidate; exact archive sidecars and digest-bound qualification own artifact facts. |
 
-The corresponding `python/tools/evaluate_*.py` command regenerates each
-record. Corpora and model assets are hash-pinned under ignored `models/`
+The `python/tools/evaluate_*.py` commands regenerate current measurements;
+historical decisions retain their stated reproduction limits.
+Corpora and model assets are hash-pinned under ignored `models/`
 directories and are never bundled merely because they exist locally.
 `python/tools/check_evaluation_hygiene.py` rejects absolute paths, stale source
 hashes, malformed audible-change contracts, privacy leaks, and oversized
@@ -48,5 +52,6 @@ result to `evaluate_rnnoise_backends.py --upstream-binary`.
 Objective metrics establish behavior only for the recorded corpus, hardware,
 and configuration. Unobserved devices, operating-system versions, routes, or
 voices are listed as limitations rather than inferred. Release promotion
-requires one clean, SHA-bound automated 30-minute baseline from the exact
-candidate; broader hardware/lifecycle coverage remains optional evidence.
+requires a SHA-bound automated 30-minute baseline from the exact candidate and
+the OS, device, rate, and lifecycle coverage specified in
+`python/tools/hardware_qualification.py`. See [RELEASING](../RELEASING.md).

@@ -7,6 +7,9 @@
 The preferred release path is the `Release package` workflow.
 
 Prepare source, version, release notes, and documentation in one release commit.
+Keep the upcoming release notes in `release-notes/`; published notes remain on
+[GitHub Releases](https://github.com/FueledByRedBull/audio-forge/releases) and in
+their tagged source. The [changelog](CHANGELOG.md) keeps the repository history.
 Keep artifact sizes, hashes, and file counts in the generated sidecars, so their
 publication does not require a second documentation commit. The
 `fallback_release_tag` is a standing source of dependency assets, independent of

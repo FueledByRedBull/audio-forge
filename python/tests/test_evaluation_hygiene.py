@@ -95,63 +95,6 @@ def test_audible_report_requires_complete_contract(tmp_path: Path):
     assert any("lacks evaluation_contract" in error for error in errors)
 
 
-def test_release_trends_reject_duplicate_versions(tmp_path: Path):
-    path = tmp_path / "release-trends.json"
-    _write(
-        path,
-        {
-            "schema_version": 1,
-            "releases": [
-                {"version": "1.10.0"},
-                {"version": "1.10.0"},
-            ],
-        },
-    )
-
-    errors = hygiene.validate_release_trends(path)
-
-    assert any("duplicate version 1.10.0" in error for error in errors)
-
-
-def test_release_trends_validate_embedded_hardware_privacy(tmp_path: Path):
-    path = tmp_path / "release-trends.json"
-    _write(
-        path,
-        {
-            "schema_version": 1,
-            "releases": [
-                {
-                    "version": "1.10.1",
-                    "status": "published",
-                    "commit": "a" * 40,
-                    "package": {
-                        "bundle": {"status": "not_measured", "reason": "test"},
-                        "archive": {"status": "not_measured", "reason": "test"},
-                    },
-                    "runtime": {"status": "not_measured", "reason": "test"},
-                    "quality": {"status": "not_measured", "reason": "test"},
-                    "hardware": {
-                        "status": "measured",
-                        "value": {
-                            "schema_version": 3,
-                            "routes": {
-                                "correlation": {
-                                    "input": "Private microphone",
-                                    "output": "device-" + "b" * 16,
-                                }
-                            },
-                        },
-                    },
-                }
-            ],
-        },
-    )
-
-    errors = hygiene.validate_release_trends(path)
-
-    assert any("report-local device pseudonym" in error for error in errors)
-
-
 def test_stale_declared_source_hash_is_rejected(tmp_path: Path, monkeypatch):
     source = tmp_path / "source.py"
     source.write_text("before\n", encoding="utf-8")

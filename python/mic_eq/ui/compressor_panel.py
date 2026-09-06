@@ -234,7 +234,7 @@ class CompressorPanel(QWidget):
         self.auto_makeup_checkbox.setToolTip(
             "Automatically adjust makeup gain from post-compression EBU R128 loudness measurement.\n"
             "Maintains post-compressor output level relative to target LUFS.\n"
-            "Target: -18 LUFS (podcast/streaming standard)"
+            "Uses the selected Target LUFS value."
         )
         advanced_layout.addWidget(self.auto_makeup_checkbox, 4, 0, 1, 2)
 

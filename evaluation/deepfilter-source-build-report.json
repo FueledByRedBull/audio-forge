@@ -3,7 +3,7 @@
     "args": "--attenuation-db 80 --post-filter-beta 0 --strength 1",
     "hashes": {
       "binary": {
-        "target/release/deepfilter_benchmark.exe": "e844da85b934c707bcec81eacfb5b398cd5f8d01c114a9830abd3682ac34217f"
+        "target/release/deepfilter_benchmark.exe": "7efaa9bb35239fc98e1b45936cf98602ec46053bc3b62ee3f7efa39f8b15a6b5"
       },
       "corpus_manifest": {
         "models/deepfilter_fullband_eval/manifest.json": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6"
@@ -16,22 +16,22 @@
     "The original inherited DLL's build identity was not recoverable; parity establishes behavior on this held-out corpus, not provenance."
   ],
   "output": {
-    "attestation_output_bytes": 13767680,
-    "attestation_output_sha256": "5F666380BD0F69B6DEF04D7AEB6D38C8C1C5780E2CB3C3F9602F05564AA948A5",
+    "attestation_output_bytes": 13766656,
+    "attestation_output_sha256": "38605121768ED5C29FE933ADF4EDAC2E2F4BBC98E53EAD6838919CC7FD4AB027",
     "attestation_path": "target/deepfilter/df.dll.provenance.json",
-    "attestation_sha256": "e1370015954b88363d0c06d8677d5bd1897f3a76ecd673087d584d69305a32f3",
-    "bytes": 13767680,
+    "attestation_sha256": "7d9b553a7bbab5f7b1f2d9966f75342c0fd72e0442ba169065892d9946207420",
+    "bytes": 13766656,
     "hash_note": "Native linker metadata can vary between approved toolchains; each build publishes its own attestation.",
     "manifest_sha256_is_reference_only": true,
     "path": "df.dll",
-    "sha256": "5f666380bd0f69b6def04d7aeb6d38c8c1c5780e2cb3c3f9602f05564aa948a5"
+    "sha256": "38605121768ed5c29fe933adf4edac2e2f4bbc98e53ead6838919cc7fd4ab027"
   },
   "parity": {
     "cases": 8,
     "comparisons": [
       {
         "candidate_latency_samples": 480,
-        "candidate_p99_frame_ms": 1.3347,
+        "candidate_p99_frame_ms": 1.4223000000000001,
         "expected_latency_samples": 480,
         "finite": true,
         "input": {
@@ -43,14 +43,14 @@
         "max_abs": 0.0,
         "model": "ll",
         "reference_latency_samples": 480,
-        "reference_p99_frame_ms": 1.2162,
+        "reference_p99_frame_ms": 1.5777,
         "rmse": 0.0,
         "samples": 48480,
         "segment": "p232_001@0"
       },
       {
         "candidate_latency_samples": 480,
-        "candidate_p99_frame_ms": 1.5689,
+        "candidate_p99_frame_ms": 1.1670999999999998,
         "expected_latency_samples": 480,
         "finite": true,
         "input": {
@@ -62,14 +62,14 @@
         "max_abs": 0.0,
         "model": "ll",
         "reference_latency_samples": 480,
-        "reference_p99_frame_ms": 1.3747,
+        "reference_p99_frame_ms": 1.2121,
         "rmse": 0.0,
         "samples": 48480,
         "segment": "p232_006@24000"
       },
       {
         "candidate_latency_samples": 480,
-        "candidate_p99_frame_ms": 1.3825,
+        "candidate_p99_frame_ms": 1.1122,
         "expected_latency_samples": 480,
         "finite": true,
         "input": {
@@ -81,14 +81,14 @@
         "max_abs": 0.0,
         "model": "ll",
         "reference_latency_samples": 480,
-        "reference_p99_frame_ms": 1.5219,
+        "reference_p99_frame_ms": 1.2303,
         "rmse": 0.0,
         "samples": 48480,
         "segment": "p257_001@0"
       },
       {
         "candidate_latency_samples": 480,
-        "candidate_p99_frame_ms": 1.3875,
+        "candidate_p99_frame_ms": 1.4038,
         "expected_latency_samples": 480,
         "finite": true,
         "input": {
@@ -100,14 +100,14 @@
         "max_abs": 0.0,
         "model": "ll",
         "reference_latency_samples": 480,
-        "reference_p99_frame_ms": 1.6117,
+        "reference_p99_frame_ms": 1.2471999999999999,
         "rmse": 0.0,
         "samples": 48480,
         "segment": "p257_006@24000"
       },
       {
         "candidate_latency_samples": 1440,
-        "candidate_p99_frame_ms": 1.0183,
+        "candidate_p99_frame_ms": 0.8689,
         "expected_latency_samples": 1440,
         "finite": true,
         "input": {
@@ -119,14 +119,14 @@
         "max_abs": 0.0,
         "model": "standard",
         "reference_latency_samples": 1440,
-        "reference_p99_frame_ms": 0.8205,
+        "reference_p99_frame_ms": 0.8275,
         "rmse": 0.0,
         "samples": 49440,
         "segment": "p232_001@0"
       },
       {
         "candidate_latency_samples": 1440,
-        "candidate_p99_frame_ms": 0.6323,
+        "candidate_p99_frame_ms": 0.7525999999999999,
         "expected_latency_samples": 1440,
         "finite": true,
         "input": {
@@ -138,14 +138,14 @@
         "max_abs": 0.0,
         "model": "standard",
         "reference_latency_samples": 1440,
-        "reference_p99_frame_ms": 0.7123,
+        "reference_p99_frame_ms": 0.7062,
         "rmse": 0.0,
         "samples": 49440,
         "segment": "p232_006@24000"
       },
       {
         "candidate_latency_samples": 1440,
-        "candidate_p99_frame_ms": 0.7380000000000001,
+        "candidate_p99_frame_ms": 0.7303000000000001,
         "expected_latency_samples": 1440,
         "finite": true,
         "input": {
@@ -157,14 +157,14 @@
         "max_abs": 0.0,
         "model": "standard",
         "reference_latency_samples": 1440,
-        "reference_p99_frame_ms": 0.7602000000000001,
+        "reference_p99_frame_ms": 0.6304000000000001,
         "rmse": 0.0,
         "samples": 49440,
         "segment": "p257_001@0"
       },
       {
         "candidate_latency_samples": 1440,
-        "candidate_p99_frame_ms": 0.8067000000000001,
+        "candidate_p99_frame_ms": 0.6669,
         "expected_latency_samples": 1440,
         "finite": true,
         "input": {
@@ -176,7 +176,7 @@
         "max_abs": 0.0,
         "model": "standard",
         "reference_latency_samples": 1440,
-        "reference_p99_frame_ms": 0.8882,
+        "reference_p99_frame_ms": 0.7259,
         "rmse": 0.0,
         "samples": 49440,
         "segment": "p257_006@24000"
@@ -216,8 +216,8 @@
     "finite_cases": 18,
     "gate_p99_frame_ms": 10.0,
     "latency_cases": 18,
-    "max_p99_frame_ms": 1.5689,
-    "max_rtf": 0.10225861386138614,
+    "max_p99_frame_ms": 1.4443,
+    "max_rtf": 0.0908480198019802,
     "repeats": "5 per model plus the 8 parity cases",
     "runs": [
       {
@@ -225,90 +225,90 @@
         "finite": true,
         "latency_samples": 480,
         "model": "ll",
-        "p99_frame_ms": 1.4071,
+        "p99_frame_ms": 1.3724,
         "repeat": 1,
-        "rtf": 0.10225861386138614
+        "rtf": 0.08873534653465347
       },
       {
         "expected_latency_samples": 480,
         "finite": true,
         "latency_samples": 480,
         "model": "ll",
-        "p99_frame_ms": 1.3404999999999998,
+        "p99_frame_ms": 1.27,
         "repeat": 2,
-        "rtf": 0.08447306930693069
+        "rtf": 0.08565881188118812
       },
       {
         "expected_latency_samples": 480,
         "finite": true,
         "latency_samples": 480,
         "model": "ll",
-        "p99_frame_ms": 1.3597,
+        "p99_frame_ms": 1.4443,
         "repeat": 3,
-        "rtf": 0.08888792079207922
+        "rtf": 0.0885929702970297
       },
       {
         "expected_latency_samples": 480,
         "finite": true,
         "latency_samples": 480,
         "model": "ll",
-        "p99_frame_ms": 1.2550000000000001,
+        "p99_frame_ms": 1.2854999999999999,
         "repeat": 4,
-        "rtf": 0.0898450495049505
+        "rtf": 0.08626178217821782
       },
       {
         "expected_latency_samples": 480,
         "finite": true,
         "latency_samples": 480,
         "model": "ll",
-        "p99_frame_ms": 1.3657000000000001,
+        "p99_frame_ms": 1.3323,
         "repeat": 5,
-        "rtf": 0.09557425742574258
+        "rtf": 0.0908480198019802
       },
       {
         "expected_latency_samples": 1440,
         "finite": true,
         "latency_samples": 1440,
         "model": "standard",
-        "p99_frame_ms": 0.9087000000000001,
+        "p99_frame_ms": 0.675,
         "repeat": 1,
-        "rtf": 0.04892378640776699
+        "rtf": 0.04359145631067961
       },
       {
         "expected_latency_samples": 1440,
         "finite": true,
         "latency_samples": 1440,
         "model": "standard",
-        "p99_frame_ms": 0.6983,
+        "p99_frame_ms": 0.7773,
         "repeat": 2,
-        "rtf": 0.044897475728155334
+        "rtf": 0.04387766990291262
       },
       {
         "expected_latency_samples": 1440,
         "finite": true,
         "latency_samples": 1440,
         "model": "standard",
-        "p99_frame_ms": 0.7205,
+        "p99_frame_ms": 0.8001,
         "repeat": 3,
-        "rtf": 0.048159611650485434
+        "rtf": 0.044875631067961164
       },
       {
         "expected_latency_samples": 1440,
         "finite": true,
         "latency_samples": 1440,
         "model": "standard",
-        "p99_frame_ms": 0.8538,
+        "p99_frame_ms": 0.5937,
         "repeat": 4,
-        "rtf": 0.05033330097087379
+        "rtf": 0.04381660194174757
       },
       {
         "expected_latency_samples": 1440,
         "finite": true,
         "latency_samples": 1440,
         "model": "standard",
-        "p99_frame_ms": 0.8907999999999999,
+        "p99_frame_ms": 0.8057,
         "repeat": 5,
-        "rtf": 0.04779902912621359
+        "rtf": 0.04529631067961165
       }
     ]
   },

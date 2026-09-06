@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import importlib.util
 import json
+import math
 import os
 import sys
 import tomllib
@@ -37,7 +38,7 @@ def test_hardware_result_parsers_require_success_and_evidence() -> None:
     health = {
         "return_code": 0,
         "stdout": [
-            'Health summary: max_input_age_ms=5 max_output_age_ms=4 restarts=0 underrun_baseline=3 diagnostics={"input_dropped_samples":0}'
+            'Health summary: max_input_age_ms=5 max_output_age_ms=4 restarts=0 underrun_baseline=3 diagnostics={"input_dropped_samples":0,"input_sample_rate":48000}'
         ],
     }
 
@@ -53,7 +54,79 @@ def test_hardware_result_parsers_require_success_and_evidence() -> None:
     assert parsed_health["max_input_callback_age_ms"] == 5
     assert parsed_health["stream_restarts"] == 0
     assert parsed_health["output_underrun_baseline"] == 3
+    assert parsed_health["observed_input_sample_rate_hz"] == 48_000
     assert parsed_health["runtime_diagnostics"]["input_dropped_samples"] == 0
+
+
+def test_hardware_sample_rate_evidence_rejects_missing_or_non_integer_values() -> None:
+    assert TOOL._diagnostic_input_sample_rate({}) is None
+    assert TOOL._diagnostic_input_sample_rate({"input_sample_rate": True}) is None
+    assert TOOL._diagnostic_input_sample_rate({"input_sample_rate": 48_000.0}) is None
+    assert TOOL._diagnostic_input_sample_rate({"input_sample_rate": 48_000}) == 48_000
+
+
+def test_health_check_fails_after_warmup_on_backend_failure(monkeypatch, capsys) -> None:
+    clean = {
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "input_sample_rate": 48_000,
+        "output_underrun_total": 0,
+    }
+    failed = {
+        **clean,
+        "noise_backend_available": False,
+        "noise_backend_failed": True,
+    }
+    diagnostics = iter((clean, failed))
+    diagnostic_reads = 0
+    stopped = False
+    clock = [0.0]
+
+    class Processor:
+        def start(self, _input, _output):
+            return "Started"
+
+        def stop(self):
+            nonlocal stopped
+            stopped = True
+
+        def get_input_callback_age_ms(self):
+            return 1
+
+        def get_output_callback_age_ms(self):
+            return 1
+
+        def service_recovery(self):
+            return None
+
+        def get_stream_restart_count(self):
+            return 0
+
+        def get_runtime_diagnostics(self):
+            nonlocal diagnostic_reads
+            diagnostic_reads += 1
+            return next(diagnostics)
+
+    module = ModuleType("mic_eq")
+    monkeypatch.setattr(module, "AudioProcessor", Processor, raising=False)
+    monkeypatch.setitem(sys.modules, "mic_eq", module)
+    monkeypatch.setattr(
+        HEALTH_TOOL.sys,
+        "argv",
+        ["health_check.py", "--duration", "1800", "--warmup", "0", "--poll", "0"],
+    )
+    monkeypatch.setattr(HEALTH_TOOL.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        HEALTH_TOOL.time,
+        "sleep",
+        lambda _seconds: clock.__setitem__(0, clock[0] + 1.0),
+    )
+
+    assert HEALTH_TOOL.main() == 6
+    assert stopped is True
+    assert diagnostic_reads == 2
+    assert clock[0] < 2.0
+    assert "noise_backend_failed=true" in capsys.readouterr().out
 
 
 def test_power_event_reader_rejects_unbounded_or_entity_xml(monkeypatch) -> None:
@@ -246,6 +319,13 @@ def test_health_gate_requires_standard_deepfilter_inference_and_output() -> None
         )
         == []
     )
+    clean["output_true_peak_db"] = -200.0
+    assert (
+        HEALTH_TOOL._selected_noise_model_failures(
+            clean, expected_model="deepfilter"
+        )
+        == []
+    )
     clean["suppressor_latency_samples"] = 1_919
     assert (
         HEALTH_TOOL._selected_noise_model_failures(
@@ -263,7 +343,7 @@ def test_health_gate_requires_standard_deepfilter_inference_and_output() -> None
         noise_model="rnnoise",
         suppressor_latency_samples=480,
         suppressor_successful_inference_frames=0,
-        output_true_peak_db=-120.0,
+        output_true_peak_db=math.nan,
     )
     failures = HEALTH_TOOL._selected_noise_model_failures(
         broken, expected_model="deepfilter"
@@ -271,7 +351,7 @@ def test_health_gate_requires_standard_deepfilter_inference_and_output() -> None
     assert "noise_model='rnnoise'" in failures
     assert "suppressor_latency_samples=480" in failures
     assert "suppressor_successful_inference_frames=0" in failures
-    assert "output_true_peak_db=-120.0" in failures
+    assert "output_true_peak_db=nan" in failures
 
 
 def test_lifecycle_model_probe_requires_new_inference_frames() -> None:
@@ -291,6 +371,29 @@ def test_lifecycle_model_probe_requires_new_inference_frames() -> None:
     assert TOOL._model_diagnostics_healthy(
         diagnostics, "deepfilter", minimum_inference_frames=12
     ) is True
+    diagnostics["output_true_peak_db"] = -200.0
+    assert TOOL._model_diagnostics_healthy(
+        diagnostics, "deepfilter", minimum_inference_frames=12
+    ) is True
+    diagnostics["output_true_peak_db"] = math.nan
+    assert TOOL._model_diagnostics_healthy(diagnostics, "deepfilter") is False
+
+
+@pytest.mark.parametrize("event_window", [False, True])
+def test_lifecycle_recovery_rejects_changed_or_missing_input_rate(event_window) -> None:
+    baseline = {key: 0 for key in HEALTH_TOOL._ZERO_REQUIRED_DIAGNOSTICS}
+    baseline.update(
+        input_sample_rate=48_000,
+        output_underrun_total=0,
+        noise_backend_available=True,
+        noise_backend_failed=False,
+    )
+    assert TOOL._diagnostic_failures(baseline, baseline, event_window=event_window) == []
+    for rate in (44_100, None, True):
+        current = {**baseline, "input_sample_rate": rate}
+        assert "input_sample_rate missing or changed" in TOOL._diagnostic_failures(
+            baseline, current, event_window=event_window
+        )
 
 
 def test_lifecycle_settle_rejects_diagnostic_counter_growth() -> None:
@@ -318,7 +421,7 @@ def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
     monkeypatch, tmp_path, new_underruns
 ) -> None:
     input_device = SimpleNamespace(
-        name="Input", endpoint_id="input-endpoint", is_default=True, sample_rate=48_000
+        name="Input", endpoint_id="input-endpoint", is_default=True, sample_rate=44_100
     )
     output_device = SimpleNamespace(
         name="Output", endpoint_id="output-endpoint", is_default=True, sample_rate=48_000
@@ -331,6 +434,7 @@ def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
         }
         result.update(
             {
+                "input_sample_rate": 48_000,
                 "output_underrun_total": new_underruns if model == "deepfilter" else 0,
                 "noise_backend_available": True,
                 "noise_backend_failed": False,
@@ -340,7 +444,7 @@ def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
                     1_440 if model == "deepfilter" else 480
                 ),
                 "suppressor_successful_inference_frames": frames,
-                "output_true_peak_db": -18.0,
+                "output_true_peak_db": -200.0,
             }
         )
         return result
@@ -414,6 +518,8 @@ def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
         return
 
     assert result["passed"] is True, json.dumps(result, indent=2)
+    assert result["observed_input_sample_rate_hz"] == 48_000
+    assert result["diagnostics"]["before"]["input_sample_rate"] == 48_000
     assert result["event"]["alternate_inference_frames"] == 1
     assert result["event"]["latency_samples_before"] == 480
     assert result["event"]["latency_samples_alternate"] == 1_440

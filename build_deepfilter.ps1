@@ -187,7 +187,7 @@ function Assert-WorkspaceSourceTree([string]$GitPath, [string]$SourceCache, [str
         if (-not (Test-Path -LiteralPath $workspacePath -PathType Leaf)) {
             throw "DeepFilter workspace is missing upstream source file: $relative"
         }
-        if ($relative -notin @("libDF\Cargo.toml", "libDF\src\tract.rs")) {
+        if ($relative -notin @("libDF\Cargo.toml", "libDF\src\lib.rs", "libDF\src\tract.rs")) {
             $expectedHash = Invoke-Captured $GitPath @("-C", $SourceCache, "rev-parse", "$Commit`:$($relative.Replace('\', '/'))")
             $actualHash = Invoke-Captured $GitPath @("-C", $Workspace, "hash-object", "--no-filters", "--", "libDF\$relativeWithinLib")
             if ($actualHash.Trim() -ne $expectedHash.Trim()) {
@@ -310,6 +310,7 @@ Assert-CleanGitCheckout $gitPath $sourceCache $repository $commit
 $sourceFiles = @(
     @{ Relative = "libDF\Cargo.toml"; Hash = [string]$provenance.upstream.files.'libDF/Cargo.toml'.sha256 },
     @{ Relative = "libDF\src\capi.rs"; Hash = [string]$provenance.upstream.files.'libDF/src/capi.rs'.sha256 },
+    @{ Relative = "libDF\src\lib.rs"; Hash = [string]$provenance.upstream.files.'libDF/src/lib.rs'.sha256 },
     @{ Relative = "libDF\src\tract.rs"; Hash = [string]$provenance.upstream.files.'libDF/src/tract.rs'.sha256 }
 )
 foreach ($file in $sourceFiles) {
@@ -415,6 +416,7 @@ if (-not (Test-Path -LiteralPath $extracted -PathType Container)) {
 Assert-PatchTree $extracted $tractPatch ([string]$provenance.tract_linalg_patch.patched_cargo_toml_sha256)
 
 $libManifest = Join-Path $workspace "libDF\Cargo.toml"
+$libSource = Join-Path $workspace "libDF\src\lib.rs"
 $tractSource = Join-Path $workspace "libDF\src\tract.rs"
 if ((Get-Sha256 $libManifest) -eq ([string]$provenance.upstream.files.'libDF/Cargo.toml'.sha256).ToUpperInvariant()) {
     $manifestText = [System.IO.File]::ReadAllText($libManifest)
@@ -427,6 +429,16 @@ if ((Get-Sha256 $libManifest) -eq ([string]$provenance.upstream.files.'libDF/Car
     Set-Utf8NoBom $libManifest $manifestText
 }
 Assert-FileHash $libManifest ([string]$provenance.upstream.files.'libDF/Cargo.toml'.patched_sha256) "Patched libDF manifest"
+
+if ((Get-Sha256 $libSource) -eq ([string]$provenance.upstream.files.'libDF/src/lib.rs'.sha256).ToUpperInvariant()) {
+    $libSourceText = [System.IO.File]::ReadAllText($libSource)
+    $unitNormPattern = '(?m)^        \*s = x\.norm\(\) \* \(1\. - alpha\) \+ \*s \* alpha;\r?$'
+    $unitNormMatches = [regex]::Matches($libSourceText, $unitNormPattern)
+    if ($unitNormMatches.Count -ne 2) { throw "Expected two unit normalization state updates in libDF/src/lib.rs, found $($unitNormMatches.Count)." }
+    $libSourceText = [regex]::Replace($libSourceText, $unitNormPattern, '        *s = (x.norm() * (1. - alpha) + *s * alpha).max(f32::MIN_POSITIVE);')
+    Set-Utf8NoBom $libSource $libSourceText
+}
+Assert-FileHash $libSource ([string]$provenance.upstream.files.'libDF/src/lib.rs'.patched_sha256) "Patched libDF normalization source"
 
 if ((Get-Sha256 $tractSource) -eq ([string]$provenance.upstream.files.'libDF/src/tract.rs'.sha256).ToUpperInvariant()) {
     $tractSourceText = [System.IO.File]::ReadAllText($tractSource)
@@ -446,6 +458,7 @@ if (-not $workspaceHasMarker) {
         tract_linalg_version = $tractVersion
         lock_sha256 = Get-Sha256 (Join-Path $workspace "Cargo.lock")
         lib_manifest_sha256 = Get-Sha256 $libManifest
+        lib_source_sha256 = Get-Sha256 $libSource
         tract_source_sha256 = Get-Sha256 $tractSource
         tract_manifest_sha256 = Get-Sha256 (Join-Path $tractPatch "Cargo.toml")
         rustflags = @(
@@ -519,7 +532,7 @@ try {
         source = [ordered]@{
             repository = $repository
             commit = $commit
-            workspace_validation = "Every file under libDF was matched to the pinned git blob; only the two recorded compatibility patches were accepted."
+            workspace_validation = "Every file under libDF was matched to the pinned git blob; only the three recorded source patches were accepted."
         }
         recipe = [ordered]@{
             files = $recipeFiles

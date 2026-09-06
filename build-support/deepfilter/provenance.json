@@ -13,6 +13,10 @@
       "libDF/src/capi.rs": {
         "sha256": "6ADB1B6158EAD9505E3CCDB5A8F06A52FF361E1E49D1A28EDC76AC05BC2756AF"
       },
+      "libDF/src/lib.rs": {
+        "sha256": "716B6274C60344B25B7824A55D06D0FAC0E58603FAEDBB86B3F3BD1EA6A256D3",
+        "patched_sha256": "F75AC8DC734E5238C5D1654123237CF467E24F3270CD99392E41DA6903425C25"
+      },
       "libDF/src/tract.rs": {
         "sha256": "0F080A766955CF037A1642EBFE6DE645B9161985379D5C7CC790A21A04F1E580",
         "patched_sha256": "CC457A9B52C1B61AC625C6ADA7ABCEAE96C3A1A1D7EBE3FDE593832418C814DD"
@@ -33,6 +37,11 @@
         "path": "libDF/Cargo.toml",
         "operation": "Remove the upstream dev-dependencies section from the production-only C API workspace; tests and benches are not part of the DLL build.",
         "occurrences": 1
+      },
+      {
+        "path": "libDF/src/lib.rs",
+        "operation": "Floor both unit normalization state updates at f32::MIN_POSITIVE so FTZ/DAZ cannot turn sustained digital silence into 0 / sqrt(0) nonfinite features.",
+        "occurrences": 2
       }
     ]
   },
@@ -120,8 +129,8 @@
     "reproducibility": "Binary bit-reproducibility was not claimed; the build script records each output hash."
   },
   "validated_recipe_run": {
-    "binary_sha256": "5F666380BD0F69B6DEF04D7AEB6D38C8C1C5780E2CB3C3F9602F05564AA948A5",
-    "binary_bytes": 13767680,
+    "binary_sha256": "38605121768ED5C29FE933ADF4EDAC2E2F4BBC98E53EAD6838919CC7FD4AB027",
+    "binary_bytes": 13766656,
     "attestation_schema_version": 1,
     "evidence_report": "evaluation/deepfilter-source-build-report.json",
     "parity_cases": 8,

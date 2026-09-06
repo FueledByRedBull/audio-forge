@@ -2216,6 +2216,10 @@ impl PyAudioProcessor {
                 .output_resampler_active
                 .load(Ordering::Relaxed),
         )?;
+        diagnostics.set_item(
+            "input_sample_rate",
+            self.processor.active_input_sample_rate(),
+        )?;
         diagnostics.set_item("output_sample_rate", self.processor.output_sample_rate())?;
         diagnostics.set_item(
             "output_fixed_buffer_frames",

@@ -56,12 +56,7 @@ def _critical_diagnostic_failures(
         if value != 0:
             failures.append(f"{key}={value}")
 
-    if not bool(diagnostics.get("noise_backend_available", False)):
-        failures.append("noise_backend_available=false")
-    if bool(diagnostics.get("noise_backend_failed", False)):
-        failures.append("noise_backend_failed=true")
-    if diagnostics.get("last_stream_error"):
-        failures.append("last_stream_error=set")
+    failures.extend(_backend_diagnostic_failures(diagnostics))
     if output_underrun_baseline is not None:
         final_underruns = diagnostics.get("output_underrun_total")
         if not isinstance(final_underruns, (int, float)):
@@ -74,6 +69,28 @@ def _critical_diagnostic_failures(
                     f"{final_underrun_count} (baseline {output_underrun_baseline})"
                 )
     return failures
+
+
+def _backend_diagnostic_failures(diagnostics: dict) -> list[str]:
+    failures: list[str] = []
+    if not bool(diagnostics.get("noise_backend_available", False)):
+        failures.append("noise_backend_available=false")
+    if bool(diagnostics.get("noise_backend_failed", False)):
+        failures.append("noise_backend_failed=true")
+    if diagnostics.get("last_stream_error"):
+        failures.append("last_stream_error=set")
+    return failures
+
+
+def _input_sample_rate_diagnostic_failures(diagnostics: dict) -> list[str]:
+    value = diagnostics.get("input_sample_rate")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+    ):
+        return ["input_sample_rate=missing_or_invalid"]
+    return []
 
 
 def _selected_noise_model_failures(
@@ -103,7 +120,6 @@ def _selected_noise_model_failures(
         if (
             not isinstance(output_true_peak_db, (int, float))
             or not math.isfinite(float(output_true_peak_db))
-            or float(output_true_peak_db) <= -119.0
         ):
             failures.append(f"output_true_peak_db={output_true_peak_db!r}")
     return failures
@@ -194,6 +210,17 @@ def main() -> int:
         max_input_age = 0
         max_output_age = 0
         output_underrun_baseline: int | None = None
+
+        def print_summary(diagnostics: dict) -> None:
+            print(
+                "Health summary: "
+                f"max_input_age_ms={max_input_age} "
+                f"max_output_age_ms={max_output_age} "
+                f"restarts={last_restart_count} "
+                f"underrun_baseline={output_underrun_baseline} "
+                f"diagnostics={json.dumps(diagnostics, sort_keys=True, separators=(',', ':'))}"
+            )
+
         try:
             last_restart_count = processor.get_stream_restart_count()
         except Exception:
@@ -243,11 +270,23 @@ def main() -> int:
                 time.sleep(args.poll)
                 continue
 
-            if not in_warmup and output_underrun_baseline is None:
-                warm_diagnostics = dict(processor.get_runtime_diagnostics())
-                output_underrun_baseline = int(
-                    warm_diagnostics.get("output_underrun_total", 0) or 0
+            if not in_warmup:
+                current_diagnostics = dict(processor.get_runtime_diagnostics())
+                if output_underrun_baseline is None:
+                    output_underrun_baseline = int(
+                        current_diagnostics.get("output_underrun_total", 0) or 0
+                    )
+                early_failures = _backend_diagnostic_failures(current_diagnostics)
+                early_failures.extend(
+                    _input_sample_rate_diagnostic_failures(current_diagnostics)
                 )
+                if early_failures:
+                    print_summary(current_diagnostics)
+                    print(
+                        "Health check failed: critical runtime diagnostics were not clean "
+                        f"({', '.join(early_failures)})."
+                    )
+                    return 6
 
             if not in_warmup and (input_unknown or output_unknown):
                 unknown_parts = []
@@ -288,18 +327,12 @@ def main() -> int:
         if output_underrun_baseline is None:
             print("Health check failed: no post-warmup underrun baseline was recorded.")
             return 7
-        print(
-            "Health summary: "
-            f"max_input_age_ms={max_input_age} "
-            f"max_output_age_ms={max_output_age} "
-            f"restarts={last_restart_count} "
-            f"underrun_baseline={output_underrun_baseline} "
-            f"diagnostics={json.dumps(diagnostics, sort_keys=True, separators=(',', ':'))}"
-        )
+        print_summary(diagnostics)
         diagnostic_failures = _critical_diagnostic_failures(
             diagnostics,
             output_underrun_baseline=output_underrun_baseline,
         )
+        diagnostic_failures.extend(_input_sample_rate_diagnostic_failures(diagnostics))
         diagnostic_failures.extend(
             _selected_noise_model_failures(
                 diagnostics,

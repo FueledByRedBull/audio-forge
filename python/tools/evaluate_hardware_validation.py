@@ -393,6 +393,7 @@ def _parse_self_test(result: dict[str, Any]) -> dict[str, Any]:
 def _parse_health(result: dict[str, Any]) -> dict[str, Any]:
     output = "\n".join(result["stdout"])
     match = HEALTH_SUMMARY.search(output)
+    runtime_diagnostics = json.loads(match.group("diagnostics")) if match else {}
     return {
         "passed": int(result["return_code"]) == 0 and match is not None,
         "max_input_callback_age_ms": int(match.group("input_age")) if match else None,
@@ -401,8 +402,22 @@ def _parse_health(result: dict[str, Any]) -> dict[str, Any]:
         "output_underrun_baseline": (
             int(match.group("underrun_baseline")) if match else None
         ),
-        "runtime_diagnostics": json.loads(match.group("diagnostics")) if match else {},
+        "observed_input_sample_rate_hz": _diagnostic_input_sample_rate(
+            runtime_diagnostics
+        ),
+        "runtime_diagnostics": runtime_diagnostics,
     }
+
+
+def _diagnostic_input_sample_rate(diagnostics: dict[str, Any]) -> int | None:
+    value = diagnostics.get("input_sample_rate")
+    if not _is_valid_input_sample_rate(value):
+        return None
+    return value
+
+
+def _is_valid_input_sample_rate(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 
@@ -439,11 +454,6 @@ def _device_snapshot(
             ),
             "count": len(selected),
             "endpoint_count": sum(_device_key(device) is not None for device in selected),
-            "sample_rates": tuple(
-                int(device.sample_rate)
-                for device in selected
-                if device.sample_rate is not None
-            ),
         }
 
     return {
@@ -469,6 +479,7 @@ def _callbacks_are_healthy(processor: Any) -> bool:
 def _diagnostic_summary(diagnostics: dict[str, Any]) -> dict[str, Any]:
     keys = (
         *_ZERO_REQUIRED_DIAGNOSTICS,
+        "input_sample_rate",
         "noise_backend_available",
         "noise_backend_failed",
         "output_underrun_total",
@@ -513,6 +524,9 @@ def _diagnostic_failures(
         ),
         ignored_zero_diagnostics=allowed,
     )
+    before_rate = _diagnostic_input_sample_rate(before)
+    if before_rate is None or _diagnostic_input_sample_rate(after) != before_rate:
+        failures.append("input_sample_rate missing or changed")
     if event_window:
         failures = [failure for failure in failures if failure != "last_stream_error=set"]
         for key in allowed:
@@ -587,7 +601,6 @@ def _model_diagnostics_healthy(
     if (
         not isinstance(peak, (int, float))
         or not math.isfinite(float(peak))
-        or float(peak) <= -119.0
     ):
         return False
     if model.startswith("deepfilter"):
@@ -744,12 +757,6 @@ def _run_lifecycle_probe_impl(
     ):
         evidence["event"]["reason"] = "selected_route_is_ambiguous"
         return evidence
-    rates = before_devices["input"]["sample_rates"]
-    if len(rates) != 1:
-        evidence["event"]["reason"] = "selected_input_rate_unavailable"
-        return evidence
-    evidence["observed_input_sample_rate_hz"] = rates[0]
-
     started_utc = datetime.now(timezone.utc)
     deadline = time.monotonic() + timeout_seconds
 
@@ -863,6 +870,11 @@ def _run_lifecycle_probe_impl(
         if before_diagnostics is None:
             evidence["event"]["reason"] = "initial_runtime_not_healthy"
             return evidence
+        actual_input_sample_rate = _diagnostic_input_sample_rate(before_diagnostics)
+        if actual_input_sample_rate is None:
+            evidence["event"]["reason"] = "selected_input_rate_unavailable"
+            return evidence
+        evidence["observed_input_sample_rate_hz"] = actual_input_sample_rate
         evidence["diagnostics"]["before"] = _diagnostic_summary(before_diagnostics)
 
         if scenario == "model_configuration_change":
@@ -1146,30 +1158,6 @@ def _run_lifecycle_probe(
                 os.environ["AUDIOFORGE_ENABLE_DEEPFILTER"] = previous_deepfilter_env
 
 
-def _observed_input_sample_rate(
-    *,
-    bundle_root: Path | None,
-    input_name: str,
-    output_name: str,
-) -> int | None:
-    try:
-        _processor, list_input_devices, list_output_devices = _runtime_api(bundle_root)
-        snapshot = _device_snapshot(
-            list_input_devices, list_output_devices, input_name, output_name
-        )
-        if (
-            snapshot["input"]["count"] != 1
-            or snapshot["input"]["endpoint_count"] != 1
-            or snapshot["output"]["count"] != 1
-            or snapshot["output"]["endpoint_count"] != 1
-            or len(snapshot["input"]["sample_rates"]) != 1
-        ):
-            return None
-        return snapshot["input"]["sample_rates"][0]
-    except Exception:
-        return None
-
-
 def _selected_endpoint_ids(
     *,
     bundle_root: Path | None,
@@ -1329,17 +1317,29 @@ def evaluate(
             scenario_evidence_valid = (
                 scenario_evidence_valid and confirm_scenario_observed
             )
-    observed_input_sample_rate_hz = (
+    health_sample_rate = parsed_health["observed_input_sample_rate_hz"]
+    lifecycle_sample_rate = (
         lifecycle_evidence.get("observed_input_sample_rate_hz")
         if isinstance(lifecycle_evidence, dict)
         else None
     )
-    if not isinstance(observed_input_sample_rate_hz, int):
-        observed_input_sample_rate_hz = _observed_input_sample_rate(
-            bundle_root=bundle_root,
-            input_name=health_input,
-            output_name=health_output,
-        )
+    observed_input_sample_rate_hz = (
+        health_sample_rate
+        if _is_valid_input_sample_rate(health_sample_rate)
+        else None
+    )
+    if (
+        isinstance(lifecycle_evidence, dict)
+        and lifecycle_evidence.get("passed")
+        and not _is_valid_input_sample_rate(lifecycle_sample_rate)
+    ):
+        scenario_evidence_valid = False
+    if (
+        _is_valid_input_sample_rate(health_sample_rate)
+        and _is_valid_input_sample_rate(lifecycle_sample_rate)
+        and health_sample_rate != lifecycle_sample_rate
+    ):
+        observed_input_sample_rate_hz = None
     scenario_evidence_valid = (
         scenario_evidence_valid
         and observed_input_sample_rate_hz == nominal_sample_rate_hz

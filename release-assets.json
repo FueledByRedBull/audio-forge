@@ -3,8 +3,8 @@
   "assets": [
     {
       "path": "df.dll",
-      "size": 13767680,
-      "sha256": "5f666380bd0f69b6def04d7aeb6d38c8c1c5780e2cb3c3f9602f05564aa948a5",
+      "size": 13766656,
+      "sha256": "38605121768ed5c29fe933adf4edac2e2f4bbc98e53ead6838919cc7fd4ab027",
       "source": "https://github.com/Rikorose/DeepFilterNet/tree/d375b2d8309e0935d165700c91da9de862a99c31",
       "origin": {
         "status": "verified-source-build",
@@ -14,7 +14,7 @@
         "commit": "d375b2d8309e0935d165700c91da9de862a99c31",
         "build_recipe": "build_deepfilter.ps1",
         "abi": "Windows x64 DeepFilter C API; runtime export validation in deepfilter_ffi.rs",
-        "rebuild": "Run build_deepfilter.ps1. It verifies the complete pinned libDF tree, the recorded compatibility patches, the locked Rust graph, model hashes, required exports, and writes a per-build output attestation. Native linker metadata may vary between approved toolchains, so the manifest sha256 is a reference build digest rather than a clean-build gate."
+        "rebuild": "Run build_deepfilter.ps1. It verifies the complete pinned libDF tree, the recorded source patches, the locked Rust graph, model hashes, required exports, and writes a per-build output attestation. Native linker metadata may vary between approved toolchains, so the manifest sha256 is a reference build digest rather than a clean-build gate."
       },
       "license": "MIT option; bundled notice: licenses/DeepFilterNet-LICENSE.txt"
     },

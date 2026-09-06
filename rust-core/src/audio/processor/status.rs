@@ -13,6 +13,17 @@ impl AudioProcessor {
         }
     }
 
+    /// Get the sample rate negotiated for the running input stream.
+    pub fn active_input_sample_rate(&self) -> Option<u32> {
+        if self.is_running() {
+            self.audio_input
+                .as_ref()
+                .map(|input| input.device_info().sample_rate)
+        } else {
+            None
+        }
+    }
+
     /// Get active output device name for the running stream.
     pub fn active_output_device_name(&self) -> Option<String> {
         if self.is_running() {

@@ -2715,7 +2715,7 @@ mod tests {
             (
                 "output.rs",
                 include_str!("../output.rs"),
-                &["cpal_output_callback"][..],
+                &["cpal_output_callback", "cpal_output_renderer"][..],
             ),
         ];
 

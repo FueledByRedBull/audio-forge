@@ -202,6 +202,12 @@ impl SileroVAD {
             .map_err(|e| {
                 VadError::ModelLoadError(format!("Failed to set optimization level: {}", e))
             })?
+            // Run this small 32 ms workload on the caller to avoid an idle
+            // spinning pool in the realtime path.
+            .with_intra_threads(1)
+            .map_err(|e| {
+                VadError::ModelLoadError(format!("Failed to set intra-op thread count: {}", e))
+            })?
             .commit_from_file(&model_path)
             .map_err(|e| {
                 VadError::ModelLoadError(format!(

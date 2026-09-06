@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "audible_change": true,
-  "generated_at_utc": "2026-09-06T19:12:14.151962+00:00",
+  "generated_at_utc": "2026-09-06T22:17:57.222074+00:00",
   "experiment": "VAD/noise-reliability auto-makeup versus RMS-only fallback",
   "retained": true,
   "predefined_gates": {
@@ -24,7 +24,7 @@
     "median_baseline_pumping_score": 0.09354038299621031,
     "p95_candidate_p99_boundary_excess_linear": 0.013264153255848208,
     "p95_baseline_p99_boundary_excess_linear": 0.015430391722824422,
-    "max_candidate_p99_block_runtime_ms": 0.1295050084590912,
+    "max_candidate_p99_block_runtime_ms": 0.1274999976158142,
     "minimum_active_block_ratio": 0.19033333333333333,
     "minimum_inactive_block_ratio": 0.49733333333333335
   },
@@ -41,7 +41,7 @@
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
     "rust-core/src/audio/processor/python_api.rs": "f38e8cedb679bf0abcb7d45c6187509cf1b2e9cf9ea7afa0423c9b88c7e3a37b",
     "rust-core/src/dsp/compressor.rs": "03a3fc8ea093a129eec994edb198abdd8687a76a3d1dbf7ed23b87d5491ad860",
-    "rust-core/src/dsp/vad.rs": "ac447a6985bb328e99772bc0f9784909d2c820769fa67044349f71e69d7cd379"
+    "rust-core/src/dsp/vad.rs": "2170c381ce50411332a09a5d8c2d576fed3dae6b6bd4b1b1c4b128817afa960b"
   },
   "evaluation_contract": {
     "configuration": {
@@ -62,7 +62,7 @@
       "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
     },
     "runtime": {
-      "max_p99_frame_seconds": 0.00012950500845909118,
+      "max_p99_frame_seconds": 0.0001274999976158142,
       "control_deadline_seconds": 0.01,
       "platform": "Windows-11-10.0.26200-SP0",
       "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"

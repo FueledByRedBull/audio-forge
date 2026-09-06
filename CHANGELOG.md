@@ -20,6 +20,7 @@
   input stream rates, detect backend failures during the hardware soak, and
   attribute results to the verified archive's source revision.
 - Restore full Windows device names, including microphone model names.
+- Reduce VAD CPU use and avoid output underruns caused by stale queue-length checks.
 - Preserve quiet detected speech in VAD Only mode without applying the disabled
   level threshold; retain level fallback when VAD is unavailable.
 - Add per-user Windows MSI packaging alongside the portable distribution, explicit

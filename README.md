@@ -103,10 +103,10 @@ Mic Input -> Input Cleanup (DC block + one selected/adaptive HP) -> Noise Gate -
 
 Special paths:
 
-- `Bypass` keeps the transport path active while skipping the main DSP stages.
-- `Raw Monitor` uses the clean write path and skips the pre-filter and downstream DSP chain for diagnostics.
+- `Bypass` skips voice effects while retaining input conditioning and configured output protection.
+- `Raw Monitor` skips input filtering and voice effects for diagnostics, retains configured output protection, and takes precedence over Bypass.
 
-Latency labels in the UI describe suppressor/DSP behavior, not a universal round-trip value. Calibration measures the selected output-to-input route and applies that route delay directly; a directional one-way split is left unset unless independently measured. End-to-end latency still depends on the selected devices, driver mode, buffer sizing, and routing path.
+Latency labels include engine/suppressor timing plus measured route delay when enabled. Calibration measures the selected output-to-input route and adds it to the reported estimate; it does not reduce physical delay. A directional one-way split is left unset unless independently measured. End-to-end latency still depends on the selected devices, driver mode, buffer sizing, and routing path.
 
 ## Requirements
 
@@ -155,7 +155,7 @@ See [Development Assets](#development-assets) for the full runtime asset and env
 2. Start processing.
 3. Choose a suppressor backend and gate mode.
 4. Tune EQ/dynamics manually, run Auto-EQ, or run Auto Voice Setup for a broader voice-chain calibration.
-5. Run latency calibration if the current device route needs compensation.
+5. Optionally measure route latency for calibrated reporting; this does not reduce audio delay.
 
 Useful behavior to know:
 
@@ -166,7 +166,7 @@ Useful behavior to know:
 - Adaptive cleanup tracks off-nominal mains hum and its harmonic with fractional frequency/phase continuity, and selects one high-pass response instead of cascading filters.
 - Auto-EQ and Auto Voice Setup use native Silero posteriors when available and report an explicit energy-analysis fallback when they are not.
 - Auto Voice Setup rejects unusable room tone, restricts boosts for questionable references, and reports device/time/channel mismatch or recapture guidance.
-- Voice Setup candidates remain temporary until a second passage produces an explicit accept, reduce, retry, or rollback decision from repeatability and exact downstream native-chain checks. This is engineering validation, not a listening-preference claim.
+- Voice Setup candidates remain temporary until a second passage checks repeatability through EQ, de-essing, compression, and the selected limiter settings. Gate, noise suppression, input cleanup, and live loudness adaptation are outside this offline check; confirm the result in your destination app.
 - Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
 - Diagnostics separate input drops, backlog recovery, output recovery, output short-write loss, and active output underrun streaks. Historical output underrun and recovery totals stay visible without forcing the health chip into a warning state after the stream has recovered.
 - `Help > Export Diagnostics...` writes a versioned, size-bounded support

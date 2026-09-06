@@ -4,6 +4,11 @@
 
 ## v1.12.0
 
+- Match Voice Setup analysis and verification to the applied limiter settings,
+  run second-passage verification off the UI thread, and restore temporary
+  calibration evidence on rollback and Undo within the same capture context.
+- Allow route selection inside first-run setup, disable compression in Minimal
+  Processing, and clarify preset scope, bypass, and latency-reporting labels.
 - Keep analysis workers alive until completion, cancel obsolete work cooperatively,
   and release the Python GIL during offline native processing.
 - Preserve damaged configuration and incomplete migrations, prevent accidental
@@ -12,7 +17,8 @@
   apply click-safe EQ bypass transitions through the production processing path.
 - Prevent noise-model discovery from crashing on a closed inherited stderr pipe.
 - Prevent DeepFilter failure during sustained digital silence; qualify actual
-  input stream rates and detect backend failures during the hardware soak.
+  input stream rates, detect backend failures during the hardware soak, and
+  attribute results to the verified archive's source revision.
 - Restore full Windows device names, including microphone model names.
 - Preserve quiet detected speech in VAD Only mode without applying the disabled
   level threshold; retain level fallback when VAD is unavailable.

@@ -180,6 +180,118 @@ def test_hardware_report_provenance_uses_project_version_and_dirty_revision(
     assert TOOL._source_revision() == "abc123+uncommitted"
 
 
+def test_hardware_artifact_provenance_uses_verified_metadata_commit(
+    tmp_path, monkeypatch
+) -> None:
+    archive = tmp_path / "archives" / "candidate.7z"
+    sidecars = tmp_path / "sidecars"
+    bundle = tmp_path / "bundle"
+    archive.parent.mkdir()
+    sidecars.mkdir()
+    (bundle / "_internal").mkdir(parents=True)
+    archive.write_bytes(b"candidate")
+    archive_hash = TOOL._sha256(archive)
+    checksum = sidecars / f"{archive.name}.sha256"
+    checksum.write_text(f"{archive_hash}  {archive.name}\n", encoding="ascii")
+    (sidecars / f"{archive.name}.manifest.json").write_text("{}", encoding="utf-8")
+    (sidecars / f"{archive.name}.metadata.json").write_text(
+        json.dumps({"commit": "a" * 40, "source_dirty": False}),
+        encoding="utf-8",
+    )
+    (bundle / "_internal" / "audioforge-build.json").write_text(
+        json.dumps({"version": "1.12.0"}), encoding="utf-8"
+    )
+    captured: dict[str, Any] = {}
+
+    def verify(*paths, **kwargs):
+        captured["paths"] = paths
+        captured["kwargs"] = kwargs
+        return []
+
+    monkeypatch.setattr(TOOL, "_verify_sidecars", verify)
+
+    artifact, source_revision = TOOL._artifact_provenance(
+        archive, checksum, bundle, archive_hash
+    )
+
+    assert source_revision == "a" * 40
+    assert artifact["archive_sha256"] == archive_hash
+    assert captured["paths"][2] == sidecars / f"{archive.name}.manifest.json"
+    assert captured["paths"][3] == sidecars / f"{archive.name}.metadata.json"
+    assert captured["kwargs"]["expected_commit"] == "a" * 40
+
+
+def test_hardware_artifact_provenance_requires_metadata_sidecar(tmp_path) -> None:
+    archive = tmp_path / "candidate.7z"
+    archive.write_bytes(b"candidate")
+    checksum = tmp_path / f"{archive.name}.sha256"
+    checksum.write_text(
+        f"{TOOL._sha256(archive)}  {archive.name}\n", encoding="ascii"
+    )
+    bundle = tmp_path / "bundle" / "_internal"
+    bundle.mkdir(parents=True)
+    (bundle / "audioforge-build.json").write_text(
+        json.dumps({"version": "1.12.0"}), encoding="utf-8"
+    )
+
+    with pytest.raises(RuntimeError, match="invalid artifact metadata sidecar"):
+        TOOL._artifact_provenance(archive, checksum, bundle.parent, TOOL._sha256(archive))
+
+
+def test_hardware_evaluation_freezes_provenance_before_subprocesses(
+    tmp_path, monkeypatch
+) -> None:
+    subprocess_started = False
+
+    def source_revision() -> str:
+        return "b" * 40 if subprocess_started else "a" * 40
+
+    def runtime_provenance(_bundle_root=None) -> dict[str, str]:
+        return {"phase": "late" if subprocess_started else "start"}
+
+    def run(_command):
+        nonlocal subprocess_started
+        subprocess_started = True
+        return {"return_code": 0, "stdout": [], "stderr": []}
+
+    monkeypatch.setattr(TOOL, "_source_revision", source_revision)
+    monkeypatch.setattr(TOOL, "_runtime_provenance", runtime_provenance)
+    monkeypatch.setattr(TOOL, "_run", run)
+    monkeypatch.setattr(
+        TOOL,
+        "_parse_self_test",
+        lambda _result: {"passed": True, "route_latency_ms": 1.0, "confidence": 1.0},
+    )
+    monkeypatch.setattr(
+        TOOL,
+        "_parse_health",
+        lambda _result: {
+            "passed": True,
+            "observed_input_sample_rate_hz": 48_000,
+            "runtime_diagnostics": {},
+        },
+    )
+    monkeypatch.setattr(TOOL, "_selected_endpoint_ids", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        TOOL,
+        "_privacy_filter_runs",
+        lambda runs, names: (runs, {name: f"device-{index}" for index, name in enumerate(names)}),
+    )
+    monkeypatch.setattr(TOOL, "_replace_private_strings", lambda value, _mapping: value)
+
+    report = TOOL.evaluate(
+        health_input="Input",
+        health_output="Output",
+        correlation_input="Loopback",
+        correlation_output="Output",
+        health_duration=1.0,
+        report_path=tmp_path / "report.json",
+    )
+
+    assert report["source_revision"] == "a" * 40
+    assert report["runtime_provenance"] == {"phase": "start"}
+
+
 def test_hardware_subprocess_uses_source_python_path(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

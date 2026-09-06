@@ -6,6 +6,12 @@ and publication gates.
 
 ## Reliability
 
+- Voice Setup uses the applied limiter settings throughout analysis and
+  second-passage verification, which runs in a cancellable background worker.
+  Temporary calibration evidence survives rollback and Undo only within the
+  same capture context.
+- First-run setup lets you select devices directly. Minimal Processing disables
+  compression, and preset, bypass, and latency labels describe their behavior.
 - Analysis cancellation retains worker ownership and rejects stale results.
 - Offline native processing releases the Python GIL and rejects invalid inputs.
 - Configuration recovery preserves damaged files and incomplete migrations;

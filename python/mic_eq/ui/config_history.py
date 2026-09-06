@@ -31,6 +31,8 @@ class ConfigurationSnapshot:
     payload_json: str
     label: str
     source: str
+    noise_reference_reliability: float = 0.0
+    calibration_context_key: str | None = None
 
     @classmethod
     def from_preset(
@@ -39,6 +41,8 @@ class ConfigurationSnapshot:
         *,
         label: str,
         source: str,
+        noise_reference_reliability: float = 0.0,
+        calibration_context_key: str | None = None,
     ) -> "ConfigurationSnapshot":
         payload_json = json.dumps(
             preset.to_dict(),
@@ -47,7 +51,10 @@ class ConfigurationSnapshot:
             separators=(",", ":"),
             sort_keys=True,
         )
-        snapshot = cls(payload_json, str(label), str(source))
+        snapshot = cls(
+            payload_json, str(label), str(source),
+            noise_reference_reliability, calibration_context_key,
+        )
         snapshot.to_preset()
         return snapshot
 
@@ -58,6 +65,8 @@ class ConfigurationSnapshot:
         return parsed
 
     def to_preset(self) -> Preset:
+        if not 0.0 <= self.noise_reference_reliability <= 1.0:
+            raise ValueError("noise-reference reliability must be finite and between 0 and 1")
         return Preset.from_dict(self.payload())
 
 
@@ -115,7 +124,11 @@ class BoundedConfigurationHistory:
     def record(self, snapshot: ConfigurationSnapshot) -> bool:
         snapshot.to_preset()
         current = self.current
-        if current is not None and current.payload_json == snapshot.payload_json:
+        if current is not None and (
+            current.payload_json == snapshot.payload_json
+            and current.noise_reference_reliability == snapshot.noise_reference_reliability
+            and current.calibration_context_key == snapshot.calibration_context_key
+        ):
             return False
         if self._cursor < len(self._entries) - 1:
             del self._entries[self._cursor + 1 :]

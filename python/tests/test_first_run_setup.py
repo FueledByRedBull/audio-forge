@@ -1,22 +1,14 @@
-"""Tests for the resumable first-run orchestration shell."""
+"""Tests for the resumable first-run setup flow."""
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QComboBox, QWidget
 
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.ui.first_run_setup_dialog import (
     FirstRunSetupDialog,
     route_health_reason,
 )
-
-
-class _Combo:
-    def __init__(self, value: object):
-        self.value = value
-
-    def currentData(self):
-        return self.value
 
 
 class _Processor:
@@ -43,29 +35,42 @@ class _Owner(QWidget):
         super().__init__()
         self.config = config
         self.processor = processor
-        self.input_combo = _Combo(
-            DeviceIdentity(
-                name="Mic",
-                endpoint_id="input-id",
-                direction="input",
-                name_ordinal=0,
-            )
+        input_identity = DeviceIdentity(
+            name="Mic",
+            endpoint_id="input-id",
+            direction="input",
+            name_ordinal=0,
         )
-        self.output_combo = _Combo(
-            DeviceIdentity(
-                name="Cable",
-                endpoint_id="output-id",
-                direction="output",
-                name_ordinal=0,
-            )
+        self.input_combo = QComboBox()
+        self.input_combo.addItem(input_identity.name, input_identity)
+        output_identity = DeviceIdentity(
+            name="Cable",
+            endpoint_id="output-id",
+            direction="output",
+            name_ordinal=0,
         )
+        self.output_combo = QComboBox()
+        self.output_combo.addItem(output_identity.name, output_identity)
         self.latency_saved = False
         self.voice_applied = False
         self.start_calls = 0
+        self.stop_calls = 0
+        self.device_change_calls = 0
+        self.device_change_routes = []
 
     def _start_processing(self):
         self.start_calls += 1
         self.processor.running = True
+
+    def _stop_processing(self):
+        self.stop_calls += 1
+        self.processor.running = False
+
+    def _on_device_changed(self):
+        self.device_change_calls += 1
+        self.device_change_routes.append(
+            (self.input_combo.currentData(), self.output_combo.currentData())
+        )
 
     def _on_latency_calibration_clicked(self):
         return self.latency_saved
@@ -84,7 +89,7 @@ def test_route_health_requires_running_recent_error_free_callbacks():
     processor.age_ms = 2_100.0
     healthy, reason = route_health_reason(processor)
     assert healthy is False
-    assert "stale" in reason
+    assert "stopped responding" in reason
 
     processor.age_ms = 4.0
     processor.diagnostics["output_callback_error_count"] = 1
@@ -95,7 +100,7 @@ def test_route_health_requires_running_recent_error_free_callbacks():
     processor.diagnostics["output_callback_error_count"] = "invalid"
     healthy, reason = route_health_reason(processor)
     assert healthy is False
-    assert "diagnostics were invalid" in reason
+    assert "stream health data was invalid" in reason
 
 
 def test_route_health_fails_closed_without_valid_callback_heartbeats():
@@ -108,12 +113,12 @@ def test_route_health_fails_closed_without_valid_callback_heartbeats():
 
     healthy, reason = route_health_reason(MissingHeartbeatProcessor())
     assert healthy is False
-    assert "heartbeat is unavailable" in reason
+    assert "stream health check is unavailable" in reason
 
     processor = _Processor(running=True, age_ms=float("nan"))
     healthy, reason = route_health_reason(processor)
     assert healthy is False
-    assert "heartbeat is invalid" in reason
+    assert "stream health value is invalid" in reason
 
 
 def test_setup_resumes_at_saved_step_and_delegates_route_check(qapp, monkeypatch):
@@ -143,7 +148,7 @@ def test_setup_resumes_at_saved_step_and_delegates_route_check(qapp, monkeypatch
     assert dialog.current_step == "latency"
 
 
-def test_setup_records_skips_honestly_and_can_resume_them(qapp, monkeypatch):
+def test_setup_records_skips_and_can_resume_them(qapp, monkeypatch):
     monkeypatch.setattr(
         "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
     )
@@ -162,12 +167,99 @@ def test_setup_records_skips_honestly_and_can_resume_them(qapp, monkeypatch):
     assert set(config.first_run_setup_steps.values()) == {"pending"}
 
 
+def test_setup_applies_selected_route_from_wizard(qapp, monkeypatch):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
+    )
+    config = AppConfig()
+    owner = _Owner(config, _Processor())
+    input_desired = DeviceIdentity(
+        name="USB Mic",
+        endpoint_id="usb-input-id",
+        direction="input",
+        name_ordinal=0,
+    )
+    output_desired = DeviceIdentity(
+        name="Virtual Cable",
+        endpoint_id="virtual-output-id",
+        direction="output",
+        name_ordinal=0,
+    )
+    owner.input_combo.addItem(input_desired.name, input_desired)
+    owner.output_combo.addItem(output_desired.name, output_desired)
+
+    dialog = FirstRunSetupDialog(owner)
+    dialog.input_device_selector.setCurrentIndex(1)
+    dialog.output_device_selector.setCurrentIndex(1)
+    dialog._run_current_step()
+
+    assert owner.input_combo.currentData() == input_desired
+    assert owner.output_combo.currentData() == output_desired
+    assert owner.device_change_calls == 1
+    assert owner.device_change_routes == [(input_desired, output_desired)]
+    assert config.first_run_setup_steps["devices"] == "completed"
+    assert dialog.current_step == "route"
+
+
+def test_setup_restarts_processing_for_new_route(qapp, monkeypatch):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
+    )
+    config = AppConfig()
+    processor = _Processor(running=True)
+    owner = _Owner(config, processor)
+    owner.input_combo.addItem(
+        "USB Mic",
+        DeviceIdentity(
+            name="USB Mic",
+            endpoint_id="usb-input-id",
+            direction="input",
+            name_ordinal=0,
+        ),
+    )
+    owner.output_combo.addItem(
+        "Virtual Cable",
+        DeviceIdentity(
+            name="Virtual Cable",
+            endpoint_id="virtual-output-id",
+            direction="output",
+            name_ordinal=0,
+        ),
+    )
+
+    dialog = FirstRunSetupDialog(owner)
+    dialog.input_device_selector.setCurrentIndex(1)
+    dialog.output_device_selector.setCurrentIndex(1)
+    dialog._run_current_step()
+
+    assert owner.stop_calls == 1
+    assert processor.is_running() is False
+    dialog._run_current_step()
+    assert owner.start_calls == 1
+    assert dialog._route_check_timer.isActive()
+
+
+def test_setup_keeps_same_running_route(qapp, monkeypatch):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
+    )
+    config = AppConfig()
+    processor = _Processor(running=True)
+    owner = _Owner(config, processor)
+    dialog = FirstRunSetupDialog(owner)
+
+    dialog._run_current_step()
+
+    assert owner.stop_calls == 0
+    assert processor.is_running() is True
+
+
 def test_setup_missing_devices_stays_on_route_selection(qapp, monkeypatch):
     monkeypatch.setattr(
         "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
     )
     owner = _Owner(AppConfig(), _Processor())
-    owner.output_combo.value = None
+    owner.output_combo.clear()
     dialog = FirstRunSetupDialog(owner)
 
     dialog._run_current_step()

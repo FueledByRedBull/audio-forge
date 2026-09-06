@@ -30,7 +30,10 @@ from hardware_qualification import (
     SUPPORTED_DEVICE_CLASSES,
     SUPPORTED_SCENARIOS,
 )
-from release_provenance import sha256_file as _sha256
+from release_provenance import (
+    sha256_file as _sha256,
+    verify_sidecars as _verify_sidecars,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -128,27 +131,74 @@ def _artifact_provenance(
     checksum: Path,
     bundle_root: Path,
     expected_archive_sha256: str,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str]:
     archive = archive.resolve(strict=True)
     checksum = checksum.resolve(strict=True)
     bundle_root = bundle_root.resolve(strict=True)
-    actual_hash = _sha256(archive)
     expected_hash = expected_archive_sha256.strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
         raise ValueError("expected archive SHA-256 must contain 64 lowercase hex digits")
-    sidecar_fields = checksum.read_text(encoding="utf-8-sig").strip().split()
-    if len(sidecar_fields) < 2:
-        raise RuntimeError("checksum sidecar is malformed")
-    sidecar_hash = sidecar_fields[0].lower()
-    sidecar_name = sidecar_fields[-1].lstrip("*")
-    if sidecar_name != archive.name:
-        raise RuntimeError(
-            f"checksum sidecar names {sidecar_name!r}, expected {archive.name!r}"
+
+    metadata_path = checksum.with_name(f"{archive.name}.metadata.json")
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"invalid artifact metadata sidecar: {error}") from error
+    if not isinstance(metadata, dict):
+        raise RuntimeError("artifact metadata sidecar must contain a JSON object")
+    source_revision = metadata.get("commit")
+    if not isinstance(source_revision, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", source_revision
+    ):
+        raise RuntimeError("artifact metadata sidecar lacks a complete source commit")
+    if metadata.get("source_dirty") is not False:
+        raise RuntimeError("exact artifact metadata must record source_dirty=false")
+
+    native_attestation: Path | None = None
+    native_metadata = metadata.get("native_attestation")
+    if native_metadata is not None:
+        if not isinstance(native_metadata, dict):
+            raise RuntimeError("artifact native attestation metadata is malformed")
+        deepfilter = native_metadata.get("deepfilter")
+        attestation_name = (
+            deepfilter.get("name")
+            if isinstance(deepfilter, dict)
+            else None
         )
-    if actual_hash != expected_hash or sidecar_hash != expected_hash:
-        raise RuntimeError(
-            "archive hash, expected hash, and checksum sidecar do not match"
+        if (
+            not isinstance(attestation_name, str)
+            or not attestation_name
+            or Path(attestation_name).name != attestation_name
+        ):
+            raise RuntimeError("artifact native attestation filename is malformed")
+        native_candidates = (
+            checksum.with_name(attestation_name),
+            checksum.parent.parent / attestation_name,
+            archive.parent / attestation_name,
         )
+        native_attestation = next(
+            (candidate for candidate in native_candidates if candidate.is_file()),
+            native_candidates[0],
+        )
+
+    manifest_path = checksum.with_name(f"{archive.name}.manifest.json")
+    provenance_errors = _verify_sidecars(
+        archive,
+        checksum,
+        manifest_path,
+        metadata_path,
+        bundle=bundle_root,
+        expected_archive_sha256=expected_hash,
+        expected_commit=source_revision,
+        native_attestation=native_attestation,
+    )
+    if provenance_errors:
+        raise RuntimeError(
+            "artifact provenance verification failed: "
+            + "; ".join(provenance_errors)
+        )
+
+    actual_hash = _sha256(archive)
     return {
         "archive_name": archive.name,
         "archive_bytes": archive.stat().st_size,
@@ -158,7 +208,7 @@ def _artifact_provenance(
         "checksum_sha256": _sha256(checksum),
         "bundle": _tree_fingerprint(bundle_root),
         "build": _bundle_build_info(bundle_root),
-    }
+    }, source_revision
 
 
 def _portable_runtime_file(path: Path) -> dict[str, Any]:
@@ -1233,24 +1283,30 @@ def evaluate(
     executable_startup: dict[str, Any] | None = None
     model_discovery: dict[str, Any] | None = None
     bundle_arguments: list[str] = []
+    source_revision: str
+    runtime_provenance: dict[str, Any]
     if bundle_root is not None:
         if archive is None or checksum is None or expected_archive_sha256 is None:
             raise ValueError(
                 "bundle qualification requires archive, checksum, and expected SHA-256"
             )
         bundle_root = bundle_root.resolve(strict=True)
-        artifact = _artifact_provenance(
+        artifact, source_revision = _artifact_provenance(
             archive,
             checksum,
             bundle_root,
             expected_archive_sha256,
         )
+        runtime_provenance = _runtime_provenance(bundle_root)
         package_smoke = _package_smoke(
             bundle_root, str(artifact["build"]["version"])
         )
         executable_startup = _hidden_executable_startup(bundle_root)
         model_discovery = _bundled_model_discovery(bundle_root)
         bundle_arguments = ["--bundle-root", str(bundle_root)]
+    else:
+        source_revision = _source_revision()
+        runtime_provenance = _runtime_provenance()
 
     self_test = _run(
         [
@@ -1398,8 +1454,8 @@ def evaluate(
             if artifact is not None
             else _project_version()
         ),
-        "source_revision": _source_revision(),
-        "runtime_provenance": _runtime_provenance(bundle_root),
+        "source_revision": source_revision,
+        "runtime_provenance": runtime_provenance,
         "machine": machine,
         "audible_change": None,
         "case": {

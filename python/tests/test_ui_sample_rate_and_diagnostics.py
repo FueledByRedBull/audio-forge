@@ -994,6 +994,7 @@ def test_input_channel_mode_change_persists_and_applies(monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.processor = _Processor()
     window.config = type("Cfg", (), {"input_channel_mode": "average"})()
+    window.compressor_panel = Mock()
     window.input_channel_mode_combo = _FakeCombo(list(INPUT_CHANNEL_MODE_OPTIONS))
     window.input_channel_mode_combo.setCurrentIndex(4)
     monkeypatch.setattr(
@@ -1004,6 +1005,9 @@ def test_input_channel_mode_change_persists_and_applies(monkeypatch):
 
     assert window.config.input_channel_mode == "phase_safe_mono"
     assert window.processor.modes == ["phase_safe_mono"]
+    window.compressor_panel.set_compressor_settings.assert_called_once_with(
+        {"noise_reference_reliability": 0.0}
+    )
     assert saved == [window.config]
 
 
@@ -1248,6 +1252,7 @@ def test_device_selection_policy_prefers_default_and_virtual_output():
 
 def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
+    window.compressor_panel = Mock()
     window.input_combo = _FakeCombo(
         [
             ("Mic A", DeviceIdentity(name="Mic A", is_default=False)),
@@ -1304,10 +1309,14 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
         name="Mic A", is_default=False, direction="input"
     )
     assert window.status_bar.messages == []
+    window.compressor_panel.reset_mock()
+    window._refresh_devices()
+    window.compressor_panel.set_compressor_settings.assert_not_called()
 
 
 def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
+    window.compressor_panel = Mock()
     window.input_combo = _FakeCombo(
         [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
     )
@@ -1350,6 +1359,7 @@ def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
 
 def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
+    window.compressor_panel = Mock()
     window.input_combo = _FakeCombo(
         [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
     )
@@ -1385,6 +1395,9 @@ def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatc
 
     window._refresh_devices()
 
+    window.compressor_panel.set_compressor_settings.assert_called_once_with(
+        {"noise_reference_reliability": 0.0}
+    )
     assert window.config.last_output_device == "Out Old"
     assert window.config.last_output_device_identity == DeviceIdentity(
         name="Out Old", is_default=False

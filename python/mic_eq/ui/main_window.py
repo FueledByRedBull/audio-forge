@@ -216,8 +216,8 @@ class MainWindow(QMainWindow):
         self.config = load_config()
         self.current_preset_path = None
 
-        # Bounded processing-configuration history. It stores immutable preset
-        # data only; live audio buffers and realtime processor state stay out.
+        # Bounded settings history with transient calibration evidence;
+        # live audio buffers and realtime processor state stay out.
         self._configuration_history = BoundedConfigurationHistory(limit=50)
         self._history_ready = False
         self._history_replaying = False
@@ -540,13 +540,15 @@ class MainWindow(QMainWindow):
 
         self.bypass_checkbox = QCheckBox("Master Bypass")
         self.bypass_checkbox.setToolTip(
-            "Bypass all processing (pass audio through unchanged)"
+            "Bypass voice effects; input conditioning and configured output protection remain. "
+            "Raw Monitor takes precedence when enabled."
         )
         self.bypass_checkbox.toggled.connect(self._on_bypass_toggled)
 
         self.raw_monitor_checkbox = QCheckBox("Raw Monitor")
         self.raw_monitor_checkbox.setToolTip(
-            "Diagnostic path: bypass pre-filter + DSP chain and use clean output write path"
+            "Diagnostic monitoring before input filtering and voice effects; "
+            "configured output protection remains. Takes precedence over Master Bypass."
         )
         self.raw_monitor_checkbox.toggled.connect(self._on_raw_monitor_toggled)
         self._action_layout_widgets = (
@@ -1188,7 +1190,7 @@ class MainWindow(QMainWindow):
         presets_menu.addSeparator()
 
         # Built-in presets submenu
-        builtin_menu = presets_menu.addMenu("&Built-in Presets")
+        builtin_menu = presets_menu.addMenu("&Built-in Voice Presets")
         assert builtin_menu is not None
         for key, preset in BUILTIN_PRESETS.items():
             action = QAction(preset.name, self)
@@ -1352,7 +1354,7 @@ class MainWindow(QMainWindow):
         options_menu.addSeparator()
 
         self.use_measured_latency_action = QAction(
-            "Use Measured Latency Compensation", self
+            "Include Measured Route Delay in Latency Estimate", self
         )
         self.use_measured_latency_action.setCheckable(True)
         self.use_measured_latency_action.setChecked(self.config.use_measured_latency)
@@ -1361,7 +1363,7 @@ class MainWindow(QMainWindow):
         )
         options_menu.addAction(self.use_measured_latency_action)
 
-        latency_calibration_action = QAction("Run Latency Calibration...", self)
+        latency_calibration_action = QAction("Measure Route Latency (Advanced)...", self)
         latency_calibration_action.triggered.connect(
             self._on_latency_calibration_clicked
         )
@@ -1636,7 +1638,7 @@ class MainWindow(QMainWindow):
         save_config(self.config)
         self._apply_latency_compensation_for_current_devices()
         mode = "enabled" if enabled else "disabled"
-        self.status_bar.showMessage(f"Measured latency compensation {mode}", 4000)
+        self.status_bar.showMessage(f"Measured route delay in latency estimate {mode}", 4000)
 
     def _on_latency_calibration_clicked(self) -> bool:
         if self._latency_profile_key() is None:
@@ -1697,6 +1699,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_devices(self):
         """Refresh the device lists."""
+        previous_route = self._current_device_route_key()
         previous_input = (
             self.config.last_input_device_identity
             or self._combo_device_identity(self.input_combo)
@@ -1837,6 +1840,10 @@ class MainWindow(QMainWindow):
         finally:
             for widget, blocked in zip(signal_widgets, signal_states):
                 widget.blockSignals(blocked)
+            if previous_route != self._current_device_route_key():
+                self.compressor_panel.set_compressor_settings(
+                    {"noise_reference_reliability": 0.0}
+                )
 
         if config_dirty:
             save_config(self.config)
@@ -2051,6 +2058,7 @@ class MainWindow(QMainWindow):
     def _on_device_changed(self):
         """Handle device selection change - save to config."""
         if hasattr(self, "config"):  # Check config is initialized
+            self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
             input_identity = self._combo_device_identity(self.input_combo)
             output_identity = self._combo_device_identity(self.output_combo)
             self.config.last_input_device_identity = input_identity
@@ -2074,6 +2082,7 @@ class MainWindow(QMainWindow):
             mode = "average"
         self.config.input_channel_mode = mode
         self._apply_input_channel_mode(mode)
+        self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
         save_config(self.config)
 
     def _on_input_cleanup_mode_changed(self):
@@ -2085,6 +2094,7 @@ class MainWindow(QMainWindow):
             mode = "off"
         self.config.input_cleanup_mode = mode
         self._apply_input_cleanup_mode(mode)
+        self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
         save_config(self.config)
 
     def _start_processing(self):
@@ -2242,11 +2252,23 @@ class MainWindow(QMainWindow):
             preset,
             label="Startup configuration",
             source="startup",
+            noise_reference_reliability=self.compressor_panel.get_compressor_settings(
+                include_calibration=True
+            )["noise_reference_reliability"],
+            calibration_context_key=self._calibration_context_key(),
         )
         self._configuration_history.initialize(snapshot)
         self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
         self._history_ready = True
         self._update_history_actions()
+
+    def _calibration_context_key(self) -> str | None:
+        route = self._current_device_route_key()
+        if route is None:
+            return None
+        return json.dumps((
+            route, self.config.input_channel_mode, self.config.input_cleanup_mode,
+        ))
 
     def _connect_configuration_history_inputs(self) -> None:
         """Observe processing controls and coalesce one user gesture."""
@@ -2320,6 +2342,10 @@ class MainWindow(QMainWindow):
                 preset,
                 label=label,
                 source=source,
+                noise_reference_reliability=self.compressor_panel.get_compressor_settings(
+                    include_calibration=True
+                )["noise_reference_reliability"],
+                calibration_context_key=self._calibration_context_key(),
             )
             recorded = self._configuration_history.record(snapshot)
         except (PresetValidationError, TypeError, ValueError) as error:
@@ -2344,15 +2370,27 @@ class MainWindow(QMainWindow):
         """Restore one validated snapshot without creating a new entry."""
         preset = snapshot.to_preset()
         previous_preset = self._get_current_preset()
+        previous_compressor = self.compressor_panel.get_compressor_settings(
+            include_calibration=True
+        )
         previous_provenance = dict(self._current_value_provenance)
         self._history_replaying = True
         self._history_timer.stop()
         try:
             self._apply_preset(preset, require_exact=True)
+            self.compressor_panel.set_compressor_settings({
+                "noise_reference_reliability": (
+                    snapshot.noise_reference_reliability
+                    if snapshot.calibration_context_key is not None
+                    and snapshot.calibration_context_key == self._calibration_context_key()
+                    else 0.0
+                )
+            })
             self._current_value_provenance = dict(preset.value_provenance)
         except Exception:
             try:
                 self._apply_preset(previous_preset, require_exact=True)
+                self.compressor_panel.set_compressor_settings(previous_compressor)
                 self._current_value_provenance = previous_provenance
             except Exception:
                 logger.exception(
@@ -2530,7 +2568,7 @@ class MainWindow(QMainWindow):
         self.processor.set_bypass(checked)
         if checked:
             self.status_bar.showMessage(
-                "Master bypass enabled - audio passing through unchanged"
+                "Voice effects bypassed; input conditioning and configured output protection remain"
             )
         else:
             self.status_bar.showMessage("Processing active")

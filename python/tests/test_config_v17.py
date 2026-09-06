@@ -25,6 +25,15 @@ build_latency_profile_key = config.build_latency_profile_key
 legacy_latency_profile_key = config.legacy_latency_profile_key
 
 
+def test_minimal_preset_disables_voice_dynamics_but_keeps_output_protection():
+    preset = config.BUILTIN_PRESETS["minimal"]
+    assert preset.gate.enabled and preset.rnnoise.enabled
+    assert not preset.eq.enabled
+    assert not preset.deesser.enabled
+    assert not preset.compressor.enabled
+    assert preset.limiter.enabled and preset.limiter.careful_output_enabled
+
+
 def test_preset_save_is_atomic_and_preserves_existing_file_on_replace_failure(
     tmp_path,
     monkeypatch,

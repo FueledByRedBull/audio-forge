@@ -1,4 +1,4 @@
-"""Thin, resumable shell around AudioForge's existing setup workflows."""
+"""Resumable first-run setup for selecting a route and running checks."""
 
 from __future__ import annotations
 
@@ -8,7 +8,9 @@ from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QDialog,
+    QComboBox,
     QGridLayout,
+    QGroupBox,
     QLabel,
     QMessageBox,
     QProgressBar,
@@ -18,7 +20,7 @@ from PyQt6.QtWidgets import (
 
 from ..config import coerce_device_identity, save_config
 from ..config_parts.app_config import FIRST_RUN_SETUP_STEPS
-from .accessibility import set_accessible_group
+from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
     PRIMARY_ACTION_BUTTON_STYLE,
     SECONDARY_ACTION_BUTTON_STYLE,
@@ -31,34 +33,34 @@ from .theme import DESCRIPTION_LABEL_STYLE, message_text_style
 
 STEP_CONTENT = {
     "devices": (
-        "1. Select the route",
-        "Choose the microphone and output or virtual cable in the main window. "
-        "AudioForge remembers stable Windows endpoint identities, including duplicate names.",
-        "Check Selected Devices",
+        "1. Choose your route",
+        "Select the microphone and destination for your calls, games, or recording. "
+        "Choose a virtual cable when another app should receive AudioForge output.",
+        "Use Selected Route",
     ),
     "route": (
-        "2. Verify the live route",
-        "Start the existing processing path and verify that both Windows audio callbacks remain "
-        "healthy. This checks stream operation; it does not claim that a cable is audibly patched.",
-        "Run Route Check",
+        "2. Check the live route",
+        "Start processing and confirm that the audio stream stays healthy. "
+        "Then check your call, game, or recording app for the microphone signal; "
+        "AudioForge cannot confirm destination-app reception from here.",
+        "Check Live Route",
     ),
     "latency": (
-        "3. Measure route latency",
-        "Open the existing latency calibration workflow. Save a result to complete this step, "
-        "or skip it and continue with engine-only latency reporting.",
+        "3. Optional advanced latency",
+        "Measure the selected route when you use a loopback cable or speaker-to-microphone path. "
+        "Skip this step to continue with engine latency reporting.",
         "Open Latency Calibration",
     ),
     "voice": (
-        "4. Calibrate the voice chain",
-        "Open the existing Auto Voice Setup workflow. This shell does not duplicate capture, "
-        "analysis, or apply logic.",
-        "Open Auto Voice Setup",
+        "4. Tune the voice chain",
+        "Run voice setup to tune the chain. After it finishes, check the result in your destination app.",
+        "Open Voice Setup",
     ),
 }
 
 
 def route_health_reason(processor: object) -> tuple[bool, str]:
-    """Return a conservative live-stream health decision for the setup shell."""
+    """Return a conservative live-stream health decision for setup."""
     is_running = getattr(processor, "is_running", None)
     if not callable(is_running) or not bool(is_running()):
         return False, "Processing did not start. Check device availability and retry."
@@ -80,12 +82,12 @@ def route_health_reason(processor: object) -> tuple[bool, str]:
     except (TypeError, ValueError, OverflowError):
         return (
             False,
-            "Audio callback diagnostics were invalid. Restart AudioForge and retry.",
+            "Audio stream health data was invalid. Restart AudioForge and retry.",
         )
     if callback_error_present:
         return (
             False,
-            "A Windows audio callback reported an error. Retry after checking the route.",
+            "The audio stream reported an error. Check the selected route and retry.",
         )
 
     for label, getter_name in (
@@ -96,35 +98,35 @@ def route_health_reason(processor: object) -> tuple[bool, str]:
         if not callable(getter):
             return (
                 False,
-                f"The {label} callback heartbeat is unavailable. Retry the route.",
+                f"The {label} stream health check is unavailable. Retry the route.",
             )
         try:
             raw_age = getter()
         except (TypeError, ValueError, OverflowError):
             return (
                 False,
-                f"The {label} callback heartbeat could not be read. Retry the route.",
+                f"The {label} stream health check could not be read. Retry the route.",
             )
         if (
             isinstance(raw_age, bool)
             or not isinstance(raw_age, (int, float))
             or not 0.0 <= float(raw_age) < float("inf")
         ):
-            return False, f"The {label} callback heartbeat is invalid. Retry the route."
+            return False, f"The {label} stream health value is invalid. Retry the route."
         age_ms = float(raw_age)
         if age_ms > 2_000.0:
             return (
                 False,
-                f"The {label} callback is stale ({age_ms:.0f} ms). Retry the route.",
+                f"The {label} audio stream stopped responding ({age_ms:.0f} ms). Retry the route.",
             )
     return (
         True,
-        "Both native audio streams are active without reported callback errors.",
+        "Audio stream is healthy. Confirm the microphone signal in your destination app.",
     )
 
 
 class FirstRunSetupDialog(QDialog):
-    """Persisted setup navigator that delegates every operation to the main window."""
+    """Persisted setup flow for selecting a route and running checks."""
 
     def __init__(self, owner: Any, *, restart_completed: bool = False):
         super().__init__(owner)
@@ -180,6 +182,38 @@ class FirstRunSetupDialog(QDialog):
         self.status_label.setStyleSheet(message_text_style("info"))
         layout.addWidget(self.status_label)
 
+        self.device_selection_group = QGroupBox("Audio route")
+        device_layout = QGridLayout(self.device_selection_group)
+        input_label = QLabel("Microphone:")
+        self.input_device_selector = QComboBox()
+        bind_label(
+            input_label,
+            self.input_device_selector,
+            name="Setup microphone",
+        )
+        device_layout.addWidget(input_label, 0, 0)
+        device_layout.addWidget(self.input_device_selector, 0, 1)
+
+        output_label = QLabel("Destination:")
+        self.output_device_selector = QComboBox()
+        bind_label(
+            output_label,
+            self.output_device_selector,
+            name="Setup destination",
+        )
+        device_layout.addWidget(output_label, 1, 0)
+        device_layout.addWidget(self.output_device_selector, 1, 1)
+        device_layout.setColumnStretch(1, 1)
+        layout.addWidget(self.device_selection_group)
+        self.input_device_selector.setModel(self.owner.input_combo.model())
+        self.output_device_selector.setModel(self.owner.output_combo.model())
+        self.input_device_selector.setCurrentIndex(
+            self.owner.input_combo.currentIndex()
+        )
+        self.output_device_selector.setCurrentIndex(
+            self.owner.output_combo.currentIndex()
+        )
+
         button_row = QGridLayout()
         button_row.setSpacing(SPACING_NORMAL)
         self.back_button = QPushButton("Back")
@@ -208,12 +242,16 @@ class FirstRunSetupDialog(QDialog):
         set_accessible_group(
             (
                 (self.progress, "Setup progress", None),
+                (self.input_device_selector, "Setup microphone", None),
+                (self.output_device_selector, "Setup destination", None),
                 (self.back_button, "Previous setup step", None),
                 (self.skip_button, "Skip current setup step", None),
                 (self.pause_button, "Pause setup", None),
                 (self.action_button, "Run current setup step", None),
             )
         )
+        self.setTabOrder(self.input_device_selector, self.output_device_selector)
+        self.setTabOrder(self.output_device_selector, self.back_button)
         self.setTabOrder(self.back_button, self.skip_button)
         self.setTabOrder(self.skip_button, self.pause_button)
         self.setTabOrder(self.pause_button, self.action_button)
@@ -258,6 +296,7 @@ class FirstRunSetupDialog(QDialog):
         )
         self.title_label.setText(f"<h2>{title}</h2>")
         self.description_label.setText(description)
+        self.device_selection_group.setVisible(step == "devices")
         self.status_label.setText(
             "This step was completed. You can run it again or continue."
             if state == "completed"
@@ -272,9 +311,54 @@ class FirstRunSetupDialog(QDialog):
         self.status_label.setStyleSheet(message_text_style(state))
 
     def _selected_devices_ready(self) -> bool:
-        input_identity = coerce_device_identity(self.owner.input_combo.currentData())
-        output_identity = coerce_device_identity(self.owner.output_combo.currentData())
+        input_combo = self.input_device_selector
+        output_combo = self.output_device_selector
+        if self.current_step != "devices":
+            input_combo = self.owner.input_combo
+            output_combo = self.owner.output_combo
+        input_identity = coerce_device_identity(
+            input_combo.currentData()
+        )
+        output_identity = coerce_device_identity(
+            output_combo.currentData()
+        )
         return input_identity is not None and output_identity is not None
+
+    def _apply_selected_devices(self) -> bool:
+        input_index = self.input_device_selector.currentIndex()
+        output_index = self.output_device_selector.currentIndex()
+        if input_index < 0 or output_index < 0:
+            return False
+
+        input_combo = self.owner.input_combo
+        output_combo = self.owner.output_combo
+        if input_index >= input_combo.count() or output_index >= output_combo.count():
+            return False
+        route_changed = (
+            input_combo.currentIndex() != input_index
+            or output_combo.currentIndex() != output_index
+        )
+        if route_changed and self.owner.processor.is_running():
+            self.owner._stop_processing()
+            if self.owner.processor.is_running():
+                return False
+        input_signals_blocked = input_combo.blockSignals(True)
+        output_signals_blocked = output_combo.blockSignals(True)
+        try:
+            input_combo.setCurrentIndex(input_index)
+            output_combo.setCurrentIndex(output_index)
+        except (RuntimeError, TypeError, ValueError):
+            return False
+        finally:
+            input_combo.blockSignals(input_signals_blocked)
+            output_combo.blockSignals(output_signals_blocked)
+        if route_changed:
+            self.owner._on_device_changed()
+        return (
+            input_combo.currentIndex() == input_index
+            and output_combo.currentIndex() == output_index
+            and self._selected_devices_ready()
+        )
 
     def _run_current_step(self) -> None:
         step = self.current_step
@@ -285,7 +369,14 @@ class FirstRunSetupDialog(QDialog):
                     "error",
                 )
                 return
-            self._complete_step("Selected input and output endpoints are available.")
+            if not self._apply_selected_devices():
+                self._set_status(
+                    "Those devices are no longer available. Return to the main window, "
+                    "refresh the device list, and try again.",
+                    "error",
+                )
+                return
+            self._complete_step("Microphone and destination selected.")
             return
         if step == "route":
             if not self._selected_devices_ready():
@@ -296,7 +387,7 @@ class FirstRunSetupDialog(QDialog):
             if not self.owner.processor.is_running():
                 self.owner._start_processing()
             self.action_button.setEnabled(False)
-            self._set_status("Checking native input and output callbacks...", "info")
+            self._set_status("Checking the audio stream...", "info")
             self._route_check_timer.start(750)
             return
         if step == "latency":
@@ -311,7 +402,7 @@ class FirstRunSetupDialog(QDialog):
                 )
             else:
                 self._set_status(
-                    "No latency result was saved. Retry, or skip this optional step honestly.",
+                    "No latency result was saved. Retry, or skip this optional step.",
                     "warn",
                 )
             return
@@ -322,7 +413,10 @@ class FirstRunSetupDialog(QDialog):
             finally:
                 self.show()
             if applied:
-                self._complete_step("Auto Voice Setup applied a validated chain.")
+                self._complete_step(
+                    "Voice setup applied settings after downstream validation. "
+                    "Check the result in your destination app."
+                )
             else:
                 self._set_status(
                     "Voice Setup closed without applying a chain. Retry or skip this step.",

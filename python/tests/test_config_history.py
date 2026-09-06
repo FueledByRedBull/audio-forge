@@ -71,6 +71,30 @@ def test_history_is_bounded_and_deduplicates_identical_payloads() -> None:
     assert history.current.to_preset().gate.threshold_db == -37.0
 
 
+def test_history_keeps_transient_calibration_outside_preset_payload():
+    history = BoundedConfigurationHistory()
+    before = ConfigurationSnapshot.from_preset(
+        Preset(), label="Before", source="test",
+        noise_reference_reliability=0.7, calibration_context_key="route-a",
+    )
+    after = ConfigurationSnapshot.from_preset(
+        Preset(), label="After", source="test",
+        noise_reference_reliability=0.2, calibration_context_key="route-a",
+    )
+    assert before.payload_json == after.payload_json
+    assert "noise_reference_reliability" not in before.to_preset().to_dict()["compressor"]
+    history.initialize(before)
+    assert history.record(after)
+    restored = []
+    history.undo(lambda snapshot: restored.append(snapshot.noise_reference_reliability))
+    assert restored == [0.7]
+    with pytest.raises(ValueError, match="reliability"):
+        ConfigurationSnapshot.from_preset(
+            Preset(), label="Invalid", source="test",
+            noise_reference_reliability=float("nan"),
+        )
+
+
 def test_failed_restore_does_not_move_history_cursor() -> None:
     history = BoundedConfigurationHistory()
     history.initialize(_snapshot(-40.0, label="baseline"))
@@ -242,6 +266,7 @@ def test_main_window_failed_history_restore_rolls_back_partial_state(
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
     window = MainWindow()
+    window.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.7})
     original_threshold = window.gate_panel.threshold_spinbox.value()
     target = window._get_current_preset()
     target.gate.threshold_db = original_threshold + 6.0
@@ -272,7 +297,47 @@ def test_main_window_failed_history_restore_rolls_back_partial_state(
         original_threshold
     )
     assert window._history_replaying is False
+    assert window.compressor_panel.get_compressor_settings(include_calibration=True)[
+        "noise_reference_reliability"
+    ] == pytest.approx(0.7)
 
+    window.meter_timer.stop()
+    window.diagnostics_timer.stop()
+    window.close()
+    window.deleteLater()
+    qapp.processEvents()
+
+
+def test_history_restores_calibration_only_in_the_same_capture_context(qapp, monkeypatch):
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    for name in ("list_presets", "list_input_devices", "list_output_devices"):
+        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    window = MainWindow()
+    route = "route-a"
+    monkeypatch.setattr(window, "_current_device_route_key", lambda: route)
+    window.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.7})
+    assert window._commit_pending_configuration_snapshot()
+    snapshot = window._configuration_history.current
+    assert snapshot is not None
+    window.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.2})
+    window._restore_configuration_snapshot(snapshot)
+    assert window.compressor_panel.get_compressor_settings(include_calibration=True)[
+        "noise_reference_reliability"
+    ] == pytest.approx(0.7)
+    for change in ("channel", "cleanup", "route"):
+        window.config.input_channel_mode = "phase_safe_mono"
+        window.config.input_cleanup_mode = "off"
+        if change == "channel":
+            window.config.input_channel_mode = "left"
+        elif change == "cleanup":
+            window.config.input_cleanup_mode = "gentle"
+        else:
+            route = "route-b"
+        window._restore_configuration_snapshot(snapshot)
+        assert window.compressor_panel.get_compressor_settings(include_calibration=True)[
+            "noise_reference_reliability"
+        ] == 0.0
     window.meter_timer.stop()
     window.diagnostics_timer.stop()
     window.close()

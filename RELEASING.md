@@ -127,20 +127,12 @@ Validate extraction plus per-user installation/uninstallation with
 
 Run the release validation checks:
 
-The currently locked Semgrep version pins `mcp==1.23.3` for its optional MCP server;
-AudioForge only invokes `semgrep scan`, so the three upstream MCP advisories
-are listed explicitly below pending validation of the developer-tool update. Runtime
-dependencies remain unignored.
-
 ```powershell
 .\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
 .\.venv\Scripts\python.exe -m pyright
 .\.venv\Scripts\python.exe -m pytest python/tests -q
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt `
-  --ignore-vuln PYSEC-2026-3481 `
-  --ignore-vuln PYSEC-2026-3482 `
-  --ignore-vuln PYSEC-2026-3483
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py

@@ -30,9 +30,9 @@ dev = [
     "maturin>=1.4",
     "pyinstaller>=6.0",
     "pip-audit>=2.10.1",
-    "pip-tools>=7.5.3",
+    "pip-tools>=7.6.1",
     "pip==26.2.1",
-    "semgrep>=1.165.0",
+    "semgrep>=1.176.1",
     "PyYAML>=6.0.3",
 ]
 

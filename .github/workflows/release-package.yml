@@ -241,14 +241,7 @@ jobs:
         run: |
           .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
           if ($LASTEXITCODE -ne 0) { throw "Runtime dependency audit failed with exit code $LASTEXITCODE." }
-          # Semgrep 1.171.0 currently pins mcp==1.23.3 for its optional
-          # `semgrep mcp` server. This repository only invokes `semgrep scan`;
-          # keep the upstream IDs explicit pending validation of the developer
-          # tool update rather than hiding unrelated audit results.
-          .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip `
-            --ignore-vuln PYSEC-2026-3481 `
-            --ignore-vuln PYSEC-2026-3482 `
-            --ignore-vuln PYSEC-2026-3483
+          .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
           if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
 
       - name: Python release gates

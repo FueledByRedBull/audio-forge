@@ -7,7 +7,7 @@
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
 
-Current version: `v2.0.0`
+Current version: `v1.12.0`
 
 ## Download
 
@@ -79,8 +79,8 @@ Operational tools:
 
 AudioForge targets Windows 10 (1809 or later) and Windows 11 x64. Hosted Windows CI validates software and
 packaging; it does not qualify every microphone, driver, virtual route, or OS
-version. Exact-artifact hardware reports define the tested coverage. The v2.0
-hardware matrix remains pending; see the [release workflow](RELEASING.md#automated-workflow)
+version. Exact-artifact hardware reports define the tested coverage. See the
+[release workflow](RELEASING.md#automated-workflow)
 for the qualification gates.
 Linux and macOS builds are not supported.
 
@@ -275,7 +275,7 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v2.0.0-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.12.0-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 The v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz, tar.zst,

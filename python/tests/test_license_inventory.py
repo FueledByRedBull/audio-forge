@@ -73,7 +73,7 @@ def test_source_status_requires_verified_receipt_and_keeps_native_records(monkey
     monkeypatch.setattr(license_inventory, "load_manifest", lambda _path: manifest)
     monkeypatch.setattr(license_inventory, "verify_sources", lambda *args, **kwargs: None)
     monkeypatch.setenv("AUDIOFORGE_SOURCE_DIR", "build/source-distribution")
-    monkeypatch.setenv("AUDIOFORGE_SOURCE_REVISION", "v2.0.0")
+    monkeypatch.setenv("AUDIOFORGE_SOURCE_REVISION", "v1.12.0")
 
     result = license_inventory.source_distribution_status()
 

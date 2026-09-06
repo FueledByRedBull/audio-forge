@@ -81,7 +81,7 @@ def parse_version(value: str) -> ReleaseVersion:
     match = _VERSION.fullmatch(value.strip())
     if match is None:
         raise ValueError(
-            "version must be MAJOR.MINOR.PATCH, 2.0.0rc1, or 2.0.0-rc.1"
+            "version must be MAJOR.MINOR.PATCH with optional rcN or -rc.N suffix"
         )
     groups = match.groupdict()
     rc_values = [groups["pep_rc"], groups["cargo_rc"]]

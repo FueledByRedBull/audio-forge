@@ -154,7 +154,7 @@ def validate_case(
 def coverage_missing(
     reports: Iterable[dict[str, Any]],
 ) -> dict[str, int | list[str] | list[int]]:
-    """Compute the mandatory v2 matrix gaps from validated case-shaped reports."""
+    """Compute the mandatory release matrix gaps from validated case-shaped reports."""
     reports = list(reports)
     os_releases: set[str] = set()
     device_classes: set[str] = set()

@@ -194,7 +194,7 @@
     ],
     "rmse": 0.0
   },
-  "purpose": "Compact evidence for the pinned DeepFilter source build used by the v2.0 release candidate.",
+  "purpose": "Compact evidence for the pinned DeepFilter source build used by the AudioForge release candidate.",
   "recipe": {
     "lockfile": "build-support/deepfilter/Cargo.lock",
     "manifest": "build-support/deepfilter/Cargo.toml",
@@ -322,7 +322,7 @@
     "repository": "https://github.com/Rikorose/DeepFilterNet.git"
   },
   "source_sha256": {
-    "python/tools/evaluate_deepfilter_source_build.py": "4550537b1ac165cce915b0c3b325cabc6e9eac419bb1daeb3cd3fd8f9071e6fa",
+    "python/tools/evaluate_deepfilter_source_build.py": "0d855cd432e8d8ca02145a8bb7e1d210dc4693540b36f66cf56c5af4390c5565",
     "rust-core/src/bin/deepfilter_benchmark.rs": "ed7f006433c3c919420ac49eba61f6292d9b6938497ae7172990c2a61133cb08",
     "rust-core/src/dsp/deepfilter_ffi.rs": "7785dd862a350c31da4b09ca621b24d59f876a153a72601d712a76101946d9d5"
   }

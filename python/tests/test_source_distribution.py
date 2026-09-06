@@ -154,7 +154,7 @@ def test_release_manifest_cannot_claim_complete_with_blocked_entry():
             {
                 "schema_version": 1,
                 "project": "AudioForge",
-                "project_version": "2.0.0",
+                "project_version": "1.12.0",
                 "status": "complete",
                 "blockers": [],
                 "entries": [entry],
@@ -201,7 +201,7 @@ def test_source_receipt_binds_manifest_and_revision(tmp_path: Path, monkeypatch)
     entry = _entry(payload)
     manifest = {
         "project": "AudioForge",
-        "project_version": "2.0.0",
+        "project_version": "1.12.0",
         "entries": [entry],
         "blockers": [],
     }
@@ -214,7 +214,7 @@ def test_source_receipt_binds_manifest_and_revision(tmp_path: Path, monkeypatch)
     receipt_path = _write_receipt(
         tmp_path,
         manifest,
-        revision="v2.0.0",
+        revision="v1.12.0",
         include_runtime_assets=False,
     )
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -298,7 +298,7 @@ def test_manifest_records_current_incomplete_status():
 
     assert manifest["status"] in {"complete", "incomplete"}
     assert bool(manifest["blockers"]) is (manifest["status"] == "incomplete")
-    assert loaded["project_version"] == "2.0.0"
+    assert loaded["project_version"] == "1.12.0"
     assert len(manifest["entries"]) >= 100
     assert loaded["recipes"]
     assert all(

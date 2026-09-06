@@ -336,7 +336,7 @@ def evaluate(
     attestation_hash = _sha256(attestation) if attestation.is_file() else None
     report = {
         "schema_version": 2,
-        "purpose": "Compact evidence for the pinned DeepFilter source build used by the v2.0 release candidate.",
+        "purpose": "Compact evidence for the pinned DeepFilter source build used by the AudioForge release candidate.",
         "command": "python/tools/evaluate_deepfilter_source_build.py --reference-library target/deepfilter/df-inherited-before-adoption.dll --candidate-library df.dll --benchmark target/release/deepfilter_benchmark.exe --corpus models/deepfilter_fullband_eval --model-dir models --output evaluation/deepfilter-source-build-report.json",
         "source": {
             "repository": upstream["repository"],

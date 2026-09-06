@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v2.0.0 - release candidate
+## v1.12.0
 
 - Keep analysis workers alive until completion, cancel obsolete work cooperatively,
   and release the Python GIL during offline native processing.
@@ -18,8 +18,6 @@
   using generated sidecars for artifact measurements.
 - Move the build runtime to CPython 3.13.15, replace the unused DirectML payload
   with CPU-only ONNX Runtime, and build DeepFilter from pinned source.
-- Hardware microphone qualification and corresponding-source distribution remain
-  publication gates; this entry does not certify a released v2.0 binary.
 
 ## v1.11.4 - 2026-09-01
 

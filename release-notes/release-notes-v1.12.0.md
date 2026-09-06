@@ -1,8 +1,8 @@
-# AudioForge 2.0.0
+# AudioForge 1.12.0
 
-Release candidate: software and packaging validation is in progress. Hardware
-microphone qualification is pending. See [the release workflow](../RELEASING.md)
-for the remaining publication gates.
+AudioForge 1.12.0 delivers the reliability, packaging, and runtime updates
+below. See [the release workflow](../RELEASING.md) for the candidate validation
+and publication gates.
 
 ## Reliability
 
@@ -17,12 +17,11 @@ for the remaining publication gates.
 Windows distribution provides a portable archive and a per-user MSI installer.
 Original AudioForge source remains MIT licensed. The combined PyQt6 application
 is distributed under GPLv3; dependency terms and notices accompany the bundle.
-Corresponding-source arrangements must be complete before final publication.
 
 Source builds use CPython 3.13.15 x64 and Rust 1.94.0. VAD uses the pinned
 CPU-only ONNX Runtime; DeepFilter uses a verified source build.
-Published checksum, manifest,
-metadata, and qualification files describe the exact downloadable artifacts.
+Published checksum, manifest, metadata, and qualification files describe the
+exact downloadable artifacts.
 The release workflow validates a candidate once and promotes those same bytes.
 
 Windows 10/11 are the intended product targets. Hosted software checks do not

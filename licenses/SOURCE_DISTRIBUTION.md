@@ -1,7 +1,7 @@
 # Corresponding source distribution
 
 `licenses/source-manifest.json` records the exact source archives and SHA-256
-digests needed to reconstruct the v2.0 Windows build. It is generated from the
+digests needed to reconstruct the AudioForge Windows build. It is generated from the
 locked Python requirements, the resolved Windows Cargo graph, the Qt source
 corresponding to the bundled PyQt6 Qt libraries, the CPython interpreter, and
 the pinned Windows-only source package.
@@ -58,7 +58,7 @@ Create the release bundle from the tagged, committed revision:
 .\.venv\Scripts\python.exe python/tools/source_distribution.py bundle `
   --manifest licenses/source-manifest.json `
   --output build/source-distribution `
-  --revision v2.0.0 `
+  --revision v1.12.0 `
   --include-runtime-assets
 ```
 

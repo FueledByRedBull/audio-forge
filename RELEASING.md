@@ -24,13 +24,13 @@ hosted build cannot replace either gate.
 ### Release candidates
 
 Release candidates use one canonical tag spelling: `vMAJOR.MINOR.PATCH-rc.N`.
-The source version may use PEP 440 (`2.0.0rc1`); the release tooling maps it to
-Cargo's `2.0.0-rc.1`, the canonical tag, and an artifact name containing that
+The source version may use PEP 440 (`1.12.0rc1`); the release tooling maps it to
+Cargo's `1.12.0-rc.1`, the canonical tag, and an artifact name containing that
 tag. MSI has only three numeric version fields, so the release tooling reserves
-the last value in each 100-value patch block for the final release: `2.0.0rc1`
-maps to MSI `2.0.1`, while `2.0.0` maps to `2.0.99`. RC sequences are bounded
+the last value in each 100-value patch block for the final release: `1.12.0rc1`
+maps to MSI `1.12.1`, while `1.12.0` maps to `1.12.99`. RC sequences are bounded
 to 1 through 98 and patch components to 654. MSI's numeric value is an internal
-installer identity; app and release metadata retain the public `2.0.0` version.
+installer identity; app and release metadata retain the public `1.12.0` version.
 RC promotion creates or verifies a GitHub prerelease; final promotion rejects a
 prerelease state.
 
@@ -49,7 +49,7 @@ For local release prep from a clean clone, you can mirror that behavior with:
 
 Then run the workflow with:
 
-- `release_tag`: the target tag, for example `v2.0.0`.
+- `release_tag`: the target tag, for example `v1.12.0`.
 - `asset_source_tag`: optional published release override for pinned
   DeepFilter model assets. Leave blank to use the repository
   `AUDIOFORGE_ASSET_SOURCE_TAG` override when configured, then the
@@ -160,7 +160,7 @@ Create the distributable archive:
 
 ```powershell
 & "C:\Program Files\7-Zip\7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v2.0.0-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.12.0-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 This setting is retained from a final-bundle comparison against ZIP/Deflate,
@@ -171,7 +171,7 @@ filtering was smallest; the exact measurements are recorded in
 Compute the checksum:
 
 ```powershell
-Get-FileHash .\AudioForge-v2.0.0-win64-ultra.7z -Algorithm SHA256
+Get-FileHash .\AudioForge-v1.12.0-win64-ultra.7z -Algorithm SHA256
 ```
 
 For a real candidate, generate and verify all provenance sidecars instead of
@@ -180,26 +180,26 @@ writing release facts manually:
 ```powershell
 .\.venv\Scripts\python.exe python\tools\release_provenance.py create `
   --bundle .\dist\AudioForge `
-  --archive .\AudioForge-v2.0.0-win64-ultra.7z `
+  --archive .\AudioForge-v1.12.0-win64-ultra.7z `
   --baseline .\evaluation\release-bundle-path-baseline.json `
   --output-dir .
 
 .\.venv\Scripts\python.exe python\tools\release_provenance.py verify `
   --bundle .\dist\AudioForge `
-  --archive .\AudioForge-v2.0.0-win64-ultra.7z `
-  --checksum .\AudioForge-v2.0.0-win64-ultra.7z.sha256 `
-  --manifest .\AudioForge-v2.0.0-win64-ultra.7z.manifest.json `
-  --metadata .\AudioForge-v2.0.0-win64-ultra.7z.metadata.json `
+  --archive .\AudioForge-v1.12.0-win64-ultra.7z `
+  --checksum .\AudioForge-v1.12.0-win64-ultra.7z.sha256 `
+  --manifest .\AudioForge-v1.12.0-win64-ultra.7z.manifest.json `
+  --metadata .\AudioForge-v1.12.0-win64-ultra.7z.metadata.json `
   --baseline .\evaluation\release-bundle-path-baseline.json
 ```
 
 Candidate and promotion:
 
 1. Commit tracked source/doc/version changes.
-2. Create annotated tag `v2.0.0`.
+2. Create annotated tag `v1.12.0`.
 3. Confirm the standing runtime-asset source is still available and matches the
    manifest. Existing verified assets do not need uploading again for each version.
-4. Push `master` and `v2.0.0`, or run the `Release package` workflow manually
+4. Push `master` and `v1.12.0`, or run the `Release package` workflow manually
    to create a candidate.
 5. Record the candidate workflow run ID and generated archive SHA-256.
 6. On a temporary or standing self-hosted runner labelled `self-hosted`,

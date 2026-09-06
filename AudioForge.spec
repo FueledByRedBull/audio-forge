@@ -103,6 +103,11 @@ a = Analysis(
         "pytest",
         "setuptools",
         "wheel",
+        # Optional scientific-library helpers installed by development tools.
+        "cffi",
+        "charset_normalizer",
+        "typing_extensions",
+        "yaml",
     ],
     noarchive=False,
     optimize=0,

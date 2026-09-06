@@ -2,7 +2,6 @@
   "paths": [
     "_internal/_asyncio.pyd",
     "_internal/_bz2.pyd",
-    "_internal/_cffi_backend.cp313-win_amd64.pyd",
     "_internal/_ctypes.pyd",
     "_internal/_decimal.pyd",
     "_internal/_lzma.pyd",
@@ -11,11 +10,8 @@
     "_internal/_queue.pyd",
     "_internal/_socket.pyd",
     "_internal/_wmi.pyd",
-    "_internal/ada92cb5d92a588d1b93__mypyc.cp313-win_amd64.pyd",
     "_internal/audioforge-build.json",
     "_internal/base_library.zip",
-    "_internal/charset_normalizer/cd.cp313-win_amd64.pyd",
-    "_internal/charset_normalizer/md.cp313-win_amd64.pyd",
     "_internal/df.dll",
     "_internal/libffi-8.dll",
     "_internal/licenses/DeepFilterNet-LICENSE.txt",
@@ -642,7 +638,6 @@
     "_internal/win32/win32pdh.pyd",
     "_internal/win32/win32trace.pyd",
     "_internal/win32com/propsys/propsys.pyd",
-    "_internal/yaml/_yaml.cp313-win_amd64.pyd",
     "AudioForge.exe"
   ],
   "schema_version": 1

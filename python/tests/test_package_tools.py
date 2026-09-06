@@ -65,6 +65,41 @@ def test_package_smoke_source_packaging_checks_pass():
     assert package_smoke.check_source_packaging() == []
 
 
+def test_runtime_analysis_without_optional_development_packages():
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import importlib.abc
+import sys
+
+class ExcludeOptional(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {
+            'cffi', 'pycparser', 'charset_normalizer', 'typing_extensions', 'yaml'
+        }:
+            raise ModuleNotFoundError(fullname, name=fullname)
+
+sys.meta_path.insert(0, ExcludeOptional())
+from mic_eq.ui.main_window import MainWindow
+import numpy as np
+from scipy.signal import correlate, lfilter, resample_poly
+from scipy.optimize import least_squares, minimize
+
+x = np.random.default_rng(42).normal(size=480)
+assert np.isfinite(lfilter([0.5, 0.5], [1], x)).all()
+assert resample_poly(x, 1, 3).shape == (160,)
+assert correlate(x, x).argmax() == len(x) - 1
+assert least_squares(lambda p: p - 2, [0.0]).success
+assert minimize(lambda p: float((p[0] - 2) ** 2), [0.0]).success
+assert MainWindow is not None
+"""],
+        cwd=TOOLS_DIR.parents[1],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_workflow_action_parser_covers_inline_and_named_steps():
     source = (
         "      - uses: actions/checkout@" + "a" * 40 + "\n"

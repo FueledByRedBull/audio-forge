@@ -12,6 +12,7 @@ and publication gates.
   preset creation refuses accidental replacement after filename sanitization.
 - EQ enable/disable transitions run through the production processing path.
 - Noise-model discovery no longer panics when an inherited stderr pipe is closed.
+- Windows device lists include full friendly names, such as the microphone model.
 - VAD Only preserves quiet detected speech independently of the disabled level
   threshold, while retaining level fallback if VAD is unavailable.
 

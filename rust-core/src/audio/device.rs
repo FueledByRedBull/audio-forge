@@ -123,8 +123,21 @@ fn persisted_endpoint_id(device_id: &DeviceId) -> String {
 pub(crate) fn device_name(device: &Device) -> Result<String, String> {
     device
         .description()
-        .map(|description| description.name().to_string())
+        .map(|description| display_name(&description))
         .map_err(|error| error.to_string())
+}
+
+fn display_name(description: &cpal::DeviceDescription) -> String {
+    #[cfg(target_os = "windows")]
+    if let Some(name) = description
+        .extended()
+        .first()
+        .filter(|name| !name.trim().is_empty())
+    {
+        return name.clone();
+    }
+
+    description.name().to_string()
 }
 
 fn collect_devices(input: bool) -> PyResult<Vec<DeviceInfo>> {
@@ -194,7 +207,8 @@ pub fn list_output_devices() -> PyResult<Vec<DeviceInfo>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_endpoint_id;
+    use super::{display_name, parse_endpoint_id};
+    use cpal::DeviceDescriptionBuilder;
 
     #[test]
     fn endpoint_id_rejects_empty_values() {
@@ -217,6 +231,32 @@ mod tests {
         } else {
             assert_eq!(persisted, "wasapi:stable-device");
         }
+    }
+
+    #[test]
+    fn display_name_uses_windows_friendly_name_without_appending_driver() {
+        let description = DeviceDescriptionBuilder::new("Microphone")
+            .driver("Razer Seiren Mini")
+            .add_extended_line("Microphone (Razer Seiren Mini)")
+            .build();
+
+        let name = display_name(&description);
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(name, "Microphone (Razer Seiren Mini)");
+            assert_eq!(name.matches("Razer Seiren Mini").count(), 1);
+        } else {
+            assert_eq!(name, "Microphone");
+        }
+    }
+
+    #[test]
+    fn display_name_falls_back_when_windows_friendly_name_is_missing() {
+        let description = DeviceDescriptionBuilder::new("Microphone")
+            .driver("Razer Seiren Mini")
+            .build();
+
+        assert_eq!(display_name(&description), "Microphone");
     }
 
     #[cfg(target_os = "windows")]

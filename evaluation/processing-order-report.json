@@ -1,7 +1,7 @@
 {
   "schema_version": 4,
   "audible_change": true,
-  "generated_at_utc": "2026-09-05T14:14:35.583767+00:00",
+  "generated_at_utc": "2026-09-06T12:54:11.103969+00:00",
   "status": "incumbents-retained-objective-gates-failed",
   "decision": {
     "product_chain_changed": false,
@@ -27,7 +27,7 @@
       "median_candidate_tail_retained_ratio": 0.00731529608144042,
       "median_baseline_pumping_score": 5.245177218607963e-05,
       "median_candidate_pumping_score": 0.20301037781192355,
-      "median_runtime_ratio": 1.0648914708565973
+      "median_runtime_ratio": 1.079077256122311
     },
     "non_regression": {
       "false_closure": true,
@@ -73,7 +73,7 @@
       "rust-core/src/audio/processor/python_api.rs": "2f2aa1620b073c4fb87748d71a57196e61c38a3d78cfb0ccdd73a9083b63bbb1",
       "rust-core/src/dsp/deesser.rs": "17f3fc098e7a0da074915c26ce0ec833a0fa71e778fb3c9618289cf31edddac3",
       "rust-core/src/dsp/eq.rs": "3dc1fd2c14496a7d76b34840011a2eb9a90e2d6a12ec2f67c5ace0be869855c9",
-      "rust-core/src/dsp/gate.rs": "4d2cfc3761e162d362eeb8735bdd8a46c224bd9f2dd3f482f0f6bf8365d97f4c",
+      "rust-core/src/dsp/gate.rs": "25b10ac9c7fe0534943790f44725e2685cf7d8121f7293fea42f9f061de6ae7d",
       "rust-core/src/dsp/noise_suppressor.rs": "6c81089b03d0bc276cbb2ea975df51df6ade2e0cf57c01ef060fc514db58bb09",
       "rust-core/src/dsp/rnnoise.rs": "4f473389c120de55be1754c97fd4f0db235a496ee416ae6fe1beb9a9de8a54ae"
     },
@@ -102,7 +102,7 @@
       }
     },
     "runtime": {
-      "gate_suppressor_median_runtime_ratio": 1.0648914708565973,
+      "gate_suppressor_median_runtime_ratio": 1.079077256122311,
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native simulators report whole-clip timing; the ordering candidate is rejected before realtime callback qualification.",
       "platform": "Windows-11-10.0.26200-SP0"

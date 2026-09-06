@@ -1,16 +1,16 @@
 {
   "schema_version": 2,
   "audible_change": true,
-  "generated_at_utc": "2026-08-28T17:23:34.579582+00:00",
+  "generated_at_utc": "2026-09-06T13:06:28.837908+00:00",
   "purpose": "Select AudioForge DeepFilter runtime controls and verify LL/Standard wet-dry alignment; no DPDFNet candidate is evaluated.",
   "environment": {
     "platform": "Windows-11-10.0.26200-SP0",
     "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
-    "python": "3.12.10",
-    "binary_sha256": "e1b47ffc77eb10c5dbe4431a1fe6452d2b2cc400fa06dbc0d3f7cda7b9bee47e"
+    "python": "3.13.15",
+    "binary_sha256": "e844da85b934c707bcec81eacfb5b398cd5f8d01c114a9830abd3682ac34217f"
   },
   "assets": {
-    "df.dll": "270d14b92143c18c5f7e14e9eba3192d7843ec52fb9d1ade2fd9173d03a71656",
+    "df.dll": "5f666380bd0f69b6def04d7aeb6d38c8c1c5780e2cb3c3f9602f05564aa948a5",
     "models/DeepFilterNet3_ll_onnx.tar.gz": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
     "models/DeepFilterNet3_onnx.tar.gz": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616"
   },
@@ -18,7 +18,7 @@
     "python/tools/evaluate_deepfilter_hardening.py": "b2dccce85d975fde015708c02f1965e0fdd74777340b67f288fff2bae38cbb43",
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
     "rust-core/src/bin/deepfilter_benchmark.rs": "ed7f006433c3c919420ac49eba61f6292d9b6938497ae7172990c2a61133cb08",
-    "rust-core/src/dsp/deepfilter_ffi.rs": "7785dd862a350c31da4b09ca621b24d59f876a153a72601d712a76101946d9d5"
+    "rust-core/src/dsp/deepfilter_ffi.rs": "5828c9b881124f57aeb807ccda51246fb1f4c64e3c99d0ea727f735425d8158b"
   },
   "corpus": {
     "root": "models/dpdfnet_eval_subset",
@@ -67,9 +67,9 @@
           "median_clean_si_sdr_db": 40.230666707334436,
           "median_clean_speech_lsd_db": 0.466396088920712,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.0949016339973018,
-          "max_p99_frame_seconds": 0.0012863,
-          "max_frame_seconds": 0.0029724
+          "max_realtime_factor": 0.08384362193476708,
+          "max_p99_frame_seconds": 0.0011616,
+          "max_frame_seconds": 0.0021492
         },
         "checks": {
           "clean_dropout_at_most_1_percent": true,
@@ -88,9 +88,9 @@
           "median_clean_si_sdr_db": 38.607896643318504,
           "median_clean_speech_lsd_db": 0.5556658198857465,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.10715320768193,
-          "max_p99_frame_seconds": 0.0017012,
-          "max_frame_seconds": 0.0175392
+          "max_realtime_factor": 0.08474949448456472,
+          "max_p99_frame_seconds": 0.0012797,
+          "max_frame_seconds": 0.0028453
         },
         "checks": {
           "clean_dropout_at_most_1_percent": true,
@@ -109,9 +109,9 @@
           "median_clean_si_sdr_db": 37.96036721630091,
           "median_clean_speech_lsd_db": 0.5956377161062862,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.11887490595984446,
-          "max_p99_frame_seconds": 0.0019155,
-          "max_frame_seconds": 0.0193415
+          "max_realtime_factor": 0.0838333513213237,
+          "max_p99_frame_seconds": 0.0011623,
+          "max_frame_seconds": 0.0038186
         },
         "checks": {
           "clean_dropout_at_most_1_percent": true,
@@ -130,9 +130,9 @@
           "median_clean_si_sdr_db": 37.67681517320091,
           "median_clean_speech_lsd_db": 0.6130385489373065,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.11342806761368146,
-          "max_p99_frame_seconds": 0.0017133,
-          "max_frame_seconds": 0.0030084
+          "max_realtime_factor": 0.08594756130465836,
+          "max_p99_frame_seconds": 0.001226,
+          "max_frame_seconds": 0.0025548
         },
         "checks": {
           "clean_dropout_at_most_1_percent": true,
@@ -165,9 +165,9 @@
           "median_clean_si_sdr_db": 37.96036721630091,
           "median_clean_speech_lsd_db": 0.5956377161062862,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.11887490595984446,
-          "max_p99_frame_seconds": 0.0019155,
-          "max_frame_seconds": 0.0193415
+          "max_realtime_factor": 0.0838333513213237,
+          "max_p99_frame_seconds": 0.0011623,
+          "max_frame_seconds": 0.0038186
         },
         "checks": {
           "baseline": true
@@ -181,9 +181,9 @@
           "median_clean_si_sdr_db": 37.94671678648628,
           "median_clean_speech_lsd_db": 0.6008421335924912,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.09021147131180066,
-          "max_p99_frame_seconds": 0.001359,
-          "max_frame_seconds": 0.0029149
+          "max_realtime_factor": 0.10524879930164271,
+          "max_p99_frame_seconds": 0.0052038,
+          "max_frame_seconds": 0.0454919
         },
         "checks": {
           "noisy_si_sdr_improves_by_0_15_db": true,
@@ -202,9 +202,9 @@
           "median_clean_si_sdr_db": 37.92735809583468,
           "median_clean_speech_lsd_db": 0.6054280978282482,
           "median_clean_dropout_rate": 0.0,
-          "max_realtime_factor": 0.08931082215697166,
-          "max_p99_frame_seconds": 0.0012773,
-          "max_frame_seconds": 0.0020751
+          "max_realtime_factor": 0.08682992619633363,
+          "max_p99_frame_seconds": 0.0012654,
+          "max_frame_seconds": 0.0032308
         },
         "checks": {
           "noisy_si_sdr_improves_by_0_15_db": true,
@@ -237,16 +237,16 @@
       "selected_post_filter_beta": 0.0
     },
     "asset_hashes": {
-      "df.dll": "270d14b92143c18c5f7e14e9eba3192d7843ec52fb9d1ade2fd9173d03a71656",
+      "df.dll": "5f666380bd0f69b6def04d7aeb6d38c8c1c5780e2cb3c3f9602f05564aa948a5",
       "models/DeepFilterNet3_ll_onnx.tar.gz": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
       "models/DeepFilterNet3_onnx.tar.gz": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
-      "target/release/deepfilter_benchmark.exe": "e1b47ffc77eb10c5dbe4431a1fe6452d2b2cc400fa06dbc0d3f7cda7b9bee47e",
+      "target/release/deepfilter_benchmark.exe": "e844da85b934c707bcec81eacfb5b398cd5f8d01c114a9830abd3682ac34217f",
       "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
     },
     "runtime": {
-      "max_realtime_factor": 0.11887490595984446,
-      "max_p99_frame_seconds": 0.0019155,
-      "max_frame_seconds": 0.0193415,
+      "max_realtime_factor": 0.0838333513213237,
+      "max_p99_frame_seconds": 0.0011623,
+      "max_frame_seconds": 0.0038186,
       "frame_deadline_seconds": 0.01
     },
     "latency": {

@@ -3,7 +3,7 @@
     "args": "--attenuation-db 80 --post-filter-beta 0 --strength 1",
     "hashes": {
       "binary": {
-        "target/release/deepfilter_benchmark.exe": "86b29ebaf580ca7a6388c79c28e09d20188a695f1a153c67c8cccd0a1d8f1843"
+        "target/release/deepfilter_benchmark.exe": "e844da85b934c707bcec81eacfb5b398cd5f8d01c114a9830abd3682ac34217f"
       },
       "corpus_manifest": {
         "models/deepfilter_fullband_eval/manifest.json": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6"
@@ -31,7 +31,7 @@
     "comparisons": [
       {
         "candidate_latency_samples": 480,
-        "candidate_p99_frame_ms": 1.2606,
+        "candidate_p99_frame_ms": 1.3347,
         "expected_latency_samples": 480,
         "finite": true,
         "input": {
@@ -43,14 +43,14 @@
         "max_abs": 0.0,
         "model": "ll",
         "reference_latency_samples": 480,
-        "reference_p99_frame_ms": 1.4893,
+        "reference_p99_frame_ms": 1.2162,
         "rmse": 0.0,
         "samples": 48480,
         "segment": "p232_001@0"
       },
       {
         "candidate_latency_samples": 480,
-        "candidate_p99_frame_ms": 1.4005999999999998,
+        "candidate_p99_frame_ms": 1.5689,
         "expected_latency_samples": 480,
         "finite": true,
         "input": {
@@ -62,14 +62,14 @@
         "max_abs": 0.0,
         "model": "ll",
         "reference_latency_samples": 480,
-        "reference_p99_frame_ms": 1.3336999999999999,
+        "reference_p99_frame_ms": 1.3747,
         "rmse": 0.0,
         "samples": 48480,
         "segment": "p232_006@24000"
       },
       {
         "candidate_latency_samples": 480,
-        "candidate_p99_frame_ms": 1.2107,
+        "candidate_p99_frame_ms": 1.3825,
         "expected_latency_samples": 480,
         "finite": true,
         "input": {
@@ -81,14 +81,14 @@
         "max_abs": 0.0,
         "model": "ll",
         "reference_latency_samples": 480,
-        "reference_p99_frame_ms": 1.5116,
+        "reference_p99_frame_ms": 1.5219,
         "rmse": 0.0,
         "samples": 48480,
         "segment": "p257_001@0"
       },
       {
         "candidate_latency_samples": 480,
-        "candidate_p99_frame_ms": 1.1378,
+        "candidate_p99_frame_ms": 1.3875,
         "expected_latency_samples": 480,
         "finite": true,
         "input": {
@@ -100,14 +100,14 @@
         "max_abs": 0.0,
         "model": "ll",
         "reference_latency_samples": 480,
-        "reference_p99_frame_ms": 1.3531000000000002,
+        "reference_p99_frame_ms": 1.6117,
         "rmse": 0.0,
         "samples": 48480,
         "segment": "p257_006@24000"
       },
       {
         "candidate_latency_samples": 1440,
-        "candidate_p99_frame_ms": 0.7111,
+        "candidate_p99_frame_ms": 1.0183,
         "expected_latency_samples": 1440,
         "finite": true,
         "input": {
@@ -119,14 +119,14 @@
         "max_abs": 0.0,
         "model": "standard",
         "reference_latency_samples": 1440,
-        "reference_p99_frame_ms": 0.6232,
+        "reference_p99_frame_ms": 0.8205,
         "rmse": 0.0,
         "samples": 49440,
         "segment": "p232_001@0"
       },
       {
         "candidate_latency_samples": 1440,
-        "candidate_p99_frame_ms": 0.6084,
+        "candidate_p99_frame_ms": 0.6323,
         "expected_latency_samples": 1440,
         "finite": true,
         "input": {
@@ -138,14 +138,14 @@
         "max_abs": 0.0,
         "model": "standard",
         "reference_latency_samples": 1440,
-        "reference_p99_frame_ms": 0.7972,
+        "reference_p99_frame_ms": 0.7123,
         "rmse": 0.0,
         "samples": 49440,
         "segment": "p232_006@24000"
       },
       {
         "candidate_latency_samples": 1440,
-        "candidate_p99_frame_ms": 0.5589,
+        "candidate_p99_frame_ms": 0.7380000000000001,
         "expected_latency_samples": 1440,
         "finite": true,
         "input": {
@@ -157,14 +157,14 @@
         "max_abs": 0.0,
         "model": "standard",
         "reference_latency_samples": 1440,
-        "reference_p99_frame_ms": 0.6848,
+        "reference_p99_frame_ms": 0.7602000000000001,
         "rmse": 0.0,
         "samples": 49440,
         "segment": "p257_001@0"
       },
       {
         "candidate_latency_samples": 1440,
-        "candidate_p99_frame_ms": 0.8476999999999999,
+        "candidate_p99_frame_ms": 0.8067000000000001,
         "expected_latency_samples": 1440,
         "finite": true,
         "input": {
@@ -176,7 +176,7 @@
         "max_abs": 0.0,
         "model": "standard",
         "reference_latency_samples": 1440,
-        "reference_p99_frame_ms": 0.7257,
+        "reference_p99_frame_ms": 0.8882,
         "rmse": 0.0,
         "samples": 49440,
         "segment": "p257_006@24000"
@@ -216,8 +216,8 @@
     "finite_cases": 18,
     "gate_p99_frame_ms": 10.0,
     "latency_cases": 18,
-    "max_p99_frame_ms": 1.4005999999999998,
-    "max_rtf": 0.09273138613861386,
+    "max_p99_frame_ms": 1.5689,
+    "max_rtf": 0.10225861386138614,
     "repeats": "5 per model plus the 8 parity cases",
     "runs": [
       {
@@ -225,90 +225,90 @@
         "finite": true,
         "latency_samples": 480,
         "model": "ll",
-        "p99_frame_ms": 1.1251,
+        "p99_frame_ms": 1.4071,
         "repeat": 1,
-        "rtf": 0.08600158415841584
+        "rtf": 0.10225861386138614
       },
       {
         "expected_latency_samples": 480,
         "finite": true,
         "latency_samples": 480,
         "model": "ll",
-        "p99_frame_ms": 1.0344,
+        "p99_frame_ms": 1.3404999999999998,
         "repeat": 2,
-        "rtf": 0.0826029702970297
+        "rtf": 0.08447306930693069
       },
       {
         "expected_latency_samples": 480,
         "finite": true,
         "latency_samples": 480,
         "model": "ll",
-        "p99_frame_ms": 1.2194,
+        "p99_frame_ms": 1.3597,
         "repeat": 3,
-        "rtf": 0.08801069306930694
+        "rtf": 0.08888792079207922
       },
       {
         "expected_latency_samples": 480,
         "finite": true,
         "latency_samples": 480,
         "model": "ll",
-        "p99_frame_ms": 1.3027,
+        "p99_frame_ms": 1.2550000000000001,
         "repeat": 4,
-        "rtf": 0.08554881188118812
+        "rtf": 0.0898450495049505
       },
       {
         "expected_latency_samples": 480,
         "finite": true,
         "latency_samples": 480,
         "model": "ll",
-        "p99_frame_ms": 1.2712999999999999,
+        "p99_frame_ms": 1.3657000000000001,
         "repeat": 5,
-        "rtf": 0.09273138613861386
+        "rtf": 0.09557425742574258
       },
       {
         "expected_latency_samples": 1440,
         "finite": true,
         "latency_samples": 1440,
         "model": "standard",
-        "p99_frame_ms": 0.5185,
+        "p99_frame_ms": 0.9087000000000001,
         "repeat": 1,
-        "rtf": 0.04247592233009709
+        "rtf": 0.04892378640776699
       },
       {
         "expected_latency_samples": 1440,
         "finite": true,
         "latency_samples": 1440,
         "model": "standard",
-        "p99_frame_ms": 0.9840999999999999,
+        "p99_frame_ms": 0.6983,
         "repeat": 2,
-        "rtf": 0.044435533980582524
+        "rtf": 0.044897475728155334
       },
       {
         "expected_latency_samples": 1440,
         "finite": true,
         "latency_samples": 1440,
         "model": "standard",
-        "p99_frame_ms": 0.716,
+        "p99_frame_ms": 0.7205,
         "repeat": 3,
-        "rtf": 0.04387310679611651
+        "rtf": 0.048159611650485434
       },
       {
         "expected_latency_samples": 1440,
         "finite": true,
         "latency_samples": 1440,
         "model": "standard",
-        "p99_frame_ms": 0.6987,
+        "p99_frame_ms": 0.8538,
         "repeat": 4,
-        "rtf": 0.0445026213592233
+        "rtf": 0.05033330097087379
       },
       {
         "expected_latency_samples": 1440,
         "finite": true,
         "latency_samples": 1440,
         "model": "standard",
-        "p99_frame_ms": 0.7607999999999999,
+        "p99_frame_ms": 0.8907999999999999,
         "repeat": 5,
-        "rtf": 0.044214854368932036
+        "rtf": 0.04779902912621359
       }
     ]
   },
@@ -324,6 +324,6 @@
   "source_sha256": {
     "python/tools/evaluate_deepfilter_source_build.py": "0d855cd432e8d8ca02145a8bb7e1d210dc4693540b36f66cf56c5af4390c5565",
     "rust-core/src/bin/deepfilter_benchmark.rs": "ed7f006433c3c919420ac49eba61f6292d9b6938497ae7172990c2a61133cb08",
-    "rust-core/src/dsp/deepfilter_ffi.rs": "7785dd862a350c31da4b09ca621b24d59f876a153a72601d712a76101946d9d5"
+    "rust-core/src/dsp/deepfilter_ffi.rs": "5828c9b881124f57aeb807ccda51246fb1f4c64e3c99d0ea727f735425d8158b"
   }
 }

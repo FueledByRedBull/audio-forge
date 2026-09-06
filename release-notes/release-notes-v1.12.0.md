@@ -11,6 +11,9 @@ and publication gates.
 - Configuration recovery preserves damaged files and incomplete migrations;
   preset creation refuses accidental replacement after filename sanitization.
 - EQ enable/disable transitions run through the production processing path.
+- Noise-model discovery no longer panics when an inherited stderr pipe is closed.
+- VAD Only preserves quiet detected speech independently of the disabled level
+  threshold, while retaining level fallback if VAD is unavailable.
 
 ## Installation and distribution
 

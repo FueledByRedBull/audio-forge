@@ -10,6 +10,9 @@
   preset replacement, and handle malformed presets at their shared load boundary.
 - Validate offline DSP inputs, isolate real-time allocation test accounting, and
   apply click-safe EQ bypass transitions through the production processing path.
+- Prevent noise-model discovery from crashing on a closed inherited stderr pipe.
+- Preserve quiet detected speech in VAD Only mode without applying the disabled
+  level threshold; retain level fallback when VAD is unavailable.
 - Add per-user Windows MSI packaging alongside the portable distribution, explicit
   Windows runtime dependencies, and bundled dependency license inventories.
 - Strengthen release failure propagation, provenance verification, hardware

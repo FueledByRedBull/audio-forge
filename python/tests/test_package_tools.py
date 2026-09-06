@@ -100,6 +100,43 @@ assert MainWindow is not None
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows inherited stderr handle")
+def test_noise_model_discovery_with_closed_stderr_pipe():
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import ctypes
+from ctypes import wintypes
+import msvcrt
+import os
+from mic_eq import AudioProcessor
+from mic_eq.ui.app_bootstrap import configure_deepfilter_env
+
+configure_deepfilter_env()
+os.environ["AUDIOFORGE_ENABLE_DEEPFILTER"] = "1"
+processor = AudioProcessor()
+kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel.GetStdHandle.argtypes = [wintypes.DWORD]
+kernel.GetStdHandle.restype = wintypes.HANDLE
+kernel.SetStdHandle.argtypes = [wintypes.DWORD, wintypes.HANDLE]
+kernel.SetStdHandle.restype = wintypes.BOOL
+previous = kernel.GetStdHandle(-12)
+reader, writer = os.pipe()
+os.close(reader)
+assert kernel.SetStdHandle(-12, msvcrt.get_osfhandle(writer))
+try:
+    assert processor.list_noise_models()
+finally:
+    assert kernel.SetStdHandle(-12, previous)
+    os.close(writer)
+"""],
+        cwd=TOOLS_DIR.parents[1],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_workflow_action_parser_covers_inline_and_named_steps():
     source = (
         "      - uses: actions/checkout@" + "a" * 40 + "\n"

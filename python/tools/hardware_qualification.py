@@ -20,18 +20,12 @@ SUPPORTED_SCENARIOS = frozenset(
         "model_configuration_change",
     }
 )
-REQUIRED_OS_RELEASES = frozenset({"10", "11"})
-REQUIRED_DEVICE_CLASSES = frozenset({"built_in", "usb", "virtual"})
-REQUIRED_SAMPLE_RATES = frozenset({44_100, 48_000})
-REQUIRED_SCENARIOS = frozenset(
-    {
-        "baseline",
-        "device_reconnect",
-        "default_device_change",
-        "sleep_resume",
-        "model_configuration_change",
-    }
-)
+# v1.12 release-qualified scope; broader accepted report dimensions above are
+# compatibility targets, not claims of completed hardware qualification.
+REQUIRED_OS_RELEASES = frozenset({"11"})
+REQUIRED_DEVICE_CLASSES = frozenset({"usb", "virtual"})
+REQUIRED_SAMPLE_RATES = frozenset({48_000})
+REQUIRED_SCENARIOS = frozenset({"baseline", "model_configuration_change"})
 PHYSICAL_SCENARIOS = frozenset(
     {"device_reconnect", "default_device_change", "sleep_resume"}
 )

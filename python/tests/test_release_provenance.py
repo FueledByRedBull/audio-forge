@@ -692,15 +692,12 @@ def test_verifier_checks_matrix_source_report_hashes_and_schema(
                         "scenarios": [],
                     },
                     "required": {
-                        "required_os_releases": ["10", "11"],
-                        "required_device_classes": ["built_in", "usb", "virtual"],
-                        "required_nominal_sample_rates_hz": [44_100, 48_000],
+                        "required_os_releases": ["11"],
+                        "required_device_classes": ["usb", "virtual"],
+                        "required_nominal_sample_rates_hz": [48_000],
                         "required_scenarios": [
                             "baseline",
-                            "default_device_change",
-                            "device_reconnect",
                             "model_configuration_change",
-                            "sleep_resume",
                         ],
                     },
                 },

@@ -63,13 +63,15 @@ their generated checksums/metadata/manifests as one immutable Actions artifact.
 The separately dispatched
 `Qualify release candidate on hardware` workflow downloads those exact bytes
 onto the labelled AudioForge Windows audio runner, verifies provenance, and
-binds selected-route plus a 30-minute automated baseline to the archive
-SHA-256. The hardware gate requires evidence covering Windows 10 and 11,
-built-in/USB/virtual devices, 44.1/48 kHz, and baseline, reconnect, default-device
-change, sleep/resume, and model-configuration changes. Physical lifecycle cases
-require explicit operator observation and measured events; model changes are exercised automatically. Coverage is never inferred
-from a baseline.
-This is coverage of the required dimensions, not every possible combination.
+binds its measurements to the archive SHA-256. The v1.12.0 hardware gate
+requires Windows 11 x64, USB microphone and virtual routes at observed 48 kHz,
+an automated baseline of at least 1,800 seconds, and model switching/restoration.
+Windows 10, analog or built-in input, 44.1 kHz, and physical reconnect,
+default-device change, and sleep/resume cases remain compatibility targets or
+unqualified cases; they are not v1.12.0 release verification claims or
+mandatory gates. If those physical lifecycle cases are run, they still require
+explicit operator observation and measured events. Coverage is never inferred
+from a baseline and does not imply every device or combination was tested.
 Publication is a third, explicit promotion step:
 it downloads those same bytes and both qualification reports, verifies every
 sidecar and report against the archive SHA-256, and uploads without rebuilding.
@@ -198,14 +200,17 @@ Candidate and promotion:
 6. On a temporary or standing self-hosted runner labelled `self-hosted`,
    `windows`, `x64`, and `audioforge-hardware`, run `Qualify release candidate
    on hardware` with the candidate run ID and digest plus explicitly selected
-   health/correlation routes. Run the automated `baseline` and
-   `model_configuration_change` scenarios, plus operator-observed physical
-   lifecycle scenarios across the supported dimensions. The
-   workflow refuses a health duration below 1,800 seconds and uploads a
-   privacy-safe digest-bound report.
+   health/correlation routes for the release-qualified USB microphone and
+   virtual-route cases at observed 48 kHz. Run the automated `baseline` and
+   `model_configuration_change` scenarios, including model switching and
+   restoration. The workflow refuses a health duration below 1,800 seconds and
+   uploads a privacy-safe digest-bound report. Windows 10, analog or built-in
+   input, 44.1 kHz, and physical lifecycle cases may be collected as
+   compatibility evidence but are not mandatory v1.12.0 gates.
 7. Run `Assemble release hardware gate` with all qualification run IDs. It checks
    the producing workflows, revisions, source-report hashes, and required
-   OS/device/rate/lifecycle coverage. An incomplete matrix blocks publication.
+   release-qualified OS/device/rate/scenario coverage. An incomplete matrix
+   blocks publication.
 8. Run `Promote release candidate` with the candidate workflow run ID,
    hardware-gate workflow run ID, release tag, and approved archive SHA-256.
    Promotion downloads the candidate plus both qualification reports, verifies
@@ -229,7 +234,8 @@ Candidate and promotion:
   source provenance. Reduced builds without models are not a supported edition.
 - `python/tools/package_smoke.py` verifies exact bundled DLL/model/native-extension and license-notice presence, rejects duplicate top-level native-extension payloads, and rejects a stale bundle-version manifest.
 - `python/tools/prune_bundle.py` must not remove dependency `.dist-info` directories; license/metadata retention is part of the release gate. It may remove duplicate native-extension payloads only when the canonical `_internal/mic_eq/mic_eq_core*.pyd` copy is present.
-- AudioForge supports Windows 10 and Windows 11 and relies on the system UCRT.
+- AudioForge targets Windows 10 and Windows 11 for compatibility and relies on
+  the system UCRT.
   Microsoft documents the UCRT as an operating-system component on Windows 10
   and later, states that the system copy is always used on Windows 10/11, and
   does not recommend local deployment for performance and security reasons:

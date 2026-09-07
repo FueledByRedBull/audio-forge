@@ -183,7 +183,8 @@ def aggregate(
         "limitations": [
             "Coverage is release-artifact and hardware specific; source-tree simulations do not satisfy this gate.",
             "Promotion requires the digest-bound baseline plus the required OS, device, sample-rate, and lifecycle dimensions listed in coverage.required.",
-            "Optional non-baseline lifecycle cases combine automated health metrics with an explicit operator-observed event.",
+            "Windows 10, built-in input, 44.1 kHz and physical lifecycle recovery are not release-qualified unless corresponding cases are included.",
+            "Physical lifecycle cases require automated health metrics and an explicit operator-observed event.",
             "No device names or endpoint IDs are retained in case or matrix reports.",
         ],
     }

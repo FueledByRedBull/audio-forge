@@ -77,11 +77,16 @@ Operational tools:
 
 ## Status
 
-AudioForge targets Windows 10 (1809 or later) and Windows 11 x64. Hosted Windows CI validates software and
-packaging; it does not qualify every microphone, driver, virtual route, or OS
-version. Exact-artifact hardware reports define the tested coverage. See the
-[release workflow](RELEASING.md#automated-workflow)
-for the qualification gates.
+AudioForge's compatibility targets are Windows 10 (1809 or later) and Windows
+11 x64. For v1.12.0, the release-qualified hardware scope is Windows 11 x64
+with a USB microphone and virtual routes at the observed 48 kHz, an automated
+baseline of at least 1,800 seconds, and model switching/restoration. Windows
+10, analog or built-in input, 44.1 kHz, and physical reconnect, default-device
+change, and sleep/resume cases remain unqualified for this release.
+Hosted Windows CI validates software and packaging. Exact-artifact hardware
+reports define the tested coverage and do not imply every device was tested.
+See the [release workflow](RELEASING.md#automated-workflow) for the
+qualification gates.
 Linux and macOS builds are not supported.
 
 DeepFilterNet support is intentionally opt-in for source runs. Packaged builds register and enable verified bundled assets during application bootstrap; RNNoise remains the safe default when those assets are absent. External DLL/model paths are ignored unless `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` is explicitly set.
@@ -241,7 +246,7 @@ Packaging script behavior:
 - Writes `_internal/audioforge-build.json`; package smoke rejects a bundle whose version differs from the source tree.
 - Prunes unused Qt payload, duplicate native-extension payload, and app-local
   UCRT/API-set files with `python/tools/prune_bundle.py` while retaining
-  dependency metadata and licenses. AudioForge supports Windows 10/11 and
+  dependency metadata and licenses. AudioForge targets Windows 10/11 and
   relies on the operating system UCRT, which Windows always uses on those
   versions even if a local copy is present.
 - The release profile strips native symbols, and packaging excludes only unused

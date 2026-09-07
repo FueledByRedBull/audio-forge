@@ -820,42 +820,18 @@ def _matrix_case(
 def _complete_matrix_cases(archive_hash: str) -> list[dict]:
     return [
         _matrix_case(
-            case_id="win10-built-in-baseline",
-            os_release="10",
-            device_class="built_in",
-            sample_rate=44_100,
+            case_id="win11-usb-baseline",
+            os_release="11",
+            device_class="usb",
+            sample_rate=48_000,
             scenario="baseline",
             archive_sha256=archive_hash,
         ),
         _matrix_case(
-            case_id="win11-usb-reconnect",
-            os_release="11",
-            device_class="usb",
-            sample_rate=48_000,
-            scenario="device_reconnect",
-            archive_sha256=archive_hash,
-        ),
-        _matrix_case(
-            case_id="win11-virtual-default-device",
+            case_id="win11-virtual-model-configuration",
             os_release="11",
             device_class="virtual",
-            sample_rate=44_100,
-            scenario="default_device_change",
-            archive_sha256=archive_hash,
-        ),
-        _matrix_case(
-            case_id="win10-built-in-sleep-resume",
-            os_release="10",
-            device_class="built_in",
             sample_rate=48_000,
-            scenario="sleep_resume",
-            archive_sha256=archive_hash,
-        ),
-        _matrix_case(
-            case_id="win11-usb-model-configuration",
-            os_release="11",
-            device_class="usb",
-            sample_rate=44_100,
             scenario="model_configuration_change",
             archive_sha256=archive_hash,
         ),
@@ -879,6 +855,40 @@ def test_hardware_matrix_accepts_required_risk_based_coverage(tmp_path) -> None:
     assert result["passed"] is True
     assert result["coverage"]["missing"]["automated_baseline_cases"] == 0
     assert result["coverage"]["missing"]["scenarios"] == []
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "replacement", "missing_key"),
+    [
+        ("machine", "release", "10", "os_releases"),
+        ("case", "device_class", "usb", "device_classes"),
+        ("case", "nominal_sample_rate_hz", 44_100, "nominal_sample_rates_hz"),
+        ("case", "scenario", "baseline", "scenarios"),
+    ],
+)
+def test_release_scope_still_requires_each_qualified_dimension(
+    tmp_path, section, field, replacement, missing_key
+) -> None:
+    archive_hash = "e" * 64
+    paths = []
+    for index, case in enumerate(_complete_matrix_cases(archive_hash)):
+        case[section][field] = replacement
+        if field == "nominal_sample_rate_hz":
+            case["case"]["observed_input_sample_rate_hz"] = replacement
+        if field == "scenario":
+            case["case"]["evidence_kind"] = "automated"
+        path = tmp_path / f"case-{index}.json"
+        path.write_text(json.dumps(case), encoding="utf-8")
+        paths.append(path)
+    result = MATRIX_TOOL.aggregate(
+        paths,
+        expected_archive_sha256=archive_hash,
+        output=tmp_path / "matrix.json",
+        allow_incomplete=True,
+    )
+    assert result["errors"] == []
+    assert result["passed"] is False
+    assert result["coverage"]["missing"][missing_key]
 
 
 def test_hardware_matrix_requires_an_automated_baseline_without_fabrication(
@@ -909,7 +919,7 @@ def test_hardware_matrix_requires_an_automated_baseline_without_fabrication(
 
     assert result["passed"] is False
     assert result["coverage"]["missing"]["automated_baseline_cases"] == 1
-    assert result["coverage"]["missing"]["device_classes"] == ["built_in", "virtual"]
+    assert result["coverage"]["missing"]["device_classes"] == ["virtual"]
     assert "model_configuration_change" in result["coverage"]["missing"]["scenarios"]
 
 

@@ -35,5 +35,11 @@ Published checksum, manifest, metadata, and qualification files describe the
 exact downloadable artifacts.
 The release workflow validates a candidate once and promotes those same bytes.
 
-Windows 10/11 are the intended product targets. Hosted software checks do not
-replace physical-device, reconnect, sleep/resume, or sustained audio qualification.
+Windows 10/11 remain compatibility targets. For v1.12.0, release qualification
+covers Windows 11 x64 with a USB microphone and virtual routes at the observed
+48 kHz, an automated baseline of at least 1,800 seconds, and model
+switching/restoration. Windows 10, analog or built-in input, 44.1 kHz, and
+physical reconnect, default-device change, and sleep/resume cases remain
+unqualified for this release. Hosted software checks do not replace
+the exact-artifact hardware evidence, and the qualification records do not
+imply every device was tested.

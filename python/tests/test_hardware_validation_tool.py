@@ -528,9 +528,12 @@ def test_lifecycle_settle_rejects_diagnostic_counter_growth() -> None:
     )
 
 
-@pytest.mark.parametrize("new_underruns", [0, 1])
+@pytest.mark.parametrize(
+    ("new_underruns", "startup_underruns"),
+    [(0, None), (1, None), (3, (1, 3))],
+)
 def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
-    monkeypatch, tmp_path, new_underruns
+    monkeypatch, tmp_path, new_underruns, startup_underruns
 ) -> None:
     input_device = SimpleNamespace(
         name="Input", endpoint_id="input-endpoint", is_default=True, sample_rate=44_100
@@ -540,14 +543,16 @@ def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
     )
     environment_seen: list[str | None] = []
 
-    def diagnostics(model: str, frames: int) -> dict[str, object]:
+    def diagnostics(
+        model: str, frames: int, output_underruns: int
+    ) -> dict[str, object]:
         result: dict[str, Any] = {
             key: 0 for key in HEALTH_TOOL._ZERO_REQUIRED_DIAGNOSTICS
         }
         result.update(
             {
                 "input_sample_rate": 48_000,
-                "output_underrun_total": new_underruns if model == "deepfilter" else 0,
+                "output_underrun_total": output_underruns,
                 "noise_backend_available": True,
                 "noise_backend_failed": False,
                 "last_stream_error": None,
@@ -565,6 +570,7 @@ def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
         def __init__(self) -> None:
             self.model = "rnnoise"
             self.deepfilter_reads = 0
+            self.startup_reads = 0
 
         def start(self, _input: str, _output: str) -> None:
             return None
@@ -587,8 +593,20 @@ def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
         def get_runtime_diagnostics(self) -> dict[str, object]:
             if self.model == "deepfilter":
                 self.deepfilter_reads += 1
-                return diagnostics("deepfilter", max(0, self.deepfilter_reads - 1))
-            return diagnostics("rnnoise", 0)
+                return diagnostics(
+                    "deepfilter",
+                    max(0, self.deepfilter_reads - 1),
+                    new_underruns,
+                )
+            self.startup_reads += 1
+            startup_underrun = (
+                startup_underruns[
+                    min(self.startup_reads - 1, len(startup_underruns) - 1)
+                ]
+                if startup_underruns
+                else 0
+            )
+            return diagnostics("rnnoise", 0, startup_underrun)
 
         def service_recovery(self) -> None:
             return None
@@ -615,6 +633,7 @@ def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
     monkeypatch.delenv("AUDIOFORGE_ENABLE_DEEPFILTER", raising=False)
     monkeypatch.setattr(TOOL, "_runtime_api", runtime_api)
     monkeypatch.setattr(TOOL, "LIFECYCLE_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(TOOL, "LIFECYCLE_STARTUP_STABILITY_SECONDS", 0.003)
     result = TOOL._run_lifecycle_probe(
         scenario="model_configuration_change",
         health_input="Input",
@@ -624,14 +643,21 @@ def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
         settle_seconds=0.0,
     )
 
-    if new_underruns:
+    if startup_underruns is None and new_underruns:
         assert result["passed"] is False
         assert result["event"]["reason"] == "model_switch_not_observed"
+        assert result["event"]["last_diagnostics"]["output_underrun_total"] == 1
+        diagnostic_failures = result["event"]["last_failure_predicates"][
+            "diagnostic_failures"
+        ]
+        assert "output_underrun_total changed" in diagnostic_failures
         return
 
     assert result["passed"] is True, json.dumps(result, indent=2)
     assert result["observed_input_sample_rate_hz"] == 48_000
     assert result["diagnostics"]["before"]["input_sample_rate"] == 48_000
+    if startup_underruns:
+        assert result["diagnostics"]["before"]["output_underrun_total"] == 3
     assert result["event"]["alternate_inference_frames"] == 1
     assert result["event"]["latency_samples_before"] == 480
     assert result["event"]["latency_samples_alternate"] == 1_440

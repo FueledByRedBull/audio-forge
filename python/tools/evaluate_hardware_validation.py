@@ -53,6 +53,7 @@ EVIDENCE_KINDS = ("automated", "operator_observed")
 LIFECYCLE_PROBE_TIMEOUT_SECONDS = 120.0
 LIFECYCLE_SETTLE_SECONDS = 5.0
 LIFECYCLE_POLL_SECONDS = 0.5
+LIFECYCLE_STARTUP_STABILITY_SECONDS = 1.0
 CALLBACK_UNKNOWN_AGE_MS = 1 << 63
 POWER_EVENT_IDS = {
     ("microsoft-windows-kernel-power", 42): ("sleep", "s3"),
@@ -532,9 +533,11 @@ def _diagnostic_summary(diagnostics: dict[str, Any]) -> dict[str, Any]:
         "input_sample_rate",
         "noise_backend_available",
         "noise_backend_failed",
+        "suppressor_latency_samples",
         "output_underrun_total",
         "noise_model",
         "suppressor_successful_inference_frames",
+        "output_true_peak_db",
     )
     summary = {key: diagnostics.get(key) for key in keys if key in diagnostics}
     summary["last_stream_error_present"] = bool(diagnostics.get("last_stream_error"))
@@ -904,18 +907,35 @@ def _run_lifecycle_probe_impl(
         processor.start(health_input, health_output)
         before_diagnostics: dict[str, Any] | None = None
         warmup_deadline = min(deadline, time.monotonic() + 10.0)
+        startup_previous: dict[str, Any] | None = None
+        startup_stable_since: float | None = None
         while time.monotonic() < warmup_deadline:
             try:
                 current = dict(processor.get_runtime_diagnostics())
+                startup_failures = _diagnostic_failures(current, current)
+                if startup_previous is not None:
+                    startup_failures.extend(
+                        _stable_diagnostic_failures(startup_previous, current)
+                    )
+                startup_previous = current
                 if (
                     route_ok()
                     and _callbacks_are_healthy(processor)
-                    and not _diagnostic_failures(current, current)
+                    and not startup_failures
                 ):
-                    before_diagnostics = current
-                    break
+                    if startup_stable_since is None:
+                        startup_stable_since = time.monotonic()
+                    elif (
+                        time.monotonic() - startup_stable_since
+                        >= LIFECYCLE_STARTUP_STABILITY_SECONDS
+                    ):
+                        before_diagnostics = current
+                        break
+                else:
+                    startup_stable_since = None
             except Exception:
-                pass
+                startup_previous = None
+                startup_stable_since = None
             time.sleep(LIFECYCLE_POLL_SECONDS)
         if before_diagnostics is None:
             evidence["event"]["reason"] = "initial_runtime_not_healthy"
@@ -948,6 +968,8 @@ def _run_lifecycle_probe_impl(
                 switched = True
                 alternate_frames: int | None = None
                 switched_diagnostics: dict[str, Any] | None = None
+                last_switch_diagnostics: dict[str, Any] | None = None
+                last_switch_failure_predicates: dict[str, Any] = {}
                 switch_deadline = min(deadline, time.monotonic() + 15.0)
                 while time.monotonic() < switch_deadline:
                     current = dict(processor.get_runtime_diagnostics())
@@ -958,21 +980,43 @@ def _run_lifecycle_probe_impl(
                         and math.isfinite(float(frames))
                     ):
                         alternate_frames = int(frames)
+                    processor_model = str(processor.get_noise_model())
+                    model_matches = processor_model == alternate
+                    model_diagnostics_healthy = _model_diagnostics_healthy(
+                        current,
+                        alternate,
+                        minimum_inference_frames=alternate_frames or 0,
+                    )
+                    callbacks_healthy = _callbacks_are_healthy(processor)
+                    diagnostic_failures = _diagnostic_failures(
+                        before_diagnostics, current
+                    )
+                    last_switch_diagnostics = current
+                    last_switch_failure_predicates = {
+                        "processor_model": processor_model,
+                        "expected_model": alternate,
+                        "model_matches": model_matches,
+                        "model_diagnostics_healthy": model_diagnostics_healthy,
+                        "callbacks_healthy": callbacks_healthy,
+                        "diagnostic_failures": diagnostic_failures,
+                    }
                     if (
-                        processor.get_noise_model() == alternate
-                        and _model_diagnostics_healthy(
-                            current,
-                            alternate,
-                            minimum_inference_frames=alternate_frames or 0,
-                        )
-                        and _callbacks_are_healthy(processor)
-                        and not _diagnostic_failures(before_diagnostics, current)
+                        model_matches
+                        and model_diagnostics_healthy
+                        and callbacks_healthy
+                        and not diagnostic_failures
                     ):
                         switched_diagnostics = current
                         break
                     time.sleep(LIFECYCLE_POLL_SECONDS)
                 if switched_diagnostics is None:
                     evidence["event"]["reason"] = "model_switch_not_observed"
+                    evidence["event"]["last_diagnostics"] = _diagnostic_summary(
+                        last_switch_diagnostics or {}
+                    )
+                    evidence["event"]["last_failure_predicates"] = (
+                        last_switch_failure_predicates
+                    )
                     return evidence
                 if not processor.set_noise_model(original):
                     evidence["event"]["reason"] = "model_restore_failed"
@@ -989,23 +1033,47 @@ def _run_lifecycle_probe_impl(
                     original_inference_floor = int(original_frames)
                 restore_deadline = min(deadline, time.monotonic() + 15.0)
                 restored_diagnostics: dict[str, Any] | None = None
+                last_restore_diagnostics: dict[str, Any] | None = None
+                last_restore_failure_predicates: dict[str, Any] = {}
                 while time.monotonic() < restore_deadline:
                     current = dict(processor.get_runtime_diagnostics())
+                    processor_model = str(processor.get_noise_model())
+                    model_matches = processor_model == original
+                    model_diagnostics_healthy = _model_diagnostics_healthy(
+                        current,
+                        original,
+                        minimum_inference_frames=original_inference_floor,
+                    )
+                    callbacks_healthy = _callbacks_are_healthy(processor)
+                    diagnostic_failures = _diagnostic_failures(
+                        before_diagnostics, current
+                    )
+                    last_restore_diagnostics = current
+                    last_restore_failure_predicates = {
+                        "processor_model": processor_model,
+                        "expected_model": original,
+                        "model_matches": model_matches,
+                        "model_diagnostics_healthy": model_diagnostics_healthy,
+                        "callbacks_healthy": callbacks_healthy,
+                        "diagnostic_failures": diagnostic_failures,
+                    }
                     if (
-                        processor.get_noise_model() == original
-                        and _model_diagnostics_healthy(
-                            current,
-                            original,
-                            minimum_inference_frames=original_inference_floor,
-                        )
-                        and _callbacks_are_healthy(processor)
-                        and not _diagnostic_failures(before_diagnostics, current)
+                        model_matches
+                        and model_diagnostics_healthy
+                        and callbacks_healthy
+                        and not diagnostic_failures
                     ):
                         restored_diagnostics = current
                         break
                     time.sleep(LIFECYCLE_POLL_SECONDS)
                 if restored_diagnostics is None:
                     evidence["event"]["reason"] = "model_restore_not_observed"
+                    evidence["event"]["last_diagnostics"] = _diagnostic_summary(
+                        last_restore_diagnostics or {}
+                    )
+                    evidence["event"]["last_failure_predicates"] = (
+                        last_restore_failure_predicates
+                    )
                     return evidence
                 recovered, after, recovery = settle(before_diagnostics)
                 evidence["event"] = {

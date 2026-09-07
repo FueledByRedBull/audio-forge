@@ -789,6 +789,136 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
         qapp.processEvents()
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("eq_settings", {"band_freqs": [60.0]}, "candidate EQ bands are incomplete"),
+        ("limiter_settings", {}, "candidate limiter settings are incomplete"),
+    ],
+)
+def test_incomplete_candidate_offers_retake_instead_of_apply(
+    qapp, monkeypatch, field, value, reason
+):
+    from unittest.mock import Mock
+
+    from mic_eq.config import AppConfig
+    from mic_eq.ui.main_window import MainWindow
+    from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    for name in ("list_presets", "list_input_devices", "list_output_devices"):
+        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    owner = MainWindow()
+    owner.meter_timer.stop()
+    owner.diagnostics_timer.stop()
+    dialog = VoiceSetupDialog(parent=owner)
+    limiter = {
+        "enabled": False,
+        "ceiling_db": -2.5,
+        "release_ms": 175.0,
+        "careful_output_enabled": False,
+    }
+    result = {
+        "diagnostics": {
+            "apply_recommended": False,
+            "uncertainty_reasons": ["capture confidence is weak"],
+            "setup_confidence": 0.62,
+            "capture_confidence": 0.7,
+            "recommendation_uncertainty": 0.4,
+            "gate_mode_label": "VAD Assisted",
+        },
+        "gate_settings": owner.gate_panel.get_settings(),
+        "deesser_settings": owner.deesser_panel.get_settings(),
+        "compressor_settings": owner.compressor_panel.get_compressor_settings(
+            include_calibration=True
+        ),
+        "limiter_settings": limiter,
+        "eq_settings": {
+            "band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
+            "band_gains": [1.0] * 10,
+            "band_qs": [1.41] * 10,
+        },
+    }
+    result[field] = value
+    dialog.noise_audio = np.zeros(16, dtype=np.float32)
+    try:
+        dialog._on_analysis_complete(result)
+        assert dialog.setup_state == "noise_ready"
+        assert dialog.start_button.text() == "Record Voice Again"
+        assert not dialog.retake_btn.isHidden()
+        assert dialog.warning_label.text().startswith("Recommendations are incomplete:")
+        assert reason in dialog.warning_label.text()
+        assert "Apply" not in dialog.start_button.text()
+
+        show_error = Mock()
+        monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.critical", show_error)
+        dialog._apply_setup()
+        show_error.assert_called_once()
+        assert show_error.call_args.args[1] == "Incomplete Voice Setup"
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+        owner.close()
+        owner.deleteLater()
+        qapp.processEvents()
+
+
+def test_complete_advisory_candidate_still_offers_apply(qapp, monkeypatch):
+    from mic_eq.config import AppConfig
+    from mic_eq.ui.main_window import MainWindow
+    from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    for name in ("list_presets", "list_input_devices", "list_output_devices"):
+        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    owner = MainWindow()
+    owner.meter_timer.stop()
+    owner.diagnostics_timer.stop()
+    dialog = VoiceSetupDialog(parent=owner)
+    try:
+        dialog._on_analysis_complete(
+            {
+                "diagnostics": {
+                    "apply_recommended": False,
+                    "uncertainty_reasons": ["capture confidence is weak"],
+                    "setup_confidence": 0.62,
+                    "capture_confidence": 0.7,
+                    "recommendation_uncertainty": 0.4,
+                    "gate_mode_label": "VAD Assisted",
+                },
+                "gate_settings": owner.gate_panel.get_settings(),
+                "deesser_settings": owner.deesser_panel.get_settings(),
+                "compressor_settings": owner.compressor_panel.get_compressor_settings(
+                    include_calibration=True
+                ),
+                "limiter_settings": {
+                    "enabled": False,
+                    "ceiling_db": -2.5,
+                    "release_ms": 175.0,
+                    "careful_output_enabled": False,
+                },
+                "eq_settings": {
+                    "band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
+                    "band_gains": [1.0] * 10,
+                    "band_qs": [1.41] * 10,
+                },
+            }
+        )
+        assert dialog.setup_state == "completed"
+        assert dialog.start_button.text() == "Apply Voice Setup"
+        assert not dialog.curve_combo.isEnabled()
+        assert not dialog.dynamics_combo.isEnabled()
+        assert dialog.warning_label.text().startswith("Advisory recommendations only:")
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+        owner.close()
+        owner.deleteLater()
+        qapp.processEvents()
+
+
 def test_expanded_compressor_search_handles_no_safe_threshold_only_candidate(
     monkeypatch,
 ):

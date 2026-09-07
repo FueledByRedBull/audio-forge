@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 from ..analysis.noise_reference import CaptureMetadata, analyze_noise_reference
 from ..analysis.cancellation import AnalysisCancelled
 from ..analysis.voice_setup import (
+    _normalise_limiter_settings,
     analyze_voice_setup,
     validate_voice_setup_verification,
 )
@@ -71,6 +72,36 @@ logger = logging.getLogger(__name__)
 
 NOISE_RECORDING_DURATION = 2.0
 VOICE_RECORDING_DURATION = 10.0
+
+
+def _candidate_eq_settings_error(eq_settings: Any) -> str | None:
+    if not isinstance(eq_settings, Mapping):
+        return "candidate EQ settings are missing"
+    if any(
+        key not in eq_settings
+        or not isinstance(eq_settings[key], (list, tuple))
+        or len(eq_settings[key]) != len(EQ_FREQUENCIES)
+        for key in ("band_freqs", "band_gains", "band_qs")
+    ):
+        return "candidate EQ bands are incomplete"
+    return None
+
+
+def _candidate_settings_error(
+    setup_result: Mapping[str, Any] | None,
+) -> str | None:
+    """Return a user-facing reason when a candidate cannot be applied."""
+    if not isinstance(setup_result, Mapping):
+        return "voice setup result is missing"
+    try:
+        limiter_settings = _normalise_limiter_settings(
+            setup_result.get("limiter_settings"), require_complete=True
+        )
+    except ValueError:
+        return "candidate limiter settings are invalid"
+    if limiter_settings is None:
+        return "candidate limiter settings are incomplete"
+    return _candidate_eq_settings_error(setup_result.get("eq_settings"))
 
 
 class VoiceSetupWorker(QThread):
@@ -860,15 +891,35 @@ class VoiceSetupDialog(QDialog):
         if self._close_requested:
             return
         self.setup_result = setup_result
-        self.curve_group.setEnabled(False)
-        self.dynamics_group.setEnabled(False)
-        self.setup_state = "completed"
-        self.start_button.setText("Apply Voice Setup")
+        candidate_error = _candidate_settings_error(setup_result)
+        candidate_complete = candidate_error is None
+        self.curve_group.setEnabled(not candidate_complete)
+        self.dynamics_group.setEnabled(not candidate_complete)
+        self.setup_state = (
+            "completed"
+            if candidate_complete
+            else ("noise_ready" if self.noise_audio is not None else "idle")
+        )
+        self.start_button.setText(
+            "Apply Voice Setup"
+            if candidate_complete
+            else ("Record Voice Again" if self.noise_audio is not None else "Start Voice Setup")
+        )
         self.start_button.setEnabled(True)
         self.curve_combo.setEnabled(True)
-        self.phase_label.setText("Recommendations ready")
+        if not candidate_complete:
+            self.retake_btn.setVisible(True)
+        self.phase_label.setText(
+            "Recommendations ready" if candidate_complete else "Recommendations incomplete"
+        )
         diagnostics = setup_result["diagnostics"]
-        if diagnostics.get("apply_recommended", False):
+        if not candidate_complete:
+            self.warning_label.setText(
+                "Recommendations are incomplete: "
+                f"{candidate_error}. Record the voice passage again to retry."
+            )
+            state = "warn"
+        elif diagnostics.get("apply_recommended", False):
             self.warning_label.setText("Review the validated settings and apply them.")
             state = "ok"
         else:
@@ -897,7 +948,9 @@ class VoiceSetupDialog(QDialog):
         self.overall_label.setStyleSheet(status_chip_style(state))
 
         eq_settings = setup_result.get("eq_settings")
-        if eq_settings is not None:
+        eq_error = _candidate_eq_settings_error(eq_settings)
+        if eq_error is None:
+            assert isinstance(eq_settings, Mapping)
             self.eq_label.setText(
                 "EQ: "
                 f"{_format_percent(eq_settings.get('analysis_confidence', 0.0))} | "
@@ -905,8 +958,9 @@ class VoiceSetupDialog(QDialog):
             )
             self.eq_label.setStyleSheet(status_chip_style("ok"))
         else:
-            eq_error = setup_result.get("eq_error") or "Skipped"
-            self.eq_label.setText(f"EQ: skipped | {eq_error}")
+            self.eq_label.setText(
+                f"EQ: skipped | {setup_result.get('eq_error') or eq_error}"
+            )
             self.eq_label.setStyleSheet(status_chip_style("warn"))
 
         gate = setup_result["gate_settings"]
@@ -946,6 +1000,16 @@ class VoiceSetupDialog(QDialog):
         parent = _find_eq_panel_owner(self.parent())
         if not parent or self.setup_result is None:
             QMessageBox.critical(self, "Error", "Could not apply voice setup.")
+            return
+
+        candidate_error = _candidate_settings_error(self.setup_result)
+        if candidate_error is not None:
+            QMessageBox.critical(
+                self,
+                "Incomplete Voice Setup",
+                "The voice setup recommendations are incomplete ("
+                f"{candidate_error}). Record the voice passage again; no changes were applied.",
+            )
             return
 
         diagnostics = self.setup_result.get("diagnostics") or {}
@@ -1006,19 +1070,15 @@ class VoiceSetupDialog(QDialog):
     def _apply_candidate_panels(self, parent: Any) -> None:
         if self.setup_result is None:
             raise ValueError("voice setup result is missing")
+        candidate_error = _candidate_settings_error(self.setup_result)
+        if candidate_error is not None:
+            raise ValueError(candidate_error)
         limiter_settings = self.setup_result.get("limiter_settings")
-        if not isinstance(limiter_settings, Mapping):
-            raise ValueError("candidate limiter settings are missing")
         eq_settings = self.setup_result.get("eq_settings")
-        if not isinstance(eq_settings, Mapping):
-            raise ValueError("candidate EQ settings are missing")
-        if any(
-            key not in eq_settings
-            or not isinstance(eq_settings[key], (list, tuple))
-            or len(eq_settings[key]) != len(EQ_FREQUENCIES)
-            for key in ("band_freqs", "band_gains", "band_qs")
+        if not isinstance(limiter_settings, Mapping) or not isinstance(
+            eq_settings, Mapping
         ):
-            raise ValueError("candidate EQ bands are incomplete")
+            raise ValueError("candidate settings are incomplete")
         parent.gate_panel.set_settings(self.setup_result["gate_settings"])
         parent.deesser_panel.set_settings(self.setup_result["deesser_settings"])
         parent.compressor_panel.set_compressor_settings(

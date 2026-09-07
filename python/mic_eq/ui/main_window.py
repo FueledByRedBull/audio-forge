@@ -1253,17 +1253,13 @@ class MainWindow(QMainWindow):
         # Startup Preset submenu
         startup_menu = options_menu.addMenu("Startup &Preset...")
         assert startup_menu is not None
-        custom_presets = list_presets()
-        custom_names = tuple(name for name, _filepath in custom_presets)
-        startup_preset_id = _normalize_startup_preset_id(
-            self.config.startup_preset, custom_names
-        )
+        self._startup_preset_menu = startup_menu
+        self._startup_custom_actions: list[QAction] = []
 
         # "Last Used" option (default, checked if startup_preset is empty)
         last_used_action = QAction("Last Used", self)
         last_used_action.setCheckable(True)
         last_used_action.setData("")
-        last_used_action.setChecked(startup_preset_id == "")
         last_used_action.triggered.connect(lambda: self._set_startup_preset(""))
         startup_menu.addAction(last_used_action)
         self._last_used_action = last_used_action  # Store for updating checked state
@@ -1277,7 +1273,6 @@ class MainWindow(QMainWindow):
             action.setCheckable(True)
             preset_id = _startup_builtin_id(key)
             action.setData(preset_id)
-            action.setChecked(startup_preset_id == preset_id)
             action.triggered.connect(
                 lambda checked, item_id=preset_id: self._set_startup_preset(item_id)
             )
@@ -1285,24 +1280,17 @@ class MainWindow(QMainWindow):
 
         # Separator
         startup_menu.addSeparator()
-
-        # Custom presets
-        for name, filepath in custom_presets:
-            action = QAction(name, self)
-            action.setCheckable(True)
-            preset_id = _startup_custom_id(name)
-            action.setData(preset_id)
-            action.setChecked(startup_preset_id == preset_id)
-            action.triggered.connect(
-                lambda checked, item_id=preset_id: self._set_startup_preset(item_id)
-            )
-            startup_menu.addAction(action)
+        startup_menu.aboutToShow.connect(self._refresh_startup_preset_menu)
+        self._refresh_startup_preset_menu()
 
         options_menu.addSeparator()
 
         device_preset_menu = options_menu.addMenu("Preset for Current &Route")
         assert device_preset_menu is not None
+        self._device_preset_menu = device_preset_menu
         self._device_preset_actions: dict[str, QAction] = {}
+        self._device_custom_actions: list[QAction] = []
+        self._device_custom_separator: QAction | None = None
 
         self.auto_apply_device_presets_action = QAction(
             "Automatically Apply Route Presets", self
@@ -1335,21 +1323,8 @@ class MainWindow(QMainWindow):
             device_preset_menu.addAction(action)
             self._device_preset_actions[preset_id] = action
 
-        if custom_presets:
-            device_preset_menu.addSeparator()
-        for name, filepath in custom_presets:
-            preset_id = _startup_custom_id(filepath.name)
-            action = QAction(name, self)
-            action.setCheckable(True)
-            action.triggered.connect(
-                lambda _checked, item_id=preset_id: self._bind_current_route_preset(
-                    item_id
-                )
-            )
-            device_preset_menu.addAction(action)
-            self._device_preset_actions[preset_id] = action
-
-        device_preset_menu.aboutToShow.connect(self._update_device_preset_menu)
+        device_preset_menu.aboutToShow.connect(self._refresh_device_preset_menu)
+        self._refresh_device_preset_menu()
 
         options_menu.addSeparator()
 
@@ -1388,27 +1363,39 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar.showMessage("Startup preset set to Last Used", 5000)
 
-        # Update checked states of all startup preset actions
-        # Get the Options menu
-        menubar = self.menuBar()
-        assert menubar is not None
-        for action in menubar.actions():
-            options_menu = action.menu()
-            if options_menu is not None and options_menu.title() == "&Options":
-                for menu_action in options_menu.actions():
-                    startup_menu = menu_action.menu()
-                    if (
-                        startup_menu is not None
-                        and startup_menu.title() == "Startup &Preset..."
-                    ):
-                        # Update checked state for all actions in the startup menu
-                        for preset_action in startup_menu.actions():
-                            if preset_action.isCheckable():
-                                preset_action.setChecked(
-                                    str(preset_action.data() or "") == preset_id
-                                )
-                        break
-                break
+        self._update_startup_preset_menu(preset_id)
+
+    def _update_startup_preset_menu(self, preset_id: str | None = None) -> None:
+        selected_id = (
+            self.config.startup_preset if preset_id is None else preset_id
+        )
+        for action in self._startup_preset_menu.actions():
+            if action.isCheckable():
+                action.setChecked(str(action.data() or "") == selected_id)
+
+    def _refresh_startup_preset_menu(self) -> None:
+        custom_presets = list_presets()
+        for action in self._startup_custom_actions:
+            self._startup_preset_menu.removeAction(action)
+            action.deleteLater()
+        self._startup_custom_actions.clear()
+
+        custom_names = tuple(name for name, _filepath in custom_presets)
+        startup_preset_id = _normalize_startup_preset_id(
+            self.config.startup_preset, custom_names
+        )
+        for name, _filepath in custom_presets:
+            action = QAction(name, self)
+            action.setCheckable(True)
+            preset_id = _startup_custom_id(name)
+            action.setData(preset_id)
+            action.triggered.connect(
+                lambda _checked, item_id=preset_id: self._set_startup_preset(item_id)
+            )
+            self._startup_preset_menu.addAction(action)
+            self._startup_custom_actions.append(action)
+
+        self._update_startup_preset_menu(startup_preset_id)
 
     def _maybe_show_first_run_setup(self) -> None:
         if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get(
@@ -1470,6 +1457,36 @@ class MainWindow(QMainWindow):
             save_config(self.config)
         self._update_device_preset_menu()
         self.status_bar.showMessage("Cleared the preset binding for this route", 4000)
+
+    def _refresh_device_preset_menu(self) -> None:
+        custom_presets = list_presets()
+        for action in self._device_custom_actions:
+            self._device_preset_menu.removeAction(action)
+            action.deleteLater()
+            self._device_preset_actions.pop(str(action.data() or ""), None)
+        self._device_custom_actions.clear()
+        if self._device_custom_separator is not None:
+            self._device_preset_menu.removeAction(self._device_custom_separator)
+            self._device_custom_separator.deleteLater()
+            self._device_custom_separator = None
+
+        if custom_presets:
+            self._device_custom_separator = self._device_preset_menu.addSeparator()
+        for name, filepath in custom_presets:
+            preset_id = _startup_custom_id(filepath.name)
+            action = QAction(name, self)
+            action.setCheckable(True)
+            action.setData(preset_id)
+            action.triggered.connect(
+                lambda _checked, item_id=preset_id: self._bind_current_route_preset(
+                    item_id
+                )
+            )
+            self._device_preset_menu.addAction(action)
+            self._device_custom_actions.append(action)
+            self._device_preset_actions[preset_id] = action
+
+        self._update_device_preset_menu()
 
     def _update_device_preset_menu(self) -> None:
         route_key = self._current_device_route_key()
@@ -2360,6 +2377,8 @@ class MainWindow(QMainWindow):
             return False
         if recorded:
             self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
+            if source == "ui":
+                self.eq_panel.set_auto_eq_diagnostics(None)
         self._update_history_actions()
         return recorded
 
@@ -2491,16 +2510,22 @@ class MainWindow(QMainWindow):
         preset.version = __version__
         if self._save_preset_file(preset) is None:
             return
+        saved_message = f"Preset '{preset_name}' saved successfully."
+        if not self._last_preset_identity_persisted:
+            saved_message += (
+                " AudioForge could not remember it for the next launch."
+            )
         QMessageBox.information(
             self,
             "Preset Saved",
-            f"Preset '{preset_name}' saved successfully.",
+            saved_message,
         )
 
     def _save_preset_file(self, preset: Preset) -> Path | None:
+        self._last_preset_identity_persisted = True
         try:
             try:
-                return save_preset(preset, overwrite=False)
+                filepath = save_preset(preset, overwrite=False)
             except FileExistsError:
                 confirm_reply = QMessageBox.question(
                     self,
@@ -2511,7 +2536,22 @@ class MainWindow(QMainWindow):
                 )
                 if confirm_reply != QMessageBox.StandardButton.Yes:
                     return None
-                return save_preset(preset, overwrite=True)
+                filepath = save_preset(preset, overwrite=True)
+
+            previous_path = self.current_preset_path
+            previous_last_preset = self.config.last_preset
+            self.config.last_preset = str(filepath)
+            try:
+                persisted = save_config(self.config)
+            except (IOError, OSError, ValueError):
+                persisted = False
+            if not persisted:
+                self.config.last_preset = previous_last_preset
+                self.current_preset_path = previous_path
+                self._last_preset_identity_persisted = False
+                return filepath
+            self.current_preset_path = filepath
+            return filepath
         except (IOError, OSError, ValueError) as exc:
             logger.warning("Preset save failed", exc_info=True)
             QMessageBox.critical(
@@ -2541,9 +2581,15 @@ class MainWindow(QMainWindow):
         preset_name = generate_auto_eq_preset_name(target_curve)
         self._prompt_save_current_preset(
             title="Save Auto-EQ as Preset?",
-            question=f"Save these auto-EQ settings as preset '{preset_name}'?",
+            question=(
+                f"Save these full processing-chain settings from Auto-EQ as preset "
+                f"'{preset_name}'?"
+            ),
             preset_name=preset_name,
-            description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
+            description=(
+                "Complete processing preset with Auto-EQ using "
+                f"the {target_curve.title()} target curve"
+            ),
         )
 
     def on_voice_setup_applied(self, target_curve: str):
@@ -3594,8 +3640,13 @@ class MainWindow(QMainWindow):
         if filepath is None:
             return
         self.status_bar.showMessage(f"Preset saved: {filepath}")
+        saved_message = f"Preset '{name}' saved to:\n{filepath}"
+        if not self._last_preset_identity_persisted:
+            saved_message += (
+                "\n\nAudioForge could not remember it for the next launch."
+            )
         QMessageBox.information(
-            self, "Preset Saved", f"Preset '{name}' saved to:\n{filepath}"
+            self, "Preset Saved", saved_message
         )
 
     def _load_preset(self):

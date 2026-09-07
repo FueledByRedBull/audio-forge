@@ -180,8 +180,10 @@ class CalibrationDialog(QDialog):
         self.setModal(True)  # Modal dialog - blocks main window
 
         # Recording state
-        self.recording_state = "idle"  # idle, recording, completed
+        self.recording_state = "idle"  # idle, recording, analyzing, ready
         self.audio_data: np.ndarray | None = None
+        self.eq_settings: dict | None = None
+        self._candidate_target_metadata: tuple[str, str, str] | None = None
         self.analysis_worker: AnalysisWorker | None = None
         self._analysis_workers: list[AnalysisWorker] = []
         self._analysis_generation = 0
@@ -408,21 +410,22 @@ class CalibrationDialog(QDialog):
                 "Recording",
                 "Please record the full 10 seconds for accurate calibration.",
             )
-        elif self.recording_state == "completed":
-            # Check if analysis was complete and user is applying results
-            if hasattr(self, "eq_settings") and self.eq_settings is not None:
-                # Apply EQ settings to main window
+        elif self.recording_state == "analyzing":
+            return
+        elif self.recording_state == "ready":
+            if self.eq_settings is not None:
                 self._apply_eq_settings()
             else:
-                # Start new recording
                 self._reset_recording_ui()
                 self._start_recording()
 
     def _apply_eq_settings(self):
         """Apply auto-EQ settings to main window and close dialog."""
-        eq_settings = self.eq_settings
-        if eq_settings is None:
+        if self.recording_state != "ready" or self.eq_settings is None:
             return
+        if self._candidate_target_metadata is None:
+            return
+        eq_settings = self.eq_settings
         if DEBUG:
             logger.debug("Applying EQ settings")
 
@@ -433,23 +436,36 @@ class CalibrationDialog(QDialog):
             QMessageBox.critical(self, "Error", "Could not find EQ panel")
             return
 
-        # Build band tuples from eq_settings
+        # Build all band tuples before touching the live EQ state.
         from ..config import EQ_FREQUENCIES as BAND_FREQUENCIES_HZ
 
-        freqs_hz = eq_settings.get("band_freqs", BAND_FREQUENCIES_HZ)
-        if len(freqs_hz) != len(BAND_FREQUENCIES_HZ):
-            freqs_hz = BAND_FREQUENCIES_HZ
-        bands = []
-        for i, freq in enumerate(freqs_hz):
-            gain = eq_settings["band_gains"][i]
-            q = eq_settings["band_qs"][i] if "band_qs" in eq_settings else 1.41
-            bands.append((freq, gain, q))
+        try:
+            freqs_hz = eq_settings.get("band_freqs", BAND_FREQUENCIES_HZ)
+            gains = eq_settings["band_gains"]
+            qs = eq_settings.get("band_qs", [1.41] * len(BAND_FREQUENCIES_HZ))
+            if any(
+                len(values) != len(BAND_FREQUENCIES_HZ)
+                for values in (freqs_hz, gains, qs)
+            ):
+                raise ValueError("Auto-EQ candidate does not contain 10 complete bands")
+            bands = [(freq, gains[i], qs[i]) for i, freq in enumerate(freqs_hz)]
+        except (KeyError, TypeError, ValueError) as error:
+            QMessageBox.critical(self, "Error", f"Invalid Auto-EQ candidate: {error}")
+            return
 
-        # Apply settings to EQ panel
-        parent.eq_panel.apply_auto_eq_results(bands, diagnostics=eq_settings)
+        try:
+            parent.eq_panel.apply_auto_eq_results(bands, diagnostics=eq_settings)
+            parent.eq_panel.set_settings({"enabled": True})
+            parent.eq_panel.set_auto_eq_diagnostics(eq_settings)
+        except Exception as error:
+            logger.warning("Failed to apply Auto-EQ candidate", exc_info=True)
+            QMessageBox.critical(
+                self, "Error", f"Could not apply Auto-EQ settings:\n{error}"
+            )
+            return
 
         # Emit signal for main window to handle preset save and undo button
-        target_curve = self.get_selected_curve()
+        target_curve = self._candidate_target_metadata[0]
         self.auto_eq_applied.emit(target_curve)
 
         if DEBUG:
@@ -465,6 +481,7 @@ class CalibrationDialog(QDialog):
         if DEBUG:
             logger.debug("Start recording clicked")
 
+        self._clear_eq_candidate()
         self._cancel_analysis_workers()
 
         # Get parent's processor (MainWindow has it)
@@ -673,17 +690,17 @@ class CalibrationDialog(QDialog):
             logger.debug("Audio stats - Peak: %.1f dB, RMS: %.1f dB", peak_db, rms_db)
 
         self.audio_data = audio_data
-        self.recording_state = "completed"
+        self._clear_eq_candidate()
+        self.recording_state = "analyzing"
 
         # Update UI
-        self.start_button.setText("Record Again")
-        self.start_button.setEnabled(True)
+        self.start_button.setText("Analyzing...")
+        self.start_button.setEnabled(False)
         self.retake_btn.setVisible(True)
 
-        # Re-enable curve selection
-        self.curve_combo.setEnabled(True)
-        self.target_mode_combo.setEnabled(True)
-        self.smoothing_combo.setEnabled(True)
+        self.curve_combo.setEnabled(False)
+        self.target_mode_combo.setEnabled(False)
+        self.smoothing_combo.setEnabled(False)
 
         # Show completion message
         self.warning_label.setText(
@@ -708,8 +725,7 @@ class CalibrationDialog(QDialog):
     def _start_analysis(self):
         """Start analysis worker."""
         if self.audio_data is None:
-            if DEBUG:
-                logger.debug("No audio data to analyze")
+            self._on_analysis_failed("No audio data to analyze")
             return
 
         self._cancel_analysis_workers()
@@ -718,14 +734,26 @@ class CalibrationDialog(QDialog):
         parent = _find_processor_owner(self.parent())
 
         if not parent:
-            if DEBUG:
-                logger.debug("Could not find processor")
+            self._on_analysis_failed("Could not find processor")
             return
 
-        sample_rate = _processor_sample_rate(parent)
-        target_preset = self.get_selected_curve()
-        target_mode = self.get_selected_target_mode()
-        smoothing_strength = self.get_selected_smoothing_strength()
+        try:
+            sample_rate = _processor_sample_rate(parent)
+            target_preset = self.get_selected_curve()
+            target_mode = self.get_selected_target_mode()
+            smoothing_strength = self.get_selected_smoothing_strength()
+        except Exception as error:
+            self._on_analysis_failed(f"Analysis setup failed: {error}")
+            return
+        self._candidate_target_metadata = (
+            target_preset,
+            target_mode,
+            smoothing_strength,
+        )
+        self.eq_settings = None
+        self.curve_combo.setEnabled(False)
+        self.target_mode_combo.setEnabled(False)
+        self.smoothing_combo.setEnabled(False)
         chain_settings = _chain_settings(parent)
 
         if DEBUG:
@@ -741,14 +769,18 @@ class CalibrationDialog(QDialog):
         # Create and start analysis worker
         generation = self._analysis_generation + 1
         self._analysis_generation = generation
-        worker = AnalysisWorker(
-            self.audio_data,
-            sample_rate,
-            target_preset,
-            target_mode=target_mode,
-            smoothing_strength=smoothing_strength,
-            chain_settings=chain_settings,
-        )
+        try:
+            worker = AnalysisWorker(
+                self.audio_data,
+                sample_rate,
+                target_preset,
+                target_mode=target_mode,
+                smoothing_strength=smoothing_strength,
+                chain_settings=chain_settings,
+            )
+        except Exception as error:
+            self._on_analysis_failed(f"Analysis setup failed: {error}")
+            return
         self.analysis_worker = worker
         self._analysis_workers.append(worker)
         worker.step_progress.connect(
@@ -783,6 +815,8 @@ class CalibrationDialog(QDialog):
         """Handle analysis step progress."""
         if generation is not None and generation != self._analysis_generation:
             return
+        if self.recording_state != "analyzing":
+            return
         if self._close_requested:
             return
         if DEBUG:
@@ -796,7 +830,12 @@ class CalibrationDialog(QDialog):
         """Handle analysis completion."""
         if generation is not None and generation != self._analysis_generation:
             return
+        if self.recording_state != "analyzing":
+            return
         if self._close_requested:
+            return
+        if self._candidate_target_metadata is None:
+            self._on_analysis_failed("Analysis target metadata is unavailable")
             return
         if DEBUG:
             logger.debug("Analysis complete")
@@ -807,7 +846,11 @@ class CalibrationDialog(QDialog):
             logger.debug("Max correction: %.1f dB", round(max_gain, 1))
 
         apply_recommended = bool(eq_settings.get("apply_recommended", True))
-        self.eq_settings = eq_settings if apply_recommended else None
+        if apply_recommended:
+            self.eq_settings = eq_settings
+        else:
+            self._clear_eq_candidate()
+        self.recording_state = "ready"
         if apply_recommended:
             self.warning_label.setText(
                 "Analysis complete! Max correction: "
@@ -923,15 +966,22 @@ class CalibrationDialog(QDialog):
         """Handle analysis failure."""
         if generation is not None and generation != self._analysis_generation:
             return
+        if self.recording_state != "analyzing":
+            return
         if self._close_requested:
             return
         if DEBUG:
             logger.debug("Analysis failed: %s", error)
+        self._clear_eq_candidate()
+        self.recording_state = "ready"
         self.warning_label.setText(f"❌ {error}")
         self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
         self.diagnostics_group.setVisible(False)
         self.start_button.setText("Record Again")
         self.start_button.setEnabled(True)
+        self.curve_combo.setEnabled(False)
+        self.target_mode_combo.setEnabled(False)
+        self.smoothing_combo.setEnabled(False)
 
     def _on_retake_clicked(self):
         """Discard and re-record."""
@@ -975,6 +1025,7 @@ class CalibrationDialog(QDialog):
         self._stop_owned_processor()
 
         self.recording_state = "idle"
+        self._clear_eq_candidate()
         self.audio_data = None
         self.progress_bar.setValue(0)
         self.time_label.setText(f"Time remaining: {RECORDING_DURATION:.0f}s")
@@ -989,6 +1040,11 @@ class CalibrationDialog(QDialog):
         self.curve_combo.setEnabled(True)
         self.target_mode_combo.setEnabled(True)
         self.smoothing_combo.setEnabled(True)
+
+    def _clear_eq_candidate(self) -> None:
+        """Discard the only candidate that may be applied."""
+        self.eq_settings = None
+        self._candidate_target_metadata = None
 
     def _stop_owned_processor(self):
         """Stop the processor only if this dialog started it."""
@@ -1075,6 +1131,7 @@ class CalibrationDialog(QDialog):
         self._close_requested = True
         self._close_result = accepted
         self.recording_state = "idle"
+        self._clear_eq_candidate()
         self._capture_start_timer.stop()
         self.recording_timer.stop()
         self._cancel_analysis_workers()

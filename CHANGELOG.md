@@ -4,6 +4,11 @@
 
 ## v1.12.0
 
+- Discard stale Auto-EQ results after retakes, keep analysis targets fixed, and
+  enable applied EQ with Undo support. Retry incomplete Voice Setup results and
+  clear outdated calibration diagnostics after processing edits.
+- Remember newly saved presets for Last Used startup, refresh preset menus on
+  opening, and distinguish a saved preset from a failure to remember it.
 - Match Voice Setup analysis and verification to the applied limiter settings,
   run second-passage verification off the UI thread, and restore temporary
   calibration evidence on rollback and Undo within the same capture context.

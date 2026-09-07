@@ -786,6 +786,7 @@ class EQPanel(QWidget):
 
     def _on_enabled_toggled(self, checked):
         """Handle EQ enable/disable."""
+        self.set_auto_eq_diagnostics(None)
         self.processor.set_eq_enabled(checked)
 
     def _reset_all(self):
@@ -830,6 +831,7 @@ class EQPanel(QWidget):
     ) -> None:
         if not 0 <= band_index < len(self.band_sliders):
             raise ValueError(f"Invalid EQ band index: {band_index}")
+        self.set_auto_eq_diagnostics(None)
         slider = self.band_sliders[band_index]
         slider.set_frequency(min(20_000.0, max(20.0, frequency_hz)))
         if slider.filter_type() in GAIN_FILTER_TYPES:
@@ -865,6 +867,7 @@ class EQPanel(QWidget):
 
     def _update_curve(self):
         """Update frequency response curve based on current band parameters."""
+        self.set_auto_eq_diagnostics(None)
         bands = []
         for i, slider in enumerate(self.band_sliders):
             freq = slider.frequency_hz()

@@ -307,9 +307,13 @@ def test_save_preset_file_handles_collision_and_errors(monkeypatch, save_results
     monkeypatch.setattr("mic_eq.ui.main_window.save_preset", save_mock)
     monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.question", question)
     monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.critical", critical)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", Mock())
 
+    window = MainWindow.__new__(MainWindow)
+    window.config = AppConfig()
+    window.current_preset_path = None
     result = MainWindow._save_preset_file(
-        MainWindow.__new__(MainWindow), Preset(name="My Preset")
+        window, Preset(name="My Preset")
     )
 
     expected_path = save_results[-1] if isinstance(save_results[-1], Path) else None
@@ -654,6 +658,7 @@ def test_calibration_ignores_stale_analysis_generation(qapp):
     owner = _FakeOwner(_FakeProcessor())
     dialog = CalibrationDialog(parent=owner)
     dialog._analysis_generation = 2
+    dialog.recording_state = "analyzing"
     previous_step = dialog.warning_label.text()
 
     dialog._on_analysis_step("stale step", 55, generation=1)
@@ -665,7 +670,8 @@ def test_calibration_ignores_stale_analysis_generation(qapp):
         generation=1,
     )
 
-    assert not hasattr(dialog, "eq_settings")
+    assert dialog.eq_settings is None
+    assert dialog.recording_state == "analyzing"
     dialog.close()
     owner.close()
 
@@ -691,7 +697,7 @@ def test_analysis_close_waits_for_a_slow_worker_and_ignores_its_result(
 
     assert dialog._analysis_workers == []
     assert dialog._close_requested is False
-    assert not hasattr(dialog, "eq_settings")
+    assert dialog.eq_settings is None
     owner.close()
 
 
@@ -757,6 +763,8 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
         },
     }
 
+    dialog.recording_state = "analyzing"
+    dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
     dialog._on_analysis_complete(eq_settings)
 
     assert not dialog.diagnostics_group.isHidden()
@@ -798,6 +806,8 @@ def test_calibration_dialog_does_not_offer_abstained_eq(qapp):
         "abstention_reasons": ["noise-referenced SNR is too low"],
     }
 
+    dialog.recording_state = "analyzing"
+    dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
     dialog._on_analysis_complete(eq_settings)
 
     assert dialog.eq_settings is None

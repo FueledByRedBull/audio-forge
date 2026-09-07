@@ -14,6 +14,7 @@ from mic_eq.ui.config_history import (
     explicit_provenance_after_edit,
 )
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.calibration_dialog import CalibrationDialog
 
 
 def _snapshot(
@@ -205,6 +206,7 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
 
     preset = window._get_current_preset()
     preset.gate.threshold_db = baseline + 5.0
+    preset.eq.enabled = False
     window._apply_preset(preset)
     assert window.gate_panel.threshold_spinbox.value() == pytest.approx(
         baseline + 5.0
@@ -214,18 +216,31 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
         (80.0 * (1.6**index), 1.0 if index == 4 else 0.0, 1.41)
         for index in range(10)
     ]
-    window.eq_panel.apply_auto_eq_results(auto_eq_bands)
-    window.on_auto_eq_applied("broadcast")
+    dialog = CalibrationDialog(window)
+    dialog.recording_state = "analyzing"
+    dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
+    dialog.auto_eq_applied.connect(window.on_auto_eq_applied)
+    dialog._on_analysis_complete({
+        "band_freqs": [band[0] for band in auto_eq_bands],
+        "band_gains": [band[1] for band in auto_eq_bands],
+        "band_qs": [band[2] for band in auto_eq_bands],
+        "apply_recommended": True,
+    })
+    dialog._on_start_clicked()
     assert window.eq_panel.band_sliders[4].slider.value() == 10
+    assert window.processor.is_eq_enabled()
+    assert window.eq_panel._auto_eq_diagnostics is not None
 
     window.undo_configuration()
     assert window.eq_panel.band_sliders[4].slider.value() == 0
+    assert not window.processor.is_eq_enabled()
     assert window.gate_panel.threshold_spinbox.value() == pytest.approx(
         baseline + 5.0
     )
     assert window.status_bar.currentMessage() == "Undid: Auto-EQ (Broadcast)"
     window.redo_configuration()
     assert window.eq_panel.band_sliders[4].slider.value() == 10
+    assert window.processor.is_eq_enabled()
     assert window.status_bar.currentMessage() == "Redid: Auto-EQ (Broadcast)"
 
     history_size = window._configuration_history.size

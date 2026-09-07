@@ -248,7 +248,7 @@ jobs:
         run: |
           .\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
           if ($LASTEXITCODE -ne 0) { throw "Ruff failed with exit code $LASTEXITCODE." }
-          .\.venv\Scripts\python.exe -m pyright
+          .\.venv\Scripts\python.exe -m pyright --pythonpath .\.venv\Scripts\python.exe
           if ($LASTEXITCODE -ne 0) { throw "Pyright failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe -m pytest python/tests -q
           if ($LASTEXITCODE -ne 0) { throw "Pytest failed with exit code $LASTEXITCODE." }

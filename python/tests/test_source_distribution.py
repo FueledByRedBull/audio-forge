@@ -298,7 +298,7 @@ def test_manifest_records_current_incomplete_status():
 
     assert manifest["status"] in {"complete", "incomplete"}
     assert bool(manifest["blockers"]) is (manifest["status"] == "incomplete")
-    assert loaded["project_version"] == "1.12.0"
+    assert loaded["project_version"] == source_tool._read_project_version()
     assert len(manifest["entries"]) >= 100
     assert loaded["recipes"]
     assert all(

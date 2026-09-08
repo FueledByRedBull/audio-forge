@@ -203,6 +203,7 @@ def main() -> int:
     catalog_text = current_version if catalog_version == "__CURRENT_VERSION__" else catalog_version
     window_text = package_version if main_window_version == "__PACKAGE_VERSION__" else main_window_version
     checks = {
+        "licenses/source-manifest.json": json.loads(_read("licenses/source-manifest.json"))["project_version"],
         "rust-core/Cargo.toml": _version("rust-core/Cargo.toml", rust_version, "rust core").cargo,
         "Cargo.lock mic_eq_core": _version("Cargo.lock", lock_version, "Cargo.lock").cargo,
         "python/mic_eq/__init__.py": _version("python/mic_eq/__init__.py", package_version, "python package").pep440,
@@ -213,6 +214,7 @@ def main() -> int:
         "python/mic_eq/ui/main_window.py auto-eq preset": _version("python/mic_eq/ui/main_window.py", window_text, "auto-eq preset").pep440,
     }
     expected_by_path = {
+        "licenses/source-manifest.json": expected.pep440,
         "rust-core/Cargo.toml": expected.cargo,
         "Cargo.lock mic_eq_core": expected.cargo,
         "python/mic_eq/__init__.py": expected.pep440,

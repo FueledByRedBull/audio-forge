@@ -2,7 +2,12 @@
 
 ## Unreleased
 
-## v1.12.1
+## v1.12.2
+
+- Correct release provenance test isolation and refresh synchronized release
+  metadata for the patch release.
+
+## v1.12.1 (unpublished)
 
 - Discard stale Auto-EQ results after retakes, keep analysis targets fixed, and
   enable applied EQ with Undo support. Retry incomplete Voice Setup results and

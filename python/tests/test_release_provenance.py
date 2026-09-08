@@ -60,6 +60,7 @@ def test_git_commit_is_derived_from_head_and_cross_checks_workflow_sha(
 ) -> None:
     head = "a" * 40
     monkeypatch.setattr(release_provenance, "_git_head", lambda: head)
+    monkeypatch.delenv("AUDIOFORGE_SOURCE_REVISION", raising=False)
     monkeypatch.delenv("GITHUB_SHA", raising=False)
     assert release_provenance._git_commit() == head
 
@@ -67,6 +68,13 @@ def test_git_commit_is_derived_from_head_and_cross_checks_workflow_sha(
     assert release_provenance._git_commit() == head
 
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)
+    with pytest.raises(RuntimeError, match="does not match"):
+        release_provenance._git_commit()
+
+    monkeypatch.setenv("AUDIOFORGE_SOURCE_REVISION", head)
+    assert release_provenance._git_commit() == head
+
+    monkeypatch.setenv("AUDIOFORGE_SOURCE_REVISION", "b" * 40)
     with pytest.raises(RuntimeError, match="does not match"):
         release_provenance._git_commit()
 

@@ -1,6 +1,6 @@
 [package]
 name = "mic_eq_core"
-version = "1.12.3"
+version = "1.12.4"
 edition = "2021"
 rust-version = "1.94"
 description = "High-performance DSP engine for AudioForge - real-time noise suppression and equalization"

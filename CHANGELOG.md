@@ -2,7 +2,12 @@
 
 ## Unreleased
 
-## v1.12.3
+## v1.12.4
+
+- Archive corresponding source with the receipt and project archive at the
+  archive root.
+
+## v1.12.3 (unpublished)
 
 - Ignore generated native release attestations so immutable packaging no longer
   trips the clean-source guard.

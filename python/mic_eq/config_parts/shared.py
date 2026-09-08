@@ -15,7 +15,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-CURRENT_VERSION = "1.12.3"
+CURRENT_VERSION = "1.12.4"
 APPDATA_DIR_NAME = "AudioForge"
 LEGACY_APPDATA_DIR_NAME = "MicEq"
 _MIGRATION_MARKER_NAME = f".{APPDATA_DIR_NAME}.migration-pending"

@@ -2,22 +2,7 @@
 
 ## Unreleased
 
-## v1.12.4
-
-- Archive corresponding source with the receipt and project archive at the
-  archive root.
-
-## v1.12.3 (unpublished)
-
-- Ignore generated native release attestations so immutable packaging no longer
-  trips the clean-source guard.
-
-## v1.12.2 (unpublished)
-
-- Correct release provenance test isolation and refresh synchronized release
-  metadata for the patch release.
-
-## v1.12.1 (unpublished)
+## v1.12.0
 
 - Discard stale Auto-EQ results after retakes, keep analysis targets fixed, and
   enable applied EQ with Undo support. Retry incomplete Voice Setup results and

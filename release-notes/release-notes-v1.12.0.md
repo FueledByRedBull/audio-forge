@@ -1,6 +1,6 @@
-# AudioForge 1.12.4
+# AudioForge 1.12.0
 
-AudioForge 1.12.4 delivers the reliability, packaging, and runtime updates
+AudioForge 1.12.0 delivers the reliability, packaging, and runtime updates
 below. See [the release workflow](../RELEASING.md) for the candidate validation
 and publication gates.
 
@@ -35,7 +35,7 @@ Published checksum, manifest, metadata, and qualification files describe the
 exact downloadable artifacts.
 The release workflow validates a candidate once and promotes those same bytes.
 
-Windows 10/11 remain compatibility targets. For v1.12.4, release qualification
+Windows 10/11 remain compatibility targets. For v1.12.0, release qualification
 covers Windows 11 x64 with a USB microphone and virtual routes at the observed
 48 kHz, an automated baseline of at least 1,800 seconds, and model
 switching/restoration. Windows 10, analog or built-in input, 44.1 kHz, and

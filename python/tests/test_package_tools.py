@@ -237,6 +237,10 @@ def test_release_candidate_can_be_validated_before_tagging():
     assert binding["if"] == "inputs.release_tag != '' || github.ref_type == 'tag'"
     validation = jobs["validate-candidate"]["steps"]
     assert validation[0]["with"]["ref"] == "${{ needs.package-windows.outputs.source_revision }}"
+    install_index = next(i for i, step in enumerate(validation) if step.get("name") == "Install pinned validation runtime")
+    smoke_index = next(i for i, step in enumerate(validation) if step.get("name") == "Verify, extract, and smoke-test exact candidate")
+    assert install_index < smoke_index
+    assert "--require-hashes -r requirements/runtime.txt" in validation[install_index]["run"]
 
 
 def test_workflow_checker_rejects_legacy_python_pin():

@@ -506,6 +506,11 @@ jobs:
           name: audioforge-release-candidate-${{ needs.package-windows.outputs.release_tag }}
           path: candidate
 
+      - name: Install pinned validation runtime
+        run: |
+          python -m pip install --require-hashes -r requirements/runtime.txt --no-compile
+          if ($LASTEXITCODE -ne 0) { throw "Validation runtime installation failed." }
+
       - name: Verify, extract, and smoke-test exact candidate
         run: |
           $archive = Resolve-Path "candidate/${{ needs.package-windows.outputs.archive }}"

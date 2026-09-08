@@ -67,7 +67,9 @@ Then run the workflow with:
 On manual dispatch, the workflow hydrates and verifies the corresponding-source
 inputs before building, then builds and validates a Windows candidate. It
 retains the portable archive, per-user MSI, corresponding-source archive, and
-their generated checksums/metadata/manifests as one immutable Actions artifact.
+their generated checksums/metadata/manifests as one immutable Actions artifact
+for three days. Promote within that window; expired candidates must be rebuilt
+and validated before promotion.
 Hardware qualification workflows can collect additional measurements when a
 suitable runner is available. They are optional and do not block publication.
 Never attribute measurements from an earlier candidate to the final binary.

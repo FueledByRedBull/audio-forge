@@ -1,8 +1,8 @@
 # Product follow-up after v1.12.0
 
 Planning checklist, not a release gate or a claim that these features are implemented.
-Recheck each item after [PR #62](https://github.com/FueledByRedBull/audio-forge/pull/62)
-lands. Keep this draft separate from release work; do not merge solely to store a plan.
+Recheck each item against merged [PR #62](https://github.com/FueledByRedBull/audio-forge/pull/62).
+Keep this draft separate from release work; do not merge solely to store a plan.
 When implementation resumes, link the corresponding issue/PR beside its checkbox
 and use that issue for detailed decisions and acceptance criteria.
 
@@ -17,7 +17,7 @@ The checklist below is self-contained and does not require access to those chats
 
 ## Already addressed in PR #62
 
-These are implemented on that PR, not necessarily on the default branch. Preserve
+These are implemented on the default branch. Preserve
 their regression coverage; reopen only if current evidence shows a remaining defect.
 
 - [x] Match Voice Setup analysis, applied limiter settings, and control readback.
@@ -122,3 +122,41 @@ cosmetic redesign is not a prerequisite for this checklist.
   44.1 kHz capture, and physical reconnect/default-device/sleep-resume as resources
   become available. Keep untested configurations explicit; do not reinstate them
   as v1.12.0 publication gates without a separate support-policy decision.
+
+## Maintenance and size follow-up
+
+The September 9 bloat review identifies investigations, not a mandate to replace
+working numerical code or create another framework. Preserve release evidence,
+regression tests, both supported models, and Git history.
+
+- [x] Bound candidate retention to three days and reuse compiled caches across
+  source-only edits. Keep separate job/profile caches; measure build time before
+  replacing them with another compiler cache tool.
+- [ ] Add size comparisons to the existing release-provenance path. It already
+  records every bundled file's size and total bytes; reuse that manifest, compare
+  with the preceding release, and report the largest changes in the job summary.
+  Avoid another public attachment or mandatory release gate.
+- [ ] Measure a SciPy-free prototype before adopting it: compressed package size,
+  startup time, held-out Auto-EQ results, resampling/filtering/latency correctness,
+  numerical stability, and maintenance cost. The v1.12.0 manifest attributes
+  about 90 MB uncompressed to SciPy; this is not the compressed saving. Preserve
+  SciPy unless the complete replacement demonstrates worthwhile benefit.
+- [ ] Audit corresponding-source closure against the pinned Windows CPU build.
+  Classify required build/license inputs and optional upstream test/web tooling,
+  measure archive sizes, and prove the reduced set still rebuilds the shipped
+  dependencies before removing entries. Content-addressed deduplication is
+  already implemented in this PR; do not prune by filename alone.
+- [ ] Define local cleanup around disposable outputs and retained inputs first.
+  Keep active Python installations/virtual environments, models, corpora, and
+  unpublished evidence out of broad deletion targets. Prefer existing build-tool
+  cleanup commands; add a preview-first cleaner only if those are insufficient.
+- [ ] When changing large UI/DSP modules, extract a concrete responsibility and
+  retain its regression coverage. Split tests by behavior when navigation suffers;
+  file length alone does not justify controllers or a wholesale rewrite.
+- [ ] Consolidate evaluation plumbing only where repeated code is demonstrated.
+  Reuse the existing WAV helper and provenance utilities; keep named experiments
+  and historical decisions. Check consumers and reproduction requirements before
+  archiving rejected experiments such as DPDFNet.
+- [ ] Measure installation time and dependency weight before splitting the dev
+  lock into test, security, and packaging environments. Retain hashed resolution
+  and audit coverage; avoid multiple lockfiles without a measured payoff.

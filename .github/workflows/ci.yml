@@ -38,9 +38,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target/release
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-python-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('rust-core/**/*.rs', 'rust-core/Cargo.toml', 'Cargo.toml', 'pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-python-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-python-v3-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'rust-core/Cargo.toml', 'pyproject.toml') }}
       - name: Hydrate pinned CPU ONNX Runtime
         run: |
           python python/tools/fetch_release_assets.py --only-cpu-runtime --force
@@ -100,9 +98,7 @@ jobs:
             ~/.cargo/git
             target/debug
             target/release
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-rust-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ hashFiles('rust-core/**/*.rs', 'rust-core/Cargo.toml', 'Cargo.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-rust-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml') }}-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-rust-v3-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'rust-core/Cargo.toml') }}
       - name: Hydrate pinned CPU ONNX Runtime
         run: |
           python python/tools/fetch_release_assets.py --only-cpu-runtime --force

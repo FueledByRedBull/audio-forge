@@ -82,9 +82,7 @@ jobs:
             target/debug
             target/release
             target/deepfilter
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'build-support/deepfilter/**', 'build_deepfilter.ps1') }}-${{ hashFiles('rust-core/**/*.rs', 'rust-core/Cargo.toml', 'Cargo.toml', 'pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-release-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'build-support/deepfilter/**', 'build_deepfilter.ps1') }}-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v3-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'rust-core/Cargo.toml', 'pyproject.toml', 'build-support/deepfilter/**', 'build_deepfilter.ps1') }}
 
       - name: Create Python 3.13 virtual environment
         run: |
@@ -482,7 +480,7 @@ jobs:
             ${{ steps.source.outputs.metadata }}
             ${{ steps.native.outputs.attestation }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
 
   validate-candidate:
     name: Validate the exact archived candidate

@@ -129,8 +129,8 @@
       "cut_only_max_true_peak_gain_db": 2.677757366184541,
       "default_audio_max_absolute_delta": 0.0,
       "default_realtime_factor": {
-        "max": 0.0015350099303677825,
-        "median": 0.0013764311766644279
+        "max": 0.0016363140389078986,
+        "median": 0.0013242022943092584
       },
       "full_chain_max_true_peak_overshoot_db": 0.0006989240646362305,
       "full_chain_nonfinite_outputs": 0,
@@ -138,8 +138,8 @@
       "stress_max_limiter_gain_reduction_db": 3.8455235958099365,
       "total_duration_seconds": 48.7680625,
       "worst_case_realtime_factor": {
-        "max": 0.005761445783132531,
-        "median": 0.005511859279105377
+        "max": 0.005670036324726157,
+        "median": 0.005368272564353668
       }
     },
     "headroom_prediction": {
@@ -175,18 +175,18 @@
   "runtime": {
     "numpy": "2.5.1",
     "platform": "Windows-11-10.0.26200-SP0",
-    "python": "3.12.10"
+    "python": "3.13.15"
   },
   "schema_version": 1,
   "source_sha256": {
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
     "python/mic_eq/config_parts/settings.py": "0c068183a3b5b82f165f0f1cf13cd80b2d505b2888c263aa9d490168f3247dff",
     "python/mic_eq/ui/eq_curve.py": "a49e1d4e063e63b9435770ea5a3f503dd83f8756a7fc9690457b6589f357e0ab",
-    "python/mic_eq/ui/eq_panel.py": "c588c02ad4334b3c2dfe334e9502de9d4c901de66c1efc5121adf48c77c559c8",
+    "python/mic_eq/ui/eq_panel.py": "0eca1e8a04b0ec9d70ce26857c6e822097934e94ea71f81185e411e7a94fd572",
     "python/tools/evaluate_eq_filter_types.py": "0389d71d3f8d97f88eef51e0c834d84860b37842c1d051266b37df0fcfba4316",
-    "rust-core/src/audio/processor/python_api.rs": "ba7f30ca011f71a580f4a7ce034064bd123b06d1e340a038e29cbdc84be43847",
-    "rust-core/src/dsp/biquad.rs": "309c40b098ea80ea057f0b0703d98ab34ee583dcd023ea53cf8926a582b653e1",
-    "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
-    "rust-core/src/lib.rs": "adf6333661206fbb9b988b6e9798be5ac9a65105e5081bea0f8b37fa9324d1fd"
+    "rust-core/src/audio/processor/python_api.rs": "f38e8cedb679bf0abcb7d45c6187509cf1b2e9cf9ea7afa0423c9b88c7e3a37b",
+    "rust-core/src/dsp/biquad.rs": "b6bc1c4e1dab2353cceb3fb8b382e98b0e23d035cde6ba5e3faf921965b354bb",
+    "rust-core/src/dsp/eq.rs": "3dc1fd2c14496a7d76b34840011a2eb9a90e2d6a12ec2f67c5ace0be869855c9",
+    "rust-core/src/lib.rs": "468348d29dd64ced4340ab1b19ba1a117fcf92017ab8eb10d650145a83072535"
   }
 }

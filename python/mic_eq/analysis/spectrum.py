@@ -1,16 +1,12 @@
 """Audio spectrum analysis for Auto-EQ and Voice Setup.
 
-Welch/Hamming remains the production estimator. A DPSS multi-taper,
-multi-resolution implementation is retained as an explicit fixture experiment;
-policy changes only if every perceptual band improves stability by at least the
-materiality threshold.
+Uses Welch/Hamming spectra for voice measurements and smoothing.
 """
 from dataclasses import dataclass
 
 import numpy as np
 from scipy import signal
 from scipy.signal import find_peaks
-from scipy.signal.windows import dpss
 
 from .vad import VAD_SPEECH_EVIDENCE_THRESHOLD, VAD_STRONG_SPEECH_THRESHOLD
 
@@ -23,8 +19,6 @@ MIN_VOICED_FRAME_RATIO = 0.15
 MIN_VOICED_FRAMES = 3
 SILERO_WINDOW_SAMPLES = 512
 SILERO_SAMPLE_RATE = 16_000
-MULTIRES_MATERIAL_IMPROVEMENT_DB = 0.75
-SPECTRUM_ESTIMATOR_POLICY = "welch_hamming"
 UNCERTAINTY_BLOCK_FRAMES = 3
 UNCERTAINTY_SCALE_DB = 2.5
 PHONETIC_COVERAGE_TARGET_BLOCKS = 12
@@ -53,17 +47,6 @@ class VoiceSpectrumResult:
     measurement_uncertainty_db: np.ndarray | None = None
     phonetic_coverage: float = 0.0
     effective_measurement_blocks: float = 0.0
-
-
-@dataclass(frozen=True, slots=True)
-class SpectrumEstimatorEvaluation:
-    """Stability comparison for the optional multi-resolution experiment."""
-
-    current_band_stability_db: dict[str, float]
-    multires_band_stability_db: dict[str, float]
-    improvement_db: dict[str, float]
-    material_improvement: bool
-    selected_estimator: str
 
 
 def _select_voiced_samples(audio: np.ndarray, frame_size: int, hop_size: int) -> np.ndarray:
@@ -745,100 +728,6 @@ def analyze_voice_spectrum(
     )
 
 
-def compute_multiresolution_spectrum(
-    audio: np.ndarray,
-    fs: int = 48_000,
-    output_nperseg: int = 4096,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Experimental DPSS multi-taper spectrum blended across three resolutions."""
-    audio_arr = np.asarray(audio, dtype=float)
-    if audio_arr.size < output_nperseg:
-        raise ValueError(f"Audio too short for multi-resolution spectrum: {audio_arr.size}")
-    voiced = _select_voiced_samples(audio_arr, output_nperseg, output_nperseg // 2)
-    source = voiced if voiced.size >= output_nperseg else audio_arr
-    target_freqs = np.fft.rfftfreq(output_nperseg, 1.0 / fs)
-    resolutions = [size for size in (2048, 4096, 8192) if size <= source.size]
-    estimates: dict[int, np.ndarray] = {}
-
-    for size in resolutions:
-        hop = size // 2
-        frames = np.lib.stride_tricks.sliding_window_view(source, size)[::hop]
-        if frames.shape[0] > 24:
-            selected = np.linspace(0, frames.shape[0] - 1, 24, dtype=int)
-            frames = frames[selected]
-        tapers = dpss(size, NW=2.5, Kmax=3, sym=False)
-        spectra = []
-        for frame in frames:
-            for taper in tapers:
-                normalization = max(float(np.sum(taper * taper)), 1e-12)
-                power = np.square(np.abs(np.fft.rfft(frame * taper))) / normalization
-                spectra.append(power)
-        median_power = np.median(np.asarray(spectra, dtype=float), axis=0)
-        local_freqs = np.fft.rfftfreq(size, 1.0 / fs)
-        estimates[size] = np.interp(target_freqs, local_freqs, 10.0 * np.log10(median_power + 1e-12))
-
-    short = estimates[min(resolutions)]
-    medium = estimates[min(resolutions, key=lambda size: abs(size - 4096))]
-    long = estimates[max(resolutions)]
-    low_weight = np.clip((700.0 - target_freqs) / 500.0, 0.0, 1.0)
-    high_weight = np.clip((target_freqs - 3500.0) / 2500.0, 0.0, 1.0)
-    medium_weight = np.clip(1.0 - low_weight - high_weight, 0.0, 1.0)
-    weight_sum = np.maximum(low_weight + medium_weight + high_weight, 1e-12)
-    blended = (low_weight * long + medium_weight * medium + high_weight * short) / weight_sum
-    return target_freqs, np.asarray(blended, dtype=float)
-
-
-def evaluate_spectrum_estimators(
-    microphone_position_fixtures: list[np.ndarray],
-    fs: int = 48_000,
-) -> SpectrumEstimatorEvaluation:
-    """Compare shape stability and retain Welch unless every voice band improves materially."""
-    if len(microphone_position_fixtures) < 3:
-        raise ValueError("At least three labelled microphone-position fixtures are required")
-    current_rows = []
-    multires_rows = []
-    common_freqs: np.ndarray | None = None
-    for fixture in microphone_position_fixtures:
-        current_freqs, current = compute_voice_spectrum(fixture, fs=fs)
-        multires_freqs, multires = compute_multiresolution_spectrum(fixture, fs=fs)
-        if common_freqs is None:
-            common_freqs = current_freqs
-        assert common_freqs is not None
-        multires = np.interp(common_freqs, multires_freqs, multires)
-        voice_mask = (common_freqs >= 100.0) & (common_freqs <= 8000.0)
-        current_rows.append(current - float(np.median(current[voice_mask])))
-        multires_rows.append(multires - float(np.median(multires[voice_mask])))
-
-    assert common_freqs is not None
-    current_std = np.std(np.asarray(current_rows), axis=0)
-    multires_std = np.std(np.asarray(multires_rows), axis=0)
-    bands = {
-        "low_frequency": (80.0, 300.0),
-        "formant": (300.0, 3500.0),
-        "sibilance": (5000.0, 10_000.0),
-    }
-    current_band = {}
-    multires_band = {}
-    improvement = {}
-    for name, (low_hz, high_hz) in bands.items():
-        mask = (common_freqs >= low_hz) & (common_freqs <= high_hz)
-        current_band[name] = float(np.median(current_std[mask]))
-        multires_band[name] = float(np.median(multires_std[mask]))
-        improvement[name] = current_band[name] - multires_band[name]
-
-    material = bool(
-        all(value >= MULTIRES_MATERIAL_IMPROVEMENT_DB for value in improvement.values())
-        and float(np.mean(list(improvement.values()))) >= MULTIRES_MATERIAL_IMPROVEMENT_DB
-    )
-    return SpectrumEstimatorEvaluation(
-        current_band_stability_db=current_band,
-        multires_band_stability_db=multires_band,
-        improvement_db=improvement,
-        material_improvement=material,
-        selected_estimator="multiresolution_dpss" if material else SPECTRUM_ESTIMATOR_POLICY,
-    )
-
-
 def get_octave_frequencies(fraction=6, limits=(20, 20000), ref_freq=1000.0):
     """
     Calculate fractional-octave centers using IEC 61260-1 spacing equations.
@@ -857,7 +746,7 @@ def get_octave_frequencies(fraction=6, limits=(20, 20000), ref_freq=1000.0):
         f_upper: Upper band edges (NumPy array)
 
     Reference:
-        IEC 61260-1:2019 - Electroacoustics - Octave-band and
+        IEC 61260-1:2014 - Electroacoustics - Octave-band and
         fractional-octave-band filters
     """
     # IEC standard octave ratio (base-10)

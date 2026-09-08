@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sysconfig
 from pathlib import Path
 
 
@@ -14,6 +15,15 @@ def is_app_local_system_ucrt(path: Path) -> bool:
     )
 
 
+def is_unused_openssl_payload(path: Path) -> bool:
+    """Return whether *path* is an unused portable OpenSSL payload."""
+
+    name = path.name.casefold()
+    return name in {"_ssl.pyd", "_hashlib.pyd"} or name.startswith(
+        "libssl-"
+    ) or name.startswith("libcrypto-")
+
+
 def prune_bundle(bundle_root: Path) -> list[Path]:
     removed: list[Path] = []
     translations_dir = bundle_root / "_internal" / "PyQt6" / "Qt6" / "translations"
@@ -23,7 +33,15 @@ def prune_bundle(bundle_root: Path) -> list[Path]:
 
     packaged_extension_dir = bundle_root / "_internal" / "mic_eq"
     duplicate_extension_dir = bundle_root / "_internal" / "mic_eq_core"
-    has_packaged_extension = any(packaged_extension_dir.glob("mic_eq_core*.pyd"))
+    expected_name = "mic_eq_core" + str(
+        sysconfig.get_config_var("EXT_SUFFIX") or ".pyd"
+    )
+    for candidate in sorted(packaged_extension_dir.glob("mic_eq_core*.pyd")):
+        if candidate.is_file() and candidate.name != expected_name:
+            candidate.unlink()
+            removed.append(candidate.relative_to(bundle_root))
+            print(f"Removed foreign Python ABI extension: {candidate}")
+    has_packaged_extension = (packaged_extension_dir / expected_name).is_file()
     if has_packaged_extension and duplicate_extension_dir.exists():
         shutil.rmtree(duplicate_extension_dir)
         print(f"Removed duplicate native extension payload: {duplicate_extension_dir}")
@@ -40,6 +58,10 @@ def prune_bundle(bundle_root: Path) -> list[Path]:
             candidate.unlink()
             removed.append(candidate.relative_to(bundle_root))
             print(f"Removed system UCRT/API-set payload: {candidate}")
+        elif is_unused_openssl_payload(candidate):
+            candidate.unlink()
+            removed.append(candidate.relative_to(bundle_root))
+            print(f"Removed unused OpenSSL payload: {candidate}")
 
     for relative_path in (
         Path("_internal/PyQt6/Qt6/bin/Qt6Pdf.dll"),
@@ -47,6 +69,8 @@ def prune_bundle(bundle_root: Path) -> list[Path]:
         Path("_internal/PyQt6/QtPdf.pyd"),
         Path("_internal/PyQt6/QtPdfWidgets.pyd"),
         Path("_internal/PyQt6/Qt6/plugins/iconengines/qsvgicon.dll"),
+        Path("_internal/PyQt6/Qt6/plugins/imageformats/qsvg.dll"),
+        Path("_internal/PyQt6/Qt6/plugins/imageformats/qpdf.dll"),
     ):
         candidate = bundle_root / relative_path
         if candidate.exists():

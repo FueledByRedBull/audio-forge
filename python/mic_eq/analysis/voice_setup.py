@@ -1,4 +1,4 @@
-"""Uncertainty-aware Auto Voice Setup analysis and native-chain validation.
+"""Uncertainty-aware Auto Voice Setup analysis and downstream DSP validation.
 
 Recommendations use energy-VAD-masked speech, BS.1770 K-weighted momentary and
 three-second short-term loudness, active loudness spread, and robust band-energy
@@ -8,13 +8,16 @@ before the UI offers to apply them.
 
 from __future__ import annotations
 
+from dataclasses import asdict
 import time
-from typing import Any, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import numpy as np
 from scipy.signal import lfilter, resample_poly
 
 from .auto_eq import analyze_auto_eq, simulate_candidate_chain
+from .cancellation import AnalysisCancelled, check_analysis_cancelled
 from .deesser_fusion import (
     CLIP_FEATURE_NAMES,
     ENABLE_PROBABILITY_THRESHOLD,
@@ -37,12 +40,34 @@ from .vad import (
     VAD_STRONG_SPEECH_THRESHOLD,
     analyze_offline_vad,
 )
-from ..config import EQ_FREQUENCIES
+from ..config import EQ_FREQUENCIES, LimiterSettings
 
 NOISE_MIN_DURATION_S = MIN_NOISE_DURATION_S
 SPEECH_MIN_DURATION_S = 3.0
 FRAME_MS = 40.0
 HOP_MS = 20.0
+
+_DEFAULT_LIMITER_SETTINGS: dict[str, Any] = asdict(LimiterSettings())
+_LIMITER_SETTING_KEYS = frozenset(_DEFAULT_LIMITER_SETTINGS)
+
+
+def _normalise_limiter_settings(
+    settings: Mapping[str, Any] | None = None,
+    *,
+    require_complete: bool = False,
+) -> dict[str, Any] | None:
+    if settings is None:
+        return None if require_complete else dict(_DEFAULT_LIMITER_SETTINGS)
+    if not isinstance(settings, Mapping):
+        raise ValueError("limiter settings must be a mapping")
+    missing = _LIMITER_SETTING_KEYS.difference(settings)
+    if missing:
+        if require_complete:
+            return None
+        raise ValueError(
+            "limiter settings are missing: " + ", ".join(sorted(missing))
+        )
+    return dict(settings)
 
 GATE_MODE_LABELS = {
     0: "Threshold Only",
@@ -756,9 +781,14 @@ def _calibrate_compressor_threshold(
     target_p95_db: float,
     target_median_db: float,
     peak_cap_db: float,
+    limiter_settings: Mapping[str, Any] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Fit four compressor controls with a bounded deterministic native search."""
+    """Fit four compressor controls with a bounded deterministic DSP search."""
     calibrated = dict(compressor_settings)
+    effective_limiter_settings = _normalise_limiter_settings(limiter_settings)
+    if effective_limiter_settings is None:
+        raise ValueError("limiter settings are incomplete")
     diagnostics: dict[str, Any] = {
         "backend": "unavailable",
         "objective": "bounded_multi_objective_compressor_search_v1",
@@ -787,6 +817,7 @@ def _calibrate_compressor_threshold(
         return tuple(round(float(candidate[key]), 6) for key in _COMPRESSOR_SEARCH_BOUNDS)
 
     def evaluate(candidate_values: Mapping[str, float]) -> None:
+        check_analysis_cancelled(cancel_check)
         if len(evaluated) >= _COMPRESSOR_SEARCH_BUDGET - 1:
             return
         candidate_key = key_for(candidate_values)
@@ -813,12 +844,7 @@ def _calibrate_compressor_threshold(
             {
                 "deesser": deesser_settings,
                 "compressor": simulation_compressor,
-                "limiter": {
-                    "enabled": True,
-                    "ceiling_db": -1.5,
-                    "release_ms": 80.0,
-                    "careful_output_enabled": True,
-                },
+                "limiter": dict(effective_limiter_settings),
             },
         )
         if simulation.get("simulation_backend") != "rust":
@@ -845,7 +871,12 @@ def _calibrate_compressor_threshold(
             + active_gain
         )
         output_true_peak = float(simulation.get("output_true_peak_db", 120.0))
-        ceiling = float(simulation.get("limiter_effective_ceiling_db", -1.5))
+        ceiling = float(
+            simulation.get(
+                "limiter_effective_ceiling_db",
+                effective_limiter_settings["ceiling_db"],
+            )
+        )
         pre_limiter_headroom = float(
             simulation.get("pre_limiter_true_peak_headroom_db", -120.0)
         )
@@ -922,10 +953,12 @@ def _calibrate_compressor_threshold(
 
     evaluate(incumbent)
     for threshold in np.linspace(-55.0, -6.0, 33):
+        check_analysis_cancelled(cancel_check)
         threshold_candidate = dict(incumbent)
         threshold_candidate["threshold_db"] = float(threshold)
         evaluate(threshold_candidate)
     for index in range(1, 17):
+        check_analysis_cancelled(cancel_check)
         candidate = {}
         for key, base in zip(_COMPRESSOR_SEARCH_BOUNDS, (2, 3, 5, 7)):
             lower, upper = _COMPRESSOR_SEARCH_BOUNDS[key]
@@ -966,6 +999,7 @@ def _calibrate_compressor_threshold(
     else:
         refinement_seeds.extend(feasible[1:2])
     for _, _, seed in refinement_seeds:
+        check_analysis_cancelled(cancel_check)
         for key, step in local_steps.items():
             for direction in (-1.0, 1.0):
                 candidate = dict(seed)
@@ -1001,6 +1035,7 @@ def _calibrate_compressor_threshold(
             expanded if expanded_selected else threshold_only
         )
     calibrated.update(best_values)
+    check_analysis_cancelled(cancel_check)
     winner_verification = simulate_candidate_chain(
         speech_audio.astype(np.float32, copy=False),
         sample_rate,
@@ -1018,12 +1053,7 @@ def _calibrate_compressor_threshold(
                     else {}
                 ),
             },
-            "limiter": {
-                "enabled": True,
-                "ceiling_db": -1.5,
-                "release_ms": 80.0,
-                "careful_output_enabled": True,
-            },
+            "limiter": dict(effective_limiter_settings),
         },
     )
     if winner_verification.get("simulation_backend") == "rust":
@@ -1096,10 +1126,16 @@ def analyze_voice_setup(
     dynamics_intensity: str = "balanced",
     custom_target_p95_db: float = 3.5,
     custom_peak_cap_db: float = 8.0,
+    limiter_settings: Mapping[str, Any] | None = None,
     noise_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
     speech_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Analyze room noise plus speech and recommend a full voice chain."""
+    """Analyze room noise plus speech and recommend downstream DSP settings."""
+    check_analysis_cancelled(cancel_check)
+    effective_limiter_settings = _normalise_limiter_settings(limiter_settings)
+    if effective_limiter_settings is None:
+        raise ValueError("limiter settings are incomplete")
     noise_arr = np.asarray(noise_audio, dtype=float)
     speech_arr = np.asarray(speech_audio, dtype=float)
 
@@ -1119,6 +1155,7 @@ def analyze_voice_setup(
             speech_arr,
             sample_rate,
         )
+        check_analysis_cancelled(cancel_check)
     noise_vad_probabilities = None
     noise_vad_backend = "energy_fallback"
     if vad_available:
@@ -1126,6 +1163,7 @@ def analyze_voice_setup(
             noise_arr,
             sample_rate,
         )
+        check_analysis_cancelled(cancel_check)
     noise_reference = analyze_noise_reference(
         noise_arr,
         speech_arr,
@@ -1135,6 +1173,7 @@ def analyze_voice_setup(
         noise_vad_probabilities=noise_vad_probabilities,
         speech_vad_probabilities=vad_probabilities,
     )
+    check_analysis_cancelled(cancel_check)
     conservative_noise_spectrum = (
         noise_reference.frequencies,
         noise_reference.conservative_spectrum_db,
@@ -1147,6 +1186,7 @@ def analyze_voice_setup(
         vad_probabilities=vad_probabilities,
         noise_audio=noise_arr,
     )
+    check_analysis_cancelled(cancel_check)
     frame_rms = np.asarray(features["frame_db"], dtype=float)
     active_frames = frame_rms[np.asarray(features["active_frame_mask"], dtype=bool)]
     if active_frames.size < 6:
@@ -1167,10 +1207,12 @@ def analyze_voice_setup(
         noise_spectrum_override=conservative_noise_spectrum,
         noise_reference_source_override="validated_conservative",
     )
+    check_analysis_cancelled(cancel_check)
     smoothed_spectrum = smooth_spectrum_perceptual(
         spectrum_result.freqs,
         spectrum_result.median_spectrum_db,
     )
+    check_analysis_cancelled(cancel_check)
     spectral_confidence = float(spectrum_result.residual_confidence)
     noise_referenced_snr_db = float(spectrum_result.snr_db)
     snr_confidence = _clamp((noise_referenced_snr_db - 6.0) / 12.0, 0.0, 1.0)
@@ -1243,7 +1285,15 @@ def analyze_voice_setup(
             noise_reference_quality=noise_reference.quality_score,
             noise_reference_status=noise_reference.status,
             noise_reference_reasons=noise_reference.reasons,
+            chain_settings={
+                "deesser": deesser_settings,
+                "compressor": compressor_settings,
+                "limiter": dict(effective_limiter_settings),
+            },
+            cancel_check=cancel_check,
         )
+    except AnalysisCancelled:
+        raise
     except Exception as exc:  # pragma: no cover - exercised through return shape
         eq_error = str(exc)
 
@@ -1268,8 +1318,12 @@ def analyze_voice_setup(
                     compressor_diag["target_median_reduction_db"]
                 ),
                 peak_cap_db=float(compressor_diag["peak_reduction_cap_db"]),
+                limiter_settings=effective_limiter_settings,
+                cancel_check=cancel_check,
             )
         )
+
+    check_analysis_cancelled(cancel_check)
 
     dynamics_confidence = _clamp(speech_dynamic_range_db / 8.0, 0.0, 1.0)
     quiet_room_confidence = _clamp(
@@ -1311,16 +1365,16 @@ def analyze_voice_setup(
             {
                 "deesser": deesser_settings,
                 "compressor": compressor_settings,
-                "limiter": {
-                    "enabled": True,
-                    "ceiling_db": -1.5,
-                    "release_ms": 80.0,
-                    "careful_output_enabled": True,
-                },
+                "limiter": dict(effective_limiter_settings),
             },
         )
         output_true_peak = float(offline_validation.get("output_true_peak_db", 120.0))
-        ceiling = float(offline_validation.get("limiter_effective_ceiling_db", -1.5))
+        ceiling = float(
+            offline_validation.get(
+                "limiter_effective_ceiling_db",
+                effective_limiter_settings["ceiling_db"],
+            )
+        )
         compressor_gr = float(offline_validation.get("compressor_gain_reduction_db", 120.0))
         compressor_p95 = float(
             offline_validation.get("compressor_gain_reduction_p95_db", compressor_gr)
@@ -1378,6 +1432,7 @@ def analyze_voice_setup(
         "gate_settings": gate_settings,
         "deesser_settings": deesser_settings,
         "compressor_settings": compressor_settings,
+        "limiter_settings": dict(effective_limiter_settings),
         "diagnostics": {
             "setup_confidence": setup_confidence,
             "recommendation_uncertainty": 1.0 - setup_confidence,
@@ -1482,12 +1537,17 @@ def validate_voice_setup_verification(
     sample_rate: int,
     setup_result: Mapping[str, Any],
     target_preset: str,
+    *,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Validate a second passage through the exact native candidate chain.
+    """Validate downstream EQ, de-esser, compressor, and limiter stages.
 
-    This is an engineering validation of repeatability and DSP constraints. It
-    deliberately does not claim that a listener will prefer the result.
+    Gate, noise suppression, input cleanup, and live loudness adaptation are
+    outside this offline renderer. This is an engineering validation of
+    repeatability and DSP constraints; it does not claim that a listener will
+    prefer the result.
     """
+    check_analysis_cancelled(cancel_check)
     noise = np.asarray(noise_audio, dtype=np.float32)
     original = np.asarray(original_speech_audio, dtype=np.float32)
     verification = np.asarray(verification_speech_audio, dtype=np.float32)
@@ -1504,22 +1564,40 @@ def validate_voice_setup_verification(
             "perceptual_validation": False,
         }
 
-    eq_settings = dict(setup_result.get("eq_settings") or {})
-    if not eq_settings:
-        eq_settings = {
-            "band_freqs": list(EQ_FREQUENCIES),
-            "band_gains": [0.0] * len(EQ_FREQUENCIES),
-            "band_qs": [1.41] * len(EQ_FREQUENCIES),
+    effective_limiter_settings = _normalise_limiter_settings(
+        setup_result.get("limiter_settings"),
+        require_complete=True,
+    )
+    if effective_limiter_settings is None:
+        return {
+            "decision": "retry",
+            "reasons": ["candidate limiter settings are missing"],
+            "perceptual_validation": False,
+        }
+
+    raw_eq_settings = setup_result.get("eq_settings")
+    if not isinstance(raw_eq_settings, Mapping):
+        return {
+            "decision": "retry",
+            "reasons": ["candidate EQ settings are missing"],
+            "perceptual_validation": False,
+        }
+    eq_settings = dict(raw_eq_settings)
+    if any(
+        key not in eq_settings
+        or not isinstance(eq_settings[key], (list, tuple))
+        or len(eq_settings[key]) != len(EQ_FREQUENCIES)
+        for key in ("band_freqs", "band_gains", "band_qs")
+    ):
+        return {
+            "decision": "retry",
+            "reasons": ["candidate EQ bands are incomplete"],
+            "perceptual_validation": False,
         }
     chain = {
         "deesser": dict(setup_result.get("deesser_settings") or {}),
         "compressor": dict(setup_result.get("compressor_settings") or {}),
-        "limiter": {
-            "enabled": True,
-            "ceiling_db": -1.5,
-            "release_ms": 80.0,
-            "careful_output_enabled": True,
-        },
+        "limiter": dict(effective_limiter_settings),
         "return_output_audio": True,
     }
     processed = simulate_candidate_chain(
@@ -1528,12 +1606,14 @@ def validate_voice_setup_verification(
         eq_settings,
         chain,
     )
+    check_analysis_cancelled(cancel_check)
     processed_noise = simulate_candidate_chain(
         noise,
         sample_rate,
         eq_settings,
         chain,
     )
+    check_analysis_cancelled(cancel_check)
     if (
         processed.get("simulation_backend") != "rust"
         or "output_audio" not in processed
@@ -1549,16 +1629,19 @@ def validate_voice_setup_verification(
     rendered = np.asarray(processed.pop("output_audio"), dtype=np.float32)
     rendered_noise = np.asarray(processed_noise.pop("output_audio"), dtype=np.float32)
     original_spectrum = analyze_voice_spectrum(original, sample_rate)
+    check_analysis_cancelled(cancel_check)
     before_spectrum = analyze_voice_spectrum(
         verification,
         sample_rate,
         noise_audio=noise,
     )
+    check_analysis_cancelled(cancel_check)
     after_spectrum = analyze_voice_spectrum(
         rendered,
         sample_rate,
         noise_audio=rendered_noise,
     )
+    check_analysis_cancelled(cancel_check)
     before_error = _shape_error_db(
         before_spectrum.freqs,
         before_spectrum.median_spectrum_db,
@@ -1591,12 +1674,14 @@ def validate_voice_setup_verification(
         _rms_db(noise),
         noise_audio=noise,
     )
+    check_analysis_cancelled(cancel_check)
     after_features = _vad_masked_speech_features(
         rendered,
         sample_rate,
         _rms_db(rendered_noise),
         noise_audio=rendered_noise,
     )
+    check_analysis_cancelled(cancel_check)
     compressor = setup_result.get("compressor_settings") or {}
     target_p95 = float(compressor.get("target_p95_reduction_db", 3.5))
     peak_cap = float(compressor.get("peak_reduction_cap_db", 8.0))
@@ -1605,7 +1690,12 @@ def validate_voice_setup_verification(
     )
     measured_peak = float(processed.get("compressor_gain_reduction_db", 120.0))
     output_true_peak = float(processed.get("output_true_peak_db", 120.0))
-    ceiling = float(processed.get("limiter_effective_ceiling_db", -1.5))
+    ceiling = float(
+        processed.get(
+            "limiter_effective_ceiling_db",
+            effective_limiter_settings["ceiling_db"],
+        )
+    )
     limiter_events = int(processed.get("true_peak_limited_events", 0))
     noise_change_db = _rms_db(rendered_noise) - _rms_db(noise)
     speech_gain_db = float(
@@ -1639,7 +1729,7 @@ def validate_voice_setup_verification(
         reasons.append("processing is safe but stronger than the selected intensity")
     else:
         decision = "accept"
-        reasons.append("repeatability and native-chain constraints passed")
+        reasons.append("repeatability and downstream DSP constraints passed")
 
     spectral_snr = after_spectrum.spectral_snr_db
     snr_bands: dict[str, float] = {}
@@ -1658,7 +1748,7 @@ def validate_voice_setup_verification(
         "decision": decision,
         "reasons": reasons,
         "perceptual_validation": False,
-        "evidence_scope": "repeatability_and_exact_native_chain_constraints",
+        "evidence_scope": "repeatability_and_downstream_dsp_constraints",
         "spectral_target_error_before_db": before_error,
         "spectral_target_error_after_db": after_error,
         "frequency_dependent_snr_db": snr_bands,

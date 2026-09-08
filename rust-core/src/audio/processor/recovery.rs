@@ -50,17 +50,21 @@ pub fn service_recovery(&mut self) -> Option<bool> {
     let output_name = self.output_device_name.clone();
     let input_name_ordinal = self.input_device_name_ordinal;
     let output_name_ordinal = self.output_device_name_ordinal;
+    let input_endpoint_id = self.input_device_endpoint_id.clone();
+    let output_endpoint_id = self.output_device_endpoint_id.clone();
 
     self.stop();
 
     let mut success = false;
     let mut last_error: Option<String> = None;
 
-    match self.start_with_device_ordinals(
+    match self.start_with_device_ordinals_and_ids(
         input_name.as_deref(),
         input_name_ordinal,
+        input_endpoint_id.as_deref(),
         output_name.as_deref(),
         output_name_ordinal,
+        output_endpoint_id.as_deref(),
     ) {
         Ok(_) => {
             success = true;

@@ -1,11 +1,23 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import hashlib
+import json
+import sysconfig
 
 
 repo_root = Path(globals().get("SPECPATH", ".")).resolve()
 python_source = repo_root / "python"
 hook_source = repo_root / "pyinstaller-hooks"
+
+extension_dir = python_source / "mic_eq"
+if extension_dir.is_dir():
+    extension_suffix = str(sysconfig.get_config_var("EXT_SUFFIX") or ".pyd")
+    current_extension = extension_dir / f"mic_eq_core{extension_suffix}"
+    if not current_extension.is_file():
+        raise ValueError(
+            f"Current Python ABI extension is missing: {current_extension.name}"
+        )
 
 binaries = []
 datas = []
@@ -20,13 +32,34 @@ if licenses_dir.exists():
         if license_file.is_file():
             datas.append((str(license_file), "licenses"))
 
+# Bundle only notices named by this build's inventory, not stale cache files.
+dependency_licenses = repo_root / "build" / "dependency-licenses"
+inventory_file = dependency_licenses / "inventory.json"
+inventory = json.loads(inventory_file.read_text(encoding="utf-8"))
+datas.append((str(inventory_file), "licenses/dependencies"))
+components = [
+    inventory["python"],
+    *inventory["python_components"],
+    *inventory["rust_components"],
+    *inventory["native_components"],
+]
+for component in components:
+    for notice in component["notices"]:
+        path = (dependency_licenses / notice["file"]).resolve()
+        relative = path.relative_to(dependency_licenses.resolve())
+        if hashlib.sha256(path.read_bytes()).hexdigest() != notice["sha256"]:
+            raise ValueError(f"Dependency notice digest mismatch: {relative}")
+        datas.append((str(path), (Path("licenses/dependencies") / relative.parent).as_posix()))
+
 df_dll = repo_root / "df.dll"
 if df_dll.exists():
     binaries.append((str(df_dll), "."))
 
-directml_dll = repo_root / "target" / "release" / "DirectML.dll"
-if directml_dll.exists():
-    binaries.append((str(directml_dll), "."))
+ort_lib_dir = repo_root / "target" / "onnxruntime-cpu" / "lib"
+for ort_dll_name in ("onnxruntime.dll", "onnxruntime_providers_shared.dll"):
+    ort_dll = ort_lib_dir / ort_dll_name
+    if ort_dll.exists():
+        binaries.append((str(ort_dll), "."))
 
 models_dir = repo_root / "models"
 for model_name in (
@@ -64,9 +97,17 @@ a = Analysis(
     excludes=[
         "PyQt6.QtPdf",
         "PyQt6.QtPdfWidgets",
+        "ssl",
+        "_ssl",
+        "_hashlib",
         "pytest",
         "setuptools",
         "wheel",
+        # Optional scientific-library helpers installed by development tools.
+        "cffi",
+        "charset_normalizer",
+        "typing_extensions",
+        "yaml",
     ],
     noarchive=False,
     optimize=0,

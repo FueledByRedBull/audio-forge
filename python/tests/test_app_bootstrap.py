@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import runpy
+import subprocess
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -255,3 +256,95 @@ def test_launcher_leaves_model_discovery_to_app_bootstrap(tmp_path, monkeypatch)
     runpy.run_path(str(launcher_path))
 
     assert "VAD_MODEL_PATH" not in app_bootstrap.os.environ
+
+
+def test_windows_taskbar_relaunch_command_quotes_executable_path(qapp, monkeypatch):
+    class Store:
+        def __init__(self):
+            self.values = {}
+
+        def SetValue(self, key, value):
+            self.values[key] = value
+
+        def Commit(self):
+            return None
+
+    class PropVariant:
+        def __init__(self, value):
+            self.value = value
+
+    store = Store()
+    propsys = type(
+        "Propsys",
+        (),
+        {
+            "IID_IPropertyStore": object(),
+            "PROPVARIANTType": PropVariant,
+            "SHGetPropertyStoreForWindow": lambda *_args: store,
+        },
+    )
+    pscon = type(
+        "Pscon",
+        (),
+        {
+            "PKEY_AppUserModel_ID": "id",
+            "PKEY_AppUserModel_RelaunchCommand": "command",
+            "PKEY_AppUserModel_RelaunchDisplayNameResource": "display",
+            "PKEY_AppUserModel_RelaunchIconResource": "icon",
+        },
+    )
+    modules = {
+        "win32com.propsys.propsys": propsys,
+        "win32com.propsys.pscon": pscon,
+    }
+    monkeypatch.setattr(
+        app_bootstrap.importlib,
+        "import_module",
+        lambda name: modules[name],
+    )
+    monkeypatch.setattr(app_bootstrap.sys, "frozen", True, raising=False)
+    executable = r"C:\Program Files\AudioForge\AudioForge.exe"
+    monkeypatch.setattr(app_bootstrap.sys, "executable", executable)
+
+    from PyQt6.QtWidgets import QMainWindow
+
+    window = QMainWindow()
+    try:
+        app_bootstrap.apply_windows_taskbar_properties(window)
+    finally:
+        window.close()
+
+    assert store.values["command"].value == app_bootstrap.subprocess.list2cmdline(
+        [executable]
+    )
+
+
+def test_packaged_startup_smoke_runs_real_event_loop_in_isolated_config():
+    script = """
+from PyQt6.QtWidgets import QMainWindow
+from mic_eq.ui.app_bootstrap import run_smoke_test
+
+class Processor:
+    def is_running(self):
+        return False
+
+class SmokeWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.processor = Processor()
+
+raise SystemExit(run_smoke_test(SmokeWindow))
+"""
+    environment = dict(app_bootstrap.os.environ)
+    environment["QT_QPA_PLATFORM"] = "offscreen"
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout

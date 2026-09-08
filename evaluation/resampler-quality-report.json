@@ -60,10 +60,10 @@
         "long_stream_and_timing": [
           {
             "block_time_ns": {
-              "max": 412700.0,
-              "median": 95900,
-              "p95": 124679.99999999997,
-              "p99": 179631.99999999997
+              "max": 318400.0,
+              "median": 65200,
+              "p95": 106079.99999999997,
+              "p99": 147363.9999999996
             },
             "blocks": 2585,
             "count_error_samples": 0,
@@ -72,18 +72,18 @@
             "expected_output_frames": 2880000,
             "input_frames": 2646000,
             "input_rate": 44100,
-            "max_deadline_fraction": 0.017773505859375,
+            "max_deadline_fraction": 0.01371234375,
             "output_frames": 2880000,
             "output_rate": 48000,
-            "p99_deadline_fraction": 0.007736104687499999,
+            "p99_deadline_fraction": 0.0063464378906249825,
             "reported_output_delay_samples": 69
           },
           {
             "block_time_ns": {
-              "max": 700300.0,
-              "median": 80100,
-              "p95": 104040.00000000001,
-              "p99": 142148.00000000023
+              "max": 319800.0,
+              "median": 54200,
+              "p95": 84940.00000000001,
+              "p99": 98088.00000000001
             },
             "blocks": 2813,
             "count_error_samples": 0,
@@ -92,10 +92,10 @@
             "expected_output_frames": 2646000,
             "input_frames": 2880000,
             "input_rate": 48000,
-            "max_deadline_fraction": 0.0328265625,
+            "max_deadline_fraction": 0.014990625,
             "output_frames": 2646000,
             "output_rate": 44100,
-            "p99_deadline_fraction": 0.006663187500000011,
+            "p99_deadline_fraction": 0.004597875000000001,
             "reported_output_delay_samples": 58
           }
         ],
@@ -191,10 +191,10 @@
         "long_stream_and_timing": [
           {
             "block_time_ns": {
-              "max": 771400.0,
-              "median": 162400,
-              "p95": 194679.99999999997,
-              "p99": 267395.9999999999
+              "max": 495200.0,
+              "median": 116500,
+              "p95": 172579.99999999997,
+              "p99": 206163.99999999994
             },
             "blocks": 2585,
             "count_error_samples": 0,
@@ -203,18 +203,18 @@
             "expected_output_frames": 2880000,
             "input_frames": 2646000,
             "input_rate": 44100,
-            "max_deadline_fraction": 0.03322142578125,
+            "max_deadline_fraction": 0.021326484375,
             "output_frames": 2880000,
             "output_rate": 48000,
-            "p99_deadline_fraction": 0.011515784765624995,
+            "p99_deadline_fraction": 0.008878742578124998,
             "reported_output_delay_samples": 139
           },
           {
             "block_time_ns": {
-              "max": 725800.0,
-              "median": 126500,
-              "p95": 162600.0,
-              "p99": 217836.00000000023
+              "max": 409500.0,
+              "median": 100800,
+              "p95": 152720.00000000003,
+              "p99": 192116.0000000001
             },
             "blocks": 2813,
             "count_error_samples": 0,
@@ -223,10 +223,10 @@
             "expected_output_frames": 2646000,
             "input_frames": 2880000,
             "input_rate": 48000,
-            "max_deadline_fraction": 0.034021875,
+            "max_deadline_fraction": 0.019195312500000002,
             "output_frames": 2646000,
             "output_rate": 44100,
-            "p99_deadline_fraction": 0.010211062500000012,
+            "p99_deadline_fraction": 0.009005437500000005,
             "reported_output_delay_samples": 117
           }
         ],
@@ -274,8 +274,8 @@
     },
     "product_source_sha256": {
       "python/tools/evaluate_resampler_quality.py": "60a3111e6f26c14136e240e5c1d253637e7f5f024e4ebd7cfa233b7d23eb578f",
-      "rust-core/src/audio/processor/dsp_loop.rs": "031a1a28a3b1aa5f67a143f06de4e25dcab413ea71ba1853ce43d07a7670bef3",
-      "rust-core/src/audio/processor/resampling.rs": "ffe3d2bbb7e12f63029d272194eeb12f029b64868f9fd0943d6b41f827976c0d"
+      "rust-core/src/audio/processor/dsp_loop.rs": "ceba6a367a71f14563724dcb47ea45def780aef0dcffb795a909e06b48888484",
+      "rust-core/src/audio/processor/resampling.rs": "470e9e7dc0d9267ae86f33b6f578b117b38bd1ceb2828e9128888ad9e8be49cc"
     },
     "rates": [
       [
@@ -302,8 +302,8 @@
   "evaluation_contract": {
     "asset_hashes": {
       "python/tools/evaluate_resampler_quality.py": "60a3111e6f26c14136e240e5c1d253637e7f5f024e4ebd7cfa233b7d23eb578f",
-      "rust-core/src/audio/processor/dsp_loop.rs": "031a1a28a3b1aa5f67a143f06de4e25dcab413ea71ba1853ce43d07a7670bef3",
-      "rust-core/src/audio/processor/resampling.rs": "ffe3d2bbb7e12f63029d272194eeb12f029b64868f9fd0943d6b41f827976c0d"
+      "rust-core/src/audio/processor/dsp_loop.rs": "ceba6a367a71f14563724dcb47ea45def780aef0dcffb795a909e06b48888484",
+      "rust-core/src/audio/processor/resampling.rs": "470e9e7dc0d9267ae86f33b6f578b117b38bd1ceb2828e9128888ad9e8be49cc"
     },
     "clean_preservation": {
       "metric": "44.1->48->44.1 kHz pink-noise round-trip SNR",
@@ -330,8 +330,8 @@
       ]
     },
     "runtime": {
-      "max_deadline_fraction": 0.027006943359375,
-      "max_p99_frame_seconds": 0.00025315599999999906
+      "max_deadline_fraction": 0.0128765625,
+      "max_p99_frame_seconds": 0.00011697999999999993
     }
   },
   "gates": {
@@ -445,10 +445,10 @@
       "long_stream_and_timing": [
         {
           "block_time_ns": {
-            "max": 627100.0,
-            "median": 70700,
-            "p95": 122400.0,
-            "p99": 253155.99999999904
+            "max": 296400.0,
+            "median": 63900,
+            "p95": 108900.0,
+            "p99": 116979.99999999993
           },
           "blocks": 2585,
           "count_error_samples": 0,
@@ -457,18 +457,18 @@
           "expected_output_frames": 2880000,
           "input_frames": 2646000,
           "input_rate": 44100,
-          "max_deadline_fraction": 0.027006943359375,
+          "max_deadline_fraction": 0.012764882812500001,
           "output_frames": 2880000,
           "output_rate": 48000,
-          "p99_deadline_fraction": 0.010902519140624959,
+          "p99_deadline_fraction": 0.005037908203124997,
           "reported_output_delay_samples": 69
         },
         {
           "block_time_ns": {
-            "max": 556400.0,
-            "median": 59500,
-            "p95": 103240.00000000001,
-            "p99": 161064.00000000058
+            "max": 274700.0,
+            "median": 54400,
+            "p95": 87480.00000000001,
+            "p99": 103428.00000000006
           },
           "blocks": 2813,
           "count_error_samples": 0,
@@ -477,10 +477,10 @@
           "expected_output_frames": 2646000,
           "input_frames": 2880000,
           "input_rate": 48000,
-          "max_deadline_fraction": 0.02608125,
+          "max_deadline_fraction": 0.0128765625,
           "output_frames": 2646000,
           "output_rate": 44100,
-          "p99_deadline_fraction": 0.007549875000000028,
+          "p99_deadline_fraction": 0.004848187500000003,
           "reported_output_delay_samples": 58
         }
       ],
@@ -519,8 +519,8 @@
   "schema_version": 2,
   "source_sha256": {
     "python/tools/evaluate_resampler_quality.py": "60a3111e6f26c14136e240e5c1d253637e7f5f024e4ebd7cfa233b7d23eb578f",
-    "rust-core/src/audio/processor/dsp_loop.rs": "031a1a28a3b1aa5f67a143f06de4e25dcab413ea71ba1853ce43d07a7670bef3",
-    "rust-core/src/audio/processor/resampling.rs": "ffe3d2bbb7e12f63029d272194eeb12f029b64868f9fd0943d6b41f827976c0d"
+    "rust-core/src/audio/processor/dsp_loop.rs": "ceba6a367a71f14563724dcb47ea45def780aef0dcffb795a909e06b48888484",
+    "rust-core/src/audio/processor/resampling.rs": "470e9e7dc0d9267ae86f33b6f578b117b38bd1ceb2828e9128888ad9e8be49cc"
   },
   "status": "passed"
 }

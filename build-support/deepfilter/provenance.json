@@ -1,0 +1,146 @@
+{
+  "schema_version": 1,
+  "purpose": "Rebuild the Windows DeepFilter C API DLL from a pinned upstream source and verified model archives.",
+  "upstream": {
+    "repository": "https://github.com/Rikorose/DeepFilterNet.git",
+    "commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+    "checkout_line_endings": "LF",
+    "files": {
+      "libDF/Cargo.toml": {
+        "sha256": "172F3526CD144DC7FB351CF7A24D3DE89D07413E374C7A25B3E8812BB8503EB7",
+        "patched_sha256": "DCDED623C019216BE3729B6314279A4F91E1E747D6F4129DF0CDEC8B0894BB9E"
+      },
+      "libDF/src/capi.rs": {
+        "sha256": "6ADB1B6158EAD9505E3CCDB5A8F06A52FF361E1E49D1A28EDC76AC05BC2756AF"
+      },
+      "libDF/src/lib.rs": {
+        "sha256": "716B6274C60344B25B7824A55D06D0FAC0E58603FAEDBB86B3F3BD1EA6A256D3",
+        "patched_sha256": "F75AC8DC734E5238C5D1654123237CF467E24F3270CD99392E41DA6903425C25"
+      },
+      "libDF/src/tract.rs": {
+        "sha256": "0F080A766955CF037A1642EBFE6DE645B9161985379D5C7CC790A21A04F1E580",
+        "patched_sha256": "CC457A9B52C1B61AC625C6ADA7ABCEAE96C3A1A1D7EBE3FDE593832418C814DD"
+      }
+    },
+    "patches": [
+      {
+        "path": "libDF/Cargo.toml",
+        "operation": "Change the direct ndarray dependency from ^0.15 to ^0.16 so it matches tract 0.21.17.",
+        "occurrences": 1
+      },
+      {
+        "path": "libDF/src/tract.rs",
+        "operation": "Rename the three tract Graph symbol_table.sym(\"S\") calls to symbols.sym(\"S\") for tract 0.21.17.",
+        "occurrences": 3
+      },
+      {
+        "path": "libDF/Cargo.toml",
+        "operation": "Remove the upstream dev-dependencies section from the production-only C API workspace; tests and benches are not part of the DLL build.",
+        "occurrences": 1
+      },
+      {
+        "path": "libDF/src/lib.rs",
+        "operation": "Floor both unit normalization state updates at f32::MIN_POSITIVE so FTZ/DAZ cannot turn sustained digital silence into 0 / sqrt(0) nonfinite features.",
+        "occurrences": 2
+      }
+    ]
+  },
+  "models": {
+    "models/DeepFilterNet3_onnx.tar.gz": {
+      "source": "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/d375b2d8309e0935d165700c91da9de862a99c31/models/DeepFilterNet3_onnx.tar.gz",
+      "bytes": 7983136,
+      "sha256": "C94D91F70911001C946E0FABB4AA9ADC37045F45A03B56008CB0C8244CB63616"
+    },
+    "models/DeepFilterNet3_ll_onnx.tar.gz": {
+      "source": "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/d375b2d8309e0935d165700c91da9de862a99c31/models/DeepFilterNet3_ll_onnx.tar.gz",
+      "bytes": 36359660,
+      "sha256": "5998E58E8BA0E09BB76986EF97B84AFA065A571EF282D4A1222F341E3251CF3A"
+    }
+  },
+  "tract_linalg_patch": {
+    "crate": "tract-linalg",
+    "version": "0.21.17",
+    "archive_url": "https://crates.io/api/v1/crates/tract-linalg/0.21.17/download",
+    "archive_sha256": "5A4F0F9C134FAF99E3CF78B46D797398982E04AD46A3AD5223BCF8C0BD4AF360",
+    "original_cargo_toml_sha256": "214D9AA97C6344EF37EC2554B6B70D3BF53C19F8A88E970E471EAFCEB44D26A3",
+    "patched_cargo_toml_sha256": "2A5561E06EB593F1440D989E4E0345FCFA0D5F5026A2DBBBC19B9218686B8DFA",
+    "build_rs_sha256": "45D88661F5F145966D0B59F9416C746E982415C694E8E94C5F786AE0FC74C797",
+    "operation": "Remove the unused build-dependencies.time constraint (>=0.3.23,<0.3.42); the crate build.rs has no time API use. This permits the locked time 0.3.47 security fix.",
+    "lock_source": "path override; the archive hash and patched manifest hash are verified before every build"
+  },
+  "lock": {
+    "path": "build-support/deepfilter/Cargo.lock",
+    "sha256": "35591D5E442D11E1208ADD6960EF7C5190454E3632FCDE10D8A1D1B78136224F",
+    "manifest_sha256": "A4FF7A3E754FD0029F1E7E515D50EB23B0630F1A305B368EDA91AA7F4B0291AF",
+    "package_count": 227,
+    "security_pins": {
+      "bytes": "1.12.1",
+      "crossbeam-channel": "0.5.16",
+      "crossbeam-epoch": "0.9.20",
+      "kstring": "2.0.0",
+      "tar": "0.4.46",
+      "time": "0.3.47",
+      "tract-core": "0.21.17",
+      "tract-hir": "0.21.17",
+      "tract-linalg": "0.21.17",
+      "tract-nnef": "0.21.17",
+      "tract-onnx": "0.21.17",
+      "tract-onnx-opl": "0.21.17",
+      "tract-pulse": "0.21.17",
+      "tract-pulse-opl": "0.21.17"
+    }
+  },
+  "build": {
+    "target": "x86_64-pc-windows-msvc",
+    "profile": "release-lto",
+    "features": ["capi"],
+    "default_features": false,
+    "crate": "deep_filter",
+    "library": "df.dll",
+    "required_exports": [
+      "df_create",
+      "df_free",
+      "df_get_frame_length",
+      "df_process_frame",
+      "df_set_atten_lim",
+      "df_set_post_filter_beta"
+    ],
+    "tested_rust": "1.94.0 (x86_64-pc-windows-msvc; LLVM 21.1.8)",
+    "tested_cargo_audit": "0.22.2"
+  },
+  "audit": {
+    "vulnerabilities": 0,
+    "allowed_warnings": [
+      {
+        "crate": "paste",
+        "version": "1.0.15",
+        "reason": "Unmaintained compile-time proc-macro used by the tract dependency family; no security advisory is reported."
+      },
+      {
+        "crate": "proc-macro-error",
+        "version": "1.0.4",
+        "reason": "Unmaintained dependency of the inactive optional upstream hdf5 dataset dependency retained in the source package lock; it is removed from the production CAPI dependency graph."
+      }
+    ]
+  },
+  "validated_probe": {
+    "binary_sha256": "C26CEA96A5825D0EF62B5FB35C3FCF4196929B2C842803C4B25CE5ED4AABB9FB",
+    "binary_bytes": 13778944,
+    "reproducibility": "Binary bit-reproducibility was not claimed; the build script records each output hash."
+  },
+  "validated_recipe_run": {
+    "binary_sha256": "38605121768ED5C29FE933ADF4EDAC2E2F4BBC98E53EAD6838919CC7FD4AB027",
+    "binary_bytes": 13766656,
+    "attestation_schema_version": 1,
+    "evidence_report": "evaluation/deepfilter-source-build-report.json",
+    "parity_cases": 8,
+    "parity_max_abs": 0.0,
+    "parity_rmse": 0.0,
+    "latency_samples": {
+      "low_latency": 480,
+      "standard": 1440
+    },
+    "runtime_gate": "All 18 deterministic runs had finite output and p99 frame processing below 10 ms.",
+    "reproducibility": "Binary bit-reproducibility is not claimed; the build script records each output hash."
+  }
+}

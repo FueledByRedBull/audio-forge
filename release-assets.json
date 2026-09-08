@@ -3,38 +3,114 @@
   "assets": [
     {
       "path": "df.dll",
-      "size": 16614912,
-      "sha256": "270d14b92143c18c5f7e14e9eba3192d7843ec52fb9d1ade2fd9173d03a71656",
-      "source": "DeepFilterNet C runtime built or obtained for the release; do not copy from dist/",
+      "size": 13766656,
+      "sha256": "38605121768ed5c29fe933adf4edac2e2f4bbc98e53ead6838919cc7fd4ab027",
+      "source": "https://github.com/Rikorose/DeepFilterNet/tree/d375b2d8309e0935d165700c91da9de862a99c31",
+      "origin": {
+        "status": "verified-source-build",
+        "attestation_path": "target/deepfilter/df.dll.provenance.json",
+        "provenance": "build-support/deepfilter/provenance.json",
+        "repository": "https://github.com/Rikorose/DeepFilterNet.git",
+        "commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+        "build_recipe": "build_deepfilter.ps1",
+        "abi": "Windows x64 DeepFilter C API; runtime export validation in deepfilter_ffi.rs",
+        "rebuild": "Run build_deepfilter.ps1. It verifies the complete pinned libDF tree, the recorded source patches, the locked Rust graph, model hashes, required exports, and writes a per-build output attestation. Native linker metadata may vary between approved toolchains, so the manifest sha256 is a reference build digest rather than a clean-build gate."
+      },
       "license": "MIT option; bundled notice: licenses/DeepFilterNet-LICENSE.txt"
     },
     {
-      "path": "target/release/DirectML.dll",
-      "bundle_path": "DirectML.dll",
-      "size": 18527776,
-      "sha256": "9c9e6d822561c6c41b90e6994b3e8857cf1d66dbfb1e0c4c799c7c89b4e92da1",
-      "source": "Microsoft DirectML redistributable from the pinned Microsoft.AI.DirectML package; do not copy from dist/",
-      "license": "MIT; bundled notice: licenses/DirectML-LICENSE.txt"
+      "path": "target/onnxruntime-cpu/lib/onnxruntime.dll",
+      "size": 14186016,
+      "sha256": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
+      "source": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip",
+      "origin": {
+        "status": "verified-upstream-archive",
+        "package": "onnxruntime-win-x64",
+        "version": "1.23.2",
+        "commit": "a83fc4d58cb48eb68890dd689f94f28288cf2278",
+        "archive_sha256": "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd",
+        "archive_size": 78127794,
+        "archive_member": "onnxruntime-win-x64-1.23.2/lib/onnxruntime.dll",
+        "runtime": "CPU-only Windows x64; dynamic ONNX Runtime C API",
+        "rebuild": "Hydrate the pinned official archive, verify its archive SHA-256, and extract only the validated member. ORT_LIB_LOCATION points to target/onnxruntime-cpu/lib during the Rust build."
+      },
+      "license": "MIT; bundled notices: licenses/ONNXRuntime-LICENSE.txt and licenses/ONNXRuntime-ThirdPartyNotices.txt"
+    },
+    {
+      "path": "target/onnxruntime-cpu/lib/onnxruntime.lib",
+      "size": 2124,
+      "sha256": "977263ca76e6a9d0f230a198d3b05b2a2bddfed66bc5c4d4fd25293b03cc78b5",
+      "source": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip",
+      "origin": {
+        "status": "verified-upstream-archive",
+        "package": "onnxruntime-win-x64",
+        "version": "1.23.2",
+        "commit": "a83fc4d58cb48eb68890dd689f94f28288cf2278",
+        "archive_sha256": "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd",
+        "archive_size": 78127794,
+        "archive_member": "onnxruntime-win-x64-1.23.2/lib/onnxruntime.lib",
+        "runtime": "CPU-only Windows x64; import library used by the Rust link step",
+        "rebuild": "Hydrate the pinned official archive, verify its archive SHA-256, and extract only the validated member. ORT_LIB_LOCATION points to target/onnxruntime-cpu/lib during the Rust build."
+      },
+      "license": "MIT; bundled notices: licenses/ONNXRuntime-LICENSE.txt and licenses/ONNXRuntime-ThirdPartyNotices.txt"
+    },
+    {
+      "path": "target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll",
+      "size": 22088,
+      "sha256": "a2b3a50956aa75a9879c8472bc7df4f7a8072bcd2db19a1b7d988e7688f293ef",
+      "source": "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip",
+      "origin": {
+        "status": "verified-upstream-archive",
+        "package": "onnxruntime-win-x64",
+        "version": "1.23.2",
+        "commit": "a83fc4d58cb48eb68890dd689f94f28288cf2278",
+        "archive_sha256": "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd",
+        "archive_size": 78127794,
+        "archive_member": "onnxruntime-win-x64-1.23.2/lib/onnxruntime_providers_shared.dll",
+        "runtime": "CPU-only Windows x64; shared execution-provider loader",
+        "rebuild": "Hydrate the pinned official archive, verify its archive SHA-256, and extract only the validated member. ORT_LIB_LOCATION points to target/onnxruntime-cpu/lib during the Rust build."
+      },
+      "license": "MIT; bundled notices: licenses/ONNXRuntime-LICENSE.txt and licenses/ONNXRuntime-ThirdPartyNotices.txt"
     },
     {
       "path": "models/DeepFilterNet3_ll_onnx.tar.gz",
       "size": 36359660,
       "sha256": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
-      "source": "DeepFilterNet3 low-latency ONNX model artifact pinned for this release",
+      "source": "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/d375b2d8309e0935d165700c91da9de862a99c31/models/DeepFilterNet3_ll_onnx.tar.gz",
+      "origin": {
+        "status": "verified-upstream-git-blob",
+        "commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+        "git_blob_sha1": "f30e825f523c4ef52e54aa3706bbee100cd6f719",
+        "abi": "ONNX encoder/ERB decoder/DF decoder; 48000 Hz, 480-sample hop, zero lookahead",
+        "rebuild": "Use the checked-in upstream export at this commit. Retraining and bit-identical re-export are not claimed."
+      },
       "license": "MIT option; bundled notice: licenses/DeepFilterNet-LICENSE.txt"
     },
     {
       "path": "models/DeepFilterNet3_onnx.tar.gz",
       "size": 7983136,
       "sha256": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
-      "source": "DeepFilterNet3 standard ONNX model artifact pinned for this release",
+      "source": "https://raw.githubusercontent.com/Rikorose/DeepFilterNet/d375b2d8309e0935d165700c91da9de862a99c31/models/DeepFilterNet3_onnx.tar.gz",
+      "origin": {
+        "status": "verified-upstream-git-blob",
+        "commit": "d375b2d8309e0935d165700c91da9de862a99c31",
+        "git_blob_sha1": "1c4f4ffe1015fbb4541433cf291234ca32338871",
+        "abi": "ONNX encoder/ERB decoder/DF decoder; 48000 Hz, 480-sample hop, two-frame lookahead",
+        "rebuild": "Use the checked-in upstream export at this commit. Retraining and bit-identical re-export are not claimed."
+      },
       "license": "MIT option; bundled notice: licenses/DeepFilterNet-LICENSE.txt"
     },
     {
       "path": "models/silero_vad.onnx",
       "size": 2327524,
       "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
-      "source": "https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.1/src/silero_vad/data/silero_vad.onnx",
+      "source": "https://raw.githubusercontent.com/snakers4/silero-vad/7e30209a3e901f9842f81b225f3e93d8199902b1/src/silero_vad/data/silero_vad.onnx",
+      "origin": {
+        "status": "pinned-upstream-model",
+        "version": "6.2.1",
+        "commit": "7e30209a3e901f9842f81b225f3e93d8199902b1",
+        "abi": "ONNX, 16000 Hz, 64 context plus 512 new samples, recurrent output stateN"
+      },
       "license": "MIT; bundled notice: licenses/Silero-VAD-LICENSE.txt"
     }
   ]

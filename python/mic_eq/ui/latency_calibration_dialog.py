@@ -216,7 +216,7 @@ class LatencyCalibrationDialog(QDialog):
         instructions = QLabel(
             "Run calibration with your current input/output device pair.\n"
             "Best results require a loopback cable or speaker-to-mic route in a quiet room. "
-            "Compensation uses the measured route delay directly."
+            "The measured delay calibrates latency reporting; it does not reduce audio delay."
         )
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
@@ -232,7 +232,7 @@ class LatencyCalibrationDialog(QDialog):
         self.one_way_label = QLabel("-- ms")
         status_layout.addWidget(self.one_way_label, 1, 1)
 
-        status_layout.addWidget(QLabel("Applied Compensation:"), 2, 0)
+        status_layout.addWidget(QLabel("Route Delay for Reporting:"), 2, 0)
         self.comp_label = QLabel("-- ms")
         status_layout.addWidget(self.comp_label, 2, 1)
 

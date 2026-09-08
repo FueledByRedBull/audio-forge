@@ -1,7 +1,7 @@
 {
   "schema_version": 4,
   "audible_change": true,
-  "generated_at_utc": "2026-09-01T17:42:07.872653+00:00",
+  "generated_at_utc": "2026-09-06T19:14:31.977848+00:00",
   "status": "incumbents-retained-objective-gates-failed",
   "decision": {
     "product_chain_changed": false,
@@ -27,7 +27,7 @@
       "median_candidate_tail_retained_ratio": 0.00731529608144042,
       "median_baseline_pumping_score": 5.245177218607963e-05,
       "median_candidate_pumping_score": 0.20301037781192355,
-      "median_runtime_ratio": 1.0744885593486595
+      "median_runtime_ratio": 1.0838964424565747
     },
     "non_regression": {
       "false_closure": true,
@@ -69,11 +69,11 @@
   "provenance": {
     "source_hashes": {
       "python/tools/evaluate_processing_order.py": "7a178ac9dc8551820e46ef3cfb612b04239a94f5c6b9e3ec20a5412a5ef82a12",
-      "rust-core/src/audio/processor/block_processor.rs": "9ec56ab58c1f6a2070246ac3b676de61bd9c63fe3bde735f8d58acd1485b484b",
-      "rust-core/src/audio/processor/python_api.rs": "ba7f30ca011f71a580f4a7ce034064bd123b06d1e340a038e29cbdc84be43847",
+      "rust-core/src/audio/processor/block_processor.rs": "627c0b08a97614ac4c0fb86e2487856bb2e7755c4181e07f2dc3aa94de312ccf",
+      "rust-core/src/audio/processor/python_api.rs": "f38e8cedb679bf0abcb7d45c6187509cf1b2e9cf9ea7afa0423c9b88c7e3a37b",
       "rust-core/src/dsp/deesser.rs": "17f3fc098e7a0da074915c26ce0ec833a0fa71e778fb3c9618289cf31edddac3",
-      "rust-core/src/dsp/eq.rs": "2ba454cdec544b00e5ffc927a8bf248f5926ea6cb9b204501bd09f532532e10b",
-      "rust-core/src/dsp/gate.rs": "4d2cfc3761e162d362eeb8735bdd8a46c224bd9f2dd3f482f0f6bf8365d97f4c",
+      "rust-core/src/dsp/eq.rs": "3dc1fd2c14496a7d76b34840011a2eb9a90e2d6a12ec2f67c5ace0be869855c9",
+      "rust-core/src/dsp/gate.rs": "25b10ac9c7fe0534943790f44725e2685cf7d8121f7293fea42f9f061de6ae7d",
       "rust-core/src/dsp/noise_suppressor.rs": "6c81089b03d0bc276cbb2ea975df51df6ade2e0cf57c01ef060fc514db58bb09",
       "rust-core/src/dsp/rnnoise.rs": "4f473389c120de55be1754c97fd4f0db235a496ee416ae6fe1beb9a9de8a54ae"
     },
@@ -102,7 +102,7 @@
       }
     },
     "runtime": {
-      "gate_suppressor_median_runtime_ratio": 1.0744885593486595,
+      "gate_suppressor_median_runtime_ratio": 1.0838964424565747,
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native simulators report whole-clip timing; the ordering candidate is rejected before realtime callback qualification.",
       "platform": "Windows-11-10.0.26200-SP0"

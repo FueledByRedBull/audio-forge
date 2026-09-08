@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
 
-CURRENT_VERSION = "1.11.4"
+logger = logging.getLogger(__name__)
+
+
+CURRENT_VERSION = "1.12.0"
 APPDATA_DIR_NAME = "AudioForge"
 LEGACY_APPDATA_DIR_NAME = "MicEq"
+_MIGRATION_MARKER_NAME = f".{APPDATA_DIR_NAME}.migration-pending"
 
 
 class PresetValidationError(Exception):
@@ -41,22 +47,102 @@ def _config_base_dir() -> Path:
     return Path.home() / ".config"
 
 
+def _migration_marker(base_dir: Path) -> Path:
+    return base_dir / _MIGRATION_MARKER_NAME
+
+
+def migration_pending() -> bool:
+    """Return whether a legacy config migration needs a safe retry."""
+    return _migration_marker(_config_base_dir()).exists()
+
+
+def _write_migration_marker(marker: Path, state: str) -> None:
+    marker.write_text(state, encoding="ascii")
+
+
 def _config_dir() -> Path:
     base_dir = _config_base_dir()
     config_dir = base_dir / APPDATA_DIR_NAME
     legacy_dir = base_dir / LEGACY_APPDATA_DIR_NAME
-    if not config_dir.exists() and legacy_dir.exists():
+    marker = _migration_marker(base_dir)
+    migration_failed = False
+    marker_state = ""
+    if marker.exists():
         try:
-            shutil.copytree(legacy_dir, config_dir)
+            marker_state = marker.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            marker_state = "pending"
+
+    if marker_state == "staged" and config_dir.exists():
+        # A process may have been interrupted after the atomic directory swap
+        # and before removing the marker. The destination is complete.
+        try:
+            marker.unlink()
         except OSError:
-            pass
-    config_dir.mkdir(parents=True, exist_ok=True)
+            logger.warning("Could not clear completed config migration marker", exc_info=True)
+        marker_state = ""
+
+    needs_migration = legacy_dir.exists() and (
+        not config_dir.exists() or marker_state == "pending"
+    )
+    if needs_migration:
+        staged_dir: Path | None = None
+        partial_dir: Path | None = None
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            _write_migration_marker(marker, "pending")
+            # Copy into a sibling staging directory first so a failed copy
+            # cannot make a partial destination look migrated on the next run.
+            staged_dir = Path(
+                tempfile.mkdtemp(prefix=f".{APPDATA_DIR_NAME}.migrate-", dir=base_dir)
+            )
+            staged_dir.rmdir()
+            shutil.copytree(legacy_dir, staged_dir)
+            if config_dir.exists():
+                partial_dir = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{APPDATA_DIR_NAME}.partial-", dir=base_dir
+                    )
+                )
+                partial_dir.rmdir()
+                config_dir.replace(partial_dir)
+            staged_dir.replace(config_dir)
+            # Mark the directory as staged only after the atomic publication.
+            # A crash before this write leaves the pending marker, so the next
+            # process retries instead of accepting a partial destination.
+            _write_migration_marker(marker, "staged")
+            try:
+                marker.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning("Could not clear config migration marker", exc_info=True)
+        except OSError:
+            migration_failed = True
+            logger.warning("Legacy AudioForge config migration failed", exc_info=True)
+            if staged_dir is not None and staged_dir.exists():
+                try:
+                    shutil.rmtree(staged_dir)
+                except OSError:
+                    logger.warning("Could not clean failed config migration staging", exc_info=True)
+            if partial_dir is not None and partial_dir.exists() and not config_dir.exists():
+                try:
+                    partial_dir.replace(config_dir)
+                except OSError:
+                    logger.warning("Could not restore partial config destination", exc_info=True)
+    # Leave the destination absent after a failed migration.  This keeps the
+    # next process (or the next call) eligible to retry instead of treating an
+    # empty/partial destination as an already completed migration.
+    if not migration_failed:
+        config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
 
 
 def get_presets_dir() -> Path:
     """Get the presets directory, creating it if necessary."""
     presets_dir = _config_dir() / "presets"
+    if migration_pending():
+        return presets_dir
     presets_dir.mkdir(parents=True, exist_ok=True)
     return presets_dir
 
@@ -64,6 +150,8 @@ def get_presets_dir() -> Path:
 def get_preset_imports_dir() -> Path:
     """Get the preset imports directory, creating it if necessary."""
     imports_dir = get_presets_dir().parent / "imports"
+    if migration_pending():
+        return imports_dir
     imports_dir.mkdir(parents=True, exist_ok=True)
     return imports_dir
 
@@ -219,49 +307,49 @@ def parse_latency_profile_key(
 ) -> tuple[DeviceIdentity | None, DeviceIdentity | None] | None:
     """Parse a latency profile key from either legacy or structured format."""
     text = str(key)
-    if "||" in text:
-        input_name, output_name = text.split("||", 1)
-        input_device = coerce_device_identity(input_name)
-        output_device = coerce_device_identity(output_name)
-        if input_device is None or output_device is None:
-            return None
-        return input_device, output_device
-
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        return None
+        payload = None
 
-    if not isinstance(payload, dict) or set(payload) != {"input", "output"}:
-        return None
+    if isinstance(payload, dict) and set(payload) == {"input", "output"}:
 
-    def parse_route_identity(value: object) -> tuple[DeviceIdentity | None, bool]:
-        if value is None:
-            return None, True
-        candidate = value
+        def parse_route_identity(value: object) -> tuple[DeviceIdentity | None, bool]:
+            if value is None:
+                return None, True
+            candidate = value
+            if (
+                isinstance(value, dict)
+                and value.get("endpoint_id")
+                and not value.get("name")
+            ):
+                # Stable endpoint route keys intentionally omit rename-prone names.
+                # Supply a non-persisted placeholder so the ordinary identity
+                # validator can canonicalize the endpoint fields again.
+                candidate = {
+                    **value,
+                    "name": f"endpoint:{value['endpoint_id']}",
+                }
+            parsed = coerce_device_identity(candidate)
+            return parsed, parsed is not None
+
+        input_device, input_valid = parse_route_identity(payload.get("input"))
+        output_device, output_valid = parse_route_identity(payload.get("output"))
         if (
-            isinstance(value, dict)
-            and value.get("endpoint_id")
-            and not value.get("name")
+            not input_valid
+            or not output_valid
+            or input_device is None
+            or output_device is None
         ):
-            # Stable endpoint route keys intentionally omit rename-prone names.
-            # Supply a non-persisted placeholder so the ordinary identity
-            # validator can canonicalize the endpoint fields again.
-            candidate = {
-                **value,
-                "name": f"endpoint:{value['endpoint_id']}",
-            }
-        parsed = coerce_device_identity(candidate)
-        return parsed, parsed is not None
+            return None
+        return input_device, output_device
 
-    input_device, input_valid = parse_route_identity(payload.get("input"))
-    output_device, output_valid = parse_route_identity(payload.get("output"))
-    if (
-        not input_valid
-        or not output_valid
-        or input_device is None
-        or output_device is None
-    ):
+    if "||" not in text:
+        return None
+    input_name, output_name = text.split("||", 1)
+    input_device = coerce_device_identity(input_name)
+    output_device = coerce_device_identity(output_name)
+    if input_device is None or output_device is None:
         return None
     return input_device, output_device
 
@@ -282,4 +370,5 @@ __all__ = [
     "get_presets_dir",
     "legacy_latency_profile_key",
     "parse_latency_profile_key",
+    "migration_pending",
 ]

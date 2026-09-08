@@ -3,6 +3,7 @@ mod tests {
     #![allow(clippy::excessive_precision)] // SciPy golden vectors are copied verbatim.
 
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn test_rms_computation() {
@@ -17,6 +18,72 @@ mod tests {
     fn test_gate_mode_enum() {
         assert_ne!(GateMode::ThresholdOnly, GateMode::VadAssisted);
         assert_ne!(GateMode::VadAssisted, GateMode::VadOnly);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_uses_pinned_cpu_onnx_runtime_release() {
+        assert_eq!(ort::MINOR_VERSION, 23);
+        let build_info = ort::info();
+        assert!(
+            build_info.contains("1.23.2") || build_info.contains("a83fc4d"),
+            "unexpected ONNX Runtime build info: {build_info}"
+        );
+    }
+
+    #[test]
+    fn test_vad_commits_telemetry_opt_out_before_first_session() {
+        if std::env::var_os("AUDIOFORGE_VAD_TELEMETRY_CHILD").is_some() {
+            let _ = SileroVAD::new(SILERO_SAMPLE_RATE, 0.5);
+            assert!(matches!(ORT_TELEMETRY_POLICY.get(), Some(Ok(()))));
+            return;
+        }
+
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .arg("test_vad_commits_telemetry_opt_out_before_first_session")
+            .arg("--nocapture")
+            .env("AUDIOFORGE_VAD_TELEMETRY_CHILD", "opt_out")
+            .output()
+            .expect("run telemetry opt-out regression in a fresh process");
+
+        assert!(
+            output.status.success(),
+            "fresh-process telemetry opt-out regression failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn test_vad_rejects_preconfigured_ort_environment() {
+        if std::env::var_os("AUDIOFORGE_VAD_TELEMETRY_CHILD").is_some() {
+            assert!(ort::init().commit(), "test must own the first ORT configuration");
+
+            let error = match SileroVAD::new(SILERO_SAMPLE_RATE, 0.5) {
+                Ok(_) => panic!("VAD must reject an environment configured before telemetry opt-out"),
+                Err(error) => error,
+            };
+            assert!(matches!(
+                error,
+                VadError::ModelLoadError(message)
+                    if message.contains(ORT_TELEMETRY_INIT_ERROR)
+            ));
+            return;
+        }
+
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .arg("test_vad_rejects_preconfigured_ort_environment")
+            .arg("--nocapture")
+            .env("AUDIOFORGE_VAD_TELEMETRY_CHILD", "preconfigured")
+            .output()
+            .expect("run preconfigured-environment regression in a fresh process");
+
+        assert!(
+            output.status.success(),
+            "fresh-process preconfigured-environment regression failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

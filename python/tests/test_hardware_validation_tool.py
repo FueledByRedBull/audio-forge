@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import importlib.util
 import json
+import math
 import os
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -34,7 +38,7 @@ def test_hardware_result_parsers_require_success_and_evidence() -> None:
     health = {
         "return_code": 0,
         "stdout": [
-            'Health summary: max_input_age_ms=5 max_output_age_ms=4 restarts=0 underrun_baseline=3 diagnostics={"input_dropped_samples":0}'
+            'Health summary: max_input_age_ms=5 max_output_age_ms=4 restarts=0 underrun_baseline=3 diagnostics={"input_dropped_samples":0,"input_sample_rate":48000}'
         ],
     }
 
@@ -50,13 +54,121 @@ def test_hardware_result_parsers_require_success_and_evidence() -> None:
     assert parsed_health["max_input_callback_age_ms"] == 5
     assert parsed_health["stream_restarts"] == 0
     assert parsed_health["output_underrun_baseline"] == 3
+    assert parsed_health["observed_input_sample_rate_hz"] == 48_000
     assert parsed_health["runtime_diagnostics"]["input_dropped_samples"] == 0
+
+
+def test_hardware_sample_rate_evidence_rejects_missing_or_non_integer_values() -> None:
+    assert TOOL._diagnostic_input_sample_rate({}) is None
+    assert TOOL._diagnostic_input_sample_rate({"input_sample_rate": True}) is None
+    assert TOOL._diagnostic_input_sample_rate({"input_sample_rate": 48_000.0}) is None
+    assert TOOL._diagnostic_input_sample_rate({"input_sample_rate": 48_000}) == 48_000
+
+
+def test_health_check_fails_after_warmup_on_backend_failure(monkeypatch, capsys) -> None:
+    clean = {
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "input_sample_rate": 48_000,
+        "output_underrun_total": 0,
+    }
+    failed = {
+        **clean,
+        "noise_backend_available": False,
+        "noise_backend_failed": True,
+    }
+    diagnostics = iter((clean, failed))
+    diagnostic_reads = 0
+    stopped = False
+    clock = [0.0]
+
+    class Processor:
+        def start(self, _input, _output):
+            return "Started"
+
+        def stop(self):
+            nonlocal stopped
+            stopped = True
+
+        def get_input_callback_age_ms(self):
+            return 1
+
+        def get_output_callback_age_ms(self):
+            return 1
+
+        def service_recovery(self):
+            return None
+
+        def get_stream_restart_count(self):
+            return 0
+
+        def get_runtime_diagnostics(self):
+            nonlocal diagnostic_reads
+            diagnostic_reads += 1
+            return next(diagnostics)
+
+    module = ModuleType("mic_eq")
+    monkeypatch.setattr(module, "AudioProcessor", Processor, raising=False)
+    monkeypatch.setitem(sys.modules, "mic_eq", module)
+    monkeypatch.setattr(
+        HEALTH_TOOL.sys,
+        "argv",
+        ["health_check.py", "--duration", "1800", "--warmup", "0", "--poll", "0"],
+    )
+    monkeypatch.setattr(HEALTH_TOOL.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        HEALTH_TOOL.time,
+        "sleep",
+        lambda _seconds: clock.__setitem__(0, clock[0] + 1.0),
+    )
+
+    assert HEALTH_TOOL.main() == 6
+    assert stopped is True
+    assert diagnostic_reads == 2
+    assert clock[0] < 2.0
+    assert "noise_backend_failed=true" in capsys.readouterr().out
+
+
+def test_power_event_reader_rejects_unbounded_or_entity_xml(monkeypatch) -> None:
+    valid_xml = """
+    <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">
+      <System>
+        <Provider Name="Microsoft-Windows-Kernel-Power" />
+        <EventID>42</EventID>
+        <TimeCreated SystemTime="2026-09-06T14:00:00Z" />
+      </System>
+    </Event>
+    """
+    entity_xml = '<!DOCTYPE Event [<!ENTITY unused "expanded">]>' + valid_xml
+    oversized_xml = valid_xml.replace(
+        "</Event>", "<EventData>" + ("x" * 32) + "</EventData></Event>"
+    )
+    outputs = iter((valid_xml, entity_xml, oversized_xml))
+
+    monkeypatch.setattr(TOOL.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        TOOL, "MAX_POWER_EVENT_FRAGMENT_CHARS", len(valid_xml) + 1
+    )
+    monkeypatch.setattr(
+        TOOL.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0, stdout=next(outputs), stderr=""
+        ),
+    )
+
+    since = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert len(TOOL._read_power_events(since)) == 1
+    assert TOOL._read_power_events(since) == []
+    assert TOOL._read_power_events(since) == []
 
 
 def test_hardware_report_provenance_uses_project_version_and_dirty_revision(
     monkeypatch,
 ) -> None:
-    assert TOOL._project_version() == "1.11.4"
+    with (TOOL.REPO_ROOT / "pyproject.toml").open("rb") as handle:
+        expected_version = tomllib.load(handle)["project"]["version"]
+    assert TOOL._project_version() == expected_version
 
     class Result:
         def __init__(self, stdout: str) -> None:
@@ -66,6 +178,118 @@ def test_hardware_report_provenance_uses_project_version_and_dirty_revision(
     monkeypatch.setattr(TOOL.subprocess, "run", lambda *args, **kwargs: next(outputs))
 
     assert TOOL._source_revision() == "abc123+uncommitted"
+
+
+def test_hardware_artifact_provenance_uses_verified_metadata_commit(
+    tmp_path, monkeypatch
+) -> None:
+    archive = tmp_path / "archives" / "candidate.7z"
+    sidecars = tmp_path / "sidecars"
+    bundle = tmp_path / "bundle"
+    archive.parent.mkdir()
+    sidecars.mkdir()
+    (bundle / "_internal").mkdir(parents=True)
+    archive.write_bytes(b"candidate")
+    archive_hash = TOOL._sha256(archive)
+    checksum = sidecars / f"{archive.name}.sha256"
+    checksum.write_text(f"{archive_hash}  {archive.name}\n", encoding="ascii")
+    (sidecars / f"{archive.name}.manifest.json").write_text("{}", encoding="utf-8")
+    (sidecars / f"{archive.name}.metadata.json").write_text(
+        json.dumps({"commit": "a" * 40, "source_dirty": False}),
+        encoding="utf-8",
+    )
+    (bundle / "_internal" / "audioforge-build.json").write_text(
+        json.dumps({"version": "1.12.0"}), encoding="utf-8"
+    )
+    captured: dict[str, Any] = {}
+
+    def verify(*paths, **kwargs):
+        captured["paths"] = paths
+        captured["kwargs"] = kwargs
+        return []
+
+    monkeypatch.setattr(TOOL, "_verify_sidecars", verify)
+
+    artifact, source_revision = TOOL._artifact_provenance(
+        archive, checksum, bundle, archive_hash
+    )
+
+    assert source_revision == "a" * 40
+    assert artifact["archive_sha256"] == archive_hash
+    assert captured["paths"][2] == sidecars / f"{archive.name}.manifest.json"
+    assert captured["paths"][3] == sidecars / f"{archive.name}.metadata.json"
+    assert captured["kwargs"]["expected_commit"] == "a" * 40
+
+
+def test_hardware_artifact_provenance_requires_metadata_sidecar(tmp_path) -> None:
+    archive = tmp_path / "candidate.7z"
+    archive.write_bytes(b"candidate")
+    checksum = tmp_path / f"{archive.name}.sha256"
+    checksum.write_text(
+        f"{TOOL._sha256(archive)}  {archive.name}\n", encoding="ascii"
+    )
+    bundle = tmp_path / "bundle" / "_internal"
+    bundle.mkdir(parents=True)
+    (bundle / "audioforge-build.json").write_text(
+        json.dumps({"version": "1.12.0"}), encoding="utf-8"
+    )
+
+    with pytest.raises(RuntimeError, match="invalid artifact metadata sidecar"):
+        TOOL._artifact_provenance(archive, checksum, bundle.parent, TOOL._sha256(archive))
+
+
+def test_hardware_evaluation_freezes_provenance_before_subprocesses(
+    tmp_path, monkeypatch
+) -> None:
+    subprocess_started = False
+
+    def source_revision() -> str:
+        return "b" * 40 if subprocess_started else "a" * 40
+
+    def runtime_provenance(_bundle_root=None) -> dict[str, str]:
+        return {"phase": "late" if subprocess_started else "start"}
+
+    def run(_command):
+        nonlocal subprocess_started
+        subprocess_started = True
+        return {"return_code": 0, "stdout": [], "stderr": []}
+
+    monkeypatch.setattr(TOOL, "_source_revision", source_revision)
+    monkeypatch.setattr(TOOL, "_runtime_provenance", runtime_provenance)
+    monkeypatch.setattr(TOOL, "_run", run)
+    monkeypatch.setattr(
+        TOOL,
+        "_parse_self_test",
+        lambda _result: {"passed": True, "route_latency_ms": 1.0, "confidence": 1.0},
+    )
+    monkeypatch.setattr(
+        TOOL,
+        "_parse_health",
+        lambda _result: {
+            "passed": True,
+            "observed_input_sample_rate_hz": 48_000,
+            "runtime_diagnostics": {},
+        },
+    )
+    monkeypatch.setattr(TOOL, "_selected_endpoint_ids", lambda **_kwargs: [])
+    monkeypatch.setattr(
+        TOOL,
+        "_privacy_filter_runs",
+        lambda runs, names: (runs, {name: f"device-{index}" for index, name in enumerate(names)}),
+    )
+    monkeypatch.setattr(TOOL, "_replace_private_strings", lambda value, _mapping: value)
+
+    report = TOOL.evaluate(
+        health_input="Input",
+        health_output="Output",
+        correlation_input="Loopback",
+        correlation_output="Output",
+        health_duration=1.0,
+        report_path=tmp_path / "report.json",
+    )
+
+    assert report["source_revision"] == "a" * 40
+    assert report["runtime_provenance"] == {"phase": "start"}
 
 
 def test_hardware_subprocess_uses_source_python_path(monkeypatch) -> None:
@@ -207,13 +431,31 @@ def test_health_gate_requires_standard_deepfilter_inference_and_output() -> None
         )
         == []
     )
+    clean["output_true_peak_db"] = -200.0
+    assert (
+        HEALTH_TOOL._selected_noise_model_failures(
+            clean, expected_model="deepfilter"
+        )
+        == []
+    )
+    clean["suppressor_latency_samples"] = 1_919
+    assert (
+        HEALTH_TOOL._selected_noise_model_failures(
+            clean, expected_model="deepfilter"
+        )
+        == []
+    )
+    clean["suppressor_latency_samples"] = 1_920
+    assert "suppressor_latency_samples=1920" in HEALTH_TOOL._selected_noise_model_failures(
+        clean, expected_model="deepfilter"
+    )
 
     broken = dict(clean)
     broken.update(
         noise_model="rnnoise",
         suppressor_latency_samples=480,
         suppressor_successful_inference_frames=0,
-        output_true_peak_db=-120.0,
+        output_true_peak_db=math.nan,
     )
     failures = HEALTH_TOOL._selected_noise_model_failures(
         broken, expected_model="deepfilter"
@@ -221,7 +463,207 @@ def test_health_gate_requires_standard_deepfilter_inference_and_output() -> None
     assert "noise_model='rnnoise'" in failures
     assert "suppressor_latency_samples=480" in failures
     assert "suppressor_successful_inference_frames=0" in failures
-    assert "output_true_peak_db=-120.0" in failures
+    assert "output_true_peak_db=nan" in failures
+
+
+def test_lifecycle_model_probe_requires_new_inference_frames() -> None:
+    diagnostics = {
+        "noise_model": "deepfilter",
+        "suppressor_latency_samples": 1_440,
+        "noise_backend_available": True,
+        "noise_backend_failed": False,
+        "suppressor_successful_inference_frames": 12,
+        "output_true_peak_db": -18.0,
+    }
+
+    assert TOOL._model_diagnostics_healthy(
+        diagnostics, "deepfilter", minimum_inference_frames=12
+    ) is False
+    diagnostics["suppressor_successful_inference_frames"] = 13
+    assert TOOL._model_diagnostics_healthy(
+        diagnostics, "deepfilter", minimum_inference_frames=12
+    ) is True
+    diagnostics["output_true_peak_db"] = -200.0
+    assert TOOL._model_diagnostics_healthy(
+        diagnostics, "deepfilter", minimum_inference_frames=12
+    ) is True
+    diagnostics["output_true_peak_db"] = math.nan
+    assert TOOL._model_diagnostics_healthy(diagnostics, "deepfilter") is False
+
+
+@pytest.mark.parametrize("event_window", [False, True])
+def test_lifecycle_recovery_rejects_changed_or_missing_input_rate(event_window) -> None:
+    baseline = {key: 0 for key in HEALTH_TOOL._ZERO_REQUIRED_DIAGNOSTICS}
+    baseline.update(
+        input_sample_rate=48_000,
+        output_underrun_total=0,
+        noise_backend_available=True,
+        noise_backend_failed=False,
+    )
+    assert TOOL._diagnostic_failures(baseline, baseline, event_window=event_window) == []
+    for rate in (44_100, None, True):
+        current = {**baseline, "input_sample_rate": rate}
+        assert "input_sample_rate missing or changed" in TOOL._diagnostic_failures(
+            baseline, current, event_window=event_window
+        )
+
+
+def test_lifecycle_settle_rejects_diagnostic_counter_growth() -> None:
+    baseline: dict[str, Any] = {
+        key: 0 for key in HEALTH_TOOL._ZERO_REQUIRED_DIAGNOSTICS
+    }
+    baseline.update(
+        {
+            "output_underrun_total": 0,
+            "noise_backend_available": True,
+            "noise_backend_failed": False,
+            "last_stream_error": None,
+        }
+    )
+    current = dict(baseline)
+    current["output_recovery_count"] = 1
+
+    assert "output_recovery_count changed" in TOOL._stable_diagnostic_failures(
+        baseline, current
+    )
+
+
+@pytest.mark.parametrize(
+    ("new_underruns", "startup_underruns"),
+    [(0, None), (1, None), (3, (1, 3))],
+)
+def test_lifecycle_model_probe_uses_bundled_deepfilter_and_restores_cleanly(
+    monkeypatch, tmp_path, new_underruns, startup_underruns
+) -> None:
+    input_device = SimpleNamespace(
+        name="Input", endpoint_id="input-endpoint", is_default=True, sample_rate=44_100
+    )
+    output_device = SimpleNamespace(
+        name="Output", endpoint_id="output-endpoint", is_default=True, sample_rate=48_000
+    )
+    environment_seen: list[str | None] = []
+
+    def diagnostics(
+        model: str, frames: int, output_underruns: int
+    ) -> dict[str, object]:
+        result: dict[str, Any] = {
+            key: 0 for key in HEALTH_TOOL._ZERO_REQUIRED_DIAGNOSTICS
+        }
+        result.update(
+            {
+                "input_sample_rate": 48_000,
+                "output_underrun_total": output_underruns,
+                "noise_backend_available": True,
+                "noise_backend_failed": False,
+                "last_stream_error": None,
+                "noise_model": model,
+                "suppressor_latency_samples": (
+                    1_440 if model == "deepfilter" else 480
+                ),
+                "suppressor_successful_inference_frames": frames,
+                "output_true_peak_db": -200.0,
+            }
+        )
+        return result
+
+    class Processor:
+        def __init__(self) -> None:
+            self.model = "rnnoise"
+            self.deepfilter_reads = 0
+            self.startup_reads = 0
+
+        def start(self, _input: str, _output: str) -> None:
+            return None
+
+        def stop(self) -> None:
+            return None
+
+        def get_active_input_device(self) -> str:
+            return "Input"
+
+        def get_active_output_device(self) -> str:
+            return "Output"
+
+        def get_input_callback_age_ms(self) -> int:
+            return 1
+
+        def get_output_callback_age_ms(self) -> int:
+            return 1
+
+        def get_runtime_diagnostics(self) -> dict[str, object]:
+            if self.model == "deepfilter":
+                self.deepfilter_reads += 1
+                return diagnostics(
+                    "deepfilter",
+                    max(0, self.deepfilter_reads - 1),
+                    new_underruns,
+                )
+            self.startup_reads += 1
+            startup_underrun = (
+                startup_underruns[
+                    min(self.startup_reads - 1, len(startup_underruns) - 1)
+                ]
+                if startup_underruns
+                else 0
+            )
+            return diagnostics("rnnoise", 0, startup_underrun)
+
+        def service_recovery(self) -> None:
+            return None
+
+        def list_noise_models(self) -> list[tuple[str, str]]:
+            return [("rnnoise", "RNNoise"), ("deepfilter", "DeepFilter")]
+
+        def get_noise_model(self) -> str:
+            return self.model
+
+        def set_noise_model(self, model: str) -> bool:
+            self.model = model
+            self.deepfilter_reads = 0
+            return True
+
+    def runtime_api(_bundle_root: Path | None):
+        environment_seen.append(os.environ.get("AUDIOFORGE_ENABLE_DEEPFILTER"))
+        return (
+            Processor,
+            lambda: [input_device],
+            lambda: [output_device],
+        )
+
+    monkeypatch.delenv("AUDIOFORGE_ENABLE_DEEPFILTER", raising=False)
+    monkeypatch.setattr(TOOL, "_runtime_api", runtime_api)
+    monkeypatch.setattr(TOOL, "LIFECYCLE_POLL_SECONDS", 0.001)
+    monkeypatch.setattr(TOOL, "LIFECYCLE_STARTUP_STABILITY_SECONDS", 0.003)
+    result = TOOL._run_lifecycle_probe(
+        scenario="model_configuration_change",
+        health_input="Input",
+        health_output="Output",
+        bundle_root=tmp_path,
+        timeout_seconds=0.5,
+        settle_seconds=0.0,
+    )
+
+    if startup_underruns is None and new_underruns:
+        assert result["passed"] is False
+        assert result["event"]["reason"] == "model_switch_not_observed"
+        assert result["event"]["last_diagnostics"]["output_underrun_total"] == 1
+        diagnostic_failures = result["event"]["last_failure_predicates"][
+            "diagnostic_failures"
+        ]
+        assert "output_underrun_total changed" in diagnostic_failures
+        return
+
+    assert result["passed"] is True, json.dumps(result, indent=2)
+    assert result["observed_input_sample_rate_hz"] == 48_000
+    assert result["diagnostics"]["before"]["input_sample_rate"] == 48_000
+    if startup_underruns:
+        assert result["diagnostics"]["before"]["output_underrun_total"] == 3
+    assert result["event"]["alternate_inference_frames"] == 1
+    assert result["event"]["latency_samples_before"] == 480
+    assert result["event"]["latency_samples_alternate"] == 1_440
+    assert result["event"]["latency_samples_restored"] == 480
+    assert environment_seen == ["1"]
+    assert "AUDIOFORGE_ENABLE_DEEPFILTER" not in os.environ
 
 
 def test_hardware_report_privacy_filter_removes_all_selected_device_names() -> None:
@@ -265,6 +707,16 @@ def test_hardware_privacy_filter_handles_empty_overlapping_and_case_variant_name
     assert output == f"{pseudonyms['Mic Array']} selected after {pseudonyms['Mic']}"
 
 
+def test_hardware_privacy_filter_redacts_windows_endpoint_ids() -> None:
+    endpoint_id = "{0.0.1.00000000}.{12345678-1234-1234-1234-123456789abc}"
+    runs, _pseudonyms = TOOL._privacy_filter_runs(
+        [{"stderr": [f"WASAPI endpoint {endpoint_id} failed"]}], []
+    )
+
+    assert endpoint_id not in json.dumps(runs)
+    assert "endpoint-redacted" in runs[0]["stderr"][0]
+
+
 def test_hardware_evaluation_rejects_empty_device_names_before_running(tmp_path) -> None:
     with pytest.raises(ValueError, match="health input"):
         TOOL.evaluate(
@@ -275,6 +727,43 @@ def test_hardware_evaluation_rejects_empty_device_names_before_running(tmp_path)
             health_duration=1.0,
             report_path=tmp_path / "report.json",
         )
+
+
+def _lifecycle_evidence(scenario: str) -> dict:
+    event = {
+        "observed": True,
+        "backend_observed": True,
+    }
+    if scenario == "device_reconnect":
+        event.update(
+            selected_endpoint_absent=True,
+            selected_endpoint_reappeared=True,
+        )
+    elif scenario == "default_device_change":
+        event.update(
+            default_endpoint_changed=True,
+            selected_route_correct=True,
+        )
+    elif scenario == "sleep_resume":
+        event.update(os_suspend_event=True, os_resume_event=True)
+    else:
+        event.update(
+            model_switched=True,
+            model_restored=True,
+            diagnostics_healthy=True,
+        )
+    return {
+        "scenario": scenario,
+        "passed": True,
+        "bounded": True,
+        "event": event,
+        "recovery": {
+            "bounded": True,
+            "recovered": True,
+            "settled_clean": True,
+        },
+        "diagnostics": {"before": {}, "after": {}},
+    }
 
 
 def _matrix_case(
@@ -298,6 +787,7 @@ def _matrix_case(
             "id": case_id,
             "device_class": device_class,
             "nominal_sample_rate_hz": sample_rate,
+            "observed_input_sample_rate_hz": sample_rate,
             "scenario": scenario,
             "evidence_kind": (
                 "automated" if scenario == "baseline" else "operator_observed"
@@ -311,6 +801,9 @@ def _matrix_case(
         "model_discovery": {"passed": True},
         "selected_route_correlation": {"passed": True},
         "sustained_health": {"passed": True},
+        "lifecycle_evidence": (
+            None if scenario == "baseline" else _lifecycle_evidence(scenario)
+        ),
         "routes": {
             "correlation": {
                 "input": "device-0123456789abcdef",
@@ -324,31 +817,78 @@ def _matrix_case(
     }
 
 
-def test_hardware_matrix_accepts_one_digest_bound_automated_baseline(tmp_path) -> None:
-    archive_hash = "a" * 64
-    path = tmp_path / "win11-virtual-baseline.json"
-    path.write_text(
-        json.dumps(
-            _matrix_case(
-                case_id="win11-virtual-baseline",
-                os_release="11",
-                device_class="virtual",
-                sample_rate=48_000,
-                scenario="baseline",
-                archive_sha256=archive_hash,
-            )
+def _complete_matrix_cases(archive_hash: str) -> list[dict]:
+    return [
+        _matrix_case(
+            case_id="win11-usb-baseline",
+            os_release="11",
+            device_class="usb",
+            sample_rate=48_000,
+            scenario="baseline",
+            archive_sha256=archive_hash,
         ),
-        encoding="utf-8",
-    )
+        _matrix_case(
+            case_id="win11-virtual-model-configuration",
+            os_release="11",
+            device_class="virtual",
+            sample_rate=48_000,
+            scenario="model_configuration_change",
+            archive_sha256=archive_hash,
+        ),
+    ]
+
+
+def test_hardware_matrix_accepts_required_risk_based_coverage(tmp_path) -> None:
+    archive_hash = "a" * 64
+    paths = []
+    for index, case in enumerate(_complete_matrix_cases(archive_hash)):
+        path = tmp_path / f"case-{index}.json"
+        path.write_text(json.dumps(case), encoding="utf-8")
+        paths.append(path)
 
     result = MATRIX_TOOL.aggregate(
-        [path],
+        paths,
         expected_archive_sha256=archive_hash,
         output=tmp_path / "matrix.json",
     )
 
     assert result["passed"] is True
     assert result["coverage"]["missing"]["automated_baseline_cases"] == 0
+    assert result["coverage"]["missing"]["scenarios"] == []
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "replacement", "missing_key"),
+    [
+        ("machine", "release", "10", "os_releases"),
+        ("case", "device_class", "usb", "device_classes"),
+        ("case", "nominal_sample_rate_hz", 44_100, "nominal_sample_rates_hz"),
+        ("case", "scenario", "baseline", "scenarios"),
+    ],
+)
+def test_release_scope_still_requires_each_qualified_dimension(
+    tmp_path, section, field, replacement, missing_key
+) -> None:
+    archive_hash = "e" * 64
+    paths = []
+    for index, case in enumerate(_complete_matrix_cases(archive_hash)):
+        case[section][field] = replacement
+        if field == "nominal_sample_rate_hz":
+            case["case"]["observed_input_sample_rate_hz"] = replacement
+        if field == "scenario":
+            case["case"]["evidence_kind"] = "automated"
+        path = tmp_path / f"case-{index}.json"
+        path.write_text(json.dumps(case), encoding="utf-8")
+        paths.append(path)
+    result = MATRIX_TOOL.aggregate(
+        paths,
+        expected_archive_sha256=archive_hash,
+        output=tmp_path / "matrix.json",
+        allow_incomplete=True,
+    )
+    assert result["errors"] == []
+    assert result["passed"] is False
+    assert result["coverage"]["missing"][missing_key]
 
 
 def test_hardware_matrix_requires_an_automated_baseline_without_fabrication(
@@ -379,6 +919,8 @@ def test_hardware_matrix_requires_an_automated_baseline_without_fabrication(
 
     assert result["passed"] is False
     assert result["coverage"]["missing"]["automated_baseline_cases"] == 1
+    assert result["coverage"]["missing"]["device_classes"] == ["virtual"]
+    assert "model_configuration_change" in result["coverage"]["missing"]["scenarios"]
 
 
 def test_hardware_matrix_rejects_forged_top_level_pass(tmp_path) -> None:
@@ -391,7 +933,7 @@ def test_hardware_matrix_rejects_forged_top_level_pass(tmp_path) -> None:
         scenario="device_reconnect",
         archive_sha256=archive_hash,
     )
-    case["requested_health_duration_seconds"] = 30.0
+    case["requested_health_duration_seconds"] = float("nan")
     case["case"]["evidence_kind"] = "automated"
     case["case"]["operator_attestation"] = False
     case["case"]["scenario_evidence_valid"] = False

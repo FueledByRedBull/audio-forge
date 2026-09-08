@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+## v1.12.0
+
+- Discard stale Auto-EQ results after retakes, keep analysis targets fixed, and
+  enable applied EQ with Undo support. Retry incomplete Voice Setup results and
+  clear outdated calibration diagnostics after processing edits.
+- Remember newly saved presets for Last Used startup, refresh preset menus on
+  opening, and distinguish a saved preset from a failure to remember it.
+- Match Voice Setup analysis and verification to the applied limiter settings,
+  run second-passage verification off the UI thread, and restore temporary
+  calibration evidence on rollback and Undo within the same capture context.
+- Allow route selection inside first-run setup, disable compression in Minimal
+  Processing, and clarify preset scope, bypass, and latency-reporting labels.
+- Keep analysis workers alive until completion, cancel obsolete work cooperatively,
+  and release the Python GIL during offline native processing.
+- Preserve damaged configuration and incomplete migrations, prevent accidental
+  preset replacement, and handle malformed presets at their shared load boundary.
+- Validate offline DSP inputs, isolate real-time allocation test accounting, and
+  apply click-safe EQ bypass transitions through the production processing path.
+- Prevent noise-model discovery from crashing on a closed inherited stderr pipe.
+- Prevent DeepFilter failure during sustained digital silence; qualify actual
+  input stream rates, detect backend failures during the hardware soak, and
+  attribute results to the verified archive's source revision.
+- Restore full Windows device names, including microphone model names.
+- Reduce VAD CPU use and avoid output underruns caused by stale queue-length checks.
+- Preserve quiet detected speech in VAD Only mode without applying the disabled
+  level threshold; retain level fallback when VAD is unavailable.
+- Add per-user Windows MSI packaging alongside the portable distribution, explicit
+  Windows runtime dependencies, and bundled dependency license inventories.
+- Strengthen release failure propagation, provenance verification, hardware
+  coverage checks, and retry-safe draft publication of the tested artifacts.
+- Pin supported build tools and prepare release documentation before publication,
+  using generated sidecars for artifact measurements.
+- Move the build runtime to CPython 3.13.15, replace the unused DirectML payload
+  with CPU-only ONNX Runtime, and build DeepFilter from pinned source.
+
 ## v1.11.4 - 2026-09-01
 
 - Aligned RNNoise wet/dry frames at partial strength and added bounded recovery

@@ -264,11 +264,17 @@ pub struct AudioProcessor {
     /// Zero-based occurrence of the selected input friendly name.
     input_device_name_ordinal: u32,
 
+    /// Stable platform endpoint ID for the selected input, when available.
+    input_device_endpoint_id: Option<String>,
+
     /// Output device name
     output_device_name: Option<String>,
 
     /// Zero-based occurrence of the selected output friendly name.
     output_device_name_ordinal: u32,
+
+    /// Stable platform endpoint ID for the selected output, when available.
+    output_device_endpoint_id: Option<String>,
 
     // === Level Metering (lock-free atomics) ===
     // Stored as f32 bits via to_bits()/from_bits()
@@ -599,8 +605,10 @@ impl AudioProcessor {
             )),
             input_device_name: None,
             input_device_name_ordinal: 0,
+            input_device_endpoint_id: None,
             output_device_name: None,
             output_device_name_ordinal: 0,
+            output_device_endpoint_id: None,
             // Initialize metering atomics with -infinity (no signal)
             input_peak: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             input_rms: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),

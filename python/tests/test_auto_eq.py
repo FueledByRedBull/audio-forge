@@ -5,6 +5,8 @@ Comprehensive pytest suite for Auto-EQ behavior.
 import numpy as np
 import pytest
 
+import mic_eq
+import mic_eq.mic_eq_core as mic_eq_core
 from mic_eq import config
 from mic_eq.analysis import auto_eq
 from mic_eq.analysis.auto_eq_parts import headroom as headroom_module
@@ -201,6 +203,7 @@ def test_validation_failure_abstains_instead_of_applying_a_flat_curve(monkeypatc
         qs,
         centers_hz,
         _weights,
+        cancel_check=None,
     ):
         flat = np.zeros_like(gains)
         return (
@@ -1155,7 +1158,12 @@ def test_27_validation_rejects_remaining_headroom_risk():
 
 def test_28_python_headroom_fallback_is_explicitly_advisory(monkeypatch):
     monkeypatch.setattr(
-        headroom_module, "_native_simulate", lambda *_args, **_kwargs: None
+        headroom_module,
+        "_native_simulate",
+        lambda *_args, **_kwargs: (
+            None,
+            {"kind": "unavailable", "message": "native simulator unavailable"},
+        ),
     )
     audio = np.zeros(4096, dtype=np.float32)
     eq_settings = {
@@ -1188,9 +1196,86 @@ def test_28_python_headroom_fallback_is_explicitly_advisory(monkeypatch):
     assert headroom["after"]["limitations"]
 
 
+def test_28b_native_headroom_failure_preserves_a_bounded_cause(monkeypatch):
+    monkeypatch.setattr(
+        headroom_module,
+        "_native_simulate",
+        lambda *_args, **_kwargs: (
+            None,
+            {"kind": "runtime_error", "message": "native simulator failed: test"},
+        ),
+    )
+    eq_settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.0] * 10,
+        "band_qs": [1.41] * 10,
+    }
+
+    validated = apply_headroom_validation(
+        np.zeros(4096, dtype=np.float32),
+        48_000,
+        eq_settings,
+        {"compressor": {"enabled": False}, "deesser": {"enabled": False}},
+    )
+
+    assert validated["headroom_validation"]["native_simulation_failure"] == {
+        "kind": "runtime_error",
+        "message": "native simulator failed: test",
+    }
+    assert validated["headroom_validation"]["after"]["native_simulation_failure"][
+        "kind"
+    ] == "runtime_error"
+
+
+@pytest.mark.parametrize(
+    ("failure_mode", "expected_kind"),
+    [
+        ("unavailable", "unavailable"),
+        ("runtime", "runtime_error"),
+        ("invalid", "invalid_result"),
+    ],
+)
+def test_native_headroom_failure_classification_is_explicit(
+    monkeypatch, failure_mode, expected_kind
+):
+    if failure_mode == "unavailable":
+        monkeypatch.setattr(mic_eq, "CORE_AVAILABLE", False)
+    elif failure_mode == "runtime":
+        monkeypatch.setattr(
+            mic_eq_core,
+            "simulate_auto_eq_chain",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+    else:
+        monkeypatch.setattr(
+            mic_eq_core,
+            "simulate_auto_eq_chain",
+            lambda *_args, **_kwargs: {"output_true_peak_db": -3.0},
+        )
+
+    _result, failure = headroom_module._native_simulate(
+        np.zeros(64, dtype=np.float32),
+        48_000,
+        [(1000.0, 0.0, 1.41)] * 10,
+        {},
+    )
+
+    assert failure is not None
+    assert failure["kind"] == expected_kind
+
+
+def test_headroom_safety_fails_closed_for_missing_metrics():
+    assert headroom_module._is_headroom_safe({}) is False
+
+
 def test_29_fallback_cannot_report_risky_capture_as_safe(monkeypatch):
     monkeypatch.setattr(
-        headroom_module, "_native_simulate", lambda *_args, **_kwargs: None
+        headroom_module,
+        "_native_simulate",
+        lambda *_args, **_kwargs: (
+            None,
+            {"kind": "unavailable", "message": "native simulator unavailable"},
+        ),
     )
     t = np.arange(48_000, dtype=float) / 48_000.0
     audio = (0.95 * np.sin(2.0 * np.pi * 5000.0 * t)).astype(np.float32)

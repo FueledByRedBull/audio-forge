@@ -517,7 +517,11 @@ impl NoiseGate {
             vad_held_open,
             vad_threshold,
         );
-        level_reduction.max(posterior_reduction)
+        if mode == GateMode::VadOnly && vad_available {
+            posterior_reduction
+        } else {
+            level_reduction.max(posterior_reduction)
+        }
     }
 
     #[inline]
@@ -1249,5 +1253,78 @@ mod tests {
         assert!(uncertain_probability > high_probability);
         assert!(high_probability.abs() < 1.0e-9);
         assert!(low_probability <= EXPANDER_RANGE_DB * VAD_ONLY_CONTINUOUS_SCALE);
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_only_quiet_speech_ignores_level_with_pipeline_matrix() {
+        for sample_rate in [16_000_u32, 44_100, 48_000] {
+            let vad_noise = render_vad_case(sample_rate, GateMode::VadOnly, -50.0, 0.0, true);
+            let vad_fallback = render_vad_case(sample_rate, GateMode::VadOnly, -20.0, 1.0, false);
+
+            for speech_level_db in [-50.0, -60.0] {
+                let threshold_speech = render_vad_case(
+                    sample_rate,
+                    GateMode::ThresholdOnly,
+                    speech_level_db,
+                    1.0,
+                    true,
+                );
+                let assisted_speech = render_vad_case(
+                    sample_rate,
+                    GateMode::VadAssisted,
+                    speech_level_db,
+                    1.0,
+                    true,
+                );
+                let vad_speech =
+                    render_vad_case(sample_rate, GateMode::VadOnly, speech_level_db, 1.0, true);
+
+                println!(
+                    "sr={sample_rate} level={speech_level_db:.0}dB threshold_speech={threshold_speech:.2}dB assisted_speech={assisted_speech:.2}dB vad_speech={vad_speech:.2}dB vad_noise={vad_noise:.2}dB vad_fallback={vad_fallback:.2}dB"
+                );
+
+                assert!(threshold_speech < -3.0);
+                assert!(assisted_speech < -3.0);
+                assert!(vad_speech > -1.0);
+            }
+            assert!(vad_noise < -25.0);
+            assert!(vad_fallback > -1.0);
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    fn render_vad_case(
+        sample_rate: u32,
+        mode: GateMode,
+        level_db: f64,
+        probability: f32,
+        available: bool,
+    ) -> f64 {
+        let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, sample_rate as f64);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(sample_rate, 0.5)));
+        gate.set_gate_mode(mode);
+        let block_len = (sample_rate as usize / 100).max(1);
+        gate.set_external_vad_probability(0.0, false);
+        let mut warmup = vec![0.1_f32; sample_rate as usize / 10];
+        for block in warmup.chunks_mut(block_len) {
+            gate.process_block_inplace(block);
+        }
+        gate.reset();
+        gate.set_external_vad_probability(probability, available);
+
+        let amplitude = util::db_to_linear(level_db) as f32;
+        let mut buffer = vec![amplitude; (sample_rate as usize) / 2];
+        for block in buffer.chunks_mut(block_len) {
+            gate.process_block_inplace(block);
+        }
+        let tail = &buffer[buffer.len() - (sample_rate as usize / 10)..];
+        let output_rms = (tail
+            .iter()
+            .map(|sample| (*sample as f64).powi(2))
+            .sum::<f64>()
+            / tail.len() as f64)
+            .sqrt();
+        20.0 * (output_rms / amplitude as f64).log10()
     }
 }

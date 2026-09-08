@@ -39,11 +39,11 @@ fn find_48khz_config(
     target_rate: u32,
 ) -> Option<SupportedStreamConfig> {
     for config in configs {
-        let min_rate = config.min_sample_rate().0;
-        let max_rate = config.max_sample_rate().0;
+        let min_rate = config.min_sample_rate();
+        let max_rate = config.max_sample_rate();
         if preferred_sample_rate_from_ranges(0, &[(min_rate, max_rate)], target_rate) == target_rate
         {
-            return Some(config.with_sample_rate(cpal::SampleRate(target_rate)));
+            return Some(config.with_sample_rate(target_rate));
         }
     }
     None

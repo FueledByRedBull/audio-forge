@@ -17,7 +17,7 @@ impl AudioProcessor {
         input_device: Option<&str>,
         output_device: Option<&str>,
     ) -> Result<String, String> {
-        self.start_with_device_ordinals(input_device, 0, output_device, 0)
+        self.start_with_device_ordinals_and_ids(input_device, 0, None, output_device, 0, None)
     }
 
     /// Start audio processing with deterministic duplicate-name selection.
@@ -27,6 +27,30 @@ impl AudioProcessor {
         input_device_name_ordinal: u32,
         output_device: Option<&str>,
         output_device_name_ordinal: u32,
+    ) -> Result<String, String> {
+        self.start_with_device_ordinals_and_ids(
+            input_device,
+            input_device_name_ordinal,
+            None,
+            output_device,
+            output_device_name_ordinal,
+            None,
+        )
+    }
+
+    /// Start audio processing using stable platform endpoint IDs when present.
+    ///
+    /// The friendly name and ordinal remain a compatibility fallback for
+    /// platforms without stable endpoint IDs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_with_device_ordinals_and_ids(
+        &mut self,
+        input_device: Option<&str>,
+        input_device_name_ordinal: u32,
+        input_device_endpoint_id: Option<&str>,
+        output_device: Option<&str>,
+        output_device_name_ordinal: u32,
+        output_device_endpoint_id: Option<&str>,
     ) -> Result<String, String> {
         self.ensure_supervisor();
         self.restart_requested.store(false, Ordering::Release);
@@ -156,9 +180,10 @@ impl AudioProcessor {
             Arc::clone(&self.input_phase_polarity_flipped),
         );
         let input = match input_device {
-            Some(name) => AudioInput::from_device_name_ordinal_with_options(
+            Some(name) => AudioInput::from_device_identity_with_options(
                 name,
                 input_device_name_ordinal,
+                input_device_endpoint_id,
                 input_producer,
                 last_input_callback_time_us,
                 input_callback_error_count,
@@ -184,7 +209,11 @@ impl AudioProcessor {
 
         let output_setup = match output_device {
             Some(name) => {
-                AudioOutput::from_named_device_ordinal_setup(name, output_device_name_ordinal)
+                AudioOutput::from_named_device_identity_setup(
+                    name,
+                    output_device_name_ordinal,
+                    output_device_endpoint_id,
+                )
             }
             None => AudioOutput::from_default_device_setup(),
         };
@@ -266,8 +295,10 @@ impl AudioProcessor {
 
         self.input_device_name = Some(input_device_name.clone());
         self.input_device_name_ordinal = input_device_name_ordinal;
+        self.input_device_endpoint_id = input_device_endpoint_id.map(ToOwned::to_owned);
         self.output_device_name = Some(output_device_name.clone());
         self.output_device_name_ordinal = output_device_name_ordinal;
+        self.output_device_endpoint_id = output_device_endpoint_id.map(ToOwned::to_owned);
         self.audio_input = Some(input);
         self.audio_output = Some(output);
 
@@ -348,7 +379,6 @@ impl AudioProcessor {
         let suppressor_dirty = Arc::clone(&self.suppressor_dirty);
         let suppressor_reset_requested = Arc::clone(&self.suppressor_reset_requested);
         let restart_requested_for_dsp = Arc::clone(&self.restart_requested);
-        let eq_enabled = Arc::clone(&self.eq_enabled);
         let eq_control = Arc::clone(&self.eq_control);
         let eq_dirty = Arc::clone(&self.eq_dirty);
         let compressor_enabled = Arc::clone(&self.compressor_enabled);
@@ -656,9 +686,7 @@ impl AudioProcessor {
                         deesser_detector_confidence.store(0.0_f32.to_bits(), Ordering::Relaxed);
                     }
 
-                    if eq_enabled.load(Ordering::Acquire) {
-                        eq_rt.process_block_inplace($buffer);
-                    }
+                    eq_rt.process_block_inplace($buffer);
 
                     if compressor_enabled.load(Ordering::Acquire) {
                         let true_peak_pressure = f32::from_bits(

@@ -9,6 +9,7 @@ import time
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from ..analysis.auto_eq import analyze_auto_eq
+from ..analysis.cancellation import AnalysisCancelled
 
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class AnalysisWorker(QThread):
 
     # Signals
     step_progress = pyqtSignal(str, int)  # (step_name, percentage)
-    finished = pyqtSignal(dict)            # Emits eq_settings dict
+    result_ready = pyqtSignal(dict)        # Emits eq_settings dict
     failed = pyqtSignal(str)               # Emits error message (generic)
 
     def __init__(
@@ -85,6 +86,7 @@ class AnalysisWorker(QThread):
                 target_mode=self.target_mode,
                 smoothing_strength=self.smoothing_strength,
                 chain_settings=self.chain_settings,
+                cancel_check=self._should_stop,
             )
             if self._should_stop():
                 return
@@ -103,8 +105,10 @@ class AnalysisWorker(QThread):
             if elapsed > 0.5:
                 logger.info("Analysis took %.2fs (target <500ms)", elapsed)
 
-            self.finished.emit(eq_settings)
+            self.result_ready.emit(eq_settings)
 
+        except AnalysisCancelled:
+            return
         except Exception as e:
             # Catch any unexpected errors
             self.failed.emit(str(e))

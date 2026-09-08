@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use super::buffer::AudioConsumer;
 use super::clock::now_micros;
+use super::device::{device_for_endpoint_id, device_name};
 use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
 use super::rt::{store_rt_error, RtErrorCode};
 use super::{find_48khz_config, parse_fixed_buffer_frames, supported_fixed_buffer_frames};
@@ -85,9 +86,7 @@ impl AudioOutput {
     }
 
     fn select_device(device: Device) -> Result<OutputStreamSetup, AudioError> {
-        let name = device
-            .name()
-            .map_err(|e| AudioError::DeviceName(e.to_string()))?;
+        let name = device_name(&device).map_err(AudioError::DeviceName)?;
 
         let supported_configs: Vec<_> = device
             .supported_output_configs()
@@ -117,7 +116,7 @@ impl AudioOutput {
 
         let device_info = AudioDeviceInfo {
             name,
-            sample_rate: supported_config.sample_rate().0,
+            sample_rate: supported_config.sample_rate(),
             channels: supported_config.channels(),
         };
 
@@ -134,19 +133,23 @@ impl AudioOutput {
         Self::select_device(device)
     }
 
-    pub(crate) fn from_named_device_ordinal_setup(
+    pub(crate) fn from_named_device_identity_setup(
         name: &str,
         name_ordinal: u32,
+        endpoint_id: Option<&str>,
     ) -> Result<OutputStreamSetup, AudioError> {
         let host = cpal::default_host();
-        let device = host
-            .output_devices()
-            .map_err(|error| AudioError::DeviceName(error.to_string()))?
-            .filter(|device| device.name().map(|value| value == name).unwrap_or(false))
-            .nth(name_ordinal as usize)
-            .ok_or_else(|| {
-                AudioError::DeviceNotFound(format!("{name} (occurrence {name_ordinal})"))
-            })?;
+        let device = if let Some(endpoint_id) = endpoint_id {
+            device_for_endpoint_id(endpoint_id, false).map_err(AudioError::DeviceNotFound)?
+        } else {
+            host.output_devices()
+                .map_err(|error| AudioError::DeviceName(error.to_string()))?
+                .filter(|device| device_name(device).is_ok_and(|value| value == name))
+                .nth(name_ordinal as usize)
+                .ok_or_else(|| {
+                    AudioError::DeviceNotFound(format!("{name} (occurrence {name_ordinal})"))
+                })?
+        };
         Self::select_device(device)
     }
 
@@ -204,6 +207,62 @@ impl AudioOutput {
             }
         }
     }
+
+    // RT_REGION_START: cpal_output_renderer
+    fn render_output<T>(
+        data: &mut [T],
+        num_channels: usize,
+        consumer: &mut AudioConsumer,
+        scratch: &mut [f32],
+        underrun_streak: &AtomicU32,
+        total_underruns: &AtomicU64,
+    ) -> usize
+    where
+        T: SizedSample + FromSample<f32>,
+    {
+        let frames_needed = data.len() / num_channels;
+        let mut copied_frames = 0usize;
+
+        while copied_frames < frames_needed {
+            let batch = (frames_needed - copied_frames).min(scratch.len());
+            if batch == 0 {
+                break;
+            }
+            let count = consumer.read(&mut scratch[..batch]);
+            if count == 0 {
+                break;
+            }
+
+            for (i, &sample) in scratch[..count].iter().enumerate() {
+                let frame_idx = copied_frames + i;
+                let converted = Self::convert_output_sample::<T>(sample);
+                if num_channels == 1 {
+                    data[frame_idx] = converted;
+                } else {
+                    for channel in 0..num_channels {
+                        data[frame_idx * num_channels + channel] = converted;
+                    }
+                }
+            }
+
+            copied_frames += count;
+            if count < batch {
+                break;
+            }
+        }
+
+        if copied_frames < frames_needed {
+            underrun_streak.fetch_add(1, Ordering::Relaxed);
+            total_underruns.fetch_add(1, Ordering::Relaxed);
+            Self::fill_underrun_tail(data, copied_frames, num_channels, consumer.last_sample());
+            consumer.set_last_sample(0.0);
+        } else {
+            underrun_streak.store(0, Ordering::Relaxed);
+        }
+
+        copied_frames
+    }
+    // RT_REGION_END: cpal_output_renderer
 
     fn drain_muted_consumer(
         consumer: &mut AudioConsumer,
@@ -369,88 +428,14 @@ impl AudioOutput {
                         return;
                     }
 
-                    let available = consumer.len();
-
-                    if num_channels == 1 {
-                        let needed = data.len();
-                        if available < needed {
-                            underrun_streak.fetch_add(1, Ordering::Relaxed);
-                            total_underruns.fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            underrun_streak.store(0, Ordering::Relaxed);
-                        }
-
-                        let to_read = available.min(data.len());
-                        let mut copied = 0usize;
-                        let mut last_written_sample = None;
-                        while copied < to_read {
-                            let batch = (to_read - copied).min(OUTPUT_SCRATCH_CAPACITY);
-                            let count = consumer.read(&mut mono_scratch[..batch]);
-                            if count == 0 {
-                                break;
-                            }
-
-                            for (dst, &sample) in data[copied..copied + count]
-                                .iter_mut()
-                                .zip(mono_scratch[..count].iter())
-                            {
-                                *dst = Self::convert_output_sample::<T>(sample);
-                                last_written_sample = Some(sample);
-                            }
-
-                            copied += count;
-                            if count < batch {
-                                break;
-                            }
-                        }
-
-                        if copied < data.len() {
-                            let last =
-                                last_written_sample.unwrap_or_else(|| consumer.last_sample());
-                            Self::fill_underrun_tail(data, copied, 1, last);
-                            consumer.set_last_sample(0.0);
-                        }
-                    } else {
-                        let mono_samples = data.len() / num_channels;
-                        if available < mono_samples {
-                            underrun_streak.fetch_add(1, Ordering::Relaxed);
-                            total_underruns.fetch_add(1, Ordering::Relaxed);
-                        } else {
-                            underrun_streak.store(0, Ordering::Relaxed);
-                        }
-
-                        let to_read = available.min(mono_samples);
-                        let mut copied_frames = 0usize;
-                        let mut last_written_sample = None;
-                        while copied_frames < to_read {
-                            let batch = (to_read - copied_frames).min(OUTPUT_SCRATCH_CAPACITY);
-                            let count = consumer.read(&mut mono_scratch[..batch]);
-                            if count == 0 {
-                                break;
-                            }
-
-                            for (i, &sample) in mono_scratch[..count].iter().enumerate() {
-                                let frame_idx = copied_frames + i;
-                                let converted = Self::convert_output_sample::<T>(sample);
-                                for channel in 0..num_channels {
-                                    data[frame_idx * num_channels + channel] = converted;
-                                }
-                                last_written_sample = Some(sample);
-                            }
-
-                            copied_frames += count;
-                            if count < batch {
-                                break;
-                            }
-                        }
-
-                        if copied_frames < mono_samples {
-                            let last =
-                                last_written_sample.unwrap_or_else(|| consumer.last_sample());
-                            Self::fill_underrun_tail(data, copied_frames, num_channels, last);
-                            consumer.set_last_sample(0.0);
-                        }
-                    }
+                    Self::render_output(
+                        data,
+                        num_channels,
+                        &mut consumer,
+                        &mut mono_scratch,
+                        underrun_streak.as_ref(),
+                        total_underruns.as_ref(),
+                    );
                     // RT_REGION_END: cpal_output_callback
                 },
                 move |err| {
@@ -685,11 +670,11 @@ pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
         .map_err(|e| AudioError::DeviceName(e.to_string()))?;
 
     for device in device_iter {
-        if let Ok(name) = device.name() {
+        if let Ok(name) = device_name(&device) {
             if let Ok(config) = device.default_output_config() {
                 devices.push(AudioDeviceInfo {
                     name,
-                    sample_rate: config.sample_rate().0,
+                    sample_rate: config.sample_rate(),
                     channels: config.channels(),
                 });
             }
@@ -738,6 +723,126 @@ mod tests {
         assert_eq!(data[2], data[3]);
         assert_eq!(data[10], 0);
         assert_eq!(data[11], 0);
+    }
+
+    #[test]
+    fn test_render_output_reads_full_request_in_scratch_batches() {
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (mut producer, mut consumer) = rb.split();
+        let source = [0.1_f32, -0.2, 0.3, -0.4, 0.5];
+        assert_eq!(producer.write(&source), source.len());
+
+        let mut output = [0.0_f32; 5];
+        let mut scratch = [0.0_f32; 2];
+        let streak = AtomicU32::new(3);
+        let total = AtomicU64::new(7);
+
+        let mut copied = 0;
+        crate::test_alloc::assert_no_allocations("output renderer full read", || {
+            copied = AudioOutput::render_output(
+                &mut output,
+                1,
+                &mut consumer,
+                &mut scratch,
+                &streak,
+                &total,
+            );
+        });
+
+        assert_eq!(copied, source.len());
+        assert_eq!(output, source);
+        assert_eq!(streak.load(Ordering::Relaxed), 0);
+        assert_eq!(total.load(Ordering::Relaxed), 7);
+    }
+
+    #[test]
+    fn test_render_output_counts_short_read_and_fills_tail() {
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (mut producer, mut consumer) = rb.split();
+        let source = [0.5_f32, -0.25];
+        assert_eq!(producer.write(&source), source.len());
+
+        let mut output = [9.0_f32; 5];
+        let mut scratch = [0.0_f32; 3];
+        let streak = AtomicU32::new(2);
+        let total = AtomicU64::new(4);
+
+        let mut copied = 0;
+        crate::test_alloc::assert_no_allocations("output renderer short mono read", || {
+            copied = AudioOutput::render_output(
+                &mut output,
+                1,
+                &mut consumer,
+                &mut scratch,
+                &streak,
+                &total,
+            );
+        });
+
+        assert_eq!(copied, source.len());
+        assert_eq!(&output[..source.len()], &source);
+        assert!(output[2] < 0.0);
+        assert_eq!(output[4], 0.0);
+        assert_eq!(consumer.last_sample(), 0.0);
+        assert_eq!(streak.load(Ordering::Relaxed), 3);
+        assert_eq!(total.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn test_render_output_counts_short_stereo_and_empty_reads() {
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (mut producer, mut consumer) = rb.split();
+        assert_eq!(producer.write(&[0.5_f32]), 1);
+
+        let mut output = [9.0_f32; 6];
+        let mut scratch = [0.0_f32; 2];
+        let streak = AtomicU32::new(4);
+        let total = AtomicU64::new(8);
+
+        let mut copied = 0;
+        crate::test_alloc::assert_no_allocations("output renderer short stereo read", || {
+            copied = AudioOutput::render_output(
+                &mut output,
+                2,
+                &mut consumer,
+                &mut scratch,
+                &streak,
+                &total,
+            );
+        });
+
+        assert_eq!(copied, 1);
+        assert_eq!(&output[..2], &[0.5, 0.5]);
+        assert!(output[2] > 0.0);
+        assert_eq!(output[4], 0.0);
+        assert_eq!(output[5], 0.0);
+        assert_eq!(consumer.last_sample(), 0.0);
+        assert_eq!(streak.load(Ordering::Relaxed), 5);
+        assert_eq!(total.load(Ordering::Relaxed), 9);
+
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (_producer, mut consumer) = rb.split();
+        let mut output = [9.0_f32; 4];
+        let mut scratch = [0.0_f32; 2];
+        let streak = AtomicU32::new(0);
+        let total = AtomicU64::new(0);
+
+        let mut copied = 0;
+        crate::test_alloc::assert_no_allocations("output renderer empty read", || {
+            copied = AudioOutput::render_output(
+                &mut output,
+                2,
+                &mut consumer,
+                &mut scratch,
+                &streak,
+                &total,
+            );
+        });
+
+        assert_eq!(copied, 0);
+        assert_eq!(output, [0.0; 4]);
+        assert_eq!(streak.load(Ordering::Relaxed), 1);
+        assert_eq!(total.load(Ordering::Relaxed), 1);
     }
 
     #[test]

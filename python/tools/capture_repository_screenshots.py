@@ -30,7 +30,7 @@ from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "docs" / "images"
-DEFAULT_REPORT = REPO_ROOT / "evaluation" / "ui-screenshot-report.json"
+DEFAULT_REPORT = REPO_ROOT / "build" / "ui-screenshot-report.json"
 CAPTURE_WIDTH = 1600
 CAPTURE_HEIGHT = 960
 CAPTURE_FONT_FILENAME = "segoeui.ttf"

@@ -7,6 +7,7 @@ from pathlib import Path
 import tarfile
 import tomllib
 from typing import Any, cast
+from unittest.mock import Mock
 import urllib.error
 import urllib.request
 
@@ -79,6 +80,55 @@ def test_download_and_verify_source_archive(tmp_path: Path, monkeypatch):
     downloaded = download_sources(manifest, destination)
     assert downloaded == [_archive_target(destination, entry)]
     verify_sources(manifest, destination)
+
+
+def test_download_deduplicates_identical_source_content(tmp_path: Path, monkeypatch):
+    payload = b"same source archive"
+    first = _entry(payload)
+    second = {
+        **_entry(payload),
+        "id": "python-example-copy-1.0",
+        "filename": "example-copy-1.0.zip",
+    }
+    manifest = {
+        "project": "AudioForge",
+        "project_version": "1.12.0",
+        "entries": [first, second],
+        "blockers": [],
+    }
+    destination = tmp_path / "hydrated"
+    _mock_urlopen(monkeypatch, payload)
+    open_source = Mock(wraps=source_tool._open_source_url)
+    monkeypatch.setattr(source_tool, "_open_source_url", open_source)
+
+    downloaded = download_sources(manifest, destination)
+
+    assert downloaded == [
+        _archive_target(destination, first),
+        _archive_target(destination, second),
+    ]
+    open_source.assert_called_once()
+    assert downloaded[0] == downloaded[1]
+    assert list((destination / "archives").iterdir()) == [downloaded[0]]
+    verify_sources(manifest, destination)
+    (destination / "AudioForge-project-source.tar").write_bytes(b"project archive")
+    monkeypatch.setattr(source_tool, "_git_text", lambda *args: "0" * 40)
+    receipt = json.loads(
+        source_tool._write_receipt(
+            destination,
+            manifest,
+            revision="HEAD",
+            include_runtime_assets=False,
+        ).read_text(encoding="utf-8")
+    )
+    assert [record["id"] for record in receipt["archives"]] == [
+        first["id"],
+        second["id"],
+    ]
+    assert {record["path"] for record in receipt["archives"]} == {
+        _archive_target(destination, first).relative_to(destination).as_posix(),
+        _archive_target(destination, second).relative_to(destination).as_posix(),
+    }
 
 
 def test_download_refuses_existing_hash_mismatch(tmp_path: Path):

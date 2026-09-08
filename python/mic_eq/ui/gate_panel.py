@@ -26,6 +26,7 @@ from .layout_constants import (
     MARGIN_PANEL,
     PRIMARY_LABEL_STYLE,
     INFO_LABEL_STYLE,
+    bind_slider_spinbox,
     fit_spinbox_to_contents,
 )
 
@@ -311,24 +312,40 @@ class GatePanel(QWidget):
     def _connect_signals(self):
         """Connect signals to slots."""
         self.enabled_checkbox.toggled.connect(self._update_gate)
-        self.threshold_slider.valueChanged.connect(self._on_slider_changed)
+        bind_slider_spinbox(
+            self.threshold_slider,
+            self.threshold_spinbox,
+            on_change=self._update_gate,
+        )
         self.threshold_slider.sliderReleased.connect(self._rate_limiter.flush)
-        self.threshold_spinbox.valueChanged.connect(self._on_spinbox_changed)
         self.attack_spinbox.valueChanged.connect(self._update_gate)
         self.release_spinbox.valueChanged.connect(self._update_gate)
 
         # VAD control signals
         self.gate_mode_combo.currentIndexChanged.connect(self._update_vad_mode)
-        self.vad_threshold_slider.valueChanged.connect(self._on_vad_threshold_slider)
-        self.vad_threshold_spinbox.valueChanged.connect(self._on_vad_threshold_spinbox)
+        bind_slider_spinbox(
+            self.vad_threshold_slider,
+            self.vad_threshold_spinbox,
+            slider_to_value=lambda value: value / 100.0,
+            value_to_slider=lambda value: int(value * 100),
+            on_change=self._update_vad_mode,
+        )
         self.vad_hold_spinbox.valueChanged.connect(self._update_vad_mode)
-        self.vad_pre_gain_slider.valueChanged.connect(self._on_vad_pre_gain_slider)
-        self.vad_pre_gain_spinbox.valueChanged.connect(self._on_vad_pre_gain_spinbox)
+        bind_slider_spinbox(
+            self.vad_pre_gain_slider,
+            self.vad_pre_gain_spinbox,
+            slider_to_value=lambda value: value / 10.0,
+            value_to_slider=lambda value: int(value * 10),
+            on_change=self._update_vad_mode,
+        )
 
         # Auto-threshold control signals
         self.auto_threshold_checkbox.toggled.connect(self._update_auto_threshold)
-        self.margin_slider.valueChanged.connect(self._on_margin_slider)
-        self.margin_spinbox.valueChanged.connect(self._on_margin_spinbox)
+        bind_slider_spinbox(
+            self.margin_slider,
+            self.margin_spinbox,
+            on_change=self._update_auto_threshold,
+        )
 
         # Initial update
         self._update_gate()
@@ -340,20 +357,6 @@ class GatePanel(QWidget):
             logger.debug("Initial VAD setup skipped", exc_info=True)
         self._update_auto_threshold()
         self._refresh_threshold_summary()
-
-    def _on_slider_changed(self, value):
-        """Handle threshold slider change."""
-        self.threshold_spinbox.blockSignals(True)
-        self.threshold_spinbox.setValue(float(value))
-        self.threshold_spinbox.blockSignals(False)
-        self._update_gate()
-
-    def _on_spinbox_changed(self, value):
-        """Handle threshold spinbox change."""
-        self.threshold_slider.blockSignals(True)
-        self.threshold_slider.setValue(int(value))
-        self.threshold_slider.blockSignals(False)
-        self._update_gate()
 
     def _update_gate(self):
         """Update noise gate configuration."""
@@ -369,36 +372,6 @@ class GatePanel(QWidget):
             self.processor.set_gate_release(release)
 
         self._rate_limiter.call(apply)
-
-    def _on_vad_threshold_slider(self, value):
-        """Handle VAD threshold slider change."""
-        threshold = value / 100.0  # Convert 30-80 to 0.3-0.8
-        self.vad_threshold_spinbox.blockSignals(True)
-        self.vad_threshold_spinbox.setValue(threshold)
-        self.vad_threshold_spinbox.blockSignals(False)
-        self._update_vad_mode()
-
-    def _on_vad_threshold_spinbox(self, value):
-        """Handle VAD threshold spinbox change."""
-        self.vad_threshold_slider.blockSignals(True)
-        self.vad_threshold_slider.setValue(int(value * 100))
-        self.vad_threshold_slider.blockSignals(False)
-        self._update_vad_mode()
-
-    def _on_vad_pre_gain_slider(self, value):
-        """Handle VAD pre-gain slider change."""
-        gain = value / 10.0  # Convert 10-100 to 1.0-10.0
-        self.vad_pre_gain_spinbox.blockSignals(True)
-        self.vad_pre_gain_spinbox.setValue(gain)
-        self.vad_pre_gain_spinbox.blockSignals(False)
-        self._update_vad_mode()
-
-    def _on_vad_pre_gain_spinbox(self, value):
-        """Handle VAD pre-gain spinbox change."""
-        self.vad_pre_gain_slider.blockSignals(True)
-        self.vad_pre_gain_slider.setValue(int(value * 10))
-        self.vad_pre_gain_slider.blockSignals(False)
-        self._update_vad_mode()
 
     def _is_vad_available(self) -> bool:
         """Return True when Rust VAD backend is available."""
@@ -521,20 +494,6 @@ class GatePanel(QWidget):
         self.margin_slider.setEnabled(auto_threshold_enabled)
         self.margin_spinbox.setEnabled(auto_threshold_enabled)
         self._refresh_threshold_summary()
-
-    def _on_margin_slider(self, value):
-        """Handle margin slider change."""
-        self.margin_spinbox.blockSignals(True)
-        self.margin_spinbox.setValue(float(value))
-        self.margin_spinbox.blockSignals(False)
-        self._update_auto_threshold()
-
-    def _on_margin_spinbox(self, value):
-        """Handle margin spinbox change."""
-        self.margin_slider.blockSignals(True)
-        self.margin_slider.setValue(int(value))
-        self.margin_slider.blockSignals(False)
-        self._update_auto_threshold()
 
     def _update_auto_threshold(self):
         """Update auto-threshold configuration."""

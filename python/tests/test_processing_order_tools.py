@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 from scipy.io import wavfile
 
 
-TOOL_PATH = Path(__file__).parent.parent / "tools" / "evaluate_processing_order.py"
-SPEC = importlib.util.spec_from_file_location("evaluate_processing_order", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-ordering = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = ordering
-SPEC.loader.exec_module(ordering)
+import evaluate_processing_order as ordering
 REPORT_PATH = (
     Path(__file__).resolve().parents[2] / "evaluation/processing-order-report.json"
 )

@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-
-TOOL_PATH = Path(__file__).parent.parent / "tools" / "evaluate_onnxruntime_probe.py"
-SPEC = importlib.util.spec_from_file_location("evaluate_onnxruntime_probe", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-probe = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = probe
-SPEC.loader.exec_module(probe)
+import evaluate_onnxruntime_probe as probe
 
 
 def test_equal_posteriors_pass_all_decision_checks() -> None:

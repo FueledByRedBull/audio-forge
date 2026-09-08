@@ -54,6 +54,16 @@ def test_gate_panel_uses_calibrated_vad_default(qapp):
     assert panel.vad_threshold_spinbox.value() == 0.48
 
 
+def test_gate_slider_and_spinbox_stay_synchronized(qapp):
+    panel = GatePanel(_GateProcessor(vad_available=True))
+
+    panel.threshold_slider.setValue(-32)
+    assert panel.threshold_spinbox.value() == -32.0
+
+    panel.threshold_spinbox.setValue(-26.0)
+    assert panel.threshold_slider.value() == -26
+
+
 def test_gate_panel_preserves_loaded_vad_mode_when_backend_unavailable(qapp):
     processor = _GateProcessor(vad_available=False)
     panel = GatePanel(processor)

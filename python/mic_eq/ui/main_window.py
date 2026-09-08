@@ -39,6 +39,7 @@ import sys
 import json
 import logging
 import shutil
+from dataclasses import asdict
 from pathlib import Path
 
 from .gate_panel import GatePanel
@@ -979,11 +980,8 @@ class MainWindow(QMainWindow):
 
     def _select_input_channel_mode(self, mode: str) -> None:
         target = mode if self._is_valid_input_channel_mode(mode) else "phase_safe_mono"
-        for index in range(self.input_channel_mode_combo.count()):
-            if self.input_channel_mode_combo.itemData(index) == target:
-                self.input_channel_mode_combo.setCurrentIndex(index)
-                return
-        self.input_channel_mode_combo.setCurrentIndex(0)
+        index = self.input_channel_mode_combo.findData(target)
+        self.input_channel_mode_combo.setCurrentIndex(index if index >= 0 else 0)
 
     def _apply_input_channel_mode(self, mode: str) -> None:
         target = mode if self._is_valid_input_channel_mode(mode) else "phase_safe_mono"
@@ -1001,11 +999,8 @@ class MainWindow(QMainWindow):
 
     def _select_input_cleanup_mode(self, mode: str) -> None:
         target = mode if self._is_valid_input_cleanup_mode(mode) else "off"
-        for index in range(self.input_cleanup_mode_combo.count()):
-            if self.input_cleanup_mode_combo.itemData(index) == target:
-                self.input_cleanup_mode_combo.setCurrentIndex(index)
-                return
-        self.input_cleanup_mode_combo.setCurrentIndex(0)
+        index = self.input_cleanup_mode_combo.findData(target)
+        self.input_cleanup_mode_combo.setCurrentIndex(index if index >= 0 else 0)
 
     def _apply_input_cleanup_mode(self, mode: str) -> None:
         target = mode if self._is_valid_input_cleanup_mode(mode) else "off"
@@ -2656,11 +2651,11 @@ class MainWindow(QMainWindow):
                     f"The model may not be available in this build.\n"
                     f"Reverting to previous model.",
                 )
-                # Revert to RNNoise using find-by-ID loop (not hardcoded index)
-                for i in range(self.model_combo.count()):
-                    if self.model_combo.itemData(i) == "rnnoise":
-                        self.model_combo.setCurrentIndex(i)
-                        return
+                # Revert to RNNoise by its stable item data.
+                rnnoise_index = self.model_combo.findData("rnnoise")
+                if rnnoise_index >= 0:
+                    self.model_combo.setCurrentIndex(rnnoise_index)
+                    return
             else:
                 self._set_noise_suppression_latency_label(model_id)
                 self.status_bar.showMessage(
@@ -2680,11 +2675,11 @@ class MainWindow(QMainWindow):
                 f"2. Using RNNoise model as fallback\n"
                 f"3. Verifying the bundled model/runtime assets",
             )
-            # Revert to RNNoise using find-by-ID loop (NOT hardcoded index)
-            for i in range(self.model_combo.count()):
-                if self.model_combo.itemData(i) == "rnnoise":
-                    self.model_combo.setCurrentIndex(i)
-                    return
+            # Revert to RNNoise by its stable item data.
+            rnnoise_index = self.model_combo.findData("rnnoise")
+            if rnnoise_index >= 0:
+                self.model_combo.setCurrentIndex(rnnoise_index)
+                return
 
     def _update_meters(self):
         """Update level meters from processor (called by timer)."""
@@ -3407,14 +3402,7 @@ class MainWindow(QMainWindow):
             preset_key: Optional key for built-in presets (e.g., "voice", "bass_cut")
         """
         requested_model = getattr(preset.rnnoise, "model", "rnnoise")
-        requested_model_index = next(
-            (
-                index
-                for index in range(self.model_combo.count())
-                if self.model_combo.itemData(index) == requested_model
-            ),
-            -1,
-        )
+        requested_model_index = self.model_combo.findData(requested_model)
         model_fallback_warning: str | None = None
         if require_exact and requested_model_index < 0:
             raise RuntimeError(
@@ -3422,29 +3410,10 @@ class MainWindow(QMainWindow):
             )
 
         # Apply gate settings (including VAD mode and auto-threshold)
-        self.gate_panel.set_settings(
-            {
-                "enabled": preset.gate.enabled,
-                "threshold_db": preset.gate.threshold_db,
-                "attack_ms": preset.gate.attack_ms,
-                "release_ms": preset.gate.release_ms,
-                "gate_mode": preset.gate.gate_mode,
-                "vad_threshold": preset.gate.vad_threshold,
-                "vad_hold_time_ms": preset.gate.vad_hold_time_ms,
-                "vad_pre_gain": preset.gate.vad_pre_gain,
-                "auto_threshold_enabled": preset.gate.auto_threshold_enabled,  # v1.6.0+
-                "gate_margin_db": preset.gate.gate_margin_db,  # v1.6.0+
-            }
-        )
+        self.gate_panel.set_settings(asdict(preset.gate))
 
         # Apply EQ settings
-        self.eq_panel.set_settings(
-            {
-                "enabled": preset.eq.enabled,
-                "schema_version": preset.eq.schema_version,
-                "bands": [band.to_dict() for band in preset.eq.bands],
-            }
-        )
+        self.eq_panel.set_settings(preset.eq.to_dict())
 
         # Apply RNNoise settings
         self.rnnoise_checkbox.setChecked(preset.rnnoise.enabled)
@@ -3457,74 +3426,59 @@ class MainWindow(QMainWindow):
 
         # Apply model selection
         model = requested_model
-        model_found = False
-        for i in range(self.model_combo.count()):
-            if self.model_combo.itemData(i) == model:
-                # Block signals to prevent duplicate model initialization
-                # setCurrentIndex triggers currentIndexChanged which calls set_noise_model,
-                # so we need to block it here since we'll call it directly below
-                self.model_combo.blockSignals(True)
-                self.model_combo.setCurrentIndex(i)
-                self.model_combo.blockSignals(False)
-                model_found = True
-                # Try to set model, handle errors gracefully
-                try:
-                    success = self.processor.set_noise_model(model)
-                    if success:
-                        self._set_noise_suppression_latency_label(model)
-                    else:
-                        if require_exact:
-                            raise RuntimeError(f"Noise model {model!r} is unavailable")
-                        # Model switch failed - show warning and use RNNoise
-                        logger.warning(
-                            "Failed to switch to %s from preset; using RNNoise", model
-                        )
-                        self.status_bar.showMessage(
-                            f"Note: Preset specifies {model} but not available, using RNNoise",
-                            5000,
-                        )
-                        model_fallback_warning = (
-                            f"{model} was unavailable; using RNNoise"
-                        )
-                        # Fall back to RNNoise using find-by-ID loop (NOT hardcoded index)
-                        for j in range(self.model_combo.count()):
-                            if self.model_combo.itemData(j) == "rnnoise":
-                                self.model_combo.blockSignals(True)
-                                self.model_combo.setCurrentIndex(j)
-                                self.model_combo.blockSignals(False)
-                                self.processor.set_noise_model("rnnoise")
-                                self._set_noise_suppression_latency_label("rnnoise")
-                                break
-                except Exception:
+        model_index = requested_model_index
+        model_found = model_index >= 0
+        if model_found:
+            # Block signals to prevent duplicate model initialization.
+            # setCurrentIndex triggers currentIndexChanged which calls
+            # set_noise_model, so call it directly below instead.
+            self.model_combo.blockSignals(True)
+            self.model_combo.setCurrentIndex(model_index)
+            self.model_combo.blockSignals(False)
+            # Try to set model, handle errors gracefully.
+            try:
+                success = self.processor.set_noise_model(model)
+                if success:
+                    self._set_noise_suppression_latency_label(model)
+                else:
                     if require_exact:
-                        raise
-                    # Unexpected error - log and fall back
-                    logger.exception("Error switching model in preset")
-                    self.status_bar.showMessage(
-                        "Error loading preset model, using RNNoise", 5000
+                        raise RuntimeError(f"Noise model {model!r} is unavailable")
+                    logger.warning(
+                        "Failed to switch to %s from preset; using RNNoise", model
                     )
-                    model_fallback_warning = f"{model} failed to load; using RNNoise"
-                    # Fall back to RNNoise using find-by-ID loop (NOT hardcoded index)
-                    for j in range(self.model_combo.count()):
-                        if self.model_combo.itemData(j) == "rnnoise":
-                            self.model_combo.blockSignals(True)
-                            self.model_combo.setCurrentIndex(j)
-                            self.model_combo.blockSignals(False)
-                            self.processor.set_noise_model("rnnoise")
-                            self._set_noise_suppression_latency_label("rnnoise")
-                            break
-                break
+                    self.status_bar.showMessage(
+                        f"Note: Preset specifies {model} but not available, using RNNoise",
+                        5000,
+                    )
+                    model_fallback_warning = (
+                        f"{model} was unavailable; using RNNoise"
+                    )
+                    rnnoise_index = self.model_combo.findData("rnnoise")
+                    if rnnoise_index >= 0:
+                        self.model_combo.blockSignals(True)
+                        self.model_combo.setCurrentIndex(rnnoise_index)
+                        self.model_combo.blockSignals(False)
+                        self.processor.set_noise_model("rnnoise")
+                        self._set_noise_suppression_latency_label("rnnoise")
+            except Exception:
+                if require_exact:
+                    raise
+                logger.exception("Error switching model in preset")
+                self.status_bar.showMessage(
+                    "Error loading preset model, using RNNoise", 5000
+                )
+                model_fallback_warning = f"{model} failed to load; using RNNoise"
+                rnnoise_index = self.model_combo.findData("rnnoise")
+                if rnnoise_index >= 0:
+                    self.model_combo.blockSignals(True)
+                    self.model_combo.setCurrentIndex(rnnoise_index)
+                    self.model_combo.blockSignals(False)
+                    self.processor.set_noise_model("rnnoise")
+                    self._set_noise_suppression_latency_label("rnnoise")
 
         if not model_found:
             logger.warning("Preset model %r not found in available models", model)
-            rnnoise_index = next(
-                (
-                    index
-                    for index in range(self.model_combo.count())
-                    if self.model_combo.itemData(index) == "rnnoise"
-                ),
-                -1,
-            )
+            rnnoise_index = self.model_combo.findData("rnnoise")
             if rnnoise_index < 0:
                 raise RuntimeError("RNNoise fallback is not present in this runtime")
             self.model_combo.blockSignals(True)
@@ -3540,47 +3494,13 @@ class MainWindow(QMainWindow):
             model_fallback_warning = f"{model} was unavailable; using RNNoise"
 
         # Apply de-esser settings
-        self.deesser_panel.set_settings(
-            {
-                "enabled": preset.deesser.enabled,
-                "auto_enabled": preset.deesser.auto_enabled,
-                "auto_amount": preset.deesser.auto_amount,
-                "low_cut_hz": preset.deesser.low_cut_hz,
-                "high_cut_hz": preset.deesser.high_cut_hz,
-                "threshold_db": preset.deesser.threshold_db,
-                "ratio": preset.deesser.ratio,
-                "attack_ms": preset.deesser.attack_ms,
-                "release_ms": preset.deesser.release_ms,
-                "max_reduction_db": preset.deesser.max_reduction_db,
-            }
-        )
+        self.deesser_panel.set_settings(asdict(preset.deesser))
 
         # Apply compressor settings
-        self.compressor_panel.set_compressor_settings(
-            {
-                "enabled": preset.compressor.enabled,
-                "threshold_db": preset.compressor.threshold_db,
-                "ratio": preset.compressor.ratio,
-                "attack_ms": preset.compressor.attack_ms,
-                "release_ms": preset.compressor.release_ms,
-                "makeup_gain_db": preset.compressor.makeup_gain_db,
-                "adaptive_release": preset.compressor.adaptive_release,
-                "base_release_ms": preset.compressor.base_release_ms,
-                "auto_makeup_enabled": preset.compressor.auto_makeup_enabled,
-                "target_lufs": preset.compressor.target_lufs,
-                "sidechain_highpass_enabled": preset.compressor.sidechain_highpass_enabled,
-            }
-        )
+        self.compressor_panel.set_compressor_settings(asdict(preset.compressor))
 
         # Apply limiter settings
-        self.compressor_panel.set_limiter_settings(
-            {
-                "enabled": preset.limiter.enabled,
-                "ceiling_db": preset.limiter.ceiling_db,
-                "release_ms": preset.limiter.release_ms,
-                "careful_output_enabled": preset.limiter.careful_output_enabled,
-            }
-        )
+        self.compressor_panel.set_limiter_settings(asdict(preset.limiter))
 
         # Apply bypass
         self.bypass_checkbox.setChecked(preset.bypass)

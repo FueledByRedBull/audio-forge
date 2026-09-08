@@ -69,7 +69,11 @@ Publication downloads the same candidate bytes and automated qualification
 report, verifies sidecars and report against the archive SHA-256, and uploads
 without rebuilding. Promotion prepares a draft, verifies uploaded assets by
 hash, and publishes only after the complete asset set is present. A durable
-evidence archive retains the package report alongside the portable/MSI assets. Set
+evidence archive retains the package report and all checksum, metadata, manifest,
+and native-provenance sidecars. Publish five files: portable app, MSI,
+corresponding source, evidence archive, and one `SHA256SUMS.txt` file.
+For reruns, preflight compares GitHub's SHA-256 digests; the final verification
+still downloads and hashes every published file. Set
 `AUDIOFORGE_ASSET_SOURCE_TAG` when candidate builds should pull raw assets or
 an existing package archive from a standing asset-source release. The workflow
 still verifies all downloaded/extracted assets against `release-assets.json`

@@ -2,22 +2,15 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import math
-import sys
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 
-TOOL_PATH = Path(__file__).parent.parent / "tools" / "evaluate_deepfilter_fullband.py"
-SPEC = importlib.util.spec_from_file_location("evaluate_deepfilter_fullband", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-TOOL = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = TOOL
-SPEC.loader.exec_module(TOOL)
+import evaluate_deepfilter_fullband as TOOL
 REPORT_PATH = (
     Path(__file__).resolve().parents[2] / "evaluation/deepfilter-fullband-report.json"
 )

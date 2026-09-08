@@ -17,7 +17,7 @@ Download the latest published Windows build from the
 - Published archive: `AudioForge-v<version>-win64-ultra.7z`
 - Per-user installer: `AudioForge-v<version>-win64.msi`
 - Corresponding source: `AudioForge-v<version>-source.7z`
-- Checksum: use the matching `.7z.sha256` sidecar published by the release workflow.
+- Checksum: use the `SHA256SUMS.txt` file published with the release.
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
 
@@ -284,7 +284,7 @@ The portable folder is intended to be archived as a single distributable:
 The v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz, tar.zst,
 solid LZMA, and solid LZMA2. The command above was the smallest verified
 format. Treat the generated `.metadata.json`, `.manifest.json`, and `.sha256`
-sidecars beside a release archive as authoritative. See
+sidecars in the release evidence archive as authoritative. See
 `evaluation/archive-format-benchmark.json` for the historical format
 comparison.
 

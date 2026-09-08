@@ -13,7 +13,6 @@ from typing import Any, Mapping
 from release_provenance import sha256_file as _sha256
 
 import numpy as np
-from scipy.io import wavfile
 from scipy.signal import resample_poly
 
 from mic_eq import analyze_vad_probabilities
@@ -22,6 +21,7 @@ from mic_eq.mic_eq_core import (
     simulate_gate_suppressor_order,
 )
 from mic_eq.analysis.deesser_corpus import CORPUS_CASES, generate_deesser_case
+from mic_eq.analysis.wav_io import read_mono_wav
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -36,24 +36,7 @@ def _source_sha256(path: Path) -> str:
 
 
 def _read_mono(path: Path) -> tuple[int, np.ndarray]:
-    sample_rate, raw = wavfile.read(path)
-    audio = np.asarray(raw)
-    if np.issubdtype(audio.dtype, np.unsignedinteger):
-        info = np.iinfo(audio.dtype)
-        midpoint = float(info.max + 1) / 2.0
-        audio = (audio.astype(np.float64) - midpoint) / midpoint
-    elif np.issubdtype(audio.dtype, np.signedinteger):
-        info = np.iinfo(audio.dtype)
-        scale = float(max(abs(int(info.min)), int(info.max)))
-        audio = audio.astype(np.float64) / scale
-    else:
-        audio = audio.astype(np.float64)
-    if audio.ndim == 2:
-        audio = np.mean(audio, axis=1)
-    converted = np.asarray(audio, dtype=np.float64)
-    if converted.ndim != 1 or not np.all(np.isfinite(converted)):
-        raise ValueError(f"{path.name} must contain finite mono/stereo PCM")
-    return int(sample_rate), converted
+    return read_mono_wav(path, allow_stereo=True, dtype=np.float64)
 
 
 def _resample(audio: np.ndarray, source_rate: int) -> np.ndarray:

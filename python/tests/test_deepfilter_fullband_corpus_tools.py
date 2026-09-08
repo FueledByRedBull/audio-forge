@@ -2,26 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import io
-import sys
-from pathlib import Path
 
 import numpy as np
 import pytest
 from scipy.io import wavfile
 
 
-TOOL_PATH = (
-    Path(__file__).parent.parent / "tools" / "fetch_deepfilter_fullband_corpus.py"
-)
-SPEC = importlib.util.spec_from_file_location(
-    "fetch_deepfilter_fullband_corpus", TOOL_PATH
-)
-assert SPEC is not None and SPEC.loader is not None
-TOOL = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = TOOL
-SPEC.loader.exec_module(TOOL)
+import fetch_deepfilter_fullband_corpus as TOOL
 
 
 def _wav_payload(sample_rate: int) -> bytes:

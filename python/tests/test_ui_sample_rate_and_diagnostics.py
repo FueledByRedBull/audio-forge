@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 import threading
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -198,6 +199,12 @@ class _FakeCombo:
     def itemData(self, index: int):
         return self._items[index][1]
 
+    def findData(self, target):
+        return next(
+            (index for index, (_label, data) in enumerate(self._items) if data == target),
+            -1,
+        )
+
 
 class _FakeControl:
     def __init__(self, value=None):
@@ -266,6 +273,14 @@ class _PresetProcessor:
 
     def set_bypass(self, value):
         self.calls.append(("bypass", value))
+
+
+class _PresetProcessorRaisesForDeepFilter(_PresetProcessor):
+    def set_noise_model(self, value):
+        self.calls.append(("noise_model", value))
+        if value == "deepfilter":
+            raise RuntimeError("test model load failure")
+        return True
 
 
 class _PresetPanel:
@@ -597,20 +612,6 @@ def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
     assert _CaptureWorkerStub.last_init["chain_settings"] == {}
     assert dialog.analysis_worker is not None
     assert dialog.analysis_worker.sample_rate == 44_100
-
-    dialog.close()
-    owner.close()
-
-
-def test_calibration_recorded_audio_reports_processor_rate(qapp):
-    owner = _FakeOwner(_FakeProcessor(sample_rate=44_100))
-    dialog = CalibrationDialog(parent=owner)
-    dialog.audio_data = np.ones(32, dtype=np.float32)
-
-    audio, sample_rate = dialog.get_recorded_audio()
-
-    assert audio is not None
-    assert sample_rate == 44_100
 
     dialog.close()
     owner.close()
@@ -1805,6 +1806,9 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
 
     MainWindow._apply_preset(window, preset)
 
+    assert window.gate_panel.settings == asdict(preset.gate)
+    assert window.eq_panel.settings == preset.eq.to_dict()
+    assert window.deesser_panel.settings == asdict(preset.deesser)
     assert window.compressor_panel.compressor_settings["adaptive_release"] is True
     assert window.compressor_panel.compressor_settings["base_release_ms"] == 75.0
     assert window.compressor_panel.compressor_settings["auto_makeup_enabled"] is True
@@ -1814,6 +1818,32 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
         is False
     )
     assert window.compressor_panel.limiter_settings["careful_output_enabled"] is False
+    assert "noise_reference_reliability" not in window.compressor_panel.compressor_settings
+
+
+def test_apply_preset_falls_back_when_model_load_raises(qapp):
+    window = MainWindow.__new__(MainWindow)
+    window.gate_panel = _PresetPanel()
+    window.eq_panel = _PresetPanel()
+    window.deesser_panel = _PresetPanel()
+    window.compressor_panel = _PresetPanel()
+    window.rnnoise_checkbox = _FakeControl()
+    window.strength_slider = _FakeControl()
+    window.model_combo = _FakeCombo(
+        [("RNNoise", "rnnoise"), ("DeepFilter", "deepfilter")]
+    )
+    window.rnnoise_latency_label = _FakeLabel()
+    window.bypass_checkbox = _FakeControl()
+    window.processor = _PresetProcessorRaisesForDeepFilter()
+    window.status_bar = _FakeStatusBar()
+
+    preset = Preset()
+    preset.rnnoise.model = "deepfilter"
+
+    MainWindow._apply_preset(window, preset)
+
+    assert window.model_combo.currentData() == "rnnoise"
+    assert "using RNNoise" in window.status_bar.messages[-1][0]
 
 
 class _LatencyProcessor:

@@ -12,7 +12,7 @@ from PyQt6.QtCore import QPoint, Qt
 from PyQt6.QtTest import QSignalSpy, QTest
 
 from mic_eq import AudioProcessor
-from mic_eq.config import EQSettings, Preset, q_from_bandwidth_octaves
+from mic_eq.config import BUILTIN_PRESETS, EQSettings, Preset, q_from_bandwidth_octaves
 from mic_eq.ui.eq_panel import EQPanel
 
 
@@ -91,6 +91,24 @@ def test_ui_synchronization(qapp):
     assert abs(panel.band_freqs_hz[5] - 2310.0) <= 0.1
     assert abs(panel.get_settings()["band_freqs"][5] - 2310.0) <= 0.1
     assert abs(panel.curve_widget.band_markers[5] - 2310.0) <= 0.1
+
+    _close_panel(panel, processor, qapp)
+
+
+def test_catalog_eq_buttons_reuse_values_and_preserve_enabled_state(qapp):
+    processor = AudioProcessor()
+    panel = EQPanel(processor)
+    panel.enabled_checkbox.setChecked(False)
+
+    panel._preset_voice()
+    qapp.processEvents()
+
+    expected = BUILTIN_PRESETS["voice"].eq.bands
+    actual = panel.get_eq_settings().bands
+    assert panel.enabled_checkbox.isChecked() is False
+    assert [(band.gain_db, band.q) for band in actual] == [
+        (band.gain_db, band.q) for band in expected
+    ]
 
     _close_panel(panel, processor, qapp)
 

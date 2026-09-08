@@ -1,26 +1,14 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import numpy as np
 
 
-def _load_tool(name: str):
-    path = Path(__file__).parents[1] / "tools" / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-vad_eval = _load_tool("evaluate_vad_models")
-vad_corpus = _load_tool("build_vad_evaluation_corpus")
-vad_child_corpus = _load_tool("fetch_vad_child_validation_corpus")
-vad_selection = _load_tool("evaluate_vad_model_selection")
+import build_vad_evaluation_corpus as vad_corpus
+import evaluate_vad_model_selection as vad_selection
+import evaluate_vad_models as vad_eval
+import fetch_vad_child_validation_corpus as vad_child_corpus
 
 
 def test_frame_labels_use_majority_overlap_at_model_window_rate(tmp_path: Path):
@@ -33,6 +21,7 @@ def test_frame_labels_use_majority_overlap_at_model_window_rate(tmp_path: Path):
 
     labels = vad_eval._frame_labels(capture, 3)
 
+    assert labels is not None
     assert labels.tolist() == [True, True, False]
 
 

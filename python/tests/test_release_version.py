@@ -2,19 +2,9 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import pytest
 
-
-TOOL = Path(__file__).parents[1] / "tools" / "release_version.py"
-SPEC = importlib.util.spec_from_file_location("release_version", TOOL)
-assert SPEC is not None and SPEC.loader is not None
-release_version = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = release_version
-SPEC.loader.exec_module(release_version)
+import release_version
 
 
 @pytest.mark.parametrize("value", ("1.12.0rc1", "1.12.0-rc.1"))

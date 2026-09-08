@@ -31,6 +31,7 @@ from .layout_constants import (
 )
 from .theme import COMPACT_CONTROL_STYLE
 from ..config import (
+    BUILTIN_PRESETS,
     EQBandSettings,
     EQSettings,
     EQ_FREQUENCIES,
@@ -877,33 +878,15 @@ class EQPanel(QWidget):
 
     def _preset_voice(self):
         """Apply voice clarity preset."""
-        # Cut low end, slight boost in presence, cut high end hiss
-        gains = [-3.0, -2.0, 0.0, 1.0, 2.0, 3.0, 2.0, 0.0, -1.0, -2.0]
-        qs = [
-            0.7,
-            1.0,
-            1.2,
-            1.4,
-            1.6,
-            2.0,
-            1.8,
-            1.2,
-            0.9,
-            0.7,
-        ]  # Wide cuts, focused boosts
-        self._apply_preset(gains, qs)
+        self._apply_catalog_preset("voice")
 
     def _preset_bass_cut(self):
         """Apply bass cut preset (high-pass effect)."""
-        gains = [-12.0, -6.0, -2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        qs = [0.5, 0.7, 0.9, 1.41, 1.41, 1.41, 1.41, 1.41, 1.41, 1.41]  # Wide rolloff
-        self._apply_preset(gains, qs)
+        self._apply_catalog_preset("bass_cut")
 
     def _preset_presence(self):
         """Apply presence boost preset."""
-        gains = [0.0, 0.0, 0.0, 0.0, 2.0, 4.0, 3.0, 1.0, 0.0, 0.0]
-        qs = [1.41, 1.41, 1.41, 1.41, 2.0, 2.5, 2.0, 1.5, 1.41, 1.41]  # Narrow focus
-        self._apply_preset(gains, qs)
+        self._apply_catalog_preset("presence")
 
     def _preset_warm_clear(self):
         """Apply warm & clear preset - bass boost with harshness cut."""
@@ -911,6 +894,14 @@ class EQPanel(QWidget):
         gains = [-12.0, 4.0, 4.0, 3.0, -3.0, -10.0, 0.0, 0.0, 0.0, 0.0]
         qs = [0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707]
         self._apply_preset(gains, qs)
+
+    def _apply_catalog_preset(self, key: str) -> None:
+        """Apply the catalog EQ values while leaving the enabled state alone."""
+        bands = BUILTIN_PRESETS[key].eq.bands
+        self._apply_preset(
+            [band.gain_db for band in bands],
+            [band.q for band in bands],
+        )
 
     def _apply_preset(
         self,

@@ -29,6 +29,7 @@ from .layout_constants import (
     PRIMARY_LABEL_STYLE,
     METER_LABEL_STYLE,
     INFO_LABEL_STYLE,
+    bind_slider_spinbox,
     fit_spinbox_to_contents,
 )
 
@@ -402,14 +403,25 @@ class CompressorPanel(QWidget):
         """Connect signals to slots."""
         # Compressor
         self.comp_enabled_checkbox.toggled.connect(self._update_compressor)
-        self.threshold_slider.valueChanged.connect(self._on_threshold_slider)
-        self.threshold_spinbox.valueChanged.connect(self._on_threshold_spinbox)
-        self.ratio_slider.valueChanged.connect(self._on_ratio_slider)
-        self.ratio_spinbox.valueChanged.connect(self._on_ratio_spinbox)
+        bind_slider_spinbox(
+            self.threshold_slider,
+            self.threshold_spinbox,
+            on_change=self._update_compressor,
+        )
+        bind_slider_spinbox(
+            self.ratio_slider,
+            self.ratio_spinbox,
+            slider_to_value=lambda value: value / 10.0,
+            value_to_slider=lambda value: int(value * 10),
+            on_change=self._update_compressor,
+        )
         self.attack_spinbox.valueChanged.connect(self._update_compressor)
         self.release_spinbox.valueChanged.connect(self._update_compressor)
-        self.makeup_slider.valueChanged.connect(self._on_makeup_slider)
-        self.makeup_spinbox.valueChanged.connect(self._on_makeup_spinbox)
+        bind_slider_spinbox(
+            self.makeup_slider,
+            self.makeup_spinbox,
+            on_change=self._update_compressor,
+        )
         self.adaptive_release_checkbox.toggled.connect(self._update_adaptive_release)
         self.base_release_spinbox.valueChanged.connect(self._update_adaptive_release)
         self.sidechain_highpass_checkbox.toggled.connect(self._update_compressor)
@@ -423,71 +435,18 @@ class CompressorPanel(QWidget):
         # Limiter
         self.limiter_enabled_checkbox.toggled.connect(self._update_limiter)
         self.careful_output_checkbox.toggled.connect(self._update_limiter)
-        self.ceiling_slider.valueChanged.connect(self._on_ceiling_slider)
-        self.ceiling_spinbox.valueChanged.connect(self._on_ceiling_spinbox)
+        bind_slider_spinbox(
+            self.ceiling_slider,
+            self.ceiling_spinbox,
+            slider_to_value=lambda value: value / 10.0,
+            value_to_slider=lambda value: int(value * 10),
+            on_change=self._update_limiter,
+        )
         self.limiter_release_spinbox.valueChanged.connect(self._update_limiter)
         self.ceiling_slider.sliderReleased.connect(self._limiter_rate_limiter.flush)
 
         # Initial update
         self._update_compressor()
-        self._update_limiter()
-
-    def _on_threshold_slider(self, value):
-        """Handle threshold slider change."""
-        self.threshold_spinbox.blockSignals(True)
-        self.threshold_spinbox.setValue(float(value))
-        self.threshold_spinbox.blockSignals(False)
-        self._update_compressor()
-
-    def _on_threshold_spinbox(self, value):
-        """Handle threshold spinbox change."""
-        self.threshold_slider.blockSignals(True)
-        self.threshold_slider.setValue(int(value))
-        self.threshold_slider.blockSignals(False)
-        self._update_compressor()
-
-    def _on_ratio_slider(self, value):
-        """Handle ratio slider change."""
-        ratio = value / 10.0
-        self.ratio_spinbox.blockSignals(True)
-        self.ratio_spinbox.setValue(ratio)
-        self.ratio_spinbox.blockSignals(False)
-        self._update_compressor()
-
-    def _on_ratio_spinbox(self, value):
-        """Handle ratio spinbox change."""
-        self.ratio_slider.blockSignals(True)
-        self.ratio_slider.setValue(int(value * 10))
-        self.ratio_slider.blockSignals(False)
-        self._update_compressor()
-
-    def _on_makeup_slider(self, value):
-        """Handle makeup gain slider change."""
-        self.makeup_spinbox.blockSignals(True)
-        self.makeup_spinbox.setValue(float(value))
-        self.makeup_spinbox.blockSignals(False)
-        self._update_compressor()
-
-    def _on_makeup_spinbox(self, value):
-        """Handle makeup gain spinbox change."""
-        self.makeup_slider.blockSignals(True)
-        self.makeup_slider.setValue(int(value))
-        self.makeup_slider.blockSignals(False)
-        self._update_compressor()
-
-    def _on_ceiling_slider(self, value):
-        """Handle ceiling slider change."""
-        ceiling = value / 10.0
-        self.ceiling_spinbox.blockSignals(True)
-        self.ceiling_spinbox.setValue(ceiling)
-        self.ceiling_spinbox.blockSignals(False)
-        self._update_limiter()
-
-    def _on_ceiling_spinbox(self, value):
-        """Handle ceiling spinbox change."""
-        self.ceiling_slider.blockSignals(True)
-        self.ceiling_slider.setValue(int(value * 10))
-        self.ceiling_slider.blockSignals(False)
         self._update_limiter()
 
     def _update_compressor(self):

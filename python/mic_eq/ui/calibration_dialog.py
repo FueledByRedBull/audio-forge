@@ -1156,27 +1156,6 @@ class CalibrationDialog(QDialog):
     def reject(self):
         self._request_close(False)
 
-    def get_recorded_audio(self):
-        """
-        Return the recorded audio data.
-
-        Returns:
-            tuple: (audio_data, sample_rate) where audio_data is NumPy array
-                   of samples or None if no recording exists, sample_rate is int (Hz)
-
-        This method returns the recorded voice sample for frequency analysis.
-        """
-        if self.audio_data is None:
-            return None, None
-
-        # Get sample rate from processor (via parent window)
-        parent = _find_processor_owner(self.parent())
-
-        if parent and hasattr(parent, "processor"):
-            return self.audio_data, _processor_sample_rate(parent)
-
-        return self.audio_data, 48000
-
     def get_selected_curve(self):
         """
         Return the selected target curve key.

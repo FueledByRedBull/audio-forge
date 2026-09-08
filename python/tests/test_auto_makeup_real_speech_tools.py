@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
 import hashlib
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -15,17 +13,7 @@ from scipy.io import wavfile
 from mic_eq import CORE_AVAILABLE
 from mic_eq.mic_eq_core import simulate_auto_makeup_control
 
-
-TOOL_PATH = (
-    Path(__file__).parent.parent / "tools" / "evaluate_auto_makeup_real_speech.py"
-)
-SPEC = importlib.util.spec_from_file_location(
-    "evaluate_auto_makeup_real_speech", TOOL_PATH
-)
-assert SPEC is not None and SPEC.loader is not None
-evaluation = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = evaluation
-SPEC.loader.exec_module(evaluation)
+import evaluate_auto_makeup_real_speech as evaluation
 
 
 def _write_pair_manifest(root: Path) -> tuple[Path, Path]:

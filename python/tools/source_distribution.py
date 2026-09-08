@@ -1519,16 +1519,19 @@ def load_manifest(path: Path) -> dict[str, Any]:
 def _archive_target(root: Path, entry: dict[str, Any]) -> Path:
     filename = entry.get("filename")
     identifier = entry.get("id")
+    digest = entry.get("sha256")
     if (
         not isinstance(filename, str)
         or not filename
         or not isinstance(identifier, str)
         or not identifier
+        or not isinstance(digest, str)
+        or not re.fullmatch(r"[0-9a-fA-F]{64}", digest)
     ):
         raise SourceDistributionError("Manifest entry has no safe id or filename")
     if Path(filename).name != filename or Path(identifier).name != identifier:
         raise SourceDistributionError(f"Unsafe source archive path in entry {identifier!r}")
-    return root / "archives" / f"{identifier}--{filename}"
+    return root / "archives" / digest.lower()
 
 
 def _is_derived_runtime_entry(entry: dict[str, Any]) -> bool:

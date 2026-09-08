@@ -162,6 +162,14 @@ def test_workflow_action_parser_covers_inline_and_named_steps():
     ]
 
 
+def test_workflow_policy_rejects_mutable_action_reference(tmp_path, monkeypatch):
+    source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    action, ref = check_workflows.ACTION_REF.findall(source)[0]
+    (tmp_path / "ci.yml").write_text(source.replace(f"{action}@{ref}", f"{action}@v7"), encoding="utf-8")
+    monkeypatch.setattr(check_workflows, "WORKFLOW_DIR", tmp_path)
+    assert any("not pinned to a commit SHA" in error for error in check_workflows.check_workflows())
+
+
 def test_repository_workflow_release_gates_are_current():
     assert check_workflows.check_workflows() == []
 

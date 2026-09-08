@@ -359,12 +359,10 @@ def test_manifest_records_current_incomplete_status():
     ort = next(
         entry for entry in manifest["entries"] if entry["id"] == "runtime-onnxruntime.dll"
     )
-    assert ort["sha256"] == (
-        "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd"
-    )
-    assert ort["asset_sha256"] == (
-        "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea"
-    )
+    assets = json.loads((manifest_path.parents[1] / "release-assets.json").read_text(encoding="utf-8"))["assets"]
+    runtime = next(asset for asset in assets if asset["path"] == "target/onnxruntime-cpu/lib/onnxruntime.dll")
+    assert ort["sha256"] == runtime["origin"]["archive_sha256"]
+    assert ort["asset_sha256"] == runtime["sha256"]
     assert not any(entry["id"].startswith("runtime-DirectML") for entry in manifest["entries"])
     assert any(entry["id"] == "onnxruntime-source-a83fc4d58cb4" for entry in manifest["entries"])
 

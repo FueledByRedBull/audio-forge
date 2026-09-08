@@ -201,20 +201,6 @@ def check_source_packaging() -> list[str]:
                 f"paths directly instead of writing {forbidden!r}"
             )
 
-    action_ref_pattern = re.compile(
-        r"^\s*(?:-\s*)?uses:\s*[^@\s]+@([^\s#]+)", re.MULTILINE
-    )
-    sha_pattern = re.compile(r"[0-9a-f]{40}")
-    for workflow_path in (REPO_ROOT / ".github/workflows").glob("*.yml"):
-        workflow_source = workflow_path.read_text(encoding="utf-8")
-        refs = action_ref_pattern.findall(workflow_source)
-        for ref in refs:
-            if sha_pattern.fullmatch(ref) is None:
-                errors.append(
-                    f"{workflow_path.relative_to(REPO_ROOT)}: action ref {ref!r} "
-                    "must be pinned to a 40-character commit SHA"
-                )
-
     if "dist-info" in (REPO_ROOT / "python/tools/prune_bundle.py").read_text(encoding="utf-8"):
         errors.append("python/tools/prune_bundle.py must not prune dependency dist-info metadata")
 

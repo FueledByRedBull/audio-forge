@@ -160,3 +160,34 @@ regression tests, both supported models, and Git history.
 - [ ] Measure installation time and dependency weight before splitting the dev
   lock into test, security, and packaging environments. Retain hashed resolution
   and audit coverage; avoid multiple lockfiles without a measured payoff.
+
+
+## Release-contract consolidation
+
+The implementation review correctly distinguishes live configuration from frozen
+measurement evidence. Preserve historical hashes and corruption-rejection tests;
+do not delete verification merely because two boundaries inspect the same bytes.
+
+- [x] Leave action-pin validation in workflow policy, removing its duplicate from
+  package smoke. Compare source-manifest ORT identities with `release-assets.json`
+  instead of maintaining another literal digest in the test.
+- [ ] Reuse one existing asset loader/validator across live consumers, including
+  the ORT probe. Eliminate hardcoded expected digests; preserve path, duplicate,
+  size/hash, and archive-origin validation. Keep historical probe inputs/results
+  tied to the actual tested runtime; do not relabel old evidence after tool edits.
+- [ ] Reduce package-smoke/workflow source-string checks one invariant at a time,
+  after proving equivalent behavioral or artifact coverage. Keep action pins,
+  permissions, active blocking gates, source verification, and commit bindings.
+- [ ] Consolidate artifact metadata/payload manifests if it reduces producer and
+  consumer code together. Preserve archived-release readability, checksums,
+  producer identity, and rejection of missing/corrupt/mismatched candidate data.
+  Keep the existing five public release downloads.
+- [ ] Clarify generated source-manifest ownership and DeepFilter recipe versus
+  build-attestation ownership; derive repeated live facts from their owner.
+  Preserve exact source closure and actual toolchain/output identities.
+- [ ] Simplify version checks around declared metadata. UI and preset versions
+  already derive from `__version__`; retain cross-language metadata consistency
+  without treating prose examples as additional version authorities.
+
+No new build package, universal evaluation schema, or percentage-deletion target
+is required. Extract shared code only when it removes demonstrated duplication.

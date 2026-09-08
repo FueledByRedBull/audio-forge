@@ -17,6 +17,12 @@ the application version: leave it unchanged while those assets and hashes are
 unchanged. Advance it only when a new dependency-asset source has been verified.
 Do not move a released tag to reconcile documentation.
 
+GitHub release immutability is enabled for future publications. Assemble and
+verify every asset on the draft before publishing; publication locks the assets
+and tag and creates GitHub's cryptographically verifiable release attestation.
+Existing releases retain their original protection status. See
+[GitHub's release verification instructions](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/verify-release-integrity).
+
 Publication requires exact-artifact software/package validation and complete
 corresponding source. Hardware measurements are optional supporting evidence;
 release notes must identify their tested revision and any untested coverage.

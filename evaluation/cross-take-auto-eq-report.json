@@ -6,14 +6,14 @@
       "cross_take_abstention_rate": 0.0,
       "cross_take_headroom_safe_rate": 1.0,
       "cross_take_retry_rate": 0.0,
-      "cross_take_runtime_p95_seconds": 1.3723761149998608,
+      "cross_take_runtime_p95_seconds": 1.4544555850005052,
       "median_heldout_improvement_db": -1.3411526187353697,
       "p10_heldout_improvement_db": -1.819669722622817,
       "pair_count": 12,
-      "runtime_p95_ratio": 1.3352442086571426,
+      "runtime_p95_ratio": 1.431397031298682,
       "single_abstention_rate": 0.0,
       "single_retry_rate": 0.0,
-      "single_runtime_p95_seconds": 1.0278090750006412,
+      "single_runtime_p95_seconds": 1.0161091250000027,
       "speaker_median_heldout_improvements_db": {
         "actor-19": -1.7131606578548828,
         "actor-20": -1.5680215564864328,
@@ -29,14 +29,14 @@
       "cross_take_abstention_rate": 0.0,
       "cross_take_headroom_safe_rate": 1.0,
       "cross_take_retry_rate": 0.0,
-      "cross_take_runtime_p95_seconds": 1.174764994999805,
+      "cross_take_runtime_p95_seconds": 1.3514466399989031,
       "median_heldout_improvement_db": -0.3212052368676157,
       "p10_heldout_improvement_db": -1.7551888943876506,
       "pair_count": 12,
-      "runtime_p95_ratio": 1.2765203857809864,
+      "runtime_p95_ratio": 1.4211087813856798,
       "single_abstention_rate": 0.08333333333333333,
       "single_retry_rate": 0.0,
-      "single_runtime_p95_seconds": 0.9202869050000118,
+      "single_runtime_p95_seconds": 0.9509804299999813,
       "speaker_median_heldout_improvements_db": {
         "actor-13": -0.15215224006833594,
         "actor-14": 0.7991058756333302,
@@ -101,7 +101,7 @@
     "min_median_heldout_improvement_db": 0.0,
     "min_p10_heldout_improvement_db": -0.5
   },
-  "generated_at": "2026-09-06T16:32:39.383041+00:00",
+  "generated_at": "2026-09-08T21:40:01.885008+00:00",
   "limitations": [
     "Actors use short fixed statements rather than the Rainbow Passage.",
     "Professional acted speech does not represent every conversational delivery.",
@@ -125,7 +125,7 @@
       "python/mic_eq/analysis/auto_eq_parts/cross_take.py": "82e41ae6cc39559bb919c20d8e24640e7d66d9fcdd9c0e0fdae9dac1c17358ca",
       "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "9547eb8b90d29fb6c9fb4778cb7254bba12f80438815e6bb9d403071a7fb65fa",
       "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-      "python/tools/evaluate_cross_take_auto_eq.py": "37504d4503706185e30b29c166904fda17ed06bbbdf3c3883096b512fac2efea"
+      "python/tools/evaluate_cross_take_auto_eq.py": "d8b815bc9488ac5d83b5b8f53e09d5b2d24ab9d12334b571b25b8f378bc57d8f"
     },
     "validated_input_file_count": 144
   },

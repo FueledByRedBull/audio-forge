@@ -98,8 +98,6 @@ Thumbs.db
 desktop.ini
 
 # Test files
-test_*.py
-!python/tests/test_*.py
 test_output.txt
 *.log
 
@@ -122,14 +120,6 @@ python/mic_eq_core*.so
 df.dll
 libdf.so
 libdf.dylib
-
-# Project docs (development only)
-Considerations.md
-GPLAN.md
-Maybes.md
-audio-forge-review-report.md
-future-dsp.md
-ROADMAP.md
 
 # Local archives
 AudioForge.7z

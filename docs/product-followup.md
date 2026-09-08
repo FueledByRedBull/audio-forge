@@ -1,6 +1,8 @@
-# Product follow-up after v1.12.0
+# Concrete follow-up work after v1.12.0
 
-Planning checklist, not a release gate or a claim that these features are implemented.
+Concrete-work checklist; unchecked items are not implemented.
+Optional ideas and experiments are tracked separately in
+[PR #64](https://github.com/FueledByRedBull/audio-forge/pull/64).
 Recheck each item against merged [PR #62](https://github.com/FueledByRedBull/audio-forge/pull/62).
 Keep this draft separate from release work; do not merge solely to store a plan.
 When implementation resumes, link the corresponding issue/PR beside its checkbox
@@ -37,9 +39,9 @@ their regression coverage; reopen only if current evidence shows a remaining def
 - [ ] Distinguish replacement **EQ templates**, **complete sound presets**, and
   **calibration targets** in labels and actions. EQ-only application must leave
   gate, suppressor, dynamics, and output protection unchanged.
-- [ ] Reuse the duplicated Voice/Bass Cut/Presence recipes through the existing
-  catalog. Define a complete-preset baseline once and test resolved settings;
-  avoid copying every default or creating a second preset subsystem.
+- [x] Reuse Voice/Bass Cut/Presence recipes through the existing catalog.
+- [ ] Define a complete-preset baseline once and test resolved settings; avoid
+  copying every default or creating a second preset subsystem.
 - [ ] Describe Warm & Clear as a strong replacement contour and distinguish bass
   trimming from rumble high-pass filtering. Do not retune recipes without evidence.
 
@@ -56,20 +58,7 @@ their regression coverage; reopen only if current evidence shows a remaining def
 - [ ] Check both flows for failed analysis, stale signals, cancellation, partial
   application failure, changed inputs/options, and preservation of unrelated stages.
 
-## 3. Controlled listening comparison — decision before implementation
-
-- [ ] Revisit held decisions [#24](https://github.com/FueledByRedBull/audio-forge/issues/24)
-  and [#25](https://github.com/FueledByRedBull/audio-forge/issues/25). Decide whether
-  a small in-app audition or the broader experimental harness is warranted.
-- [ ] If approved, compare current/proposed settings using the same recorded passage,
-  aligned delay and optional speech-based loudness matching. Show the actual level
-  difference separately; retain an untouched reference and an explicit keep/reject choice.
-- [ ] Bound playback, protect output, release recordings on close, and verify matching
-  accuracy and click-free switching. Disclose which stages are rendered: downstream
-  comparison is not full live-chain verification or proof of listening preference.
-  Add per-stage/milder alternatives only if basic comparison proves useful.
-
-## 4. Independent tone, intensity, and loudness
+## 3. Independent tone, intensity, and loudness
 
 - [ ] Remove the hard coupling between tonal target and requested LUFS. Use-case
   presets may initialize tone, compression intensity, and loudness independently.
@@ -78,7 +67,7 @@ their regression coverage; reopen only if current evidence shows a remaining def
 - [ ] Distinguish one-time calibration, continuous adaptation, and manual control.
   Verify changing tone alone preserves the loudness goal through analyze/apply/save/load.
 
-## 5. Microphone configuration and evidence
+## 4. Microphone configuration and evidence
 
 - [ ] Associate channel interpretation and cleanup preferences with stable device
   identity. Define behavior for new, missing, and changed endpoints and route overrides.
@@ -88,33 +77,17 @@ their regression coverage; reopen only if current evidence shows a remaining def
 - [ ] Test switching microphones, reconnecting, restarting, and migration of existing
   global preferences without silently transferring one microphone's assumptions.
 
-## 6. Everyday controls and onboarding
+## 5. Everyday controls and onboarding
 
 - [ ] Add user mute separate from temporary calibration/recovery mute. Calibration
   completion, cancellation, and errors must never clear the user's mute choice.
 - [ ] Show microphone, destination, active preset, transmission/processing state,
   and a compact health summary; retain detailed diagnostics for investigation.
-- [ ] Consider opt-in tray operation and mute shortcut; distinguish close, quit,
-  start-with-Windows, and start-processing behavior. Keep audio activity unmistakable.
+
+- [ ] Clarify close, quit, start-with-Windows, and start-processing behavior.
+  Keep audio activity unmistakable.
 - [ ] Guide route selection, speech-level/clipping checks, destination reception,
   and calibration. Keep latency measurement optional under advanced diagnostics.
-- [ ] Replace competing bypass/raw checkboxes with one clear processing-mode choice
-  if it improves use. Preserve conditioning, transport, sanitization, and protection;
-  make raw diagnostic operation conspicuous.
-
-## 7. Calibration and DSP integration experiments
-
-- [ ] Evaluate suppression choices together with gating and downstream processing
-  instead of treating downstream verification as a complete automatic tuning solution.
-- [ ] Investigate adjusting character without discarding microphone correction.
-  Revisit the existing correction/tone experiment before proposing another EQ stage.
-- [ ] Define clean-speech preservation, noise, gate-tail, clipping/headroom, latency,
-  and CPU gates before changes; compare representative held-out material and listening
-  results where approved. Retain the incumbent when benefit is not established.
-
-No audit here establishes a need to replace the EQ, compressor, limiter, or DSP
-architecture. A new suppressor, virtual microphone driver, broad framework, or
-cosmetic redesign is not a prerequisite for this checklist.
 
 ## Separate compatibility follow-up
 
@@ -125,9 +98,7 @@ cosmetic redesign is not a prerequisite for this checklist.
 
 ## Maintenance and size follow-up
 
-The September 9 bloat review identifies investigations, not a mandate to replace
-working numerical code or create another framework. Preserve release evidence,
-regression tests, both supported models, and Git history.
+Preserve release evidence, regression tests, both supported models, and Git history.
 
 - [x] Bound candidate retention to three days and reuse compiled caches across
   source-only edits. Keep separate job/profile caches; measure build time before
@@ -136,31 +107,16 @@ regression tests, both supported models, and Git history.
   records every bundled file's size and total bytes; reuse that manifest, compare
   with the preceding release, and report the largest changes in the job summary.
   Avoid another public attachment or mandatory release gate.
-- [ ] Measure a SciPy-free prototype before adopting it: compressed package size,
-  startup time, held-out Auto-EQ results, resampling/filtering/latency correctness,
-  numerical stability, and maintenance cost. The v1.12.0 manifest attributes
-  about 90 MB uncompressed to SciPy; this is not the compressed saving. Preserve
-  SciPy unless the complete replacement demonstrates worthwhile benefit.
-- [ ] Audit corresponding-source closure against the pinned Windows CPU build.
-  Classify required build/license inputs and optional upstream test/web tooling,
-  measure archive sizes, and prove the reduced set still rebuilds the shipped
-  dependencies before removing entries. Content-addressed deduplication is
-  already implemented in this PR; do not prune by filename alone.
+
 - [ ] Define local cleanup around disposable outputs and retained inputs first.
   Keep active Python installations/virtual environments, models, corpora, and
   unpublished evidence out of broad deletion targets. Prefer existing build-tool
-  cleanup commands; add a preview-first cleaner only if those are insufficient.
-- [ ] When changing large UI/DSP modules, extract a concrete responsibility and
-  retain its regression coverage. Split tests by behavior when navigation suffers;
-  file length alone does not justify controllers or a wholesale rewrite.
+  cleanup commands; reuse existing tools where sufficient. The one-time cleanup is complete.
+
 - [ ] Consolidate evaluation plumbing only where repeated code is demonstrated.
   Reuse the existing WAV helper and provenance utilities; keep named experiments
   and historical decisions. Check consumers and reproduction requirements before
   archiving rejected experiments such as DPDFNet.
-- [ ] Measure installation time and dependency weight before splitting the dev
-  lock into test, security, and packaging environments. Retain hashed resolution
-  and audit coverage; avoid multiple lockfiles without a measured payoff.
-
 
 ## Release-contract consolidation
 
@@ -178,10 +134,7 @@ do not delete verification merely because two boundaries inspect the same bytes.
 - [ ] Reduce package-smoke/workflow source-string checks one invariant at a time,
   after proving equivalent behavioral or artifact coverage. Keep action pins,
   permissions, active blocking gates, source verification, and commit bindings.
-- [ ] Consolidate artifact metadata/payload manifests if it reduces producer and
-  consumer code together. Preserve archived-release readability, checksums,
-  producer identity, and rejection of missing/corrupt/mismatched candidate data.
-  Keep the existing five public release downloads.
+
 - [ ] Clarify generated source-manifest ownership and DeepFilter recipe versus
   build-attestation ownership; derive repeated live facts from their owner.
   Preserve exact source closure and actual toolchain/output identities.
@@ -191,3 +144,11 @@ do not delete verification merely because two boundaries inspect the same bytes.
 
 No new build package, universal evaluation schema, or percentage-deletion target
 is required. Extract shared code only when it removes demonstrated duplication.
+
+## Validate PR #63 before merging
+
+- [ ] Build a fresh portable package and MSI from the final PR revision.
+- [ ] Exercise the changed source-packaging, evidence-generation, and candidate
+  validation paths; verify installation and applicable upgrade behavior.
+- [ ] Validate promotion behavior without publishing or creating a tag.
+- [ ] Review the final diff and CI results; keep this PR unmerged until authorized.

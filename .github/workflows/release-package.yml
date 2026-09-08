@@ -315,7 +315,7 @@ jobs:
           if (Test-Path -LiteralPath $sourceArchive) {
             Remove-Item -LiteralPath $sourceArchive -Force
           }
-          & $sevenZip a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on $sourceArchive (Join-Path $sourceDir "*")
+          & $sevenZip a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on $sourceArchive (Join-Path (Resolve-Path $sourceDir).Path "*")
           if ($LASTEXITCODE -ne 0) {
             throw "7-Zip source archive failed with exit code $LASTEXITCODE."
           }

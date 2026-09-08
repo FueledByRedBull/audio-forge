@@ -37,6 +37,27 @@ run_semgrep = _load_tool("run_semgrep")
 check_workflows = _load_tool("check_workflows")
 
 
+def test_release_outputs_are_ignored_without_hiding_source(tmp_path):
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text(
+        (TOOLS_DIR.parents[1] / ".gitignore").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    outputs = ["AudioForge-v9.8.7-deepfilter.provenance.json"]
+    for artifact in ("win64-ultra.7z", "win64.msi", "source.7z"):
+        for suffix in ("", ".sha256", ".metadata.json"):
+            outputs.append(f"AudioForge-v9.8.7-{artifact}{suffix}")
+    outputs.extend([
+        "AudioForge-v9.8.7-win64-ultra.7z.manifest.json",
+        "AudioForge-v9.8.7-win64.msi.manifest.json",
+    ])
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", *outputs, "python/mic_eq/new_source.py"],
+        cwd=tmp_path, text=True, capture_output=True, check=True,
+    )
+    assert set(result.stdout.splitlines()) == set(outputs)
+
+
 def _write_bundle_file(bundle: Path, relative_path: str) -> None:
     path = bundle / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)

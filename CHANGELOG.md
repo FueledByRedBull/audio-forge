@@ -2,7 +2,12 @@
 
 ## Unreleased
 
-## v1.12.2
+## v1.12.3
+
+- Ignore generated native release attestations so immutable packaging no longer
+  trips the clean-source guard.
+
+## v1.12.2 (unpublished)
 
 - Correct release provenance test isolation and refresh synchronized release
   metadata for the patch release.

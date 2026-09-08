@@ -224,6 +224,21 @@ def test_release_workflow_binds_existing_tag_to_checked_out_commit():
     assert errors == []
 
 
+def test_release_candidate_can_be_validated_before_tagging():
+    workflow = check_workflows.yaml.safe_load(
+        (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(encoding="utf-8")
+    )
+    triggers = workflow.get("on", workflow.get(True))
+    assert set(triggers) == {"workflow_dispatch"}
+    jobs = workflow["jobs"]
+    assert jobs["package-windows"]["outputs"]["source_revision"] == "${{ steps.meta.outputs.source_revision }}"
+    steps = jobs["package-windows"]["steps"]
+    binding = next(step for step in steps if step.get("name") == "Bind existing release tag to checked-out commit")
+    assert binding["if"] == "inputs.release_tag != '' || github.ref_type == 'tag'"
+    validation = jobs["validate-candidate"]["steps"]
+    assert validation[0]["with"]["ref"] == "${{ needs.package-windows.outputs.source_revision }}"
+
+
 def test_workflow_checker_rejects_legacy_python_pin():
     errors: list[str] = []
 

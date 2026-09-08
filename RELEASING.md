@@ -49,14 +49,15 @@ For local release prep from a clean clone, you can mirror that behavior with:
 
 Then run the workflow with:
 
-- `release_tag`: the target tag, for example `v1.12.4`.
+- `release_tag`: leave blank to validate the selected branch before tagging;
+  supply an existing tag only when rebuilding it.
 - `asset_source_tag`: optional published release override for pinned
   DeepFilter model assets. Leave blank to use the repository
   `AUDIOFORGE_ASSET_SOURCE_TAG` override when configured, then the
   `fallback_release_tag` pinned in `release-assets.json`. Silero v6.2.1 comes
   from its immutable direct URL.
 
-On `v*` tag pushes, the workflow hydrates and verifies the corresponding-source
+On manual dispatch, the workflow hydrates and verifies the corresponding-source
 inputs before building, then builds and validates a Windows candidate. It
 retains the portable archive, per-user MSI, corresponding-source archive, and
 their generated checksums/metadata/manifests as one immutable Actions artifact.
@@ -190,13 +191,15 @@ writing release facts manually:
 
 Candidate and promotion:
 
-1. Commit tracked source/doc/version changes.
-2. Create annotated tag `v1.12.4`.
-3. Confirm the standing runtime-asset source is still available and matches the
+1. Commit and push tracked source/doc/version changes.
+2. Confirm the standing runtime-asset source is still available and matches the
    manifest. Existing verified assets do not need uploading again for each version.
-4. Push `master` and `v1.12.4`, or run the `Release package` workflow manually
-   to create a candidate.
-5. Record the candidate workflow run ID and generated archive SHA-256.
+3. Dispatch `Release package` on that branch with `release_tag` blank. Both
+   build and exact-archive validation must pass. Fix failed attempts on the
+   branch without creating tags or changing the release version.
+4. Record the successful candidate run ID, source commit, and archive SHA-256.
+5. Create and push annotated tag `v1.12.4` at that exact source commit. Tag
+   pushes do not rebuild the candidate; subsequent gates use the same bytes.
 6. On a temporary or standing self-hosted runner labelled `self-hosted`,
    `windows`, `x64`, and `audioforge-hardware`, run `Qualify release candidate
    on hardware` with the candidate run ID and digest plus explicitly selected

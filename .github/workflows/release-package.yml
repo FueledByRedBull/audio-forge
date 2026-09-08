@@ -4,16 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Existing Git tag represented by this candidate. Defaults to the tag for the pyproject version."
+        description: "Optional existing tag to rebuild. Leave blank to validate the selected branch before tagging."
         required: false
         type: string
       asset_source_tag:
         description: "Published release used only as a fallback for pinned runtime assets. Defaults to release-assets.json."
         required: false
         type: string
-  push:
-    tags:
-      - "v*"
 
 concurrency:
   group: release-package-${{ github.ref }}
@@ -41,6 +38,7 @@ jobs:
       source_metadata: ${{ steps.source.outputs.metadata }}
       native_attestation: ${{ steps.native.outputs.attestation }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
+      source_revision: ${{ steps.meta.outputs.source_revision }}
       version: ${{ steps.meta.outputs.version }}
       msi_version: ${{ steps.meta.outputs.msi_version }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
@@ -148,12 +146,14 @@ jobs:
           $archive = "AudioForge-$expectedTag-win64-ultra.7z"
           "version=$version" >> $env:GITHUB_OUTPUT
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+          "source_revision=$env:AUDIOFORGE_SOURCE_REVISION" >> $env:GITHUB_OUTPUT
           "msi_version=$msiVersion" >> $env:GITHUB_OUTPUT
           "prerelease=$isPrerelease" >> $env:GITHUB_OUTPUT
           "asset_source_tag=$assetSourceTag" >> $env:GITHUB_OUTPUT
           "archive=$archive" >> $env:GITHUB_OUTPUT
 
       - name: Bind existing release tag to checked-out commit
+        if: inputs.release_tag != '' || github.ref_type == 'tag'
         env:
           RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
         run: |
@@ -495,7 +495,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.package-windows.outputs.release_tag }}
+          ref: ${{ needs.package-windows.outputs.source_revision }}
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -533,7 +533,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Corresponding-source extraction failed with exit code $LASTEXITCODE."
           }
-          $tagCommit = (git rev-list -n 1 "${{ needs.package-windows.outputs.release_tag }}" --).Trim()
+          $tagCommit = (git rev-parse HEAD).Trim()
+          if ($tagCommit -ne "${{ needs.package-windows.outputs.source_revision }}") {
+            throw "Candidate validation checkout does not match its source revision."
+          }
           if ($tagCommit -notmatch '^[0-9a-f]{40}$') {
             throw "Release tag does not resolve to a full commit: $tagCommit"
           }

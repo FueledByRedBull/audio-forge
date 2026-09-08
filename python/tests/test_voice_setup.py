@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 import numpy as np
+import pytest
 
 from mic_eq.analysis.voice_setup import (
     _COMPRESSOR_SEARCH_BUDGET,
@@ -14,6 +18,8 @@ from mic_eq.analysis.voice_setup import (
     validate_voice_setup_verification,
 )
 from mic_eq.analysis.auto_eq import simulate_candidate_chain
+from mic_eq.analysis.cancellation import AnalysisCancelled
+from mic_eq.ui.voice_setup_dialog import VoiceSetupVerificationWorker
 
 
 def _make_noise(sample_rate: int, seconds: float = 2.0, amplitude: float = 0.0012) -> np.ndarray:
@@ -65,12 +71,19 @@ def test_short_capture_keeps_short_term_unavailable_and_labels_fallback():
 
 def test_voice_setup_uses_vad_assisted_when_available():
     sample_rate = 48_000
+    limiter = {
+        "enabled": False,
+        "ceiling_db": -2.5,
+        "release_ms": 175.0,
+        "careful_output_enabled": False,
+    }
     result = analyze_voice_setup(
         _make_noise(sample_rate),
         _make_voice(sample_rate),
         sample_rate,
         "streaming",
         vad_available=True,
+        limiter_settings=limiter,
     )
 
     assert result["gate_settings"]["gate_mode"] == 1
@@ -83,6 +96,7 @@ def test_voice_setup_uses_vad_assisted_when_available():
         <= 1.0
     )
     assert result["diagnostics"]["setup_confidence"] > 0.0
+    assert result["limiter_settings"] == limiter
 
 
 def test_gate_vad_threshold_stays_in_calibrated_narrow_snr_range():
@@ -100,23 +114,6 @@ def test_gate_vad_threshold_stays_in_calibrated_narrow_snr_range():
 
     np.testing.assert_allclose(thresholds, [0.4725, 0.46625, 0.46, 0.4475])
     assert all(0.42 <= threshold <= 0.50 for threshold in thresholds)
-
-
-def test_voice_setup_falls_back_without_vad_and_can_enable_deesser():
-    sample_rate = 48_000
-    result = analyze_voice_setup(
-        _make_noise(sample_rate),
-        _make_voice(sample_rate, sibilant=True),
-        sample_rate,
-        "broadcast",
-        vad_available=False,
-    )
-
-    assert result["gate_settings"]["gate_mode"] == 0
-    assert result["gate_settings"]["auto_threshold_enabled"] is False
-    assert result["deesser_settings"]["enabled"] is True
-    assert result["deesser_settings"]["high_cut_hz"] > result["deesser_settings"]["low_cut_hz"]
-    assert result["diagnostics"]["deesser_temporal_contrast_db"] > 0.75
 
 
 def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp():
@@ -159,6 +156,8 @@ def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp(
         fixture_results[label] = result
         diagnostics = result["diagnostics"]
 
+        assert result["gate_settings"]["gate_mode"] == 0, label
+        assert result["gate_settings"]["auto_threshold_enabled"] is False, label
         assert np.isfinite(diagnostics["short_term_lufs"]), label
         assert diagnostics["loudness_range_db"] >= 0.0, label
         assert diagnostics["vad_active_duration_s"] >= 0.0, label
@@ -190,7 +189,13 @@ def test_labelled_fixture_recommendations_use_loudness_features_and_offline_dsp(
                 diagnostics["setup_confidence"],
             )
 
-    assert fixture_results["sibilant"]["deesser_settings"]["enabled"] is True
+    sibilant = fixture_results["sibilant"]
+    assert sibilant["deesser_settings"]["enabled"] is True
+    assert (
+        sibilant["deesser_settings"]["high_cut_hz"]
+        > sibilant["deesser_settings"]["low_cut_hz"]
+    )
+    assert sibilant["diagnostics"]["deesser_temporal_contrast_db"] > 0.75
     assert (
         fixture_results["sibilant"]["diagnostics"]["offline_validation"][
             "deesser_gain_reduction_db"
@@ -425,6 +430,493 @@ def test_expanded_compressor_search_keeps_safe_profile_on_effective_tie(
     assert calibrated["ratio"] == compressor["ratio"]
     assert calibrated["attack_ms"] == compressor["attack_ms"]
     assert calibrated["release_ms"] == compressor["release_ms"]
+
+
+def test_compressor_calibration_uses_one_limiter_configuration(monkeypatch):
+    observed_limiters: list[dict[str, object]] = []
+
+    def fake_simulation(_audio, _sample_rate, _eq, chain):
+        observed_limiters.append(dict(chain["limiter"]))
+        return {
+            "simulation_backend": "rust",
+            "compressor_gain_reduction_db": 3.7,
+            "compressor_gain_reduction_median_db": 1.4,
+            "compressor_gain_reduction_p95_db": 3.5,
+            "compressor_gain_reduction_active_ratio": 1.0,
+            "active_output_gain_db": 0.0,
+            "output_true_peak_db": -3.0,
+            "limiter_effective_ceiling_db": -1.5,
+            "pre_limiter_true_peak_headroom_db": 2.0,
+            "compressor_pumping_score_db": 0.0,
+            "silence_output_gain_db": 0.0,
+            "non_finite_output": False,
+        }
+
+    monkeypatch.setattr(
+        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        fake_simulation,
+    )
+    limiter = {
+        "enabled": False,
+        "ceiling_db": -2.5,
+        "release_ms": 175.0,
+        "careful_output_enabled": False,
+    }
+    compressor = {
+        "threshold_db": -24.0,
+        "ratio": 2.5,
+        "attack_ms": 12.0,
+        "release_ms": 180.0,
+        "auto_makeup_enabled": True,
+        "makeup_gain_db": 0.0,
+        "target_lufs": -18.0,
+        "measured_short_term_lufs": -22.0,
+    }
+
+    _calibrate_compressor_threshold(
+        speech_audio=np.zeros(4800, dtype=np.float32),
+        sample_rate=48000,
+        eq_settings={
+            "band_freqs": list(np.geomspace(60.0, 16000.0, 10)),
+            "band_gains": [0.0] * 10,
+            "band_qs": [1.41] * 10,
+        },
+        deesser_settings={"enabled": False},
+        compressor_settings=compressor,
+        target_p95_db=3.5,
+        target_median_db=1.4,
+        peak_cap_db=8.0,
+        limiter_settings=limiter,
+    )
+
+    assert observed_limiters
+    assert all(item == limiter for item in observed_limiters)
+
+
+def test_verification_uses_candidate_limiter_and_retries_without_it(monkeypatch):
+    observed_limiters: list[dict[str, object]] = []
+
+    class FakeSpectrum:
+        freqs = np.geomspace(80.0, 12_000.0, 16)
+        median_spectrum_db = np.zeros(16)
+        spectral_snr_db = np.zeros(16)
+        snr_db = 0.0
+
+    def fake_simulation(audio, _sample_rate, _eq, chain):
+        observed_limiters.append(dict(chain["limiter"]))
+        return {
+            "simulation_backend": "rust",
+            "output_audio": np.zeros_like(audio).tolist(),
+            "compressor_gain_reduction_p95_db": 1.0,
+            "compressor_gain_reduction_db": 1.0,
+            "deesser_gain_reduction_p95_db": 0.0,
+            "output_true_peak_db": -3.0,
+            "limiter_effective_ceiling_db": -1.5,
+            "true_peak_limited_events": 0,
+            "output_rms_db": -30.0,
+            "input_rms_db": -30.0,
+        }
+
+    monkeypatch.setattr(
+        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        fake_simulation,
+    )
+    monkeypatch.setattr(
+        "mic_eq.analysis.voice_setup.analyze_voice_spectrum",
+        lambda *_args, **_kwargs: FakeSpectrum(),
+    )
+    monkeypatch.setattr(
+        "mic_eq.analysis.voice_setup._shape_error_db",
+        lambda *_args, **_kwargs: 0.0,
+    )
+    monkeypatch.setattr(
+        "mic_eq.analysis.voice_setup._vad_masked_speech_features",
+        lambda *_args, **_kwargs: {"active_loudness_spread_db": 0.0},
+    )
+    limiter = {
+        "enabled": False,
+        "ceiling_db": -2.5,
+        "release_ms": 175.0,
+        "careful_output_enabled": False,
+    }
+    setup_result = {
+        "eq_settings": {
+            "band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
+            "band_gains": [0.0] * 10,
+            "band_qs": [1.41] * 10,
+        },
+        "deesser_settings": {"enabled": False},
+        "compressor_settings": {
+            "target_p95_reduction_db": 3.5,
+            "peak_reduction_cap_db": 8.0,
+        },
+        "limiter_settings": limiter,
+    }
+    audio = np.zeros(48_000 * 3, dtype=np.float32)
+
+    result = validate_voice_setup_verification(
+        audio,
+        audio,
+        audio,
+        48_000,
+        setup_result,
+        "broadcast",
+    )
+
+    assert result["decision"] == "accept"
+    assert observed_limiters
+    assert all(item == limiter for item in observed_limiters)
+    missing = dict(setup_result)
+    missing.pop("limiter_settings")
+    retry = validate_voice_setup_verification(
+        audio,
+        audio,
+        audio,
+        48_000,
+        missing,
+        "broadcast",
+    )
+    assert retry["decision"] == "retry"
+    assert retry["reasons"] == ["candidate limiter settings are missing"]
+
+
+def test_verification_checks_cancellation_between_rendering_stages(monkeypatch):
+    calls = 0
+    cancelled = False
+
+    def fake_simulation(audio, _sample_rate, _eq, _chain):
+        nonlocal calls, cancelled
+        calls += 1
+        cancelled = calls == 2
+        return {
+            "simulation_backend": "rust",
+            "output_audio": np.zeros_like(audio).tolist(),
+        }
+
+    monkeypatch.setattr(
+        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        fake_simulation,
+    )
+    with pytest.raises(AnalysisCancelled):
+        validate_voice_setup_verification(
+            np.zeros(144_000, dtype=np.float32),
+            np.zeros(144_000, dtype=np.float32),
+            np.zeros(144_000, dtype=np.float32),
+            48_000,
+            {
+                "eq_settings": {
+                    "band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
+                    "band_gains": [0.0] * 10,
+                    "band_qs": [1.41] * 10,
+                },
+                "limiter_settings": {
+                    "enabled": True,
+                    "ceiling_db": -0.5,
+                    "release_ms": 50.0,
+                    "careful_output_enabled": True,
+                },
+            },
+            "broadcast",
+            cancel_check=lambda: cancelled,
+        )
+    assert calls == 2
+
+
+def test_verification_worker_cancellation_does_not_emit_result(qapp, monkeypatch):
+    entered = threading.Event()
+    result_ready = []
+
+    def blocking_validation(*_args, cancel_check=None, **_kwargs):
+        if not callable(cancel_check):
+            raise AssertionError("worker did not provide a cancellation callback")
+        entered.set()
+        while not cancel_check():
+            time.sleep(0.005)
+        raise AnalysisCancelled("sentinel")
+
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.validate_voice_setup_verification",
+        blocking_validation,
+    )
+    worker = VoiceSetupVerificationWorker(
+        np.zeros(16, dtype=np.float32),
+        np.zeros(16, dtype=np.float32),
+        np.zeros(16, dtype=np.float32),
+        48_000,
+        {"limiter_settings": {
+            "enabled": True,
+            "ceiling_db": -0.5,
+            "release_ms": 50.0,
+            "careful_output_enabled": True,
+        }},
+        "broadcast",
+    )
+    worker.result_ready.connect(result_ready.append)
+    worker.start()
+    assert entered.wait(1.0)
+    worker.stop()
+    assert worker.wait(2_000)
+    qapp.processEvents()
+    assert result_ready == []
+
+
+def test_verification_worker_reports_failure(monkeypatch):
+    errors: list[str] = []
+
+    def failing_validation(*_args, **_kwargs):
+        raise RuntimeError("sentinel")
+
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.validate_voice_setup_verification",
+        failing_validation,
+    )
+    worker = VoiceSetupVerificationWorker(
+        np.zeros(16, dtype=np.float32),
+        np.zeros(16, dtype=np.float32),
+        np.zeros(16, dtype=np.float32),
+        48_000,
+        {"limiter_settings": {
+            "enabled": True,
+            "ceiling_db": -0.5,
+            "release_ms": 50.0,
+            "careful_output_enabled": True,
+        }},
+        "broadcast",
+    )
+    worker.failed.connect(errors.append)
+    worker.run()
+    assert errors == ["sentinel"]
+
+
+def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, monkeypatch):
+    from unittest.mock import Mock
+    from mic_eq.config import AppConfig
+    from mic_eq.ui.main_window import MainWindow
+    from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    for name in ("list_presets", "list_input_devices", "list_output_devices"):
+        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    owner = MainWindow()
+    owner.meter_timer.stop()
+    owner.diagnostics_timer.stop()
+    owner.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.7})
+    owner.eq_panel.set_settings({"enabled": False})
+    old_compressor = owner.compressor_panel.get_compressor_settings(include_calibration=True)
+    old_limiter = owner.compressor_panel.get_limiter_settings()
+    old_eq = owner.eq_panel.get_settings()
+    dialog = VoiceSetupDialog(parent=owner)
+    limiter = {"enabled": False, "ceiling_db": -2.5, "release_ms": 175.0,
+               "careful_output_enabled": False}
+    dialog.setup_result = {
+        "diagnostics": {"apply_recommended": True},
+        "gate_settings": owner.gate_panel.get_settings(),
+        "deesser_settings": {**owner.deesser_panel.get_settings(), "auto_amount": 0.3476},
+        "compressor_settings": {**old_compressor, "threshold_db": -21.123,
+            "ratio": 2.3476, "noise_reference_reliability": 0.4,
+            "target_p95_reduction_db": 3.5, "peak_reduction_cap_db": 8.0},
+        "limiter_settings": limiter,
+        "eq_settings": {"band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
+                        "band_gains": [1.0] * 10, "band_qs": [1.41] * 10},
+    }
+    with monkeypatch.context() as patch:
+        patch.setattr(dialog, "_show_summary", lambda _result: None)
+        dialog._on_analysis_complete(dialog.setup_result)
+    assert not dialog.curve_combo.isEnabled()
+    assert not dialog.dynamics_combo.isEnabled()
+    dialog._apply_setup()
+    assert dialog.setup_state == "verification_ready"
+    assert dialog.setup_result["compressor_settings"]["threshold_db"] == -21.12
+    assert dialog.setup_result["compressor_settings"]["ratio"] == 2.35
+    assert dialog.setup_result["compressor_settings"]["target_p95_reduction_db"] == 3.5
+    assert dialog.setup_result["deesser_settings"]["auto_amount"] == 0.35
+    assert dialog.setup_result["limiter_settings"] == limiter
+    assert owner.eq_panel.get_settings()["enabled"] is True
+    dialog._on_verification_failed("sentinel failure")
+    assert owner.compressor_panel.get_compressor_settings(include_calibration=True) == old_compressor
+    assert owner.compressor_panel.get_limiter_settings() == old_limiter
+    assert owner.eq_panel.get_settings() == old_eq
+
+    with monkeypatch.context() as patch:
+        show_error = Mock()
+        patch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.critical", show_error)
+        patch.setattr(owner.eq_panel, "apply_auto_eq_results",
+                      Mock(side_effect=RuntimeError("sentinel apply failure")))
+        dialog._apply_setup()
+        assert show_error.call_count == 1
+    assert owner.compressor_panel.get_compressor_settings(include_calibration=True) == old_compressor
+    assert owner.compressor_panel.get_limiter_settings() == old_limiter
+    assert owner.eq_panel.get_settings() == old_eq
+
+    entered = threading.Event()
+    def blocked_verification(*_args, cancel_check, **_kwargs):
+        entered.set()
+        while not cancel_check():
+            time.sleep(0.005)
+        raise AnalysisCancelled("closed")
+    monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.validate_voice_setup_verification",
+                        blocked_verification)
+    dialog._apply_setup()
+    dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
+    dialog._complete_verification(np.zeros(16, dtype=np.float32))
+    worker = dialog.analysis_worker
+    assert worker is not None
+    try:
+        assert entered.wait(2.0)
+        # Deliver an event while verification is blocked, then close cooperatively.
+        events = []
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, lambda: events.append("responsive"))
+        qapp.processEvents()
+        assert events == ["responsive"]
+        stale_generation = dialog._analysis_generation
+        dialog.reject()
+        assert worker.wait(2_000)
+        dialog._on_verification_complete({"decision": "accept"}, generation=stale_generation)
+        assert "verification" not in dialog.setup_result
+        assert owner.compressor_panel.get_compressor_settings(include_calibration=True) == old_compressor
+        assert owner.compressor_panel.get_limiter_settings() == old_limiter
+        assert owner.eq_panel.get_settings() == old_eq
+    finally:
+        worker.stop()
+        worker.wait(2_000)
+        qapp.processEvents()
+        dialog.reject()
+        dialog.deleteLater()
+        owner.close()
+        owner.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("eq_settings", {"band_freqs": [60.0]}, "candidate EQ bands are incomplete"),
+        ("limiter_settings", {}, "candidate limiter settings are incomplete"),
+    ],
+)
+def test_incomplete_candidate_offers_retake_instead_of_apply(
+    qapp, monkeypatch, field, value, reason
+):
+    from unittest.mock import Mock
+
+    from mic_eq.config import AppConfig
+    from mic_eq.ui.main_window import MainWindow
+    from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    for name in ("list_presets", "list_input_devices", "list_output_devices"):
+        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    owner = MainWindow()
+    owner.meter_timer.stop()
+    owner.diagnostics_timer.stop()
+    dialog = VoiceSetupDialog(parent=owner)
+    limiter = {
+        "enabled": False,
+        "ceiling_db": -2.5,
+        "release_ms": 175.0,
+        "careful_output_enabled": False,
+    }
+    result = {
+        "diagnostics": {
+            "apply_recommended": False,
+            "uncertainty_reasons": ["capture confidence is weak"],
+            "setup_confidence": 0.62,
+            "capture_confidence": 0.7,
+            "recommendation_uncertainty": 0.4,
+            "gate_mode_label": "VAD Assisted",
+        },
+        "gate_settings": owner.gate_panel.get_settings(),
+        "deesser_settings": owner.deesser_panel.get_settings(),
+        "compressor_settings": owner.compressor_panel.get_compressor_settings(
+            include_calibration=True
+        ),
+        "limiter_settings": limiter,
+        "eq_settings": {
+            "band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
+            "band_gains": [1.0] * 10,
+            "band_qs": [1.41] * 10,
+        },
+    }
+    result[field] = value
+    dialog.noise_audio = np.zeros(16, dtype=np.float32)
+    try:
+        dialog._on_analysis_complete(result)
+        assert dialog.setup_state == "noise_ready"
+        assert dialog.start_button.text() == "Record Voice Again"
+        assert not dialog.retake_btn.isHidden()
+        assert dialog.warning_label.text().startswith("Recommendations are incomplete:")
+        assert reason in dialog.warning_label.text()
+        assert "Apply" not in dialog.start_button.text()
+
+        show_error = Mock()
+        monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.critical", show_error)
+        dialog._apply_setup()
+        show_error.assert_called_once()
+        assert show_error.call_args.args[1] == "Incomplete Voice Setup"
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+        owner.close()
+        owner.deleteLater()
+        qapp.processEvents()
+
+
+def test_complete_advisory_candidate_still_offers_apply(qapp, monkeypatch):
+    from mic_eq.config import AppConfig
+    from mic_eq.ui.main_window import MainWindow
+    from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    for name in ("list_presets", "list_input_devices", "list_output_devices"):
+        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    owner = MainWindow()
+    owner.meter_timer.stop()
+    owner.diagnostics_timer.stop()
+    dialog = VoiceSetupDialog(parent=owner)
+    try:
+        dialog._on_analysis_complete(
+            {
+                "diagnostics": {
+                    "apply_recommended": False,
+                    "uncertainty_reasons": ["capture confidence is weak"],
+                    "setup_confidence": 0.62,
+                    "capture_confidence": 0.7,
+                    "recommendation_uncertainty": 0.4,
+                    "gate_mode_label": "VAD Assisted",
+                },
+                "gate_settings": owner.gate_panel.get_settings(),
+                "deesser_settings": owner.deesser_panel.get_settings(),
+                "compressor_settings": owner.compressor_panel.get_compressor_settings(
+                    include_calibration=True
+                ),
+                "limiter_settings": {
+                    "enabled": False,
+                    "ceiling_db": -2.5,
+                    "release_ms": 175.0,
+                    "careful_output_enabled": False,
+                },
+                "eq_settings": {
+                    "band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
+                    "band_gains": [1.0] * 10,
+                    "band_qs": [1.41] * 10,
+                },
+            }
+        )
+        assert dialog.setup_state == "completed"
+        assert dialog.start_button.text() == "Apply Voice Setup"
+        assert not dialog.curve_combo.isEnabled()
+        assert not dialog.dynamics_combo.isEnabled()
+        assert dialog.warning_label.text().startswith("Advisory recommendations only:")
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+        owner.close()
+        owner.deleteLater()
+        qapp.processEvents()
 
 
 def test_expanded_compressor_search_handles_no_safe_threshold_only_candidate(

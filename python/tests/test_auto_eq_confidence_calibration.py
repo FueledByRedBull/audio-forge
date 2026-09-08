@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -31,6 +32,33 @@ def test_classification_counts_and_scores():
     assert result["true_negative"] == 1
     assert result["precision"] == 0.5
     assert result["recall"] == 0.5
+
+
+def test_cli_keeps_training_grid_in_details_only(tmp_path: Path, monkeypatch):
+    report = tmp_path / "summary.json"
+    details = tmp_path / "details.json"
+    monkeypatch.setattr(sys, "argv", [
+        str(TOOL_PATH), "--report", str(report), "--details-output", str(details),
+    ])
+    monkeypatch.setattr(calibration, "_pairs", lambda root: [(Path("clean"), Path("noisy"), 10.0)])
+    monkeypatch.setattr(calibration, "_case", lambda *args, **kwargs: (
+        {"candidate_runtime_seconds": 0.1, "stable_capture": True}, [],
+    ))
+    monkeypatch.setattr(calibration, "_calibrate", lambda *args, **kwargs: {
+        "selected_threshold": 0.45,
+        "current_validation": {"f1": 0.6},
+        "training_candidates": [{"threshold": 0.45, "f1": 0.6}],
+    })
+    monkeypatch.setattr(calibration, "_sha256", lambda path: "a" * 64)
+    monkeypatch.setattr(calibration, "_relative", lambda path: path.name)
+
+    assert calibration.main() == 0
+    summary = json.loads(report.read_text())
+    full = json.loads(details.read_text())
+    for name, decision in summary["decision"].items():
+        assert decision["current_validation"] == full["decision"][name]["current_validation"]
+        assert "training_candidates" not in decision
+        assert full["decision"][name]["training_candidates"]
 
 
 def test_calibration_retains_current_without_both_validation_classes():

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from typing import Any
 
@@ -13,11 +13,17 @@ from ..eq_quality import evaluate_eq_quality, weighted_target_error
 from .constants import NUM_EQ_BANDS, REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD
 from .dynamic_bands import _voice_weights
 from .optimizer import _overall_confidence, _validation_confidence
+from ..cancellation import check_analysis_cancelled
 
 HEADROOM_TARGET_DB = 1.0
 LIMITER_GAIN_REDUCTION_WARN_DB = 1.0
 TRUE_PEAK_GAIN_REDUCTION_WARN_DB = 0.5
 HEADROOM_SCALES = (1.0, 0.85, 0.70, 0.55, 0.40, 0.25, 0.0)
+_NATIVE_SAFETY_METRICS = (
+    "pre_limiter_true_peak_headroom_db",
+    "limiter_gain_reduction_db",
+    "true_peak_limiter_gain_reduction_db",
+)
 
 
 def _db(value: float) -> float:
@@ -40,6 +46,14 @@ def _as_bool(value: Any, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     return default
+
+
+def _native_failure(kind: str, *, message: str) -> dict[str, str]:
+    """Return a bounded, user-safe reason for an unavailable native path."""
+    return {
+        "kind": kind,
+        "message": str(message)[:256],
+    }
 
 
 def _flatten_chain_settings(chain_settings: dict[str, Any] | None) -> dict[str, Any]:
@@ -104,22 +118,56 @@ def _native_simulate(
     sample_rate: int,
     bands: list[tuple[float, float, float]],
     flat_settings: dict[str, Any],
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
     try:
         from mic_eq import CORE_AVAILABLE
         from mic_eq.mic_eq_core import simulate_auto_eq_chain
-    except ImportError:
-        return None
+    except ImportError as exc:
+        return None, _native_failure(
+            "unavailable",
+            message=f"native simulator import failed: {type(exc).__name__}: {exc}",
+        )
     if not CORE_AVAILABLE:
-        return None
+        return None, _native_failure(
+            "unavailable",
+            message="native simulator is unavailable in this build",
+        )
     try:
         audio = np.ascontiguousarray(audio_data, dtype=np.float32)
-        result: Any = simulate_auto_eq_chain(audio, float(sample_rate), bands, flat_settings)
+        result: Any = simulate_auto_eq_chain(
+            audio, float(sample_rate), bands, flat_settings
+        )
         if not isinstance(result, Mapping):
-            return None
-        return {str(key): value for key, value in result.items()}
-    except Exception:
-        return None
+            return None, _native_failure(
+                "invalid_result",
+                message=(
+                    "native simulator returned "
+                    f"{type(result).__name__}, expected a mapping"
+                ),
+            )
+        normalized = {str(key): value for key, value in result.items()}
+        invalid_metrics = []
+        for key in _NATIVE_SAFETY_METRICS:
+            value = normalized.get(key)
+            if isinstance(value, bool) or not isinstance(
+                value, (int, float, np.number)
+            ):
+                invalid_metrics.append(f"{key} is missing or non-numeric")
+                continue
+            if not np.isfinite(float(value)):
+                invalid_metrics.append(f"{key} is not finite")
+        if invalid_metrics:
+            return None, _native_failure(
+                "invalid_result",
+                message="native simulator safety metrics invalid: "
+                + "; ".join(invalid_metrics),
+            )
+        return normalized, None
+    except Exception as exc:
+        return None, _native_failure(
+            "runtime_error",
+            message=f"native simulator failed: {type(exc).__name__}: {exc}",
+        )
 
 
 def _biquad_coefficients(
@@ -262,7 +310,9 @@ def simulate_candidate_chain(
 
     bands = _bands_from_settings(eq_settings)
     flat_settings = _flatten_chain_settings(chain_settings)
-    native = _native_simulate(audio_data, sample_rate, bands, flat_settings)
+    native, native_failure = _native_simulate(
+        audio_data, sample_rate, bands, flat_settings
+    )
     if native is not None:
         native["simulation_backend"] = "rust"
         native["safety_authority"] = "authoritative"
@@ -276,16 +326,22 @@ def simulate_candidate_chain(
         "compression uses whole-capture RMS instead of the live envelope",
         "the live lookahead limiter is not simulated",
     ]
+    if native_failure is not None:
+        fallback["native_simulation_failure"] = native_failure
     return fallback
 
 
 def _is_headroom_safe(simulation: dict[str, Any]) -> bool:
-    pre_true_peak_headroom = _as_float(
-        simulation.get("pre_limiter_true_peak_headroom_db"),
-        simulation.get("true_peak_headroom_db", 120.0),
-    )
-    limiter_gr = _as_float(simulation.get("limiter_gain_reduction_db"), 0.0)
-    true_peak_gr = _as_float(simulation.get("true_peak_limiter_gain_reduction_db"), 0.0)
+    metrics: list[float] = []
+    for key in _NATIVE_SAFETY_METRICS:
+        value = simulation.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
+            return False
+        parsed = float(value)
+        if not np.isfinite(parsed):
+            return False
+        metrics.append(parsed)
+    pre_true_peak_headroom, limiter_gr, true_peak_gr = metrics
     return (
         pre_true_peak_headroom >= HEADROOM_TARGET_DB
         and limiter_gr <= LIMITER_GAIN_REDUCTION_WARN_DB
@@ -379,6 +435,7 @@ def apply_headroom_validation(
     analysis_freqs: np.ndarray | None = None,
     measured_db: np.ndarray | None = None,
     target_db: np.ndarray | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Scale Auto-EQ boosts/cuts when offline chain simulation predicts headroom risk."""
 
@@ -388,12 +445,14 @@ def apply_headroom_validation(
     if original_gains.size != NUM_EQ_BANDS:
         return result
 
+    check_analysis_cancelled(cancel_check)
     before = simulate_candidate_chain(audio, sample_rate, result, chain_settings)
     selected = before
     selected_scale = 1.0
     selected_gains = original_gains.copy()
     if not _is_headroom_safe(before):
         for scale in HEADROOM_SCALES[1:]:
+            check_analysis_cancelled(cancel_check)
             candidate = deepcopy(result)
             candidate_gains = (original_gains * scale).tolist()
             candidate["band_gains"] = candidate_gains
@@ -434,6 +493,9 @@ def apply_headroom_validation(
         "after": selected,
         "status": "safe" if safe else "risk" if authoritative else "advisory",
     }
+    native_failure = selected.get("native_simulation_failure")
+    if native_failure is not None:
+        result["headroom_validation"]["native_simulation_failure"] = native_failure
     result["headroom_safe"] = safe
     result["headroom_advisory"] = not authoritative
     result["headroom_gain_scale"] = selected_scale

@@ -1,0 +1,51 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Id="FueledByRedBull.AudioForge"
+    Name="AudioForge"
+    Manufacturer="FueledByRedBull"
+    Version="$(var.Version)"
+    Scope="perUser"
+    UpgradeCode="D04C75FD-3A69-4AF2-9A5B-0F7C89C3AA7A"
+    Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of AudioForge is already installed." />
+    <Property Id="WINDOWSBUILDNUMBER" Secure="yes">
+      <RegistrySearch
+        Id="WindowsBuildNumberSearch"
+        Root="HKLM"
+        Key="SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+        Name="CurrentBuildNumber"
+        Type="raw" />
+    </Property>
+    <Launch
+      Condition="Installed OR (VersionNT64 AND WINDOWSBUILDNUMBER &gt;= 17763)"
+      Message="AudioForge requires 64-bit Windows 10 version 1809 (build 17763) or newer." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="AudioForge" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="AudioForge" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="AudioForge" Level="1">
+      <Files Include="!(bindpath.PayloadDir)\**" Directory="INSTALLFOLDER" />
+      <Component Id="StartMenuShortcut" Directory="ApplicationProgramsFolder">
+        <Shortcut
+          Id="AudioForgeStartMenuShortcut"
+          Name="AudioForge"
+          Description="AudioForge microphone equalizer"
+          Target="[INSTALLFOLDER]AudioForge.exe"
+          WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\FueledByRedBull\AudioForge"
+          Name="StartMenuShortcut"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </Feature>
+  </Package>
+</Wix>

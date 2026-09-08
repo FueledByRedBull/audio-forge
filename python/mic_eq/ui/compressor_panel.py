@@ -5,6 +5,7 @@ Controls for dynamics processing: threshold, ratio, attack, release, makeup gain
 """
 
 import logging
+import math
 
 from PyQt6.QtWidgets import (
     QWidget,
@@ -41,6 +42,7 @@ class CompressorPanel(QWidget):
     def __init__(self, processor):
         super().__init__()
         self.processor = processor
+        self._noise_reference_reliability = 0.0
         self._comp_rate_limiter = RateLimiter(interval_ms=33)
         self._limiter_rate_limiter = RateLimiter(interval_ms=33)
         self._setup_ui()
@@ -234,7 +236,7 @@ class CompressorPanel(QWidget):
         self.auto_makeup_checkbox.setToolTip(
             "Automatically adjust makeup gain from post-compression EBU R128 loudness measurement.\n"
             "Maintains post-compressor output level relative to target LUFS.\n"
-            "Target: -18 LUFS (podcast/streaming standard)"
+            "Uses the selected Target LUFS value."
         )
         advanced_layout.addWidget(self.auto_makeup_checkbox, 4, 0, 1, 2)
 
@@ -581,9 +583,9 @@ class CompressorPanel(QWidget):
         """Update the gain reduction meter (call from timer)."""
         self.gr_meter.set_gain_reduction(gr_db)
 
-    def get_compressor_settings(self) -> dict:
-        """Get current compressor settings as a dictionary."""
-        return {
+    def get_compressor_settings(self, *, include_calibration: bool = False) -> dict:
+        """Get compressor settings, optionally including transient calibration."""
+        settings = {
             "enabled": self.comp_enabled_checkbox.isChecked(),
             "threshold_db": self.threshold_spinbox.value(),
             "ratio": self.ratio_spinbox.value(),
@@ -596,6 +598,9 @@ class CompressorPanel(QWidget):
             "target_lufs": self.target_lufs_spinbox.value(),
             "sidechain_highpass_enabled": self.sidechain_highpass_checkbox.isChecked(),
         }
+        if include_calibration:
+            settings["noise_reference_reliability"] = self._noise_reference_reliability
+        return settings
 
     def get_limiter_settings(self) -> dict:
         """Get current limiter settings as a dictionary."""
@@ -643,13 +648,31 @@ class CompressorPanel(QWidget):
         self._update_compressor()
         self._update_adaptive_release()
         self._update_auto_makeup()
-        if hasattr(
-            self.processor,
-            "set_compressor_noise_reference_reliability",
-        ):
-            self.processor.set_compressor_noise_reference_reliability(
-                settings.get("noise_reference_reliability", 0.0)
+        # Room-noise reliability is transient calibration evidence, not a
+        # persisted compressor setting. Omission intentionally invalidates it
+        # for ordinary preset application; rollback snapshots opt in above.
+        if "noise_reference_reliability" not in settings:
+            reliability = 0.0
+        else:
+            try:
+                candidate_reliability = float(settings["noise_reference_reliability"])
+            except (TypeError, ValueError):
+                candidate_reliability = None
+            reliability = (
+                min(1.0, max(0.0, candidate_reliability))
+                if candidate_reliability is not None
+                and math.isfinite(candidate_reliability)
+                else None
             )
+        if reliability is not None:
+            self._noise_reference_reliability = reliability
+            setter = getattr(
+                self.processor,
+                "set_compressor_noise_reference_reliability",
+                None,
+            )
+            if callable(setter):
+                setter(reliability)
 
     def set_limiter_settings(self, settings: dict) -> None:
         """Apply limiter settings from a dictionary."""

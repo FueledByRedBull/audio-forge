@@ -6,13 +6,13 @@
         "cases": 15,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
         "median_gain_envelope_variation_db": 5.310739347651052,
-        "median_runtime_ms": 130.8644,
+        "median_runtime_ms": 126.59339999999999,
         "median_transient_shape_error_db": -0.1189286088492921,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -0.029248146474483497,
-        "p95_runtime_ms": 157.73388599999998,
-        "p95_runtime_realtime_factor": 0.03654881721161168,
+        "p95_runtime_ms": 320.41092699999973,
+        "p95_runtime_realtime_factor": 0.06538805721543231,
         "total_true_peak_limited_events": 20,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -22,13 +22,13 @@
         "cases": 3,
         "max_true_peak_limiter_gain_reduction_db": 0.5307239890098572,
         "median_gain_envelope_variation_db": 6.453329087019887,
-        "median_runtime_ms": 135.9216,
+        "median_runtime_ms": 233.1762,
         "median_transient_shape_error_db": -1.6067039964586185,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -0.32134079929172366,
-        "p95_runtime_ms": 140.391702,
-        "p95_runtime_realtime_factor": 0.03466663057735951,
+        "p95_runtime_ms": 434.4427209999999,
+        "p95_runtime_realtime_factor": 0.07964646775906224,
         "total_true_peak_limited_events": 1,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.5220339298248291
@@ -38,13 +38,13 @@
         "cases": 12,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
         "median_gain_envelope_variation_db": 5.093856098012724,
-        "median_runtime_ms": 126.85675,
+        "median_runtime_ms": 120.3471,
         "median_transient_shape_error_db": -0.10713932782443558,
         "minimum_main_peak_gain_reduction_db": 2.999488353729248,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -0.03395770542572466,
-        "p95_runtime_ms": 159.450969,
-        "p95_runtime_realtime_factor": 0.036573346341786585,
+        "p95_runtime_ms": 169.9603325,
+        "p95_runtime_realtime_factor": 0.03627548786380649,
         "total_true_peak_limited_events": 19,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -56,13 +56,13 @@
         "cases": 15,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
         "median_gain_envelope_variation_db": 6.016380929169147,
-        "median_runtime_ms": 129.6031,
+        "median_runtime_ms": 129.2725,
         "median_transient_shape_error_db": -0.055159067508680715,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -0.006332666920683711,
-        "p95_runtime_ms": 160.20996699999998,
-        "p95_runtime_realtime_factor": 0.037758771225405094,
+        "p95_runtime_ms": 255.19034299999996,
+        "p95_runtime_realtime_factor": 0.05740686418622081,
         "total_true_peak_limited_events": 18,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -72,13 +72,13 @@
         "cases": 3,
         "max_true_peak_limiter_gain_reduction_db": 0.5307239890098572,
         "median_gain_envelope_variation_db": 9.258924201082737,
-        "median_runtime_ms": 136.05519999999999,
+        "median_runtime_ms": 218.72549999999998,
         "median_transient_shape_error_db": -0.005432988056877311,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -0.0010865976113754619,
-        "p95_runtime_ms": 142.09772,
-        "p95_runtime_realtime_factor": 0.03447085136063628,
+        "p95_runtime_ms": 281.221829,
+        "p95_runtime_realtime_factor": 0.06292387599158841,
         "total_true_peak_limited_events": 1,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.5220339298248291
@@ -88,13 +88,13 @@
         "cases": 12,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
         "median_gain_envelope_variation_db": 5.837585718129652,
-        "median_runtime_ms": 127.83019999999999,
+        "median_runtime_ms": 124.53035,
         "median_transient_shape_error_db": -0.05788496227786025,
         "minimum_main_peak_gain_reduction_db": 2.999488353729248,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -0.025014490380498536,
-        "p95_runtime_ms": 163.6307005,
-        "p95_runtime_realtime_factor": 0.03778598247761598,
+        "p95_runtime_ms": 188.9561565,
+        "p95_runtime_realtime_factor": 0.03730970558693806,
         "total_true_peak_limited_events": 17,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -106,13 +106,13 @@
         "cases": 15,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
         "median_gain_envelope_variation_db": 6.908091526427348,
-        "median_runtime_ms": 131.429,
+        "median_runtime_ms": 128.9855,
         "median_transient_shape_error_db": -0.051729685283528254,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -0.008934198163053249,
-        "p95_runtime_ms": 157.94708599999998,
-        "p95_runtime_realtime_factor": 0.03725115802779746,
+        "p95_runtime_ms": 243.626769,
+        "p95_runtime_realtime_factor": 0.05170980366028857,
         "total_true_peak_limited_events": 18,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -122,13 +122,13 @@
         "cases": 3,
         "max_true_peak_limiter_gain_reduction_db": 0.5307239890098572,
         "median_gain_envelope_variation_db": 42.093090033315235,
-        "median_runtime_ms": 137.329,
+        "median_runtime_ms": 205.1124,
         "median_transient_shape_error_db": -0.2865931941511276,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -0.05731863883022551,
-        "p95_runtime_ms": 149.06677499999998,
-        "p95_runtime_realtime_factor": 0.03508988735972017,
+        "p95_runtime_ms": 254.790327,
+        "p95_runtime_realtime_factor": 0.052635134606175436,
         "total_true_peak_limited_events": 1,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.5220339298248291
@@ -138,13 +138,13 @@
         "cases": 12,
         "max_true_peak_limiter_gain_reduction_db": 0.7609714269638062,
         "median_gain_envelope_variation_db": 6.782276426478707,
-        "median_runtime_ms": 127.34715000000001,
+        "median_runtime_ms": 123.80255,
         "median_transient_shape_error_db": -0.04489213244670884,
         "minimum_main_peak_gain_reduction_db": 2.999488353729248,
         "minimum_pre_true_peak_overshoot_db": 0.0,
         "p90_transient_shape_error_db": -0.011027387961943086,
-        "p95_runtime_ms": 160.29733399999998,
-        "p95_runtime_realtime_factor": 0.03726304831518128,
+        "p95_runtime_ms": 200.76978899999995,
+        "p95_runtime_realtime_factor": 0.04222334185533375,
         "total_true_peak_limited_events": 17,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 0.7522813081741333
@@ -253,8 +253,8 @@
   "evaluation_contract": {
     "asset_hashes": {
       "native_extension": {
-        "path": "python/mic_eq/mic_eq_core.cp312-win_amd64.pyd",
-        "sha256": "bc54f5b601bd22595f217d6486dcc501e0b888b9dd364843cbbd78181f782820"
+        "path": "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd",
+        "sha256": "97089bd9eece803acc7322c577bb4288f6b425796b3c80ec089742da752eb68f"
       },
       "real_case_source_sha256": [
         "099f330317e03d0d97c9a9e572863d9db3f514d7c28bd2b4f050c5bddabaae04",
@@ -274,7 +274,7 @@
       "source": {
         "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
         "python/tools/evaluate_limiter_lookahead.py": "08fdba9a64d62298fb925d43e6b09b4f1ef2e085caba2b31298d54b60609e32d",
-        "rust-core/src/audio/processor/python_api.rs": "ba7f30ca011f71a580f4a7ce034064bd123b06d1e340a038e29cbdc84be43847",
+        "rust-core/src/audio/processor/python_api.rs": "f38e8cedb679bf0abcb7d45c6187509cf1b2e9cf9ea7afa0423c9b88c7e3a37b",
         "rust-core/src/dsp/limiter.rs": "e7e7df92b682c3f8b8a56f8ba66263d2a29822ba4b206c670a3ac76b6cdb7285",
         "rust-core/src/dsp/true_peak.rs": "945631c2b249c354c29cd9bde5b2c624ecbede1f737435347ae8315bb30b7354"
       }
@@ -365,13 +365,13 @@
       }
     },
     "runtime": {
-      "candidate_p95_realtime_factor": 0.037758771225405094,
+      "candidate_p95_realtime_factor": 0.06538805721543231,
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native simulator reports whole-render timing; seven timed renders plus warmup are recorded instead of callback P99.",
       "platform": "Windows-11-10.0.26200-SP0"
     }
   },
-  "generated_at_utc": "2026-09-01T17:53:18.657280+00:00",
+  "generated_at_utc": "2026-09-06T19:13:51.813232+00:00",
   "limitations": [
     "Real speech receives one recorded static gain, calibrated through the protected chain to 3 dB of main-limiter gain reduction; the source waveform is otherwise unchanged.",
     "Transient shape error removes one local static gain and is not a perceptual score.",
@@ -398,7 +398,7 @@
   "source_sha256": {
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
     "python/tools/evaluate_limiter_lookahead.py": "08fdba9a64d62298fb925d43e6b09b4f1ef2e085caba2b31298d54b60609e32d",
-    "rust-core/src/audio/processor/python_api.rs": "ba7f30ca011f71a580f4a7ce034064bd123b06d1e340a038e29cbdc84be43847",
+    "rust-core/src/audio/processor/python_api.rs": "f38e8cedb679bf0abcb7d45c6187509cf1b2e9cf9ea7afa0423c9b88c7e3a37b",
     "rust-core/src/dsp/limiter.rs": "e7e7df92b682c3f8b8a56f8ba66263d2a29822ba4b206c670a3ac76b6cdb7285",
     "rust-core/src/dsp/true_peak.rs": "945631c2b249c354c29cd9bde5b2c624ecbede1f737435347ae8315bb30b7354"
   }

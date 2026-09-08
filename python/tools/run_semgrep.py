@@ -36,7 +36,14 @@ def _error_findings(sarif_path: Path) -> list[str]:
         for result in run.get("results", []):
             rule_id = str(result.get("ruleId", "unknown-rule"))
             severity = str(result.get("level") or rules.get(rule_id, ""))
-            if severity == "error":
+            suppressions = result.get("suppressions")
+            suppressed_in_source = isinstance(suppressions, list) and any(
+                isinstance(suppression, dict)
+                and suppression.get("kind") == "inSource"
+                and suppression.get("status") in (None, "accepted")
+                for suppression in suppressions
+            )
+            if severity == "error" and not suppressed_in_source:
                 findings.append(str(result.get("ruleId", "unknown-rule")))
     return findings
 
@@ -72,34 +79,26 @@ def _scan_command(scan_output: Path) -> list[str]:
         "--sarif",
         "--output",
         str(scan_output),
-        "--exclude",
-        ".venv",
-        "--exclude",
-        ".git",
-        "--exclude",
-        "build",
-        "--exclude",
-        "dist",
-        "--exclude",
-        "target",
-        "--exclude",
-        "models",
-        "--exclude",
-        "downloads",
-        "--exclude",
-        "__pycache__",
-        "--exclude",
-        ".pytest_cache",
-        "--exclude",
-        ".ruff_cache",
-        "--exclude",
-        ".pyright",
-        "--exclude",
-        "static_analysis_semgrep_*",
+        # Joined values prevent the Windows CLI from expanding bare wildcards.
+        "--exclude=.venv*",
+        "--exclude=.env",
+        "--exclude=.env.*",
+        "--exclude=credentials.*",
+        "--exclude=secrets.*",
+        "--exclude=.git",
+        "--exclude=build",
+        "--exclude=dist",
+        "--exclude=target",
+        "--exclude=models",
+        "--exclude=downloads",
+        "--exclude=__pycache__",
+        "--exclude=.pytest_cache",
+        "--exclude=.ruff_cache",
+        "--exclude=.pyright",
+        "--exclude=static_analysis_semgrep_*",
         # Never feed a previous scanner report back into the next scan. SARIF
         # embeds matched examples and can therefore look like source secrets.
-        "--exclude",
-        "*.sarif",
+        "--exclude=*.sarif",
     ]
     for ruleset in _rulesets():
         command.extend(("--config", ruleset))

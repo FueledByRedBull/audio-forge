@@ -4,19 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Existing Git tag and target GitHub Release, for example v1.10.2."
+        description: "Existing final or RC Git tag, for example v1.12.0 or v1.12.0-rc.1."
         required: true
         type: string
       candidate_run_id:
         description: "Successful Release package workflow run containing the exact candidate."
         required: true
         type: string
-      hardware_matrix_run_id:
-        description: "Successful automated hardware-gate workflow run for the exact candidate."
-        required: true
-        type: string
       expected_archive_sha256:
-        description: "SHA-256 approved after automated and hardware qualification."
+        description: "SHA-256 approved after automated qualification."
         required: true
         type: string
 
@@ -45,7 +41,71 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.13.15"
+
+      - name: Verify producing workflow runs and source commit
+        id: origins
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          $canonicalTag = (python python/tools/release_version.py tag $env:RELEASE_TAG).Trim()
+          if ($LASTEXITCODE -ne 0 -or $canonicalTag -ne $env:RELEASE_TAG) {
+            throw "release_tag must be the canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N tag."
+          }
+          $isPrerelease = (python python/tools/release_version.py prerelease $env:RELEASE_TAG).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Unable to classify release tag '$env:RELEASE_TAG'." }
+          if ($env:CANDIDATE_RUN_ID -notmatch '^\d+$') {
+            throw "Workflow run IDs must contain only decimal digits."
+          }
+          $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG --).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Unable to resolve release tag '$env:RELEASE_TAG'."
+          }
+          function Assert-WorkflowRun {
+            param(
+              [string]$RunId,
+              [string]$ExpectedWorkflow
+            )
+            $json = gh run view $RunId `
+              --repo $env:GITHUB_REPOSITORY `
+              --json databaseId,workflowName,event,status,conclusion,headSha,attempt
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to read GitHub Actions run $RunId."
+            }
+            $run = $json | ConvertFrom-Json
+            if ([string]$run.databaseId -ne $RunId) {
+              throw "GitHub Actions run identity mismatch for $RunId."
+            }
+            if ($run.workflowName -ne $ExpectedWorkflow) {
+              throw "Run $RunId was produced by '$($run.workflowName)', expected '$ExpectedWorkflow'."
+            }
+            if ($run.status -ne "completed" -or $run.conclusion -ne "success") {
+              throw "Run $RunId is not a successful completed workflow run."
+            }
+            if ($run.headSha -notmatch '^[0-9a-fA-F]{40}$' -or
+                $run.headSha.ToLowerInvariant() -ne $tagCommit.ToLowerInvariant()) {
+              throw "Run $RunId did not build the release tag commit."
+            }
+            if ($run.event -notin @("push", "workflow_dispatch")) {
+              throw "Run $RunId has unsupported event '$($run.event)'."
+            }
+            if ([string]$run.attempt -notmatch '^\d+$' -or [int]$run.attempt -lt 1) {
+              throw "Run $RunId has an invalid attempt number."
+            }
+            return $run
+          }
+          $candidateRun = Assert-WorkflowRun $env:CANDIDATE_RUN_ID "Release package"
+          "candidate_run_id=$($candidateRun.databaseId)" >> $env:GITHUB_OUTPUT
+          "candidate_run_attempt=$($candidateRun.attempt)" >> $env:GITHUB_OUTPUT
+          "tag_commit=$tagCommit" >> $env:GITHUB_OUTPUT
+          "prerelease=$isPrerelease" >> $env:GITHUB_OUTPUT
+
+      - name: Install pinned validation runtime
+        run: |
+          python -m pip install --require-hashes -r requirements/runtime.txt --no-compile
+          if ($LASTEXITCODE -ne 0) { throw "Validation runtime installation failed." }
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -63,37 +123,50 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ inputs.candidate_run_id }}
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: audioforge-release-hardware-matrix-${{ inputs.release_tag }}
-          path: hardware-matrix
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.hardware_matrix_run_id }}
-
-      - name: Verify exact candidate and both qualification bindings
+      - name: Verify exact candidate and automated qualification binding
         id: candidate
         env:
           EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          CANDIDATE_RUN_ID: ${{ steps.origins.outputs.candidate_run_id }}
+          CANDIDATE_RUN_ATTEMPT: ${{ steps.origins.outputs.candidate_run_attempt }}
+          TAG_COMMIT: ${{ steps.origins.outputs.tag_commit }}
+          EXPECTED_PRERELEASE: ${{ steps.origins.outputs.prerelease }}
         run: |
-          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
-            throw "release_tag must be an exact vMAJOR.MINOR.PATCH tag."
+          $canonicalTag = (python python/tools/release_version.py tag $env:RELEASE_TAG).Trim()
+          if ($LASTEXITCODE -ne 0 -or $canonicalTag -ne $env:RELEASE_TAG) {
+            throw "release_tag must be the canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N tag."
           }
           if ($env:EXPECTED_SHA256 -notmatch '^[0-9a-fA-F]{64}$') {
             throw "expected_archive_sha256 must contain exactly 64 hexadecimal characters."
           }
-          $archive = Get-ChildItem -LiteralPath candidate -Filter "*.7z" -File
-          $checksum = Get-ChildItem -LiteralPath candidate -Filter "*.7z.sha256" -File
-          $manifest = Get-ChildItem -LiteralPath candidate -Filter "*.7z.manifest.json" -File
-          $metadata = Get-ChildItem -LiteralPath candidate -Filter "*.7z.metadata.json" -File
+          $archive = Get-ChildItem -LiteralPath candidate -Filter "*-win64-ultra.7z" -File
+          $checksum = Get-ChildItem -LiteralPath candidate -Filter "*-win64-ultra.7z.sha256" -File
+          $manifest = Get-ChildItem -LiteralPath candidate -Filter "*-win64-ultra.7z.manifest.json" -File
+          $metadata = Get-ChildItem -LiteralPath candidate -Filter "*-win64-ultra.7z.metadata.json" -File
+          $sourceArchive = Get-ChildItem -LiteralPath candidate -Filter "*-source.7z" -File
+          $sourceChecksum = Get-ChildItem -LiteralPath candidate -Filter "*-source.7z.sha256" -File
+          $sourceMetadata = Get-ChildItem -LiteralPath candidate -Filter "*-source.7z.metadata.json" -File
+          $installer = Get-ChildItem -LiteralPath candidate -Filter "*.msi" -File
+          $installerChecksum = Get-ChildItem -LiteralPath candidate -Filter "*.msi.sha256" -File
+          $installerManifest = Get-ChildItem -LiteralPath candidate -Filter "*.msi.manifest.json" -File
+          $installerMetadata = Get-ChildItem -LiteralPath candidate -Filter "*.msi.metadata.json" -File
+          $nativeAttestation = Get-ChildItem -LiteralPath candidate -Filter "*-deepfilter.provenance.json" -File
           if (
             @($archive).Count -ne 1 -or
             @($checksum).Count -ne 1 -or
             @($manifest).Count -ne 1 -or
-            @($metadata).Count -ne 1
+            @($metadata).Count -ne 1 -or
+            @($sourceArchive).Count -ne 1 -or
+            @($sourceChecksum).Count -ne 1 -or
+            @($sourceMetadata).Count -ne 1 -or
+            @($installer).Count -ne 1 -or
+            @($installerChecksum).Count -ne 1 -or
+            @($installerManifest).Count -ne 1 -or
+            @($installerMetadata).Count -ne 1 -or
+            @($nativeAttestation).Count -ne 1
           ) {
-            throw "Candidate artifact must contain exactly one archive and each provenance sidecar."
+            throw "Candidate artifact must contain exactly one portable archive, source archive, MSI, DeepFilter attestation, and each provenance sidecar."
           }
 
           $extract = Join-Path $env:RUNNER_TEMP "audioforge-promoted-candidate"
@@ -103,10 +176,70 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Candidate extraction failed with exit code $LASTEXITCODE."
           }
+          $sourceExtract = Join-Path $env:RUNNER_TEMP "audioforge-promoted-source"
+          New-Item -ItemType Directory -Force -Path $sourceExtract | Out-Null
+          & $sevenZip x -y "-o$sourceExtract" $sourceArchive.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "Corresponding-source extraction failed with exit code $LASTEXITCODE."
+          }
+
+          function Assert-WorkflowBinding {
+            param(
+              [object]$Value,
+              [string]$Label,
+              [string]$RunId,
+              [string]$RunAttempt,
+              [string]$ExpectedWorkflow
+            )
+            $producer = $Value.producer
+            if ($null -eq $producer -or
+                [string]$producer.run_id -ne $RunId -or
+                [string]$producer.run_attempt -ne $RunAttempt -or
+                [string]$producer.workflow -ne $ExpectedWorkflow) {
+              throw "$Label producer does not bind to workflow run $RunId attempt $RunAttempt."
+            }
+          }
+          function Assert-MetadataBinding {
+            param(
+              [object]$Value,
+              [string]$Label,
+              [string]$RunId,
+              [string]$RunAttempt
+            )
+            $workflow = $Value.workflow
+            if ($null -eq $workflow -or
+                [string]$workflow.run_id -ne $RunId -or
+                [string]$workflow.run_attempt -ne $RunAttempt) {
+              throw "$Label workflow metadata does not bind to workflow run $RunId attempt $RunAttempt."
+            }
+          }
+          $qualification = Get-Content -LiteralPath "validation/release-qualification.json" -Raw | ConvertFrom-Json
+          $portableMetadataObject = Get-Content -LiteralPath $metadata.FullName -Raw | ConvertFrom-Json
+          $installerMetadataObject = Get-Content -LiteralPath $installerMetadata.FullName -Raw | ConvertFrom-Json
+          Assert-WorkflowBinding $qualification "Automated qualification" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT "Release package"
+          Assert-MetadataBinding $portableMetadataObject "Portable artifact" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT
+          Assert-MetadataBinding $installerMetadataObject "MSI artifact" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT
 
           $tagCommit = git rev-list -n 1 $env:RELEASE_TAG --
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tagCommit)) {
             throw "Unable to resolve release tag '$env:RELEASE_TAG'."
+          }
+          $expectedVersion = (python python/tools/release_version.py pep440 $env:RELEASE_TAG).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($expectedVersion)) {
+            throw "Unable to resolve the public version for '$env:RELEASE_TAG'."
+          }
+          python python/tools/source_distribution.py verify `
+            --archive $sourceArchive.FullName `
+            --checksum $sourceChecksum.FullName `
+            --metadata $sourceMetadata.FullName `
+            --expected-version $expectedVersion `
+            --manifest licenses/source-manifest.json `
+            --source-dir $sourceExtract `
+            --include-runtime-assets `
+            --require-receipt `
+            --revision $tagCommit.Trim()
+          if ($LASTEXITCODE -ne 0) {
+            throw "Promotion refused: corresponding-source verification failed."
           }
           python python/tools/release_provenance.py verify `
             --bundle $extract `
@@ -117,20 +250,64 @@ jobs:
             --baseline evaluation/release-bundle-path-baseline.json `
             --expected-archive-sha256 ($env:EXPECTED_SHA256).ToLowerInvariant() `
             --expected-commit $tagCommit.Trim() `
-            --report validation/release-qualification.json `
-            --report hardware-matrix/release-hardware-matrix.json
+            --require-source-distribution `
+            --native-attestation $nativeAttestation.FullName `
+            --report validation/release-qualification.json
           if ($LASTEXITCODE -ne 0) {
-            throw "Promotion refused: provenance, automated qualification, or hardware qualification binding failed."
+            throw "Promotion refused: provenance or automated qualification binding failed."
+          }
+          python python/tools/release_provenance.py verify `
+            --bundle $extract `
+            --archive $installer.FullName `
+            --checksum $installerChecksum.FullName `
+            --manifest $installerManifest.FullName `
+            --metadata $installerMetadata.FullName `
+            --baseline evaluation/release-bundle-path-baseline.json `
+            --expected-commit $tagCommit.Trim() `
+            --require-source-distribution `
+            --native-attestation $nativeAttestation.FullName
+          if ($LASTEXITCODE -ne 0) {
+            throw "Promotion refused: MSI provenance verification failed."
+          }
+          python python/tools/msi_smoke.py `
+            --msi $installer.FullName `
+            --payload $extract `
+            --install-uninstall
+          if ($LASTEXITCODE -ne 0) {
+            throw "Promotion refused: MSI install/uninstall smoke failed."
           }
           python python/tools/package_smoke.py --dist $extract
           if ($LASTEXITCODE -ne 0) {
             throw "Promotion refused: extracted package smoke failed."
+          }
+          $exe = Join-Path $extract "AudioForge.exe"
+          $process = Start-Process -FilePath $exe `
+            -ArgumentList "--smoke-test" `
+            -WorkingDirectory $extract `
+            -WindowStyle Hidden `
+            -PassThru
+          $process | Wait-Process -Timeout 60
+          $process.Refresh()
+          if (-not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "Promotion refused: exact candidate EXE smoke test timed out after 60 seconds."
+          }
+          if ($process.ExitCode -ne 0) {
+            throw "Promotion refused: exact candidate EXE smoke test failed with code $($process.ExitCode)."
           }
 
           "archive=$($archive.FullName)" >> $env:GITHUB_OUTPUT
           "checksum=$($checksum.FullName)" >> $env:GITHUB_OUTPUT
           "manifest=$($manifest.FullName)" >> $env:GITHUB_OUTPUT
           "metadata=$($metadata.FullName)" >> $env:GITHUB_OUTPUT
+          "installer=$($installer.FullName)" >> $env:GITHUB_OUTPUT
+          "installer_checksum=$($installerChecksum.FullName)" >> $env:GITHUB_OUTPUT
+          "installer_manifest=$($installerManifest.FullName)" >> $env:GITHUB_OUTPUT
+          "installer_metadata=$($installerMetadata.FullName)" >> $env:GITHUB_OUTPUT
+          "source_archive=$($sourceArchive.FullName)" >> $env:GITHUB_OUTPUT
+          "source_checksum=$($sourceChecksum.FullName)" >> $env:GITHUB_OUTPUT
+          "source_metadata=$($sourceMetadata.FullName)" >> $env:GITHUB_OUTPUT
+          "native_attestation=$($nativeAttestation.FullName)" >> $env:GITHUB_OUTPUT
 
       - name: Upload exact validated assets to GitHub Release
         env:
@@ -140,26 +317,198 @@ jobs:
           CHECKSUM: ${{ steps.candidate.outputs.checksum }}
           MANIFEST: ${{ steps.candidate.outputs.manifest }}
           METADATA: ${{ steps.candidate.outputs.metadata }}
+          INSTALLER: ${{ steps.candidate.outputs.installer }}
+          INSTALLER_CHECKSUM: ${{ steps.candidate.outputs.installer_checksum }}
+          INSTALLER_MANIFEST: ${{ steps.candidate.outputs.installer_manifest }}
+          INSTALLER_METADATA: ${{ steps.candidate.outputs.installer_metadata }}
+          SOURCE_ARCHIVE: ${{ steps.candidate.outputs.source_archive }}
+          SOURCE_CHECKSUM: ${{ steps.candidate.outputs.source_checksum }}
+          SOURCE_METADATA: ${{ steps.candidate.outputs.source_metadata }}
+          NATIVE_ATTESTATION: ${{ steps.candidate.outputs.native_attestation }}
+          EXPECTED_PRERELEASE: ${{ steps.origins.outputs.prerelease }}
         run: |
           $version = $env:RELEASE_TAG.TrimStart("v")
-          $notesFile = "release-notes/release-notes-v$version.md"
-          gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY *> $null
+          $publicVersion = (python python/tools/release_version.py pep440 $env:RELEASE_TAG).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($publicVersion)) {
+            throw "Unable to resolve the public release version for notes."
+          }
+          $baseVersion = $publicVersion -replace 'rc\d+$', ''
+          if ($env:GITHUB_SHA -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Workflow revision is not a full commit SHA."
+          }
+          git fetch --no-tags origin $env:GITHUB_SHA --depth=1
           if ($LASTEXITCODE -ne 0) {
-            gh release create $env:RELEASE_TAG `
-              --repo $env:GITHUB_REPOSITORY `
-              --verify-tag `
-              --title "AudioForge $version" `
-              --notes-file $notesFile
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to create GitHub Release '$env:RELEASE_TAG'."
+            throw "Unable to fetch the selected workflow revision for release notes."
+          }
+          $notesFile = $null
+          $notesContent = $null
+          foreach ($notesCandidate in @(
+            "release-notes/release-notes-v$version.md",
+            "release-notes/release-notes-v$baseVersion.md"
+          )) {
+            $candidateContent = git show (("{0}:{1}" -f $env:GITHUB_SHA, $notesCandidate)) 2>$null
+            if ($LASTEXITCODE -eq 0 -and $candidateContent) {
+              $notesFile = $notesCandidate
+              $notesContent = $candidateContent
+              break
             }
           }
-          gh release upload $env:RELEASE_TAG `
-            $env:ARCHIVE `
-            $env:CHECKSUM `
-            $env:MANIFEST `
-            $env:METADATA `
-            --repo $env:GITHUB_REPOSITORY
+          if (-not $notesFile) {
+            throw "Release notes are missing from workflow revision $env:GITHUB_SHA for $env:RELEASE_TAG."
+          }
+          $notesPath = Join-Path $env:RUNNER_TEMP (Split-Path -Leaf $notesFile)
+          $notesContent | Set-Content -LiteralPath $notesPath -Encoding utf8
+          $expectedPrerelease = $env:EXPECTED_PRERELEASE -eq "true"
+          $evidenceDir = Join-Path $env:RUNNER_TEMP ("audioforge-release-evidence-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
+          if (-not (Test-Path -LiteralPath "validation/release-qualification.json" -PathType Leaf)) {
+            throw "Automated qualification evidence is missing."
+          }
+          Copy-Item -LiteralPath "validation/release-qualification.json" -Destination $evidenceDir
+          $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
+          if (-not (Test-Path -LiteralPath $sevenZip)) { $sevenZip = "7z.exe" }
+          $evidenceArchive = Join-Path $env:RUNNER_TEMP "AudioForge-v$version-release-evidence.7z"
+          & $sevenZip a -t7z -mx=9 $evidenceArchive (Join-Path $evidenceDir "*")
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to upload exact validated release assets; existing asset names are never overwritten implicitly."
+            throw "Release evidence archive failed with exit code $LASTEXITCODE."
+          }
+          $evidenceChecksum = "$evidenceArchive.sha256"
+          $evidenceHash = (Get-FileHash -LiteralPath $evidenceArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$evidenceHash  $([IO.Path]::GetFileName($evidenceArchive))" |
+            Set-Content -LiteralPath $evidenceChecksum -Encoding ascii
+          $assetPaths = @(
+            $env:ARCHIVE,
+            $env:CHECKSUM,
+            $env:MANIFEST,
+            $env:METADATA,
+            $env:INSTALLER,
+            $env:INSTALLER_CHECKSUM,
+            $env:INSTALLER_MANIFEST,
+            $env:INSTALLER_METADATA,
+            $env:SOURCE_ARCHIVE,
+            $env:SOURCE_CHECKSUM,
+            $env:SOURCE_METADATA,
+            $env:NATIVE_ATTESTATION,
+            $evidenceArchive,
+            $evidenceChecksum
+          )
+          foreach ($assetPath in $assetPaths) {
+            if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
+              throw "Validated release asset is missing: $assetPath"
+            }
+          }
+
+          $releaseJson = gh release view $env:RELEASE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --json isDraft,isPrerelease,assets 2>$null
+          $releaseExists = $LASTEXITCODE -eq 0
+          if (-not $releaseExists) {
+            $createArgs = @(
+              "release", "create", $env:RELEASE_TAG,
+              "--repo", $env:GITHUB_REPOSITORY,
+              "--verify-tag", "--draft",
+              "--title", "AudioForge $version",
+              "--notes-file", $notesPath
+            )
+            if ($expectedPrerelease) { $createArgs += "--prerelease" }
+            gh @createArgs
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create draft GitHub Release '$env:RELEASE_TAG'."
+            }
+            $releaseJson = gh release view $env:RELEASE_TAG `
+              --repo $env:GITHUB_REPOSITORY `
+              --json isDraft,isPrerelease,assets
+            if ($LASTEXITCODE -ne 0) {
+              throw "Draft GitHub Release '$env:RELEASE_TAG' could not be read after creation."
+            }
+          }
+          $release = $releaseJson | ConvertFrom-Json
+          if ([bool]$release.isPrerelease -ne $expectedPrerelease) {
+            throw "Release '$env:RELEASE_TAG' has an unexpected prerelease state."
+          }
+
+          function Get-ReleaseAssets {
+            param([object]$Release)
+            $assets = @{}
+            foreach ($asset in @($Release.assets)) {
+              if ($null -ne $asset.name) {
+                $assets[[string]$asset.name] = $asset
+              }
+            }
+            return $assets
+          }
+          function Assert-AssetMatches {
+            param(
+              [string]$LocalPath,
+              [string]$RemotePath,
+              [string]$AssetName
+            )
+            if (-not (Test-Path -LiteralPath $RemotePath -PathType Leaf)) {
+              throw "Release asset '$AssetName' could not be downloaded for verification."
+            }
+            $localHash = (Get-FileHash -LiteralPath $LocalPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $remoteHash = (Get-FileHash -LiteralPath $RemotePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($localHash -ne $remoteHash) {
+              throw "Existing release asset '$AssetName' differs from the validated candidate."
+            }
+          }
+
+          $verifyDir = Join-Path $env:RUNNER_TEMP ("audioforge-release-assets-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Force -Path $verifyDir | Out-Null
+          $remoteAssets = Get-ReleaseAssets $release
+          $toUpload = @()
+          foreach ($assetPath in $assetPaths) {
+            $assetName = [IO.Path]::GetFileName($assetPath)
+            if ($remoteAssets.ContainsKey($assetName)) {
+              gh release download $env:RELEASE_TAG `
+                --repo $env:GITHUB_REPOSITORY `
+                --pattern $assetName `
+                --dir $verifyDir `
+                --clobber
+              if ($LASTEXITCODE -ne 0) {
+                throw "Unable to download existing release asset '$assetName'."
+              }
+              Assert-AssetMatches $assetPath (Join-Path $verifyDir $assetName) $assetName
+            } else {
+              $toUpload += $assetPath
+            }
+          }
+          if ($toUpload.Count -gt 0) {
+            gh release upload $env:RELEASE_TAG @toUpload --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload missing exact validated release assets."
+            }
+          }
+
+          $releaseJson = gh release view $env:RELEASE_TAG `
+            --repo $env:GITHUB_REPOSITORY `
+            --json isDraft,isPrerelease,assets
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release '$env:RELEASE_TAG' could not be read after asset upload."
+          }
+          $release = $releaseJson | ConvertFrom-Json
+          $remoteAssets = Get-ReleaseAssets $release
+          if ([bool]$release.isPrerelease -ne $expectedPrerelease) {
+            throw "Release '$env:RELEASE_TAG' changed prerelease state during promotion."
+          }
+          foreach ($assetPath in $assetPaths) {
+            $assetName = [IO.Path]::GetFileName($assetPath)
+            if (-not $remoteAssets.ContainsKey($assetName)) {
+              throw "Release '$env:RELEASE_TAG' is missing validated asset '$assetName'."
+            }
+            gh release download $env:RELEASE_TAG `
+              --repo $env:GITHUB_REPOSITORY `
+              --pattern $assetName `
+              --dir $verifyDir `
+              --clobber
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to re-read release asset '$assetName' for final verification."
+            }
+            Assert-AssetMatches $assetPath (Join-Path $verifyDir $assetName) $assetName
+          }
+          if ($release.isDraft) {
+            gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false
+            if ($LASTEXITCODE -ne 0) {
+              throw "Validated release '$env:RELEASE_TAG' could not be published."
+            }
           }

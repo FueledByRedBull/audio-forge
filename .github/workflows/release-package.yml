@@ -4,16 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Git tag represented by this candidate. Defaults to v<pyproject version>."
+        description: "Optional existing tag to rebuild. Leave blank to validate the selected branch before tagging."
         required: false
         type: string
       asset_source_tag:
         description: "Published release used only as a fallback for pinned runtime assets. Defaults to release-assets.json."
         required: false
         type: string
-  push:
-    tags:
-      - "v*"
 
 concurrency:
   group: release-package-${{ github.ref }}
@@ -29,46 +26,73 @@ jobs:
     timeout-minutes: 120
     outputs:
       archive: ${{ steps.package.outputs.archive }}
+      installer: ${{ steps.package.outputs.installer }}
       checksum: ${{ steps.provenance.outputs.checksum }}
       manifest: ${{ steps.provenance.outputs.manifest }}
       metadata: ${{ steps.provenance.outputs.metadata }}
+      installer_checksum: ${{ steps.provenance.outputs.installer_checksum }}
+      installer_manifest: ${{ steps.provenance.outputs.installer_manifest }}
+      installer_metadata: ${{ steps.provenance.outputs.installer_metadata }}
+      source_archive: ${{ steps.source.outputs.archive }}
+      source_checksum: ${{ steps.source.outputs.checksum }}
+      source_metadata: ${{ steps.source.outputs.metadata }}
+      native_attestation: ${{ steps.native.outputs.attestation }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
+      source_revision: ${{ steps.meta.outputs.source_revision }}
       version: ${{ steps.meta.outputs.version }}
+      msi_version: ${{ steps.meta.outputs.msi_version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_TERM_COLOR: always
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       RUSTFLAGS: -C debuginfo=0
+      AUDIOFORGE_SOURCE_DIR: build/source-distribution
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+
+      - name: Bind source revision to checked-out release ref
+        run: |
+          $sourceRevision = (git rev-parse HEAD).Trim()
+          if ($sourceRevision -notmatch '^[0-9a-f]{40}$') {
+            throw "Checked-out source revision is not a full commit: $sourceRevision"
+          }
+          "AUDIOFORGE_SOURCE_REVISION=$sourceRevision" >> $env:GITHUB_ENV
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.13.15"
           cache: pip
           cache-dependency-path: requirements/dev.txt
 
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+        with:
+          toolchain: 1.94.0
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+            target/debug
+            target/release
+            target/deepfilter
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'build-support/deepfilter/**', 'build_deepfilter.ps1') }}-${{ hashFiles('rust-core/**/*.rs', 'rust-core/Cargo.toml', 'Cargo.toml', 'pyproject.toml') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock') }}-
-            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-${{ runner.arch }}-cargo-release-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'build-support/deepfilter/**', 'build_deepfilter.ps1') }}-
 
-      - name: Create virtual environment
-        run: python -m venv .venv
+      - name: Create Python 3.13 virtual environment
+        run: |
+          python -m venv .venv
+          if ($LASTEXITCODE -ne 0) { throw "Python 3.13 virtual environment creation failed." }
 
       - name: Install Python dependencies
-        run: .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements/dev.txt
+        run: .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements/dev.txt --no-compile
 
       - name: Resolve release metadata
         id: meta
@@ -79,8 +103,14 @@ jobs:
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
         run: |
-          $version = .\.venv\Scripts\python.exe -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
-          $expectedTag = "v$version"
+          $version = (.\.venv\Scripts\python.exe -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])").Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($version)) {
+            throw "Unable to read the project version from pyproject.toml."
+          }
+          $expectedTag = (.\.venv\Scripts\python.exe python/tools/release_version.py tag $version).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($expectedTag)) {
+            throw "Project version '$version' is not a supported final or RC release version."
+          }
           $releaseTag = $env:INPUT_RELEASE_TAG
           if ([string]::IsNullOrWhiteSpace($releaseTag)) {
             if ($env:REF_TYPE -eq "tag") {
@@ -91,6 +121,12 @@ jobs:
           }
           if ($releaseTag -ne $expectedTag) {
             throw "Release tag '$releaseTag' does not match pyproject version '$version' ($expectedTag)."
+          }
+
+          $msiVersion = (.\.venv\Scripts\python.exe python/tools/release_version.py msi $version).Trim()
+          $isPrerelease = (.\.venv\Scripts\python.exe python/tools/release_version.py prerelease $version).Trim()
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($msiVersion)) {
+            throw "Project version '$version' cannot be represented by the MSI version mapping."
           }
 
           $assetSourceTag = $env:INPUT_ASSET_SOURCE_TAG
@@ -107,11 +143,37 @@ jobs:
             throw "release-assets.json does not define fallback_release_tag."
           }
 
-          $archive = "AudioForge-v$version-win64-ultra.7z"
+          $archive = "AudioForge-$expectedTag-win64-ultra.7z"
           "version=$version" >> $env:GITHUB_OUTPUT
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+          "source_revision=$env:AUDIOFORGE_SOURCE_REVISION" >> $env:GITHUB_OUTPUT
+          "msi_version=$msiVersion" >> $env:GITHUB_OUTPUT
+          "prerelease=$isPrerelease" >> $env:GITHUB_OUTPUT
           "asset_source_tag=$assetSourceTag" >> $env:GITHUB_OUTPUT
           "archive=$archive" >> $env:GITHUB_OUTPUT
+
+      - name: Bind existing release tag to checked-out commit
+        if: inputs.release_tag != '' || github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.release_tag }}
+        run: |
+          $currentCommit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $currentCommit -notmatch '^[0-9a-f]{40}$') {
+            throw "Checked-out source revision is not a full commit: $currentCommit"
+          }
+          $tagRef = "refs/tags/$($env:RELEASE_TAG)"
+          $tagFetchSpec = "$tagRef`:$tagRef"
+          git fetch --no-tags origin $tagFetchSpec
+          if ($LASTEXITCODE -ne 0) {
+            throw "Existing release tag '$env:RELEASE_TAG' could not be fetched from origin."
+          }
+          $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG --).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -notmatch '^[0-9a-f]{40}$') {
+            throw "Existing release tag '$env:RELEASE_TAG' does not resolve to a full commit: $tagCommit"
+          }
+          if ($tagCommit -ne $currentCommit) {
+            throw "Existing release tag '$env:RELEASE_TAG' must resolve to the checked-out commit $currentCommit, but resolves to $tagCommit."
+          }
 
       - name: Download and verify pinned release runtime assets
         env:
@@ -122,30 +184,82 @@ jobs:
             --release-tag $env:ASSET_SOURCE_TAG `
             --force
 
+      - name: Configure pinned CPU ONNX Runtime
+        run: |
+          $ortLib = (Resolve-Path "target\onnxruntime-cpu\lib").Path
+          "ORT_LIB_LOCATION=$ortLib" >> $env:GITHUB_ENV
+          "ORT_PREFER_DYNAMIC_LINK=1" >> $env:GITHUB_ENV
+
+      - name: Rust format
+        run: cargo fmt --check
+
+      - name: Cache pinned cargo-audit and advisory database
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/cargo-audit.exe
+            ~/.cargo/advisory-db
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2
+      - name: Install pinned cargo-audit
+        run: |
+          $audit = Join-Path $env:USERPROFILE ".cargo/bin/cargo-audit.exe"
+          $version = ""
+          if (Test-Path -LiteralPath $audit) { $version = & $audit --version | Out-String }
+          if ($version -notmatch "0\.22\.2") {
+            cargo install cargo-audit --version 0.22.2 --locked --force
+            if ($LASTEXITCODE -ne 0) { throw "cargo-audit installation failed with exit code $LASTEXITCODE." }
+          }
+          $version = & $audit --version | Out-String
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch "0\.22\.2") { throw "cargo-audit 0.22.2 is not available." }
+      - name: RustSec audit
+        run: |
+          cargo audit --deny warnings
+          if ($LASTEXITCODE -ne 0) { throw "RustSec audit failed with exit code $LASTEXITCODE." }
+          # DeepFilter is an independent locked Cargo graph shipped as df.dll.
+          # These are the two reviewed unmaintained-crate notices in that graph;
+          # vulnerability findings remain fatal.
+          cargo audit `
+            --file build-support/deepfilter/Cargo.lock `
+            --deny warnings `
+            --ignore RUSTSEC-2024-0436 `
+            --ignore RUSTSEC-2024-0370
+          if ($LASTEXITCODE -ne 0) { throw "DeepFilter RustSec audit failed with exit code $LASTEXITCODE." }
+
+      - name: Rust tests and lint
+        run: |
+          cargo test -p mic_eq_core
+          if ($LASTEXITCODE -ne 0) { throw "Rust tests failed with exit code $LASTEXITCODE." }
+          cargo test --release -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
+          if ($LASTEXITCODE -ne 0) { throw "Release stress test failed with exit code $LASTEXITCODE." }
+          cargo clippy -p mic_eq_core --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw "Clippy failed with exit code $LASTEXITCODE." }
+
       - name: Build Rust extension
-        run: .\.venv\Scripts\python.exe -m maturin develop --release
+        run: .\.venv\Scripts\python.exe -m maturin develop --release --locked
 
       - name: Audit locked Python dependencies
         run: |
-          .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt
-          # Semgrep 1.171.0 currently pins mcp==1.23.3 for its optional
-          # `semgrep mcp` server. This repository only invokes `semgrep scan`;
-          # keep the upstream IDs explicit until Semgrep publishes a compatible
-          # MCP pin rather than hiding unrelated audit results.
-          .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt `
-            --ignore-vuln PYSEC-2026-3481 `
-            --ignore-vuln PYSEC-2026-3482 `
-            --ignore-vuln PYSEC-2026-3483
+          .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
+          if ($LASTEXITCODE -ne 0) { throw "Runtime dependency audit failed with exit code $LASTEXITCODE." }
+          .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
+          if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
 
       - name: Python release gates
         run: |
           .\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
-          .\.venv\Scripts\python.exe -m pyright
+          if ($LASTEXITCODE -ne 0) { throw "Ruff failed with exit code $LASTEXITCODE." }
+          .\.venv\Scripts\python.exe -m pyright --pythonpath .\.venv\Scripts\python.exe
+          if ($LASTEXITCODE -ne 0) { throw "Pyright failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe -m pytest python/tests -q
+          if ($LASTEXITCODE -ne 0) { throw "Pytest failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe python/tools/check_versions.py
+          if ($LASTEXITCODE -ne 0) { throw "Version check failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe python/tools/check_workflows.py
+          if ($LASTEXITCODE -ne 0) { throw "Workflow check failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe python/tools/check_evaluation_hygiene.py
+          if ($LASTEXITCODE -ne 0) { throw "Evaluation hygiene check failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe python/tools/package_smoke.py --source-only
+          if ($LASTEXITCODE -ne 0) { throw "Package source smoke failed with exit code $LASTEXITCODE." }
 
       - name: Semgrep
         run: .\.venv\Scripts\python.exe python/tools/run_semgrep.py --sarif release-semgrep-results.sarif
@@ -159,28 +273,147 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Rust format
-        run: cargo fmt --check
-
-      - name: RustSec audit
-        uses: rustsec/audit-check@858dc40f52ca2b8570b7a997c1c4e35c6fc9a432 # master, Node 24
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Rust tests and lint
-        run: |
-          cargo test -p mic_eq_core
-          cargo test --release -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
-          cargo clippy -p mic_eq_core --all-targets -- -D warnings
-
       - name: Verify release assets
         run: .\.venv\Scripts\python.exe python/tools/verify_release_assets.py
 
+      - name: Cache pinned dependency source archives
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: build/source-distribution/archives
+          key: corresponding-source-${{ hashFiles('licenses/source-manifest.json') }}
+
+      - name: Hydrate and verify corresponding source
+        id: source
+        run: |
+          $sourceDir = $env:AUDIOFORGE_SOURCE_DIR
+          .\.venv\Scripts\python.exe python/tools/source_distribution.py bundle `
+            --manifest licenses/source-manifest.json `
+            --output $sourceDir `
+            --revision $env:AUDIOFORGE_SOURCE_REVISION `
+            --include-runtime-assets
+          if ($LASTEXITCODE -ne 0) {
+            throw "Corresponding-source hydration failed with exit code $LASTEXITCODE."
+          }
+          .\.venv\Scripts\python.exe python/tools/source_distribution.py verify `
+            --manifest licenses/source-manifest.json `
+            --source-dir $sourceDir `
+            --include-runtime-assets `
+            --require-receipt `
+            --revision $env:AUDIOFORGE_SOURCE_REVISION
+          if ($LASTEXITCODE -ne 0) {
+            throw "Corresponding-source verification failed with exit code $LASTEXITCODE."
+          }
+          $receiptPath = Join-Path $sourceDir "source-receipt.json"
+          $projectSource = Join-Path $sourceDir "AudioForge-project-source.tar"
+          if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $projectSource -PathType Leaf)) {
+            throw "Hydrated source is missing its receipt or tracked project archive."
+          }
+          $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
+          if (-not (Test-Path -LiteralPath $sevenZip)) { $sevenZip = "7z.exe" }
+          $sourceArchive = "AudioForge-${{ steps.meta.outputs.release_tag }}-source.7z"
+          if (Test-Path -LiteralPath $sourceArchive) {
+            Remove-Item -LiteralPath $sourceArchive -Force
+          }
+          & $sevenZip a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on $sourceArchive (Join-Path (Resolve-Path $sourceDir).Path "*")
+          if ($LASTEXITCODE -ne 0) {
+            throw "7-Zip source archive failed with exit code $LASTEXITCODE."
+          }
+          $sourceHash = (Get-FileHash -LiteralPath $sourceArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sourceChecksum = "$sourceArchive.sha256"
+          "$sourceHash  $sourceArchive" | Set-Content -LiteralPath $sourceChecksum -Encoding ascii
+          $receiptHash = (Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $manifestHash = (Get-FileHash -LiteralPath "licenses/source-manifest.json" -Algorithm SHA256).Hash.ToLowerInvariant()
+          $projectSourceHash = (Get-FileHash -LiteralPath $projectSource -Algorithm SHA256).Hash.ToLowerInvariant()
+          $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+          if ([string]$receipt.revision -ne $env:AUDIOFORGE_SOURCE_REVISION) {
+            throw "Source receipt revision does not match the workflow commit."
+          }
+          $sourceMetadata = "$sourceArchive.metadata.json"
+          @{
+            schema_version = 1
+            project = "AudioForge"
+            version = "${{ steps.meta.outputs.version }}"
+            commit = $env:AUDIOFORGE_SOURCE_REVISION
+            archive = @{
+              name = $sourceArchive
+              size = (Get-Item -LiteralPath $sourceArchive).Length
+              sha256 = $sourceHash
+              checksum = [IO.Path]::GetFileName($sourceChecksum)
+            }
+            source_manifest_sha256 = $manifestHash
+            source_receipt_sha256 = $receiptHash
+            project_source_sha256 = $projectSourceHash
+            project_source_name = [IO.Path]::GetFileName($projectSource)
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $sourceMetadata -Encoding utf8
+          "archive=$sourceArchive" >> $env:GITHUB_OUTPUT
+          "checksum=$sourceChecksum" >> $env:GITHUB_OUTPUT
+          "metadata=$sourceMetadata" >> $env:GITHUB_OUTPUT
+
       - name: Build executable
-        run: powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
+        run: powershell -ExecutionPolicy Bypass -File .\build_exe.ps1 -PythonPath .\.venv\Scripts\python.exe
 
       - name: Package smoke
         run: .\.venv\Scripts\python.exe python/tools/package_smoke.py
+
+      - name: Bind DeepFilter build attestation to the packaged DLL
+        id: native
+        run: |
+          $attestationSource = Resolve-Path "target/deepfilter/df.dll.provenance.json"
+          $attestation = "AudioForge-${{ steps.meta.outputs.release_tag }}-deepfilter.provenance.json"
+          Copy-Item -LiteralPath $attestationSource -Destination $attestation -Force
+          $attestationObject = Get-Content -LiteralPath $attestation -Raw | ConvertFrom-Json
+          $dll = Resolve-Path "df.dll"
+          $dllHash = (Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ([string]$attestationObject.output.name -notmatch '^[^\\/:*?"<>|]+\.dll$' -or
+              [string]$attestationObject.output.sha256 -ne $dllHash -or
+              [int64]$attestationObject.output.bytes -ne (Get-Item -LiteralPath $dll).Length) {
+            throw "DeepFilter attestation does not match the source-built runtime DLL."
+          }
+          .\.venv\Scripts\python.exe python/tools/verify_release_assets.py
+          if ($LASTEXITCODE -ne 0) {
+            throw "DeepFilter source-build attestation validation failed."
+          }
+          "attestation=$attestation" >> $env:GITHUB_OUTPUT
+
+      - name: Build per-user MSI from exact portable tree
+        id: installer
+        run: |
+          $installer = "AudioForge-${{ steps.meta.outputs.release_tag }}-win64.msi"
+          $upgradeBaselineRoot = Join-Path $env:RUNNER_TEMP ("AudioForge-msi-upgrade-baseline-" + [guid]::NewGuid().ToString("N"))
+          New-Item -ItemType Directory -Force -Path $upgradeBaselineRoot | Out-Null
+          Copy-Item -LiteralPath ".\dist\AudioForge" -Destination $upgradeBaselineRoot -Recurse
+          $upgradeBaselinePayload = Join-Path $upgradeBaselineRoot "AudioForge"
+          $baselineBuildInfo = Join-Path $upgradeBaselinePayload "_internal\audioforge-build.json"
+          @{
+            schema_version = 1
+            version = "0.0.0"
+          } | ConvertTo-Json | Set-Content -LiteralPath $baselineBuildInfo -Encoding utf8
+          Set-Content -LiteralPath (Join-Path $upgradeBaselinePayload "_internal\msi-upgrade-baseline-only.marker") -Value "baseline" -Encoding utf8
+          $upgradeBaseline = Join-Path $env:RUNNER_TEMP "AudioForge-upgrade-baseline.msi"
+          powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
+            -Payload $upgradeBaselinePayload `
+            -Version 0.0.0 `
+            -Output $upgradeBaseline
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSI upgrade-baseline build failed with exit code $LASTEXITCODE."
+          }
+          powershell -ExecutionPolicy Bypass -File .\build_msi.ps1 `
+            -Payload .\dist\AudioForge `
+            -Version "${{ steps.meta.outputs.msi_version }}" `
+            -Output $installer
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSI build failed with exit code $LASTEXITCODE."
+          }
+          .\.venv\Scripts\python.exe python/tools/msi_smoke.py `
+            --msi $installer `
+            --payload .\dist\AudioForge `
+            --install-uninstall `
+            --upgrade-from $upgradeBaseline
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSI smoke validation failed with exit code $LASTEXITCODE."
+          }
+          "installer=$installer" >> $env:GITHUB_OUTPUT
 
       - name: Create release archive
         id: package
@@ -199,6 +432,7 @@ jobs:
           }
 
           "archive=$archive" >> $env:GITHUB_OUTPUT
+          "installer=${{ steps.installer.outputs.installer }}" >> $env:GITHUB_OUTPUT
 
       - name: Generate exact-artifact provenance
         id: provenance
@@ -208,22 +442,45 @@ jobs:
             --bundle dist/AudioForge `
             --archive $archive `
             --baseline evaluation/release-bundle-path-baseline.json `
+            --native-attestation ${{ steps.native.outputs.attestation }} `
             --output-dir .
           if ($LASTEXITCODE -ne 0) {
             throw "Release provenance generation failed."
           }
+          $installer = "${{ steps.installer.outputs.installer }}"
+          .\.venv\Scripts\python.exe python/tools/release_provenance.py create `
+            --bundle dist/AudioForge `
+            --archive $installer `
+            --baseline evaluation/release-bundle-path-baseline.json `
+            --native-attestation ${{ steps.native.outputs.attestation }} `
+            --output-dir .
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installer provenance generation failed."
+          }
           "checksum=$archive.sha256" >> $env:GITHUB_OUTPUT
           "manifest=$archive.manifest.json" >> $env:GITHUB_OUTPUT
           "metadata=$archive.metadata.json" >> $env:GITHUB_OUTPUT
+          "installer_checksum=$installer.sha256" >> $env:GITHUB_OUTPUT
+          "installer_manifest=$installer.manifest.json" >> $env:GITHUB_OUTPUT
+          "installer_metadata=$installer.metadata.json" >> $env:GITHUB_OUTPUT
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: audioforge-release-candidate-${{ steps.meta.outputs.release_tag }}
+          compression-level: 0
           path: |
             ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.installer }}
             ${{ steps.provenance.outputs.checksum }}
             ${{ steps.provenance.outputs.manifest }}
             ${{ steps.provenance.outputs.metadata }}
+            ${{ steps.provenance.outputs.installer_checksum }}
+            ${{ steps.provenance.outputs.installer_manifest }}
+            ${{ steps.provenance.outputs.installer_metadata }}
+            ${{ steps.source.outputs.archive }}
+            ${{ steps.source.outputs.checksum }}
+            ${{ steps.source.outputs.metadata }}
+            ${{ steps.native.outputs.attestation }}
           if-no-files-found: error
           retention-days: 14
 
@@ -237,15 +494,22 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.package-windows.outputs.source_revision }}
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.13.15"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: audioforge-release-candidate-${{ needs.package-windows.outputs.release_tag }}
           path: candidate
+
+      - name: Install pinned validation runtime
+        run: |
+          python -m pip install --require-hashes -r requirements/runtime.txt --no-compile
+          if ($LASTEXITCODE -ne 0) { throw "Validation runtime installation failed." }
 
       - name: Verify, extract, and smoke-test exact candidate
         run: |
@@ -253,12 +517,46 @@ jobs:
           $checksum = Resolve-Path "candidate/${{ needs.package-windows.outputs.checksum }}"
           $manifest = Resolve-Path "candidate/${{ needs.package-windows.outputs.manifest }}"
           $metadata = Resolve-Path "candidate/${{ needs.package-windows.outputs.metadata }}"
+          $installer = Resolve-Path "candidate/${{ needs.package-windows.outputs.installer }}"
+          $installerChecksum = Resolve-Path "candidate/${{ needs.package-windows.outputs.installer_checksum }}"
+          $installerManifest = Resolve-Path "candidate/${{ needs.package-windows.outputs.installer_manifest }}"
+          $installerMetadata = Resolve-Path "candidate/${{ needs.package-windows.outputs.installer_metadata }}"
+          $sourceArchive = Resolve-Path "candidate/${{ needs.package-windows.outputs.source_archive }}"
+          $sourceChecksum = Resolve-Path "candidate/${{ needs.package-windows.outputs.source_checksum }}"
+          $sourceMetadata = Resolve-Path "candidate/${{ needs.package-windows.outputs.source_metadata }}"
+          $nativeAttestation = Resolve-Path "candidate/${{ needs.package-windows.outputs.native_attestation }}"
           $extract = Join-Path $env:RUNNER_TEMP "audioforge-candidate"
           New-Item -ItemType Directory -Force -Path $extract | Out-Null
           $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
           & $sevenZip x -y "-o$extract" $archive
           if ($LASTEXITCODE -ne 0) {
             throw "Candidate extraction failed with exit code $LASTEXITCODE."
+          }
+          $sourceExtract = Join-Path $env:RUNNER_TEMP "audioforge-source-candidate"
+          New-Item -ItemType Directory -Force -Path $sourceExtract | Out-Null
+          & $sevenZip x -y "-o$sourceExtract" $sourceArchive
+          if ($LASTEXITCODE -ne 0) {
+            throw "Corresponding-source extraction failed with exit code $LASTEXITCODE."
+          }
+          $tagCommit = (git rev-parse HEAD).Trim()
+          if ($tagCommit -ne "${{ needs.package-windows.outputs.source_revision }}") {
+            throw "Candidate validation checkout does not match its source revision."
+          }
+          if ($tagCommit -notmatch '^[0-9a-f]{40}$') {
+            throw "Release tag does not resolve to a full commit: $tagCommit"
+          }
+          python python/tools/source_distribution.py verify `
+            --archive $sourceArchive `
+            --checksum $sourceChecksum `
+            --metadata $sourceMetadata `
+            --expected-version "${{ needs.package-windows.outputs.version }}" `
+            --manifest licenses/source-manifest.json `
+            --source-dir $sourceExtract `
+            --include-runtime-assets `
+            --require-receipt `
+            --revision $tagCommit
+          if ($LASTEXITCODE -ne 0) {
+            throw "Exact-candidate corresponding-source verification failed."
           }
 
           python python/tools/release_provenance.py verify `
@@ -267,9 +565,23 @@ jobs:
             --checksum $checksum `
             --manifest $manifest `
             --metadata $metadata `
-            --baseline evaluation/release-bundle-path-baseline.json
+            --baseline evaluation/release-bundle-path-baseline.json `
+            --native-attestation $nativeAttestation `
+            --require-source-distribution
           if ($LASTEXITCODE -ne 0) {
             throw "Exact-candidate provenance verification failed."
+          }
+          python python/tools/release_provenance.py verify `
+            --bundle $extract `
+            --archive $installer `
+            --checksum $installerChecksum `
+            --manifest $installerManifest `
+            --metadata $installerMetadata `
+            --baseline evaluation/release-bundle-path-baseline.json `
+            --native-attestation $nativeAttestation `
+            --require-source-distribution
+          if ($LASTEXITCODE -ne 0) {
+            throw "Exact-candidate MSI provenance verification failed."
           }
           python python/tools/package_smoke.py --dist $extract
           if ($LASTEXITCODE -ne 0) {
@@ -278,20 +590,31 @@ jobs:
 
           $exe = Join-Path $extract "AudioForge.exe"
           $process = Start-Process -FilePath $exe `
+            -ArgumentList "--smoke-test" `
             -WorkingDirectory $extract `
             -WindowStyle Hidden `
             -PassThru
-          $process | Wait-Process -Timeout 12 -ErrorAction SilentlyContinue
+          $process | Wait-Process -Timeout 60
           $process.Refresh()
-          if ($process.HasExited) {
-            throw "Exact-candidate EXE exited early with code $($process.ExitCode)."
+          if (-not $process.HasExited) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            throw "Exact-candidate EXE smoke test timed out after 60 seconds."
           }
-          Stop-Process -Id $process.Id
-          $process | Wait-Process -Timeout 10
+          if ($process.ExitCode -ne 0) {
+            throw "Exact-candidate EXE smoke test failed with code $($process.ExitCode)."
+          }
+          python python/tools/msi_smoke.py `
+            --msi $installer `
+            --payload $extract `
+            --install-uninstall
+          if ($LASTEXITCODE -ne 0) {
+            throw "Exact-candidate MSI install/uninstall smoke failed."
+          }
 
           $metadataObject = Get-Content -LiteralPath $metadata -Raw | ConvertFrom-Json
           @{
             schema_version = 1
+            qualification_kind = "exact-artifact-package"
             status = "passed"
             passed = $true
             artifact = @{
@@ -299,10 +622,23 @@ jobs:
               sha256 = $metadataObject.archive.sha256
             }
             commit = $metadataObject.commit
+            producer = @{
+              repository = $env:GITHUB_REPOSITORY
+              workflow = $env:GITHUB_WORKFLOW
+              run_id = $env:GITHUB_RUN_ID
+              run_attempt = $env:GITHUB_RUN_ATTEMPT
+              event = $env:GITHUB_EVENT_NAME
+              head_sha = $tagCommit
+              ref = $env:GITHUB_REF
+            }
             checks = @{
               provenance = "passed"
               package_smoke = "passed"
               hidden_exe_startup = "passed"
+              installer_provenance = "passed"
+              installer_smoke = "passed"
+              installer_upgrade = "passed"
+              source_distribution = "passed"
             }
           } | ConvertTo-Json -Depth 5 |
             Set-Content -LiteralPath "release-qualification.json" -Encoding utf8

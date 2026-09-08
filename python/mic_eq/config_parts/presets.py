@@ -25,6 +25,7 @@ from .shared import (
     _version_tuple,
     get_preset_imports_dir,
     get_presets_dir,
+    migration_pending,
 )
 from .validation import (
     VALIDATION_RANGES,
@@ -271,6 +272,7 @@ class Preset:
                 "1.11.2",
                 "1.11.3",
                 "1.11.4",
+                "1.12.0",
             ):
                 if version_tuple < _version_tuple(version):
                     data["version"] = version
@@ -557,11 +559,18 @@ class Preset:
                 bypass=_validate_bool(data.get("bypass", False), "bypass", "preset"),
                 value_provenance=provenance,
             )
-        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        except (KeyError, TypeError, ValueError, AttributeError, RecursionError) as exc:
             raise PresetValidationError(f"Preset data is invalid or corrupted: {exc}") from exc
 
 
-def save_preset(preset: Preset, filepath: Optional[Path] = None) -> Path:
+def save_preset(
+    preset: Preset,
+    filepath: Optional[Path] = None,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    if migration_pending():
+        raise OSError("AudioForge config migration is still pending")
     if filepath is None:
         safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in preset.name)
         safe_name = safe_name.strip().replace(" ", "_")
@@ -571,6 +580,8 @@ def save_preset(preset: Preset, filepath: Optional[Path] = None) -> Path:
 
     filepath = Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
+    if filepath.exists() and not overwrite:
+        raise FileExistsError(f"Preset file already exists: '{filepath.name}'")
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{filepath.name}.",
         suffix=".tmp",
@@ -583,7 +594,14 @@ def save_preset(preset: Preset, filepath: Optional[Path] = None) -> Path:
             json.dump(preset.to_dict(), handle, indent=2, allow_nan=False)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_path, filepath)
+        if overwrite:
+            os.replace(temporary_path, filepath)
+        else:
+            # Hard-link publication is exclusive on Windows and POSIX: a
+            # competing writer cannot appear between an exists() check and a
+            # destructive replace.
+            os.link(temporary_path, filepath)
+            temporary_path.unlink()
     except Exception:
         temporary_path.unlink(missing_ok=True)
         raise
@@ -626,9 +644,23 @@ def load_preset(filepath: Path) -> Preset:
         )
 
     validate_preset_file_size(resolved_path)
-    with open(resolved_path, "r", encoding="utf-8") as handle:
-        data = json.load(handle, parse_constant=_reject_json_constant)
-    return Preset.from_dict(data)
+    try:
+        with open(resolved_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle, parse_constant=_reject_json_constant)
+        return Preset.from_dict(data)
+    except PresetValidationError:
+        raise
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise PresetValidationError(
+            f"Preset data is invalid or corrupted: {exc}"
+        ) from exc
 
 
 def list_presets() -> list[tuple[str, Path]]:
@@ -638,7 +670,16 @@ def list_presets() -> list[tuple[str, Path]]:
         try:
             preset = load_preset(filepath)
             presets.append((preset.name, filepath))
-        except (json.JSONDecodeError, KeyError, PresetValidationError, TypeError, ValueError):
+        except (
+            OSError,
+            UnicodeError,
+            RecursionError,
+            json.JSONDecodeError,
+            KeyError,
+            PresetValidationError,
+            TypeError,
+            ValueError,
+        ):
             continue
     return sorted(presets, key=lambda item: item[0].lower())
 

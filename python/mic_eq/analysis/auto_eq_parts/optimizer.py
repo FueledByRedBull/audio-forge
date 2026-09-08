@@ -1,5 +1,6 @@
 """Constrained least-squares optimizer for Auto-EQ."""
 
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -26,6 +27,7 @@ from .constants import (
     UNKNOWN_EVIDENCE_Q_MAX,
     debug_log,
 )
+from ..cancellation import check_analysis_cancelled
 from .dynamic_bands import (
     _build_dense_log_grid,
     _center_bounds,
@@ -225,6 +227,7 @@ def _constrained_gain_refinement(
     weights: np.ndarray,
     gain_lower: np.ndarray | None = None,
     gain_upper: np.ndarray | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[np.ndarray, bool]:
     """Re-optimize gains symmetrically inside the final safety bounds."""
     gains_arr = np.asarray(gains, dtype=float)
@@ -270,12 +273,16 @@ def _constrained_gain_refinement(
             "fun": adjacency_slack,
         },
     )
+    def on_solver_iteration(_candidate: np.ndarray) -> None:
+        check_analysis_cancelled(cancel_check)
+
     projection = minimize(
         lambda candidate: float(np.sum(np.square(candidate - gains_arr))),
         gains_arr,
         method="SLSQP",
         bounds=solver_bounds,
         constraints=solver_constraints,
+        callback=on_solver_iteration,
         options={"ftol": 1e-9, "maxiter": 120, "disp": False},
     )
     projected = (
@@ -291,6 +298,7 @@ def _constrained_gain_refinement(
         method="SLSQP",
         bounds=solver_bounds,
         constraints=solver_constraints,
+        callback=on_solver_iteration,
         options={"ftol": 1e-7, "maxiter": 120, "disp": False},
     )
     if result.success and np.all(np.isfinite(result.x)):
@@ -442,6 +450,7 @@ def _validate_and_attenuate_solution(
     qs: np.ndarray,
     centers_hz: np.ndarray,
     weights: np.ndarray,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     before_error = weighted_target_error(
         dense_freqs,
@@ -458,6 +467,7 @@ def _validate_and_attenuate_solution(
     best_metrics = evaluate_eq_quality(centers_hz, best_gains, qs).to_dict()
 
     for scale in (1.0, 0.85, 0.70, 0.55, 0.40, 0.25):
+        check_analysis_cancelled(cancel_check)
         candidate = gains * scale
         metrics = evaluate_eq_quality(centers_hz, candidate, qs)
         after_error = weighted_target_error(
@@ -511,6 +521,7 @@ def calculate_eq_bands(
     used_spectrum_fallback=False,
     smoothing_strength="conservative",
     tilt_policy="preserve",
+    cancel_check: Callable[[], bool] | None = None,
 ):
     """
     Calculate optimal 10-band EQ settings using least-squares optimization.
@@ -526,6 +537,7 @@ def calculate_eq_bands(
     Returns:
         eq_settings: Dict with 'band_gains' and 'band_qs' (10-element lists)
     """
+    check_analysis_cancelled(cancel_check)
     freqs = _validated_frequency_series(freqs, label="frequency grid")
     measured_db = _validated_frequency_series(
         measured_db,
@@ -823,9 +835,19 @@ def calculate_eq_bands(
 
     verbose_level = 2 if DEBUG else 0
 
+    def cancellable_residual(residual):
+        if cancel_check is None:
+            return residual
+
+        def wrapped(candidate, *args):
+            check_analysis_cancelled(cancel_check)
+            return residual(candidate, *args)
+
+        return wrapped
+
     # Stage 1: stable gain-only solve with fixed Q prior.
     stage1 = least_squares(
-        _gain_only_residuals,
+        cancellable_residual(_gain_only_residuals),
         gains_initial,
         args=(
             dense_freqs,
@@ -843,6 +865,7 @@ def calculate_eq_bands(
         max_nfev=120,
         verbose=verbose_level,
     )
+    check_analysis_cancelled(cancel_check)
     gains_stage1 = stage1.x
 
     # Stage 2: refine gains + Q with bounded Q and local center refinement.
@@ -859,7 +882,7 @@ def calculate_eq_bands(
     params_lower = np.concatenate([dynamic_gain_lower, q_low, center_low])
     params_upper = np.concatenate([dynamic_gain_upper, q_high, center_high])
     stage2 = least_squares(
-        _joint_gain_q_residuals,
+        cancellable_residual(_joint_gain_q_residuals),
         params_initial,
         args=(
             dense_freqs,
@@ -877,6 +900,7 @@ def calculate_eq_bands(
         max_nfev=180,
         verbose=verbose_level,
     )
+    check_analysis_cancelled(cancel_check)
     optimal_gains = stage2.x[:NUM_EQ_BANDS]
     optimal_qs = stage2.x[NUM_EQ_BANDS : 2 * NUM_EQ_BANDS]
     optimal_centers_hz = stage2.x[2 * NUM_EQ_BANDS :]
@@ -940,6 +964,7 @@ def calculate_eq_bands(
         weights,
         final_gain_lower,
         final_gain_upper,
+        cancel_check,
     )
     inactive_mask = np.abs(optimal_gains) < 0.25
     if np.any(inactive_mask):
@@ -960,6 +985,7 @@ def calculate_eq_bands(
                 weights,
                 inactive_gain_lower,
                 inactive_gain_upper,
+                cancel_check,
             )
         )
         constraint_solver_success = bool(
@@ -969,13 +995,7 @@ def calculate_eq_bands(
     # Validation is deliberately last. Its uniform attenuation preserves the
     # hard adjacency constraints and zeroed bands above, so no later optimizer
     # can silently regrow a correction that validation rejected.
-    (
-        optimal_gains,
-        before_error,
-        after_error,
-        validation_gain_scale,
-        quality_metrics,
-    ) = _validate_and_attenuate_solution(
+    validation_args = (
         dense_freqs,
         measured_dense_db,
         target_dense_db,
@@ -984,6 +1004,17 @@ def calculate_eq_bands(
         optimal_centers_hz,
         weights,
     )
+    validation = _validate_and_attenuate_solution(
+        *validation_args,
+        cancel_check=cancel_check,
+    )
+    (
+        optimal_gains,
+        before_error,
+        after_error,
+        validation_gain_scale,
+        quality_metrics,
+    ) = validation
 
     validation_conf = _validation_confidence(
         before_error, after_error, validation_gain_scale

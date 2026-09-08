@@ -9,12 +9,24 @@ import sys
 import tomllib
 from pathlib import Path
 
+from release_version import ReleaseVersion, parse_tag, parse_version
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+EXPECTED_PYTHON_MINOR = (3, 13)
 
 
 def _read(path: str) -> str:
     return (REPO_ROOT / path).read_text(encoding="utf-8")
+
+
+def _check_python_runtime() -> None:
+    actual = (sys.version_info.major, sys.version_info.minor)
+    if sys.implementation.name != "cpython" or actual != EXPECTED_PYTHON_MINOR:
+        rendered = ".".join(str(part) for part in actual)
+        raise ValueError(
+            "release checks require CPython 3.13, "
+            f"got {sys.implementation.name} {rendered}"
+        )
 
 
 def _single_match(path: str, pattern: str, label: str) -> str:
@@ -78,6 +90,20 @@ def _extract_cargo_lock_version(package_name: str) -> str:
     raise ValueError(f"Cargo.lock: package {package_name!r} not found")
 
 
+def _version(path: str, value: str, label: str) -> ReleaseVersion:
+    try:
+        return parse_version(value)
+    except ValueError as exc:
+        raise ValueError(f"{label}: invalid version {value!r} in {path}") from exc
+
+
+def _tag(path: str, value: str, label: str) -> ReleaseVersion:
+    try:
+        return parse_tag(value)
+    except ValueError as exc:
+        raise ValueError(f"{label}: invalid release tag {value!r} in {path}") from exc
+
+
 def _check_release_asset_hydration() -> None:
     manifest = json.loads(_read("release-assets.json"))
     fallback_tag = manifest.get("fallback_release_tag")
@@ -119,10 +145,11 @@ def _check_release_asset_hydration() -> None:
         )
 
 
-def _check_no_static_current_archive_claims(version: str) -> None:
+def _check_no_static_current_archive_claims(version: ReleaseVersion | str) -> None:
+    parsed = version if isinstance(version, ReleaseVersion) else parse_version(version)
     paths = (
         "README.md",
-        f"release-notes/release-notes-v{version}.md",
+        f"release-notes/release-notes-{parsed.tag}.md",
     )
     archive_term = r"(?:archive|portable\s+folder|bundle)"
     exact_size = re.compile(
@@ -142,8 +169,12 @@ def _check_no_static_current_archive_claims(version: str) -> None:
 
 
 def main() -> int:
+    _check_python_runtime()
     _check_release_asset_hydration()
-    expected = _single_match("pyproject.toml", r'^version\s*=\s*"([^"]+)"', "pyproject")
+    expected_text = _single_match(
+        "pyproject.toml", r'^version\s*=\s*"([^"]+)"', "pyproject"
+    )
+    expected = _version("pyproject.toml", expected_text, "pyproject")
     _check_no_static_current_archive_claims(expected)
     package_version = _single_match(
         "python/mic_eq/__init__.py",
@@ -158,31 +189,47 @@ def main() -> int:
     catalog_version = _extract_catalog_version_reference("python/mic_eq/config_parts/catalogs.py")
     main_window_version = _extract_main_window_preset_version("python/mic_eq/ui/main_window.py")
 
+    rust_version = _single_match(
+        "rust-core/Cargo.toml",
+        r'^version\s*=\s*"([^"]+)"',
+        "rust core",
+    )
+    lock_version = _extract_cargo_lock_version("mic_eq_core")
+    readme_tag = _single_match(
+        "README.md",
+        r"Current version:\s*`(v[^`]+)`",
+        "readme",
+    )
+    catalog_text = current_version if catalog_version == "__CURRENT_VERSION__" else catalog_version
+    window_text = package_version if main_window_version == "__PACKAGE_VERSION__" else main_window_version
     checks = {
-        "rust-core/Cargo.toml": _single_match(
-            "rust-core/Cargo.toml",
-            r'^version\s*=\s*"([^"]+)"',
-            "rust core",
-        ),
-        "Cargo.lock mic_eq_core": _extract_cargo_lock_version("mic_eq_core"),
-        "python/mic_eq/__init__.py": package_version,
-        "python/mic_eq/config_parts/shared.py CURRENT_VERSION": current_version,
-        "README.md": _single_match(
-            "README.md",
-            r"Current version:\s*`v([^`]+)`",
-            "readme",
-        ),
-        "python/mic_eq/config_parts/presets.py Preset.version": current_version,
-        "python/mic_eq/config_parts/catalogs.py built-ins": (
-            current_version if catalog_version == "__CURRENT_VERSION__" else catalog_version
-        ),
-        "python/mic_eq/ui/main_window.py auto-eq preset": (
-            package_version if main_window_version == "__PACKAGE_VERSION__" else main_window_version
-        ),
+        "licenses/source-manifest.json": json.loads(_read("licenses/source-manifest.json"))["project_version"],
+        "rust-core/Cargo.toml": _version("rust-core/Cargo.toml", rust_version, "rust core").cargo,
+        "Cargo.lock mic_eq_core": _version("Cargo.lock", lock_version, "Cargo.lock").cargo,
+        "python/mic_eq/__init__.py": _version("python/mic_eq/__init__.py", package_version, "python package").pep440,
+        "python/mic_eq/config_parts/shared.py CURRENT_VERSION": _version("python/mic_eq/config_parts/shared.py", current_version, "shared config").pep440,
+        "README.md": _tag("README.md", readme_tag, "readme").tag,
+        "python/mic_eq/config_parts/presets.py Preset.version": _version("python/mic_eq/config_parts/shared.py", current_version, "preset default").pep440,
+        "python/mic_eq/config_parts/catalogs.py built-ins": _version("python/mic_eq/config_parts/catalogs.py", catalog_text, "built-in preset").pep440,
+        "python/mic_eq/ui/main_window.py auto-eq preset": _version("python/mic_eq/ui/main_window.py", window_text, "auto-eq preset").pep440,
+    }
+    expected_by_path = {
+        "licenses/source-manifest.json": expected.pep440,
+        "rust-core/Cargo.toml": expected.cargo,
+        "Cargo.lock mic_eq_core": expected.cargo,
+        "python/mic_eq/__init__.py": expected.pep440,
+        "python/mic_eq/config_parts/shared.py CURRENT_VERSION": expected.pep440,
+        "README.md": expected.tag,
+        "python/mic_eq/config_parts/presets.py Preset.version": expected.pep440,
+        "python/mic_eq/config_parts/catalogs.py built-ins": expected.pep440,
+        "python/mic_eq/ui/main_window.py auto-eq preset": expected.pep440,
     }
 
     release_versions = set(
-        re.findall(r"AudioForge-v([0-9]+\.[0-9]+\.[0-9]+)", _read("RELEASING.md"))
+        re.findall(
+            r"AudioForge-(v[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[0-9]+)?)",
+            _read("RELEASING.md"),
+        )
     )
     _require_pattern(
         "python/mic_eq/config_parts/presets.py",
@@ -191,23 +238,28 @@ def main() -> int:
     )
     if not release_versions:
         raise ValueError("RELEASING.md: release archive version string not found")
-    if release_versions != {expected}:
+    if release_versions != {expected.tag}:
         checks["RELEASING.md"] = ", ".join(sorted(release_versions))
+        expected_by_path["RELEASING.md"] = expected.tag
 
-    release_notes_path = REPO_ROOT / "release-notes" / f"release-notes-v{expected}.md"
+    release_notes_path = REPO_ROOT / "release-notes" / f"release-notes-{expected.tag}.md"
     if not release_notes_path.is_file():
         raise ValueError(
             f"release notes: expected file is missing: {release_notes_path.relative_to(REPO_ROOT)}"
         )
 
-    mismatches = {path: version for path, version in checks.items() if version != expected}
+    mismatches = {
+        path: version
+        for path, version in checks.items()
+        if version != expected_by_path.get(path, expected.tag)
+    }
     if mismatches:
-        print(f"Version mismatch: pyproject.toml is {expected}")
+        print(f"Version mismatch: pyproject.toml is {expected.pep440}")
         for path, version in mismatches.items():
             print(f"  {path}: {version}")
         return 1
 
-    print(f"Version strings are in sync: {expected}")
+    print(f"Version strings are in sync: {expected.pep440}")
     return 0
 
 

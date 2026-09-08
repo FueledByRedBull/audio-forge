@@ -41,7 +41,7 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: "3.13.15"
 
       - name: Download exact-artifact case reports
         env:
@@ -49,8 +49,9 @@ jobs:
           HARDWARE_RUN_IDS: ${{ inputs.hardware_run_ids }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
-          if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') {
-            throw "release_tag must be an exact vMAJOR.MINOR.PATCH tag."
+          $canonicalTag = (python python/tools/release_version.py tag $env:RELEASE_TAG).Trim()
+          if ($LASTEXITCODE -ne 0 -or $canonicalTag -ne $env:RELEASE_TAG) {
+            throw "release_tag must be the canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N tag."
           }
           $runIds = @(
             $env:HARDWARE_RUN_IDS -split '[,\s]+' |
@@ -60,8 +61,63 @@ jobs:
           if ($runIds.Count -eq 0 -or $invalidRunIds.Count -gt 0) {
             throw "hardware_run_ids must contain only numeric GitHub Actions run IDs."
           }
+          $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG --).Trim()
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Unable to resolve release tag '$env:RELEASE_TAG'."
+          }
+          function Assert-HardwareRun {
+            param([string]$RunId)
+            $json = gh run view $RunId `
+              --repo $env:GITHUB_REPOSITORY `
+              --json databaseId,workflowName,event,status,conclusion,headSha,attempt
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to read hardware qualification run $RunId."
+            }
+            $run = $json | ConvertFrom-Json
+            if ([string]$run.databaseId -ne $RunId) {
+              throw "GitHub Actions run identity mismatch for $RunId."
+            }
+            if ($run.workflowName -ne "Qualify release candidate on hardware") {
+              throw "Run $RunId was not produced by the hardware qualification workflow."
+            }
+            if ($run.event -ne "workflow_dispatch" -or
+                $run.status -ne "completed" -or
+                $run.conclusion -ne "success") {
+              throw "Hardware qualification run $RunId is not a successful completed dispatch."
+            }
+            if ($run.headSha -notmatch '^[0-9a-fA-F]{40}$' -or
+                $run.headSha.ToLowerInvariant() -ne $tagCommit.ToLowerInvariant()) {
+              throw "Hardware qualification run $RunId did not build the release tag commit."
+            }
+            if ([string]$run.attempt -notmatch '^\d+$' -or [int]$run.attempt -lt 1) {
+              throw "Hardware qualification run $RunId has an invalid attempt number."
+            }
+            return $run
+          }
+          function Assert-SourceReportProducer {
+            param(
+              [object]$Report,
+              [string]$RunId,
+              [string]$RunAttempt,
+              [string]$TagCommit
+            )
+            $producer = $Report.producer
+            if ($null -eq $producer -or
+                [string]$producer.run_id -ne $RunId -or
+                [string]$producer.run_attempt -ne $RunAttempt) {
+              throw "Hardware source report does not bind to run $RunId attempt $RunAttempt."
+            }
+            if ([string]$producer.workflow -ne "Qualify release candidate on hardware") {
+              throw "Hardware source report from run $RunId has an unexpected producer workflow."
+            }
+            if ([string]$producer.event -ne "workflow_dispatch" -or
+                [string]$producer.head_sha -ne $TagCommit) {
+              throw "Hardware source report from run $RunId does not bind to the release tag commit and dispatch."
+            }
+          }
           New-Item -ItemType Directory -Force -Path case-reports | Out-Null
           foreach ($runId in $runIds) {
+            $run = Assert-HardwareRun $runId
             $destination = Join-Path "case-reports" $runId
             gh run download $runId `
               --repo $env:GITHUB_REPOSITORY `
@@ -70,6 +126,12 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               throw "Failed to download hardware report from run $runId."
             }
+            $reports = @(Get-ChildItem -LiteralPath $destination -Recurse -Filter "release-hardware-qualification.json" -File)
+            if ($reports.Count -ne 1) {
+              throw "Hardware run $runId must provide exactly one qualification report."
+            }
+            $sourceReport = Get-Content -LiteralPath $reports[0].FullName -Raw | ConvertFrom-Json
+            Assert-SourceReportProducer $sourceReport $runId ([string]$run.attempt) $tagCommit
           }
 
       - name: Assemble and gate the matrix
@@ -92,15 +154,29 @@ jobs:
             @($reports.FullName) `
             --expected-archive-sha256 ($env:EXPECTED_SHA256).ToLowerInvariant() `
             --expected-source-revision $tagCommit.Trim() `
+            --report-root case-reports `
             --output release-hardware-matrix.json
           if ($LASTEXITCODE -ne 0) {
             throw "The release hardware matrix is incomplete or invalid."
           }
+          $matrix = Get-Content -LiteralPath release-hardware-matrix.json -Raw | ConvertFrom-Json
+          $matrix | Add-Member -NotePropertyName producer -NotePropertyValue ([ordered]@{
+            repository = $env:GITHUB_REPOSITORY
+            workflow = $env:GITHUB_WORKFLOW
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            event = $env:GITHUB_EVENT_NAME
+            head_sha = $tagCommit.Trim()
+            ref = $env:GITHUB_REF
+          }) -Force
+          $matrix | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath release-hardware-matrix.json -Encoding utf8
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: audioforge-release-hardware-matrix-${{ inputs.release_tag }}
-          path: release-hardware-matrix.json
+          path: |
+            release-hardware-matrix.json
+            case-reports
           if-no-files-found: error
           retention-days: 14

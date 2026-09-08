@@ -10,6 +10,7 @@ use ndarray::{Array3, ArrayView1, ArrayView2};
 use ort::{session::builder::GraphOptimizationLevel, session::Session, value::TensorRef};
 use std::env;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use thiserror::Error;
 
 /// Gate operating modes
@@ -52,6 +53,10 @@ const LSTM_NUM_LAYERS: usize = 2;
 /// Combined state dimension (h + c concatenated)
 const LSTM_STATE_DIM: usize = LSTM_HIDDEN_DIM * 2; // 128
 const SILERO_SR_TENSOR: [i64; 1] = [SILERO_SAMPLE_RATE as i64];
+const ORT_TELEMETRY_INIT_ERROR: &str =
+    "ONNX Runtime was already configured before AudioForge disabled telemetry";
+
+static ORT_TELEMETRY_POLICY: OnceLock<Result<(), &'static str>> = OnceLock::new();
 
 /// Errors related to VAD processing
 #[derive(Debug, Error)]
@@ -70,6 +75,19 @@ pub enum VadError {
 
     #[error("VAD feature not enabled (build with --features vad)")]
     NotEnabled,
+}
+
+fn ensure_ort_telemetry_disabled() -> Result<(), VadError> {
+    match ORT_TELEMETRY_POLICY.get_or_init(|| {
+        ort::init()
+            .with_telemetry(false)
+            .commit()
+            .then_some(())
+            .ok_or(ORT_TELEMETRY_INIT_ERROR)
+    }) {
+        Ok(()) => Ok(()),
+        Err(error) => Err(VadError::ModelLoadError((*error).to_string())),
+    }
 }
 
 /// Silero VAD for voice activity detection
@@ -172,6 +190,7 @@ impl SileroVAD {
     /// * `sample_rate` - Audio sample rate (typically 48000)
     /// * `threshold` - Speech probability threshold (0.0-1.0), default 0.5
     pub fn new(sample_rate: u32, threshold: f32) -> Result<Self, VadError> {
+        ensure_ort_telemetry_disabled()?;
         let model_path = Self::find_model_path()?;
 
         // Create ONNX Runtime session with ort 2.0 API
@@ -182,6 +201,12 @@ impl SileroVAD {
             .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|e| {
                 VadError::ModelLoadError(format!("Failed to set optimization level: {}", e))
+            })?
+            // Run this small 32 ms workload on the caller to avoid an idle
+            // spinning pool in the realtime path.
+            .with_intra_threads(1)
+            .map_err(|e| {
+                VadError::ModelLoadError(format!("Failed to set intra-op thread count: {}", e))
             })?
             .commit_from_file(&model_path)
             .map_err(|e| {

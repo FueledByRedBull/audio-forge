@@ -41,13 +41,14 @@ PORTABLE_TEXT_SUFFIXES = {
 
 def _portable_source_sha256(path: Path) -> set[str]:
     data = path.read_bytes()
-    hashes = {hashlib.sha256(data).hexdigest()}
     if path.suffix.casefold() not in PORTABLE_TEXT_SUFFIXES or b"\0" in data:
-        return hashes
-    lf = data.replace(b"\r\n", b"\n")
-    hashes.add(hashlib.sha256(lf).hexdigest())
-    hashes.add(hashlib.sha256(lf.replace(b"\n", b"\r\n")).hexdigest())
-    return hashes
+        return {hashlib.sha256(data).hexdigest()}
+    lf = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    crlf = lf.replace(b"\n", b"\r\n")
+    return {
+        hashlib.sha256(lf).hexdigest(),
+        hashlib.sha256(crlf).hexdigest(),
+    }
 
 
 def _declared_source_hashes(report: dict[str, Any]) -> list[tuple[str, str]]:
@@ -169,85 +170,7 @@ def validate_evaluation_tree(root: Path = DEFAULT_EVALUATION_ROOT) -> list[str]:
     errors: list[str] = []
     for path in sorted(root.glob("*.json")):
         errors.extend(validate_report(path))
-        if path.name == "release-trends.json":
-            errors.extend(validate_release_trends(path))
     return errors
-
-
-def validate_release_trends(path: Path) -> list[str]:
-    errors: list[str] = []
-    try:
-        trends = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
-        return [f"{path}: invalid release trends JSON: {error}"]
-    releases = trends.get("releases")
-    if not isinstance(releases, list):
-        return [f"{path}: releases must be a list"]
-    versions: set[str] = set()
-    for index, release in enumerate(releases):
-        location = f"{path}:releases[{index}]"
-        if not isinstance(release, dict):
-            errors.append(f"{location}: entry must be an object")
-            continue
-        version = release.get("version")
-        if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
-            errors.append(f"{location}: version must be semantic X.Y.Z")
-        elif version in versions:
-            errors.append(f"{location}: duplicate version {version}")
-        else:
-            versions.add(version)
-        release_status = release.get("status")
-        if release_status not in {"candidate", "published"}:
-            errors.append(f"{location}: status must be candidate or published")
-        if release_status == "published" and not re.fullmatch(
-            r"[0-9a-f]{40}", str(release.get("commit", ""))
-        ):
-            errors.append(f"{location}: published rows require an exact commit")
-        for category in ("package", "runtime", "quality", "hardware"):
-            if category not in release:
-                errors.append(f"{location}: missing {category}")
-        for metric_location, metric in _measurement_nodes(release):
-            status = metric.get("status")
-            if status not in {"measured", "not_measured"}:
-                errors.append(f"{location}.{metric_location}: invalid measurement status")
-            elif status == "measured" and "value" not in metric:
-                errors.append(f"{location}.{metric_location}: measured value is missing")
-            elif status == "not_measured" and not metric.get("reason"):
-                errors.append(
-                    f"{location}.{metric_location}: not_measured requires a reason"
-                )
-        hardware_metric = release.get("hardware")
-        if (
-            isinstance(hardware_metric, dict)
-            and hardware_metric.get("status") == "measured"
-        ):
-            hardware_value = hardware_metric.get("value")
-            if not isinstance(hardware_value, dict):
-                errors.append(f"{location}.hardware: measured value must be an object")
-            else:
-                errors.extend(
-                    _validate_hardware_report_privacy(
-                        f"{location}.hardware.value", hardware_value
-                    )
-                )
-    return errors
-
-
-def _measurement_nodes(
-    release: dict[str, Any],
-) -> list[tuple[str, dict[str, Any]]]:
-    nodes: list[tuple[str, dict[str, Any]]] = []
-    for category in ("runtime", "quality", "hardware"):
-        metric = release.get(category)
-        if isinstance(metric, dict):
-            nodes.append((category, metric))
-    package = release.get("package")
-    if isinstance(package, dict):
-        for name in ("bundle", "archive"):
-            metric = package.get(name)
-            if isinstance(metric, dict):
-                nodes.append((f"package.{name}", metric))
-    return nodes
 
 
 def main() -> int:

@@ -36,7 +36,6 @@ pub struct OfflineDspBlockProcessor {
     true_peak_limiter: TruePeakLimiter,
     true_peak_detector: TruePeakDetector,
     deesser_enabled: bool,
-    eq_enabled: bool,
     compressor_enabled: bool,
     limiter_enabled: bool,
     eq_before_deesser: bool,
@@ -52,7 +51,6 @@ impl OfflineDspBlockProcessor {
             true_peak_limiter: TruePeakLimiter::default_settings(sample_rate as f32),
             true_peak_detector: TruePeakDetector::new(),
             deesser_enabled: false,
-            eq_enabled: true,
             compressor_enabled: false,
             limiter_enabled: true,
             eq_before_deesser: false,
@@ -65,7 +63,6 @@ impl OfflineDspBlockProcessor {
     }
 
     pub fn set_eq_enabled(&mut self, enabled: bool) {
-        self.eq_enabled = enabled;
         self.eq.set_enabled(enabled);
     }
 
@@ -131,9 +128,7 @@ impl OfflineDspBlockProcessor {
         let block = output.as_mut_slice();
 
         if self.eq_before_deesser {
-            if self.eq_enabled {
-                self.eq.process_block_inplace(block);
-            }
+            self.eq.process_block_inplace(block);
             if self.deesser_enabled {
                 self.deesser.process_block_inplace(block);
                 stats.deesser_gain_reduction_db = self.deesser.current_gain_reduction_db();
@@ -143,9 +138,7 @@ impl OfflineDspBlockProcessor {
                 self.deesser.process_block_inplace(block);
                 stats.deesser_gain_reduction_db = self.deesser.current_gain_reduction_db();
             }
-            if self.eq_enabled {
-                self.eq.process_block_inplace(block);
-            }
+            self.eq.process_block_inplace(block);
         }
         if self.compressor_enabled {
             self.compressor.process_block_inplace(block);

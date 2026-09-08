@@ -516,6 +516,8 @@ def main() -> int:
         )
     report.pop("captures", None)
     report.pop("band_observations", None)
+    for decision in decisions.values():
+        decision.pop("training_candidates")
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(
         json.dumps(report, indent=2) + "\n",

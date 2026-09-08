@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from .config_parts.app_config import AppConfig, DevicePresetBinding, load_config, save_config
+from .config_parts.app_config import (
+    CONFIG_SCHEMA_VERSION,
+    AppConfig,
+    DevicePresetBinding,
+    load_config,
+    save_config,
+)
 from .config_parts.catalogs import build_builtin_presets, build_target_curves
 from .config_parts.presets import (
     Preset,
@@ -79,6 +85,7 @@ __all__ = [
     "AUTO_EQ_DEFAULT_Q",
     "AppConfig",
     "BUILTIN_PRESETS",
+    "CONFIG_SCHEMA_VERSION",
     "CURRENT_VERSION",
     "CompressorSettings",
     "DeEsserSettings",

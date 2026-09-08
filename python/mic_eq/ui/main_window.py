@@ -216,8 +216,8 @@ class MainWindow(QMainWindow):
         self.config = load_config()
         self.current_preset_path = None
 
-        # Bounded processing-configuration history. It stores immutable preset
-        # data only; live audio buffers and realtime processor state stay out.
+        # Bounded settings history with transient calibration evidence;
+        # live audio buffers and realtime processor state stay out.
         self._configuration_history = BoundedConfigurationHistory(limit=50)
         self._history_ready = False
         self._history_replaying = False
@@ -271,6 +271,14 @@ class MainWindow(QMainWindow):
         self._restore_from_config()
         self._initialize_configuration_history()
         self._connect_configuration_history_inputs()
+        if self.config.load_warning:
+            warning = self.config.load_warning
+            self.config_warning_banner.setText(warning)
+            self.config_warning_banner.setVisible(True)
+            QTimer.singleShot(
+                0,
+                lambda: self.status_bar.showMessage(warning),
+            )
         QTimer.singleShot(0, self._maybe_show_first_run_setup)
 
         # Meter update timer (60 FPS)
@@ -345,6 +353,13 @@ class MainWindow(QMainWindow):
         self.device_warning_banner.setWordWrap(True)
         self.device_warning_banner.setVisible(False)
         main_layout.addWidget(self.device_warning_banner)
+
+        self.config_warning_banner = QLabel()
+        self.config_warning_banner.setStyleSheet(WARNING_BANNER_STYLE)
+        self.config_warning_banner.setAccessibleName("Configuration warning")
+        self.config_warning_banner.setWordWrap(True)
+        self.config_warning_banner.setVisible(False)
+        main_layout.addWidget(self.config_warning_banner)
 
         # Top: Device selection
         device_group = QGroupBox("Audio Devices")
@@ -525,13 +540,15 @@ class MainWindow(QMainWindow):
 
         self.bypass_checkbox = QCheckBox("Master Bypass")
         self.bypass_checkbox.setToolTip(
-            "Bypass all processing (pass audio through unchanged)"
+            "Bypass voice effects; input conditioning and configured output protection remain. "
+            "Raw Monitor takes precedence when enabled."
         )
         self.bypass_checkbox.toggled.connect(self._on_bypass_toggled)
 
         self.raw_monitor_checkbox = QCheckBox("Raw Monitor")
         self.raw_monitor_checkbox.setToolTip(
-            "Diagnostic path: bypass pre-filter + DSP chain and use clean output write path"
+            "Diagnostic monitoring before input filtering and voice effects; "
+            "configured output protection remains. Takes precedence over Master Bypass."
         )
         self.raw_monitor_checkbox.toggled.connect(self._on_raw_monitor_toggled)
         self._action_layout_widgets = (
@@ -1173,7 +1190,7 @@ class MainWindow(QMainWindow):
         presets_menu.addSeparator()
 
         # Built-in presets submenu
-        builtin_menu = presets_menu.addMenu("&Built-in Presets")
+        builtin_menu = presets_menu.addMenu("&Built-in Voice Presets")
         assert builtin_menu is not None
         for key, preset in BUILTIN_PRESETS.items():
             action = QAction(preset.name, self)
@@ -1236,17 +1253,13 @@ class MainWindow(QMainWindow):
         # Startup Preset submenu
         startup_menu = options_menu.addMenu("Startup &Preset...")
         assert startup_menu is not None
-        custom_presets = list_presets()
-        custom_names = tuple(name for name, _filepath in custom_presets)
-        startup_preset_id = _normalize_startup_preset_id(
-            self.config.startup_preset, custom_names
-        )
+        self._startup_preset_menu = startup_menu
+        self._startup_custom_actions: list[QAction] = []
 
         # "Last Used" option (default, checked if startup_preset is empty)
         last_used_action = QAction("Last Used", self)
         last_used_action.setCheckable(True)
         last_used_action.setData("")
-        last_used_action.setChecked(startup_preset_id == "")
         last_used_action.triggered.connect(lambda: self._set_startup_preset(""))
         startup_menu.addAction(last_used_action)
         self._last_used_action = last_used_action  # Store for updating checked state
@@ -1260,7 +1273,6 @@ class MainWindow(QMainWindow):
             action.setCheckable(True)
             preset_id = _startup_builtin_id(key)
             action.setData(preset_id)
-            action.setChecked(startup_preset_id == preset_id)
             action.triggered.connect(
                 lambda checked, item_id=preset_id: self._set_startup_preset(item_id)
             )
@@ -1268,24 +1280,17 @@ class MainWindow(QMainWindow):
 
         # Separator
         startup_menu.addSeparator()
-
-        # Custom presets
-        for name, filepath in custom_presets:
-            action = QAction(name, self)
-            action.setCheckable(True)
-            preset_id = _startup_custom_id(name)
-            action.setData(preset_id)
-            action.setChecked(startup_preset_id == preset_id)
-            action.triggered.connect(
-                lambda checked, item_id=preset_id: self._set_startup_preset(item_id)
-            )
-            startup_menu.addAction(action)
+        startup_menu.aboutToShow.connect(self._refresh_startup_preset_menu)
+        self._refresh_startup_preset_menu()
 
         options_menu.addSeparator()
 
         device_preset_menu = options_menu.addMenu("Preset for Current &Route")
         assert device_preset_menu is not None
+        self._device_preset_menu = device_preset_menu
         self._device_preset_actions: dict[str, QAction] = {}
+        self._device_custom_actions: list[QAction] = []
+        self._device_custom_separator: QAction | None = None
 
         self.auto_apply_device_presets_action = QAction(
             "Automatically Apply Route Presets", self
@@ -1318,26 +1323,13 @@ class MainWindow(QMainWindow):
             device_preset_menu.addAction(action)
             self._device_preset_actions[preset_id] = action
 
-        if custom_presets:
-            device_preset_menu.addSeparator()
-        for name, filepath in custom_presets:
-            preset_id = _startup_custom_id(filepath.name)
-            action = QAction(name, self)
-            action.setCheckable(True)
-            action.triggered.connect(
-                lambda _checked, item_id=preset_id: self._bind_current_route_preset(
-                    item_id
-                )
-            )
-            device_preset_menu.addAction(action)
-            self._device_preset_actions[preset_id] = action
-
-        device_preset_menu.aboutToShow.connect(self._update_device_preset_menu)
+        device_preset_menu.aboutToShow.connect(self._refresh_device_preset_menu)
+        self._refresh_device_preset_menu()
 
         options_menu.addSeparator()
 
         self.use_measured_latency_action = QAction(
-            "Use Measured Latency Compensation", self
+            "Include Measured Route Delay in Latency Estimate", self
         )
         self.use_measured_latency_action.setCheckable(True)
         self.use_measured_latency_action.setChecked(self.config.use_measured_latency)
@@ -1346,7 +1338,7 @@ class MainWindow(QMainWindow):
         )
         options_menu.addAction(self.use_measured_latency_action)
 
-        latency_calibration_action = QAction("Run Latency Calibration...", self)
+        latency_calibration_action = QAction("Measure Route Latency (Advanced)...", self)
         latency_calibration_action.triggered.connect(
             self._on_latency_calibration_clicked
         )
@@ -1371,30 +1363,44 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar.showMessage("Startup preset set to Last Used", 5000)
 
-        # Update checked states of all startup preset actions
-        # Get the Options menu
-        menubar = self.menuBar()
-        assert menubar is not None
-        for action in menubar.actions():
-            options_menu = action.menu()
-            if options_menu is not None and options_menu.title() == "&Options":
-                for menu_action in options_menu.actions():
-                    startup_menu = menu_action.menu()
-                    if (
-                        startup_menu is not None
-                        and startup_menu.title() == "Startup &Preset..."
-                    ):
-                        # Update checked state for all actions in the startup menu
-                        for preset_action in startup_menu.actions():
-                            if preset_action.isCheckable():
-                                preset_action.setChecked(
-                                    str(preset_action.data() or "") == preset_id
-                                )
-                        break
-                break
+        self._update_startup_preset_menu(preset_id)
+
+    def _update_startup_preset_menu(self, preset_id: str | None = None) -> None:
+        selected_id = (
+            self.config.startup_preset if preset_id is None else preset_id
+        )
+        for action in self._startup_preset_menu.actions():
+            if action.isCheckable():
+                action.setChecked(str(action.data() or "") == selected_id)
+
+    def _refresh_startup_preset_menu(self) -> None:
+        custom_presets = list_presets()
+        for action in self._startup_custom_actions:
+            self._startup_preset_menu.removeAction(action)
+            action.deleteLater()
+        self._startup_custom_actions.clear()
+
+        custom_names = tuple(name for name, _filepath in custom_presets)
+        startup_preset_id = _normalize_startup_preset_id(
+            self.config.startup_preset, custom_names
+        )
+        for name, _filepath in custom_presets:
+            action = QAction(name, self)
+            action.setCheckable(True)
+            preset_id = _startup_custom_id(name)
+            action.setData(preset_id)
+            action.triggered.connect(
+                lambda _checked, item_id=preset_id: self._set_startup_preset(item_id)
+            )
+            self._startup_preset_menu.addAction(action)
+            self._startup_custom_actions.append(action)
+
+        self._update_startup_preset_menu(startup_preset_id)
 
     def _maybe_show_first_run_setup(self) -> None:
-        if os.environ.get("PYTEST_CURRENT_TEST"):
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get(
+            "AUDIOFORGE_SMOKE_TEST"
+        ):
             return
         if self.config.first_run_setup_state in {"not_started", "in_progress"}:
             self._show_first_run_setup(restart_completed=False)
@@ -1451,6 +1457,36 @@ class MainWindow(QMainWindow):
             save_config(self.config)
         self._update_device_preset_menu()
         self.status_bar.showMessage("Cleared the preset binding for this route", 4000)
+
+    def _refresh_device_preset_menu(self) -> None:
+        custom_presets = list_presets()
+        for action in self._device_custom_actions:
+            self._device_preset_menu.removeAction(action)
+            action.deleteLater()
+            self._device_preset_actions.pop(str(action.data() or ""), None)
+        self._device_custom_actions.clear()
+        if self._device_custom_separator is not None:
+            self._device_preset_menu.removeAction(self._device_custom_separator)
+            self._device_custom_separator.deleteLater()
+            self._device_custom_separator = None
+
+        if custom_presets:
+            self._device_custom_separator = self._device_preset_menu.addSeparator()
+        for name, filepath in custom_presets:
+            preset_id = _startup_custom_id(filepath.name)
+            action = QAction(name, self)
+            action.setCheckable(True)
+            action.setData(preset_id)
+            action.triggered.connect(
+                lambda _checked, item_id=preset_id: self._bind_current_route_preset(
+                    item_id
+                )
+            )
+            self._device_preset_menu.addAction(action)
+            self._device_custom_actions.append(action)
+            self._device_preset_actions[preset_id] = action
+
+        self._update_device_preset_menu()
 
     def _update_device_preset_menu(self) -> None:
         route_key = self._current_device_route_key()
@@ -1619,7 +1655,7 @@ class MainWindow(QMainWindow):
         save_config(self.config)
         self._apply_latency_compensation_for_current_devices()
         mode = "enabled" if enabled else "disabled"
-        self.status_bar.showMessage(f"Measured latency compensation {mode}", 4000)
+        self.status_bar.showMessage(f"Measured route delay in latency estimate {mode}", 4000)
 
     def _on_latency_calibration_clicked(self) -> bool:
         if self._latency_profile_key() is None:
@@ -1680,6 +1716,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_devices(self):
         """Refresh the device lists."""
+        previous_route = self._current_device_route_key()
         previous_input = (
             self.config.last_input_device_identity
             or self._combo_device_identity(self.input_combo)
@@ -1690,135 +1727,140 @@ class MainWindow(QMainWindow):
         )
 
         # Block signals to prevent spurious config saves during refresh
-        self.input_combo.blockSignals(True)
-        self.output_combo.blockSignals(True)
+        signal_widgets = [self.input_combo, self.output_combo]
         if "input_channel_mode_combo" in self.__dict__:
-            self.input_channel_mode_combo.blockSignals(True)
+            signal_widgets.append(self.input_channel_mode_combo)
         if "input_cleanup_mode_combo" in self.__dict__:
-            self.input_cleanup_mode_combo.blockSignals(True)
+            signal_widgets.append(self.input_cleanup_mode_combo)
+        signal_states = [widget.blockSignals(True) for widget in signal_widgets]
 
-        self.input_combo.clear()
-        self.output_combo.clear()
-
-        input_found = False
-        output_found = False
-        config_dirty = False
-
-        # Get input devices
         try:
-            input_devices = list_input_devices()
-            input_found = len(input_devices) > 0
-            for device in input_devices:
-                identity = self._identity_from_device_info(device, "input")
-                duplicate_suffix = (
-                    f" [#{identity.name_ordinal + 1}]"
-                    if sum(item.name == identity.name for item in input_devices) > 1
-                    and identity.name_ordinal is not None
-                    else ""
-                )
-                label = f"{device.name}{duplicate_suffix}" + (
-                    " (Default)" if device.is_default else ""
-                )
-                self.input_combo.addItem(
-                    label,
-                    identity,
-                )
-            if previous_input is not None:
-                if not self._select_combo_identity(self.input_combo, previous_input):
+            self.input_combo.clear()
+            self.output_combo.clear()
+
+            input_found = False
+            output_found = False
+            config_dirty = False
+
+            # Get input devices
+            try:
+                input_devices = list_input_devices()
+                input_found = len(input_devices) > 0
+                for device in input_devices:
+                    identity = self._identity_from_device_info(device, "input")
+                    duplicate_suffix = (
+                        f" [#{identity.name_ordinal + 1}]"
+                        if sum(item.name == identity.name for item in input_devices) > 1
+                        and identity.name_ordinal is not None
+                        else ""
+                    )
+                    label = f"{device.name}{duplicate_suffix}" + (
+                        " (Default)" if device.is_default else ""
+                    )
+                    self.input_combo.addItem(
+                        label,
+                        identity,
+                    )
+                if previous_input is not None:
+                    if not self._select_combo_identity(self.input_combo, previous_input):
+                        fallback_index = self._default_combo_index(self.input_combo)
+                        if fallback_index >= 0:
+                            self.input_combo.setCurrentIndex(fallback_index)
+                        if previous_input.name:
+                            self.status_bar.showMessage(
+                                f"Previous input device '{previous_input.name}' is disconnected; "
+                                "using the default until it returns"
+                            )
+                    else:
+                        resolved = self._combo_device_identity(self.input_combo)
+                        if (
+                            resolved is not None
+                            and resolved.to_dict() != previous_input.to_dict()
+                        ):
+                            self.config.last_input_device = resolved.name
+                            self.config.last_input_device_identity = resolved
+                            config_dirty = True
+                elif self.input_combo.count() > 0:
                     fallback_index = self._default_combo_index(self.input_combo)
                     if fallback_index >= 0:
                         self.input_combo.setCurrentIndex(fallback_index)
-                    if previous_input.name:
-                        self.status_bar.showMessage(
-                            f"Previous input device '{previous_input.name}' is disconnected; "
-                            "using the default until it returns"
-                        )
-                else:
-                    resolved = self._combo_device_identity(self.input_combo)
-                    if (
-                        resolved is not None
-                        and resolved.to_dict() != previous_input.to_dict()
-                    ):
-                        self.config.last_input_device = resolved.name
-                        self.config.last_input_device_identity = resolved
-                        config_dirty = True
-            elif self.input_combo.count() > 0:
-                fallback_index = self._default_combo_index(self.input_combo)
-                if fallback_index >= 0:
-                    self.input_combo.setCurrentIndex(fallback_index)
-        except (RuntimeError, OSError) as e:
-            self.input_combo.addItem(f"Error: {e}")
-            logger.warning("Input device enumeration failed", exc_info=True)
+            except (RuntimeError, OSError) as e:
+                self.input_combo.addItem(f"Error: {e}")
+                logger.warning("Input device enumeration failed", exc_info=True)
 
-        # Get output devices
-        try:
-            output_devices = list_output_devices()
-            output_found = len(output_devices) > 0
-            for device in output_devices:
-                identity = self._identity_from_device_info(device, "output")
-                duplicate_suffix = (
-                    f" [#{identity.name_ordinal + 1}]"
-                    if sum(item.name == identity.name for item in output_devices) > 1
-                    and identity.name_ordinal is not None
-                    else ""
+            # Get output devices
+            try:
+                output_devices = list_output_devices()
+                output_found = len(output_devices) > 0
+                for device in output_devices:
+                    identity = self._identity_from_device_info(device, "output")
+                    duplicate_suffix = (
+                        f" [#{identity.name_ordinal + 1}]"
+                        if sum(item.name == identity.name for item in output_devices) > 1
+                        and identity.name_ordinal is not None
+                        else ""
+                    )
+                    label = f"{device.name}{duplicate_suffix}" + (
+                        " (Default)" if device.is_default else ""
+                    )
+                    self.output_combo.addItem(
+                        label,
+                        identity,
+                    )
+                if previous_output is not None:
+                    if not self._select_combo_identity(self.output_combo, previous_output):
+                        fallback_index = self._default_combo_index(self.output_combo)
+                        if fallback_index >= 0:
+                            self.output_combo.setCurrentIndex(fallback_index)
+                        if previous_output.name:
+                            self.status_bar.showMessage(
+                                f"Previous output device '{previous_output.name}' is disconnected; "
+                                "using the default until it returns"
+                            )
+                    else:
+                        resolved = self._combo_device_identity(self.output_combo)
+                        if (
+                            resolved is not None
+                            and resolved.to_dict() != previous_output.to_dict()
+                        ):
+                            self.config.last_output_device = resolved.name
+                            self.config.last_output_device_identity = resolved
+                            config_dirty = True
+                elif self.output_combo.count() > 0:
+                    preferred_index = self._preferred_output_combo_index(self.output_combo)
+                    if preferred_index >= 0:
+                        self.output_combo.setCurrentIndex(preferred_index)
+
+            except (RuntimeError, OSError) as e:
+                self.output_combo.addItem(f"Error: {e}")
+                logger.warning("Output device enumeration failed", exc_info=True)
+
+            # Update warning banner visibility and text
+            if not input_found and not output_found:
+                self.device_warning_banner.setText(
+                    "Warning: No audio devices detected. Check your audio drivers and connections."
                 )
-                label = f"{device.name}{duplicate_suffix}" + (
-                    " (Default)" if device.is_default else ""
+                self.device_warning_banner.setVisible(True)
+            elif not input_found:
+                self.device_warning_banner.setText(
+                    "Warning: No input devices detected. Check your microphone connections."
                 )
-                self.output_combo.addItem(
-                    label,
-                    identity,
+                self.device_warning_banner.setVisible(True)
+            elif not output_found:
+                self.device_warning_banner.setText(
+                    "Warning: No output devices detected. Check your audio output connections."
                 )
-            if previous_output is not None:
-                if not self._select_combo_identity(self.output_combo, previous_output):
-                    fallback_index = self._default_combo_index(self.output_combo)
-                    if fallback_index >= 0:
-                        self.output_combo.setCurrentIndex(fallback_index)
-                    if previous_output.name:
-                        self.status_bar.showMessage(
-                            f"Previous output device '{previous_output.name}' is disconnected; "
-                            "using the default until it returns"
-                        )
-                else:
-                    resolved = self._combo_device_identity(self.output_combo)
-                    if (
-                        resolved is not None
-                        and resolved.to_dict() != previous_output.to_dict()
-                    ):
-                        self.config.last_output_device = resolved.name
-                        self.config.last_output_device_identity = resolved
-                        config_dirty = True
-            elif self.output_combo.count() > 0:
-                preferred_index = self._preferred_output_combo_index(self.output_combo)
-                if preferred_index >= 0:
-                    self.output_combo.setCurrentIndex(preferred_index)
+                self.device_warning_banner.setVisible(True)
+            else:
+                self.device_warning_banner.setVisible(False)
 
-        except (RuntimeError, OSError) as e:
-            self.output_combo.addItem(f"Error: {e}")
-            logger.warning("Output device enumeration failed", exc_info=True)
-
-        # Update warning banner visibility and text
-        if not input_found and not output_found:
-            self.device_warning_banner.setText(
-                "Warning: No audio devices detected. Check your audio drivers and connections."
-            )
-            self.device_warning_banner.setVisible(True)
-        elif not input_found:
-            self.device_warning_banner.setText(
-                "Warning: No input devices detected. Check your microphone connections."
-            )
-            self.device_warning_banner.setVisible(True)
-        elif not output_found:
-            self.device_warning_banner.setText(
-                "Warning: No output devices detected. Check your audio output connections."
-            )
-            self.device_warning_banner.setVisible(True)
-        else:
-            self.device_warning_banner.setVisible(False)
-
-        # Restore signals
-        self.input_combo.blockSignals(False)
-        self.output_combo.blockSignals(False)
+        finally:
+            for widget, blocked in zip(signal_widgets, signal_states):
+                widget.blockSignals(blocked)
+            if previous_route != self._current_device_route_key():
+                self.compressor_panel.set_compressor_settings(
+                    {"noise_reference_reliability": 0.0}
+                )
 
         if config_dirty:
             save_config(self.config)
@@ -2033,6 +2075,7 @@ class MainWindow(QMainWindow):
     def _on_device_changed(self):
         """Handle device selection change - save to config."""
         if hasattr(self, "config"):  # Check config is initialized
+            self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
             input_identity = self._combo_device_identity(self.input_combo)
             output_identity = self._combo_device_identity(self.output_combo)
             self.config.last_input_device_identity = input_identity
@@ -2056,6 +2099,7 @@ class MainWindow(QMainWindow):
             mode = "average"
         self.config.input_channel_mode = mode
         self._apply_input_channel_mode(mode)
+        self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
         save_config(self.config)
 
     def _on_input_cleanup_mode_changed(self):
@@ -2067,6 +2111,7 @@ class MainWindow(QMainWindow):
             mode = "off"
         self.config.input_cleanup_mode = mode
         self._apply_input_cleanup_mode(mode)
+        self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
         save_config(self.config)
 
     def _start_processing(self):
@@ -2134,10 +2179,20 @@ class MainWindow(QMainWindow):
                 f"Failed to start audio processing:\n\n{e}\n\n{guidance}",
             )
             self.status_bar.showMessage(f"Error: {e}")
+            self._sync_processing_controls()
+
+    def _sync_processing_controls(self) -> None:
+        """Reflect the native processor state after recovery or a failed start."""
+        running = bool(self.processor.is_running())
+        self.start_btn.setEnabled(not running)
+        self.stop_btn.setEnabled(running)
+        self.input_combo.setEnabled(not running)
+        self.output_combo.setEnabled(not running)
 
     def _stop_processing(self):
         """Stop audio processing."""
         if not self.processor.is_running():
+            self._sync_processing_controls()
             if DEBUG:
                 logger.debug("Stop processing clicked, but processor is not running")
             return
@@ -2214,11 +2269,23 @@ class MainWindow(QMainWindow):
             preset,
             label="Startup configuration",
             source="startup",
+            noise_reference_reliability=self.compressor_panel.get_compressor_settings(
+                include_calibration=True
+            )["noise_reference_reliability"],
+            calibration_context_key=self._calibration_context_key(),
         )
         self._configuration_history.initialize(snapshot)
         self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
         self._history_ready = True
         self._update_history_actions()
+
+    def _calibration_context_key(self) -> str | None:
+        route = self._current_device_route_key()
+        if route is None:
+            return None
+        return json.dumps((
+            route, self.config.input_channel_mode, self.config.input_cleanup_mode,
+        ))
 
     def _connect_configuration_history_inputs(self) -> None:
         """Observe processing controls and coalesce one user gesture."""
@@ -2292,6 +2359,10 @@ class MainWindow(QMainWindow):
                 preset,
                 label=label,
                 source=source,
+                noise_reference_reliability=self.compressor_panel.get_compressor_settings(
+                    include_calibration=True
+                )["noise_reference_reliability"],
+                calibration_context_key=self._calibration_context_key(),
             )
             recorded = self._configuration_history.record(snapshot)
         except (PresetValidationError, TypeError, ValueError) as error:
@@ -2306,6 +2377,8 @@ class MainWindow(QMainWindow):
             return False
         if recorded:
             self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
+            if source == "ui":
+                self.eq_panel.set_auto_eq_diagnostics(None)
         self._update_history_actions()
         return recorded
 
@@ -2316,15 +2389,27 @@ class MainWindow(QMainWindow):
         """Restore one validated snapshot without creating a new entry."""
         preset = snapshot.to_preset()
         previous_preset = self._get_current_preset()
+        previous_compressor = self.compressor_panel.get_compressor_settings(
+            include_calibration=True
+        )
         previous_provenance = dict(self._current_value_provenance)
         self._history_replaying = True
         self._history_timer.stop()
         try:
             self._apply_preset(preset, require_exact=True)
+            self.compressor_panel.set_compressor_settings({
+                "noise_reference_reliability": (
+                    snapshot.noise_reference_reliability
+                    if snapshot.calibration_context_key is not None
+                    and snapshot.calibration_context_key == self._calibration_context_key()
+                    else 0.0
+                )
+            })
             self._current_value_provenance = dict(preset.value_provenance)
         except Exception:
             try:
                 self._apply_preset(previous_preset, require_exact=True)
+                self.compressor_panel.set_compressor_settings(previous_compressor)
                 self._current_value_provenance = previous_provenance
             except Exception:
                 logger.exception(
@@ -2419,29 +2504,63 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        existing_presets = list_presets()
-        existing_names = [name.lower() for name, _ in existing_presets]
-        if preset_name.lower() in existing_names:
-            confirm_reply = QMessageBox.question(
-                self,
-                "Overwrite Preset?",
-                f"Preset '{preset_name}' already exists. Overwrite?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if confirm_reply != QMessageBox.StandardButton.Yes:
-                return
-
         preset = self._get_current_preset()
         preset.name = preset_name
         preset.description = description
         preset.version = __version__
-        save_preset(preset)
+        if self._save_preset_file(preset) is None:
+            return
+        saved_message = f"Preset '{preset_name}' saved successfully."
+        if not self._last_preset_identity_persisted:
+            saved_message += (
+                " AudioForge could not remember it for the next launch."
+            )
         QMessageBox.information(
             self,
             "Preset Saved",
-            f"Preset '{preset_name}' saved successfully.",
+            saved_message,
         )
+
+    def _save_preset_file(self, preset: Preset) -> Path | None:
+        self._last_preset_identity_persisted = True
+        try:
+            try:
+                filepath = save_preset(preset, overwrite=False)
+            except FileExistsError:
+                confirm_reply = QMessageBox.question(
+                    self,
+                    "Overwrite Preset?",
+                    f"A preset file for '{preset.name}' already exists. Overwrite?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if confirm_reply != QMessageBox.StandardButton.Yes:
+                    return None
+                filepath = save_preset(preset, overwrite=True)
+
+            previous_path = self.current_preset_path
+            previous_last_preset = self.config.last_preset
+            self.config.last_preset = str(filepath)
+            try:
+                persisted = save_config(self.config)
+            except (IOError, OSError, ValueError):
+                persisted = False
+            if not persisted:
+                self.config.last_preset = previous_last_preset
+                self.current_preset_path = previous_path
+                self._last_preset_identity_persisted = False
+                return filepath
+            self.current_preset_path = filepath
+            return filepath
+        except (IOError, OSError, ValueError) as exc:
+            logger.warning("Preset save failed", exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to save preset:\n{exc}\n\n"
+                "Check you have write permission to the presets folder.",
+            )
+            return None
 
     def on_auto_eq_applied(self, target_curve: str):
         """
@@ -2462,9 +2581,15 @@ class MainWindow(QMainWindow):
         preset_name = generate_auto_eq_preset_name(target_curve)
         self._prompt_save_current_preset(
             title="Save Auto-EQ as Preset?",
-            question=f"Save these auto-EQ settings as preset '{preset_name}'?",
+            question=(
+                f"Save these full processing-chain settings from Auto-EQ as preset "
+                f"'{preset_name}'?"
+            ),
             preset_name=preset_name,
-            description=f"Auto-generated EQ settings using {target_curve.title()} target curve",
+            description=(
+                "Complete processing preset with Auto-EQ using "
+                f"the {target_curve.title()} target curve"
+            ),
         )
 
     def on_voice_setup_applied(self, target_curve: str):
@@ -2489,7 +2614,7 @@ class MainWindow(QMainWindow):
         self.processor.set_bypass(checked)
         if checked:
             self.status_bar.showMessage(
-                "Master bypass enabled - audio passing through unchanged"
+                "Voice effects bypassed; input conditioning and configured output protection remain"
             )
         else:
             self.status_bar.showMessage("Processing active")
@@ -2621,6 +2746,15 @@ class MainWindow(QMainWindow):
             self._stream_recovery.mark_processing_stopped()
             self._last_backend_warning = None
             self._reset_health_labels()
+            # A failed native restart intentionally leaves recovery pending
+            # while the stream is stopped. Keep servicing that request here.
+            self._service_stream_recovery(
+                diagnostics={},
+                input_rms=-120.0,
+                output_rms=-120.0,
+                output_buf=0,
+            )
+            self._sync_processing_controls()
             return
 
         diagnostics = self.processor.get_runtime_diagnostics()
@@ -3123,6 +3257,7 @@ class MainWindow(QMainWindow):
                             "Auto-recovery failed",
                             6000,
                         )
+                self._sync_processing_controls()
         except Exception:
             logger.debug("Rust recovery service failed", exc_info=True)
 
@@ -3141,6 +3276,7 @@ class MainWindow(QMainWindow):
                 f"Recovered output path automatically: {result}",
                 4000,
             )
+            self._sync_processing_controls()
         except Exception as e:
             logger.exception("Auto-recovery failed")
             self.status_bar.showMessage(
@@ -3500,20 +3636,18 @@ class MainWindow(QMainWindow):
         if ok:
             preset.description = description.strip()
 
-        # Save to file
-        try:
-            filepath = save_preset(preset)
-            self.status_bar.showMessage(f"Preset saved: {filepath}")
-            QMessageBox.information(
-                self, "Preset Saved", f"Preset '{name}' saved to:\n{filepath}"
+        filepath = self._save_preset_file(preset)
+        if filepath is None:
+            return
+        self.status_bar.showMessage(f"Preset saved: {filepath}")
+        saved_message = f"Preset '{name}' saved to:\n{filepath}"
+        if not self._last_preset_identity_persisted:
+            saved_message += (
+                "\n\nAudioForge could not remember it for the next launch."
             )
-        except (IOError, OSError, ValueError) as e:
-            logger.warning("Preset save failed", exc_info=True)
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to save preset:\n{e}\n\nCheck you have write permission to the presets folder.",
-            )
+        QMessageBox.information(
+            self, "Preset Saved", saved_message
+        )
 
     def _load_preset(self):
         """Load a preset from file."""

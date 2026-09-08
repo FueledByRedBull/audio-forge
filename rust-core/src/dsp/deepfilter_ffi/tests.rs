@@ -187,6 +187,94 @@ mod tests {
     }
 
     #[test]
+    fn long_digital_silence_keeps_ffi_finite_under_rt_fp_mode() {
+        const SILENCE_FRAMES: usize = 7_800;
+        const TONE_FRAMES: usize = 20;
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let app_paths = AppOwnedDeepFilterPaths {
+            library: Some(repo_root.join(if cfg!(target_os = "windows") {
+                "df.dll"
+            } else if cfg!(target_os = "macos") {
+                "libdf.dylib"
+            } else {
+                "libdf.so"
+            })),
+            model: Some(repo_root.join("models")),
+        };
+        let lib = match DeepFilterLib::try_load(&app_paths, false) {
+            Ok(lib) => Arc::new(lib),
+            Err(error) => {
+                eprintln!("Skipping native DeepFilter silence regression: {error}");
+                return;
+            }
+        };
+
+        for model in [DeepFilterModel::LowLatency, DeepFilterModel::Standard] {
+            let mut ffi = match DeepFilterFFI::new(
+                lib.clone(),
+                model,
+                DeepFilterRuntimeConfig::default(),
+                &app_paths,
+                false,
+            ) {
+                Ok(ffi) => ffi,
+                Err(error) => {
+                    eprintln!("Skipping native DeepFilter silence regression: {error}");
+                    return;
+                }
+            };
+            let mut silence = [0.0_f32; DEEPFILTER_FRAME_SIZE];
+            let mut output = [0.0_f32; DEEPFILTER_FRAME_SIZE];
+            // SAFETY: This test intentionally exercises the same scoped floating-point
+            // mode as the realtime DSP loop, using only stack-owned test buffers.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+            let failed_silence_frame = unsafe {
+                no_denormals::no_denormals(|| {
+                    (0..SILENCE_FRAMES).find(|_| {
+                        ffi.process_into(&mut silence, &mut output).is_err()
+                            || output.iter().any(|sample| !sample.is_finite())
+                    })
+                })
+            };
+            assert_eq!(
+                failed_silence_frame, None,
+                "{model:?} became non-finite during sustained digital silence"
+            );
+
+            for (index, sample) in silence.iter_mut().enumerate() {
+                *sample = (index as f32 * 0.071).sin() * 0.05;
+            }
+            let mut tone_nonzero = false;
+            // SAFETY: This test intentionally exercises the same scoped floating-point
+            // mode as the realtime DSP loop, using only stack-owned test buffers.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+            let failed_tone_frame = unsafe {
+                no_denormals::no_denormals(|| {
+                    (0..TONE_FRAMES).find(|_| match ffi.process_into(&mut silence, &mut output) {
+                        Ok(_) => {
+                            assert!(
+                                output.iter().all(|sample| sample.is_finite()),
+                                "{model:?} produced non-finite output after silence"
+                            );
+                            tone_nonzero |= output.iter().any(|sample| *sample != 0.0);
+                            false
+                        }
+                        Err(_) => true,
+                    })
+                })
+            };
+            assert!(
+                failed_tone_frame.is_none(),
+                "{model:?} did not recover for a finite tone after silence at frame {failed_tone_frame:?}"
+            );
+            assert!(
+                tone_nonzero,
+                "{model:?} produced only zero output for {TONE_FRAMES} finite tone frames after silence"
+            );
+        }
+    }
+
+    #[test]
     fn strength_smoothing_is_independent_of_backlog_chunking() {
         let frame = [0.0; DEEPFILTER_FRAME_SIZE];
         let frames = 4;

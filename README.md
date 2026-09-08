@@ -1,13 +1,13 @@
 # AudioForge
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![Rust](https://img.shields.io/badge/rust-1.83%2B-orange.svg)](https://www.rust-lang.org/)
+[![Python](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
+[![Rust](https://img.shields.io/badge/rust-1.94.0-orange.svg)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)]()
 
 AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
 
-Current version: `v1.11.4`
+Current version: `v1.12.0`
 
 ## Download
 
@@ -15,6 +15,8 @@ Download the latest published Windows build from the
 [latest AudioForge release](https://github.com/FueledByRedBull/audio-forge/releases/latest):
 
 - Published archive: `AudioForge-v<version>-win64-ultra.7z`
+- Per-user installer: `AudioForge-v<version>-win64.msi`
+- Corresponding source: `AudioForge-v<version>-source.7z`
 - Checksum: use the matching `.7z.sha256` sidecar published by the release workflow.
 
 The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
@@ -75,7 +77,15 @@ Operational tools:
 
 ## Status
 
-AudioForge currently supports Windows 10/11 only. Source builds, CI, portable `dist/AudioForge` packaging, runtime assets, device recovery behavior, and desktop identity integration are validated on Windows. Linux and macOS builds are not supported today, even though parts of the Rust audio stack use cross-platform libraries.
+AudioForge's compatibility targets are Windows 10 (1809 or later) and Windows
+11 x64. The final v1.12.0 portable EXE and MSI passed hosted software and package
+validation. Earlier candidate hardware tests passed on Windows 11 with USB and
+virtual routes at 48 kHz, including 30-minute runs and model switching. Those
+measurements do not qualify the final binary, which has not repeated the full
+hardware run. Windows 10, analog input, 44.1 kHz, and physical device lifecycle
+cases remain unqualified. See the [release workflow](RELEASING.md#automated-workflow)
+for validation and optional hardware evidence.
+Linux and macOS builds are not supported.
 
 DeepFilterNet support is intentionally opt-in for source runs. Packaged builds register and enable verified bundled assets during application bootstrap; RNNoise remains the safe default when those assets are absent. External DLL/model paths are ignored unless `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` is explicitly set.
 DeepFilter model/DLL initialization and Silero VAD inference are prepared off the realtime DSP loop; the audio path only swaps ready suppressor state and consumes cached VAD probabilities.
@@ -96,27 +106,34 @@ Mic Input -> Input Cleanup (DC block + one selected/adaptive HP) -> Noise Gate -
 
 Special paths:
 
-- `Bypass` keeps the transport path active while skipping the main DSP stages.
-- `Raw Monitor` uses the clean write path and skips the pre-filter and downstream DSP chain for diagnostics.
+- `Bypass` skips voice effects while retaining input conditioning and configured output protection.
+- `Raw Monitor` skips input filtering and voice effects for diagnostics, retains configured output protection, and takes precedence over Bypass.
 
-Latency labels in the UI describe suppressor/DSP behavior, not a universal round-trip value. Calibration measures the selected output-to-input route and applies that route delay directly; a directional one-way split is left unset unless independently measured. End-to-end latency still depends on the selected devices, driver mode, buffer sizing, and routing path.
+Latency labels include engine/suppressor timing plus measured route delay when enabled. Calibration measures the selected output-to-input route and adds it to the reported estimate; it does not reduce physical delay. A directional one-way split is left unset unless independently measured. End-to-end latency still depends on the selected devices, driver mode, buffer sizing, and routing path.
 
 ## Requirements
 
-- Windows 10/11
-- Python 3.10+
-- Rust 1.83+
+- Windows 10 (1809 or later) or Windows 11, x64
+- CPython 3.13.15 x64
+- Rust 1.94.0, selected by `rust-toolchain.toml`
 - `maturin`
 - A virtual environment in `.venv` is assumed by the packaging script.
 
 ## Quick Start From Source
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for checks and contribution guidance,
+[SECURITY.md](SECURITY.md) for vulnerability reporting, and
+[third-party notices](licenses/THIRD_PARTY_NOTICES.md) for binary distribution
+terms. AudioForge's original source is MIT; the PyQt6-based application is
+distributed under GPLv3 together with its dependency notices.
+
 ```powershell
 git clone https://github.com/FueledByRedBull/audio-forge.git
 cd audio-forge
 
-python -m venv .venv
+py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements/dev.txt
+.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
 .\.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
 
 .\.venv\Scripts\python.exe -m maturin develop --release
@@ -141,7 +158,7 @@ See [Development Assets](#development-assets) for the full runtime asset and env
 2. Start processing.
 3. Choose a suppressor backend and gate mode.
 4. Tune EQ/dynamics manually, run Auto-EQ, or run Auto Voice Setup for a broader voice-chain calibration.
-5. Run latency calibration if the current device route needs compensation.
+5. Optionally measure route latency for calibrated reporting; this does not reduce audio delay.
 
 Useful behavior to know:
 
@@ -152,7 +169,7 @@ Useful behavior to know:
 - Adaptive cleanup tracks off-nominal mains hum and its harmonic with fractional frequency/phase continuity, and selects one high-pass response instead of cascading filters.
 - Auto-EQ and Auto Voice Setup use native Silero posteriors when available and report an explicit energy-analysis fallback when they are not.
 - Auto Voice Setup rejects unusable room tone, restricts boosts for questionable references, and reports device/time/channel mismatch or recapture guidance.
-- Voice Setup candidates remain temporary until a second passage produces an explicit accept, reduce, retry, or rollback decision from repeatability and exact downstream native-chain checks. This is engineering validation, not a listening-preference claim.
+- Voice Setup candidates remain temporary until a second passage checks repeatability through EQ, de-essing, compression, and the selected limiter settings. Gate, noise suppression, input cleanup, and live loudness adaptation are outside this offline check; confirm the result in your destination app.
 - Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
 - Diagnostics separate input drops, backlog recovery, output recovery, output short-write loss, and active output underrun streaks. Historical output underrun and recovery totals stay visible without forcing the health chip into a warning state after the stream has recovered.
 - `Help > Export Diagnostics...` writes a versioned, size-bounded support
@@ -186,10 +203,10 @@ Create `models/` in the repo root for local runtime discovery:
 - `models/DeepFilterNet3_onnx.tar.gz`
 - `models/silero_vad.onnx`
 
-DeepFilter runtime library:
+Native runtime libraries:
 
 - `df.dll` in the repo root for development runs.
-- `target/release/DirectML.dll` from the pinned DirectML redistributable package for full-feature packaging.
+- `target/onnxruntime-cpu/lib/onnxruntime.dll` and `onnxruntime_providers_shared.dll` from the pinned CPU-only ONNX Runtime package.
 - Bundled under `dist/AudioForge/_internal` for portable builds.
 
 Environment variables:
@@ -210,26 +227,24 @@ range; AudioForge preflights the request and otherwise keeps the driver default.
 
 ## Build Portable EXE
 
-Build the Rust extension first, then package:
+The packaging entry point rebuilds the Rust extension before freezing:
 
 ```powershell
 .\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
-.\.venv\Scripts\python.exe -m maturin develop --release
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
 ```
 
 Packaging script behavior:
 
-- Uses the locally built `python/mic_eq/mic_eq_core*.pyd`.
-- Fails if the local native extension is older than Rust sources.
+- Rebuilds `python/mic_eq/mic_eq_core*.pyd` from the current source and lockfile.
 - Validates required full-feature runtime assets against `release-assets.json`.
 - Reuses PyInstaller's analysis cache by default; pass `-Clean` for a cold PyInstaller rebuild.
 - Bundles the Python runtime with PyInstaller.
-- Bundles AudioForge, DeepFilterNet, Silero VAD, and DirectML license notices.
+- Bundles GPLv3 distribution terms, dependency inventory, and retained license notices.
 - Writes `_internal/audioforge-build.json`; package smoke rejects a bundle whose version differs from the source tree.
 - Prunes unused Qt payload, duplicate native-extension payload, and app-local
   UCRT/API-set files with `python/tools/prune_bundle.py` while retaining
-  dependency metadata and licenses. AudioForge supports Windows 10/11 and
+  dependency metadata and licenses. AudioForge targets Windows 10/11 and
   relies on the operating system UCRT, which Windows always uses on those
   versions even if a local copy is present.
 - The release profile strips native symbols, and packaging excludes only unused
@@ -243,13 +258,27 @@ Portable output:
 - `dist/AudioForge/AudioForge.exe`
 - Bundled assets and runtime files under `dist/AudioForge/_internal`
 
+## Build the MSI installer
+
+After building the portable payload, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_msi.ps1
+```
+
+The installer uses the same portable payload and installs for the current user.
+The script acquires and verifies its pinned WiX tooling. CI compares the
+extracted and installed file tree with the portable bundle and checks uninstall
+preserves user configuration. MSI candidates are published only after the same
+release qualification gates as the portable archive.
+
 ## Create Release Archive
 
 The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.11.4-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.12.0-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 The v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz, tar.zst,
@@ -263,20 +292,12 @@ comparison.
 
 CI-equivalent checks:
 
-The current Semgrep release pins `mcp==1.23.3` for its optional MCP server;
-AudioForge only invokes `semgrep scan`, so the three upstream MCP advisories
-are listed explicitly below until Semgrep publishes a compatible pin. Runtime
-dependencies remain unignored.
-
 ```powershell
 .\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
 .\.venv\Scripts\python.exe -m pyright
 .\.venv\Scripts\python.exe -m pytest python/tests -q
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt `
-  --ignore-vuln PYSEC-2026-3481 `
-  --ignore-vuln PYSEC-2026-3482 `
-  --ignore-vuln PYSEC-2026-3483
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
 .\.venv\Scripts\python.exe python/tools/run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python/tools/check_versions.py
 .\.venv\Scripts\python.exe python/tools/check_workflows.py
@@ -328,7 +349,11 @@ working notes outside the repository and do not treat them as authoritative.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+The original AudioForge source is MIT; see [LICENSE](LICENSE). Portable and MSI
+distributions that include PyQt6 are distributed under GPLv3 together with the
+notices in [licenses/THIRD_PARTY_NOTICES.md](licenses/THIRD_PARTY_NOTICES.md)
+and the corresponding source materials described in
+[licenses/SOURCE_DISTRIBUTION.md](licenses/SOURCE_DISTRIBUTION.md).
 
 ## Acknowledgments
 

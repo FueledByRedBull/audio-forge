@@ -696,51 +696,19 @@ impl DeepFilterProcessor {
                     &app_paths,
                     allow_external,
                 ) {
-                    Ok(df) => {
-                        let latency_str = match model {
-                            DeepFilterModel::LowLatency => "~10ms",
-                            DeepFilterModel::Standard => "~30ms",
-                        };
-                        eprintln!(
-                            "DeepFilterNet initialized (C FFI MODE - {} variant, {} latency)",
-                            if matches!(model, DeepFilterModel::LowLatency) {
-                                "Low Latency"
-                            } else {
-                                "Standard"
-                            },
-                            latency_str
-                        );
-                        (Some(df), Some(lib_arc), None)
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "DeepFilterNet C FFI initialization failed: {}. Using passthrough fallback.",
-                            e
-                        );
-                        (
-                            None,
-                            Some(lib_arc),
-                            Some(format!("DeepFilterNet init failed: {}", e)),
-                        )
-                    }
+                    Ok(df) => (Some(df), Some(lib_arc), None),
+                    Err(e) => (
+                        None,
+                        Some(lib_arc),
+                        Some(format!("DeepFilterNet init failed: {}", e)),
+                    ),
                 }
             }
-            Err(e) => {
-                eprintln!(
-                    "DeepFilterNet C library unavailable ({}). Using passthrough fallback.",
-                    e
-                );
-                eprintln!("NOTE: To use DeepFilterNet, set DEEPFILTER_LIB_PATH to an explicit library file path,");
-                eprintln!("      or let the application bootstrap register bundled assets.");
-                eprintln!("NOTE: Also ensure DeepFilterNet3 model file is available:");
-                eprintln!("  - Set DEEPFILTER_MODEL_PATH environment variable");
-                eprintln!("  - Or place in ./models/DeepFilterNet3_ll_onnx.tar.gz or DeepFilterNet3_onnx.tar.gz");
-                (
-                    None,
-                    None,
-                    Some(format!("DeepFilterNet C library unavailable: {}", e)),
-                )
-            }
+            Err(e) => (
+                None,
+                None,
+                Some(format!("DeepFilterNet C library unavailable: {}", e)),
+            ),
         };
 
         Self {

@@ -2025,6 +2025,7 @@ mod tests {
         let mut processor = OfflineDspBlockProcessor::new(TARGET_SAMPLE_RATE as f64);
         processor.set_deesser_enabled(false);
         processor.set_eq_enabled(false);
+        processor.eq_mut().reset();
         processor.set_compressor_enabled(false);
         processor.set_limiter_enabled(false);
 
@@ -2036,6 +2037,52 @@ mod tests {
 
         assert_eq!(output.len(), 4);
         assert_eq!(output.as_slice(), &input[..4]);
+    }
+
+    #[test]
+    fn test_offline_block_processor_runs_eq_bypass_transition() {
+        let sample_rate = TARGET_SAMPLE_RATE as f64;
+        let mut processor = OfflineDspBlockProcessor::new(sample_rate);
+        processor.set_deesser_enabled(false);
+        processor.set_compressor_enabled(false);
+        processor.set_limiter_enabled(false);
+        processor.eq_mut().set_band_gain(0, 12.0);
+        processor.eq_mut().reset();
+
+        let input_sample = |sample_index: usize| {
+            (0.01
+                * (2.0 * std::f64::consts::PI * 80.0 * sample_index as f64 / sample_rate).sin())
+                as f32
+        };
+        let mut output = FixedAudioBuffer::<f32, 512>::new();
+        for block_index in 0..8 {
+            let mut block = [0.0_f32; 512];
+            for (index, sample) in block.iter_mut().enumerate() {
+                *sample = input_sample(block_index * 512 + index);
+            }
+            processor.process_block(&mut block, &mut output);
+        }
+
+        processor.set_eq_enabled(false);
+        let mut disabled_block = [0.0_f32; 512];
+        for (index, sample) in disabled_block.iter_mut().enumerate() {
+            *sample = input_sample(8 * 512 + index);
+        }
+        processor.process_block(&mut disabled_block, &mut output);
+        let before_enable = output.as_slice()[output.len() - 1];
+
+        processor.set_eq_enabled(true);
+        let mut enabled_block = [0.0_f32; 512];
+        for (index, sample) in enabled_block.iter_mut().enumerate() {
+            *sample = input_sample(9 * 512 + index);
+        }
+        processor.process_block(&mut enabled_block, &mut output);
+
+        assert!(
+            (output.as_slice()[0] - before_enable).abs() < 0.002,
+            "offline EQ re-enable boundary jump was {:.6}",
+            (output.as_slice()[0] - before_enable).abs()
+        );
     }
 
     #[test]
@@ -2086,6 +2133,7 @@ mod tests {
         let mut processor = OfflineDspBlockProcessor::new(TARGET_SAMPLE_RATE as f64);
         processor.set_deesser_enabled(false);
         processor.set_eq_enabled(false);
+        processor.eq_mut().reset();
         processor.set_compressor_enabled(false);
         processor.set_limiter_enabled(true);
         let latency = processor.latency_samples();
@@ -2667,7 +2715,7 @@ mod tests {
             (
                 "output.rs",
                 include_str!("../output.rs"),
-                &["cpal_output_callback"][..],
+                &["cpal_output_callback", "cpal_output_renderer"][..],
             ),
         ];
 

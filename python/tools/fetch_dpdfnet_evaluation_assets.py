@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 from release_provenance import sha256_file as _sha256
 
@@ -137,6 +137,13 @@ def fetch_dataset_subset(root: Path) -> dict[str, Any]:
     for index, row in enumerate(selected_rows, start=1):
         relative_path = Path(row["file_name"])
         destination = root / relative_path
+        if (
+            relative_path.anchor
+            or PureWindowsPath(row["file_name"]).anchor
+            or ".." in PureWindowsPath(row["file_name"]).parts
+            or not destination.resolve().is_relative_to(root.resolve())
+        ):
+            raise ValueError("Dataset file_name must stay within the corpus directory")
         if not destination.is_file():
             print(f"[{index}/{len(selected_rows)}] {relative_path}", flush=True)
             _download(

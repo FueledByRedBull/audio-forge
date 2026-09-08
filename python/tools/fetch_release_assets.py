@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 
 from verify_release_assets import verify_assets
 
@@ -25,9 +31,21 @@ ASSETS = [
         "archive_path": Path("_internal/df.dll"),
     },
     {
-        "name": "DirectML.dll",
-        "destination": Path("target/release/DirectML.dll"),
-        "archive_path": Path("_internal/DirectML.dll"),
+        "name": "onnxruntime.dll",
+        "destination": Path("target/onnxruntime-cpu/lib/onnxruntime.dll"),
+        "pinned_archive": True,
+    },
+    {
+        "name": "onnxruntime.lib",
+        "destination": Path("target/onnxruntime-cpu/lib/onnxruntime.lib"),
+        "pinned_archive": True,
+    },
+    {
+        "name": "onnxruntime_providers_shared.dll",
+        "destination": Path(
+            "target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll"
+        ),
+        "pinned_archive": True,
     },
     {
         "name": "DeepFilterNet3_ll_onnx.tar.gz",
@@ -49,6 +67,16 @@ ASSETS = [
         ),
     },
 ]
+SOURCE_BUILD_STATUS = "verified-source-build"
+PINNED_ARCHIVE_STATUS = "verified-upstream-archive"
+PINNED_ARCHIVE_HOSTS = frozenset(
+    {
+        "github.com",
+        "github-releases.githubusercontent.com",
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+    }
+)
 
 
 def _default_asset_source_tag() -> str:
@@ -59,6 +87,31 @@ def _default_asset_source_tag() -> str:
             "release-assets.json must define a non-empty fallback_release_tag"
         )
     return tag
+
+
+def _manifest_entries() -> dict[str, dict[str, object]]:
+    raw = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+    assets = raw.get("assets")
+    if not isinstance(assets, list):
+        raise RuntimeError("release-assets.json must contain an assets list")
+    entries: dict[str, dict[str, object]] = {}
+    for entry in assets:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            continue
+        entries[entry["path"].replace("\\", "/")] = entry
+    return entries
+
+
+def _source_build_entry(
+    asset: dict[str, object], entries: dict[str, dict[str, object]]
+) -> dict[str, object] | None:
+    manifest_entry = entries.get(str(asset["destination"]).replace("\\", "/"))
+    if not manifest_entry:
+        return None
+    origin = manifest_entry.get("origin")
+    if isinstance(origin, dict) and origin.get("status") == SOURCE_BUILD_STATUS:
+        return manifest_entry
+    return None
 
 
 def _run(command: list[str], *, capture: bool = False) -> str:
@@ -134,6 +187,161 @@ def _download_direct_url(url: str, destination: Path) -> None:
         shutil.copyfileobj(response, output)
 
 
+def _validate_pinned_archive_url(url: str) -> None:
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname not in PINNED_ARCHIVE_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port not in {None, 443}
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "pinned runtime archives must use trusted GitHub HTTPS hosts"
+        )
+
+
+class _TrustedArchiveRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        _validate_pinned_archive_url(target)
+        return super().redirect_request(req, fp, code, msg, headers, target)
+
+
+def _manifest_pinned_archive_entry(
+    asset: dict[str, object], entries: dict[str, dict[str, object]]
+) -> dict[str, object] | None:
+    if not asset.get("pinned_archive"):
+        return None
+    raw_destination = str(asset["destination"]).replace("\\", "/")
+    entry = entries.get(raw_destination)
+    if entry is None:
+        raise RuntimeError(f"Pinned archive manifest entry is missing: {raw_destination}")
+    origin = entry.get("origin")
+    if not isinstance(origin, dict) or origin.get("status") != PINNED_ARCHIVE_STATUS:
+        raise RuntimeError(
+            f"{raw_destination} must declare origin.status={PINNED_ARCHIVE_STATUS}"
+        )
+    return entry
+
+
+def _download_pinned_archive(
+    manifest_entry: dict[str, object], temporary: Path, cache: dict[str, Path]
+) -> Path:
+    origin = manifest_entry.get("origin")
+    if not isinstance(origin, dict):
+        raise RuntimeError("Pinned archive entry has no origin object")
+    raw_url = origin.get("archive_url") or manifest_entry.get("source")
+    expected_sha = origin.get("archive_sha256")
+    expected_size = origin.get("archive_size")
+    if (
+        not isinstance(raw_url, str)
+        or not raw_url
+        or not isinstance(expected_sha, str)
+        or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha)
+        or type(expected_size) is not int
+        or expected_size <= 0
+    ):
+        raise RuntimeError("Pinned archive entry has invalid URL, SHA-256, or byte count")
+    _validate_pinned_archive_url(raw_url)
+    cache_key = f"{raw_url}|{expected_sha.lower()}|{expected_size}"
+    if cache_key in cache:
+        return cache[cache_key]
+
+    filename = Path(urllib.parse.urlsplit(raw_url).path).name
+    if not filename:
+        raise RuntimeError("Pinned archive URL has no filename")
+    archive_path = temporary / filename
+    staged_path = temporary / f".{filename}.{os.getpid()}.part"
+    opener = urllib.request.build_opener(_TrustedArchiveRedirectHandler)
+    request = urllib.request.Request(
+        raw_url,
+        headers={"User-Agent": "AudioForge-release-assets"},
+    )
+    digest = hashlib.sha256()
+    byte_count = 0
+    try:
+        with opener.open(request, timeout=120) as response, staged_path.open("xb") as output:
+            final_url = response.geturl()
+            _validate_pinned_archive_url(final_url)
+            for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                if byte_count + len(chunk) > expected_size:
+                    raise RuntimeError(
+                        f"Pinned archive exceeded its declared size of {expected_size} bytes"
+                    )
+                output.write(chunk)
+                digest.update(chunk)
+                byte_count += len(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        actual_sha = digest.hexdigest()
+        if byte_count != expected_size or actual_sha.lower() != expected_sha.lower():
+            raise RuntimeError(
+                f"Pinned archive verification failed: expected {expected_size} bytes/{expected_sha}, "
+                f"got {byte_count} bytes/{actual_sha}"
+            )
+        staged_path.replace(archive_path)
+    finally:
+        staged_path.unlink(missing_ok=True)
+    cache[cache_key] = archive_path
+    return archive_path
+
+
+def _normalise_zip_member(name: str) -> str:
+    if "\x00" in name:
+        raise RuntimeError("ZIP archive contains a NUL byte in a member path")
+    portable = name.replace("\\", "/")
+    posix = PurePosixPath(portable)
+    windows = PureWindowsPath(portable)
+    if (
+        posix.is_absolute()
+        or windows.is_absolute()
+        or bool(windows.drive)
+        or bool(windows.root)
+        or ".." in posix.parts
+        or ".." in windows.parts
+    ):
+        raise RuntimeError(f"ZIP archive contains an unsafe member path: {name!r}")
+    parts = tuple(part for part in portable.split("/") if part not in {"", "."})
+    if not parts:
+        raise RuntimeError("ZIP archive contains an empty member path")
+    return "/".join(parts)
+
+
+def _extract_pinned_zip_member(
+    archive_path: Path,
+    extracted_root: Path,
+    relative_member: str,
+) -> Path:
+    expected_member = _normalise_zip_member(relative_member)
+    extracted_root.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive_path) as archive:
+        members: dict[str, zipfile.ZipInfo] = {}
+        for info in archive.infolist():
+            normalised = _normalise_zip_member(info.filename)
+            mode = (info.external_attr >> 16) & 0xFFFF
+            if stat.S_ISLNK(mode):
+                raise RuntimeError(
+                    f"ZIP archive contains a symlink member: {info.filename!r}"
+                )
+            if normalised in members:
+                raise RuntimeError(f"ZIP archive contains duplicate member: {normalised}")
+            members[normalised] = info
+        info = members.get(expected_member)
+        if info is None or info.is_dir():
+            raise RuntimeError(
+                f"Archive '{archive_path.name}' did not contain file '{expected_member}'."
+            )
+        target = extracted_root.joinpath(*expected_member.split("/"))
+        if not target.resolve().is_relative_to(extracted_root.resolve()):
+            raise RuntimeError(f"ZIP member escaped extraction root: {expected_member}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with archive.open(info) as source, target.open("wb") as output:
+            shutil.copyfileobj(source, output)
+    return target
+
+
 def _extract_archive_asset(
     archive_path: Path,
     extracted_root: Path,
@@ -150,6 +358,59 @@ def _extract_archive_asset(
             f"Archive '{archive_path.name}' did not contain '{relative_asset_path.as_posix()}'."
         )
     return extracted_asset
+
+
+def _build_source_asset(
+    asset: dict[str, object], manifest_entry: dict[str, object], temporary: Path
+) -> Path:
+    origin = manifest_entry.get("origin")
+    if not isinstance(origin, dict):
+        raise RuntimeError(f"{asset['name']} source-build manifest entry has no origin object")
+    raw_attestation = origin.get("attestation_path")
+    if not isinstance(raw_attestation, str) or not raw_attestation:
+        raise RuntimeError(
+            f"{asset['name']} source-build manifest entry has no attestation_path"
+        )
+    attestation_relative = Path(raw_attestation.replace("\\", "/"))
+    if attestation_relative.is_absolute() or ".." in attestation_relative.parts:
+        raise RuntimeError("source-build attestation_path must stay inside the repository")
+    attestation = REPO_ROOT / attestation_relative
+    output = temporary / str(asset["name"])
+    output.parent.mkdir(parents=True, exist_ok=True)
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    if not powershell:
+        raise RuntimeError("PowerShell is required to build the pinned DeepFilter source asset.")
+    _run(
+        [
+            powershell,
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "build_deepfilter.ps1"),
+            "-OutputPath",
+            str(output),
+            "-AttestationPath",
+            str(attestation),
+        ]
+    )
+    if not output.is_file():
+        raise RuntimeError(f"Source build completed without producing {output}")
+    if not attestation.is_file():
+        raise RuntimeError(f"Source build completed without producing {raw_attestation}")
+    return output
+
+
+def _atomic_copy(source: Path, destination: Path) -> None:
+    staged = destination.with_name(f".{destination.name}.copy-{os.getpid()}")
+    try:
+        if staged.exists():
+            staged.unlink()
+        shutil.copy2(source, staged)
+        os.replace(staged, destination)
+    finally:
+        if staged.exists():
+            staged.unlink()
 
 
 def main() -> int:
@@ -174,12 +435,46 @@ def main() -> int:
         action="store_true",
         help="Overwrite local assets even if destination files already exist.",
     )
+    parser.add_argument(
+        "--only-cpu-runtime",
+        "--only-onnxruntime",
+        dest="only_cpu_runtime",
+        action="store_true",
+        help="Hydrate and verify only the pinned CPU ONNX Runtime files.",
+    )
     args = parser.parse_args()
 
+    assets = [
+        asset
+        for asset in ASSETS
+        if not args.only_cpu_runtime or asset.get("pinned_archive")
+    ]
+    manifest_entries = _manifest_entries()
     if shutil.which("gh") is None:
-        raise RuntimeError("GitHub CLI 'gh' is required for fetch_release_assets.py.")
+        pending_release_assets = [
+            asset
+            for asset in assets
+            if not (
+                (REPO_ROOT / asset["destination"]).exists() and not args.force
+            )
+            and not asset.get("direct_url")
+            and _source_build_entry(asset, manifest_entries) is None
+            and _manifest_pinned_archive_entry(asset, manifest_entries) is None
+        ]
+        if pending_release_assets:
+            raise RuntimeError("GitHub CLI 'gh' is required for release asset hydration.")
 
-    asset_names = _release_asset_names(args.release_tag, args.repo)
+    pending_release_assets = [
+        asset
+        for asset in assets
+        if not ((REPO_ROOT / asset["destination"]).exists() and not args.force)
+        and not asset.get("direct_url")
+        and _source_build_entry(asset, manifest_entries) is None
+        and _manifest_pinned_archive_entry(asset, manifest_entries) is None
+    ]
+    asset_names = (
+        _release_asset_names(args.release_tag, args.repo) if pending_release_assets else set()
+    )
     archive_name = next(
         (name for name in sorted(asset_names) if name.startswith("AudioForge-") and name.endswith("-win64-ultra.7z")),
         None,
@@ -189,11 +484,47 @@ def main() -> int:
         temp_dir = Path(temp_dir_name)
         extracted_root = temp_dir / "archive-extract"
         archive_path: Path | None = None
+        pinned_archive_paths: dict[str, Path] = {}
+        pinned_extracted_root = temp_dir / "pinned-archive-extract"
 
-        for asset in ASSETS:
+        ordered_assets = [
+            asset for asset in assets if _source_build_entry(asset, manifest_entries) is None
+        ] + [asset for asset in assets if _source_build_entry(asset, manifest_entries) is not None]
+        for asset in ordered_assets:
             destination = REPO_ROOT / asset["destination"]
             if destination.exists() and not args.force:
                 print(f"Skipping existing {destination.relative_to(REPO_ROOT)}")
+                continue
+
+            source_build_entry = _source_build_entry(asset, manifest_entries)
+            if source_build_entry is not None:
+                source = _build_source_asset(asset, source_build_entry, temp_dir)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                _atomic_copy(source, destination)
+                print(f"Built {asset['name']} from pinned source -> {destination.relative_to(REPO_ROOT)}")
+                continue
+
+            pinned_archive_entry = _manifest_pinned_archive_entry(asset, manifest_entries)
+            if pinned_archive_entry is not None:
+                origin = pinned_archive_entry["origin"]
+                assert isinstance(origin, dict)
+                archive_member = origin.get("archive_member")
+                if not isinstance(archive_member, str) or not archive_member:
+                    raise RuntimeError(
+                        f"{asset['name']} pinned archive entry has no archive_member"
+                    )
+                archive = _download_pinned_archive(
+                    pinned_archive_entry, temp_dir, pinned_archive_paths
+                )
+                source = _extract_pinned_zip_member(
+                    archive, pinned_extracted_root, archive_member
+                )
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                _atomic_copy(source, destination)
+                print(
+                    f"Installed {asset['name']} from pinned CPU ONNX Runtime archive -> "
+                    f"{destination.relative_to(REPO_ROOT)}"
+                )
                 continue
 
             direct_url = asset.get("direct_url")
@@ -215,10 +546,15 @@ def main() -> int:
                 source = _extract_archive_asset(archive_path, extracted_root, asset["archive_path"])
 
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+            _atomic_copy(source, destination)
             print(f"Installed {asset['name']} -> {destination.relative_to(REPO_ROOT)}")
 
-    verification_errors = verify_assets()
+    selected_paths = (
+        {str(asset["destination"]).replace("\\", "/") for asset in assets}
+        if args.only_cpu_runtime
+        else None
+    )
+    verification_errors = verify_assets(selected_paths=selected_paths)
     if verification_errors:
         formatted_errors = "\n  ".join(verification_errors)
         raise RuntimeError(f"Downloaded assets failed verification:\n  {formatted_errors}")

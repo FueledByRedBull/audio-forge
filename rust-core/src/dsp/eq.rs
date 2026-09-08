@@ -5,7 +5,7 @@
 //! - Bands 1-8: Peaking (160 Hz - 12 kHz)
 //! - Band 9: High shelf (16 kHz)
 
-use super::biquad::{Biquad, BiquadType};
+use super::biquad::{coefficient_crossfade_samples, Biquad, BiquadType};
 use std::f64::consts::PI;
 
 /// Default EQ band frequencies (Hz)
@@ -351,6 +351,10 @@ pub struct ParametricEQ {
     bands: [EqBand; NUM_BANDS],
     enabled: bool,
     sample_rate: f64,
+    wet_mix: f64,
+    transition_start_mix: f64,
+    transition_total: usize,
+    transition_remaining: usize,
 }
 
 impl ParametricEQ {
@@ -364,31 +368,54 @@ impl ParametricEQ {
             bands,
             enabled: true,
             sample_rate,
+            wet_mix: 1.0,
+            transition_start_mix: 1.0,
+            transition_total: 0,
+            transition_remaining: 0,
         }
     }
 
     /// Process a block of samples in-place
     pub fn process_block_inplace(&mut self, buffer: &mut [f32]) {
-        if !self.enabled {
+        if !self.enabled && self.transition_remaining == 0 {
             return;
         }
-
-        for band in &mut self.bands {
-            band.process_block_inplace(buffer);
+        if self.enabled && self.transition_remaining == 0 {
+            for band in &mut self.bands {
+                band.process_block_inplace(buffer);
+            }
+            return;
+        }
+        for sample in buffer.iter_mut() {
+            *sample = self.process_sample(*sample);
         }
     }
 
     /// Process a single sample through all bands
     #[inline]
     pub fn process_sample(&mut self, mut sample: f32) -> f32 {
-        if !self.enabled {
+        if !self.enabled && self.transition_remaining == 0 {
             return sample;
         }
 
+        let dry = sample;
         for band in &mut self.bands {
             sample = band.process_sample(sample);
         }
-        sample
+
+        if self.transition_remaining > 0 {
+            let fade_position = self.transition_total - self.transition_remaining + 1;
+            let target_mix = if self.enabled { 1.0 } else { 0.0 };
+            self.wet_mix = self.transition_start_mix
+                + (target_mix - self.transition_start_mix) * fade_position as f64
+                    / self.transition_total as f64;
+            self.transition_remaining -= 1;
+            if self.transition_remaining == 0 {
+                self.wet_mix = target_mix;
+            }
+        }
+
+        (dry as f64 * (1.0 - self.wet_mix) + sample as f64 * self.wet_mix) as f32
     }
 
     /// Reset all filter states
@@ -396,6 +423,10 @@ impl ParametricEQ {
         for band in &mut self.bands {
             band.reset();
         }
+        self.wet_mix = if self.enabled { 1.0 } else { 0.0 };
+        self.transition_start_mix = self.wet_mix;
+        self.transition_total = 0;
+        self.transition_remaining = 0;
     }
 
     /// Set gain for a specific band (0-9)
@@ -473,7 +504,13 @@ impl ParametricEQ {
 
     /// Enable or disable the entire EQ
     pub fn set_enabled(&mut self, enabled: bool) {
+        if self.enabled == enabled {
+            return;
+        }
         self.enabled = enabled;
+        self.transition_start_mix = self.wet_mix;
+        self.transition_total = coefficient_crossfade_samples(self.sample_rate);
+        self.transition_remaining = self.transition_total;
     }
 
     /// Check if EQ is enabled
@@ -615,9 +652,51 @@ mod tests {
         eq.set_enabled(false);
 
         let input = 0.5f32;
+        for _ in 0..coefficient_crossfade_samples(48_000.0) {
+            eq.process_sample(input);
+        }
         let output = eq.process_sample(input);
 
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_eq_enabled_block_path_matches_sample_path() {
+        let sample_rate = 48_000.0;
+        let mut block_eq = ParametricEQ::new(sample_rate);
+        let mut sample_eq = ParametricEQ::new(sample_rate);
+        for (index, filter_type, frequency_hz, gain_db, q) in [
+            (0, EqFilterType::LowShelf, 80.0, 4.0, 0.7),
+            (4, EqFilterType::Bell, 1_000.0, -3.0, 1.4),
+            (9, EqFilterType::HighShelf, 12_000.0, 2.0, 0.9),
+        ] {
+            let mut config = block_eq.get_band_config(index).unwrap();
+            config.filter_type = filter_type;
+            config.frequency_hz = frequency_hz;
+            config.gain_db = gain_db;
+            config.q = q;
+            block_eq.set_band_config(index, config);
+            sample_eq.set_band_config(index, config);
+        }
+        block_eq.reset();
+        sample_eq.reset();
+
+        let mut block = [0.0_f32; 1024];
+        for (index, sample) in block.iter_mut().enumerate() {
+            let t = index as f64 / sample_rate;
+            *sample = (0.31 * (2.0 * PI * 80.0 * t).sin()
+                + 0.17 * (2.0 * PI * 1_000.0 * t).sin()
+                + 0.09 * (2.0 * PI * 12_000.0 * t).sin()) as f32;
+        }
+        let mut sample = block;
+        block_eq.process_block_inplace(&mut block);
+        for value in &mut sample {
+            *value = sample_eq.process_sample(*value);
+        }
+
+        for (block_value, sample_value) in block.iter().zip(sample.iter()) {
+            assert!((block_value - sample_value).abs() < 1.0e-6);
+        }
     }
 
     #[test]
@@ -809,6 +888,39 @@ mod tests {
             previous = output;
         }
         assert!(max_step < 0.2, "live EQ edit max step was {max_step}");
+    }
+
+    #[test]
+    fn test_eq_enable_transition_crossfades_stale_filter_state() {
+        let sample_rate = 48_000.0;
+        let mut eq = ParametricEQ::new(sample_rate);
+        eq.set_band_gain(0, 12.0);
+
+        let input = |sample_index: usize| {
+            (0.01 * (2.0 * PI * 80.0 * sample_index as f64 / sample_rate).sin()) as f32
+        };
+        for sample_index in 0..4096 {
+            let _ = eq.process_sample(input(sample_index));
+        }
+
+        eq.set_enabled(false);
+        for sample_index in 4096..4224 {
+            let _ = eq.process_sample(input(sample_index));
+        }
+        let before_enable = eq.process_sample(input(4224));
+        eq.set_enabled(true);
+        let first_enabled = eq.process_sample(input(4225));
+
+        assert!(
+            (first_enabled - before_enable).abs() < 0.002,
+            "EQ re-enable boundary jump was {:.6}",
+            (first_enabled - before_enable).abs()
+        );
+        let mut filtered = first_enabled;
+        for sample_index in 4226..4300 {
+            filtered = eq.process_sample(input(sample_index));
+        }
+        assert!((filtered - input(4299)).abs() > 0.0001);
     }
 
     #[test]

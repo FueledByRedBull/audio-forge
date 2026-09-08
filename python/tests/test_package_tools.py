@@ -300,6 +300,18 @@ def test_release_workflow_checker_rejects_dirty_source_override():
     assert any("must fail closed on dirty source trees" in error for error in errors)
 
 
+def test_promotion_keeps_package_gates_without_hardware_runner():
+    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
+    source = path.read_text(encoding="utf-8")
+    errors: list[str] = []
+    check_workflows._check_required_gates(path.name, source, errors)
+    assert errors == []
+    assert "hardware_matrix_run_id" not in source
+    assert "self-hosted" not in source
+    assert "--require-hashes -r requirements/runtime.txt" in source
+    assert "git fetch --no-tags origin $env:GITHUB_SHA --depth=1" in source
+
+
 def test_release_workflow_checker_rejects_asset_clobbering():
     path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
     source = path.read_text(encoding="utf-8") + "\ngh release upload --clobber\n"

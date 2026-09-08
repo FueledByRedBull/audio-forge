@@ -78,15 +78,13 @@ Operational tools:
 ## Status
 
 AudioForge's compatibility targets are Windows 10 (1809 or later) and Windows
-11 x64. For v1.12.0, the release-qualified hardware scope is Windows 11 x64
-with a USB microphone and virtual routes at the observed 48 kHz, an automated
-baseline of at least 1,800 seconds, and model switching/restoration. Windows
-10, analog or built-in input, 44.1 kHz, and physical reconnect, default-device
-change, and sleep/resume cases remain unqualified for this release.
-Hosted Windows CI validates software and packaging. Exact-artifact hardware
-reports define the tested coverage and do not imply every device was tested.
-See the [release workflow](RELEASING.md#automated-workflow) for the
-qualification gates.
+11 x64. The final v1.12.0 portable EXE and MSI passed hosted software and package
+validation. Earlier candidate hardware tests passed on Windows 11 with USB and
+virtual routes at 48 kHz, including 30-minute runs and model switching. Those
+measurements do not qualify the final binary, which has not repeated the full
+hardware run. Windows 10, analog input, 44.1 kHz, and physical device lifecycle
+cases remain unqualified. See the [release workflow](RELEASING.md#automated-workflow)
+for validation and optional hardware evidence.
 Linux and macOS builds are not supported.
 
 DeepFilterNet support is intentionally opt-in for source runs. Packaged builds register and enable verified bundled assets during application bootstrap; RNNoise remains the safe default when those assets are absent. External DLL/model paths are ignored unless `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` is explicitly set.

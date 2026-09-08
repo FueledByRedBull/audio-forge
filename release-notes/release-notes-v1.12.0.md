@@ -1,7 +1,7 @@
 # AudioForge 1.12.0
 
 AudioForge 1.12.0 delivers the reliability, packaging, and runtime updates
-below. See [the release workflow](../RELEASING.md) for the candidate validation
+below. See [the release workflow](https://github.com/FueledByRedBull/audio-forge/blob/master/RELEASING.md) for the candidate validation
 and publication gates.
 
 ## Reliability
@@ -35,11 +35,10 @@ Published checksum, manifest, metadata, and qualification files describe the
 exact downloadable artifacts.
 The release workflow validates a candidate once and promotes those same bytes.
 
-Windows 10/11 remain compatibility targets. For v1.12.0, release qualification
-covers Windows 11 x64 with a USB microphone and virtual routes at the observed
-48 kHz, an automated baseline of at least 1,800 seconds, and model
-switching/restoration. Windows 10, analog or built-in input, 44.1 kHz, and
-physical reconnect, default-device change, and sleep/resume cases remain
-unqualified for this release. Hosted software checks do not replace
-the exact-artifact hardware evidence, and the qualification records do not
-imply every device was tested.
+Windows 10/11 remain compatibility targets. The final portable EXE and MSI
+passed automated package, startup, and installation/uninstallation validation.
+Earlier candidate hardware tests passed on Windows 11 with USB and virtual
+routes at 48 kHz, including 30-minute runs and model switching/restoration.
+The final binary has not repeated that full hardware run. Windows 10, analog
+or built-in input, 44.1 kHz, and physical reconnect, default-device change,
+and sleep/resume cases remain unqualified.

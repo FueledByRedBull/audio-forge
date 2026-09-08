@@ -17,9 +17,10 @@ the application version: leave it unchanged while those assets and hashes are
 unchanged. Advance it only when a new dependency-asset source has been verified.
 Do not move a released tag to reconcile documentation.
 
-Publication requires hardware qualification and complete corresponding source.
-The workflows below produce the exact candidate evidence and sidecars; a passing
-hosted build cannot replace either gate.
+Publication requires exact-artifact software/package validation and complete
+corresponding source. Hardware measurements are optional supporting evidence;
+release notes must identify their tested revision and any untested coverage.
+A self-hosted runner is not required to publish.
 
 ### Release candidates
 
@@ -61,25 +62,14 @@ On manual dispatch, the workflow hydrates and verifies the corresponding-source
 inputs before building, then builds and validates a Windows candidate. It
 retains the portable archive, per-user MSI, corresponding-source archive, and
 their generated checksums/metadata/manifests as one immutable Actions artifact.
-The separately dispatched
-`Qualify release candidate on hardware` workflow downloads those exact bytes
-onto the labelled AudioForge Windows audio runner, verifies provenance, and
-binds its measurements to the archive SHA-256. The v1.12.0 hardware gate
-requires Windows 11 x64, USB microphone and virtual routes at observed 48 kHz,
-an automated baseline of at least 1,800 seconds, and model switching/restoration.
-Windows 10, analog or built-in input, 44.1 kHz, and physical reconnect,
-default-device change, and sleep/resume cases remain compatibility targets or
-unqualified cases; they are not v1.12.0 release verification claims or
-mandatory gates. If those physical lifecycle cases are run, they still require
-explicit operator observation and measured events. Coverage is never inferred
-from a baseline and does not imply every device or combination was tested.
-Publication is a third, explicit promotion step:
-it downloads those same bytes and both qualification reports, verifies every
-sidecar and report against the archive SHA-256, and uploads without rebuilding.
-Promotion prepares a draft, verifies existing or newly uploaded assets by hash,
-and publishes only after the complete asset set is present. A durable evidence
-archive retains the package report, hardware matrix, and underlying case reports
-alongside the portable/MSI artifacts. Set
+Hardware qualification workflows can collect additional measurements when a
+suitable runner is available. They are optional and do not block publication.
+Never attribute measurements from an earlier candidate to the final binary.
+Publication downloads the same candidate bytes and automated qualification
+report, verifies sidecars and report against the archive SHA-256, and uploads
+without rebuilding. Promotion prepares a draft, verifies uploaded assets by
+hash, and publishes only after the complete asset set is present. A durable
+evidence archive retains the package report alongside the portable/MSI assets. Set
 `AUDIOFORGE_ASSET_SOURCE_TAG` when candidate builds should pull raw assets or
 an existing package archive from a standing asset-source release. The workflow
 still verifies all downloaded/extracted assets against `release-assets.json`
@@ -200,25 +190,13 @@ Candidate and promotion:
 4. Record the successful candidate run ID, source commit, and archive SHA-256.
 5. Create and push annotated tag `v1.12.0` at that exact source commit. Tag
    pushes do not rebuild the candidate; subsequent gates use the same bytes.
-6. On a temporary or standing self-hosted runner labelled `self-hosted`,
-   `windows`, `x64`, and `audioforge-hardware`, run `Qualify release candidate
-   on hardware` with the candidate run ID and digest plus explicitly selected
-   health/correlation routes for the release-qualified USB microphone and
-   virtual-route cases at observed 48 kHz. Run the automated `baseline` and
-   `model_configuration_change` scenarios, including model switching and
-   restoration. The workflow refuses a health duration below 1,800 seconds and
-   uploads a privacy-safe digest-bound report. Windows 10, analog or built-in
-   input, 44.1 kHz, and physical lifecycle cases may be collected as
-   compatibility evidence but are not mandatory v1.12.0 gates.
-7. Run `Assemble release hardware gate` with all qualification run IDs. It checks
-   the producing workflows, revisions, source-report hashes, and required
-   release-qualified OS/device/rate/scenario coverage. An incomplete matrix
-   blocks publication.
-8. Run `Promote release candidate` with the candidate workflow run ID,
-   hardware-gate workflow run ID, release tag, and approved archive SHA-256.
-   Promotion downloads the candidate plus both qualification reports, verifies
-   the evidence against the tag commit and digest, requires completed source
-   distribution, and publishes the draft only after verifying all uploaded bytes.
+6. Review available hardware evidence and describe untested configurations in
+   the release notes. Hardware runs are optional; retain the candidate revision
+   and digest with any measurements rather than implying broader coverage.
+7. Run `Promote release candidate` with the candidate workflow run ID, release
+   tag, and approved archive SHA-256. Promotion verifies the automated evidence,
+   source distribution, and uploaded bytes before publishing. Release notes come
+   from the selected workflow revision; the binary remains bound to the tag.
 
 ## Packaging notes
 

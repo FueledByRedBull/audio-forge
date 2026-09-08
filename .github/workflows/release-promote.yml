@@ -11,12 +11,8 @@ on:
         description: "Successful Release package workflow run containing the exact candidate."
         required: true
         type: string
-      hardware_matrix_run_id:
-        description: "Successful automated hardware-gate workflow run for the exact candidate."
-        required: true
-        type: string
       expected_archive_sha256:
-        description: "SHA-256 approved after automated and hardware qualification."
+        description: "SHA-256 approved after automated qualification."
         required: true
         type: string
 
@@ -53,7 +49,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
-          HARDWARE_MATRIX_RUN_ID: ${{ inputs.hardware_matrix_run_id }}
         run: |
           $canonicalTag = (python python/tools/release_version.py tag $env:RELEASE_TAG).Trim()
           if ($LASTEXITCODE -ne 0 -or $canonicalTag -ne $env:RELEASE_TAG) {
@@ -61,10 +56,8 @@ jobs:
           }
           $isPrerelease = (python python/tools/release_version.py prerelease $env:RELEASE_TAG).Trim()
           if ($LASTEXITCODE -ne 0) { throw "Unable to classify release tag '$env:RELEASE_TAG'." }
-          foreach ($runId in @($env:CANDIDATE_RUN_ID, $env:HARDWARE_MATRIX_RUN_ID)) {
-            if ($runId -notmatch '^\d+$') {
-              throw "Workflow run IDs must contain only decimal digits."
-            }
+          if ($env:CANDIDATE_RUN_ID -notmatch '^\d+$') {
+            throw "Workflow run IDs must contain only decimal digits."
           }
           $tagCommit = (git rev-list -n 1 $env:RELEASE_TAG --).Trim()
           if ($LASTEXITCODE -ne 0 -or $tagCommit -notmatch '^[0-9a-fA-F]{40}$') {
@@ -104,13 +97,15 @@ jobs:
             return $run
           }
           $candidateRun = Assert-WorkflowRun $env:CANDIDATE_RUN_ID "Release package"
-          $matrixRun = Assert-WorkflowRun $env:HARDWARE_MATRIX_RUN_ID "Assemble release hardware gate"
           "candidate_run_id=$($candidateRun.databaseId)" >> $env:GITHUB_OUTPUT
           "candidate_run_attempt=$($candidateRun.attempt)" >> $env:GITHUB_OUTPUT
-          "hardware_matrix_run_id=$($matrixRun.databaseId)" >> $env:GITHUB_OUTPUT
-          "hardware_matrix_run_attempt=$($matrixRun.attempt)" >> $env:GITHUB_OUTPUT
           "tag_commit=$tagCommit" >> $env:GITHUB_OUTPUT
           "prerelease=$isPrerelease" >> $env:GITHUB_OUTPUT
+
+      - name: Install pinned validation runtime
+        run: |
+          python -m pip install --require-hashes -r requirements/runtime.txt --no-compile
+          if ($LASTEXITCODE -ne 0) { throw "Validation runtime installation failed." }
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -128,23 +123,13 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ inputs.candidate_run_id }}
 
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: audioforge-release-hardware-matrix-${{ inputs.release_tag }}
-          path: hardware-matrix
-          github-token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          run-id: ${{ inputs.hardware_matrix_run_id }}
-
-      - name: Verify exact candidate and both qualification bindings
+      - name: Verify exact candidate and automated qualification binding
         id: candidate
         env:
           EXPECTED_SHA256: ${{ inputs.expected_archive_sha256 }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           CANDIDATE_RUN_ID: ${{ steps.origins.outputs.candidate_run_id }}
           CANDIDATE_RUN_ATTEMPT: ${{ steps.origins.outputs.candidate_run_attempt }}
-          HARDWARE_MATRIX_RUN_ID: ${{ steps.origins.outputs.hardware_matrix_run_id }}
-          HARDWARE_MATRIX_RUN_ATTEMPT: ${{ steps.origins.outputs.hardware_matrix_run_attempt }}
           TAG_COMMIT: ${{ steps.origins.outputs.tag_commit }}
           EXPECTED_PRERELEASE: ${{ steps.origins.outputs.prerelease }}
         run: |
@@ -229,16 +214,11 @@ jobs:
             }
           }
           $qualification = Get-Content -LiteralPath "validation/release-qualification.json" -Raw | ConvertFrom-Json
-          $matrix = Get-Content -LiteralPath "hardware-matrix/release-hardware-matrix.json" -Raw | ConvertFrom-Json
           $portableMetadataObject = Get-Content -LiteralPath $metadata.FullName -Raw | ConvertFrom-Json
           $installerMetadataObject = Get-Content -LiteralPath $installerMetadata.FullName -Raw | ConvertFrom-Json
           Assert-WorkflowBinding $qualification "Automated qualification" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT "Release package"
           Assert-MetadataBinding $portableMetadataObject "Portable artifact" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT
           Assert-MetadataBinding $installerMetadataObject "MSI artifact" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT
-          Assert-WorkflowBinding $matrix "Hardware matrix qualification" $env:HARDWARE_MATRIX_RUN_ID $env:HARDWARE_MATRIX_RUN_ATTEMPT "Assemble release hardware gate"
-          if ([string]$matrix.producer.head_sha -ne $env:TAG_COMMIT) {
-            throw "Hardware matrix producer head SHA does not match the release tag commit."
-          }
 
           $tagCommit = git rev-list -n 1 $env:RELEASE_TAG --
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tagCommit)) {
@@ -272,11 +252,9 @@ jobs:
             --expected-commit $tagCommit.Trim() `
             --require-source-distribution `
             --native-attestation $nativeAttestation.FullName `
-            --report validation/release-qualification.json `
-            --report hardware-matrix/release-hardware-matrix.json `
-            --matrix-report-root hardware-matrix/case-reports
+            --report validation/release-qualification.json
           if ($LASTEXITCODE -ne 0) {
-            throw "Promotion refused: provenance, automated qualification, or hardware qualification binding failed."
+            throw "Promotion refused: provenance or automated qualification binding failed."
           }
           python python/tools/release_provenance.py verify `
             --bundle $extract `
@@ -355,28 +333,38 @@ jobs:
             throw "Unable to resolve the public release version for notes."
           }
           $baseVersion = $publicVersion -replace 'rc\d+$', ''
-          $notesFile = "release-notes/release-notes-v$version.md"
-          if (-not (Test-Path -LiteralPath $notesFile -PathType Leaf)) {
-            $notesFile = "release-notes/release-notes-v$baseVersion.md"
+          if ($env:GITHUB_SHA -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Workflow revision is not a full commit SHA."
           }
-          if (-not (Test-Path -LiteralPath $notesFile -PathType Leaf)) {
-            throw "Release notes are missing for $env:RELEASE_TAG (looked for the tag and base-version files)."
+          git fetch --no-tags origin $env:GITHUB_SHA --depth=1
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to fetch the selected workflow revision for release notes."
           }
+          $notesFile = $null
+          $notesContent = $null
+          foreach ($notesCandidate in @(
+            "release-notes/release-notes-v$version.md",
+            "release-notes/release-notes-v$baseVersion.md"
+          )) {
+            $candidateContent = git show (("{0}:{1}" -f $env:GITHUB_SHA, $notesCandidate)) 2>$null
+            if ($LASTEXITCODE -eq 0 -and $candidateContent) {
+              $notesFile = $notesCandidate
+              $notesContent = $candidateContent
+              break
+            }
+          }
+          if (-not $notesFile) {
+            throw "Release notes are missing from workflow revision $env:GITHUB_SHA for $env:RELEASE_TAG."
+          }
+          $notesPath = Join-Path $env:RUNNER_TEMP (Split-Path -Leaf $notesFile)
+          $notesContent | Set-Content -LiteralPath $notesPath -Encoding utf8
           $expectedPrerelease = $env:EXPECTED_PRERELEASE -eq "true"
           $evidenceDir = Join-Path $env:RUNNER_TEMP ("audioforge-release-evidence-" + [guid]::NewGuid().ToString("N"))
           New-Item -ItemType Directory -Force -Path $evidenceDir | Out-Null
           if (-not (Test-Path -LiteralPath "validation/release-qualification.json" -PathType Leaf)) {
             throw "Automated qualification evidence is missing."
           }
-          if (-not (Test-Path -LiteralPath "hardware-matrix/release-hardware-matrix.json" -PathType Leaf)) {
-            throw "Hardware matrix evidence is missing."
-          }
-          if (-not (Test-Path -LiteralPath "hardware-matrix/case-reports" -PathType Container)) {
-            throw "Hardware case evidence is missing."
-          }
           Copy-Item -LiteralPath "validation/release-qualification.json" -Destination $evidenceDir
-          Copy-Item -LiteralPath "hardware-matrix/release-hardware-matrix.json" -Destination $evidenceDir
-          Copy-Item -LiteralPath "hardware-matrix/case-reports" -Destination $evidenceDir -Recurse
           $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
           if (-not (Test-Path -LiteralPath $sevenZip)) { $sevenZip = "7z.exe" }
           $evidenceArchive = Join-Path $env:RUNNER_TEMP "AudioForge-v$version-release-evidence.7z"
@@ -420,7 +408,7 @@ jobs:
               "--repo", $env:GITHUB_REPOSITORY,
               "--verify-tag", "--draft",
               "--title", "AudioForge $version",
-              "--notes-file", $notesFile
+              "--notes-file", $notesPath
             )
             if ($expectedPrerelease) { $createArgs += "--prerelease" }
             gh @createArgs

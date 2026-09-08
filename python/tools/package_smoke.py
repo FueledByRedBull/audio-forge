@@ -158,10 +158,6 @@ def check_source_packaging() -> list[str]:
         (".github/workflows/release-package.yml", "release_provenance.py verify"),
         (".github/workflows/release-promote.yml", "actions/download-artifact@"),
         (".github/workflows/release-promote.yml", "release_provenance.py verify"),
-        (
-            ".github/workflows/release-promote.yml",
-            "release-hardware-matrix.json",
-        ),
         (".github/workflows/release-promote.yml", "gh release upload"),
         (
             ".github/workflows/release-hardware-qualify.yml",

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-## v1.12.0
+## v1.12.1
 
 - Discard stale Auto-EQ results after retakes, keep analysis targets fixed, and
   enable applied EQ with Undo support. Retry incomplete Voice Setup results and

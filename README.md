@@ -30,7 +30,8 @@ Choose **one** app download:
 | `AudioForge-v<version>-win64-ultra.7z` | A portable folder you can keep where you want | Extract the entire archive, then run `AudioForge.exe`. |
 
 Both include the application runtime: **you do not need Python or Rust to run
-the packaged app**. Keep the portable folder's files together.
+the packaged app**. Keep the portable folder's files together. If Windows cannot
+extract the `.7z` archive, use [7-Zip](https://www.7-zip.org/) or choose the MSI.
 Windows 10 (1809+) and Windows 11 x64 are the compatibility targets; see
 [validation and known limits](#status) for configurations actually tested.
 
@@ -40,12 +41,24 @@ See [release instructions](RELEASING.md) for the complete asset and evidence lay
 
 ## Using The App
 
+For a call or stream, the signal travels through this route:
+
+```text
+Microphone -> AudioForge -> Virtual audio route -> Call / streaming app
+```
+
+A virtual audio route connects one app's output to another app's input. Select
+its output/playback side in AudioForge and its input/recording side in the
+receiving app; their names depend on the installed driver.
+
 1. **Choose a route.** Select your microphone as input. For monitoring, choose
    headphones as output. For calls or streaming, choose a virtual audio route
    you have installed, then select its receiving endpoint as the microphone in
    your destination app. AudioForge does not install a virtual audio driver.
 2. **Start and check.** Press **Start Processing**, speak normally, and check the
-   meters for signal and clipping. Confirm that your destination app receives it.
+   meters for signal and clipping. A successful check means both AudioForge
+   and your destination app show input activity, and a test recording in the
+   destination contains your processed voice.
 3. **Shape your sound.** Choose noise suppression and a gate mode, then adjust
    EQ/dynamics manually, run Auto-EQ, or use Auto Voice Setup for guided calibration.
 4. **Save what works.** Save a complete sound preset to recall your processing
@@ -158,6 +171,19 @@ Objective DSP decisions and release evidence are indexed in
 [`evaluation/README.md`](evaluation/README.md). Tracked reports contain compact
 aggregates, gates, hashes, decisions, and limitations; raw per-case details are
 optional ignored outputs, not repository content.
+
+## Help and Contributing
+
+- **No sound?** Check that processing is started, mute is off, and the selected
+  output reaches the input selected in your destination app. Watch the meters
+  to see where the signal stops.
+- **Report a bug or request a feature:** [open an issue](https://github.com/FueledByRedBull/audio-forge/issues/new/choose).
+  Include your app version, expected behavior, and steps to reproduce. Use
+  **Help > Export Diagnostics...** for a bounded support snapshot; inspect any
+  attachment before sharing it.
+- **Contribute:** follow [CONTRIBUTING.md](CONTRIBUTING.md) for development and checks.
+- **Report a security issue:** use [SECURITY.md](SECURITY.md).
+- **Review measured behavior:** see the [evaluation index](evaluation/README.md).
 
 ## DSP Chain
 
@@ -387,19 +413,6 @@ dimensions, hashes, alt text, and privacy boundary.
 - `launcher.py`: PyInstaller/frozen-app launcher used by `AudioForge.spec`; source/development runs use `python -m mic_eq` or the `mic-eq` console entrypoint.
 
 </details>
-
-## Help and Contributing
-
-- **No sound?** Check that processing is started, mute is off, and the selected
-  output reaches the input selected in your destination app. Watch the meters
-  to see where the signal stops.
-- **Report a bug or request a feature:** [open an issue](https://github.com/FueledByRedBull/audio-forge/issues/new/choose).
-  Include your app version, expected behavior, and steps to reproduce. Use
-  **Help > Export Diagnostics...** for a bounded support snapshot; inspect any
-  attachment before sharing it.
-- **Contribute:** follow [CONTRIBUTING.md](CONTRIBUTING.md) for development and checks.
-- **Report a security issue:** use [SECURITY.md](SECURITY.md).
-- **Review measured behavior:** see the [evaluation index](evaluation/README.md).
 
 ## Roadmap
 

@@ -15,6 +15,7 @@ from .config_parts.catalogs import build_builtin_presets, build_target_curves
 from .config_parts.presets import (
     Preset,
     generate_auto_eq_preset_name,
+    import_preset,
     list_presets,
     load_preset,
     save_preset,
@@ -123,6 +124,7 @@ __all__ = [
     "build_input_device_preference_key",
     "coerce_device_identity",
     "generate_auto_eq_preset_name",
+    "import_preset",
     "get_config_file",
     "get_preset_imports_dir",
     "get_presets_dir",

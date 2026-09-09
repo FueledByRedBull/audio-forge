@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 import numpy as np
 
-from ..config import TARGET_CURVES, coerce_device_identity
+from ..config import DeviceIdentity, TARGET_CURVES, coerce_device_identity
 from .analysis_worker import AnalysisWorker
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
@@ -114,6 +114,13 @@ def _chain_settings(owner: Any) -> dict[str, Any]:
 
 
 def _selected_device_pair(owner: Any) -> tuple[str | None, str | None]:
+    selected_input, selected_output = _selected_device_identities(owner)
+    return _device_name(selected_input), _device_name(selected_output)
+
+
+def _selected_device_identities(
+    owner: Any,
+) -> tuple[DeviceIdentity | None, DeviceIdentity | None]:
     if owner is None:
         return None, None
 
@@ -125,7 +132,59 @@ def _selected_device_pair(owner: Any) -> tuple[str | None, str | None]:
     if hasattr(owner, "output_combo"):
         output_device = owner.output_combo.currentData() or None
 
-    return _device_name(input_device), _device_name(output_device)
+    return coerce_device_identity(input_device), coerce_device_identity(output_device)
+
+
+def _active_device_identities(
+    processor: Any,
+) -> tuple[DeviceIdentity | None, DeviceIdentity | None]:
+    """Read the exact route used by the running native stream."""
+
+    def read_identity(direction: str) -> DeviceIdentity | None:
+        get_name = getattr(processor, f"get_active_{direction}_device", None)
+        get_endpoint_id = getattr(
+            processor, f"get_active_{direction}_device_endpoint_id", None
+        )
+        get_name_ordinal = getattr(
+            processor, f"get_active_{direction}_device_name_ordinal", None
+        )
+        return coerce_device_identity({
+            "name": get_name() if callable(get_name) else None,
+            "endpoint_id": get_endpoint_id() if callable(get_endpoint_id) else None,
+            "name_ordinal": get_name_ordinal() if callable(get_name_ordinal) else None,
+            "direction": direction,
+        })
+
+    return read_identity("input"), read_identity("output")
+
+
+def _route_identity_matches(
+    selected: DeviceIdentity | None,
+    active: DeviceIdentity | None,
+) -> bool:
+    """Match endpoint IDs first, with ordinal-safe legacy fallback."""
+    if selected is None or active is None:
+        return selected is None and active is None
+
+    if selected.endpoint_id:
+        return bool(active.endpoint_id) and (
+            selected.endpoint_id.casefold() == active.endpoint_id.casefold()
+        )
+
+    return (
+        " ".join(selected.name.casefold().split())
+        == " ".join(active.name.casefold().split())
+        and (selected.name_ordinal or 0) == (active.name_ordinal or 0)
+    )
+
+
+def _route_identities_match(
+    selected: tuple[DeviceIdentity | None, DeviceIdentity | None],
+    active: tuple[DeviceIdentity | None, DeviceIdentity | None],
+) -> bool:
+    return _route_identity_matches(selected[0], active[0]) and _route_identity_matches(
+        selected[1], active[1]
+    )
 
 
 def _start_selected_route(owner: Any) -> object:
@@ -137,6 +196,34 @@ def _start_selected_route(owner: Any) -> object:
         owner.output_combo.currentData() if hasattr(owner, "output_combo") else None
     )
     return start_processor_for_route(owner.processor, input_device, output_device)
+
+
+def _restart_processor_for_route(
+    processor: Any,
+    selected: tuple[DeviceIdentity | None, DeviceIdentity | None],
+    previous: tuple[DeviceIdentity | None, DeviceIdentity | None],
+) -> object:
+    """Restart on a selected route, restoring the old route when startup fails."""
+    if any(device is None for device in previous):
+        raise RuntimeError("Cannot identify the current route; stop processing before switching devices")
+    processor.stop()
+    try:
+        return start_processor_for_route(processor, selected[0], selected[1])
+    except Exception as switch_error:
+        try:
+            start_processor_for_route(processor, previous[0], previous[1])
+        except Exception as restore_error:
+            raise RuntimeError(
+                f"{switch_error}; failed to restore previous route: {restore_error}"
+            ) from switch_error
+        raise RuntimeError(f"{switch_error}; previous route restored") from switch_error
+
+
+def _sync_owner_processing_controls(owner: Any) -> None:
+    """Let an owner refresh start/stop controls after a native handoff error."""
+    sync = getattr(owner, "_sync_processing_controls", None)
+    if callable(sync):
+        sync()
 
 
 def _device_name(device: object) -> str | None:
@@ -646,7 +733,9 @@ class CalibrationDialog(QDialog):
             return
 
         processor_was_running = parent.processor.is_running()
-        selected_input, selected_output = _selected_device_pair(parent)
+        selected_identities = _selected_device_identities(parent)
+        selected_input = _device_name(selected_identities[0])
+        selected_output = _device_name(selected_identities[1])
 
         if DEBUG:
             logger.debug(
@@ -657,18 +746,9 @@ class CalibrationDialog(QDialog):
             )
 
         if processor_was_running:
-            get_active_input = getattr(
-                parent.processor, "get_active_input_device", None
-            )
-            get_active_output = getattr(
-                parent.processor, "get_active_output_device", None
-            )
-            active_input = _device_name(
-                get_active_input() if callable(get_active_input) else None
-            )
-            active_output = _device_name(
-                get_active_output() if callable(get_active_output) else None
-            )
+            active_identities = _active_device_identities(parent.processor)
+            active_input = _device_name(active_identities[0])
+            active_output = _device_name(active_identities[1])
             if DEBUG:
                 logger.debug(
                     "Active stream devices: input=%r, output=%r",
@@ -676,7 +756,7 @@ class CalibrationDialog(QDialog):
                     active_output,
                 )
 
-            if active_input != selected_input or active_output != selected_output:
+            if not _route_identities_match(selected_identities, active_identities):
                 reply = QMessageBox.question(
                     self,
                     "Switch Devices for Auto-EQ?",
@@ -698,12 +778,14 @@ class CalibrationDialog(QDialog):
                 try:
                     if DEBUG:
                         logger.debug("Restarting processor on selected devices")
-                    parent.processor.stop()
-                    _start_selected_route(parent)
+                    _restart_processor_for_route(
+                        parent.processor, selected_identities, active_identities
+                    )
                     _set_temporary_mute(parent, _TEMPORARY_MUTE_REASON, False)
                     if DEBUG:
                         logger.debug("Processor restarted on selected devices")
                 except Exception as e:
+                    _sync_owner_processing_controls(parent)
                     QMessageBox.critical(
                         self,
                         "Audio Error",

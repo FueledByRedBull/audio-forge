@@ -16,7 +16,7 @@ use thiserror::Error;
 
 use super::buffer::AudioProducer;
 use super::clock::now_micros;
-use super::device::{device_for_endpoint_id, device_name};
+use super::device::{device_for_endpoint_id, device_name, persisted_endpoint_id};
 use super::rt::{store_rt_error, RtErrorCode};
 use super::{find_48khz_config, parse_fixed_buffer_frames, supported_fixed_buffer_frames};
 
@@ -309,6 +309,7 @@ pub enum AudioError {
 #[derive(Debug, Clone)]
 pub struct AudioDeviceInfo {
     pub name: String,
+    pub endpoint_id: Option<String>,
     pub sample_rate: u32,
     pub channels: u16,
 }
@@ -413,6 +414,10 @@ impl AudioInput {
 
         let device_info = AudioDeviceInfo {
             name,
+            endpoint_id: device
+                .id()
+                .ok()
+                .map(|device_id| persisted_endpoint_id(&device_id)),
             sample_rate: supported_config.sample_rate(),
             channels: supported_config.channels(),
         };
@@ -1194,6 +1199,10 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
             if let Ok(config) = device.default_input_config() {
                 devices.push(AudioDeviceInfo {
                     name,
+                    endpoint_id: device
+                        .id()
+                        .ok()
+                        .map(|device_id| persisted_endpoint_id(&device_id)),
                     sample_rate: config.sample_rate(),
                     channels: config.channels(),
                 });

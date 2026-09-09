@@ -41,8 +41,13 @@ from .calibration_dialog import (
     TOO_LOUD_DB,
     TOO_QUIET_DB,
     _candidate_metadata,
+    _active_device_identities,
     _owner_calibration_context_key,
+    _restart_processor_for_route,
+    _route_identities_match,
+    _selected_device_identities,
     _set_temporary_mute,
+    _sync_owner_processing_controls,
     _device_label,
     _device_name,
     _diagnostic_state,
@@ -51,7 +56,6 @@ from .calibration_dialog import (
     _format_db,
     _format_percent,
     _processor_sample_rate,
-    _selected_device_pair,
     _start_selected_route,
 )
 from .layout_constants import (
@@ -621,24 +625,17 @@ class VoiceSetupDialog(QDialog):
             return False
 
         processor_was_running = parent.processor.is_running()
-        selected_input, selected_output = _selected_device_pair(parent)
+        selected_identities = _selected_device_identities(parent)
+        selected_input = _device_name(selected_identities[0])
+        selected_output = _device_name(selected_identities[1])
 
         if processor_was_running:
-            get_active_input = getattr(
-                parent.processor, "get_active_input_device", None
-            )
-            get_active_output = getattr(
-                parent.processor, "get_active_output_device", None
-            )
+            active_identities = _active_device_identities(parent.processor)
             active_pair = (
-                _device_name(
-                    get_active_input() if callable(get_active_input) else None
-                ),
-                _device_name(
-                    get_active_output() if callable(get_active_output) else None
-                ),
+                _device_name(active_identities[0]),
+                _device_name(active_identities[1]),
             )
-            if active_pair != (selected_input, selected_output):
+            if not _route_identities_match(selected_identities, active_identities):
                 reply = QMessageBox.question(
                     self,
                     "Switch Devices for Voice Setup?",
@@ -668,10 +665,12 @@ class VoiceSetupDialog(QDialog):
                     return False
 
                 try:
-                    parent.processor.stop()
-                    _start_selected_route(parent)
+                    _restart_processor_for_route(
+                        parent.processor, selected_identities, active_identities
+                    )
                     _set_temporary_mute(parent, _VOICE_SETUP_MUTE_REASON, False)
                 except Exception as exc:
+                    _sync_owner_processing_controls(parent)
                     QMessageBox.critical(
                         self,
                         "Audio Error",

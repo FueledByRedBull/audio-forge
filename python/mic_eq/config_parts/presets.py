@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import filecmp
 import json
 import os
 import tempfile
@@ -608,7 +609,7 @@ def save_preset(
     return filepath
 
 
-def load_preset(filepath: Path) -> Preset:
+def _resolve_preset_file(filepath: Path) -> Path:
     requested_path = Path(filepath)
     if requested_path.suffix.lower() != ".json":
         raise PresetValidationError(
@@ -628,21 +629,10 @@ def load_preset(filepath: Path) -> Preset:
         raise PresetValidationError(
             f"Invalid preset path: '{requested_path.name}' - not a file"
         )
+    return resolved_path
 
-    allowed_roots = [
-        get_presets_dir().resolve(),
-        get_preset_imports_dir().resolve(),
-    ]
-    within_allowed_root = any(
-        root == resolved_path or root in resolved_path.parents for root in allowed_roots
-    )
-    if not within_allowed_root:
-        allowed_display = ", ".join(str(root) for root in allowed_roots)
-        raise PresetValidationError(
-            f"Invalid preset path: '{requested_path.name}' - "
-            f"path must be inside allowed preset roots: {allowed_display}"
-        )
 
+def _load_resolved_preset(resolved_path: Path) -> Preset:
     validate_preset_file_size(resolved_path)
     try:
         with open(resolved_path, "r", encoding="utf-8") as handle:
@@ -661,6 +651,95 @@ def load_preset(filepath: Path) -> Preset:
         raise PresetValidationError(
             f"Preset data is invalid or corrupted: {exc}"
         ) from exc
+
+
+def load_preset(filepath: Path) -> Preset:
+    requested_path = Path(filepath)
+    resolved_path = _resolve_preset_file(requested_path)
+
+    allowed_roots = [
+        get_presets_dir().resolve(),
+        get_preset_imports_dir().resolve(),
+    ]
+    within_allowed_root = any(
+        root == resolved_path or root in resolved_path.parents for root in allowed_roots
+    )
+    if not within_allowed_root:
+        allowed_display = ", ".join(str(root) for root in allowed_roots)
+        raise PresetValidationError(
+            f"Invalid preset path: '{requested_path.name}' - "
+            f"path must be inside allowed preset roots: {allowed_display}"
+        )
+
+    return _load_resolved_preset(resolved_path)
+
+
+def _same_imported_preset(
+    source: Path,
+    destination: Path,
+    imports_dir: Path,
+) -> bool:
+    try:
+        resolved_destination = destination.resolve(strict=True)
+        resolved_imports_dir = imports_dir.resolve()
+        if not (
+            resolved_destination.is_file()
+            and (
+                resolved_imports_dir == resolved_destination
+                or resolved_imports_dir in resolved_destination.parents
+            )
+        ):
+            return False
+        return filecmp.cmp(source, resolved_destination, shallow=False)
+    except OSError:
+        return False
+
+
+def import_preset(filepath: Path) -> tuple[Preset, Path]:
+    """Validate and publish an external preset without overwriting imports."""
+    source_path = _resolve_preset_file(filepath)
+    validate_preset_file_size(source_path)
+    if migration_pending():
+        raise OSError("AudioForge config migration is still pending")
+
+    imports_dir = get_preset_imports_dir()
+    imports_dir.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{source_path.name}.",
+        suffix=".tmp",
+        dir=imports_dir,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as destination:
+            with source_path.open("rb") as source:
+                destination.write(source.read(MAX_PRESET_FILE_BYTES + 1))
+            destination.flush()
+            os.fsync(destination.fileno())
+        preset = _load_resolved_preset(temporary_path)
+        imported_path = imports_dir / source_path.name
+        suffix_index = 0
+        while True:
+            if _same_imported_preset(
+                temporary_path,
+                imported_path,
+                imports_dir,
+            ):
+                temporary_path.unlink(missing_ok=True)
+                return preset, imported_path
+            try:
+                os.link(temporary_path, imported_path)
+            except FileExistsError:
+                suffix_index += 1
+                imported_path = imports_dir / (
+                    f"{source_path.stem} ({suffix_index}){source_path.suffix}"
+                )
+                continue
+            temporary_path.unlink()
+            return preset, imported_path
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
 
 def list_presets() -> list[tuple[str, Path]]:
@@ -698,6 +777,7 @@ def generate_auto_eq_preset_name(target_curve: str) -> str:
 __all__ = [
     "Preset",
     "generate_auto_eq_preset_name",
+    "import_preset",
     "list_presets",
     "load_preset",
     "save_preset",

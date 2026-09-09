@@ -1153,9 +1153,29 @@ impl PyAudioProcessor {
         self.processor.active_input_device_name()
     }
 
+    /// Get the stable endpoint ID for the running input stream, when present.
+    fn get_active_input_device_endpoint_id(&self) -> Option<String> {
+        self.processor.active_input_device_endpoint_id()
+    }
+
+    /// Get the selected input friendly-name ordinal for the running stream.
+    fn get_active_input_device_name_ordinal(&self) -> Option<u32> {
+        self.processor.active_input_device_name_ordinal()
+    }
+
     /// Get active output device name for the running stream.
     fn get_active_output_device(&self) -> Option<String> {
         self.processor.active_output_device_name()
+    }
+
+    /// Get the stable endpoint ID for the running output stream, when present.
+    fn get_active_output_device_endpoint_id(&self) -> Option<String> {
+        self.processor.active_output_device_endpoint_id()
+    }
+
+    /// Get the selected output friendly-name ordinal for the running stream.
+    fn get_active_output_device_name_ordinal(&self) -> Option<u32> {
+        self.processor.active_output_device_name_ordinal()
     }
 
     /// Get sample rate

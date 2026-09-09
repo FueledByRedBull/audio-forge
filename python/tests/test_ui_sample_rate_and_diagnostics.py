@@ -1768,7 +1768,10 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
     window.deesser_panel = _PresetPanel()
     window.compressor_panel = _PresetPanel()
     window.rnnoise_checkbox = _FakeControl()
-    window.strength_slider = _FakeControl()
+    from PyQt6.QtWidgets import QSlider
+    window.strength_slider = QSlider()
+    window.strength_slider.setRange(0, 100)
+    window.strength_label = _FakeLabel()
     window.model_combo = _FakeCombo([("RNNoise", "rnnoise")])
     window.rnnoise_latency_label = _FakeLabel()
     window.bypass_checkbox = _FakeControl()
@@ -1817,7 +1820,10 @@ def test_apply_preset_falls_back_when_model_load_raises(qapp):
     window.deesser_panel = _PresetPanel()
     window.compressor_panel = _PresetPanel()
     window.rnnoise_checkbox = _FakeControl()
-    window.strength_slider = _FakeControl()
+    from PyQt6.QtWidgets import QSlider
+    window.strength_slider = QSlider()
+    window.strength_slider.setRange(0, 100)
+    window.strength_label = _FakeLabel()
     window.model_combo = _FakeCombo(
         [("RNNoise", "rnnoise"), ("DeepFilter", "deepfilter")]
     )

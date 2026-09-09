@@ -37,7 +37,7 @@ PIXEL_FONT = re.compile(r"font-size\s*:\s*[0-9.]+px")
 @pytest.fixture
 def isolated_main_window(qapp, monkeypatch):
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
@@ -369,7 +369,7 @@ def test_reduced_motion_lowers_nonessential_meter_refresh(
 ) -> None:
     monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "1")
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])

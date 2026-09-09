@@ -38,7 +38,6 @@ import os
 import sys
 import json
 import logging
-import shutil
 from dataclasses import asdict
 from pathlib import Path
 
@@ -109,8 +108,8 @@ from ..config import (
     PresetValidationError,
     save_preset,
     load_preset,
+    import_preset,
     get_presets_dir,
-    get_preset_imports_dir,
     list_presets,
     BUILTIN_PRESETS,
     save_config,
@@ -123,7 +122,6 @@ from ..config import (
     legacy_latency_profile_key,
     LatencyCalibrationProfile,
 )
-from ..config_parts.presets import validate_preset_file_size
 
 # Enable debug logging
 DEBUG = False
@@ -1171,7 +1169,7 @@ class MainWindow(QMainWindow):
     def _schedule_ui_state_save(self) -> None:
         self._ui_state_timer.start(200)
 
-    def _save_ui_state(self) -> None:
+    def _save_ui_state(self) -> bool:
         if (
             hasattr(self, "main_splitter")
             and self.main_splitter.orientation() == Qt.Orientation.Horizontal
@@ -1181,7 +1179,12 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, "control_tabs"):
             self.config.main_control_tab_index = int(self.control_tabs.currentIndex())
-        save_config(self.config)
+        try:
+            return save_config(self.config)
+        except OSError:
+            logger.exception("Could not save window settings")
+            self.status_bar.showMessage("Could not save window settings", 5000)
+            return False
 
     def _clamp_splitter_sizes(self, sizes: list[int]) -> list[int]:
         total = max(sum(int(size) for size in sizes), self.width() - 150, 760)
@@ -1688,11 +1691,45 @@ class MainWindow(QMainWindow):
         """Return mutable endpoint format fields used by calibration evidence."""
         input_identity = self._combo_device_identity(self.input_combo)
         output_identity = self._combo_device_identity(self.output_combo)
-        return (
+        context = [
             getattr(input_identity, "sample_rate", None),
             getattr(input_identity, "channels", None),
             getattr(output_identity, "sample_rate", None),
             getattr(output_identity, "channels", None),
+        ]
+        processor = self.__dict__.get("processor")
+        try:
+            if processor is not None and processor.is_running():
+                diagnostics = dict(processor.get_runtime_diagnostics())
+                for index, value in (
+                    (0, diagnostics.get("input_sample_rate")),
+                    (2, diagnostics.get("output_sample_rate")),
+                ):
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        rate = int(value)
+                        if rate > 0:
+                            context[index] = rate
+        except Exception:
+            logger.debug("Could not read active audio format", exc_info=True)
+        return tuple(context)
+
+    def _latency_profile_matches_capture_format(
+        self, profile: LatencyCalibrationProfile
+    ) -> bool:
+        context = profile.capture_format_context
+        current = self._current_capture_format_context()
+        return (
+            context is not None
+            and len(context) == len(current)
+            and all(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0
+                for value in context
+            )
+            and all(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0
+                for value in current
+            )
+            and context == current
         )
 
     def _on_auto_apply_device_presets_toggled(self, checked: bool) -> None:
@@ -1847,7 +1884,11 @@ class MainWindow(QMainWindow):
         profiles = self.config.latency_calibration_profiles
         profile = profiles.get(key)
         if profile is not None:
-            return profile
+            return (
+                profile
+                if self._latency_profile_matches_capture_format(profile)
+                else None
+            )
 
         legacy_key = self._legacy_latency_profile_key()
         profile = profiles.get(legacy_key)
@@ -1856,7 +1897,12 @@ class MainWindow(QMainWindow):
             if legacy_key != key and legacy_key in profiles:
                 del profiles[legacy_key]
             save_config(self.config)
-        return profile
+        return (
+            profile
+            if profile is not None
+            and self._latency_profile_matches_capture_format(profile)
+            else None
+        )
 
     def _sync_latency_profile_for_current_devices(
         self, profile: LatencyCalibrationProfile
@@ -1865,6 +1911,10 @@ class MainWindow(QMainWindow):
         if key is None:
             raise ValueError(
                 "Stable endpoint identity is unavailable for this duplicate-name route"
+            )
+        if not self._latency_profile_matches_capture_format(profile):
+            raise ValueError(
+                "Latency calibration result is stale for the current route or format"
             )
         legacy_key = self._legacy_latency_profile_key()
         self.config.latency_calibration_profiles[key] = profile
@@ -2430,6 +2480,7 @@ class MainWindow(QMainWindow):
                 self._combo_device_identity(self.input_combo),
                 self._combo_device_identity(self.output_combo),
             )
+            self._apply_latency_compensation_for_current_devices()
             # Native start clears temporary mute state; restore both owners.
             if DEBUG:
                 logger.debug("Restoring output mute state after processing start")
@@ -2696,7 +2747,7 @@ class MainWindow(QMainWindow):
             self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
             if source == "ui":
                 self.eq_panel.set_auto_eq_diagnostics(None)
-            self._set_preset_modified()
+        self._set_preset_modified()
         self._update_history_actions()
         return recorded
 
@@ -3560,6 +3611,7 @@ class MainWindow(QMainWindow):
             recovery_result = self.processor.service_recovery()
             if recovery_result is not None:
                 if recovery_result:
+                    self._apply_latency_compensation_for_current_devices()
                     reason = ""
                     try:
                         reason = self.processor.get_last_restart_reason() or ""
@@ -3600,6 +3652,7 @@ class MainWindow(QMainWindow):
                 self._combo_device_identity(self.input_combo),
                 self._combo_device_identity(self.output_combo),
             )
+            self._apply_latency_compensation_for_current_devices()
             self._apply_output_mute()
             self.status_bar.showMessage(
                 f"Recovered output path automatically: {result}",
@@ -3775,9 +3828,9 @@ class MainWindow(QMainWindow):
         self.processor.set_rnnoise_enabled(preset.rnnoise.enabled)
 
         # Apply strength
-        strength_percent = int(preset.rnnoise.strength * 100)
+        strength_percent = round(preset.rnnoise.strength * 100)
         self.strength_slider.setValue(strength_percent)
-        self.processor.set_rnnoise_strength(preset.rnnoise.strength)
+        self._on_strength_changed(self.strength_slider.value())
 
         # Apply model selection
         model = requested_model
@@ -3915,8 +3968,9 @@ class MainWindow(QMainWindow):
             "Save Preset",
             "Enter description (optional):",
         )
-        if ok:
-            preset.description = description.strip()
+        if not ok:
+            return
+        preset.description = description.strip()
 
         filepath = self._save_preset_file(preset)
         if filepath is None:
@@ -3951,15 +4005,7 @@ class MainWindow(QMainWindow):
                 preset = load_preset(requested_path)
                 preset_path = requested_path
             except PresetValidationError:
-                imports_dir = get_preset_imports_dir()
-                imported_path = imports_dir / requested_path.name
-                if requested_path.resolve(strict=True) != imported_path.resolve(
-                    strict=False
-                ):
-                    validate_preset_file_size(requested_path)
-                    shutil.copy2(requested_path, imported_path)
-                preset = load_preset(imported_path)
-                preset_path = imported_path
+                preset, preset_path = import_preset(requested_path)
             self._apply_preset(preset, preset_path=preset_path)
             # Save to config for persistence
             save_config(self.config)
@@ -4014,10 +4060,17 @@ class MainWindow(QMainWindow):
             "width": self.width(),
             "height": self.height(),
         }
-        self._save_ui_state()
-
-        if self.processor.is_running():
-            self.processor.stop()
+        try:
+            saved = self._save_ui_state()
+        finally:
+            if self.processor.is_running():
+                self.processor.stop()
+        if not saved:
+            QMessageBox.warning(
+                self,
+                "Settings Not Saved",
+                "Audio processing has stopped, but window settings could not be saved.",
+            )
         event.accept()
 
 

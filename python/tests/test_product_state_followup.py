@@ -39,6 +39,13 @@ def test_active_preset_identity_tracks_edit_history_and_restart(qapp, monkeypatc
         assert window.current_preset_path == filepath
         assert window.current_preset_modified is False
 
+        original_threshold = window.gate_panel.threshold_spinbox.value()
+        window.gate_panel.threshold_spinbox.setValue(original_threshold + 1)
+        window.gate_panel.threshold_spinbox.setValue(original_threshold)
+        assert window.current_preset_modified is True
+        assert not window._commit_pending_configuration_snapshot(source="ui")
+        assert window.current_preset_modified is False
+
         window.gate_panel.threshold_spinbox.setValue(-33.0)
         assert window._commit_pending_configuration_snapshot(source="ui")
         assert window.current_preset_modified is True

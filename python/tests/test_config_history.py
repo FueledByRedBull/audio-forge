@@ -182,7 +182,7 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
     )
     monkeypatch.setattr(
         "mic_eq.ui.main_window.save_config",
-        lambda _config: None,
+        lambda _config: True,
     )
     monkeypatch.setattr(
         "mic_eq.ui.main_window.list_presets",
@@ -295,7 +295,7 @@ def test_main_window_failed_history_restore_rolls_back_partial_state(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
@@ -344,7 +344,7 @@ def test_main_window_failed_history_restore_rolls_back_partial_state(
 
 def test_history_restores_calibration_only_in_the_same_capture_context(qapp, monkeypatch):
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     for name in ("list_presets", "list_input_devices", "list_output_devices"):
         monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
     window = MainWindow()
@@ -384,7 +384,7 @@ def test_history_restore_refuses_an_unavailable_noise_backend(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
@@ -417,7 +417,7 @@ def test_normal_preset_load_falls_back_when_noise_backend_is_absent(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])

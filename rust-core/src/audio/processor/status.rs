@@ -13,6 +13,26 @@ impl AudioProcessor {
         }
     }
 
+    /// Get the stable endpoint ID for the running input stream, when present.
+    pub fn active_input_device_endpoint_id(&self) -> Option<String> {
+        if self.is_running() {
+            self.audio_input
+                .as_ref()
+                .and_then(|input| input.device_info().endpoint_id.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Get the selected input friendly-name ordinal for the running stream.
+    pub fn active_input_device_name_ordinal(&self) -> Option<u32> {
+        if self.is_running() {
+            Some(self.input_device_name_ordinal)
+        } else {
+            None
+        }
+    }
+
     /// Get the sample rate negotiated for the running input stream.
     pub fn active_input_sample_rate(&self) -> Option<u32> {
         if self.is_running() {
@@ -28,6 +48,26 @@ impl AudioProcessor {
     pub fn active_output_device_name(&self) -> Option<String> {
         if self.is_running() {
             self.output_device_name.clone()
+        } else {
+            None
+        }
+    }
+
+    /// Get the stable endpoint ID for the running output stream, when present.
+    pub fn active_output_device_endpoint_id(&self) -> Option<String> {
+        if self.is_running() {
+            self.audio_output
+                .as_ref()
+                .and_then(|output| output.device_info().endpoint_id.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Get the selected output friendly-name ordinal for the running stream.
+    pub fn active_output_device_name_ordinal(&self) -> Option<u32> {
+        if self.is_running() {
+            Some(self.output_device_name_ordinal)
         } else {
             None
         }

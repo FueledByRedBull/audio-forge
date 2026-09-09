@@ -722,7 +722,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     for name in ("list_presets", "list_input_devices", "list_output_devices"):
         monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
     owner = MainWindow()
@@ -853,7 +853,7 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     for name in ("list_presets", "list_input_devices", "list_output_devices"):
         monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
     owner = MainWindow()
@@ -920,7 +920,7 @@ def test_complete_advisory_candidate_still_offers_apply(qapp, monkeypatch):
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     for name in ("list_presets", "list_input_devices", "list_output_devices"):
         monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
     owner = MainWindow()

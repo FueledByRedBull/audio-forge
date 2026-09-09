@@ -332,23 +332,33 @@ mod tests {
     }
 
     #[test]
-    fn test_active_device_names_only_report_when_running() {
+    fn test_active_device_identity_only_reports_when_running() {
         let mut processor = AudioProcessor::new();
         processor.input_device_name = Some("Mic A".to_string());
+        processor.input_device_name_ordinal = 1;
         processor.output_device_name = Some("Out B".to_string());
+        processor.output_device_name_ordinal = 2;
 
         assert_eq!(processor.active_input_device_name(), None);
+        assert_eq!(processor.active_input_device_endpoint_id(), None);
+        assert_eq!(processor.active_input_device_name_ordinal(), None);
         assert_eq!(processor.active_output_device_name(), None);
+        assert_eq!(processor.active_output_device_endpoint_id(), None);
+        assert_eq!(processor.active_output_device_name_ordinal(), None);
 
         processor.running.store(true, Ordering::SeqCst);
         assert_eq!(
             processor.active_input_device_name().as_deref(),
             Some("Mic A")
         );
+        assert_eq!(processor.active_input_device_endpoint_id(), None);
+        assert_eq!(processor.active_input_device_name_ordinal(), Some(1));
         assert_eq!(
             processor.active_output_device_name().as_deref(),
             Some("Out B")
         );
+        assert_eq!(processor.active_output_device_endpoint_id(), None);
+        assert_eq!(processor.active_output_device_name_ordinal(), Some(2));
     }
 
     #[test]

@@ -32,6 +32,11 @@ from ..config import coerce_device_identity
 from .accessibility import set_accessible_group
 from .level_meter import LevelMeter
 from .device_selection import start_processor_for_route
+from .calibration_dialog import (
+    _active_device_identities,
+    _route_identities_match,
+    _selected_device_identities,
+)
 from .layout_constants import configure_resizable_dialog, create_scrollable_dialog_body
 
 
@@ -66,6 +71,41 @@ def _output_sample_rate(owner: Any) -> int:
     if sample_rate <= 0:
         raise RuntimeError("Output sample rate is unavailable.")
     return sample_rate
+
+
+def _known_capture_format_context(value: object) -> tuple[int, int, int, int] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    if any(
+        isinstance(item, bool) or not isinstance(item, int) or item <= 0
+        for item in value
+    ):
+        return None
+    return tuple(value)  # type: ignore[return-value]
+
+
+def _owner_calibration_context(
+    owner: Any,
+) -> tuple[str | None, tuple[int, int, int, int] | None, str | None]:
+    route_getter = getattr(owner, "_current_device_route_key", None)
+    format_getter = getattr(owner, "_current_capture_format_context", None)
+    context_getter = getattr(owner, "_calibration_context_key", None)
+    if (
+        not callable(route_getter)
+        or not callable(format_getter)
+    ):
+        return None, None, None
+    try:
+        route_key = route_getter()
+        format_context = _known_capture_format_context(format_getter())
+        context_key = context_getter() if callable(context_getter) else None
+    except Exception:
+        return None, None, None
+    if not isinstance(route_key, str) or not route_key:
+        route_key = None
+    if not isinstance(context_key, str) or not context_key:
+        context_key = None
+    return route_key, format_context, context_key
 
 
 def _resample_probe(
@@ -196,6 +236,18 @@ class LatencyCalibrationDialog(QDialog):
         self._probe_started_at: float | None = None
         self._engine_latency_samples: list[float] = []
         self._engine_signature = ""
+        self._measurement_route_key: str | None = None
+        self._measurement_format_context: tuple[int, int, int, int] | None = None
+        self._measurement_context_key: str | None = None
+        owner = self._get_processor_owner()
+        if owner is not None:
+            route_key, _format_context, context_key = _owner_calibration_context(owner)
+            self._measurement_route_key = route_key
+            self._measurement_context_key = context_key
+        if existing_profile is not None:
+            self._measurement_format_context = _known_capture_format_context(
+                existing_profile.get("capture_format_context")
+            )
 
         self._setup_ui(existing_profile)
         configure_resizable_dialog(
@@ -330,6 +382,22 @@ class LatencyCalibrationDialog(QDialog):
             )
             return
 
+        self._latest_profile = None
+        self._measurement_route_key = None
+        self._measurement_format_context = None
+        self._measurement_context_key = None
+        self._apply_profile_to_labels(None)
+        self.accept_button.setEnabled(False)
+
+        if owner.processor.is_running():
+            selected_identities = _selected_device_identities(owner)
+            active_identities = _active_device_identities(owner.processor)
+            if not _route_identities_match(selected_identities, active_identities):
+                self._on_worker_failed(
+                    "Latency calibration requires the selected route to match the active stream."
+                )
+                return
+
         try:
             if not owner.processor.is_running():
                 input_device = getattr(owner, "input_combo", None)
@@ -345,6 +413,20 @@ class LatencyCalibrationDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(
                 self, "Audio Error", f"Failed to start processing: {e}"
+            )
+            return
+
+        (
+            self._measurement_route_key,
+            self._measurement_format_context,
+            self._measurement_context_key,
+        ) = _owner_calibration_context(owner)
+        if (
+            self._measurement_route_key is None
+            or self._measurement_format_context is None
+        ):
+            self._on_worker_failed(
+                "Latency calibration requires known input/output sample rates and channels."
             )
             return
 
@@ -463,6 +545,12 @@ class LatencyCalibrationDialog(QDialog):
     def _on_worker_finished(self, payload: dict):
         analysis = payload.get("analysis")
         profile = payload.get("profile")
+        if not isinstance(profile, dict) or self._measurement_format_context is None:
+            self._on_worker_failed("Latency calibration produced no usable format context.")
+            return
+
+        profile = dict(profile)
+        profile["capture_format_context"] = list(self._measurement_format_context)
 
         self._latest_profile = profile
         self._apply_profile_to_labels(profile)
@@ -541,6 +629,22 @@ class LatencyCalibrationDialog(QDialog):
     def _on_accept_clicked(self):
         if not self._latest_profile:
             QMessageBox.information(self, "No Result", "Run calibration first.")
+            return
+
+        owner = self._get_processor_owner()
+        route_key, format_context, context_key = _owner_calibration_context(owner)
+        profile_context = _known_capture_format_context(
+            self._latest_profile.get("capture_format_context")
+        )
+        if (
+            route_key != self._measurement_route_key
+            or format_context != self._measurement_format_context
+            or context_key != self._measurement_context_key
+            or profile_context != self._measurement_format_context
+        ):
+            self.status_label.setText(
+                "Calibration is stale because the route or format changed. Run it again."
+            )
             return
 
         self.calibration_saved.emit(self._latest_profile)

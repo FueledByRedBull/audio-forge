@@ -111,7 +111,7 @@ pub(crate) fn device_for_endpoint_id(endpoint_id: &str, input: bool) -> Result<D
 /// Before CPAL exposed stable IDs, AudioForge persisted the raw WASAPI
 /// `IMMDevice::GetId` value. Keep those values stable for route/profile keys;
 /// `parse_endpoint_id` adds the `wasapi:` host prefix when opening them.
-fn persisted_endpoint_id(device_id: &DeviceId) -> String {
+pub(crate) fn persisted_endpoint_id(device_id: &DeviceId) -> String {
     let serialized = device_id.to_string();
     #[cfg(target_os = "windows")]
     if let Some(raw) = serialized.strip_prefix("wasapi:") {

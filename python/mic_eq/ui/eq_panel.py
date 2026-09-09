@@ -693,25 +693,26 @@ class EQPanel(QWidget):
         self.presets_layout.setSpacing(SPACING_TIGHT)
 
         voice_btn = QPushButton("Voice")
-        voice_btn.setToolTip("Preset for voice clarity")
+        voice_btn.setToolTip("EQ-only replacement for voice clarity; other processing stays unchanged")
         voice_btn.clicked.connect(self._preset_voice)
 
         bass_btn = QPushButton("Bass Cut")
-        bass_btn.setToolTip("Reduce low frequencies")
+        bass_btn.setToolTip("EQ-only bass trimming; not a rumble high-pass filter")
         bass_btn.clicked.connect(self._preset_bass_cut)
 
         presence_btn = QPushButton("Presence")
-        presence_btn.setToolTip("Boost voice presence frequencies")
+        presence_btn.setToolTip("EQ-only replacement that boosts voice presence; other processing stays unchanged")
         presence_btn.clicked.connect(self._preset_presence)
 
         warm_clear_btn = QPushButton("Warm & Clear")
         warm_clear_btn.setToolTip(
-            "Bass boost with harshness cut (warm lows, clear mids)"
+            "Strong EQ-only replacement: trims bass, lifts low mids, and cuts "
+            "harsh upper mids; no rumble high-pass filter"
         )
         warm_clear_btn.clicked.connect(self._preset_warm_clear)
 
         flat_btn = QPushButton("Flat")
-        flat_btn.setToolTip("Reset to flat response")
+        flat_btn.setToolTip("EQ-only neutral replacement; other processing stays unchanged")
         flat_btn.clicked.connect(self._reset_all)
         self._preset_buttons = (
             voice_btn,
@@ -889,7 +890,7 @@ class EQPanel(QWidget):
         self._apply_catalog_preset("presence")
 
     def _preset_warm_clear(self):
-        """Apply warm & clear preset - bass boost with harshness cut."""
+        """Apply the strong warm/clear EQ contour without a rumble filter."""
         # Refined mapping with blended midrange for nasal reduction
         gains = [-12.0, 4.0, 4.0, 3.0, -3.0, -10.0, 0.0, 0.0, 0.0, 0.0]
         qs = [0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707, 0.707]

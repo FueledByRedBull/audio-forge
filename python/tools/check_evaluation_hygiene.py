@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ AUDIBLE_CONTRACT_FIELDS = {
     "clean_preservation",
 }
 DEVICE_PSEUDONYM = re.compile(r"^device-[0-9a-f]{16}$")
+GIT_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 PORTABLE_TEXT_SUFFIXES = {
     ".bat",
     ".c",
@@ -66,6 +68,78 @@ def _declared_source_hashes(report: dict[str, Any]) -> list[tuple[str, str]]:
     return found
 
 
+def _git_text(*args: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _git_blob(revision: str, relative_path: str) -> bytes | None:
+    try:
+        result = subprocess.run(
+            ["git", "cat-file", "blob", f"{revision}:{relative_path}"],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+        )
+    except OSError:
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def _resolve_source_revision(value: object) -> tuple[str | None, str | None]:
+    if not isinstance(value, str) or GIT_COMMIT.fullmatch(value) is None:
+        return None, "source_revision must be a full lowercase commit ID"
+    resolved = _git_text("rev-parse", "--verify", f"{value}^{{commit}}")
+    if resolved is None or resolved.casefold() != value:
+        return None, f"source_revision is unavailable or not a commit: {value}"
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", value, "HEAD"],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+        )
+    except OSError:
+        result = None
+    if result is None or result.returncode != 0:
+        return None, f"source_revision is not an ancestor of HEAD: {value}"
+    return value, None
+
+
+def _report_path_at_revision(path: Path, report: dict[str, Any], revision: str) -> list[str]:
+    try:
+        relative_path = path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        return [f"{path}: pinned report path is outside the repository"]
+    raw_historical = _git_blob(revision, relative_path)
+    if raw_historical is None:
+        return [f"{path}: report is unavailable at source_revision {revision}"]
+    try:
+        historical = json.loads(raw_historical.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        return [f"{path}: pinned report is invalid JSON: {error}"]
+    if not isinstance(historical, dict):
+        return [f"{path}: pinned report root must be an object"]
+    current = dict(report)
+    current.pop("source_revision", None)
+    historical.pop("source_revision", None)
+    if current != historical:
+        return [f"{path}: report contents differ from source_revision {revision}"]
+    return []
+
+
 def _walk_strings(value: Any, location: str = "$") -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     if isinstance(value, str):
@@ -98,11 +172,34 @@ def validate_report(path: Path) -> list[str]:
         if WINDOWS_ABSOLUTE.match(value) or POSIX_HOME.match(value):
             errors.append(f"{path}:{location}: machine-local absolute path: {value!r}")
 
+    source_revision: str | None = None
+    if "source_revision" in report:
+        source_revision, revision_error = _resolve_source_revision(
+            report.get("source_revision")
+        )
+        if revision_error is not None:
+            errors.append(f"{path}: {revision_error}")
+        elif source_revision is not None:
+            errors.extend(_report_path_at_revision(path, report, source_revision))
+
     declared_source_hashes = _declared_source_hashes(report)
     for raw_path, expected in declared_source_hashes:
         source_path = Path(raw_path)
         if source_path.is_absolute() or ".." in source_path.parts:
             errors.append(f"{path}: non-portable source hash path: {raw_path!r}")
+            continue
+        if source_revision is not None:
+            blob = _git_blob(source_revision, source_path.as_posix())
+            if blob is None:
+                errors.append(
+                    f"{path}: declared source file is missing at source_revision: {raw_path}"
+                )
+            elif not re.fullmatch(r"[0-9a-f]{64}", expected):
+                errors.append(f"{path}: invalid source SHA-256 for {raw_path}")
+            elif hashlib.sha256(blob).hexdigest() != expected:
+                errors.append(
+                    f"{path}: stale source SHA-256 in source_revision for {raw_path}"
+                )
             continue
         resolved = REPO_ROOT / source_path
         if not resolved.is_file():

@@ -17,26 +17,56 @@ from typing import Any
 
 import numpy as np
 
+from verify_release_assets import PINNED_ARCHIVE_STATUS, load_asset_manifest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOOLS_ROOT = REPO_ROOT / "python" / "tools"
-CPU_ORT_ARCHIVE_SHA256 = (
-    "0b38df9af21834e41e73d602d90db5cb06dbd1ca618948b8f1d66d607ac9f3cd"
-)
-CPU_ORT_RUNTIME_FILES = {
-    "onnxruntime.dll": {
-        "size": 14186016,
-        "sha256": "dec964ab1ee36cc9b0ae247d13b376627992fc57dec0454354017ab8fd84f1ea",
-    },
-    "onnxruntime.lib": {
-        "size": 2124,
-        "sha256": "977263ca76e6a9d0f230a198d3b05b2a2bddfed66bc5c4d4fd25293b03cc78b5",
-    },
-    "onnxruntime_providers_shared.dll": {
-        "size": 22088,
-        "sha256": "a2b3a50956aa75a9879c8472bc7df4f7a8072bcd2db19a1b7d988e7688f293ef",
-    },
-}
+CPU_ORT_ASSET_PREFIX = "target/onnxruntime-cpu/lib/"
+
+
+def _load_cpu_ort_expectations(
+    manifest_path: Path | None = None,
+) -> tuple[dict[str, dict[str, object]], str]:
+    manifest = load_asset_manifest(
+        manifest_path or (REPO_ROOT / "release-assets.json")
+    )
+    runtime_files: dict[str, dict[str, object]] = {}
+    archive_sha256: str | None = None
+    for asset in manifest.assets:
+        raw_path = asset["path"]
+        assert isinstance(raw_path, str)
+        if not raw_path.startswith(CPU_ORT_ASSET_PREFIX):
+            continue
+        origin = asset.get("origin")
+        if not isinstance(origin, dict) or origin.get("status") != PINNED_ARCHIVE_STATUS:
+            raise ValueError(
+                f"{raw_path}: CPU ORT asset must use a pinned upstream archive"
+            )
+        name = Path(raw_path).name
+        if name in runtime_files:
+            raise ValueError(f"manifest repeats CPU ORT runtime file {name}")
+        size = asset.get("size")
+        sha256 = asset.get("sha256")
+        archive_digest = origin.get("archive_sha256")
+        if type(size) is not int or not isinstance(sha256, str):
+            raise ValueError(f"{raw_path}: CPU ORT asset is missing size or sha256")
+        if not isinstance(archive_digest, str):
+            raise ValueError(f"{raw_path}: CPU ORT asset is missing archive SHA-256")
+        if archive_sha256 is None:
+            archive_sha256 = archive_digest
+        elif archive_sha256.lower() != archive_digest.lower():
+            raise ValueError("CPU ORT manifest entries disagree on archive SHA-256")
+        runtime_files[name] = {
+            "path": raw_path,
+            "size": size,
+            "sha256": sha256,
+        }
+    if not runtime_files or archive_sha256 is None:
+        raise ValueError("release-assets.json contains no pinned CPU ORT runtime assets")
+    return runtime_files, archive_sha256
+
+
 THRESHOLDS = (0.35, 0.36, 0.40, 0.48, 0.50, 0.65)
 SOFTWARE_GATE_NAMES = (
     "finite_posteriors",
@@ -96,12 +126,13 @@ def _runtime_identity() -> dict[str, Any]:
 
 def _record_cpu_ort_runtime_files(paths: list[Path]) -> list[dict[str, Any]]:
     """Validate the runtime files used by a probe against the pinned archive."""
+    expected_files, _ = _load_cpu_ort_expectations()
     records: list[dict[str, Any]] = []
     seen: set[str] = set()
     for path in paths:
         record = _asset_record(path.resolve(strict=True))
         name = path.name
-        expected = CPU_ORT_RUNTIME_FILES.get(name)
+        expected = expected_files.get(name)
         if expected is None:
             raise ValueError(f"candidate runtime file is not a pinned CPU ORT asset: {name}")
         if name in seen:
@@ -114,7 +145,7 @@ def _record_cpu_ort_runtime_files(paths: list[Path]) -> list[dict[str, Any]]:
                 f"got {record['size']} bytes/{record['sha256']}"
             )
         records.append(record)
-    missing = sorted(set(CPU_ORT_RUNTIME_FILES) - seen)
+    missing = sorted(set(expected_files) - seen)
     if missing:
         raise ValueError(
             "candidate runtime file list is missing pinned CPU ORT assets: "
@@ -531,9 +562,10 @@ def evaluate(args: argparse.Namespace) -> dict[str, Any]:
     }
     if args.cpu_archive is not None:
         archive = _asset_record(args.cpu_archive.resolve(strict=True))
-        if archive["sha256"] != CPU_ORT_ARCHIVE_SHA256:
+        _, expected_archive_sha256 = _load_cpu_ort_expectations()
+        if archive["sha256"] != expected_archive_sha256:
             raise ValueError(
-                f"CPU ORT archive hash mismatch: expected {CPU_ORT_ARCHIVE_SHA256}, got {archive['sha256']}"
+                f"CPU ORT archive hash mismatch: expected {expected_archive_sha256}, got {archive['sha256']}"
             )
         report["method"]["cpu_archive"] = archive
     if args.candidate_runtime_file:

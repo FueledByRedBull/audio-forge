@@ -11,11 +11,12 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import __version__ as CURRENT_VERSION
+
 
 logger = logging.getLogger(__name__)
 
 
-CURRENT_VERSION = "1.12.0"
 APPDATA_DIR_NAME = "AudioForge"
 LEGACY_APPDATA_DIR_NAME = "MicEq"
 _MIGRATION_MARKER_NAME = f".{APPDATA_DIR_NAME}.migration-pending"

@@ -40,9 +40,11 @@ STEP_CONTENT = {
     ),
     "route": (
         "2. Check the live route",
-        "Start processing and confirm that the audio stream stays healthy. "
-        "Then check your call, game, or recording app for the microphone signal; "
-        "AudioForge cannot confirm destination-app reception from here.",
+        "Start processing, speak at a normal level, and watch the input/output "
+        "levels and clipping indicators. Then check your call, game, or recording "
+        "app for the microphone signal; AudioForge cannot confirm destination-app "
+        "reception from here. If Mute Output is on, pause setup, uncheck it in the "
+        "main window, and resume before this check.",
         "Check Live Route",
     ),
     "latency": (
@@ -382,6 +384,13 @@ class FirstRunSetupDialog(QDialog):
             if not self._selected_devices_ready():
                 self._set_status(
                     "The selected route is unavailable. Return to step 1.", "error"
+                )
+                return
+            if getattr(self.owner, "user_muted", False):
+                self._set_status(
+                    "Output is muted. Pause setup, uncheck Mute Output in the main window, "
+                    "then resume this check.",
+                    "warn",
                 )
                 return
             if not self.owner.processor.is_running():

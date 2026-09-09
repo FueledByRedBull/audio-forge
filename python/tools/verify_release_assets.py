@@ -3,24 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
 import urllib.parse
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
-from release_provenance import (
-    DEEPFILTER_RECIPE_FILES,
-    _deepfilter_attestation_contract_errors,
-    _deepfilter_recipe_sha256,
-    sha256_file as _sha256,
-)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = REPO_ROOT / "release-assets.json"
 SOURCE_BUILD_STATUS = "verified-source-build"
-SOURCE_RECIPE_FILES = DEEPFILTER_RECIPE_FILES
 HEX_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 PINNED_ARCHIVE_STATUS = "verified-upstream-archive"
 PINNED_ARCHIVE_HOSTS = frozenset(
@@ -31,14 +26,168 @@ PINNED_ARCHIVE_HOSTS = frozenset(
         "release-assets.githubusercontent.com",
     }
 )
+KNOWN_ORIGIN_STATUSES = frozenset(
+    {
+        SOURCE_BUILD_STATUS,
+        PINNED_ARCHIVE_STATUS,
+        "verified-upstream-git-blob",
+        "pinned-upstream-model",
+    }
+)
+BLOCKED_ORIGIN_STATUSES = frozenset(
+    {
+        "inherited-binary-build-identity-unresolved",
+        "license-restricted",
+        "proprietary",
+        "distribution-blocked",
+    }
+)
+KNOWN_ORIGIN_STATUSES |= BLOCKED_ORIGIN_STATUSES
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class AssetManifest:
+    """Validated release manifest entries shared by live asset consumers."""
+
+    fallback_release_tag: str | None
+    assets: tuple[dict[str, Any], ...]
+    entries: dict[str, dict[str, Any]]
+
+
+def load_asset_manifest(
+    path: Path = MANIFEST_PATH,
+    *,
+    require_assets: bool = True,
+    require_metadata: bool = False,
+) -> AssetManifest:
+    """Load and validate the live release asset manifest once."""
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"manifest could not be read: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("manifest root must be an object")
+
+    errors: list[str] = []
+    fallback_tag = raw.get("fallback_release_tag")
+    if fallback_tag is not None and (
+        not isinstance(fallback_tag, str) or not fallback_tag.startswith("v") or not fallback_tag[1:]
+    ):
+        errors.append("fallback_release_tag must be a non-empty v-prefixed string")
+
+    raw_assets = raw.get("assets")
+    if not isinstance(raw_assets, list):
+        errors.append("manifest must contain an assets list")
+        raw_assets = []
+    elif require_assets and not raw_assets:
+        errors.append("manifest must contain a non-empty assets list")
+
+    entries: dict[str, dict[str, Any]] = {}
+    bundle_paths: dict[str, str] = {}
+    validated_assets: list[dict[str, Any]] = []
+    for index, asset in enumerate(raw_assets):
+        if not isinstance(asset, dict):
+            errors.append(f"assets[{index}] must be an object")
+            continue
+        raw_path = asset.get("path")
+        if not isinstance(raw_path, str) or not raw_path:
+            errors.append(f"assets[{index}].path is required")
+            continue
+        normalized_path = raw_path.replace("\\", "/")
+        if path_error := _validate_manifest_path(raw_path, "asset path"):
+            errors.append(path_error)
+        if normalized_path in entries:
+            errors.append(f"manifest repeats asset path {raw_path}")
+
+        raw_bundle_path = asset.get("bundle_path")
+        normalized_bundle_path: str | None = None
+        if raw_bundle_path is not None:
+            if not isinstance(raw_bundle_path, str) or not raw_bundle_path:
+                errors.append(f"{raw_path}: bundle_path must be a non-empty string")
+            else:
+                normalized_bundle_path = raw_bundle_path.replace("\\", "/")
+                if path_error := _validate_manifest_path(raw_bundle_path, "asset bundle_path"):
+                    errors.append(path_error)
+                previous = bundle_paths.get(normalized_bundle_path)
+                if previous is not None:
+                    errors.append(
+                        f"manifest repeats bundle_path {raw_bundle_path} for {previous} and {raw_path}"
+                    )
+
+        expected_sha = asset.get("sha256")
+        if not isinstance(expected_sha, str) or not HEX_SHA256.fullmatch(expected_sha):
+            errors.append(f"{raw_path}: manifest sha256 must be a 64-character hex string")
+
+        expected_size = asset.get("size")
+        if expected_size is not None and (
+            type(expected_size) is not int or expected_size <= 0
+        ):
+            errors.append(f"{raw_path}: manifest size must be a positive integer")
+
+        for field in ("source", "license"):
+            value = asset.get(field)
+            if value is not None and (not isinstance(value, str) or not value):
+                errors.append(f"{raw_path}: manifest {field} must be a non-empty string")
+            elif require_metadata and not isinstance(value, str):
+                errors.append(f"{raw_path}: manifest {field} is required")
+
+        origin = asset.get("origin")
+        if origin is not None:
+            if not isinstance(origin, dict):
+                errors.append(f"{raw_path}: origin must be an object")
+            else:
+                status = origin.get("status")
+                if not isinstance(status, str) or not status:
+                    errors.append(f"{raw_path}: origin.status must be a non-empty string")
+                elif status not in KNOWN_ORIGIN_STATUSES:
+                    errors.append(f"{raw_path}: unsupported origin.status {status!r}")
+                if status == PINNED_ARCHIVE_STATUS:
+                    errors.extend(_verify_pinned_archive_metadata(asset, raw_path))
+                elif status == SOURCE_BUILD_STATUS:
+                    attestation_path = origin.get("attestation_path")
+                    if not isinstance(attestation_path, str) or not attestation_path:
+                        errors.append(
+                            f"{raw_path}: source-built asset must declare origin.attestation_path"
+                        )
+                    elif path_error := _validate_manifest_path(
+                        attestation_path, "asset attestation_path"
+                    ):
+                        errors.append(path_error)
+                    provenance_path = origin.get("provenance")
+                    if provenance_path is not None:
+                        if not isinstance(provenance_path, str) or not provenance_path:
+                            errors.append(f"{raw_path}: asset provenance path is invalid")
+                        elif path_error := _validate_manifest_path(
+                            provenance_path, "asset provenance"
+                        ):
+                            errors.append(path_error)
+
+        if normalized_path not in entries:
+            entries[normalized_path] = asset
+        if normalized_bundle_path is not None and normalized_bundle_path not in bundle_paths:
+            bundle_paths[normalized_bundle_path] = raw_path
+        validated_assets.append(asset)
+
+    if errors:
+        raise ValueError("manifest validation failed: " + "; ".join(errors))
+    return AssetManifest(
+        fallback_release_tag=fallback_tag if isinstance(fallback_tag, str) else None,
+        assets=tuple(validated_assets),
+        entries=entries,
+    )
 
 
 def _load_manifest(path: Path = MANIFEST_PATH) -> list[dict[str, Any]]:
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    assets = raw.get("assets")
-    if not isinstance(assets, list) or not assets:
-        raise ValueError("manifest must contain a non-empty assets list")
-    return assets
+    return list(load_asset_manifest(path).assets)
 
 
 def _validate_manifest_path(raw_path: str, field_name: str) -> str | None:
@@ -107,6 +256,12 @@ def _verify_pinned_archive_metadata(asset: dict[str, Any], raw_path: str) -> lis
 def _verify_source_build_attestation(
     asset: dict[str, Any], path: Path, raw_path: str
 ) -> list[str]:
+    from release_provenance import (
+        DEEPFILTER_RECIPE_FILES,
+        _deepfilter_attestation_contract_errors,
+        _deepfilter_recipe_sha256,
+    )
+
     errors: list[str] = []
     origin = asset.get("origin")
     if not isinstance(origin, dict):
@@ -177,7 +332,7 @@ def _verify_source_build_attestation(
     if not isinstance(recipe_files, dict):
         errors.append(f"{raw_path}: attestation recipe.files must be an object")
     else:
-        missing = [name for name in SOURCE_RECIPE_FILES if name not in recipe_files]
+        missing = [name for name in DEEPFILTER_RECIPE_FILES if name not in recipe_files]
         if missing:
             errors.append(f"{raw_path}: attestation is missing recipe hashes: {', '.join(missing)}")
         for name, expected_hash in recipe_files.items():
@@ -208,6 +363,11 @@ def verify_assets(
     manifest_path: Path = MANIFEST_PATH,
     selected_paths: set[str] | None = None,
 ) -> list[str]:
+    try:
+        manifest = load_asset_manifest(manifest_path)
+    except ValueError as exc:
+        return [str(exc)]
+
     errors: list[str] = []
     normalized_selected = (
         {path.replace("\\", "/") for path in selected_paths}
@@ -215,27 +375,14 @@ def verify_assets(
         else None
     )
     seen_selected: set[str] = set()
-    for asset in _load_manifest(manifest_path):
-        if not isinstance(asset, dict):
-            errors.append("asset entry must be an object")
-            continue
+    for asset in manifest.assets:
         raw_path = asset.get("path")
-        if not isinstance(raw_path, str) or not raw_path:
-            errors.append("asset entry missing path")
-            continue
+        assert isinstance(raw_path, str) and raw_path
         normalized_path = raw_path.replace("\\", "/")
         if normalized_selected is not None and normalized_path not in normalized_selected:
             continue
         if normalized_selected is not None:
             seen_selected.add(normalized_path)
-        if path_error := _validate_manifest_path(raw_path, "asset path"):
-            errors.append(path_error)
-            continue
-
-        raw_bundle_path = asset.get("bundle_path")
-        if isinstance(raw_bundle_path, str) and raw_bundle_path:
-            if path_error := _validate_manifest_path(raw_bundle_path, "asset bundle_path"):
-                errors.append(path_error)
 
         path = REPO_ROOT / raw_path.replace("\\", "/")
         if not path.is_file():
@@ -244,11 +391,10 @@ def verify_assets(
 
         origin = asset.get("origin")
         source_built = isinstance(origin, dict) and origin.get("status") == SOURCE_BUILD_STATUS
-        if isinstance(origin, dict) and origin.get("status") == PINNED_ARCHIVE_STATUS:
-            errors.extend(_verify_pinned_archive_metadata(asset, raw_path))
+        if isinstance(origin, dict) and origin.get("status") in BLOCKED_ORIGIN_STATUSES:
+            errors.append(f"{raw_path}: origin status is not releasable")
+            continue
         expected_size = asset.get("size")
-        if expected_size is not None and type(expected_size) is not int:
-            errors.append(f"{raw_path}: manifest size must be an integer")
         if (
             not source_built
             and type(expected_size) is int
@@ -258,9 +404,7 @@ def verify_assets(
                 f"{raw_path}: size mismatch, expected {expected_size}, got {path.stat().st_size}"
             )
         expected_sha = asset.get("sha256")
-        if not isinstance(expected_sha, str) or not HEX_SHA256.fullmatch(expected_sha):
-            errors.append(f"{raw_path}: manifest sha256 must be a 64-character hex string")
-            continue
+        assert isinstance(expected_sha, str) and HEX_SHA256.fullmatch(expected_sha)
 
         if source_built:
             errors.extend(_verify_source_build_attestation(asset, path, raw_path))

@@ -129,8 +129,8 @@
       "cut_only_max_true_peak_gain_db": 2.677757366184541,
       "default_audio_max_absolute_delta": 0.0,
       "default_realtime_factor": {
-        "max": 0.001645570489551653,
-        "median": 0.0013578259392098646
+        "max": 0.0013126006838469837,
+        "median": 0.001286625295221797
       },
       "full_chain_max_true_peak_overshoot_db": 0.0006989240646362305,
       "full_chain_nonfinite_outputs": 0,
@@ -138,8 +138,8 @@
       "stress_max_limiter_gain_reduction_db": 3.8455235958099365,
       "total_duration_seconds": 48.7680625,
       "worst_case_realtime_factor": {
-        "max": 0.0058097555269622176,
-        "median": 0.005473234208887455
+        "max": 0.006042695052052871,
+        "median": 0.0052641284597677186
       }
     },
     "headroom_prediction": {
@@ -182,7 +182,7 @@
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
     "python/mic_eq/config_parts/settings.py": "0c068183a3b5b82f165f0f1cf13cd80b2d505b2888c263aa9d490168f3247dff",
     "python/mic_eq/ui/eq_curve.py": "a49e1d4e063e63b9435770ea5a3f503dd83f8756a7fc9690457b6589f357e0ab",
-    "python/mic_eq/ui/eq_panel.py": "7d1b6ebeabe1215edf85285031b2fcce38682988d75dc6073c7b3e3b2c9c6e05",
+    "python/mic_eq/ui/eq_panel.py": "dd0dcc96025b1d00217796e55b85d38daef037c5de2a43e30144e0a6cbe6e1c0",
     "python/tools/evaluate_eq_filter_types.py": "0389d71d3f8d97f88eef51e0c834d84860b37842c1d051266b37df0fcfba4316",
     "rust-core/src/audio/processor/python_api.rs": "f38e8cedb679bf0abcb7d45c6187509cf1b2e9cf9ea7afa0423c9b88c7e3a37b",
     "rust-core/src/dsp/biquad.rs": "b6bc1c4e1dab2353cceb3fb8b382e98b0e23d035cde6ba5e3faf921965b354bb",

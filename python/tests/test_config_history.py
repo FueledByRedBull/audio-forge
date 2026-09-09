@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import numpy as np
 import pytest
 
 from mic_eq.config import AppConfig, Preset
@@ -14,7 +15,7 @@ from mic_eq.ui.config_history import (
     explicit_provenance_after_edit,
 )
 from mic_eq.ui.main_window import MainWindow
-from mic_eq.ui.calibration_dialog import CalibrationDialog
+from mic_eq.ui.calibration_dialog import CalibrationDialog, _candidate_metadata
 
 
 def _snapshot(
@@ -219,6 +220,24 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
     dialog = CalibrationDialog(window)
     dialog.recording_state = "analyzing"
     dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
+    dialog.audio_data = np.zeros(16, dtype=np.float32)
+    dialog._analysis_generation = 1
+    dialog._candidate_metadata = _candidate_metadata(
+        "eq_only",
+        target={"curve": "broadcast", "mode": "adaptive", "smoothing": "conservative"},
+        capture={
+            "generation": 1,
+            "sample_rate": int(window.processor.sample_rate()),
+            "sample_count": 16,
+            "context_key": window._calibration_context_key(),
+        },
+        options={"target_mode": "adaptive", "smoothing_strength": "conservative"},
+        allowed_scope=("eq",),
+    )
+    monkeypatch.setattr(
+        "mic_eq.ui.calibration_dialog.QMessageBox.critical",
+        lambda _parent, _title, message: pytest.fail(message),
+    )
     dialog.auto_eq_applied.connect(window.on_auto_eq_applied)
     dialog._on_analysis_complete({
         "band_freqs": [band[0] for band in auto_eq_bands],

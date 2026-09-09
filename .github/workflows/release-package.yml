@@ -55,6 +55,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 0
+          filter: blob:none
 
       - name: Bind source revision to checked-out release ref
         run: |
@@ -461,6 +463,40 @@ jobs:
           "installer_checksum=$installer.sha256" >> $env:GITHUB_OUTPUT
           "installer_manifest=$installer.manifest.json" >> $env:GITHUB_OUTPUT
           "installer_metadata=$installer.metadata.json" >> $env:GITHUB_OUTPUT
+
+      - name: Report package size changes
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_MANIFEST: ${{ steps.provenance.outputs.manifest }}
+        run: |
+          $previousJson = gh release view --repo $env:GITHUB_REPOSITORY --json tagName,assets
+          if ($LASTEXITCODE -ne 0) { throw "Could not read the preceding release for size comparison." }
+          $previous = $previousJson | ConvertFrom-Json
+          $manifestName = "AudioForge-$($previous.tagName)-win64-ultra.7z.manifest.json"
+          $comparisonDir = Join-Path $env:RUNNER_TEMP "bundle-size-comparison"
+          New-Item -ItemType Directory -Force -Path $comparisonDir | Out-Null
+          $assetNames = @($previous.assets | ForEach-Object { $_.name })
+          if ($assetNames -contains $manifestName) {
+            gh release download $previous.tagName --repo $env:GITHUB_REPOSITORY --pattern $manifestName --dir $comparisonDir
+            if ($LASTEXITCODE -ne 0) { throw "Could not download the preceding payload manifest." }
+          } else {
+            $evidenceName = "AudioForge-$($previous.tagName)-evidence.7z"
+            if ($assetNames -notcontains $evidenceName) {
+              "Size comparison unavailable: $($previous.tagName) has no retained payload manifest." >> $env:GITHUB_STEP_SUMMARY
+              exit 0
+            }
+            gh release download $previous.tagName --repo $env:GITHUB_REPOSITORY --pattern $evidenceName --dir $comparisonDir
+            if ($LASTEXITCODE -ne 0) { throw "Could not download the preceding release evidence." }
+            $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
+            & $sevenZip e (Join-Path $comparisonDir $evidenceName) $manifestName "-o$comparisonDir" -y
+            if ($LASTEXITCODE -ne 0) { throw "Could not read the preceding payload manifest." }
+          }
+          "Comparing payload with published $($previous.tagName)." >> $env:GITHUB_STEP_SUMMARY
+          .\.venv\Scripts\python.exe python/tools/release_provenance.py compare-sizes `
+            --manifest $env:CURRENT_MANIFEST `
+            --previous-manifest (Join-Path $comparisonDir $manifestName) >> $env:GITHUB_STEP_SUMMARY
+          if ($LASTEXITCODE -ne 0) { throw "Package size comparison failed." }
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

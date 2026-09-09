@@ -37,6 +37,7 @@ INPUT_CHANNEL_MODES = frozenset(
 INPUT_CLEANUP_MODES = frozenset({"off", "gentle", "strong"})
 DYNAMICS_INTENSITIES = frozenset({"gentle", "balanced", "dense", "custom"})
 DEVICE_PRESET_PROVENANCE = frozenset({"explicit_user", "legacy_migration"})
+INPUT_PREFERENCE_PROVENANCE = frozenset({"explicit_user", "legacy_migration"})
 FIRST_RUN_SETUP_STATES = frozenset(
     {"not_started", "in_progress", "completed", "completed_with_skips"}
 )
@@ -62,6 +63,9 @@ _PRE_SETUP_CONFIG_FIELDS = frozenset(
         "latency_calibration_profiles",
         "auto_apply_device_presets",
         "device_preset_bindings",
+        "input_device_preferences",
+        "route_input_preferences",
+        "user_muted",
     }
 )
 
@@ -93,6 +97,40 @@ class DevicePresetBinding:
         return cls(preset_id=preset_id, provenance=provenance)
 
 
+@dataclass(frozen=True, slots=True)
+class InputDevicePreference:
+    """Input interpretation preferences for one stable device or route."""
+
+    channel_mode: str = "phase_safe_mono"
+    cleanup_mode: str = "off"
+    provenance: str = "explicit_user"
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "channel_mode": self.channel_mode,
+            "cleanup_mode": self.cleanup_mode,
+            "provenance": self.provenance,
+        }
+
+    @classmethod
+    def from_value(cls, value: object) -> "InputDevicePreference | None":
+        if not isinstance(value, dict):
+            return None
+        channel_mode = value.get("channel_mode", value.get("input_channel_mode"))
+        cleanup_mode = value.get("cleanup_mode", value.get("input_cleanup_mode"))
+        if not (
+            isinstance(channel_mode, str)
+            and channel_mode in INPUT_CHANNEL_MODES
+            and isinstance(cleanup_mode, str)
+            and cleanup_mode in INPUT_CLEANUP_MODES
+        ):
+            return None
+        provenance = str(value.get("provenance", "explicit_user")).strip()
+        if provenance not in INPUT_PREFERENCE_PROVENANCE:
+            provenance = "legacy_migration"
+        return cls(channel_mode, cleanup_mode, provenance)
+
+
 def _coerce_input_channel_mode(value: object) -> str:
     return (
         value
@@ -103,6 +141,29 @@ def _coerce_input_channel_mode(value: object) -> str:
 
 def _coerce_input_cleanup_mode(value: object) -> str:
     return value if isinstance(value, str) and value in INPUT_CLEANUP_MODES else "off"
+
+
+def build_input_device_preference_key(identity: DeviceIdentity) -> str:
+    """Return the rename-stable key used for one input device's preferences."""
+    return json.dumps(identity.stable_dict(), sort_keys=True, separators=(",", ":"))
+
+
+def _canonical_input_preference_key(value: object) -> str | None:
+    """Canonicalize endpoint keys while accepting legacy friendly names."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        payload = None
+    if isinstance(payload, dict):
+        if payload.get("endpoint_id") and not payload.get("name"):
+            payload = {**payload, "name": f"endpoint:{payload['endpoint_id']}"}
+        identity = coerce_device_identity(payload)
+    else:
+        identity = coerce_device_identity(text)
+    return build_input_device_preference_key(identity) if identity is not None else None
 
 
 def _coerce_float(value: object, default: float, low: float, high: float) -> float:
@@ -186,6 +247,13 @@ class AppConfig:
     latency_calibration_profiles: dict[str, LatencyCalibrationProfile] = field(default_factory=dict)
     auto_apply_device_presets: bool = True
     device_preset_bindings: dict[str, DevicePresetBinding] = field(default_factory=dict)
+    input_device_preferences: dict[str, InputDevicePreference] = field(
+        default_factory=dict
+    )
+    route_input_preferences: dict[str, InputDevicePreference] = field(
+        default_factory=dict
+    )
+    user_muted: bool = False
     first_run_setup_state: str = "not_started"
     first_run_setup_step: str = "devices"
     first_run_setup_steps: dict[str, str] = field(
@@ -234,6 +302,15 @@ class AppConfig:
                 key: binding.to_dict()
                 for key, binding in self.device_preset_bindings.items()
             },
+            "input_device_preferences": {
+                key: preference.to_dict()
+                for key, preference in self.input_device_preferences.items()
+            },
+            "route_input_preferences": {
+                key: preference.to_dict()
+                for key, preference in self.route_input_preferences.items()
+            },
+            "user_muted": self.user_muted,
             "first_run_setup_state": self.first_run_setup_state,
             "first_run_setup_step": self.first_run_setup_step,
             "first_run_setup_steps": dict(self.first_run_setup_steps),
@@ -290,6 +367,52 @@ class AppConfig:
                 parsed_key = build_device_route_key(*parsed_devices)
                 parsed_bindings[parsed_key] = binding
 
+        raw_device_preferences = data.get("input_device_preferences", {}) or {}
+        parsed_device_preferences: dict[str, InputDevicePreference] = {}
+        if isinstance(raw_device_preferences, dict):
+            for key, value in raw_device_preferences.items():
+                preference = InputDevicePreference.from_value(value)
+                if preference is None:
+                    continue
+                parsed_key = _canonical_input_preference_key(key)
+                if parsed_key is not None:
+                    parsed_device_preferences[parsed_key] = preference
+
+        raw_route_preferences = data.get("route_input_preferences", {}) or {}
+        parsed_route_preferences: dict[str, InputDevicePreference] = {}
+        if isinstance(raw_route_preferences, dict):
+            for key, value in raw_route_preferences.items():
+                preference = InputDevicePreference.from_value(value)
+                if preference is None:
+                    continue
+                parsed_devices = parse_latency_profile_key(str(key))
+                if parsed_devices is None:
+                    continue
+                parsed_key = build_device_route_key(*parsed_devices)
+                parsed_route_preferences[parsed_key] = preference
+
+        # Older builds stored one global pair. Associate it only with a
+        # stable legacy input endpoint; unknown/new devices get safe defaults.
+        known_input_identity = (
+            input_identity
+            if input_identity is not None and input_identity.endpoint_id
+            else None
+        )
+        if not parsed_device_preferences and known_input_identity is not None and (
+            "input_channel_mode" in data or "input_cleanup_mode" in data
+        ):
+            parsed_device_preferences[build_input_device_preference_key(known_input_identity)] = (
+                InputDevicePreference(
+                    channel_mode=_coerce_input_channel_mode(
+                        data.get("input_channel_mode")
+                    ),
+                    cleanup_mode=_coerce_input_cleanup_mode(
+                        data.get("input_cleanup_mode")
+                    ),
+                    provenance="legacy_migration",
+                )
+            )
+
         first_run_steps = _coerce_first_run_steps(
             data.get("first_run_setup_steps")
         )
@@ -343,6 +466,9 @@ class AppConfig:
                 data.get("auto_apply_device_presets", True), True
             ),
             device_preset_bindings=parsed_bindings,
+            input_device_preferences=parsed_device_preferences,
+            route_input_preferences=parsed_route_preferences,
+            user_muted=_coerce_config_bool(data.get("user_muted", False), False),
             first_run_setup_state=(
                 "completed_with_skips"
                 if migrated_existing_install
@@ -537,6 +663,8 @@ __all__ = [
     "AppConfig",
     "CONFIG_SCHEMA_VERSION",
     "DevicePresetBinding",
+    "InputDevicePreference",
+    "build_input_device_preference_key",
     "INPUT_CHANNEL_MODES",
     "INPUT_CLEANUP_MODES",
     "DYNAMICS_INTENSITIES",

@@ -208,8 +208,10 @@ def test_sidecars_bind_deepfilter_attestation_to_candidate(tmp_path, monkeypatch
                 "assets": [
                     {
                         "path": "df.dll",
+                        "sha256": release_provenance.sha256_file(dll),
                         "origin": {
                             "status": "verified-source-build",
+                            "attestation_path": "target/deepfilter/df.dll.provenance.json",
                             "repository": provenance["upstream"]["repository"],
                             "commit": provenance["upstream"]["commit"],
                         },

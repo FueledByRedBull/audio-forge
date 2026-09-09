@@ -169,6 +169,34 @@ mod tests {
     }
 
     #[test]
+    fn test_user_mute_does_not_disable_stall_recovery() {
+        let mut processor = AudioProcessor::new();
+        processor.set_output_mute(true);
+        processor.running.store(true, Ordering::Release);
+        processor.ensure_supervisor();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !processor.restart_requested.load(Ordering::Acquire)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(processor.restart_requested.load(Ordering::Acquire));
+        assert!(processor.output_muted.load(Ordering::Acquire));
+        processor.stop();
+    }
+
+    #[test]
+    fn test_stop_preserves_explicit_output_mute() {
+        let mut processor = AudioProcessor::new();
+        processor.set_output_mute(true);
+        processor.stop();
+        assert!(processor.output_muted.load(Ordering::Acquire));
+        processor.set_output_mute(false);
+        processor.stop();
+        assert!(!processor.output_muted.load(Ordering::Acquire));
+    }
+
+    #[test]
     fn test_output_probe_queue_validates_and_publishes_state() {
         let processor = AudioProcessor::new();
         let rb = AudioRingBuffer::new(16);
@@ -177,6 +205,10 @@ mod tests {
         processor.running.store(true, Ordering::Release);
         processor.output_sample_rate.store(8, Ordering::Relaxed);
 
+        processor.set_output_mute(true);
+        assert!(processor.queue_output_probe(&[0.1]).unwrap_err().contains("Unmute"));
+        assert_eq!(consumer.read(&mut [0.0]), 0);
+        processor.set_output_mute(false);
         assert!(processor.queue_output_probe(&[]).is_err());
         assert!(processor.queue_output_probe(&[f32::NAN]).is_err());
         processor.queue_output_probe(&[0.1, -0.2, 0.3]).unwrap();

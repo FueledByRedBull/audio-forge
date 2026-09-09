@@ -387,7 +387,9 @@ impl AudioOutput {
                     last_callback_time_us.store(now_micros(), Ordering::Relaxed);
 
                     if let Some(probe) = output_probe.as_mut() {
-                        if probe.cancel_requested.load(Ordering::Acquire) {
+                        if probe.cancel_requested.load(Ordering::Acquire)
+                            || output_muted_clone.load(Ordering::Acquire)
+                        {
                             Self::discard_probe(probe, &mut mono_scratch);
                         } else if probe.active.load(Ordering::Acquire) {
                             let frames_needed = if num_channels == 1 {

@@ -63,6 +63,9 @@ class _EqPanelStub:
         self.diagnostics: dict | None = None
         self.fail_apply = False
 
+    def get_settings(self) -> dict:
+        return {"enabled": self.enabled}
+
     def apply_auto_eq_results(self, bands, diagnostics=None) -> None:
         self.operations.append("apply")
         if self.fail_apply:

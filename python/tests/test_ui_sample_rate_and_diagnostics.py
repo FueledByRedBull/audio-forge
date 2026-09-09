@@ -1264,6 +1264,9 @@ def test_device_selection_policy_prefers_default_and_virtual_output():
 def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
+    window.processor = Mock()
+    window.input_channel_mode_combo = _FakeCombo([("Mono", "phase_safe_mono")])
+    window.input_cleanup_mode_combo = _FakeCombo([("Off", "off")])
     window.input_combo = _FakeCombo(
         [
             ("Mic A", DeviceIdentity(name="Mic A", is_default=False)),
@@ -1280,20 +1283,12 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
     window.output_combo.setCurrentIndex(0)
     window.device_warning_banner = _FakeLabel()
     window.status_bar = _FakeStatusBar()
-    window.config = type(
-        "Cfg",
-        (),
-        {
-            "last_input_device": "Mic A",
-            "last_output_device": "Out A",
-            "last_input_device_identity": DeviceIdentity(
-                name="Mic A", is_default=False
-            ),
-            "last_output_device_identity": DeviceIdentity(
-                name="Out A", is_default=False
-            ),
-        },
-    )()
+    window.config = AppConfig(
+        last_input_device="Mic A",
+        last_output_device="Out A",
+        last_input_device_identity=DeviceIdentity(name="Mic A", is_default=False),
+        last_output_device_identity=DeviceIdentity(name="Out A", is_default=False),
+    )
 
     monkeypatch.setattr(
         "mic_eq.ui.main_window.list_input_devices",
@@ -1328,6 +1323,7 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
 def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
+    window.processor = Mock()
     window.input_combo = _FakeCombo(
         [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
     )
@@ -1340,16 +1336,12 @@ def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
     window.input_channel_mode_combo._signals_blocked = True
     window.device_warning_banner = _FakeLabel()
     window.status_bar = _FakeStatusBar()
-    window.config = type(
-        "Cfg",
-        (),
-        {
-            "last_input_device_identity": DeviceIdentity(name="Mic A"),
-            "last_output_device_identity": DeviceIdentity(name="Out A"),
-            "last_input_device": "Mic A",
-            "last_output_device": "Out A",
-        },
-    )()
+    window.config = AppConfig(
+        last_input_device_identity=DeviceIdentity(name="Mic A"),
+        last_output_device_identity=DeviceIdentity(name="Out A"),
+        last_input_device="Mic A",
+        last_output_device="Out A",
+    )
     monkeypatch.setattr(
         "mic_eq.ui.main_window.list_input_devices",
         lambda: [type("Dev", (), {"name": "Mic A", "is_default": True})()],
@@ -1371,6 +1363,9 @@ def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
 def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
+    window.processor = Mock()
+    window.input_channel_mode_combo = _FakeCombo([("Mono", "phase_safe_mono")])
+    window.input_cleanup_mode_combo = _FakeCombo([("Off", "off")])
     window.input_combo = _FakeCombo(
         [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
     )
@@ -1381,18 +1376,12 @@ def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatc
     window.output_combo.setCurrentIndex(0)
     window.device_warning_banner = _FakeLabel()
     window.status_bar = _FakeStatusBar()
-    window.config = type(
-        "Cfg",
-        (),
-        {
-            "last_input_device": "Mic A",
-            "last_output_device": "Out Old",
-            "last_input_device_identity": DeviceIdentity(name="Mic A", is_default=True),
-            "last_output_device_identity": DeviceIdentity(
-                name="Out Old", is_default=False
-            ),
-        },
-    )()
+    window.config = AppConfig(
+        last_input_device="Mic A",
+        last_output_device="Out Old",
+        last_input_device_identity=DeviceIdentity(name="Mic A", is_default=True),
+        last_output_device_identity=DeviceIdentity(name="Out Old", is_default=False),
+    )
 
     monkeypatch.setattr(
         "mic_eq.ui.main_window.list_input_devices",
@@ -1912,6 +1901,22 @@ def test_latency_calibration_failure_stops_owned_processor(qapp):
     assert processor.started == 1
     assert processor.stopped == 1
     assert not processor.running
+
+
+def test_latency_calibration_respects_user_mute(qapp, monkeypatch):
+    processor = _LatencyProcessor(running=False)
+    processor.set_output_mute = Mock()
+    owner = _LatencyOwner(processor)
+    owner.user_muted = True
+    notice = Mock()
+    monkeypatch.setattr(QMessageBox, "information", notice)
+    dialog = LatencyCalibrationDialog(owner)
+
+    dialog._on_run_clicked()
+    assert processor.started == 0
+    notice.assert_called_once()
+    dialog.reject()
+    processor.set_output_mute.assert_not_called()
 
 
 def test_latency_calibration_failure_does_not_stop_preexisting_processor(qapp):

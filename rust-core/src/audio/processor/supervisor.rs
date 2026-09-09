@@ -16,7 +16,6 @@ fn ensure_supervisor(&mut self) {
     let last_start_time_us = Arc::clone(&self.last_start_time_us);
     let recovery_state = Arc::clone(&self.recovery_state);
     let recording_active = Arc::clone(&self.recording_active);
-    let output_muted = Arc::clone(&self.output_muted);
     let recovery_suppressed = Arc::clone(&self.recovery_suppressed);
 
     self.supervisor_thread = Some(std::thread::spawn(move || {
@@ -41,7 +40,6 @@ fn ensure_supervisor(&mut self) {
 
             if recovery_suppressed.load(Ordering::Acquire)
                 || recording_active.load(Ordering::Acquire)
-                || output_muted.load(Ordering::Acquire)
             {
                 consecutive_stalls = 0;
                 continue;

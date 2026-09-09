@@ -6,6 +6,8 @@ DEBUG: Added terminal logging for calibration workflow
 
 import logging
 import time
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 from PyQt6.QtWidgets import (
@@ -49,6 +51,8 @@ from .theme import (
 DEBUG = False
 
 logger = logging.getLogger(__name__)
+
+_TEMPORARY_MUTE_REASON = "auto_eq_calibration"
 
 # Rainbow Passage - standard calibration text from audiometry
 RAINBOW_PASSAGE = """The Rainbow Passage
@@ -168,6 +172,49 @@ def _diagnostic_state(confidence: float) -> str:
     return "bad"
 
 
+def _set_temporary_mute(owner: Any, reason: str, enabled: bool) -> None:
+    """Mute only this dialog's temporary capture reason when supported."""
+    setter = getattr(owner, "set_temporary_output_mute", None)
+    if callable(setter):
+        setter(bool(enabled), reason)
+        return
+    processor = getattr(owner, "processor", None)
+    setter = getattr(processor, "set_output_mute", None)
+    if callable(setter):
+        # Standalone dialog owners have no reason registry. Preserve their
+        # user mute flag when using the processor-only test/runtime fallback.
+        setter(bool(enabled or getattr(owner, "user_muted", False)))
+
+
+def _candidate_metadata(
+    scope: str,
+    *,
+    target: dict[str, Any],
+    capture: dict[str, Any],
+    options: dict[str, Any],
+    allowed_scope: tuple[str, ...],
+    verified_stages: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """Describe the captured candidate without retaining audio buffers."""
+    return {
+        "scope": scope,
+        "allowed_scope": list(allowed_scope),
+        "target": deepcopy(target),
+        "capture_identity": deepcopy(capture),
+        "options": deepcopy(options),
+        "verified_stages": list(verified_stages),
+    }
+
+
+def _owner_calibration_context_key(owner: Any) -> str | None:
+    """Read the owner's route/format/channel/cleanup identity when available."""
+    getter = getattr(owner, "_calibration_context_key", None)
+    if not callable(getter):
+        return None
+    value = getter()
+    return value if isinstance(value, str) and value else None
+
+
 class CalibrationDialog(QDialog):
     """Auto-EQ calibration dialog with target curve selection."""
 
@@ -184,6 +231,8 @@ class CalibrationDialog(QDialog):
         self.audio_data: np.ndarray | None = None
         self.eq_settings: dict | None = None
         self._candidate_target_metadata: tuple[str, str, str] | None = None
+        self._candidate_metadata: dict[str, Any] | None = None
+        self._capture_context_key: str | None = None
         self.analysis_worker: AnalysisWorker | None = None
         self._analysis_workers: list[AnalysisWorker] = []
         self._analysis_generation = 0
@@ -425,7 +474,7 @@ class CalibrationDialog(QDialog):
             return
         if self._candidate_target_metadata is None:
             return
-        eq_settings = self.eq_settings
+        eq_settings = deepcopy(self.eq_settings)
         if DEBUG:
             logger.debug("Applying EQ settings")
 
@@ -434,6 +483,15 @@ class CalibrationDialog(QDialog):
 
         if not parent:
             QMessageBox.critical(self, "Error", "Could not find EQ panel")
+            return
+
+        identity_error = self._candidate_identity_error(eq_settings, parent)
+        if identity_error is not None:
+            QMessageBox.critical(
+                self,
+                "Stale Auto-EQ Candidate",
+                f"{identity_error}; no changes were applied.",
+            )
             return
 
         # Build all band tuples before touching the live EQ state.
@@ -453,19 +511,75 @@ class CalibrationDialog(QDialog):
             QMessageBox.critical(self, "Error", f"Invalid Auto-EQ candidate: {error}")
             return
 
+        get_eq_settings = getattr(parent.eq_panel, "get_settings", None)
+        if not callable(get_eq_settings):
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Could not snapshot current EQ settings; no changes were applied.",
+            )
+            return
+        try:
+            eq_snapshot = deepcopy(get_eq_settings())
+        except Exception as error:
+            logger.warning("Failed to snapshot EQ before candidate apply", exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Could not snapshot current EQ settings; no changes were applied: {error}",
+            )
+            return
+
         try:
             parent.eq_panel.apply_auto_eq_results(bands, diagnostics=eq_settings)
             parent.eq_panel.set_settings({"enabled": True})
             parent.eq_panel.set_auto_eq_diagnostics(eq_settings)
+            accepted_eq = deepcopy(get_eq_settings())
+            if not isinstance(accepted_eq, Mapping):
+                raise TypeError("EQ panel returned invalid settings")
+            if "enabled" in accepted_eq and not bool(accepted_eq["enabled"]):
+                raise ValueError("EQ panel did not accept the enabled state")
+            for key in ("enabled", "band_freqs", "band_gains", "band_qs"):
+                if key in accepted_eq:
+                    value = accepted_eq[key]
+                    eq_settings[key] = (
+                        bool(value) if key == "enabled" else list(value)
+                    )
         except Exception as error:
+            restore_error = None
+            try:
+                current_eq = parent.eq_panel.get_settings()
+            except Exception:
+                current_eq = None
+            if current_eq != eq_snapshot:
+                try:
+                    parent.eq_panel.set_settings(eq_snapshot)
+                except Exception as restore_exc:
+                    restore_error = restore_exc
+                    logger.warning(
+                        "Failed to restore EQ after candidate apply failure",
+                        exc_info=True,
+                    )
             logger.warning("Failed to apply Auto-EQ candidate", exc_info=True)
+            message = f"Could not apply Auto-EQ settings: {error}"
+            if restore_error is not None:
+                message += f"; EQ restoration failed: {restore_error}"
             QMessageBox.critical(
-                self, "Error", f"Could not apply Auto-EQ settings:\n{error}"
+                self, "Error", message
             )
             return
 
+        self.eq_settings = eq_settings
+        candidate = eq_settings.get("_candidate")
+        if isinstance(candidate, dict):
+            candidate["verified_stages"] = ["eq"]
+
         # Emit signal for main window to handle preset save and undo button
-        target_curve = self._candidate_target_metadata[0]
+        target_curve = (
+            self._candidate_metadata["target"]["curve"]
+            if self._candidate_metadata is not None
+            else self._candidate_target_metadata[0]
+        )
         self.auto_eq_applied.emit(target_curve)
 
         if DEBUG:
@@ -475,6 +589,46 @@ class CalibrationDialog(QDialog):
 
         # Close dialog
         self.accept()
+
+    def _candidate_identity_error(
+        self, eq_settings: Mapping[str, Any], parent: Any
+    ) -> str | None:
+        candidate = eq_settings.get("_candidate")
+        expected = self._candidate_metadata
+        if not isinstance(candidate, Mapping) or not isinstance(expected, Mapping):
+            return "Auto-EQ candidate identity is missing"
+        if candidate.get("scope") != "eq_only":
+            return "Auto-EQ candidate scope is invalid"
+        if tuple(candidate.get("allowed_scope") or ()) != ("eq",):
+            return "Auto-EQ candidate scope is incomplete"
+        for key in ("scope", "allowed_scope", "target", "options", "capture_identity"):
+            if candidate.get(key) != expected.get(key):
+                return "Auto-EQ candidate options or capture identity changed"
+
+        target = candidate.get("target")
+        if not isinstance(target, Mapping) or self._candidate_target_metadata is None:
+            return "Auto-EQ candidate target is missing"
+        if tuple(target.get(key) for key in ("curve", "mode", "smoothing")) != self._candidate_target_metadata:
+            return "Auto-EQ candidate target does not match the captured target"
+
+        capture = candidate.get("capture_identity")
+        if not isinstance(capture, Mapping):
+            return "Auto-EQ capture identity is missing"
+        if self.audio_data is None:
+            return "Auto-EQ recording is missing"
+        if capture.get("sample_count") != int(self.audio_data.size):
+            return "Auto-EQ recording changed after analysis"
+        try:
+            if capture.get("sample_rate") != _processor_sample_rate(parent):
+                return "Audio sample rate changed after analysis"
+        except RuntimeError:
+            return "Auto-EQ capture sample rate is unavailable"
+        if capture.get("context_key") != _owner_calibration_context_key(parent):
+            return "Audio route or input cleanup context changed after capture"
+        generation = capture.get("generation")
+        if generation != self._analysis_generation:
+            return "Auto-EQ candidate is stale"
+        return None
 
     def _start_recording(self):
         """Start non-blocking recording."""
@@ -546,7 +700,7 @@ class CalibrationDialog(QDialog):
                         logger.debug("Restarting processor on selected devices")
                     parent.processor.stop()
                     _start_selected_route(parent)
-                    parent.processor.set_output_mute(False)
+                    _set_temporary_mute(parent, _TEMPORARY_MUTE_REASON, False)
                     if DEBUG:
                         logger.debug("Processor restarted on selected devices")
                 except Exception as e:
@@ -576,6 +730,7 @@ class CalibrationDialog(QDialog):
                 )
                 return
 
+        self._capture_context_key = _owner_calibration_context_key(parent)
         self.recording_state = "recording"
         self.start_button.setText("Recording...")
         self.start_button.setEnabled(False)  # Prevent early stop
@@ -604,6 +759,7 @@ class CalibrationDialog(QDialog):
             return
 
         try:
+            _set_temporary_mute(parent, _TEMPORARY_MUTE_REASON, True)
             parent.processor.set_recovery_suppressed(True)
             parent.processor.start_raw_recording(RECORDING_DURATION)
         except Exception as e:
@@ -642,6 +798,7 @@ class CalibrationDialog(QDialog):
             if progress_pct >= 100 or parent.processor.is_recording_complete():
                 self.recording_timer.stop()
                 audio = parent.processor.stop_raw_recording()
+                _set_temporary_mute(parent, _TEMPORARY_MUTE_REASON, False)
                 if audio is None:
                     self._on_recording_failed("Recording failed - no audio data")
                     return
@@ -750,6 +907,24 @@ class CalibrationDialog(QDialog):
             target_mode,
             smoothing_strength,
         )
+        self._candidate_metadata = _candidate_metadata(
+            "eq_only",
+            target={
+                "curve": target_preset,
+                "mode": target_mode,
+                "smoothing": smoothing_strength,
+            },
+            capture={
+                "sample_rate": sample_rate,
+                "sample_count": int(self.audio_data.size),
+                "context_key": self._capture_context_key,
+            },
+            options={
+                "target_mode": target_mode,
+                "smoothing_strength": smoothing_strength,
+            },
+            allowed_scope=("eq",),
+        )
         self.eq_settings = None
         self.curve_combo.setEnabled(False)
         self.target_mode_combo.setEnabled(False)
@@ -769,6 +944,7 @@ class CalibrationDialog(QDialog):
         # Create and start analysis worker
         generation = self._analysis_generation + 1
         self._analysis_generation = generation
+        self._candidate_metadata["capture_identity"]["generation"] = generation
         try:
             worker = AnalysisWorker(
                 self.audio_data,
@@ -845,6 +1021,11 @@ class CalibrationDialog(QDialog):
             max_gain = max(abs(g) for g in eq_settings["band_gains"])
             logger.debug("Max correction: %.1f dB", round(max_gain, 1))
 
+        eq_settings = deepcopy(eq_settings)
+        candidate = deepcopy(self._candidate_metadata or {})
+        if isinstance(candidate, dict):
+            candidate["verified_stages"] = []
+        eq_settings["_candidate"] = candidate
         apply_recommended = bool(eq_settings.get("apply_recommended", True))
         if apply_recommended:
             self.eq_settings = eq_settings
@@ -1027,6 +1208,7 @@ class CalibrationDialog(QDialog):
         self.recording_state = "idle"
         self._clear_eq_candidate()
         self.audio_data = None
+        self._capture_context_key = None
         self.progress_bar.setValue(0)
         self.time_label.setText(f"Time remaining: {RECORDING_DURATION:.0f}s")
         self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
@@ -1045,6 +1227,7 @@ class CalibrationDialog(QDialog):
         """Discard the only candidate that may be applied."""
         self.eq_settings = None
         self._candidate_target_metadata = None
+        self._candidate_metadata = None
 
     def _stop_owned_processor(self):
         """Stop the processor only if this dialog started it."""
@@ -1078,7 +1261,7 @@ class CalibrationDialog(QDialog):
             logger.warning("Failed to stop raw recording during cleanup: %s", e)
 
         try:
-            parent.processor.set_output_mute(False)
+            _set_temporary_mute(parent, _TEMPORARY_MUTE_REASON, False)
         except Exception as e:
             logger.warning("Failed to unmute output during cleanup: %s", e)
 

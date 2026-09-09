@@ -20,6 +20,7 @@ import prune_bundle
 import package_smoke
 import verify_release_assets
 import fetch_release_assets
+import release_provenance
 import check_versions
 import run_semgrep
 import check_workflows
@@ -1058,7 +1059,7 @@ def test_verify_release_assets_rejects_absolute_and_traversal_paths(
 def test_verify_release_assets_accepts_attested_source_build(tmp_path, monkeypatch):
     dll = tmp_path / "df.dll"
     dll.write_bytes(b"verified-source-build")
-    for relative in verify_release_assets.SOURCE_RECIPE_FILES:
+    for relative in release_provenance.DEEPFILTER_RECIPE_FILES:
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         if relative != "build-support/deepfilter/provenance.json":
@@ -1089,7 +1090,7 @@ def test_verify_release_assets_accepts_attested_source_build(tmp_path, monkeypat
     )
     recipe_files = {
         relative: verify_release_assets._sha256(tmp_path / relative)
-        for relative in verify_release_assets.SOURCE_RECIPE_FILES
+        for relative in release_provenance.DEEPFILTER_RECIPE_FILES
     }
     attestation = {
         "schema_version": 1,

@@ -324,6 +324,12 @@ class LatencyCalibrationDialog(QDialog):
             QMessageBox.critical(self, "Error", "Could not find audio processor.")
             return
 
+        if getattr(owner, "user_muted", False):
+            QMessageBox.information(
+                self, "Output muted", "Unmute output before measuring latency."
+            )
+            return
+
         try:
             if not owner.processor.is_running():
                 input_device = getattr(owner, "input_combo", None)
@@ -583,10 +589,6 @@ class LatencyCalibrationDialog(QDialog):
                 pass
             try:
                 owner.processor.cancel_output_probe()
-            except Exception:
-                pass
-            try:
-                owner.processor.set_output_mute(False)
             except Exception:
                 pass
             try:

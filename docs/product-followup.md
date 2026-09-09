@@ -36,6 +36,8 @@ their regression coverage; reopen only if current evidence shows a remaining def
 
 - [x] Show the current preset name and saved/modified state. Verify save, save-as,
   load, manual edit, undo/redo, and reopen; preserve explicit startup/route overrides.
+- [x] Recover from an invalid Last Used preset without blocking startup. Clear
+  the unusable reference and retain a visible explanation while using defaults.
 - [x] Distinguish replacement **EQ templates**, **complete sound presets**, and
   **calibration targets** in labels and actions. EQ-only application must leave
   gate, suppressor, dynamics, and output protection unchanged.
@@ -81,6 +83,8 @@ independent application service remain unimplemented.
   do not persist raw audio, device handles, runtime buffers, or stale confidence.
 - [x] Test switching microphones, reconnecting, restarting, and migration of existing
   global preferences without silently transferring one microphone's assumptions.
+- [x] Defer device refresh while processing, so displayed endpoints and applied
+  route preferences continue to match the running stream.
 
 ## 5. Everyday controls and onboarding
 
@@ -89,6 +93,9 @@ independent application service remain unimplemented.
 - [x] Apply live mute before saving the preference. Failed or protected config
   writes must leave the requested live state applied and report that it was not saved;
   a failed native mute must never be reported as successfully muted.
+- [x] Report failed saves for route preferences, latency calibration, and setup
+  progress. Keep setup usable and let calibration saves be retried; never report
+  an in-memory change as persisted.
 - [x] Show microphone, destination, active preset, transmission/processing state,
   and a compact health summary; retain detailed diagnostics for investigation.
 
@@ -98,7 +105,8 @@ independent application service remain unimplemented.
   and calibration. Keep latency measurement optional under advanced diagnostics.
   Require explicit destination confirmation after the live-stream check, and
   expose the existing user mute control inside setup. Resume saved latency steps
-  without including latency in the default numbered journey.
+  without including latency in the default numbered journey. Resume skipped voice
+  setup directly, and show live levels and clipping feedback in the route step.
 
 ## Separate compatibility follow-up
 

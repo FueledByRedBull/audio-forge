@@ -647,10 +647,19 @@ class LatencyCalibrationDialog(QDialog):
             )
             return
 
+        if owner is None or not owner._on_latency_calibration_saved(self._latest_profile):
+            self.status_label.setText(
+                "Calibration could not be saved. Check settings-folder access and retry."
+            )
+            return
         self.calibration_saved.emit(self._latest_profile)
         self.accept()
 
     def _on_reset_clicked(self):
+        owner = self._get_processor_owner()
+        if owner is None or not owner._on_latency_calibration_reset():
+            self.status_label.setText("Calibration reset could not be saved. Retry when settings can be saved.")
+            return
         self._latest_profile = None
         self._apply_profile_to_labels(None)
         self.accept_button.setEnabled(False)

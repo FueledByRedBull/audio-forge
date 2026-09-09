@@ -8,6 +8,7 @@ DEBUG: Added terminal logging for processor state tracking
 
 from PyQt6.QtWidgets import (
     QMainWindow,
+    QDialog,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -1362,12 +1363,23 @@ class MainWindow(QMainWindow):
             and self._is_valid_input_cleanup_mode(cleanup_mode)
         ):
             return False
+        previous = route_preferences.get(route_key)
         route_preferences[route_key] = InputDevicePreference(
             channel_mode=channel_mode,
             cleanup_mode=cleanup_mode,
             provenance="explicit_user",
         )
-        save_config(self.config)
+        try:
+            saved = save_config(self.config)
+        except (OSError, TypeError, ValueError):
+            saved = False
+        if not saved:
+            if previous is None:
+                del route_preferences[route_key]
+            else:
+                route_preferences[route_key] = previous
+            self.status_bar.showMessage("Route input settings could not be saved", 6000)
+            return False
         self._apply_input_preferences_for_current_route()
         return True
 
@@ -1379,6 +1391,12 @@ class MainWindow(QMainWindow):
             isinstance(channel_mode, str) and isinstance(cleanup_mode, str)
         ):
             return False
+        if self._current_device_route_key() is None:
+            self.status_bar.showMessage(
+                "Connect devices with stable endpoint IDs before saving route input settings",
+                5000,
+            )
+            return False
         if self._set_route_input_preference(
             channel_mode=channel_mode,
             cleanup_mode=cleanup_mode,
@@ -1387,10 +1405,6 @@ class MainWindow(QMainWindow):
                 "Saved input settings for the current device route", 4000
             )
             return True
-        self.status_bar.showMessage(
-            "Connect devices with stable endpoint IDs before saving route input settings",
-            5000,
-        )
         return False
 
     def _setup_menubar(self):
@@ -1906,7 +1920,12 @@ class MainWindow(QMainWindow):
             profiles[key] = profile
             if legacy_key != key and legacy_key in profiles:
                 del profiles[legacy_key]
-            save_config(self.config)
+            try:
+                saved = save_config(self.config)
+            except (OSError, TypeError, ValueError):
+                saved = False
+            if not saved:
+                self.status_bar.showMessage("Updated latency profile could not be saved", 6000)
         return (
             profile
             if profile is not None
@@ -1965,8 +1984,7 @@ class MainWindow(QMainWindow):
         profile = self._current_latency_profile()
 
         if self.config.use_measured_latency and profile is not None:
-            if self._refresh_latency_profile_engine(profile):
-                save_config(self.config)
+            self._refresh_latency_profile_engine(profile)
             route_latency_ms = float(profile.route_latency_ms)
             if route_latency_ms <= 0.0:
                 # Compatibility for profiles constructed in-memory by older
@@ -1981,10 +1999,16 @@ class MainWindow(QMainWindow):
 
     def _on_use_measured_latency_toggled(self, enabled: bool):
         self.config.use_measured_latency = bool(enabled)
-        save_config(self.config)
         self._apply_latency_compensation_for_current_devices()
+        try:
+            saved = save_config(self.config)
+        except (OSError, TypeError, ValueError):
+            saved = False
         mode = "enabled" if enabled else "disabled"
-        self.status_bar.showMessage(f"Measured route delay in latency estimate {mode}", 4000)
+        message = f"Measured route delay in latency estimate {mode}"
+        if not saved:
+            message += "; preference could not be saved"
+        self.status_bar.showMessage(message, 4000 if saved else 6000)
 
     def _on_latency_calibration_clicked(self) -> bool:
         if self._latency_profile_key() is None:
@@ -1994,28 +2018,33 @@ class MainWindow(QMainWindow):
             )
             return False
         profile = self._current_latency_profile()
-        if profile is not None and self._refresh_latency_profile_engine(profile):
-            save_config(self.config)
+        if profile is not None:
+            self._refresh_latency_profile_engine(profile)
         existing_profile = profile.to_dict() if profile is not None else None
 
         dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
-        dialog.calibration_saved.connect(self._on_latency_calibration_saved)
-        dialog.calibration_reset.connect(self._on_latency_calibration_reset)
         self._calibration_dialog_open = True
         try:
-            dialog.exec()
+            return dialog.exec() == QDialog.DialogCode.Accepted
         finally:
             self._calibration_dialog_open = False
-        return self._current_latency_profile() is not None
 
-    def _on_latency_calibration_saved(self, profile_data: dict):
-        profile = LatencyCalibrationProfile.from_dict(profile_data)
+    def _on_latency_calibration_saved(self, profile_data: dict) -> bool:
+        previous = dict(self.config.latency_calibration_profiles)
         try:
+            profile = LatencyCalibrationProfile.from_dict(profile_data)
             self._sync_latency_profile_for_current_devices(profile)
         except ValueError as error:
             self.status_bar.showMessage(str(error), 6000)
-            return
-        save_config(self.config)
+            return False
+        try:
+            saved = save_config(self.config)
+        except (OSError, TypeError, ValueError):
+            saved = False
+        if not saved:
+            self.config.latency_calibration_profiles = previous
+            self.status_bar.showMessage("Latency calibration could not be saved; retry saving", 6000)
+            return False
         self._apply_latency_compensation_for_current_devices()
         route_latency_ms = float(profile.route_latency_ms)
         if route_latency_ms <= 0.0:
@@ -2024,27 +2053,41 @@ class MainWindow(QMainWindow):
             f"Measured route latency saved for current device pair ({route_latency_ms:.1f} ms)",
             5000,
         )
+        return True
 
-    def _on_latency_calibration_reset(self):
+    def _on_latency_calibration_reset(self) -> bool:
         key = self._latency_profile_key()
         if key is None:
             self._apply_latency_compensation_for_current_devices()
-            return
+            return False
         legacy_key = self._legacy_latency_profile_key()
+        previous = dict(self.config.latency_calibration_profiles)
         removed = False
         for candidate in {key, legacy_key}:
             if candidate in self.config.latency_calibration_profiles:
                 del self.config.latency_calibration_profiles[candidate]
                 removed = True
         if removed:
-            save_config(self.config)
+            try:
+                saved = save_config(self.config)
+            except (OSError, TypeError, ValueError):
+                saved = False
+            if not saved:
+                self.config.latency_calibration_profiles = previous
+                self.status_bar.showMessage("Latency calibration reset could not be saved", 6000)
+                return False
         self._apply_latency_compensation_for_current_devices()
         self.status_bar.showMessage(
             "Latency calibration reset for current device pair", 4000
         )
+        return True
 
     def _refresh_devices(self):
         """Refresh the device lists."""
+        if self.processor.is_running():
+            self.refresh_btn.setEnabled(False)
+            self.status_bar.showMessage("Stop processing before refreshing audio devices", 5000)
+            return
         previous_route = self._current_device_route_key()
         previous_capture_format = self._current_capture_format_context()
         previous_input = (
@@ -2380,14 +2423,24 @@ class MainWindow(QMainWindow):
                         )
                         self.config.last_preset = ""
                         save_config(self.config)
-            except (IOError, OSError, ValueError, json.JSONDecodeError) as e:
+            except (OSError, ValueError, PresetValidationError) as e:
                 logger.warning("Preset restore failed", exc_info=True)
-                self.status_bar.showMessage(f"Failed to restore preset: {e}")
+                warning = f"Could not restore the previous preset; starting with defaults. {e}"
+                self.config.load_warning = "\n".join(
+                    text for text in (self.config.load_warning, warning) if text
+                )
                 self.config.last_preset = ""
-                save_config(self.config)
+                try:
+                    cleared = save_config(self.config)
+                except (OSError, TypeError, ValueError):
+                    cleared = False
+                if not cleared:
+                    self.config.load_warning += "\nThe cleared preset reference could not be saved."
 
         # Show appropriate status message
-        if restored_count == 0:
+        if self.config.load_warning:
+            self.status_bar.showMessage(self.config.load_warning)
+        elif restored_count == 0:
             self.status_bar.showMessage("Ready")
         elif restored_count < 3:
             self.status_bar.showMessage(
@@ -2449,7 +2502,7 @@ class MainWindow(QMainWindow):
         self._store_input_preference(channel_mode=mode, cleanup_mode=cleanup_mode)
         self._apply_input_channel_mode(mode)
         self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
-        save_config(self.config)
+        self._save_input_preferences()
 
     def _on_input_cleanup_mode_changed(self):
         """Persist and apply the selected adaptive input cleanup mode."""
@@ -2462,7 +2515,17 @@ class MainWindow(QMainWindow):
         self._store_input_preference(channel_mode=channel_mode, cleanup_mode=mode)
         self._apply_input_cleanup_mode(mode)
         self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
-        save_config(self.config)
+        self._save_input_preferences()
+
+    def _save_input_preferences(self) -> None:
+        try:
+            saved = save_config(self.config)
+        except (OSError, TypeError, ValueError):
+            saved = False
+        if not saved:
+            self.status_bar.showMessage(
+                "Input settings applied for this session, but could not be saved", 6000
+            )
 
     def _start_processing(self):
         """Start audio processing."""
@@ -2500,6 +2563,7 @@ class MainWindow(QMainWindow):
             self.stop_btn.setEnabled(True)
             self.input_combo.setEnabled(False)
             self.output_combo.setEnabled(False)
+            self.refresh_btn.setEnabled(False)
             self._stream_recovery.mark_processing_started()
             self._update_session_summary()
             if DEBUG:
@@ -2537,6 +2601,7 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(running)
         self.input_combo.setEnabled(not running)
         self.output_combo.setEnabled(not running)
+        self.refresh_btn.setEnabled(not running)
         update_summary = getattr(self, "_update_session_summary", None)
         if callable(update_summary):
             update_summary()
@@ -2559,6 +2624,7 @@ class MainWindow(QMainWindow):
             self.stop_btn.setEnabled(False)
             self.input_combo.setEnabled(True)
             self.output_combo.setEnabled(True)
+            self.refresh_btn.setEnabled(True)
             self._stream_recovery.mark_processing_stopped()
             self._update_session_summary()
             if DEBUG:

@@ -529,7 +529,7 @@ def test_new_input_endpoint_does_not_inherit_another_device_preference() -> None
 
 def test_onboarding_route_check_stops_for_user_mute(qapp, monkeypatch) -> None:
     monkeypatch.setattr(
-        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: True
     )
 
     class Owner(QWidget):

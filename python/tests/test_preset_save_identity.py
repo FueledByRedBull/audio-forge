@@ -47,6 +47,33 @@ def test_saved_processing_settings_restore_on_next_launch(qapp, monkeypatch, tmp
         qapp.processEvents()
 
 
+def test_invalid_last_used_preset_falls_back_with_persistent_warning(
+    qapp, monkeypatch, tmp_path
+):
+    from mic_eq.config import get_presets_dir
+    from mic_eq.config_parts import shared
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+
+    broken = get_presets_dir() / "broken.json"
+    broken.write_text("{invalid json", encoding="utf-8")
+    main_window.save_config(AppConfig(last_preset=str(broken)))
+
+    window = MainWindow()
+    try:
+        assert window.current_preset_path is None
+        assert window.config.last_preset == ""
+        assert not window.config_warning_banner.isHidden()
+        assert "could not restore" in window.config_warning_banner.text().lower()
+        assert "could not restore" in window.status_bar.currentMessage().lower()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
 def _save_window(tmp_path: Path) -> MainWindow:
     window = MainWindow.__new__(MainWindow)
     previous_path = tmp_path / "previous.json"

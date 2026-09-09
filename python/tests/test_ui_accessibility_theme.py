@@ -334,22 +334,31 @@ def test_workflow_dialogs_scroll_vertically_without_horizontal_overflow(
     qapp.processEvents()
 
 
+@pytest.mark.parametrize("step", ("devices", "route", "voice"))
 def test_first_run_setup_buttons_fit_the_minimum_dialog(
     isolated_main_window,
     qapp,
     monkeypatch,
+    step,
 ) -> None:
     monkeypatch.setattr(
         "mic_eq.ui.first_run_setup_dialog.save_config",
-        lambda _config: None,
+        lambda _config: True,
     )
+    isolated_main_window.config.first_run_setup_step = step
     dialog = FirstRunSetupDialog(isolated_main_window)
-    dialog.resize(440, 280)
+    dialog.resize(440, 340)
     dialog.show()
     qapp.processEvents()
     qapp.processEvents()
 
-    content_rect = dialog.contentsRect()
+    scroll_area = dialog.content_scroll_area
+    body = scroll_area.widget()
+    viewport = scroll_area.viewport()
+    scrollbar = scroll_area.horizontalScrollBar()
+    assert body is not None and viewport is not None and scrollbar is not None
+    content_rect = body.contentsRect()
+    assert scrollbar.maximum() == 0
     for button in (
         dialog.back_button,
         dialog.skip_button,
@@ -357,6 +366,11 @@ def test_first_run_setup_buttons_fit_the_minimum_dialog(
         dialog.action_button,
     ):
         assert content_rect.contains(button.geometry())
+        scroll_area.ensureWidgetVisible(button)
+        qapp.processEvents()
+        assert viewport.rect().contains(
+            button.mapTo(viewport, button.rect().center())
+        )
 
     dialog.close()
     dialog.deleteLater()

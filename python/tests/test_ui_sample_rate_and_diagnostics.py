@@ -46,6 +46,7 @@ from mic_eq.config import (
     CompressorSettings,
     DeviceIdentity,
     DevicePresetBinding,
+    InputDevicePreference,
     LimiterSettings,
     Preset,
     build_latency_profile_key,
@@ -518,6 +519,7 @@ class _RecoveryWindow:
         self.status_bar = _FakeStatusBar()
         self.start_btn = _FakeControl()
         self.stop_btn = _FakeControl()
+        self.refresh_btn = _FakeControl()
         self.input_combo = _FakeControl()
         self.output_combo = _FakeControl()
         self._last_backend_warning = None
@@ -1009,7 +1011,7 @@ def test_input_channel_mode_change_persists_and_applies(monkeypatch):
     window.input_channel_mode_combo = _FakeCombo(list(INPUT_CHANNEL_MODE_OPTIONS))
     window.input_channel_mode_combo.setCurrentIndex(4)
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.save_config", lambda cfg: saved.append(cfg)
+        "mic_eq.ui.main_window.save_config", lambda cfg: saved.append(cfg) or True
     )
 
     window._on_input_channel_mode_changed()
@@ -1020,6 +1022,83 @@ def test_input_channel_mode_change_persists_and_applies(monkeypatch):
         {"noise_reference_reliability": 0.0}
     )
     assert saved == [window.config]
+
+
+@pytest.mark.parametrize("save_failure", [False, OSError("config locked")])
+def test_route_input_preference_reports_unsaved_failure(monkeypatch, save_failure):
+    window = MainWindow.__new__(MainWindow)
+    window.processor = Mock()
+    window.config = AppConfig()
+    window.input_combo = _FakeCombo(
+        [("Mic", DeviceIdentity(name="Mic", endpoint_id="input", direction="input"))]
+    )
+    window.output_combo = _FakeCombo(
+        [("Cable", DeviceIdentity(name="Cable", endpoint_id="output", direction="output"))]
+    )
+    window.input_channel_mode_combo = _FakeCombo(
+        [("Left", "left"), ("Average", "average")]
+    )
+    window.input_cleanup_mode_combo = _FakeCombo(
+        [("Off", "off"), ("Gentle", "gentle")]
+    )
+    window.status_bar = _FakeStatusBar()
+    window.input_channel_mode_combo.setCurrentIndex(0)
+    window.input_cleanup_mode_combo.setCurrentIndex(1)
+    route_key = MainWindow._current_device_route_key(window)
+    assert route_key is not None
+    previous = InputDevicePreference(channel_mode="average", cleanup_mode="off")
+    window.config.route_input_preferences[route_key] = previous
+    if isinstance(save_failure, Exception):
+        monkeypatch.setattr(
+            "mic_eq.ui.main_window.save_config",
+            Mock(side_effect=save_failure),
+        )
+    else:
+        monkeypatch.setattr(
+            "mic_eq.ui.main_window.save_config",
+            Mock(return_value=save_failure),
+        )
+
+    assert not window._save_current_route_input_preference()
+
+    assert window.config.route_input_preferences[route_key] == previous
+    assert "could not be saved" in window.status_bar.messages[-1][0].lower()
+
+    window.compressor_panel = Mock()
+    window._on_input_channel_mode_changed()
+    window.processor.set_input_channel_mode.assert_called_with("left")
+    assert "applied for this session" in window.status_bar.messages[-1][0]
+    window._on_input_cleanup_mode_changed()
+    window.processor.set_input_cleanup_mode.assert_called_with("gentle")
+    assert "could not be saved" in window.status_bar.messages[-1][0]
+
+
+def test_refresh_devices_defers_while_processing(qapp, monkeypatch):
+    window = MainWindow.__new__(MainWindow)
+    window.processor = Mock()
+    window.processor.is_running.return_value = True
+    window.config = AppConfig()
+    window.refresh_btn = _FakeControl()
+    window.status_bar = _FakeStatusBar()
+    window.input_combo = _FakeCombo(
+        [("Mic", DeviceIdentity(name="Mic", endpoint_id="input", direction="input"))]
+    )
+    window.output_combo = _FakeCombo(
+        [("Cable", DeviceIdentity(name="Cable", endpoint_id="output", direction="output"))]
+    )
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.list_input_devices",
+        Mock(side_effect=AssertionError("refresh enumerated while running")),
+    )
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.list_output_devices",
+        Mock(side_effect=AssertionError("refresh enumerated while running")),
+    )
+
+    window._refresh_devices()
+
+    assert not window.refresh_btn.enabled
+    assert "stop processing" in window.status_bar.messages[-1][0].lower()
 
 
 def test_input_phase_warning_marks_diagnostics_warn():
@@ -1265,6 +1344,7 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
     window.processor = Mock()
+    window.processor.is_running.return_value = False
     window.input_channel_mode_combo = _FakeCombo([("Mono", "phase_safe_mono")])
     window.input_cleanup_mode_combo = _FakeCombo([("Off", "off")])
     window.input_combo = _FakeCombo(
@@ -1324,6 +1404,7 @@ def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
     window.processor = Mock()
+    window.processor.is_running.return_value = False
     window.input_combo = _FakeCombo(
         [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
     )
@@ -1364,6 +1445,7 @@ def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatc
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
     window.processor = Mock()
+    window.processor.is_running.return_value = False
     window.input_channel_mode_combo = _FakeCombo([("Mono", "phase_safe_mono")])
     window.input_cleanup_mode_combo = _FakeCombo([("Off", "off")])
     window.input_combo = _FakeCombo(

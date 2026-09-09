@@ -86,6 +86,9 @@ implementation. Concrete verification work is in PR #63's product-followup docum
 - [ ] O16 - #20/#21: independent speech-event annotations remain not planned
   until a product decision requires human labels. Listening infrastructure
   (#24/#25) is already covered by section A, not a second active project.
+  The old roadmap's consented, redistributable multi-speaker/microphone/room/
+  language corpus, blind de-esser ratings and held-out refit are part of this
+  same hold, not approved data collection.
 - [ ] O17 - Teliko listening comparison remains unperformed, not failed. Reopen
   only with one fixed raw voice take, matched incumbent/candidate renders, safe
   loudness alignment, and a blind comparison. Do not invent preference evidence.
@@ -116,6 +119,16 @@ implementation. Concrete verification work is in PR #63's product-followup docum
   automatic Voice Setup already exist. Full automatic hardware-loopback detection
   without user routing remains optional; do not claim a measured route delay
   identifies physical one-way latency or removes that delay from the audio path.
+- [ ] O26 - Historical Qt/Semgrep dependency refresh proposals are conditional
+  on current advisories, reachable functionality, measured benefit and the
+  existing hashed dependency/package checks. Old suggested versions are not
+  upgrade targets. Preserve required notices, source inputs and regression gates.
+
+Historical sources: [roadmap](https://github.com/FueledByRedBull/audio-forge/blob/a99d7ff3fe99fed40ab545efd934aa5148cc1d3f/ROADMAP.md),
+[listening protocol](https://github.com/FueledByRedBull/audio-forge/blob/011888346f9071f8fd4d2b3e0292428d99a40513/evaluation/LISTENING_PROTOCOL.md),
+and [readiness review](https://github.com/FueledByRedBull/audio-forge/blob/0767172b268f8e85e662885fb0b156ea3215d63f/docs/v2-readiness.md).
+The old protocol's listener counts, trial/score rules and acceptance thresholds
+remain historical proposals; they are not reinstated as release requirements.
 
 "Unchecked" in this planning document means held/not adopted, not approval to
 build. Existing negative decisions remain valid until their reopening condition

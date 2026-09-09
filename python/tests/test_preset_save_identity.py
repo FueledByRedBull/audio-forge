@@ -191,7 +191,9 @@ def test_preset_strength_round_trip_matches_live_processor(qapp, monkeypatch, tm
         qapp.processEvents()
 
 
-@pytest.mark.parametrize("write_result", [False, OSError("disk full")])
+@pytest.mark.parametrize("write_result", [
+    False, OSError("disk full"), TypeError("invalid value"), ValueError("non-finite value"),
+])
 def test_close_stops_processing_before_reporting_settings_failure(
     qapp, monkeypatch, tmp_path, write_result,
 ):

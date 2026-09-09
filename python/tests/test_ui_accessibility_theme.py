@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from PyQt6.QtCore import QRect, Qt
 from PyQt6.QtGui import QPalette
-from PyQt6.QtWidgets import QScrollArea, QWidget
+from PyQt6.QtWidgets import QLabel, QScrollArea, QWidget
 
 from mic_eq.config import AppConfig
 from mic_eq.ui.accessibility import audit_widget_tree, set_accessible
@@ -50,6 +50,32 @@ def isolated_main_window(qapp, monkeypatch):
     window.close()
     window.deleteLater()
     qapp.processEvents()
+
+
+@pytest.mark.parametrize("states, mute_error, expected", [
+    (("idle", "idle"), False, "idle"),
+    (("idle", "ok"), False, "ok"),
+    (("ok", "warn"), False, "warn"),
+    (("warn", "bad"), True, "bad"),
+    (("idle", "idle"), True, "warn"),
+])
+def test_compact_health_aggregation_and_stop(isolated_main_window, states, mute_error, expected):
+    window = isolated_main_window
+    labels = tuple(QLabel(window) for _ in states)
+    for label, state in zip(labels, states):
+        label.setProperty("health_state", state)
+    window._health_decision_widgets = labels
+    window._health_layout_widgets = ()
+    window._output_mute_error = mute_error
+    window._update_diagnostic_labels(
+        diagnostics={}, latency_ms=0, dsp_time_ms=0,
+        input_buf=0, output_buf=0, rnnoise_buf=0,
+    )
+    assert window.health_summary_label.property("health_state") == expected
+    window._stop_processing()
+    window._update_meters()
+    assert window.health_summary_label.text() == "Health: --"
+    assert window.health_summary_label.property("health_state") == "idle"
 
 
 def test_all_semantic_text_pairs_meet_wcag_aa_contrast() -> None:

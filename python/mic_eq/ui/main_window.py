@@ -983,6 +983,7 @@ class MainWindow(QMainWindow):
         label.setProperty("health_state", state)
 
     def _reset_health_labels(self) -> None:
+        self._set_health_chip(self.health_summary_label, "Health: --", "idle")
         self._set_health_chip(self.input_health_label, "Input: --", "idle")
         self._set_health_chip(self.output_health_label, "Output: --", "idle")
         self._set_health_chip(self.gate_health_label, "Gate: --", "idle")
@@ -1192,7 +1193,7 @@ class MainWindow(QMainWindow):
             self.config.main_control_tab_index = int(self.control_tabs.currentIndex())
         try:
             return save_config(self.config)
-        except OSError:
+        except (OSError, TypeError, ValueError):
             logger.exception("Could not save window settings")
             self.status_bar.showMessage("Could not save window settings", 5000)
             return False
@@ -3634,8 +3635,8 @@ class MainWindow(QMainWindow):
             for label in self._health_decision_widgets + self._health_layout_widgets:
                 state = label.property("health_state")
                 states.append(state if isinstance(state, str) else "idle")
-            state = "bad" if "bad" in states else "warn" if "warn" in states else "ok"
-            if self.__dict__.get("_output_mute_error") and state == "ok":
+            state = next((level for level in ("bad", "warn", "ok") if level in states), "idle")
+            if self.__dict__.get("_output_mute_error") and state in {"ok", "idle"}:
                 state = "warn"
             self._set_health_chip(self.health_summary_label, f"Health: {state.upper()}", state)
             self._update_session_summary()

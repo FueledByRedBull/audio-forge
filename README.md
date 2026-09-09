@@ -160,6 +160,10 @@ See [Development Assets](#development-assets) for the full runtime asset and env
 4. Tune EQ/dynamics manually, run Auto-EQ, or run Auto Voice Setup for a broader voice-chain calibration.
 5. Optionally measure route latency for calibrated reporting; this does not reduce audio delay.
 
+AudioForge opens with processing stopped; use **Start Processing** to send audio.
+**Stop Processing** leaves the app open. Closing the main window or choosing
+**File > Exit** stops audio and quits. AudioForge does not start with Windows.
+
 Useful behavior to know:
 
 - Device refresh keeps the current selection when the same device is still available.

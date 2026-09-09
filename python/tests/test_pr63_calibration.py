@@ -138,10 +138,10 @@ class _ContextRestoreStage(_RestoreStage):
 class _ContextRestoreOwner(_RestoreOwner):
     def __init__(self) -> None:
         super().__init__()
-        self.context_key = "route-a"
+        self.context_key: str | None = "route-a"
         self.compressor_panel = _ContextRestoreStage()
 
-    def _calibration_context_key(self) -> str:
+    def _calibration_context_key(self) -> str | None:
         return self.context_key
 
 
@@ -175,6 +175,32 @@ def _eq_candidate() -> dict:
         "band_qs": [1.41] * 10,
         "apply_recommended": True,
         "_candidate": _eq_candidate_metadata(),
+    }
+
+
+def _voice_candidate_metadata(context_key: str | None = None) -> dict:
+    return {
+        "scope": "full_voice_setup",
+        "allowed_scope": ["eq", "gate", "deesser", "compressor", "limiter"],
+        "target": {
+            "curve": "broadcast",
+            "target_lufs": -18.0,
+            "dynamics_intensity": "balanced",
+        },
+        "capture_identity": {
+            "generation": 1,
+            "sample_rate": 48_000,
+            "noise_samples": 16,
+            "voice_samples": 16,
+            "context_key": context_key,
+        },
+        "options": {
+            "vad_available": False,
+            "dynamics_intensity": "balanced",
+            "custom_target_p95_db": 3.5,
+            "custom_peak_cap_db": 8.0,
+        },
+        "verified_stages": [],
     }
 
 
@@ -406,6 +432,28 @@ def test_rollback_drops_stale_noise_reliability_but_restores_numeric_settings(
         dialog.reject()
 
 
+def test_rollback_drops_noise_reliability_when_context_is_unknown(qapp, monkeypatch) -> None:
+    owner = _ContextRestoreOwner()
+    owner.context_key = None
+    dialog = VoiceSetupDialog()
+    dialog._pre_setup_snapshot = {
+        "gate": {},
+        "deesser": {},
+        "compressor": {"ratio": 2.5, "noise_reference_reliability": 0.8},
+        "limiter": {},
+        "eq": {},
+        "calibration_context_key": None,
+    }
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog._find_eq_panel_owner", lambda _widget: owner
+    )
+    try:
+        assert dialog._restore_pre_setup_snapshot() is True
+        assert owner.compressor_panel.last_settings == {"ratio": 2.5}
+    finally:
+        dialog.reject()
+
+
 def test_voice_close_and_reset_block_when_restore_owner_is_missing(qapp, monkeypatch) -> None:
     dialog = VoiceSetupDialog()
     worker = Mock()
@@ -435,29 +483,7 @@ def test_voice_close_and_reset_block_when_restore_owner_is_missing(qapp, monkeyp
 def test_voice_verification_marks_only_accepted_stages(qapp, monkeypatch) -> None:
     owner = _CalibrationOwner()
     dialog = VoiceSetupDialog(owner)
-    candidate = {
-        "scope": "full_voice_setup",
-        "allowed_scope": ["eq", "gate", "deesser", "compressor", "limiter"],
-        "target": {
-            "curve": "broadcast",
-            "target_lufs": -18.0,
-            "dynamics_intensity": "balanced",
-        },
-        "capture_identity": {
-            "generation": 1,
-            "sample_rate": 48_000,
-            "noise_samples": 16,
-            "voice_samples": 16,
-            "context_key": None,
-        },
-        "options": {
-            "vad_available": False,
-            "dynamics_intensity": "balanced",
-            "custom_target_p95_db": 3.5,
-            "custom_peak_cap_db": 8.0,
-        },
-        "verified_stages": [],
-    }
+    candidate = _voice_candidate_metadata()
     dialog.setup_result = {"_candidate": deepcopy(candidate)}
     dialog._candidate_metadata = deepcopy(candidate)
     dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
@@ -478,7 +504,43 @@ def test_voice_verification_marks_only_accepted_stages(qapp, monkeypatch) -> Non
         owner.close()
 
 
-def test_numeric_compressor_preset_recovers_exact_intensity_without_marker(qapp) -> None:
+def test_verification_callback_uses_capture_generation_after_launch(qapp, monkeypatch) -> None:
+    owner = _CalibrationOwner()
+    dialog = VoiceSetupDialog(owner)
+    candidate = _voice_candidate_metadata()
+    dialog.setup_result = {"_candidate": deepcopy(candidate)}
+    dialog._candidate_metadata = deepcopy(candidate)
+    dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
+    dialog._analysis_generation = 1
+    applied: list[str] = []
+    dialog.setup_applied.connect(applied.append)
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.VoiceSetupVerificationWorker.start",
+        lambda _worker: None,
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args, **_kwargs: None)
+    try:
+        dialog._complete_verification(np.zeros(16, dtype=np.float32))
+        worker = dialog.analysis_worker
+        assert worker is not None
+        verification_generation = dialog._analysis_generation
+        assert verification_generation != candidate["capture_identity"]["generation"]
+
+        worker.result_ready.emit({"decision": "accept"})
+
+        assert applied == ["broadcast"]
+        assert dialog.setup_result["_candidate"]["verified_stages"] == [
+            "eq",
+            "deesser",
+            "compressor",
+            "limiter",
+        ]
+    finally:
+        dialog.reject()
+        owner.close()
+
+
+def test_numeric_compressor_preset_marks_intensity_custom_without_marker(qapp) -> None:
     common = {
         "speech_body_db": -22.0,
         "speech_loudness_lufs": -20.0,
@@ -501,7 +563,7 @@ def test_numeric_compressor_preset_recovers_exact_intensity_without_marker(qapp)
             restored.set_compressor_settings(saved)
             assert restored.get_compressor_settings(include_calibration=True)[
                 "dynamics_profile"
-            ] == intensity
+            ] == "custom"
         finally:
             source.close()
             restored.close()

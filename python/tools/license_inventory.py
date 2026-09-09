@@ -22,6 +22,7 @@ from source_distribution import (
     load_manifest,
     verify_sources,
 )
+from verify_release_assets import load_asset_manifest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -416,7 +417,7 @@ def build_inventory(output: Path) -> dict[str, Any]:
         for component in rust_components
     }
     rust_components.extend(_deepfilter_rust_components(output, existing_rust))
-    runtime = json.loads((ROOT / "release-assets.json").read_text(encoding="utf-8"))
+    runtime = load_asset_manifest(ROOT / "release-assets.json")
     source_status = source_distribution_status(output)
     inventory = {
         "schema_version": 1, "version": project["project"]["version"],
@@ -425,7 +426,7 @@ def build_inventory(output: Path) -> dict[str, Any]:
         "python": {"version": sys.version.split()[0], "source": f"https://www.python.org/downloads/release/python-{sys.version_info.major}{sys.version_info.minor}{sys.version_info.micro}/",
                    "notices": copy_notices([Path(sys.base_prefix) / "LICENSE.txt"], output / "cpython")},
         "python_components": python_components, "rust_components": rust_components,
-        "native_assets": runtime["assets"],
+        "native_assets": list(runtime.assets),
         "source_distribution": source_status,
         "native_components": source_status.get("native_components", []),
     }

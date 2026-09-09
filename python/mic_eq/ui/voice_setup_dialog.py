@@ -1141,9 +1141,6 @@ class VoiceSetupDialog(QDialog):
             return "candidate capture sample rate is unavailable"
         if capture.get("context_key") != _owner_calibration_context_key(parent):
             return "audio route or input cleanup context changed after capture"
-        generation = capture.get("generation")
-        if generation != self._analysis_generation:
-            return "voice setup candidate is stale"
         return None
 
     def _apply_setup(self) -> None:

@@ -6,8 +6,6 @@ Controls for dynamics processing: threshold, ratio, attack, release, makeup gain
 
 import logging
 import math
-from collections.abc import Mapping
-from typing import cast
 
 from PyQt6.QtWidgets import (
     QWidget,
@@ -22,7 +20,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-from ..analysis.voice_setup import DYNAMICS_PROFILES
 from .level_meter import GainReductionMeter
 from .rate_limiter import RateLimiter
 from .accessibility import bind_label, set_accessible_group
@@ -38,41 +35,6 @@ from .layout_constants import (
 
 
 logger = logging.getLogger(__name__)
-
-
-def _infer_dynamics_profile(settings: Mapping[str, object]) -> str:
-    """Recover an intensity only when saved controls match its recommendation."""
-    required = ("ratio", "attack_ms", "release_ms", "base_release_ms")
-    if any(key not in settings for key in required):
-        return "custom"
-    raw_values = [settings[key] for key in required]
-    if not all(isinstance(value, (int, float, str)) for value in raw_values):
-        return "custom"
-    try:
-        ratio = float(cast(int | float | str, raw_values[0]))
-        attack = float(cast(int | float | str, raw_values[1]))
-        release = float(cast(int | float | str, raw_values[2]))
-        base_release = float(cast(int | float | str, raw_values[3]))
-    except (TypeError, ValueError):
-        return "custom"
-    if not all(math.isfinite(value) for value in (ratio, attack, release, base_release)):
-        return "custom"
-
-    loudness_range = (base_release - 50.0) / 6.0
-    expected_attack = max(4.0, min(12.0, 11.0 - loudness_range / 2.5))
-    expected_release = max(120.0, min(260.0, 135.0 + loudness_range * 11.0))
-    if abs(attack - expected_attack) > 0.05 or abs(release - expected_release) > 0.5:
-        return "custom"
-    base_ratio = max(1.8, min(5.5, 2.2 + loudness_range / 5.0))
-    profile = min(
-        DYNAMICS_PROFILES,
-        key=lambda name: abs(ratio / base_ratio - DYNAMICS_PROFILES[name]["ratio_scale"]),
-    )
-    return (
-        profile
-        if abs(ratio / base_ratio - DYNAMICS_PROFILES[profile]["ratio_scale"]) <= 0.02
-        else "custom"
-    )
 
 
 class CompressorPanel(QWidget):
@@ -697,10 +659,10 @@ class CompressorPanel(QWidget):
             self._dynamics_customized = bool(settings.get("dynamics_customized", False))
             self._calibrated_controls = self._dynamics_control_values()
         elif any(key in settings for key in self._dynamics_control_values()):
-            # Numeric preset files predate the transient marker. Recover a
-            # named intensity only for an exact recommendation signature;
-            # calibrated or hand-edited controls are intentionally custom.
-            self._dynamics_profile = _infer_dynamics_profile(settings)
+            # Numeric preset files have no calibration provenance. A partial
+            # control signature cannot distinguish a calibrated intensity from
+            # a hand-edited threshold, so keep the loaded label honest.
+            self._dynamics_profile = "custom"
             self._dynamics_customized = False
             self._calibrated_controls = self._dynamics_control_values()
         # Room-noise reliability is transient calibration evidence, not a

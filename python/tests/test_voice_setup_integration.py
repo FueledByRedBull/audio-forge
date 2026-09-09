@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+from PyQt6.QtTest import QSignalSpy
 
 from mic_eq.analysis.voice_setup import analyze_voice_setup
 from mic_eq.config import load_preset
@@ -187,7 +188,14 @@ def test_accepted_full_voice_setup_is_one_undo_transaction(
     window._history_transaction_depth += 1
     try:
         _apply_complete_candidate(window, dialog, result)
-        dialog._on_verification_complete({"decision": "accept"})
+        monkeypatch.setattr(
+            'mic_eq.ui.voice_setup_dialog.validate_voice_setup_verification',
+            lambda *_args, **_kwargs: {'decision': 'accept'},
+        )
+        accepted = QSignalSpy(dialog.setup_applied)
+        dialog._complete_verification(speech)
+        assert accepted.wait(5000), dialog.warning_label.text()
+        assert len(accepted) == 1
     finally:
         window._history_transaction_depth -= 1
 

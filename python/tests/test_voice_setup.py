@@ -761,8 +761,19 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
     )
     assert not dialog.curve_combo.isEnabled()
     assert not dialog.dynamics_combo.isEnabled()
+    dialog.curve_combo.setCurrentIndex(dialog.curve_combo.findData("podcast"))
+    dialog.dynamics_combo.setCurrentIndex(dialog.dynamics_combo.findData("dense"))
+    dialog.target_lufs_spin.setValue(-14.0)
     dialog._apply_setup()
     assert dialog.setup_state == "verification_ready"
+    assert dialog.setup_result["_candidate"]["target"] == {
+        "curve": "broadcast",
+        "target_lufs": -18.0,
+        "dynamics_intensity": "balanced",
+    }
+    assert dialog.setup_result["_candidate"]["options"]["dynamics_intensity"] == (
+        "balanced"
+    )
     assert dialog.setup_result["compressor_settings"]["threshold_db"] == -21.12
     assert dialog.setup_result["compressor_settings"]["ratio"] == 2.35
     assert dialog.setup_result["compressor_settings"]["target_p95_reduction_db"] == 3.5

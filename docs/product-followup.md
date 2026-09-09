@@ -138,7 +138,9 @@ their old unchecked boxes do not override current evidence or support policy.
   Keep parsed policy checks; do not build a general workflow framework.
 - [ ] C04 - Perform the previously proposed all-ref history audit for exposed
   credentials and large/generated objects using redacted results. No completed
-  scan is claimed. Rotate a discovered credential before considering history
+  full scan is claimed: the historical readiness review records a narrow scan
+  of 1,717 source/document blobs and four large archive objects. Rotate a
+  discovered credential before considering history
   repair; do not rewrite history for cosmetic cleanup.
 - [ ] C05 - Verify current branch/tag/publishing protections, administrative
   bypass, force-push/deletion policy, and dependency-alert reconciliation.
@@ -162,6 +164,27 @@ their old unchecked boxes do not override current evidence or support policy.
   arrangements when shipping changed dependencies (AF-02/08). The GPL distribution
   policy, inventories, pinned origins, and source packaging exist; no independent
   legal review or bit-for-bit rebuild of every upstream dependency is claimed.
+- [ ] C10 - Before claiming formal accessibility conformance, run a manual
+  Narrator check of the packaged UI. When publishing changed UI, verify the
+  sanitized README screenshots match it and refresh them if stale; inspect
+  clipping, labels, privacy, scaling, and keyboard/scroll access. Automated
+  contrast/widget-tree tests do not certify the Windows screen-reader bridge.
+
+The historical [readiness review](https://github.com/FueledByRedBull/audio-forge/blob/0767172b268f8e85e662885fb0b156ea3215d63f/docs/v2-readiness.md)
+records AF/F implementation and measurements; the local ledger preserves each
+individual disposition. Routing is complete:
+
+| Original items | Current home |
+| --- | --- |
+| AF-01..08, AF-10..15, AF-17, AF-19..20 | Implemented hardening; preserve existing regressions and scoped evidence. Remaining verification is C03..C09, not a request to repeat every fix. |
+| AF-09 | C01/C02 physical compatibility, deferred under current support policy. |
+| AF-16 | C03: parsed checks exist; remaining execution-proof/linter recommendations are conditional. |
+| AF-18 | PR #64 O15: optional ownership extraction. |
+| Correctness F01..F14 | Implemented and tested; old unchecked boxes are historical. Physical observations remain C01/C02. |
+| January cleanup plans | Current naming/versioning fulfilled or superseded; only selective C08 cleanup remains. Do not execute old blanket-deletion commands. |
+| De-esser/latency plan | Implemented; physical/CPU targets C01/C02/C06, optional extensions PR #64 O25. |
+| Accessibility/screenshot contracts | Existing automated checks plus conditional C10 manual/current-image verification. |
+| Listening protocol, old roadmap, rejected DSP candidates | PR #64; held or rejected, not new merge gates. |
 
 Historical plans are superseded where they call for deleting the now-required
 `df.dll`, treating all `target/` content as disposable, using `build.ps1`,

@@ -1080,15 +1080,25 @@ class MainWindow(QMainWindow):
 
     def _on_user_mute_toggled(self, checked: bool) -> None:
         self.user_muted = bool(checked)
+        self._apply_output_mute()
+        saved = False
         if self.__dict__.get("config") is not None:
             self.config.user_muted = self.user_muted
-            save_config(self.config)
-        self._apply_output_mute()
+            try:
+                saved = save_config(self.config)
+            except (OSError, TypeError, ValueError):
+                pass
         if self.__dict__.get("_output_mute_error"):
-            message = "Output mute preference saved; it will apply when audio starts"
+            message = "Output mute change could not be applied"
+            if saved:
+                message += "; preference saved for the next start"
+        elif self.user_muted or self.__dict__.get("_temporary_mute_reasons", set()):
+            message = "Output muted"
         else:
-            message = "Output muted by user" if self.user_muted else "Output unmuted by user"
-        self.status_bar.showMessage(message, 3000)
+            message = "Output unmuted"
+        if not saved:
+            message += "; preference could not be saved"
+        self.status_bar.showMessage(message, 6000 if not saved else 3000)
 
     def _update_session_summary(self) -> None:
         """Keep the compact route/preset/transmission summary current."""

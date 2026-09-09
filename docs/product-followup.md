@@ -2,8 +2,9 @@
 
 Implementation checklist for [PR #63](https://github.com/FueledByRedBull/audio-forge/pull/63).
 Unchecked items still require implementation or verification.
-Optional ideas and experiments are tracked separately in
-[PR #64](https://github.com/FueledByRedBull/audio-forge/pull/64).
+Optional ideas and experiments were recorded in the closed, unmerged planning
+[PR #64](https://github.com/FueledByRedBull/audio-forge/pull/64). Listening comparison,
+tray operation, and background controls remain outside this implementation pass.
 Preserve the fixes in merged [PR #62](https://github.com/FueledByRedBull/audio-forge/pull/62).
 Keep PR #63 unmerged until the owner authorizes merging.
 
@@ -46,6 +47,11 @@ their regression coverage; reopen only if current evidence shows a remaining def
 
 ## 2. Consistent calibration and settings application
 
+EQ-only and Full Voice Setup retain separate dialog orchestration and apply
+settings through the existing panels. The items below cover shared helpers and
+tested application/rollback behavior; a unified calibration session and an
+independent application service remain unimplemented.
+
 - [x] Make EQ-only and Full Voice Setup share capture ownership, cancellation,
   candidate validity, review, application, and rollback rules. Preserve useful
   shortcuts and scope-specific analysis options, including optional noise capture.
@@ -80,6 +86,9 @@ their regression coverage; reopen only if current evidence shows a remaining def
 
 - [x] Add user mute separate from temporary calibration/recovery mute. Calibration
   completion, cancellation, and errors must never clear the user's mute choice.
+- [x] Apply live mute before saving the preference. Failed or protected config
+  writes must leave the requested live state applied and report that it was not saved;
+  a failed native mute must never be reported as successfully muted.
 - [x] Show microphone, destination, active preset, transmission/processing state,
   and a compact health summary; retain detailed diagnostics for investigation.
 
@@ -87,6 +96,9 @@ their regression coverage; reopen only if current evidence shows a remaining def
   Keep audio activity unmistakable.
 - [x] Guide route selection, speech-level/clipping checks, destination reception,
   and calibration. Keep latency measurement optional under advanced diagnostics.
+  Require explicit destination confirmation after the live-stream check, and
+  expose the existing user mute control inside setup. Resume saved latency steps
+  without including latency in the default numbered journey.
 
 ## Separate compatibility follow-up
 

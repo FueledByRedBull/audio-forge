@@ -9,6 +9,7 @@ from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QDialog,
     QComboBox,
+    QCheckBox,
     QGridLayout,
     QGroupBox,
     QLabel,
@@ -31,30 +32,32 @@ from .layout_constants import (
 from .theme import DESCRIPTION_LABEL_STYLE, message_text_style
 
 
+DEFAULT_SETUP_STEPS = ("devices", "route", "voice")
+
+
 STEP_CONTENT = {
     "devices": (
-        "1. Choose your route",
+        "1. Choose devices",
         "Select the microphone and destination for your calls, games, or recording. "
         "Choose a virtual cable when another app should receive AudioForge output.",
         "Use Selected Route",
     ),
     "route": (
-        "2. Check the live route",
+        "2. Check speech and clipping",
         "Start processing, speak at a normal level, and watch the input/output "
         "levels and clipping indicators. Then check your call, game, or recording "
-        "app for the microphone signal; AudioForge cannot confirm destination-app "
-        "reception from here. If Mute Output is on, pause setup, uncheck it in the "
-        "main window, and resume before this check.",
-        "Check Live Route",
+        "app for the microphone signal and confirm it below. AudioForge cannot "
+        "confirm destination-app reception automatically.",
+        "Check Speech & Clipping",
     ),
     "latency": (
-        "3. Optional advanced latency",
+        "Advanced latency calibration",
         "Measure the selected route when you use a loopback cable or speaker-to-microphone path. "
-        "Skip this step to continue with engine latency reporting.",
+        "This is optional and is available from the main Options menu as well.",
         "Open Latency Calibration",
     ),
     "voice": (
-        "4. Tune the voice chain",
+        "3. Calibrate the voice chain",
         "Run voice setup to tune the chain. After it finishes, check the result in your destination app.",
         "Open Voice Setup",
     ),
@@ -157,6 +160,12 @@ class FirstRunSetupDialog(QDialog):
                 "devices",
             )
         self.config.first_run_setup_state = "in_progress"
+        self._advanced_latency_mode = (
+            self.config.first_run_setup_step == "latency"
+            and self.config.first_run_setup_steps.get("latency") != "completed"
+        )
+        self._route_check_phase = "speech"
+        self._route_check_pending = False
         self._step_index = self._initial_step_index()
         self._save_progress()
         self._route_check_timer = QTimer(self)
@@ -166,7 +175,7 @@ class FirstRunSetupDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(SPACING_SECTION)
         self.progress = QProgressBar()
-        self.progress.setRange(0, len(FIRST_RUN_SETUP_STEPS))
+        self.progress.setRange(0, len(DEFAULT_SETUP_STEPS))
         self.progress.setTextVisible(True)
         layout.addWidget(self.progress)
 
@@ -183,6 +192,15 @@ class FirstRunSetupDialog(QDialog):
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(message_text_style("info"))
         layout.addWidget(self.status_label)
+
+        self.mute_checkbox = QCheckBox("Mute Output")
+        self.mute_checkbox.setToolTip(
+            "Keep transmission muted until you uncheck this control. "
+            "Calibration and stream recovery may use a separate temporary mute."
+        )
+        self.mute_checkbox.setChecked(bool(getattr(self.owner, "user_muted", False)))
+        self.mute_checkbox.toggled.connect(self._on_mute_toggled)
+        layout.addWidget(self.mute_checkbox)
 
         self.device_selection_group = QGroupBox("Audio route")
         device_layout = QGridLayout(self.device_selection_group)
@@ -241,22 +259,38 @@ class FirstRunSetupDialog(QDialog):
         button_row.setColumnStretch(1, 1)
         layout.addLayout(button_row)
 
+        self.advanced_latency_button = QPushButton("Advanced Latency Calibration...")
+        self.advanced_latency_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
+        self.advanced_latency_button.clicked.connect(self._run_latency_calibration)
+        self.advanced_latency_button.setEnabled(
+            callable(getattr(self.owner, "_on_latency_calibration_clicked", None))
+        )
+        layout.addWidget(self.advanced_latency_button)
+
         set_accessible_group(
             (
                 (self.progress, "Setup progress", None),
+                (self.mute_checkbox, "Mute output during setup", None),
                 (self.input_device_selector, "Setup microphone", None),
                 (self.output_device_selector, "Setup destination", None),
                 (self.back_button, "Previous setup step", None),
                 (self.skip_button, "Skip current setup step", None),
                 (self.pause_button, "Pause setup", None),
                 (self.action_button, "Run current setup step", None),
+                (
+                    self.advanced_latency_button,
+                    "Open advanced latency calibration",
+                    None,
+                ),
             )
         )
+        self.setTabOrder(self.mute_checkbox, self.input_device_selector)
         self.setTabOrder(self.input_device_selector, self.output_device_selector)
         self.setTabOrder(self.output_device_selector, self.back_button)
         self.setTabOrder(self.back_button, self.skip_button)
         self.setTabOrder(self.skip_button, self.pause_button)
         self.setTabOrder(self.pause_button, self.action_button)
+        self.setTabOrder(self.action_button, self.advanced_latency_button)
         self._render_step()
         configure_resizable_dialog(
             self,
@@ -268,18 +302,20 @@ class FirstRunSetupDialog(QDialog):
 
     def _initial_step_index(self) -> int:
         current = self.config.first_run_setup_step
-        if current in FIRST_RUN_SETUP_STEPS:
-            current_index = FIRST_RUN_SETUP_STEPS.index(current)
+        if current in DEFAULT_SETUP_STEPS:
+            current_index = DEFAULT_SETUP_STEPS.index(current)
             if self.config.first_run_setup_steps.get(current) != "completed":
                 return current_index
-        for index, step in enumerate(FIRST_RUN_SETUP_STEPS):
+        for index, step in enumerate(DEFAULT_SETUP_STEPS):
             if self.config.first_run_setup_steps.get(step) != "completed":
                 return index
-        return len(FIRST_RUN_SETUP_STEPS) - 1
+        return len(DEFAULT_SETUP_STEPS) - 1
 
     @property
     def current_step(self) -> str:
-        return FIRST_RUN_SETUP_STEPS[self._step_index]
+        if self._advanced_latency_mode:
+            return "latency"
+        return DEFAULT_SETUP_STEPS[self._step_index]
 
     def _save_progress(self) -> None:
         self.config.first_run_setup_step = self.current_step
@@ -287,30 +323,49 @@ class FirstRunSetupDialog(QDialog):
 
     def _render_step(self) -> None:
         step = self.current_step
+        if step != "route":
+            self._route_check_timer.stop()
+            self._route_check_pending = False
+            self._route_check_phase = "speech"
+            self.action_button.setEnabled(True)
         title, description, action = STEP_CONTENT[step]
         state = self.config.first_run_setup_steps.get(step, "pending")
         completed_count = sum(
-            value == "completed" for value in self.config.first_run_setup_steps.values()
+            self.config.first_run_setup_steps.get(default_step) == "completed"
+            for default_step in DEFAULT_SETUP_STEPS
         )
         self.progress.setValue(completed_count)
         self.progress.setFormat(
-            f"{completed_count}/{len(FIRST_RUN_SETUP_STEPS)} completed"
+            f"{completed_count}/{len(DEFAULT_SETUP_STEPS)} completed"
         )
         self.title_label.setText(f"<h2>{title}</h2>")
         self.description_label.setText(description)
         self.device_selection_group.setVisible(step == "devices")
+        self.advanced_latency_button.setVisible(step != "latency")
+        self.mute_checkbox.blockSignals(True)
+        self.mute_checkbox.setChecked(bool(getattr(self.owner, "user_muted", False)))
+        self.mute_checkbox.blockSignals(False)
         self.status_label.setText(
             "This step was completed. You can run it again or continue."
             if state == "completed"
             else "Ready. Progress is saved if you close this window."
         )
         self.status_label.setStyleSheet(message_text_style("info"))
-        self.action_button.setText(action)
-        self.back_button.setEnabled(self._step_index > 0)
+        if step == "route" and self._route_check_phase == "destination":
+            self.action_button.setText("Confirm Destination Signal")
+        else:
+            self.action_button.setText(action)
+        self.back_button.setEnabled(
+            self._advanced_latency_mode or self._step_index > 0
+        )
 
     def _set_status(self, message: str, state: str) -> None:
         self.status_label.setText(message)
         self.status_label.setStyleSheet(message_text_style(state))
+
+    def _on_mute_toggled(self, checked: bool) -> None:
+        """Route the onboarding control through the main window's mute owner."""
+        self.owner.user_mute_checkbox.setChecked(checked)
 
     def _selected_devices_ready(self) -> bool:
         input_combo = self.input_device_selector
@@ -355,6 +410,7 @@ class FirstRunSetupDialog(QDialog):
             input_combo.blockSignals(input_signals_blocked)
             output_combo.blockSignals(output_signals_blocked)
         if route_changed:
+            self._route_check_phase = "speech"
             self.owner._on_device_changed()
         return (
             input_combo.currentIndex() == input_index
@@ -382,38 +438,40 @@ class FirstRunSetupDialog(QDialog):
             return
         if step == "route":
             if not self._selected_devices_ready():
+                self._route_check_phase = "speech"
                 self._set_status(
                     "The selected route is unavailable. Return to step 1.", "error"
                 )
                 return
             if getattr(self.owner, "user_muted", False):
+                action = (
+                    "confirm the destination signal"
+                    if self._route_check_phase == "destination"
+                    else "run this check"
+                )
                 self._set_status(
-                    "Output is muted. Pause setup, uncheck Mute Output in the main window, "
-                    "then resume this check.",
+                    f"Output is muted. Uncheck Mute Output above, then {action}.",
                     "warn",
                 )
+                return
+            if self._route_check_phase == "destination":
+                healthy, reason = route_health_reason(self.owner.processor)
+                if not healthy:
+                    self._route_check_phase = "speech"
+                    self._set_status(reason, "error")
+                    self.action_button.setText("Check Speech & Clipping")
+                    return
+                self._complete_step("Destination signal confirmed by user.")
                 return
             if not self.owner.processor.is_running():
                 self.owner._start_processing()
             self.action_button.setEnabled(False)
+            self._route_check_pending = True
             self._set_status("Checking the audio stream...", "info")
             self._route_check_timer.start(750)
             return
         if step == "latency":
-            self.hide()
-            try:
-                saved = bool(self.owner._on_latency_calibration_clicked())
-            finally:
-                self.show()
-            if saved:
-                self._complete_step(
-                    "A measured latency profile was saved for this route."
-                )
-            else:
-                self._set_status(
-                    "No latency result was saved. Retry, or skip this optional step.",
-                    "warn",
-                )
+            self._run_latency_calibration()
             return
         if step == "voice":
             self.hide()
@@ -433,13 +491,44 @@ class FirstRunSetupDialog(QDialog):
                 )
 
     def _finish_route_check(self) -> None:
+        if not self._route_check_pending or self.current_step != "route":
+            return
         self._route_check_timer.stop()
+        self._route_check_pending = False
         self.action_button.setEnabled(True)
         healthy, reason = route_health_reason(self.owner.processor)
         if healthy:
-            self._complete_step(reason)
+            self._route_check_phase = "destination"
+            self._set_status(
+                f"{reason} Check your destination app, then confirm that it receives "
+                "your microphone signal.",
+                "success",
+            )
+            self.action_button.setText("Confirm Destination Signal")
         else:
+            self._route_check_phase = "speech"
+            self.action_button.setText("Check Speech & Clipping")
             self._set_status(reason, "error")
+
+    def _run_latency_calibration(self) -> None:
+        self.hide()
+        try:
+            saved = bool(self.owner._on_latency_calibration_clicked())
+        finally:
+            self.show()
+        if saved:
+            self.config.first_run_setup_steps["latency"] = "completed"
+            self._set_status("A measured latency profile was saved for this route.", "success")
+            if self._advanced_latency_mode:
+                self._advanced_latency_mode = False
+            self._save_progress()
+            self._render_step()
+        else:
+            self._set_status(
+                "No latency result was saved. Retry when needed, or continue with the "
+                "standard setup.",
+                "warn",
+            )
 
     def _complete_step(self, message: str) -> None:
         self.config.first_run_setup_steps[self.current_step] = "completed"
@@ -451,7 +540,13 @@ class FirstRunSetupDialog(QDialog):
         self._advance_or_finish()
 
     def _advance_or_finish(self) -> None:
-        if self._step_index < len(FIRST_RUN_SETUP_STEPS) - 1:
+        if self._advanced_latency_mode:
+            self._advanced_latency_mode = False
+            self._step_index = self._initial_step_index()
+            self._save_progress()
+            self._render_step()
+            return
+        if self._step_index < len(DEFAULT_SETUP_STEPS) - 1:
             self._step_index += 1
             self._save_progress()
             self._render_step()
@@ -459,18 +554,27 @@ class FirstRunSetupDialog(QDialog):
         self._finish_setup()
 
     def _go_back(self) -> None:
+        if self._advanced_latency_mode:
+            self._advanced_latency_mode = False
+            self._step_index = max(0, self._step_index - 1)
+            self._save_progress()
+            self._render_step()
+            return
         if self._step_index == 0:
             return
         self._step_index -= 1
+        self._route_check_phase = "speech"
         self._save_progress()
         self._render_step()
 
     def _finish_setup(self) -> None:
         skipped = any(
-            state == "skipped" for state in self.config.first_run_setup_steps.values()
+            self.config.first_run_setup_steps.get(step) == "skipped"
+            for step in DEFAULT_SETUP_STEPS
         )
         pending = any(
-            state == "pending" for state in self.config.first_run_setup_steps.values()
+            self.config.first_run_setup_steps.get(step) == "pending"
+            for step in DEFAULT_SETUP_STEPS
         )
         if pending:
             QMessageBox.information(
@@ -495,6 +599,7 @@ class FirstRunSetupDialog(QDialog):
 
     def reject(self) -> None:
         self._route_check_timer.stop()
+        self._route_check_pending = False
         super().reject()
 
 

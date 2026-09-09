@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
+import pytest
 from PyQt6.QtWidgets import QComboBox, QWidget
 
 from mic_eq.config import (
@@ -404,6 +405,52 @@ def test_user_mute_survives_temporary_owner_release() -> None:
     MainWindow.set_temporary_output_mute(owner, False, "calibration")
 
     assert calls == [True, True]
+
+
+@pytest.mark.parametrize("checked,temporary", [(True, False), (False, False), (False, True)])
+@pytest.mark.parametrize("write_error", [False, True])
+def test_user_mute_applies_before_failed_persistence(
+    monkeypatch, checked: bool, temporary: bool, write_error: bool
+) -> None:
+    calls: list[bool] = []
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.processor = SimpleNamespace(set_output_mute=calls.append)
+    owner.config = SimpleNamespace(user_muted=not checked)
+    owner._temporary_mute_reasons = {"calibration"} if temporary else set()
+    owner._update_session_summary = lambda: None
+    owner.status_bar = Mock()
+
+    def save(_config) -> bool:
+        assert calls == [checked or temporary]
+        if write_error:
+            raise OSError("config is not writable")
+        return False
+
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", save)
+    MainWindow._on_user_mute_toggled(owner, checked)
+
+    assert owner.user_muted is checked
+    assert owner.config.user_muted is checked
+    assert calls == [checked or temporary]
+    message = owner.status_bar.showMessage.call_args.args[0]
+    assert "preference could not be saved" in message
+    assert ("Output muted" if checked or temporary else "Output unmuted") in message
+
+
+def test_user_mute_does_not_claim_native_failure_is_muted(monkeypatch) -> None:
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.processor = SimpleNamespace(set_output_mute=Mock(side_effect=RuntimeError("unavailable")))
+    owner.config = SimpleNamespace(user_muted=False)
+    owner._temporary_mute_reasons = set()
+    owner._update_session_summary = lambda: None
+    owner.status_bar = Mock()
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
+
+    MainWindow._on_user_mute_toggled(owner, True)
+
+    message = owner.status_bar.showMessage.call_args.args[0]
+    assert "could not be applied" in message
+    assert "preference saved" in message
 
 
 def test_failed_mute_application_stays_pending() -> None:

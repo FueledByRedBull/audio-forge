@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QComboBox, QWidget
+from PyQt6.QtWidgets import QCheckBox, QComboBox, QWidget
 
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.ui.first_run_setup_dialog import (
@@ -53,6 +53,11 @@ class _Owner(QWidget):
         self.output_combo.addItem(output_identity.name, output_identity)
         self.latency_saved = False
         self.voice_applied = False
+        self.user_muted = False
+        self._temporary_mute_reasons = {"calibration"}
+        self.mute_toggles = []
+        self.user_mute_checkbox = QCheckBox(self)
+        self.user_mute_checkbox.toggled.connect(self._on_user_mute_toggled)
         self.start_calls = 0
         self.stop_calls = 0
         self.device_change_calls = 0
@@ -77,6 +82,10 @@ class _Owner(QWidget):
 
     def _on_auto_voice_setup_clicked(self):
         return self.voice_applied
+
+    def _on_user_mute_toggled(self, checked):
+        self.user_muted = bool(checked)
+        self.mute_toggles.append(self.user_muted)
 
 
 def test_route_health_requires_running_recent_error_free_callbacks():
@@ -144,8 +153,11 @@ def test_setup_resumes_at_saved_step_and_delegates_route_check(qapp, monkeypatch
     assert dialog._route_check_timer.isActive()
     dialog._finish_route_check()
     assert not dialog._route_check_timer.isActive()
+    assert config.first_run_setup_steps["route"] == "pending"
+    assert "Confirm Destination Signal" in dialog.action_button.text()
+    dialog._run_current_step()
     assert config.first_run_setup_steps["route"] == "completed"
-    assert dialog.current_step == "latency"
+    assert dialog.current_step == "voice"
 
 
 def test_setup_records_skips_and_can_resume_them(qapp, monkeypatch):
@@ -156,15 +168,23 @@ def test_setup_records_skips_and_can_resume_them(qapp, monkeypatch):
     owner = _Owner(config, _Processor(running=True))
     dialog = FirstRunSetupDialog(owner)
 
-    for _step in range(4):
+    for _step in range(3):
         dialog._skip_step()
 
     assert config.first_run_setup_state == "completed_with_skips"
-    assert set(config.first_run_setup_steps.values()) == {"skipped"}
+    assert all(
+        config.first_run_setup_steps[step] == "skipped"
+        for step in ("devices", "route", "voice")
+    )
+    assert config.first_run_setup_steps["latency"] == "pending"
 
     resumed = FirstRunSetupDialog(owner)
     assert resumed.current_step == "devices"
-    assert set(config.first_run_setup_steps.values()) == {"pending"}
+    assert all(
+        config.first_run_setup_steps[step] == "pending"
+        for step in ("devices", "route", "voice")
+    )
+    assert config.first_run_setup_steps["latency"] == "pending"
 
 
 def test_setup_applies_selected_route_from_wizard(qapp, monkeypatch):
@@ -254,6 +274,65 @@ def test_setup_keeps_same_running_route(qapp, monkeypatch):
     assert processor.is_running() is True
 
 
+def test_setup_destination_confirmation_rechecks_mute_and_stream(qapp, monkeypatch):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
+    )
+    config = AppConfig(
+        first_run_setup_state="in_progress",
+        first_run_setup_step="route",
+        first_run_setup_steps={
+            "devices": "completed",
+            "route": "pending",
+            "latency": "pending",
+            "voice": "pending",
+        },
+    )
+    processor = _Processor(running=True)
+    owner = _Owner(config, processor)
+    dialog = FirstRunSetupDialog(owner)
+
+    dialog._route_check_phase = "destination"
+    owner.user_muted = True
+    dialog._run_current_step()
+    assert config.first_run_setup_steps["route"] == "pending"
+    assert "Output is muted" in dialog.status_label.text()
+
+    owner.user_muted = False
+    processor.running = False
+    dialog._run_current_step()
+    assert dialog._route_check_phase == "speech"
+    assert "did not start" in dialog.status_label.text()
+
+
+def test_setup_ignores_late_route_timer_after_navigation(qapp, monkeypatch):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
+    )
+    config = AppConfig(
+        first_run_setup_state="in_progress",
+        first_run_setup_step="route",
+        first_run_setup_steps={
+            "devices": "completed",
+            "route": "pending",
+            "latency": "pending",
+            "voice": "pending",
+        },
+    )
+    owner = _Owner(config, _Processor())
+    dialog = FirstRunSetupDialog(owner)
+
+    dialog._run_current_step()
+    assert dialog._route_check_pending is True
+    dialog._go_back()
+    dialog._finish_route_check()
+
+    assert dialog.current_step == "devices"
+    assert config.first_run_setup_steps["route"] == "pending"
+    assert "Confirm Destination" not in dialog.action_button.text()
+    assert dialog.action_button.isEnabled()
+
+
 def test_setup_missing_devices_stays_on_route_selection(qapp, monkeypatch):
     monkeypatch.setattr(
         "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
@@ -267,3 +346,66 @@ def test_setup_missing_devices_stays_on_route_selection(qapp, monkeypatch):
     assert dialog.current_step == "devices"
     assert owner.config.first_run_setup_steps["devices"] == "pending"
     assert "must be available" in dialog.status_label.text()
+
+
+def test_setup_keeps_latency_optional_and_advanced(qapp, monkeypatch):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
+    )
+    config = AppConfig()
+    owner = _Owner(config, _Processor())
+    owner.latency_saved = True
+    dialog = FirstRunSetupDialog(owner)
+
+    dialog._skip_step()
+    dialog._skip_step()
+    assert dialog.current_step == "voice"
+    assert config.first_run_setup_steps["latency"] == "pending"
+    assert dialog.advanced_latency_button.isEnabled()
+
+    dialog._run_latency_calibration()
+    assert config.first_run_setup_steps["latency"] == "completed"
+    assert dialog.current_step == "voice"
+
+
+def test_setup_resumes_legacy_saved_latency_step(qapp, monkeypatch):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
+    )
+    config = AppConfig(
+        first_run_setup_state="in_progress",
+        first_run_setup_step="latency",
+        first_run_setup_steps={
+            "devices": "completed",
+            "route": "completed",
+            "latency": "pending",
+            "voice": "pending",
+        },
+    )
+    owner = _Owner(config, _Processor())
+    owner.latency_saved = True
+    dialog = FirstRunSetupDialog(owner)
+
+    assert dialog.current_step == "latency"
+    dialog._run_current_step()
+    assert config.first_run_setup_steps["latency"] == "completed"
+    assert dialog.current_step == "voice"
+
+
+def test_setup_mute_control_preserves_temporary_mute_owner(qapp, monkeypatch):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: None
+    )
+    owner = _Owner(AppConfig(), _Processor())
+    dialog = FirstRunSetupDialog(owner)
+
+    dialog.mute_checkbox.setChecked(True)
+
+    assert owner.user_muted is True
+    assert owner.mute_toggles == [True]
+    assert owner.user_mute_checkbox.isChecked()
+    dialog.mute_checkbox.setChecked(False)
+    assert owner.user_muted is False
+    assert owner.mute_toggles == [True, False]
+    assert not owner.user_mute_checkbox.isChecked()
+    assert owner._temporary_mute_reasons == {"calibration"}

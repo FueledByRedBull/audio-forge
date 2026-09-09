@@ -72,6 +72,12 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/dev.txt
 
+      - name: Version check
+        run: python python/tools/check_versions.py
+
+      - name: Evaluation evidence hygiene
+        run: python python/tools/check_evaluation_hygiene.py
+
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
         with:
           toolchain: 1.94.0
@@ -252,12 +258,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Pyright failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe -m pytest python/tests -q
           if ($LASTEXITCODE -ne 0) { throw "Pytest failed with exit code $LASTEXITCODE." }
-          .\.venv\Scripts\python.exe python/tools/check_versions.py
-          if ($LASTEXITCODE -ne 0) { throw "Version check failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe python/tools/check_workflows.py
           if ($LASTEXITCODE -ne 0) { throw "Workflow check failed with exit code $LASTEXITCODE." }
-          .\.venv\Scripts\python.exe python/tools/check_evaluation_hygiene.py
-          if ($LASTEXITCODE -ne 0) { throw "Evaluation hygiene check failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe python/tools/package_smoke.py --source-only
           if ($LASTEXITCODE -ne 0) { throw "Package source smoke failed with exit code $LASTEXITCODE." }
 

@@ -6,7 +6,9 @@ Optional ideas and experiments were recorded in the closed, unmerged planning
 [PR #64](https://github.com/FueledByRedBull/audio-forge/pull/64). Listening comparison,
 tray operation, and background controls remain outside this implementation pass.
 Preserve the fixes in merged [PR #62](https://github.com/FueledByRedBull/audio-forge/pull/62).
-Keep PR #63 unmerged until the owner authorizes merging.
+The owner authorized merging after final CI and package validation on September 10.
+This document owns concrete maintenance and verification follow-ups; the local
+`PROJECT_LEDGER.md` inventories all audit items, completed work, and optional holds.
 
 Goal: choose a microphone and destination, calibrate the intended settings, hear
 and choose the result, edit it, save it, and restore it predictably during daily use.
@@ -115,6 +117,58 @@ independent application service remain unimplemented.
   become available. Keep untested configurations explicit; do not reinstate them
   as v1.12.0 publication gates without a separate support-policy decision.
 
+## Reconciled audit follow-ups (September 10)
+
+These are follow-ups, not newly invented merge gates. "Needs verification" is
+not a confirmed defect. Historical audits describe their original revisions;
+their old unchecked boxes do not override current evidence or support policy.
+
+- [ ] C01 - After merging, check the final packaged app on the owner's setup:
+  first launch, route selection, mute, save/reopen, clean quit, reconnect, and
+  sleep/resume. Record the exact archive digest and observed result; physical
+  actions require the owner and must not be inferred from simulated tests.
+- [ ] C02 - Complete the separate compatibility follow-up above when equipment
+  is available: Windows 10, built-in/analog inputs, actual 44.1 kHz capture,
+  physical reconnect, default-device changes, and sleep/resume (AF-09 / #35).
+  Existing 48 kHz runs do not qualify 44.1 kHz; changing Windows Default Format
+  alone does not force the processor to open at that rate.
+- [ ] C03 - Reconcile remaining acceptance evidence for AF-16: identify existing
+  executable failure/comment/unreachable-step tests before adding any missing
+  cases. Decide whether a standard workflow linter adds coverage worth its cost.
+  Keep parsed policy checks; do not build a general workflow framework.
+- [ ] C04 - Perform the previously proposed all-ref history audit for exposed
+  credentials and large/generated objects using redacted results. No completed
+  scan is claimed. Rotate a discovered credential before considering history
+  repair; do not rewrite history for cosmetic cleanup.
+- [ ] C05 - Verify current branch/tag/publishing protections, administrative
+  bypass, force-push/deletion policy, and dependency-alert reconciliation.
+  Record observed settings; documentation or an old API response is not proof
+  of current server policy (AF-20). Do not alter protections as part of checking.
+- [ ] C06 - Locate remaining measured acceptance evidence before making broader
+  claims: supported clean-build/contributor paths, warm/cold audit-cache timings,
+  and the old de-esser CPU / physical latency-repeatability targets (AF-07/19/20).
+  Native heartbeat and allocation-scope regressions already exist; preserve them
+  rather than reopening their fixed defects or rerunning benchmarks without need.
+- [ ] C07 - Verify the old generic offline non-48-kHz EQ-prediction limitation
+  and exact extracted-runtime asset equality before treating either as closed.
+  The former was not reproduced in the fixed-48-kHz live UI; these were audit
+  limitations/hardening suggestions, not demonstrated shipped exploits.
+- [ ] C08 - After the merge, refresh the clean main checkout and retire obsolete
+  worktrees only after preserving branch-only notes and unpublished evidence.
+  Reclaim disposable caches/build output selectively. Keep `.venv313`, its base
+  interpreter under `target/python313-nuget`, runtime assets, models, corpora,
+  and the protected rewrite directory. A Git ignore rule is not deletion proof.
+- [ ] C09 - Review the combined-distribution inventory and corresponding-source
+  arrangements when shipping changed dependencies (AF-02/08). The GPL distribution
+  policy, inventories, pinned origins, and source packaging exist; no independent
+  legal review or bit-for-bit rebuild of every upstream dependency is claimed.
+
+Historical plans are superseded where they call for deleting the now-required
+`df.dll`, treating all `target/` content as disposable, using `build.ps1`,
+restoring `ROADMAP.md`, or forcing obsolete version numbers. The de-esser and
+latency wizard are implemented; physical repeatability/performance targets
+remain subject to C01/C02/C06. Optional proposals belong in PR #64's document.
+
 ## Maintenance and size follow-up
 
 Preserve release evidence, regression tests, both supported models, and Git history.
@@ -164,6 +218,25 @@ do not delete verification merely because two boundaries inspect the same bytes.
 No new build package, universal evaluation schema, or percentage-deletion target
 is required. Extract shared code only when it removes demonstrated duplication.
 
+## September 8 ponytail findings: implemented in this PR
+
+| ID | Disposition |
+| --- | --- |
+| PT-01 | Deduplicate corresponding-source inputs by content identity. |
+| PT-02 | Publish five assets, consolidating sidecars into evidence and checksums. |
+| PT-03 | Reuse matching remote digests on promotion preflight; retain final byte checks. |
+| PT-04 | Use ordinary imports for test tools where isolation is unnecessary. |
+| PT-05 | Reuse Qt slider/spinbox binding without removing stage-specific behavior. |
+| PT-06 | Reuse the WAV reader while retaining caller-specific validation. |
+| PT-07 | Reuse settings serialization for preset application. |
+| PT-08 | Use native combo lookup for simple string identities. |
+| PT-09 | Reuse catalog recipes for EQ buttons. |
+| PT-10 | Remove the unused recorded-audio getter and its getter-only test. |
+
+All ten are implemented, not ten pending deletion requests. The original audit's
+line/byte savings were estimates or historical measurements, not new package
+claims. Required validation, source records, and retained evaluations remain.
+
 ## Validate PR #63 before merging
 
 Record commit-specific results on PR #63 and its CI/Release package runs,
@@ -173,4 +246,4 @@ so recording successful builds does not require another source commit.
 - Exercise the changed source-packaging, evidence-generation, and candidate
   validation paths; verify installation and applicable upgrade behavior.
 - Validate promotion behavior without publishing or creating a tag.
-- Review the final diff and CI results; keep this PR unmerged until authorized.
+- Review the final diff and CI results, then merge under the September 10 authorization.

@@ -15,7 +15,7 @@ runs locally through a Rust engine and a PyQt interface.
 
 **[Download](#download)** · [First setup](#using-the-app) · [Features](#what-it-does) · [Build from source](#quick-start-from-source) · [Get help](#help-and-contributing)
 
-Current version: `v1.12.0`
+Current version: `v1.12.1`
 
 ![AudioForge main window showing sanitized input and virtual-route output selection, cleanup controls, and the editable ten-band EQ.](docs/images/audioforge-routing-eq.png)
 
@@ -347,7 +347,7 @@ The portable folder is intended to be archived as a single distributable:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.12.0-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.12.1-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 The v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz, tar.zst,

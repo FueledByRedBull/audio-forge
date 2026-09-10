@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## v1.12.1
+
+- Show saved/modified preset identity and distinguish complete sound presets from EQ templates.
+- Recover from invalid Last Used presets with defaults and a visible explanation.
+- Keep user mute independent of calibration/recovery, with explicit save-failure feedback.
+- Remember microphone-specific preferences and keep device selectors aligned with running streams.
+- Guide first-run routing, speech/clipping checks, and voice calibration; keep latency optional.
+- Preserve calibration capture identity, rollback and Undo; reject stale or incomplete results.
+- Handle failed route, latency, onboarding and window-state writes without claiming settings were saved.
+- Reset compact health indicators correctly after processing stops.
+- Deduplicate corresponding-source inputs, reuse existing validation helpers, and consolidate public downloads into five files.
+- Improve README downloads, routing instructions, screenshots, badges and help navigation.
+
 ## v1.12.0
 
 - Discard stale Auto-EQ results after retakes, keep analysis targets fixed, and

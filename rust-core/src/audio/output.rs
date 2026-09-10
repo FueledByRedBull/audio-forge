@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use super::buffer::AudioConsumer;
 use super::clock::now_micros;
-use super::device::{device_for_endpoint_id, device_name};
+use super::device::{device_for_endpoint_id, device_name, persisted_endpoint_id};
 use super::input::{AudioDeviceInfo, AudioError, TARGET_SAMPLE_RATE};
 use super::rt::{store_rt_error, RtErrorCode};
 use super::{find_48khz_config, parse_fixed_buffer_frames, supported_fixed_buffer_frames};
@@ -116,6 +116,10 @@ impl AudioOutput {
 
         let device_info = AudioDeviceInfo {
             name,
+            endpoint_id: device
+                .id()
+                .ok()
+                .map(|device_id| persisted_endpoint_id(&device_id)),
             sample_rate: supported_config.sample_rate(),
             channels: supported_config.channels(),
         };
@@ -387,7 +391,9 @@ impl AudioOutput {
                     last_callback_time_us.store(now_micros(), Ordering::Relaxed);
 
                     if let Some(probe) = output_probe.as_mut() {
-                        if probe.cancel_requested.load(Ordering::Acquire) {
+                        if probe.cancel_requested.load(Ordering::Acquire)
+                            || output_muted_clone.load(Ordering::Acquire)
+                        {
                             Self::discard_probe(probe, &mut mono_scratch);
                         } else if probe.active.load(Ordering::Acquire) {
                             let frames_needed = if num_channels == 1 {
@@ -674,6 +680,10 @@ pub fn list_output_devices() -> Result<Vec<AudioDeviceInfo>, AudioError> {
             if let Ok(config) = device.default_output_config() {
                 devices.push(AudioDeviceInfo {
                     name,
+                    endpoint_id: device
+                        .id()
+                        .ok()
+                        .map(|device_id| persisted_endpoint_id(&device_id)),
                     sample_rate: config.sample_rate(),
                     channels: config.channels(),
                 });

@@ -1,33 +1,87 @@
 # AudioForge
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/)
-[![Rust](https://img.shields.io/badge/rust-1.94.0-orange.svg)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)]()
+**Shape your live microphone sound. Keep the processing on your PC.**
 
-AudioForge is a Windows microphone processor for people who want a cleaner live mic without sending audio through a cloud service. It combines a Rust realtime audio core with a PyQt desktop UI for noise suppression, smart gating, Auto-EQ, Auto Voice Setup, latency calibration, and dynamics control.
+[![Latest release](https://img.shields.io/github/v/release/FueledByRedBull/audio-forge?label=download&color=287dba)](https://github.com/FueledByRedBull/audio-forge/releases/latest)
+[![CI on master](https://github.com/FueledByRedBull/audio-forge/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/FueledByRedBull/audio-forge/actions/workflows/ci.yml?query=branch%3Amaster)
+[![Windows x64](https://img.shields.io/badge/platform-Windows_x64-287dba)](#status)
+[![Source license: MIT](https://img.shields.io/badge/source-MIT-64748b)](LICENSE)
+[![Packaged app: GPLv3](https://img.shields.io/badge/packaged_app-GPLv3-64748b)](#license)
+
+AudioForge is a Windows desktop microphone processor for calls, streaming, and
+recording. Reduce background noise, shape your voice with editable EQ and
+dynamics, and use guided calibration to find a starting point. Audio processing
+runs locally through a Rust engine and a PyQt interface.
+
+**[Download](#download)** · [First setup](#using-the-app) · [Features](#what-it-does) · [Build from source](#quick-start-from-source) · [Get help](#help-and-contributing)
 
 Current version: `v1.12.0`
 
+![AudioForge main window showing sanitized input and virtual-route output selection, cleanup controls, and the editable ten-band EQ.](docs/images/audioforge-routing-eq.png)
+
 ## Download
 
-Download the latest published Windows build from the
-[latest AudioForge release](https://github.com/FueledByRedBull/audio-forge/releases/latest):
+Get the [latest published Windows release](https://github.com/FueledByRedBull/audio-forge/releases/latest).
+Choose **one** app download:
 
-- Published archive: `AudioForge-v<version>-win64-ultra.7z`
-- Per-user installer: `AudioForge-v<version>-win64.msi`
-- Corresponding source: `AudioForge-v<version>-source.7z`
-- Checksum: use the matching `.7z.sha256` sidecar published by the release workflow.
+| Download | Best for | Start here |
+| --- | --- | --- |
+| `AudioForge-v<version>-win64.msi` | A normal installation for your Windows user | Run the installer, then open AudioForge. |
+| `AudioForge-v<version>-win64-ultra.7z` | A portable folder you can keep where you want | Extract the entire archive, then run `AudioForge.exe`. |
 
-The portable bundle is self-contained. Extract it and run `AudioForge.exe`.
+Both include the application runtime: **you do not need Python or Rust to run
+the packaged app**. Keep the portable folder's files together. If Windows cannot
+extract the `.7z` archive, use [7-Zip](https://www.7-zip.org/) or choose the MSI.
+Windows 10 (1809+) and Windows 11 x64 are the compatibility targets; see
+[validation and known limits](#status) for configurations actually tested.
+
+The release also includes `AudioForge-v<version>-source.7z`, corresponding
+source for redistribution/rebuilding, and `SHA256SUMS.txt` for checking downloads.
+See [release instructions](RELEASING.md) for the complete asset and evidence layout.
+
+## Using The App
+
+For a call or stream, the signal travels through this route:
+
+```text
+Microphone -> AudioForge -> Virtual audio route -> Call / streaming app
+```
+
+A virtual audio route connects one app's output to another app's input. Select
+its output/playback side in AudioForge and its input/recording side in the
+receiving app; their names depend on the installed driver.
+
+1. **Choose a route.** Select your microphone as input. For monitoring, choose
+   headphones as output. For calls or streaming, choose a virtual audio route
+   you have installed, then select its receiving endpoint as the microphone in
+   your destination app. AudioForge does not install a virtual audio driver.
+2. **Start and check.** Press **Start Processing**, speak normally, and check the
+   meters for signal and clipping. A successful check means both AudioForge
+   and your destination app show input activity, and a test recording in the
+   destination contains your processed voice.
+3. **Shape your sound.** Choose noise suppression and a gate mode, then adjust
+   EQ/dynamics manually, run Auto-EQ, or use Auto Voice Setup for guided calibration.
+4. **Save what works.** Save a complete sound preset to recall your processing
+   settings. Use mute when you need to silence transmission without quitting.
+5. **Measure latency only if needed.** Optional route calibration improves the
+   reported estimate; it does not reduce physical audio delay.
+
+AudioForge opens with processing stopped; use **Start Processing** to send audio.
+**Stop Processing** leaves the app open. Closing the main window or choosing
+**File > Exit** stops audio and quits. AudioForge does not start with Windows.
 
 ## What It Does
 
-AudioForge sits between your microphone and your output/virtual routing path. It is built for voice work where reliability matters: streaming, calls, recording chains, monitoring, and calibration-heavy setups.
+| Your goal | Tools in AudioForge |
+| --- | --- |
+| Reduce background noise | RNNoise or DeepFilterNet suppression, speech-aware gating, and input cleanup. |
+| Shape your voice | Editable ten-band EQ, Auto-EQ, and guided Auto Voice Setup. |
+| Control harshness and peaks | De-esser, compressor, and lookahead limiter. |
+| Keep control during daily use | Presets, undo/redo, mute, level meters, and runtime diagnostics. |
+| Understand your route | Input/output selection, monitoring, and optional latency measurement. |
 
-### Routing and editable EQ
-
-![AudioForge main window showing sanitized input and virtual-route output selection, cleanup controls, and the editable ten-band EQ.](docs/images/audioforge-routing-eq.png)
+<details>
+<summary>See dynamics controls and Auto Voice Setup</summary>
 
 ### Dynamics processing
 
@@ -37,9 +91,12 @@ AudioForge sits between your microphone and your output/virtual routing path. It
 
 ![AudioForge Auto Voice Setup dialog showing target and dynamics choices plus sanitized validated recommendation summaries.](docs/images/audioforge-auto-voice-setup.png)
 
-The screenshots use deterministic sanitized state. Regenerate them with
-`python/tools/capture_repository_screenshots.py`; automated checks cover their
-dimensions, hashes, alt text, and privacy boundary.
+</details>
+
+Screenshots show deterministic, sanitized app state.
+
+<details>
+<summary>Detailed processing features and settings behavior</summary>
 
 User-facing tools:
 
@@ -75,6 +132,26 @@ Operational tools:
 - Device refresh that preserves current selections when possible.
 - Portable PyInstaller packaging with bundled runtime assets.
 
+Useful behavior to know:
+
+- Device refresh keeps the current selection when the same device is still available.
+- Input/output stream setup prefers 48 kHz configs when available.
+- In VAD modes, auto threshold is the default path; the UI shows live noise floor and effective threshold.
+- Phase-safe mono retains fractional-delay history across input callbacks instead of re-estimating from isolated blocks.
+- Adaptive cleanup tracks off-nominal mains hum and its harmonic with fractional frequency/phase continuity, and selects one high-pass response instead of cascading filters.
+- Auto-EQ and Auto Voice Setup use native Silero posteriors when available and report an explicit energy-analysis fallback when they are not.
+- Auto Voice Setup rejects unusable room tone, restricts boosts for questionable references, and reports device/time/channel mismatch or recapture guidance.
+- Voice Setup candidates remain temporary until a second passage checks repeatability through EQ, de-essing, compression, and the selected limiter settings. Gate, noise suppression, input cleanup, and live loudness adaptation are outside this offline check; confirm the result in your destination app.
+- Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
+- Diagnostics separate input drops, backlog recovery, output recovery, output short-write loss, and active output underrun streaks. Historical output underrun and recovery totals stay visible without forcing the health chip into a warning state after the stream has recovered.
+- `Help > Export Diagnostics...` writes a versioned, size-bounded support
+  snapshot. It allowlists configuration and runtime health fields,
+  pseudonymizes device identities with report-local keys, and excludes raw
+  audio, raw device names, environment variables, secrets, and arbitrary
+  paths.
+
+</details>
+
 ## Status
 
 AudioForge's compatibility targets are Windows 10 (1809 or later) and Windows
@@ -95,6 +172,19 @@ Objective DSP decisions and release evidence are indexed in
 aggregates, gates, hashes, decisions, and limitations; raw per-case details are
 optional ignored outputs, not repository content.
 
+## Help and Contributing
+
+- **No sound?** Check that processing is started, mute is off, and the selected
+  output reaches the input selected in your destination app. Watch the meters
+  to see where the signal stops.
+- **Report a bug or request a feature:** [open an issue](https://github.com/FueledByRedBull/audio-forge/issues/new/choose).
+  Include your app version, expected behavior, and steps to reproduce. Use
+  **Help > Export Diagnostics...** for a bounded support snapshot; inspect any
+  attachment before sharing it.
+- **Contribute:** follow [CONTRIBUTING.md](CONTRIBUTING.md) for development and checks.
+- **Report a security issue:** use [SECURITY.md](SECURITY.md).
+- **Review measured behavior:** see the [evaluation index](evaluation/README.md).
+
 ## DSP Chain
 
 Normal processing path:
@@ -112,6 +202,8 @@ Special paths:
 Latency labels include engine/suppressor timing plus measured route delay when enabled. Calibration measures the selected output-to-input route and adds it to the reported estimate; it does not reduce physical delay. A directional one-way split is left unset unless independently measured. End-to-end latency still depends on the selected devices, driver mode, buffer sizing, and routing path.
 
 ## Requirements
+
+These requirements are for **building from source**, not running the download.
 
 - Windows 10 (1809 or later) or Windows 11, x64
 - CPython 3.13.15 x64
@@ -152,31 +244,8 @@ RNNoise is the default safe noise-suppression backend. DeepFilterNet is opt-in f
 
 See [Development Assets](#development-assets) for the full runtime asset and environment-variable list.
 
-## Using The App
-
-1. Select input and output devices.
-2. Start processing.
-3. Choose a suppressor backend and gate mode.
-4. Tune EQ/dynamics manually, run Auto-EQ, or run Auto Voice Setup for a broader voice-chain calibration.
-5. Optionally measure route latency for calibrated reporting; this does not reduce audio delay.
-
-Useful behavior to know:
-
-- Device refresh keeps the current selection when the same device is still available.
-- Input/output stream setup prefers 48 kHz configs when available.
-- In VAD modes, auto threshold is the default path; the UI shows live noise floor and effective threshold.
-- Phase-safe mono retains fractional-delay history across input callbacks instead of re-estimating from isolated blocks.
-- Adaptive cleanup tracks off-nominal mains hum and its harmonic with fractional frequency/phase continuity, and selects one high-pass response instead of cascading filters.
-- Auto-EQ and Auto Voice Setup use native Silero posteriors when available and report an explicit energy-analysis fallback when they are not.
-- Auto Voice Setup rejects unusable room tone, restricts boosts for questionable references, and reports device/time/channel mismatch or recapture guidance.
-- Voice Setup candidates remain temporary until a second passage checks repeatability through EQ, de-essing, compression, and the selected limiter settings. Gate, noise suppression, input cleanup, and live loudness adaptation are outside this offline check; confirm the result in your destination app.
-- Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
-- Diagnostics separate input drops, backlog recovery, output recovery, output short-write loss, and active output underrun streaks. Historical output underrun and recovery totals stay visible without forcing the health chip into a warning state after the stream has recovered.
-- `Help > Export Diagnostics...` writes a versioned, size-bounded support
-  snapshot. It allowlists configuration and runtime health fields,
-  pseudonymizes device identities with report-local keys, and excludes raw
-  audio, raw device names, environment variables, secrets, and arbitrary
-  paths.
+<details>
+<summary>Developer reference: assets, packaging, tests, and repository layout</summary>
 
 ## Development Assets
 
@@ -284,7 +353,7 @@ The portable folder is intended to be archived as a single distributable:
 The v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz, tar.zst,
 solid LZMA, and solid LZMA2. The command above was the smallest verified
 format. Treat the generated `.metadata.json`, `.manifest.json`, and `.sha256`
-sidecars beside a release archive as authoritative. See
+sidecars in the release evidence archive as authoritative. See
 `evaluation/archive-format-benchmark.json` for the historical format
 comparison.
 
@@ -330,6 +399,10 @@ Headless runtime checks:
 
 ## Repository Layout
 
+Regenerate the sanitized README screenshots with
+`python/tools/capture_repository_screenshots.py`; existing checks cover their
+dimensions, hashes, alt text, and privacy boundary.
+
 - `python/mic_eq`: PyQt application, analysis code, persistence, and source/development entrypoints.
 - `rust-core`: Rust audio engine exposed through PyO3.
 - `python/tests`: Python test suite.
@@ -338,6 +411,8 @@ Headless runtime checks:
 - `build_exe.ps1`: PyInstaller packaging script.
 - `AudioForge.spec`: canonical portable package definition.
 - `launcher.py`: PyInstaller/frozen-app launcher used by `AudioForge.spec`; source/development runs use `python -m mic_eq` or the `mic-eq` console entrypoint.
+
+</details>
 
 ## Roadmap
 

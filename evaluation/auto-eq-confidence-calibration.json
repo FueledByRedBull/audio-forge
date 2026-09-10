@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
   "audible_change": true,
-  "generated_at_utc": "2026-09-06T16:30:47.325083+00:00",
+  "generated_at_utc": "2026-09-08T21:37:48.338148+00:00",
   "experiment": "Corpus-derived calibration of remaining Auto-EQ confidence cutoffs",
   "decision": {
     "local_abstention": {
@@ -89,7 +89,7 @@
   "capture_count": 108,
   "active_band_observation_count": 1067,
   "source_sha256": {
-    "python/tools/calibrate_auto_eq_confidence.py": "ab0e0d0062020907516399fa564697b4a6115e31cebc4e7f671de863efaeb5a3",
+    "python/tools/calibrate_auto_eq_confidence.py": "1be440596e11624f3e243e9e289462874603f16509d49f4f654a112b92b90751",
     "python/mic_eq/analysis/auto_eq.py": "b43dfa2f415f3813e367bcdfa994b93c23d074c95bb5d306112120d945668c98",
     "python/mic_eq/analysis/auto_eq_parts/constants.py": "2dda97dcc188e3e0f8305eca11681033dd8674ec35bd60a4cd80259460f52161",
     "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "9547eb8b90d29fb6c9fb4778cb7254bba12f80438815e6bb9d403071a7fb65fa",
@@ -126,8 +126,8 @@
       "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
     },
     "runtime": {
-      "max_p99_frame_seconds": 0.8710534270000788,
-      "median_case_seconds": 0.3936203499997646,
+      "max_p99_frame_seconds": 0.6158208289986575,
+      "median_case_seconds": 0.41444679999949585,
       "platform": "Windows-11-10.0.26200-SP0",
       "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
     },

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
 import hashlib
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -13,12 +11,7 @@ import pytest
 from scipy.io import wavfile
 
 
-TOOL_PATH = Path(__file__).parent.parent / "tools" / "evaluate_deepfilter_hardening.py"
-SPEC = importlib.util.spec_from_file_location("evaluate_deepfilter_hardening", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-deepfilter_eval = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = deepfilter_eval
-SPEC.loader.exec_module(deepfilter_eval)
+import evaluate_deepfilter_hardening as deepfilter_eval
 
 
 def _write_pair_manifest(root: Path) -> tuple[Path, Path]:

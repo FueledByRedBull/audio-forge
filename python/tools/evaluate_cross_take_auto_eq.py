@@ -13,8 +13,6 @@ from typing import Any
 from release_provenance import sha256_file as _sha256
 
 import numpy as np
-from scipy.io import wavfile
-
 from mic_eq.analysis.auto_eq import analyze_auto_eq, simulate_candidate_chain
 from mic_eq.analysis.auto_eq_parts.cross_take import cross_take_evidence
 from mic_eq.analysis.auto_eq_parts.dynamic_bands import (
@@ -32,6 +30,7 @@ from mic_eq.analysis.spectrum import (
     smooth_spectrum_perceptual,
 )
 from mic_eq.analysis.vad import analyze_offline_vad
+from mic_eq.analysis.wav_io import read_mono_wav
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -56,22 +55,16 @@ def _source_sha256(path: Path) -> str:
 
 
 def _read_mono(path: Path) -> tuple[int, np.ndarray]:
-    sample_rate, raw = wavfile.read(path)
-    audio = np.asarray(raw)
-    if int(sample_rate) != 48_000 or audio.ndim != 1:
+    sample_rate, audio = read_mono_wav(
+        path,
+        allow_stereo=False,
+        dtype=np.float32,
+    )
+    if sample_rate != 48_000:
         raise ValueError(f"{path.name} must be native-48-kHz mono")
-    if np.issubdtype(audio.dtype, np.unsignedinteger):
-        info = np.iinfo(audio.dtype)
-        midpoint = float(info.max + 1) / 2.0
-        audio = (audio.astype(np.float64) - midpoint) / midpoint
-    elif np.issubdtype(audio.dtype, np.signedinteger):
-        info = np.iinfo(audio.dtype)
-        scale = float(max(abs(int(info.min)), int(info.max)))
-        audio = audio.astype(np.float64) / scale
-    converted = np.asarray(audio, dtype=np.float32)
-    if converted.size < sample_rate or not np.all(np.isfinite(converted)):
+    if audio.size < sample_rate:
         raise ValueError(f"{path.name} is too short or non-finite")
-    return int(sample_rate), converted
+    return sample_rate, audio
 
 
 def _read_manifest_take(

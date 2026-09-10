@@ -16,6 +16,8 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+from verify_release_assets import load_asset_manifest
+
 from hardware_qualification import (
     REQUIRED_DEVICE_CLASSES,
     REQUIRED_OS_RELEASES,
@@ -109,6 +111,49 @@ def build_bundle_manifest(bundle: Path) -> dict[str, Any]:
         "total_bytes": sum(entry["size"] for entry in entries),
         "files": entries,
     }
+
+
+def compare_bundle_sizes(current: dict[str, Any], previous: dict[str, Any]) -> str:
+    """Summarize uncompressed payload changes using existing release manifests."""
+    def sizes(manifest: dict[str, Any]) -> dict[str, int]:
+        entries = manifest.get("files")
+        if not isinstance(entries, list):
+            raise ValueError("manifest files must be a list")
+        result: dict[str, int] = {}
+        seen: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("manifest file must be an object")
+            path, size = entry.get("path"), entry.get("size")
+            if not isinstance(path, str) or not path or type(size) is not int or size < 0:
+                raise ValueError("manifest file requires a path and nonnegative integer size")
+            if path.casefold() in seen:
+                raise ValueError(f"duplicate manifest path: {path}")
+            seen.add(path.casefold())
+            result[path] = size
+        return result
+
+    before, after = sizes(previous), sizes(current)
+    old_total, new_total = sum(before.values()), sum(after.values())
+    changes = sorted(
+        ((path, after.get(path, 0) - before.get(path, 0)) for path in before.keys() | after.keys()),
+        key=lambda change: (-abs(change[1]), change[0]),
+    )
+    lines = [
+        "## Bundle size comparison",
+        "",
+        f"Uncompressed payload: {old_total:,} -> {new_total:,} bytes ({new_total - old_total:+,}).",
+        "Compressed download sizes are separate from these payload sizes.",
+        "",
+        "| Largest file changes (up to 20) | Previous bytes | Current bytes | Change |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for path, delta in [change for change in changes if change[1]][:20]:
+        label = path.replace("|", "&#124;").replace("`", "'").replace("\n", " ").replace("\r", " ")
+        lines.append(f"| `{label}` | {before.get(path, 0):,} | {after.get(path, 0):,} | {delta:+,} |")
+    if not any(delta for _, delta in changes):
+        lines.append("| No payload size changes | | | |")
+    return "\n".join(lines) + "\n"
 
 
 def build_path_baseline(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -297,14 +342,9 @@ def _cpu_ort_asset_errors(bundle: Path) -> list[str]:
 
     manifest_path = REPO_ROOT / "release-assets.json"
     try:
-        manifest = _load_json(manifest_path)
+        entries = load_asset_manifest(manifest_path).entries
     except (OSError, ValueError) as exc:
         return [f"CPU ORT release asset manifest could not be loaded: {exc}"]
-    entries = {
-        str(asset.get("path")): asset
-        for asset in manifest.get("assets", [])
-        if isinstance(asset, dict) and isinstance(asset.get("path"), str)
-    }
     errors: list[str] = []
     for manifest_path_name, bundle_path_name in CPU_ORT_BUNDLE_ASSETS.items():
         asset_path = bundle / bundle_path_name
@@ -373,20 +413,13 @@ def _deepfilter_attestation_errors(
     manifest_path = REPO_ROOT / "release-assets.json"
     provenance_path = REPO_ROOT / "build-support" / "deepfilter" / "provenance.json"
     try:
-        manifest = _load_json(manifest_path)
+        entries = load_asset_manifest(manifest_path).entries
         provenance = _load_json(provenance_path)
     except (OSError, ValueError) as exc:
         errors.append(f"DeepFilter source identity could not be loaded: {exc}")
         return errors
     errors.extend(_deepfilter_attestation_contract_errors(attestation, provenance))
-    manifest_asset = next(
-        (
-            asset
-            for asset in manifest.get("assets", [])
-            if isinstance(asset, dict) and asset.get("path") == "df.dll"
-        ),
-        None,
-    )
+    manifest_asset = entries.get("df.dll")
     origin = manifest_asset.get("origin") if isinstance(manifest_asset, dict) else None
     expected_upstream = provenance.get("upstream")
     if not isinstance(origin, dict) or not isinstance(expected_upstream, dict):
@@ -418,14 +451,7 @@ def _deepfilter_attestation_errors(
             elif _deepfilter_recipe_sha256(recipe_file) != raw_digest.casefold():
                 errors.append(f"DeepFilter attestation recipe hash does not match: {required}")
             if is_model:
-                manifest_model = next(
-                    (
-                        asset
-                        for asset in manifest.get("assets", [])
-                        if isinstance(asset, dict) and asset.get("path") == required
-                    ),
-                    None,
-                )
+                manifest_model = entries.get(required)
                 expected_model_hash = (
                     manifest_model.get("sha256")
                     if isinstance(manifest_model, dict)
@@ -1147,6 +1173,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     baseline.add_argument("--bundle", type=Path, required=True)
     baseline.add_argument("--output", type=Path, required=True)
+    sizes = subparsers.add_parser("compare-sizes", help="compare existing bundle manifests")
+    sizes.add_argument("--manifest", type=Path, required=True)
+    sizes.add_argument("--previous-manifest", type=Path, required=True)
     return parser
 
 
@@ -1163,6 +1192,9 @@ def _print_errors(errors: Iterable[str]) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "compare-sizes":
+        print(compare_bundle_sizes(_load_json(args.manifest), _load_json(args.previous_manifest)), end="")
+        return 0
     if args.command == "write-baseline":
         baseline = build_path_baseline(build_bundle_manifest(args.bundle))
         _write_json(args.output.resolve(), baseline)

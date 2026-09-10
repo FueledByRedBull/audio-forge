@@ -2,23 +2,15 @@
 
 from __future__ import annotations
 
-import importlib.util
 import io
-import sys
 import zipfile
-from pathlib import Path
 
 import numpy as np
 import pytest
 from scipy.io import wavfile
 
 
-TOOL_PATH = Path(__file__).parents[1] / "tools" / "fetch_cross_take_corpus.py"
-SPEC = importlib.util.spec_from_file_location("fetch_cross_take_corpus", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-TOOL = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = TOOL
-SPEC.loader.exec_module(TOOL)
+import fetch_cross_take_corpus as TOOL
 
 
 def _wav_payload(frequency_hz: float, *, stereo: bool = False) -> bytes:

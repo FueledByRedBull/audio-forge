@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 from PyQt6.QtWidgets import QWidget
 
+from mic_eq.config_parts import app_config
+from mic_eq.ui import main_window
 from tools.capture_repository_screenshots import (
     SANITIZED_INPUT_DEVICES,
     SANITIZED_OUTPUT_DEVICES,
@@ -45,9 +47,27 @@ def test_sanitized_capture_devices_are_explicit_and_non_local() -> None:
 def test_capture_generates_nonempty_portable_pngs_and_report(
     tmp_path: Path,
 ) -> None:
+    original_sources = {
+        name: getattr(main_window, name)
+        for name in (
+            "load_config",
+            "save_config",
+            "list_presets",
+            "list_input_devices",
+            "list_output_devices",
+        )
+    }
     output_dir = tmp_path / "images"
     report_path = tmp_path / "report.json"
     report = capture_screenshots(output_dir, report_path)
+
+    assert main_window.load_config is original_sources["load_config"]
+    assert main_window.save_config is original_sources["save_config"]
+    assert main_window.list_presets is original_sources["list_presets"]
+    assert main_window.list_input_devices is original_sources["list_input_devices"]
+    assert main_window.list_output_devices is original_sources["list_output_devices"]
+    assert main_window.load_config is app_config.load_config
+    assert main_window.save_config is app_config.save_config
 
     assert all(report["checks"].values())
     assert report["capture_contract"]["reads_user_config"] is False

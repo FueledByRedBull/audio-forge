@@ -25,6 +25,8 @@ import urllib.error
 import urllib.request
 import tomllib
 
+from verify_release_assets import load_asset_manifest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = ROOT / "licenses" / "source-manifest.json"
@@ -766,7 +768,7 @@ def _native_asset_entries() -> tuple[list[dict[str, Any]], list[str]]:
     if not asset_file.exists():
         return [], ["release-assets.json is missing"]
     try:
-        assets = json.loads(asset_file.read_text(encoding="utf-8"))["assets"]
+        assets = load_asset_manifest(asset_file).assets
     except (OSError, KeyError, TypeError, ValueError) as exc:
         return [], [f"Could not read release-assets.json: {exc}"]
 
@@ -774,7 +776,9 @@ def _native_asset_entries() -> tuple[list[dict[str, Any]], list[str]]:
     blockers: list[str] = []
     for asset in assets:
         path = str(asset.get("path", ""))
-        origin = asset.get("origin") if isinstance(asset.get("origin"), dict) else {}
+        origin = asset.get("origin")
+        if not isinstance(origin, dict):
+            origin = {}
         unresolved = origin.get("status") == "inherited-binary-build-identity-unresolved"
         license_text = str(asset.get("license") or "").casefold()
         restricted_license = "microsoft software license" in license_text or "proprietary" in license_text
@@ -1128,16 +1132,12 @@ def _expected_runtime_entries() -> dict[str, dict[str, Any]]:
     """Read the current runtime asset identities without resolving networks."""
     asset_file = ROOT / "release-assets.json"
     try:
-        assets = json.loads(asset_file.read_text(encoding="utf-8"))["assets"]
+        assets = load_asset_manifest(asset_file).assets
     except (OSError, KeyError, TypeError, ValueError) as exc:
         raise SourceDistributionError(f"Could not read release-assets.json: {exc}") from exc
     expected: dict[str, dict[str, Any]] = {}
     for asset in assets:
-        if not isinstance(asset, dict):
-            raise SourceDistributionError("release-assets.json contains a non-object asset")
-        path = asset.get("path")
-        if not isinstance(path, str) or not path:
-            raise SourceDistributionError("release-assets.json contains an asset without a path")
+        path = asset["path"]
         identifier = f"runtime-{Path(path).name or 'asset'}"
         if identifier in expected:
             raise SourceDistributionError(f"release-assets.json repeats asset identity {identifier}")
@@ -1519,16 +1519,19 @@ def load_manifest(path: Path) -> dict[str, Any]:
 def _archive_target(root: Path, entry: dict[str, Any]) -> Path:
     filename = entry.get("filename")
     identifier = entry.get("id")
+    digest = entry.get("sha256")
     if (
         not isinstance(filename, str)
         or not filename
         or not isinstance(identifier, str)
         or not identifier
+        or not isinstance(digest, str)
+        or not re.fullmatch(r"[0-9a-fA-F]{64}", digest)
     ):
         raise SourceDistributionError("Manifest entry has no safe id or filename")
     if Path(filename).name != filename or Path(identifier).name != identifier:
         raise SourceDistributionError(f"Unsafe source archive path in entry {identifier!r}")
-    return root / "archives" / f"{identifier}--{filename}"
+    return root / "archives" / digest.lower()
 
 
 def _is_derived_runtime_entry(entry: dict[str, Any]) -> bool:

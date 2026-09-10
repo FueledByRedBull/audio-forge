@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 
+from pathlib import Path
 
-TOOL_PATH = Path(__file__).parent.parent / "tools" / "evaluate_limiter_lookahead.py"
-SPEC = importlib.util.spec_from_file_location("evaluate_limiter_lookahead", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-limiter_eval = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = limiter_eval
-SPEC.loader.exec_module(limiter_eval)
+import evaluate_limiter_lookahead as limiter_eval
+
 REPORT_PATH = Path(__file__).resolve().parents[2] / "evaluation/limiter-lookahead-report.json"
 
 

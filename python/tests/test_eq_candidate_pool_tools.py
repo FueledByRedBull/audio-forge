@@ -2,18 +2,9 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import numpy as np
 
-TOOL_PATH = Path(__file__).parents[1] / "tools" / "evaluate_eq_candidate_pool.py"
-SPEC = importlib.util.spec_from_file_location("evaluate_eq_candidate_pool", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-TOOL = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = TOOL
-SPEC.loader.exec_module(TOOL)
+import evaluate_eq_candidate_pool as TOOL
 
 
 def _variant(*, passing: bool) -> dict:

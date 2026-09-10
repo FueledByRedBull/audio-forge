@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -10,13 +9,9 @@ from pathlib import Path
 import numpy as np
 from scipy.io import wavfile
 
+import calibrate_auto_eq_confidence as calibration
 
-TOOL_PATH = Path(__file__).parent.parent / "tools" / "calibrate_auto_eq_confidence.py"
-SPEC = importlib.util.spec_from_file_location("calibrate_auto_eq_confidence", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-calibration = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = calibration
-SPEC.loader.exec_module(calibration)
+TOOL_PATH = Path(calibration.__file__)
 
 
 def test_classification_counts_and_scores():

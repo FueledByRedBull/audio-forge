@@ -2,26 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+from scipy.io import wavfile
 
-
-TOOL_PATH = (
-    Path(__file__).parents[1] / "tools" / "evaluate_cross_take_auto_eq.py"
-)
-SPEC = importlib.util.spec_from_file_location(
-    "evaluate_cross_take_auto_eq",
-    TOOL_PATH,
-)
-assert SPEC is not None and SPEC.loader is not None
-TOOL = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = TOOL
-SPEC.loader.exec_module(TOOL)
+import evaluate_cross_take_auto_eq as TOOL
 REPORT_PATH = (
     Path(__file__).resolve().parents[2]
     / "evaluation/cross-take-auto-eq-report.json"
@@ -89,7 +77,7 @@ def test_statement_folds_never_reuse_the_tuning_statement() -> None:
 
 def test_manifest_take_rejects_substituted_audio(tmp_path: Path) -> None:
     audio_path = tmp_path / "take.wav"
-    TOOL.wavfile.write(
+    wavfile.write(
         audio_path,
         48_000,
         np.zeros(48_000, dtype=np.int16),

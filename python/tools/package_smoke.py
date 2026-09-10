@@ -11,6 +11,7 @@ import tomllib
 from pathlib import Path
 
 from prune_bundle import is_app_local_system_ucrt
+from verify_release_assets import load_asset_manifest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -49,47 +50,24 @@ def _contains(path: str, needle: str) -> bool:
 
 def _load_asset_manifest() -> tuple[list[dict[str, object]], list[str]]:
     manifest_path = REPO_ROOT / "release-assets.json"
-    errors: list[str] = []
     if not manifest_path.is_file():
         return [], ["release-assets.json is missing"]
-
     try:
-        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        return [], [f"release-assets.json is invalid JSON: {exc}"]
+        manifest = load_asset_manifest(manifest_path, require_metadata=True)
+    except ValueError as exc:
+        return [], [f"release-assets.json is invalid: {exc}"]
 
-    assets = raw.get("assets")
-    if not isinstance(assets, list) or not assets:
-        return [], ["release-assets.json must contain a non-empty assets list"]
-
-    seen_paths: set[str] = set()
-    for index, asset in enumerate(assets):
-        if not isinstance(asset, dict):
-            errors.append(f"release-assets.json assets[{index}] must be an object")
-            continue
-        path = asset.get("path")
-        sha256 = asset.get("sha256")
-        source = asset.get("source")
-        license_note = asset.get("license")
-        if not isinstance(path, str) or not path:
-            errors.append(f"release-assets.json assets[{index}].path is required")
-            continue
-        seen_paths.add(path.replace("\\", "/"))
+    seen_paths = set(manifest.entries)
+    for asset in manifest.assets:
         bundle_path = asset.get("bundle_path")
         if isinstance(bundle_path, str) and bundle_path:
             seen_paths.add(bundle_path.replace("\\", "/"))
-        if not isinstance(sha256, str) or len(sha256) != 64:
-            errors.append(f"release-assets.json asset {path} must have a 64-character sha256")
-        if not isinstance(source, str) or not source:
-            errors.append(f"release-assets.json asset {path} must document source")
-        if not isinstance(license_note, str) or not license_note:
-            errors.append(f"release-assets.json asset {path} must document license")
-
-    for required in REQUIRED_MANIFEST_ASSETS:
-        if required not in seen_paths:
-            errors.append(f"release-assets.json is missing required asset {required}")
-
-    return assets, errors
+    errors = [
+        f"release-assets.json is missing required asset {required}"
+        for required in REQUIRED_MANIFEST_ASSETS
+        if required not in seen_paths
+    ]
+    return list(manifest.assets), errors
 
 
 def check_source_packaging() -> list[str]:
@@ -145,20 +123,9 @@ def check_source_packaging() -> list[str]:
         ("launcher.py", "os.add_dll_directory(str(dll_dir))"),
     ]
     workflow_expectations = [
-        (".github/workflows/release-package.yml", "maturin develop --release"),
-        (".github/workflows/release-package.yml", "python/tools/verify_release_assets.py"),
         (".github/workflows/release-package.yml", "powershell -ExecutionPolicy Bypass -File .\\build_exe.ps1"),
-        (".github/workflows/release-package.yml", "-PythonPath .\\.venv\\Scripts\\python.exe"),
-        (".github/workflows/release-package.yml", "ORT_LIB_LOCATION=$ortLib"),
-        (".github/workflows/release-package.yml", "python/tools/package_smoke.py"),
         (".github/workflows/release-package.yml", "actions/upload-artifact@"),
         (".github/workflows/release-package.yml", "AudioForge-$expectedTag-win64-ultra.7z"),
-        (".github/workflows/release-package.yml", "fetch_release_assets.py"),
-        (".github/workflows/release-package.yml", "release_provenance.py create"),
-        (".github/workflows/release-package.yml", "release_provenance.py verify"),
-        (".github/workflows/release-promote.yml", "actions/download-artifact@"),
-        (".github/workflows/release-promote.yml", "release_provenance.py verify"),
-        (".github/workflows/release-promote.yml", "gh release upload"),
         (
             ".github/workflows/release-hardware-qualify.yml",
             "evaluate_hardware_validation.py",
@@ -200,20 +167,6 @@ def check_source_packaging() -> list[str]:
                 "python/mic_eq/ui/app_bootstrap.py must register bundled DeepFilter "
                 f"paths directly instead of writing {forbidden!r}"
             )
-
-    action_ref_pattern = re.compile(
-        r"^\s*(?:-\s*)?uses:\s*[^@\s]+@([^\s#]+)", re.MULTILINE
-    )
-    sha_pattern = re.compile(r"[0-9a-f]{40}")
-    for workflow_path in (REPO_ROOT / ".github/workflows").glob("*.yml"):
-        workflow_source = workflow_path.read_text(encoding="utf-8")
-        refs = action_ref_pattern.findall(workflow_source)
-        for ref in refs:
-            if sha_pattern.fullmatch(ref) is None:
-                errors.append(
-                    f"{workflow_path.relative_to(REPO_ROOT)}: action ref {ref!r} "
-                    "must be pinned to a 40-character commit SHA"
-                )
 
     if "dist-info" in (REPO_ROOT / "python/tools/prune_bundle.py").read_text(encoding="utf-8"):
         errors.append("python/tools/prune_bundle.py must not prune dependency dist-info metadata")

@@ -30,6 +30,8 @@ Routine test results and screenshot-generation reports belong under ignored
 
 The `python/tools/evaluate_*.py` commands regenerate current measurements;
 historical decisions retain their stated reproduction limits.
+Reports with `source_revision` preserve the original committed measurement;
+hygiene verifies both the unchanged report and its source hashes at that commit.
 Corpora and model assets are hash-pinned under ignored `models/`
 directories and are never bundled merely because they exist locally.
 `python/tools/check_evaluation_hygiene.py` rejects absolute paths, stale source
@@ -47,11 +49,17 @@ The RNNoise comparison wrapper is
 command is kept in that source file beside the wrapper it produces. Pass the
 result to `evaluate_rnnoise_backends.py --upstream-binary`.
 
+Keep the DPDFNet asset fetcher: its pinned EvalSet is also the speech corpus for
+current Auto-EQ, makeup, DeepFilter, RNNoise, and processing-order evaluations.
+`evaluate_dpdfnet_evalset.py` reproduces the official-output comparison only;
+retaining it does not restore the historical clean-failure experiment or add
+DPDFNet to the product.
+
 ## Interpretation
 
 Objective metrics establish behavior only for the recorded corpus, hardware,
 and configuration. Unobserved devices, operating-system versions, routes, or
-voices are listed as limitations rather than inferred. Release promotion
-requires a SHA-bound automated 30-minute baseline from the exact candidate and
-the OS, device, rate, and lifecycle coverage specified in
-`python/tools/hardware_qualification.py`. See [RELEASING](../RELEASING.md).
+voices are listed as limitations rather than inferred. Hardware qualification
+is optional for publication; retain the candidate revision and digest with any
+measurements and state the configurations actually tested. See
+[RELEASING](../RELEASING.md).

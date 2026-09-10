@@ -31,8 +31,8 @@ is distributed under GPLv3; dependency terms and notices accompany the bundle.
 
 Source builds use CPython 3.13.15 x64 and Rust 1.94.0. VAD uses the pinned
 CPU-only ONNX Runtime; DeepFilter uses a verified source build.
-Published checksum, manifest, metadata, and qualification files describe the
-exact downloadable artifacts.
+The release provides one SHA256SUMS file. Its evidence archive contains the
+checksums, manifests, metadata, native provenance, and qualification report.
 The release workflow validates a candidate once and promotes those same bytes.
 
 Windows 10/11 remain compatibility targets. The final portable EXE and MSI

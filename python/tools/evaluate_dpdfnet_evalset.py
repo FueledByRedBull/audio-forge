@@ -9,27 +9,21 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 from release_provenance import sha256_file as _sha256
+from mic_eq.analysis.wav_io import read_mono_wav
 
 import numpy as np
 from pesq import pesq  # type: ignore[reportMissingImports]
 from pystoi import stoi  # type: ignore[reportMissingImports]
-from scipy.io import wavfile
 
 OUTPUTS = ("Noisy", "DeepFilterNet3", "DPDFNet2", "DPDFNet4", "DPDFNet8")
 SAMPLE_RATE = 16_000
 
 
 def _load(path: Path) -> np.ndarray:
-    sample_rate, raw = wavfile.read(path)
+    sample_rate, audio = read_mono_wav(path, dtype=np.float64)
     if int(sample_rate) != SAMPLE_RATE:
         raise ValueError(f"{path} is {sample_rate} Hz, expected {SAMPLE_RATE}")
-    audio = np.asarray(raw)
-    if audio.ndim == 2:
-        audio = np.mean(audio.astype(np.float64), axis=1)
-    if np.issubdtype(audio.dtype, np.integer):
-        info = np.iinfo(audio.dtype.name)
-        audio = audio.astype(np.float64) / float(max(abs(info.min), info.max))
-    return np.asarray(np.nan_to_num(audio), dtype=np.float64)
+    return audio
 
 
 def _si_snr(reference: np.ndarray, estimate: np.ndarray) -> float:

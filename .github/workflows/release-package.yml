@@ -55,6 +55,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.release_tag || github.ref }}
+          fetch-depth: 0
+          filter: blob:none
 
       - name: Bind source revision to checked-out release ref
         run: |
@@ -70,6 +72,12 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/dev.txt
 
+      - name: Version check
+        run: python python/tools/check_versions.py
+
+      - name: Evaluation evidence hygiene
+        run: python python/tools/check_evaluation_hygiene.py
+
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
         with:
           toolchain: 1.94.0
@@ -82,9 +90,7 @@ jobs:
             target/debug
             target/release
             target/deepfilter
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'build-support/deepfilter/**', 'build_deepfilter.ps1') }}-${{ hashFiles('rust-core/**/*.rs', 'rust-core/Cargo.toml', 'Cargo.toml', 'pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-cargo-release-v2-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'build-support/deepfilter/**', 'build_deepfilter.ps1') }}-
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v3-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'rust-core/Cargo.toml', 'pyproject.toml', 'build-support/deepfilter/**', 'build_deepfilter.ps1') }}
 
       - name: Create Python 3.13 virtual environment
         run: |
@@ -252,12 +258,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Pyright failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe -m pytest python/tests -q
           if ($LASTEXITCODE -ne 0) { throw "Pytest failed with exit code $LASTEXITCODE." }
-          .\.venv\Scripts\python.exe python/tools/check_versions.py
-          if ($LASTEXITCODE -ne 0) { throw "Version check failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe python/tools/check_workflows.py
           if ($LASTEXITCODE -ne 0) { throw "Workflow check failed with exit code $LASTEXITCODE." }
-          .\.venv\Scripts\python.exe python/tools/check_evaluation_hygiene.py
-          if ($LASTEXITCODE -ne 0) { throw "Evaluation hygiene check failed with exit code $LASTEXITCODE." }
           .\.venv\Scripts\python.exe python/tools/package_smoke.py --source-only
           if ($LASTEXITCODE -ne 0) { throw "Package source smoke failed with exit code $LASTEXITCODE." }
 
@@ -280,7 +282,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/source-distribution/archives
-          key: corresponding-source-${{ hashFiles('licenses/source-manifest.json') }}
+          key: corresponding-source-content-v1-${{ hashFiles('licenses/source-manifest.json') }}
 
       - name: Hydrate and verify corresponding source
         id: source
@@ -464,6 +466,40 @@ jobs:
           "installer_manifest=$installer.manifest.json" >> $env:GITHUB_OUTPUT
           "installer_metadata=$installer.metadata.json" >> $env:GITHUB_OUTPUT
 
+      - name: Report package size changes
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_MANIFEST: ${{ steps.provenance.outputs.manifest }}
+        run: |
+          $previousJson = gh release view --repo $env:GITHUB_REPOSITORY --json tagName,assets
+          if ($LASTEXITCODE -ne 0) { throw "Could not read the preceding release for size comparison." }
+          $previous = $previousJson | ConvertFrom-Json
+          $manifestName = "AudioForge-$($previous.tagName)-win64-ultra.7z.manifest.json"
+          $comparisonDir = Join-Path $env:RUNNER_TEMP "bundle-size-comparison"
+          New-Item -ItemType Directory -Force -Path $comparisonDir | Out-Null
+          $assetNames = @($previous.assets | ForEach-Object { $_.name })
+          if ($assetNames -contains $manifestName) {
+            gh release download $previous.tagName --repo $env:GITHUB_REPOSITORY --pattern $manifestName --dir $comparisonDir
+            if ($LASTEXITCODE -ne 0) { throw "Could not download the preceding payload manifest." }
+          } else {
+            $evidenceName = "AudioForge-$($previous.tagName)-evidence.7z"
+            if ($assetNames -notcontains $evidenceName) {
+              "Size comparison unavailable: $($previous.tagName) has no retained payload manifest." >> $env:GITHUB_STEP_SUMMARY
+              exit 0
+            }
+            gh release download $previous.tagName --repo $env:GITHUB_REPOSITORY --pattern $evidenceName --dir $comparisonDir
+            if ($LASTEXITCODE -ne 0) { throw "Could not download the preceding release evidence." }
+            $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
+            & $sevenZip e (Join-Path $comparisonDir $evidenceName) $manifestName "-o$comparisonDir" -y
+            if ($LASTEXITCODE -ne 0) { throw "Could not read the preceding payload manifest." }
+          }
+          "Comparing payload with published $($previous.tagName)." >> $env:GITHUB_STEP_SUMMARY
+          .\.venv\Scripts\python.exe python/tools/release_provenance.py compare-sizes `
+            --manifest $env:CURRENT_MANIFEST `
+            --previous-manifest (Join-Path $comparisonDir $manifestName) >> $env:GITHUB_STEP_SUMMARY
+          if ($LASTEXITCODE -ne 0) { throw "Package size comparison failed." }
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: audioforge-release-candidate-${{ steps.meta.outputs.release_tag }}
@@ -482,7 +518,7 @@ jobs:
             ${{ steps.source.outputs.metadata }}
             ${{ steps.native.outputs.attestation }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
 
   validate-candidate:
     name: Validate the exact archived candidate

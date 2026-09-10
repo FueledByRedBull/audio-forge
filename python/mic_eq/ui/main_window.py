@@ -8,6 +8,7 @@ DEBUG: Added terminal logging for processor state tracking
 
 from PyQt6.QtWidgets import (
     QMainWindow,
+    QDialog,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -38,7 +39,7 @@ import os
 import sys
 import json
 import logging
-import shutil
+from dataclasses import asdict
 from pathlib import Path
 
 from .gate_panel import GatePanel
@@ -108,19 +109,20 @@ from ..config import (
     PresetValidationError,
     save_preset,
     load_preset,
+    import_preset,
     get_presets_dir,
-    get_preset_imports_dir,
     list_presets,
     BUILTIN_PRESETS,
     save_config,
     load_config,
     build_device_route_key,
     DevicePresetBinding,
+    InputDevicePreference,
+    build_input_device_preference_key,
     coerce_device_identity,
     legacy_latency_profile_key,
     LatencyCalibrationProfile,
 )
-from ..config_parts.presets import validate_preset_file_size
 
 # Enable debug logging
 DEBUG = False
@@ -215,6 +217,12 @@ class MainWindow(QMainWindow):
         # Load configuration
         self.config = load_config()
         self.current_preset_path = None
+        self.current_preset_name = "Default"
+        self.preset_modified = False
+        self._saved_preset_payload: str | None = None
+        self._temporary_mute_reasons: set[str] = set()
+        self._output_mute_error: str | None = None
+        self.user_muted = bool(getattr(self.config, "user_muted", False))
 
         # Bounded settings history with transient calibration evidence;
         # live audio buffers and realtime processor state stay out.
@@ -250,6 +258,10 @@ class MainWindow(QMainWindow):
         self._setup_menubar()
         self._setup_options_menu()
         self._setup_statusbar()
+        self.user_mute_checkbox.blockSignals(True)
+        self.user_mute_checkbox.setChecked(self.user_muted)
+        self.user_mute_checkbox.blockSignals(False)
+        self._apply_output_mute()
 
         # Populate device lists
         self._refresh_devices()
@@ -342,7 +354,7 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(
             MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL
         )
-        main_layout.setSpacing(SPACING_SECTION)
+        main_layout.setSpacing(SPACING_NORMAL)
 
         # Warning banner for missing audio devices (hidden by default)
         self.device_warning_banner = QLabel(
@@ -459,7 +471,6 @@ class MainWindow(QMainWindow):
 
         self.eq_panel = EQPanel(self.processor)
         self.eq_panel.setMinimumWidth(0)
-
         self.eq_scroll_area = QScrollArea()
         self.eq_scroll_area.setWidget(self.eq_panel)
         self.eq_scroll_area.setWidgetResizable(True)
@@ -497,6 +508,31 @@ class MainWindow(QMainWindow):
         control_stack.setContentsMargins(
             MARGIN_PANEL, SPACING_NORMAL, MARGIN_PANEL, MARGIN_PANEL
         )
+
+        self.route_status_label = QLabel("Route: --")
+        self.preset_status_label = QLabel("Preset: Default (saved)")
+        self.transmission_status_label = QLabel("Transmission: Stopped")
+        self.health_summary_label = QLabel("Health: --")
+        for label, name in (
+            (self.route_status_label, "Current audio route"),
+            (self.preset_status_label, "Active preset and saved state"),
+            (self.transmission_status_label, "Audio transmission state"),
+            (self.health_summary_label, "Compact audio health summary"),
+        ):
+            label.setAccessibleName(name)
+            label.setStyleSheet(SUBDUED_TEXT_STYLE)
+            label.setWordWrap(True)
+        session_layout = QGridLayout()
+        session_layout.setSpacing(SPACING_NORMAL)
+        session_layout.addWidget(self.route_status_label, 0, 0)
+        session_layout.addWidget(self.preset_status_label, 0, 1)
+        session_layout.addWidget(self.transmission_status_label, 0, 2)
+        session_layout.addWidget(self.health_summary_label, 0, 3)
+        session_layout.setColumnStretch(0, 1)
+        session_layout.setColumnStretch(1, 1)
+        session_layout.setColumnStretch(2, 1)
+        session_layout.setColumnStretch(3, 1)
+        control_stack.addLayout(session_layout)
 
         self.action_layout = QGridLayout()
         self.action_layout.setSpacing(SPACING_NORMAL)
@@ -551,6 +587,13 @@ class MainWindow(QMainWindow):
             "configured output protection remains. Takes precedence over Master Bypass."
         )
         self.raw_monitor_checkbox.toggled.connect(self._on_raw_monitor_toggled)
+        self.user_mute_checkbox = QCheckBox("Mute Output")
+        self.user_mute_checkbox.setToolTip(
+            "Keep transmission muted until you uncheck this control. "
+            "Calibration and stream recovery use a separate temporary mute."
+        )
+        self.user_mute_checkbox.toggled.connect(self._on_user_mute_toggled)
+        control_stack.addWidget(self.user_mute_checkbox)
         self._action_layout_widgets = (
             self.start_btn,
             self.stop_btn,
@@ -937,8 +980,10 @@ class MainWindow(QMainWindow):
     def _set_health_chip(self, label: QLabel, text: str, state: str) -> None:
         label.setText(text)
         label.setStyleSheet(status_chip_style(state))
+        label.setProperty("health_state", state)
 
     def _reset_health_labels(self) -> None:
+        self._set_health_chip(self.health_summary_label, "Health: --", "idle")
         self._set_health_chip(self.input_health_label, "Input: --", "idle")
         self._set_health_chip(self.output_health_label, "Output: --", "idle")
         self._set_health_chip(self.gate_health_label, "Gate: --", "idle")
@@ -979,11 +1024,8 @@ class MainWindow(QMainWindow):
 
     def _select_input_channel_mode(self, mode: str) -> None:
         target = mode if self._is_valid_input_channel_mode(mode) else "phase_safe_mono"
-        for index in range(self.input_channel_mode_combo.count()):
-            if self.input_channel_mode_combo.itemData(index) == target:
-                self.input_channel_mode_combo.setCurrentIndex(index)
-                return
-        self.input_channel_mode_combo.setCurrentIndex(0)
+        index = self.input_channel_mode_combo.findData(target)
+        self.input_channel_mode_combo.setCurrentIndex(index if index >= 0 else 0)
 
     def _apply_input_channel_mode(self, mode: str) -> None:
         target = mode if self._is_valid_input_channel_mode(mode) else "phase_safe_mono"
@@ -1001,11 +1043,8 @@ class MainWindow(QMainWindow):
 
     def _select_input_cleanup_mode(self, mode: str) -> None:
         target = mode if self._is_valid_input_cleanup_mode(mode) else "off"
-        for index in range(self.input_cleanup_mode_combo.count()):
-            if self.input_cleanup_mode_combo.itemData(index) == target:
-                self.input_cleanup_mode_combo.setCurrentIndex(index)
-                return
-        self.input_cleanup_mode_combo.setCurrentIndex(0)
+        index = self.input_cleanup_mode_combo.findData(target)
+        self.input_cleanup_mode_combo.setCurrentIndex(index if index >= 0 else 0)
 
     def _apply_input_cleanup_mode(self, mode: str) -> None:
         target = mode if self._is_valid_input_cleanup_mode(mode) else "off"
@@ -1015,10 +1054,134 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.debug("Failed to apply input cleanup mode", exc_info=True)
 
+    def _apply_output_mute(self) -> None:
+        """Apply user and temporary mute state without either one clearing the other."""
+        muted = bool(
+            self.__dict__.get("user_muted", False)
+            or self.__dict__.get("_temporary_mute_reasons", set())
+        )
+        try:
+            self.processor.set_output_mute(muted)
+            self._output_mute_error = None
+        except Exception:
+            self._output_mute_error = "unavailable"
+            logger.debug("Failed to apply output mute state", exc_info=True)
+        self._update_session_summary()
+
+    def set_temporary_output_mute(
+        self, muted: bool, reason: str = "calibration"
+    ) -> None:
+        """Set one temporary mute owner; releasing it never changes user mute."""
+        reason = str(reason or "temporary")
+        reasons = self.__dict__.setdefault("_temporary_mute_reasons", set())
+        if muted:
+            reasons.add(reason)
+        else:
+            reasons.discard(reason)
+        self._apply_output_mute()
+
+    def _on_user_mute_toggled(self, checked: bool) -> None:
+        self.user_muted = bool(checked)
+        self._apply_output_mute()
+        saved = False
+        if self.__dict__.get("config") is not None:
+            self.config.user_muted = self.user_muted
+            try:
+                saved = save_config(self.config)
+            except (OSError, TypeError, ValueError):
+                pass
+        if self.__dict__.get("_output_mute_error"):
+            message = "Output mute change could not be applied"
+            if saved:
+                message += "; preference saved for the next start"
+        elif self.user_muted or self.__dict__.get("_temporary_mute_reasons", set()):
+            message = "Output muted"
+        else:
+            message = "Output unmuted"
+        if not saved:
+            message += "; preference could not be saved"
+        self.status_bar.showMessage(message, 6000 if not saved else 3000)
+
+    def _update_session_summary(self) -> None:
+        """Keep the compact route/preset/transmission summary current."""
+        if self.__dict__.get("route_status_label") is None:
+            return
+        input_name = self._device_name_from_identity(
+            self._combo_device_identity(self.input_combo)
+        ) or "Default input"
+        output_name = self._device_name_from_identity(
+            self._combo_device_identity(self.output_combo)
+        ) or "Default output"
+        self.route_status_label.setText(f"Route: {input_name} -> {output_name}")
+        state = "unsaved changes" if self.preset_modified else "saved"
+        self.preset_status_label.setText(
+            f"Preset: {self.current_preset_name or 'Default'} ({state})"
+        )
+        running = bool(getattr(self, "processor", None) and self.processor.is_running())
+        transmission = "Running" if running else "Stopped"
+        if self.__dict__.get("_output_mute_error"):
+            transmission += " / Mute pending"
+        elif self.__dict__.get("user_muted", False) or self.__dict__.get(
+            "_temporary_mute_reasons", set()
+        ):
+            transmission += " / Muted"
+        self.transmission_status_label.setText(f"Transmission: {transmission}")
+
+    def _set_preset_identity(
+        self,
+        preset: Preset,
+        *,
+        path: Path | None = None,
+        preset_id: str | None = None,
+        persist_last_used: bool = True,
+    ) -> None:
+        self.current_preset_name = str(preset.name or "Default")
+        self.current_preset_path = path
+        self._saved_preset_payload = self._preset_payload(preset)
+        if persist_last_used:
+            if preset_id is not None:
+                self.config.last_preset = preset_id
+            elif path is not None:
+                self.config.last_preset = str(path)
+        self._set_preset_modified(False)
+
+    @staticmethod
+    def _preset_payload(preset: Preset) -> str:
+        payload = preset.to_dict()
+        for key in ("name", "description", "version", "value_provenance"):
+            payload.pop(key, None)
+        return json.dumps(
+            payload,
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def _set_preset_modified(self, modified: bool | None = None) -> None:
+        if modified is None:
+            saved_payload = self.__dict__.get("_saved_preset_payload")
+            if saved_payload is None:
+                modified = False
+            else:
+                try:
+                    modified = (
+                        self._preset_payload(self._get_current_preset())
+                        != saved_payload
+                    )
+                except (PresetValidationError, TypeError, ValueError):
+                    modified = True
+        self.preset_modified = bool(modified)
+        self._update_session_summary()
+
+    @property
+    def current_preset_modified(self) -> bool:
+        return bool(self.__dict__.get("preset_modified", False))
+
     def _schedule_ui_state_save(self) -> None:
         self._ui_state_timer.start(200)
 
-    def _save_ui_state(self) -> None:
+    def _save_ui_state(self) -> bool:
         if (
             hasattr(self, "main_splitter")
             and self.main_splitter.orientation() == Qt.Orientation.Horizontal
@@ -1028,7 +1191,12 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, "control_tabs"):
             self.config.main_control_tab_index = int(self.control_tabs.currentIndex())
-        save_config(self.config)
+        try:
+            return save_config(self.config)
+        except (OSError, TypeError, ValueError):
+            logger.exception("Could not save window settings")
+            self.status_bar.showMessage("Could not save window settings", 5000)
+            return False
 
     def _clamp_splitter_sizes(self, sizes: list[int]) -> list[int]:
         total = max(sum(int(size) for size in sizes), self.width() - 150, 760)
@@ -1131,6 +1299,115 @@ class MainWindow(QMainWindow):
             return value
         return ""
 
+    def _current_input_preference_key(self) -> str | None:
+        identity = self._combo_device_identity(self.input_combo)
+        if identity is None or not identity_is_persistable(
+            self._combo_identities(self.input_combo), identity
+        ):
+            return None
+        return build_input_device_preference_key(identity)
+
+    def _input_preference_for_current_route(self) -> InputDevicePreference:
+        route_key = self._current_device_route_key()
+        route_preferences = getattr(self.config, "route_input_preferences", {})
+        if route_key is not None and route_key in route_preferences:
+            return route_preferences[route_key]
+
+        device_key = self._current_input_preference_key()
+        device_preferences = getattr(self.config, "input_device_preferences", {})
+        if device_key is not None and device_key in device_preferences:
+            return device_preferences[device_key]
+
+        # An unmatched route or device is unbound; global settings never
+        # transfer to a different endpoint.
+        return InputDevicePreference()
+
+    def _apply_input_preferences_for_current_route(self) -> None:
+        preference = self._input_preference_for_current_route()
+        self._select_input_channel_mode(preference.channel_mode)
+        self._select_input_cleanup_mode(preference.cleanup_mode)
+        self._apply_input_channel_mode(preference.channel_mode)
+        self._apply_input_cleanup_mode(preference.cleanup_mode)
+        if hasattr(self, "config"):
+            self.config.input_channel_mode = preference.channel_mode
+            self.config.input_cleanup_mode = preference.cleanup_mode
+
+    def _store_input_preference(self, *, channel_mode: str, cleanup_mode: str) -> None:
+        preference = InputDevicePreference(
+            channel_mode=channel_mode,
+            cleanup_mode=cleanup_mode,
+            provenance="explicit_user",
+        )
+        route_preferences = getattr(self.config, "route_input_preferences", None)
+        device_preferences = getattr(self.config, "input_device_preferences", None)
+        if route_preferences is not None and device_preferences is not None:
+            route_key = self._current_device_route_key()
+            if route_key in route_preferences:
+                route_preferences[route_key] = preference
+            else:
+                device_key = self._current_input_preference_key()
+                if device_key is not None:
+                    device_preferences[device_key] = preference
+        self.config.input_channel_mode = channel_mode
+        self.config.input_cleanup_mode = cleanup_mode
+
+    def _set_route_input_preference(
+        self, *, channel_mode: str, cleanup_mode: str
+    ) -> bool:
+        """Persist an exact-route override; return false when stable IDs are absent."""
+        route_key = self._current_device_route_key()
+        route_preferences = getattr(self.config, "route_input_preferences", None)
+        if route_key is None or route_preferences is None:
+            return False
+        if not (
+            self._is_valid_input_channel_mode(channel_mode)
+            and self._is_valid_input_cleanup_mode(cleanup_mode)
+        ):
+            return False
+        previous = route_preferences.get(route_key)
+        route_preferences[route_key] = InputDevicePreference(
+            channel_mode=channel_mode,
+            cleanup_mode=cleanup_mode,
+            provenance="explicit_user",
+        )
+        try:
+            saved = save_config(self.config)
+        except (OSError, TypeError, ValueError):
+            saved = False
+        if not saved:
+            if previous is None:
+                del route_preferences[route_key]
+            else:
+                route_preferences[route_key] = previous
+            self.status_bar.showMessage("Route input settings could not be saved", 6000)
+            return False
+        self._apply_input_preferences_for_current_route()
+        return True
+
+    def _save_current_route_input_preference(self, _checked: bool = False) -> bool:
+        """Save the visible input controls as an exact-route override."""
+        channel_mode = self.input_channel_mode_combo.currentData()
+        cleanup_mode = self.input_cleanup_mode_combo.currentData()
+        if not (
+            isinstance(channel_mode, str) and isinstance(cleanup_mode, str)
+        ):
+            return False
+        if self._current_device_route_key() is None:
+            self.status_bar.showMessage(
+                "Connect devices with stable endpoint IDs before saving route input settings",
+                5000,
+            )
+            return False
+        if self._set_route_input_preference(
+            channel_mode=channel_mode,
+            cleanup_mode=cleanup_mode,
+        ):
+            self.status_bar.showMessage(
+                "Saved input settings for the current device route", 4000
+            )
+            return True
+        return False
+
     def _setup_menubar(self):
         """Setup menu bar."""
         menubar = self.menuBar()
@@ -1177,12 +1454,12 @@ class MainWindow(QMainWindow):
         presets_menu = menubar.addMenu("&Presets")
         assert presets_menu is not None
 
-        save_preset_action = QAction("&Save Preset...", self)
+        save_preset_action = QAction("Save &Complete Preset...", self)
         save_preset_action.setShortcut("Ctrl+S")
         save_preset_action.triggered.connect(self._save_preset)
         presets_menu.addAction(save_preset_action)
 
-        load_preset_action = QAction("&Load Preset...", self)
+        load_preset_action = QAction("&Load Complete Preset...", self)
         load_preset_action.setShortcut("Ctrl+O")
         load_preset_action.triggered.connect(self._load_preset)
         presets_menu.addAction(load_preset_action)
@@ -1190,7 +1467,7 @@ class MainWindow(QMainWindow):
         presets_menu.addSeparator()
 
         # Built-in presets submenu
-        builtin_menu = presets_menu.addMenu("&Built-in Voice Presets")
+        builtin_menu = presets_menu.addMenu("&Complete Sound Presets")
         assert builtin_menu is not None
         for key, preset in BUILTIN_PRESETS.items():
             action = QAction(preset.name, self)
@@ -1328,6 +1605,17 @@ class MainWindow(QMainWindow):
 
         options_menu.addSeparator()
 
+        self.save_route_input_preference_action = QAction(
+            "Save Input Settings for Current Route", self
+        )
+        self.save_route_input_preference_action.setToolTip(
+            "Save the selected channel and cleanup modes for this exact input/output route."
+        )
+        self.save_route_input_preference_action.triggered.connect(
+            self._save_current_route_input_preference
+        )
+        options_menu.addAction(self.save_route_input_preference_action)
+
         self.use_measured_latency_action = QAction(
             "Include Measured Route Delay in Latency Estimate", self
         )
@@ -1424,6 +1712,51 @@ class MainWindow(QMainWindow):
             return None
         return build_device_route_key(input_identity, output_identity)
 
+    def _current_capture_format_context(self) -> tuple[int | None, ...]:
+        """Return mutable endpoint format fields used by calibration evidence."""
+        input_identity = self._combo_device_identity(self.input_combo)
+        output_identity = self._combo_device_identity(self.output_combo)
+        context = [
+            getattr(input_identity, "sample_rate", None),
+            getattr(input_identity, "channels", None),
+            getattr(output_identity, "sample_rate", None),
+            getattr(output_identity, "channels", None),
+        ]
+        processor = self.__dict__.get("processor")
+        try:
+            if processor is not None and processor.is_running():
+                diagnostics = dict(processor.get_runtime_diagnostics())
+                for index, value in (
+                    (0, diagnostics.get("input_sample_rate")),
+                    (2, diagnostics.get("output_sample_rate")),
+                ):
+                    if isinstance(value, (int, float)) and not isinstance(value, bool):
+                        rate = int(value)
+                        if rate > 0:
+                            context[index] = rate
+        except Exception:
+            logger.debug("Could not read active audio format", exc_info=True)
+        return tuple(context)
+
+    def _latency_profile_matches_capture_format(
+        self, profile: LatencyCalibrationProfile
+    ) -> bool:
+        context = profile.capture_format_context
+        current = self._current_capture_format_context()
+        return (
+            context is not None
+            and len(context) == len(current)
+            and all(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0
+                for value in context
+            )
+            and all(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0
+                for value in current
+            )
+            and context == current
+        )
+
     def _on_auto_apply_device_presets_toggled(self, checked: bool) -> None:
         self.config.auto_apply_device_presets = bool(checked)
         save_config(self.config)
@@ -1508,7 +1841,7 @@ class MainWindow(QMainWindow):
             preset = BUILTIN_PRESETS.get(key)
             if preset is None:
                 return False
-            self._apply_preset(preset, preset_key=key)
+            self._apply_preset(preset, preset_key=key, persist_last_used=False)
             return True
         if not preset_id.startswith(STARTUP_CUSTOM_PREFIX):
             return False
@@ -1522,9 +1855,9 @@ class MainWindow(QMainWindow):
             return False
         _name, filepath = candidates[0]
         preset = load_preset(filepath)
-        self._apply_preset(preset)
-        self.current_preset_path = filepath
-        self.config.last_preset = str(filepath)
+        self._apply_preset(
+            preset, preset_path=filepath, persist_last_used=False
+        )
         save_config(self.config)
         return True
 
@@ -1573,21 +1906,33 @@ class MainWindow(QMainWindow):
         key = self._latency_profile_key()
         if key is None:
             return None
-        profile = self.config.latency_calibration_profiles.get(key)
+        profiles = self.config.latency_calibration_profiles
+        profile = profiles.get(key)
         if profile is not None:
-            return profile
+            return (
+                profile
+                if self._latency_profile_matches_capture_format(profile)
+                else None
+            )
 
         legacy_key = self._legacy_latency_profile_key()
-        profile = self.config.latency_calibration_profiles.get(legacy_key)
+        profile = profiles.get(legacy_key)
         if profile is not None:
-            self.config.latency_calibration_profiles[key] = profile
-            if (
-                legacy_key != key
-                and legacy_key in self.config.latency_calibration_profiles
-            ):
-                del self.config.latency_calibration_profiles[legacy_key]
-            save_config(self.config)
-        return profile
+            profiles[key] = profile
+            if legacy_key != key and legacy_key in profiles:
+                del profiles[legacy_key]
+            try:
+                saved = save_config(self.config)
+            except (OSError, TypeError, ValueError):
+                saved = False
+            if not saved:
+                self.status_bar.showMessage("Updated latency profile could not be saved", 6000)
+        return (
+            profile
+            if profile is not None
+            and self._latency_profile_matches_capture_format(profile)
+            else None
+        )
 
     def _sync_latency_profile_for_current_devices(
         self, profile: LatencyCalibrationProfile
@@ -1596,6 +1941,10 @@ class MainWindow(QMainWindow):
         if key is None:
             raise ValueError(
                 "Stable endpoint identity is unavailable for this duplicate-name route"
+            )
+        if not self._latency_profile_matches_capture_format(profile):
+            raise ValueError(
+                "Latency calibration result is stale for the current route or format"
             )
         legacy_key = self._legacy_latency_profile_key()
         self.config.latency_calibration_profiles[key] = profile
@@ -1636,8 +1985,7 @@ class MainWindow(QMainWindow):
         profile = self._current_latency_profile()
 
         if self.config.use_measured_latency and profile is not None:
-            if self._refresh_latency_profile_engine(profile):
-                save_config(self.config)
+            self._refresh_latency_profile_engine(profile)
             route_latency_ms = float(profile.route_latency_ms)
             if route_latency_ms <= 0.0:
                 # Compatibility for profiles constructed in-memory by older
@@ -1652,10 +2000,16 @@ class MainWindow(QMainWindow):
 
     def _on_use_measured_latency_toggled(self, enabled: bool):
         self.config.use_measured_latency = bool(enabled)
-        save_config(self.config)
         self._apply_latency_compensation_for_current_devices()
+        try:
+            saved = save_config(self.config)
+        except (OSError, TypeError, ValueError):
+            saved = False
         mode = "enabled" if enabled else "disabled"
-        self.status_bar.showMessage(f"Measured route delay in latency estimate {mode}", 4000)
+        message = f"Measured route delay in latency estimate {mode}"
+        if not saved:
+            message += "; preference could not be saved"
+        self.status_bar.showMessage(message, 4000 if saved else 6000)
 
     def _on_latency_calibration_clicked(self) -> bool:
         if self._latency_profile_key() is None:
@@ -1665,28 +2019,33 @@ class MainWindow(QMainWindow):
             )
             return False
         profile = self._current_latency_profile()
-        if profile is not None and self._refresh_latency_profile_engine(profile):
-            save_config(self.config)
+        if profile is not None:
+            self._refresh_latency_profile_engine(profile)
         existing_profile = profile.to_dict() if profile is not None else None
 
         dialog = LatencyCalibrationDialog(self, existing_profile=existing_profile)
-        dialog.calibration_saved.connect(self._on_latency_calibration_saved)
-        dialog.calibration_reset.connect(self._on_latency_calibration_reset)
         self._calibration_dialog_open = True
         try:
-            dialog.exec()
+            return dialog.exec() == QDialog.DialogCode.Accepted
         finally:
             self._calibration_dialog_open = False
-        return self._current_latency_profile() is not None
 
-    def _on_latency_calibration_saved(self, profile_data: dict):
-        profile = LatencyCalibrationProfile.from_dict(profile_data)
+    def _on_latency_calibration_saved(self, profile_data: dict) -> bool:
+        previous = dict(self.config.latency_calibration_profiles)
         try:
+            profile = LatencyCalibrationProfile.from_dict(profile_data)
             self._sync_latency_profile_for_current_devices(profile)
         except ValueError as error:
             self.status_bar.showMessage(str(error), 6000)
-            return
-        save_config(self.config)
+            return False
+        try:
+            saved = save_config(self.config)
+        except (OSError, TypeError, ValueError):
+            saved = False
+        if not saved:
+            self.config.latency_calibration_profiles = previous
+            self.status_bar.showMessage("Latency calibration could not be saved; retry saving", 6000)
+            return False
         self._apply_latency_compensation_for_current_devices()
         route_latency_ms = float(profile.route_latency_ms)
         if route_latency_ms <= 0.0:
@@ -1695,28 +2054,43 @@ class MainWindow(QMainWindow):
             f"Measured route latency saved for current device pair ({route_latency_ms:.1f} ms)",
             5000,
         )
+        return True
 
-    def _on_latency_calibration_reset(self):
+    def _on_latency_calibration_reset(self) -> bool:
         key = self._latency_profile_key()
         if key is None:
             self._apply_latency_compensation_for_current_devices()
-            return
+            return False
         legacy_key = self._legacy_latency_profile_key()
+        previous = dict(self.config.latency_calibration_profiles)
         removed = False
         for candidate in {key, legacy_key}:
             if candidate in self.config.latency_calibration_profiles:
                 del self.config.latency_calibration_profiles[candidate]
                 removed = True
         if removed:
-            save_config(self.config)
+            try:
+                saved = save_config(self.config)
+            except (OSError, TypeError, ValueError):
+                saved = False
+            if not saved:
+                self.config.latency_calibration_profiles = previous
+                self.status_bar.showMessage("Latency calibration reset could not be saved", 6000)
+                return False
         self._apply_latency_compensation_for_current_devices()
         self.status_bar.showMessage(
             "Latency calibration reset for current device pair", 4000
         )
+        return True
 
     def _refresh_devices(self):
         """Refresh the device lists."""
+        if self.processor.is_running():
+            self.refresh_btn.setEnabled(False)
+            self.status_bar.showMessage("Stop processing before refreshing audio devices", 5000)
+            return
         previous_route = self._current_device_route_key()
+        previous_capture_format = self._current_capture_format_context()
         previous_input = (
             self.config.last_input_device_identity
             or self._combo_device_identity(self.input_combo)
@@ -1857,13 +2231,23 @@ class MainWindow(QMainWindow):
         finally:
             for widget, blocked in zip(signal_widgets, signal_states):
                 widget.blockSignals(blocked)
-            if previous_route != self._current_device_route_key():
+            current_route = self._current_device_route_key()
+            capture_format_changed = (
+                previous_capture_format != self._current_capture_format_context()
+            )
+            route_changed = previous_route != current_route
+            if route_changed or capture_format_changed:
                 self.compressor_panel.set_compressor_settings(
                     {"noise_reference_reliability": 0.0}
                 )
+                self._apply_input_preferences_for_current_route()
+                self._apply_latency_compensation_for_current_devices()
+            if route_changed:
+                self._apply_bound_preset_for_current_route()
 
         if config_dirty:
             save_config(self.config)
+        self._update_session_summary()
 
     def _restore_from_config(self):
         """Restore settings from loaded config."""
@@ -1940,7 +2324,11 @@ class MainWindow(QMainWindow):
                 preset_key = preset_id[len(STARTUP_BUILTIN_PREFIX) :]
                 if preset_key in BUILTIN_PRESETS:
                     preset = BUILTIN_PRESETS[preset_key]
-                    self._apply_preset(preset, preset_key=preset_key)
+                    self._apply_preset(
+                        preset,
+                        preset_key=preset_key,
+                        persist_last_used=False,
+                    )
                     self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
                     preset_loaded = True
             # Try custom presets
@@ -1950,7 +2338,11 @@ class MainWindow(QMainWindow):
                     if name == custom_name:
                         try:
                             preset = load_preset(filepath)
-                            self._apply_preset(preset)
+                            self._apply_preset(
+                                preset,
+                                preset_path=filepath,
+                                persist_last_used=False,
+                            )
                             self.status_bar.showMessage(
                                 f"Startup preset: {preset_name}", 5000
                             )
@@ -1971,7 +2363,11 @@ class MainWindow(QMainWindow):
                     if name == preset_id:
                         try:
                             preset = load_preset(filepath)
-                            self._apply_preset(preset)
+                            self._apply_preset(
+                                preset,
+                                preset_path=filepath,
+                                persist_last_used=False,
+                            )
                             self.status_bar.showMessage(
                                 f"Startup preset: {preset_name}", 5000
                             )
@@ -2003,7 +2399,7 @@ class MainWindow(QMainWindow):
                     preset_key = self.config.last_preset[8:]  # Remove "builtin:" prefix
                     if preset_key in BUILTIN_PRESETS:
                         preset = BUILTIN_PRESETS[preset_key]
-                        self._apply_preset(preset)
+                        self._apply_preset(preset, preset_key=preset_key)
                         # Re-save config to persist preset for next session
                         save_config(self.config)
                         restored_count += 1
@@ -2018,8 +2414,7 @@ class MainWindow(QMainWindow):
                     preset_path = Path(self.config.last_preset)
                     if preset_path.exists():
                         preset = load_preset(preset_path)
-                        self._apply_preset(preset)
-                        self.current_preset_path = preset_path
+                        self._apply_preset(preset, preset_path=preset_path)
                         # Re-save config to persist preset for next session
                         save_config(self.config)
                         restored_count += 1
@@ -2029,14 +2424,24 @@ class MainWindow(QMainWindow):
                         )
                         self.config.last_preset = ""
                         save_config(self.config)
-            except (IOError, OSError, ValueError, json.JSONDecodeError) as e:
+            except (OSError, ValueError, PresetValidationError) as e:
                 logger.warning("Preset restore failed", exc_info=True)
-                self.status_bar.showMessage(f"Failed to restore preset: {e}")
+                warning = f"Could not restore the previous preset; starting with defaults. {e}"
+                self.config.load_warning = "\n".join(
+                    text for text in (self.config.load_warning, warning) if text
+                )
                 self.config.last_preset = ""
-                save_config(self.config)
+                try:
+                    cleared = save_config(self.config)
+                except (OSError, TypeError, ValueError):
+                    cleared = False
+                if not cleared:
+                    self.config.load_warning += "\nThe cleared preset reference could not be saved."
 
         # Show appropriate status message
-        if restored_count == 0:
+        if self.config.load_warning:
+            self.status_bar.showMessage(self.config.load_warning)
+        elif restored_count == 0:
             self.status_bar.showMessage("Ready")
         elif restored_count < 3:
             self.status_bar.showMessage(
@@ -2047,16 +2452,11 @@ class MainWindow(QMainWindow):
 
         self._restore_ui_state()
         self._apply_latency_compensation_for_current_devices()
-        if "input_channel_mode_combo" in self.__dict__:
-            input_channel_mode = getattr(
-                self.config, "input_channel_mode", "phase_safe_mono"
-            )
-            self._select_input_channel_mode(input_channel_mode)
-            self._apply_input_channel_mode(input_channel_mode)
-        if "input_cleanup_mode_combo" in self.__dict__:
-            input_cleanup_mode = getattr(self.config, "input_cleanup_mode", "off")
-            self._select_input_cleanup_mode(input_cleanup_mode)
-            self._apply_input_cleanup_mode(input_cleanup_mode)
+        if (
+            "input_channel_mode_combo" in self.__dict__
+            and "input_cleanup_mode_combo" in self.__dict__
+        ):
+            self._apply_input_preferences_for_current_route()
 
         # Route-specific DSP is more specific than the generic startup/last-used
         # preset and is intentionally applied only after both endpoints resolve.
@@ -2086,9 +2486,11 @@ class MainWindow(QMainWindow):
             self.config.last_output_device = self._device_name_from_identity(
                 output_identity
             )
+            self._apply_input_preferences_for_current_route()
             save_config(self.config)
             self._apply_latency_compensation_for_current_devices()
             self._apply_bound_preset_for_current_route()
+            self._update_session_summary()
 
     def _on_input_channel_mode_changed(self):
         """Persist and apply the selected input channel mixdown mode."""
@@ -2096,11 +2498,12 @@ class MainWindow(QMainWindow):
             return
         mode = self.input_channel_mode_combo.currentData()
         if not self._is_valid_input_channel_mode(mode):
-            mode = "average"
-        self.config.input_channel_mode = mode
+            mode = "phase_safe_mono"
+        cleanup_mode = getattr(self.config, "input_cleanup_mode", "off")
+        self._store_input_preference(channel_mode=mode, cleanup_mode=cleanup_mode)
         self._apply_input_channel_mode(mode)
         self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
-        save_config(self.config)
+        self._save_input_preferences()
 
     def _on_input_cleanup_mode_changed(self):
         """Persist and apply the selected adaptive input cleanup mode."""
@@ -2109,10 +2512,21 @@ class MainWindow(QMainWindow):
         mode = self.input_cleanup_mode_combo.currentData()
         if not self._is_valid_input_cleanup_mode(mode):
             mode = "off"
-        self.config.input_cleanup_mode = mode
+        channel_mode = getattr(self.config, "input_channel_mode", "phase_safe_mono")
+        self._store_input_preference(channel_mode=channel_mode, cleanup_mode=mode)
         self._apply_input_cleanup_mode(mode)
         self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
-        save_config(self.config)
+        self._save_input_preferences()
+
+    def _save_input_preferences(self) -> None:
+        try:
+            saved = save_config(self.config)
+        except (OSError, TypeError, ValueError):
+            saved = False
+        if not saved:
+            self.status_bar.showMessage(
+                "Input settings applied for this session, but could not be saved", 6000
+            )
 
     def _start_processing(self):
         """Start audio processing."""
@@ -2123,12 +2537,9 @@ class MainWindow(QMainWindow):
 
         input_device = self._device_selection_to_name(self.input_combo) or None
         output_device = self._device_selection_to_name(self.output_combo) or None
-        self._apply_input_channel_mode(
-            getattr(self.config, "input_channel_mode", "phase_safe_mono")
-        )
-        self._apply_input_cleanup_mode(
-            getattr(self.config, "input_cleanup_mode", "off")
-        )
+        self._apply_input_preferences_for_current_route()
+        # Set the persisted mute before native startup so the first buffer is safe.
+        self._apply_output_mute()
 
         if DEBUG:
             logger.debug(
@@ -2143,16 +2554,19 @@ class MainWindow(QMainWindow):
                 self._combo_device_identity(self.input_combo),
                 self._combo_device_identity(self.output_combo),
             )
-            # Unmute output after starting processing (in case it was muted by calibration)
+            self._apply_latency_compensation_for_current_devices()
+            # Native start clears temporary mute state; restore both owners.
             if DEBUG:
-                logger.debug("Unmuting output after processing start")
-            self.processor.set_output_mute(False)
+                logger.debug("Restoring output mute state after processing start")
+            self._apply_output_mute()
             self.status_bar.showMessage(f"Processing: {result}")
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
             self.input_combo.setEnabled(False)
             self.output_combo.setEnabled(False)
+            self.refresh_btn.setEnabled(False)
             self._stream_recovery.mark_processing_started()
+            self._update_session_summary()
             if DEBUG:
                 logger.debug("Processing started: %s", result)
         except Exception as e:
@@ -2188,6 +2602,10 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(running)
         self.input_combo.setEnabled(not running)
         self.output_combo.setEnabled(not running)
+        self.refresh_btn.setEnabled(not running)
+        update_summary = getattr(self, "_update_session_summary", None)
+        if callable(update_summary):
+            update_summary()
 
     def _stop_processing(self):
         """Stop audio processing."""
@@ -2207,7 +2625,9 @@ class MainWindow(QMainWindow):
             self.stop_btn.setEnabled(False)
             self.input_combo.setEnabled(True)
             self.output_combo.setEnabled(True)
+            self.refresh_btn.setEnabled(True)
             self._stream_recovery.mark_processing_stopped()
+            self._update_session_summary()
             if DEBUG:
                 logger.debug("Processing stopped")
         except RuntimeError as e:
@@ -2276,15 +2696,24 @@ class MainWindow(QMainWindow):
         )
         self._configuration_history.initialize(snapshot)
         self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
+        if self._saved_preset_payload is None:
+            self.current_preset_name = "Default"
+            self.current_preset_path = None
+            self._saved_preset_payload = self._preset_payload(preset)
+            self.preset_modified = False
         self._history_ready = True
         self._update_history_actions()
+        self._update_session_summary()
 
     def _calibration_context_key(self) -> str | None:
         route = self._current_device_route_key()
         if route is None:
             return None
         return json.dumps((
-            route, self.config.input_channel_mode, self.config.input_cleanup_mode,
+            route,
+            self.config.input_channel_mode,
+            self.config.input_cleanup_mode,
+            self._current_capture_format_context(),
         ))
 
     def _connect_configuration_history_inputs(self) -> None:
@@ -2301,9 +2730,23 @@ class MainWindow(QMainWindow):
             spinbox.valueChanged.connect(self._queue_configuration_snapshot)
         for spinbox in self.findChildren(QDoubleSpinBox):
             spinbox.valueChanged.connect(self._queue_configuration_snapshot)
+        ignored_combos = (
+            getattr(self, "input_combo", None),
+            getattr(self, "output_combo", None),
+            getattr(self, "input_channel_mode_combo", None),
+            getattr(self, "input_cleanup_mode_combo", None),
+        )
         for combo in self.findChildren(QComboBox):
+            if combo in ignored_combos:
+                continue
             combo.currentIndexChanged.connect(self._queue_configuration_snapshot)
+        ignored_buttons = (
+            getattr(self, "raw_monitor_checkbox", None),
+            getattr(self, "user_mute_checkbox", None),
+        )
         for button in self.findChildren(QAbstractButton):
+            if button in ignored_buttons:
+                continue
             button.toggled.connect(self._queue_configuration_snapshot)
 
     def _begin_configuration_transaction(self) -> None:
@@ -2332,6 +2775,8 @@ class MainWindow(QMainWindow):
             or self._history_transaction_depth > 0
         ):
             return
+        self.preset_modified = True
+        self._update_session_summary()
         self._history_timer.start()
 
     def _commit_pending_configuration_snapshot(
@@ -2379,6 +2824,7 @@ class MainWindow(QMainWindow):
             self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
             if source == "ui":
                 self.eq_panel.set_auto_eq_diagnostics(None)
+        self._set_preset_modified()
         self._update_history_actions()
         return recorded
 
@@ -2406,6 +2852,7 @@ class MainWindow(QMainWindow):
                 )
             })
             self._current_value_provenance = dict(preset.value_provenance)
+            self._set_preset_modified()
         except Exception:
             try:
                 self._apply_preset(previous_preset, require_exact=True)
@@ -2550,7 +2997,7 @@ class MainWindow(QMainWindow):
                 self.current_preset_path = previous_path
                 self._last_preset_identity_persisted = False
                 return filepath
-            self.current_preset_path = filepath
+            self._set_preset_identity(preset, path=filepath)
             return filepath
         except (IOError, OSError, ValueError) as exc:
             logger.warning("Preset save failed", exc_info=True)
@@ -2656,11 +3103,11 @@ class MainWindow(QMainWindow):
                     f"The model may not be available in this build.\n"
                     f"Reverting to previous model.",
                 )
-                # Revert to RNNoise using find-by-ID loop (not hardcoded index)
-                for i in range(self.model_combo.count()):
-                    if self.model_combo.itemData(i) == "rnnoise":
-                        self.model_combo.setCurrentIndex(i)
-                        return
+                # Revert to RNNoise by its stable item data.
+                rnnoise_index = self.model_combo.findData("rnnoise")
+                if rnnoise_index >= 0:
+                    self.model_combo.setCurrentIndex(rnnoise_index)
+                    return
             else:
                 self._set_noise_suppression_latency_label(model_id)
                 self.status_bar.showMessage(
@@ -2680,11 +3127,11 @@ class MainWindow(QMainWindow):
                 f"2. Using RNNoise model as fallback\n"
                 f"3. Verifying the bundled model/runtime assets",
             )
-            # Revert to RNNoise using find-by-ID loop (NOT hardcoded index)
-            for i in range(self.model_combo.count()):
-                if self.model_combo.itemData(i) == "rnnoise":
-                    self.model_combo.setCurrentIndex(i)
-                    return
+            # Revert to RNNoise by its stable item data.
+            rnnoise_index = self.model_combo.findData("rnnoise")
+            if rnnoise_index >= 0:
+                self.model_combo.setCurrentIndex(rnnoise_index)
+                return
 
     def _update_meters(self):
         """Update level meters from processor (called by timer)."""
@@ -3183,6 +3630,16 @@ class MainWindow(QMainWindow):
             )
         except Exception:
             logger.debug("Diagnostic label update failed", exc_info=True)
+        if self.__dict__.get("health_summary_label") is not None:
+            states = []
+            for label in self._health_decision_widgets + self._health_layout_widgets:
+                state = label.property("health_state")
+                states.append(state if isinstance(state, str) else "idle")
+            state = next((level for level in ("bad", "warn", "ok") if level in states), "idle")
+            if self.__dict__.get("_output_mute_error") and state in {"ok", "idle"}:
+                state = "warn"
+            self._set_health_chip(self.health_summary_label, f"Health: {state.upper()}", state)
+            self._update_session_summary()
 
     def _service_stream_recovery(
         self,
@@ -3231,6 +3688,7 @@ class MainWindow(QMainWindow):
             recovery_result = self.processor.service_recovery()
             if recovery_result is not None:
                 if recovery_result:
+                    self._apply_latency_compensation_for_current_devices()
                     reason = ""
                     try:
                         reason = self.processor.get_last_restart_reason() or ""
@@ -3262,16 +3720,17 @@ class MainWindow(QMainWindow):
             logger.debug("Rust recovery service failed", exc_info=True)
 
     def _recover_output_path(self):
-        """Best-effort output recovery: unmute + restart with selected devices."""
+        """Best-effort output recovery while preserving both mute owners."""
         try:
-            self.processor.set_output_mute(False)
             self.processor.stop()
+            self._apply_output_mute()
             result = start_processor_for_route(
                 self.processor,
                 self._combo_device_identity(self.input_combo),
                 self._combo_device_identity(self.output_combo),
             )
-            self.processor.set_output_mute(False)
+            self._apply_latency_compensation_for_current_devices()
+            self._apply_output_mute()
             self.status_bar.showMessage(
                 f"Recovered output path automatically: {result}",
                 4000,
@@ -3287,6 +3746,7 @@ class MainWindow(QMainWindow):
             self.stop_btn.setEnabled(False)
             self.input_combo.setEnabled(True)
             self.output_combo.setEnabled(True)
+            self._update_session_summary()
 
     def _export_diagnostics(self) -> None:
         """Export an allowlisted support snapshot off the realtime path."""
@@ -3399,22 +3859,35 @@ class MainWindow(QMainWindow):
         preset_key: str | None = None,
         *,
         require_exact: bool = False,
+        scope: str = "complete",
+        preset_path: Path | None = None,
+        persist_last_used: bool = True,
     ):
         """Apply a preset to the UI and processor.
 
         Args:
             preset: Preset object to apply
             preset_key: Optional key for built-in presets (e.g., "voice", "bass_cut")
+            scope: "complete" replaces the processing chain; "eq" replaces EQ only.
         """
+        if scope not in {"complete", "eq"}:
+            raise ValueError(f"Unknown preset scope: {scope}")
+        if scope == "eq":
+            self.eq_panel.set_settings(preset.eq.to_dict())
+            self.status_bar.showMessage(f"Applied EQ-only template: {preset.name}")
+            if self.__dict__.get("_history_ready", False) and not self.__dict__.get(
+                "_history_replaying", False
+            ):
+                self._commit_pending_configuration_snapshot(
+                    label=f"EQ-only template ({preset.name})",
+                    source="preset",
+                )
+            else:
+                self._set_preset_modified(True)
+            return
+
         requested_model = getattr(preset.rnnoise, "model", "rnnoise")
-        requested_model_index = next(
-            (
-                index
-                for index in range(self.model_combo.count())
-                if self.model_combo.itemData(index) == requested_model
-            ),
-            -1,
-        )
+        requested_model_index = self.model_combo.findData(requested_model)
         model_fallback_warning: str | None = None
         if require_exact and requested_model_index < 0:
             raise RuntimeError(
@@ -3422,109 +3895,75 @@ class MainWindow(QMainWindow):
             )
 
         # Apply gate settings (including VAD mode and auto-threshold)
-        self.gate_panel.set_settings(
-            {
-                "enabled": preset.gate.enabled,
-                "threshold_db": preset.gate.threshold_db,
-                "attack_ms": preset.gate.attack_ms,
-                "release_ms": preset.gate.release_ms,
-                "gate_mode": preset.gate.gate_mode,
-                "vad_threshold": preset.gate.vad_threshold,
-                "vad_hold_time_ms": preset.gate.vad_hold_time_ms,
-                "vad_pre_gain": preset.gate.vad_pre_gain,
-                "auto_threshold_enabled": preset.gate.auto_threshold_enabled,  # v1.6.0+
-                "gate_margin_db": preset.gate.gate_margin_db,  # v1.6.0+
-            }
-        )
+        self.gate_panel.set_settings(asdict(preset.gate))
 
         # Apply EQ settings
-        self.eq_panel.set_settings(
-            {
-                "enabled": preset.eq.enabled,
-                "schema_version": preset.eq.schema_version,
-                "bands": [band.to_dict() for band in preset.eq.bands],
-            }
-        )
+        self.eq_panel.set_settings(preset.eq.to_dict())
 
         # Apply RNNoise settings
         self.rnnoise_checkbox.setChecked(preset.rnnoise.enabled)
         self.processor.set_rnnoise_enabled(preset.rnnoise.enabled)
 
         # Apply strength
-        strength_percent = int(preset.rnnoise.strength * 100)
+        strength_percent = round(preset.rnnoise.strength * 100)
         self.strength_slider.setValue(strength_percent)
-        self.processor.set_rnnoise_strength(preset.rnnoise.strength)
+        self._on_strength_changed(self.strength_slider.value())
 
         # Apply model selection
         model = requested_model
-        model_found = False
-        for i in range(self.model_combo.count()):
-            if self.model_combo.itemData(i) == model:
-                # Block signals to prevent duplicate model initialization
-                # setCurrentIndex triggers currentIndexChanged which calls set_noise_model,
-                # so we need to block it here since we'll call it directly below
-                self.model_combo.blockSignals(True)
-                self.model_combo.setCurrentIndex(i)
-                self.model_combo.blockSignals(False)
-                model_found = True
-                # Try to set model, handle errors gracefully
-                try:
-                    success = self.processor.set_noise_model(model)
-                    if success:
-                        self._set_noise_suppression_latency_label(model)
-                    else:
-                        if require_exact:
-                            raise RuntimeError(f"Noise model {model!r} is unavailable")
-                        # Model switch failed - show warning and use RNNoise
-                        logger.warning(
-                            "Failed to switch to %s from preset; using RNNoise", model
-                        )
-                        self.status_bar.showMessage(
-                            f"Note: Preset specifies {model} but not available, using RNNoise",
-                            5000,
-                        )
-                        model_fallback_warning = (
-                            f"{model} was unavailable; using RNNoise"
-                        )
-                        # Fall back to RNNoise using find-by-ID loop (NOT hardcoded index)
-                        for j in range(self.model_combo.count()):
-                            if self.model_combo.itemData(j) == "rnnoise":
-                                self.model_combo.blockSignals(True)
-                                self.model_combo.setCurrentIndex(j)
-                                self.model_combo.blockSignals(False)
-                                self.processor.set_noise_model("rnnoise")
-                                self._set_noise_suppression_latency_label("rnnoise")
-                                break
-                except Exception:
+        model_index = requested_model_index
+        model_found = model_index >= 0
+        if model_found:
+            # Block signals to prevent duplicate model initialization.
+            # setCurrentIndex triggers currentIndexChanged which calls
+            # set_noise_model, so call it directly below instead.
+            self.model_combo.blockSignals(True)
+            self.model_combo.setCurrentIndex(model_index)
+            self.model_combo.blockSignals(False)
+            # Try to set model, handle errors gracefully.
+            try:
+                success = self.processor.set_noise_model(model)
+                if success:
+                    self._set_noise_suppression_latency_label(model)
+                else:
                     if require_exact:
-                        raise
-                    # Unexpected error - log and fall back
-                    logger.exception("Error switching model in preset")
-                    self.status_bar.showMessage(
-                        "Error loading preset model, using RNNoise", 5000
+                        raise RuntimeError(f"Noise model {model!r} is unavailable")
+                    logger.warning(
+                        "Failed to switch to %s from preset; using RNNoise", model
                     )
-                    model_fallback_warning = f"{model} failed to load; using RNNoise"
-                    # Fall back to RNNoise using find-by-ID loop (NOT hardcoded index)
-                    for j in range(self.model_combo.count()):
-                        if self.model_combo.itemData(j) == "rnnoise":
-                            self.model_combo.blockSignals(True)
-                            self.model_combo.setCurrentIndex(j)
-                            self.model_combo.blockSignals(False)
-                            self.processor.set_noise_model("rnnoise")
-                            self._set_noise_suppression_latency_label("rnnoise")
-                            break
-                break
+                    self.status_bar.showMessage(
+                        f"Note: Preset specifies {model} but not available, using RNNoise",
+                        5000,
+                    )
+                    model_fallback_warning = (
+                        f"{model} was unavailable; using RNNoise"
+                    )
+                    rnnoise_index = self.model_combo.findData("rnnoise")
+                    if rnnoise_index >= 0:
+                        self.model_combo.blockSignals(True)
+                        self.model_combo.setCurrentIndex(rnnoise_index)
+                        self.model_combo.blockSignals(False)
+                        self.processor.set_noise_model("rnnoise")
+                        self._set_noise_suppression_latency_label("rnnoise")
+            except Exception:
+                if require_exact:
+                    raise
+                logger.exception("Error switching model in preset")
+                self.status_bar.showMessage(
+                    "Error loading preset model, using RNNoise", 5000
+                )
+                model_fallback_warning = f"{model} failed to load; using RNNoise"
+                rnnoise_index = self.model_combo.findData("rnnoise")
+                if rnnoise_index >= 0:
+                    self.model_combo.blockSignals(True)
+                    self.model_combo.setCurrentIndex(rnnoise_index)
+                    self.model_combo.blockSignals(False)
+                    self.processor.set_noise_model("rnnoise")
+                    self._set_noise_suppression_latency_label("rnnoise")
 
         if not model_found:
             logger.warning("Preset model %r not found in available models", model)
-            rnnoise_index = next(
-                (
-                    index
-                    for index in range(self.model_combo.count())
-                    if self.model_combo.itemData(index) == "rnnoise"
-                ),
-                -1,
-            )
+            rnnoise_index = self.model_combo.findData("rnnoise")
             if rnnoise_index < 0:
                 raise RuntimeError("RNNoise fallback is not present in this runtime")
             self.model_combo.blockSignals(True)
@@ -3540,47 +3979,13 @@ class MainWindow(QMainWindow):
             model_fallback_warning = f"{model} was unavailable; using RNNoise"
 
         # Apply de-esser settings
-        self.deesser_panel.set_settings(
-            {
-                "enabled": preset.deesser.enabled,
-                "auto_enabled": preset.deesser.auto_enabled,
-                "auto_amount": preset.deesser.auto_amount,
-                "low_cut_hz": preset.deesser.low_cut_hz,
-                "high_cut_hz": preset.deesser.high_cut_hz,
-                "threshold_db": preset.deesser.threshold_db,
-                "ratio": preset.deesser.ratio,
-                "attack_ms": preset.deesser.attack_ms,
-                "release_ms": preset.deesser.release_ms,
-                "max_reduction_db": preset.deesser.max_reduction_db,
-            }
-        )
+        self.deesser_panel.set_settings(asdict(preset.deesser))
 
         # Apply compressor settings
-        self.compressor_panel.set_compressor_settings(
-            {
-                "enabled": preset.compressor.enabled,
-                "threshold_db": preset.compressor.threshold_db,
-                "ratio": preset.compressor.ratio,
-                "attack_ms": preset.compressor.attack_ms,
-                "release_ms": preset.compressor.release_ms,
-                "makeup_gain_db": preset.compressor.makeup_gain_db,
-                "adaptive_release": preset.compressor.adaptive_release,
-                "base_release_ms": preset.compressor.base_release_ms,
-                "auto_makeup_enabled": preset.compressor.auto_makeup_enabled,
-                "target_lufs": preset.compressor.target_lufs,
-                "sidechain_highpass_enabled": preset.compressor.sidechain_highpass_enabled,
-            }
-        )
+        self.compressor_panel.set_compressor_settings(asdict(preset.compressor))
 
         # Apply limiter settings
-        self.compressor_panel.set_limiter_settings(
-            {
-                "enabled": preset.limiter.enabled,
-                "ceiling_db": preset.limiter.ceiling_db,
-                "release_ms": preset.limiter.release_ms,
-                "careful_output_enabled": preset.limiter.careful_output_enabled,
-            }
-        )
+        self.compressor_panel.set_limiter_settings(asdict(preset.limiter))
 
         # Apply bypass
         self.bypass_checkbox.setChecked(preset.bypass)
@@ -3601,6 +4006,13 @@ class MainWindow(QMainWindow):
 
         history_ready = bool(self.__dict__.get("_history_ready", False))
         history_replaying = bool(self.__dict__.get("_history_replaying", False))
+        if not history_replaying:
+            self._set_preset_identity(
+                preset,
+                path=preset_path,
+                preset_id=(f"builtin:{preset_key}" if preset_key else None),
+                persist_last_used=persist_last_used,
+            )
         if history_ready and not history_replaying:
             self._commit_pending_configuration_snapshot(
                 label=f"Loaded preset ({preset.name})",
@@ -3609,7 +4021,7 @@ class MainWindow(QMainWindow):
             )
 
         # Save to config if preset_key provided (built-in preset)
-        if preset_key:
+        if preset_key and persist_last_used:
             self.config.last_preset = f"builtin:{preset_key}"
             save_config(self.config)
             self.current_preset_path = None  # Built-in, not a file
@@ -3633,8 +4045,9 @@ class MainWindow(QMainWindow):
             "Save Preset",
             "Enter description (optional):",
         )
-        if ok:
-            preset.description = description.strip()
+        if not ok:
+            return
+        preset.description = description.strip()
 
         filepath = self._save_preset_file(preset)
         if filepath is None:
@@ -3669,19 +4082,9 @@ class MainWindow(QMainWindow):
                 preset = load_preset(requested_path)
                 preset_path = requested_path
             except PresetValidationError:
-                imports_dir = get_preset_imports_dir()
-                imported_path = imports_dir / requested_path.name
-                if requested_path.resolve(strict=True) != imported_path.resolve(
-                    strict=False
-                ):
-                    validate_preset_file_size(requested_path)
-                    shutil.copy2(requested_path, imported_path)
-                preset = load_preset(imported_path)
-                preset_path = imported_path
-            self._apply_preset(preset)
+                preset, preset_path = import_preset(requested_path)
+            self._apply_preset(preset, preset_path=preset_path)
             # Save to config for persistence
-            self.current_preset_path = preset_path
-            self.config.last_preset = str(preset_path)
             save_config(self.config)
         except PresetValidationError as e:
             # Actionable error for validation failures
@@ -3734,10 +4137,17 @@ class MainWindow(QMainWindow):
             "width": self.width(),
             "height": self.height(),
         }
-        self._save_ui_state()
-
-        if self.processor.is_running():
-            self.processor.stop()
+        try:
+            saved = self._save_ui_state()
+        finally:
+            if self.processor.is_running():
+                self.processor.stop()
+        if not saved:
+            QMessageBox.warning(
+                self,
+                "Settings Not Saved",
+                "Audio processing has stopped, but window settings could not be saved.",
+            )
         event.accept()
 
 

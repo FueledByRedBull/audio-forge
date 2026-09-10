@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import Any, cast
 from release_provenance import sha256_file as _sha256
+from unittest.mock import patch
 
 # These must be fixed before QApplication is created.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -92,22 +93,24 @@ def _source_hashes() -> dict[str, str]:
     return {path: _sha256(REPO_ROOT / path) for path in paths}
 
 
-def _install_sanitized_sources() -> None:
+def _install_sanitized_sources():
     """Prevent capture from reading user config, presets, or audio devices."""
-
-    main_window_module.load_config = lambda: AppConfig(
-        first_run_setup_state="completed",
-        first_run_setup_steps={
-            "devices": "completed",
-            "route": "completed",
-            "latency": "completed",
-            "voice": "completed",
-        },
+    return patch.multiple(
+        main_window_module,
+        load_config=lambda: AppConfig(
+            first_run_setup_state="completed",
+            first_run_setup_steps={
+                "devices": "completed",
+                "route": "completed",
+                "latency": "completed",
+                "voice": "completed",
+            },
+        ),
+        save_config=lambda _config: True,
+        list_presets=lambda: [],
+        list_input_devices=lambda: list(SANITIZED_INPUT_DEVICES),
+        list_output_devices=lambda: list(SANITIZED_OUTPUT_DEVICES),
     )
-    main_window_module.save_config = lambda _config: None
-    main_window_module.list_presets = lambda: []
-    main_window_module.list_input_devices = lambda: list(SANITIZED_INPUT_DEVICES)
-    main_window_module.list_output_devices = lambda: list(SANITIZED_OUTPUT_DEVICES)
 
 
 def _load_capture_font(app: QApplication) -> dict[str, str]:
@@ -139,7 +142,6 @@ def _select_data(combo: Any, value: str) -> None:
 
 
 def _prepare_main_window() -> MainWindow:
-    _install_sanitized_sources()
     window = MainWindow()
     window.meter_timer.stop()
     window.diagnostics_timer.stop()
@@ -261,6 +263,7 @@ def _write_optimized_png(widget: QWidget, path: Path) -> tuple[int, int]:
     return image.width(), image.height()
 
 
+@_install_sanitized_sources()
 def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
     existing_app = QApplication.instance()
     app = QApplication([]) if existing_app is None else cast(QApplication, existing_app)

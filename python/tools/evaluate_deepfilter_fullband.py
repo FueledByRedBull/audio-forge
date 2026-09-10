@@ -15,8 +15,9 @@ from typing import Any, cast
 from release_provenance import sha256_file as _sha256
 
 import numpy as np
-from scipy.io import wavfile
 from scipy.signal import stft, welch
+
+from mic_eq.analysis.wav_io import read_mono_wav
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -70,24 +71,14 @@ class Segment:
 
 
 def _read_mono(path: Path) -> np.ndarray:
-    sample_rate, raw = wavfile.read(path)
+    sample_rate, audio = read_mono_wav(
+        path,
+        allow_stereo=False,
+        dtype=np.float64,
+    )
     if int(sample_rate) != SAMPLE_RATE:
         raise ValueError(f"{path} is {sample_rate} Hz, expected native 48000 Hz")
-    audio = np.asarray(raw)
-    if audio.ndim != 1:
-        raise ValueError(f"{path} must be mono, got shape {audio.shape}")
-    if np.issubdtype(audio.dtype, np.integer):
-        bits = audio.dtype.itemsize * 8
-        scale = float(2 ** (bits - 1))
-        if np.issubdtype(audio.dtype, np.unsignedinteger):
-            converted = (np.asarray(audio, dtype=np.float64) - scale) / scale
-        else:
-            converted = np.asarray(audio, dtype=np.float64) / scale
-    else:
-        converted = np.asarray(audio, dtype=np.float64)
-    if converted.size == 0 or not np.all(np.isfinite(converted)):
-        raise ValueError(f"{path} must contain finite audio")
-    return converted
+    return audio
 
 
 def _manifest_audio(

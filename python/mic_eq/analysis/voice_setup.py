@@ -75,13 +75,6 @@ GATE_MODE_LABELS = {
     2: "VAD Only",
 }
 
-TARGET_LUFS_BY_CURVE = {
-    "broadcast": -16.0,
-    "streaming": -16.0,
-    "podcast": -17.0,
-    "flat": -18.0,
-}
-
 DYNAMICS_PROFILES: dict[str, dict[str, float]] = {
     "gentle": {
         "target_p95_db": 2.0,
@@ -667,6 +660,7 @@ def _recommend_compressor_settings(
     dynamics_intensity: str,
     custom_target_p95_db: float,
     custom_peak_cap_db: float,
+    target_lufs: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, float | bool]]:
     profile_name = dynamics_intensity.lower()
     if profile_name == "custom":
@@ -684,7 +678,9 @@ def _recommend_compressor_settings(
     else:
         profile_name = profile_name if profile_name in DYNAMICS_PROFILES else "balanced"
         profile = DYNAMICS_PROFILES[profile_name]
-    target_lufs = TARGET_LUFS_BY_CURVE.get(target_preset, -18.0)
+    requested_target_lufs = _clamp(
+        -18.0 if target_lufs is None else float(target_lufs), -24.0, -12.0
+    )
     threshold_db = _clamp(speech_body_db - 5.5, -48.0, -14.0)
     ratio = _clamp(
         (2.2 + loudness_range_db / 5.0) * profile["ratio_scale"],
@@ -697,7 +693,7 @@ def _recommend_compressor_settings(
     auto_makeup_enabled = bool(capture_confidence >= 0.55 and speech_snr_db >= 10.0)
     makeup_gain_db = 0.0
     if not auto_makeup_enabled:
-        makeup_gain_db = _clamp(target_lufs - speech_loudness_lufs, 0.0, 6.0)
+        makeup_gain_db = _clamp(requested_target_lufs - speech_loudness_lufs, 0.0, 6.0)
 
     settings = {
         "enabled": True,
@@ -709,7 +705,7 @@ def _recommend_compressor_settings(
         "adaptive_release": True,
         "base_release_ms": base_release_ms,
         "auto_makeup_enabled": auto_makeup_enabled,
-        "target_lufs": target_lufs,
+        "target_lufs": requested_target_lufs,
         "sidechain_highpass_enabled": True,
         "measured_short_term_lufs": speech_loudness_lufs,
         "measured_loudness_range_db": loudness_range_db,
@@ -719,7 +715,7 @@ def _recommend_compressor_settings(
     }
     diagnostics = {
         "auto_makeup_enabled": auto_makeup_enabled,
-        "target_lufs": target_lufs,
+        "target_lufs": requested_target_lufs,
         "dynamics_intensity": profile_name,
         "target_p95_reduction_db": profile["target_p95_db"],
         "target_median_reduction_db": profile["target_median_db"],
@@ -1126,6 +1122,7 @@ def analyze_voice_setup(
     dynamics_intensity: str = "balanced",
     custom_target_p95_db: float = 3.5,
     custom_peak_cap_db: float = 8.0,
+    target_lufs: float | None = None,
     limiter_settings: Mapping[str, Any] | None = None,
     noise_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
     speech_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
@@ -1267,6 +1264,7 @@ def analyze_voice_setup(
         dynamics_intensity=dynamics_intensity,
         custom_target_p95_db=custom_target_p95_db,
         custom_peak_cap_db=custom_peak_cap_db,
+        target_lufs=target_lufs,
     )
     compressor_settings["noise_reference_reliability"] = float(
         np.clip(noise_reference.quality_score, 0.0, 1.0)

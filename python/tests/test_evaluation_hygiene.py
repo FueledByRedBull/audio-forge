@@ -2,19 +2,11 @@
 
 from __future__ import annotations
 
-import importlib.util
 import hashlib
 import json
-import sys
 from pathlib import Path
 
-
-TOOL_PATH = Path(__file__).parent.parent / "tools" / "check_evaluation_hygiene.py"
-SPEC = importlib.util.spec_from_file_location("check_evaluation_hygiene", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-hygiene = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = hygiene
-SPEC.loader.exec_module(hygiene)
+import check_evaluation_hygiene as hygiene
 
 
 def _write(path: Path, payload: dict) -> None:

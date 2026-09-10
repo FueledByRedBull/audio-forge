@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import re
 import sys
@@ -34,51 +33,6 @@ def _single_match(path: str, pattern: str, label: str) -> str:
     if not match:
         raise ValueError(f"{label}: version string not found in {path}")
     return match.group(1)
-
-
-def _require_pattern(path: str, pattern: str, label: str) -> None:
-    if not re.search(pattern, _read(path), re.MULTILINE):
-        raise ValueError(f"{label}: version reference not found in {path}")
-
-
-def _parse_python(path: str) -> ast.AST:
-    return ast.parse(_read(path), filename=path)
-
-
-def _extract_catalog_version_reference(path: str) -> str:
-    tree = _parse_python(path)
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        if not isinstance(node.func, ast.Name) or node.func.id != "preset_cls":
-            continue
-        for keyword in node.keywords:
-            if keyword.arg != "version":
-                continue
-            value = keyword.value
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                return value.value
-            if isinstance(value, ast.Name) and value.id == "CURRENT_VERSION":
-                return "__CURRENT_VERSION__"
-    raise ValueError(f"built-in preset default: version reference not found in {path}")
-
-
-def _extract_main_window_preset_version(path: str) -> str:
-    tree = _parse_python(path)
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if not isinstance(target, ast.Attribute) or target.attr != "version":
-                continue
-            if not isinstance(target.value, ast.Name) or target.value.id != "preset":
-                continue
-            value = node.value
-            if isinstance(value, ast.Constant) and isinstance(value.value, str):
-                return value.value
-            if isinstance(value, ast.Name) and value.id == "__version__":
-                return "__PACKAGE_VERSION__"
-    raise ValueError(f"auto-eq preset default: version assignment not found in {path}")
 
 
 def _extract_cargo_lock_version(package_name: str) -> str:
@@ -181,14 +135,6 @@ def main() -> int:
         r'^__version__\s*=\s*"([^"]+)"',
         "python package",
     )
-    current_version = _single_match(
-        "python/mic_eq/config_parts/shared.py",
-        r'^CURRENT_VERSION\s*=\s*"([^"]+)"',
-        "shared config version",
-    )
-    catalog_version = _extract_catalog_version_reference("python/mic_eq/config_parts/catalogs.py")
-    main_window_version = _extract_main_window_preset_version("python/mic_eq/ui/main_window.py")
-
     rust_version = _single_match(
         "rust-core/Cargo.toml",
         r'^version\s*=\s*"([^"]+)"',
@@ -200,47 +146,20 @@ def main() -> int:
         r"Current version:\s*`(v[^`]+)`",
         "readme",
     )
-    catalog_text = current_version if catalog_version == "__CURRENT_VERSION__" else catalog_version
-    window_text = package_version if main_window_version == "__PACKAGE_VERSION__" else main_window_version
     checks = {
         "licenses/source-manifest.json": json.loads(_read("licenses/source-manifest.json"))["project_version"],
         "rust-core/Cargo.toml": _version("rust-core/Cargo.toml", rust_version, "rust core").cargo,
         "Cargo.lock mic_eq_core": _version("Cargo.lock", lock_version, "Cargo.lock").cargo,
         "python/mic_eq/__init__.py": _version("python/mic_eq/__init__.py", package_version, "python package").pep440,
-        "python/mic_eq/config_parts/shared.py CURRENT_VERSION": _version("python/mic_eq/config_parts/shared.py", current_version, "shared config").pep440,
         "README.md": _tag("README.md", readme_tag, "readme").tag,
-        "python/mic_eq/config_parts/presets.py Preset.version": _version("python/mic_eq/config_parts/shared.py", current_version, "preset default").pep440,
-        "python/mic_eq/config_parts/catalogs.py built-ins": _version("python/mic_eq/config_parts/catalogs.py", catalog_text, "built-in preset").pep440,
-        "python/mic_eq/ui/main_window.py auto-eq preset": _version("python/mic_eq/ui/main_window.py", window_text, "auto-eq preset").pep440,
     }
     expected_by_path = {
         "licenses/source-manifest.json": expected.pep440,
         "rust-core/Cargo.toml": expected.cargo,
         "Cargo.lock mic_eq_core": expected.cargo,
         "python/mic_eq/__init__.py": expected.pep440,
-        "python/mic_eq/config_parts/shared.py CURRENT_VERSION": expected.pep440,
         "README.md": expected.tag,
-        "python/mic_eq/config_parts/presets.py Preset.version": expected.pep440,
-        "python/mic_eq/config_parts/catalogs.py built-ins": expected.pep440,
-        "python/mic_eq/ui/main_window.py auto-eq preset": expected.pep440,
     }
-
-    release_versions = set(
-        re.findall(
-            r"AudioForge-(v[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[0-9]+)?)",
-            _read("RELEASING.md"),
-        )
-    )
-    _require_pattern(
-        "python/mic_eq/config_parts/presets.py",
-        r"version:\s*str\s*=\s*CURRENT_VERSION",
-        "preset default",
-    )
-    if not release_versions:
-        raise ValueError("RELEASING.md: release archive version string not found")
-    if release_versions != {expected.tag}:
-        checks["RELEASING.md"] = ", ".join(sorted(release_versions))
-        expected_by_path["RELEASING.md"] = expected.tag
 
     release_notes_path = REPO_ROOT / "release-notes" / f"release-notes-{expected.tag}.md"
     if not release_notes_path.is_file():

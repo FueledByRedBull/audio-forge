@@ -620,6 +620,7 @@ class LatencyCalibrationProfile:
     engine_latency_ms: float = 0.0
     total_latency_ms: float = 0.0
     engine_config_signature: str = ""
+    capture_format_context: tuple[int | None, ...] | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -637,13 +638,12 @@ class LatencyCalibrationProfile:
                 high=60_000.0,
             )
 
-        def bounded_integer(
+        def parse_bounded_integer(
+            value: object,
             name: str,
-            default: int,
             low: int,
             high: int,
         ) -> int:
-            value = data.get(name, default)
             if isinstance(value, bool) or not isinstance(value, (int, float, str)):
                 raise ValueError(f"latency profile {name} must be an integer")
             try:
@@ -660,6 +660,14 @@ class LatencyCalibrationProfile:
                     f"latency profile {name} must be between {low} and {high}"
                 )
             return parsed
+
+        def bounded_integer(
+            name: str,
+            default: int,
+            low: int,
+            high: int,
+        ) -> int:
+            return parse_bounded_integer(data.get(name, default), name, low, high)
 
         measured_route = finite_latency("measured_round_trip_ms")
         applied_compensation = finite_latency("applied_compensation_ms")
@@ -705,6 +713,29 @@ class LatencyCalibrationProfile:
             raise ValueError(
                 "latency profile engine_config_signature must be bounded text"
             )
+        raw_capture_format = data.get("capture_format_context")
+        capture_format_context: tuple[int | None, ...] | None = None
+        if raw_capture_format is not None:
+            if not isinstance(raw_capture_format, (list, tuple)) or len(
+                raw_capture_format
+            ) != 4:
+                raise ValueError(
+                    "latency profile capture_format_context must contain four values"
+                )
+            parsed_capture_format: list[int | None] = []
+            for index, value in enumerate(raw_capture_format):
+                if value is None:
+                    parsed_capture_format.append(None)
+                    continue
+                parsed_capture_format.append(
+                    parse_bounded_integer(
+                        value,
+                        f"capture_format_context[{index}]",
+                        8_000 if index % 2 == 0 else 1,
+                        768_000 if index % 2 == 0 else 0xFFFF,
+                    )
+                )
+            capture_format_context = tuple(parsed_capture_format)
         return cls(
             measured_round_trip_ms=measured_route,
             estimated_one_way_ms=finite_latency("estimated_one_way_ms"),
@@ -732,6 +763,7 @@ class LatencyCalibrationProfile:
             engine_latency_ms=engine_latency,
             total_latency_ms=total_latency,
             engine_config_signature=signature,
+            capture_format_context=capture_format_context,
         )
 
 

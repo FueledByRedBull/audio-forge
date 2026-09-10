@@ -21,3 +21,17 @@ def test_tracked_tree_contains_source_and_compact_evidence_only():
         assert path.name not in {"AGENTS.md", "AGENTS.override.md", "GPLAN.md"}, name
         assert not path.name.lower().startswith((".env", "credentials.", "secrets.")), name
         assert (root / path).stat().st_size <= 1_000_000, name
+
+
+def test_shared_ignore_rules_allow_tests_and_project_docs(tmp_path):
+    root = Path(__file__).resolve().parents[2]
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_bytes((root / ".gitignore").read_bytes())
+    result = subprocess.run(
+        ["git", "-c", "core.excludesFile=", "check-ignore", "--no-index",
+         "python/tests/test_sample.py", "tools/test_sample.py",
+         "rust-integration/test_sample.py", "ROADMAP.md", "future-dsp.md"],
+        cwd=tmp_path, capture_output=True, text=True,
+    )
+    assert result.returncode == 1, result.stderr
+    assert result.stdout == ""

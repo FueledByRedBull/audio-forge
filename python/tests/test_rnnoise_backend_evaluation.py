@@ -1,27 +1,8 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-from types import ModuleType
-
 import numpy as np
 
-
-def _load_tool() -> ModuleType:
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "python"
-        / "tools"
-        / "evaluate_rnnoise_backends.py"
-    )
-    spec = importlib.util.spec_from_file_location("evaluate_rnnoise_backends", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-TOOL = _load_tool()
+import evaluate_rnnoise_backends as TOOL
 
 
 def test_delay_estimator_finds_positive_model_delay() -> None:

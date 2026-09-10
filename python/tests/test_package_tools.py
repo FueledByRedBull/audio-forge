@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import importlib.util
 import hashlib
 import io
+import os
+import shutil
 import json
 import stat
 import subprocess
@@ -15,26 +16,17 @@ from pathlib import Path
 import pytest
 
 
+import prune_bundle
+import package_smoke
+import verify_release_assets
+import fetch_release_assets
+import release_provenance
+import check_versions
+import run_semgrep
+import check_workflows
+
+
 TOOLS_DIR = Path(__file__).parent.parent / "tools"
-
-
-def _load_tool(name: str):
-    path = TOOLS_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-prune_bundle = _load_tool("prune_bundle")
-package_smoke = _load_tool("package_smoke")
-verify_release_assets = _load_tool("verify_release_assets")
-fetch_release_assets = _load_tool("fetch_release_assets")
-check_versions = _load_tool("check_versions")
-run_semgrep = _load_tool("run_semgrep")
-check_workflows = _load_tool("check_workflows")
 
 
 def test_release_outputs_are_ignored_without_hiding_source(tmp_path):
@@ -169,6 +161,14 @@ def test_workflow_action_parser_covers_inline_and_named_steps():
         ("actions/checkout", "a" * 40),
         ("rustsec/audit-check", "b" * 40),
     ]
+
+
+def test_workflow_policy_rejects_mutable_action_reference(tmp_path, monkeypatch):
+    source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    action, ref = check_workflows.ACTION_REF.findall(source)[0]
+    (tmp_path / "ci.yml").write_text(source.replace(f"{action}@{ref}", f"{action}@v7"), encoding="utf-8")
+    monkeypatch.setattr(check_workflows, "WORKFLOW_DIR", tmp_path)
+    assert any("not pinned to a commit SHA" in error for error in check_workflows.check_workflows())
 
 
 def test_repository_workflow_release_gates_are_current():
@@ -310,6 +310,33 @@ def test_promotion_keeps_package_gates_without_hardware_runner():
     assert "self-hosted" not in source
     assert "--require-hashes -r requirements/runtime.txt" in source
     assert "git fetch --no-tags origin $env:GITHUB_SHA --depth=1" in source
+
+
+@pytest.mark.parametrize("digest", ["matching", "sha256:" + "0" * 64, ""])
+def test_promotion_preflight_checks_digest_without_downloading(tmp_path, digest):
+    shell = shutil.which("pwsh")
+    if shell is None:
+        pytest.skip("PowerShell is required for the Windows promotion workflow")
+    source = (check_workflows.WORKFLOW_DIR / "release-promote.yml").read_text()
+    script = source[source.index("          $toUpload = @()"):]
+    script = script[:script.index("          if ($toUpload.Count -gt 0)")]
+    asset = tmp_path / "asset.7z"
+    asset.write_bytes(b"verified candidate")
+    if digest == "matching":
+        digest = "sha256:" + hashlib.sha256(asset.read_bytes()).hexdigest()
+    setup = """
+$ErrorActionPreference = 'Stop'
+$assetPaths = @($env:TEST_ASSET)
+$remoteAssets = @{ 'asset.7z' = @{ digest = $env:TEST_DIGEST } }
+function gh { throw 'Preflight must not download assets' }
+"""
+    result = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-Command", setup + script],
+        env={**os.environ, "TEST_ASSET": str(asset), "TEST_DIGEST": digest},
+        capture_output=True, text=True,
+    )
+    expected = "sha256:" + hashlib.sha256(asset.read_bytes()).hexdigest()
+    assert (result.returncode == 0) == (digest == expected), result.stderr
 
 
 def test_release_workflow_checker_rejects_asset_clobbering():
@@ -1032,7 +1059,7 @@ def test_verify_release_assets_rejects_absolute_and_traversal_paths(
 def test_verify_release_assets_accepts_attested_source_build(tmp_path, monkeypatch):
     dll = tmp_path / "df.dll"
     dll.write_bytes(b"verified-source-build")
-    for relative in verify_release_assets.SOURCE_RECIPE_FILES:
+    for relative in release_provenance.DEEPFILTER_RECIPE_FILES:
         path = tmp_path / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         if relative != "build-support/deepfilter/provenance.json":
@@ -1063,7 +1090,7 @@ def test_verify_release_assets_accepts_attested_source_build(tmp_path, monkeypat
     )
     recipe_files = {
         relative: verify_release_assets._sha256(tmp_path / relative)
-        for relative in verify_release_assets.SOURCE_RECIPE_FILES
+        for relative in release_provenance.DEEPFILTER_RECIPE_FILES
     }
     attestation = {
         "schema_version": 1,

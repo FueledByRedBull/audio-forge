@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
 import hashlib
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -13,17 +11,7 @@ import pytest
 from scipy.io import wavfile
 
 
-TOOL_PATH = (
-    Path(__file__).parent.parent / "tools" / "evaluate_correction_tone_stages.py"
-)
-SPEC = importlib.util.spec_from_file_location(
-    "evaluate_correction_tone_stages",
-    TOOL_PATH,
-)
-assert SPEC is not None and SPEC.loader is not None
-TOOL = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = TOOL
-SPEC.loader.exec_module(TOOL)
+import evaluate_correction_tone_stages as TOOL
 
 
 def _write_corpus(root: Path, *, tamper_first: bool = False) -> None:

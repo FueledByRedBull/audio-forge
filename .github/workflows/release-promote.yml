@@ -365,33 +365,27 @@ jobs:
             throw "Automated qualification evidence is missing."
           }
           Copy-Item -LiteralPath "validation/release-qualification.json" -Destination $evidenceDir
+          foreach ($sidecar in @(
+            $env:CHECKSUM, $env:MANIFEST, $env:METADATA,
+            $env:INSTALLER_CHECKSUM, $env:INSTALLER_MANIFEST, $env:INSTALLER_METADATA,
+            $env:SOURCE_CHECKSUM, $env:SOURCE_METADATA, $env:NATIVE_ATTESTATION
+          )) {
+            Copy-Item -LiteralPath $sidecar -Destination $evidenceDir -ErrorAction Stop
+          }
           $sevenZip = Join-Path $env:ProgramFiles "7-Zip/7z.exe"
           if (-not (Test-Path -LiteralPath $sevenZip)) { $sevenZip = "7z.exe" }
-          $evidenceArchive = Join-Path $env:RUNNER_TEMP "AudioForge-v$version-release-evidence.7z"
-          & $sevenZip a -t7z -mx=9 $evidenceArchive (Join-Path $evidenceDir "*")
+          $evidenceArchive = Join-Path $env:RUNNER_TEMP "AudioForge-v$version-evidence.7z"
+          & $sevenZip a -t7z -mx=9 -mtc=off -mta=off -mtm=off $evidenceArchive (Join-Path $evidenceDir "*")
           if ($LASTEXITCODE -ne 0) {
             throw "Release evidence archive failed with exit code $LASTEXITCODE."
           }
-          $evidenceChecksum = "$evidenceArchive.sha256"
-          $evidenceHash = (Get-FileHash -LiteralPath $evidenceArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$evidenceHash  $([IO.Path]::GetFileName($evidenceArchive))" |
-            Set-Content -LiteralPath $evidenceChecksum -Encoding ascii
-          $assetPaths = @(
-            $env:ARCHIVE,
-            $env:CHECKSUM,
-            $env:MANIFEST,
-            $env:METADATA,
-            $env:INSTALLER,
-            $env:INSTALLER_CHECKSUM,
-            $env:INSTALLER_MANIFEST,
-            $env:INSTALLER_METADATA,
-            $env:SOURCE_ARCHIVE,
-            $env:SOURCE_CHECKSUM,
-            $env:SOURCE_METADATA,
-            $env:NATIVE_ATTESTATION,
-            $evidenceArchive,
-            $evidenceChecksum
-          )
+          $assetPaths = @($env:ARCHIVE, $env:INSTALLER, $env:SOURCE_ARCHIVE, $evidenceArchive)
+          $checksumsFile = Join-Path $env:RUNNER_TEMP "AudioForge-v$version-SHA256SUMS.txt"
+          $assetPaths | ForEach-Object {
+            $hash = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $([IO.Path]::GetFileName($_))"
+          } | Set-Content -LiteralPath $checksumsFile -Encoding ascii
+          $assetPaths += $checksumsFile
           foreach ($assetPath in $assetPaths) {
             if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
               throw "Validated release asset is missing: $assetPath"
@@ -460,15 +454,12 @@ jobs:
           foreach ($assetPath in $assetPaths) {
             $assetName = [IO.Path]::GetFileName($assetPath)
             if ($remoteAssets.ContainsKey($assetName)) {
-              gh release download $env:RELEASE_TAG `
-                --repo $env:GITHUB_REPOSITORY `
-                --pattern $assetName `
-                --dir $verifyDir `
-                --clobber
-              if ($LASTEXITCODE -ne 0) {
-                throw "Unable to download existing release asset '$assetName'."
+              $localHash = (Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
+              $remoteDigest = [string]$remoteAssets[$assetName].digest
+              if ($remoteDigest -notmatch '^sha256:[0-9a-fA-F]{64}$' -or
+                  $remoteDigest.ToLowerInvariant() -ne "sha256:$localHash") {
+                throw "Existing release asset '$assetName' has a missing or mismatched SHA-256 digest."
               }
-              Assert-AssetMatches $assetPath (Join-Path $verifyDir $assetName) $assetName
             } else {
               $toUpload += $assetPath
             }

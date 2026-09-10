@@ -1,24 +1,8 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-from types import ModuleType
-
 import numpy as np
 
-
-def _load_tool() -> ModuleType:
-    path = Path(__file__).resolve().parents[1] / "tools" / "self_test.py"
-    spec = importlib.util.spec_from_file_location("audioforge_self_test", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-TOOL = _load_tool()
+import self_test as TOOL
 
 
 class _ProcessorStub:

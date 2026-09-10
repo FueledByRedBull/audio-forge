@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import threading
 import time
 
@@ -55,6 +56,32 @@ def _make_voice(
     )
     noise = noise_amplitude * rng.normal(size=t.size)
     return (level * envelope * voiced + noise).astype(np.float32)
+
+
+def _full_voice_candidate_metadata(context_key: str | None = None) -> dict:
+    return {
+        "scope": "full_voice_setup",
+        "allowed_scope": ["eq", "gate", "deesser", "compressor", "limiter"],
+        "target": {
+            "curve": "broadcast",
+            "target_lufs": -18.0,
+            "dynamics_intensity": "balanced",
+        },
+        "capture_identity": {
+            "generation": 1,
+            "sample_rate": 48_000,
+            "noise_samples": 16,
+            "voice_samples": 16,
+            "context_key": context_key,
+        },
+        "options": {
+            "vad_available": False,
+            "dynamics_intensity": "balanced",
+            "custom_target_p95_db": 3.5,
+            "custom_peak_cap_db": 8.0,
+        },
+        "verified_stages": [],
+    }
 
 
 def test_short_capture_keeps_short_term_unavailable_and_labels_fallback():
@@ -274,7 +301,7 @@ def test_dynamics_intensity_is_separate_from_target_loudness():
         custom_peak_cap_db=8.0,
     )
 
-    assert gentle["target_lufs"] == dense["target_lufs"] == -16.0
+    assert gentle["target_lufs"] == dense["target_lufs"] == -18.0
     assert gentle["ratio"] < dense["ratio"]
     assert (
         gentle_diag["target_p95_reduction_db"]
@@ -695,10 +722,11 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     for name in ("list_presets", "list_input_devices", "list_output_devices"):
         monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
     owner = MainWindow()
+    monkeypatch.setattr(owner, "_calibration_context_key", lambda: "test-route")
     owner.meter_timer.stop()
     owner.diagnostics_timer.stop()
     owner.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.7})
@@ -710,6 +738,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
     limiter = {"enabled": False, "ceiling_db": -2.5, "release_ms": 175.0,
                "careful_output_enabled": False}
     dialog.setup_result = {
+        "_candidate": _full_voice_candidate_metadata("test-route"),
         "diagnostics": {"apply_recommended": True},
         "gate_settings": owner.gate_panel.get_settings(),
         "deesser_settings": {**owner.deesser_panel.get_settings(), "auto_amount": 0.3476},
@@ -720,13 +749,31 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
         "eq_settings": {"band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
                         "band_gains": [1.0] * 10, "band_qs": [1.41] * 10},
     }
+    dialog._candidate_metadata = deepcopy(dialog.setup_result["_candidate"])
+    dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
+    dialog._analysis_generation = 1
     with monkeypatch.context() as patch:
         patch.setattr(dialog, "_show_summary", lambda _result: None)
         dialog._on_analysis_complete(dialog.setup_result)
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.QMessageBox.critical",
+        Mock(side_effect=AssertionError("unexpected voice setup error dialog")),
+    )
     assert not dialog.curve_combo.isEnabled()
     assert not dialog.dynamics_combo.isEnabled()
+    dialog.curve_combo.setCurrentIndex(dialog.curve_combo.findData("podcast"))
+    dialog.dynamics_combo.setCurrentIndex(dialog.dynamics_combo.findData("dense"))
+    dialog.target_lufs_spin.setValue(-14.0)
     dialog._apply_setup()
     assert dialog.setup_state == "verification_ready"
+    assert dialog.setup_result["_candidate"]["target"] == {
+        "curve": "broadcast",
+        "target_lufs": -18.0,
+        "dynamics_intensity": "balanced",
+    }
+    assert dialog.setup_result["_candidate"]["options"]["dynamics_intensity"] == (
+        "balanced"
+    )
     assert dialog.setup_result["compressor_settings"]["threshold_db"] == -21.12
     assert dialog.setup_result["compressor_settings"]["ratio"] == 2.35
     assert dialog.setup_result["compressor_settings"]["target_p95_reduction_db"] == 3.5
@@ -806,7 +853,7 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     for name in ("list_presets", "list_input_devices", "list_output_devices"):
         monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
     owner = MainWindow()
@@ -820,6 +867,7 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
         "careful_output_enabled": False,
     }
     result = {
+        "_candidate": _full_voice_candidate_metadata(),
         "diagnostics": {
             "apply_recommended": False,
             "uncertainty_reasons": ["capture confidence is weak"],
@@ -841,7 +889,9 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
         },
     }
     result[field] = value
-    dialog.noise_audio = np.zeros(16, dtype=np.float32)
+    dialog._candidate_metadata = deepcopy(result["_candidate"])
+    dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
+    dialog._analysis_generation = 1
     try:
         dialog._on_analysis_complete(result)
         assert dialog.setup_state == "noise_ready"
@@ -870,7 +920,7 @@ def test_complete_advisory_candidate_still_offers_apply(qapp, monkeypatch):
     from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     for name in ("list_presets", "list_input_devices", "list_output_devices"):
         monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
     owner = MainWindow()
@@ -878,34 +928,37 @@ def test_complete_advisory_candidate_still_offers_apply(qapp, monkeypatch):
     owner.diagnostics_timer.stop()
     dialog = VoiceSetupDialog(parent=owner)
     try:
-        dialog._on_analysis_complete(
-            {
-                "diagnostics": {
-                    "apply_recommended": False,
-                    "uncertainty_reasons": ["capture confidence is weak"],
-                    "setup_confidence": 0.62,
-                    "capture_confidence": 0.7,
-                    "recommendation_uncertainty": 0.4,
-                    "gate_mode_label": "VAD Assisted",
-                },
-                "gate_settings": owner.gate_panel.get_settings(),
-                "deesser_settings": owner.deesser_panel.get_settings(),
-                "compressor_settings": owner.compressor_panel.get_compressor_settings(
-                    include_calibration=True
-                ),
-                "limiter_settings": {
-                    "enabled": False,
-                    "ceiling_db": -2.5,
-                    "release_ms": 175.0,
-                    "careful_output_enabled": False,
-                },
-                "eq_settings": {
-                    "band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
-                    "band_gains": [1.0] * 10,
-                    "band_qs": [1.41] * 10,
-                },
-            }
-        )
+        result = {
+            "_candidate": _full_voice_candidate_metadata(),
+            "diagnostics": {
+                "apply_recommended": False,
+                "uncertainty_reasons": ["capture confidence is weak"],
+                "setup_confidence": 0.62,
+                "capture_confidence": 0.7,
+                "recommendation_uncertainty": 0.4,
+                "gate_mode_label": "VAD Assisted",
+            },
+            "gate_settings": owner.gate_panel.get_settings(),
+            "deesser_settings": owner.deesser_panel.get_settings(),
+            "compressor_settings": owner.compressor_panel.get_compressor_settings(
+                include_calibration=True
+            ),
+            "limiter_settings": {
+                "enabled": False,
+                "ceiling_db": -2.5,
+                "release_ms": 175.0,
+                "careful_output_enabled": False,
+            },
+            "eq_settings": {
+                "band_freqs": list(np.geomspace(60.0, 16_000.0, 10)),
+                "band_gains": [1.0] * 10,
+                "band_qs": [1.41] * 10,
+            },
+        }
+        dialog._candidate_metadata = deepcopy(result["_candidate"])
+        dialog.noise_audio = dialog.voice_audio = np.zeros(16, dtype=np.float32)
+        dialog._analysis_generation = 1
+        dialog._on_analysis_complete(result)
         assert dialog.setup_state == "completed"
         assert dialog.start_button.text() == "Apply Voice Setup"
         assert not dialog.curve_combo.isEnabled()

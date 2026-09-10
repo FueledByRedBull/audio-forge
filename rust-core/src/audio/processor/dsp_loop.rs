@@ -62,9 +62,8 @@ impl AudioProcessor {
             return Err("Already running".to_string());
         }
 
-        // Ensure any stale recording/mute state is cleared before starting.
+        // Clear stale capture state; explicit output mute survives restarts.
         self.recording_active.store(false, Ordering::Release);
-        self.output_muted.store(false, Ordering::Release);
         self.raw_recording_pos.store(0, Ordering::Release);
         self.raw_recording_target.store(0, Ordering::Release);
         self.recording_level_db
@@ -1866,9 +1865,8 @@ impl AudioProcessor {
         self.audio_input = None;
         self.audio_output = None;
 
-        // Ensure output is unmuted and recording state is cleared.
+        // Clear capture state without changing the caller's output mute.
         self.recording_active.store(false, Ordering::Release);
-        self.output_muted.store(false, Ordering::Release);
         self.raw_recording_pos.store(0, Ordering::Release);
         self.raw_recording_target.store(0, Ordering::Release);
         self.recording_level_db

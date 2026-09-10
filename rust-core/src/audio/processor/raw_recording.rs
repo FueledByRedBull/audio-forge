@@ -104,6 +104,9 @@ impl AudioProcessor {
         if !self.is_running() {
             return Err("Audio processor must be running before queuing a probe".to_string());
         }
+        if self.output_muted.load(Ordering::Acquire) {
+            return Err("Unmute output before playing a calibration probe".to_string());
+        }
         if samples.is_empty() {
             return Err("Output probe must contain at least one sample".to_string());
         }

@@ -7,6 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 from PyQt6.QtWidgets import QMainWindow, QMenu, QMessageBox
+from PyQt6.QtGui import QCloseEvent
 
 from mic_eq.config import AppConfig, DevicePresetBinding, Preset
 from mic_eq.ui import main_window
@@ -46,6 +47,33 @@ def test_saved_processing_settings_restore_on_next_launch(qapp, monkeypatch, tmp
         qapp.processEvents()
 
 
+def test_invalid_last_used_preset_falls_back_with_persistent_warning(
+    qapp, monkeypatch, tmp_path
+):
+    from mic_eq.config import get_presets_dir
+    from mic_eq.config_parts import shared
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+
+    broken = get_presets_dir() / "broken.json"
+    broken.write_text("{invalid json", encoding="utf-8")
+    main_window.save_config(AppConfig(last_preset=str(broken)))
+
+    window = MainWindow()
+    try:
+        assert window.current_preset_path is None
+        assert window.config.last_preset == ""
+        assert not window.config_warning_banner.isHidden()
+        assert "could not restore" in window.config_warning_banner.text().lower()
+        assert "could not restore" in window.status_bar.currentMessage().lower()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
 def _save_window(tmp_path: Path) -> MainWindow:
     window = MainWindow.__new__(MainWindow)
     previous_path = tmp_path / "previous.json"
@@ -74,6 +102,129 @@ def test_save_preset_updates_last_used_identity(monkeypatch, tmp_path):
     assert window.current_preset_path == saved_path
     assert window.config.last_preset == str(saved_path)
     save_config.assert_called_once_with(window.config)
+
+
+def test_cancel_description_does_not_save_or_change_identity(monkeypatch, tmp_path):
+    window = _save_window(tmp_path)
+    save = Mock()
+    window._save_preset_file = save
+    window._get_current_preset = lambda: Preset()
+    monkeypatch.setattr(
+        main_window.QInputDialog, "getText",
+        Mock(side_effect=[("Cancelled", True), ("", False)]),
+    )
+
+    MainWindow._save_preset(window)
+
+    save.assert_not_called()
+    assert window.current_preset_path == tmp_path / "previous.json"
+    assert window.config.last_preset == str(tmp_path / "previous.json")
+
+
+@pytest.mark.parametrize("valid", [False, True])
+def test_import_collision_preserves_previous_preset(qapp, monkeypatch, tmp_path, valid):
+    from mic_eq.config import get_preset_imports_dir, load_preset, save_preset
+    from mic_eq.config_parts import shared
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path / "config")
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+    monkeypatch.setattr(main_window.QMessageBox, "warning", Mock())
+    existing = get_preset_imports_dir() / "voice.json"
+    save_preset(Preset(name="Existing voice"), existing)
+    original = existing.read_bytes()
+    external = tmp_path / "voice.json"
+    if valid:
+        save_preset(Preset(name="New voice"), external)
+    else:
+        external.write_text("{invalid json", encoding="utf-8")
+    monkeypatch.setattr(main_window.QFileDialog, "getOpenFileName", lambda *_: (str(external), ""))
+    window = MainWindow()
+    try:
+        window._apply_preset(load_preset(existing), preset_path=existing)
+        window._load_preset()
+        assert existing.read_bytes() == original
+        if valid:
+            assert window.current_preset_name == "New voice"
+            assert window.current_preset_path != existing
+            assert window.current_preset_path is not None
+            assert load_preset(window.current_preset_path).name == "New voice"
+        else:
+            assert window.current_preset_name == "Existing voice"
+            assert window.current_preset_path == existing
+            main_window.QMessageBox.warning.assert_called_once()
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("strength", [0.735, 0.29, 0.58, 0.0, 1.0])
+def test_preset_strength_round_trip_matches_live_processor(qapp, monkeypatch, tmp_path, strength):
+    from mic_eq.config import load_preset
+    from mic_eq.config_parts import shared
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+    window = MainWindow()
+    try:
+        preset = window._get_current_preset()
+        preset.rnnoise.strength = strength
+        window._apply_preset(preset)
+        accepted = window.strength_slider.value() / 100.0
+        assert accepted == round(strength * 100) / 100.0
+        assert window.processor.get_rnnoise_strength() == pytest.approx(accepted)
+        assert window.strength_label.text() == f"{window.strength_slider.value()}%"
+        saved = window._get_current_preset()
+        saved.name = "Strength round trip"
+        path = window._save_preset_file(saved)
+        assert path is not None
+        restored = load_preset(path)
+        assert restored.rnnoise.strength == accepted
+        window._apply_preset(restored)
+        assert window.processor.get_rnnoise_strength() == pytest.approx(accepted)
+        assert window.current_preset_modified is False
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+@pytest.mark.parametrize("write_result", [
+    False, OSError("disk full"), TypeError("invalid value"), ValueError("non-finite value"),
+])
+def test_close_stops_processing_before_reporting_settings_failure(
+    qapp, monkeypatch, tmp_path, write_result,
+):
+    from mic_eq.config_parts import shared
+
+    monkeypatch.setattr(shared, "_config_base_dir", lambda: tmp_path)
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+    window = MainWindow()
+    events = []
+    original_processor = window.processor
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(main_window, "save_config", Mock(
+                side_effect=write_result if isinstance(write_result, Exception) else None,
+                return_value=write_result,
+            ))
+            patch.setattr(main_window.QMessageBox, "warning", lambda *_: events.append("warning"))
+            cast(Any, window).processor = SimpleNamespace(
+                is_running=lambda: True, stop=lambda: events.append("stop"),
+            )
+            assert window._save_ui_state() is False
+            event = QCloseEvent()
+            window.closeEvent(event)
+            assert events == ["stop", "warning"]
+            assert event.isAccepted()
+    finally:
+        window.processor = original_processor
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
 
 
 def test_prompt_save_cancel_keeps_last_used_identity(monkeypatch, tmp_path):

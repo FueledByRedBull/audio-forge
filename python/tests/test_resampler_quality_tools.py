@@ -2,20 +2,11 @@
 
 from __future__ import annotations
 
-import importlib.util
 import math
-import sys
-from pathlib import Path
 
 import numpy as np
 
-
-TOOL_PATH = Path(__file__).parent.parent / "tools" / "evaluate_resampler_quality.py"
-SPEC = importlib.util.spec_from_file_location("evaluate_resampler_quality", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-evaluate_resampler_quality = importlib.util.module_from_spec(SPEC)
-sys.modules["evaluate_resampler_quality"] = evaluate_resampler_quality
-SPEC.loader.exec_module(evaluate_resampler_quality)
+import evaluate_resampler_quality
 
 
 def test_db_ratio_and_tone_projection_are_scale_consistent():

@@ -29,6 +29,7 @@ from .layout_constants import (
     PRIMARY_LABEL_STYLE,
     METER_LABEL_STYLE,
     INFO_LABEL_STYLE,
+    bind_slider_spinbox,
     fit_spinbox_to_contents,
 )
 
@@ -43,6 +44,10 @@ class CompressorPanel(QWidget):
         super().__init__()
         self.processor = processor
         self._noise_reference_reliability = 0.0
+        self._dynamics_profile = "balanced"
+        self._dynamics_customized = False
+        self._calibrated_controls: dict[str, float | bool] | None = None
+        self._applying_settings = False
         self._comp_rate_limiter = RateLimiter(interval_ms=33)
         self._limiter_rate_limiter = RateLimiter(interval_ms=33)
         self._setup_ui()
@@ -402,14 +407,25 @@ class CompressorPanel(QWidget):
         """Connect signals to slots."""
         # Compressor
         self.comp_enabled_checkbox.toggled.connect(self._update_compressor)
-        self.threshold_slider.valueChanged.connect(self._on_threshold_slider)
-        self.threshold_spinbox.valueChanged.connect(self._on_threshold_spinbox)
-        self.ratio_slider.valueChanged.connect(self._on_ratio_slider)
-        self.ratio_spinbox.valueChanged.connect(self._on_ratio_spinbox)
+        bind_slider_spinbox(
+            self.threshold_slider,
+            self.threshold_spinbox,
+            on_change=self._update_compressor,
+        )
+        bind_slider_spinbox(
+            self.ratio_slider,
+            self.ratio_spinbox,
+            slider_to_value=lambda value: value / 10.0,
+            value_to_slider=lambda value: int(value * 10),
+            on_change=self._update_compressor,
+        )
         self.attack_spinbox.valueChanged.connect(self._update_compressor)
         self.release_spinbox.valueChanged.connect(self._update_compressor)
-        self.makeup_slider.valueChanged.connect(self._on_makeup_slider)
-        self.makeup_spinbox.valueChanged.connect(self._on_makeup_spinbox)
+        bind_slider_spinbox(
+            self.makeup_slider,
+            self.makeup_spinbox,
+            on_change=self._update_compressor,
+        )
         self.adaptive_release_checkbox.toggled.connect(self._update_adaptive_release)
         self.base_release_spinbox.valueChanged.connect(self._update_adaptive_release)
         self.sidechain_highpass_checkbox.toggled.connect(self._update_compressor)
@@ -423,8 +439,13 @@ class CompressorPanel(QWidget):
         # Limiter
         self.limiter_enabled_checkbox.toggled.connect(self._update_limiter)
         self.careful_output_checkbox.toggled.connect(self._update_limiter)
-        self.ceiling_slider.valueChanged.connect(self._on_ceiling_slider)
-        self.ceiling_spinbox.valueChanged.connect(self._on_ceiling_spinbox)
+        bind_slider_spinbox(
+            self.ceiling_slider,
+            self.ceiling_spinbox,
+            slider_to_value=lambda value: value / 10.0,
+            value_to_slider=lambda value: int(value * 10),
+            on_change=self._update_limiter,
+        )
         self.limiter_release_spinbox.valueChanged.connect(self._update_limiter)
         self.ceiling_slider.sliderReleased.connect(self._limiter_rate_limiter.flush)
 
@@ -432,66 +453,9 @@ class CompressorPanel(QWidget):
         self._update_compressor()
         self._update_limiter()
 
-    def _on_threshold_slider(self, value):
-        """Handle threshold slider change."""
-        self.threshold_spinbox.blockSignals(True)
-        self.threshold_spinbox.setValue(float(value))
-        self.threshold_spinbox.blockSignals(False)
-        self._update_compressor()
-
-    def _on_threshold_spinbox(self, value):
-        """Handle threshold spinbox change."""
-        self.threshold_slider.blockSignals(True)
-        self.threshold_slider.setValue(int(value))
-        self.threshold_slider.blockSignals(False)
-        self._update_compressor()
-
-    def _on_ratio_slider(self, value):
-        """Handle ratio slider change."""
-        ratio = value / 10.0
-        self.ratio_spinbox.blockSignals(True)
-        self.ratio_spinbox.setValue(ratio)
-        self.ratio_spinbox.blockSignals(False)
-        self._update_compressor()
-
-    def _on_ratio_spinbox(self, value):
-        """Handle ratio spinbox change."""
-        self.ratio_slider.blockSignals(True)
-        self.ratio_slider.setValue(int(value * 10))
-        self.ratio_slider.blockSignals(False)
-        self._update_compressor()
-
-    def _on_makeup_slider(self, value):
-        """Handle makeup gain slider change."""
-        self.makeup_spinbox.blockSignals(True)
-        self.makeup_spinbox.setValue(float(value))
-        self.makeup_spinbox.blockSignals(False)
-        self._update_compressor()
-
-    def _on_makeup_spinbox(self, value):
-        """Handle makeup gain spinbox change."""
-        self.makeup_slider.blockSignals(True)
-        self.makeup_slider.setValue(int(value))
-        self.makeup_slider.blockSignals(False)
-        self._update_compressor()
-
-    def _on_ceiling_slider(self, value):
-        """Handle ceiling slider change."""
-        ceiling = value / 10.0
-        self.ceiling_spinbox.blockSignals(True)
-        self.ceiling_spinbox.setValue(ceiling)
-        self.ceiling_spinbox.blockSignals(False)
-        self._update_limiter()
-
-    def _on_ceiling_spinbox(self, value):
-        """Handle ceiling spinbox change."""
-        self.ceiling_slider.blockSignals(True)
-        self.ceiling_slider.setValue(int(value * 10))
-        self.ceiling_slider.blockSignals(False)
-        self._update_limiter()
-
     def _update_compressor(self):
         """Update compressor configuration."""
+        self._mark_dynamics_customized()
         enabled = self.comp_enabled_checkbox.isChecked()
         threshold = self.threshold_spinbox.value()
         ratio = self.ratio_spinbox.value()
@@ -530,8 +494,38 @@ class CompressorPanel(QWidget):
 
         self._limiter_rate_limiter.call(apply)
 
+    def _dynamics_control_values(self) -> dict[str, float | bool]:
+        return {
+            "enabled": self.comp_enabled_checkbox.isChecked(),
+            "threshold_db": self.threshold_spinbox.value(),
+            "ratio": self.ratio_spinbox.value(),
+            "attack_ms": self.attack_spinbox.value(),
+            "release_ms": self.release_spinbox.value(),
+            "makeup_gain_db": self.makeup_spinbox.value(),
+            "adaptive_release": self.adaptive_release_checkbox.isChecked(),
+            "base_release_ms": self.base_release_spinbox.value(),
+            "auto_makeup_enabled": self.auto_makeup_checkbox.isChecked(),
+            "sidechain_highpass_enabled": self.sidechain_highpass_checkbox.isChecked(),
+        }
+
+    def _mark_dynamics_customized(self) -> None:
+        if self._applying_settings or self._calibrated_controls is None:
+            return
+        values = self._dynamics_control_values()
+        if any(
+            isinstance(value, bool) != isinstance(self._calibrated_controls.get(key), bool)
+            or (
+                isinstance(value, float)
+                and abs(value - float(self._calibrated_controls.get(key, value))) > 1.0e-6
+            )
+            or value != self._calibrated_controls.get(key)
+            for key, value in values.items()
+        ):
+            self._dynamics_customized = True
+
     def _update_adaptive_release(self):
         """Update adaptive release configuration."""
+        self._mark_dynamics_customized()
         try:
             adaptive = self.adaptive_release_checkbox.isChecked()
             base_release = self.base_release_spinbox.value()
@@ -559,6 +553,7 @@ class CompressorPanel(QWidget):
 
     def _update_auto_makeup(self):
         """Update auto makeup gain configuration."""
+        self._mark_dynamics_customized()
         try:
             auto_makeup = self.auto_makeup_checkbox.isChecked()
             target_lufs = self.target_lufs_spinbox.value()
@@ -600,6 +595,11 @@ class CompressorPanel(QWidget):
         }
         if include_calibration:
             settings["noise_reference_reliability"] = self._noise_reference_reliability
+            settings["dynamics_intensity"] = (
+                "customized" if self._dynamics_customized else self._dynamics_profile
+            )
+            settings["dynamics_profile"] = self._dynamics_profile
+            settings["dynamics_customized"] = self._dynamics_customized
         return settings
 
     def get_limiter_settings(self) -> dict:
@@ -613,41 +613,58 @@ class CompressorPanel(QWidget):
 
     def set_compressor_settings(self, settings: dict) -> None:
         """Apply compressor settings from a dictionary."""
-        if "enabled" in settings:
-            self.comp_enabled_checkbox.setChecked(settings["enabled"])
-        if "threshold_db" in settings:
-            self.threshold_spinbox.setValue(settings["threshold_db"])
-            self.threshold_slider.setValue(int(settings["threshold_db"]))
-        if "ratio" in settings:
-            self.ratio_spinbox.setValue(settings["ratio"])
-            self.ratio_slider.setValue(int(settings["ratio"] * 10))
-        if "attack_ms" in settings:
-            self.attack_spinbox.setValue(settings["attack_ms"])
-        if "release_ms" in settings:
-            self.release_spinbox.setValue(settings["release_ms"])
-        if "makeup_gain_db" in settings:
-            self.makeup_spinbox.setValue(settings["makeup_gain_db"])
-            self.makeup_slider.setValue(int(settings["makeup_gain_db"]))
+        self._applying_settings = True
+        try:
+            if "enabled" in settings:
+                self.comp_enabled_checkbox.setChecked(settings["enabled"])
+            if "threshold_db" in settings:
+                self.threshold_spinbox.setValue(settings["threshold_db"])
+                self.threshold_slider.setValue(int(settings["threshold_db"]))
+            if "ratio" in settings:
+                self.ratio_spinbox.setValue(settings["ratio"])
+                self.ratio_slider.setValue(int(settings["ratio"] * 10))
+            if "attack_ms" in settings:
+                self.attack_spinbox.setValue(settings["attack_ms"])
+            if "release_ms" in settings:
+                self.release_spinbox.setValue(settings["release_ms"])
+            if "makeup_gain_db" in settings:
+                self.makeup_spinbox.setValue(settings["makeup_gain_db"])
+                self.makeup_slider.setValue(int(settings["makeup_gain_db"]))
 
-        # Adaptive release settings (v1.2.0+)
-        if "adaptive_release" in settings:
-            self.adaptive_release_checkbox.setChecked(settings["adaptive_release"])
-        if "base_release_ms" in settings:
-            self.base_release_spinbox.setValue(settings["base_release_ms"])
+            # Adaptive release settings (v1.2.0+)
+            if "adaptive_release" in settings:
+                self.adaptive_release_checkbox.setChecked(settings["adaptive_release"])
+            if "base_release_ms" in settings:
+                self.base_release_spinbox.setValue(settings["base_release_ms"])
 
-        # Auto makeup gain settings (v1.3.0+)
-        if "auto_makeup_enabled" in settings:
-            self.auto_makeup_checkbox.setChecked(settings["auto_makeup_enabled"])
-        if "target_lufs" in settings:
-            self.target_lufs_spinbox.setValue(settings["target_lufs"])
-        if "sidechain_highpass_enabled" in settings:
-            self.sidechain_highpass_checkbox.setChecked(
-                settings["sidechain_highpass_enabled"]
-            )
+            # Auto makeup gain settings (v1.3.0+)
+            if "auto_makeup_enabled" in settings:
+                self.auto_makeup_checkbox.setChecked(settings["auto_makeup_enabled"])
+            if "target_lufs" in settings:
+                self.target_lufs_spinbox.setValue(settings["target_lufs"])
+            if "sidechain_highpass_enabled" in settings:
+                self.sidechain_highpass_checkbox.setChecked(
+                    settings["sidechain_highpass_enabled"]
+                )
 
-        self._update_compressor()
-        self._update_adaptive_release()
-        self._update_auto_makeup()
+            self._update_compressor()
+            self._update_adaptive_release()
+            self._update_auto_makeup()
+        finally:
+            self._applying_settings = False
+
+        profile = settings.get("dynamics_profile", settings.get("dynamics_intensity"))
+        if profile in {"gentle", "balanced", "dense", "custom"}:
+            self._dynamics_profile = str(profile)
+            self._dynamics_customized = bool(settings.get("dynamics_customized", False))
+            self._calibrated_controls = self._dynamics_control_values()
+        elif any(key in settings for key in self._dynamics_control_values()):
+            # Numeric preset files have no calibration provenance. A partial
+            # control signature cannot distinguish a calibrated intensity from
+            # a hand-edited threshold, so keep the loaded label honest.
+            self._dynamics_profile = "custom"
+            self._dynamics_customized = False
+            self._calibrated_controls = self._dynamics_control_values()
         # Room-noise reliability is transient calibration evidence, not a
         # persisted compressor setting. Omission intentionally invalidates it
         # for ordinary preset application; rollback snapshots opt in above.

@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
 
 
-TOOL_PATH = Path(__file__).parent.parent / "tools" / "release_provenance.py"
-SPEC = importlib.util.spec_from_file_location("release_provenance", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-release_provenance = importlib.util.module_from_spec(SPEC)
-sys.modules["release_provenance"] = release_provenance
-SPEC.loader.exec_module(release_provenance)
+import release_provenance
 
 
 @pytest.fixture(autouse=True)
@@ -215,8 +208,10 @@ def test_sidecars_bind_deepfilter_attestation_to_candidate(tmp_path, monkeypatch
                 "assets": [
                     {
                         "path": "df.dll",
+                        "sha256": release_provenance.sha256_file(dll),
                         "origin": {
                             "status": "verified-source-build",
+                            "attestation_path": "target/deepfilter/df.dll.provenance.json",
                             "repository": provenance["upstream"]["repository"],
                             "commit": provenance["upstream"]["commit"],
                         },

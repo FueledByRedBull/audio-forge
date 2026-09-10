@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 import threading
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -45,6 +46,7 @@ from mic_eq.config import (
     CompressorSettings,
     DeviceIdentity,
     DevicePresetBinding,
+    InputDevicePreference,
     LimiterSettings,
     Preset,
     build_latency_profile_key,
@@ -198,6 +200,12 @@ class _FakeCombo:
     def itemData(self, index: int):
         return self._items[index][1]
 
+    def findData(self, target):
+        return next(
+            (index for index, (_label, data) in enumerate(self._items) if data == target),
+            -1,
+        )
+
 
 class _FakeControl:
     def __init__(self, value=None):
@@ -266,6 +274,14 @@ class _PresetProcessor:
 
     def set_bypass(self, value):
         self.calls.append(("bypass", value))
+
+
+class _PresetProcessorRaisesForDeepFilter(_PresetProcessor):
+    def set_noise_model(self, value):
+        self.calls.append(("noise_model", value))
+        if value == "deepfilter":
+            raise RuntimeError("test model load failure")
+        return True
 
 
 class _PresetPanel:
@@ -503,6 +519,7 @@ class _RecoveryWindow:
         self.status_bar = _FakeStatusBar()
         self.start_btn = _FakeControl()
         self.stop_btn = _FakeControl()
+        self.refresh_btn = _FakeControl()
         self.input_combo = _FakeControl()
         self.output_combo = _FakeControl()
         self._last_backend_warning = None
@@ -597,20 +614,6 @@ def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
     assert _CaptureWorkerStub.last_init["chain_settings"] == {}
     assert dialog.analysis_worker is not None
     assert dialog.analysis_worker.sample_rate == 44_100
-
-    dialog.close()
-    owner.close()
-
-
-def test_calibration_recorded_audio_reports_processor_rate(qapp):
-    owner = _FakeOwner(_FakeProcessor(sample_rate=44_100))
-    dialog = CalibrationDialog(parent=owner)
-    dialog.audio_data = np.ones(32, dtype=np.float32)
-
-    audio, sample_rate = dialog.get_recorded_audio()
-
-    assert audio is not None
-    assert sample_rate == 44_100
 
     dialog.close()
     owner.close()
@@ -1008,7 +1011,7 @@ def test_input_channel_mode_change_persists_and_applies(monkeypatch):
     window.input_channel_mode_combo = _FakeCombo(list(INPUT_CHANNEL_MODE_OPTIONS))
     window.input_channel_mode_combo.setCurrentIndex(4)
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.save_config", lambda cfg: saved.append(cfg)
+        "mic_eq.ui.main_window.save_config", lambda cfg: saved.append(cfg) or True
     )
 
     window._on_input_channel_mode_changed()
@@ -1019,6 +1022,83 @@ def test_input_channel_mode_change_persists_and_applies(monkeypatch):
         {"noise_reference_reliability": 0.0}
     )
     assert saved == [window.config]
+
+
+@pytest.mark.parametrize("save_failure", [False, OSError("config locked")])
+def test_route_input_preference_reports_unsaved_failure(monkeypatch, save_failure):
+    window = MainWindow.__new__(MainWindow)
+    window.processor = Mock()
+    window.config = AppConfig()
+    window.input_combo = _FakeCombo(
+        [("Mic", DeviceIdentity(name="Mic", endpoint_id="input", direction="input"))]
+    )
+    window.output_combo = _FakeCombo(
+        [("Cable", DeviceIdentity(name="Cable", endpoint_id="output", direction="output"))]
+    )
+    window.input_channel_mode_combo = _FakeCombo(
+        [("Left", "left"), ("Average", "average")]
+    )
+    window.input_cleanup_mode_combo = _FakeCombo(
+        [("Off", "off"), ("Gentle", "gentle")]
+    )
+    window.status_bar = _FakeStatusBar()
+    window.input_channel_mode_combo.setCurrentIndex(0)
+    window.input_cleanup_mode_combo.setCurrentIndex(1)
+    route_key = MainWindow._current_device_route_key(window)
+    assert route_key is not None
+    previous = InputDevicePreference(channel_mode="average", cleanup_mode="off")
+    window.config.route_input_preferences[route_key] = previous
+    if isinstance(save_failure, Exception):
+        monkeypatch.setattr(
+            "mic_eq.ui.main_window.save_config",
+            Mock(side_effect=save_failure),
+        )
+    else:
+        monkeypatch.setattr(
+            "mic_eq.ui.main_window.save_config",
+            Mock(return_value=save_failure),
+        )
+
+    assert not window._save_current_route_input_preference()
+
+    assert window.config.route_input_preferences[route_key] == previous
+    assert "could not be saved" in window.status_bar.messages[-1][0].lower()
+
+    window.compressor_panel = Mock()
+    window._on_input_channel_mode_changed()
+    window.processor.set_input_channel_mode.assert_called_with("left")
+    assert "applied for this session" in window.status_bar.messages[-1][0]
+    window._on_input_cleanup_mode_changed()
+    window.processor.set_input_cleanup_mode.assert_called_with("gentle")
+    assert "could not be saved" in window.status_bar.messages[-1][0]
+
+
+def test_refresh_devices_defers_while_processing(qapp, monkeypatch):
+    window = MainWindow.__new__(MainWindow)
+    window.processor = Mock()
+    window.processor.is_running.return_value = True
+    window.config = AppConfig()
+    window.refresh_btn = _FakeControl()
+    window.status_bar = _FakeStatusBar()
+    window.input_combo = _FakeCombo(
+        [("Mic", DeviceIdentity(name="Mic", endpoint_id="input", direction="input"))]
+    )
+    window.output_combo = _FakeCombo(
+        [("Cable", DeviceIdentity(name="Cable", endpoint_id="output", direction="output"))]
+    )
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.list_input_devices",
+        Mock(side_effect=AssertionError("refresh enumerated while running")),
+    )
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.list_output_devices",
+        Mock(side_effect=AssertionError("refresh enumerated while running")),
+    )
+
+    window._refresh_devices()
+
+    assert not window.refresh_btn.enabled
+    assert "stop processing" in window.status_bar.messages[-1][0].lower()
 
 
 def test_input_phase_warning_marks_diagnostics_warn():
@@ -1263,6 +1343,10 @@ def test_device_selection_policy_prefers_default_and_virtual_output():
 def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
+    window.processor = Mock()
+    window.processor.is_running.return_value = False
+    window.input_channel_mode_combo = _FakeCombo([("Mono", "phase_safe_mono")])
+    window.input_cleanup_mode_combo = _FakeCombo([("Off", "off")])
     window.input_combo = _FakeCombo(
         [
             ("Mic A", DeviceIdentity(name="Mic A", is_default=False)),
@@ -1279,20 +1363,12 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
     window.output_combo.setCurrentIndex(0)
     window.device_warning_banner = _FakeLabel()
     window.status_bar = _FakeStatusBar()
-    window.config = type(
-        "Cfg",
-        (),
-        {
-            "last_input_device": "Mic A",
-            "last_output_device": "Out A",
-            "last_input_device_identity": DeviceIdentity(
-                name="Mic A", is_default=False
-            ),
-            "last_output_device_identity": DeviceIdentity(
-                name="Out A", is_default=False
-            ),
-        },
-    )()
+    window.config = AppConfig(
+        last_input_device="Mic A",
+        last_output_device="Out A",
+        last_input_device_identity=DeviceIdentity(name="Mic A", is_default=False),
+        last_output_device_identity=DeviceIdentity(name="Out A", is_default=False),
+    )
 
     monkeypatch.setattr(
         "mic_eq.ui.main_window.list_input_devices",
@@ -1327,6 +1403,8 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
 def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
+    window.processor = Mock()
+    window.processor.is_running.return_value = False
     window.input_combo = _FakeCombo(
         [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
     )
@@ -1339,16 +1417,12 @@ def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
     window.input_channel_mode_combo._signals_blocked = True
     window.device_warning_banner = _FakeLabel()
     window.status_bar = _FakeStatusBar()
-    window.config = type(
-        "Cfg",
-        (),
-        {
-            "last_input_device_identity": DeviceIdentity(name="Mic A"),
-            "last_output_device_identity": DeviceIdentity(name="Out A"),
-            "last_input_device": "Mic A",
-            "last_output_device": "Out A",
-        },
-    )()
+    window.config = AppConfig(
+        last_input_device_identity=DeviceIdentity(name="Mic A"),
+        last_output_device_identity=DeviceIdentity(name="Out A"),
+        last_input_device="Mic A",
+        last_output_device="Out A",
+    )
     monkeypatch.setattr(
         "mic_eq.ui.main_window.list_input_devices",
         lambda: [type("Dev", (), {"name": "Mic A", "is_default": True})()],
@@ -1370,6 +1444,10 @@ def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
 def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
+    window.processor = Mock()
+    window.processor.is_running.return_value = False
+    window.input_channel_mode_combo = _FakeCombo([("Mono", "phase_safe_mono")])
+    window.input_cleanup_mode_combo = _FakeCombo([("Off", "off")])
     window.input_combo = _FakeCombo(
         [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
     )
@@ -1380,18 +1458,12 @@ def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatc
     window.output_combo.setCurrentIndex(0)
     window.device_warning_banner = _FakeLabel()
     window.status_bar = _FakeStatusBar()
-    window.config = type(
-        "Cfg",
-        (),
-        {
-            "last_input_device": "Mic A",
-            "last_output_device": "Out Old",
-            "last_input_device_identity": DeviceIdentity(name="Mic A", is_default=True),
-            "last_output_device_identity": DeviceIdentity(
-                name="Out Old", is_default=False
-            ),
-        },
-    )()
+    window.config = AppConfig(
+        last_input_device="Mic A",
+        last_output_device="Out Old",
+        last_input_device_identity=DeviceIdentity(name="Mic A", is_default=True),
+        last_output_device_identity=DeviceIdentity(name="Out Old", is_default=False),
+    )
 
     monkeypatch.setattr(
         "mic_eq.ui.main_window.list_input_devices",
@@ -1778,7 +1850,10 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
     window.deesser_panel = _PresetPanel()
     window.compressor_panel = _PresetPanel()
     window.rnnoise_checkbox = _FakeControl()
-    window.strength_slider = _FakeControl()
+    from PyQt6.QtWidgets import QSlider
+    window.strength_slider = QSlider()
+    window.strength_slider.setRange(0, 100)
+    window.strength_label = _FakeLabel()
     window.model_combo = _FakeCombo([("RNNoise", "rnnoise")])
     window.rnnoise_latency_label = _FakeLabel()
     window.bypass_checkbox = _FakeControl()
@@ -1805,6 +1880,9 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
 
     MainWindow._apply_preset(window, preset)
 
+    assert window.gate_panel.settings == asdict(preset.gate)
+    assert window.eq_panel.settings == preset.eq.to_dict()
+    assert window.deesser_panel.settings == asdict(preset.deesser)
     assert window.compressor_panel.compressor_settings["adaptive_release"] is True
     assert window.compressor_panel.compressor_settings["base_release_ms"] == 75.0
     assert window.compressor_panel.compressor_settings["auto_makeup_enabled"] is True
@@ -1814,6 +1892,35 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
         is False
     )
     assert window.compressor_panel.limiter_settings["careful_output_enabled"] is False
+    assert "noise_reference_reliability" not in window.compressor_panel.compressor_settings
+
+
+def test_apply_preset_falls_back_when_model_load_raises(qapp):
+    window = MainWindow.__new__(MainWindow)
+    window.gate_panel = _PresetPanel()
+    window.eq_panel = _PresetPanel()
+    window.deesser_panel = _PresetPanel()
+    window.compressor_panel = _PresetPanel()
+    window.rnnoise_checkbox = _FakeControl()
+    from PyQt6.QtWidgets import QSlider
+    window.strength_slider = QSlider()
+    window.strength_slider.setRange(0, 100)
+    window.strength_label = _FakeLabel()
+    window.model_combo = _FakeCombo(
+        [("RNNoise", "rnnoise"), ("DeepFilter", "deepfilter")]
+    )
+    window.rnnoise_latency_label = _FakeLabel()
+    window.bypass_checkbox = _FakeControl()
+    window.processor = _PresetProcessorRaisesForDeepFilter()
+    window.status_bar = _FakeStatusBar()
+
+    preset = Preset()
+    preset.rnnoise.model = "deepfilter"
+
+    MainWindow._apply_preset(window, preset)
+
+    assert window.model_combo.currentData() == "rnnoise"
+    assert "using RNNoise" in window.status_bar.messages[-1][0]
 
 
 class _LatencyProcessor:
@@ -1882,6 +1989,22 @@ def test_latency_calibration_failure_stops_owned_processor(qapp):
     assert processor.started == 1
     assert processor.stopped == 1
     assert not processor.running
+
+
+def test_latency_calibration_respects_user_mute(qapp, monkeypatch):
+    processor = _LatencyProcessor(running=False)
+    processor.set_output_mute = Mock()
+    owner = _LatencyOwner(processor)
+    owner.user_muted = True
+    notice = Mock()
+    monkeypatch.setattr(QMessageBox, "information", notice)
+    dialog = LatencyCalibrationDialog(owner)
+
+    dialog._on_run_clicked()
+    assert processor.started == 0
+    notice.assert_called_once()
+    dialog.reject()
+    processor.set_output_mute.assert_not_called()
 
 
 def test_latency_calibration_failure_does_not_stop_preexisting_processor(qapp):

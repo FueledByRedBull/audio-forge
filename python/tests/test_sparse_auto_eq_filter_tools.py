@@ -2,24 +2,9 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import numpy as np
 
-
-TOOL_PATH = (
-    Path(__file__).parent.parent / "tools" / "evaluate_sparse_auto_eq_filters.py"
-)
-SPEC = importlib.util.spec_from_file_location(
-    "evaluate_sparse_auto_eq_filters",
-    TOOL_PATH,
-)
-assert SPEC is not None and SPEC.loader is not None
-TOOL = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = TOOL
-SPEC.loader.exec_module(TOOL)
+import evaluate_sparse_auto_eq_filters as TOOL
 
 
 def _flat_bands() -> list[tuple[str, float, float, float, int, bool]]:

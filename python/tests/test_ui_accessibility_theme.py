@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from PyQt6.QtCore import QRect, Qt
 from PyQt6.QtGui import QPalette
-from PyQt6.QtWidgets import QScrollArea, QWidget
+from PyQt6.QtWidgets import QLabel, QScrollArea, QWidget
 
 from mic_eq.config import AppConfig
 from mic_eq.ui.accessibility import audit_widget_tree, set_accessible
@@ -37,7 +37,7 @@ PIXEL_FONT = re.compile(r"font-size\s*:\s*[0-9.]+px")
 @pytest.fixture
 def isolated_main_window(qapp, monkeypatch):
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
@@ -50,6 +50,32 @@ def isolated_main_window(qapp, monkeypatch):
     window.close()
     window.deleteLater()
     qapp.processEvents()
+
+
+@pytest.mark.parametrize("states, mute_error, expected", [
+    (("idle", "idle"), False, "idle"),
+    (("idle", "ok"), False, "ok"),
+    (("ok", "warn"), False, "warn"),
+    (("warn", "bad"), True, "bad"),
+    (("idle", "idle"), True, "warn"),
+])
+def test_compact_health_aggregation_and_stop(isolated_main_window, states, mute_error, expected):
+    window = isolated_main_window
+    labels = tuple(QLabel(window) for _ in states)
+    for label, state in zip(labels, states):
+        label.setProperty("health_state", state)
+    window._health_decision_widgets = labels
+    window._health_layout_widgets = ()
+    window._output_mute_error = mute_error
+    window._update_diagnostic_labels(
+        diagnostics={}, latency_ms=0, dsp_time_ms=0,
+        input_buf=0, output_buf=0, rnnoise_buf=0,
+    )
+    assert window.health_summary_label.property("health_state") == expected
+    window._stop_processing()
+    window._update_meters()
+    assert window.health_summary_label.text() == "Health: --"
+    assert window.health_summary_label.property("health_state") == "idle"
 
 
 def test_all_semantic_text_pairs_meet_wcag_aa_contrast() -> None:
@@ -334,22 +360,31 @@ def test_workflow_dialogs_scroll_vertically_without_horizontal_overflow(
     qapp.processEvents()
 
 
+@pytest.mark.parametrize("step", ("devices", "route", "voice"))
 def test_first_run_setup_buttons_fit_the_minimum_dialog(
     isolated_main_window,
     qapp,
     monkeypatch,
+    step,
 ) -> None:
     monkeypatch.setattr(
         "mic_eq.ui.first_run_setup_dialog.save_config",
-        lambda _config: None,
+        lambda _config: True,
     )
+    isolated_main_window.config.first_run_setup_step = step
     dialog = FirstRunSetupDialog(isolated_main_window)
-    dialog.resize(440, 280)
+    dialog.resize(440, 340)
     dialog.show()
     qapp.processEvents()
     qapp.processEvents()
 
-    content_rect = dialog.contentsRect()
+    scroll_area = dialog.content_scroll_area
+    body = scroll_area.widget()
+    viewport = scroll_area.viewport()
+    scrollbar = scroll_area.horizontalScrollBar()
+    assert body is not None and viewport is not None and scrollbar is not None
+    content_rect = body.contentsRect()
+    assert scrollbar.maximum() == 0
     for button in (
         dialog.back_button,
         dialog.skip_button,
@@ -357,6 +392,11 @@ def test_first_run_setup_buttons_fit_the_minimum_dialog(
         dialog.action_button,
     ):
         assert content_rect.contains(button.geometry())
+        scroll_area.ensureWidgetVisible(button)
+        qapp.processEvents()
+        assert viewport.rect().contains(
+            button.mapTo(viewport, button.rect().center())
+        )
 
     dialog.close()
     dialog.deleteLater()
@@ -369,7 +409,7 @@ def test_reduced_motion_lowers_nonessential_meter_refresh(
 ) -> None:
     monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "1")
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
     monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])

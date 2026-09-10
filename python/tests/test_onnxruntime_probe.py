@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
+import json
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-
-TOOL_PATH = Path(__file__).parent.parent / "tools" / "evaluate_onnxruntime_probe.py"
-SPEC = importlib.util.spec_from_file_location("evaluate_onnxruntime_probe", TOOL_PATH)
-assert SPEC is not None and SPEC.loader is not None
-probe = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = probe
-SPEC.loader.exec_module(probe)
+import evaluate_onnxruntime_probe as probe
 
 
 def test_equal_posteriors_pass_all_decision_checks() -> None:
@@ -132,14 +126,40 @@ def test_candidate_runtime_files_are_bound_to_pinned_hashes(
     tmp_path: Path, monkeypatch
 ) -> None:
     paths: list[Path] = []
-    expected_files: dict[str, dict[str, object]] = {}
-    for name, expected in probe.CPU_ORT_RUNTIME_FILES.items():
+    assets: list[dict[str, object]] = []
+    archive_sha256 = "a" * 64
+    for index, name in enumerate(
+        (
+            "onnxruntime.dll",
+            "onnxruntime.lib",
+            "onnxruntime_providers_shared.dll",
+        ),
+        start=1,
+    ):
         path = tmp_path / name
-        path.write_bytes(b"x" * expected["size"])
+        payload = b"x" * index
+        path.write_bytes(payload)
         digest = probe.hashlib.sha256(path.read_bytes()).hexdigest()
-        expected_files[name] = {"size": expected["size"], "sha256": digest}
+        assets.append(
+            {
+                "path": f"target/onnxruntime-cpu/lib/{name}",
+                "size": len(payload),
+                "sha256": digest,
+                "source": "https://github.com/example/runtime.zip",
+                "origin": {
+                    "status": "verified-upstream-archive",
+                    "archive_sha256": archive_sha256,
+                    "archive_size": 123,
+                    "archive_member": f"package/{name}",
+                    "runtime": "CPU-only Windows x64",
+                },
+            }
+        )
         paths.append(path)
-    monkeypatch.setattr(probe, "CPU_ORT_RUNTIME_FILES", expected_files)
+    (tmp_path / "release-assets.json").write_text(
+        json.dumps({"assets": assets}), encoding="utf-8"
+    )
+    monkeypatch.setattr(probe, "REPO_ROOT", tmp_path)
 
     assert len(probe._record_cpu_ort_runtime_files(paths)) == 3
     with pytest.raises(ValueError, match="missing pinned CPU ORT assets"):

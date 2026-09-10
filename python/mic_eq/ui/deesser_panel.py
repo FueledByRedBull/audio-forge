@@ -26,6 +26,7 @@ from .layout_constants import (
     MARGIN_PANEL,
     PRIMARY_LABEL_STYLE,
     SPACING_NORMAL,
+    bind_slider_spinbox,
     fit_spinbox_to_contents,
 )
 from .rate_limiter import RateLimiter
@@ -273,25 +274,43 @@ class DeEsserPanel(QWidget):
     def _connect_signals(self):
         self.enabled_checkbox.toggled.connect(self._update_deesser)
         self.auto_checkbox.toggled.connect(self._on_auto_toggled)
-        self.auto_amount_slider.valueChanged.connect(self._on_auto_amount_slider)
-        self.auto_amount_spinbox.valueChanged.connect(self._on_auto_amount_spinbox)
+        bind_slider_spinbox(
+            self.auto_amount_slider,
+            self.auto_amount_spinbox,
+            slider_to_value=lambda value: value / 100.0,
+            value_to_slider=lambda value: int(value * 100),
+            on_change=self._update_deesser,
+        )
 
         self.low_cut_slider.valueChanged.connect(self._on_low_cut_slider)
         self.low_cut_spinbox.valueChanged.connect(self._on_low_cut_spinbox)
         self.high_cut_slider.valueChanged.connect(self._on_high_cut_slider)
         self.high_cut_spinbox.valueChanged.connect(self._on_high_cut_spinbox)
 
-        self.threshold_slider.valueChanged.connect(self._on_threshold_slider)
-        self.threshold_spinbox.valueChanged.connect(self._on_threshold_spinbox)
+        bind_slider_spinbox(
+            self.threshold_slider,
+            self.threshold_spinbox,
+            on_change=self._update_deesser,
+        )
 
-        self.ratio_slider.valueChanged.connect(self._on_ratio_slider)
-        self.ratio_spinbox.valueChanged.connect(self._on_ratio_spinbox)
+        bind_slider_spinbox(
+            self.ratio_slider,
+            self.ratio_spinbox,
+            slider_to_value=lambda value: value / 10.0,
+            value_to_slider=lambda value: int(value * 10),
+            on_change=self._update_deesser,
+        )
 
         self.attack_spinbox.valueChanged.connect(self._update_deesser)
         self.release_spinbox.valueChanged.connect(self._update_deesser)
 
-        self.max_reduction_slider.valueChanged.connect(self._on_max_reduction_slider)
-        self.max_reduction_spinbox.valueChanged.connect(self._on_max_reduction_spinbox)
+        bind_slider_spinbox(
+            self.max_reduction_slider,
+            self.max_reduction_spinbox,
+            slider_to_value=lambda value: value / 10.0,
+            value_to_slider=lambda value: int(value * 10),
+            on_change=self._update_deesser,
+        )
 
         self.auto_amount_slider.sliderReleased.connect(self._rate_limiter.flush)
         self.threshold_slider.sliderReleased.connect(self._rate_limiter.flush)
@@ -310,19 +329,6 @@ class DeEsserPanel(QWidget):
 
     def _on_auto_toggled(self, _checked):
         self._update_auto_controls_enabled()
-        self._update_deesser()
-
-    def _on_auto_amount_slider(self, value):
-        amount = value / 100.0
-        self.auto_amount_spinbox.blockSignals(True)
-        self.auto_amount_spinbox.setValue(amount)
-        self.auto_amount_spinbox.blockSignals(False)
-        self._update_deesser()
-
-    def _on_auto_amount_spinbox(self, value):
-        self.auto_amount_slider.blockSignals(True)
-        self.auto_amount_slider.setValue(int(value * 100))
-        self.auto_amount_slider.blockSignals(False)
         self._update_deesser()
 
     def _enforce_band_gap(self, source: str):
@@ -377,44 +383,6 @@ class DeEsserPanel(QWidget):
         self.high_cut_slider.setValue(int(value))
         self.high_cut_slider.blockSignals(False)
         self._enforce_band_gap("high")
-        self._update_deesser()
-
-    def _on_threshold_slider(self, value):
-        self.threshold_spinbox.blockSignals(True)
-        self.threshold_spinbox.setValue(float(value))
-        self.threshold_spinbox.blockSignals(False)
-        self._update_deesser()
-
-    def _on_threshold_spinbox(self, value):
-        self.threshold_slider.blockSignals(True)
-        self.threshold_slider.setValue(int(value))
-        self.threshold_slider.blockSignals(False)
-        self._update_deesser()
-
-    def _on_ratio_slider(self, value):
-        ratio = value / 10.0
-        self.ratio_spinbox.blockSignals(True)
-        self.ratio_spinbox.setValue(ratio)
-        self.ratio_spinbox.blockSignals(False)
-        self._update_deesser()
-
-    def _on_ratio_spinbox(self, value):
-        self.ratio_slider.blockSignals(True)
-        self.ratio_slider.setValue(int(value * 10))
-        self.ratio_slider.blockSignals(False)
-        self._update_deesser()
-
-    def _on_max_reduction_slider(self, value):
-        db = value / 10.0
-        self.max_reduction_spinbox.blockSignals(True)
-        self.max_reduction_spinbox.setValue(db)
-        self.max_reduction_spinbox.blockSignals(False)
-        self._update_deesser()
-
-    def _on_max_reduction_spinbox(self, value):
-        self.max_reduction_slider.blockSignals(True)
-        self.max_reduction_slider.setValue(int(value * 10))
-        self.max_reduction_slider.blockSignals(False)
         self._update_deesser()
 
     def _update_deesser(self):

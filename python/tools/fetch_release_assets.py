@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -17,72 +16,37 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from pathlib import PurePosixPath, PureWindowsPath
+from typing import Mapping, TypedDict
 
-from verify_release_assets import verify_assets
+from verify_release_assets import (
+    PINNED_ARCHIVE_HOSTS,
+    PINNED_ARCHIVE_STATUS,
+    SOURCE_BUILD_STATUS,
+    AssetManifest,
+    load_asset_manifest,
+    verify_assets,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = REPO_ROOT / "release-assets.json"
 
-ASSETS = [
-    {
-        "name": "df.dll",
-        "destination": Path("df.dll"),
-        "archive_path": Path("_internal/df.dll"),
-    },
-    {
-        "name": "onnxruntime.dll",
-        "destination": Path("target/onnxruntime-cpu/lib/onnxruntime.dll"),
-        "pinned_archive": True,
-    },
-    {
-        "name": "onnxruntime.lib",
-        "destination": Path("target/onnxruntime-cpu/lib/onnxruntime.lib"),
-        "pinned_archive": True,
-    },
-    {
-        "name": "onnxruntime_providers_shared.dll",
-        "destination": Path(
-            "target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll"
-        ),
-        "pinned_archive": True,
-    },
-    {
-        "name": "DeepFilterNet3_ll_onnx.tar.gz",
-        "destination": Path("models/DeepFilterNet3_ll_onnx.tar.gz"),
-        "archive_path": Path("_internal/models/DeepFilterNet3_ll_onnx.tar.gz"),
-    },
-    {
-        "name": "DeepFilterNet3_onnx.tar.gz",
-        "destination": Path("models/DeepFilterNet3_onnx.tar.gz"),
-        "archive_path": Path("_internal/models/DeepFilterNet3_onnx.tar.gz"),
-    },
-    {
-        "name": "silero_vad.onnx",
-        "destination": Path("models/silero_vad.onnx"),
-        "archive_path": Path("_internal/models/silero_vad.onnx"),
-        "direct_url": (
-            "https://raw.githubusercontent.com/snakers4/silero-vad/"
-            "v6.2.1/src/silero_vad/data/silero_vad.onnx"
-        ),
-    },
-]
-SOURCE_BUILD_STATUS = "verified-source-build"
-PINNED_ARCHIVE_STATUS = "verified-upstream-archive"
-PINNED_ARCHIVE_HOSTS = frozenset(
-    {
-        "github.com",
-        "github-releases.githubusercontent.com",
-        "objects.githubusercontent.com",
-        "release-assets.githubusercontent.com",
-    }
-)
+
+class AssetPlan(TypedDict):
+    name: str
+    destination: Path
+    archive_path: Path
+    pinned_archive: bool
+    direct_url: str | None
 
 
 def _default_asset_source_tag() -> str:
-    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    tag = manifest.get("fallback_release_tag")
-    if not isinstance(tag, str) or not tag.startswith("v") or not tag[1:]:
+    try:
+        manifest = load_asset_manifest(MANIFEST_PATH, require_assets=False)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    tag = manifest.fallback_release_tag
+    if tag is None:
         raise RuntimeError(
             "release-assets.json must define a non-empty fallback_release_tag"
         )
@@ -90,20 +54,47 @@ def _default_asset_source_tag() -> str:
 
 
 def _manifest_entries() -> dict[str, dict[str, object]]:
-    raw = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    assets = raw.get("assets")
-    if not isinstance(assets, list):
-        raise RuntimeError("release-assets.json must contain an assets list")
-    entries: dict[str, dict[str, object]] = {}
-    for entry in assets:
-        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+    try:
+        return load_asset_manifest(MANIFEST_PATH).entries
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
+def _manifest_assets(
+    manifest: AssetManifest, *, only_cpu_runtime: bool
+) -> list[AssetPlan]:
+    assets: list[AssetPlan] = []
+    for entry in manifest.assets:
+        raw_path = entry["path"]
+        assert isinstance(raw_path, str)
+        origin = entry.get("origin")
+        status = origin.get("status") if isinstance(origin, dict) else None
+        is_cpu_runtime = raw_path.startswith("target/onnxruntime-cpu/lib/")
+        if only_cpu_runtime and not is_cpu_runtime:
             continue
-        entries[entry["path"].replace("\\", "/")] = entry
-    return entries
+        destination = Path(raw_path)
+        assets.append(
+            {
+                "name": destination.name,
+                "destination": destination,
+                "archive_path": Path("_internal") / destination,
+                "pinned_archive": status == PINNED_ARCHIVE_STATUS,
+                "direct_url": (
+                    entry.get("source")
+                    if status == "pinned-upstream-model"
+                    else None
+                ),
+            }
+        )
+    if only_cpu_runtime and not assets:
+        raise RuntimeError(
+            "release-assets.json contains no pinned CPU ONNX Runtime assets"
+        )
+    return assets
 
 
 def _source_build_entry(
-    asset: dict[str, object], entries: dict[str, dict[str, object]]
+    asset: Mapping[str, object], entries: dict[str, dict[str, object]]
 ) -> dict[str, object] | None:
     manifest_entry = entries.get(str(asset["destination"]).replace("\\", "/"))
     if not manifest_entry:
@@ -210,7 +201,7 @@ class _TrustedArchiveRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _manifest_pinned_archive_entry(
-    asset: dict[str, object], entries: dict[str, dict[str, object]]
+    asset: Mapping[str, object], entries: dict[str, dict[str, object]]
 ) -> dict[str, object] | None:
     if not asset.get("pinned_archive"):
         return None
@@ -361,7 +352,7 @@ def _extract_archive_asset(
 
 
 def _build_source_asset(
-    asset: dict[str, object], manifest_entry: dict[str, object], temporary: Path
+    asset: Mapping[str, object], manifest_entry: dict[str, object], temporary: Path
 ) -> Path:
     origin = manifest_entry.get("origin")
     if not isinstance(origin, dict):
@@ -444,12 +435,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    assets = [
-        asset
-        for asset in ASSETS
-        if not args.only_cpu_runtime or asset.get("pinned_archive")
-    ]
-    manifest_entries = _manifest_entries()
+    try:
+        manifest = load_asset_manifest(MANIFEST_PATH)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    assets = _manifest_assets(manifest, only_cpu_runtime=args.only_cpu_runtime)
+    manifest_entries = manifest.entries
     if shutil.which("gh") is None:
         pending_release_assets = [
             asset
@@ -554,7 +545,7 @@ def main() -> int:
         if args.only_cpu_runtime
         else None
     )
-    verification_errors = verify_assets(selected_paths=selected_paths)
+    verification_errors = verify_assets(MANIFEST_PATH, selected_paths=selected_paths)
     if verification_errors:
         formatted_errors = "\n  ".join(verification_errors)
         raise RuntimeError(f"Downloaded assets failed verification:\n  {formatted_errors}")

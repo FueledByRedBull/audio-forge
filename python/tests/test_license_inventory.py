@@ -97,10 +97,13 @@ def test_source_archive_notice_extraction_uses_declared_members(tmp_path: Path):
         with source_file.open("rb") as handle:
             archive.addfile(info, handle)
 
+    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    archive_path.rename(archive_path.with_name(digest))
     manifest = {
         "entries": [{
             "id": "native-openssl",
             "kind": "native-build-source",
+            "sha256": digest,
             "license_paths": [member_name],
             "filename": "native.tar.gz",
         }]
@@ -124,10 +127,13 @@ def test_source_archive_notice_extraction_reads_zip_members(tmp_path: Path):
     with zipfile.ZipFile(archive_path, "w") as archive:
         archive.writestr(member_name, payload)
 
+    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    archive_path.rename(archive_path.with_name(digest))
     manifest = {
         "entries": [{
             "id": "native-ort",
             "kind": "native-build-source",
+            "sha256": digest,
             "license_paths": [member_name],
             "filename": "native.zip",
         }]

@@ -788,7 +788,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
     with monkeypatch.context() as patch:
         show_error = Mock()
         patch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.critical", show_error)
-        patch.setattr(owner.eq_panel, "apply_auto_eq_results",
+        patch.setattr(owner.eq_panel, "set_settings",
                       Mock(side_effect=RuntimeError("sentinel apply failure")))
         dialog._apply_setup()
         assert show_error.call_count == 1

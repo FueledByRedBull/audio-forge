@@ -70,6 +70,29 @@ AudioForge opens with processing stopped; use **Start Processing** to send audio
 **Stop Processing** leaves the app open. Closing the main window or choosing
 **File > Exit** stops audio and quits. AudioForge does not start with Windows.
 
+### In the current source checkout (unreleased)
+
+- Use **Compare Recording** after calibration to hear the same passage as
+  original, current, and proposed processing. Choose headphones or speakers
+  explicitly. Optional level matching affects playback only; actual level
+  changes and peak protection remain visible. The preview includes input
+  cleanup, gating, suppression, both EQ stages, and dynamics. Recordings stay
+  in memory until the dialogs close.
+- **Options > Tray & Background** enables close-to-tray and the **Ctrl+Alt+M** global mute
+  shortcut. Both are optional. With close-to-tray enabled, closing the window
+  keeps audio running; **File > Exit** or **Quit AudioForge** in the tray stops it.
+- Select **Normal**, **Bypass**, or **Raw** from the processing-mode control.
+  Saved calibration status becomes stale when its route or processing settings change.
+- Calibration establishes a microphone-correction stage; a separate tone stage
+  preserves that correction when you change gains, templates, filter types, or slopes.
+  Older presets retain their combined EQ response as the tone stage.
+- Auto Voice Setup tests gate and suppression choices across available RNNoise
+  and DeepFilterNet models with the proposed dynamics, within a 35 ms suppressor-latency bound.
+  DeepFilter settings stay within the DeepFilter family because automatic
+  switches back to RNNoise failed clean-speech preservation checks.
+  It keeps the current choices unless a candidate passes safety and speech
+  preservation checks and improves on a separate part of the capture.
+
 ## What It Does
 
 | Your goal | Tools in AudioForge |

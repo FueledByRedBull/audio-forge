@@ -112,6 +112,62 @@ mod tests {
         assert!(!processor.is_vad_available());
     }
 
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_full_chain_vad_pre_gain_changes_gate_decision_on_cleaned_input() {
+        let wav = include_bytes!("../../../../models/vad_eval_silero_test.wav");
+        let start_frame = 17 * 16_000;
+        let frame_count = 16_000;
+        let start = 44 + start_frame * 2;
+        let end = start + frame_count * 2;
+        let mut audio = Vec::with_capacity(frame_count * 3);
+        for sample in wav[start..end].chunks_exact(2) {
+            let sample = f32::from(i16::from_le_bytes([sample[0], sample[1]]))
+                / f32::from(i16::MAX)
+                * 0.03;
+            audio.extend([sample, sample, sample]);
+        }
+
+        Python::initialize();
+        Python::attach(|py| {
+            let settings = |pre_gain: f64| {
+                let settings = PyDict::new(py);
+                settings.set_item("input_cleanup_mode", "off").unwrap();
+                settings.set_item("input_pre_filtered", false).unwrap();
+                settings.set_item("gate_enabled", true).unwrap();
+                settings.set_item("gate_mode", 2_u8).unwrap();
+                settings.set_item("gate_vad_threshold", 0.48_f64).unwrap();
+                settings.set_item("gate_vad_hold_time_ms", 0.0_f64).unwrap();
+                settings.set_item("gate_vad_pre_gain", pre_gain).unwrap();
+                settings
+            };
+
+            let low_settings = settings(1.0);
+            let high_settings = settings(10.0);
+            let (low_gain, _) = simulate_input_frontend(
+                py,
+                audio.clone(),
+                48_000.0,
+                Some(&low_settings),
+            )
+            .expect("native VAD should process the fixture");
+            let (high_gain, _) = simulate_input_frontend(
+                py,
+                audio,
+                48_000.0,
+                Some(&high_settings),
+            )
+            .expect("native VAD should process the fixture");
+
+            let low_energy = low_gain.iter().map(|sample| sample.abs()).sum::<f32>();
+            let high_energy = high_gain.iter().map(|sample| sample.abs()).sum::<f32>();
+            assert!(
+                high_energy > low_energy * 1.5,
+                "VAD pre-gain did not change the cleaned-input gate decision: low={low_energy:.3}, high={high_energy:.3}"
+            );
+        });
+    }
+
     #[test]
     fn test_total_reported_latency_respects_output_vs_processing_rates() {
         let total = total_reported_latency_us(
@@ -504,6 +560,8 @@ mod tests {
     #[test]
     fn test_vad_worker_restarts_after_exit_and_inference_error() {
         let mut processor = AudioProcessor::new();
+        processor.set_vad_pre_gain(3.5);
+        VAD_WORKER_LAST_PRE_GAIN_BITS.store(0.0_f32.to_bits(), Ordering::Release);
         let finished = std::thread::spawn(|| {});
         let finished_id = finished.thread().id();
         while !finished.is_finished() {
@@ -536,6 +594,11 @@ mod tests {
             .vad_backend_available
             .load(Ordering::Acquire)));
 
+        assert_eq!(producer.write(&[0.1; 4096]), 4096);
+        assert!(wait_until(&|| {
+            f32::from_bits(VAD_WORKER_LAST_PRE_GAIN_BITS.load(Ordering::Acquire)) == 3.5
+        }));
+
         VAD_WORKER_FORCE_INFERENCE_ERROR.store(true, Ordering::Release);
         assert_eq!(producer.write(&[0.1; 4096]), 4096);
         assert!(wait_until(&|| !processor
@@ -545,8 +608,11 @@ mod tests {
             .vad_backend_available
             .load(Ordering::Acquire)));
 
+        processor.set_vad_pre_gain(2.0);
         assert_eq!(producer.write(&[0.1; 4096]), 4096);
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(wait_until(&|| {
+            f32::from_bits(VAD_WORKER_LAST_PRE_GAIN_BITS.load(Ordering::Acquire)) == 2.0
+        }));
         assert!(processor
             .vad_worker_thread
             .as_ref()
@@ -596,6 +662,29 @@ mod tests {
 
         assert!(processor.recording_active.load(Ordering::Acquire));
         assert!(processor.raw_recording_target.load(Ordering::Acquire) > 0);
+    }
+
+    #[test]
+    fn test_raw_recording_before_cleanup_is_opt_in_and_cleared_on_stop() {
+        let mut processor = AudioProcessor::new();
+        install_raw_recording_consumer(&processor);
+
+        processor
+            .start_raw_recording_with_tap(0.01, true)
+            .unwrap();
+        assert!(processor
+            .raw_recording_before_cleanup
+            .load(Ordering::Acquire));
+
+        processor.stop_raw_recording();
+        assert!(!processor
+            .raw_recording_before_cleanup
+            .load(Ordering::Acquire));
+
+        processor.start_raw_recording(0.01).unwrap();
+        assert!(!processor
+            .raw_recording_before_cleanup
+            .load(Ordering::Acquire));
     }
 
     #[test]
@@ -2082,6 +2171,33 @@ mod tests {
     }
 
     #[test]
+    fn test_offline_bypass_keeps_output_safety_without_normal_limiter() {
+        let sample_rate = TARGET_SAMPLE_RATE as f64;
+        let mut processor = OfflineDspBlockProcessor::new(sample_rate);
+        processor.set_eq_enabled(false);
+        processor.set_deesser_enabled(false);
+        processor.set_compressor_enabled(false);
+        processor.set_limiter_enabled(true);
+        processor.set_normal_limiter_enabled(false);
+        processor.limiter_mut().set_ceiling(-6.0);
+
+        let true_peak_latency = processor.true_peak_limiter_mut().lookahead_samples();
+        assert_eq!(processor.latency_samples(), true_peak_latency);
+
+        let mut input = [0.0_f32; 512];
+        input.fill(1.0);
+        let mut output = FixedAudioBuffer::<f32, 512>::new();
+        let stats = processor.process_block_with_stats(&mut input, &mut output);
+
+        assert_eq!(stats.limiter_peak_gain_reduction_db, 0.0);
+        assert!(stats.true_peak_limiter_gain_reduction_db > 0.0);
+        assert!(output
+            .as_slice()
+            .iter()
+            .all(|sample| sample.is_finite() && sample.abs() <= 1.0));
+    }
+
+    #[test]
     fn test_offline_block_processor_runs_eq_bypass_transition() {
         let sample_rate = TARGET_SAMPLE_RATE as f64;
         let mut processor = OfflineDspBlockProcessor::new(sample_rate);
@@ -2484,7 +2600,7 @@ mod tests {
         assert!(!config.enabled);
 
         let snapshot = processor.eq_control.snapshot().expect("stable EQ state");
-        assert_eq!(snapshot.bands[4], config);
+        assert_eq!(snapshot.tone_bands[4], config);
     }
 
     #[test]
@@ -2549,6 +2665,63 @@ mod tests {
         for (index, expected) in configs.into_iter().enumerate() {
             assert_eq!(processor.get_eq_band_config(index), Some(expected));
         }
+    }
+
+    #[test]
+    fn test_tone_batch_updates_preserve_measured_correction_layer() {
+        let processor = AudioProcessor::new();
+        let mut correction: [EqBandConfig; NUM_BANDS] =
+            std::array::from_fn(EqBandConfig::default_for_index);
+        correction[1].gain_db = 4.5;
+        correction[1].frequency_hz = 850.0;
+        let tone: [EqBandConfig; NUM_BANDS] =
+            std::array::from_fn(EqBandConfig::default_for_index);
+
+        processor
+            .apply_eq_layers(correction.to_vec(), tone.to_vec())
+            .unwrap();
+
+        let mut updated_tone = tone;
+        updated_tone[6].gain_db = -3.0;
+        updated_tone[6].q = 1.7;
+        processor
+            .apply_eq_settings_v2(updated_tone.to_vec())
+            .unwrap();
+
+        let snapshot = processor.eq_control.snapshot().expect("stable EQ state");
+        assert_eq!(snapshot.correction_bands, correction);
+        assert_eq!(snapshot.tone_bands, updated_tone);
+    }
+
+    #[test]
+    fn test_invalid_eq_layer_update_leaves_both_layers_unchanged() {
+        let processor = AudioProcessor::new();
+        let mut correction: [EqBandConfig; NUM_BANDS] =
+            std::array::from_fn(EqBandConfig::default_for_index);
+        correction[0].gain_db = 3.0;
+        let mut tone: [EqBandConfig; NUM_BANDS] =
+            std::array::from_fn(EqBandConfig::default_for_index);
+        tone[4].gain_db = -2.0;
+        processor
+            .apply_eq_layers(correction.to_vec(), tone.to_vec())
+            .unwrap();
+        let before = processor.eq_control.snapshot().expect("stable EQ state");
+
+        let mut invalid_tone = tone;
+        invalid_tone[4].q = 11.0;
+        assert!(processor
+            .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
+            .is_err());
+
+        let mut invalid_correction = correction;
+        invalid_correction[0].frequency_hz = 1.0;
+        assert!(processor
+            .apply_eq_layers(invalid_correction.to_vec(), tone.to_vec())
+            .is_err());
+
+        let after = processor.eq_control.snapshot().expect("stable EQ state");
+        assert_eq!(after.correction_bands, before.correction_bands);
+        assert_eq!(after.tone_bands, before.tone_bands);
     }
 
     #[test]

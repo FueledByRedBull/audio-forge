@@ -15,18 +15,15 @@ from release_provenance import sha256_file as _sha256
 import numpy as np
 
 from mic_eq import eq_magnitude_response_v2
-from mic_eq.mic_eq_core import (
-    simulate_auto_eq_chain,
-    simulate_eq_v2,
-)
+from mic_eq.mic_eq_core import simulate_auto_eq_chain, simulate_eq_v2
 from mic_eq.analysis.wav_io import read_mono_wav
 from mic_eq.analysis.auto_eq import analyze_auto_eq
-from mic_eq.config import EQSettings
+from mic_eq.config import EQBandSettings, EQ_SCHEMA_VERSION, EQSettings
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CORPUS = REPO_ROOT / "models" / "deepfilter_fullband_eval" / "clean"
-DEFAULT_REPORT = REPO_ROOT / "evaluation" / "correction-tone-stage-report.json"
+DEFAULT_REPORT = REPO_ROOT / "evaluation" / "correction-tone-product-report.json"
 SAMPLE_RATE = 48_000
 SEPARATOR_SECONDS = 0.25
 TIMING_REPEATS = 5
@@ -291,48 +288,103 @@ def _legacy_flat() -> list[tuple[float, float, float]]:
     return [(band[1], 0.0, band[3]) for band in _default_bands()]
 
 
+def _settings_bands(
+    bands: list[TypedBand],
+) -> list[EQBandSettings]:
+    return [
+        EQBandSettings(
+            filter_type=filter_type,
+            frequency_hz=frequency,
+            gain_db=gain,
+            q=q,
+            slope_db_per_octave=slope,
+            enabled=enabled,
+        )
+        for filter_type, frequency, gain, q, slope, enabled in bands
+    ]
+
+
+def _schema3_roundtrip(
+    correction: list[TypedBand],
+    tone: list[TypedBand],
+) -> bool:
+    settings = EQSettings(
+        enabled=True,
+        correction_bands=_settings_bands(correction),
+        tone_bands=_settings_bands(tone),
+    )
+    restored = EQSettings.from_dict(settings.to_dict())
+    return (
+        restored.schema_version == EQ_SCHEMA_VERSION
+        and restored.correction_bands == settings.correction_bands
+        and restored.tone_bands == settings.tone_bands
+        and restored.bands == settings.bands
+    )
+
+
+def _production_settings(
+    correction: list[TypedBand],
+    tone: list[TypedBand],
+) -> dict[str, Any]:
+    """Build the production offline-chain settings used by both paths."""
+    return {
+        "eq_enabled": True,
+        "correction_bands": correction,
+        "eq_bands": tone,
+        "deesser_enabled": False,
+        "compressor_enabled": False,
+        "limiter_enabled": True,
+        "limiter_ceiling_db": -1.0,
+        "limiter_careful_output_enabled": True,
+        "return_output_audio": True,
+    }
+
+
 def _render_case(
     audio: np.ndarray,
     correction: list[TypedBand],
     tone: list[TypedBand],
 ) -> dict[str, Any]:
     normalized = _normalized(audio)
+    reference_correction = _default_bands(enabled=False)
+
     def render() -> tuple[dict[str, Any], dict[str, Any]]:
-        incumbent_result = simulate_eq_v2(
+        correction_result = simulate_eq_v2(
             normalized,
             float(SAMPLE_RATE),
             correction,
             return_output_audio=True,
         )
-        correction_audio = np.asarray(
-            incumbent_result["output_audio"], dtype=np.float32
-        )
         tone_result = simulate_eq_v2(
-            correction_audio,
+            np.asarray(correction_result["output_audio"], dtype=np.float32),
             float(SAMPLE_RATE),
             tone,
             return_output_audio=True,
         )
-        return incumbent_result, tone_result
+        return correction_result, tone_result
 
+    # Preserve the predefined EQ-only cost budget. The complete simulator also
+    # times limiter protection and analysis, which exist in both product paths.
     render()
     renders = [render() for _ in range(TIMING_REPEATS)]
-    incumbent, tone_result = renders[-1]
-    candidate_audio = np.asarray(tone_result["output_audio"], dtype=np.float32)
-    chain = simulate_auto_eq_chain(
-        candidate_audio,
-        float(SAMPLE_RATE),
-        _legacy_flat(),
-        {
-            "deesser_enabled": False,
-            "compressor_enabled": False,
-            "limiter_enabled": True,
-            "limiter_ceiling_db": -1.0,
-            "limiter_careful_output_enabled": True,
-        },
+    reference = simulate_auto_eq_chain(
+        normalized, float(SAMPLE_RATE), _legacy_flat(),
+        _production_settings(reference_correction, tone),
     )
+    candidate = simulate_auto_eq_chain(
+        normalized, float(SAMPLE_RATE), _legacy_flat(),
+        _production_settings(correction, tone),
+    )
+    reference_audio = np.asarray(reference["output_audio"], dtype=np.float32)
+    candidate_audio = np.asarray(candidate["output_audio"], dtype=np.float32)
+    if reference_audio.shape != normalized.shape or candidate_audio.shape != normalized.shape:
+        raise ValueError("production chain must return source-aligned audio")
+    if not np.all(np.isfinite(reference_audio)) or not np.all(np.isfinite(candidate_audio)):
+        raise ValueError("production chain returned non-finite audio")
+    delta = candidate_audio.astype(np.float64) - reference_audio.astype(np.float64)
+    delta_rms = float(np.sqrt(np.mean(delta * delta))) if delta.size else 0.0
     duration_seconds = normalized.size / SAMPLE_RATE
-    incumbent_runtime_ms = float(
+    reference_runtime_ms = float(
         np.median([result[0]["runtime_ms"] for result in renders])
     )
     candidate_runtime_ms = float(
@@ -341,27 +393,28 @@ def _render_case(
         )
     )
     return {
-        "incumbent_realtime_factor": incumbent_runtime_ms
+        "incumbent_realtime_factor": reference_runtime_ms
         / max(duration_seconds * 1000.0, 1.0e-12),
         "candidate_realtime_factor": candidate_runtime_ms
         / max(duration_seconds * 1000.0, 1.0e-12),
-        "runtime_ratio": candidate_runtime_ms / max(incumbent_runtime_ms, 1.0e-12),
+        "runtime_ratio": candidate_runtime_ms / max(reference_runtime_ms, 1.0e-12),
         "latency_samples": [
-            int(incumbent["algorithmic_latency_samples"]),
-            int(tone_result["algorithmic_latency_samples"]),
+            int(candidate["chain_latency_samples"]) - int(reference["chain_latency_samples"]),
         ],
-        "finite": not bool(incumbent["non_finite_output"])
-        and not bool(tone_result["non_finite_output"])
-        and not bool(chain["non_finite_output"]),
+        "reference_chain_latency_samples": int(reference["chain_latency_samples"]),
+        "candidate_chain_latency_samples": int(candidate["chain_latency_samples"]),
+        "finite": not bool(reference["non_finite_output"])
+        and not bool(candidate["non_finite_output"]),
         "full_chain_true_peak_overshoot_db": max(
             0.0,
-            float(chain["output_true_peak_db"])
-            - float(chain["limiter_effective_ceiling_db"]),
+            float(candidate["output_true_peak_db"])
+            - float(candidate["limiter_effective_ceiling_db"]),
         ),
         "full_chain_limiter_gr_db": max(
-            float(chain["limiter_gain_reduction_db"]),
-            float(chain["true_peak_limiter_gain_reduction_db"]),
+            float(candidate["limiter_gain_reduction_db"]),
+            float(candidate["true_peak_limiter_gain_reduction_db"]),
         ),
+        "reference_candidate_delta_rms": delta_rms,
     }
 
 
@@ -432,14 +485,20 @@ def _source_hashes() -> dict[str, str]:
     paths = (
         "python/tools/evaluate_correction_tone_stages.py",
         "python/mic_eq/analysis/wav_io.py",
+        "python/mic_eq/config_parts/settings.py",
         "rust-core/src/dsp/eq.rs",
+        "rust-core/src/audio/processor/control.rs",
+        "rust-core/src/audio/processor/eq_controls.rs",
+        "rust-core/src/audio/processor/block_processor.rs",
+        "rust-core/src/audio/processor/dsp_loop.rs",
+        "rust-core/src/audio/processor/python_api.rs",
         "rust-core/src/lib.rs",
     )
     return {path: _sha256(REPO_ROOT / path) for path in paths}
 
 
 def evaluate(corpus_root: Path) -> dict[str, Any]:
-    native_file = sys.modules[simulate_eq_v2.__module__].__file__
+    native_file = sys.modules[simulate_auto_eq_chain.__module__].__file__
     if native_file is None:
         raise RuntimeError("native extension has no filesystem path")
     native_path = Path(native_file).resolve(strict=True)
@@ -503,7 +562,10 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
                         np.max(np.abs(migrated_response - incumbent_response))
                     ),
                     "tone_payload_preserved": tone_before == tone_after,
-                    "schema_roundtrip": decoded == (correction, tone),
+                    "schema_roundtrip": (
+                        decoded == (correction, tone)
+                        and _schema3_roundtrip(correction, tone)
+                    ),
                     "render": _render_case(audio, correction, tone),
                 }
             )
@@ -517,23 +579,50 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
     manifest = corpus_root.parent / "manifest.json"
     source_hashes = _source_hashes()
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "audible_change": True,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "experiment": "Separate Auto-EQ correction and user tone stages",
+        "experiment": (
+            "Production Auto-EQ correction and independent user tone stages"
+        ),
         "candidate": {
-            "scope": "evaluation_only",
+            "scope": "production_offline_eq_cascade",
             "order": ["deesser", "correction", "tone", "compressor", "limiter"],
             "migration": "incumbent combined stage becomes tone; correction starts flat",
+            "native_settings": {
+                "eq_enabled": True,
+                "correction_bands": "typed six-field bands",
+                "eq_bands": "typed six-field bands",
+            },
         },
-        "incumbent": {"stages": 1, "bands": 10},
+        "incumbent": {
+            "stages": 1,
+            "bands": 10,
+            "scope": "production_offline_eq_cascade_with_flat_correction",
+        },
         "retention_gates": GATES,
         "checks": checks,
+        "product_need": {
+            "requested": True,
+            "basis": (
+                "The product requirement is to preserve microphone correction "
+                "while allowing an independent voice-character tone stage."
+            ),
+            "measured_user_benefit": False,
+            "interpretation": (
+                "This report records the requested capability; it does not "
+                "claim a preference or listening-study result."
+            ),
+        },
         "decision": {
-            "retained": False,
+            "retained": not failed_checks,
             "safety_and_cost_eligible": not failed_checks,
             "failed_checks": failed_checks,
-            "product_action": "retain one combined stage; no measured product benefit justifies a second stage",
+            "product_action": (
+                "retain the independent production stages when safety and cost "
+                "gates pass; product need is explicitly requested, with no "
+                "unmeasured preference claim"
+            ),
         },
         "aggregate": aggregate,
         "failures": failures,
@@ -545,6 +634,11 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
                 "timing_repeats": TIMING_REPEATS,
                 "pre_registration": "https://github.com/FueledByRedBull/audio-forge/issues/28",
                 "input_peak_normalization": 0.5,
+                "reference": "flat correction plus selected tone",
+                "candidate": "measured correction plus selected tone",
+                "native_api": "simulate_auto_eq_chain",
+                "timing_api": "simulate_eq_v2",
+                "timing_scope": "one correction EQ kernel versus correction plus tone kernels; excludes shared limiter and offline analysis",
             },
             "asset_hashes": {
                 "corpus_manifest": _sha256(manifest),
@@ -564,14 +658,15 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
                 "p95_runtime_ratio": aggregate["p95_runtime_ratio"],
                 "max_p99_frame_seconds": None,
                 "max_p99_frame_seconds_reason": (
-                    "The native offline API reports whole-clip runtime; realtime "
-                    "factor is measured for both one- and two-stage paths."
+                    "The native EQ API reports whole-clip kernel runtime; realtime "
+                    "factor is measured for one and two EQ kernels. Full-chain "
+                    "renders separately verify safety and added latency."
                 ),
                 "machine": platform.platform(),
                 "python": platform.python_version(),
             },
             "latency": {
-                "algorithmic_latency_samples": aggregate["latency_samples"],
+                "added_algorithmic_latency_samples": aggregate["latency_samples"],
                 "sample_rate": SAMPLE_RATE,
             },
             "clean_preservation": {
@@ -581,13 +676,18 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
                 ],
                 "p95_limiter_gr_db": aggregate["p95_limiter_gr_db"],
             },
+            "product_need": {
+                "requested": True,
+                "measured_user_benefit": False,
+            },
         },
         "source_sha256": source_hashes,
         "limitations": [
             "The 48 kHz clean subset contains only two VoiceBank test speakers.",
             "Frozen tone profiles are representative fixtures, not preference labels.",
-            "Response parity and bounded cost establish eligibility, not user benefit; no measured product benefit justifies doubling the stage architecture.",
-            "The candidate is not a production preset or realtime DSP path.",
+            "Response parity and bounded cost establish safety and cost eligibility, not user benefit.",
+            "The report records an explicitly requested product capability and makes no measured user-preference claim.",
+            "The offline renderer exercises the production EQ cascade; realtime hardware behavior remains covered by the native and integration checks.",
         ],
     }
 

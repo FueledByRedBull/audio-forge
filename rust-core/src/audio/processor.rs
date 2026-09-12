@@ -175,7 +175,8 @@ pub struct AudioProcessor {
     suppressor_strength: Arc<AtomicU32>, // f32 bits stored as u32
     current_model: Arc<AtomicU8>,        // NoiseModel as u8
 
-    /// 10-band parametric EQ
+    /// Independent measured microphone correction and user tone EQ stages.
+    correction_eq: Arc<Mutex<ParametricEQ>>,
     eq: Arc<Mutex<ParametricEQ>>,
     eq_enabled: Arc<AtomicBool>,
     eq_control: Arc<EqControlState>,
@@ -456,6 +457,9 @@ pub struct AudioProcessor {
     output_muted: Arc<AtomicBool>,
     /// Flag indicating recording is active (used to mute output to prevent user from hearing themselves)
     recording_active: Arc<AtomicBool>,
+    /// Whether the raw recording tap should run before adaptive input cleanup.
+    /// The default calibration tap remains after the fixed pre-filter.
+    raw_recording_before_cleanup: Arc<AtomicBool>,
     /// Producer for calibration probes rendered by the selected CPAL output stream.
     output_probe_producer: Arc<Mutex<Option<AudioProducer>>>,
     /// Whether the selected output callback should render the queued calibration probe.
@@ -546,6 +550,7 @@ impl AudioProcessor {
             retired_suppressor_rx: Arc::new(Mutex::new(None)),
             suppressor_strength, // Store Arc for PyO3 bindings
             current_model: Arc::new(AtomicU8::new(NoiseModel::RNNoise as u8)),
+            correction_eq: Arc::new(Mutex::new(ParametricEQ::new(sample_rate as f64))),
             eq: Arc::new(Mutex::new(ParametricEQ::new(sample_rate as f64))),
             eq_enabled: Arc::new(AtomicBool::new(true)),
             eq_control: Arc::new(EqControlState::new()),
@@ -702,6 +707,7 @@ impl AudioProcessor {
             recording_level_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             output_muted: Arc::new(AtomicBool::new(false)),
             recording_active: Arc::new(AtomicBool::new(false)),
+            raw_recording_before_cleanup: Arc::new(AtomicBool::new(false)),
             output_probe_producer: Arc::new(Mutex::new(None)),
             output_probe_active: Arc::new(AtomicBool::new(false)),
             output_probe_complete: Arc::new(AtomicBool::new(true)),

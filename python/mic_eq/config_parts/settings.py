@@ -21,7 +21,7 @@ EQ_FREQUENCIES = [
     16000.0,
 ]
 AUTO_EQ_DEFAULT_Q = 4.33
-EQ_SCHEMA_VERSION = 2
+EQ_SCHEMA_VERSION = 3
 EQ_BAND_COUNT = 10
 EQ_FILTER_TYPES = frozenset(
     {
@@ -213,6 +213,10 @@ class EQBandSettings:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def to_native(self) -> tuple[str, float, float, float, int, bool]:
+        return (self.filter_type, self.frequency_hz, self.gain_db, self.q,
+                self.slope_db_per_octave, self.enabled)
+
     @classmethod
     def from_dict(cls, data: object, *, index: int) -> "EQBandSettings":
         if not isinstance(data, Mapping):
@@ -344,11 +348,17 @@ def _legacy_bands(
 
 @dataclass(init=False)
 class EQSettings:
-    """Versioned EQ schema with immutable bands and legacy list views."""
+    """Versioned EQ schema with optional independent correction and tone layers.
+
+    ``bands`` is the editable tone stage. Correction is processed separately,
+    so tone filter geometry and gains never rewrite calibration.
+    """
 
     enabled: bool
     schema_version: int
     bands: tuple[EQBandSettings, ...]
+    correction_bands: tuple[EQBandSettings, ...] | None
+    tone_bands: tuple[EQBandSettings, ...] | None
 
     def __init__(
         self,
@@ -359,11 +369,34 @@ class EQSettings:
         *,
         schema_version: int = EQ_SCHEMA_VERSION,
         bands: Sequence[EQBandSettings] | None = None,
+        correction_bands: Sequence[EQBandSettings] | None = None,
+        tone_bands: Sequence[EQBandSettings] | None = None,
     ) -> None:
         self.enabled = _strict_bool(enabled, name="eq.enabled")
         if schema_version != EQ_SCHEMA_VERSION:
             raise ValueError(f"unsupported EQ schema version: {schema_version}")
         self.schema_version = schema_version
+        if (correction_bands is None) != (tone_bands is None):
+            raise ValueError(
+                "correction and tone layers must be supplied together"
+            )
+        if correction_bands is not None and tone_bands is not None:
+            parsed_correction = tuple(correction_bands)
+            parsed_tone = tuple(tone_bands)
+            if len(parsed_correction) != EQ_BAND_COUNT or len(parsed_tone) != EQ_BAND_COUNT:
+                raise ValueError(
+                    f"EQ layers must contain {EQ_BAND_COUNT} typed bands"
+                )
+            if not all(
+                isinstance(band, EQBandSettings)
+                for band in parsed_correction + parsed_tone
+            ):
+                raise ValueError("EQ layers must contain typed bands")
+            self.correction_bands = parsed_correction
+            self.tone_bands = parsed_tone
+        else:
+            self.correction_bands = None
+            self.tone_bands = None
         if bands is not None:
             if any(
                 value is not None
@@ -386,19 +419,32 @@ class EQSettings:
                 [0.0] * EQ_BAND_COUNT if band_gains is None else band_gains,
                 [1.41] * EQ_BAND_COUNT if band_qs is None else band_qs,
             )
+        if self.tone_bands is not None:
+            if bands is not None and self.bands != self.tone_bands:
+                raise ValueError("EQ bands do not match the tone layer")
+            self.bands = self.tone_bands
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "schema_version": self.schema_version,
             "enabled": self.enabled,
             "bands": [band.to_dict() for band in self.bands],
         }
+        if self.correction_bands is not None and self.tone_bands is not None:
+            payload["layers"] = {
+                "correction": [
+                    band.to_dict() for band in self.correction_bands
+                ],
+                "tone": [band.to_dict() for band in self.tone_bands],
+            }
+        return payload
 
     @classmethod
     def from_dict(cls, data: object) -> "EQSettings":
         if not isinstance(data, Mapping):
             raise ValueError("eq must be an object")
-        new_fields = {"schema_version", "enabled", "bands"}
+        new_fields = {"schema_version", "enabled", "bands", "layers"}
+        required_fields = {"schema_version", "enabled", "bands"}
         legacy_fields = {"enabled", "band_freqs", "band_gains", "band_qs"}
         fields = set(data)
         if "bands" in data or "schema_version" in data:
@@ -408,8 +454,8 @@ class EQSettings:
                     "eq contains unknown fields: "
                     + ", ".join(sorted(str(key) for key in unknown))
                 )
-            if fields != new_fields:
-                missing = new_fields - fields
+            if not required_fields.issubset(fields):
+                missing = required_fields - fields
                 raise ValueError(
                     "eq is missing fields: "
                     + ", ".join(sorted(str(key) for key in missing))
@@ -423,6 +469,41 @@ class EQSettings:
             raw_bands = data["bands"]
             if not isinstance(raw_bands, list):
                 raise ValueError("eq.bands must be an array")
+            layers = data.get("layers")
+            correction_bands: list[EQBandSettings] | None = None
+            tone_bands: list[EQBandSettings] | None = None
+            if layers is not None:
+                if not isinstance(layers, Mapping):
+                    raise ValueError("eq.layers must be an object")
+                if set(layers) != {"correction", "tone"}:
+                    raise ValueError(
+                        "eq.layers must contain correction and tone arrays"
+                    )
+
+                def parse_layer(name: str) -> list[EQBandSettings]:
+                    raw_layer = layers[name]
+                    if not isinstance(raw_layer, list):
+                        raise ValueError(f"eq.layers.{name} must be an array")
+                    if len(raw_layer) != EQ_BAND_COUNT:
+                        raise ValueError(
+                            f"eq.layers.{name} must contain {EQ_BAND_COUNT} bands"
+                        )
+                    return [
+                        EQBandSettings.from_dict(
+                            band,
+                            index=index,
+                        )
+                        for index, band in enumerate(raw_layer)
+                    ]
+
+                correction_bands = parse_layer("correction")
+                tone_bands = parse_layer("tone")
+
+            if schema_version == 2:
+                # Preserve the audible combined stage from older presets;
+                # calibration can subsequently establish a separate correction.
+                correction_bands = tone_bands = None
+                schema_version = EQ_SCHEMA_VERSION
             return cls(
                 enabled=_strict_bool(data["enabled"], name="eq.enabled"),
                 schema_version=schema_version,
@@ -430,6 +511,8 @@ class EQSettings:
                     EQBandSettings.from_dict(band, index=index)
                     for index, band in enumerate(raw_bands)
                 ],
+                correction_bands=correction_bands,
+                tone_bands=tone_bands,
             )
 
         unknown = fields - legacy_fields
@@ -493,6 +576,8 @@ class EQSettings:
                 parsed = value
             replacements.append(replace(band, **{field_name: parsed}))
         self.bands = tuple(replacements)
+        if self.tone_bands is not None:
+            self.tone_bands = self.bands
 
     @property
     def band_freqs(self) -> list[float]:

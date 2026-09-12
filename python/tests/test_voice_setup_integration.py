@@ -27,6 +27,7 @@ def real_main_window(qapp, monkeypatch, tmp_path):
     assert main_window.load_config is app_config.load_config
     assert main_window.save_config is app_config.save_config
     window = MainWindow()
+    monkeypatch.setattr(window, "_calibration_context_key", lambda: "test-route/48000/mono")
     window.meter_timer.stop()
     window.diagnostics_timer.stop()
     try:
@@ -278,7 +279,9 @@ def test_voice_setup_tone_and_lufs_survive_apply_save_and_restart(real_main_wind
         assert reloaded.current_preset_path == filepath
         assert reloaded.current_preset_name == "Broadcast Voice"
         assert restored.compressor.target_lufs == pytest.approx(-19.0)
-        assert restored.eq.band_gains == pytest.approx(expected_gains)
+        assert restored.eq.correction_bands is not None
+        assert [band.gain_db for band in restored.eq.correction_bands] == pytest.approx(expected_gains)
+        assert restored.eq.band_gains == [0.0] * 10
     finally:
         try:
             reloaded.processor.stop()

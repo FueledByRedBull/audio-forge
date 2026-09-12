@@ -48,6 +48,16 @@ def _as_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _as_int(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed
+
+
 def _native_failure(kind: str, *, message: str) -> dict[str, str]:
     """Return a bounded, user-safe reason for an unavailable native path."""
     return {
@@ -61,8 +71,20 @@ def _flatten_chain_settings(chain_settings: dict[str, Any] | None) -> dict[str, 
     deesser = chain_settings.get("deesser") or {}
     compressor = chain_settings.get("compressor") or {}
     limiter = chain_settings.get("limiter") or {}
+    gate = (
+        chain_settings.get("gate")
+        or chain_settings.get("gate_settings")
+        or {}
+    )
+    suppressor = (
+        chain_settings.get("suppressor")
+        or chain_settings.get("suppression")
+        or chain_settings.get("rnnoise")
+        or chain_settings.get("suppressor_settings")
+        or {}
+    )
 
-    return {
+    flattened = {
         "return_output_audio": _as_bool(
             chain_settings.get("return_output_audio"),
             False,
@@ -99,6 +121,57 @@ def _flatten_chain_settings(chain_settings: dict[str, Any] | None) -> dict[str, 
             True,
         ),
     }
+    if isinstance(gate, Mapping):
+        flattened.update(
+            {
+                "gate_enabled": _as_bool(gate.get("enabled"), True),
+                "gate_threshold_db": _as_float(
+                    gate.get("threshold_db"), -40.0
+                ),
+                "gate_attack_ms": _as_float(gate.get("attack_ms"), 10.0),
+                "gate_release_ms": _as_float(
+                    gate.get("release_ms"), 100.0
+                ),
+                "gate_mode": _as_int(gate.get("gate_mode"), 0),
+                "gate_vad_threshold": _as_float(
+                    gate.get("vad_threshold"), 0.48
+                ),
+                "gate_vad_hold_time_ms": _as_float(
+                    gate.get("vad_hold_time_ms"), 200.0
+                ),
+                "gate_vad_pre_gain": _as_float(
+                    gate.get("vad_pre_gain"), 1.0
+                ),
+                "gate_auto_threshold_enabled": _as_bool(
+                    gate.get("auto_threshold_enabled"), True
+                ),
+                "gate_margin_db": _as_float(
+                    gate.get("gate_margin_db"), 10.0
+                ),
+            }
+        )
+    if isinstance(suppressor, Mapping):
+        flattened.update(
+            {
+                "suppressor_enabled": _as_bool(
+                    suppressor.get("enabled"), True
+                ),
+                "suppressor_strength": _as_float(
+                    suppressor.get("strength"), 1.0
+                ),
+                "noise_model": str(suppressor.get("model", "rnnoise")),
+            }
+        )
+    for key in (
+        "full_chain",
+        "input_pre_filtered",
+        "input_cleanup_mode",
+        "processing_mode",
+        "vad_probabilities",
+    ):
+        if key in chain_settings:
+            flattened[key] = deepcopy(chain_settings[key])
+    return flattened
 
 
 def _bands_from_settings(eq_settings: dict[str, Any]) -> list[tuple[float, float, float]]:
@@ -308,8 +381,23 @@ def simulate_candidate_chain(
 ) -> dict[str, Any]:
     """Simulate the deterministic downstream chain for a candidate EQ."""
 
-    bands = _bands_from_settings(eq_settings)
     flat_settings = _flatten_chain_settings(chain_settings)
+    if "bands" in eq_settings:
+        from ...config import EQSettings
+
+        typed = EQSettings.from_dict({key: eq_settings[key] for key in
+                                     ("schema_version", "enabled", "bands", "layers") if key in eq_settings})
+        bands = [(band.frequency_hz, band.gain_db, band.q) for band in typed.bands]
+        flat_settings.update(
+            eq_enabled=typed.enabled,
+            eq_bands=[band.to_native() for band in typed.bands],
+        )
+        if typed.correction_bands:
+            flat_settings["correction_bands"] = [
+                band.to_native() for band in typed.correction_bands
+            ]
+    else:
+        bands = _bands_from_settings(eq_settings)
     native, native_failure = _native_simulate(
         audio_data, sample_rate, bands, flat_settings
     )

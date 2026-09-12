@@ -112,7 +112,7 @@ def test_snapshot_is_deterministic_finite_bounded_and_private() -> None:
     assert first["runtime"]["restart_reason_present"] is True
     assert first["configuration"]["saved_latency_profile_count"] == 1
     assert first["configuration"]["device_preset_binding_count"] == 0
-    assert first["processing"]["eq"]["schema_version"] == 2
+    assert first["processing"]["eq"]["schema_version"] == 3
     assert len(first["processing"]["eq"]["bands"]) == 10
     assert "gain_db" not in first["processing"]["eq"]["bands"][0]
     assert "Private USB Microphone" not in text

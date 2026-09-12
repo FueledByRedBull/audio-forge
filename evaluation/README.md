@@ -22,7 +22,7 @@ Routine test results and screenshot-generation reports belong under ignored
 | Resampling | `resampler-quality-report.json` | Retain the 128-tap Blackman product path. |
 | Manual typed EQ | `eq-filter-types-report.json` | Retain manual bell/notch/shelf/pass types and selectable slopes. |
 | Auto-EQ candidate pool | `eq-candidate-pool-report.json`, `sparse-auto-eq-filter-report.json` | Reject the tested nested wider pools and sparse type-selecting candidate. |
-| EQ stage split | `correction-tone-stage-report.json` | Safe/cost-eligible, but closed because no product benefit was demonstrated. |
+| EQ stage split | `correction-tone-product-report.json`; historical `correction-tone-stage-report.json` | Retain the explicitly requested independent stages: 12 cases pass safety, EQ-kernel cost, schema and zero-added-latency gates. The historical proposal was closed before this product request. |
 | RNNoise | `rnnoise-backend-comparison.json` | Retain `nnnoiseless`; upstream Xiph was materially slower and regressed clean preservation. |
 | DPDFNet | `dpdfnet-vs-deepfilternet3-report.json`, `dpdfnet-official-evalset-report.json` | Rejected and absent; historical clean failures are not independently reproducible from this checkout. |
 | ONNX Runtime backend | `onnxruntime-cpu-probe.json` | Official CPU-only 1.23.2 matched the preserved 3.12 baseline across 498 captures and 20,908 frames. |

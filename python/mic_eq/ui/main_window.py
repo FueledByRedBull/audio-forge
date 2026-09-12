@@ -32,9 +32,10 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QSizePolicy,
+    QSystemTrayIcon,
 )
 from PyQt6.QtCore import Qt, QTimer, QRect
-from PyQt6.QtGui import QAction, QGuiApplication
+from PyQt6.QtGui import QAction, QGuiApplication, QIcon
 import os
 import sys
 import json
@@ -92,6 +93,7 @@ from .startup_presets import (
     startup_preset_display_name as _startup_preset_display_name,
 )
 from .theme import prefers_reduced_motion
+from .desktop_integration import GlobalMuteHotkey
 from .. import AudioProcessor, __version__, list_input_devices, list_output_devices
 from ..diagnostics_export import (
     build_diagnostics_snapshot,
@@ -141,6 +143,12 @@ INPUT_CLEANUP_MODE_OPTIONS = (
     ("Strong", "strong"),
 )
 INPUT_PHASE_WARNING_CORRELATION = -0.75
+PROCESSING_MODE_OPTIONS = (
+    ("Normal", "normal"),
+    ("Bypass", "bypass"),
+    ("Raw Monitor", "raw"),
+)
+DEFAULT_MUTE_HOTKEY = "Ctrl+Alt+M"
 DEFAULT_WINDOW_WIDTH = 1280
 DEFAULT_WINDOW_HEIGHT = 850
 MINIMUM_WINDOW_WIDTH = 900
@@ -249,6 +257,13 @@ class MainWindow(QMainWindow):
         self._last_gate_chatter_event_count = 0
         self._responsive_layout_compact: bool | None = None
         self._splitter_is_vertical: bool | None = None
+        self._quitting = False
+        self._tray_icon: QSystemTrayIcon | None = None
+        self._tray_menu: QMenu | None = None
+        self._tray_mute_action: QAction | None = None
+        self._mute_hotkey: GlobalMuteHotkey | None = None
+        self._close_to_tray_action: QAction | None = None
+        self._mute_hotkey_action: QAction | None = None
         self._ui_state_timer = QTimer(self)
         self._ui_state_timer.setSingleShot(True)
         self._ui_state_timer.timeout.connect(self._save_ui_state)
@@ -258,6 +273,7 @@ class MainWindow(QMainWindow):
         self._setup_menubar()
         self._setup_options_menu()
         self._setup_statusbar()
+        self._setup_desktop_integration()
         self.user_mute_checkbox.blockSignals(True)
         self.user_mute_checkbox.setChecked(self.user_muted)
         self.user_mute_checkbox.blockSignals(False)
@@ -513,11 +529,13 @@ class MainWindow(QMainWindow):
         self.preset_status_label = QLabel("Preset: Default (saved)")
         self.transmission_status_label = QLabel("Transmission: Stopped")
         self.health_summary_label = QLabel("Health: --")
+        self.calibration_status_label = QLabel("No saved calibration")
         for label, name in (
             (self.route_status_label, "Current audio route"),
             (self.preset_status_label, "Active preset and saved state"),
             (self.transmission_status_label, "Audio transmission state"),
             (self.health_summary_label, "Compact audio health summary"),
+            (self.calibration_status_label, "Saved calibration validity"),
         ):
             label.setAccessibleName(name)
             label.setStyleSheet(SUBDUED_TEXT_STYLE)
@@ -528,10 +546,12 @@ class MainWindow(QMainWindow):
         session_layout.addWidget(self.preset_status_label, 0, 1)
         session_layout.addWidget(self.transmission_status_label, 0, 2)
         session_layout.addWidget(self.health_summary_label, 0, 3)
+        session_layout.addWidget(self.calibration_status_label, 0, 4)
         session_layout.setColumnStretch(0, 1)
         session_layout.setColumnStretch(1, 1)
         session_layout.setColumnStretch(2, 1)
         session_layout.setColumnStretch(3, 1)
+        session_layout.setColumnStretch(4, 1)
         control_stack.addLayout(session_layout)
 
         self.action_layout = QGridLayout()
@@ -574,19 +594,23 @@ class MainWindow(QMainWindow):
         )
         self._undo_auto_eq_button.clicked.connect(self.undo_configuration)
 
-        self.bypass_checkbox = QCheckBox("Master Bypass")
-        self.bypass_checkbox.setToolTip(
-            "Bypass voice effects; input conditioning and configured output protection remain. "
-            "Raw Monitor takes precedence when enabled."
+        processing_mode_label = QLabel("Mode:")
+        self.processing_mode_combo = QComboBox()
+        for label, mode in PROCESSING_MODE_OPTIONS:
+            self.processing_mode_combo.addItem(label, mode)
+        self.processing_mode_combo.setMinimumWidth(128)
+        self.processing_mode_combo.setToolTip(
+            "Normal applies the voice chain. Bypass keeps input conditioning and output protection. "
+            "Raw Monitor skips input filtering and the voice chain for diagnostics."
         )
-        self.bypass_checkbox.toggled.connect(self._on_bypass_toggled)
-
-        self.raw_monitor_checkbox = QCheckBox("Raw Monitor")
-        self.raw_monitor_checkbox.setToolTip(
-            "Diagnostic monitoring before input filtering and voice effects; "
-            "configured output protection remains. Takes precedence over Master Bypass."
+        bind_label(
+            processing_mode_label,
+            self.processing_mode_combo,
+            name="Processing mode",
         )
-        self.raw_monitor_checkbox.toggled.connect(self._on_raw_monitor_toggled)
+        self.processing_mode_combo.currentIndexChanged.connect(
+            self._on_processing_mode_changed
+        )
         self.user_mute_checkbox = QCheckBox("Mute Output")
         self.user_mute_checkbox.setToolTip(
             "Keep transmission muted until you uncheck this control. "
@@ -600,8 +624,8 @@ class MainWindow(QMainWindow):
             self.auto_eq_button,
             self.auto_voice_setup_button,
             self._undo_auto_eq_button,
-            self.bypass_checkbox,
-            self.raw_monitor_checkbox,
+            processing_mode_label,
+            self.processing_mode_combo,
         )
         control_stack.addLayout(self.action_layout)
 
@@ -712,8 +736,7 @@ class MainWindow(QMainWindow):
         self.setTabOrder(self.stop_btn, self.auto_eq_button)
         self.setTabOrder(self.auto_eq_button, self.auto_voice_setup_button)
         self.setTabOrder(self.auto_voice_setup_button, self._undo_auto_eq_button)
-        self.setTabOrder(self._undo_auto_eq_button, self.bypass_checkbox)
-        self.setTabOrder(self.bypass_checkbox, self.raw_monitor_checkbox)
+        self.setTabOrder(self._undo_auto_eq_button, self.processing_mode_combo)
 
     @staticmethod
     def _remove_grid_widgets(layout: QGridLayout, widgets: tuple[QWidget, ...]) -> None:
@@ -787,7 +810,7 @@ class MainWindow(QMainWindow):
         widgets = self._action_layout_widgets
         self._remove_grid_widgets(self.action_layout, widgets)
         action_buttons = widgets[:5]
-        bypass_checkbox, raw_monitor_checkbox = widgets[5:]
+        mode_label, mode_combo = widgets[5:]
         if compact:
             for index, button in enumerate(action_buttons):
                 row, column = divmod(index, 3)
@@ -795,15 +818,17 @@ class MainWindow(QMainWindow):
             for column in range(3):
                 self.action_layout.setColumnStretch(column, 1)
             self.action_layout.addWidget(
-                bypass_checkbox,
+                mode_label,
                 1,
                 3,
                 Qt.AlignmentFlag.AlignVCenter,
             )
             self.action_layout.addWidget(
-                raw_monitor_checkbox,
+                mode_combo,
                 1,
                 4,
+                1,
+                1,
                 Qt.AlignmentFlag.AlignVCenter,
             )
             return
@@ -812,13 +837,13 @@ class MainWindow(QMainWindow):
             self.action_layout.addWidget(button, 0, column)
         self.action_layout.setColumnStretch(5, 1)
         self.action_layout.addWidget(
-            bypass_checkbox,
+            mode_label,
             0,
             6,
             Qt.AlignmentFlag.AlignVCenter,
         )
         self.action_layout.addWidget(
-            raw_monitor_checkbox,
+            mode_combo,
             0,
             7,
             Qt.AlignmentFlag.AlignVCenter,
@@ -1054,6 +1079,90 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.debug("Failed to apply input cleanup mode", exc_info=True)
 
+    @staticmethod
+    def _is_valid_processing_mode(mode: object) -> bool:
+        return isinstance(mode, str) and any(
+            mode == option_mode for _label, option_mode in PROCESSING_MODE_OPTIONS
+        )
+
+    def _processing_mode(self) -> str:
+        """Return the one UI mode while accepting legacy test/integration owners."""
+        combo = self.__dict__.get("processing_mode_combo")
+        if combo is not None:
+            mode = combo.currentData()
+            if self._is_valid_processing_mode(mode):
+                return str(mode)
+        raw_control = self.__dict__.get("raw_monitor_checkbox")
+        if raw_control is not None and raw_control.isChecked():
+            return "raw"
+        bypass_control = self.__dict__.get("bypass_checkbox")
+        if bypass_control is not None and bypass_control.isChecked():
+            return "bypass"
+        return "normal"
+
+    def _set_processing_mode(self, mode: str, *, notify: bool = False) -> None:
+        target = mode if self._is_valid_processing_mode(mode) else "normal"
+        combo = self.__dict__.get("processing_mode_combo")
+        if combo is not None:
+            index = combo.findData(target)
+            if index >= 0 and combo.currentIndex() != index:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(index)
+                combo.blockSignals(False)
+
+        try:
+            if hasattr(self.processor, "set_raw_monitor_enabled"):
+                self.processor.set_raw_monitor_enabled(target == "raw")
+            if hasattr(self.processor, "set_bypass"):
+                self.processor.set_bypass(target == "bypass")
+        except Exception as error:
+            raise RuntimeError(f"Processing mode could not be applied: {error}") from error
+        self._applied_processing_mode = target
+
+        # Keep the old attributes in sync for integrations that still inspect
+        # them; the combo remains the only visible control.
+        for name, checked in (
+            ("bypass_checkbox", target == "bypass"),
+            ("raw_monitor_checkbox", target == "raw"),
+        ):
+            control = self.__dict__.get(name)
+            if control is not None and hasattr(control, "setChecked"):
+                block_signals = getattr(control, "blockSignals", None)
+                if callable(block_signals):
+                    block_signals(True)
+                control.setChecked(checked)
+                if callable(block_signals):
+                    block_signals(False)
+
+        if notify:
+            message = {
+                "normal": "Processing active",
+                "bypass": (
+                    "Voice effects bypassed; input conditioning and configured "
+                    "output protection remain"
+                ),
+                "raw": "Raw monitor enabled - skipping pre-filter and DSP chain",
+            }[target]
+            self.status_bar.showMessage(message)
+        update_summary = getattr(self, "_update_session_summary", None)
+        if callable(update_summary):
+            update_summary()
+
+    def _on_processing_mode_changed(self, _index: int) -> None:
+        previous = self.__dict__.get("_applied_processing_mode", "normal")
+        try:
+            self._set_processing_mode(self._processing_mode(), notify=True)
+        except RuntimeError as error:
+            try:
+                self._set_processing_mode(previous)
+            except RuntimeError:
+                self.set_temporary_output_mute(True, "processing_mode_error")
+                self.status_bar.showMessage(f"{error}; output muted because restoration failed")
+                return
+            self.status_bar.showMessage(f"{error}; previous mode restored", 6000)
+        else:
+            self.set_temporary_output_mute(False, "processing_mode_error")
+
     def _apply_output_mute(self) -> None:
         """Apply user and temporary mute state without either one clearing the other."""
         muted = bool(
@@ -1066,6 +1175,11 @@ class MainWindow(QMainWindow):
         except Exception:
             self._output_mute_error = "unavailable"
             logger.debug("Failed to apply output mute state", exc_info=True)
+        tray_mute_action = self.__dict__.get("_tray_mute_action")
+        if tray_mute_action is not None:
+            tray_mute_action.blockSignals(True)
+            tray_mute_action.setChecked(bool(self.user_muted))
+            tray_mute_action.blockSignals(False)
         self._update_session_summary()
 
     def set_temporary_output_mute(
@@ -1118,7 +1232,9 @@ class MainWindow(QMainWindow):
             f"Preset: {self.current_preset_name or 'Default'} ({state})"
         )
         running = bool(getattr(self, "processor", None) and self.processor.is_running())
-        transmission = "Running" if running else "Stopped"
+        mode = self._processing_mode()
+        mode_label = next(label for label, value in PROCESSING_MODE_OPTIONS if value == mode)
+        transmission = f"{'Running' if running else 'Stopped'} / {mode_label}"
         if self.__dict__.get("_output_mute_error"):
             transmission += " / Mute pending"
         elif self.__dict__.get("user_muted", False) or self.__dict__.get(
@@ -1126,6 +1242,20 @@ class MainWindow(QMainWindow):
         ):
             transmission += " / Muted"
         self.transmission_status_label.setText(f"Transmission: {transmission}")
+        if self.__dict__.get("_history_ready") and not self.__dict__.get("_calibration_dialog_open"):
+            self._refresh_calibration_status()
+
+    def _refresh_calibration_status(self) -> None:
+        from .calibration_history import calibration_summary, current_calibration
+
+        self.calibration_status_label.setText(calibration_summary(self))
+        result = current_calibration(self, "full_voice_setup")
+        if result is not None or self.__dict__.get("_persisted_calibration_active"):
+            reliability = result.noise_reference_reliability if result is not None else 0.0
+            current = self.compressor_panel.get_compressor_settings(include_calibration=True)
+            if current["noise_reference_reliability"] != reliability:
+                self.compressor_panel.set_compressor_settings({"noise_reference_reliability": reliability})
+        self._persisted_calibration_active = result is not None
 
     def _set_preset_identity(
         self,
@@ -1431,7 +1561,7 @@ class MainWindow(QMainWindow):
 
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
+        exit_action.triggered.connect(self._quit_from_tray)
         file_menu.addAction(exit_action)
 
         # Edit menu
@@ -1631,6 +1761,166 @@ class MainWindow(QMainWindow):
             self._on_latency_calibration_clicked
         )
         options_menu.addAction(latency_calibration_action)
+
+        options_menu.addSeparator()
+
+        desktop_menu = options_menu.addMenu("Tray &Background")
+        assert desktop_menu is not None
+        self._close_to_tray_action = QAction(
+            "Keep running in tray when window is closed", self
+        )
+        self._close_to_tray_action.setCheckable(True)
+        self._close_to_tray_action.setChecked(
+            bool(getattr(self.config, "close_to_tray", False))
+        )
+        self._close_to_tray_action.setToolTip(
+            "Hide the window while audio continues; use the tray menu to show or quit."
+        )
+        self._close_to_tray_action.toggled.connect(self._on_close_to_tray_toggled)
+        desktop_menu.addAction(self._close_to_tray_action)
+
+        self._mute_hotkey_action = QAction(
+            f"Enable global mute shortcut ({DEFAULT_MUTE_HOTKEY})", self
+        )
+        self._mute_hotkey_action.setCheckable(True)
+        self._mute_hotkey_action.setChecked(bool(getattr(self.config, "mute_hotkey", "")))
+        self._mute_hotkey_action.setToolTip(
+            "Toggle Output Mute from any application while AudioForge is running."
+        )
+        self._mute_hotkey_action.toggled.connect(self._on_mute_hotkey_toggled)
+        desktop_menu.addAction(self._mute_hotkey_action)
+
+    def _setup_desktop_integration(self) -> None:
+        """Create the optional tray icon and register the configured hotkey."""
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._mark_quitting)
+
+        configured_hotkey = str(getattr(self.config, "mute_hotkey", "") or "")
+        if configured_hotkey:
+            self._register_mute_hotkey(configured_hotkey)
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            if self._close_to_tray_action is not None:
+                self._close_to_tray_action.setEnabled(False)
+                self._close_to_tray_action.blockSignals(True)
+                self._close_to_tray_action.setChecked(False)
+                self._close_to_tray_action.blockSignals(False)
+            return
+
+        icon = self.windowIcon()
+        if icon.isNull() and isinstance(app, QGuiApplication):
+            icon = app.windowIcon()
+        if icon.isNull():
+            icon = QIcon.fromTheme("audio-card")
+        self._tray_icon = QSystemTrayIcon(icon, self)
+        self._tray_icon.setToolTip("AudioForge microphone processor")
+        self._tray_menu = QMenu(self)
+
+        show_action = QAction("Show AudioForge", self)
+        show_action.triggered.connect(self._show_from_tray)
+        self._tray_menu.addAction(show_action)
+
+        self._tray_mute_action = QAction("Mute Output", self)
+        self._tray_mute_action.setCheckable(True)
+        self._tray_mute_action.setChecked(self.user_muted)
+        self._tray_mute_action.toggled.connect(self._on_tray_mute_toggled)
+        self._tray_menu.addAction(self._tray_mute_action)
+        self._tray_menu.addSeparator()
+
+        if self._close_to_tray_action is not None:
+            self._tray_menu.addAction(self._close_to_tray_action)
+        self._tray_menu.addSeparator()
+        quit_action = QAction("Quit AudioForge", self)
+        quit_action.triggered.connect(self._quit_from_tray)
+        self._tray_menu.addAction(quit_action)
+        self._tray_icon.setContextMenu(self._tray_menu)
+        self._tray_icon.activated.connect(self._on_tray_activated)
+        self._tray_icon.show()
+
+    def _mark_quitting(self) -> None:
+        self._quitting = True
+
+    def _show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._show_from_tray()
+
+    def _on_tray_mute_toggled(self, checked: bool) -> None:
+        if self.user_mute_checkbox.isChecked() != bool(checked):
+            self.user_mute_checkbox.setChecked(bool(checked))
+
+    def _on_close_to_tray_toggled(self, checked: bool) -> None:
+        setattr(self.config, "close_to_tray", bool(checked))
+        try:
+            saved = save_config(self.config)
+        except (OSError, TypeError, ValueError):
+            saved = False
+        message = "Close-to-tray enabled" if checked else "Close-to-tray disabled"
+        if not saved:
+            message += "; preference could not be saved"
+        self.status_bar.showMessage(message, 5000 if not saved else 3000)
+
+    def _on_mute_hotkey_toggled(self, checked: bool) -> None:
+        configured_hotkey = DEFAULT_MUTE_HOTKEY if checked else ""
+        setattr(self.config, "mute_hotkey", configured_hotkey)
+        if checked:
+            registered = self._register_mute_hotkey(configured_hotkey)
+        else:
+            self._unregister_mute_hotkey()
+            registered = True
+        try:
+            saved = save_config(self.config)
+        except (OSError, TypeError, ValueError):
+            saved = False
+        if checked and not registered:
+            return
+        message = (
+            f"Global mute shortcut {'enabled' if checked else 'disabled'}"
+        )
+        if not saved:
+            message += "; preference could not be saved"
+        self.status_bar.showMessage(message, 5000 if not saved else 3000)
+
+    def _register_mute_hotkey(self, shortcut: str) -> bool:
+        self._unregister_mute_hotkey()
+        hotkey = GlobalMuteHotkey(shortcut, self._toggle_mute_from_hotkey)
+        registered, error = hotkey.register()
+        if not registered:
+            self.config.mute_hotkey = ""
+            if self._mute_hotkey_action is not None:
+                self._mute_hotkey_action.blockSignals(True)
+                self._mute_hotkey_action.setChecked(False)
+                self._mute_hotkey_action.blockSignals(False)
+            self.status_bar.showMessage(
+                f"Global mute shortcut unavailable: {error}",
+                8000,
+            )
+            return False
+        self._mute_hotkey = hotkey
+        return True
+
+    def _unregister_mute_hotkey(self) -> None:
+        if self._mute_hotkey is None:
+            return
+        self._mute_hotkey.unregister()
+        self._mute_hotkey = None
+
+    def _toggle_mute_from_hotkey(self) -> None:
+        self.user_mute_checkbox.setChecked(not self.user_mute_checkbox.isChecked())
+
+    def _quit_from_tray(self) -> None:
+        self._quitting = True
+        self.close()
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.quit()
 
     def _set_startup_preset(self, preset_id: str):
         """Set the startup preset and update checked states.
@@ -2714,6 +3004,7 @@ class MainWindow(QMainWindow):
             self.config.input_channel_mode,
             self.config.input_cleanup_mode,
             self._current_capture_format_context(),
+            self._processing_mode(),
         ))
 
     def _connect_configuration_history_inputs(self) -> None:
@@ -2735,6 +3026,7 @@ class MainWindow(QMainWindow):
             getattr(self, "output_combo", None),
             getattr(self, "input_channel_mode_combo", None),
             getattr(self, "input_cleanup_mode_combo", None),
+            getattr(self, "processing_mode_combo", None),
         )
         for combo in self.findChildren(QComboBox):
             if combo in ignored_combos:
@@ -3057,24 +3349,32 @@ class MainWindow(QMainWindow):
         )
 
     def _on_bypass_toggled(self, checked):
-        """Handle bypass toggle."""
+        """Handle the legacy bypass signal while the mode combo is present."""
+        if self.__dict__.get("processing_mode_combo") is not None:
+            target = "bypass" if checked else "normal"
+            self._set_processing_mode(target, notify=True)
+            return
         self.processor.set_bypass(checked)
-        if checked:
-            self.status_bar.showMessage(
-                "Voice effects bypassed; input conditioning and configured output protection remain"
-            )
-        else:
-            self.status_bar.showMessage("Processing active")
+        self.status_bar.showMessage(
+            "Voice effects bypassed; input conditioning and configured output protection remain"
+            if checked
+            else "Processing active"
+        )
 
     def _on_raw_monitor_toggled(self, checked):
-        """Handle raw monitor toggle."""
-        self.processor.set_raw_monitor_enabled(checked)
-        if checked:
-            self.status_bar.showMessage(
-                "Raw monitor enabled - skipping pre-filter and DSP chain"
+        """Handle the legacy raw-monitor signal while preserving bypass state."""
+        if self.__dict__.get("processing_mode_combo") is not None:
+            target = "raw" if checked else (
+                "bypass" if self._processing_mode() == "bypass" else "normal"
             )
-        else:
-            self.status_bar.showMessage("Raw monitor disabled")
+            self._set_processing_mode(target, notify=True)
+            return
+        self.processor.set_raw_monitor_enabled(checked)
+        self.status_bar.showMessage(
+            "Raw monitor enabled - skipping pre-filter and DSP chain"
+            if checked
+            else "Raw monitor disabled"
+        )
 
     def _on_rnnoise_toggled(self, checked):
         """Handle RNNoise toggle."""
@@ -3086,52 +3386,35 @@ class MainWindow(QMainWindow):
         self.strength_label.setText(f"{value}%")
         self.processor.set_rnnoise_strength(strength)
 
+    def _apply_noise_model(self, model_id: str) -> None:
+        """Apply manual or calibrated selection without disguising a failed switch."""
+        index = self.model_combo.findData(model_id)
+        if index < 0 or not self.processor.set_noise_model(model_id):
+            raise ValueError(f"Noise model {model_id!r} is unavailable; previous model retained")
+        blocked = self.model_combo.blockSignals(True)
+        try:
+            self.model_combo.setCurrentIndex(index)
+        finally:
+            self.model_combo.blockSignals(blocked)
+        self._set_noise_suppression_latency_label(model_id)
+
     def _on_model_changed(self, index: int):
-        """Handle noise model selection change."""
+        """Apply a manual selection, restoring the actual model on failure."""
         model_id = self.model_combo.itemData(index)
         if not model_id:
             return
-
+        previous_model = self.processor.get_noise_model()
         try:
-            success = self.processor.set_noise_model(model_id)
-            if not success:
-                # Model switch failed - show error and revert
-                QMessageBox.warning(
-                    self,
-                    "Model Switch Failed",
-                    f"Could not switch to {self.model_combo.currentText()}.\n\n"
-                    f"The model may not be available in this build.\n"
-                    f"Reverting to previous model.",
-                )
-                # Revert to RNNoise by its stable item data.
-                rnnoise_index = self.model_combo.findData("rnnoise")
-                if rnnoise_index >= 0:
-                    self.model_combo.setCurrentIndex(rnnoise_index)
-                    return
-            else:
-                self._set_noise_suppression_latency_label(model_id)
-                self.status_bar.showMessage(
-                    f"Switched to {self.model_combo.currentText()}"
-                )
-        except Exception as e:
-            # Unexpected error - show detailed dialog with guidance
-            logger.exception("Model switch error")
-            QMessageBox.critical(
-                self,
-                "Error Switching Model",
-                f"An unexpected error occurred while switching noise models:\n\n"
-                f"{type(e).__name__}: {e}\n\n"
-                f"This may indicate a problem with the selected neural backend.\n"
-                f"Please try:\n"
-                f"1. Restarting the application\n"
-                f"2. Using RNNoise model as fallback\n"
-                f"3. Verifying the bundled model/runtime assets",
-            )
-            # Revert to RNNoise by its stable item data.
-            rnnoise_index = self.model_combo.findData("rnnoise")
-            if rnnoise_index >= 0:
-                self.model_combo.setCurrentIndex(rnnoise_index)
-                return
+            self._apply_noise_model(model_id)
+        except Exception as error:
+            blocked = self.model_combo.blockSignals(True)
+            try:
+                self.model_combo.setCurrentIndex(self.model_combo.findData(previous_model))
+            finally:
+                self.model_combo.blockSignals(blocked)
+            QMessageBox.warning(self, "Model Switch Failed", str(error))
+        else:
+            self.status_bar.showMessage(f"Switched to {self.model_combo.currentText()}")
 
     def _update_meters(self):
         """Update level meters from processor (called by timer)."""
@@ -3849,7 +4132,7 @@ class MainWindow(QMainWindow):
             deesser=DeEsserSettings(**deesser_settings),
             compressor=CompressorSettings(**compressor_settings),
             limiter=LimiterSettings(**limiter_settings),
-            bypass=self.bypass_checkbox.isChecked(),
+            bypass=self._processing_mode() == "bypass",
             value_provenance=dict(self._current_value_provenance),
         )
 
@@ -3873,7 +4156,8 @@ class MainWindow(QMainWindow):
         if scope not in {"complete", "eq"}:
             raise ValueError(f"Unknown preset scope: {scope}")
         if scope == "eq":
-            self.eq_panel.set_settings(preset.eq.to_dict())
+            self.eq_panel.enabled_checkbox.setChecked(preset.eq.enabled)
+            self.eq_panel._apply_typed_bands(preset.eq.bands, layer="tone")
             self.status_bar.showMessage(f"Applied EQ-only template: {preset.name}")
             if self.__dict__.get("_history_ready", False) and not self.__dict__.get(
                 "_history_replaying", False
@@ -3987,9 +4271,9 @@ class MainWindow(QMainWindow):
         # Apply limiter settings
         self.compressor_panel.set_limiter_settings(asdict(preset.limiter))
 
-        # Apply bypass
-        self.bypass_checkbox.setChecked(preset.bypass)
-        self.processor.set_bypass(preset.bypass)
+        # Presets retain the legacy bypass field. Raw Monitor remains an
+        # explicit diagnostic session mode and is cleared when a preset loads.
+        self._set_processing_mode("bypass" if preset.bypass else "normal")
 
         # Preserve migration provenance across apply, undo, and redo. A later
         # manual edit marks only changed paths explicit when it is committed.
@@ -4131,6 +4415,25 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close."""
+        if (
+            not self._quitting
+            and self._tray_icon is not None
+            and self._tray_icon.isVisible()
+            and self._close_to_tray_action is not None
+            and self._close_to_tray_action.isChecked()
+        ):
+            self.hide()
+            event.ignore()
+            self.status_bar.showMessage(
+                "AudioForge is still running in the tray; use Quit AudioForge to exit",
+                5000,
+            )
+            return
+
+        self._quitting = True
+        self._unregister_mute_hotkey()
+        if self._tray_icon is not None:
+            self._tray_icon.hide()
         self.config.window_geometry = {
             "x": self.x(),
             "y": self.y(),

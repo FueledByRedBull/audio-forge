@@ -81,6 +81,17 @@ def _preset_value_paths(data: dict) -> set[str]:
                             f"eq.bands.{index}.{key}"
                             for key in band
                         )
+                layers = values.get("layers")
+                if isinstance(layers, dict):
+                    for layer_name in ("correction", "tone"):
+                        layer = layers.get(layer_name)
+                        if isinstance(layer, list):
+                            for index, band in enumerate(layer):
+                                if isinstance(band, dict):
+                                    paths.update(
+                                        f"eq.layers.{layer_name}.{index}.{key}"
+                                        for key in band
+                                    )
             else:
                 paths.update(f"{section}.{key}" for key in values)
     if "bypass" in data:

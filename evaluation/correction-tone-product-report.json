@@ -1,0 +1,166 @@
+{
+  "aggregate": {
+    "all_outputs_finite": true,
+    "candidate_p95_realtime_factor": 0.0016240277302952044,
+    "case_count": 12,
+    "failed_cases": 0,
+    "incumbent_p95_realtime_factor": 0.0014630036092187857,
+    "latency_samples": [
+      0
+    ],
+    "max_response_parity_delta_db": 0.0,
+    "max_true_peak_overshoot_db": 0.0,
+    "p95_limiter_gr_db": 0.0,
+    "p95_runtime_ratio": 1.1100640627690606,
+    "schema_roundtrip": true,
+    "tone_payload_preserved": true,
+    "tone_profiles": [
+      "bass_cut",
+      "flat",
+      "presence",
+      "warm"
+    ]
+  },
+  "audible_change": true,
+  "candidate": {
+    "migration": "incumbent combined stage becomes tone; correction starts flat",
+    "native_settings": {
+      "correction_bands": "typed six-field bands",
+      "eq_bands": "typed six-field bands",
+      "eq_enabled": true
+    },
+    "order": [
+      "deesser",
+      "correction",
+      "tone",
+      "compressor",
+      "limiter"
+    ],
+    "scope": "production_offline_eq_cascade"
+  },
+  "checks": {
+    "all_tone_profiles": true,
+    "enough_cases": true,
+    "finite_output": true,
+    "limiter_load": true,
+    "response_parity": true,
+    "runtime_absolute": true,
+    "runtime_ratio": true,
+    "schema_and_undo_shape": true,
+    "tone_ownership": true,
+    "true_peak_ceiling": true,
+    "zero_added_latency": true,
+    "zero_failed_cases": true
+  },
+  "decision": {
+    "failed_checks": [],
+    "product_action": "retain the independent production stages when safety and cost gates pass; product need is explicitly requested, with no unmeasured preference claim",
+    "retained": true,
+    "safety_and_cost_eligible": true
+  },
+  "evaluation_contract": {
+    "asset_hashes": {
+      "corpus_manifest": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6",
+      "native_extension": {
+        "path": "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd",
+        "sha256": "f47844f85ae2b753a91c2bde923720f49854d59e925ed3d123b99b0d6c1a3ac7"
+      },
+      "source": {
+        "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
+        "python/mic_eq/config_parts/settings.py": "13af098f4b9ab8df09327cbe7f63a9f83a5e5f5fd791dbbfcba9b14fffbd1c4c",
+        "python/tools/evaluate_correction_tone_stages.py": "36fc18cc3f1a017b32c8deec407bc91ad15ed4fbd590635395e1bce338ddda68",
+        "rust-core/src/audio/processor/block_processor.rs": "b78f619667a475800df9e1b7537fa67439960a7bf23d0289b5f04d11396ab8c5",
+        "rust-core/src/audio/processor/control.rs": "407ae11ba1c066c1af81d19abab5d24f5bf9b9971ff5290d154c315df3676807",
+        "rust-core/src/audio/processor/dsp_loop.rs": "7dd2930232481a1f9786392bc890d625c188447fe0cdaeadb041aebe46dacb57",
+        "rust-core/src/audio/processor/eq_controls.rs": "3f00799bc9310d46afa4d8615672c665ff95f00e2a4348b2facb0fb2b95c31e2",
+        "rust-core/src/audio/processor/python_api.rs": "fc4d1f19363ed8227326d1819f408a303eda26f5492309cdc69cbaa11cf18743",
+        "rust-core/src/dsp/eq.rs": "3dc1fd2c14496a7d76b34840011a2eb9a90e2d6a12ec2f67c5ace0be869855c9",
+        "rust-core/src/lib.rs": "468348d29dd64ced4340ab1b19ba1a117fcf92017ab8eb10d650145a83072535"
+      }
+    },
+    "clean_preservation": {
+      "all_outputs_finite": true,
+      "max_true_peak_overshoot_db": 0.0,
+      "p95_limiter_gr_db": 0.0
+    },
+    "configuration": {
+      "candidate": "measured correction plus selected tone",
+      "input_peak_normalization": 0.5,
+      "native_api": "simulate_auto_eq_chain",
+      "pre_registration": "https://github.com/FueledByRedBull/audio-forge/issues/28",
+      "reference": "flat correction plus selected tone",
+      "sample_rate": 48000,
+      "timing_api": "simulate_eq_v2",
+      "timing_repeats": 5,
+      "timing_scope": "one correction EQ kernel versus correction plus tone kernels; excludes shared limiter and offline analysis",
+      "tone_profiles": [
+        "flat",
+        "presence",
+        "warm",
+        "bass_cut"
+      ]
+    },
+    "latency": {
+      "added_algorithmic_latency_samples": [
+        0
+      ],
+      "sample_rate": 48000
+    },
+    "product_need": {
+      "measured_user_benefit": false,
+      "requested": true
+    },
+    "runtime": {
+      "candidate_p95_realtime_factor": 0.0016240277302952044,
+      "incumbent_p95_realtime_factor": 0.0014630036092187857,
+      "machine": "Windows-11-10.0.26200-SP0",
+      "max_p99_frame_seconds": null,
+      "max_p99_frame_seconds_reason": "The native EQ API reports whole-clip kernel runtime; realtime factor is measured for one and two EQ kernels. Full-chain renders separately verify safety and added latency.",
+      "p95_runtime_ratio": 1.1100640627690606,
+      "python": "3.13.15"
+    }
+  },
+  "experiment": "Production Auto-EQ correction and independent user tone stages",
+  "failures": [],
+  "generated_at_utc": "2026-09-12T17:29:59.539854+00:00",
+  "incumbent": {
+    "bands": 10,
+    "scope": "production_offline_eq_cascade_with_flat_correction",
+    "stages": 1
+  },
+  "limitations": [
+    "The 48 kHz clean subset contains only two VoiceBank test speakers.",
+    "Frozen tone profiles are representative fixtures, not preference labels.",
+    "Response parity and bounded cost establish safety and cost eligibility, not user benefit.",
+    "The report records an explicitly requested product capability and makes no measured user-preference claim.",
+    "The offline renderer exercises the production EQ cascade; realtime hardware behavior remains covered by the native and integration checks."
+  ],
+  "product_need": {
+    "basis": "The product requirement is to preserve microphone correction while allowing an independent voice-character tone stage.",
+    "interpretation": "This report records the requested capability; it does not claim a preference or listening-study result.",
+    "measured_user_benefit": false,
+    "requested": true
+  },
+  "retention_gates": {
+    "max_candidate_p95_realtime_factor": 0.01,
+    "max_p95_limiter_gr_db": 3.0,
+    "max_p95_runtime_ratio": 2.25,
+    "max_response_parity_delta_db": 1e-09,
+    "max_true_peak_overshoot_db": 0.05,
+    "min_corpus_cases": 8,
+    "required_tone_profiles": 4
+  },
+  "schema_version": 4,
+  "source_sha256": {
+    "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
+    "python/mic_eq/config_parts/settings.py": "13af098f4b9ab8df09327cbe7f63a9f83a5e5f5fd791dbbfcba9b14fffbd1c4c",
+    "python/tools/evaluate_correction_tone_stages.py": "36fc18cc3f1a017b32c8deec407bc91ad15ed4fbd590635395e1bce338ddda68",
+    "rust-core/src/audio/processor/block_processor.rs": "b78f619667a475800df9e1b7537fa67439960a7bf23d0289b5f04d11396ab8c5",
+    "rust-core/src/audio/processor/control.rs": "407ae11ba1c066c1af81d19abab5d24f5bf9b9971ff5290d154c315df3676807",
+    "rust-core/src/audio/processor/dsp_loop.rs": "7dd2930232481a1f9786392bc890d625c188447fe0cdaeadb041aebe46dacb57",
+    "rust-core/src/audio/processor/eq_controls.rs": "3f00799bc9310d46afa4d8615672c665ff95f00e2a4348b2facb0fb2b95c31e2",
+    "rust-core/src/audio/processor/python_api.rs": "fc4d1f19363ed8227326d1819f408a303eda26f5492309cdc69cbaa11cf18743",
+    "rust-core/src/dsp/eq.rs": "3dc1fd2c14496a7d76b34840011a2eb9a90e2d6a12ec2f67c5ace0be869855c9",
+    "rust-core/src/lib.rs": "468348d29dd64ced4340ab1b19ba1a117fcf92017ab8eb10d650145a83072535"
+  }
+}

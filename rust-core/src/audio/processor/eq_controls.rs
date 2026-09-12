@@ -7,6 +7,9 @@ impl AudioProcessor {
         if let Ok(mut e) = self.eq.lock() {
             e.set_enabled(enabled);
         }
+        if let Ok(mut e) = self.correction_eq.lock() {
+            e.set_enabled(enabled);
+        }
         self.eq_control.set_enabled(enabled);
         self.eq_dirty.store(true, Ordering::Release);
     }
@@ -155,13 +158,20 @@ impl AudioProcessor {
             }
         });
 
-        // All validation passed - apply atomically
+        // All validation passed - apply the legacy settings to the tone layer.
+        // Keep an existing measured correction layer intact. Older code reset it
+        // to flat whenever the user edited tone settings.
+        let correction_bands = self
+            .eq_control
+            .snapshot()
+            .map(|snapshot| snapshot.correction_bands)
+            .unwrap_or_else(|| std::array::from_fn(EqBandConfig::default_for_index));
         if let Ok(mut eq) = self.eq.lock() {
             for (index, config) in snapshot_bands.iter().copied().enumerate() {
                 eq.set_band_config(index, config);
             }
         }
-        self.eq_control.set_bands(&snapshot_bands);
+        self.eq_control.set_layers(&correction_bands, &snapshot_bands);
         self.eq_dirty.store(true, Ordering::Release);
 
         Ok(())
@@ -182,12 +192,59 @@ impl AudioProcessor {
         }
 
         let snapshot_bands = std::array::from_fn(|index| bands[index]);
+        // This complete typed API is the tone-layer update. Preserve measured
+        // correction settings published by apply_eq_layers.
+        let correction_bands = self
+            .eq_control
+            .snapshot()
+            .map(|snapshot| snapshot.correction_bands)
+            .unwrap_or_else(|| std::array::from_fn(EqBandConfig::default_for_index));
         if let Ok(mut eq) = self.eq.lock() {
             for (index, config) in snapshot_bands.iter().copied().enumerate() {
                 eq.set_band_config(index, config);
             }
         }
-        self.eq_control.set_bands(&snapshot_bands);
+        self.eq_control.set_layers(&correction_bands, &snapshot_bands);
+        self.eq_dirty.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Apply independent measured correction and user tone EQ stages.
+    pub fn apply_eq_layers(
+        &self,
+        correction_bands: Vec<EqBandConfig>,
+        tone_bands: Vec<EqBandConfig>,
+    ) -> PyResult<()> {
+        if correction_bands.len() != NUM_BANDS || tone_bands.len() != NUM_BANDS {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "Expected {} correction and tone bands, got {} and {}",
+                NUM_BANDS,
+                correction_bands.len(),
+                tone_bands.len()
+            )));
+        }
+        for (index, config) in correction_bands.iter().copied().enumerate() {
+            self.validate_eq_band_config(index, config)
+                .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+        }
+        for (index, config) in tone_bands.iter().copied().enumerate() {
+            self.validate_eq_band_config(index, config)
+                .map_err(PyErr::new::<pyo3::exceptions::PyValueError, _>)?;
+        }
+
+        let correction_snapshot = std::array::from_fn(|index| correction_bands[index]);
+        let tone_snapshot = std::array::from_fn(|index| tone_bands[index]);
+        if let Ok(mut correction_eq) = self.correction_eq.lock() {
+            for (index, config) in correction_snapshot.iter().copied().enumerate() {
+                correction_eq.set_band_config(index, config);
+            }
+        }
+        if let Ok(mut eq) = self.eq.lock() {
+            for (index, config) in tone_snapshot.iter().copied().enumerate() {
+                eq.set_band_config(index, config);
+            }
+        }
+        self.eq_control.set_layers(&correction_snapshot, &tone_snapshot);
         self.eq_dirty.store(true, Ordering::Release);
         Ok(())
     }

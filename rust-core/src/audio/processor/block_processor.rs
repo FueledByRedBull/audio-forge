@@ -30,14 +30,18 @@ impl Default for OfflineDspBlockStats {
 /// Offline DSP chain that does not depend on CPAL streams or live ring buffers.
 pub struct OfflineDspBlockProcessor {
     deesser: DeEsser,
-    eq: ParametricEQ,
+    correction_eq: ParametricEQ,
+    tone_eq: ParametricEQ,
     compressor: Compressor,
     limiter: Limiter,
     true_peak_limiter: TruePeakLimiter,
     true_peak_detector: TruePeakDetector,
     deesser_enabled: bool,
     compressor_enabled: bool,
-    limiter_enabled: bool,
+    /// The normal lookahead limiter is separate from the final output safety
+    /// limiter so bypass can match the live path.
+    normal_limiter_enabled: bool,
+    output_protection_enabled: bool,
     eq_before_deesser: bool,
 }
 
@@ -45,14 +49,16 @@ impl OfflineDspBlockProcessor {
     pub fn new(sample_rate: f64) -> Self {
         Self {
             deesser: DeEsser::new(sample_rate),
-            eq: ParametricEQ::new(sample_rate),
+            correction_eq: ParametricEQ::new(sample_rate),
+            tone_eq: ParametricEQ::new(sample_rate),
             compressor: Compressor::new(-18.0, 3.0, 5.0, 100.0, 0.0, 6.0, sample_rate),
             limiter: Limiter::default_settings(sample_rate),
             true_peak_limiter: TruePeakLimiter::default_settings(sample_rate as f32),
             true_peak_detector: TruePeakDetector::new(),
             deesser_enabled: false,
             compressor_enabled: false,
-            limiter_enabled: true,
+            normal_limiter_enabled: true,
+            output_protection_enabled: true,
             eq_before_deesser: false,
         }
     }
@@ -63,7 +69,8 @@ impl OfflineDspBlockProcessor {
     }
 
     pub fn set_eq_enabled(&mut self, enabled: bool) {
-        self.eq.set_enabled(enabled);
+        self.correction_eq.set_enabled(enabled);
+        self.tone_eq.set_enabled(enabled);
     }
 
     pub fn set_compressor_enabled(&mut self, enabled: bool) {
@@ -72,7 +79,15 @@ impl OfflineDspBlockProcessor {
     }
 
     pub fn set_limiter_enabled(&mut self, enabled: bool) {
-        self.limiter_enabled = enabled;
+        self.normal_limiter_enabled = enabled;
+        self.output_protection_enabled = enabled;
+        self.limiter.set_enabled(enabled);
+    }
+
+    /// Enable or disable only the configured lookahead limiter stage.
+    /// Output safety remains controlled by `set_limiter_enabled`.
+    pub fn set_normal_limiter_enabled(&mut self, enabled: bool) {
+        self.normal_limiter_enabled = enabled;
         self.limiter.set_enabled(enabled);
     }
 
@@ -81,7 +96,27 @@ impl OfflineDspBlockProcessor {
     }
 
     pub fn eq_mut(&mut self) -> &mut ParametricEQ {
-        &mut self.eq
+        &mut self.tone_eq
+    }
+
+    /// Access the independent microphone-correction EQ stage.
+    pub fn correction_eq_mut(&mut self) -> &mut ParametricEQ {
+        &mut self.correction_eq
+    }
+
+    /// Apply both EQ layers before the next block is rendered.
+    pub fn set_eq_layers(
+        &mut self,
+        correction_bands: &[EqBandConfig; NUM_BANDS],
+        tone_bands: &[EqBandConfig; NUM_BANDS],
+    ) {
+        for index in 0..NUM_BANDS {
+            self.correction_eq
+                .set_band_config(index, correction_bands[index]);
+            self.tone_eq.set_band_config(index, tone_bands[index]);
+        }
+        self.correction_eq.reset();
+        self.tone_eq.reset();
     }
 
     pub fn deesser_mut(&mut self) -> &mut DeEsser {
@@ -101,11 +136,17 @@ impl OfflineDspBlockProcessor {
     }
 
     pub fn latency_samples(&self) -> usize {
-        if self.limiter_enabled {
-            self.limiter.lookahead_samples() + self.true_peak_limiter.lookahead_samples()
+        let normal_latency = if self.normal_limiter_enabled {
+            self.limiter.lookahead_samples()
         } else {
             0
-        }
+        };
+        let output_safety_latency = if self.output_protection_enabled {
+            self.true_peak_limiter.lookahead_samples()
+        } else {
+            0
+        };
+        normal_latency + output_safety_latency
     }
 
     pub fn process_block_with_stats<const N: usize>(
@@ -128,7 +169,8 @@ impl OfflineDspBlockProcessor {
         let block = output.as_mut_slice();
 
         if self.eq_before_deesser {
-            self.eq.process_block_inplace(block);
+            self.correction_eq.process_block_inplace(block);
+            self.tone_eq.process_block_inplace(block);
             if self.deesser_enabled {
                 self.deesser.process_block_inplace(block);
                 stats.deesser_gain_reduction_db = self.deesser.current_gain_reduction_db();
@@ -138,17 +180,20 @@ impl OfflineDspBlockProcessor {
                 self.deesser.process_block_inplace(block);
                 stats.deesser_gain_reduction_db = self.deesser.current_gain_reduction_db();
             }
-            self.eq.process_block_inplace(block);
+            self.correction_eq.process_block_inplace(block);
+            self.tone_eq.process_block_inplace(block);
         }
         if self.compressor_enabled {
             self.compressor.process_block_inplace(block);
             stats.compressor_gain_reduction_db =
                 self.compressor.block_peak_gain_reduction() as f32;
         }
-        if self.limiter_enabled {
+        if self.normal_limiter_enabled {
             self.limiter.process_block_inplace(block);
             stats.limiter_peak_gain_reduction_db =
                 self.limiter.peak_gain_reduction_and_reset() as f32;
+        }
+        if self.output_protection_enabled {
             self.true_peak_limiter
                 .set_ceiling_linear(10.0_f32.powf(self.limiter.ceiling_db() as f32 / 20.0));
             let true_peak_stats = self.true_peak_limiter.process_block_inplace(block);

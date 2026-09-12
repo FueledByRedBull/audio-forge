@@ -1,7 +1,20 @@
 impl AudioProcessor {
     /// Start recording raw audio for calibration
-    /// Taps audio AFTER pre-filter (DC blocker + 80Hz HP) but BEFORE noise gate
+    /// Taps audio after the fixed pre-filter while preserving the historical
+    /// calibration behavior (adaptive cleanup is paused during capture).
     pub fn start_raw_recording(&mut self, duration_secs: f64) -> Result<(), String> {
+        self.start_raw_recording_with_tap(duration_secs, false)
+    }
+
+    /// Start a raw capture with an explicit tap position relative to adaptive
+    /// input cleanup. The default calibration path remains after the fixed
+    /// pre-filter and pauses adaptive cleanup; setting `before_cleanup` keeps
+    /// cleanup running while capturing the original input for an audition.
+    pub fn start_raw_recording_with_tap(
+        &mut self,
+        duration_secs: f64,
+        before_cleanup: bool,
+    ) -> Result<(), String> {
         if !duration_secs.is_finite() || duration_secs <= 0.0 {
             return Err("Recording duration must be a finite positive value".to_string());
         }
@@ -36,6 +49,8 @@ impl AudioProcessor {
                 .store(num_samples, Ordering::Release);
             self.recording_level_db
                 .store((-120.0_f32).to_bits(), Ordering::Relaxed);
+            self.raw_recording_before_cleanup
+                .store(before_cleanup, Ordering::Release);
             self.recording_active.store(true, Ordering::Release);
             Ok(())
         } else {
@@ -46,6 +61,8 @@ impl AudioProcessor {
     /// Stop recording and return captured audio (truncated to actual length)
     pub fn stop_raw_recording(&mut self) -> Option<Vec<f32>> {
         self.recording_active.store(false, Ordering::Release);
+        self.raw_recording_before_cleanup
+            .store(false, Ordering::Release);
         self.recording_level_db
             .store((-120.0_f32).to_bits(), Ordering::Relaxed);
         if let Ok(mut consumer_guard) = self.raw_recording_consumer.lock() {

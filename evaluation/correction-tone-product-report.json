@@ -1,17 +1,17 @@
 {
   "aggregate": {
     "all_outputs_finite": true,
-    "candidate_p95_realtime_factor": 0.0016240277302952044,
+    "candidate_p95_realtime_factor": 0.0016360215180702404,
     "case_count": 12,
     "failed_cases": 0,
-    "incumbent_p95_realtime_factor": 0.0014630036092187857,
+    "incumbent_p95_realtime_factor": 0.0014389288749582598,
     "latency_samples": [
       0
     ],
     "max_response_parity_delta_db": 0.0,
     "max_true_peak_overshoot_db": 0.0,
     "p95_limiter_gr_db": 0.0,
-    "p95_runtime_ratio": 1.1100640627690606,
+    "p95_runtime_ratio": 1.1369717757020463,
     "schema_roundtrip": true,
     "tone_payload_preserved": true,
     "tone_profiles": [
@@ -67,7 +67,7 @@
       },
       "source": {
         "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-        "python/mic_eq/config_parts/settings.py": "13af098f4b9ab8df09327cbe7f63a9f83a5e5f5fd791dbbfcba9b14fffbd1c4c",
+        "python/mic_eq/config_parts/settings.py": "617fc0517b19f01c5c213d84917fe9cbb5aedf1dd1984fc975399b1244fcf829",
         "python/tools/evaluate_correction_tone_stages.py": "36fc18cc3f1a017b32c8deec407bc91ad15ed4fbd590635395e1bce338ddda68",
         "rust-core/src/audio/processor/block_processor.rs": "b78f619667a475800df9e1b7537fa67439960a7bf23d0289b5f04d11396ab8c5",
         "rust-core/src/audio/processor/control.rs": "407ae11ba1c066c1af81d19abab5d24f5bf9b9971ff5290d154c315df3676807",
@@ -111,18 +111,18 @@
       "requested": true
     },
     "runtime": {
-      "candidate_p95_realtime_factor": 0.0016240277302952044,
-      "incumbent_p95_realtime_factor": 0.0014630036092187857,
+      "candidate_p95_realtime_factor": 0.0016360215180702404,
+      "incumbent_p95_realtime_factor": 0.0014389288749582598,
       "machine": "Windows-11-10.0.26200-SP0",
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native EQ API reports whole-clip kernel runtime; realtime factor is measured for one and two EQ kernels. Full-chain renders separately verify safety and added latency.",
-      "p95_runtime_ratio": 1.1100640627690606,
+      "p95_runtime_ratio": 1.1369717757020463,
       "python": "3.13.15"
     }
   },
   "experiment": "Production Auto-EQ correction and independent user tone stages",
   "failures": [],
-  "generated_at_utc": "2026-09-12T17:29:59.539854+00:00",
+  "generated_at_utc": "2026-09-12T17:37:17.035187+00:00",
   "incumbent": {
     "bands": 10,
     "scope": "production_offline_eq_cascade_with_flat_correction",
@@ -153,7 +153,7 @@
   "schema_version": 4,
   "source_sha256": {
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-    "python/mic_eq/config_parts/settings.py": "13af098f4b9ab8df09327cbe7f63a9f83a5e5f5fd791dbbfcba9b14fffbd1c4c",
+    "python/mic_eq/config_parts/settings.py": "617fc0517b19f01c5c213d84917fe9cbb5aedf1dd1984fc975399b1244fcf829",
     "python/tools/evaluate_correction_tone_stages.py": "36fc18cc3f1a017b32c8deec407bc91ad15ed4fbd590635395e1bce338ddda68",
     "rust-core/src/audio/processor/block_processor.rs": "b78f619667a475800df9e1b7537fa67439960a7bf23d0289b5f04d11396ab8c5",
     "rust-core/src/audio/processor/control.rs": "407ae11ba1c066c1af81d19abab5d24f5bf9b9971ff5290d154c315df3676807",

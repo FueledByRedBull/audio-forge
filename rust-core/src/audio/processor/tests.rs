@@ -114,8 +114,11 @@ mod tests {
 
     #[cfg(feature = "vad")]
     #[test]
+    #[ignore = "requires the local speech corpus and Silero model"]
     fn test_full_chain_vad_pre_gain_changes_gate_decision_on_cleaned_input() {
-        let wav = include_bytes!("../../../../models/vad_eval_silero_test.wav");
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../models/vad_eval_silero_test.wav");
+        let wav = std::fs::read(fixture).expect("local speech fixture is required");
         let start_frame = 17 * 16_000;
         let frame_count = 16_000;
         let start = 44 + start_frame * 2;

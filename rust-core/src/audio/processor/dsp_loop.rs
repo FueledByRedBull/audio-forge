@@ -64,6 +64,8 @@ impl AudioProcessor {
 
         // Clear stale capture state; explicit output mute survives restarts.
         self.recording_active.store(false, Ordering::Release);
+        self.raw_recording_before_cleanup
+            .store(false, Ordering::Release);
         self.raw_recording_pos.store(0, Ordering::Release);
         self.raw_recording_target.store(0, Ordering::Release);
         self.recording_level_db
@@ -479,6 +481,7 @@ impl AudioProcessor {
         let rt_buffer_overflow_count = Arc::clone(&self.rt_buffer_overflow_count);
         let suppressor_strength = Arc::clone(&self.suppressor_strength);
         let recording_active_thread = Arc::clone(&recording_active);
+        let raw_recording_before_cleanup = Arc::clone(&self.raw_recording_before_cleanup);
 
         // Clone raw recording buffer atomics
         let raw_recording_pos = Arc::clone(&self.raw_recording_pos);
@@ -521,7 +524,8 @@ impl AudioProcessor {
                     VadAutoGate::without_backend(sample_rate_for_latency, control.vad_threshold);
                 gate_rt.set_vad_auto_gate(Some(vad_auto_gate));
             }
-            let mut eq_rt = ParametricEQ::new(sample_rate_for_latency as f64);
+            let mut correction_eq_rt = ParametricEQ::new(sample_rate_for_latency as f64);
+            let mut tone_eq_rt = ParametricEQ::new(sample_rate_for_latency as f64);
             let mut compressor_rt = Compressor::default_voice(sample_rate_for_latency as f64);
             let mut deesser_rt = DeEsser::new(sample_rate_for_latency as f64);
             let mut limiter_rt = Limiter::default_settings(sample_rate_for_latency as f64);
@@ -555,7 +559,7 @@ impl AudioProcessor {
                 &suppressor_rt,
             );
             let eq_snapshot = eq_control.snapshot().unwrap_or_else(EqControlSnapshot::new);
-            apply_eq_control(&mut eq_rt, &eq_snapshot);
+            apply_eq_control(&mut correction_eq_rt, &mut tone_eq_rt, &eq_snapshot);
             let compressor_snapshot = compressor_rt_control
                 .snapshot()
                 .unwrap_or_else(CompressorControlState::new);
@@ -645,7 +649,7 @@ impl AudioProcessor {
                     }
                     if eq_dirty.swap(false, Ordering::AcqRel) {
                         if let Some(eq_snapshot) = eq_control.snapshot() {
-                            apply_eq_control(&mut eq_rt, &eq_snapshot);
+                            apply_eq_control(&mut correction_eq_rt, &mut tone_eq_rt, &eq_snapshot);
                         } else {
                             eq_dirty.store(true, Ordering::Release);
                         }
@@ -685,7 +689,8 @@ impl AudioProcessor {
                         deesser_detector_confidence.store(0.0_f32.to_bits(), Ordering::Relaxed);
                     }
 
-                    eq_rt.process_block_inplace($buffer);
+                    correction_eq_rt.process_block_inplace($buffer);
+                    tone_eq_rt.process_block_inplace($buffer);
 
                     if compressor_enabled.load(Ordering::Acquire) {
                         let true_peak_pressure = f32::from_bits(
@@ -1145,7 +1150,8 @@ impl AudioProcessor {
                                 } else {
                                     gate_dirty.store(true, Ordering::Release);
                                 }
-                                eq_rt.reset();
+                                correction_eq_rt.reset();
+                                tone_eq_rt.reset();
                                 compressor_rt.reset();
                                 deesser_rt.reset();
                                 limiter_rt.reset();
@@ -1276,9 +1282,12 @@ impl AudioProcessor {
                                 input_cleanup_mode.load(Ordering::Acquire),
                             )
                             .unwrap_or_default();
+                            let recording_active_now = recording_active.load(Ordering::Relaxed);
+                            let raw_tap_before_cleanup =
+                                raw_recording_before_cleanup.load(Ordering::Relaxed);
                             let adaptive_cleanup_enabled = processing_path == ProcessingPath::Full
                                 && cleanup_mode.is_enabled()
-                                && !recording_active.load(Ordering::Relaxed);
+                                && (!recording_active_now || raw_tap_before_cleanup);
                             adaptive_cleanup_state.set_mode(cleanup_mode);
                             if adaptive_cleanup_enabled {
                                 adaptive_cleanup_state.analyze_input(buffer);
@@ -1290,6 +1299,40 @@ impl AudioProcessor {
                                     input_cleanup_high_pass_hz.as_ref(),
                                 );
                             }
+                            // An explicit pre-cleanup audition captures the
+                            // sanitized microphone samples before either the
+                            // fixed DC/80 Hz pre-filter or adaptive cleanup.
+                            if recording_active_now && raw_tap_before_cleanup {
+                                let target = raw_recording_target.load(Ordering::Acquire);
+                                let pos = raw_recording_pos.load(Ordering::Acquire);
+                                if pos < target {
+                                    let remaining = target - pos;
+                                    let to_copy = n.min(remaining);
+                                    let written = recording_producer.write(&buffer[..to_copy]);
+                                    let new_pos = pos.saturating_add(written);
+                                    raw_recording_pos.store(new_pos, Ordering::Release);
+
+                                    let window_len = (sample_rate_for_latency as usize / 10).max(1);
+                                    let level_start = to_copy.saturating_sub(window_len);
+                                    let level_slice = &buffer[level_start..to_copy];
+                                    let level_rms = if level_slice.is_empty() {
+                                        -120.0
+                                    } else {
+                                        let sum_sq: f32 = level_slice
+                                            .iter()
+                                            .map(|sample| sample * sample)
+                                            .sum();
+                                        let rms = (sum_sq / level_slice.len() as f32).sqrt();
+                                        if rms > 1e-6 {
+                                            20.0 * rms.log10()
+                                        } else {
+                                            -120.0
+                                        }
+                                    };
+                                    recording_level_db
+                                        .store(level_rms.to_bits(), Ordering::Relaxed);
+                                }
+                            }
                             apply_input_pre_filter(
                                 buffer,
                                 &mut pre_filter_state,
@@ -1300,7 +1343,7 @@ impl AudioProcessor {
                             // === RAW AUDIO RECORDING TAP (for calibration) ===
                             // Capture audio AFTER pre-filter, BEFORE noise gate
                             // This is the raw microphone response needed for EQ analysis
-                            if recording_active.load(Ordering::Relaxed) {
+                            if recording_active_now && !raw_tap_before_cleanup {
                                 let target = raw_recording_target.load(Ordering::Acquire);
                                 let pos = raw_recording_pos.load(Ordering::Acquire);
                                 if pos < target {
@@ -1867,6 +1910,8 @@ impl AudioProcessor {
 
         // Clear capture state without changing the caller's output mute.
         self.recording_active.store(false, Ordering::Release);
+        self.raw_recording_before_cleanup
+            .store(false, Ordering::Release);
         self.raw_recording_pos.store(0, Ordering::Release);
         self.raw_recording_target.store(0, Ordering::Release);
         self.recording_level_db
@@ -1904,6 +1949,9 @@ impl AudioProcessor {
             if let Ok(control) = self.gate_control.lock() {
                 apply_gate_control(&mut g, &control);
             }
+        }
+        if let Ok(mut e) = self.correction_eq.lock() {
+            e.reset();
         }
         if let Ok(mut e) = self.eq.lock() {
             e.reset();

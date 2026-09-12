@@ -296,8 +296,8 @@ pub fn run_seeded_control_dsp_stress(
             apply_snapshot!(gate_dirty, dsp_gate, |snapshot| {
                 apply_gate_control(&mut gate, &snapshot)
             });
-            apply_snapshot!(eq_dirty, dsp_eq, |snapshot| {
-                apply_eq_control(chain.eq_mut(), &snapshot)
+            apply_snapshot!(eq_dirty, dsp_eq, |snapshot: EqControlSnapshot| {
+                chain.set_eq_layers(&snapshot.correction_bands, &snapshot.tone_bands)
             });
             apply_snapshot!(compressor_dirty, dsp_compressor, |snapshot| {
                 apply_compressor_control(chain.compressor_mut(), &snapshot)

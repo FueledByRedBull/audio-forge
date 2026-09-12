@@ -271,3 +271,23 @@ def test_q_mode_rejects_redundant_octave_bandwidth() -> None:
             bandwidth_mode="q",
             bandwidth_octaves=1.0,
         )
+
+
+def test_independent_stages_roundtrip_and_combined_schema_migration():
+    correction = tuple(replace(band, gain_db=-2.0) for band in EQSettings().bands)
+    tone = list(EQSettings().bands)
+    tone[0] = replace(tone[0], filter_type="high_pass", frequency_hz=120.0, slope_db_per_octave=48)
+    settings = EQSettings(correction_bands=correction, tone_bands=tone)
+    restored = EQSettings.from_dict(settings.to_dict())
+    assert restored.correction_bands == correction
+    assert restored.bands == tuple(tone)
+    restored.band_freqs = [125.0, *restored.band_freqs[1:]]
+    assert restored.correction_bands == correction
+    assert EQSettings.from_dict(restored.to_dict()).band_freqs[0] == 125.0
+
+    combined = EQSettings(band_gains=[1.0] * 10).to_dict()
+    combined["schema_version"] = 2
+    migrated = EQSettings.from_dict(combined)
+    assert migrated.schema_version == 3
+    assert migrated.band_gains == [1.0] * 10
+    assert migrated.correction_bands is None

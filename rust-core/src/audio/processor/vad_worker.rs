@@ -1,5 +1,7 @@
 #[cfg(all(test, feature = "vad"))]
 static VAD_WORKER_FORCE_INFERENCE_ERROR: AtomicBool = AtomicBool::new(false);
+#[cfg(all(test, feature = "vad"))]
+static VAD_WORKER_LAST_PRE_GAIN_BITS: AtomicU32 = AtomicU32::new(1.0_f32.to_bits());
 
 impl AudioProcessor {
 #[cfg(feature = "vad")]
@@ -17,6 +19,7 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
     let probability = Arc::clone(&self.vad_raw_probability);
     let available = Arc::clone(&self.vad_backend_available);
     let last_update_us = Arc::clone(&self.vad_last_update_us);
+    let gate_rt_control = Arc::clone(&self.gate_rt_control);
     let sample_rate = self.sample_rate;
     let threshold = self
         .gate_rt_control
@@ -53,6 +56,17 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
             }
 
             if !local.is_empty() {
+                // Keep the model's input gain in sync with the lock-free gate
+                // controls. This runs on the worker, away from the RT path.
+                if let Some(control) = gate_rt_control.snapshot() {
+                    if control.pre_gain.is_finite() {
+                        let worker_vad = vad.as_mut().expect("VAD backend initialized");
+                        worker_vad.set_pre_gain(control.pre_gain);
+                        #[cfg(test)]
+                        VAD_WORKER_LAST_PRE_GAIN_BITS
+                            .store(worker_vad.pre_gain().to_bits(), Ordering::Release);
+                    }
+                }
                 #[cfg(test)]
                 if VAD_WORKER_FORCE_INFERENCE_ERROR.swap(false, Ordering::AcqRel) {
                     available.store(false, Ordering::Release);

@@ -17,6 +17,8 @@ from verify_release_assets import load_asset_manifest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_BUNDLE_FILES = (
     "AudioForge.exe",
+    "_internal/PyQt6/QtMultimedia.pyd",
+    "_internal/PyQt6/Qt6/bin/Qt6Multimedia.dll",
     "_internal/df.dll",
     "_internal/onnxruntime.dll",
     "_internal/onnxruntime_providers_shared.dll",

@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 import numpy as np
 
+from .. import CORE_AVAILABLE
 from ..config import DeviceIdentity, TARGET_CURVES, coerce_device_identity
 from .analysis_worker import AnalysisWorker
 from .accessibility import bind_label, set_accessible_group
@@ -89,7 +90,21 @@ def _processor_sample_rate(owner: Any) -> int:
     return sample_rate
 
 
-def _chain_settings(owner: Any) -> dict[str, Any]:
+def _chain_settings(
+    owner: Any,
+    *,
+    full_chain: bool = False,
+    input_pre_filtered: bool = False,
+) -> dict[str, Any]:
+    if full_chain:
+        preset = owner._get_current_preset().to_dict()
+        return {
+            **{name: preset[name] for name in ("gate", "rnnoise", "deesser", "compressor", "limiter")},
+            "full_chain": True,
+            "input_pre_filtered": bool(input_pre_filtered),
+            "input_cleanup_mode": owner.processor.get_input_cleanup_mode(),
+            "processing_mode": owner._processing_mode(),
+        }
     settings: dict[str, Any] = {}
     if owner is None:
         return settings
@@ -111,6 +126,35 @@ def _chain_settings(owner: Any) -> dict[str, Any]:
                 exc_info=True,
             )
     return settings
+
+
+def _filtered_capture_for_analysis(
+    audio_data: np.ndarray,
+    sample_rate: int,
+) -> np.ndarray:
+    """Apply only the live fixed pre-filter for existing analysis paths."""
+    audio = np.ascontiguousarray(np.asarray(audio_data, dtype=np.float32).reshape(-1))
+    if audio.size == 0:
+        return audio.copy()
+    if not CORE_AVAILABLE:
+        raise RuntimeError("Native input conditioning is unavailable")
+    from ..mic_eq_core import simulate_auto_eq_chain
+
+    result = simulate_auto_eq_chain(
+        audio,
+        float(sample_rate),
+        [(1000.0, 0.0, 1.41)] * 10,
+        {
+            "full_chain": True,
+            "processing_mode": "bypass",
+            "limiter_enabled": False,
+            "return_output_audio": True,
+        },
+    )
+    output = np.asarray(result.get("output_audio"), dtype=np.float32).reshape(-1)
+    if output.size != audio.size or not np.isfinite(output).all():
+        raise ValueError("fixed pre-filter returned invalid audio")
+    return np.ascontiguousarray(output, dtype=np.float32)
 
 
 def _selected_device_pair(owner: Any) -> tuple[str | None, str | None]:
@@ -316,6 +360,7 @@ class CalibrationDialog(QDialog):
         # Recording state
         self.recording_state = "idle"  # idle, recording, analyzing, ready
         self.audio_data: np.ndarray | None = None
+        self.preview_audio_data: np.ndarray | None = None
         self.eq_settings: dict | None = None
         self._candidate_target_metadata: tuple[str, str, str] | None = None
         self._candidate_metadata: dict[str, Any] | None = None
@@ -494,6 +539,12 @@ class CalibrationDialog(QDialog):
         self.retake_btn.clicked.connect(self._on_retake_clicked)
         control_layout.addWidget(self.retake_btn)
 
+        self.compare_button = QPushButton("Compare Recording")
+        self.compare_button.setEnabled(False)
+        self.compare_button.setToolTip("Listen to this same passage with current and proposed processing")
+        self.compare_button.clicked.connect(self._compare_recording)
+        control_layout.addWidget(self.compare_button)
+
         # Cancel button
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self._on_cancel_clicked)
@@ -626,6 +677,9 @@ class CalibrationDialog(QDialog):
                 raise TypeError("EQ panel returned invalid settings")
             if "enabled" in accepted_eq and not bool(accepted_eq["enabled"]):
                 raise ValueError("EQ panel did not accept the enabled state")
+            for key in ("schema_version", "bands", "layers"):
+                if key in accepted_eq:
+                    eq_settings[key] = deepcopy(accepted_eq[key])
             for key in ("enabled", "band_freqs", "band_gains", "band_qs"):
                 if key in accepted_eq:
                     value = accepted_eq[key]
@@ -668,6 +722,9 @@ class CalibrationDialog(QDialog):
             else self._candidate_target_metadata[0]
         )
         self.auto_eq_applied.emit(target_curve)
+        from .calibration_history import persist_calibration
+
+        persist_calibration(self, parent, "eq_only", target_curve, ("eq",))
 
         if DEBUG:
             logger.debug(
@@ -676,6 +733,47 @@ class CalibrationDialog(QDialog):
 
         # Close dialog
         self.accept()
+
+    def _compare_recording(self) -> None:
+        if self.recording_state != "ready" or self.audio_data is None or self.eq_settings is None:
+            return
+        owner = _find_eq_panel_owner(self.parent())
+        if owner is None:
+            return
+        error = self._candidate_identity_error(self.eq_settings, owner)
+        if error:
+            QMessageBox.warning(self, "Stale recording", error)
+            return
+        from .listening_comparison_dialog import ListeningComparisonDialog
+
+        try:
+            chain = _chain_settings(
+                owner,
+                full_chain=True,
+                input_pre_filtered=self.preview_audio_data is None,
+            )
+        except Exception as error:
+            QMessageBox.warning(self, "Comparison unavailable", str(error))
+            return
+        dialog = ListeningComparisonDialog(
+            audio_data=self.preview_audio_data
+            if self.preview_audio_data is not None
+            else self.audio_data,
+            sample_rate=_processor_sample_rate(owner),
+            current_settings=owner.eq_panel.get_settings(),
+            proposed_settings=self.eq_settings,
+            current_chain_settings=chain,
+            proposed_chain_settings=chain,
+            parent=self,
+        )
+        _set_temporary_mute(owner, "listening_comparison", True)
+        try:
+            keep = dialog.exec() == int(QDialog.DialogCode.Accepted)
+        finally:
+            _set_temporary_mute(owner, "listening_comparison", False)
+            dialog.deleteLater()
+        if keep:
+            self._apply_eq_settings()
 
     def _candidate_identity_error(
         self, eq_settings: Mapping[str, Any], parent: Any
@@ -843,7 +941,10 @@ class CalibrationDialog(QDialog):
         try:
             _set_temporary_mute(parent, _TEMPORARY_MUTE_REASON, True)
             parent.processor.set_recovery_suppressed(True)
-            parent.processor.start_raw_recording(RECORDING_DURATION)
+            parent.processor.start_raw_recording(
+                RECORDING_DURATION,
+                before_cleanup=True,
+            )
         except Exception as e:
             self._on_recording_failed(f"Recording error: {e}")
             return
@@ -921,14 +1022,23 @@ class CalibrationDialog(QDialog):
         """Handle recording completion."""
         if DEBUG:
             logger.debug("Recording complete: %d samples", len(audio_data))
-            import numpy as np
 
             rms = np.mean(audio_data**2) ** 0.5
             peak_db = 20 * np.log10(max(np.abs(audio_data).max(), 1e-6))
             rms_db = 20 * np.log10(max(rms, 1e-6))
             logger.debug("Audio stats - Peak: %.1f dB, RMS: %.1f dB", peak_db, rms_db)
 
-        self.audio_data = audio_data
+        self.preview_audio_data = np.ascontiguousarray(
+            np.asarray(audio_data, dtype=np.float32).reshape(-1).copy()
+        )
+        try:
+            sample_rate = _processor_sample_rate(_find_processor_owner(self.parent()))
+        except Exception:
+            sample_rate = 48_000
+        self.audio_data = _filtered_capture_for_analysis(
+            self.preview_audio_data,
+            sample_rate,
+        )
         self._clear_eq_candidate()
         self.recording_state = "analyzing"
 
@@ -1114,6 +1224,7 @@ class CalibrationDialog(QDialog):
         else:
             self._clear_eq_candidate()
         self.recording_state = "ready"
+        self.compare_button.setEnabled(apply_recommended)
         if apply_recommended:
             self.warning_label.setText(
                 "Analysis complete! Max correction: "
@@ -1279,6 +1390,7 @@ class CalibrationDialog(QDialog):
 
     def _reset_recording_ui(self):
         """Reset UI to initial idle state."""
+        self.compare_button.setEnabled(False)
         self._capture_start_timer.stop()
         self.recording_timer.stop()
         self._cancel_analysis_workers()
@@ -1290,6 +1402,7 @@ class CalibrationDialog(QDialog):
         self.recording_state = "idle"
         self._clear_eq_candidate()
         self.audio_data = None
+        self.preview_audio_data = None
         self._capture_context_key = None
         self.progress_bar.setValue(0)
         self.time_label.setText(f"Time remaining: {RECORDING_DURATION:.0f}s")
@@ -1378,6 +1491,8 @@ class CalibrationDialog(QDialog):
             worker.deleteLater()
         self._analysis_workers.clear()
         self._close_requested = False
+        self.audio_data = None
+        self.preview_audio_data = None
         QDialog.done(self, int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected))
 
     def _wait_for_analysis_workers(self) -> None:

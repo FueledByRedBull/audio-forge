@@ -1,0 +1,567 @@
+{
+  "corpus_manifest_sha256": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6",
+  "implementation_sha256": {
+    "python/tools/evaluate_product_tuning.py": "993f5a13fa9b3cfafa7ebc1c376fd63af85654b8a2f5874197eb1134264b2bd3",
+    "python/mic_eq/analysis/joint_tuning.py": "d43e0903f7f2637664e513a058f88e7f8cdeb7dc4a82b27c361950f9e2fa82e0",
+    "rust-core/src/audio/processor/python_api.rs": "fc4d1f19363ed8227326d1819f408a303eda26f5492309cdc69cbaa11cf18743",
+    "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "f47844f85ae2b753a91c2bde923720f49854d59e925ed3d123b99b0d6c1a3ac7",
+    "df.dll": "71878910f6d4767c58d47217bef883ce71b60a31070d8b1970552ee103f626f3",
+    "release-assets.json": "a86a608d9be0644b05a925a0a5119870ea6f060feda41b311de7a3d60e71ad3e"
+  },
+  "selection_split": "per-capture first half selects among eligible models under the active model selection policy; second half must pass all gates and improve on the incumbent; incumbent settings are retained exactly when evidence is inconclusive; selected suppressor latency must be <=35 ms; fallback noise floor comes from training noise only, while explicit noise_floor_db is precomputed context",
+  "model": "deepfilter",
+  "incumbent_model": "deepfilter",
+  "candidate_models": [
+    "deepfilter-ll",
+    "deepfilter"
+  ],
+  "model_selection_policy": {
+    "id": "retain_deepfilter_family_v1",
+    "incumbent_model": "deepfilter",
+    "candidate_models": [
+      "deepfilter-ll",
+      "deepfilter"
+    ],
+    "excluded_models": [
+      "rnnoise"
+    ],
+    "reason": "retain the DeepFilter family after unrestricted DeepFilterNet LL to RNNoise selections failed the independent clean-speech gate"
+  },
+  "max_suppressor_latency_ms": 35.0,
+  "case_count": 22,
+  "all_gates_passed": true,
+  "applied_candidates": 6,
+  "cases": [
+    {
+      "id": "p232_003",
+      "threshold_db": -40.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter-ll",
+      "selected_strength": 1.0,
+      "decision": "apply_candidate",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 10.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": -0.0002685336221475154,
+      "runtime_ms": 32464.425399999527
+    },
+    {
+      "id": "p232_003",
+      "threshold_db": -22.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter-ll",
+      "selected_strength": 1.0,
+      "decision": "apply_candidate",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 10.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": -0.015604414977133274,
+      "runtime_ms": 32460.3089000002
+    },
+    {
+      "id": "p232_005",
+      "threshold_db": -40.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 28496.551799999907
+    },
+    {
+      "id": "p232_005",
+      "threshold_db": -22.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 26788.241399999606
+    },
+    {
+      "id": "p232_006",
+      "threshold_db": -40.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 25903.600099999494
+    },
+    {
+      "id": "p232_006",
+      "threshold_db": -22.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 31145.870399999694
+    },
+    {
+      "id": "p232_009",
+      "threshold_db": -40.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 21453.84060000015
+    },
+    {
+      "id": "p232_009",
+      "threshold_db": -22.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 24065.992099999676
+    },
+    {
+      "id": "p232_011",
+      "threshold_db": -40.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 26690.739499999836
+    },
+    {
+      "id": "p232_011",
+      "threshold_db": -22.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 29099.88129999965
+    },
+    {
+      "id": "p232_012",
+      "threshold_db": -40.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 22165.45170000063
+    },
+    {
+      "id": "p232_012",
+      "threshold_db": -22.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter-ll",
+      "selected_strength": 1.0,
+      "decision": "apply_candidate",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 10.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": -0.01925945281982422,
+      "runtime_ms": 26697.493499999837
+    },
+    {
+      "id": "p232_014",
+      "threshold_db": -40.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 24510.668400000213
+    },
+    {
+      "id": "p232_014",
+      "threshold_db": -22.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 24587.840800000777
+    },
+    {
+      "id": "p257_003",
+      "threshold_db": -40.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 26789.479199999732
+    },
+    {
+      "id": "p257_003",
+      "threshold_db": -22.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter-ll",
+      "selected_strength": 1.0,
+      "decision": "apply_candidate",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 10.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": -0.02369290217757225,
+      "runtime_ms": 27527.328400000442
+    },
+    {
+      "id": "p257_006",
+      "threshold_db": -40.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 23766.087899999548
+    },
+    {
+      "id": "p257_006",
+      "threshold_db": -22.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 21725.35550000066
+    },
+    {
+      "id": "p257_008",
+      "threshold_db": -40.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 29645.18240000052
+    },
+    {
+      "id": "p257_008",
+      "threshold_db": -22.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter-ll",
+      "selected_strength": 1.0,
+      "decision": "apply_candidate",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 10.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": -0.014711742289364338,
+      "runtime_ms": 28517.595899999833
+    },
+    {
+      "id": "p257_011",
+      "threshold_db": -40.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "apply_candidate",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": -0.0005189820658415556,
+      "runtime_ms": 27128.424200000154
+    },
+    {
+      "id": "p257_011",
+      "threshold_db": -22.0,
+      "incumbent_model": "deepfilter",
+      "selected_model": "deepfilter",
+      "selected_strength": 1.0,
+      "decision": "retain_incumbent",
+      "model_selection_policy": "retain_deepfilter_family_v1",
+      "selected_latency_ms": 30.0,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      },
+      "clean_error_increase": 0.0,
+      "runtime_ms": 24947.684600000684
+    }
+  ],
+  "schema_version": 2,
+  "audible_change": true,
+  "measurement_source_revision": "d64957c354f5a2f2e93e16e521aff547473e74a4",
+  "measurement_implementation_sha256": {
+    "python/tools/evaluate_product_tuning.py": "993f5a13fa9b3cfafa7ebc1c376fd63af85654b8a2f5874197eb1134264b2bd3",
+    "python/mic_eq/analysis/joint_tuning.py": "d43e0903f7f2637664e513a058f88e7f8cdeb7dc4a82b27c361950f9e2fa82e0",
+    "rust-core/src/audio/processor/python_api.rs": "fc4d1f19363ed8227326d1819f408a303eda26f5492309cdc69cbaa11cf18743",
+    "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "f47844f85ae2b753a91c2bde923720f49854d59e925ed3d123b99b0d6c1a3ac7",
+    "df.dll": "71878910f6d4767c58d47217bef883ce71b60a31070d8b1970552ee103f626f3",
+    "release-assets.json": "a86a608d9be0644b05a925a0a5119870ea6f060feda41b311de7a3d60e71ad3e"
+  },
+  "report_formatting": {
+    "metadata_only": true,
+    "contract": "audioforge.audible-change.v2",
+    "measurement_hashes_unchanged": true
+  },
+  "source_sha256": {
+    "python/tools/evaluate_product_tuning.py": "993f5a13fa9b3cfafa7ebc1c376fd63af85654b8a2f5874197eb1134264b2bd3",
+    "python/mic_eq/analysis/joint_tuning.py": "a5f65027dd75cfa7b757009d5ada94e4176eb7b4e106085dded0560eafef4f25",
+    "rust-core/src/audio/processor/python_api.rs": "fc4d1f19363ed8227326d1819f408a303eda26f5492309cdc69cbaa11cf18743"
+  },
+  "evaluation_contract": {
+    "configuration": {
+      "native_api": "simulate_gate_suppressor_order",
+      "corpus": "models/deepfilter_fullband_eval/manifest.json",
+      "sample_rate": 48000,
+      "capture_count": 11,
+      "case_count": 22,
+      "thresholds_db": [
+        -40.0,
+        -22.0
+      ],
+      "incumbent_model": "deepfilter",
+      "candidate_models": [
+        "deepfilter-ll",
+        "deepfilter"
+      ],
+      "model_selection_policy": {
+        "id": "retain_deepfilter_family_v1",
+        "incumbent_model": "deepfilter",
+        "candidate_models": [
+          "deepfilter-ll",
+          "deepfilter"
+        ],
+        "excluded_models": [
+          "rnnoise"
+        ],
+        "reason": "retain the DeepFilter family after unrestricted DeepFilterNet LL to RNNoise selections failed the independent clean-speech gate"
+      },
+      "selection_split": "per-capture first half selects among eligible models under the active model selection policy; second half must pass all gates and improve on the incumbent; incumbent settings are retained exactly when evidence is inconclusive; selected suppressor latency must be <=35 ms; fallback noise floor comes from training noise only, while explicit noise_floor_db is precomputed context",
+      "max_suppressor_latency_ms": 35.0
+    },
+    "asset_hashes": {
+      "corpus_manifest": {
+        "path": "models/deepfilter_fullband_eval/manifest.json",
+        "sha256": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6"
+      },
+      "native_extension": {
+        "path": "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd",
+        "sha256": "f47844f85ae2b753a91c2bde923720f49854d59e925ed3d123b99b0d6c1a3ac7"
+      },
+      "df.dll": "71878910f6d4767c58d47217bef883ce71b60a31070d8b1970552ee103f626f3",
+      "release-assets.json": "a86a608d9be0644b05a925a0a5119870ea6f060feda41b311de7a3d60e71ad3e"
+    },
+    "runtime": {
+      "max_p99_frame_seconds": null,
+      "max_p99_frame_seconds_reason": "Offline candidate search does not measure realtime callback P99; per-case runtime_ms records total candidate-search time, not live processing time.",
+      "case_runtime_ms_scope": "total candidate-search time",
+      "max_case_runtime_ms": 32464.425399999527,
+      "sub_realtime_gate_scope": "selected native render runtime_ms compared with the clip duration"
+    },
+    "latency": {
+      "measurement": "per-case selected_latency_ms from the native simulator",
+      "bound_ms": 35.0,
+      "max_selected_suppressor_latency_ms": 30.0,
+      "all_selected_within_bound": true
+    },
+    "clean_preservation": {
+      "metric": "normalized MSE change for selected output versus incumbent output on the paired clean capture",
+      "max_clean_error_increase": 0.0,
+      "gate_threshold": 0.01,
+      "gates": {
+        "clean_speech_preserved": true,
+        "finite_output": true,
+        "no_clipping": true,
+        "selected_latency_within_35ms": true,
+        "sub_realtime": true,
+        "heldout_or_exact_retention": true
+      }
+    }
+  }
+}

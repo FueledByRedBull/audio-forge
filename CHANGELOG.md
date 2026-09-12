@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Compare one captured passage through current and proposed input cleanup, gating, suppression, EQ, and dynamics before applying it.
+- Add opt-in close-to-tray operation, tray mute, and a Windows global mute shortcut.
+- Unify Normal, Bypass, and Raw monitoring in one processing-mode selector.
+- Save calibration evidence and show whether it still matches the current route and settings.
+- Keep microphone correction and voice character in independent EQ stages, including custom filter types and slopes; tone edits preserve correction.
+- Evaluate bounded gate and suppression choices across the available noise models alongside proposed dynamics, retaining current settings when held-out evidence is inconclusive.
+- Apply VAD pre-gain changes to the live inference worker, including changes made while processing.
+
 ## v1.12.1
 
 - Show saved/modified preset identity and distinguish complete sound presets from EQ templates.

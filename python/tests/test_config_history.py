@@ -198,6 +198,8 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
     )
     window = MainWindow()
     window._prompt_save_current_preset = lambda **_kwargs: None
+    monkeypatch.setattr(window, "_calibration_context_key", lambda: "test-route/48000/mono")
+    monkeypatch.setattr("mic_eq.ui.calibration_history.save_config", lambda _config: True)
     baseline = window.gate_panel.threshold_spinbox.value()
 
     window.gate_panel.threshold_spinbox.setValue(baseline + 2.0)
@@ -246,19 +248,23 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
         "apply_recommended": True,
     })
     dialog._on_start_clicked()
-    assert window.eq_panel.band_sliders[4].slider.value() == 10
+    correction = window.eq_panel.get_eq_settings().correction_bands
+    assert correction is not None and correction[4].gain_db == 1.0
+    assert window.eq_panel.band_sliders[4].slider.value() == 0
     assert window.processor.is_eq_enabled()
     assert window.eq_panel._auto_eq_diagnostics is not None
 
     window.undo_configuration()
     assert window.eq_panel.band_sliders[4].slider.value() == 0
+    assert window.eq_panel.get_eq_settings().correction_bands is None
     assert not window.processor.is_eq_enabled()
     assert window.gate_panel.threshold_spinbox.value() == pytest.approx(
         baseline + 5.0
     )
     assert window.status_bar.currentMessage() == "Undid: Auto-EQ (Broadcast)"
     window.redo_configuration()
-    assert window.eq_panel.band_sliders[4].slider.value() == 10
+    assert window.eq_panel.get_eq_settings().correction_bands == correction
+    assert window.eq_panel.band_sliders[4].slider.value() == 0
     assert window.processor.is_eq_enabled()
     assert window.status_bar.currentMessage() == "Redid: Auto-EQ (Broadcast)"
 

@@ -472,7 +472,10 @@ def test_failed_mute_application_stays_pending() -> None:
 def test_eq_only_scope_preserves_the_rest_of_the_processing_chain() -> None:
     owner = cast(Any, MainWindow.__new__(MainWindow))
     applied_eq: dict[str, object] = {}
-    owner.eq_panel = SimpleNamespace(set_settings=applied_eq.update)
+    owner.eq_panel = SimpleNamespace(
+        enabled_checkbox=SimpleNamespace(setChecked=lambda value: applied_eq.update(enabled=value)),
+        _apply_typed_bands=lambda bands, **kwargs: applied_eq.update(bands=bands, **kwargs),
+    )
     owner.status_bar = SimpleNamespace(showMessage=lambda *args: None)
     owner._history_ready = False
     owner._history_replaying = False
@@ -496,7 +499,7 @@ def test_eq_only_scope_preserves_the_rest_of_the_processing_chain() -> None:
     MainWindow._apply_preset(owner, replacement, scope="eq")
 
     assert owner.gate_panel.get_settings() == before
-    assert applied_eq == replacement.eq.to_dict()
+    assert applied_eq == {"enabled": False, "bands": replacement.eq.bands, "layer": "tone"}
     assert owner.preset_modified is True
 
 

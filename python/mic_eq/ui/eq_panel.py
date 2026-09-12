@@ -1,7 +1,6 @@
-"""
-10-Band Parametric EQ control panel
-"""
+"""10-band parametric EQ control panel."""
 
+from dataclasses import replace
 from typing import Any
 
 from PyQt6.QtWidgets import (
@@ -187,6 +186,7 @@ class EQBandSlider(QWidget):
         processor,
         curve_callback=None,
         frequency_callback=None,
+        parameter_callback=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -194,6 +194,7 @@ class EQBandSlider(QWidget):
         self.processor = processor
         self.curve_callback = curve_callback
         self.frequency_callback = frequency_callback
+        self.parameter_callback = parameter_callback
         self.bandwidth_mode = "q"
         self.bandwidth_octaves: float | None = None
         self.stage = "combined"
@@ -374,6 +375,8 @@ class EQBandSlider(QWidget):
     def _update_gain(self, gain_db):
         """Update processor and curve (rate-limited)."""
         self.processor.set_eq_band_gain(self.band_index, gain_db)
+        if self.parameter_callback:
+            self.parameter_callback()
         if self.curve_callback:
             self.curve_callback()
 
@@ -392,6 +395,8 @@ class EQBandSlider(QWidget):
     def _update_q(self, q):
         """Update processor and curve (rate-limited)."""
         self.processor.set_eq_band_q(self.band_index, q)
+        if self.parameter_callback:
+            self.parameter_callback()
         if self.curve_callback:
             self.curve_callback()
 
@@ -402,6 +407,8 @@ class EQBandSlider(QWidget):
         self.bandwidth_octaves = None
         self._set_parameter_availability()
         self.processor.set_eq_band_filter_type(self.band_index, filter_type)
+        if self.parameter_callback:
+            self.parameter_callback()
         if self.curve_callback:
             self.curve_callback()
 
@@ -409,12 +416,16 @@ class EQBandSlider(QWidget):
         """Apply an even-order pass-filter slope."""
         slope = self.slope_db_per_octave()
         self.processor.set_eq_band_slope(self.band_index, slope)
+        if self.parameter_callback:
+            self.parameter_callback()
         if self.curve_callback:
             self.curve_callback()
 
     def _on_band_enabled_changed(self, enabled: bool) -> None:
         """Apply one band's click-safe bypass state."""
         self.processor.set_eq_band_enabled(self.band_index, enabled)
+        if self.parameter_callback:
+            self.parameter_callback()
         if self.curve_callback:
             self.curve_callback()
 
@@ -454,6 +465,8 @@ class EQBandSlider(QWidget):
         """Update processor, stored band frequency, and curve."""
         self.processor.set_eq_band_frequency(self.band_index, frequency_hz)
         self.set_frequency_label(frequency_hz)
+        if self.parameter_callback:
+            self.parameter_callback()
         if self.frequency_callback:
             self.frequency_callback(self.band_index, frequency_hz)
         elif self.curve_callback:
@@ -605,6 +618,10 @@ class EQPanel(QWidget):
         self.processor = processor
         self.band_sliders = []
         self.band_freqs_hz = list(BAND_FREQUENCIES_HZ)
+        self._correction_bands: tuple[EQBandSettings, ...] | None = None
+        self._tone_bands: tuple[EQBandSettings, ...] = tuple(
+            EQSettings().bands
+        )
         self._auto_eq_diagnostics: dict | None = None
         self._curve_rate_limiter = RateLimiter(interval_ms=33)
         self._band_layout_columns = 0
@@ -621,6 +638,7 @@ class EQPanel(QWidget):
 
         # EQ Group
         eq_group = QGroupBox("10-Band Parametric EQ")
+        self._eq_group = eq_group
         eq_group.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
@@ -637,8 +655,15 @@ class EQPanel(QWidget):
 
         controls_layout.addStretch()
 
-        reset_btn = QPushButton("Reset All")
-        reset_btn.setToolTip("Reset all bands to 0 dB")
+        clear_correction_btn = QPushButton("Clear Mic Correction")
+        clear_correction_btn.setToolTip(
+            "Remove measured microphone correction while keeping the tone"
+        )
+        clear_correction_btn.clicked.connect(self.clear_correction)
+        controls_layout.addWidget(clear_correction_btn)
+
+        reset_btn = QPushButton("Reset Tone")
+        reset_btn.setToolTip("Reset character gains to zero while retaining microphone correction")
         reset_btn.clicked.connect(self._reset_all)
         controls_layout.addWidget(reset_btn)
 
@@ -651,6 +676,7 @@ class EQPanel(QWidget):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
         )
         self.curve_widget.setToolTip(
+            "The curve shows correction plus tone; handles edit tone only. "
             "Drag a handle to edit frequency and gain. Notch and pass filters "
             "move horizontally only. Use [ and ] plus arrow keys for keyboard editing."
         )
@@ -679,6 +705,7 @@ class EQPanel(QWidget):
                 self.processor,
                 curve_callback=self._update_curve,
                 frequency_callback=self._on_band_frequency_changed,
+                parameter_callback=self._on_band_parameter_changed,
             )
             self.band_sliders.append(band_slider)
 
@@ -693,7 +720,7 @@ class EQPanel(QWidget):
         self.presets_layout.setSpacing(SPACING_TIGHT)
 
         voice_btn = QPushButton("Voice")
-        voice_btn.setToolTip("EQ-only replacement for voice clarity; other processing stays unchanged")
+        voice_btn.setToolTip("Voice clarity tone; preserves microphone correction and other processing")
         voice_btn.clicked.connect(self._preset_voice)
 
         bass_btn = QPushButton("Bass Cut")
@@ -701,7 +728,7 @@ class EQPanel(QWidget):
         bass_btn.clicked.connect(self._preset_bass_cut)
 
         presence_btn = QPushButton("Presence")
-        presence_btn.setToolTip("EQ-only replacement that boosts voice presence; other processing stays unchanged")
+        presence_btn.setToolTip("Presence tone; preserves microphone correction and other processing")
         presence_btn.clicked.connect(self._preset_presence)
 
         warm_clear_btn = QPushButton("Warm & Clear")
@@ -712,7 +739,7 @@ class EQPanel(QWidget):
         warm_clear_btn.clicked.connect(self._preset_warm_clear)
 
         flat_btn = QPushButton("Flat")
-        flat_btn.setToolTip("EQ-only neutral replacement; other processing stays unchanged")
+        flat_btn.setToolTip("Neutral character gains; preserves microphone correction and other processing")
         flat_btn.clicked.connect(self._reset_all)
         self._preset_buttons = (
             voice_btn,
@@ -786,13 +813,66 @@ class EQPanel(QWidget):
         self._reflow_band_sliders(available_width)
         self._reflow_preset_buttons(available_width)
 
+    def _editable_bands(self) -> tuple[EQBandSettings, ...]:
+        """Return the independently editable tone stage."""
+        return self._tone_bands
+
+    def _native_bands(
+        self, bands: tuple[EQBandSettings, ...]
+    ) -> list[tuple[str, float, float, float, int, bool]]:
+        return [band.to_native() for band in bands]
+
+    def _update_layer_status(self) -> None:
+        if self._correction_bands is None:
+            text = "Mic correction: none | Tone: editable below"
+        else:
+            active = sum(
+                abs(band.gain_db) >= 0.25
+                for band in self._correction_bands
+            )
+            text = (
+                f"Mic correction: {active} measured band(s) | "
+                "Tone: independent and preserved"
+            )
+        self._eq_group.setTitle("Tone EQ — " + text)
+
+    def _apply_layers_to_processor(self) -> None:
+        effective = self._editable_bands()
+        correction = self._correction_bands or EQSettings().bands
+        self.processor.apply_eq_layers(self._native_bands(correction), self._native_bands(effective))
+        self.curve_widget.set_all_params(self._native_bands(effective),
+                                         correction=self._native_bands(self._correction_bands or ()))
+        self.band_freqs_hz = [band.frequency_hz for band in effective]
+        if self.curve_widget.band_markers:
+            self.curve_widget.set_band_markers(self.band_freqs_hz)
+        self._update_layer_status()
+
+    def _sync_tone_layer_from_sliders(self) -> None:
+        self._tone_bands = tuple(slider.settings() for slider in self.band_sliders)
+
+    def _on_band_parameter_changed(self) -> None:
+        """Apply both stages after a user edits the tone controls."""
+        self.set_auto_eq_diagnostics(None)
+        self._sync_tone_layer_from_sliders()
+        self._apply_layers_to_processor()
+
+    def clear_correction(self) -> None:
+        """Remove only microphone correction and retain the selected tone."""
+        if self._correction_bands is None:
+            return
+        self._correction_bands = None
+        for slider, band in zip(self.band_sliders, self._tone_bands, strict=True):
+            slider.set_settings(band)
+        self._apply_layers_to_processor()
+        self.set_auto_eq_diagnostics(None)
+
     def _on_enabled_toggled(self, checked):
         """Handle EQ enable/disable."""
         self.set_auto_eq_diagnostics(None)
         self.processor.set_eq_enabled(checked)
 
     def _reset_all(self):
-        """Reset all bands to 0 dB."""
+        """Reset the editable tone layer to a flat contour."""
         defaults = EQSettings()
         self._apply_typed_bands(defaults.bands)
         self.curve_widget.clear_band_markers()
@@ -800,8 +880,7 @@ class EQPanel(QWidget):
 
     def _on_band_frequency_changed(self, band_index: int, frequency_hz: float) -> None:
         """Synchronize manual frequency edits with panel state."""
-        if 0 <= band_index < len(self.band_freqs_hz):
-            self.band_freqs_hz[band_index] = float(frequency_hz)
+        self._sync_tone_layer_from_sliders()
         self._update_curve()
         if self.curve_widget.band_markers:
             self.curve_widget.set_band_markers(self.band_freqs_hz)
@@ -840,10 +919,8 @@ class EQPanel(QWidget):
             slider.set_gain(min(12.0, max(-12.0, gain_db)))
         slider.bandwidth_mode = "q"
         slider.bandwidth_octaves = None
-        self.band_freqs_hz[band_index] = slider.frequency_hz()
-        native_bands = [band.native_config() for band in self.band_sliders]
-        self.processor.apply_eq_settings_v2(native_bands)
-        self.curve_widget.set_all_params(native_bands)
+        self._sync_tone_layer_from_sliders()
+        self._apply_layers_to_processor()
         if self.curve_widget.band_markers:
             self.curve_widget.set_band_markers(self.band_freqs_hz)
 
@@ -870,12 +947,10 @@ class EQPanel(QWidget):
     def _update_curve(self):
         """Update frequency response curve based on current band parameters."""
         self.set_auto_eq_diagnostics(None)
-        bands = []
-        for i, slider in enumerate(self.band_sliders):
-            freq = slider.frequency_hz()
-            self.band_freqs_hz[i] = freq
-            bands.append(slider.native_config())
-        self.curve_widget.set_all_params(bands)
+        effective = self._editable_bands()
+        self.band_freqs_hz = [band.frequency_hz for band in effective]
+        self.curve_widget.set_all_params(self._native_bands(effective),
+                                         correction=self._native_bands(self._correction_bands or ()))
 
     def _preset_voice(self):
         """Apply voice clarity preset."""
@@ -897,7 +972,7 @@ class EQPanel(QWidget):
         self._apply_preset(gains, qs)
 
     def _apply_catalog_preset(self, key: str) -> None:
-        """Apply the catalog EQ values while leaving the enabled state alone."""
+        """Apply a catalog contour while preserving microphone correction."""
         bands = BUILTIN_PRESETS[key].eq.bands
         self._apply_preset(
             [band.gain_db for band in bands],
@@ -941,15 +1016,23 @@ class EQPanel(QWidget):
             self.curve_widget.clear_band_markers()
         self.set_auto_eq_diagnostics(None)
 
-    def apply_auto_eq_results(self, bands: list, diagnostics: dict | None = None):
+    def apply_auto_eq_results(
+        self,
+        bands: list,
+        diagnostics: dict | None = None,
+        *,
+        layer: str = "correction",
+    ):
         """
-        Apply auto-EQ analysis results to all EQ bands.
+        Apply auto-EQ analysis results to one EQ layer.
 
         Updates UI sliders, Q spinboxes, and processor atomically.
         Uses blockSignals() to prevent feedback loops during update.
 
         Args:
             bands: List of 10 (frequency_hz, gain_db, q) tuples
+            layer: ``correction`` for measured microphone response or
+                ``tone`` for a user character contour.
 
         Raises:
             ValueError: If bands list does not contain exactly 10 elements
@@ -966,35 +1049,35 @@ class EQPanel(QWidget):
             )
             for index, (freq, gain, q) in enumerate(bands)
         )
-        self._apply_typed_bands(typed_bands)
+        if layer == "correction":
+            # The analyzed gains are the complete accepted correction. Start
+            # character at zero so an older tone is not applied a second time.
+            self._tone_bands = tuple(replace(band, gain_db=0.0) for band in typed_bands)
+        self._apply_typed_bands(typed_bands, layer=layer)
         self.curve_widget.set_band_markers(self.band_freqs_hz)
         self.set_auto_eq_diagnostics(diagnostics)
 
     def _apply_typed_bands(
         self,
         bands: tuple[EQBandSettings, ...],
+        *,
+        layer: str = "tone",
     ) -> None:
-        """Apply one immutable typed snapshot to native DSP and controls."""
+        """Apply one immutable snapshot to a layer and recompose native DSP."""
         if len(bands) != len(self.band_sliders):
             raise ValueError(
                 f"Expected {len(self.band_sliders)} bands, got {len(bands)}"
             )
-        native_bands = [
-            (
-                band.filter_type,
-                band.frequency_hz,
-                band.gain_db,
-                band.q,
-                band.slope_db_per_octave,
-                band.enabled,
-            )
-            for band in bands
-        ]
-        self.processor.apply_eq_settings_v2(native_bands)
-        for slider, band in zip(self.band_sliders, bands):
+        if layer not in {"correction", "tone"}:
+            raise ValueError(f"Unsupported EQ layer: {layer}")
+        if layer == "correction":
+            self._correction_bands = bands
+        else:
+            self._tone_bands = bands
+        effective = self._editable_bands()
+        for slider, band in zip(self.band_sliders, effective, strict=True):
             slider.set_settings(band)
-        self.band_freqs_hz = [band.frequency_hz for band in bands]
-        self._update_curve()
+        self._apply_layers_to_processor()
 
     def set_auto_eq_diagnostics(self, diagnostics: dict | None) -> None:
         """Show the last Auto-EQ confidence and validation diagnostics."""
@@ -1009,20 +1092,30 @@ class EQPanel(QWidget):
     def get_settings(self) -> dict:
         """Get current EQ settings as a dictionary."""
         settings = self.get_eq_settings()
-        return {
-            "schema_version": EQ_SCHEMA_VERSION,
-            "enabled": settings.enabled,
-            "bands": [band.to_dict() for band in settings.bands],
-            "band_freqs": settings.band_freqs,
-            "band_gains": settings.band_gains,
-            "band_qs": settings.band_qs,
-        }
+        payload = settings.to_dict()
+        payload.update(
+            {
+                "band_freqs": settings.band_freqs,
+                "band_gains": settings.band_gains,
+                "band_qs": settings.band_qs,
+            }
+        )
+        return payload
 
     def get_eq_settings(self) -> EQSettings:
-        """Return the sole typed preset representation for the panel."""
+        """Return tone settings and the independent correction stage."""
+        self._sync_tone_layer_from_sliders()
+        effective = self._editable_bands()
+        if self._correction_bands is None:
+            return EQSettings(
+                enabled=self.enabled_checkbox.isChecked(),
+                bands=effective,
+            )
         return EQSettings(
             enabled=self.enabled_checkbox.isChecked(),
-            bands=tuple(slider.settings() for slider in self.band_sliders),
+            bands=effective,
+            correction_bands=self._correction_bands,
+            tone_bands=self._tone_bands,
         )
 
     def set_settings(self, settings: dict) -> None:
@@ -1031,13 +1124,27 @@ class EQPanel(QWidget):
             self.enabled_checkbox.setChecked(bool(settings["enabled"]))
         raw_bands = settings.get("bands")
         if raw_bands is not None:
-            bands = tuple(
-                band
-                if isinstance(band, EQBandSettings)
-                else EQBandSettings.from_dict(band, index=index)
-                for index, band in enumerate(raw_bands)
-            )
-            self._apply_typed_bands(bands)
+            payload = {
+                "schema_version": settings.get("schema_version", EQ_SCHEMA_VERSION),
+                "enabled": bool(settings.get("enabled", True)),
+                "bands": list(raw_bands),
+            }
+            if "layers" in settings:
+                payload["layers"] = settings["layers"]
+            parsed = EQSettings.from_dict(payload)
+            if parsed.correction_bands is None:
+                self._correction_bands = None
+                self._tone_bands = parsed.bands
+            else:
+                self._correction_bands = parsed.correction_bands
+                self._tone_bands = parsed.tone_bands or parsed.bands
+            for slider, band in zip(
+                self.band_sliders,
+                self._editable_bands(),
+                strict=True,
+            ):
+                slider.set_settings(band)
+            self._apply_layers_to_processor()
             self.set_auto_eq_diagnostics(None)
         elif "band_gains" in settings:
             gains = settings["band_gains"]

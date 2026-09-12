@@ -1956,7 +1956,7 @@ class _LatencyProcessor:
     def set_recovery_suppressed(self, value):
         self.recovery_suppressed.append(bool(value))
 
-    def start_raw_recording(self, _duration):
+    def start_raw_recording(self, _duration, *, before_cleanup=False):
         if self.fail_recording:
             raise RuntimeError("recording setup failed")
 

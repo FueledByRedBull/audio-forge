@@ -65,6 +65,7 @@ def test_replacing_correction_preserves_canonical_tone_payload() -> None:
 
     assert correction == replacement
     assert restored_tone == tone
+    assert TOOL._schema3_roundtrip(correction, restored_tone)
     assert json.dumps(updated["tone"], sort_keys=True) == json.dumps(
         payload["tone"],
         sort_keys=True,

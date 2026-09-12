@@ -30,6 +30,7 @@ from .noise_reference import (
     CaptureMetadata,
     analyze_noise_reference,
 )
+from .joint_tuning import tune_gate_suppression_dynamics
 from .spectrum import (
     _interpolate_vad_probabilities,
     analyze_voice_spectrum,
@@ -1124,6 +1125,10 @@ def analyze_voice_setup(
     custom_peak_cap_db: float = 8.0,
     target_lufs: float | None = None,
     limiter_settings: Mapping[str, Any] | None = None,
+    noise_model: str = "rnnoise",
+    suppressor_strength: float = 1.0,
+    suppressor_enabled: bool = True,
+    incumbent_settings: Mapping[str, Any] | None = None,
     noise_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
     speech_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
     cancel_check: Callable[[], bool] | None = None,
@@ -1295,6 +1300,11 @@ def analyze_voice_setup(
     except Exception as exc:  # pragma: no cover - exercised through return shape
         eq_error = str(exc)
 
+    simulation_eq_settings = eq_settings or {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.0] * len(EQ_FREQUENCIES),
+        "band_qs": [1.41] * len(EQ_FREQUENCIES),
+    }
     compressor_calibration: dict[str, Any] = {
         "backend": "unavailable",
         "target_gain_reduction_db": 0.0,
@@ -1323,6 +1333,60 @@ def analyze_voice_setup(
 
     check_analysis_cancelled(cancel_check)
 
+    incumbent_payload = dict(incumbent_settings or {})
+    incumbent_gate = incumbent_payload.get("gate")
+    incumbent_suppressor = incumbent_payload.get("suppressor") or incumbent_payload.get(
+        "rnnoise"
+    )
+    joint_tuning = tune_gate_suppression_dynamics(
+        noise_arr,
+        speech_arr,
+        sample_rate,
+        gate_settings,
+        compressor_settings,
+        simulation_eq_settings,
+        deesser_settings,
+        effective_limiter_settings,
+        vad_probabilities=vad_probabilities,
+        noise_vad_probabilities=noise_vad_probabilities,
+        noise_model=noise_model,
+        suppressor_strength=suppressor_strength,
+        suppressor_enabled=suppressor_enabled,
+        incumbent_settings={
+            "gate": incumbent_gate or gate_settings,
+            "suppressor": incumbent_suppressor
+            or {
+                "enabled": suppressor_enabled,
+                "strength": suppressor_strength,
+                "model": noise_model,
+            },
+        },
+        noise_floor_db=conservative_noise_rms_db,
+        cancel_check=cancel_check,
+    )
+    if joint_tuning.get("apply_recommended"):
+        gate_settings = dict(joint_tuning.get("gate_settings") or gate_settings)
+        suppressor_settings = dict(
+            joint_tuning.get("suppressor_settings")
+            or {
+                "enabled": suppressor_enabled,
+                "strength": suppressor_strength,
+                "model": noise_model,
+            }
+        )
+    else:
+        # Inconclusive or unavailable evidence preserves the caller's exact
+        # controls. Other setup stages may still be independently reviewed.
+        gate_settings = dict(incumbent_gate or gate_settings)
+        suppressor_settings = dict(
+            incumbent_suppressor
+            or {
+                "enabled": suppressor_enabled,
+                "strength": suppressor_strength,
+                "model": noise_model,
+            }
+        )
+
     dynamics_confidence = _clamp(speech_dynamic_range_db / 8.0, 0.0, 1.0)
     quiet_room_confidence = _clamp(
         (-32.0 - conservative_noise_rms_db) / 18.0,
@@ -1350,11 +1414,6 @@ def analyze_voice_setup(
 
     offline_validation: dict[str, Any] | None = None
     offline_validation_passed = False
-    simulation_eq_settings = eq_settings or {
-        "band_freqs": list(EQ_FREQUENCIES),
-        "band_gains": [0.0] * len(EQ_FREQUENCIES),
-        "band_qs": [1.41] * len(EQ_FREQUENCIES),
-    }
     try:
         offline_validation = simulate_candidate_chain(
             speech_arr.astype(np.float32, copy=False),
@@ -1428,10 +1487,12 @@ def analyze_voice_setup(
         "eq_settings": eq_settings,
         "eq_error": eq_error,
         "gate_settings": gate_settings,
+        "suppressor_settings": suppressor_settings,
         "deesser_settings": deesser_settings,
         "compressor_settings": compressor_settings,
         "limiter_settings": dict(effective_limiter_settings),
         "diagnostics": {
+            "joint_tuning": joint_tuning,
             "setup_confidence": setup_confidence,
             "recommendation_uncertainty": 1.0 - setup_confidence,
             "confidence_semantics": "bounded_quality_score",

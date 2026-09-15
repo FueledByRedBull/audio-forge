@@ -277,7 +277,11 @@ def _synthetic_product_report() -> dict[str, Any]:
     }
 
 
-def test_evaluator_report_finalizer_emits_auditable_contract_without_changing_metrics():
+@pytest.mark.parametrize("revision", [None, "f" * 40])
+def test_evaluator_report_finalizer_emits_auditable_contract_without_changing_metrics(
+    monkeypatch, revision
+):
+    monkeypatch.setattr(evaluate_product_tuning, "_git_revision", lambda _root: revision)
     report = _synthetic_product_report()
     implementation_hashes = report["implementation_sha256"]
     finalized = _finalize_report(
@@ -294,7 +298,10 @@ def test_evaluator_report_finalizer_emits_auditable_contract_without_changing_me
     assert finalized["evaluation_contract"]["configuration"]["capture_count"] == 1
     assert finalized["evaluation_contract"]["latency"]["max_selected_suppressor_latency_ms"] == 10.0
     assert "source_revision" not in finalized
-    assert "measurement_source_revision" not in finalized
+    if revision is None:
+        assert "measurement_source_revision" not in finalized
+    else:
+        assert finalized["measurement_source_revision"] == revision
 
 
 def test_evaluator_revision_is_omitted_for_dirty_worktree(monkeypatch):

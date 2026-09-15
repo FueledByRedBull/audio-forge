@@ -4220,6 +4220,17 @@
       "version": "6.11.1"
     },
     {
+      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows bundle",
+      "filename": "qtmultimedia-everywhere-src-6.11.1.tar.xz",
+      "id": "qt-qtmultimedia-6.11.1",
+      "kind": "qt-source",
+      "name": "Qt Multimedia core and Windows audio backend used by QAudioSink",
+      "sha256": "390f8e52ddee3aca5c4de7eead900c84c4fa61ff6d1f0ebea9c7543365c09b0a",
+      "source_of_truth": "https://download.qt.io/official_releases/qt/",
+      "url": "https://download.qt.io/official_releases/qt/6.11/6.11.1/submodules/qtmultimedia-everywhere-src-6.11.1.tar.xz",
+      "version": "6.11.1"
+    },
+    {
       "asset_sha256": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
       "filename": "DeepFilterNet3_ll_onnx.tar.gz",
       "id": "runtime-DeepFilterNet3_ll_onnx.tar.gz",

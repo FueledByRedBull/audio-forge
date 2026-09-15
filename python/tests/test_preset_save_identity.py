@@ -104,14 +104,14 @@ def test_save_preset_updates_last_used_identity(monkeypatch, tmp_path):
     save_config.assert_called_once_with(window.config)
 
 
-def test_cancel_description_does_not_save_or_change_identity(monkeypatch, tmp_path):
+def test_cancel_save_as_does_not_save_or_change_identity(monkeypatch, tmp_path):
     window = _save_window(tmp_path)
     save = Mock()
     window._save_preset_file = save
     window._get_current_preset = lambda: Preset()
     monkeypatch.setattr(
         main_window.QInputDialog, "getText",
-        Mock(side_effect=[("Cancelled", True), ("", False)]),
+        Mock(return_value=("Cancelled", False)),
     )
 
     MainWindow._save_preset(window)
@@ -275,7 +275,10 @@ def test_failed_save_keeps_last_used_identity(monkeypatch, tmp_path):
     critical.assert_called_once()
 
 
-@pytest.mark.parametrize("save_config_result", [False, OSError("config locked")])
+@pytest.mark.parametrize(
+    "save_config_result",
+    [False, OSError("config locked"), TypeError("invalid config")],
+)
 def test_saved_file_without_identity_persistence_is_reported(
     monkeypatch, tmp_path, save_config_result
 ):
@@ -298,10 +301,43 @@ def test_saved_file_without_identity_persistence_is_reported(
 
     MainWindow._save_preset(window)
 
-    assert window.current_preset_path == tmp_path / "previous.json"
+    assert window.current_preset_path == saved_path
     assert window.config.last_preset == str(tmp_path / "previous.json")
     assert window._last_preset_identity_persisted is False
-    assert "could not remember" in main_window.QMessageBox.information.call_args.args[2]
+    assert "could not remember" in window.status_bar.showMessage.call_args.args[0]
+
+
+@pytest.mark.parametrize("save_config_result", [False, TypeError("invalid config")])
+def test_loaded_preset_keeps_live_identity_when_remembering_fails(
+    monkeypatch, tmp_path, save_config_result
+):
+    window = MainWindow.__new__(MainWindow)
+    window.config = AppConfig(last_preset="previous.json")
+    window.current_preset_name = "Previous"
+    window.current_preset_description = ""
+    window.current_preset_path = Path("previous.json")
+    window._saved_preset_payload = None
+    window._current_value_provenance = {}
+    window.preset_modified = False
+    window._history_ready = False
+    window._history_replaying = False
+    window.status_bar = Mock()
+    window.apply_processing_configuration = Mock()
+    window._set_preset_modified = Mock()
+    window._update_session_summary = Mock()
+    if isinstance(save_config_result, Exception):
+        monkeypatch.setattr(main_window, "save_config", Mock(side_effect=save_config_result))
+    else:
+        monkeypatch.setattr(main_window, "save_config", Mock(return_value=save_config_result))
+
+    loaded_path = tmp_path / "loaded.json"
+    loaded = Preset(name="Loaded")
+    assert MainWindow._apply_preset(window, loaded, preset_path=loaded_path)
+
+    assert window.current_preset_name == "Loaded"
+    assert window.current_preset_path == loaded_path
+    assert window.config.last_preset == "previous.json"
+    assert "could not be remembered" in window.status_bar.showMessage.call_args.args[0]
 
 
 def _submenu(window: QMainWindow, title: str) -> QMenu:
@@ -352,6 +388,7 @@ def test_preset_menus_refresh_new_files_and_keep_selection(qapp, monkeypatch, tm
 
 def test_manual_history_edit_clears_auto_eq_diagnostics_only_when_recorded():
     window = cast(Any, MainWindow.__new__(MainWindow))
+    window.config = AppConfig()
     history = BoundedConfigurationHistory(limit=4)
     baseline = ConfigurationSnapshot.from_preset(
         Preset(), label="baseline", source="startup"
@@ -378,3 +415,36 @@ def test_manual_history_edit_clears_auto_eq_diagnostics_only_when_recorded():
 
     assert MainWindow._commit_pending_configuration_snapshot(window, source="ui")
     window.eq_panel.set_auto_eq_diagnostics.assert_called_once_with(None)
+
+
+def test_save_updates_owned_path_without_name_prompt(monkeypatch, tmp_path):
+    window = _save_window(tmp_path)
+    window.current_preset_name = "My Sound"
+    window.current_preset_description = "Keep this description"
+    window._get_current_preset = Preset
+    window._save_preset_file = Mock(return_value=window.current_preset_path)
+    monkeypatch.setattr(main_window, "get_presets_dir", lambda: tmp_path)
+    prompt = Mock(side_effect=AssertionError("Save must not ask for a new name"))
+    monkeypatch.setattr(main_window.QInputDialog, "getText", prompt)
+    assert window._save_preset()
+    args, kwargs = window._save_preset_file.call_args
+    assert kwargs["filepath"] == tmp_path / "previous.json"
+    assert args[0].name == "My Sound"
+    assert args[0].description == "Keep this description"
+
+
+@pytest.mark.parametrize("reply,save_ok,expected", [
+    (QMessageBox.StandardButton.Cancel, True, False),
+    (QMessageBox.StandardButton.Discard, False, True),
+    (QMessageBox.StandardButton.Save, False, False),
+    (QMessageBox.StandardButton.Save, True, True),
+])
+def test_unsaved_decision_preserves_failed_or_cancelled_saves(monkeypatch, reply, save_ok, expected):
+    window = MainWindow.__new__(MainWindow)
+    window._history_ready = True
+    window.preset_modified = True
+    window._set_preset_modified = Mock()
+    window._save_preset = Mock(return_value=save_ok)
+    monkeypatch.setattr(main_window.QMessageBox, "question", lambda *_: reply)
+    assert window._confirm_discard_changes() is expected
+    assert window._save_preset.call_count == int(reply == QMessageBox.StandardButton.Save)

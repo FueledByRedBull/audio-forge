@@ -7,7 +7,8 @@ import pytest
 
 from mic_eq.analysis import listening_comparison as comparison
 from PyQt6.QtMultimedia import QAudioFormat
-from mic_eq.ui.listening_comparison_dialog import _pcm_bytes
+from mic_eq.ui.listening_comparison_dialog import _pcm_bytes, _preview_samples
+from mic_eq.analysis.listening_comparison import RenderedComparisonClip
 
 
 def _settings(gain: float = 0.0) -> dict:
@@ -115,6 +116,26 @@ def test_level_match_preserves_actual_difference_and_matches_preview_level(monke
     assert result.proposed.level_match_gain_db == pytest.approx(-6.0, abs=0.05)
     assert result.proposed.playback_level_db == pytest.approx(
         result.original.playback_level_db, abs=0.05
+    )
+
+
+def test_level_match_is_applied_at_playback_without_rerendering():
+    clip = RenderedComparisonClip(
+        label="proposed",
+        samples=np.full(128, 0.1, dtype=np.float32),
+        actual_level_db=-20.0,
+        actual_level_delta_db=6.0,
+        playback_level_db=-20.0,
+        peak_db=-20.0,
+        level_match_gain_db=0.0,
+        safety_gain_db=0.0,
+        simulation_backend="rust",
+    )
+
+    matched = _preview_samples(clip, level_match=True)
+    np.testing.assert_allclose(matched, 0.0501187, rtol=1e-4)
+    np.testing.assert_array_equal(
+        _preview_samples(clip, level_match=False), clip.samples
     )
 
 

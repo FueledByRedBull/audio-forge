@@ -604,6 +604,37 @@ class EQSettings:
         self._replace_values("q", values)
 
 
+def build_eq_candidate_settings(
+    current: EQSettings,
+    frequencies: Sequence[object],
+    gains: Sequence[object],
+    qs: Sequence[object],
+    *,
+    layer: str = "correction",
+    enabled: bool = True,
+) -> EQSettings:
+    """Convert legacy Auto-EQ arrays using the live panel's layer semantics."""
+    candidate = _legacy_bands(frequencies, gains, qs)
+    if layer == "correction":
+        tone = tuple(replace(band, gain_db=0.0) for band in candidate)
+        return EQSettings(
+            enabled=enabled,
+            bands=tone,
+            correction_bands=candidate,
+            tone_bands=tone,
+        )
+    if layer == "tone":
+        if current.correction_bands is None:
+            return EQSettings(enabled=enabled, bands=candidate)
+        return EQSettings(
+            enabled=enabled,
+            bands=candidate,
+            correction_bands=current.correction_bands,
+            tone_bands=candidate,
+        )
+    raise ValueError(f"Unsupported EQ candidate layer: {layer}")
+
+
 def _validated_legacy_array(
     value: object,
     *,

@@ -1,24 +1,33 @@
-"""Small Windows desktop integrations used by the main window.
+"""Small desktop integrations used by the main window.
 
-The audio engine stays independent of this module.  The only native hook is
-the Windows global hotkey, which is delivered to Qt's main thread and cleaned
-up when the window closes.
+The audio engine stays independent of this module.  Native work is limited to
+the Windows global hotkey and the Qt single-instance activation channel.
 """
 
 from __future__ import annotations
 
 import ctypes
+import getpass
 import logging
 import os
+import tempfile
 from collections.abc import Callable
 from ctypes import wintypes
+from pathlib import Path
 
-from PyQt6.QtCore import QAbstractNativeEventFilter, QCoreApplication
+from PyQt6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QLockFile, QTimer
+from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+from PyQt6.QtWidgets import QMainWindow
 
 
 logger = logging.getLogger(__name__)
 
 WM_HOTKEY = 0x0312
+try:
+    _USER_SCOPE = getpass.getuser().encode("utf-8").hex()
+except Exception:
+    _USER_SCOPE = "default"
+SINGLE_INSTANCE_SERVER = f"AudioForge.SingleInstance.v1.{_USER_SCOPE}"
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
@@ -172,4 +181,149 @@ class GlobalMuteHotkey:
         return hotkey_id
 
 
-__all__ = ["GlobalMuteHotkey", "parse_global_hotkey"]
+def build_tray_tooltip(
+    *,
+    processing: bool,
+    muted: bool,
+    health: str,
+    route: str | None = None,
+) -> str:
+    """Build the short state summary shown by the tray icon."""
+
+    state = "Running" if processing else "Stopped"
+    if muted:
+        state += " / Muted"
+    parts = [f"AudioForge: {state}", f"Health: {str(health).strip() or 'unknown'}"]
+    if route:
+        parts.append(str(route).strip())
+    return " | ".join(parts)[:240]
+
+
+def activate_window(window: QMainWindow) -> None:
+    """Show and focus a hidden/minimized Qt window after a second launch."""
+
+    window.showNormal()
+    window.show()
+    window.raise_()
+    window.activateWindow()
+
+
+class SingleInstanceCoordinator:
+    """Own one process lock and forward later launches to its Qt window.
+
+    ``QLockFile`` supplies stale-lock handling across supported platforms.  The
+    local server is only the activation channel; failure to contact an existing
+    owner fails closed instead of starting a second audio session.
+    """
+
+    ACQUIRED = "acquired"
+    FORWARDED = "forwarded"
+    FAILED = "failed"
+
+    def __init__(
+        self,
+        *,
+        server_name: str = SINGLE_INSTANCE_SERVER,
+        lock_path: Path | None = None,
+    ) -> None:
+        self.server_name = str(server_name)
+        self._lock_path = lock_path or (
+            Path(tempfile.gettempdir()) / f"AudioForge.SingleInstance.{_USER_SCOPE}.lock"
+        )
+        self._server = QLocalServer()
+        self._server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+        self._server.newConnection.connect(self._on_new_connection)
+        self._server_owned = False
+        self._lock_file: QLockFile | None = None
+        self._activation_callback: Callable[[], None] | None = None
+        self._pending_activation = False
+        self.last_error: str | None = None
+        self._closed = False
+
+    def acquire(self) -> str:
+        """Acquire this instance or forward activation to the current owner."""
+
+        lock_file = QLockFile(str(self._lock_path))
+        lock_file.setStaleLockTime(0)
+        if not lock_file.tryLock(0):
+            return self.FORWARDED if self._request_activation() else self.FAILED
+        self._lock_file = lock_file
+
+        if self._listen_for_activation():
+            return self.ACQUIRED
+        lock_file = self._lock_file
+        self._lock_file = None
+        if lock_file is not None and lock_file.isLocked():
+            lock_file.unlock()
+        return self.FAILED
+
+    def set_activation_callback(self, callback: Callable[[], None] | None) -> None:
+        """Set the primary-window activation hook and flush queued launches."""
+
+        self._activation_callback = callback
+        if callback is not None and self._pending_activation:
+            self._pending_activation = False
+            QTimer.singleShot(0, callback)
+
+    def close(self) -> None:
+        """Release the activation channel and process lock exactly once."""
+
+        if self._closed:
+            return
+        self._closed = True
+        if self._server_owned:
+            self._server.close()
+            QLocalServer.removeServer(self.server_name)
+            self._server_owned = False
+        lock_file = self._lock_file
+        self._lock_file = None
+        if lock_file is not None and lock_file.isLocked():
+            lock_file.unlock()
+
+    def _listen_for_activation(self) -> bool:
+        if self._server.listen(self.server_name):
+            self._server_owned = True
+            return True
+
+        # The process lock proves no live owner exists here.  A leftover Qt
+        # endpoint can therefore be removed safely before retrying once.
+        QLocalServer.removeServer(self.server_name)
+        if self._server.listen(self.server_name):
+            self._server_owned = True
+            return True
+        self.last_error = f"could not listen for activation: {self._server.errorString()}"
+        return False
+
+    def _request_activation(self) -> bool:
+        socket = QLocalSocket()
+        socket.connectToServer(self.server_name)
+        if socket.waitForConnected(500):
+            socket.disconnectFromServer()
+            return True
+        socket.abort()
+        self.last_error = (
+            f"could not contact the existing AudioForge instance: "
+            f"{self.server_name}"
+        )
+        return False
+
+    def _on_new_connection(self) -> None:
+        while self._server.hasPendingConnections():
+            socket = self._server.nextPendingConnection()
+            if socket is None:
+                return
+            callback = self._activation_callback
+            if callback is None:
+                self._pending_activation = True
+            else:
+                QTimer.singleShot(0, callback)
+            socket.disconnected.connect(socket.deleteLater)
+            socket.disconnectFromServer()
+
+__all__ = [
+    "GlobalMuteHotkey",
+    "SingleInstanceCoordinator",
+    "activate_window",
+    "build_tray_tooltip",
+    "parse_global_hotkey",
+]

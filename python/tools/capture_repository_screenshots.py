@@ -332,7 +332,9 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
             window.processor.stop()
         except Exception:
             pass
-        window.close()
+        # This window contains only the generated demonstration settings.
+        with patch.object(window, "_confirm_discard_changes", return_value=True):
+            window.close()
         window.deleteLater()
         app.processEvents()
 

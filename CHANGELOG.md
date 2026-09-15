@@ -9,6 +9,12 @@
 - Keep microphone correction and voice character in independent EQ stages, including custom filter types and slopes; tone edits preserve correction.
 - Evaluate bounded gate and suppression choices across the available noise models alongside proposed dynamics, retaining current settings when held-out evidence is inconclusive.
 - Apply VAD pre-gain changes to the live inference worker, including changes made while processing.
+- Restore the previous sound if a configuration fails, and offer Save, Discard, or Cancel before replacing unsaved settings or quitting.
+- Separate Save from Save As, retain matching microphone calibration across tone edits, and require approval of the final verified Voice Setup candidate.
+- Add aligned comparison switching, Stop, playback-device refresh, and a separate saved preview destination.
+- Keep technical health counters behind Details, show background status in the tray, and activate the existing window on a second launch.
+- Require an explicit replacement when a saved output disappears; recovery and calibration cannot silently choose the default speakers.
+- Include Qt Multimedia corresponding source and remove unused FFmpeg media components from the portable package.
 
 ## v1.12.1
 

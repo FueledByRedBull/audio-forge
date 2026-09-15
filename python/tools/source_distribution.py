@@ -97,6 +97,11 @@ QT_MODULE_SOURCES = (
         "description": "Qt image format plugins shipped in the Windows bundle",
         "sha256": "b2bf6c6845ac175ed7f819145483ba4676f617aaa6a5012c8efee63c8bbac413",
     },
+    {
+        "module": "qtmultimedia",
+        "description": "Qt Multimedia core and Windows audio backend used by QAudioSink",
+        "sha256": "390f8e52ddee3aca5c4de7eead900c84c4fa61ff6d1f0ebea9c7543365c09b0a",
+    },
 )
 QT_SOURCE = {
     "filename_template": "qtbase-everywhere-src-{version}.tar.xz",

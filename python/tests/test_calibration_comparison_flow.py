@@ -21,7 +21,7 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
     owner: Any = QWidget()
     owner.processor = SimpleNamespace(sample_rate=lambda: 48000, get_input_cleanup_mode=lambda: "off")
     owner._get_current_preset = Preset
-    owner._processing_mode = lambda: "normal"
+    owner._processing_mode = lambda: "raw"
     owner.eq_panel = SimpleNamespace(get_settings=lambda: {"band_gains": [0.0] * 10})
     owner.set_temporary_output_mute = Mock()
     dialog = dialog_type(owner)
@@ -51,6 +51,10 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
         assert factory.call_args.kwargs["current_chain_settings"]["full_chain"] is True
         assert factory.call_args.kwargs["current_chain_settings"]["input_pre_filtered"] is False
         assert factory.call_args.kwargs["proposed_chain_settings"]["full_chain"] is True
+        assert factory.call_args.kwargs["current_chain_settings"]["processing_mode"] == "raw"
+        assert factory.call_args.kwargs["proposed_chain_settings"]["processing_mode"] == (
+            "raw" if dialog_type is CalibrationDialog else "normal"
+        )
         assert apply.call_count == int(keep)
         assert owner.set_temporary_output_mute.call_args_list == [
             ((True, "listening_comparison"),), ((False, "listening_comparison"),)]

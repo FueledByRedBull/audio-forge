@@ -336,6 +336,9 @@ class FirstRunSetupDialog(QDialog):
         self.setTabOrder(self.skip_button, self.pause_button)
         self.setTabOrder(self.pause_button, self.action_button)
         self.setTabOrder(self.action_button, self.advanced_latency_button)
+        owner_mute_checkbox = getattr(self.owner, "user_mute_checkbox", None)
+        if owner_mute_checkbox is not None and hasattr(owner_mute_checkbox, "toggled"):
+            owner_mute_checkbox.toggled.connect(self._sync_mute_control)
         self._render_step()
         configure_resizable_dialog(
             self,
@@ -434,9 +437,7 @@ class FirstRunSetupDialog(QDialog):
         self.device_selection_group.setVisible(step == "devices")
         self.route_feedback_group.setVisible(step == "route")
         self.advanced_latency_button.setVisible(step != "latency")
-        self.mute_checkbox.blockSignals(True)
-        self.mute_checkbox.setChecked(bool(getattr(self.owner, "user_muted", False)))
-        self.mute_checkbox.blockSignals(False)
+        self._sync_mute_control()
         if self._progress_unsaved:
             self.status_label.setText(
                 "Progress is unsaved. You can continue, but setup may need to be "
@@ -473,6 +474,13 @@ class FirstRunSetupDialog(QDialog):
     def _on_mute_toggled(self, checked: bool) -> None:
         """Route the onboarding control through the main window's mute owner."""
         self.owner.user_mute_checkbox.setChecked(checked)
+
+    def _sync_mute_control(self, _checked: bool | None = None) -> None:
+        """Mirror the live mute owner when a hotkey or tray action changes it."""
+        checked = bool(getattr(self.owner, "user_muted", False))
+        self.mute_checkbox.blockSignals(True)
+        self.mute_checkbox.setChecked(checked)
+        self.mute_checkbox.blockSignals(False)
 
     def _selected_devices_ready(self) -> bool:
         input_combo = self.input_device_selector

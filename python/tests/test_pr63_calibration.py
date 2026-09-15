@@ -9,7 +9,7 @@ import numpy as np
 from PyQt6.QtWidgets import QMessageBox, QWidget
 
 from mic_eq.analysis.voice_setup import _recommend_compressor_settings
-from mic_eq.config import DeviceIdentity
+from mic_eq.config import DeviceIdentity, EQ_FREQUENCIES, EQSettings, Preset
 from mic_eq.ui.calibration_dialog import (
     CalibrationDialog,
     _active_device_identities,
@@ -65,9 +65,9 @@ class _EqPanel:
         self.apply_calls = 0
         self.state = {
             "enabled": False,
-            "band_freqs": [80.0],
-            "band_gains": [0.0],
-            "band_qs": [1.41],
+            "band_freqs": list(EQ_FREQUENCIES),
+            "band_gains": [0.0] * 10,
+            "band_qs": [1.41] * 10,
         }
 
     def get_settings(self) -> dict:
@@ -79,9 +79,9 @@ class _EqPanel:
         self.apply_calls += 1
         self.state = {
             "enabled": True,
-            "band_freqs": [100.0],
-            "band_gains": [6.0],
-            "band_qs": [1.0],
+            "band_freqs": [100.0] * 10,
+            "band_gains": [6.0] * 10,
+            "band_qs": [1.0] * 10,
             "diagnostics": diagnostics,
         }
         raise RuntimeError("native apply failed after mutation")
@@ -89,7 +89,8 @@ class _EqPanel:
     def set_settings(self, settings: dict) -> None:
         if self.restore_error:
             raise RuntimeError("restore unavailable")
-        self.state = deepcopy(settings)
+        self.state.update(deepcopy(settings))
+        self.state.pop("diagnostics", None)
 
     def set_auto_eq_diagnostics(self, _diagnostics) -> None:
         return None
@@ -101,6 +102,48 @@ class _CalibrationOwner(QWidget):
         self.processor = Mock()
         self.processor.sample_rate.return_value = 48_000
         self.eq_panel = _EqPanel()
+
+    def _get_current_preset(self) -> Preset:
+        current = self.eq_panel.get_settings()
+        return Preset(
+            eq=EQSettings(
+                enabled=bool(current["enabled"]),
+                band_freqs=current["band_freqs"],
+                band_gains=current["band_gains"],
+                band_qs=current["band_qs"],
+            )
+        )
+
+    def _processing_mode(self) -> str:
+        return "normal"
+
+    def apply_processing_configuration(
+        self,
+        preset: Preset,
+        *,
+        noise_reference_reliability: float | None = None,
+        processing_mode: str | None = None,
+        compressor_metadata: dict[str, object] | None = None,
+    ) -> None:
+        del noise_reference_reliability, processing_mode, compressor_metadata
+        correction = preset.eq.correction_bands
+        if correction is not None:
+            self.eq_panel.apply_auto_eq_results(
+                [
+                    (band.frequency_hz, band.gain_db, band.q)
+                    for band in correction
+                ]
+            )
+            self.eq_panel.set_settings({"enabled": preset.eq.enabled})
+            return
+        self.eq_panel.set_settings(
+            {
+                "enabled": preset.eq.enabled,
+                "band_freqs": [band.frequency_hz for band in preset.eq.bands],
+                "band_gains": [band.gain_db for band in preset.eq.bands],
+                "band_qs": [band.q for band in preset.eq.bands],
+            }
+        )
 
 
 class _ContextCalibrationOwner(_CalibrationOwner):
@@ -150,6 +193,29 @@ class _RestoreOwner:
         self.deesser_panel = _RestoreStage()
         self.compressor_panel = _RestoreStage()
         self.eq_panel = _RestoreStage()
+        self.preset = Preset()
+        self.apply_calls: list[tuple[Preset, float | None, str | None]] = []
+        self.fail_apply = False
+
+    def _get_current_preset(self) -> Preset:
+        return self.preset
+
+    def apply_processing_configuration(
+        self,
+        preset: Preset,
+        *,
+        noise_reference_reliability: float | None = None,
+        processing_mode: str | None = None,
+        compressor_metadata: dict[str, object] | None = None,
+    ) -> None:
+        self.apply_calls.append(
+            (preset, noise_reference_reliability, processing_mode)
+        )
+        if self.fail_apply:
+            raise RuntimeError("transaction failed")
+        self.preset = preset
+        if compressor_metadata:
+            self.compressor_panel.set_compressor_settings(compressor_metadata)
 
 
 class _ContextRestoreStage(_RestoreStage):
@@ -406,18 +472,17 @@ def test_eq_apply_requires_snapshot_and_reports_restore_failure(qapp, monkeypatc
         owner.close()
 
 
-def test_voice_rollback_attempts_all_stages_and_keeps_failed_snapshot(qapp, monkeypatch) -> None:
+def test_voice_rollback_uses_shared_transaction_and_keeps_failed_snapshot(
+    qapp, monkeypatch
+) -> None:
     owner = _RestoreOwner()
     dialog = VoiceSetupDialog()
     snapshot = {
-        "gate": {},
-        "deesser": {},
+        "preset": Preset().to_dict(),
         "compressor": {},
-        "limiter": {},
-        "eq": {},
     }
     dialog._pre_setup_snapshot = snapshot
-    owner.gate_panel.fail = True
+    owner.fail_apply = True
     monkeypatch.setattr(
         "mic_eq.ui.voice_setup_dialog._find_eq_panel_owner",
         lambda _widget: owner,
@@ -425,16 +490,14 @@ def test_voice_rollback_attempts_all_stages_and_keeps_failed_snapshot(qapp, monk
     try:
         assert dialog._restore_pre_setup_snapshot() is False
         assert dialog._pre_setup_snapshot is snapshot
-        assert owner.gate_panel.calls == 1
-        assert owner.deesser_panel.calls == 1
-        assert owner.compressor_panel.calls == 2
-        assert owner.eq_panel.calls == 1
+        assert len(owner.apply_calls) == 1
         dialog._on_verification_failed("verification failed")
         assert "restore is incomplete" in dialog.phase_label.text()
 
-        owner.gate_panel.fail = False
+        owner.fail_apply = False
         assert dialog._restore_pre_setup_snapshot() is True
         assert dialog._pre_setup_snapshot is None
+        assert len(owner.apply_calls) == 3
     finally:
         dialog.reject()
 
@@ -548,11 +611,12 @@ def test_rollback_drops_stale_noise_reliability_but_restores_numeric_settings(
     owner = _ContextRestoreOwner()
     dialog = VoiceSetupDialog()
     snapshot = {
-        "gate": {},
-        "deesser": {},
-        "compressor": {"ratio": 2.5, "noise_reference_reliability": 0.8},
-        "limiter": {},
-        "eq": {},
+        "preset": Preset().to_dict(),
+        "compressor_metadata": {
+            "dynamics_profile": "balanced",
+            "dynamics_customized": False,
+        },
+        "noise_reference_reliability": 0.8,
         "calibration_context_key": "route-a",
     }
     dialog._pre_setup_snapshot = snapshot
@@ -562,7 +626,10 @@ def test_rollback_drops_stale_noise_reliability_but_restores_numeric_settings(
     )
     try:
         assert dialog._restore_pre_setup_snapshot() is True
-        assert owner.compressor_panel.last_settings == {"ratio": 2.5}
+        assert owner.compressor_panel.last_settings == {
+            "dynamics_profile": "balanced",
+            "dynamics_customized": False,
+        }
     finally:
         dialog.reject()
 
@@ -572,11 +639,12 @@ def test_rollback_drops_noise_reliability_when_context_is_unknown(qapp, monkeypa
     owner.context_key = None
     dialog = VoiceSetupDialog()
     dialog._pre_setup_snapshot = {
-        "gate": {},
-        "deesser": {},
-        "compressor": {"ratio": 2.5, "noise_reference_reliability": 0.8},
-        "limiter": {},
-        "eq": {},
+        "preset": Preset().to_dict(),
+        "compressor_metadata": {
+            "dynamics_profile": "balanced",
+            "dynamics_customized": False,
+        },
+        "noise_reference_reliability": 0.8,
         "calibration_context_key": None,
     }
     monkeypatch.setattr(
@@ -584,7 +652,10 @@ def test_rollback_drops_noise_reliability_when_context_is_unknown(qapp, monkeypa
     )
     try:
         assert dialog._restore_pre_setup_snapshot() is True
-        assert owner.compressor_panel.last_settings == {"ratio": 2.5}
+        assert owner.compressor_panel.last_settings == {
+            "dynamics_profile": "balanced",
+            "dynamics_customized": False,
+        }
     finally:
         dialog.reject()
 
@@ -628,12 +699,9 @@ def test_voice_verification_marks_only_accepted_stages(qapp, monkeypatch) -> Non
         dialog._on_verification_complete({"decision": "retry"})
         assert dialog.setup_result["_candidate"]["verified_stages"] == []
         dialog._on_verification_complete({"decision": "accept"})
-        assert dialog.setup_result["_candidate"]["verified_stages"] == [
-            "eq",
-            "deesser",
-            "compressor",
-            "limiter",
-        ]
+        assert dialog.setup_result["_candidate"]["verified_stages"] == []
+        assert dialog.setup_state == "final_comparison_ready"
+        assert dialog._final_comparison_pending is True
     finally:
         dialog.reject()
         owner.close()
@@ -663,13 +731,9 @@ def test_verification_callback_uses_capture_generation_after_launch(qapp, monkey
 
         worker.result_ready.emit({"decision": "accept"})
 
-        assert applied == ["broadcast"]
-        assert dialog.setup_result["_candidate"]["verified_stages"] == [
-            "eq",
-            "deesser",
-            "compressor",
-            "limiter",
-        ]
+        assert applied == []
+        assert dialog.setup_result["_candidate"]["verified_stages"] == []
+        assert dialog.setup_state == "final_comparison_ready"
     finally:
         dialog.reject()
         owner.close()

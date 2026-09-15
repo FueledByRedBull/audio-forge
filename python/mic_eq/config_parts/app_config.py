@@ -50,6 +50,7 @@ _PRE_SETUP_CONFIG_FIELDS = frozenset(
         "last_output_device",
         "last_input_device_identity",
         "last_output_device_identity",
+        "preview_playback_device_id",
         "input_channel_mode",
         "input_cleanup_mode",
         "last_preset",
@@ -234,6 +235,8 @@ class AppConfig:
     last_output_device: str = ""
     last_input_device_identity: DeviceIdentity | None = None
     last_output_device_identity: DeviceIdentity | None = None
+    # Optional preview-only route; it never changes the live processing output.
+    preview_playback_device_id: str = ""
     input_channel_mode: str = "phase_safe_mono"
     input_cleanup_mode: str = "off"
     last_preset: str = ""
@@ -286,6 +289,7 @@ class AppConfig:
                 if self.last_output_device_identity is not None
                 else None
             ),
+            "preview_playback_device_id": self.preview_playback_device_id,
             "input_channel_mode": self.input_channel_mode,
             "input_cleanup_mode": self.input_cleanup_mode,
             "last_preset": self.last_preset,
@@ -427,6 +431,13 @@ class AppConfig:
             first_run_steps = {
                 step: "skipped" for step in FIRST_RUN_SETUP_STEPS
             }
+        preview_device_id = data.get("preview_playback_device_id", "")
+        if not (
+            isinstance(preview_device_id, str)
+            and len(preview_device_id) <= 4096
+            and "\x00" not in preview_device_id
+        ):
+            preview_device_id = ""
 
         return cls(
             last_input_device=_coerce_device_name(
@@ -437,6 +448,7 @@ class AppConfig:
             ),
             last_input_device_identity=input_identity,
             last_output_device_identity=output_identity,
+            preview_playback_device_id=preview_device_id,
             input_channel_mode=_coerce_input_channel_mode(data.get("input_channel_mode")),
             input_cleanup_mode=_coerce_input_cleanup_mode(data.get("input_cleanup_mode")),
             last_preset=data.get("last_preset", "") if isinstance(data.get("last_preset", ""), str) else "",

@@ -315,7 +315,7 @@ def test_main_window_failed_history_restore_rolls_back_partial_state(
         label="failing restore",
         source="test",
     )
-    real_apply = window._apply_preset
+    real_apply = window._write_processing_configuration
     call_count = 0
 
     def fail_after_partial_apply(preset: Preset, *args, **kwargs) -> None:
@@ -328,7 +328,7 @@ def test_main_window_failed_history_restore_rolls_back_partial_state(
             raise RuntimeError("simulated native restore failure")
         real_apply(preset, *args, **kwargs)
 
-    monkeypatch.setattr(window, "_apply_preset", fail_after_partial_apply)
+    monkeypatch.setattr(window, "_write_processing_configuration", fail_after_partial_apply)
     with pytest.raises(RuntimeError, match="simulated native restore failure"):
         window._restore_configuration_snapshot(snapshot)
 
@@ -406,7 +406,7 @@ def test_history_restore_refuses_an_unavailable_noise_backend(
     while (model_index := window.model_combo.findData("deepfilter")) >= 0:
         window.model_combo.removeItem(model_index)
 
-    with pytest.raises(RuntimeError, match="not present"):
+    with pytest.raises(RuntimeError, match="unavailable"):
         window._restore_configuration_snapshot(snapshot)
 
     assert window.model_combo.currentData() == previous.rnnoise.model
@@ -418,29 +418,116 @@ def test_history_restore_refuses_an_unavailable_noise_backend(
     qapp.processEvents()
 
 
-def test_normal_preset_load_falls_back_when_noise_backend_is_absent(
-    qapp,
-    monkeypatch,
-) -> None:
+def test_normal_preset_load_retains_sound_when_noise_backend_is_absent(qapp, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
     monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
+    for name in ("list_presets", "list_input_devices", "list_output_devices"):
+        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    monkeypatch.setattr(QMessageBox, "critical", lambda *_: None)
     window = MainWindow()
+    previous = window._get_current_preset()
     preset = window._get_current_preset()
-    preset.rnnoise.model = "removed-backend"
-    window.model_combo.addItem("Removed backend", "different-backend")
-    window.model_combo.blockSignals(True)
-    window.model_combo.setCurrentIndex(window.model_combo.count() - 1)
-    window.model_combo.blockSignals(False)
-
-    window._apply_preset(preset)
-
-    assert window.model_combo.currentData() == "rnnoise"
-    assert "using RNNoise" in window.status_bar.currentMessage()
-    window.meter_timer.stop()
-    window.diagnostics_timer.stop()
+    preset.rnnoise.model = "deepfilter"
+    while (index := window.model_combo.findData("deepfilter")) >= 0:
+        window.model_combo.removeItem(index)
+    assert window._apply_preset(preset) is False
+    assert window._preset_payload(window._get_current_preset()) == window._preset_payload(previous)
+    assert window.current_preset_name == "Default"
     window.close()
     window.deleteLater()
     qapp.processEvents()
+
+
+@pytest.mark.parametrize("rollback_fails", [False, True])
+def test_failed_configuration_restores_sound_or_stops_muted(qapp, monkeypatch, rollback_fails):
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
+    for name in ("list_presets", "list_input_devices", "list_output_devices"):
+        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    window = MainWindow()
+    window.user_mute_checkbox.setChecked(True)
+    window.apply_processing_configuration(
+        window._get_current_preset(),
+        noise_reference_reliability=0.7,
+        processing_mode="raw",
+        compressor_metadata={"dynamics_profile": "dense"},
+    )
+    metadata = window.compressor_panel.get_compressor_settings(include_calibration=True)
+    assert metadata["noise_reference_reliability"] == 0.7
+    assert metadata["dynamics_profile"] == "dense"
+    before = window._preset_payload(window._get_current_preset())
+    identity = (window.current_preset_name, window.current_preset_path, window.config.last_preset)
+    cursor = window._configuration_history.cursor
+    target = window._get_current_preset()
+    target.gate.threshold_db = -25.0
+    original_set = window.eq_panel.set_settings
+    calls = 0
+
+    def fail_after_eq(settings):
+        nonlocal calls
+        calls += 1
+        original_set(settings)
+        if calls == 1 or rollback_fails:
+            raise RuntimeError("injected failure after EQ")
+
+    monkeypatch.setattr(window.eq_panel, "set_settings", fail_after_eq)
+    try:
+        with pytest.raises(RuntimeError, match="injected failure after EQ"):
+            window.apply_processing_configuration(target)
+        assert (window.current_preset_name, window.current_preset_path, window.config.last_preset) == identity
+        assert window._configuration_history.cursor == cursor
+        assert window.user_muted
+        if rollback_fails:
+            assert not window.processor.is_running()
+            assert "configuration" in window._temporary_mute_reasons
+            assert "restoration failed" in window.status_bar.currentMessage()
+        else:
+            assert window._preset_payload(window._get_current_preset()) == before
+            assert "configuration" not in window._temporary_mute_reasons
+            assert window._processing_mode() == "raw"
+            assert window.compressor_panel.get_compressor_settings(include_calibration=True) == metadata
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
+
+
+def test_configuration_rollback_stop_failure_keeps_mute_and_reports_stop_failure(
+    qapp, monkeypatch
+):
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
+    for name in ("list_presets", "list_input_devices", "list_output_devices"):
+        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    window = MainWindow()
+    original_processor = window.processor
+
+    class FailingStopProcessor:
+        def is_running(self) -> bool:
+            return True
+
+        def set_output_mute(self, _muted: bool) -> None:
+            return None
+
+        def stop(self) -> None:
+            raise RuntimeError("stop unavailable")
+
+    try:
+        monkeypatch.setattr(window, "processor", FailingStopProcessor())
+
+        def fail_configuration_write(_preset):
+            raise RuntimeError("configuration write unavailable")
+
+        monkeypatch.setattr(window, "_write_processing_configuration", fail_configuration_write)
+        with pytest.raises(RuntimeError, match="processor stop failed"):
+            window.apply_processing_configuration(window._get_current_preset())
+        assert "configuration" in window._temporary_mute_reasons
+        assert "processor stop both failed" in window.status_bar.currentMessage()
+    finally:
+        window.processor = original_processor
+        window.meter_timer.stop()
+        window.diagnostics_timer.stop()
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()

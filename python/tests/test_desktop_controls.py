@@ -96,16 +96,18 @@ def test_processing_mode_updates_both_native_flags() -> None:
 
 def test_tray_close_keeps_audio_running_until_explicit_quit() -> None:
     owner: Any = SimpleNamespace(
-        _quitting=False, _tray_icon=SimpleNamespace(isVisible=lambda: True, hide=Mock()),
+        _quitting=False, _tray_icon=SimpleNamespace(isVisible=lambda: True, hide=Mock(), showMessage=Mock()),
         _close_to_tray_action=SimpleNamespace(isChecked=lambda: True), hide=Mock(),
         status_bar=Mock(), _unregister_mute_hotkey=Mock(), config=SimpleNamespace(),
         x=lambda: 0, y=lambda: 0, width=lambda: 1280, height=lambda: 850,
         _save_ui_state=lambda: True, processor=Mock(),
+        _confirm_discard_changes=lambda: True,
     )
     event = Mock()
     MainWindow.closeEvent(owner, event)
     owner.hide.assert_called_once()
     owner.processor.stop.assert_not_called()
+    owner._tray_icon.showMessage.assert_called_once()
     event.ignore.assert_called_once()
     owner._quitting = True
     MainWindow.closeEvent(owner, event)

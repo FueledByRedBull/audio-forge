@@ -151,6 +151,7 @@
     "required_tone_profiles": 4
   },
   "schema_version": 4,
+  "source_revision": "7aed6b67c987d736a8f80563ae6122b0ead84543",
   "source_sha256": {
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
     "python/mic_eq/config_parts/settings.py": "617fc0517b19f01c5c213d84917fe9cbb5aedf1dd1984fc975399b1244fcf829",

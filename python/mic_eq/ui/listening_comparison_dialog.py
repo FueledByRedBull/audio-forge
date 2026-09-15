@@ -32,10 +32,13 @@ from PyQt6.QtWidgets import (
 
 from ..analysis.cancellation import AnalysisCancelled
 from ..analysis.listening_comparison import (
+    MAX_LEVEL_MATCH_DB,
     ComparisonRenderResult,
     RenderedComparisonClip,
+    _playback_safe,
     render_comparison,
 )
+from ..config import save_config
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
     SUBDUED_TEXT_STYLE,
@@ -60,6 +63,53 @@ def _device_key(device: QAudioDevice | None) -> bytes | None:
         return device.id().data()
     except (AttributeError, TypeError):
         return None
+
+
+def _parent_config(widget: Any) -> Any:
+    """Find an owning config without coupling the dialog to MainWindow."""
+    current = widget
+    while current is not None:
+        config = getattr(current, "config", None)
+        if config is not None:
+            return config
+        parent = getattr(current, "parent", None)
+        current = parent() if callable(parent) else None
+    return None
+
+
+def _stored_preview_device_key(widget: Any) -> str | None:
+    config = _parent_config(widget)
+    value = getattr(config, "preview_playback_device_id", None)
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _persist_preview_device(widget: Any, device: QAudioDevice | None) -> bool | None:
+    """Persist the preview route without changing the live output route."""
+    config = _parent_config(widget)
+    if config is None or not hasattr(config, "preview_playback_device_id"):
+        return None
+    key = _device_key(device)
+    setattr(config, "preview_playback_device_id", key.hex() if key else "")
+    try:
+        return bool(save_config(config))
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _preview_samples(
+    clip: RenderedComparisonClip,
+    *,
+    level_match: bool,
+) -> np.ndarray:
+    """Apply the stored level match at playback time, without rerendering."""
+    if not level_match or clip.label == "original":
+        return np.ascontiguousarray(clip.samples, dtype=np.float32)
+    gain = clip.level_match_gain_db
+    if not gain and np.isfinite(clip.actual_level_delta_db):
+        gain = -float(clip.actual_level_delta_db)
+    gain = float(np.clip(gain, -MAX_LEVEL_MATCH_DB, MAX_LEVEL_MATCH_DB))
+    matched, _ = _playback_safe(clip.samples, level_match_gain_db=gain)
+    return matched
 
 
 def _format_for_device(
@@ -201,6 +251,7 @@ class ListeningComparisonDialog(QDialog):
         current_chain_settings: Mapping[str, Any] | None = None,
         proposed_chain_settings: Mapping[str, Any] | None = None,
         playback_device: QAudioDevice | None = None,
+        playback_device_key: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Before/After Listening Comparison")
@@ -218,6 +269,9 @@ class ListeningComparisonDialog(QDialog):
             else None
         )
         self._requested_playback_device = playback_device
+        self._requested_playback_device_key = (
+            playback_device_key or _stored_preview_device_key(self)
+        )
         self._outputs: list[QAudioDevice] = []
         self._result: ComparisonRenderResult | None = None
         self._worker: ListeningComparisonWorker | None = None
@@ -231,6 +285,11 @@ class ListeningComparisonDialog(QDialog):
         self._fade_timer.setInterval(4)
         self._fade_timer.timeout.connect(self._fade_playback)
         self._pending_clip: str | None = None
+        self._playing_clip_key: str | None = None
+        self._playback_start_sample = 0
+        self._playback_sample_rate = self._sample_rate
+        self._media_devices = QMediaDevices(self)
+        self._media_devices.audioOutputsChanged.connect(self._on_audio_outputs_changed)
 
         self._setup_ui()
         configure_resizable_dialog(
@@ -281,8 +340,22 @@ class ListeningComparisonDialog(QDialog):
             "Choose the speakers or headphones that should receive the preview."
         )
         configure_responsive_combo(self.output_combo)
-        playback_layout.addRow(output_label, self.output_combo)
+        output_controls = QHBoxLayout()
+        output_controls.addWidget(self.output_combo, 1)
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setAccessibleName("Refresh listening comparison output devices")
+        self.refresh_button.setToolTip("Refresh available playback devices.")
+        self.refresh_button.clicked.connect(self._refresh_playback_devices)
+        output_controls.addWidget(self.refresh_button)
+        playback_layout.addRow(output_label, output_controls)
         bind_label(output_label, self.output_combo)
+
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setAccessibleName("Stop listening comparison playback")
+        self.stop_button.setEnabled(False)
+        self.stop_button.setToolTip("Stop the current preview.")
+        self.stop_button.clicked.connect(self._stop_playback)
+        playback_layout.addRow("Playback:", self.stop_button)
 
         self.level_match_checkbox = QCheckBox(
             "Match speech level (actual level difference remains visible)"
@@ -350,20 +423,32 @@ class ListeningComparisonDialog(QDialog):
         layout.addLayout(actions)
         set_accessible_group(
             (
+                (self.refresh_button, "Refresh playback devices", None),
+                (self.stop_button, "Stop playback", None),
                 (self.keep_button, "Keep proposed settings", None),
                 (self.reject_button, "Reject proposed settings", None),
             )
         )
 
     def _refresh_playback_devices(self) -> None:
+        self._stop_playback()
+        requested_key = _device_key(self._requested_playback_device)
+        requested_key_text = (
+            requested_key.hex().lower() if requested_key is not None else None
+        )
+        if requested_key_text is None and self._requested_playback_device_key:
+            requested_key_text = self._requested_playback_device_key.strip().lower()
+        self.output_combo.blockSignals(True)
         self.output_combo.clear()
         self.output_combo.addItem("Choose headphones or speakers…", None)
         self._outputs = list(QMediaDevices.audioOutputs())
-        requested_key = _device_key(self._requested_playback_device)
         selected_index = -1
         for index, device in enumerate(self._outputs):
             self.output_combo.addItem(device.description(), device)
-            if requested_key is not None and _device_key(device) == requested_key:
+            device_key = _device_key(device)
+            if requested_key_text is not None and device_key is not None and (
+                device_key.hex().lower() == requested_key_text
+            ):
                 selected_index = index + 1
         if not self._outputs:
             self.output_combo.addItem("No playback devices detected", None)
@@ -373,8 +458,17 @@ class ListeningComparisonDialog(QDialog):
                 "then reopen this comparison."
             )
             self.status_label.setStyleSheet(message_text_style("warn"))
-        elif selected_index >= 0:
-            self.output_combo.setCurrentIndex(selected_index)
+        else:
+            self.output_combo.setEnabled(True)
+            if selected_index >= 0:
+                self.output_combo.setCurrentIndex(selected_index)
+            elif requested_key_text is not None:
+                self.status_label.setText(
+                    "The saved preview device is unavailable. Choose another output."
+                )
+                self.status_label.setStyleSheet(message_text_style("warn"))
+        self.output_combo.blockSignals(False)
+        self._update_playback_buttons()
 
     def _current_playback_device(self) -> QAudioDevice | None:
         value = self.output_combo.currentData()
@@ -382,8 +476,29 @@ class ListeningComparisonDialog(QDialog):
 
     def _on_output_changed(self, _index: int) -> None:
         self._stop_playback()
+        device = self._current_playback_device()
+        if device is not None:
+            self._requested_playback_device = device
+            device_key = _device_key(device)
+            self._requested_playback_device_key = (
+                device_key.hex() if device_key is not None else None
+            )
+            saved = _persist_preview_device(self, device)
+            if saved is False:
+                self.status_label.setText(
+                    "Preview device selected for this session, but saving it failed."
+                )
+                self.status_label.setStyleSheet(message_text_style("warn"))
+        self._update_playback_buttons()
+
+    def _on_audio_outputs_changed(self) -> None:
+        self._refresh_playback_devices()
+
+    def _update_playback_buttons(self) -> None:
+        enabled = self._result is not None and self._current_playback_device() is not None
         for button in self._play_buttons.values():
-            button.setEnabled(self._result is not None and self._current_playback_device() is not None)
+            button.setEnabled(enabled)
+        self.stop_button.setEnabled(self._audio_sink is not None)
 
     def _start_render(self) -> None:
         if self._close_requested:
@@ -405,7 +520,10 @@ class ListeningComparisonDialog(QDialog):
             self._proposed_settings,
             current_chain_settings=self._current_chain_settings,
             proposed_chain_settings=self._proposed_chain_settings,
-            level_match=self.level_match_checkbox.isChecked(),
+            # Level matching is a playback preference.  Keeping rendering
+            # independent of it makes toggling instant and preserves the same
+            # DSP result for every A/B pass.
+            level_match=False,
             parent=self,
         )
         worker = self._worker
@@ -418,7 +536,18 @@ class ListeningComparisonDialog(QDialog):
 
     def _on_level_match_changed(self, _enabled: bool) -> None:
         self._stop_playback()
-        self._start_render()
+        if self._result is not None:
+            for key, detail in self._clip_labels.items():
+                detail.setText(
+                    self._clip_details(
+                        getattr(self._result, key),
+                        level_match=self.level_match_checkbox.isChecked(),
+                    )
+                )
+            self.status_label.setText(
+                "Speech level matching applied to the next preview playback."
+            )
+            self.status_label.setStyleSheet(message_text_style("info"))
 
     def _on_render_progress(self, message: str, percentage: int) -> None:
         self.progress_label.setText(message)
@@ -432,8 +561,14 @@ class ListeningComparisonDialog(QDialog):
         self.progress_label.setText("Comparison ready")
         for key, button in self._play_buttons.items():
             button.setEnabled(self._current_playback_device() is not None)
-            self._clip_labels[key].setText(self._clip_details(getattr(result, key)))
+            self._clip_labels[key].setText(
+                self._clip_details(
+                    getattr(result, key),
+                    level_match=self.level_match_checkbox.isChecked(),
+                )
+            )
         self.keep_button.setEnabled(True)
+        self._update_playback_buttons()
         self.status_label.setText(
             f"{result.scope_label}. Native delay compensation: "
             f"{result.alignment_ms:.1f} ms. "
@@ -467,19 +602,51 @@ class ListeningComparisonDialog(QDialog):
             self._start_render()
 
     @staticmethod
-    def _clip_details(clip: RenderedComparisonClip) -> str:
+    def _clip_details(
+        clip: RenderedComparisonClip, *, level_match: bool = False
+    ) -> str:
+        match_gain = clip.level_match_gain_db
+        if level_match and clip.label != "original" and not match_gain:
+            match_gain = float(
+                np.clip(
+                    -clip.actual_level_delta_db,
+                    -MAX_LEVEL_MATCH_DB,
+                    MAX_LEVEL_MATCH_DB,
+                )
+            )
         match = (
-            f"preview gain {clip.level_match_gain_db:+.1f} dB; "
-            if clip.level_match_gain_db
+            f"preview gain {match_gain:+.1f} dB; "
+            if level_match and match_gain
             else ""
         )
+        if level_match:
+            return (
+                f"Actual level vs original: {clip.actual_level_delta_db:+.1f} dB; "
+                f"{match}bounded preview gain and peak-safe playback"
+            )
         return (
             f"Actual level vs original: {clip.actual_level_delta_db:+.1f} dB; "
             f"{match}safety gain {clip.safety_gain_db:+.1f} dB; "
             f"playback peak {clip.peak_db:.1f} dBFS"
         )
 
-    def _play_clip(self, key: str) -> None:
+    def _current_playback_sample(self) -> int:
+        if self._audio_sink is None or self._playing_clip_key is None:
+            return int(self._playback_start_sample)
+        try:
+            elapsed_us = max(0, int(self._audio_sink.processedUSecs()))
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return int(self._playback_start_sample)
+        offset = int(round(elapsed_us * self._playback_sample_rate / 1_000_000.0))
+        if self._result is not None:
+            try:
+                clip = self._result.clip(self._playing_clip_key)
+                offset = min(offset + self._playback_start_sample, int(clip.samples.size))
+            except (KeyError, TypeError, ValueError):
+                pass
+        return max(0, offset)
+
+    def _play_clip(self, key: str, *, start_sample: int = 0) -> None:
         if self._audio_sink is not None:
             self._pending_clip = key
             self._fade_timer.start()
@@ -492,7 +659,12 @@ class ListeningComparisonDialog(QDialog):
         self._stop_playback()
         try:
             audio_format, _, _ = _format_for_device(device, result.sample_rate)
-            payload = _pcm_bytes(clip.samples, audio_format, result.sample_rate)
+            samples = _preview_samples(
+                clip,
+                level_match=self.level_match_checkbox.isChecked(),
+            )
+            start = min(max(0, int(start_sample)), int(samples.size))
+            payload = _pcm_bytes(samples[start:], audio_format, result.sample_rate)
             audio_buffer = QBuffer(self)
             audio_buffer.setData(QByteArray(payload))
             if not audio_buffer.open(QIODevice.OpenModeFlag.ReadOnly):
@@ -502,11 +674,15 @@ class ListeningComparisonDialog(QDialog):
             sink.stateChanged.connect(self._on_audio_state_changed)
             self._audio_buffer = audio_buffer
             self._audio_sink = sink
+            self._playing_clip_key = key
+            self._playback_start_sample = start
+            self._playback_sample_rate = int(result.sample_rate)
             sink.start(audio_buffer)
             if sink.error() != QAudio.Error.NoError:
                 raise RuntimeError(f"audio output failed ({sink.error().name})")
             self.status_label.setText(f"Playing {clip.label} on {device.description()}.")
             self.status_label.setStyleSheet(message_text_style("info"))
+            self._update_playback_buttons()
         except Exception as error:
             self._stop_playback()
             self.status_label.setText(f"Playback failed: {error}")
@@ -527,12 +703,17 @@ class ListeningComparisonDialog(QDialog):
         sink, buffer = self._audio_sink, self._audio_buffer
         self._audio_sink = None
         self._audio_buffer = None
+        self._playing_clip_key = None
+        self._playback_start_sample = 0
+        self._playback_sample_rate = self._sample_rate
         if sink is not None:
             sink.stop()
             sink.deleteLater()
         if buffer is not None:
             buffer.close()
             buffer.deleteLater()
+        if hasattr(self, "stop_button"):
+            self.stop_button.setEnabled(False)
 
     def _fade_playback(self) -> None:
         sink = self._audio_sink
@@ -540,9 +721,10 @@ class ListeningComparisonDialog(QDialog):
             sink.setVolume(sink.volume() - 0.2)
             return
         key = self._pending_clip
+        start_sample = self._current_playback_sample()
         self._stop_playback()
         if key is not None:
-            self._play_clip(key)
+            self._play_clip(key, start_sample=start_sample)
 
     def _wait_for_worker(self) -> None:
         self._request_close(False)

@@ -255,16 +255,16 @@ def test_default_window_uses_wide_controls_without_outer_scrolling(
     assert window.content_scroll_area.horizontalScrollBar().maximum() == 0
     assert window.content_scroll_area.verticalScrollBar().maximum() == 0
     viewport = window.content_scroll_area.viewport()
-    dropped_top_left = window.dropped_label.mapTo(
-        viewport,
-        window.dropped_label.rect().topLeft(),
-    )
-    dropped_bottom_right = window.dropped_label.mapTo(
-        viewport,
-        window.dropped_label.rect().bottomRight(),
-    )
-    assert viewport.rect().contains(dropped_top_left)
-    assert viewport.rect().contains(dropped_bottom_right)
+    assert window.health_details.isHidden()
+    assert viewport.rect().contains(window.health_details_button.mapTo(
+        viewport, window.health_details_button.rect().bottomRight()
+    ))
+    window.health_details_button.click()
+    qapp.processEvents()
+    assert window.health_details.isVisible()
+    assert window.dropped_label.isVisible()
+    window.health_details_button.click()
+    assert window.health_details.isHidden()
 
 
 @pytest.mark.parametrize(

@@ -8,6 +8,8 @@ from dataclasses import asdict
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+from typing import Any
 
 import numpy as np
 
@@ -26,6 +28,10 @@ from mic_eq.config import Preset
 from mic_eq.mic_eq_core import simulate_gate_suppressor_order
 
 _MAX_SUPPRESSOR_LATENCY_MS = _DEFAULT_MAX_SUPPRESSOR_LATENCY_MS
+REPO_ROOT = Path(__file__).resolve().parents[2]
+_PORTABLE_TEXT_SUFFIXES = frozenset(
+    {".bat", ".c", ".h", ".json", ".md", ".ps1", ".py", ".pyi", ".rs", ".toml", ".yaml", ".yml"}
+)
 
 
 def _selected_settings(
@@ -54,6 +60,198 @@ def _selected_settings(
     if not np.isfinite(selected_strength) or not 0.0 <= selected_strength <= 1.0:
         raise ValueError("joint tuner returned invalid suppressor strength")
     return dict(selected_gate), selected_model, selected_strength
+
+
+def _portable_source_sha256(path: Path) -> str:
+    """Hash source text in the same line-ending-independent form as hygiene."""
+
+    data = path.read_bytes()
+    if path.suffix.casefold() in _PORTABLE_TEXT_SUFFIXES and b"\0" not in data:
+        data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _git_revision(root: Path) -> str | None:
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        if status.returncode != 0 or status.stdout.strip():
+            return None
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except OSError:
+        return None
+    revision = result.stdout.strip().lower()
+    return revision if result.returncode == 0 and len(revision) == 40 else None
+
+
+def _finalize_report(
+    report: dict[str, Any],
+    *,
+    corpus: Path,
+    root: Path = REPO_ROOT,
+) -> dict[str, Any]:
+    """Add the auditable contract without changing measured case results."""
+
+    finalized = dict(report)
+    cases = [case for case in report.get("cases", []) if isinstance(case, Mapping)]
+    implementation_hashes = dict(report.get("implementation_sha256", {}))
+    source_paths = (
+        root / "python/tools/evaluate_product_tuning.py",
+        root / "python/mic_eq/analysis/joint_tuning.py",
+        root / "rust-core/src/audio/processor/python_api.rs",
+    )
+    source_hashes = {
+        path.relative_to(root).as_posix(): _portable_source_sha256(path)
+        for path in source_paths
+        if path.is_file()
+    }
+    thresholds = sorted(
+        {
+            float(case["threshold_db"])
+            for case in cases
+            if isinstance(case.get("threshold_db"), (int, float))
+        }
+    )
+    capture_ids = {
+        str(case["id"])
+        for case in cases
+        if isinstance(case.get("id"), str)
+    }
+    selected_latencies = [
+        float(case["selected_latency_ms"])
+        for case in cases
+        if isinstance(case.get("selected_latency_ms"), (int, float))
+    ]
+    runtime_ms = [
+        float(case["runtime_ms"])
+        for case in cases
+        if isinstance(case.get("runtime_ms"), (int, float))
+    ]
+    clean_error_increases = [
+        float(case["clean_error_increase"])
+        for case in cases
+        if isinstance(case.get("clean_error_increase"), (int, float))
+    ]
+    gate_names = sorted(
+        {
+            str(name)
+            for case in cases
+            for name in (case.get("gates", {}) if isinstance(case.get("gates"), Mapping) else {})
+        }
+    )
+    corpus_manifest = corpus / "manifest.json"
+    corpus_relative = corpus_manifest.relative_to(root).as_posix()
+    asset_hashes: dict[str, Any] = {
+        "corpus_manifest": {
+            "path": corpus_relative,
+            "sha256": str(report["corpus_manifest_sha256"]),
+        }
+    }
+    native_entries = sorted(
+        (path, digest)
+        for path, digest in implementation_hashes.items()
+        if str(path).casefold().endswith(".pyd")
+    )
+    if native_entries:
+        native_path, native_digest = native_entries[0]
+        asset_hashes["native_extension"] = {
+            "path": native_path,
+            "sha256": native_digest,
+        }
+    for asset_name in ("df.dll", "release-assets.json"):
+        if asset_name in implementation_hashes:
+            asset_hashes[asset_name] = implementation_hashes[asset_name]
+
+    selection_split = str(report["selection_split"])
+    finalized.update(
+        {
+            "schema_version": 2,
+            "audible_change": True,
+            "measurement_implementation_sha256": implementation_hashes,
+            "report_formatting": {
+                "metadata_only": False,
+                "contract": "audioforge.audible-change.v2",
+                "measurement_hashes_unchanged": True,
+            },
+            "source_sha256": source_hashes,
+            "evaluation_contract": {
+                "configuration": {
+                    "native_api": "simulate_gate_suppressor_order",
+                    "corpus": corpus_relative,
+                    "sample_rate": 48000,
+                    "capture_count": len(capture_ids),
+                    "case_count": int(report["case_count"]),
+                    "thresholds_db": thresholds,
+                    "incumbent_model": report["incumbent_model"],
+                    "candidate_models": list(report["candidate_models"]),
+                    "model_selection_policy": dict(report["model_selection_policy"]),
+                    "selection_split": selection_split,
+                    "max_suppressor_latency_ms": float(report["max_suppressor_latency_ms"]),
+                },
+                "asset_hashes": asset_hashes,
+                "runtime": {
+                    "max_p99_frame_seconds": None,
+                    "max_p99_frame_seconds_reason": (
+                        "Offline candidate search does not measure realtime callback P99; "
+                        "per-case runtime_ms records total candidate-search time, not live processing time."
+                    ),
+                    "case_runtime_ms_scope": "total candidate-search time",
+                    "max_case_runtime_ms": max(runtime_ms) if runtime_ms else None,
+                    "sub_realtime_gate_scope": (
+                        "selected native render runtime_ms compared with the clip duration"
+                    ),
+                },
+                "latency": {
+                    "measurement": "per-case selected_latency_ms from the native simulator",
+                    "bound_ms": float(report["max_suppressor_latency_ms"]),
+                    "max_selected_suppressor_latency_ms": (
+                        max(selected_latencies) if selected_latencies else None
+                    ),
+                    "all_selected_within_bound": all(
+                        bool(case.get("gates", {}).get("selected_latency_within_35ms"))
+                        for case in cases
+                    ),
+                },
+                "clean_preservation": {
+                    "metric": (
+                        "normalized MSE change for selected output versus incumbent output "
+                        "on the paired clean capture"
+                    ),
+                    "max_clean_error_increase": (
+                        max(clean_error_increases) if clean_error_increases else None
+                    ),
+                    "gate_threshold": 0.01,
+                    "gates": {
+                        name: all(
+                            bool(
+                                isinstance(case.get("gates"), Mapping)
+                                and case["gates"].get(name)
+                            )
+                            for case in cases
+                        )
+                        for name in gate_names
+                    },
+                },
+            },
+        }
+    )
+    revision = _git_revision(root)
+    if revision is not None:
+        finalized["measurement_source_revision"] = revision
+    return finalized
 
 
 def evaluate(corpus: Path, model: str) -> dict:
@@ -168,7 +366,7 @@ def evaluate(corpus: Path, model: str) -> dict:
                 }
             )
             print(capture["id"], threshold, result["decision"], all(gates.values()), flush=True)
-    root = Path(__file__).resolve().parents[2]
+    root = REPO_ROOT
     baseline_path = (
         root
         / "models"
@@ -212,7 +410,7 @@ def evaluate(corpus: Path, model: str) -> dict:
     return {"corpus_manifest_sha256": hashlib.sha256((corpus / "manifest.json").read_bytes()).hexdigest(),
             "implementation_sha256": {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
                                       for path in evidence_files},
-            "selection_split": "first half selects among all available models; second half must pass all gates and improve on incumbent; incumbent settings are retained exactly when evidence is inconclusive; selected suppressor latency must be <=35 ms; fallback noise floor comes from training noise only, while explicit noise_floor_db is precomputed context",
+            "selection_split": "per-capture first half selects among eligible models under the active model selection policy; second half must pass all gates and improve on the incumbent; incumbent settings are retained exactly when evidence is inconclusive; selected suppressor latency must be <=35 ms; fallback noise floor comes from training noise only, while explicit noise_floor_db is precomputed context",
             "model": incumbent_model,
             "incumbent_model": incumbent_model,
             "candidate_models": list(selection_policy["candidate_models"]),
@@ -229,12 +427,17 @@ def evaluate(corpus: Path, model: str) -> dict:
             )}
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, default=Path("models/deepfilter_fullband_eval"))
     parser.add_argument("--model", default="rnnoise", choices=("rnnoise", "deepfilter", "deepfilter-ll"))
     parser.add_argument("--output", type=Path, default=Path("evaluation/product-joint-tuning.json"))
-    args = parser.parse_args()
-    report = evaluate(args.corpus, args.model)
+    args = parser.parse_args(argv)
+    corpus = args.corpus.resolve()
+    report = _finalize_report(evaluate(corpus, args.model), corpus=corpus)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
-    raise SystemExit(0 if report["all_gates_passed"] else 1)
+    return 0 if report["all_gates_passed"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

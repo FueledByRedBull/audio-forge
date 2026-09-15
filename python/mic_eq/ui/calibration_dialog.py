@@ -28,7 +28,15 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 import numpy as np
 
 from .. import CORE_AVAILABLE
-from ..config import DeviceIdentity, TARGET_CURVES, coerce_device_identity
+from ..config import (
+    DeviceIdentity,
+    EQ_FREQUENCIES,
+    EQSettings,
+    Preset,
+    TARGET_CURVES,
+    build_eq_candidate_settings,
+    coerce_device_identity,
+)
 from .analysis_worker import AnalysisWorker
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
@@ -65,6 +73,47 @@ TOO_LOUD_DB = -3.0  # Warn if louder than this (clipping risk)
 RECORDING_DURATION = 10.0  # Seconds
 
 
+def _eq_candidate_preset(parent: Any, eq_settings: Mapping[str, Any]) -> Preset | None:
+    """Merge an EQ-only candidate into the current complete preset."""
+    getter = getattr(parent, "_get_current_preset", None)
+    if not callable(getter):
+        return None
+    current = getter()
+    if not isinstance(current, Preset):
+        return None
+    payload = deepcopy(current.to_dict())
+    base_eq = payload.get("eq")
+    if not isinstance(base_eq, Mapping):
+        raise ValueError("current EQ settings are unavailable")
+    if "bands" in eq_settings:
+        candidate_eq = {
+            key: deepcopy(eq_settings[key])
+            for key in ("schema_version", "enabled", "bands", "layers")
+            if key in eq_settings
+        }
+        candidate_eq.setdefault(
+            "schema_version", int(base_eq.get("schema_version", 1))
+        )
+        candidate_eq.setdefault("enabled", True)
+        typed_eq = EQSettings.from_dict(candidate_eq)
+    else:
+        frequencies = list(eq_settings.get("band_freqs") or EQ_FREQUENCIES)
+        gains = list(eq_settings.get("band_gains") or ())
+        qs = list(eq_settings.get("band_qs") or ())
+        if not (len(frequencies) == len(gains) == len(qs) == len(EQ_FREQUENCIES)):
+            raise ValueError("Auto-EQ candidate does not contain 10 complete bands")
+        typed_eq = build_eq_candidate_settings(
+            current.eq,
+            frequencies,
+            gains,
+            qs,
+            layer="correction",
+            enabled=bool(eq_settings.get("enabled", True)),
+        )
+    payload["eq"] = typed_eq.to_dict()
+    return Preset.from_dict(payload)
+
+
 def _find_processor_owner(widget: object) -> Any | None:
     parent: Any = widget
     while parent and not hasattr(parent, "processor"):
@@ -95,11 +144,18 @@ def _chain_settings(
     *,
     full_chain: bool = False,
     input_pre_filtered: bool = False,
+    preset: Preset | None = None,
 ) -> dict[str, Any]:
     if full_chain:
-        preset = owner._get_current_preset().to_dict()
+        current = preset if preset is not None else owner._get_current_preset()
+        if not isinstance(current, Preset):
+            raise TypeError("current processing configuration is unavailable")
+        preset_payload = current.to_dict()
         return {
-            **{name: preset[name] for name in ("gate", "rnnoise", "deesser", "compressor", "limiter")},
+            **{
+                name: preset_payload[name]
+                for name in ("gate", "rnnoise", "deesser", "compressor", "limiter")
+            },
             "full_chain": True,
             "input_pre_filtered": bool(input_pre_filtered),
             "input_cleanup_mode": owner.processor.get_input_cleanup_mode(),
@@ -632,23 +688,6 @@ class CalibrationDialog(QDialog):
             )
             return
 
-        # Build all band tuples before touching the live EQ state.
-        from ..config import EQ_FREQUENCIES as BAND_FREQUENCIES_HZ
-
-        try:
-            freqs_hz = eq_settings.get("band_freqs", BAND_FREQUENCIES_HZ)
-            gains = eq_settings["band_gains"]
-            qs = eq_settings.get("band_qs", [1.41] * len(BAND_FREQUENCIES_HZ))
-            if any(
-                len(values) != len(BAND_FREQUENCIES_HZ)
-                for values in (freqs_hz, gains, qs)
-            ):
-                raise ValueError("Auto-EQ candidate does not contain 10 complete bands")
-            bands = [(freq, gains[i], qs[i]) for i, freq in enumerate(freqs_hz)]
-        except (KeyError, TypeError, ValueError) as error:
-            QMessageBox.critical(self, "Error", f"Invalid Auto-EQ candidate: {error}")
-            return
-
         get_eq_settings = getattr(parent.eq_panel, "get_settings", None)
         if not callable(get_eq_settings):
             QMessageBox.critical(
@@ -657,20 +696,51 @@ class CalibrationDialog(QDialog):
                 "Could not snapshot current EQ settings; no changes were applied.",
             )
             return
-        try:
-            eq_snapshot = deepcopy(get_eq_settings())
-        except Exception as error:
-            logger.warning("Failed to snapshot EQ before candidate apply", exc_info=True)
+        apply_configuration = getattr(parent, "apply_processing_configuration", None)
+        if not callable(apply_configuration):
             QMessageBox.critical(
                 self,
                 "Error",
-                f"Could not snapshot current EQ settings; no changes were applied: {error}",
+                "The processing owner does not support transactional configuration; "
+                "no changes were applied.",
+            )
+            return
+        mode_getter = getattr(parent, "_processing_mode", None)
+        if not callable(mode_getter):
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Could not capture the current processing mode; no changes were applied.",
+            )
+            return
+        try:
+            snapshot_preset = parent._get_current_preset()
+            snapshot_mode = str(mode_getter())
+        except Exception as error:
+            logger.warning(
+                "Failed to snapshot complete configuration before candidate apply",
+                exc_info=True,
+            )
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Could not snapshot current processing settings; no changes were applied: "
+                f"{error}",
+            )
+            return
+        if not isinstance(snapshot_preset, Preset):
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Could not snapshot current processing settings; no changes were applied.",
             )
             return
 
         try:
-            parent.eq_panel.apply_auto_eq_results(bands, diagnostics=eq_settings)
-            parent.eq_panel.set_settings({"enabled": True})
+            candidate_preset = _eq_candidate_preset(parent, eq_settings)
+            if candidate_preset is None:
+                raise ValueError("current processing configuration is unavailable")
+            apply_configuration(candidate_preset, processing_mode=snapshot_mode)
             parent.eq_panel.set_auto_eq_diagnostics(eq_settings)
             accepted_eq = deepcopy(get_eq_settings())
             if not isinstance(accepted_eq, Mapping):
@@ -689,18 +759,13 @@ class CalibrationDialog(QDialog):
         except Exception as error:
             restore_error = None
             try:
-                current_eq = parent.eq_panel.get_settings()
-            except Exception:
-                current_eq = None
-            if current_eq != eq_snapshot:
-                try:
-                    parent.eq_panel.set_settings(eq_snapshot)
-                except Exception as restore_exc:
-                    restore_error = restore_exc
-                    logger.warning(
-                        "Failed to restore EQ after candidate apply failure",
-                        exc_info=True,
-                    )
+                apply_configuration(snapshot_preset, processing_mode=snapshot_mode)
+            except Exception as restore_exc:
+                restore_error = restore_exc
+                logger.warning(
+                    "Failed to restore processing configuration after candidate apply failure",
+                    exc_info=True,
+                )
             logger.warning("Failed to apply Auto-EQ candidate", exc_info=True)
             message = f"Could not apply Auto-EQ settings: {error}"
             if restore_error is not None:

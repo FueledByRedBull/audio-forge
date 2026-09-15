@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pytest
 from PyQt6.QtTest import QSignalSpy
+from PyQt6.QtWidgets import QDialog
 
 from mic_eq.analysis.voice_setup import analyze_voice_setup
 from mic_eq.config import load_preset
@@ -184,6 +185,10 @@ def test_accepted_full_voice_setup_is_one_undo_transaction(
         "mic_eq.ui.voice_setup_dialog.QMessageBox.information",
         lambda *_args, **_kwargs: None,
     )
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.QMessageBox.warning",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **_kwargs: None)
 
     window._history_transaction_depth += 1
@@ -195,7 +200,27 @@ def test_accepted_full_voice_setup_is_one_undo_transaction(
         )
         accepted = QSignalSpy(dialog.setup_applied)
         dialog._complete_verification(speech)
-        assert accepted.wait(5000), dialog.warning_label.text()
+        verification_worker = dialog.analysis_worker
+        assert verification_worker is not None
+        finished = QSignalSpy(verification_worker.finished)
+        assert finished.wait(30_000)
+        assert dialog.setup_state == "final_comparison_ready"
+
+        class _AcceptedComparison:
+            def __init__(self, **_kwargs):
+                pass
+
+            def exec(self):
+                return int(QDialog.DialogCode.Accepted)
+
+            def deleteLater(self):
+                pass
+
+        monkeypatch.setattr(
+            "mic_eq.ui.listening_comparison_dialog.ListeningComparisonDialog",
+            _AcceptedComparison,
+        )
+        dialog._on_start_clicked()
         assert len(accepted) == 1
     finally:
         window._history_transaction_depth -= 1

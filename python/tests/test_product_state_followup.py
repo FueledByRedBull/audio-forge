@@ -98,6 +98,7 @@ def test_start_applies_persisted_mute_before_and_after_native_start(
 
     processor = Processor()
     cast(Any, window).processor = processor
+    window.output_combo.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
     window.user_muted = True
     window._temporary_mute_reasons = set()
     window._apply_input_preferences_for_current_route = lambda: None
@@ -115,6 +116,20 @@ def test_start_applies_persisted_mute_before_and_after_native_start(
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+def test_start_refuses_retained_configuration_mute() -> None:
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.processor = SimpleNamespace(is_running=lambda: False, start=Mock())
+    owner._temporary_mute_reasons = {"configuration"}
+    owner.status_bar = Mock()
+    owner._sync_processing_controls = Mock()
+
+    MainWindow._start_processing(owner)
+
+    owner.processor.start.assert_not_called()
+    owner._sync_processing_controls.assert_called_once_with()
+    assert "reload the preset" in owner.status_bar.showMessage.call_args.args[0]
 
 
 def test_legacy_input_modes_migrate_only_to_the_known_stable_device() -> None:

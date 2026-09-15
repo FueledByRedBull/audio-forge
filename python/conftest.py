@@ -23,3 +23,18 @@ def qapp():
     app.setPalette(application_palette())
     yield app
     app.processEvents()
+
+
+@pytest.fixture(autouse=True)
+def discard_unsaved_test_windows(monkeypatch):
+    """Discard test edits during window cleanup; tests can override the decision."""
+    from PyQt6.QtWidgets import QMessageBox
+
+    question = QMessageBox.question
+
+    def answer(parent, title, *args, **kwargs):
+        if title == "Unsaved Sound Changes":
+            return QMessageBox.StandardButton.Discard
+        return question(parent, title, *args, **kwargs)
+
+    monkeypatch.setattr(QMessageBox, "question", answer)

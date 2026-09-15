@@ -664,6 +664,22 @@ def test_package_smoke_accepts_required_assets_and_metadata(tmp_path):
     assert package_smoke.check_dist_bundle(bundle) == []
 
 
+def test_package_smoke_requires_windows_audio_backend(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
+    (bundle / "AudioForge.exe").write_bytes(b"x")
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        if relative_path.endswith("windowsmediaplugin.dll"):
+            continue
+        _write_bundle_file(bundle, relative_path)
+    _write_valid_build_info(bundle)
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert any("windowsmediaplugin.dll" in error for error in errors)
+
+
 def test_package_smoke_rejects_duplicate_native_extension(tmp_path):
     bundle = tmp_path / "AudioForge"
     (bundle / "AudioForge.exe").parent.mkdir(parents=True)
@@ -741,6 +757,21 @@ def test_package_smoke_rejects_excluded_openssl_payload(tmp_path):
     assert any("excluded OpenSSL payload" in error for error in errors)
 
 
+def test_package_smoke_rejects_unused_qt_ffmpeg_payload(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
+    (bundle / "AudioForge.exe").write_bytes(b"x")
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        _write_bundle_file(bundle, relative_path)
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+    _write_bundle_file(bundle, "_internal/PyQt6/Qt6/bin/avcodec-61.dll")
+    _write_bundle_file(bundle, "_internal/PyQt6/Qt6/plugins/multimedia/ffmpegmediaplugin.dll")
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert any("unused Qt FFmpeg payload" in error for error in errors)
+
+
 def test_prune_bundle_removes_duplicate_native_extension_only_when_packaged_copy_exists(
     tmp_path,
 ):
@@ -793,6 +824,40 @@ def test_prune_bundle_removes_excluded_openssl_payload(tmp_path):
 
     assert sorted(path.as_posix() for path in removed) == sorted(relative_paths)
     assert not any((bundle / relative_path).exists() for relative_path in relative_paths)
+
+
+def test_prune_bundle_removes_unused_qt_ffmpeg_payload_and_keeps_windows_backend(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    relative_paths = (
+        "_internal/PyQt6/Qt6/bin/avcodec-61.dll",
+        "_internal/PyQt6/Qt6/bin/avformat-61.dll",
+        "_internal/PyQt6/Qt6/bin/avutil-59.dll",
+        "_internal/PyQt6/Qt6/bin/swresample-5.dll",
+        "_internal/PyQt6/Qt6/bin/swscale-8.dll",
+        "_internal/PyQt6/Qt6/plugins/multimedia/ffmpegmediaplugin.dll",
+    )
+    for relative_path in relative_paths:
+        _write_bundle_file(bundle, relative_path)
+    windows_backend = bundle / "_internal/PyQt6/Qt6/plugins/multimedia/windowsmediaplugin.dll"
+    windows_backend.parent.mkdir(parents=True, exist_ok=True)
+    windows_backend.write_bytes(b"x")
+
+    removed = prune_bundle.prune_bundle(bundle)
+
+    assert sorted(path.as_posix() for path in removed) == sorted(relative_paths)
+    assert not any((bundle / relative_path).exists() for relative_path in relative_paths)
+    assert windows_backend.is_file()
+
+
+def test_prune_bundle_keeps_dependency_dist_info_metadata(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    metadata = bundle / "_internal/example.dist-info/METADATA"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text("Name: example\n", encoding="utf-8")
+
+    prune_bundle.prune_bundle(bundle)
+
+    assert metadata.is_file()
 
 
 def test_package_smoke_rejects_external_windows_icu(tmp_path):

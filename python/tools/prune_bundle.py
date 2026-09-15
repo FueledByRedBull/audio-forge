@@ -24,6 +24,24 @@ def is_unused_openssl_payload(path: Path) -> bool:
     ) or name.startswith("libcrypto-")
 
 
+_UNUSED_FFMPEG_PAYLOAD_NAMES = frozenset(
+    {
+        "avcodec-61.dll",
+        "avformat-61.dll",
+        "avutil-59.dll",
+        "swresample-5.dll",
+        "swscale-8.dll",
+        "ffmpegmediaplugin.dll",
+    }
+)
+
+
+def is_unused_ffmpeg_payload(path: Path) -> bool:
+    """Return whether *path* belongs to the unused Qt FFmpeg backend."""
+
+    return path.name.casefold() in _UNUSED_FFMPEG_PAYLOAD_NAMES
+
+
 def prune_bundle(bundle_root: Path) -> list[Path]:
     removed: list[Path] = []
     translations_dir = bundle_root / "_internal" / "PyQt6" / "Qt6" / "translations"
@@ -62,6 +80,13 @@ def prune_bundle(bundle_root: Path) -> list[Path]:
             candidate.unlink()
             removed.append(candidate.relative_to(bundle_root))
             print(f"Removed unused OpenSSL payload: {candidate}")
+        elif is_unused_ffmpeg_payload(candidate):
+            # AudioForge sends raw PCM through QAudioSink. The Windows
+            # multimedia backend is sufficient; the FFmpeg backend and its
+            # codec DLLs are not used by the application.
+            candidate.unlink()
+            removed.append(candidate.relative_to(bundle_root))
+            print(f"Removed unused FFmpeg payload: {candidate}")
 
     for relative_path in (
         Path("_internal/PyQt6/Qt6/bin/Qt6Pdf.dll"),

@@ -139,6 +139,14 @@ User-facing tools:
 - Raw monitor and bypass paths for troubleshooting.
 - Bounded full-processing undo/redo (`Ctrl+Z` / `Ctrl+Shift+Z`) for manual
   edits, presets, Auto-EQ, and Auto Voice Setup, with realtime state excluded.
+- Same-recording Original/Current/Proposed listening comparison, with aligned
+  switching, optional level matching, Stop, and a separate headphone/speaker output.
+- Independent microphone correction and tone EQ. Tone edits preserve matching
+  microphone evidence; changed output settings make previous output verification stale.
+- `Ctrl+S` updates your current saved preset; `Ctrl+Shift+S` saves a copy. Quit
+  and preset replacement offer Save, Discard, or Cancel for unsaved sound changes.
+- Optional tray/background operation and a global mute shortcut. Relaunching
+  shows the existing window; Details reveals technical health counters.
 
 Presets use a versioned typed-band schema; migration tests preserve explicit
 user values and response parity. The graph and numeric controls share that

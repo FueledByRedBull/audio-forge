@@ -1,6 +1,8 @@
 """Joint selection must keep exact incumbent settings when evidence is weak."""
 
 from dataclasses import asdict
+import json
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -10,7 +12,14 @@ from mic_eq.analysis import joint_tuning
 from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.config import Preset
 from mic_eq.mic_eq_core import simulate_gate_suppressor_order
-from tools.evaluate_product_tuning import _selected_settings
+from tools import evaluate_product_tuning
+from tools.evaluate_product_tuning import (
+    REPO_ROOT,
+    _finalize_report,
+    _git_revision,
+    _selected_settings,
+)
+from tools.check_evaluation_hygiene import validate_report
 
 
 def _tuning_args() -> tuple[Any, ...]:
@@ -237,6 +246,89 @@ def test_evaluator_uses_actual_selected_model_and_canonicalizes_alias():
     assert selected_gate == gate
     assert model == "deepfilter-ll"
     assert strength == 0.47
+
+
+def _synthetic_product_report() -> dict[str, Any]:
+    return {
+        "corpus_manifest_sha256": "e" * 64,
+        "implementation_sha256": {
+            "python/tools/evaluate_product_tuning.py": "a" * 64,
+            "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "b" * 64,
+            "df.dll": "c" * 64,
+            "release-assets.json": "d" * 64,
+        },
+        "selection_split": "per-capture first half selects among eligible models",
+        "incumbent_model": "rnnoise",
+        "candidate_models": ["rnnoise", "deepfilter-ll"],
+        "model_selection_policy": {"id": "all_supported_models_v1"},
+        "max_suppressor_latency_ms": 35.0,
+        "case_count": 1,
+        "all_gates_passed": True,
+        "cases": [
+            {
+                "id": "capture-1",
+                "threshold_db": -40.0,
+                "selected_latency_ms": 10.0,
+                "runtime_ms": 12.5,
+                "clean_error_increase": -0.01,
+                "gates": {"clean_speech_preserved": True, "selected_latency_within_35ms": True},
+            }
+        ],
+    }
+
+
+def test_evaluator_report_finalizer_emits_auditable_contract_without_changing_metrics():
+    report = _synthetic_product_report()
+    implementation_hashes = report["implementation_sha256"]
+    finalized = _finalize_report(
+        report,
+        corpus=REPO_ROOT / "models" / "test-report-corpus",
+    )
+
+    assert finalized["schema_version"] == 2
+    assert finalized["audible_change"] is True
+    assert finalized["implementation_sha256"] == implementation_hashes
+    assert finalized["measurement_implementation_sha256"] == implementation_hashes
+    assert finalized["report_formatting"]["metadata_only"] is False
+    assert finalized["evaluation_contract"]["configuration"]["case_count"] == 1
+    assert finalized["evaluation_contract"]["configuration"]["capture_count"] == 1
+    assert finalized["evaluation_contract"]["latency"]["max_selected_suppressor_latency_ms"] == 10.0
+    assert "source_revision" not in finalized
+    assert "measurement_source_revision" not in finalized
+
+
+def test_evaluator_revision_is_omitted_for_dirty_worktree(monkeypatch):
+    def fake_run(command, **_kwargs):
+        assert command[1:] == ["status", "--porcelain", "--untracked-files=no"]
+        return SimpleNamespace(returncode=0, stdout=" M python/tools/evaluate_product_tuning.py")
+
+    monkeypatch.setattr(evaluate_product_tuning.subprocess, "run", fake_run)
+
+    assert _git_revision(REPO_ROOT) is None
+
+
+def test_evaluator_cli_writes_the_auditable_contract(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        evaluate_product_tuning,
+        "evaluate",
+        lambda _corpus, _model: _synthetic_product_report(),
+    )
+    output = tmp_path / "product-report.json"
+
+    assert evaluate_product_tuning.main(
+        [
+            "--corpus",
+            str(REPO_ROOT / "models" / "test-report-corpus"),
+            "--output",
+            str(output),
+        ]
+    ) == 0
+    written = json.loads(output.read_text(encoding="utf-8"))
+
+    assert written["audible_change"] is True
+    assert written["evaluation_contract"]["runtime"]["max_p99_frame_seconds"] is None
+    assert written["report_formatting"]["metadata_only"] is False
+    assert validate_report(output) == []
 
 
 def test_training_noise_floor_does_not_use_heldout_noise(monkeypatch):

@@ -181,6 +181,9 @@ class _FakeCombo:
     def addItem(self, label, data=None):
         self._items.append((label, data))
 
+    def setPlaceholderText(self, text: str):
+        self.placeholder = text
+
     def setCurrentIndex(self, index: int):
         self._index = index
 
@@ -328,6 +331,7 @@ def test_save_preset_file_handles_collision_and_errors(monkeypatch, save_results
     window = MainWindow.__new__(MainWindow)
     window.config = AppConfig()
     window.current_preset_path = None
+    window.status_bar = _FakeStatusBar()
     result = MainWindow._save_preset_file(
         window, Preset(name="My Preset")
     )
@@ -1008,6 +1012,9 @@ def test_input_channel_mode_change_persists_and_applies(monkeypatch):
     window.processor = _Processor()
     window.config = type("Cfg", (), {"input_channel_mode": "average"})()
     window.compressor_panel = Mock()
+    window.compressor_panel.get_compressor_settings.return_value = {
+        "noise_reference_reliability": 0.8
+    }
     window.input_channel_mode_combo = _FakeCombo(list(INPUT_CHANNEL_MODE_OPTIONS))
     window.input_channel_mode_combo.setCurrentIndex(4)
     monkeypatch.setattr(
@@ -1065,6 +1072,9 @@ def test_route_input_preference_reports_unsaved_failure(monkeypatch, save_failur
     assert "could not be saved" in window.status_bar.messages[-1][0].lower()
 
     window.compressor_panel = Mock()
+    window.compressor_panel.get_compressor_settings.return_value = {
+        "noise_reference_reliability": 0.0
+    }
     window._on_input_channel_mode_changed()
     window.processor.set_input_channel_mode.assert_called_with("left")
     assert "applied for this session" in window.status_bar.messages[-1][0]
@@ -1283,6 +1293,19 @@ def test_start_processor_for_route_forwards_endpoint_ids():
     }
 
 
+def test_start_processor_for_route_rejects_missing_output_device():
+    class Processor:
+        def start(self, *_args, **_kwargs):
+            raise AssertionError("processor must not start without a destination")
+
+    with pytest.raises(ValueError, match="destination"):
+        start_processor_for_route(
+            Processor(),
+            DeviceIdentity(name="USB Microphone", direction="input"),
+            None,
+        )
+
+
 def test_route_preset_binding_applies_only_to_exact_stable_route(qapp):
     input_identity = DeviceIdentity(
         name="Mic",
@@ -1343,6 +1366,9 @@ def test_device_selection_policy_prefers_default_and_virtual_output():
 def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
+    window.compressor_panel.get_compressor_settings.return_value = {
+        "noise_reference_reliability": 0.0
+    }
     window.processor = Mock()
     window.processor.is_running.return_value = False
     window.input_channel_mode_combo = _FakeCombo([("Mono", "phase_safe_mono")])
@@ -1403,6 +1429,9 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
 def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
+    window.compressor_panel.get_compressor_settings.return_value = {
+        "noise_reference_reliability": 0.0
+    }
     window.processor = Mock()
     window.processor.is_running.return_value = False
     window.input_combo = _FakeCombo(
@@ -1444,6 +1473,9 @@ def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
 def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatch):
     window = MainWindow.__new__(MainWindow)
     window.compressor_panel = Mock()
+    window.compressor_panel.get_compressor_settings.return_value = {
+        "noise_reference_reliability": 0.8
+    }
     window.processor = Mock()
     window.processor.is_running.return_value = False
     window.input_channel_mode_combo = _FakeCombo([("Mono", "phase_safe_mono")])
@@ -1484,11 +1516,9 @@ def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatc
     assert window.config.last_output_device_identity == DeviceIdentity(
         name="Out Old", is_default=False
     )
-    assert window.output_combo.currentData() == DeviceIdentity(
-        name="Out New", is_default=True, direction="output"
-    )
+    assert window.output_combo.currentData() is None
     assert any(
-        "Previous output device 'Out Old' is disconnected" in message
+        "Destination 'Out Old' is disconnected" in message
         for message, _ in window.status_bar.messages
     )
 
@@ -1878,7 +1908,7 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
         limiter=LimiterSettings(careful_output_enabled=False),
     )
 
-    MainWindow._apply_preset(window, preset)
+    MainWindow._write_processing_configuration(window, preset)
 
     assert window.gate_panel.settings == asdict(preset.gate)
     assert window.eq_panel.settings == preset.eq.to_dict()
@@ -1895,7 +1925,7 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
     assert "noise_reference_reliability" not in window.compressor_panel.compressor_settings
 
 
-def test_apply_preset_falls_back_when_model_load_raises(qapp):
+def test_configuration_writer_rejects_model_load_failure_before_panel_edits(qapp):
     window = MainWindow.__new__(MainWindow)
     window.gate_panel = _PresetPanel()
     window.eq_panel = _PresetPanel()
@@ -1917,10 +1947,10 @@ def test_apply_preset_falls_back_when_model_load_raises(qapp):
     preset = Preset()
     preset.rnnoise.model = "deepfilter"
 
-    MainWindow._apply_preset(window, preset)
-
+    with pytest.raises(RuntimeError):
+        MainWindow._write_processing_configuration(window, preset)
     assert window.model_combo.currentData() == "rnnoise"
-    assert "using RNNoise" in window.status_bar.messages[-1][0]
+    assert window.gate_panel.settings is None
 
 
 class _LatencyProcessor:

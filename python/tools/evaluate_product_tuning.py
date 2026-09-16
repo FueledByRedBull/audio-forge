@@ -431,11 +431,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--corpus", type=Path, default=Path("models/deepfilter_fullband_eval"))
     parser.add_argument("--model", default="rnnoise", choices=("rnnoise", "deepfilter", "deepfilter-ll"))
-    parser.add_argument("--output", type=Path, default=Path("evaluation/product-joint-tuning.json"))
+    parser.add_argument("--output", type=Path, help="Compact report; defaults to the selected model's evaluation report.")
+    parser.add_argument("--details-output", type=Path, help="Optional full per-case report; use an ignored directory or CI artifact.")
     args = parser.parse_args(argv)
+    suffix = "" if args.model == "rnnoise" else f"-{args.model}"
+    output = args.output or Path(f"evaluation/product-joint-tuning{suffix}.json")
+    if args.details_output is not None and args.details_output.resolve() == output.resolve():
+        parser.error("--output and --details-output must be different files")
     corpus = args.corpus.resolve()
     report = _finalize_report(evaluate(corpus, args.model), corpus=corpus)
-    args.output.write_text(json.dumps(report, indent=2) + "\n")
+    if args.details_output is not None:
+        args.details_output.parent.mkdir(parents=True, exist_ok=True)
+        args.details_output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    report.pop("cases", None)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return 0 if report["all_gates_passed"] else 1
 
 

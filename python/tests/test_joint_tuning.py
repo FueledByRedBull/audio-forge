@@ -314,28 +314,63 @@ def test_evaluator_revision_is_omitted_for_dirty_worktree(monkeypatch):
     assert _git_revision(REPO_ROOT) is None
 
 
-def test_evaluator_cli_writes_the_auditable_contract(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("model", "explicit_output", "keep_details"),
+    [("rnnoise", True, True), ("rnnoise", False, False),
+     ("deepfilter", False, True), ("deepfilter-ll", False, False)],
+)
+def test_evaluator_cli_writes_the_auditable_contract(
+    tmp_path, monkeypatch, model, explicit_output, keep_details
+):
+    monkeypatch.chdir(tmp_path)
+
+    def evaluate(_corpus, selected_model):
+        assert selected_model == model
+        return _synthetic_product_report()
+
     monkeypatch.setattr(
         evaluate_product_tuning,
         "evaluate",
-        lambda _corpus, _model: _synthetic_product_report(),
+        evaluate,
     )
-    output = tmp_path / "product-report.json"
+    suffix = "" if model == "rnnoise" else f"-{model}"
+    output = tmp_path / (
+        "product-report.json" if explicit_output
+        else f"evaluation/product-joint-tuning{suffix}.json"
+    )
+    details = tmp_path / "details" / "cases.json"
+    arguments = ["--corpus", str(REPO_ROOT / "models" / "test-report-corpus"),
+                 "--model", model]
+    if explicit_output:
+        arguments.extend(["--output", str(output)])
+    if keep_details:
+        arguments.extend(["--details-output", str(details)])
 
-    assert evaluate_product_tuning.main(
-        [
-            "--corpus",
-            str(REPO_ROOT / "models" / "test-report-corpus"),
-            "--output",
-            str(output),
-        ]
-    ) == 0
+    assert evaluate_product_tuning.main(arguments) == 0
     written = json.loads(output.read_text(encoding="utf-8"))
 
+    assert "cases" not in written
+    assert details.exists() == keep_details
+    if keep_details:
+        detailed = json.loads(details.read_text(encoding="utf-8"))
+        assert detailed.pop("cases") == _synthetic_product_report()["cases"]
+        assert detailed == written
+    assert list(tmp_path.glob("evaluation/*.json")) == ([] if explicit_output else [output])
     assert written["audible_change"] is True
     assert written["evaluation_contract"]["runtime"]["max_p99_frame_seconds"] is None
     assert written["report_formatting"]["metadata_only"] is False
     assert validate_report(output) == []
+
+
+def test_evaluator_rejects_overlapping_report_outputs_before_evaluation(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(evaluate_product_tuning, "evaluate", lambda *_: pytest.fail("must not evaluate"))
+    with pytest.raises(SystemExit) as error:
+        evaluate_product_tuning.main(
+            ["--output", "report.json", "--details-output", "./report.json"]
+        )
+    assert error.value.code == 2
+    assert not (tmp_path / "report.json").exists()
 
 
 def test_training_noise_floor_does_not_use_heldout_noise(monkeypatch):

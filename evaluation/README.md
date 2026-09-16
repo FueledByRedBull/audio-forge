@@ -33,6 +33,9 @@ The `python/tools/evaluate_*.py` commands regenerate current measurements;
 historical decisions retain their stated reproduction limits.
 Reports with `source_revision` preserve the original committed measurement;
 hygiene verifies both the unchanged report and its source hashes at that commit.
+The three historical joint-tuning reports retain their original per-case evidence.
+New joint-tuning runs write compact, model-specific reports; optional
+`--details-output models/evaluation-details/joint-tuning.json` keeps full case details.
 Corpora and model assets are hash-pinned under ignored `models/`
 directories and are never bundled merely because they exist locally.
 `python/tools/check_evaluation_hygiene.py` rejects absolute paths, stale source

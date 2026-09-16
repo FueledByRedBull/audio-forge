@@ -75,17 +75,23 @@ AudioForge opens with processing stopped; use **Start Processing** to send audio
 - Use **Compare Recording** after calibration to hear the same passage as
   original, current, and proposed processing. Choose headphones or speakers
   explicitly. Optional level matching affects playback only; actual level
-  changes and peak protection remain visible. The preview includes input
+  changes and peak protection remain visible. Switching stays aligned; Stop
+  ends playback, and the preview destination is saved separately. The preview includes input
   cleanup, gating, suppression, both EQ stages, and dynamics. Recordings stay
   in memory until the dialogs close.
 - **Options > Tray & Background** enables close-to-tray and the **Ctrl+Alt+M** global mute
   shortcut. Both are optional. With close-to-tray enabled, closing the window
   keeps audio running; **File > Exit** or **Quit AudioForge** in the tray stops it.
+  Relaunching shows the existing window; Details reveals technical health counters.
 - Select **Normal**, **Bypass**, or **Raw** from the processing-mode control.
   Saved calibration status becomes stale when its route or processing settings change.
 - Calibration establishes a microphone-correction stage; a separate tone stage
   preserves that correction when you change gains, templates, filter types, or slopes.
   Older presets retain their combined EQ response as the tone stage.
+  Tone edits preserve matching microphone evidence; changed output settings
+  make previous output verification stale.
+- `Ctrl+S` updates your current saved preset; `Ctrl+Shift+S` saves a copy. Quit
+  and preset replacement offer Save, Discard, or Cancel for unsaved sound changes.
 - Auto Voice Setup tests gate and suppression choices across available RNNoise
   and DeepFilterNet models with the proposed dynamics, within a 35 ms suppressor-latency bound.
   DeepFilter settings stay within the DeepFilter family because automatic
@@ -139,14 +145,6 @@ User-facing tools:
 - Raw monitor and bypass paths for troubleshooting.
 - Bounded full-processing undo/redo (`Ctrl+Z` / `Ctrl+Shift+Z`) for manual
   edits, presets, Auto-EQ, and Auto Voice Setup, with realtime state excluded.
-- Same-recording Original/Current/Proposed listening comparison, with aligned
-  switching, optional level matching, Stop, and a separate headphone/speaker output.
-- Independent microphone correction and tone EQ. Tone edits preserve matching
-  microphone evidence; changed output settings make previous output verification stale.
-- `Ctrl+S` updates your current saved preset; `Ctrl+Shift+S` saves a copy. Quit
-  and preset replacement offer Save, Discard, or Cancel for unsaved sound changes.
-- Optional tray/background operation and a global mute shortcut. Relaunching
-  shows the existing window; Details reveals technical health counters.
 
 Presets use a versioned typed-band schema; migration tests preserve explicit
 user values and response parity. The graph and numeric controls share that

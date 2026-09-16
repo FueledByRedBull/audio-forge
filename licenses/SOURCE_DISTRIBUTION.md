@@ -52,13 +52,14 @@ builder. The dependency inventory then reports `complete` only after this
 receipt check; without both variables it reports `pending` with an explicit
 blocker.
 
-Create the release bundle from the tagged, committed revision:
+Create the release bundle from the tagged, committed revision selected above
+in `AUDIOFORGE_SOURCE_REVISION`:
 
 ```powershell
 .\.venv\Scripts\python.exe python/tools/source_distribution.py bundle `
   --manifest licenses/source-manifest.json `
   --output build/source-distribution `
-  --revision v1.12.0 `
+  --revision $env:AUDIOFORGE_SOURCE_REVISION `
   --include-runtime-assets
 ```
 

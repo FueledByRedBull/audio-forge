@@ -184,9 +184,9 @@ Useful behavior to know:
 ## Status
 
 AudioForge's compatibility targets are Windows 10 (1809 or later) and Windows
-11 x64. The final v1.12.0 portable EXE and MSI passed hosted software and package
-validation. Earlier candidate hardware tests passed on Windows 11 with USB and
-virtual routes at 48 kHz, including 30-minute runs and model switching. Those
+11 x64. Release-specific software and package validation results are recorded
+in each release's evidence archive. Earlier candidate hardware tests passed on
+Windows 11 with USB and virtual routes at 48 kHz, including 30-minute runs and model switching. Those
 measurements do not qualify the final binary, which has not repeated the full
 hardware run. Windows 10, analog input, 44.1 kHz, and physical device lifecycle
 cases remain unqualified. See the [release workflow](RELEASING.md#automated-workflow)
@@ -197,7 +197,8 @@ DeepFilterNet support is intentionally opt-in for source runs. Packaged builds r
 DeepFilter model/DLL initialization and Silero VAD inference are prepared off the realtime DSP loop; the audio path only swaps ready suppressor state and consumes cached VAD probabilities.
 
 Objective DSP decisions and release evidence are indexed in
-[`evaluation/README.md`](evaluation/README.md). Tracked reports contain compact
+[`evaluation/README.md`](evaluation/README.md), including historical provenance
+limits. New reports contain compact
 aggregates, gates, hashes, decisions, and limitations; raw per-case details are
 optional ignored outputs, not repository content.
 
@@ -238,6 +239,8 @@ These requirements are for **building from source**, not running the download.
 - CPython 3.13.15 x64
 - Rust 1.94.0, selected by `rust-toolchain.toml`
 - `maturin`
+- GitHub CLI (`gh`) configured for release downloads, and 7-Zip (`7z` on PATH
+  or installed in `C:/Program Files/7-Zip`), for runtime asset hydration.
 - A virtual environment in `.venv` is assumed by the packaging script.
 
 ## Quick Start From Source

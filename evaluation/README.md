@@ -1,7 +1,7 @@
 # Evaluation evidence
 
 This directory stores compact decision records, not raw benchmark dumps.
-Tracked JSON keeps only experiment configuration, source/asset hashes,
+New tracked reports retain experiment configuration, source/asset hashes,
 aggregate metrics, predefined gates, the resulting decision, and limitations.
 Per-case detail is written only when an evaluator's optional
 `--details-output` argument is supplied and should stay under ignored
@@ -31,6 +31,14 @@ Routine test results and screenshot-generation reports belong under ignored
 
 The `python/tools/evaluate_*.py` commands regenerate current measurements;
 historical decisions retain their stated reproduction limits.
+The older `compressor-control-report.json`, `compressor-search-report.json`,
+`deesser-corpus-v1-report.json`, `dynamics-aliasing-report.json`, and
+`rnnoise-backend-comparison.json` preserve historical results with incomplete
+source provenance. Their binary or corpus hashes, where present, do not identify
+the complete generator and application source used. They support the recorded
+decisions, not an exact reproduction or validation of the current checkout.
+Preserve those measurements; record exact source and asset identities when
+generating replacement evidence, rather than assigning guessed provenance.
 Reports with `source_revision` preserve the original committed measurement;
 hygiene verifies both the unchanged report and its source hashes at that commit.
 The three historical joint-tuning reports retain their original per-case evidence.

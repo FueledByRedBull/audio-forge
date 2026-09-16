@@ -119,57 +119,6 @@ def _validate_stage(bands: list[TypedBand]) -> None:
         raise ValueError("stage response must be finite")
 
 
-def _candidate_payload(
-    correction: list[TypedBand],
-    tone: list[TypedBand],
-) -> dict[str, Any]:
-    _validate_stage(correction)
-    _validate_stage(tone)
-    return {
-        "schema_version": 1,
-        "enabled": True,
-        "correction": [list(band) for band in correction],
-        "tone": [list(band) for band in tone],
-    }
-
-
-def _decode_candidate(payload: object) -> tuple[list[TypedBand], list[TypedBand]]:
-    if not isinstance(payload, dict) or set(payload) != {
-        "schema_version",
-        "enabled",
-        "correction",
-        "tone",
-    }:
-        raise ValueError("invalid two-stage candidate schema")
-    if payload["schema_version"] != 1 or payload["enabled"] is not True:
-        raise ValueError("unsupported or disabled two-stage candidate")
-
-    def parse(raw: object) -> list[TypedBand]:
-        if not isinstance(raw, list) or len(raw) != 10:
-            raise ValueError("each EQ stage must contain exactly ten bands")
-        bands: list[TypedBand] = []
-        for value in raw:
-            if not isinstance(value, list) or len(value) != 6:
-                raise ValueError("typed stage bands require six fields")
-            filter_type, frequency, gain, q, slope, enabled = value
-            if not isinstance(filter_type, str) or not isinstance(enabled, bool):
-                raise ValueError("invalid typed stage band")
-            bands.append(
-                (
-                    filter_type,
-                    float(frequency),
-                    float(gain),
-                    float(q),
-                    int(slope),
-                    enabled,
-                )
-            )
-        _validate_stage(bands)
-        return bands
-
-    return parse(payload["correction"]), parse(payload["tone"])
-
-
 def _canonical_payload(payload: dict[str, Any]) -> str:
     return json.dumps(
         payload,
@@ -179,17 +128,38 @@ def _canonical_payload(payload: dict[str, Any]) -> str:
     )
 
 
-def _migrate_combined(combined: list[TypedBand]) -> dict[str, Any]:
+def _migrate_combined(combined: list[TypedBand]) -> EQSettings:
     """Preserve the incumbent response by treating it as user-owned tone."""
-    return _candidate_payload(_default_bands(enabled=False), combined)
+    return EQSettings(
+        correction_bands=_settings_bands(_default_bands(enabled=False)),
+        tone_bands=_settings_bands(combined),
+    )
 
 
 def _replace_correction(
-    payload: dict[str, Any],
+    settings: EQSettings,
     correction: list[TypedBand],
-) -> dict[str, Any]:
-    _old_correction, tone = _decode_candidate(payload)
-    return _candidate_payload(correction, tone)
+) -> EQSettings:
+    if settings.tone_bands is None:
+        raise ValueError("EQ settings must contain a tone layer")
+    return EQSettings(
+        enabled=settings.enabled,
+        correction_bands=_settings_bands(correction),
+        tone_bands=settings.tone_bands,
+    )
+
+
+def _native_stages(
+    settings: EQSettings,
+) -> tuple[list[TypedBand], list[TypedBand]]:
+    correction = settings.correction_bands
+    tone = settings.tone_bands
+    if correction is None or tone is None:
+        raise ValueError("EQ settings must contain correction and tone layers")
+    return (
+        [band.to_native() for band in correction],
+        [band.to_native() for band in tone],
+    )
 
 
 def _combined_response(
@@ -290,8 +260,9 @@ def _legacy_flat() -> list[tuple[float, float, float]]:
 
 def _settings_bands(
     bands: list[TypedBand],
-) -> list[EQBandSettings]:
-    return [
+) -> tuple[EQBandSettings, ...]:
+    _validate_stage(bands)
+    return tuple(
         EQBandSettings(
             filter_type=filter_type,
             frequency_hz=frequency,
@@ -301,18 +272,12 @@ def _settings_bands(
             enabled=enabled,
         )
         for filter_type, frequency, gain, q, slope, enabled in bands
-    ]
+    )
 
 
 def _schema3_roundtrip(
-    correction: list[TypedBand],
-    tone: list[TypedBand],
+    settings: EQSettings,
 ) -> bool:
-    settings = EQSettings(
-        enabled=True,
-        correction_bands=_settings_bands(correction),
-        tone_bands=_settings_bands(tone),
-    )
     restored = EQSettings.from_dict(settings.to_dict())
     return (
         restored.schema_version == EQ_SCHEMA_VERSION
@@ -524,18 +489,18 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
             tone = tones[tone_name]
             migrated = _migrate_combined(tone)
             tone_before = json.dumps(
-                migrated["tone"],
+                migrated.to_dict()["layers"]["tone"],
                 allow_nan=False,
                 separators=(",", ":"),
             )
             candidate = _replace_correction(migrated, correction)
-            _decoded_correction, _decoded_tone = _decode_candidate(candidate)
+            candidate_correction, candidate_tone = _native_stages(candidate)
             tone_after = json.dumps(
-                candidate["tone"],
+                candidate.to_dict()["layers"]["tone"],
                 allow_nan=False,
                 separators=(",", ":"),
             )
-            migrated_correction, migrated_tone = _decode_candidate(migrated)
+            migrated_correction, migrated_tone = _native_stages(migrated)
             migrated_response = _combined_response(
                 grid,
                 migrated_correction,
@@ -549,8 +514,9 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
                 ),
                 dtype=float,
             )
-            encoded = _canonical_payload(candidate)
-            decoded = _decode_candidate(json.loads(encoded))
+            encoded = _canonical_payload(candidate.to_dict())
+            decoded = EQSettings.from_dict(json.loads(encoded))
+            decoded_correction, decoded_tone = _native_stages(decoded)
             rows.append(
                 {
                     "id": str(case["id"]),
@@ -563,8 +529,9 @@ def evaluate(corpus_root: Path) -> dict[str, Any]:
                     ),
                     "tone_payload_preserved": tone_before == tone_after,
                     "schema_roundtrip": (
-                        decoded == (correction, tone)
-                        and _schema3_roundtrip(correction, tone)
+                        decoded_correction == candidate_correction
+                        and decoded_tone == candidate_tone
+                        and _schema3_roundtrip(candidate)
                     ),
                     "render": _render_case(audio, correction, tone),
                 }

@@ -18,20 +18,6 @@ def calibration_settings(owner: Any) -> dict:
     return json.loads(owner._preset_payload(owner._get_current_preset()))
 
 
-def calibration_inputs(
-    owner: Any,
-) -> tuple[str | None, dict[str, Any], dict[str, Any]]:
-    """Return capture, correction, and downstream verification identities.
-
-    MainWindow can use this read-only projection when a configuration or route
-    command changes. The status view should describe these identities, never
-    mutate DSP state while rendering them.
-    """
-    settings = calibration_settings(owner)
-    correction, verification = calibration_settings_parts(settings)
-    return owner._calibration_context_key(), correction, verification
-
-
 def current_calibration(owner: Any, scope: str) -> CalibrationResult | None:
     settings = calibration_settings(owner)
     correction, _verification = calibration_settings_parts(settings)

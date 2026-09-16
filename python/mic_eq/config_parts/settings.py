@@ -34,9 +34,8 @@ EQ_FILTER_TYPES = frozenset(
     }
 )
 EQ_BANDWIDTH_MODES = frozenset({"q", "octaves"})
-# Schema v2 reserves the field but the retained runtime has one combined
-# stage. Reject unimplemented ownership semantics instead of silently ignoring
-# them; a future multi-stage design requires a new measured schema revision.
+# Per-band stage stays combined; schema v3 represents correction and tone
+# through separate layers on EQSettings.
 EQ_STAGES = frozenset({"combined"})
 EQ_SLOPES_DB_PER_OCTAVE = frozenset({12, 24, 36, 48})
 EQ_RUNTIME_SAMPLE_RATE = 48_000.0

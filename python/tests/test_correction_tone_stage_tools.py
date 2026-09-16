@@ -39,8 +39,8 @@ def _write_corpus(root: Path, *, tamper_first: bool = False) -> None:
 
 def test_combined_migration_preserves_native_response_exactly() -> None:
     tone = TOOL._tone_profiles()["presence"]
-    payload = TOOL._migrate_combined(tone)
-    correction, migrated_tone = TOOL._decode_candidate(payload)
+    settings = TOOL._migrate_combined(tone)
+    correction, migrated_tone = TOOL._native_stages(settings)
     grid = np.geomspace(20.0, 20_000.0, 256)
     migrated = TOOL._combined_response(grid, correction, migrated_tone)
     incumbent = np.asarray(
@@ -56,28 +56,31 @@ def test_combined_migration_preserves_native_response_exactly() -> None:
 
 def test_replacing_correction_preserves_canonical_tone_payload() -> None:
     tone = TOOL._tone_profiles()["warm"]
-    payload = TOOL._migrate_combined(tone)
+    settings = TOOL._migrate_combined(tone)
     replacement = TOOL._default_bands(enabled=False)
     replacement[4] = ("bell", 1500.0, -2.0, 1.4, 12, True)
 
-    updated = TOOL._replace_correction(payload, replacement)
-    correction, restored_tone = TOOL._decode_candidate(updated)
+    updated = TOOL._replace_correction(settings, replacement)
+    correction, restored_tone = TOOL._native_stages(updated)
 
     assert correction == replacement
     assert restored_tone == tone
-    assert TOOL._schema3_roundtrip(correction, restored_tone)
-    assert json.dumps(updated["tone"], sort_keys=True) == json.dumps(
-        payload["tone"],
+    assert TOOL._schema3_roundtrip(updated)
+    assert json.dumps(
+        updated.to_dict()["layers"]["tone"],
+        sort_keys=True,
+    ) == json.dumps(
+        settings.to_dict()["layers"]["tone"],
         sort_keys=True,
     )
 
 
 def test_candidate_schema_rejects_malformed_or_short_stages() -> None:
-    payload = TOOL._migrate_combined(TOOL._tone_profiles()["flat"])
-    payload["tone"] = payload["tone"][:-1]
+    payload = TOOL._migrate_combined(TOOL._tone_profiles()["flat"]).to_dict()
+    payload["layers"]["tone"] = payload["layers"]["tone"][:-1]
 
-    with pytest.raises(ValueError, match="exactly ten bands"):
-        TOOL._decode_candidate(payload)
+    with pytest.raises(ValueError, match="must contain 10 bands"):
+        TOOL.EQSettings.from_dict(payload)
 
 
 def test_gate_rejects_failed_cases_without_requiring_impossible_speedup() -> None:

@@ -309,14 +309,6 @@ class RenderedComparisonClip:
     level_match_gain_db: float
     safety_gain_db: float
     simulation_backend: str
-    simulation: Mapping[str, Any] | None = None
-
-    @property
-    def duration_seconds(self) -> float:
-        sample_rate = self.simulation.get("sample_rate") if self.simulation else None
-        if isinstance(sample_rate, (int, float)) and sample_rate > 0:
-            return float(self.samples.size / sample_rate)
-        return 0.0
 
 
 @dataclass(frozen=True)
@@ -440,9 +432,6 @@ def render_comparison(
             if simulation is not None
             else "capture"
         )
-        simulation_copy = dict(simulation) if simulation is not None else None
-        if simulation_copy is not None:
-            simulation_copy["sample_rate"] = rate
         return RenderedComparisonClip(
             label=label,
             samples=playback,
@@ -453,7 +442,6 @@ def render_comparison(
             level_match_gain_db=match_gain,
             safety_gain_db=float(safety_gain),
             simulation_backend=simulation_backend,
-            simulation=simulation_copy,
         )
 
     original = prepare("original", audio, reference_level_db, None)

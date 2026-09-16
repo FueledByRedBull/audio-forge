@@ -70,14 +70,9 @@ from .config_parts.validation import (
 )
 
 
-BUILTIN_PRESETS = build_builtin_presets(
-    Preset,
-    GateSettings,
-    EQSettings,
-    RNNoiseSettings,
-)
+BUILTIN_PRESETS = build_builtin_presets()
 
-TARGET_CURVES = build_target_curves(TargetCurve)
+TARGET_CURVES = build_target_curves()
 
 
 __all__ = [

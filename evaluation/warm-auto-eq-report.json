@@ -1,5 +1,6 @@
 {
   "schema_version": 2,
+  "source_revision": "f71eade89dcc0f8a170ab062ef712fe62de0619d",
   "audible_change": true,
   "baseline_revision": "a0d785a6772fff311110d9553de973b717b74217",
   "source_sha256": {

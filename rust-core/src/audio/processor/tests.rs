@@ -621,6 +621,47 @@ mod tests {
             .as_ref()
             .is_some_and(|worker| !worker.is_finished()));
         assert!(processor.vad_backend_available.load(Ordering::Acquire));
+
+        let model_inits = VAD_WORKER_MODEL_INITS.load(Ordering::Acquire);
+        let reset_count = VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire);
+        processor
+            .vad_source_discontinuity
+            .fetch_add(1, Ordering::Release);
+        assert!(wait_until(&|| {
+            VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire) > reset_count
+        }));
+        assert_eq!(producer.write(&[0.1; 4096]), 4096);
+        assert!(wait_until(&|| processor
+            .vad_backend_available
+            .load(Ordering::Acquire)));
+        assert_eq!(VAD_WORKER_MODEL_INITS.load(Ordering::Acquire), model_inits);
+
+        // Hold the worker in its existing error backoff, fill the queue, then
+        // publish a gap. The worker must flush the accepted queue before it
+        // resets the recurrent state.
+        VAD_WORKER_FORCE_INFERENCE_ERROR.store(true, Ordering::Release);
+        assert_eq!(producer.write(&[0.1; 4096]), 4096);
+        assert!(wait_until(&|| !processor
+            .vad_backend_available
+            .load(Ordering::Acquire)));
+        let reset_count = VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire);
+        let flushed_count = VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES.load(Ordering::Acquire);
+        assert_eq!(
+            producer.write(&[0.2; VAD_WORKER_MAX_BUFFER_SAMPLES]),
+            VAD_WORKER_MAX_BUFFER_SAMPLES
+        );
+        processor
+            .vad_source_discontinuity
+            .fetch_add(1, Ordering::Release);
+        assert!(wait_until(&|| {
+            VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire) > reset_count
+        }));
+        assert!(wait_until(&|| processor
+            .vad_backend_available
+            .load(Ordering::Acquire)));
+        assert!(VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES.load(Ordering::Acquire)
+            >= flushed_count + VAD_WORKER_MAX_BUFFER_SAMPLES as u64);
+
         processor.stop_vad_worker();
     }
 
@@ -3060,10 +3101,50 @@ mod tests {
         let source = include_str!("dsp_loop.rs");
         let region = marked_region(source, "dsp_processing_loop");
 
-        assert!(region.contains("let written = vad_worker_producer.write(buffer);"));
+        assert!(region.contains("Self::enqueue_vad_block"));
         assert!(region.contains("if written < buffer.len()"));
         assert!(region.contains("store_rt_error("));
         assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_enqueue_overflow_drops_whole_block_and_recovers() {
+        let block = vec![0.2_f32; 1024];
+        let rb = AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES);
+        let (mut producer, mut consumer) = rb.split();
+        let fill = vec![0.1_f32; VAD_WORKER_MAX_BUFFER_SAMPLES - block.len() + 1];
+        assert_eq!(producer.write(&fill), fill.len());
+
+        let queue_len_before = consumer.len();
+        let mut source_clock = 123_u64;
+        let discontinuities = AtomicU64::new(0);
+        assert_eq!(
+            AudioProcessor::enqueue_vad_block(
+                &mut producer,
+                &block,
+                &mut source_clock,
+                &discontinuities,
+            ),
+            0
+        );
+        assert_eq!(consumer.len(), queue_len_before);
+        assert_eq!(source_clock, 123);
+        assert_eq!(discontinuities.load(Ordering::Acquire), 1);
+
+        let mut drained = vec![0.0_f32; queue_len_before];
+        assert_eq!(consumer.read(&mut drained), queue_len_before);
+        assert_eq!(
+            AudioProcessor::enqueue_vad_block(
+                &mut producer,
+                &block,
+                &mut source_clock,
+                &discontinuities,
+            ),
+            block.len()
+        );
+        assert_eq!(source_clock, 123 + block.len() as u64);
+        assert_eq!(consumer.len(), block.len());
     }
 
     #[test]

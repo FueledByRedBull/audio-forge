@@ -337,6 +337,10 @@ pub struct AudioProcessor {
     /// This lets the DSP thread measure audio age independently of worker
     /// scheduling and publication time.
     vad_source_sample_end: Arc<AtomicU64>,
+    #[cfg(feature = "vad")]
+    /// Incremented when the bounded VAD queue drops a block. The stateful
+    /// model must restart at the next contiguous source sample.
+    vad_source_discontinuity: Arc<AtomicU64>,
 
     /// Compressor current release time in milliseconds (for metering)
     compressor_current_release_ms: Arc<AtomicU64>,
@@ -647,6 +651,8 @@ impl AudioProcessor {
             vad_last_update_us: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "vad")]
             vad_source_sample_end: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "vad")]
+            vad_source_discontinuity: Arc::new(AtomicU64::new(0)),
             compressor_current_release_ms: Arc::new(AtomicU64::new(
                 COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
             )),

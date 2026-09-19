@@ -211,7 +211,10 @@ def _candidate_settings_error(
         return "candidate limiter settings are invalid"
     if limiter_settings is None:
         return "candidate limiter settings are incomplete"
-    return _candidate_eq_settings_error(setup_result.get("eq_settings"))
+    eq_error = _candidate_eq_settings_error(setup_result.get("eq_settings"))
+    if eq_error is not None and setup_result.get("eq_error"):
+        return str(setup_result["eq_error"])
+    return eq_error
 
 
 class VoiceSetupWorker(QThread):

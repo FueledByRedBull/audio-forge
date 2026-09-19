@@ -1108,6 +1108,48 @@ def test_26_headroom_validation_preserves_safe_correction():
     assert validated["headroom_validation"]["safe"]
 
 
+def test_headroom_validation_keeps_safe_neutral_recommendation():
+    sample_rate = 48_000
+    t = np.arange(sample_rate, dtype=float) / sample_rate
+    audio = (0.02 * np.sin(2.0 * np.pi * 180.0 * t)).astype(np.float32)
+    eq_settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.0] * 10,
+        "band_qs": [1.41] * 10,
+        "validation_gain_scale": 0.55,
+        "recommendation_status": "apply",
+        "apply_recommended": True,
+    }
+
+    validated = apply_headroom_validation(audio, sample_rate, eq_settings)
+
+    assert validated["headroom_gain_scale"] == 1.0
+    assert validated["recommendation_status"] == "apply"
+    assert validated["apply_recommended"] is True
+
+
+def test_headroom_validation_abstains_neutral_candidate_after_actual_attenuation():
+    settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.1] + [0.0] * 9,
+        "band_qs": [1.41] * 10,
+        "validation_gain_scale": 0.55,
+        "recommendation_status": "apply",
+        "apply_recommended": True,
+        "headroom_gain_scale": 0.25,
+    }
+
+    headroom_module._refresh_scaled_eq_metadata(
+        settings,
+        analysis_freqs=None,
+        measured_db=None,
+        target_db=None,
+    )
+
+    assert settings["recommendation_status"] == "abstain"
+    assert settings["apply_recommended"] is False
+
+
 def test_headroom_zero_scale_clears_stale_apply_metadata():
     sample_rate = 48_000
     audio = np.ones(sample_rate // 4, dtype=np.float32)
@@ -1181,8 +1223,16 @@ def test_headroom_nonzero_scale_recomputes_active_band_threshold(monkeypatch):
 
 
 def test_27_validation_rejects_remaining_headroom_risk():
-    freqs = _default_freqs()
-    spectrum_db = generate_test_spectrum(freqs, "harsh")
+    sample_rate = 48_000
+    time = np.arange(sample_rate * 3) / sample_rate
+    freqs = np.fft.rfftfreq(time.size, 1.0 / sample_rate)
+    audio = sum(
+        0.1 / harmonic * np.sin(2 * np.pi * 150 * harmonic * time)
+        for harmonic in range(1, 26)
+    )
+    spectrum_db = 10.0 * np.log10(
+        np.maximum(np.square(np.abs(np.fft.rfft(audio))), 1.0e-12)
+    )
     eq_settings = {
         "band_gains": [0.0] * 10,
         "headroom_validation": {"safe": False},
@@ -1191,6 +1241,7 @@ def test_27_validation_rejects_remaining_headroom_risk():
     validation = validate_analysis(eq_settings, spectrum_db, freqs)
 
     assert not validation.passed
+    assert "headroom" in validation.reason.lower()
     assert validation.details["headroom_safe"] is False
 
 

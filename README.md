@@ -15,7 +15,9 @@ runs locally through a Rust engine and a PyQt interface.
 
 **[Download](#download)** · [First setup](#using-the-app) · [Features](#what-it-does) · [Build from source](#quick-start-from-source) · [Get help](#help-and-contributing)
 
-Current version: `v1.12.1`
+Current version: `v1.13.0` (unreleased) — [planned release notes](release-notes/release-notes-v1.13.0.md).
+
+Latest published release: `v1.12.1`.
 
 ![AudioForge main window showing sanitized input and virtual-route output selection, cleanup controls, and the editable ten-band EQ.](docs/images/audioforge-routing-eq.png)
 
@@ -142,7 +144,7 @@ User-facing tools:
   constrained mouse/keyboard graph editing synchronized with numeric controls.
 - Auto-EQ calibration that combines energy and Silero speech posteriors, rejects shape outliers, uses matched noise-referenced per-band reliability when available, and abstains when a safe correction is unsupported.
 - Auto-EQ headroom validation through the native chain simulator; legacy Python-only estimates are advisory. Typed EQ and full-chain previews require native DSP rather than approximating unsupported filters or stages.
-- Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, bounded multi-parameter native compressor calibration (threshold, ratio, attack, release), and guided second-passage verification.
+- Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, and bounded native compressor calibration. EQ is fitted before compressor calibration; the compressor search includes the requested auto makeup and the final native full-chain headroom check. A target that cannot leave safe headroom remains advisory, so lower Target loudness and rerun instead of applying it. Natural / No Added Tone remains neutral.
 - Dynamic-EQ de-esser, compressor with speech-aware auto makeup gain driven by calibrated VAD and noise-floor evidence, and lookahead limiter.
 - Band-limited 4x true-peak detection and limiting, validated against an independent offline reference.
 - Stateful phase-safe mono alignment and adaptive 49-61 Hz hum/harmonic tracking for difficult input sources.
@@ -170,12 +172,15 @@ Useful behavior to know:
 
 - Device refresh keeps the current selection when the same device is still available.
 - Input/output stream setup prefers 48 kHz configs when available.
-- In VAD modes, auto threshold is the default path; the UI shows live noise floor and effective threshold.
+- VAD Assisted uses the tracked noise floor when auto threshold is enabled. VAD Only opens from speech confidence; its displayed noise floor is not the opening threshold.
 - Phase-safe mono retains fractional-delay history across input callbacks instead of re-estimating from isolated blocks.
 - Adaptive cleanup tracks off-nominal mains hum and its harmonic with fractional frequency/phase continuity, and selects one high-pass response instead of cascading filters.
 - Auto-EQ and Auto Voice Setup analyze 48 kHz captures, use native Silero posteriors when available, and report an explicit energy-analysis fallback when they are not.
 - Auto Voice Setup rejects unusable room tone, restricts boosts for questionable references, and reports device/time/channel mismatch or recapture guidance.
+- Auto Voice Setup keeps a candidate advisory when the requested target loudness cannot leave the native chain's required headroom; choose a lower (more negative) LUFS target and rerun the capture before applying it.
 - Voice Setup candidates remain temporary until a second passage checks repeatability through EQ, de-essing, compression, and the selected limiter settings. Gate, noise suppression, input cleanup, and live loudness adaptation are outside this offline check; confirm the result in your destination app.
+- A realtime VAD queue overflow drops the whole affected analysis block and marks a discontinuity so the worker clears queued context and resets its recurrent state before publishing new probabilities.
+- After sustained near-full-scale audio, VAD clears its recurrent history when the level drops to recover detection of subsequent normal speech. Audio buffering and source timing are preserved.
 - Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
 - Diagnostics separate input drops, backlog recovery, output recovery, output short-write loss, and active output underrun streaks. Historical output underrun and recovery totals stay visible without forcing the health chip into a warning state after the stream has recovered.
 - `Help > Export Diagnostics...` writes a versioned, size-bounded support
@@ -380,11 +385,13 @@ release qualification gates as the portable archive.
 
 ## Create Release Archive
 
-The portable folder is intended to be archived as a single distributable:
+The portable folder is intended to be archived as a single distributable.
+For the planned 1.13.0 release, validate package metadata and rebuild
+the portable folder before using this archive name:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.12.1-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.13.0-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 The v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz, tar.zst,

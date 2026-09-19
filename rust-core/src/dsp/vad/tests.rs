@@ -595,6 +595,83 @@ mod tests {
     }
 
     #[test]
+    fn test_pinned_silero_severe_run_requires_eight_complete_windows() {
+        let mut vad = SileroVAD::new(SILERO_SAMPLE_RATE, 0.35)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let window_size = vad.window_size();
+        let loud = vec![1.0_f32; window_size];
+        let normal = vec![0.25_f32; window_size];
+        let quiet = vec![0.01_f32; window_size];
+
+        for _ in 0..VAD_SEVERE_MIN_FRAMES * 2 {
+            let _ = vad.process(&normal).unwrap();
+        }
+        assert_eq!(vad.severe_rms_frames, 0);
+        assert!(!vad.severe_rms_armed);
+
+        for _ in 0..VAD_SEVERE_MIN_FRAMES - 1 {
+            let _ = vad.process(&loud).unwrap();
+        }
+        assert_eq!(vad.severe_rms_frames, VAD_SEVERE_MIN_FRAMES - 1);
+        assert!(!vad.severe_rms_armed);
+
+        let _ = vad.process(&quiet).unwrap();
+        assert_eq!(vad.severe_rms_frames, 0);
+        assert!(!vad.severe_rms_armed);
+
+        vad.set_pre_gain(2.5);
+        let normal_with_gain = vec![0.06_f32; window_size];
+        for _ in 0..VAD_SEVERE_MIN_FRAMES * 2 {
+            let _ = vad.process(&normal_with_gain).unwrap();
+        }
+        assert_eq!(vad.severe_rms_frames, 0);
+        assert!(!vad.severe_rms_armed);
+
+        vad.set_pre_gain(1.0);
+        for _ in 0..VAD_SEVERE_MIN_FRAMES {
+            let _ = vad.process(&loud).unwrap();
+        }
+        assert!(vad.severe_rms_armed);
+        vad.reset();
+        assert_eq!(vad.severe_rms_frames, 0);
+        assert!(!vad.severe_rms_armed);
+        assert_eq!(vad.processed_input_samples(), 0);
+    }
+
+    #[test]
+    fn test_pinned_silero_severe_recovery_preserves_clock_and_matches_fresh_state() {
+        let mut vad = SileroVAD::new(SILERO_SAMPLE_RATE, 0.35)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let mut fresh = SileroVAD::new(SILERO_SAMPLE_RATE, 0.35)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let window_size = vad.window_size();
+        let loud = vec![1.0_f32; window_size];
+        let partial = vec![0.0_f32; window_size / 2];
+        let quiet_tail = vec![0.01_f32; window_size / 2];
+        let mut quiet_window = partial.clone();
+        quiet_window.extend_from_slice(&quiet_tail);
+
+        for _ in 0..VAD_SEVERE_MIN_FRAMES {
+            let _ = vad.process(&loud).unwrap();
+        }
+        assert!(vad.severe_rms_armed);
+        assert_eq!(vad.processed_input_samples(), (window_size * 8) as u64);
+
+        // The recovery frame is split across calls to prove that only the
+        // recurrent state is cleared; the input buffer and source clock stay.
+        let _ = vad.process(&partial).unwrap();
+        assert_eq!(vad.available_samples(), window_size / 2);
+        let actual = vad.process(&quiet_tail).unwrap();
+        let expected = fresh.process(&quiet_window).unwrap();
+
+        assert!((actual - expected).abs() < 1.0e-6);
+        assert_eq!(vad.processed_input_samples(), (window_size * 9) as u64);
+        assert_eq!(vad.available_samples(), 0);
+        assert_eq!(vad.severe_rms_frames, 0);
+        assert!(!vad.severe_rms_armed);
+    }
+
+    #[test]
     fn test_model_optional_vad_returns_neutral_probability_before_first_inference() {
         let Some(mut vad) = optional_silero_vad(48_000, 0.42) else {
             return;

@@ -519,8 +519,11 @@ def _refresh_scaled_eq_metadata(
     status = str(result.get("recommendation_status", "apply"))
     reasons = list(result.get("recommendation_reasons") or [])
     abstention_reasons = list(result.get("abstention_reasons") or [])
-    scale = _as_float(result.get("validation_gain_scale"), 1.0)
-    if not np.any(np.abs(gains) >= 0.25):
+    # ``validation_gain_scale`` belongs to the optimizer's spectral-fit
+    # attenuation.  Only the scale selected by this headroom simulation can
+    # make a neutral candidate lose its usable correction.
+    scale = _as_float(result.get("headroom_gain_scale"), 1.0)
+    if scale < 1.0 and not np.any(np.abs(gains) >= 0.25):
         status = "abstain"
         reason = "headroom validation removed the usable correction"
         if reason not in abstention_reasons:
@@ -581,6 +584,7 @@ def apply_headroom_validation(
     result["band_gains"] = selected_gains.tolist()
     existing_scale = _as_float(result.get("validation_gain_scale"), 1.0)
     result["validation_gain_scale"] = float(existing_scale * selected_scale)
+    result["headroom_gain_scale"] = float(selected_scale)
     _refresh_scaled_eq_metadata(result, analysis_freqs, measured_db, target_db, fit_context)
 
     meets_thresholds = _is_headroom_safe(selected)

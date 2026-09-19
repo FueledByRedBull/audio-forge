@@ -2,6 +2,12 @@
 static VAD_WORKER_FORCE_INFERENCE_ERROR: AtomicBool = AtomicBool::new(false);
 #[cfg(all(test, feature = "vad"))]
 static VAD_WORKER_LAST_PRE_GAIN_BITS: AtomicU32 = AtomicU32::new(1.0_f32.to_bits());
+#[cfg(all(test, feature = "vad"))]
+static VAD_WORKER_DISCONTINUITY_RESETS: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(test, feature = "vad"))]
+static VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(test, feature = "vad"))]
+static VAD_WORKER_MODEL_INITS: AtomicU64 = AtomicU64::new(0);
 
 impl AudioProcessor {
 #[cfg(feature = "vad")]
@@ -20,6 +26,7 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
     let available = Arc::clone(&self.vad_backend_available);
     let last_update_us = Arc::clone(&self.vad_last_update_us);
     let source_sample_end = Arc::clone(&self.vad_source_sample_end);
+    let source_discontinuity = Arc::clone(&self.vad_source_discontinuity);
     let gate_rt_control = Arc::clone(&self.gate_rt_control);
     let sample_rate = self.sample_rate;
     let threshold = self
@@ -30,14 +37,57 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
 
     self.vad_worker_thread = Some(std::thread::spawn(move || {
         let mut worker_consumer = vad_consumer;
-        let mut vad = None;
+        let mut vad: Option<SileroVAD> = None;
         let mut source_samples_read = 0_u64;
         let mut vad_source_base = 0_u64;
+        let mut observed_discontinuity = source_discontinuity.load(Ordering::Acquire);
         let mut local = Vec::with_capacity(VAD_WORKER_MAX_BUFFER_SAMPLES);
         while running.load(Ordering::Acquire) {
+            let current_discontinuity = source_discontinuity.load(Ordering::Acquire);
+            if current_discontinuity != observed_discontinuity {
+                observed_discontinuity = current_discontinuity;
+                // A dropped ring block means the next samples are not
+                // contiguous with the model's recurrent state. The marker is
+                // published before the drop; discard all queued samples
+                // before resetting so none can bridge the gap.
+                local.clear();
+                let mut flushed_samples = 0_u64;
+                // Bound the drain so a producer that is still overrunning the
+                // queue cannot starve the worker forever. Any samples left in
+                // the queue are consumed by the freshly reset model.
+                for _ in 0..8 {
+                    let available_samples = worker_consumer.len();
+                    if available_samples == 0 {
+                        break;
+                    }
+                    let to_read = available_samples.min(VAD_WORKER_MAX_BUFFER_SAMPLES);
+                    local.resize(to_read, 0.0);
+                    let read = worker_consumer.read(&mut local);
+                    local.clear();
+                    if read == 0 {
+                        break;
+                    }
+                    flushed_samples = flushed_samples.saturating_add(read as u64);
+                    source_samples_read = source_samples_read.saturating_add(read as u64);
+                }
+                if let Some(worker_vad) = vad.as_mut() {
+                    worker_vad.reset();
+                }
+                vad_source_base = source_samples_read;
+                available.store(false, Ordering::Release);
+                last_update_us.store(0, Ordering::Release);
+                source_sample_end.store(0, Ordering::Release);
+                #[cfg(test)]
+                VAD_WORKER_DISCONTINUITY_RESETS.fetch_add(1, Ordering::Release);
+                #[cfg(test)]
+                VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES
+                    .fetch_add(flushed_samples, Ordering::Release);
+            }
             if vad.is_none() {
                 match SileroVAD::new(sample_rate, threshold) {
                     Ok(candidate) => {
+                        #[cfg(test)]
+                        VAD_WORKER_MODEL_INITS.fetch_add(1, Ordering::Release);
                         vad_source_base = source_samples_read;
                         available.store(true, Ordering::Release);
                         vad = Some(candidate);
@@ -58,6 +108,14 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
                 let read = worker_consumer.read(&mut local);
                 local.truncate(read);
                 source_samples_read = source_samples_read.saturating_add(read as u64);
+            }
+
+            // A marker may have been published while the consumer read the
+            // queue. Do not run inference on that read; the next iteration
+            // drains the queue and resets the model before accepting data.
+            if source_discontinuity.load(Ordering::Acquire) != observed_discontinuity {
+                local.clear();
+                continue;
             }
 
             if !local.is_empty() {
@@ -84,6 +142,18 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
                 }));
                 match inference {
                     Ok(Ok(Some(prob))) => {
+                        // Do not publish a probability computed across a newly
+                        // announced discontinuity. The next iteration drains
+                        // the queue and resets the model before resuming.
+                        if source_discontinuity.load(Ordering::Acquire)
+                            != observed_discontinuity
+                        {
+                            available.store(false, Ordering::Release);
+                            last_update_us.store(0, Ordering::Release);
+                            source_sample_end.store(0, Ordering::Release);
+                            local.clear();
+                            continue;
+                        }
                         probability.store(prob.clamp(0.0, 1.0).to_bits(), Ordering::Release);
                         let processed_samples = vad
                             .as_ref()

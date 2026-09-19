@@ -17,6 +17,7 @@ import numpy as np
 from scipy.signal import lfilter, resample_poly
 
 from .auto_eq import analyze_auto_eq, simulate_candidate_chain
+from .auto_eq_parts.headroom import _is_headroom_safe
 from .cancellation import AnalysisCancelled, check_analysis_cancelled
 from .deesser_fusion import (
     CLIP_FEATURE_NAMES,
@@ -829,10 +830,10 @@ def _calibrate_compressor_threshold(
                 for key in _COMPRESSOR_SEARCH_BOUNDS
             }
         )
+        # Evaluate the same compressor controls that will be applied.  In
+        # particular, auto makeup changes both loudness and downstream
+        # headroom, so disabling it here would calibrate a different chain.
         simulation_compressor = dict(candidate)
-        if simulation_compressor.get("auto_makeup_enabled", False):
-            simulation_compressor["auto_makeup_enabled"] = False
-            simulation_compressor["makeup_gain_db"] = 0.0
         simulation = simulate_candidate_chain(
             speech_audio.astype(np.float32, copy=False),
             sample_rate,
@@ -860,12 +861,16 @@ def _calibrate_compressor_threshold(
         )
         active_gain = float(simulation.get("active_output_gain_db", 0.0))
         target_lufs = float(calibrated.get("target_lufs", -18.0))
-        output_lufs = (
-            target_lufs
-            if calibrated.get("auto_makeup_enabled", False)
-            else float(calibrated.get("measured_short_term_lufs", -18.0))
-            + active_gain
-        )
+        measured_lufs = float(calibrated.get("measured_short_term_lufs", -18.0))
+        input_rms_db = float(simulation.get("input_rms_db", np.nan))
+        output_rms_db = float(simulation.get("output_rms_db", np.nan))
+        if np.isfinite(input_rms_db) and np.isfinite(output_rms_db):
+            # The native simulator reports RMS rather than LUFS.  Preserve the
+            # measured capture's LUFS/RMS offset while scoring the actual
+            # downstream gain delivered by this candidate.
+            output_lufs = measured_lufs + output_rms_db - input_rms_db
+        else:
+            output_lufs = measured_lufs + active_gain
         output_true_peak = float(simulation.get("output_true_peak_db", 120.0))
         ceiling = float(
             simulation.get(
@@ -1032,23 +1037,16 @@ def _calibrate_compressor_threshold(
         )
     calibrated.update(best_values)
     check_analysis_cancelled(cancel_check)
+    # Verify the winner with the exact compressor controls that will be
+    # applied.  The search isolates compression by disabling auto makeup, but
+    # that must not make its diagnostics claim the final chain is safe.
     winner_verification = simulate_candidate_chain(
         speech_audio.astype(np.float32, copy=False),
         sample_rate,
         eq_settings,
         {
             "deesser": deesser_settings,
-            "compressor": {
-                **calibrated,
-                **(
-                    {
-                        "auto_makeup_enabled": False,
-                        "makeup_gain_db": 0.0,
-                    }
-                    if calibrated.get("auto_makeup_enabled", False)
-                    else {}
-                ),
-            },
+            "compressor": dict(calibrated),
             "limiter": dict(effective_limiter_settings),
         },
     )
@@ -1093,6 +1091,16 @@ def _calibrate_compressor_threshold(
             ),
             "output_true_peak_db": float(
                 best_simulation.get("output_true_peak_db", -120.0)
+            ),
+            "headroom_safe": _is_headroom_safe(best_simulation),
+            "limiter_gain_reduction_db": float(
+                best_simulation.get("limiter_gain_reduction_db", 0.0)
+            ),
+            "true_peak_limiter_gain_reduction_db": float(
+                best_simulation.get("true_peak_limiter_gain_reduction_db", 0.0)
+            ),
+            "auto_makeup_simulated": bool(
+                calibrated.get("auto_makeup_enabled", False)
             ),
             "pre_limiter_true_peak_headroom_db": float(
                 best_simulation.get("pre_limiter_true_peak_headroom_db", 0.0)
@@ -1291,7 +1299,10 @@ def analyze_voice_setup(
             noise_reference_reasons=noise_reference.reasons,
             chain_settings={
                 "deesser": deesser_settings,
-                "compressor": compressor_settings,
+                # Fit EQ before compressor calibration.  The initial
+                # auto-makeup proposal must not make a valid EQ candidate
+                # look unsafe before the compressor search can repair it.
+                "compressor": {"enabled": False},
                 "limiter": dict(effective_limiter_settings),
             },
             cancel_check=cancel_check,
@@ -1461,6 +1472,7 @@ def analyze_voice_setup(
             offline_validation.get("compressor_gain_reduction_p95_db", compressor_gr)
         )
         deesser_gr = float(offline_validation.get("deesser_gain_reduction_db", 120.0))
+        full_chain_headroom_safe = _is_headroom_safe(offline_validation)
         offline_validation_passed = bool(
             np.isfinite([output_true_peak, compressor_gr, deesser_gr]).all()
             and output_true_peak <= ceiling + 0.15
@@ -1469,6 +1481,7 @@ def analyze_voice_setup(
             and compressor_p95
             <= float(compressor_diag["target_p95_reduction_db"]) + 1.25
             and deesser_gr <= 10.0
+            and full_chain_headroom_safe
         )
     except Exception as exc:  # pragma: no cover - defensive diagnostics
         offline_validation = {"error": str(exc), "simulation_backend": "unavailable"}
@@ -1482,7 +1495,12 @@ def analyze_voice_setup(
     if capture_confidence < 0.50:
         uncertainty_reasons.append("spectral feature stability is weak")
     if not offline_validation_passed:
-        uncertainty_reasons.append("offline DSP validation did not pass")
+        if offline_validation is not None and not _is_headroom_safe(offline_validation):
+            uncertainty_reasons.append(
+                "final full-chain headroom validation did not pass"
+            )
+        else:
+            uncertainty_reasons.append("offline DSP validation did not pass")
     if offline_validation and offline_validation.get("simulation_backend") != "rust":
         uncertainty_reasons.append("offline DSP validation is advisory without the Rust extension")
         setup_confidence *= 0.90
@@ -1590,6 +1608,11 @@ def analyze_voice_setup(
             "vad_probability_used": bool(features["vad_probability_used"]),
             "vad_active_frame_ratio": float(features["vad_active_frame_ratio"]),
             "offline_validation_passed": offline_validation_passed,
+            "offline_headroom_safe": bool(
+                _is_headroom_safe(offline_validation)
+                if offline_validation is not None
+                else False
+            ),
             "offline_validation": offline_validation,
         },
     }
@@ -1599,8 +1622,10 @@ def _shape_error_db(
     measured_freqs: np.ndarray,
     measured_db: np.ndarray,
     target_preset: str,
+    *,
+    reference_db: np.ndarray | None = None,
 ) -> float:
-    """Return level-invariant voice-band error against the selected house curve."""
+    """Return voice-band error for a house curve or a voice-safe tone delta."""
     from .auto_eq_parts.target import get_target_curve
 
     mask = (measured_freqs >= 80.0) & (measured_freqs <= 12_000.0)
@@ -1608,13 +1633,28 @@ def _shape_error_db(
         return float("inf")
     measured = np.asarray(measured_db[mask], dtype=float)
     freqs = np.asarray(measured_freqs[mask], dtype=float)
+    if reference_db is None:
+        reference = measured.copy()
+    else:
+        reference_arr = np.asarray(reference_db, dtype=float)
+        if reference_arr.shape != np.asarray(measured_db).shape:
+            return float("inf")
+        reference = reference_arr[mask]
+    if reference.shape != measured.shape:
+        return float("inf")
     target = np.asarray(
-        get_target_curve(freqs, target_preset, measured, target_mode="adaptive"),
+        get_target_curve(freqs, target_preset, reference, target_mode="adaptive"),
         dtype=float,
     )
-    measured -= float(np.median(measured))
+    if reference_db is None:
+        measured -= float(np.median(measured))
+        target -= float(np.median(target))
+        return float(np.sqrt(np.mean(np.square(measured - target))))
+
+    measured_delta = measured - reference
+    measured_delta -= float(np.median(measured_delta))
     target -= float(np.median(target))
-    return float(np.sqrt(np.mean(np.square(measured - target))))
+    return float(np.sqrt(np.mean(np.square(measured_delta - target))))
 
 
 def validate_voice_setup_verification(
@@ -1733,11 +1773,13 @@ def validate_voice_setup_verification(
         before_spectrum.freqs,
         before_spectrum.median_spectrum_db,
         target_preset,
+        reference_db=before_spectrum.median_spectrum_db,
     )
     after_error = _shape_error_db(
         after_spectrum.freqs,
         after_spectrum.median_spectrum_db,
         target_preset,
+        reference_db=before_spectrum.median_spectrum_db,
     )
     original_shape = np.interp(
         before_spectrum.freqs,

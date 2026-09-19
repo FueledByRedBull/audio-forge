@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.13.0 (unreleased)
 
 - Validate Auto-EQ recording quality before optional fitting smoothing, avoiding false rejection of clear speech while retaining invalid-capture checks.
 - Add Warm / Full Voice, a bounded low-mid target with restrained upper presence in Adaptive and Static modes.
@@ -16,8 +16,11 @@
 - Unify Normal, Bypass, and Raw monitoring in one processing-mode selector.
 - Save calibration evidence and show whether it still matches the current route and settings.
 - Keep calibrated Auto-EQ and voice character in independent EQ stages, including custom filter types and slopes; tone edits preserve the calibrated layer.
+- Fit Auto Voice Setup EQ before compressor calibration, score compressor candidates with the requested auto makeup, and keep the result advisory when the native full-chain simulation cannot leave safe headroom; lower the target loudness and rerun rather than applying an unsafe candidate. Natural / No Added Tone remains neutral.
 - Evaluate bounded gate and suppression choices across the available noise models alongside proposed dynamics, retaining current settings when held-out evidence is inconclusive.
 - Apply VAD pre-gain changes to the live inference worker, including changes made while processing.
+- Drop a whole VAD analysis block on queue overflow, publish a discontinuity marker, and reset the worker's recurrent context after draining stale queued samples so a source gap cannot be bridged.
+- Recover VAD speech detection after sustained near-full-scale audio by clearing recurrent history when the level drops, while preserving buffered audio and source timing.
 - Restore the previous sound if a configuration fails, and offer Save, Discard, or Cancel before replacing unsaved settings or quitting.
 - Separate Save from Save As, retain matching microphone calibration across tone edits, and require approval of the final verified Voice Setup candidate.
 - Add aligned comparison switching, Stop, playback-device refresh, and a separate saved preview destination.

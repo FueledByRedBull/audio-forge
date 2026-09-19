@@ -48,6 +48,11 @@ const NOISE_FLOOR_ELIGIBLE_PROB_MAX: f32 = 0.3;
 const NOISE_FLOOR_UPDATE_MS: f32 = 10.0;
 const NOISE_FLOOR_UP_SLEW_DB_PER_UPDATE: f32 = 0.5;
 const NOISE_FLOOR_DOWN_SLEW_DB_PER_UPDATE: f32 = 0.1;
+/// A sustained near-full-scale model window can poison Silero's recurrent
+/// state. Keep this recovery trigger narrow so ordinary speech is untouched.
+const VAD_SEVERE_RMS_START_DB: f32 = -6.0;
+const VAD_SEVERE_RMS_END_DB: f32 = -18.0;
+const VAD_SEVERE_MIN_FRAMES: u16 = 8;
 const VAD_RESAMPLER_TAPS: i32 = 31;
 /// LSTM hidden dimension
 const LSTM_HIDDEN_DIM: usize = 64;
@@ -139,6 +144,10 @@ pub struct SileroVAD {
     smoothing: f32,
     /// Pre-gain applied to audio before VAD processing (boosts weak signals)
     pre_gain: f32,
+    /// Consecutive severe-level model windows not yet followed by recovery.
+    severe_rms_frames: u16,
+    /// Whether a sustained severe-level run has completed and awaits recovery.
+    severe_rms_armed: bool,
 }
 
 impl SileroVAD {
@@ -264,6 +273,8 @@ impl SileroVAD {
             has_inference: false,
             smoothing: 0.5, // Faster smoothing (less lag)
             pre_gain: 1.0,  // Default: no gain boost
+            severe_rms_frames: 0,
+            severe_rms_armed: false,
         })
     }
 
@@ -333,6 +344,11 @@ impl SileroVAD {
         let copy_len = inference_input.len().min(SILERO_WINDOW_SIZE);
         self.audio_512[..copy_len].copy_from_slice(&inference_input[..copy_len]);
 
+        // Measure the actual 16 kHz model window before pre-gain. Include the
+        // configured gain in dB so offline (gain-before-resample) and live
+        // (gain-after-resample) paths use the same overload decision.
+        self.update_severe_level_state();
+
         // Run inference
         let prob = self.run_inference()?;
 
@@ -346,6 +362,40 @@ impl SileroVAD {
         }
 
         Ok(calibrate_silero_probability(self.smoothed_prob))
+    }
+
+    fn update_severe_level_state(&mut self) {
+        let gain_db = 20.0 * self.pre_gain.max(0.1).log10();
+        let rms_db = compute_rms_db(&self.audio_512) + gain_db;
+
+        if self.severe_rms_armed {
+            if rms_db < VAD_SEVERE_RMS_END_DB {
+                self.reset_recurrent_state();
+                self.severe_rms_frames = 0;
+                self.severe_rms_armed = false;
+            }
+            return;
+        }
+
+        if rms_db > VAD_SEVERE_RMS_START_DB {
+            self.severe_rms_frames = self.severe_rms_frames.saturating_add(1);
+            if self.severe_rms_frames >= VAD_SEVERE_MIN_FRAMES {
+                self.severe_rms_armed = true;
+            }
+        } else {
+            // Frames below the start threshold break an unarmed run. Once
+            // armed, the -18 dB hysteresis threshold above owns recovery.
+            self.severe_rms_frames = 0;
+        }
+    }
+
+    /// Clear only recurrent inference state. Input buffering and its source
+    /// clock must survive this recovery boundary.
+    fn reset_recurrent_state(&mut self) {
+        self.context_audio.fill(0.0);
+        self.smoothed_prob = 0.0;
+        self.has_inference = false;
+        self.state.fill(0.0);
     }
 
     /// Get current speech probability (smoothed)
@@ -383,11 +433,9 @@ impl SileroVAD {
         self.resample_scratch.clear();
         self.gained_audio.fill(0.0);
         self.audio_512.fill(0.0);
-        self.context_audio.fill(0.0);
-        self.smoothed_prob = 0.0;
-        self.has_inference = false;
-        // Reset combined LSTM state to zeros
-        self.state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_STATE_DIM));
+        self.severe_rms_frames = 0;
+        self.severe_rms_armed = false;
+        self.reset_recurrent_state();
     }
 
     #[inline]

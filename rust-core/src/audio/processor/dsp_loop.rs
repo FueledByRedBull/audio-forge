@@ -1,4 +1,31 @@
 impl AudioProcessor {
+    #[cfg(feature = "vad")]
+    #[inline]
+    fn enqueue_vad_block(
+        producer: &mut AudioProducer,
+        samples: &[f32],
+        source_sample_clock: &mut u64,
+        source_discontinuity: &AtomicU64,
+    ) -> usize {
+        // A partial write would make the next accepted sample look contiguous
+        // to Silero even though the dropped tail is a source gap. Drop the
+        // whole block and publish the boundary before any later write.
+        let queue_would_overflow = producer.free_len() < samples.len();
+        if queue_would_overflow {
+            source_discontinuity.fetch_add(1, Ordering::Release);
+            return 0;
+        }
+
+        let written = producer.write(samples);
+        *source_sample_clock = source_sample_clock.saturating_add(written as u64);
+        if written < samples.len() {
+            // The free-space check is conservative; preserve the marker if a
+            // short write is reported despite sufficient space.
+            source_discontinuity.fetch_add(1, Ordering::Release);
+        }
+        written
+    }
+
     fn drain_retired_suppressors(&self) {
         if let Ok(mut rx_guard) = self.retired_suppressor_rx.lock() {
             if let Some(rx) = rx_guard.as_mut() {
@@ -426,6 +453,8 @@ impl AudioProcessor {
         let vad_last_update_us = Arc::clone(&self.vad_last_update_us);
         #[cfg(feature = "vad")]
         let vad_source_sample_end = Arc::clone(&self.vad_source_sample_end);
+        #[cfg(feature = "vad")]
+        let vad_source_discontinuity = Arc::clone(&self.vad_source_discontinuity);
         let compressor_current_release_ms = Arc::clone(&self.compressor_current_release_ms);
         let compressor_current_lufs = Arc::clone(&self.compressor_current_lufs);
         let compressor_current_makeup_gain = Arc::clone(&self.compressor_current_makeup_gain);
@@ -1467,14 +1496,17 @@ impl AudioProcessor {
                             } else {
                                 #[cfg(feature = "vad")]
                                 {
-                                    let written = vad_worker_producer.write(buffer);
-                                    // Keep the source clock on the samples the
-                                    // worker can actually consume. Dropped tail
-                                    // samples are absent from this analysis
-                                    // timeline; the wall-clock watchdog still
-                                    // invalidates results if the worker stalls.
-                                    vad_source_sample_clock = vad_source_sample_clock
-                                        .saturating_add(written as u64);
+                                    let written = Self::enqueue_vad_block(
+                                        &mut vad_worker_producer,
+                                        buffer,
+                                        &mut vad_source_sample_clock,
+                                        vad_source_discontinuity.as_ref(),
+                                    );
+                                    // Keep the source clock on samples the worker
+                                    // can actually consume. Dropped blocks are
+                                    // absent from this analysis timeline; the
+                                    // wall-clock watchdog still invalidates
+                                    // results if the worker stalls.
                                     if written < buffer.len() {
                                         rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
                                         store_rt_error(

@@ -2,6 +2,8 @@
 
 ## v1.13.0 (unreleased)
 
+- Discard overdue parameter updates when newer controls are applied, preventing a delayed UI timer from silently restoring older processor values after a UI stall.
+
 - Validate Auto-EQ recording quality before optional fitting smoothing, avoiding false rejection of clear speech while retaining invalid-capture checks.
 - Add Warm / Full Voice, a bounded low-mid target with restrained upper presence in Adaptive and Static modes.
 

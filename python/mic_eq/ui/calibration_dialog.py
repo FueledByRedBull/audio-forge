@@ -1606,7 +1606,7 @@ class CalibrationDialog(QDialog):
         Return the selected target curve key.
 
         Returns:
-            str: Target curve key ('broadcast', 'podcast', 'streaming', or 'flat')
+            str: Selected target key from the built-in curve catalog
         """
         return self.curve_combo.currentData()
 

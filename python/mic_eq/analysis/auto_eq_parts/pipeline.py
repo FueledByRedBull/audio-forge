@@ -38,7 +38,7 @@ def analyze_auto_eq(
     Args:
         audio_data: Recorded audio samples (float32 NumPy array)
         sample_rate: Sample rate in Hz (should be 48000)
-        target_preset: Target curve name ('broadcast', 'podcast', 'streaming', 'flat')
+        target_preset: Target key from the built-in curve catalog
         target_mode: 'adaptive' for bounded voice-aware targets, 'static' for catalog targets
         smoothing_strength: 'conservative', 'balanced', 'broad', or 'off'
         chain_settings: Current deterministic downstream DSP settings for headroom simulation
@@ -181,7 +181,9 @@ def analyze_auto_eq(
     check_analysis_cancelled(cancel_check)
 
     # Step 5: Validate results
-    validation = validate_analysis(eq_settings, spectrum_smoothed, freqs)
+    # Capture quality must not depend on the user's fitting-smoothing choice:
+    # smoothing deliberately removes peaks that the voice-presence check needs.
+    validation = validate_analysis(eq_settings, spectrum_db, freqs)
     validation.details.update(
         {
             "voiced_window_ratio": spectrum_result.voiced_window_ratio,

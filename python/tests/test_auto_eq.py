@@ -28,6 +28,41 @@ EQ_FREQUENCIES = config.EQ_FREQUENCIES
 AUTO_EQ_DEFAULT_Q = config.AUTO_EQ_DEFAULT_Q
 
 
+def test_capture_validation_is_independent_of_fitting_smoothing():
+    sample_rate = 48_000
+    time = np.arange(sample_rate * 3) / sample_rate
+    audio = np.asarray(sum(
+        0.1 / harmonic * np.sin(2 * np.pi * 150 * harmonic * time)
+        for harmonic in range(1, 26)
+    ), dtype=np.float32)
+    peak_counts = set()
+    for smoothing in ("conservative", "balanced", "broad", "off"):
+        _, validation = analyze_auto_eq(
+            audio, sample_rate, "flat", smoothing_strength=smoothing,
+            chain_settings={"compressor_enabled": False, "limiter_enabled": False},
+        )
+        assert validation.passed
+        peak_counts.add(validation.details["peak_count"])
+    assert len(peak_counts) == 1
+
+
+@pytest.mark.parametrize("smoothing", ["conservative", "balanced", "broad", "off"])
+@pytest.mark.parametrize("kind", ["silence", "noise", "tone"])
+def test_unsmoothed_capture_validation_still_rejects_invalid_input(smoothing, kind):
+    sample_rate = 48_000
+    time = np.arange(sample_rate * 3) / sample_rate
+    audio = {
+        "silence": np.zeros(time.size),
+        "noise": np.random.default_rng(4).normal(0, 0.03, time.size),
+        "tone": 0.1 * np.sin(2 * np.pi * 150 * time),
+    }[kind].astype(np.float32)
+    with pytest.raises(ValueError, match="Recording too unclear"):
+        analyze_auto_eq(
+            audio, sample_rate, "flat", smoothing_strength=smoothing,
+            chain_settings={"compressor_enabled": False, "limiter_enabled": False},
+        )
+
+
 @pytest.mark.parametrize(
     ("keyword", "value", "message"),
     [

@@ -121,7 +121,7 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
 
     Args:
         eq_settings: Calculated EQ settings (dict with band_gains)
-        spectrum_db: Smoothed spectrum in dB
+        spectrum_db: Measured spectrum before optional EQ-fitting smoothing, in dB
         freqs: Frequency array in Hz
 
     Returns:

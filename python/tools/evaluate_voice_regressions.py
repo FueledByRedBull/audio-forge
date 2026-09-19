@@ -16,7 +16,7 @@ import numpy as np
 from mic_eq.analysis.wav_io import read_mono_wav
 from mic_eq.analysis.auto_eq import analyze_auto_eq
 from mic_eq.analysis.auto_eq_parts.response import _predict_eq_response
-from mic_eq.config import EQ_FREQUENCIES
+from mic_eq.config import EQ_FREQUENCIES, TARGET_CURVES
 from mic_eq.mic_eq_core import simulate_auto_eq_chain
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -51,7 +51,7 @@ def measure_eq(corpus: Path) -> dict:
             "limiter_enabled": False, "return_output_audio": True,
         })
         audio = np.asarray(filtered["output_audio"], dtype=np.float32)
-        for target in ("flat", "broadcast", "podcast", "streaming"):
+        for target in TARGET_CURVES:
             eq, _validation = analyze_auto_eq(audio, 48_000, target)
             response = _predict_eq_response(freqs, eq["band_gains"], eq["band_qs"], eq["band_freqs"])
             maximum = float(np.max(np.abs(response)))

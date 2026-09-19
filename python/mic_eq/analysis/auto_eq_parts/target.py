@@ -68,7 +68,7 @@ def get_target_curve(
 
     Args:
         freqs: Frequency array (Hz)
-        target_preset: Target curve name ('broadcast', 'podcast', 'streaming', 'flat')
+        target_preset: Target curve name ('broadcast', 'podcast', 'streaming', 'warm', 'flat')
         target_mode: 'adaptive' applies a bounded reference-free tone layer
             (flat is neutral); 'static' uses the catalog curve exactly.
 
@@ -98,7 +98,7 @@ def get_target_curve(
         # enough that speech formants remain the speaker's own.
         target_db = np.clip(target_db * 0.4, -2.0, 2.0)
         measured_arr = np.asarray(measured_db, dtype=float)
-        if measured_arr.shape == freqs.shape and target_preset != "flat":
+        if measured_arr.shape == freqs.shape and target_preset not in {"flat", "warm"}:
             target_db = target_db + _adaptive_voice_offsets(
                 freqs,
                 measured_arr,

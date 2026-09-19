@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Validate Auto-EQ recording quality before optional fitting smoothing, avoiding false rejection of clear speech while retaining invalid-capture checks.
+- Add Warm / Full Voice, a bounded low-mid target with restrained upper presence in Adaptive and Static modes.
+
 - Preserve the recorded voice's spectral shape in automatic EQ; treat targets as bounded tonal adjustments and keep Natural / No Added Tone neutral.
 - Score final EQ with the same normalized fitting data and weights used by the optimizer, including after headroom reduction.
 - Honor global EQ bypass and gate/suppressor settings in previews, preserve level matching through shared peak protection, and measure raw true peak correctly.

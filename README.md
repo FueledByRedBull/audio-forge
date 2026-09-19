@@ -90,6 +90,8 @@ AudioForge opens with processing stopped; use **Start Processing** to send audio
   Speech alone cannot identify the microphone's frequency response. Automatic
   targets preserve the recorded voice and apply bounded tonal preferences;
   Natural / No Added Tone does not attempt to flatten the voice spectrum.
+  Warm / Full Voice adds broad low-mid body with restrained upper presence;
+  Adaptive keeps it subtle, while Static uses the stronger catalog curve.
   Older presets retain their combined EQ response as the tone stage.
   Tone edits preserve matching microphone evidence; changed output settings
   make previous output verification stale.

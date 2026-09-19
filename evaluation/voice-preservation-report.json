@@ -87,5 +87,6 @@
     "baseline": "build/voice-regression-baseline.json",
     "candidate": "build/voice-regression-final.json"
   },
-  "reproduce": "Run python/tools/evaluate_voice_regressions.py before and after rebuilding the native extension, supplying --baseline and --eq-corpus models/cross_take_eval."
+  "reproduce": "Run python/tools/evaluate_voice_regressions.py before and after rebuilding the native extension, supplying --baseline and --eq-corpus models/cross_take_eval.",
+  "source_revision": "a0d785a6772fff311110d9553de973b717b74217"
 }

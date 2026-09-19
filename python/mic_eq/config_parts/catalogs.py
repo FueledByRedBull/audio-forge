@@ -114,6 +114,11 @@ def build_target_curves() -> dict[str, TargetCurve]:
             description=f"{CALIBRATION_TARGET_SCOPE_LABEL} that cuts through game audio with aggressive presence",
             band_targets=[-1.0, 0.0, 1.0, 2.0, 4.0, 5.0, 4.0, 2.0, 0.0, -2.0]
         ),
+        'warm': TargetCurve(
+            name="Warm / Full Voice",
+            description=f"{CALIBRATION_TARGET_SCOPE_LABEL}: broad low-mid body with restrained upper presence",
+            band_targets=[0.0, 2.0, 3.0, 1.0, 0.0, -1.0, -1.0, -1.0, -0.5, 0.0]
+        ),
         'flat': TargetCurve(
             name="Natural / No Added Tone",
             description=f"{CALIBRATION_TARGET_SCOPE_LABEL}: preserve the recorded voice without inferring a microphone response",

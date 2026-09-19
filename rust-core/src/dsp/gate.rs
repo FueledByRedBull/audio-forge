@@ -232,19 +232,19 @@ impl NoiseGate {
     }
 
     #[inline]
-    fn update_detector(&mut self, input: f64) {
+    fn update_detector(&mut self, input: f64, threshold_db: f64) {
         self.rms_envelope_sq =
             self.rms_coeff * self.rms_envelope_sq + (1.0 - self.rms_coeff) * input * input;
         self.detector_level_db = util::linear_to_db(self.rms_envelope_sq.sqrt(), MIN_LEVEL_LINEAR);
 
-        if self.detector_level_db >= self.threshold_db {
+        if self.detector_level_db >= threshold_db {
             self.is_open = true;
             self.hold_remaining_samples =
                 (self.sample_rate * DETECTOR_HOLD_MS / 1000.0).round() as usize;
         } else if self.hold_remaining_samples > 0 {
             self.hold_remaining_samples -= 1;
             self.is_open = true;
-        } else if self.detector_level_db <= self.threshold_db - DETECTOR_HYSTERESIS_DB {
+        } else if self.detector_level_db <= threshold_db - DETECTOR_HYSTERESIS_DB {
             self.is_open = false;
         }
     }
@@ -260,20 +260,20 @@ impl NoiseGate {
     }
 
     #[inline]
-    fn detector_gain_reduction_db(&self) -> f64 {
+    fn detector_gain_reduction_db(&self, threshold_db: f64) -> f64 {
         if self.is_open {
             0.0
         } else {
-            ((self.threshold_db - self.detector_level_db) * EXPANDER_GAIN_REDUCTION_SLOPE)
+            ((threshold_db - self.detector_level_db) * EXPANDER_GAIN_REDUCTION_SLOPE)
                 .clamp(0.0, self.expander_range_db())
         }
     }
 
     #[cfg(feature = "vad")]
     #[inline]
-    fn level_open_score(&self) -> f32 {
-        let closed_db = self.threshold_db - DETECTOR_HYSTERESIS_DB;
-        let score = (self.detector_level_db - closed_db) / (self.threshold_db - closed_db);
+    fn level_open_score(&self, threshold_db: f64) -> f32 {
+        let closed_db = threshold_db - DETECTOR_HYSTERESIS_DB;
+        let score = (self.detector_level_db - closed_db) / (threshold_db - closed_db);
         score.clamp(0.0, 1.0) as f32
     }
 
@@ -286,7 +286,8 @@ impl NoiseGate {
         vad_available: bool,
         vad_held_open: bool,
     ) -> bool {
-        let level_score = self.level_open_score();
+        let level_score =
+            self.level_open_score(self.effective_level_threshold_db(mode, vad_available));
         let vad_score = vad_probability.clamp(0.0, 1.0);
         let recent_score = if self.fused_gate_open || self.current_gain > 0.35 {
             1.0
@@ -349,7 +350,8 @@ impl NoiseGate {
         vad_threshold: f32,
         probability_delta: f32,
     ) -> bool {
-        let level_score = self.level_open_score();
+        let level_score =
+            self.level_open_score(self.effective_level_threshold_db(mode, vad_available));
         let auto_relax = self.auto_relax_active();
         let close_margin = if auto_relax {
             AUTO_RELAX_CLOSE_MARGIN
@@ -516,7 +518,8 @@ impl NoiseGate {
             return self.expander_range_db();
         }
 
-        let level_reduction = self.detector_gain_reduction_db();
+        let level_reduction =
+            self.detector_gain_reduction_db(self.effective_level_threshold_db(mode, vad_available));
         if mode == GateMode::VadAssisted && self.level_failsafe_active {
             return level_reduction;
         }
@@ -539,7 +542,7 @@ impl NoiseGate {
         if force_close {
             return self.expander_range_db();
         }
-        self.detector_gain_reduction_db()
+        self.detector_gain_reduction_db(self.threshold_db)
     }
 
     #[inline]
@@ -624,10 +627,24 @@ impl NoiseGate {
         }
 
         let input_f64 = input as f64;
-        self.update_detector(input_f64);
+        self.update_detector(input_f64, self.threshold_db);
         let target_gr_db = self.compute_target_gr_db(false);
         self.track_gate_transition(self.is_open);
         self.apply_gain(input_f64, target_gr_db)
+    }
+
+    #[cfg(feature = "vad")]
+    #[inline]
+    fn effective_level_threshold_db(&self, mode: GateMode, vad_available: bool) -> f64 {
+        if mode == GateMode::VadAssisted && vad_available {
+            if let Some(vad) = &self.vad_auto_gate {
+                return f64::from(vad.effective_threshold_db());
+            }
+        }
+        // VAD Assisted keeps the explicit threshold as its level fallback
+        // when the worker is stale/unavailable. VAD Only also uses that
+        // explicit fallback only for its unavailable-worker recovery path.
+        self.threshold_db
     }
 
     /// Process a block of samples in-place.
@@ -650,8 +667,6 @@ impl NoiseGate {
                 };
                 let level_db = 20.0 * rms.max(MIN_LEVEL_LINEAR).log10();
                 let crest_db = 20.0 * (peak / rms.max(MIN_LEVEL_LINEAR)).max(1.0).log10();
-                self.level_failsafe_active =
-                    level_db >= self.threshold_db && crest_db <= LEVEL_FAILSAFE_MAX_CREST_DB;
 
                 if let Some(vad) = &mut self.vad_auto_gate {
                     if vad.is_enabled() {
@@ -662,6 +677,12 @@ impl NoiseGate {
                         );
                         let vad_threshold = vad.vad_threshold();
                         let vad_probability_available = self.vad_external_available;
+                        let level_threshold_db = self.effective_level_threshold_db(
+                            self.gate_mode,
+                            vad_probability_available,
+                        );
+                        self.level_failsafe_active = level_db >= level_threshold_db
+                            && crest_db <= LEVEL_FAILSAFE_MAX_CREST_DB;
                         let probability_delta = probability - self.previous_vad_probability;
 
                         for sample in buffer.iter_mut() {
@@ -672,7 +693,7 @@ impl NoiseGate {
                                 .clamp(0.0, 1.0)
                                 as f32;
                             // Detector tracks continuously even when VAD blocks.
-                            self.update_detector(input_f64);
+                            self.update_detector(input_f64, level_threshold_db);
                             self.update_fused_gate_score(
                                 self.gate_mode,
                                 probability,
@@ -915,6 +936,36 @@ impl NoiseGate {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "vad")]
+    fn render_assisted_noise(
+        auto_threshold: bool,
+        manual_threshold_db: f64,
+        probe_level_db: f32,
+    ) -> (f32, f32) {
+        let mut gate = NoiseGate::new(manual_threshold_db, 1.0, 20.0, 48_000.0);
+        gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.35)));
+        gate.set_gate_mode(GateMode::VadAssisted);
+        gate.set_hold_time(0.0);
+        gate.set_margin(6.0);
+        gate.set_auto_threshold(auto_threshold);
+        gate.set_external_vad_probability(0.0, true);
+
+        let amplitude = 10.0_f32.powf(-30.5 / 20.0);
+        for _ in 0..500 {
+            let mut block = vec![amplitude; 480];
+            gate.process_block_inplace(&mut block);
+        }
+
+        let floor = gate.noise_floor();
+        let probe_amplitude = 10.0_f32.powf(probe_level_db / 20.0);
+        let mut probe = vec![probe_amplitude; 4_800];
+        gate.process_block_inplace(&mut probe);
+        let rms =
+            (probe.iter().map(|sample| sample * sample).sum::<f32>() / probe.len() as f32).sqrt();
+        let output_db = 20.0 * rms.max(1.0e-10).log10();
+        (floor, output_db)
+    }
+
     #[test]
     fn test_noise_gate_opens_above_threshold() {
         let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
@@ -1079,6 +1130,36 @@ mod tests {
 
         assert!(gate.current_gain() > 0.5);
         assert!(!gate.is_vad_available());
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_assisted_auto_threshold_drives_level_detector() {
+        let (floor_at_low_manual, low_manual_auto_below_db) =
+            render_assisted_noise(true, -40.0, -30.5);
+        let (floor_at_high_manual, high_manual_auto_below_db) =
+            render_assisted_noise(true, -20.0, -30.5);
+
+        assert!((floor_at_low_manual + 30.5).abs() < 1.5);
+        assert!((floor_at_high_manual - floor_at_low_manual).abs() < 0.5);
+        assert!(
+            (low_manual_auto_below_db - high_manual_auto_below_db).abs() < 1.0,
+            "auto floor must control Assisted level detection below its threshold: low={low_manual_auto_below_db:.2} dB high={high_manual_auto_below_db:.2} dB"
+        );
+
+        let (_, low_manual_auto_above_db) = render_assisted_noise(true, -40.0, -24.0);
+        let (_, high_manual_auto_above_db) = render_assisted_noise(true, -20.0, -24.0);
+        assert!(
+            (low_manual_auto_above_db - high_manual_auto_above_db).abs() < 1.0,
+            "auto floor must control Assisted level detection above its threshold: low={low_manual_auto_above_db:.2} dB high={high_manual_auto_above_db:.2} dB"
+        );
+
+        let (_, low_manual_db) = render_assisted_noise(false, -40.0, -30.5);
+        let (_, high_manual_db) = render_assisted_noise(false, -20.0, -30.5);
+        assert!(
+            low_manual_db - high_manual_db > 10.0,
+            "explicit manual thresholds must remain distinct: low={low_manual_db:.2} dB high={high_manual_db:.2} dB"
+        );
     }
 
     #[cfg(feature = "vad")]
@@ -1320,6 +1401,11 @@ mod tests {
         let mut gate = NoiseGate::new(-40.0, 1.0, 20.0, sample_rate as f64);
         gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(sample_rate, 0.5)));
         gate.set_gate_mode(mode);
+        if mode == GateMode::VadAssisted {
+            // Keep this mode matrix focused on the explicit level/VAD
+            // interaction; auto-floor behavior has its own regression above.
+            gate.set_auto_threshold(false);
+        }
         let block_len = (sample_rate as usize / 100).max(1);
         gate.set_external_vad_probability(0.0, false);
         let mut warmup = vec![0.1_f32; sample_rate as usize / 10];

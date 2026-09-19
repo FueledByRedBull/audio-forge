@@ -384,7 +384,7 @@ class GatePanel(QWidget):
     def _is_auto_threshold_active(self) -> bool:
         mode = self.gate_mode_combo.currentIndex()
         return (
-            mode > 0
+            mode == 1
             and self._is_vad_available()
             and self.auto_threshold_checkbox.isChecked()
         )
@@ -393,7 +393,9 @@ class GatePanel(QWidget):
         if mode == 0:
             self.vad_info_label.setText("VAD: Threshold mode")
         elif vad_available:
-            if self.auto_threshold_checkbox.isChecked():
+            if mode == 2:
+                self.vad_info_label.setText("VAD: Active | Speech confidence only")
+            elif self.auto_threshold_checkbox.isChecked():
                 self.vad_info_label.setText("VAD: Active | Auto threshold on")
             else:
                 self.vad_info_label.setText("VAD: Active | Manual threshold")
@@ -405,7 +407,13 @@ class GatePanel(QWidget):
         self.noise_floor_label.setText(
             f"Noise Floor: {self._latest_noise_floor_db:.1f} dB"
         )
-        if self._is_auto_threshold_active():
+        if self.gate_mode_combo.currentIndex() == 2:
+            self.threshold_label.setText("Level Fallback:")
+            self.threshold_status_label.setText(
+                f"VAD Threshold: {self.vad_threshold_spinbox.value():.2f} | "
+                f"Level fallback when VAD is unavailable: {manual_threshold:.1f} dB"
+            )
+        elif self._is_auto_threshold_active():
             margin_db = self.margin_spinbox.value()
             effective_threshold = max(
                 -80.0, min(-10.0, self._latest_noise_floor_db + margin_db)
@@ -430,6 +438,7 @@ class GatePanel(QWidget):
 
     def _update_vad_mode(self):
         """Update VAD mode and settings."""
+        self.confidence_meter.set_threshold(self.vad_threshold_spinbox.value())
         try:
             mode = self.gate_mode_combo.currentIndex()
             vad_available = self._is_vad_available()
@@ -468,7 +477,7 @@ class GatePanel(QWidget):
         vad_enabled = mode > 0 and vad_available
         threshold_enabled = mode != 2  # Disabled in VAD Only mode
         auto_threshold_enabled = (
-            vad_enabled and self.auto_threshold_checkbox.isChecked()
+            mode == 1 and vad_enabled and self.auto_threshold_checkbox.isChecked()
         )
 
         # Enable/disable VAD controls
@@ -491,6 +500,17 @@ class GatePanel(QWidget):
 
         # Enable/disable auto-threshold controls (only when VAD is active)
         self.auto_threshold_checkbox.setEnabled(mode > 0 and vad_available)
+        self.auto_threshold_checkbox.setText(
+            "Track Noise Floor" if mode == 2 else "Auto Threshold"
+        )
+        self.auto_threshold_checkbox.setAccessibleName(
+            "Track noise floor" if mode == 2 else "Enable automatic gate threshold"
+        )
+        self.auto_threshold_checkbox.setToolTip(
+            "Track the noise floor without changing the VAD speech threshold."
+            if mode == 2
+            else "Automatically set the gate level threshold to noise floor + margin."
+        )
         self.margin_slider.setEnabled(auto_threshold_enabled)
         self.margin_spinbox.setEnabled(auto_threshold_enabled)
         self._refresh_threshold_summary()

@@ -672,6 +672,81 @@ mod tests {
     }
 
     #[test]
+    fn test_pinned_silero_speech_end_reset_requires_relative_drop_and_eight_frames() {
+        let mut vad = SileroVAD::new(SILERO_SAMPLE_RATE, 0.35)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let anchor_level = 10.0_f32.powf(-10.0 / 20.0);
+        let near_anchor_level = 10.0_f32.powf(-20.0 / 20.0);
+        let low_level = 10.0_f32.powf(-23.0 / 20.0);
+
+        vad.state.fill(1.0);
+        vad.context_audio.fill(1.0);
+        vad.has_inference = true;
+
+        // Low levels without a confident speech anchor cannot reset history.
+        vad.audio_512.fill(low_level);
+        for _ in 0..VAD_SPEECH_END_MIN_FRAMES * 2 {
+            vad.update_speech_end_state(0.1);
+        }
+        assert!(vad.speech_end_anchor_db.is_none());
+        assert_eq!(vad.speech_end_low_frames, 0);
+        assert!(vad.has_inference);
+
+        vad.audio_512.fill(anchor_level);
+        vad.update_speech_end_state(0.9);
+        assert!(vad.speech_end_anchor_db.is_some());
+
+        // A smaller level drop must not trigger a recurrent-state reset.
+        vad.audio_512.fill(near_anchor_level);
+        for _ in 0..VAD_SPEECH_END_MIN_FRAMES * 2 {
+            vad.update_speech_end_state(0.1);
+        }
+        assert_eq!(vad.speech_end_low_frames, 0);
+        assert!(vad.speech_end_anchor_db.is_some());
+        assert!(vad.has_inference);
+        assert!(vad.state.iter().all(|sample| *sample == 1.0));
+
+        // The required relative drop resets only recurrent state after eight
+        // complete low-confidence windows.
+        vad.audio_512.fill(low_level);
+        for _ in 0..VAD_SPEECH_END_MIN_FRAMES - 1 {
+            vad.update_speech_end_state(0.1);
+        }
+        assert_eq!(vad.speech_end_low_frames, VAD_SPEECH_END_MIN_FRAMES - 1);
+        assert!(vad.has_inference);
+
+        vad.update_speech_end_state(0.1);
+        assert_eq!(vad.speech_end_low_frames, VAD_SPEECH_END_MIN_FRAMES);
+        assert!(vad.speech_end_anchor_db.is_some());
+        assert!(vad.has_inference);
+
+        // A partial input call must keep the triggering probability and clock
+        // until the next complete model window reaches the reset boundary.
+        vad.smoothed_prob = 0.73;
+        let cached_probability = vad.probability();
+        let partial = vec![0.0_f32; SILERO_WINDOW_SIZE / 2];
+        assert!((vad.process(&partial).unwrap() - cached_probability).abs() < 1.0e-6);
+        assert_eq!(vad.processed_input_samples(), 0);
+        assert_eq!(vad.speech_end_low_frames, VAD_SPEECH_END_MIN_FRAMES);
+
+        let mut fresh = SileroVAD::new(SILERO_SAMPLE_RATE, 0.35)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let quiet_tail = vec![0.0_f32; SILERO_WINDOW_SIZE / 2];
+        let mut complete_window = partial.clone();
+        complete_window.extend_from_slice(&quiet_tail);
+        let expected = fresh.process(&complete_window).unwrap();
+        let actual = vad.process(&quiet_tail).unwrap();
+
+        assert!((actual - expected).abs() < 1.0e-6);
+        assert_eq!(vad.processed_input_samples(), SILERO_WINDOW_SIZE as u64);
+        assert_eq!(vad.available_samples(), 0);
+        assert!(vad.speech_end_anchor_db.is_none());
+        assert_eq!(vad.speech_end_low_frames, 0);
+        assert!(vad.has_inference);
+        assert_eq!(vad.state, fresh.state);
+    }
+
+    #[test]
     fn test_model_optional_vad_returns_neutral_probability_before_first_inference() {
         let Some(mut vad) = optional_silero_vad(48_000, 0.42) else {
             return;

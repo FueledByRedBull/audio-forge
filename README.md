@@ -180,7 +180,7 @@ Useful behavior to know:
 - Auto Voice Setup keeps a candidate advisory when the requested target loudness cannot leave the native chain's required headroom; choose a lower (more negative) LUFS target and rerun the capture before applying it.
 - Voice Setup candidates remain temporary until a second passage checks repeatability through EQ, de-essing, compression, and the selected limiter settings. Gate, noise suppression, input cleanup, and live loudness adaptation are outside this offline check; confirm the result in your destination app.
 - A realtime VAD queue overflow drops the whole affected analysis block and marks a discontinuity so the worker clears queued context and resets its recurrent state before publishing new probabilities.
-- After sustained near-full-scale audio, VAD clears its recurrent history when the level drops to recover detection of subsequent normal speech. Audio buffering and source timing are preserved.
+- VAD clears recurrent history after sustained near-full-scale audio and at speech endings identified by both low confidence and a sustained level drop. This helps normal speech recover after clipped loud passages, including quieter recordings of clipping. Audio buffering and source timing are preserved.
 - Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
 - Diagnostics separate input drops, backlog recovery, output recovery, output short-write loss, and active output underrun streaks. Historical output underrun and recovery totals stay visible without forcing the health chip into a warning state after the stream has recovered.
 - `Help > Export Diagnostics...` writes a versioned, size-bounded support

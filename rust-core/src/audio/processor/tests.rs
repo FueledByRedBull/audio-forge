@@ -746,6 +746,47 @@ mod tests {
         assert!(!uses_clean_write_path(full));
     }
 
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_full_path_transitions_publish_vad_discontinuity() {
+        let discontinuity = AtomicU64::new(0);
+
+        publish_vad_processing_path_discontinuity(
+            ProcessingPath::Full,
+            ProcessingPath::Bypass,
+            &discontinuity,
+        );
+        assert_eq!(discontinuity.load(Ordering::Acquire), 1);
+
+        publish_vad_processing_path_discontinuity(
+            ProcessingPath::Bypass,
+            ProcessingPath::Full,
+            &discontinuity,
+        );
+        assert_eq!(discontinuity.load(Ordering::Acquire), 2);
+
+        // Raw↔Bypass never feeds the VAD and therefore does not need a
+        // recurrent-state boundary of its own.
+        publish_vad_processing_path_discontinuity(
+            ProcessingPath::RawMonitor,
+            ProcessingPath::Bypass,
+            &discontinuity,
+        );
+        publish_vad_processing_path_discontinuity(
+            ProcessingPath::Bypass,
+            ProcessingPath::RawMonitor,
+            &discontinuity,
+        );
+        assert_eq!(discontinuity.load(Ordering::Acquire), 2);
+
+        publish_vad_processing_path_discontinuity(
+            ProcessingPath::RawMonitor,
+            ProcessingPath::Full,
+            &discontinuity,
+        );
+        assert_eq!(discontinuity.load(Ordering::Acquire), 3);
+    }
+
     #[test]
     fn test_raw_monitor_sanitizes_but_skips_prefilter_shaping() {
         let mut non_finite = vec![f32::NAN, f32::INFINITY, -f32::INFINITY];

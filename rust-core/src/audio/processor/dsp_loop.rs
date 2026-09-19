@@ -1,3 +1,15 @@
+#[cfg(feature = "vad")]
+#[inline]
+fn publish_vad_processing_path_discontinuity(
+    previous_path: ProcessingPath,
+    current_path: ProcessingPath,
+    source_discontinuity: &AtomicU64,
+) {
+    if (previous_path == ProcessingPath::Full) != (current_path == ProcessingPath::Full) {
+        source_discontinuity.fetch_add(1, Ordering::Release);
+    }
+}
+
 impl AudioProcessor {
     #[cfg(feature = "vad")]
     #[inline]
@@ -1150,6 +1162,12 @@ impl AudioProcessor {
                                 bypass.load(Ordering::SeqCst),
                             );
                             if processing_path != previous_processing_path {
+                                #[cfg(feature = "vad")]
+                                publish_vad_processing_path_discontinuity(
+                                    previous_processing_path,
+                                    processing_path,
+                                    vad_source_discontinuity.as_ref(),
+                                );
                                 pre_filter_state = InputPreFilterState::default();
                                 adaptive_cleanup_state.reset_dynamic_state();
                                 publish_input_cleanup_bypassed(

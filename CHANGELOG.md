@@ -21,6 +21,10 @@
 - Apply VAD pre-gain changes to the live inference worker, including changes made while processing.
 - Drop a whole VAD analysis block on queue overflow, publish a discontinuity marker, and reset the worker's recurrent context after draining stale queued samples so a source gap cannot be bridged.
 - Recover VAD speech detection after sustained near-full-scale audio by clearing recurrent history when the level drops, while preserving buffered audio and source timing.
+- Use the automatic level threshold consistently throughout VAD Assisted detection and attenuation; retain the manual threshold when VAD is unavailable.
+- Reset VAD worker history across Normal/Bypass/Raw transitions that interrupt its input.
+- Match the confidence meter marker to the selected VAD threshold and distinguish VAD Only noise-floor tracking from its speech-confidence opening threshold.
+- Clear recurrent VAD history at a sustained, low-confidence speech ending to recover from quieter clipped passages without resetting audio buffering or source timing.
 - Restore the previous sound if a configuration fails, and offer Save, Discard, or Cancel before replacing unsaved settings or quitting.
 - Separate Save from Save As, retain matching microphone calibration across tone edits, and require approval of the final verified Voice Setup candidate.
 - Add aligned comparison switching, Stop, playback-device refresh, and a separate saved preview destination.

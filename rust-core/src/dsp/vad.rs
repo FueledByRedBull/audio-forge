@@ -53,6 +53,14 @@ const NOISE_FLOOR_DOWN_SLEW_DB_PER_UPDATE: f32 = 0.1;
 const VAD_SEVERE_RMS_START_DB: f32 = -6.0;
 const VAD_SEVERE_RMS_END_DB: f32 = -18.0;
 const VAD_SEVERE_MIN_FRAMES: u16 = 8;
+/// A confident speech run establishes a relative level reference. A long,
+/// quiet low-confidence tail then marks a speech boundary and clears only the
+/// recurrent model state. Relative levels cover attenuated clipped speech
+/// without treating ordinary medium-level speech as overload.
+const VAD_SPEECH_END_CONFIDENT_PROB_MIN: f32 = 0.65;
+const VAD_SPEECH_END_LOW_PROB_MAX: f32 = 0.20;
+const VAD_SPEECH_END_LEVEL_DROP_DB: f32 = 12.0;
+const VAD_SPEECH_END_MIN_FRAMES: u16 = 8;
 const VAD_RESAMPLER_TAPS: i32 = 31;
 /// LSTM hidden dimension
 const LSTM_HIDDEN_DIM: usize = 64;
@@ -148,6 +156,10 @@ pub struct SileroVAD {
     severe_rms_frames: u16,
     /// Whether a sustained severe-level run has completed and awaits recovery.
     severe_rms_armed: bool,
+    /// Highest effective model-window level during the current speech run.
+    speech_end_anchor_db: Option<f32>,
+    /// Consecutive low-confidence frames below the relative speech-end level.
+    speech_end_low_frames: u16,
 }
 
 impl SileroVAD {
@@ -275,6 +287,8 @@ impl SileroVAD {
             pre_gain: 1.0,  // Default: no gain boost
             severe_rms_frames: 0,
             severe_rms_armed: false,
+            speech_end_anchor_db: None,
+            speech_end_low_frames: 0,
         })
     }
 
@@ -344,6 +358,14 @@ impl SileroVAD {
         let copy_len = inference_input.len().min(SILERO_WINDOW_SIZE);
         self.audio_512[..copy_len].copy_from_slice(&inference_input[..copy_len]);
 
+        // Keep the triggering low-confidence result visible until the next
+        // complete model window. This preserves partial-buffer probability
+        // reads and clears recurrent state at an actual inference boundary.
+        if self.speech_end_low_frames >= VAD_SPEECH_END_MIN_FRAMES {
+            self.reset_recurrent_state();
+            self.clear_speech_end_tracking();
+        }
+
         // Measure the actual 16 kHz model window before pre-gain. Include the
         // configured gain in dB so offline (gain-before-resample) and live
         // (gain-after-resample) paths use the same overload decision.
@@ -361,7 +383,9 @@ impl SileroVAD {
             self.has_inference = true;
         }
 
-        Ok(calibrate_silero_probability(self.smoothed_prob))
+        let probability = calibrate_silero_probability(self.smoothed_prob);
+        self.update_speech_end_state(probability);
+        Ok(probability)
     }
 
     fn update_severe_level_state(&mut self) {
@@ -373,6 +397,7 @@ impl SileroVAD {
                 self.reset_recurrent_state();
                 self.severe_rms_frames = 0;
                 self.severe_rms_armed = false;
+                self.clear_speech_end_tracking();
             }
             return;
         }
@@ -387,6 +412,38 @@ impl SileroVAD {
             // armed, the -18 dB hysteresis threshold above owns recovery.
             self.severe_rms_frames = 0;
         }
+    }
+
+    fn update_speech_end_state(&mut self, probability: f32) {
+        let gain_db = 20.0 * self.pre_gain.max(0.1).log10();
+        let level_db = compute_rms_db(&self.audio_512) + gain_db;
+
+        if probability >= VAD_SPEECH_END_CONFIDENT_PROB_MIN {
+            self.speech_end_low_frames = 0;
+            self.speech_end_anchor_db = Some(
+                self.speech_end_anchor_db
+                    .map_or(level_db, |anchor_db| anchor_db.max(level_db)),
+            );
+            return;
+        }
+
+        let Some(anchor_db) = self.speech_end_anchor_db else {
+            self.speech_end_low_frames = 0;
+            return;
+        };
+
+        if probability <= VAD_SPEECH_END_LOW_PROB_MAX
+            && level_db <= anchor_db - VAD_SPEECH_END_LEVEL_DROP_DB
+        {
+            self.speech_end_low_frames = self.speech_end_low_frames.saturating_add(1);
+        } else {
+            self.speech_end_low_frames = 0;
+        }
+    }
+
+    fn clear_speech_end_tracking(&mut self) {
+        self.speech_end_anchor_db = None;
+        self.speech_end_low_frames = 0;
     }
 
     /// Clear only recurrent inference state. Input buffering and its source
@@ -435,6 +492,7 @@ impl SileroVAD {
         self.audio_512.fill(0.0);
         self.severe_rms_frames = 0;
         self.severe_rms_armed = false;
+        self.clear_speech_end_tracking();
         self.reset_recurrent_state();
     }
 
@@ -972,14 +1030,7 @@ impl VadAutoGate {
     }
 
     fn level_above_threshold(&self, samples: &[f32]) -> bool {
-        let threshold = if self.auto_threshold_enabled {
-            // Auto mode: noise_floor + margin
-            (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold)
-        } else {
-            // Manual mode: honor the user-configured gate threshold.
-            self.manual_threshold_db
-                .clamp(self.min_threshold, self.max_threshold)
-        };
+        let threshold = self.effective_threshold_db();
         let rms_db = compute_rms_db(samples);
         rms_db >= threshold
     }
@@ -1044,6 +1095,21 @@ impl VadAutoGate {
 
     pub fn noise_floor(&self) -> f32 {
         self.noise_floor
+    }
+
+    /// Return the level threshold currently used by the auto-gate.
+    ///
+    /// Auto mode follows the learned floor plus its configured margin;
+    /// manual mode keeps the explicit user threshold. Keep the clamp here so
+    /// callers that share the level detector cannot drift from the nested
+    /// gate's opening decision.
+    pub fn effective_threshold_db(&self) -> f32 {
+        let threshold = if self.auto_threshold_enabled {
+            self.noise_floor + self.margin
+        } else {
+            self.manual_threshold_db
+        };
+        threshold.clamp(self.min_threshold, self.max_threshold)
     }
 
     /// Set manual threshold used when auto-threshold is disabled

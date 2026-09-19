@@ -11,8 +11,11 @@ published release remains at 1.12.1.
 - Calibrate Auto Voice Setup with the actual auto-makeup settings, explain
   headroom constraints, and keep neutral EQ free of false abstention warnings.
 - Recover VAD worker state safely across dropped analysis blocks.
-- Recover speech detection after sustained near-full-scale audio without
-  restarting processing or resetting the audio buffer and source clock.
+- Keep VAD Assisted automatic thresholds consistent, reset VAD history across
+  bypass/raw input gaps, and show the actual selected speech threshold.
+- Recover speech detection after sustained near-full-scale audio and quieter
+  clipped passages using speech-ending boundaries, without restarting
+  processing or resetting the audio buffer and source clock.
 - Add tray/background controls, a mute shortcut, unified processing modes,
   and safer preset, device and calibration handling.
 

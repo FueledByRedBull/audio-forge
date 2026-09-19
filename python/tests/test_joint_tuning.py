@@ -59,7 +59,8 @@ def _downstream_metrics(audio: np.ndarray, *_args: Any, **_kwargs: Any) -> dict[
 def test_native_gate_enabled_matches_requested_control():
     audio = np.full(4800, 0.01, dtype=np.float32)
     muted = simulate_gate_suppressor_order(audio, [0.0] * 10, False, 0.0,
-                                          {"gate_enabled": True, "gate_threshold_db": -10.0})
+                                          {"gate_enabled": True, "gate_threshold_db": -10.0,
+                                           "gate_auto_threshold_enabled": False})
     open_gate = simulate_gate_suppressor_order(audio, [0.0] * 10, False, 0.0,
                                              {"gate_enabled": False})
     assert np.max(np.abs(muted["output_audio"])) < 0.001

@@ -25,6 +25,7 @@
 - Reset VAD worker history across Normal/Bypass/Raw transitions that interrupt its input.
 - Match the confidence meter marker to the selected VAD threshold and distinguish VAD Only noise-floor tracking from its speech-confidence opening threshold.
 - Clear recurrent VAD history at a sustained, low-confidence speech ending to recover from quieter clipped passages without resetting audio buffering or source timing.
+- Reuse a valid Voice Setup verification take for bounded, stage-specific adjustments; explain the failing check, tolerate minor peak limiting, and restore the previous sound when verification cannot converge instead of repeatedly requesting speech.
 - Restore the previous sound if a configuration fails, and offer Save, Discard, or Cancel before replacing unsaved settings or quitting.
 - Separate Save from Save As, retain matching microphone calibration across tone edits, and require approval of the final verified Voice Setup candidate.
 - Add aligned comparison switching, Stop, playback-device refresh, and a separate saved preview destination.

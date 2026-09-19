@@ -628,6 +628,8 @@ def test_compressor_calibration_uses_one_limiter_configuration(monkeypatch):
 
 def test_verification_uses_candidate_limiter_and_retries_without_it(monkeypatch):
     observed_limiters: list[dict[str, object]] = []
+    limiter_gain_reduction_db = 0.0
+    true_peak_limiter_gain_reduction_db = 0.0
 
     class FakeSpectrum:
         freqs = np.geomspace(80.0, 12_000.0, 16)
@@ -645,7 +647,13 @@ def test_verification_uses_candidate_limiter_and_retries_without_it(monkeypatch)
             "deesser_gain_reduction_p95_db": 0.0,
             "output_true_peak_db": -3.0,
             "limiter_effective_ceiling_db": -1.5,
-            "true_peak_limited_events": 0,
+            # A single event without measured limiter gain is a harmless
+            # boundary catch and must not force a reduction loop.
+            "true_peak_limited_events": 1,
+            "limiter_gain_reduction_db": limiter_gain_reduction_db,
+            "true_peak_limiter_gain_reduction_db": (
+                true_peak_limiter_gain_reduction_db
+            ),
             "output_rms_db": -30.0,
             "input_rms_db": -30.0,
         }
@@ -697,6 +705,49 @@ def test_verification_uses_candidate_limiter_and_retries_without_it(monkeypatch)
     )
 
     assert result["decision"] == "accept"
+    assert result["reason_codes"] == ["accepted"]
+    assert result["reduction_targets"] == []
+    assert result["limiter_activity_events"] == 1
+
+    true_peak_limiter_gain_reduction_db = 1.0
+    boundary = validate_voice_setup_verification(
+        audio,
+        audio,
+        audio,
+        48_000,
+        setup_result,
+        "broadcast",
+    )
+    assert boundary["decision"] == "accept"
+    assert boundary["limiter_pressure_db"] == pytest.approx(1.0)
+    assert boundary["reduction_targets"] == []
+
+    true_peak_limiter_gain_reduction_db = 1.25
+    pressure = validate_voice_setup_verification(
+        audio,
+        audio,
+        audio,
+        48_000,
+        setup_result,
+        "broadcast",
+    )
+    assert pressure["decision"] == "reduce"
+    assert pressure["reason_codes"] == ["limiter_excess"]
+    assert pressure["reduction_targets"] == ["limiter"]
+    assert pressure["limiter_pressure_db"] == pytest.approx(1.25)
+
+    delivery_retry = validate_voice_setup_verification(
+        audio,
+        audio,
+        np.full_like(audio, 0.1),
+        48_000,
+        setup_result,
+        "broadcast",
+    )
+    assert delivery_retry["decision"] == "retry"
+    assert delivery_retry["reason_codes"] == ["verification_delivery_mismatch"]
+    assert "delivery level delta" in delivery_retry["reasons"][0]
+
     assert observed_limiters
     assert all(item == limiter for item in observed_limiters)
     missing = dict(setup_result)
@@ -709,7 +760,8 @@ def test_verification_uses_candidate_limiter_and_retries_without_it(monkeypatch)
         missing,
         "broadcast",
     )
-    assert retry["decision"] == "retry"
+    assert retry["decision"] == "rollback"
+    assert retry["reason_codes"] == ["candidate_settings_incomplete"]
     assert retry["reasons"] == ["candidate limiter settings are missing"]
 
 

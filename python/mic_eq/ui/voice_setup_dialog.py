@@ -88,6 +88,11 @@ logger = logging.getLogger(__name__)
 NOISE_RECORDING_DURATION = 2.0
 VOICE_RECORDING_DURATION = 10.0
 _VOICE_SETUP_MUTE_REASON = "auto_voice_setup"
+_MAX_VERIFICATION_ADJUSTMENTS = 3
+_MAX_VERIFICATION_BAD_CAPTURES = 3
+_LIMITER_PRESSURE_STEP_DB = 1.0
+_TARGET_LUFS_MIN = -24.0
+_TARGET_LUFS_MAX = -12.0
 
 
 def _candidate_preset(
@@ -392,6 +397,10 @@ class VoiceSetupDialog(QDialog):
         self._close_result = False
         self._started_processor = False
         self._recording_duration = NOISE_RECORDING_DURATION
+        self._verification_audio: np.ndarray | None = None
+        self._verification_adjustment_count = 0
+        self._verification_bad_capture_count = 0
+        self._verification_last_reduction_metrics: dict[str, float] | None = None
 
         self._capture_start_timer = QTimer(self)
         self._capture_start_timer.setSingleShot(True)
@@ -1132,6 +1141,7 @@ class VoiceSetupDialog(QDialog):
         if isinstance(candidate, dict):
             candidate["verified_stages"] = []
         setup_result["_candidate"] = candidate
+        self._reset_verification_state()
         self.setup_result = setup_result
         self._final_comparison_pending = False
         candidate_error = _candidate_settings_error(setup_result)
@@ -1425,6 +1435,9 @@ class VoiceSetupDialog(QDialog):
             )
             return
 
+        if self._pre_setup_snapshot is None:
+            self._reset_verification_state()
+
         self._final_comparison_pending = False
 
         identity_error = self._candidate_identity_error(parent)
@@ -1639,6 +1652,195 @@ class VoiceSetupDialog(QDialog):
                 eq_settings[key] = list(value) if key != "enabled" else bool(value)
             self.setup_result["eq_settings"] = eq_settings
 
+    def _reset_verification_state(self) -> None:
+        self._verification_audio = None
+        self._verification_adjustment_count = 0
+        self._verification_bad_capture_count = 0
+        self._verification_last_reduction_metrics = None
+
+    def _reduction_metrics(self, result: Mapping[str, Any]) -> dict[str, float]:
+        values: dict[str, float] = {}
+        for target, key in (
+            ("compressor", "compressor_gain_reduction_p95_db"),
+            ("limiter", "limiter_pressure_db"),
+            ("deesser", "deesser_gain_reduction_p95_db"),
+        ):
+            value = result.get(key)
+            if isinstance(value, (int, float)) and np.isfinite(float(value)):
+                values[target] = float(value)
+        return values
+
+    def _verification_settings_snapshot(self) -> tuple[Any, ...]:
+        if self.setup_result is None:
+            return ()
+        return tuple(
+            (name, deepcopy(self.setup_result.get(name)))
+            for name in (
+                "eq_settings",
+                "deesser_settings",
+                "compressor_settings",
+                "limiter_settings",
+            )
+        )
+
+    def _apply_verification_reduction(
+        self,
+        parent: Any,
+        reduction_targets: list[str],
+    ) -> tuple[bool, str | None]:
+        """Apply only the controls implicated by the latest verification."""
+        if self.setup_result is None:
+            return False, "verification context is missing"
+
+        before = self._verification_settings_snapshot()
+        before_sections = {
+            name: deepcopy(self.setup_result.get(name))
+            for name in (
+                "deesser_settings",
+                "compressor_settings",
+            )
+        }
+        previous_adjusted_target = self.setup_result.get(
+            "verification_adjusted_target_lufs"
+        )
+        compressor = dict(self.setup_result.get("compressor_settings") or {})
+        deesser = dict(self.setup_result.get("deesser_settings") or {})
+        adjustment_notes: list[str] = []
+        adjusted_target_lufs: float | None = None
+
+        if "compressor" in reduction_targets:
+            threshold = float(compressor.get("threshold_db", -24.0))
+            ratio = float(compressor.get("ratio", 2.5))
+            compressor["threshold_db"] = min(0.0, threshold + 2.0)
+            compressor["ratio"] = max(1.0, ratio * 0.9)
+            adjustment_notes.append("reduced compressor intensity")
+
+        if "limiter" in reduction_targets:
+            if bool(compressor.get("auto_makeup_enabled", False)):
+                target_lufs = float(compressor.get("target_lufs", -18.0))
+                adjusted_target = max(
+                    _TARGET_LUFS_MIN,
+                    min(_TARGET_LUFS_MAX, target_lufs - _LIMITER_PRESSURE_STEP_DB),
+                )
+                compressor["target_lufs"] = adjusted_target
+                if adjusted_target != target_lufs:
+                    adjusted_target_lufs = adjusted_target
+                    adjustment_notes.append(
+                        f"lowered auto target loudness to {adjusted_target:.0f} LUFS"
+                    )
+            else:
+                makeup_gain = float(compressor.get("makeup_gain_db", 0.0))
+                adjusted_makeup = max(0.0, makeup_gain - _LIMITER_PRESSURE_STEP_DB)
+                compressor["makeup_gain_db"] = adjusted_makeup
+                if adjusted_makeup != makeup_gain:
+                    adjustment_notes.append(
+                        f"lowered manual makeup to {adjusted_makeup:.1f} dB"
+                    )
+
+        if "deesser" in reduction_targets:
+            auto_amount = float(deesser.get("auto_amount", 0.0))
+            deesser["auto_amount"] = max(0.0, auto_amount * 0.85)
+            adjustment_notes.append("reduced de-esser intensity")
+
+        self.setup_result["compressor_settings"] = compressor
+        self.setup_result["deesser_settings"] = deesser
+        if self._verification_settings_snapshot() == before:
+            for name, value in before_sections.items():
+                self.setup_result[name] = value
+            return False, "verification adjustment made no settings change"
+
+        try:
+            self._apply_candidate_panels(parent)
+            self._sync_setup_result_with_applied_panels(parent)
+        except Exception:
+            for name, value in before_sections.items():
+                self.setup_result[name] = value
+            if previous_adjusted_target is None:
+                self.setup_result.pop("verification_adjusted_target_lufs", None)
+            else:
+                self.setup_result[
+                    "verification_adjusted_target_lufs"
+                ] = previous_adjusted_target
+            raise
+        if self._verification_settings_snapshot() == before:
+            for name, value in before_sections.items():
+                self.setup_result[name] = value
+            if previous_adjusted_target is None:
+                self.setup_result.pop("verification_adjusted_target_lufs", None)
+            else:
+                self.setup_result[
+                    "verification_adjusted_target_lufs"
+                ] = previous_adjusted_target
+            return False, "applied panel settings made no verification progress"
+        if adjusted_target_lufs is not None:
+            self.setup_result["verification_adjusted_target_lufs"] = (
+                adjusted_target_lufs
+            )
+        return True, "; ".join(adjustment_notes) or None
+
+    def _start_verification_worker(self, audio_data: np.ndarray) -> None:
+        if self._close_requested:
+            return
+        setup_result = self.setup_result
+        noise_audio = self.noise_audio
+        voice_audio = self.voice_audio
+        if (
+            setup_result is None
+            or noise_audio is None
+            or voice_audio is None
+        ):
+            self._on_verification_failed("Verification context is incomplete.")
+            return
+        processor_owner = _find_processor_owner(self.parent())
+        if processor_owner is None:
+            self._on_verification_failed("Audio processor disappeared during verification.")
+            return
+
+        self._cancel_analysis_workers()
+        generation = self._analysis_generation + 1
+        self._analysis_generation = generation
+        self.setup_state = "verification_analyzing"
+        self.start_button.setEnabled(False)
+        self.start_button.setText("Validating...")
+        self.curve_combo.setEnabled(False)
+        self.phase_label.setText("Validating downstream DSP stages")
+        self.warning_label.setText("Comparing the verification passage...")
+        worker = VoiceSetupVerificationWorker(
+            noise_audio,
+            voice_audio,
+            audio_data,
+            _processor_sample_rate(processor_owner),
+            setup_result,
+            str(
+                ((self.setup_result or {}).get("_candidate") or {})
+                .get("target", {})
+                .get("curve", self.get_selected_curve())
+            ),
+        )
+        self.analysis_worker = worker
+        self._analysis_workers.append(worker)
+        worker.step_progress.connect(
+            lambda step_name, percentage, token=generation: self._on_analysis_step(
+                step_name, percentage, token
+            )
+        )
+        worker.result_ready.connect(
+            lambda result, token=generation: self._on_verification_complete(
+                result, token
+            )
+        )
+        worker.failed.connect(
+            lambda error, token=generation: self._on_verification_failed(
+                error, token
+            )
+        )
+        worker.finished.connect(
+            lambda finished_worker=worker: self._on_analysis_thread_finished(
+                finished_worker
+            )
+        )
+        worker.start()
+
     def _restore_pre_setup_snapshot(self) -> bool:
         parent = _find_eq_panel_owner(self.parent())
         if self._pre_setup_snapshot is None:
@@ -1701,57 +1903,10 @@ class VoiceSetupDialog(QDialog):
                 + ("settings restored." if restored else "restore is incomplete.")
             )
             return
-        self.phase_label.setText("Validating downstream DSP stages")
-        self.warning_label.setText("Comparing the second passage...")
-        processor_owner = _find_processor_owner(self.parent())
-        if processor_owner is None:
-            self._on_verification_failed(
-                "Audio processor disappeared during verification."
-            )
-            return
-
-        self._cancel_analysis_workers()
-        generation = self._analysis_generation + 1
-        self._analysis_generation = generation
-        self.setup_state = "verification_analyzing"
-        self.start_button.setEnabled(False)
-        self.start_button.setText("Validating...")
-        self.curve_combo.setEnabled(False)
-        worker = VoiceSetupVerificationWorker(
-            self.noise_audio,
-            self.voice_audio,
-            audio_data,
-            _processor_sample_rate(processor_owner),
-            self.setup_result,
-            str(
-                ((self.setup_result or {}).get("_candidate") or {})
-                .get("target", {})
-                .get("curve", self.get_selected_curve())
-            ),
+        self._verification_audio = np.ascontiguousarray(
+            np.asarray(audio_data, dtype=np.float32).reshape(-1).copy()
         )
-        self.analysis_worker = worker
-        self._analysis_workers.append(worker)
-        worker.step_progress.connect(
-            lambda step_name, percentage, token=generation: self._on_analysis_step(
-                step_name, percentage, token
-            )
-        )
-        worker.result_ready.connect(
-            lambda result, token=generation: self._on_verification_complete(
-                result, token
-            )
-        )
-        worker.failed.connect(
-            lambda error, token=generation: self._on_verification_failed(
-                error, token
-            )
-        )
-        worker.finished.connect(
-            lambda finished_worker=worker: self._on_analysis_thread_finished(
-                finished_worker
-            )
-        )
-        worker.start()
+        self._start_verification_worker(self._verification_audio)
 
     def _finalize_verified_setup(self) -> None:
         """Persist and close only after the verified candidate was heard."""
@@ -1895,36 +2050,100 @@ class VoiceSetupDialog(QDialog):
             self.start_button.setEnabled(False)
             self.start_button.setText("Compare Final Candidate")
             self.phase_label.setText("Verification accepted; listening required")
+            adjustment_note = self.setup_result.get("verification_adjustment_note")
+            adjusted_target_lufs = self.setup_result.get(
+                "verification_adjusted_target_lufs"
+            )
+            adjustment_suffix = (
+                f" Automatic adjustment: {adjustment_note}."
+                if adjustment_note
+                else ""
+            )
+            if isinstance(adjusted_target_lufs, (int, float)):
+                adjustment_suffix += (
+                    f" Effective auto target loudness: {float(adjusted_target_lufs):.0f} LUFS."
+                )
             self.warning_label.setText(
                 "The measured candidate passed verification. Compare it with the "
                 "original processing before keeping it; closing this comparison "
                 "restores the original settings."
+                + adjustment_suffix
             )
             self.warning_label.setStyleSheet(message_text_style("info", strong=True))
             return
         if decision == "reduce" and parent is not None:
-            compressor = self.setup_result["compressor_settings"]
-            compressor["threshold_db"] = min(
-                -6.0,
-                float(compressor["threshold_db"]) + 2.0,
-            )
-            compressor["ratio"] = max(1.5, float(compressor["ratio"]) * 0.9)
-            deesser = self.setup_result["deesser_settings"]
-            deesser["auto_amount"] = max(
-                0.0,
-                float(deesser["auto_amount"]) * 0.85,
-            )
-            try:
-                self._apply_candidate_panels(parent)
-                self._sync_setup_result_with_applied_panels(parent)
-            except Exception as exc:
+            reduction_targets = [
+                target
+                for target in result.get("reduction_targets", ())
+                if target in {"compressor", "limiter", "deesser"}
+            ]
+            if not reduction_targets:
                 self._on_verification_failed(
-                    f"Could not apply reduced candidate settings: {exc}"
+                    "Verification requested a reduction without an actionable target.",
+                    generation,
                 )
                 return
+            if self._verification_audio is None:
+                self._on_verification_failed(
+                    "Verification cannot re-evaluate the candidate because the passage is unavailable.",
+                    generation,
+                )
+                return
+            if self._verification_adjustment_count >= _MAX_VERIFICATION_ADJUSTMENTS:
+                self._on_verification_failed(
+                    f"{reason} Verification made no safe progress after three automatic adjustments.",
+                    generation,
+                )
+                return
+            current_metrics = self._reduction_metrics(result)
+            previous_metrics = self._verification_last_reduction_metrics
+            if previous_metrics is not None:
+                comparable = [
+                    (previous_metrics[target], current_metrics[target])
+                    for target in reduction_targets
+                    if target in previous_metrics and target in current_metrics
+                ]
+                if comparable and not any(
+                    current < previous - 0.05
+                    for previous, current in comparable
+                ):
+                    self._on_verification_failed(
+                        f"{reason} Verification made no measurable progress after the previous adjustment.",
+                        generation,
+                    )
+                    return
+            if current_metrics:
+                self._verification_last_reduction_metrics = current_metrics
+            try:
+                changed, adjustment_note = self._apply_verification_reduction(
+                    parent,
+                    reduction_targets,
+                )
+            except Exception as exc:
+                self._on_verification_failed(
+                    f"Could not apply reduced candidate settings: {exc}",
+                    generation,
+                )
+                return
+            if not changed:
+                self._on_verification_failed(
+                    f"{reason} Verification stopped: {adjustment_note or 'no progress'}.",
+                    generation,
+                )
+                return
+            self._verification_adjustment_count += 1
             self.setup_state = "verification_ready"
             self._final_comparison_pending = False
             self.start_button.setText("Verify Reduced Processing")
+            if adjustment_note:
+                previous_note = str(
+                    self.setup_result.get("verification_adjustment_note") or ""
+                )
+                self.setup_result["verification_adjustment_note"] = "; ".join(
+                    part for part in (previous_note, adjustment_note) if part
+                )
+            self._start_verification_worker(self._verification_audio)
+            return
         elif decision == "rollback":
             restored = self._restore_pre_setup_snapshot()
             self._final_comparison_pending = False
@@ -1933,8 +2152,18 @@ class VoiceSetupDialog(QDialog):
             if not restored:
                 reason = f"{reason} Candidate rollback is incomplete."
         else:
+            self._verification_bad_capture_count += 1
+            if self._verification_bad_capture_count >= _MAX_VERIFICATION_BAD_CAPTURES:
+                self._on_verification_failed(
+                    f"{reason} Maximum verification attempts reached.",
+                    generation,
+                )
+                return
             self.setup_state = "verification_ready"
-            self.start_button.setText("Retry Verification")
+            self.start_button.setText(
+                "Retry Verification "
+                f"({self._verification_bad_capture_count}/{_MAX_VERIFICATION_BAD_CAPTURES})"
+            )
         self.start_button.setEnabled(True)
         self.curve_combo.setEnabled(decision == "rollback")
         self.phase_label.setText(f"Verification decision: {decision.upper()}")
@@ -1979,6 +2208,7 @@ class VoiceSetupDialog(QDialog):
         self.voice_audio = None
         self.preview_voice_audio = None
         self.setup_result = None
+        self._reset_verification_state()
         self._candidate_metadata = None
         self._final_comparison_pending = False
         self.curve_group.setEnabled(True)
@@ -2005,6 +2235,7 @@ class VoiceSetupDialog(QDialog):
         self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
         if verification_failed:
             restored = self._restore_pre_setup_snapshot()
+            self._reset_verification_state()
             self._final_comparison_pending = False
             self.start_button.setText("Apply & Verify Again")
             self.setup_state = "completed"
@@ -2074,6 +2305,7 @@ class VoiceSetupDialog(QDialog):
         self.voice_metadata = None
         self._current_capture_metadata = None
         self.setup_result = None
+        self._reset_verification_state()
         self._candidate_metadata = None
         self._capture_context_key = None
         self.curve_group.setEnabled(True)

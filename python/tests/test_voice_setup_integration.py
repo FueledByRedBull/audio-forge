@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import time
 from typing import Any
 
 import numpy as np
 import pytest
 from PyQt6.QtTest import QSignalSpy
+from PyQt6.QtCore import QElapsedTimer
 from PyQt6.QtWidgets import QDialog
 
 from mic_eq.analysis.voice_setup import analyze_voice_setup
@@ -257,6 +259,120 @@ def test_voice_setup_rejects_a_different_route_before_applying(
         dialog._apply_setup()
         assert window._get_current_preset().to_dict() == before
         assert "context changed" in messages[-1]
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_repeated_bad_verification_takes_stop_and_restore(real_main_window, monkeypatch, qapp):
+    window = real_main_window
+    before = window._get_current_preset().to_dict()
+    dialog = VoiceSetupDialog(parent=window)
+    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
+    _bind_capture_context(dialog, noise, speech)
+    _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.validate_voice_setup_verification",
+        lambda *_args, **_kwargs: {
+            "decision": "retry",
+            "reasons": ["verification passage was clipped; lower microphone gain"],
+        },
+    )
+    try:
+        for attempt in range(3):
+            dialog._complete_verification(speech)
+            timer = QElapsedTimer()
+            timer.start()
+            while dialog.setup_state == "verification_analyzing" and timer.elapsed() < 5000:
+                qapp.processEvents()
+                time.sleep(0.01)
+            assert dialog.setup_state != "verification_analyzing"
+            if attempt < 2:
+                assert dialog.setup_state == "verification_ready"
+        assert dialog.setup_state == "completed"
+        assert window._get_current_preset().to_dict() == before
+        assert "clipped" in dialog.warning_label.text()
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+@pytest.mark.parametrize("target,auto_makeup", [("limiter", True), ("limiter", False), ("deesser", False)])
+def test_stage_reductions_change_only_relevant_live_controls(real_main_window, target, auto_makeup):
+    window = real_main_window
+    dialog = VoiceSetupDialog(parent=window)
+    _bind_capture_context(dialog, *_short_voice_captures(int(window.processor.sample_rate())))
+    result = _voice_setup_result(window, dialog)
+    result["compressor_settings"].update(auto_makeup_enabled=auto_makeup, makeup_gain_db=4.0)
+    _apply_complete_candidate(window, dialog, result)
+    before = window._get_current_preset().to_dict()
+    try:
+        changed, _ = dialog._apply_verification_reduction(window, [target])
+        assert changed
+        after = window._get_current_preset().to_dict()
+        expected = deepcopy(before)
+        if target == "deesser":
+            assert after["deesser"]["auto_amount"] < before["deesser"]["auto_amount"]
+            expected["deesser"]["auto_amount"] = after["deesser"]["auto_amount"]
+        else:
+            field = "target_lufs" if auto_makeup else "makeup_gain_db"
+            assert after["compressor"][field] == pytest.approx(before["compressor"][field] - 1.0)
+            expected["compressor"][field] = after["compressor"][field]
+            if auto_makeup:
+                assert dialog.setup_result is not None
+                assert dialog.setup_result["verification_adjusted_target_lufs"] == after["compressor"][field]
+        assert after == expected
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+@pytest.mark.parametrize("converges", [True, False])
+def test_verification_adjustments_reuse_take_and_stop(real_main_window, monkeypatch, converges, qapp):
+    window = real_main_window
+    before = window._get_current_preset().to_dict()
+    dialog = VoiceSetupDialog(parent=window)
+    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
+    _bind_capture_context(dialog, noise, speech)
+    _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
+    calls = []
+
+    def verify(_noise, _original, take, _rate, candidate, *_args, **_kwargs):
+        calls.append(deepcopy(candidate))
+        np.testing.assert_array_equal(take, speech)
+        accepted = converges and len(calls) > 1
+        return {
+            "decision": "accept" if accepted else "reduce",
+            "reason_codes": [] if accepted else ["compressor_excess"],
+            "reduction_targets": [] if accepted else ["compressor"],
+            "reasons": ["passed" if accepted else "compressor p95 exceeds target"],
+            "compressor_gain_reduction_p95_db": 1.0 if accepted else 6.0,
+        }
+
+    monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.validate_voice_setup_verification", verify)
+    monkeypatch.setattr(
+        dialog, "_start_recording_phase",
+        lambda *_args: pytest.fail("Valid verification audio must be reused"),
+    )
+    try:
+        dialog._complete_verification(speech)
+        timer = QElapsedTimer()
+        timer.start()
+        while dialog.setup_state == "verification_analyzing" and timer.elapsed() < 5000:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert 2 <= len(calls) <= 4
+        assert calls[1]["compressor_settings"]["threshold_db"] > calls[0]["compressor_settings"]["threshold_db"]
+        assert calls[1]["deesser_settings"] == calls[0]["deesser_settings"]
+        assert calls[1]["limiter_settings"] == calls[0]["limiter_settings"]
+        if converges:
+            assert dialog.setup_state == "final_comparison_ready"
+            assert dialog._pre_setup_snapshot is not None
+            dialog.reject()
+        else:
+            assert len(calls) == 2
+            assert dialog.setup_state == "completed"
+        assert window._get_current_preset().to_dict() == before
     finally:
         dialog.reject()
         dialog.deleteLater()

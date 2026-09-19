@@ -179,6 +179,7 @@ Useful behavior to know:
 - Auto Voice Setup rejects unusable room tone, restricts boosts for questionable references, and reports device/time/channel mismatch or recapture guidance.
 - Auto Voice Setup keeps a candidate advisory when the requested target loudness cannot leave the native chain's required headroom; choose a lower (more negative) LUFS target and rerun the capture before applying it.
 - Voice Setup candidates remain temporary until a second passage checks repeatability through EQ, de-essing, compression, and the selected limiter settings. Gate, noise suppression, input cleanup, and live loudness adaptation are outside this offline check; confirm the result in your destination app.
+- Verification reuses a valid second passage when adjusting processing. Only recording problems request another take; unsuccessful bounded adjustments restore your previous settings with the specific reason.
 - A realtime VAD queue overflow drops the whole affected analysis block and marks a discontinuity so the worker clears queued context and resets its recurrent state before publishing new probabilities.
 - VAD clears recurrent history after sustained near-full-scale audio and at speech endings identified by both low confidence and a sustained level drop. This helps normal speech recover after clipped loud passages, including quieter recordings of clipping. Audio buffering and source timing are preserved.
 - Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.

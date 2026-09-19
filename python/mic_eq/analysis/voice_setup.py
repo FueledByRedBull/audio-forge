@@ -1657,6 +1657,25 @@ def _shape_error_db(
     return float(np.sqrt(np.mean(np.square(measured_delta - target))))
 
 
+def _verification_outcome(
+    decision: str,
+    reasons: list[str],
+    reason_codes: list[str],
+    reduction_targets: list[str] | None = None,
+    **details: Any,
+) -> dict[str, Any]:
+    """Build a stable verifier result, including actionable diagnostics."""
+    result: dict[str, Any] = {
+        "decision": decision,
+        "reasons": list(reasons),
+        "reason_codes": list(reason_codes),
+        "reduction_targets": list(reduction_targets or ()),
+        "perceptual_validation": False,
+    }
+    result.update(details)
+    return result
+
+
 def validate_voice_setup_verification(
     noise_audio: np.ndarray,
     original_speech_audio: np.ndarray,
@@ -1679,36 +1698,39 @@ def validate_voice_setup_verification(
     original = np.asarray(original_speech_audio, dtype=np.float32)
     verification = np.asarray(verification_speech_audio, dtype=np.float32)
     if verification.size < int(sample_rate * SPEECH_MIN_DURATION_S):
-        return {
-            "decision": "retry",
-            "reasons": ["verification passage was too short"],
-            "perceptual_validation": False,
-        }
+        return _verification_outcome(
+            "retry",
+            ["verification passage was too short; repeat for at least 3 seconds"],
+            ["verification_capture_too_short"],
+        )
     if not np.isfinite(verification).all() or float(np.max(np.abs(verification))) >= 0.999:
-        return {
-            "decision": "retry",
-            "reasons": ["verification passage was non-finite or clipped"],
-            "perceptual_validation": False,
-        }
+        return _verification_outcome(
+            "retry",
+            [
+                "verification passage was non-finite or clipped; "
+                "lower input gain and repeat"
+            ],
+            ["verification_capture_invalid"],
+        )
 
     effective_limiter_settings = _normalise_limiter_settings(
         setup_result.get("limiter_settings"),
         require_complete=True,
     )
     if effective_limiter_settings is None:
-        return {
-            "decision": "retry",
-            "reasons": ["candidate limiter settings are missing"],
-            "perceptual_validation": False,
-        }
+        return _verification_outcome(
+            "rollback",
+            ["candidate limiter settings are missing"],
+            ["candidate_settings_incomplete"],
+        )
 
     raw_eq_settings = setup_result.get("eq_settings")
     if not isinstance(raw_eq_settings, Mapping):
-        return {
-            "decision": "retry",
-            "reasons": ["candidate EQ settings are missing"],
-            "perceptual_validation": False,
-        }
+        return _verification_outcome(
+            "rollback",
+            ["candidate EQ settings are missing"],
+            ["candidate_settings_incomplete"],
+        )
     eq_settings = dict(raw_eq_settings)
     if any(
         key not in eq_settings
@@ -1716,11 +1738,11 @@ def validate_voice_setup_verification(
         or len(eq_settings[key]) != len(EQ_FREQUENCIES)
         for key in ("band_freqs", "band_gains", "band_qs")
     ):
-        return {
-            "decision": "retry",
-            "reasons": ["candidate EQ bands are incomplete"],
-            "perceptual_validation": False,
-        }
+        return _verification_outcome(
+            "rollback",
+            ["candidate EQ bands are incomplete"],
+            ["candidate_settings_incomplete"],
+        )
     chain = {
         "deesser": dict(setup_result.get("deesser_settings") or {}),
         "compressor": dict(setup_result.get("compressor_settings") or {}),
@@ -1746,12 +1768,12 @@ def validate_voice_setup_verification(
         or "output_audio" not in processed
         or "output_audio" not in processed_noise
     ):
-        return {
-            "decision": "retry",
-            "reasons": ["native verification renderer is unavailable"],
-            "simulation_backend": processed.get("simulation_backend", "unavailable"),
-            "perceptual_validation": False,
-        }
+        return _verification_outcome(
+            "rollback",
+            ["native verification renderer is unavailable"],
+            ["native_verification_unavailable"],
+            simulation_backend=processed.get("simulation_backend", "unavailable"),
+        )
 
     rendered = np.asarray(processed.pop("output_audio"), dtype=np.float32)
     rendered_noise = np.asarray(processed_noise.pop("output_audio"), dtype=np.float32)
@@ -1826,6 +1848,27 @@ def validate_voice_setup_verification(
         )
     )
     limiter_events = int(processed.get("true_peak_limited_events", 0))
+    limiter_gain_reduction = max(
+        float(processed.get("limiter_gain_reduction_db", 0.0)),
+        float(processed.get("true_peak_limiter_gain_reduction_db", 0.0)),
+    )
+    true_peak_limiter_gain_reduction = float(
+        processed.get("true_peak_limiter_gain_reduction_db", 0.0)
+    )
+    compressor_p95_excess = measured_p95 > target_p95 + 0.75
+    deesser_p95 = float(processed.get("deesser_gain_reduction_p95_db", 0.0))
+    deesser_limit = float(
+        (setup_result.get("deesser_settings") or {}).get("max_reduction_db", 6.0)
+    )
+    deesser_excess = deesser_p95 > deesser_limit * 0.9
+    limiter_pressure = limiter_gain_reduction > 1.0
+    reduction_targets: list[str] = []
+    if compressor_p95_excess:
+        reduction_targets.append("compressor")
+    if limiter_pressure:
+        reduction_targets.append("limiter")
+    if deesser_excess:
+        reduction_targets.append("deesser")
     noise_change_db = _rms_db(rendered_noise) - _rms_db(noise)
     speech_gain_db = float(
         processed.get("output_rms_db", _rms_db(rendered))
@@ -1833,31 +1876,83 @@ def validate_voice_setup_verification(
     relative_noise_change_db = noise_change_db - speech_gain_db
     snr_change_db = float(after_spectrum.snr_db - before_spectrum.snr_db)
     reasons: list[str] = []
+    reason_codes: list[str] = []
 
-    if abs(verification_level - original_level) > 8.0 or shape_delta > 5.0:
+    delivery_reasons: list[str] = []
+    safety_reasons: list[str] = []
+    safety_codes: list[str] = []
+    if abs(verification_level - original_level) > 8.0:
+        delivery_reasons.append(
+            f"delivery level delta was {abs(verification_level - original_level):.1f} dB"
+        )
+    if shape_delta > 5.0:
+        delivery_reasons.append(f"delivery shape delta was {shape_delta:.1f} dB")
+    if not delivery_reasons:
+        if after_error > before_error + 1.0:
+            safety_codes.append("target_error")
+            safety_reasons.append(
+                f"target error worsened from {before_error:.1f} to {after_error:.1f} dB"
+            )
+        if relative_noise_change_db > 4.0:
+            safety_codes.append("noise_safety_limit")
+            safety_reasons.append(
+                f"relative noise floor increased by {relative_noise_change_db:.1f} dB"
+            )
+        if snr_change_db < -4.0:
+            safety_codes.append("snr_safety_limit")
+            safety_reasons.append(f"SNR fell by {-snr_change_db:.1f} dB")
+        if measured_peak > peak_cap + 0.25:
+            safety_codes.append("compressor_peak_cap")
+            safety_reasons.append(
+                f"compressor peak reduction reached {measured_peak:.1f} dB "
+                f"(cap {peak_cap:.1f} dB)"
+            )
+        if output_true_peak > ceiling + 0.15:
+            safety_codes.append("true_peak_ceiling")
+            safety_reasons.append(
+                f"output true peak reached {output_true_peak:.1f} dBTP "
+                f"(ceiling {ceiling:.1f} dBTP)"
+            )
+    if delivery_reasons:
         decision = "retry"
-        reasons.append("verification delivery differs too much from the setup passage")
-    elif (
-        after_error > before_error + 1.0
-        or relative_noise_change_db > 4.0
-        or snr_change_db < -4.0
-        or measured_peak > peak_cap + 0.25
-        or output_true_peak > ceiling + 0.15
-    ):
+        reason_codes.append("verification_delivery_mismatch")
+        reasons.append(
+            "verification delivery differs too much from the setup passage ("
+            + ", ".join(delivery_reasons)
+            + "). Repeat the same passage at the same microphone distance "
+            "and natural speaking level."
+        )
+    elif safety_reasons:
         decision = "rollback"
-        reasons.append("candidate chain worsened the target or exceeded a safety limit")
-    elif (
-        measured_p95 > target_p95 + 0.75
-        or limiter_events > 0
-        or relative_noise_change_db > 3.0
-        or float(processed.get("deesser_gain_reduction_p95_db", 0.0))
-        > float((setup_result.get("deesser_settings") or {}).get("max_reduction_db", 6.0))
-        * 0.9
-    ):
+        reason_codes.extend(safety_codes)
+        reasons.extend(safety_reasons)
+    elif relative_noise_change_db > 3.0 and not reduction_targets:
+        decision = "rollback"
+        reason_codes.append("noise_deterioration")
+        reasons.append(
+            f"candidate increased relative noise floor by {relative_noise_change_db:.1f} dB"
+        )
+    elif reduction_targets:
         decision = "reduce"
-        reasons.append("processing is safe but stronger than the selected intensity")
+        reason_codes.extend(f"{target}_excess" for target in reduction_targets)
+        reasons.extend(
+            {
+                "compressor": (
+                    f"compressor p95 reduction exceeded target by "
+                    f"{measured_p95 - target_p95:.1f} dB"
+                ),
+                "limiter": (
+                    f"limiter pressure reached {limiter_gain_reduction:.1f} dB"
+                ),
+                "deesser": (
+                    f"de-esser p95 reduction reached {deesser_p95:.1f} dB"
+                ),
+            }[target]
+            for target in reduction_targets
+        )
     else:
         decision = "accept"
+        reason_codes.append("accepted")
         reasons.append("repeatability and downstream DSP constraints passed")
 
     spectral_snr = after_spectrum.spectral_snr_db
@@ -1874,9 +1969,12 @@ def validate_voice_setup_verification(
                 snr_bands[name] = float(np.median(spectral_snr[mask]))
 
     return {
-        "decision": decision,
-        "reasons": reasons,
-        "perceptual_validation": False,
+        **_verification_outcome(
+            decision,
+            reasons,
+            reason_codes,
+            reduction_targets,
+        ),
         "evidence_scope": "repeatability_and_downstream_dsp_constraints",
         "spectral_target_error_before_db": before_error,
         "spectral_target_error_after_db": after_error,
@@ -1903,6 +2001,11 @@ def validate_voice_setup_verification(
         ),
         "output_true_peak_db": output_true_peak,
         "limiter_activity_events": limiter_events,
+        "limiter_gain_reduction_db": float(
+            processed.get("limiter_gain_reduction_db", 0.0)
+        ),
+        "true_peak_limiter_gain_reduction_db": true_peak_limiter_gain_reduction,
+        "limiter_pressure_db": limiter_gain_reduction,
         "clipped": bool(np.max(np.abs(rendered)) >= 1.0),
         "simulation_backend": processed.get("simulation_backend"),
     }

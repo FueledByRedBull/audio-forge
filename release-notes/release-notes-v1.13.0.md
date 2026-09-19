@@ -10,6 +10,8 @@ published release remains at 1.12.1.
 - Compare the full processing chain on one recording before applying settings.
 - Calibrate Auto Voice Setup with the actual auto-makeup settings, explain
   headroom constraints, and keep neutral EQ free of false abstention warnings.
+- Recheck adjusted Voice Setup settings on the same verification take, with
+  specific failure guidance and bounded retries that restore the previous sound.
 - Recover VAD worker state safely across dropped analysis blocks.
 - Keep VAD Assisted automatic thresholds consistent, reset VAD history across
   bypass/raw input gaps, and show the actual selected speech threshold.

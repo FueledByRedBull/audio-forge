@@ -1,0 +1,91 @@
+{
+  "schema_version": 2,
+  "audible_change": true,
+  "implementation_revision": "414001cb3b6bbde4b3c8a6c832b7b862ae05b768",
+  "baseline_revision": "6d2d10437e3e2da1988cfa6f1bf36d562753bdc6",
+  "source_sha256": {
+    "python/tools/evaluate_voice_regressions.py": "6294a189e4c7945146def075b874aaf15671c2c2efd1abf1cce5ee2d4760576e",
+    "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "92b2679ab0f3ba27a387399c9612b3a81c42b67cb5fe9271fac811d49cd53667",
+    "python/mic_eq/analysis/auto_eq_parts/pipeline.py": "8f03bdd010450ba2a392c55449abdd12b9b412ab731f0d68f0d49157f5670701",
+    "python/mic_eq/analysis/auto_eq_parts/target.py": "f3ca55d88137a0d49eab8c431ab2888a9db02729f18192950d3a4e86dc7fcfc9",
+    "python/mic_eq/analysis/auto_eq_parts/headroom.py": "db65339cf4aca7cd00d91ad372fd034337e24cfb5e839bb722ea2b0924df2d29",
+    "python/mic_eq/analysis/vad.py": "c87d8462b6530adbbf7ee9302ce86042267bc14fa45864a092449d16376b05fb",
+    "rust-core/src/audio/processor/python_api.rs": "6e1cf4b13b686152c327ee61b53c547649c65d555ad512cc9e9a98af6a8d1ddb",
+    "rust-core/src/dsp/gate.rs": "985720968aa0211f5c1f2323c89261c07b97d6953ed26b49ac7c4b9e57a531c0",
+    "rust-core/src/dsp/vad.rs": "d5b106167e54f1e66f971be37461eaedaa5467e148dc324901b2975d48d1dcfa"
+  },
+  "evaluation_contract": {
+    "configuration": {
+      "sample_rate": 48000,
+      "gate_mode": "vad_only",
+      "cleanup": "gentle",
+      "vad_threshold": 0.35,
+      "vad_pre_gain": 2.5,
+      "hold_ms": 200,
+      "suppression_eq_dynamics_disabled_for_gate_comparison": true,
+      "eq_targets": [
+        "flat",
+        "broadcast",
+        "podcast",
+        "streaming"
+      ],
+      "eq_mode": "adaptive",
+      "eq_speakers": 6,
+      "eq_statements_per_speaker": 2
+    },
+    "asset_hashes": {
+      "vad_corpus_manifest": "b38d35b7c5e3b8e5c4bb891b1703cb5c2e3cc497ffda3ea739d38ec265c97e2e",
+      "eq_corpus_manifest": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc",
+      "baseline_native": "be5bec9d8969bebd4c9c4c0b96dd66601d1b47aaee89f5d0561469c8fe917429",
+      "candidate_native": "9fed4e5cc5f0dd4ddb39971c99f7d073ab793e44b8d72fcf35d96d823baa10a0",
+      "silero_model": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    },
+    "runtime": {
+      "max_p99_frame_seconds": null,
+      "reason": "Offline audio checks do not measure callback timing."
+    },
+    "latency": {
+      "measurement": null,
+      "scope": "No asynchronous worker or hardware latency measurement."
+    },
+    "clean_preservation": {
+      "gate_metric": "Change in gated/reference mean energy in labelled speech regions (dB); identical frontend in each reference.",
+      "eq_metric": "Maximum absolute fitted response from 80 Hz to 16 kHz."
+    }
+  },
+  "predefined_gates": {
+    "gate": {
+      "speech_p10_min_delta_db": -0.5,
+      "noise_max_delta_db": 3.0
+    },
+    "eq": {
+      "neutral_max_change_db": 0.25,
+      "style_max_change_db": 3.0
+    }
+  },
+  "gate_results": {
+    "speech_cases": 72,
+    "noise_cases": 6,
+    "speech_p10_delta_db": 0.1608888972464513,
+    "noise_max_delta_db": 0.971226056956711,
+    "passed": true
+  },
+  "eq_results": {
+    "cases": 48,
+    "passed": true,
+    "neutral_max_change_db": 0.0,
+    "style_max_change_db": 2.21320524494861
+  },
+  "decision": "Retain the voice-preserving EQ objective and corrected gate behavior; all predefined gates pass.",
+  "limitations": [
+    "Gate-only offline rendering; does not model asynchronous worker scheduling or measure perceptual naturalness.",
+    "Checks bounded tonal change and neutral preservation, not microphone-response recovery or subjective quality.",
+    "No conclusion about the reported prolonged post-yell failure; separate 54-case model probes did not reproduce it.",
+    "These are fixed-corpus regression limits, not perceptual equivalence or complete calibration validation."
+  ],
+  "details": {
+    "baseline": "build/voice-regression-baseline.json",
+    "candidate": "build/voice-regression-final.json"
+  },
+  "reproduce": "Run python/tools/evaluate_voice_regressions.py before and after rebuilding the native extension, supplying --baseline and --eq-corpus models/cross_take_eval."
+}

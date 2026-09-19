@@ -15,6 +15,7 @@ Routine test results and screenshot-generation reports belong under ignored
 | --- | --- | --- |
 | DeepFilter | `deepfilter-hardening-report.json`, `deepfilter-fullband-report.json` | Retain 30 dB attenuation and beta 0.0. |
 | VAD | `vad-model-selection-report.json`, `vad-v6.2.1-report.json` | Retain Silero v6.2.1 with independent calibration and multi-speaker validation. |
+| Voice preservation | `voice-preservation-report.json` | All 78 held-out gate cases and 48 EQ cases pass predefined regression limits. Natural remains neutral; adaptive tone changes stay bounded. This does not establish perceptual quality or reproduce the live post-yell issue. |
 | Auto-EQ confidence | `auto-eq-confidence-calibration.json` | Historical calibration for the former absolute-spectrum fitting objective; not a perceptual validation of the current bounded tonal adjustment. |
 | Compressor control | `auto-makeup-real-speech-report.json`, `compressor-control-report.json`, `compressor-search-report.json` | Retain VAD/reliability-driven makeup and bounded search. |
 | Processing order | `processing-order-report.json` | Retain gate before suppression and de-esser before EQ. |

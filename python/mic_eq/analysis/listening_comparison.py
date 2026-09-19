@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from typing import Any
 
@@ -56,6 +56,21 @@ def _db_from_peak(samples: np.ndarray) -> float:
 
 def _linear_from_db(value: float) -> float:
     return float(10.0 ** (float(value) / 20.0))
+
+
+def _common_safety_gain_db(samples: Iterable[np.ndarray]) -> float:
+    safe_peak = _linear_from_db(PLAYBACK_PEAK_DB)
+    peak = max(
+        (
+            float(np.max(np.abs(audio)))
+            for audio in samples
+            if audio.size
+        ),
+        default=0.0,
+    )
+    if np.isfinite(peak) and peak > safe_peak:
+        return float(20.0 * np.log10(safe_peak / peak))
+    return 0.0
 
 
 def _check_cancel(cancel_check: Callable[[], bool] | None) -> None:
@@ -149,6 +164,7 @@ def _eq_settings(settings: Mapping[str, Any]) -> dict[str, Any]:
         "band_freqs": [float(value) for value in frequencies],
         "band_gains": [float(value) for value in gains],
         "band_qs": [float(value) for value in qs],
+        "eq_enabled": enabled,
     }
 
 
@@ -181,22 +197,8 @@ def _chain_settings(
         settings.get("gate_settings")
     )
     if gate is not None:
-        chain.update(
-            {
-                "gate_enabled": bool(gate.get("enabled", True)),
-                "gate_threshold_db": gate.get("threshold_db", -40.0),
-                "gate_attack_ms": gate.get("attack_ms", 10.0),
-                "gate_release_ms": gate.get("release_ms", 100.0),
-                "gate_mode": gate.get("gate_mode", 0),
-                "gate_vad_threshold": gate.get("vad_threshold", 0.48),
-                "gate_vad_hold_time_ms": gate.get("vad_hold_time_ms", 200.0),
-                "gate_vad_pre_gain": gate.get("vad_pre_gain", 1.0),
-                "gate_auto_threshold_enabled": gate.get(
-                    "auto_threshold_enabled", True
-                ),
-                "gate_margin_db": gate.get("gate_margin_db", 10.0),
-            }
-        )
+        chain["gate"] = deepcopy(dict(gate))
+        chain.pop("gate_settings", None)
 
     suppressor = (
         _as_mapping(chain.get("suppressor"))
@@ -207,13 +209,9 @@ def _chain_settings(
         or _as_mapping(settings.get("suppressor_settings"))
     )
     if suppressor is not None:
-        chain.update(
-            {
-                "suppressor_enabled": bool(suppressor.get("enabled", True)),
-                "suppressor_strength": suppressor.get("strength", 1.0),
-                "noise_model": suppressor.get("model", "rnnoise"),
-            }
-        )
+        chain["suppressor"] = deepcopy(dict(suppressor))
+        for alias in ("suppression", "rnnoise", "suppressor_settings"):
+            chain.pop(alias, None)
 
     for key in ("full_chain", "input_pre_filtered", "input_cleanup_mode", "processing_mode"):
         if key not in chain and key in settings:
@@ -282,18 +280,39 @@ def _playback_safe(
     samples: np.ndarray,
     *,
     level_match_gain_db: float,
+    safety_gain_db: float | None = None,
 ) -> tuple[np.ndarray, float]:
     matched = samples.astype(np.float32, copy=True)
     if level_match_gain_db:
         matched *= np.float32(_linear_from_db(level_match_gain_db))
 
-    peak = float(np.max(np.abs(matched))) if matched.size else 0.0
-    safe_peak = _linear_from_db(PLAYBACK_PEAK_DB)
-    safety_gain_db = 0.0
-    if np.isfinite(peak) and peak > safe_peak:
-        safety_gain_db = float(20.0 * np.log10(safe_peak / peak))
+    if safety_gain_db is None:
+        peak = float(np.max(np.abs(matched))) if matched.size else 0.0
+        safe_peak = _linear_from_db(PLAYBACK_PEAK_DB)
+        safety_gain_db = 0.0
+        if np.isfinite(peak) and peak > safe_peak:
+            safety_gain_db = float(20.0 * np.log10(safe_peak / peak))
+    if safety_gain_db:
         matched *= np.float32(_linear_from_db(safety_gain_db))
-    return np.ascontiguousarray(matched, dtype=np.float32), safety_gain_db
+    return np.ascontiguousarray(matched, dtype=np.float32), float(safety_gain_db)
+
+
+def _apply_common_safety_gain(
+    clip: RenderedComparisonClip,
+    gain_db: float,
+    mask: np.ndarray,
+) -> RenderedComparisonClip:
+    samples = np.ascontiguousarray(
+        clip.samples * np.float32(_linear_from_db(gain_db)),
+        dtype=np.float32,
+    )
+    return replace(
+        clip,
+        samples=samples,
+        playback_level_db=_speech_level(samples, mask),
+        peak_db=_db_from_peak(samples),
+        safety_gain_db=float(gain_db),
+    )
 
 
 @dataclass(frozen=True)
@@ -423,9 +442,12 @@ def render_comparison(
         match_gain = 0.0
         if level_match and label != "original" and np.isfinite(delta):
             match_gain = float(np.clip(-delta, -MAX_LEVEL_MATCH_DB, MAX_LEVEL_MATCH_DB))
-        playback, safety_gain = _playback_safe(
+        # Apply level matching now, but defer peak protection until all three
+        # clips are available so one hot clip attenuates the set equally.
+        playback, _ = _playback_safe(
             rendered,
             level_match_gain_db=match_gain,
+            safety_gain_db=0.0,
         )
         simulation_backend = (
             str(simulation.get("simulation_backend", "unknown"))
@@ -440,13 +462,23 @@ def render_comparison(
             playback_level_db=_speech_level(playback, mask),
             peak_db=_db_from_peak(playback),
             level_match_gain_db=match_gain,
-            safety_gain_db=float(safety_gain),
+            safety_gain_db=0.0,
             simulation_backend=simulation_backend,
         )
 
     original = prepare("original", audio, reference_level_db, None)
     current = prepare("current", current_audio, current_level_db, current_simulation)
     proposed = prepare("proposed", proposed_audio, proposed_level_db, proposed_simulation)
+    clips = (original, current, proposed)
+    common_safety_gain_db = _common_safety_gain_db(
+        clip.samples for clip in clips
+    )
+    if common_safety_gain_db:
+        clips = tuple(
+            _apply_common_safety_gain(clip, common_safety_gain_db, mask)
+            for clip in clips
+        )
+    original, current, proposed = clips
     latencies = [
         int(value)
         for value in (

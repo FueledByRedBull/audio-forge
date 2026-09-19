@@ -338,16 +338,20 @@ def test_04_midscooped_to_streaming_target():
     freqs = _default_freqs()
     spectrum_db = generate_test_spectrum(freqs, "midscooped")
     target_db = get_target_curve(freqs, "streaming")
-    gains = calculate_eq_bands(freqs, spectrum_db, target_db)["band_gains"]
-    assert any(g > 2.0 for g in [gains[3], gains[4], gains[5]])
+    eq = calculate_eq_bands(freqs, spectrum_db, target_db)
+    gains = eq["band_gains"]
+    assert max(gains[3:6]) >= 1.0
+    assert eq["eq_quality"]["safe_for_auto_eq"]
 
 
 def test_05_proximity_effect_correction():
     freqs = _default_freqs()
     spectrum_db = generate_test_spectrum(freqs, "proximity")
     target_db = get_target_curve(freqs, "broadcast")
-    gains = calculate_eq_bands(freqs, spectrum_db, target_db)["band_gains"]
-    assert gains[0] < -5.0
+    eq = calculate_eq_bands(freqs, spectrum_db, target_db)
+    gains = eq["band_gains"]
+    assert gains[0] <= -4.0
+    assert eq["eq_quality"]["safe_for_auto_eq"]
 
 
 def test_06_harsh_highs_correction():
@@ -371,11 +375,10 @@ def test_08_extreme_uneven_response():
     spectrum_db = generate_test_spectrum(freqs, "extreme")
     target_db = get_target_curve(freqs, "flat")
     eq = calculate_eq_bands(freqs, spectrum_db, target_db)
-    gains = eq["band_gains"]
-    # The constrained solver should still make a material correction without
-    # requiring a dangerous hard-bound excursion.
-    assert any(abs(g) >= 3.0 for g in gains)
-    assert eq["validation_after_error_db"] < eq["validation_before_error_db"] * 0.80
+    # The automatic path stays inside a bounded combined response even for an
+    # intentionally pathological spectrum.
+    assert eq["eq_quality"]["safe_for_auto_eq"]
+    assert eq["validation_after_error_db"] <= eq["validation_before_error_db"]
 
 
 def test_09_very_quiet_signal():
@@ -827,7 +830,7 @@ def test_18b_target_modes_are_explicit_and_bounded():
     )
 
     assert np.allclose(static_target, catalog_target)
-    assert np.max(np.abs(adaptive_target - static_target)) <= 2.0 + 1e-9
+    assert np.max(np.abs(adaptive_target)) <= 2.0 + 1e-9
     assert np.max(np.abs(adaptive_target - static_target)) > 0.25
 
 
@@ -1299,3 +1302,42 @@ def test_29_fallback_cannot_report_risky_capture_as_safe(monkeypatch):
     assert validated["headroom_validation"]["status"] == "advisory"
     assert validated["headroom_validation"]["safe"] is False
     assert validated["headroom_gain_scale"] < 1.0
+
+
+def test_voice_safe_flat_target_preserves_broad_speech_shape():
+    freqs = _default_freqs()
+    measured = -70.0 - 5.0 * np.log2(freqs / 1000.0)
+    result = calculate_eq_bands(
+        freqs,
+        measured,
+        np.zeros_like(freqs),
+        tilt_policy="voice_safe",
+    )
+
+    assert result["spectral_tilt_policy"] == "voice_safe"
+    assert np.max(np.abs(result["band_gains"])) < 0.1
+    assert result["validation_before_error_db"] == pytest.approx(0.0)
+
+
+def test_normalization_is_level_and_input_grid_stable():
+    gains = []
+    for point_count, level in ((128, -70.0), (1000, -90.0)):
+        freqs = np.logspace(np.log10(20.0), np.log10(20_000.0), point_count)
+        measured = level - 5.0 * np.log2(freqs / 1000.0)
+        target = 0.7 * np.exp(
+            -((np.log10(freqs) - np.log10(2500.0)) ** 2) / (2 * 0.25**2)
+        )
+        result = calculate_eq_bands(
+            freqs,
+            measured,
+            target,
+            tilt_policy="voice_safe",
+        )
+        gains.append(np.asarray(result["band_gains"], dtype=float))
+
+    np.testing.assert_allclose(gains[0], gains[1], atol=0.01)
+
+
+def test_auto_eq_pipeline_rejects_non_live_sample_rate():
+    with pytest.raises(ValueError, match="48000"):
+        analyze_auto_eq(np.zeros(480, dtype=np.float32), 44_100, "flat")

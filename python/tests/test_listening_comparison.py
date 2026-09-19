@@ -7,7 +7,11 @@ import pytest
 
 from mic_eq.analysis import listening_comparison as comparison
 from PyQt6.QtMultimedia import QAudioFormat
-from mic_eq.ui.listening_comparison_dialog import _pcm_bytes, _preview_samples
+from mic_eq.ui.listening_comparison_dialog import (
+    _pcm_bytes,
+    _preview_samples,
+    _preview_safety_gain,
+)
 from mic_eq.analysis.listening_comparison import RenderedComparisonClip
 
 
@@ -139,6 +143,81 @@ def test_level_match_is_applied_at_playback_without_rerendering():
     )
 
 
+def test_dialog_uses_one_peak_safety_gain_for_level_matched_playback():
+    def clip(label: str, value: float, delta: float) -> RenderedComparisonClip:
+        return RenderedComparisonClip(
+            label=label,
+            samples=np.full(128, value, dtype=np.float32),
+            actual_level_db=-20.0,
+            actual_level_delta_db=delta,
+            playback_level_db=-20.0,
+            peak_db=-20.0,
+            level_match_gain_db=0.0,
+            safety_gain_db=0.0,
+            simulation_backend="rust",
+        )
+
+    result = comparison.ComparisonRenderResult(
+        sample_rate=48_000,
+        original=clip("original", 0.2, 0.0),
+        current=clip("current", 0.2, 0.0),
+        proposed=clip("proposed", 0.9, -12.0),
+        level_match=False,
+        level_match_reference_db=-20.0,
+        speech_detection="test",
+        alignment_samples=0,
+        alignment_ms=0.0,
+    )
+    safety_gain = _preview_safety_gain(result, level_match=True)
+    previews = [
+        _preview_samples(
+            clip,
+            level_match=True,
+            common_safety_gain_db=safety_gain,
+            rendered_level_matched=result.level_match,
+        )
+        for clip in result.clips
+    ]
+
+    assert safety_gain < 0.0
+    assert max(float(np.max(np.abs(samples))) for samples in previews) <= (
+        10.0 ** (comparison.PLAYBACK_PEAK_DB / 20.0) + 1.0e-6
+    )
+    assert np.max(np.abs(previews[0])) == pytest.approx(
+        np.max(np.abs(previews[1]))
+    )
+
+
+def test_peak_safety_uses_one_attenuation_for_all_level_matched_clips(monkeypatch):
+    def fake_simulation(audio, sample_rate, eq, chain):
+        return {
+            "output_audio": np.asarray(audio, dtype=np.float32).tolist(),
+            "simulation_backend": "rust",
+            "chain_latency_samples": 0,
+        }
+
+    monkeypatch.setattr(comparison, "simulate_candidate_chain", fake_simulation)
+    monkeypatch.setattr(
+        comparison,
+        "_speech_mask",
+        lambda audio, sample_rate: (np.ones(audio.size, dtype=bool), "test"),
+    )
+    capture = np.full(1024, 0.95, dtype=np.float32)
+
+    result = comparison.render_comparison(
+        capture,
+        48_000,
+        _settings(),
+        _settings(),
+        level_match=True,
+    )
+
+    gains = [clip.safety_gain_db for clip in result.clips]
+    assert gains[0] < 0.0
+    assert gains == pytest.approx([gains[0]] * 3)
+    assert max(clip.peak_db for clip in result.clips) <= comparison.PLAYBACK_PEAK_DB
+
+
 def test_typed_eq_keeps_custom_filter_and_slope_for_native_renderer(monkeypatch):
     from mic_eq.config import EQSettings
 
@@ -205,10 +284,16 @@ def test_full_chain_leaves_vad_to_native_renderer(monkeypatch):
     assert all(item["full_chain"] is True for item in seen)
     assert all(item["input_pre_filtered"] is True for item in seen)
     assert all(item["input_cleanup_mode"] == "gentle" for item in seen)
-    assert all(item["gate_mode"] == 1 for item in seen)
-    assert all(item["suppressor_strength"] == 0.7 for item in seen)
-    assert all(item["noise_model"] == "rnnoise" for item in seen)
     assert all("vad_probabilities" not in item for item in seen)
+    for item in seen:
+        gate = item["gate"]
+        suppressor = item["suppressor"]
+        assert isinstance(gate, dict)
+        assert isinstance(suppressor, dict)
+        assert gate["gate_mode"] == 1
+        assert gate["vad_threshold"] == 0.48
+        assert suppressor["strength"] == 0.7
+        assert suppressor["model"] == "rnnoise"
     assert result.excluded_stages == ()
 
 

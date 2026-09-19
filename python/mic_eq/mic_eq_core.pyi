@@ -235,7 +235,9 @@ def measure_integrated_loudness(
 ) -> float: ...
 def analyze_vad_probabilities(
     audio: npt.NDArray[np.float32], sample_rate: int, threshold: float = 0.48
-) -> list[float]: ...
+) -> list[float]:
+    """Require 8–192 kHz with integral 32 ms windows; use analyze_offline_vad for 44.1 kHz."""
+    ...
 def simulate_auto_eq_chain(
     audio: npt.NDArray[np.float32],
     sample_rate: float,

@@ -212,6 +212,8 @@ fn simulate_passthrough(
     };
     let peak_db = linear_to_db(input_peak);
     let rms_db = linear_to_db(input_rms);
+    let mut true_peak_detector = TruePeakDetector::new();
+    let true_peak_db = linear_to_db(true_peak_detector.process_block(&audio));
     let diagnostics = pyo3::types::PyDict::new(py);
     diagnostics.set_item("simulation_backend", "rust")?;
     diagnostics.set_item("safety_authority", "authoritative")?;
@@ -219,13 +221,13 @@ fn simulate_passthrough(
     diagnostics.set_item("input_sample_peak_db", peak_db)?;
     diagnostics.set_item("input_rms_db", rms_db)?;
     diagnostics.set_item("output_sample_peak_db", peak_db)?;
-    diagnostics.set_item("pre_limiter_true_peak_db", peak_db)?;
-    diagnostics.set_item("output_true_peak_db", peak_db)?;
+    diagnostics.set_item("pre_limiter_true_peak_db", true_peak_db)?;
+    diagnostics.set_item("output_true_peak_db", true_peak_db)?;
     diagnostics.set_item("output_rms_db", rms_db)?;
     diagnostics.set_item("limiter_effective_ceiling_db", 0.0_f32)?;
     diagnostics.set_item("sample_headroom_db", -peak_db)?;
-    diagnostics.set_item("pre_limiter_true_peak_headroom_db", -peak_db)?;
-    diagnostics.set_item("true_peak_headroom_db", -peak_db)?;
+    diagnostics.set_item("pre_limiter_true_peak_headroom_db", -true_peak_db)?;
+    diagnostics.set_item("true_peak_headroom_db", -true_peak_db)?;
     diagnostics.set_item("limiter_gain_reduction_db", 0.0_f32)?;
     diagnostics.set_item("true_peak_limiter_gain_reduction_db", 0.0_f32)?;
     diagnostics.set_item("true_peak_limited_events", 0_u64)?;
@@ -906,21 +908,23 @@ pub fn simulate_auto_eq_chain(
         }
     }
     if full_chain && processing_mode == "bypass" {
-        // ProcessingPath::Bypass sanitizes/clamps the input and keeps the live
-        // DC blocker + fixed 80 Hz high-pass, while skipping gate, suppressor,
-        // EQ, de-esser, and compressor stages.
+        // ProcessingPath::Bypass sanitizes/clamps the input and applies the
+        // live DC blocker + fixed 80 Hz high-pass only to raw captures, while
+        // skipping gate, suppressor, EQ, de-esser, and compressor stages.
         for sample in &mut audio {
             *sample = sample.clamp(-1.0, 1.0);
         }
-        let mut pre_filter_state = InputPreFilterState::default();
-        let mut pre_filter = Biquad::new(
-            BiquadType::HighPass,
-            INPUT_PREFILTER_HZ,
-            0.0,
-            INPUT_PREFILTER_Q,
-            sample_rate,
-        );
-        apply_input_pre_filter(&mut audio, &mut pre_filter_state, &mut pre_filter, true);
+        if !py_dict_bool(settings, "input_pre_filtered", false)? {
+            let mut pre_filter_state = InputPreFilterState::default();
+            let mut pre_filter = Biquad::new(
+                BiquadType::HighPass,
+                INPUT_PREFILTER_HZ,
+                0.0,
+                INPUT_PREFILTER_Q,
+                sample_rate,
+            );
+            apply_input_pre_filter(&mut audio, &mut pre_filter_state, &mut pre_filter, true);
+        }
     }
     let has_typed_bands = match settings {
         Some(settings) => {
@@ -947,7 +951,9 @@ pub fn simulate_auto_eq_chain(
     // `processing_mode` selects a path only for the explicit full-chain API;
     // preserve the legacy downstream simulation when full_chain is omitted.
     let full_processing = !full_chain || processing_mode == "normal";
-    processor.set_eq_enabled(full_processing);
+    let eq_enabled_default = py_dict_bool(settings, "enabled", true)?;
+    let eq_enabled = py_dict_bool(settings, "eq_enabled", eq_enabled_default)?;
+    processor.set_eq_enabled(full_processing && eq_enabled);
     let correction_configs = py_dict_eq_bands_v2_key(
         settings,
         "eq_correction_bands_v2",

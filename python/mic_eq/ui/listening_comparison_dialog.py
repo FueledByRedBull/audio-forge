@@ -35,6 +35,7 @@ from ..analysis.listening_comparison import (
     MAX_LEVEL_MATCH_DB,
     ComparisonRenderResult,
     RenderedComparisonClip,
+    _common_safety_gain_db,
     _playback_safe,
     render_comparison,
 )
@@ -96,20 +97,60 @@ def _persist_preview_device(widget: Any, device: QAudioDevice | None) -> bool | 
         return False
 
 
+def _preview_level_match_gain(
+    clip: RenderedComparisonClip,
+    *,
+    level_match: bool,
+    rendered_level_matched: bool,
+) -> float:
+    if not level_match or rendered_level_matched or clip.label == "original":
+        return 0.0
+    gain = clip.level_match_gain_db
+    if not gain and np.isfinite(clip.actual_level_delta_db):
+        gain = -float(clip.actual_level_delta_db)
+    return float(np.clip(gain, -MAX_LEVEL_MATCH_DB, MAX_LEVEL_MATCH_DB))
+
+
 def _preview_samples(
     clip: RenderedComparisonClip,
     *,
     level_match: bool,
+    common_safety_gain_db: float | None = None,
+    rendered_level_matched: bool = False,
 ) -> np.ndarray:
-    """Apply the stored level match at playback time, without rerendering."""
-    if not level_match or clip.label == "original":
+    """Prepare one already-rendered clip for playback without rerendering."""
+    if not level_match and common_safety_gain_db is None:
         return np.ascontiguousarray(clip.samples, dtype=np.float32)
-    gain = clip.level_match_gain_db
-    if not gain and np.isfinite(clip.actual_level_delta_db):
-        gain = -float(clip.actual_level_delta_db)
-    gain = float(np.clip(gain, -MAX_LEVEL_MATCH_DB, MAX_LEVEL_MATCH_DB))
-    matched, _ = _playback_safe(clip.samples, level_match_gain_db=gain)
+    match_gain = _preview_level_match_gain(
+        clip,
+        level_match=level_match,
+        rendered_level_matched=rendered_level_matched,
+    )
+    matched, _ = _playback_safe(
+        clip.samples,
+        level_match_gain_db=match_gain,
+        safety_gain_db=common_safety_gain_db,
+    )
     return matched
+
+
+def _preview_safety_gain(
+    result: ComparisonRenderResult,
+    *,
+    level_match: bool,
+) -> float:
+    """Find one peak-safe gain for all clips in the current playback mode."""
+    rendered_level_matched = bool(result.level_match)
+    prepared = (
+        _preview_samples(
+            clip,
+            level_match=level_match,
+            common_safety_gain_db=0.0,
+            rendered_level_matched=rendered_level_matched,
+        )
+        for clip in result.clips
+    )
+    return _common_safety_gain_db(prepared)
 
 
 def _format_for_device(
@@ -537,11 +578,15 @@ class ListeningComparisonDialog(QDialog):
     def _on_level_match_changed(self, _enabled: bool) -> None:
         self._stop_playback()
         if self._result is not None:
+            level_match = self.level_match_checkbox.isChecked()
+            safety_gain = _preview_safety_gain(self._result, level_match=level_match)
             for key, detail in self._clip_labels.items():
                 detail.setText(
                     self._clip_details(
                         getattr(self._result, key),
-                        level_match=self.level_match_checkbox.isChecked(),
+                        level_match=level_match,
+                        common_safety_gain_db=safety_gain,
+                        rendered_level_matched=self._result.level_match,
                     )
                 )
             self.status_label.setText(
@@ -559,12 +604,16 @@ class ListeningComparisonDialog(QDialog):
         self._result = result
         self.progress_bar.setValue(100)
         self.progress_label.setText("Comparison ready")
+        level_match = self.level_match_checkbox.isChecked()
+        safety_gain = _preview_safety_gain(result, level_match=level_match)
         for key, button in self._play_buttons.items():
             button.setEnabled(self._current_playback_device() is not None)
             self._clip_labels[key].setText(
                 self._clip_details(
                     getattr(result, key),
-                    level_match=self.level_match_checkbox.isChecked(),
+                    level_match=level_match,
+                    common_safety_gain_db=safety_gain,
+                    rendered_level_matched=result.level_match,
                 )
             )
         self.keep_button.setEnabled(True)
@@ -603,26 +652,35 @@ class ListeningComparisonDialog(QDialog):
 
     @staticmethod
     def _clip_details(
-        clip: RenderedComparisonClip, *, level_match: bool = False
+        clip: RenderedComparisonClip,
+        *,
+        level_match: bool = False,
+        common_safety_gain_db: float | None = None,
+        rendered_level_matched: bool = False,
     ) -> str:
-        match_gain = clip.level_match_gain_db
-        if level_match and clip.label != "original" and not match_gain:
-            match_gain = float(
-                np.clip(
-                    -clip.actual_level_delta_db,
-                    -MAX_LEVEL_MATCH_DB,
-                    MAX_LEVEL_MATCH_DB,
-                )
+        match_gain = (
+            float(clip.level_match_gain_db)
+            if level_match
+            and rendered_level_matched
+            and clip.label != "original"
+            else _preview_level_match_gain(
+                clip,
+                level_match=level_match,
+                rendered_level_matched=rendered_level_matched,
             )
+        )
         match = (
             f"preview gain {match_gain:+.1f} dB; "
             if level_match and match_gain
             else ""
         )
         if level_match:
+            safety_gain = clip.safety_gain_db + (common_safety_gain_db or 0.0)
             return (
                 f"Actual level vs original: {clip.actual_level_delta_db:+.1f} dB; "
-                f"{match}bounded preview gain and peak-safe playback"
+                f"{match}remaining level difference "
+                f"{clip.actual_level_delta_db + match_gain:+.1f} dB; "
+                f"shared peak safety gain {safety_gain:+.1f} dB"
             )
         return (
             f"Actual level vs original: {clip.actual_level_delta_db:+.1f} dB; "
@@ -659,9 +717,13 @@ class ListeningComparisonDialog(QDialog):
         self._stop_playback()
         try:
             audio_format, _, _ = _format_for_device(device, result.sample_rate)
+            level_match = self.level_match_checkbox.isChecked()
+            safety_gain = _preview_safety_gain(result, level_match=level_match)
             samples = _preview_samples(
                 clip,
-                level_match=self.level_match_checkbox.isChecked(),
+                level_match=level_match,
+                common_safety_gain_db=safety_gain,
+                rendered_level_matched=result.level_match,
             )
             start = min(max(0, int(start_sample)), int(samples.size))
             payload = _pcm_bytes(samples[start:], audio_format, result.sample_rate)

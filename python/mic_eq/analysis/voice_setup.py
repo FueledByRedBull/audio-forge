@@ -32,7 +32,6 @@ from .noise_reference import (
 )
 from .joint_tuning import tune_gate_suppression_dynamics
 from .spectrum import (
-    _interpolate_vad_probabilities,
     analyze_voice_spectrum,
     smooth_spectrum_perceptual,
 )
@@ -40,6 +39,7 @@ from .vad import (
     VAD_SPEECH_EVIDENCE_THRESHOLD,
     VAD_STRONG_SPEECH_THRESHOLD,
     analyze_offline_vad,
+    map_causal_vad_probabilities,
 )
 from ..config import EQ_FREQUENCIES, LimiterSettings
 
@@ -199,10 +199,9 @@ def _vad_masked_speech_features(
     adaptive_floor = max(noise_rms_db + 6.0, float(np.percentile(frame_db, 30.0)) + 2.0)
     energy_active_frames = frame_db >= adaptive_floor
     frame_starts = np.arange(frame_db.size, dtype=int) * hop_size
-    frame_vad_probabilities = _interpolate_vad_probabilities(
+    frame_vad_probabilities = map_causal_vad_probabilities(
         vad_probabilities,
-        frame_starts,
-        frame_size,
+        frame_starts + frame_size,
         sample_rate,
     )
     active_frames = energy_active_frames
@@ -1133,8 +1132,10 @@ def analyze_voice_setup(
     speech_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Analyze room noise plus speech and recommend downstream DSP settings."""
+    """Analyze 48 kHz room noise plus speech and recommend downstream DSP settings."""
     check_analysis_cancelled(cancel_check)
+    if sample_rate != 48_000:
+        raise ValueError("Voice setup analysis requires a 48000 Hz sample rate")
     effective_limiter_settings = _normalise_limiter_settings(limiter_settings)
     if effective_limiter_settings is None:
         raise ValueError("limiter settings are incomplete")
@@ -1333,6 +1334,30 @@ def analyze_voice_setup(
 
     check_analysis_cancelled(cancel_check)
 
+    # The initial VAD pass supplies stable measurement features. Re-run the
+    # detector with the settings we are about to evaluate so joint tuning sees
+    # the same threshold and input gain as the live gate.
+    joint_vad_probabilities = vad_probabilities
+    joint_noise_vad_probabilities = noise_vad_probabilities
+    joint_vad_backend = vad_analysis_backend
+    joint_noise_vad_backend = noise_vad_backend
+    if vad_available:
+        joint_vad_probabilities, joint_vad_backend = analyze_offline_vad(
+            speech_arr,
+            sample_rate,
+            threshold=float(gate_settings["vad_threshold"]),
+            pre_gain=float(gate_settings["vad_pre_gain"]),
+        )
+        joint_noise_vad_probabilities, joint_noise_vad_backend = (
+            analyze_offline_vad(
+                noise_arr,
+                sample_rate,
+                threshold=float(gate_settings["vad_threshold"]),
+                pre_gain=float(gate_settings["vad_pre_gain"]),
+            )
+        )
+        check_analysis_cancelled(cancel_check)
+
     incumbent_payload = dict(incumbent_settings or {})
     incumbent_gate = incumbent_payload.get("gate")
     incumbent_suppressor = incumbent_payload.get("suppressor") or incumbent_payload.get(
@@ -1347,8 +1372,8 @@ def analyze_voice_setup(
         simulation_eq_settings,
         deesser_settings,
         effective_limiter_settings,
-        vad_probabilities=vad_probabilities,
-        noise_vad_probabilities=noise_vad_probabilities,
+        vad_probabilities=joint_vad_probabilities,
+        noise_vad_probabilities=joint_noise_vad_probabilities,
         noise_model=noise_model,
         suppressor_strength=suppressor_strength,
         suppressor_enabled=suppressor_enabled,
@@ -1361,7 +1386,6 @@ def analyze_voice_setup(
                 "model": noise_model,
             },
         },
-        noise_floor_db=conservative_noise_rms_db,
         cancel_check=cancel_check,
     )
     if joint_tuning.get("apply_recommended"):
@@ -1559,6 +1583,10 @@ def analyze_voice_setup(
             "vad_available": bool(vad_available),
             "vad_analysis_backend": vad_analysis_backend,
             "noise_vad_analysis_backend": noise_vad_backend,
+            "joint_vad_analysis_backend": joint_vad_backend,
+            "joint_noise_vad_analysis_backend": joint_noise_vad_backend,
+            "joint_vad_threshold": float(gate_settings["vad_threshold"]),
+            "joint_vad_pre_gain": float(gate_settings["vad_pre_gain"]),
             "vad_probability_used": bool(features["vad_probability_used"]),
             "vad_active_frame_ratio": float(features["vad_active_frame_ratio"]),
             "offline_validation_passed": offline_validation_passed,

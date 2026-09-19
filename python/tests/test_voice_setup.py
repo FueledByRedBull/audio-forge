@@ -5,10 +5,13 @@ from __future__ import annotations
 from copy import deepcopy
 import threading
 import time
+from typing import Any
 
 import numpy as np
 import pytest
 
+import mic_eq
+from mic_eq.analysis import vad as vad_analysis
 from mic_eq.analysis.voice_setup import (
     _COMPRESSOR_SEARCH_BUDGET,
     _calibrate_compressor_threshold,
@@ -21,6 +24,60 @@ from mic_eq.analysis.voice_setup import (
 from mic_eq.analysis.auto_eq import simulate_candidate_chain
 from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.ui.voice_setup_dialog import VoiceSetupVerificationWorker
+
+
+def test_offline_vad_applies_live_pre_gain_before_inference(monkeypatch):
+    observed: dict[str, Any] = {}
+
+    def fake_analyze(samples, sample_rate, threshold):
+        observed["samples"] = np.asarray(samples).copy()
+        observed["sample_rate"] = sample_rate
+        observed["threshold"] = threshold
+        return [0.7]
+
+    monkeypatch.setattr(mic_eq, "CORE_AVAILABLE", True)
+    monkeypatch.setattr(mic_eq, "analyze_vad_probabilities", fake_analyze)
+
+    probabilities, backend = vad_analysis.analyze_offline_vad(
+        np.asarray([0.5, -0.25], dtype=np.float32),
+        48_000,
+        threshold=0.43,
+        pre_gain=2.0,
+    )
+
+    np.testing.assert_allclose(observed["samples"], [1.0, -0.5])
+    assert observed["sample_rate"] == 48_000
+    assert observed["threshold"] == 0.43
+    assert probabilities is not None
+    np.testing.assert_allclose(probabilities, [0.7])
+    assert backend == "silero"
+
+
+def test_causal_vad_mapping_keeps_exact_44k1_window_timing():
+    sample_rate = 44_100
+    frame_ends = np.arange(1, 2_001, dtype=np.int64) * 441
+    probabilities = np.arange(700, dtype=np.float32) / 700.0
+
+    mapped = vad_analysis.map_causal_vad_probabilities(
+        probabilities,
+        frame_ends,
+        sample_rate,
+    )
+    assert mapped is not None
+
+    np.testing.assert_array_equal(mapped[:3], 0.0)
+    # 1.6 s contains exactly 50 model windows; 20 s contains 625.
+    assert mapped[159] == pytest.approx(49 / 700)
+    assert mapped[-1] == pytest.approx(624 / 700)
+
+
+def test_voice_setup_rejects_unsupported_sample_rate_before_analysis():
+    with pytest.raises(ValueError, match="48000 Hz"):
+        analyze_voice_setup(
+            np.zeros(1, dtype=np.float32),
+            np.zeros(1, dtype=np.float32),
+            44_100,
+        )
 
 
 def _make_noise(sample_rate: int, seconds: float = 2.0, amplitude: float = 0.0012) -> np.ndarray:

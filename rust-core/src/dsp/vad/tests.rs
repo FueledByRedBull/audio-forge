@@ -187,7 +187,7 @@ mod tests {
         let _ = gate.process_with_probability(&loud, 0.1);
         let after_rise = gate.noise_floor();
         assert!(
-            after_rise - before_rise <= NOISE_FLOOR_UP_SLEW_DB_PER_FRAME + 1e-6,
+            after_rise - before_rise <= NOISE_FLOOR_UP_SLEW_DB_PER_UPDATE + 1e-6,
             "rise slew exceeded per-frame limit"
         );
 
@@ -201,9 +201,65 @@ mod tests {
         let _ = gate.process_with_probability(&quiet, 0.1);
         let after_fall = gate.noise_floor();
         assert!(
-            before_fall - after_fall <= NOISE_FLOOR_DOWN_SLEW_DB_PER_FRAME + 1e-6,
+            before_fall - after_fall <= NOISE_FLOOR_DOWN_SLEW_DB_PER_UPDATE + 1e-6,
             "fall slew exceeded per-frame limit"
         );
+    }
+
+    #[test]
+    fn test_unknown_external_probability_does_not_train_noise_floor() {
+        let mut gate = VadAutoGate::without_backend(48_000, 0.5);
+        gate.set_auto_threshold(true);
+        let frame = vec![10f32.powf(-45.0 / 20.0); 480];
+
+        for _ in 0..10 {
+            let _ = gate.process_with_external_probability(&frame, Some(0.1));
+        }
+        let trained_floor = gate.noise_floor();
+
+        for _ in 0..100 {
+            let (open, probability) = gate.process_with_external_probability(&frame, None);
+            assert!(!open);
+            assert_eq!(probability, 0.0);
+        }
+
+        assert_eq!(gate.noise_floor(), trained_floor);
+        assert!(!gate.is_available());
+        gate.process_with_external_probability(&frame, Some(0.9));
+        assert!(gate.is_available());
+        gate.reset();
+        assert!(!gate.is_available());
+    }
+
+    #[test]
+    fn test_noise_floor_cadence_is_independent_of_block_size() {
+        let mut ten_ms = VadAutoGate::without_backend(48_000, 0.5);
+        let mut one_second = VadAutoGate::without_backend(48_000, 0.5);
+        let ten_ms_frame = vec![10f32.powf(-45.0 / 20.0); 480];
+        let one_second_frame = vec![10f32.powf(-45.0 / 20.0); 48_000];
+
+        for _ in 0..100 {
+            let _ = ten_ms.process_with_probability(&ten_ms_frame, 0.1);
+        }
+        let _ = one_second.process_with_probability(&one_second_frame, 0.1);
+
+        assert!((ten_ms.noise_floor() - one_second.noise_floor()).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_vad_rejects_unsupported_sample_rates_before_loading_model() {
+        assert!(matches!(
+            SileroVAD::new(0, 0.5),
+            Err(VadError::InvalidSampleRate(0))
+        ));
+        assert!(matches!(
+            SileroVAD::new(192_001, 0.5),
+            Err(VadError::InvalidSampleRate(192_001))
+        ));
+        assert!(matches!(
+            SileroVAD::new(44_100, 0.5),
+            Err(VadError::InvalidSampleRate(44_100))
+        ));
     }
 
     #[test]

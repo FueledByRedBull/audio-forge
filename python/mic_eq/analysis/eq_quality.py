@@ -43,6 +43,15 @@ class EqQualityMetrics:
             + self.narrow_boost_risk * 0.5
         )
 
+    @property
+    def safe_for_auto_eq(self) -> bool:
+        """Whether the combined response stays inside the automatic bounds."""
+        return (
+            self.max_boost_db <= 6.0 + 1e-9
+            and self.max_cut_db <= 6.0 + 1e-9
+            and self.ripple_db <= 8.0 + 1e-9
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "max_boost_db": self.max_boost_db,
@@ -52,6 +61,7 @@ class EqQualityMetrics:
             "shelf_peak_stacking": self.shelf_peak_stacking,
             "narrow_boost_risk": self.narrow_boost_risk,
             "risk_score": self.risk_score,
+            "safe_for_auto_eq": self.safe_for_auto_eq,
             "warnings": [
                 {
                     "kind": warning.kind,

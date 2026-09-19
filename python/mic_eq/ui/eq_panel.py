@@ -655,15 +655,15 @@ class EQPanel(QWidget):
 
         controls_layout.addStretch()
 
-        clear_correction_btn = QPushButton("Clear Mic Correction")
+        clear_correction_btn = QPushButton("Clear Auto-EQ")
         clear_correction_btn.setToolTip(
-            "Remove measured microphone correction while keeping the tone"
+            "Remove the calibrated EQ layer while keeping the tone"
         )
         clear_correction_btn.clicked.connect(self.clear_correction)
         controls_layout.addWidget(clear_correction_btn)
 
         reset_btn = QPushButton("Reset Tone")
-        reset_btn.setToolTip("Reset character gains to zero while retaining microphone correction")
+        reset_btn.setToolTip("Reset character gains to zero while retaining the Auto-EQ layer")
         reset_btn.clicked.connect(self._reset_all)
         controls_layout.addWidget(reset_btn)
 
@@ -720,7 +720,7 @@ class EQPanel(QWidget):
         self.presets_layout.setSpacing(SPACING_TIGHT)
 
         voice_btn = QPushButton("Voice")
-        voice_btn.setToolTip("Voice clarity tone; preserves microphone correction and other processing")
+        voice_btn.setToolTip("Voice clarity tone; preserves the Auto-EQ layer and other processing")
         voice_btn.clicked.connect(self._preset_voice)
 
         bass_btn = QPushButton("Bass Cut")
@@ -728,7 +728,7 @@ class EQPanel(QWidget):
         bass_btn.clicked.connect(self._preset_bass_cut)
 
         presence_btn = QPushButton("Presence")
-        presence_btn.setToolTip("Presence tone; preserves microphone correction and other processing")
+        presence_btn.setToolTip("Presence tone; preserves the Auto-EQ layer and other processing")
         presence_btn.clicked.connect(self._preset_presence)
 
         warm_clear_btn = QPushButton("Warm & Clear")
@@ -739,7 +739,7 @@ class EQPanel(QWidget):
         warm_clear_btn.clicked.connect(self._preset_warm_clear)
 
         flat_btn = QPushButton("Flat")
-        flat_btn.setToolTip("Neutral character gains; preserves microphone correction and other processing")
+        flat_btn.setToolTip("Neutral character gains; preserves the Auto-EQ layer and other processing")
         flat_btn.clicked.connect(self._reset_all)
         self._preset_buttons = (
             voice_btn,
@@ -824,14 +824,14 @@ class EQPanel(QWidget):
 
     def _update_layer_status(self) -> None:
         if self._correction_bands is None:
-            text = "Mic correction: none | Tone: editable below"
+            text = "Auto-EQ: none | Tone: editable below"
         else:
             active = sum(
                 abs(band.gain_db) >= 0.25
                 for band in self._correction_bands
             )
             text = (
-                f"Mic correction: {active} measured band(s) | "
+                f"Auto-EQ: {active} active band(s) | "
                 "Tone: independent and preserved"
             )
         self._eq_group.setTitle("Tone EQ — " + text)
@@ -857,7 +857,7 @@ class EQPanel(QWidget):
         self._apply_layers_to_processor()
 
     def clear_correction(self) -> None:
-        """Remove only microphone correction and retain the selected tone."""
+        """Remove only the Auto-EQ layer and retain the selected tone."""
         if self._correction_bands is None:
             return
         self._correction_bands = None
@@ -972,7 +972,7 @@ class EQPanel(QWidget):
         self._apply_preset(gains, qs)
 
     def _apply_catalog_preset(self, key: str) -> None:
-        """Apply a catalog contour while preserving microphone correction."""
+        """Apply a catalog contour while preserving the Auto-EQ layer."""
         bands = BUILTIN_PRESETS[key].eq.bands
         self._apply_preset(
             [band.gain_db for band in bands],
@@ -1031,7 +1031,7 @@ class EQPanel(QWidget):
 
         Args:
             bands: List of 10 (frequency_hz, gain_db, q) tuples
-            layer: ``correction`` for measured microphone response or
+            layer: ``correction`` for the calibrated Auto-EQ layer or
                 ``tone`` for a user character contour.
 
         Raises:

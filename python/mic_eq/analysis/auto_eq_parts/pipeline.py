@@ -3,6 +3,7 @@
 from collections.abc import Callable
 
 from ..cancellation import check_analysis_cancelled
+from .constants import SAMPLE_RATE
 from .optimizer import calculate_eq_bands
 from .target import get_target_curve
 from .headroom import apply_headroom_validation
@@ -21,7 +22,7 @@ def analyze_auto_eq(
     noise_reference_quality=1.0,
     noise_reference_status="usable",
     noise_reference_reasons=None,
-    tilt_policy="preserve",
+    tilt_policy="voice_safe",
     cancel_check: Callable[[], bool] | None = None,
 ):
     """
@@ -42,7 +43,8 @@ def analyze_auto_eq(
         smoothing_strength: 'conservative', 'balanced', 'broad', or 'off'
         chain_settings: Current deterministic downstream DSP settings for headroom simulation
         noise_audio: Optional room-noise capture for frequency-dependent SNR
-        tilt_policy: 'preserve' by default; 'detrend' is an explicit experiment
+        tilt_policy: 'voice_safe' by default; 'preserve' is an explicit
+            microphone-shape correction mode
 
     Returns:
         result: Tuple of (eq_settings, validation_result)
@@ -57,6 +59,16 @@ def analyze_auto_eq(
     from ..vad import analyze_offline_vad
 
     check_analysis_cancelled(cancel_check)
+    try:
+        requested_rate = float(sample_rate)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Auto-EQ analysis requires a {int(SAMPLE_RATE)} Hz sample rate"
+        ) from exc
+    if requested_rate != SAMPLE_RATE:
+        raise ValueError(
+            f"Auto-EQ analysis requires a {int(SAMPLE_RATE)} Hz sample rate"
+        )
     vad_backend = "provided"
     if vad_probabilities is None:
         vad_probabilities, vad_backend = analyze_offline_vad(
@@ -105,6 +117,7 @@ def analyze_auto_eq(
     check_analysis_cancelled(cancel_check)
 
     # Step 4: Calculate optimal EQ bands using least-squares
+    fit_context: dict[str, object] = {}
     eq_settings = calculate_eq_bands(
         freqs,
         spectrum_smoothed,
@@ -124,6 +137,7 @@ def analyze_auto_eq(
         used_spectrum_fallback=spectrum_result.used_single_spectrum_fallback,
         smoothing_strength=smoothing_strength,
         tilt_policy=tilt_policy,
+        fit_context=fit_context,
         cancel_check=cancel_check,
     )
     check_analysis_cancelled(cancel_check)
@@ -161,6 +175,7 @@ def analyze_auto_eq(
         analysis_freqs=freqs,
         measured_db=spectrum_smoothed,
         target_db=target_db,
+        fit_context=fit_context,
         cancel_check=cancel_check,
     )
     check_analysis_cancelled(cancel_check)

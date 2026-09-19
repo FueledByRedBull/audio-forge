@@ -115,8 +115,8 @@ def build_target_curves() -> dict[str, TargetCurve]:
             band_targets=[-1.0, 0.0, 1.0, 2.0, 4.0, 5.0, 4.0, 2.0, 0.0, -2.0]
         ),
         'flat': TargetCurve(
-            name="Neutral Reference",
-            description=f"{CALIBRATION_TARGET_SCOPE_LABEL} for broad microphone-response correction",
+            name="Natural / No Added Tone",
+            description=f"{CALIBRATION_TARGET_SCOPE_LABEL}: preserve the recorded voice without inferring a microphone response",
             band_targets=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         ),
     }

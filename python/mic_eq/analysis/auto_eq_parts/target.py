@@ -15,7 +15,6 @@ def _band_mean(freqs: np.ndarray, values: np.ndarray, low: float, high: float) -
 def _adaptive_voice_offsets(
     freqs: np.ndarray,
     measured_db: np.ndarray,
-    target_preset: str,
 ) -> np.ndarray:
     """Derive bounded identity-preserving target offsets from measured voice balance."""
     if measured_db.size == 0:
@@ -43,13 +42,6 @@ def _adaptive_voice_offsets(
     tilt_norm = np.clip(tilt_db_per_octave / 4.0, -1.0, 1.0)
 
     offsets = np.zeros_like(freqs, dtype=float)
-    # Keep flat closest to neutral: only gentle normalization of obvious tilt.
-    if target_preset == "flat":
-        offsets += np.clip(-0.60 * tilt_norm, -0.8, 0.8) * np.interp(
-            freqs, [100.0, 1000.0, 8000.0], [-1.0, 0.0, 1.0]
-        )
-        return np.clip(offsets, -1.0, 1.0)
-
     # Preserve speaker identity by keeping adaptive offsets small and broad.
     warmth_offset = np.clip(-0.9 * low_mid_balance, -1.2, 1.2)
     presence_offset = np.clip(0.8 * low_mid_balance - 0.5 * tilt_norm, -1.5, 1.5)
@@ -77,8 +69,8 @@ def get_target_curve(
     Args:
         freqs: Frequency array (Hz)
         target_preset: Target curve name ('broadcast', 'podcast', 'streaming', 'flat')
-        target_mode: 'adaptive' applies voice-aware bounded offsets;
-            'static' uses the catalog curve exactly.
+        target_mode: 'adaptive' applies a bounded reference-free tone layer
+            (flat is neutral); 'static' uses the catalog curve exactly.
 
     Returns:
         target_db: Target dB values at each frequency
@@ -101,12 +93,16 @@ def get_target_curve(
         right=target_curve.band_targets[-1],
     )
     if target_mode == "adaptive" and measured_db is not None:
+        # The catalog is a listening-style preference, not a microphone
+        # transfer-function measurement. Keep the automatic tone layer small
+        # enough that speech formants remain the speaker's own.
+        target_db = np.clip(target_db * 0.4, -2.0, 2.0)
         measured_arr = np.asarray(measured_db, dtype=float)
-        if measured_arr.shape == freqs.shape:
+        if measured_arr.shape == freqs.shape and target_preset != "flat":
             target_db = target_db + _adaptive_voice_offsets(
                 freqs,
                 measured_arr,
-                target_preset,
             )
+        target_db = np.clip(target_db, -2.0, 2.0)
 
     return target_db

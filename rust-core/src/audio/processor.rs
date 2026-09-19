@@ -332,6 +332,11 @@ pub struct AudioProcessor {
     #[cfg(feature = "vad")]
     /// Last successful non-realtime VAD inference timestamp.
     vad_last_update_us: Arc<AtomicU64>,
+    #[cfg(feature = "vad")]
+    /// Input-rate source position covered by the last successful VAD result.
+    /// This lets the DSP thread measure audio age independently of worker
+    /// scheduling and publication time.
+    vad_source_sample_end: Arc<AtomicU64>,
 
     /// Compressor current release time in milliseconds (for metering)
     compressor_current_release_ms: Arc<AtomicU64>,
@@ -640,6 +645,8 @@ impl AudioProcessor {
             vad_worker_running: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "vad")]
             vad_last_update_us: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "vad")]
+            vad_source_sample_end: Arc::new(AtomicU64::new(0)),
             compressor_current_release_ms: Arc::new(AtomicU64::new(
                 COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
             )),

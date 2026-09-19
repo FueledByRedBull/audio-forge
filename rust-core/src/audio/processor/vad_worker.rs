@@ -19,6 +19,7 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
     let probability = Arc::clone(&self.vad_raw_probability);
     let available = Arc::clone(&self.vad_backend_available);
     let last_update_us = Arc::clone(&self.vad_last_update_us);
+    let source_sample_end = Arc::clone(&self.vad_source_sample_end);
     let gate_rt_control = Arc::clone(&self.gate_rt_control);
     let sample_rate = self.sample_rate;
     let threshold = self
@@ -30,11 +31,14 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
     self.vad_worker_thread = Some(std::thread::spawn(move || {
         let mut worker_consumer = vad_consumer;
         let mut vad = None;
+        let mut source_samples_read = 0_u64;
+        let mut vad_source_base = 0_u64;
         let mut local = Vec::with_capacity(VAD_WORKER_MAX_BUFFER_SAMPLES);
         while running.load(Ordering::Acquire) {
             if vad.is_none() {
                 match SileroVAD::new(sample_rate, threshold) {
                     Ok(candidate) => {
+                        vad_source_base = source_samples_read;
                         available.store(true, Ordering::Release);
                         vad = Some(candidate);
                     }
@@ -53,6 +57,7 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
                 local.resize(to_read, 0.0);
                 let read = worker_consumer.read(&mut local);
                 local.truncate(read);
+                source_samples_read = source_samples_read.saturating_add(read as u64);
             }
 
             if !local.is_empty() {
@@ -80,6 +85,14 @@ fn ensure_vad_worker(&mut self, vad_consumer: super::buffer::AudioConsumer) {
                 match inference {
                     Ok(Ok(Some(prob))) => {
                         probability.store(prob.clamp(0.0, 1.0).to_bits(), Ordering::Release);
+                        let processed_samples = vad
+                            .as_ref()
+                            .expect("VAD backend initialized")
+                            .processed_input_samples();
+                        source_sample_end.store(
+                            vad_source_base.saturating_add(processed_samples),
+                            Ordering::Release,
+                        );
                         last_update_us.store(now_micros(), Ordering::Release);
                         available.store(true, Ordering::Release);
                     }
@@ -108,5 +121,6 @@ fn stop_vad_worker(&mut self) {
     self.vad_backend_available
         .store(false, Ordering::Release);
     self.vad_last_update_us.store(0, Ordering::Release);
+    self.vad_source_sample_end.store(0, Ordering::Release);
 }
 }

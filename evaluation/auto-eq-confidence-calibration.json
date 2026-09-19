@@ -146,5 +146,6 @@
     "The corpus is simulated 16 kHz multilingual speech, not native product-like 48 kHz close-mic capture.",
     "Between-take agreement remains unavailable and is not inferred from these pairs.",
     "Multiple deterministic SNR renders from one source are correlated; language-disjoint validation prevents source overlap across threshold fitting and validation but does not create more speakers."
-  ]
+  ],
+  "source_revision": "6d2d10437e3e2da1988cfa6f1bf36d562753bdc6"
 }

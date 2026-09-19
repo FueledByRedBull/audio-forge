@@ -66,6 +66,19 @@ def test_native_gate_enabled_matches_requested_control():
     assert np.max(np.abs(open_gate["output_audio"])) > 0.005
 
 
+def test_vad_alignment_waits_for_a_complete_window_and_holds_last_probability():
+    aligned = joint_tuning._align_probabilities(
+        np.asarray([0.2, 0.8], dtype=np.float32),
+        4_800,
+        4_800,
+    )
+
+    np.testing.assert_allclose(
+        aligned,
+        [0.0, 0.0, 0.0, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8],
+    )
+
+
 def test_joint_unavailable_keeps_incumbent_and_cancellation_propagates(monkeypatch):
     preset = Preset()
     incumbent_gate = {**asdict(preset.gate), "threshold_db": -51.0}
@@ -89,8 +102,11 @@ def test_joint_unavailable_keeps_incumbent_and_cancellation_propagates(monkeypat
 def test_joint_selection_evaluates_each_model_and_selects_lower_noise_model(
     monkeypatch,
 ):
+    observed_releases: list[float] = []
+
     def simulate(audio, _probabilities, _before_gate, _strength, settings):
         model = settings["noise_model"]
+        observed_releases.append(float(settings["gate_release_ms"]))
         latency = {"rnnoise": 480, "deepfilter-ll": 480, "deepfilter": 1_440}[model]
         is_noise = float(np.mean(np.abs(audio))) < 0.01
         attenuation = {"rnnoise": 0.5, "deepfilter-ll": 0.1, "deepfilter": 0.05}[model]
@@ -137,6 +153,7 @@ def test_joint_selection_evaluates_each_model_and_selects_lower_noise_model(
     ]
     assert deepfilter_candidates
     assert all(not candidate["gates"]["suppressor_latency"] for candidate in deepfilter_candidates)
+    assert float(args[3]["release_ms"]) + 70.0 in observed_releases
 
 
 def test_joint_selection_reports_unavailable_models_and_retains_incumbent(monkeypatch):
@@ -171,6 +188,47 @@ def test_joint_selection_reports_unavailable_models_and_retains_incumbent(monkey
     assert statuses["deepfilter-ll"] == "unavailable"
     assert statuses["deepfilter"] == "unavailable"
     assert any("backend unavailable" in entry.get("reason", "") for entry in result["model_evaluations"])
+
+
+@pytest.mark.parametrize("noise_available", [True, False])
+def test_joint_tuning_refreshes_probabilities_for_incumbent_pre_gain(monkeypatch, noise_available):
+    observed_gains: list[float] = []
+
+    def analyze(_audio, _sample_rate, *, threshold, pre_gain):
+        del threshold
+        observed_gains.append(float(pre_gain))
+        if not noise_available and len(observed_gains) == 2:
+            return None, "energy_fallback"
+        return np.ones(100, dtype=np.float32), "silero"
+
+    def simulate(audio, _probabilities, _before_gate, _strength, settings):
+        return {
+            "output_audio": np.asarray(audio, dtype=np.float32),
+            "suppressor_latency_samples": 480,
+            "runtime_ms": 0.0,
+        }
+
+    monkeypatch.setattr(joint_tuning, "analyze_offline_vad", analyze)
+    monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulate)
+    monkeypatch.setattr(joint_tuning, "simulate_candidate_chain", _downstream_metrics)
+    args = list(_tuning_args())
+    args[3] = {**args[3], "vad_pre_gain": 1.0}
+    incumbent_gate = {**args[3], "vad_pre_gain": 2.0}
+
+    result = joint_tuning.tune_gate_suppression_dynamics(
+        *args,
+        vad_probabilities=np.ones(100, dtype=np.float32),
+        noise_vad_probabilities=np.zeros(100, dtype=np.float32),
+        incumbent_settings={
+            "gate": incumbent_gate,
+            "suppressor": {"enabled": True, "strength": 1.0, "model": "rnnoise"},
+        },
+    )
+
+    assert observed_gains == [2.0, 2.0]
+    if not noise_available:
+        assert not result["apply_recommended"]
+        assert result["gate_settings"] == incumbent_gate
 
 
 def test_deepfilter_incumbent_keeps_selection_inside_deepfilter_family(monkeypatch):

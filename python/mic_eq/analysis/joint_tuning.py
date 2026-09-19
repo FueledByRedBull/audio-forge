@@ -17,6 +17,11 @@ from scipy.signal import resample_poly
 
 from .auto_eq import simulate_candidate_chain
 from .cancellation import AnalysisCancelled, check_analysis_cancelled
+from .vad import (
+    VAD_SPEECH_EVIDENCE_THRESHOLD,
+    analyze_offline_vad,
+    map_causal_vad_probabilities,
+)
 
 _SIMULATION_RATE = 48_000
 _FRAME_SAMPLES = 480
@@ -27,7 +32,7 @@ _MIN_NOISE_ATTENUATION_DB = 2.0
 _MAX_CHATTER_EVENTS = 8
 _MAX_RUNTIME_FACTOR = 1.0
 _IMPROVEMENT_MARGIN = 0.03
-_MAX_CANDIDATES_PER_MODEL = 9
+_MAX_CANDIDATES_PER_MODEL = 10
 _SUPPORTED_NOISE_MODELS = ("rnnoise", "deepfilter-ll", "deepfilter")
 _DEEPFILTER_MODELS = ("deepfilter-ll", "deepfilter")
 _DEEPFILTER_SELECTION_POLICY = "retain_deepfilter_family_v1"
@@ -92,19 +97,13 @@ def _align_probabilities(
     values = np.asarray(probabilities, dtype=float).reshape(-1)
     if values.size == 0 or not np.isfinite(values).all():
         return np.zeros(target_count, dtype=np.float32)
-    source_duration = max(float(target_sample_count) / _SIMULATION_RATE, 1.0e-9)
-    source_times = (np.arange(values.size, dtype=float) + 0.5) * source_duration / values.size
-    target_times = (np.arange(target_count, dtype=float) + 0.5) * _FRAME_SAMPLES / _SIMULATION_RATE
-    return np.asarray(
-        np.interp(
-            target_times,
-            source_times,
-            np.clip(values, 0.0, 1.0),
-            left=float(np.clip(values[0], 0.0, 1.0)),
-            right=float(np.clip(values[-1], 0.0, 1.0)),
-        ),
-        dtype=np.float32,
+    frame_ends = (np.arange(target_count, dtype=np.int64) + 1) * _FRAME_SAMPLES
+    mapped = map_causal_vad_probabilities(
+        values,
+        frame_ends,
+        _SIMULATION_RATE,
     )
+    return np.zeros(target_count, dtype=np.float32) if mapped is None else mapped
 
 
 def _energy_probabilities(audio: np.ndarray, noise_floor_db: float) -> np.ndarray:
@@ -174,7 +173,9 @@ def _candidate_settings(
     # candidates, use the capture's measured floor plus the selected margin.
     simulator_gate = {
         "gate_enabled": bool(gate.get("enabled", True)),
-        "gate_vad_threshold": float(gate.get("vad_threshold", 0.48)),
+        "gate_vad_threshold": _clamp(
+            float(gate.get("vad_threshold", 0.48)), 0.0, 1.0
+        ),
         "gate_vad_hold_time_ms": float(gate.get("vad_hold_time_ms", 200.0)),
         "gate_vad_pre_gain": float(gate.get("vad_pre_gain", 1.0)),
         "gate_auto_threshold_enabled": bool(gate.get("auto_threshold_enabled", True)),
@@ -415,6 +416,9 @@ def _unavailable_result(
         "decision": "retain_incumbent",
         "apply_recommended": False,
         "evidence_scope": "joint_noise_speech_gate_suppressor_downstream",
+        "selection_split": (
+            "no candidate evaluation; evidence unavailable or disabled"
+        ),
         "objective": "speech_retention_noise_reduction_dynamics_safety_v1",
         "reason": str(reason)[:256],
         "reasons": [str(reason)[:256]],
@@ -577,12 +581,12 @@ def tune_gate_suppression_dynamics(
     )
     speech_probabilities = _align_probabilities(
         vad_probabilities,
-        speech.size,
+        simulation_speech.size,
         simulation_speech.size,
     )
     noise_probabilities = _align_probabilities(
         noise_vad_probabilities,
-        noise.size,
+        simulation_noise.size,
         simulation_noise.size,
     )
     if vad_probabilities is None:
@@ -592,9 +596,85 @@ def tune_gate_suppression_dynamics(
             max(1, (simulation_noise.size + _FRAME_SAMPLES - 1) // _FRAME_SAMPLES),
             dtype=np.float32,
         )
-    active = np.asarray(speech_probabilities >= 0.40, dtype=bool)
-    if float(np.mean(active)) < 0.05:
-        active = _energy_probabilities(simulation_speech, measured_noise_floor) >= 0.40
+    speech_evidence_probabilities = speech_probabilities
+    evidence_active = np.asarray(
+        speech_evidence_probabilities >= VAD_SPEECH_EVIDENCE_THRESHOLD,
+        dtype=bool,
+    )
+    if float(np.mean(evidence_active)) < 0.05:
+        speech_evidence_probabilities = _energy_probabilities(
+            simulation_speech,
+            measured_noise_floor,
+        )
+
+    base_detector_gain = max(0.1, float(base_gate.get("vad_pre_gain", 1.0)))
+    base_detector_threshold = _clamp(
+        float(base_gate.get("vad_threshold", 0.48)),
+        0.0,
+        1.0,
+    )
+    detector_probability_cache: dict[
+        tuple[float, float], tuple[np.ndarray, np.ndarray] | None
+    ] = {
+        (base_detector_gain, base_detector_threshold): (
+            speech_probabilities,
+            noise_probabilities,
+        )
+    }
+
+    def detector_probabilities(
+        detector_gate: Mapping[str, Any],
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        """Return posteriors for the detector settings under evaluation."""
+        detector_gain = max(
+            0.1,
+            float(detector_gate.get("vad_pre_gain", base_detector_gain)),
+        )
+        detector_threshold = _clamp(
+            float(detector_gate.get("vad_threshold", base_detector_threshold)),
+            0.0,
+            1.0,
+        )
+        cache_key = (detector_gain, detector_threshold)
+        if cache_key in detector_probability_cache:
+            return detector_probability_cache[cache_key]
+        if vad_probabilities is None:
+            return speech_probabilities, noise_probabilities
+
+        speech_raw, speech_backend = analyze_offline_vad(
+            simulation_speech,
+            _SIMULATION_RATE,
+            threshold=detector_threshold,
+            pre_gain=detector_gain,
+        )
+        noise_raw, noise_backend = analyze_offline_vad(
+            simulation_noise,
+            _SIMULATION_RATE,
+            threshold=detector_threshold,
+            pre_gain=detector_gain,
+        )
+        if (
+            speech_backend != "silero"
+            or speech_raw is None
+            or noise_backend != "silero"
+            or noise_raw is None
+        ):
+            cached = None
+        else:
+            cached = (
+                _align_probabilities(
+                    speech_raw,
+                    simulation_speech.size,
+                    simulation_speech.size,
+                ),
+                _align_probabilities(
+                    noise_raw,
+                    simulation_noise.size,
+                    simulation_noise.size,
+                ),
+            )
+        detector_probability_cache[cache_key] = cached
+        return cached
 
     base_release = float(base_gate.get("release_ms", 120.0))
     deltas = (
@@ -623,9 +703,8 @@ def tune_gate_suppression_dynamics(
         evaluation_speech: np.ndarray,
         evaluation_noise_probabilities: np.ndarray,
         evaluation_speech_probabilities: np.ndarray,
+        evaluation_speech_evidence_probabilities: np.ndarray,
     ) -> dict[str, Any] | None:
-        active = np.asarray(evaluation_speech_probabilities >= 0.40, dtype=bool)
-        tails = _tail_mask(active)
         check_analysis_cancelled(cancel_check)
         candidate_strength = _clamp(float(requested_strength), 0.0, 1.0)
         candidate_gate, simulator_gate = _candidate_settings(
@@ -635,6 +714,15 @@ def tune_gate_suppression_dynamics(
             threshold_delta_db=threshold_delta,
             release_delta_ms=release_delta,
         )
+        # Keep quality metrics comparable across candidates. The candidate's
+        # threshold controls the simulator; the fixed evidence mask measures
+        # the same speech material for every candidate.
+        active = np.asarray(
+            evaluation_speech_evidence_probabilities
+            >= VAD_SPEECH_EVIDENCE_THRESHOLD,
+            dtype=bool,
+        )
+        tails = _tail_mask(active)
         try:
             rendered_noise = _run_gate_suppressor(
                 simulator,
@@ -813,24 +901,60 @@ def tune_gate_suppression_dynamics(
         candidate_specs: list[
             tuple[Mapping[str, Any], float, float, float, float, bool]
         ] = []
-        if is_incumbent_model:
-            candidate_specs.append(
-                (incumbent_gate, incumbent_strength, 0.0, 0.0, 0.0, True)
+        seen_specs: set[tuple[Any, ...]] = set()
+
+        def add_candidate_spec(
+            candidate_base: Mapping[str, Any],
+            requested_strength: float,
+            strength_delta: float,
+            threshold_delta: float,
+            release_delta: float,
+            candidate_is_incumbent: bool,
+        ) -> None:
+            _candidate_gate, simulator_gate = _candidate_settings(
+                candidate_base,
+                noise_floor_db=measured_noise_floor,
+                strength=requested_strength,
+                threshold_delta_db=threshold_delta,
+                release_delta_ms=release_delta,
             )
-        else:
-            candidate_specs.append((base_gate, strength, 0.0, 0.0, 0.0, False))
-        for strength_delta, threshold_delta, release_delta in deltas:
-            if len(candidate_specs) >= _MAX_CANDIDATES_PER_MODEL:
-                break
+            key = (
+                tuple(sorted((str(k), repr(v)) for k, v in simulator_gate.items())),
+                round(float(requested_strength), 8),
+            )
+            if key in seen_specs or len(candidate_specs) >= _MAX_CANDIDATES_PER_MODEL:
+                return
+            seen_specs.add(key)
             candidate_specs.append(
                 (
-                    base_gate,
-                    strength * (1.0 + strength_delta),
+                    candidate_base,
+                    requested_strength,
                     strength_delta,
                     threshold_delta,
                     release_delta,
-                    False,
+                    candidate_is_incumbent,
                 )
+            )
+
+        if is_incumbent_model:
+            add_candidate_spec(
+                incumbent_gate,
+                incumbent_strength,
+                0.0,
+                0.0,
+                0.0,
+                True,
+            )
+        else:
+            add_candidate_spec(base_gate, strength, 0.0, 0.0, 0.0, False)
+        for strength_delta, threshold_delta, release_delta in deltas:
+            add_candidate_spec(
+                base_gate,
+                strength * (1.0 + strength_delta),
+                strength_delta,
+                threshold_delta,
+                release_delta,
+                False,
             )
 
         evaluated_for_model: list[dict[str, Any]] = []
@@ -842,6 +966,28 @@ def tune_gate_suppression_dynamics(
             release_delta,
             candidate_is_incumbent,
         ) in candidate_specs:
+            candidate_gate, _simulator_gate = _candidate_settings(
+                candidate_base,
+                noise_floor_db=measured_noise_floor,
+                strength=requested_strength,
+                threshold_delta_db=threshold_delta,
+                release_delta_ms=release_delta,
+            )
+            detector_evidence = detector_probabilities(candidate_gate)
+            if detector_evidence is None:
+                detector_gain = float(candidate_gate.get("vad_pre_gain", 1.0))
+                reason = (
+                    f"VAD evidence unavailable for detector pre-gain "
+                    f"{detector_gain:g}"
+                )
+                failure_reasons.append(f"{candidate_model} unavailable: {reason}")
+                model_failure_reasons.setdefault(candidate_model, []).append(reason)
+                if not evaluated_for_model:
+                    break
+                continue
+            candidate_speech_probabilities, candidate_noise_probabilities = (
+                detector_evidence
+            )
             candidate = evaluate(
                 candidate_model,
                 candidate_base,
@@ -851,8 +997,9 @@ def tune_gate_suppression_dynamics(
                 candidate_is_incumbent,
                 simulation_noise[:noise_split],
                 simulation_speech[:speech_split],
-                noise_probabilities[: noise_split // _FRAME_SAMPLES],
-                speech_probabilities[: speech_split // _FRAME_SAMPLES],
+                candidate_noise_probabilities[: noise_split // _FRAME_SAMPLES],
+                candidate_speech_probabilities[: speech_split // _FRAME_SAMPLES],
+                speech_evidence_probabilities[: speech_split // _FRAME_SAMPLES],
             )
             if candidate is None:
                 # A model's first attempt is its backend availability probe.
@@ -920,38 +1067,61 @@ def tune_gate_suppression_dynamics(
     holdout = None
     holdout_improved = False
     if decision == "apply_candidate":
-        holdout = evaluate(
-            selected["model"],
-            selected["gate"],
-            selected["suppressor_strength"],
-            0.0,
-            0.0,
-            False,
-            simulation_noise[noise_split:],
-            simulation_speech[speech_split:],
-            noise_probabilities[noise_split // _FRAME_SAMPLES :],
-            speech_probabilities[speech_split // _FRAME_SAMPLES :],
-        )
-        holdout_incumbent = evaluate(
-            incumbent_model,
-            incumbent_gate,
-            incumbent_strength,
-            0.0,
-            0.0,
-            True,
-            simulation_noise[noise_split:],
-            simulation_speech[speech_split:],
-            noise_probabilities[noise_split // _FRAME_SAMPLES :],
-            speech_probabilities[speech_split // _FRAME_SAMPLES :],
-        )
-        holdout_improved = bool(
-            holdout is not None and holdout["passes"] and holdout_incumbent is not None
-            and (not holdout_incumbent["passes"]
-                 or float(holdout_incumbent["score"]) - float(holdout["score"]) > _IMPROVEMENT_MARGIN)
-        )
-        if not holdout_improved:
+        selected_detector_evidence = detector_probabilities(selected["gate"])
+        incumbent_detector_evidence = detector_probabilities(incumbent_gate)
+        if selected_detector_evidence is None or incumbent_detector_evidence is None:
             decision = "retain_incumbent"
             selected = incumbent
+            failure_reasons.append(
+                "holdout skipped because detector evidence was unavailable"
+            )
+        else:
+            selected_speech_probabilities, selected_noise_probabilities = (
+                selected_detector_evidence
+            )
+            incumbent_speech_probabilities, incumbent_noise_probabilities = (
+                incumbent_detector_evidence
+            )
+            holdout = evaluate(
+                selected["model"],
+                selected["gate"],
+                selected["suppressor_strength"],
+                0.0,
+                0.0,
+                False,
+                simulation_noise[noise_split:],
+                simulation_speech[speech_split:],
+                selected_noise_probabilities[noise_split // _FRAME_SAMPLES :],
+                selected_speech_probabilities[speech_split // _FRAME_SAMPLES :],
+                speech_evidence_probabilities[speech_split // _FRAME_SAMPLES :],
+            )
+            holdout_incumbent = evaluate(
+                incumbent_model,
+                incumbent_gate,
+                incumbent_strength,
+                0.0,
+                0.0,
+                True,
+                simulation_noise[noise_split:],
+                simulation_speech[speech_split:],
+                incumbent_noise_probabilities[noise_split // _FRAME_SAMPLES :],
+                incumbent_speech_probabilities[speech_split // _FRAME_SAMPLES :],
+                speech_evidence_probabilities[speech_split // _FRAME_SAMPLES :],
+            )
+            holdout_improved = bool(
+                holdout is not None
+                and holdout["passes"]
+                and holdout_incumbent is not None
+                and (
+                    not holdout_incumbent["passes"]
+                    or float(holdout_incumbent["score"])
+                    - float(holdout["score"])
+                    > _IMPROVEMENT_MARGIN
+                )
+            )
+            if not holdout_improved:
+                decision = "retain_incumbent"
+                selected = incumbent
     if decision == "retain_incumbent":
         selected_gate = dict(incumbent_gate)
         selected_strength = incumbent_strength
@@ -977,8 +1147,23 @@ def tune_gate_suppression_dynamics(
         "decision": decision,
         "apply_recommended": decision == "apply_candidate",
         "holdout_passed": holdout_improved,
+        "holdout_evaluated": holdout is not None,
         "holdout_gates": dict(holdout["gates"]) if holdout is not None else {},
         "evidence_scope": "joint_noise_speech_gate_suppressor_downstream",
+        "selection_split": (
+            "first complete capture half selects candidates; second complete half "
+            "is the narrow holdout, with the training noise floor retained"
+        ),
+        "training_frame_count": int(
+            min(noise_split, speech_split) // _FRAME_SAMPLES
+        ),
+        "holdout_frame_count": int(
+            min(
+                simulation_noise.size - noise_split,
+                simulation_speech.size - speech_split,
+            )
+            // _FRAME_SAMPLES
+        ),
         "objective": "speech_retention_noise_reduction_dynamics_safety_v1",
         "reasons": reasons,
         "candidate_count": len(candidates),

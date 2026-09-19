@@ -164,8 +164,12 @@ impl AudioProcessor {
         let correction_bands = self
             .eq_control
             .snapshot()
-            .map(|snapshot| snapshot.correction_bands)
-            .unwrap_or_else(|| std::array::from_fn(EqBandConfig::default_for_index));
+            .ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "EQ settings changed while reading the correction layer",
+                )
+            })?
+            .correction_bands;
         if let Ok(mut eq) = self.eq.lock() {
             for (index, config) in snapshot_bands.iter().copied().enumerate() {
                 eq.set_band_config(index, config);
@@ -197,8 +201,12 @@ impl AudioProcessor {
         let correction_bands = self
             .eq_control
             .snapshot()
-            .map(|snapshot| snapshot.correction_bands)
-            .unwrap_or_else(|| std::array::from_fn(EqBandConfig::default_for_index));
+            .ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                    "EQ settings changed while reading the correction layer",
+                )
+            })?
+            .correction_bands;
         if let Ok(mut eq) = self.eq.lock() {
             for (index, config) in snapshot_bands.iter().copied().enumerate() {
                 eq.set_band_config(index, config);

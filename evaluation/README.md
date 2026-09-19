@@ -15,7 +15,7 @@ Routine test results and screenshot-generation reports belong under ignored
 | --- | --- | --- |
 | DeepFilter | `deepfilter-hardening-report.json`, `deepfilter-fullband-report.json` | Retain 30 dB attenuation and beta 0.0. |
 | VAD | `vad-model-selection-report.json`, `vad-v6.2.1-report.json` | Retain Silero v6.2.1 with independent calibration and multi-speaker validation. |
-| Auto-EQ confidence | `auto-eq-confidence-calibration.json` | Retain calibrated capture and per-band confidence gates. |
+| Auto-EQ confidence | `auto-eq-confidence-calibration.json` | Historical calibration for the former absolute-spectrum fitting objective; not a perceptual validation of the current bounded tonal adjustment. |
 | Compressor control | `auto-makeup-real-speech-report.json`, `compressor-control-report.json`, `compressor-search-report.json` | Retain VAD/reliability-driven makeup and bounded search. |
 | Processing order | `processing-order-report.json` | Retain gate before suppression and de-esser before EQ. |
 | Limiter | `limiter-lookahead-report.json` | Adopt 0.5 ms lookahead after corrected paired, delay-flushed scoring. |
@@ -75,3 +75,12 @@ voices are listed as limitations rather than inferred. Hardware qualification
 is optional for publication; retain the candidate revision and digest with any
 measurements and state the configurations actually tested. See
 [RELEASING](../RELEASING.md).
+
+`python/tools/evaluate_voice_regressions.py` compares gate-only native rendering
+before and after a rebuild on the existing held-out VAD corpus. Its optional
+`--eq-corpus models/cross_take_eval` checks neutral preservation and bounded
+tonal change across the six held-out speakers. Write baseline and case details
+under ignored `build/`; these checks do not establish microphone-response
+recovery, perceptual quality, or live worker timing. Joint tuning's later segment
+tests the selected gate/suppressor with fixed downstream settings, not an
+independently trained and evaluated whole calibration pipeline.

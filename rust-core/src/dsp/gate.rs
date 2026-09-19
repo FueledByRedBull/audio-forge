@@ -8,7 +8,10 @@ use crate::dsp::util;
 use crate::dsp::vad::{GateMode, VadAutoGate};
 
 const MIN_LEVEL_LINEAR: f64 = 1e-10;
-const EXPANDER_RATIO: f64 = 4.0;
+// Preserve the existing gentle downward-expander contract: below threshold,
+// only 75% of the level error becomes gain reduction. The name states the
+// applied quantity so it is not mistaken for a conventional 4:1 compressor.
+const EXPANDER_GAIN_REDUCTION_SLOPE: f64 = 0.75;
 const EXPANDER_RANGE_DB: f64 = 36.0;
 const DETECTOR_RMS_MS: f64 = 8.0;
 const DETECTOR_HYSTERESIS_DB: f64 = 4.0;
@@ -261,7 +264,7 @@ impl NoiseGate {
         if self.is_open {
             0.0
         } else {
-            ((self.threshold_db - self.detector_level_db) * (1.0 - 1.0 / EXPANDER_RATIO))
+            ((self.threshold_db - self.detector_level_db) * EXPANDER_GAIN_REDUCTION_SLOPE)
                 .clamp(0.0, self.expander_range_db())
         }
     }
@@ -471,6 +474,13 @@ impl NoiseGate {
         vad_threshold: f32,
     ) -> f64 {
         if !vad_available {
+            return 0.0;
+        }
+
+        if mode == GateMode::VadOnly && vad_held_open {
+            // A live VAD hold is the tail grace period after recognized
+            // speech. Preserve that tail at unity; it does not open a closed
+            // gate because the probabilistic state machine owns the hold.
             return 0.0;
         }
 
@@ -727,6 +737,9 @@ impl NoiseGate {
             self.previous_vad_probability = 0.0;
             self.vad_smoothed_probability = 0.0;
             self.auto_relax_remaining_samples = 0;
+            if let Some(vad) = &mut self.vad_auto_gate {
+                vad.reset();
+            }
         }
     }
 
@@ -1253,6 +1266,9 @@ mod tests {
         assert!(uncertain_probability > high_probability);
         assert!(high_probability.abs() < 1.0e-9);
         assert!(low_probability <= EXPANDER_RANGE_DB * VAD_ONLY_CONTINUOUS_SCALE);
+        let held_tail =
+            gate.continuous_vad_gain_reduction_db(GateMode::VadOnly, 0.10, true, true, 0.50);
+        assert!(held_tail.abs() < 1.0e-9);
     }
 
     #[cfg(feature = "vad")]

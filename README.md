@@ -85,8 +85,11 @@ AudioForge opens with processing stopped; use **Start Processing** to send audio
   Relaunching shows the existing window; Details reveals technical health counters.
 - Select **Normal**, **Bypass**, or **Raw** from the processing-mode control.
   Saved calibration status becomes stale when its route or processing settings change.
-- Calibration establishes a microphone-correction stage; a separate tone stage
-  preserves that correction when you change gains, templates, filter types, or slopes.
+- Calibration establishes an Auto-EQ stage; a separate tone stage
+  preserves it when you change gains, templates, filter types, or slopes.
+  Speech alone cannot identify the microphone's frequency response. Automatic
+  targets preserve the recorded voice and apply bounded tonal preferences;
+  Natural / No Added Tone does not attempt to flatten the voice spectrum.
   Older presets retain their combined EQ response as the tone stage.
   Tone edits preserve matching microphone evidence; changed output settings
   make previous output verification stale.
@@ -136,7 +139,7 @@ User-facing tools:
   click-safe bypass, selectable 12–48 dB/octave Butterworth pass slopes, and
   constrained mouse/keyboard graph editing synchronized with numeric controls.
 - Auto-EQ calibration that combines energy and Silero speech posteriors, rejects shape outliers, uses matched noise-referenced per-band reliability when available, and abstains when a safe correction is unsupported.
-- Auto-EQ headroom validation through the native chain simulator; Python-only fallback results are visibly advisory.
+- Auto-EQ headroom validation through the native chain simulator; legacy Python-only estimates are advisory. Typed EQ and full-chain previews require native DSP rather than approximating unsupported filters or stages.
 - Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, bounded multi-parameter native compressor calibration (threshold, ratio, attack, release), and guided second-passage verification.
 - Dynamic-EQ de-esser, compressor with speech-aware auto makeup gain driven by calibrated VAD and noise-floor evidence, and lookahead limiter.
 - Band-limited 4x true-peak detection and limiting, validated against an independent offline reference.
@@ -168,7 +171,7 @@ Useful behavior to know:
 - In VAD modes, auto threshold is the default path; the UI shows live noise floor and effective threshold.
 - Phase-safe mono retains fractional-delay history across input callbacks instead of re-estimating from isolated blocks.
 - Adaptive cleanup tracks off-nominal mains hum and its harmonic with fractional frequency/phase continuity, and selects one high-pass response instead of cascading filters.
-- Auto-EQ and Auto Voice Setup use native Silero posteriors when available and report an explicit energy-analysis fallback when they are not.
+- Auto-EQ and Auto Voice Setup analyze 48 kHz captures, use native Silero posteriors when available, and report an explicit energy-analysis fallback when they are not.
 - Auto Voice Setup rejects unusable room tone, restricts boosts for questionable references, and reports device/time/channel mismatch or recapture guidance.
 - Voice Setup candidates remain temporary until a second passage checks repeatability through EQ, de-essing, compression, and the selected limiter settings. Gate, noise suppression, input cleanup, and live loudness adaptation are outside this offline check; confirm the result in your destination app.
 - Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.

@@ -2,11 +2,17 @@
 
 ## Unreleased
 
+- Preserve the recorded voice's spectral shape in automatic EQ; treat targets as bounded tonal adjustments and keep Natural / No Added Tone neutral.
+- Score final EQ with the same normalized fitting data and weights used by the optimizer, including after headroom reduction.
+- Honor global EQ bypass and gate/suppressor settings in previews, preserve level matching through shared peak protection, and measure raw true peak correctly.
+- Reject unsupported typed Python preview approximations and report a failed correction snapshot instead of clearing the correction layer.
+- Evaluate tuning with causal, detector-matched VAD decisions and an explicit candidate set; describe later-segment evidence separately from independent whole-pipeline validation.
+- Reset VAD gate history with the stream, keep unavailable probabilities out of noise learning, and base floor adaptation on elapsed audio rather than callback count.
 - Compare one captured passage through current and proposed input cleanup, gating, suppression, EQ, and dynamics before applying it.
 - Add opt-in close-to-tray operation, tray mute, and a Windows global mute shortcut.
 - Unify Normal, Bypass, and Raw monitoring in one processing-mode selector.
 - Save calibration evidence and show whether it still matches the current route and settings.
-- Keep microphone correction and voice character in independent EQ stages, including custom filter types and slopes; tone edits preserve correction.
+- Keep calibrated Auto-EQ and voice character in independent EQ stages, including custom filter types and slopes; tone edits preserve the calibrated layer.
 - Evaluate bounded gate and suppression choices across the available noise models alongside proposed dynamics, retaining current settings when held-out evidence is inconclusive.
 - Apply VAD pre-gain changes to the live inference worker, including changes made while processing.
 - Restore the previous sound if a configuration fails, and offer Save, Discard, or Cancel before replacing unsaved settings or quitting.

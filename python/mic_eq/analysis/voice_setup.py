@@ -792,6 +792,7 @@ def _calibrate_compressor_threshold(
     peak_cap_db: float,
     limiter_settings: Mapping[str, Any] | None = None,
     vad_probabilities: np.ndarray | None = None,
+    auto_makeup_activity: list[tuple[float, float, float, float]] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, int], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -816,7 +817,7 @@ def _calibrate_compressor_threshold(
     }
     started = time.perf_counter()
     mapped_vad_probabilities: np.ndarray | None = None
-    if vad_probabilities is not None:
+    if vad_probabilities is not None and auto_makeup_activity is None:
         control_block_size = max(1, int(round(sample_rate * 0.010)))
         block_count = (
             speech_audio.size + control_block_size - 1
@@ -865,7 +866,9 @@ def _calibrate_compressor_threshold(
             "compressor": simulation_compressor,
             "limiter": dict(effective_limiter_settings),
         }
-        if mapped_vad_probabilities is not None:
+        if auto_makeup_activity is not None:
+            simulation_chain["auto_makeup_activity"] = auto_makeup_activity
+        elif mapped_vad_probabilities is not None:
             simulation_chain["vad_probabilities"] = mapped_vad_probabilities
         simulation = simulate_candidate_chain(
             speech_audio.astype(np.float32, copy=False),
@@ -998,7 +1001,7 @@ def _calibrate_compressor_threshold(
                     if progress_callback is not None:
                         progress_callback(
                             f"Calibrating compression ({len(evaluated)} candidates checked)...",
-                            25 + int(35 * len(evaluated) / _COMPRESSOR_SEARCH_BUDGET),
+                            60 + int(30 * len(evaluated) / _COMPRESSOR_SEARCH_BUDGET),
                         )
 
     initial_candidates = [incumbent]
@@ -1095,7 +1098,9 @@ def _calibrate_compressor_threshold(
         "compressor": dict(calibrated),
         "limiter": dict(effective_limiter_settings),
     }
-    if mapped_vad_probabilities is not None:
+    if auto_makeup_activity is not None:
+        winner_chain["auto_makeup_activity"] = auto_makeup_activity
+    elif mapped_vad_probabilities is not None:
         winner_chain["vad_probabilities"] = mapped_vad_probabilities
     winner_verification = simulate_candidate_chain(
         speech_audio.astype(np.float32, copy=False),
@@ -1343,8 +1348,8 @@ def analyze_voice_setup(
         speech_snr_db=speech_snr_db,
         speech_dynamic_range_db=speech_dynamic_range_db,
     )
-    # Use one detector pass with the proposed gate controls for every
-    # downstream evaluation, including compressor auto-makeup calibration.
+    # Reuse proposed-gate evidence across suppression candidates. Compressor
+    # calibration later uses the final selected frontend's activity evidence.
     joint_vad_probabilities = vad_probabilities
     joint_noise_vad_probabilities = noise_vad_probabilities
     joint_vad_backend = vad_analysis_backend
@@ -1431,28 +1436,6 @@ def analyze_voice_setup(
         "measured_gain_reduction_db": 0.0,
         "iterations": 0,
     }
-    if eq_settings is not None:
-        compressor_settings, compressor_calibration = (
-            _calibrate_compressor_threshold(
-                speech_audio=speech_arr,
-                sample_rate=sample_rate,
-                eq_settings=eq_settings,
-                deesser_settings=deesser_settings,
-                compressor_settings=compressor_settings,
-                target_p95_db=float(
-                    compressor_diag["target_p95_reduction_db"]
-                ),
-                target_median_db=float(
-                    compressor_diag["target_median_reduction_db"]
-                ),
-                peak_cap_db=float(compressor_diag["peak_reduction_cap_db"]),
-                limiter_settings=effective_limiter_settings,
-                vad_probabilities=joint_vad_probabilities,
-                cancel_check=cancel_check,
-                progress_callback=progress_callback,
-            )
-        )
-
     check_analysis_cancelled(cancel_check)
 
     incumbent_payload = dict(incumbent_settings or {})
@@ -1461,7 +1444,7 @@ def analyze_voice_setup(
         "rnnoise"
     )
     if progress_callback is not None:
-        progress_callback("Tuning noise suppression and gate...", 65)
+        progress_callback("Tuning noise suppression and gate...", 25)
     joint_tuning = tune_gate_suppression_dynamics(
         noise_arr,
         speech_arr,
@@ -1534,6 +1517,55 @@ def analyze_voice_setup(
         except (KeyError, TypeError, ValueError):
             full_chain_eq_settings = None
 
+    full_chain_raw_available = raw_noise_arr is not None and raw_speech_arr is not None
+    full_chain_speech = raw_speech_arr if full_chain_raw_available else speech_arr
+    full_chain_settings = {
+        "gate": dict(gate_settings),
+        "rnnoise": dict(suppressor_settings),
+        "deesser": dict(deesser_settings),
+        "compressor": dict(compressor_settings),
+        "limiter": dict(effective_limiter_settings),
+        "full_chain": True,
+        "input_pre_filtered": not full_chain_raw_available,
+        "input_cleanup_mode": str(input_cleanup_mode),
+        "processing_mode": str(processing_mode),
+        "vad_available": bool(vad_available),
+        "return_output_audio": True,
+    }
+    if eq_settings is not None and full_chain_eq_settings is not None:
+        check_analysis_cancelled(cancel_check)
+        if progress_callback is not None:
+            progress_callback("Preparing selected input processing for compression...", 55)
+        # Render the selected frontend once. Every compressor candidate then
+        # receives the same processed audio and causal controller evidence.
+        frontend = simulate_candidate_chain(
+            np.asarray(full_chain_speech, dtype=np.float32),
+            sample_rate,
+            {**full_chain_eq_settings, "enabled": False},
+            {
+                **full_chain_settings,
+                "deesser": {"enabled": False},
+                "compressor": {**compressor_settings, "enabled": False},
+                "limiter": {"enabled": False},
+                "return_auto_makeup_activity": True,
+            },
+        )
+        compressor_settings, compressor_calibration = _calibrate_compressor_threshold(
+            speech_audio=np.asarray(frontend["output_audio"], dtype=np.float32),
+            sample_rate=sample_rate,
+            eq_settings=full_chain_eq_settings,
+            deesser_settings=deesser_settings,
+            compressor_settings=compressor_settings,
+            target_p95_db=float(compressor_diag["target_p95_reduction_db"]),
+            target_median_db=float(compressor_diag["target_median_reduction_db"]),
+            peak_cap_db=float(compressor_diag["peak_reduction_cap_db"]),
+            limiter_settings=effective_limiter_settings,
+            auto_makeup_activity=frontend["auto_makeup_activity"],
+            cancel_check=cancel_check,
+            progress_callback=progress_callback,
+        )
+        full_chain_settings["compressor"] = dict(compressor_settings)
+
     dynamics_confidence = _clamp(speech_dynamic_range_db / 8.0, 0.0, 1.0)
     quiet_room_confidence = _clamp(
         (-32.0 - conservative_noise_rms_db) / 18.0,
@@ -1565,21 +1597,6 @@ def analyze_voice_setup(
     offline_validation_passed = False
     full_chain_active_gain_db = 0.0
     full_chain_voice_dropout = False
-    full_chain_raw_available = raw_noise_arr is not None and raw_speech_arr is not None
-    full_chain_speech = raw_speech_arr if full_chain_raw_available else speech_arr
-    full_chain_settings = {
-        "gate": dict(gate_settings),
-        "rnnoise": dict(suppressor_settings),
-        "deesser": dict(deesser_settings),
-        "compressor": dict(compressor_settings),
-        "limiter": dict(effective_limiter_settings),
-        "full_chain": True,
-        "input_pre_filtered": not full_chain_raw_available,
-        "input_cleanup_mode": str(input_cleanup_mode),
-        "processing_mode": str(processing_mode),
-        "vad_available": bool(vad_available),
-        "return_output_audio": True,
-    }
     try:
         if full_chain_eq_settings is None:
             raise ValueError("typed candidate EQ settings are unavailable")

@@ -188,6 +188,9 @@ def test_vad_bootstrap_uses_trusted_runtime_model(tmp_path, monkeypatch):
     _write_vad_asset(cwd)
     _write_vad_asset(trusted)
     monkeypatch.chdir(cwd)
+    # ``configure_vad_env`` may create this key; isolate the whole mapping so
+    # a key that was absent before the test is restored after it finishes.
+    monkeypatch.setattr(app_bootstrap.os, "environ", app_bootstrap.os.environ.copy())
     monkeypatch.delenv("VAD_MODEL_PATH", raising=False)
     monkeypatch.setattr(app_bootstrap, "_trusted_runtime_roots", lambda: [trusted])
 

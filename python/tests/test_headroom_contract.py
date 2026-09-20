@@ -118,6 +118,59 @@ def test_typed_preview_rejects_inaccurate_fallback(monkeypatch):
         )
 
 
+@pytest.mark.skipif(not CORE_AVAILABLE, reason="native extension is not built")
+@pytest.mark.parametrize("gate_enabled,vad_available", [(False, True), (True, True), (True, False)])
+def test_reusing_frontend_audio_and_activity_matches_complete_native_chain(
+    gate_enabled, vad_available
+):
+    from mic_eq.mic_eq_core import simulate_auto_eq_chain
+
+    sample_rate = 48_000
+    t = np.arange(50_003, dtype=np.float32) / sample_rate
+    audio = (0.02 * np.sin(2 * np.pi * 180 * t)).astype(np.float32)
+    frames = (audio.size + 479) // 480
+    bands = [(1000.0, 0.0, 1.41)] * 10
+    settings = {
+        "full_chain": True, "input_pre_filtered": False, "input_cleanup_mode": "gentle",
+        "gate_enabled": gate_enabled, "gate_mode": 0, "gate_threshold_db": -70.0,
+        "gate_auto_threshold_enabled": False, "suppressor_enabled": False,
+        "eq_enabled": False, "deesser_enabled": False, "limiter_enabled": True,
+        "compressor_enabled": True, "compressor_auto_makeup_enabled": True,
+        "compressor_target_lufs": -18.0, "return_output_audio": True,
+        "vad_available": vad_available,
+    }
+    if vad_available:
+        settings["vad_probabilities"] = [0.9] * frames
+    complete = simulate_auto_eq_chain(audio, float(sample_rate), bands, settings)
+    frontend = simulate_auto_eq_chain(audio, float(sample_rate), bands, {
+        **settings, "compressor_enabled": False, "limiter_enabled": False,
+        "return_auto_makeup_activity": True,
+    })
+    evidence = frontend["auto_makeup_activity"]
+    assert len(evidence) == frames
+    assert all(row[1] == float(vad_available) for row in evidence)
+    replay_settings = {key: value for key, value in settings.items() if key != "vad_probabilities"}
+    replay = simulate_auto_eq_chain(
+        np.asarray(frontend["output_audio"], dtype=np.float32), float(sample_rate), bands,
+        {**replay_settings, "full_chain": False, "auto_makeup_activity": evidence},
+    )
+    np.testing.assert_allclose(replay["output_audio"], complete["output_audio"], atol=1e-7, rtol=0)
+    for key in ("compressor_gain_reduction_p95_db", "limiter_gain_reduction_db", "output_true_peak_db"):
+        assert replay[key] == pytest.approx(complete[key], abs=1e-6)
+
+
+@pytest.mark.skipif(not CORE_AVAILABLE, reason="native extension is not built")
+@pytest.mark.parametrize("evidence", [[], [(0.5, 1.0, -60.0, float("nan"))], [(0.5, 2.0, -60.0, 0.0)]])
+def test_native_rejects_malformed_auto_makeup_activity(evidence):
+    from mic_eq.mic_eq_core import simulate_auto_eq_chain
+
+    with pytest.raises(ValueError, match="activity"):
+        simulate_auto_eq_chain(
+            np.zeros(480, dtype=np.float32), 48_000.0, [(1000.0, 0.0, 1.41)] * 10,
+            {"auto_makeup_activity": evidence},
+        )
+
+
 def test_headroom_uses_exact_fit_context_and_ignores_recording_level():
     freqs = np.geomspace(80.0, 16_000.0, 128)
     measured = -40.0 - 6.0 * np.log2(freqs / 1000.0)

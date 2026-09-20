@@ -56,6 +56,13 @@ def _downstream_metrics(audio: np.ndarray, *_args: Any, **_kwargs: Any) -> dict[
     }
 
 
+def _activity_tape(audio: np.ndarray, settings: dict[str, Any]) -> list[tuple[float, float, float, float]]:
+    probability = 0.2 if float(np.mean(np.abs(audio))) < 0.01 else 0.8
+    reliability = float(bool(settings.get("vad_available", True)))
+    frame_count = (audio.size + 479) // 480
+    return [(probability, reliability, -60.0, 0.0)] * frame_count
+
+
 def test_native_gate_enabled_matches_requested_control():
     audio = np.full(4800, 0.01, dtype=np.float32)
     muted = simulate_gate_suppressor_order(audio, [0.0] * 10, False, 0.0,
@@ -119,6 +126,7 @@ def test_joint_selection_evaluates_each_model_and_selects_lower_noise_model(
             "dry_audio": output,
             "suppressor_latency_samples": latency,
             "runtime_ms": 0.0,
+            "auto_makeup_activity": _activity_tape(audio, settings),
         }
 
     monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulate)
@@ -171,6 +179,7 @@ def test_joint_selection_reports_unavailable_models_and_retains_incumbent(monkey
             "dry_audio": output,
             "suppressor_latency_samples": 480,
             "runtime_ms": 0.0,
+            "auto_makeup_activity": _activity_tape(audio, settings),
         }
 
     monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulate)
@@ -214,6 +223,7 @@ def test_joint_tuning_refreshes_probabilities_for_incumbent_pre_gain(monkeypatch
             "dry_audio": output,
             "suppressor_latency_samples": 480,
             "runtime_ms": 0.0,
+            "auto_makeup_activity": _activity_tape(audio, settings),
         }
 
     monkeypatch.setattr(joint_tuning, "analyze_offline_vad", analyze)
@@ -237,6 +247,101 @@ def test_joint_tuning_refreshes_probabilities_for_incumbent_pre_gain(monkeypatch
     if not noise_available:
         assert not result["apply_recommended"]
         assert result["gate_settings"] == incumbent_gate
+
+
+@pytest.mark.parametrize("with_neural_vad", [True, False])
+def test_joint_downstream_uses_neural_vad_separately_from_energy_fallback(
+    monkeypatch, with_neural_vad
+):
+    monkeypatch.setattr(joint_tuning, "_model_order", lambda _model: ["rnnoise"])
+    args = list(_tuning_args())
+    args[4] = {**args[4], "auto_makeup_enabled": True}
+    observed: list[tuple[float, dict[str, Any]]] = []
+
+    def simulate(audio, _probabilities, _before_gate, _strength, _settings):
+        values = np.asarray(audio, dtype=np.float32)
+        output = values * (0.5 if float(np.mean(np.abs(values))) < 0.01 else 1.0)
+        return {
+            "output_audio": output,
+            "dry_audio": values,
+            "suppressor_latency_samples": 480,
+            "runtime_ms": 0.0,
+            "auto_makeup_activity": _activity_tape(audio, _settings),
+        }
+
+    def downstream(audio, _sample_rate, _eq_settings, chain_settings):
+        observed.append((float(np.mean(np.abs(audio))), dict(chain_settings)))
+        return _downstream_metrics(audio)
+
+    monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulate)
+    monkeypatch.setattr(joint_tuning, "simulate_candidate_chain", downstream)
+    speech_vad = np.linspace(0.1, 0.9, 100, dtype=np.float32)
+    noise_vad = np.linspace(0.9, 0.1, 100, dtype=np.float32)
+    kwargs: dict[str, Any] = {
+        "incumbent_settings": {
+            "gate": dict(args[3]),
+            "suppressor": {"model": "rnnoise", "enabled": True, "strength": 1.0},
+        },
+    }
+    if with_neural_vad:
+        kwargs.update(
+            vad_probabilities=speech_vad,
+            noise_vad_probabilities=noise_vad,
+        )
+
+    joint_tuning.tune_gate_suppression_dynamics(*args, **kwargs)
+
+    assert observed
+    if not with_neural_vad:
+        assert all("vad_probabilities" not in chain for _, chain in observed)
+        assert all(
+            all(row[1] == 0.0 for row in chain["auto_makeup_activity"])
+            for _, chain in observed
+        )
+        return
+
+    for mean, chain in observed:
+        assert "vad_probabilities" not in chain
+        assert all(row[1] == 1.0 for row in chain["auto_makeup_activity"])
+        kind = "noise" if mean < 0.01 else "speech"
+        expected_probability = 0.2 if kind == "noise" else 0.8
+        assert all(
+            row[0] == expected_probability
+            for row in chain["auto_makeup_activity"]
+        )
+
+
+def test_joint_tuning_rejects_missing_auto_makeup_activity(monkeypatch):
+    monkeypatch.setattr(joint_tuning, "_model_order", lambda _model: ["rnnoise"])
+    args = _tuning_args()
+
+    def simulate(audio, _probabilities, _before_gate, _strength, _settings):
+        values = np.asarray(audio, dtype=np.float32)
+        return {
+            "output_audio": values,
+            "dry_audio": values,
+            "suppressor_latency_samples": 480,
+            "runtime_ms": 0.0,
+        }
+
+    monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulate)
+    monkeypatch.setattr(
+        joint_tuning,
+        "simulate_candidate_chain",
+        lambda *_args, **_kwargs: pytest.fail("downstream must not run"),
+    )
+    result = joint_tuning.tune_gate_suppression_dynamics(
+        *args,
+        vad_probabilities=np.ones(100, dtype=np.float32),
+        noise_vad_probabilities=np.zeros(100, dtype=np.float32),
+        incumbent_settings={
+            "gate": dict(args[3]),
+            "suppressor": {"model": "rnnoise", "enabled": True, "strength": 1.0},
+        },
+    )
+
+    assert not result["apply_recommended"]
+    assert "auto_makeup_activity" in result["reason"]
 
 
 def test_deepfilter_incumbent_keeps_selection_inside_deepfilter_family(monkeypatch):
@@ -461,6 +566,7 @@ def test_training_noise_floor_does_not_use_heldout_noise(monkeypatch):
             "dry_audio": output,
             "suppressor_latency_samples": 480,
             "runtime_ms": 0.0,
+            "auto_makeup_activity": _activity_tape(audio, settings),
         }
 
     monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulate)

@@ -75,6 +75,59 @@ def test_compressor_search_reuses_one_causal_vad_array(monkeypatch):
         assert np.array_equal(values, expected)
 
 
+def test_compressor_search_reuses_frontend_audio_and_activity(monkeypatch):
+    observed = []
+    preset = Preset()
+    audio = np.linspace(-0.12, 0.12, 4800, dtype=np.float32)
+    activity = [(0.85, 1.0, -46.0, 0.9)] * 10
+    progress = []
+
+    def fake_simulation(candidate_audio, _sample_rate, eq_settings, chain):
+        observed.append(
+            (
+                np.asarray(candidate_audio).copy(),
+                eq_settings,
+                chain,
+            )
+        )
+        return {
+            "simulation_backend": "rust",
+            "compressor_gain_reduction_db": 3.7,
+            "compressor_gain_reduction_median_db": 1.4,
+            "compressor_gain_reduction_p95_db": 3.5,
+            "compressor_gain_reduction_active_ratio": 1.0,
+            "active_output_gain_db": 0.0,
+            "output_true_peak_db": -3.0,
+            "limiter_effective_ceiling_db": -1.5,
+            "pre_limiter_true_peak_headroom_db": 2.0,
+            "compressor_pumping_score_db": 0.0,
+            "silence_output_gain_db": 0.0,
+            "non_finite_output": False,
+        }
+
+    monkeypatch.setattr(voice_setup, "simulate_candidate_chain", fake_simulation)
+    voice_setup._calibrate_compressor_threshold(
+        speech_audio=audio,
+        sample_rate=48_000,
+        eq_settings=preset.eq.to_dict(),
+        deesser_settings=asdict(preset.deesser),
+        compressor_settings=asdict(preset.compressor),
+        target_p95_db=3.5,
+        target_median_db=1.4,
+        peak_cap_db=8.0,
+        auto_makeup_activity=activity,
+        progress_callback=lambda _text, value: progress.append(value),
+    )
+
+    assert len(observed) > 1
+    assert progress == sorted(progress)
+    for candidate_audio, eq_settings, chain in observed:
+        np.testing.assert_array_equal(candidate_audio, audio)
+        assert eq_settings == preset.eq.to_dict()
+        assert chain["auto_makeup_activity"] is activity
+        assert "vad_probabilities" not in chain
+
+
 def test_compressor_search_cancels_between_small_batches():
     completed = []
     with pytest.raises(AnalysisCancelled):

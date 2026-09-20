@@ -176,6 +176,8 @@ def _flatten_chain_settings(chain_settings: dict[str, Any] | None) -> dict[str, 
         "processing_mode",
         "vad_probabilities",
         "vad_available",
+        "auto_makeup_activity",
+        "return_auto_makeup_activity",
     ):
         if key in chain_settings:
             flattened[key] = deepcopy(chain_settings[key])

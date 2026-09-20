@@ -235,6 +235,36 @@ def _run_gate_suppressor(
         if dry.size != audio.size or not np.isfinite(dry).all():
             raise RuntimeError("native gate/suppressor simulator returned invalid dry audio")
         normalized["dry_audio"] = dry
+    activity = normalized.get("auto_makeup_activity")
+    if activity is None:
+        raise RuntimeError(
+            "native gate/suppressor simulator did not return auto_makeup_activity"
+        )
+    expected_frames = (audio.size + _FRAME_SAMPLES - 1) // _FRAME_SAMPLES
+    try:
+        activity_array = np.asarray(activity, dtype=float)
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            "native gate/suppressor simulator returned invalid auto_makeup_activity"
+        ) from None
+    if activity_array.shape != (expected_frames, 4):
+        raise RuntimeError(
+            "native gate/suppressor simulator returned auto_makeup_activity "
+            f"with shape {activity_array.shape}, expected ({expected_frames}, 4)"
+        )
+    if (
+        not np.isfinite(activity_array).all()
+        or np.any(activity_array[:, [0, 1, 3]] < 0.0)
+        or np.any(activity_array[:, [0, 1, 3]] > 1.0)
+        or np.any(activity_array[:, 2] < -120.0)
+        or np.any(activity_array[:, 2] > 0.0)
+    ):
+        raise RuntimeError(
+            "native gate/suppressor simulator returned invalid auto_makeup_activity"
+        )
+    normalized["auto_makeup_activity"] = [
+        tuple(row) for row in activity_array.tolist()
+    ]
     return normalized
 
 
@@ -600,7 +630,7 @@ def tune_gate_suppression_dynamics(
         )
 
     if progress_callback is not None:
-        progress_callback("Searching suppression candidates...", 65)
+        progress_callback("Searching suppression candidates...", 25)
     simulation_noise = _to_simulation_rate(noise, sample_rate)
     simulation_speech = _to_simulation_rate(speech, sample_rate)
     # Split before estimating fallback context so held-out noise cannot affect
@@ -652,17 +682,20 @@ def tune_gate_suppression_dynamics(
         1.0,
     )
     detector_probability_cache: dict[
-        tuple[float, float], tuple[np.ndarray, np.ndarray] | None
+        tuple[float, float],
+        tuple[np.ndarray, np.ndarray, bool, bool] | None,
     ] = {
         (base_detector_gain, base_detector_threshold): (
             speech_probabilities,
             noise_probabilities,
+            vad_probabilities is not None,
+            noise_vad_probabilities is not None,
         )
     }
 
     def detector_probabilities(
         detector_gate: Mapping[str, Any],
-    ) -> tuple[np.ndarray, np.ndarray] | None:
+    ) -> tuple[np.ndarray, np.ndarray, bool, bool] | None:
         """Return posteriors for the detector settings under evaluation."""
         detector_gain = max(
             0.1,
@@ -677,7 +710,12 @@ def tune_gate_suppression_dynamics(
         if cache_key in detector_probability_cache:
             return detector_probability_cache[cache_key]
         if vad_probabilities is None:
-            return speech_probabilities, noise_probabilities
+            return (
+                speech_probabilities,
+                noise_probabilities,
+                False,
+                noise_vad_probabilities is not None,
+            )
 
         speech_raw, speech_backend = analyze_offline_vad(
             simulation_speech,
@@ -710,6 +748,8 @@ def tune_gate_suppression_dynamics(
                     simulation_noise.size,
                     simulation_noise.size,
                 ),
+                True,
+                True,
             )
         detector_probability_cache[cache_key] = cached
         return cached
@@ -737,8 +777,8 @@ def tune_gate_suppression_dynamics(
         progress_attempts += 1
         if progress_callback is not None:
             progress = min(
-                89,
-                65 + int(24 * progress_attempts / progress_total),
+                55,
+                25 + int(30 * progress_attempts / progress_total),
             )
             progress_callback(detail, progress)
 
@@ -752,22 +792,28 @@ def tune_gate_suppression_dynamics(
         candidate_strength: float,
         candidate_model: str,
         capture_name: str,
+        vad_available: bool,
     ) -> dict[str, Any]:
         """Reuse full-wet renders only when native provides aligned dry audio."""
         # Capture/VAD owners outlive these slices and this per-analysis cache.
+        render_settings = {
+            **dict(settings),
+            "return_auto_makeup_activity": True,
+            "vad_available": bool(vad_available),
+        }
         cache_key = (
             capture_name,
             _array_identity(audio),
             _array_identity(probabilities),
             str(candidate_model),
-            _settings_identity(settings),
+            _settings_identity(render_settings),
         )
         if cache_key not in render_cache:
             full_wet = _run_gate_suppressor(
                 simulator,
                 audio,
                 probabilities,
-                settings,
+                render_settings,
                 suppressor_strength=1.0,
                 noise_model=candidate_model,
                 return_dry_audio=True,
@@ -786,6 +832,8 @@ def tune_gate_suppression_dynamics(
         evaluation_speech: np.ndarray,
         evaluation_noise_probabilities: np.ndarray,
         evaluation_speech_probabilities: np.ndarray,
+        evaluation_noise_vad_available: bool,
+        evaluation_speech_vad_available: bool,
         evaluation_speech_evidence_probabilities: np.ndarray,
         render_namespace: str,
     ) -> dict[str, Any] | None:
@@ -815,6 +863,7 @@ def tune_gate_suppression_dynamics(
                 candidate_strength=candidate_strength,
                 candidate_model=candidate_model,
                 capture_name=f"{render_namespace}:noise",
+                vad_available=evaluation_noise_vad_available,
             )
             rendered_speech = run_cached_suppressor(
                 evaluation_speech,
@@ -823,6 +872,7 @@ def tune_gate_suppression_dynamics(
                 candidate_strength=candidate_strength,
                 candidate_model=candidate_model,
                 capture_name=f"{render_namespace}:speech",
+                vad_available=evaluation_speech_vad_available,
             )
             noise_latency_samples = _latency_samples(rendered_noise)
             speech_latency_samples = _latency_samples(rendered_speech)
@@ -834,22 +884,32 @@ def tune_gate_suppression_dynamics(
                 speech_latency_samples * 1000.0 / _SIMULATION_RATE
             )
             check_analysis_cancelled(cancel_check)
-            downstream_chain = {
+            downstream_chain: dict[str, Any] = {
                 "deesser": dict(deesser_settings),
                 "compressor": dict(compressor_settings),
                 "limiter": dict(limiter_settings),
             }
+            # Reuse the frontend tape so auto-makeup sees the same causal
+            # evidence, including conservative confidence when VAD is absent.
             speech_downstream = simulate_candidate_chain(
                 rendered_speech["output_audio"],
                 _SIMULATION_RATE,
                 dict(eq_settings),
-                downstream_chain,
+                {
+                    **downstream_chain,
+                    "auto_makeup_activity": rendered_speech[
+                        "auto_makeup_activity"
+                    ],
+                },
             )
             noise_downstream = simulate_candidate_chain(
                 rendered_noise["output_audio"],
                 _SIMULATION_RATE,
                 dict(eq_settings),
-                downstream_chain,
+                {
+                    **downstream_chain,
+                    "auto_makeup_activity": rendered_noise["auto_makeup_activity"],
+                },
             )
             check_analysis_cancelled(cancel_check)
             if (
@@ -1072,9 +1132,12 @@ def tune_gate_suppression_dynamics(
                 if not evaluated_for_model:
                     break
                 continue
-            candidate_speech_probabilities, candidate_noise_probabilities = (
-                detector_evidence
-            )
+            (
+                candidate_speech_probabilities,
+                candidate_noise_probabilities,
+                candidate_speech_vad_available,
+                candidate_noise_vad_available,
+            ) = detector_evidence
             candidate = evaluate(
                 candidate_model,
                 candidate_base,
@@ -1086,6 +1149,8 @@ def tune_gate_suppression_dynamics(
                 simulation_speech[:speech_split],
                 candidate_noise_probabilities[: noise_split // _FRAME_SAMPLES],
                 candidate_speech_probabilities[: speech_split // _FRAME_SAMPLES],
+                candidate_noise_vad_available,
+                candidate_speech_vad_available,
                 speech_evidence_probabilities[: speech_split // _FRAME_SAMPLES],
                 "training",
             )
@@ -1167,12 +1232,18 @@ def tune_gate_suppression_dynamics(
                 "holdout skipped because detector evidence was unavailable"
             )
         else:
-            selected_speech_probabilities, selected_noise_probabilities = (
-                selected_detector_evidence
-            )
-            incumbent_speech_probabilities, incumbent_noise_probabilities = (
-                incumbent_detector_evidence
-            )
+            (
+                selected_speech_probabilities,
+                selected_noise_probabilities,
+                selected_speech_vad_available,
+                selected_noise_vad_available,
+            ) = selected_detector_evidence
+            (
+                incumbent_speech_probabilities,
+                incumbent_noise_probabilities,
+                incumbent_speech_vad_available,
+                incumbent_noise_vad_available,
+            ) = incumbent_detector_evidence
             holdout = evaluate(
                 selected["model"],
                 selected["gate"],
@@ -1184,6 +1255,8 @@ def tune_gate_suppression_dynamics(
                 simulation_speech[speech_split:],
                 selected_noise_probabilities[noise_split // _FRAME_SAMPLES :],
                 selected_speech_probabilities[speech_split // _FRAME_SAMPLES :],
+                selected_noise_vad_available,
+                selected_speech_vad_available,
                 speech_evidence_probabilities[speech_split // _FRAME_SAMPLES :],
                 "holdout",
             )
@@ -1201,6 +1274,8 @@ def tune_gate_suppression_dynamics(
                 simulation_speech[speech_split:],
                 incumbent_noise_probabilities[noise_split // _FRAME_SAMPLES :],
                 incumbent_speech_probabilities[speech_split // _FRAME_SAMPLES :],
+                incumbent_noise_vad_available,
+                incumbent_speech_vad_available,
                 speech_evidence_probabilities[speech_split // _FRAME_SAMPLES :],
                 "holdout",
             )
@@ -1232,7 +1307,7 @@ def tune_gate_suppression_dynamics(
     else:
         selected_model = incumbent_model
     if progress_callback is not None:
-        progress_callback("Suppression and gate search complete", 90)
+        progress_callback("Suppression and gate search complete", 55)
     reasons: list[str] = []
     model_selection = _model_selection_metadata(incumbent_model)
     if decision == "retain_incumbent":

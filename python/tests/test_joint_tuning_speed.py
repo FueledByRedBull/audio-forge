@@ -59,6 +59,7 @@ class _FakeSuppressor:
     ) -> dict[str, Any]:
         strength = float(strength)
         request_dry = bool(settings.get("return_dry_audio", False))
+        request_activity = bool(settings.get("return_auto_makeup_activity", False))
         self.calls.append((strength, request_dry))
         is_noise = float(np.mean(np.abs(audio))) < 0.01
         wet_scale = 0.4 if is_noise else 0.98
@@ -75,6 +76,12 @@ class _FakeSuppressor:
         }
         if request_dry and self.returns_dry_audio:
             result["dry_audio"] = dry
+        if request_activity:
+            reliability = float(bool(settings.get("vad_available", True)))
+            frame_count = (len(audio) + 479) // 480
+            result["auto_makeup_activity"] = [
+                (0.8, reliability, -60.0, 0.0)
+            ] * frame_count
         return result
 
 
@@ -120,8 +127,8 @@ def test_joint_tuning_reuses_full_wet_render_without_changing_selection_or_score
         rtol=0.0,
         atol=1.0e-7,
     )
-    assert progress[0][1] == 65
-    assert progress[-1][1] == 90
+    assert progress[0][1] == 25
+    assert progress[-1][1] == 55
     percentages = [item[1] for item in progress]
     assert percentages == sorted(percentages)
 

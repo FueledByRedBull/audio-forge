@@ -10,6 +10,8 @@ published release remains at 1.12.1.
 - Compare the full processing chain on one recording before applying settings.
 - Calibrate Auto Voice Setup with the actual auto-makeup settings, explain
   headroom constraints, and keep neutral EQ free of false abstention warnings.
+- Fit compression after selecting input processing, reusing its rendered audio
+  and speech/noise confidence in scoring and calibration.
 - Reduce repeated suppression work, run compressor candidates in bounded parallel
   batches, and keep analysis responsive with stage and candidate progress.
 - Keep feasible gate and suppression rankings independent of CPU timing noise.

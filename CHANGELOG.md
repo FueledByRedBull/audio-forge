@@ -2,6 +2,7 @@
 
 ## v1.13.0 (unreleased)
 
+- Score gate/suppression candidates with their causal loudness-control evidence, then calibrate compression on the selected input processing and exact applied EQ. Reuse the rendered input across compressor candidates.
 - Correct automatic makeup gain's loudness feedback and use speech/noise evidence and limiter feedback in full-chain previews and verification.
 - Save all seven verified Voice Setup stages and preserve capture validity when applying a candidate from Raw Monitor switches to Normal.
 - Handle refused or failed startup/device configuration writes without claiming success or preventing the main window from opening.

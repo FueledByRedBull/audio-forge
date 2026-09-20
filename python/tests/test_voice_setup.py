@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import mic_eq
+from mic_eq.analysis import voice_setup as voice_setup_module
 from mic_eq.analysis import vad as vad_analysis
 from mic_eq.analysis.voice_setup import (
     _COMPRESSOR_SEARCH_BUDGET,
@@ -199,7 +200,7 @@ def test_verification_scores_voice_safe_tone_delta_against_setup_capture():
     assert rendered_error == pytest.approx(0.0, abs=1.0e-9)
 
 
-def test_voice_setup_uses_vad_assisted_when_available():
+def test_voice_setup_uses_vad_assisted_when_available(monkeypatch):
     sample_rate = 48_000
     limiter = {
         "enabled": False,
@@ -207,6 +208,28 @@ def test_voice_setup_uses_vad_assisted_when_available():
         "release_ms": 175.0,
         "careful_output_enabled": False,
     }
+
+    def fake_offline_vad(audio, _sample_rate, *, threshold=0.48, pre_gain=1.0):
+        del threshold, pre_gain
+        frame_count = max(1, (np.asarray(audio).size + 511) // 512)
+        return np.full(frame_count, 0.8, dtype=np.float32), "silero"
+
+    real_simulate_candidate_chain = voice_setup_module.simulate_candidate_chain
+
+    def simulate_with_supplied_vad(audio, rate, eq_settings, chain_settings=None):
+        settings = dict(chain_settings or {})
+        if settings.get("full_chain") and settings.get("processing_mode") == "normal":
+            frame_count = max(1, (np.asarray(audio).size + 479) // 480)
+            settings["vad_probabilities"] = [0.8] * frame_count
+            settings["vad_available"] = True
+        return real_simulate_candidate_chain(audio, rate, eq_settings, settings)
+
+    monkeypatch.setattr(voice_setup_module, "analyze_offline_vad", fake_offline_vad)
+    monkeypatch.setattr(
+        voice_setup_module,
+        "simulate_candidate_chain",
+        simulate_with_supplied_vad,
+    )
     result = analyze_voice_setup(
         _make_noise(sample_rate),
         _make_voice(sample_rate),

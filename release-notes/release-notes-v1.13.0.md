@@ -12,6 +12,9 @@ published release remains at 1.12.1.
   headroom constraints, and keep neutral EQ free of false abstention warnings.
 - Reduce repeated suppression work, run compressor candidates in bounded parallel
   batches, and keep analysis responsive with stage and candidate progress.
+- Keep feasible gate and suppression rankings independent of CPU timing noise.
+- Validate the combined cleanup, gate, suppression, EQ and dynamics chain before
+  offering the candidate, and recheck the actual applied settings on verification.
 - Recheck adjusted Voice Setup settings on the same verification take, with
   specific failure guidance and bounded retries that restore the previous sound.
 - Recover VAD worker state safely across dropped analysis blocks.

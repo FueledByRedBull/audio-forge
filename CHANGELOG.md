@@ -2,6 +2,8 @@
 
 ## v1.13.0 (unreleased)
 
+- Use runtime only as a joint-tuning feasibility limit, preventing CPU timing differences from changing otherwise viable gate and suppression rankings.
+- Validate Voice Setup candidates and adjusted verification settings through the combined input cleanup, gate, suppression, typed EQ, and dynamics chain, using the original capture and applied settings.
 - Discard overdue parameter updates when newer controls are applied, preventing a delayed UI timer from silently restoring older processor values after a UI stall.
 
 - Validate Auto-EQ recording quality before optional fitting smoothing, avoiding false rejection of clear speech while retaining invalid-capture checks.

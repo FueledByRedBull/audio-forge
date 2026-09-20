@@ -105,6 +105,11 @@ AudioForge opens with processing stopped; use **Start Processing** to send audio
   switches back to RNNoise failed clean-speech preservation checks.
   It keeps the current choices unless a candidate passes safety and speech
   preservation checks and improves on a separate part of the capture.
+  Runtime is a pass/fail performance limit, so CPU timing differences do not
+  rank otherwise viable sound settings.
+  Final candidate and second-take checks render the combined cleanup, gate,
+  suppression, EQ, and dynamics settings; adjustments are checked again before
+  keeping the result.
   Analysis reports the current stage and candidate progress; compression candidates
   run in small parallel batches while retaining the same quality and safety checks.
 

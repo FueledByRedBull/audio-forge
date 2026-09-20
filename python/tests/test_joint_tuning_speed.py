@@ -163,3 +163,38 @@ def test_requested_dry_audio_cannot_be_silently_omitted():
             noise_model="rnnoise",
             return_dry_audio=True,
         )
+
+
+def test_runtime_is_a_feasibility_gate_not_a_sound_preference(monkeypatch):
+    monkeypatch.setattr(joint_tuning, "_model_order", lambda _model: ["rnnoise"])
+    monkeypatch.setattr(joint_tuning, "simulate_candidate_chain", _downstream_metrics)
+    args = _args()
+    simulator = _FakeSuppressor(returns_dry_audio=True)
+
+    def run(runtime_factor):
+        def timed(audio, *params):
+            result = simulator(audio, *params)
+            result["runtime_ms"] = runtime_factor * len(audio) / 48.0
+            return result
+
+        monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: timed)
+        return joint_tuning.tune_gate_suppression_dynamics(
+            *args,
+            vad_probabilities=np.ones(100, dtype=np.float32),
+            noise_vad_probabilities=np.zeros(100, dtype=np.float32),
+            incumbent_settings={
+                "gate": dict(args[3]),
+                "suppressor": {"model": "rnnoise", "enabled": True, "strength": 0.5},
+            },
+        )
+
+    fast, busy, overloaded = (run(factor) for factor in (0.05, 0.8, 1.1))
+    assert fast["candidates"]
+    assert [c["score"] for c in fast["candidates"]] == [
+        c["score"] for c in busy["candidates"]
+    ]
+    assert fast["gate_settings"] == busy["gate_settings"]
+    assert fast["suppressor_settings"] == busy["suppressor_settings"]
+    assert all(c["gates"]["runtime"] for c in busy["candidates"])
+    assert all(not c["gates"]["runtime"] for c in overloaded["candidates"])
+    assert not overloaded["apply_recommended"]

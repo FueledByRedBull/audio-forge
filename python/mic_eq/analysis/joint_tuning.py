@@ -271,6 +271,7 @@ def _metric_float(result: Mapping[str, Any], key: str, default: float) -> float:
 
 
 def _score(metrics: Mapping[str, float], compressor: Mapping[str, Any]) -> float:
+    # Runtime is a feasibility gate; CPU load must not rank sound settings.
     target_p95 = float(compressor.get("target_p95_reduction_db", 3.5))
     target_median = float(
         compressor.get("target_median_reduction_db", target_p95 * 0.42)
@@ -294,7 +295,6 @@ def _score(metrics: Mapping[str, float], compressor: Mapping[str, Any]) -> float
         + 0.20 * max(0.0, metrics["compressor_pumping_db"]) / 5.0
         + 0.50 * max(0.0, -metrics["pre_limiter_headroom_db"])
         + 0.08 * metrics["chatter_events"]
-        + 0.06 * metrics["runtime_factor"]
         + 0.06
         * metrics["suppressor_latency_ms"]
         / max(metrics["max_suppressor_latency_ms"], 1.0e-9)

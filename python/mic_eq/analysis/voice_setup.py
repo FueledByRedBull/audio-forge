@@ -1,4 +1,4 @@
-"""Uncertainty-aware Auto Voice Setup analysis and downstream DSP validation.
+"""Uncertainty-aware Auto Voice Setup analysis and combined DSP validation.
 
 Recommendations use energy-VAD-masked speech, BS.1770 K-weighted momentary and
 three-second short-term loudness, active loudness spread, and robust band-energy
@@ -33,6 +33,7 @@ from .noise_reference import (
     analyze_noise_reference,
 )
 from .joint_tuning import tune_gate_suppression_dynamics
+from .listening_comparison import _chain_settings as _comparison_chain_settings
 from .spectrum import (
     analyze_voice_spectrum,
     smooth_spectrum_perceptual,
@@ -43,7 +44,7 @@ from .vad import (
     analyze_offline_vad,
     map_causal_vad_probabilities,
 )
-from ..config import EQ_FREQUENCIES, LimiterSettings
+from ..config import EQ_FREQUENCIES, EQSettings, LimiterSettings, build_eq_candidate_settings
 
 NOISE_MIN_DURATION_S = MIN_NOISE_DURATION_S
 SPEECH_MIN_DURATION_S = 3.0
@@ -143,6 +144,16 @@ def _frame_rms_db(audio: np.ndarray, sample_rate: int) -> np.ndarray:
     frames = np.lib.stride_tricks.sliding_window_view(audio, frame_size)[::hop_size]
     frame_power = np.mean(frames * frames, axis=1)
     return 10.0 * np.log10(frame_power + 1e-12)
+
+
+def _active_speech_gain_db(features: Mapping[str, Any], output_db: np.ndarray) -> float:
+    source_db = np.asarray(features["frame_db"], dtype=float)
+    count = min(source_db.size, output_db.size)
+    active = np.asarray(features["active_frame_mask"], dtype=bool)[:count].copy()
+    active &= np.isfinite(source_db[:count]) & np.isfinite(output_db[:count])
+    if np.count_nonzero(active) < 3:
+        return 0.0
+    return float(np.median(output_db[:count][active] - source_db[:count][active]))
 
 
 def _k_weighted_48k(audio: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -1156,12 +1167,16 @@ def analyze_voice_setup(
     suppressor_strength: float = 1.0,
     suppressor_enabled: bool = True,
     incumbent_settings: Mapping[str, Any] | None = None,
+    raw_noise_audio: np.ndarray | None = None,
+    raw_speech_audio: np.ndarray | None = None,
+    input_cleanup_mode: str = "off",
+    processing_mode: str = "normal",
     noise_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
     speech_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, int], None] | None = None,
 ) -> dict[str, Any]:
-    """Analyze 48 kHz room noise plus speech and recommend downstream DSP settings."""
+    """Analyze 48 kHz captures and validate the combined recommended chain."""
     check_analysis_cancelled(cancel_check)
     if progress_callback is not None:
         progress_callback("Measuring speech and room noise...", 5)
@@ -1172,6 +1187,30 @@ def analyze_voice_setup(
         raise ValueError("limiter settings are incomplete")
     noise_arr = np.asarray(noise_audio, dtype=float)
     speech_arr = np.asarray(speech_audio, dtype=float)
+    raw_noise_arr = (
+        np.asarray(raw_noise_audio, dtype=np.float32)
+        if raw_noise_audio is not None
+        else None
+    )
+    raw_speech_arr = (
+        np.asarray(raw_speech_audio, dtype=np.float32)
+        if raw_speech_audio is not None
+        else None
+    )
+    if raw_noise_arr is not None and raw_speech_arr is not None:
+        if raw_noise_arr.ndim != 1 or raw_speech_arr.ndim != 1:
+            raise ValueError("raw setup captures must be mono one-dimensional arrays")
+        if raw_noise_arr.size != noise_arr.size or raw_speech_arr.size != speech_arr.size:
+            raise ValueError("raw and filtered setup captures must have matching lengths")
+        if raw_noise_arr.size == 0 or raw_speech_arr.size == 0:
+            raise ValueError("raw setup captures are empty")
+        if (
+            not np.isfinite(raw_noise_arr).all()
+            or not np.isfinite(raw_speech_arr).all()
+            or float(np.max(np.abs(raw_noise_arr))) >= 0.999
+            or float(np.max(np.abs(raw_speech_arr))) >= 0.999
+        ):
+            raise ValueError("raw setup captures are non-finite or clipped")
 
     if noise_arr.size < int(sample_rate * NOISE_MIN_DURATION_S):
         raise ValueError("Room-noise capture was too short for setup.")
@@ -1451,6 +1490,29 @@ def analyze_voice_setup(
             }
         )
 
+    # The panel turns legacy Auto-EQ arrays into the typed correction/tone
+    # layers during apply. Recreate that same payload for the pre-apply safety
+    # simulation whenever the incumbent typed EQ is available.
+    full_chain_eq_settings: dict[str, Any] | None = simulation_eq_settings
+    incumbent_eq = incumbent_payload.get("eq")
+    if eq_settings is not None and "bands" not in eq_settings:
+        try:
+            current_eq = (
+                EQSettings()
+                if incumbent_eq is None
+                else EQSettings.from_dict(dict(incumbent_eq))
+            )
+            full_chain_eq_settings = build_eq_candidate_settings(
+                current_eq,
+                eq_settings["band_freqs"],
+                eq_settings["band_gains"],
+                eq_settings["band_qs"],
+                layer="correction",
+                enabled=bool(eq_settings.get("enabled", True)),
+            ).to_dict()
+        except (KeyError, TypeError, ValueError):
+            full_chain_eq_settings = None
+
     dynamics_confidence = _clamp(speech_dynamic_range_db / 8.0, 0.0, 1.0)
     quiet_room_confidence = _clamp(
         (-32.0 - conservative_noise_rms_db) / 18.0,
@@ -1480,17 +1542,38 @@ def analyze_voice_setup(
         progress_callback("Checking final headroom and dynamics...", 95)
     offline_validation: dict[str, Any] | None = None
     offline_validation_passed = False
+    full_chain_active_gain_db = 0.0
+    full_chain_voice_dropout = False
+    full_chain_raw_available = raw_noise_arr is not None and raw_speech_arr is not None
+    full_chain_speech = raw_speech_arr if full_chain_raw_available else speech_arr
+    full_chain_settings = {
+        "gate": dict(gate_settings),
+        "rnnoise": dict(suppressor_settings),
+        "deesser": dict(deesser_settings),
+        "compressor": dict(compressor_settings),
+        "limiter": dict(effective_limiter_settings),
+        "full_chain": True,
+        "input_pre_filtered": not full_chain_raw_available,
+        "input_cleanup_mode": str(input_cleanup_mode),
+        "processing_mode": str(processing_mode),
+        "return_output_audio": True,
+    }
     try:
+        if full_chain_eq_settings is None:
+            raise ValueError("typed candidate EQ settings are unavailable")
         offline_validation = simulate_candidate_chain(
-            speech_arr.astype(np.float32, copy=False),
+            np.asarray(full_chain_speech, dtype=np.float32),
             sample_rate,
-            simulation_eq_settings,
-            {
-                "deesser": deesser_settings,
-                "compressor": compressor_settings,
-                "limiter": dict(effective_limiter_settings),
-            },
+            full_chain_eq_settings,
+            full_chain_settings,
         )
+        rendered_full_chain = np.asarray(
+            offline_validation.pop("output_audio"), dtype=np.float32
+        )
+        full_chain_active_gain_db = _active_speech_gain_db(
+            features, _frame_rms_db(rendered_full_chain, sample_rate)
+        )
+        full_chain_voice_dropout = full_chain_active_gain_db < -12.0
         output_true_peak = float(offline_validation.get("output_true_peak_db", 120.0))
         ceiling = float(
             offline_validation.get(
@@ -1513,6 +1596,8 @@ def analyze_voice_setup(
             <= float(compressor_diag["target_p95_reduction_db"]) + 1.25
             and deesser_gr <= 10.0
             and full_chain_headroom_safe
+            and not full_chain_voice_dropout
+            and full_chain_raw_available
         )
     except Exception as exc:  # pragma: no cover - defensive diagnostics
         offline_validation = {"error": str(exc), "simulation_backend": "unavailable"}
@@ -1526,7 +1611,19 @@ def analyze_voice_setup(
     if capture_confidence < 0.50:
         uncertainty_reasons.append("spectral feature stability is weak")
     if not offline_validation_passed:
-        if offline_validation is not None and not _is_headroom_safe(offline_validation):
+        if offline_validation is not None and "error" in offline_validation:
+            uncertainty_reasons.append(
+                f"full-chain validation failed: {offline_validation['error']}"
+            )
+        elif full_chain_voice_dropout:
+            uncertainty_reasons.append(
+                "full-chain gate/suppressor silenced active speech"
+            )
+        elif not full_chain_raw_available:
+            uncertainty_reasons.append(
+                "raw full-chain capture is unavailable for input validation"
+            )
+        elif offline_validation is not None and not _is_headroom_safe(offline_validation):
             uncertainty_reasons.append(
                 "final full-chain headroom validation did not pass"
             )
@@ -1639,6 +1736,10 @@ def analyze_voice_setup(
             "vad_probability_used": bool(features["vad_probability_used"]),
             "vad_active_frame_ratio": float(features["vad_active_frame_ratio"]),
             "offline_validation_passed": offline_validation_passed,
+            "offline_validation_full_chain": True,
+            "full_chain_raw_capture_used": full_chain_raw_available,
+            "full_chain_active_gain_db": full_chain_active_gain_db,
+            "full_chain_voice_dropout": full_chain_voice_dropout,
             "offline_headroom_safe": bool(
                 _is_headroom_safe(offline_validation)
                 if offline_validation is not None
@@ -1715,14 +1816,16 @@ def validate_voice_setup_verification(
     setup_result: Mapping[str, Any],
     target_preset: str,
     *,
+    raw_noise_audio: np.ndarray | None = None,
+    raw_verification_speech_audio: np.ndarray | None = None,
+    verification_chain_settings: Mapping[str, Any] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
-    """Validate downstream EQ, de-esser, compressor, and limiter stages.
+    """Validate the exact candidate chain against a second speech capture.
 
-    Gate, noise suppression, input cleanup, and live loudness adaptation are
-    outside this offline renderer. This is an engineering validation of
-    repeatability and DSP constraints; it does not claim that a listener will
-    prefer the result.
+    Callers without full-chain context validate downstream stages only.
+    Voice Setup supplies raw captures and the exact post-apply chain to
+    enable the native full-chain renderer.
     """
     check_analysis_cancelled(cancel_check)
     noise = np.asarray(noise_audio, dtype=np.float32)
@@ -1763,7 +1866,24 @@ def validate_voice_setup_verification(
             ["candidate_settings_incomplete"],
         )
     eq_settings = dict(raw_eq_settings)
-    if any(
+    if "bands" in eq_settings:
+        try:
+            from ..config import EQSettings
+
+            EQSettings.from_dict(
+                {
+                    key: eq_settings[key]
+                    for key in ("schema_version", "enabled", "bands", "layers")
+                    if key in eq_settings
+                }
+            )
+        except (TypeError, ValueError):
+            return _verification_outcome(
+                "rollback",
+                ["candidate EQ bands are incomplete"],
+                ["candidate_settings_incomplete"],
+            )
+    elif any(
         key not in eq_settings
         or not isinstance(eq_settings[key], (list, tuple))
         or len(eq_settings[key]) != len(EQ_FREQUENCIES)
@@ -1774,21 +1894,61 @@ def validate_voice_setup_verification(
             ["candidate EQ bands are incomplete"],
             ["candidate_settings_incomplete"],
         )
-    chain = {
-        "deesser": dict(setup_result.get("deesser_settings") or {}),
-        "compressor": dict(setup_result.get("compressor_settings") or {}),
-        "limiter": dict(effective_limiter_settings),
-        "return_output_audio": True,
-    }
+
+    requested_chain = verification_chain_settings
+    if requested_chain is None:
+        candidate_chain = setup_result.get("verification_chain_settings")
+        if isinstance(candidate_chain, Mapping):
+            requested_chain = candidate_chain
+    full_chain = bool(
+        isinstance(requested_chain, Mapping) and requested_chain.get("full_chain")
+    )
+    if full_chain:
+        chain = _comparison_chain_settings(setup_result, requested_chain)
+        raw_inputs = (raw_noise_audio, raw_verification_speech_audio)
+        if all(audio is not None for audio in raw_inputs):
+            chain["input_pre_filtered"] = False
+            render_noise = np.asarray(raw_noise_audio, dtype=np.float32)
+            render_verification = np.asarray(
+                raw_verification_speech_audio, dtype=np.float32
+            )
+        else:
+            # A headless caller can still verify the gate and suppressor
+            # on captures that were already passed through the fixed pre-filter.
+            chain["input_pre_filtered"] = True
+            render_noise = noise
+            render_verification = verification
+        chain["return_output_audio"] = True
+    else:
+        chain = {
+            "deesser": dict(setup_result.get("deesser_settings") or {}),
+            "compressor": dict(setup_result.get("compressor_settings") or {}),
+            "limiter": dict(effective_limiter_settings),
+            "return_output_audio": True,
+        }
+        render_noise = noise
+        render_verification = verification
+
+    if full_chain:
+        for name, audio in (
+            ("noise", render_noise),
+            ("verification", render_verification),
+        ):
+            if not np.isfinite(audio).all() or float(np.max(np.abs(audio))) >= 0.999:
+                return _verification_outcome(
+                    "retry",
+                    [f"raw {name} capture was non-finite or clipped"],
+                    ["verification_capture_invalid"],
+                )
     processed = simulate_candidate_chain(
-        verification,
+        render_verification,
         sample_rate,
         eq_settings,
         chain,
     )
     check_analysis_cancelled(cancel_check)
     processed_noise = simulate_candidate_chain(
-        noise,
+        render_noise,
         sample_rate,
         eq_settings,
         chain,
@@ -1864,6 +2024,13 @@ def validate_voice_setup_verification(
         noise_audio=rendered_noise,
     )
     check_analysis_cancelled(cancel_check)
+    full_chain_active_gain_db = 0.0
+    full_chain_voice_dropout = False
+    if full_chain:
+        full_chain_active_gain_db = _active_speech_gain_db(
+            before_features, np.asarray(after_features["frame_db"], dtype=float)
+        )
+        full_chain_voice_dropout = full_chain_active_gain_db < -12.0
     compressor = setup_result.get("compressor_settings") or {}
     target_p95 = float(compressor.get("target_p95_reduction_db", 3.5))
     peak_cap = float(compressor.get("peak_reduction_cap_db", 8.0))
@@ -1900,10 +2067,17 @@ def validate_voice_setup_verification(
         reduction_targets.append("limiter")
     if deesser_excess:
         reduction_targets.append("deesser")
-    noise_change_db = _rms_db(rendered_noise) - _rms_db(noise)
+    noise_reference = render_noise if full_chain else noise
+    speech_reference = render_verification if full_chain else verification
+    noise_change_db = _rms_db(rendered_noise) - _rms_db(noise_reference)
+    speech_input_db = (
+        _rms_db(speech_reference)
+        if full_chain
+        else float(processed.get("input_rms_db", _rms_db(verification)))
+    )
     speech_gain_db = float(
         processed.get("output_rms_db", _rms_db(rendered))
-    ) - float(processed.get("input_rms_db", _rms_db(verification)))
+    ) - speech_input_db
     relative_noise_change_db = noise_change_db - speech_gain_db
     snr_change_db = float(after_spectrum.snr_db - before_spectrum.snr_db)
     reasons: list[str] = []
@@ -1912,6 +2086,12 @@ def validate_voice_setup_verification(
     delivery_reasons: list[str] = []
     safety_reasons: list[str] = []
     safety_codes: list[str] = []
+    if full_chain_voice_dropout:
+        safety_codes.append("voice_gate_silencing")
+        safety_reasons.append(
+            "full-chain gate/suppressor reduced active speech by "
+            f"{-full_chain_active_gain_db:.1f} dB"
+        )
     if abs(verification_level - original_level) > 8.0:
         delivery_reasons.append(
             f"delivery level delta was {abs(verification_level - original_level):.1f} dB"
@@ -1984,7 +2164,8 @@ def validate_voice_setup_verification(
     else:
         decision = "accept"
         reason_codes.append("accepted")
-        reasons.append("repeatability and downstream DSP constraints passed")
+        scope = "full-chain" if full_chain else "downstream"
+        reasons.append(f"repeatability and {scope} DSP constraints passed")
 
     spectral_snr = after_spectrum.spectral_snr_db
     snr_bands: dict[str, float] = {}
@@ -2006,7 +2187,14 @@ def validate_voice_setup_verification(
             reason_codes,
             reduction_targets,
         ),
-        "evidence_scope": "repeatability_and_downstream_dsp_constraints",
+        "evidence_scope": (
+            "repeatability_and_full_chain_dsp_constraints"
+            if full_chain
+            else "repeatability_and_downstream_dsp_constraints"
+        ),
+        "full_chain": full_chain,
+        "full_chain_active_gain_db": full_chain_active_gain_db,
+        "full_chain_voice_dropout": full_chain_voice_dropout,
         "spectral_target_error_before_db": before_error,
         "spectral_target_error_after_db": after_error,
         "frequency_dependent_snr_db": snr_bands,

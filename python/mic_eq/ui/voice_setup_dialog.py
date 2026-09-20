@@ -192,6 +192,18 @@ def _apply_suppressor_settings(owner: Any, settings: Mapping[str, Any]) -> None:
 def _candidate_eq_settings_error(eq_settings: Any) -> str | None:
     if not isinstance(eq_settings, Mapping):
         return "candidate EQ settings are missing"
+    if "bands" in eq_settings:
+        try:
+            EQSettings.from_dict(
+                {
+                    key: eq_settings[key]
+                    for key in ("schema_version", "enabled", "bands", "layers")
+                    if key in eq_settings
+                }
+            )
+        except (TypeError, ValueError):
+            return "candidate EQ bands are incomplete"
+        return None
     if any(
         key not in eq_settings
         or not isinstance(eq_settings[key], (list, tuple))
@@ -247,6 +259,10 @@ class VoiceSetupWorker(QThread):
         noise_model: str = "rnnoise",
         suppressor_strength: float = 1.0,
         incumbent_settings: Mapping[str, Any] | None = None,
+        raw_noise_audio: np.ndarray | None = None,
+        raw_speech_audio: np.ndarray | None = None,
+        input_cleanup_mode: str = "off",
+        processing_mode: str = "normal",
     ) -> None:
         super().__init__()
         self.noise_audio = noise_audio
@@ -266,6 +282,10 @@ class VoiceSetupWorker(QThread):
         self.noise_model = noise_model
         self.suppressor_strength = suppressor_strength
         self.incumbent_settings = deepcopy(incumbent_settings)
+        self.raw_noise_audio = raw_noise_audio
+        self.raw_speech_audio = raw_speech_audio
+        self.input_cleanup_mode = input_cleanup_mode
+        self.processing_mode = processing_mode
         self._stop_event = threading.Event()
 
     def stop(self) -> None:
@@ -297,6 +317,10 @@ class VoiceSetupWorker(QThread):
                 noise_model=self.noise_model,
                 suppressor_strength=self.suppressor_strength,
                 incumbent_settings=self.incumbent_settings,
+                raw_noise_audio=self.raw_noise_audio,
+                raw_speech_audio=self.raw_speech_audio,
+                input_cleanup_mode=self.input_cleanup_mode,
+                processing_mode=self.processing_mode,
             )
             if self._should_stop():
                 return
@@ -308,7 +332,7 @@ class VoiceSetupWorker(QThread):
 
 
 class VoiceSetupVerificationWorker(QThread):
-    """Run second-passage downstream DSP verification off the UI thread."""
+    """Run second-passage chain verification off the UI thread."""
 
     step_progress = pyqtSignal(str, int)
     result_ready = pyqtSignal(dict)
@@ -322,11 +346,16 @@ class VoiceSetupVerificationWorker(QThread):
         sample_rate: int,
         setup_result: dict[str, Any],
         target_preset: str,
+        *,
+        raw_noise_audio: np.ndarray | None = None,
+        raw_verification_speech_audio: np.ndarray | None = None,
     ) -> None:
         super().__init__()
         self.noise_audio = noise_audio
         self.original_speech_audio = original_speech_audio
         self.verification_speech_audio = verification_speech_audio
+        self.raw_noise_audio = raw_noise_audio
+        self.raw_verification_speech_audio = raw_verification_speech_audio
         self.sample_rate = sample_rate
         self.setup_result = deepcopy(setup_result)
         self.target_preset = target_preset
@@ -343,7 +372,7 @@ class VoiceSetupVerificationWorker(QThread):
         try:
             if self._should_stop():
                 return
-            self.step_progress.emit("Validating downstream DSP stages...", 55)
+            self.step_progress.emit("Validating the combined processing chain...", 55)
             result = validate_voice_setup_verification(
                 self.noise_audio,
                 self.original_speech_audio,
@@ -351,6 +380,8 @@ class VoiceSetupVerificationWorker(QThread):
                 self.sample_rate,
                 self.setup_result,
                 self.target_preset,
+                raw_noise_audio=self.raw_noise_audio,
+                raw_verification_speech_audio=self.raw_verification_speech_audio,
                 cancel_check=self._should_stop,
             )
             if self._should_stop():
@@ -744,10 +775,9 @@ class VoiceSetupDialog(QDialog):
             self.phase_label.setText("Capturing a second passage")
             self.warning_label.setText(
                 "Read naturally again. The raw passage will be rendered through "
-                "the proposed EQ, de-esser, compressor, and limiter stages and "
-                "compared with the first capture. Gate, suppression, and input "
-                "cleanup, plus live loudness adaptation, are excluded from this "
-                "offline check."
+                "the complete proposed input, gate, suppression, EQ, and dynamics "
+                "chain and compared with the first capture. Live loudness "
+                "adaptation remains outside this offline check."
             )
             self.warning_label.setStyleSheet(message_text_style("info", strong=True))
 
@@ -1053,6 +1083,25 @@ class VoiceSetupDialog(QDialog):
             incumbent["gate"] = deepcopy(parent.gate_panel.get_settings())
         if suppression is not None:
             incumbent["rnnoise"] = suppression
+        raw_noise_audio = self.preview_noise_audio
+        raw_speech_audio = self.preview_voice_audio
+        try:
+            current_chain = _chain_settings(
+                parent,
+                full_chain=True,
+                input_pre_filtered=raw_speech_audio is None,
+            )
+            input_cleanup_mode = str(current_chain["input_cleanup_mode"])
+            processing_mode = str(current_chain["processing_mode"])
+            # Raw monitoring is left behind when the candidate is applied;
+            # preserve bypass while matching the candidate's normal path.
+            if processing_mode == "raw":
+                processing_mode = "normal"
+        except Exception as error:
+            self._on_analysis_failed(
+                f"Could not capture current processing chain: {error}"
+            )
+            return
         self._candidate_metadata = _candidate_metadata(
             "full_voice_setup",
             target={
@@ -1095,6 +1144,10 @@ class VoiceSetupDialog(QDialog):
             noise_model=str((suppression or {}).get("model", "rnnoise")),
             suppressor_strength=float((suppression or {}).get("strength", 1.0)),
             incumbent_settings=incumbent,
+            raw_noise_audio=raw_noise_audio,
+            raw_speech_audio=raw_speech_audio,
+            input_cleanup_mode=input_cleanup_mode,
+            processing_mode=processing_mode,
         )
         self.analysis_worker = worker
         self._analysis_workers.append(worker)
@@ -1547,9 +1600,8 @@ class VoiceSetupDialog(QDialog):
         self.phase_label.setText("Candidate applied temporarily")
         self.warning_label.setText(
             "Read the passage once more to accept, reduce, retry, or roll back "
-            "using downstream EQ, de-esser, compressor, and limiter measurements. "
-            "Gate, suppression, input cleanup, and live loudness adaptation are "
-            "excluded."
+            "using the exact combined input, gate, suppression, EQ, and dynamics "
+            "candidate. Live loudness adaptation remains outside this check."
         )
         self.warning_label.setStyleSheet(message_text_style("info", strong=True))
 
@@ -1651,6 +1703,15 @@ class VoiceSetupDialog(QDialog):
                 value = applied_eq[key]
                 eq_settings[key] = list(value) if key != "enabled" else bool(value)
             self.setup_result["eq_settings"] = eq_settings
+
+        # Keep the exact post-apply chain beside the candidate. Verification
+        # uses the raw capture with this full-chain snapshot; the filtered
+        # arrays remain the analysis/reference captures above.
+        self.setup_result["verification_chain_settings"] = _chain_settings(
+            parent,
+            full_chain=True,
+            input_pre_filtered=False,
+        )
 
     def _reset_verification_state(self) -> None:
         self._verification_audio = None
@@ -1803,7 +1864,7 @@ class VoiceSetupDialog(QDialog):
         self.start_button.setEnabled(False)
         self.start_button.setText("Validating...")
         self.curve_combo.setEnabled(False)
-        self.phase_label.setText("Validating downstream DSP stages")
+        self.phase_label.setText("Validating the combined processing chain")
         self.warning_label.setText("Comparing the verification passage...")
         worker = VoiceSetupVerificationWorker(
             noise_audio,
@@ -1816,6 +1877,8 @@ class VoiceSetupDialog(QDialog):
                 .get("target", {})
                 .get("curve", self.get_selected_curve())
             ),
+            raw_noise_audio=self.preview_noise_audio,
+            raw_verification_speech_audio=self.preview_verification_audio,
         )
         self.analysis_worker = worker
         self._analysis_workers.append(worker)
@@ -1939,6 +2002,9 @@ class VoiceSetupDialog(QDialog):
         candidate = self.setup_result.get("_candidate")
         if isinstance(candidate, dict):
             candidate["verified_stages"] = [
+                "input_cleanup",
+                "gate",
+                "suppression",
                 "eq",
                 "deesser",
                 "compressor",
@@ -1961,11 +2027,11 @@ class VoiceSetupDialog(QDialog):
         QMessageBox.information(
             self,
             "Voice Setup Verified",
-            "Downstream EQ, de-esser, compressor, and limiter verification "
+            "Combined input cleanup, gate, suppression, EQ, de-esser, compressor, "
+            "and limiter verification "
             "accepted the candidate after the final listening comparison.\n\n"
             + metrics_text
-            + "\n\nGate, suppression, and input cleanup were excluded; "
-            "live loudness adaptation was also excluded; "
+            + "\n\nLive loudness adaptation remains outside this offline check; "
             "this validates engineering constraints and listening preference.",
         )
         self._pre_setup_snapshot = None
@@ -1983,7 +2049,15 @@ class VoiceSetupDialog(QDialog):
             parent,
             "full_voice_setup",
             str(target_curve),
-            ("eq", "deesser", "compressor", "limiter"),
+            (
+                "input_cleanup",
+                "gate",
+                "suppression",
+                "eq",
+                "deesser",
+                "compressor",
+                "limiter",
+            ),
         )
         self.accept()
 

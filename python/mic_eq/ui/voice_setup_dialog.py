@@ -279,7 +279,6 @@ class VoiceSetupWorker(QThread):
         try:
             if self._should_stop():
                 return
-            self.step_progress.emit("Analyzing room noise and speech...", 20)
             result = analyze_voice_setup(
                 self.noise_audio,
                 self.voice_audio,
@@ -294,13 +293,13 @@ class VoiceSetupWorker(QThread):
                 noise_metadata=self.noise_metadata,
                 speech_metadata=self.voice_metadata,
                 cancel_check=self._should_stop,
+                progress_callback=self.step_progress.emit,
                 noise_model=self.noise_model,
                 suppressor_strength=self.suppressor_strength,
                 incumbent_settings=self.incumbent_settings,
             )
             if self._should_stop():
                 return
-            self.step_progress.emit("Finalizing recommendations...", 95)
             self.result_ready.emit(result)
         except AnalysisCancelled:
             return
@@ -1079,6 +1078,7 @@ class VoiceSetupDialog(QDialog):
         )
         self.curve_group.setEnabled(False)
         self.dynamics_group.setEnabled(False)
+        self.progress_bar.setValue(0)
         worker = VoiceSetupWorker(
             self.noise_audio,
             self.voice_audio,

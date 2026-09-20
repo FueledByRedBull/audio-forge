@@ -8,6 +8,7 @@ before the UI offers to apply them.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 import time
 from collections.abc import Callable, Mapping
@@ -780,6 +781,7 @@ def _calibrate_compressor_threshold(
     peak_cap_db: float,
     limiter_settings: Mapping[str, Any] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    progress_callback: Callable[[str, int], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Fit four compressor controls with a bounded deterministic DSP search."""
     calibrated = dict(compressor_settings)
@@ -813,13 +815,10 @@ def _calibrate_compressor_threshold(
     def key_for(candidate: Mapping[str, float]) -> tuple[float, ...]:
         return tuple(round(float(candidate[key]), 6) for key in _COMPRESSOR_SEARCH_BOUNDS)
 
-    def evaluate(candidate_values: Mapping[str, float]) -> None:
+    def evaluate(
+        candidate_values: Mapping[str, float],
+    ) -> tuple[float, dict[str, Any], dict[str, float]]:
         check_analysis_cancelled(cancel_check)
-        if len(evaluated) >= _COMPRESSOR_SEARCH_BUDGET - 1:
-            return
-        candidate_key = key_for(candidate_values)
-        if candidate_key in evaluated:
-            return
         candidate = dict(calibrated)
         candidate.update(
             {
@@ -845,12 +844,11 @@ def _calibrate_compressor_threshold(
             },
         )
         if simulation.get("simulation_backend") != "rust":
-            evaluated[candidate_key] = (
+            return (
                 float("inf"),
                 simulation,
                 dict(candidate_values),
             )
-            return
         peak = float(simulation.get("compressor_gain_reduction_db", 0.0))
         median = float(
             simulation.get("compressor_gain_reduction_median_db", peak)
@@ -946,25 +944,47 @@ def _calibrate_compressor_threshold(
         )
         if hard_rejected:
             score = float("inf")
-        evaluated[candidate_key] = (
+        return (
             float(score),
             simulation,
             {key: float(candidate[key]) for key in _COMPRESSOR_SEARCH_BOUNDS},
         )
 
-    evaluate(incumbent)
+    def evaluate_batch(candidates: list[dict[str, float]]) -> None:
+        pending = {}
+        for candidate in candidates:
+            key = key_for(candidate)
+            if key not in evaluated and key not in pending:
+                pending[key] = candidate
+        items = list(pending.items())[: _COMPRESSOR_SEARCH_BUDGET - 1 - len(evaluated)]
+        # Native simulations release the GIL and own independent DSP state.
+        # Small batches bound cancellation latency and concurrent CPU use.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for start in range(0, len(items), 4):
+                check_analysis_cancelled(cancel_check)
+                batch = items[start : start + 4]
+                for (key, _), result in zip(batch, pool.map(evaluate, [v for _, v in batch])):
+                    evaluated[key] = result
+                    if progress_callback is not None:
+                        progress_callback(
+                            f"Calibrating compression ({len(evaluated)} candidates checked)...",
+                            25 + int(35 * len(evaluated) / _COMPRESSOR_SEARCH_BUDGET),
+                        )
+
+    initial_candidates = [incumbent]
     for threshold in np.linspace(-55.0, -6.0, 33):
         check_analysis_cancelled(cancel_check)
         threshold_candidate = dict(incumbent)
         threshold_candidate["threshold_db"] = float(threshold)
-        evaluate(threshold_candidate)
+        initial_candidates.append(threshold_candidate)
     for index in range(1, 17):
         check_analysis_cancelled(cancel_check)
         candidate = {}
         for key, base in zip(_COMPRESSOR_SEARCH_BOUNDS, (2, 3, 5, 7)):
             lower, upper = _COMPRESSOR_SEARCH_BOUNDS[key]
             candidate[key] = lower + _halton(index, base) * (upper - lower)
-        evaluate(candidate)
+        initial_candidates.append(candidate)
+    evaluate_batch(initial_candidates)
 
     feasible = sorted(
         (item for item in evaluated.values() if np.isfinite(item[0])),
@@ -999,13 +1019,15 @@ def _calibrate_compressor_threshold(
         refinement_seeds.append(multivariable_seed)
     else:
         refinement_seeds.extend(feasible[1:2])
+    refinement_candidates = []
     for _, _, seed in refinement_seeds:
         check_analysis_cancelled(cancel_check)
         for key, step in local_steps.items():
             for direction in (-1.0, 1.0):
                 candidate = dict(seed)
                 candidate[key] += direction * step
-                evaluate(candidate)
+                refinement_candidates.append(candidate)
+    evaluate_batch(refinement_candidates)
 
     feasible = sorted(
         (item for item in evaluated.values() if np.isfinite(item[0])),
@@ -1037,9 +1059,7 @@ def _calibrate_compressor_threshold(
         )
     calibrated.update(best_values)
     check_analysis_cancelled(cancel_check)
-    # Verify the winner with the exact compressor controls that will be
-    # applied.  The search isolates compression by disabling auto makeup, but
-    # that must not make its diagnostics claim the final chain is safe.
+    # Recheck the winner with the exact controls that will be applied.
     winner_verification = simulate_candidate_chain(
         speech_audio.astype(np.float32, copy=False),
         sample_rate,
@@ -1139,9 +1159,12 @@ def analyze_voice_setup(
     noise_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
     speech_metadata: CaptureMetadata | Mapping[str, Any] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    progress_callback: Callable[[str, int], None] | None = None,
 ) -> dict[str, Any]:
     """Analyze 48 kHz room noise plus speech and recommend downstream DSP settings."""
     check_analysis_cancelled(cancel_check)
+    if progress_callback is not None:
+        progress_callback("Measuring speech and room noise...", 5)
     if sample_rate != 48_000:
         raise ValueError("Voice setup analysis requires a 48000 Hz sample rate")
     effective_limiter_settings = _normalise_limiter_settings(limiter_settings)
@@ -1284,6 +1307,8 @@ def analyze_voice_setup(
         np.clip(noise_reference.quality_score, 0.0, 1.0)
     )
 
+    if progress_callback is not None:
+        progress_callback("Fitting voice EQ...", 20)
     eq_settings: dict[str, Any] | None = None
     eq_error: str | None = None
     try:
@@ -1340,6 +1365,7 @@ def analyze_voice_setup(
                 peak_cap_db=float(compressor_diag["peak_reduction_cap_db"]),
                 limiter_settings=effective_limiter_settings,
                 cancel_check=cancel_check,
+                progress_callback=progress_callback,
             )
         )
 
@@ -1374,6 +1400,8 @@ def analyze_voice_setup(
     incumbent_suppressor = incumbent_payload.get("suppressor") or incumbent_payload.get(
         "rnnoise"
     )
+    if progress_callback is not None:
+        progress_callback("Tuning noise suppression and gate...", 65)
     joint_tuning = tune_gate_suppression_dynamics(
         noise_arr,
         speech_arr,
@@ -1398,6 +1426,7 @@ def analyze_voice_setup(
             },
         },
         cancel_check=cancel_check,
+        progress_callback=progress_callback,
     )
     if joint_tuning.get("apply_recommended"):
         gate_settings = dict(joint_tuning.get("gate_settings") or gate_settings)
@@ -1447,6 +1476,8 @@ def analyze_voice_setup(
         ]
     )
 
+    if progress_callback is not None:
+        progress_callback("Checking final headroom and dynamics...", 95)
     offline_validation: dict[str, Any] | None = None
     offline_validation_passed = False
     try:

@@ -111,9 +111,12 @@ def test_joint_selection_evaluates_each_model_and_selects_lower_noise_model(
         latency = {"rnnoise": 480, "deepfilter-ll": 480, "deepfilter": 1_440}[model]
         is_noise = float(np.mean(np.abs(audio))) < 0.01
         attenuation = {"rnnoise": 0.5, "deepfilter-ll": 0.1, "deepfilter": 0.05}[model]
+        output = np.asarray(audio, dtype=np.float32) * (
+            attenuation if is_noise else 0.98
+        )
         return {
-            "output_audio": np.asarray(audio, dtype=np.float32)
-            * (attenuation if is_noise else 0.98),
+            "output_audio": output,
+            "dry_audio": output,
             "suppressor_latency_samples": latency,
             "runtime_ms": 0.0,
         }
@@ -162,8 +165,10 @@ def test_joint_selection_reports_unavailable_models_and_retains_incumbent(monkey
         model = settings["noise_model"]
         if model != "rnnoise":
             raise RuntimeError(f"{model} backend unavailable")
+        output = np.asarray(audio, dtype=np.float32)
         return {
-            "output_audio": np.asarray(audio, dtype=np.float32),
+            "output_audio": output,
+            "dry_audio": output,
             "suppressor_latency_samples": 480,
             "runtime_ms": 0.0,
         }
@@ -203,8 +208,10 @@ def test_joint_tuning_refreshes_probabilities_for_incumbent_pre_gain(monkeypatch
         return np.ones(100, dtype=np.float32), "silero"
 
     def simulate(audio, _probabilities, _before_gate, _strength, settings):
+        output = np.asarray(audio, dtype=np.float32)
         return {
-            "output_audio": np.asarray(audio, dtype=np.float32),
+            "output_audio": output,
+            "dry_audio": output,
             "suppressor_latency_samples": 480,
             "runtime_ms": 0.0,
         }
@@ -448,8 +455,10 @@ def test_training_noise_floor_does_not_use_heldout_noise(monkeypatch):
 
     def simulate(audio, _probabilities, _before_gate, _strength, settings):
         observed_thresholds.append(float(settings["gate_threshold_db"]))
+        output = np.asarray(audio, dtype=np.float32)
         return {
-            "output_audio": np.asarray(audio, dtype=np.float32),
+            "output_audio": output,
+            "dry_audio": output,
             "suppressor_latency_samples": 480,
             "runtime_ms": 0.0,
         }

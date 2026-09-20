@@ -325,29 +325,24 @@ fn simulate_input_frontend(
         ))
     })?;
     let strength = Arc::new(AtomicU32::new((suppressor_strength as f32).to_bits()));
-    let mut suppressor = if suppressor_enabled {
-        let engine = new_noise_suppression_engine(suppressor_model, strength);
-        if !engine.backend_available() {
-            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-                engine
-                    .backend_error()
-                    .unwrap_or("noise suppressor backend unavailable")
-                    .to_string(),
-            ));
-        }
-        Some(engine)
-    } else {
-        None
-    };
-    let suppressor_latency = suppressor
-        .as_ref()
-        .map(|engine| engine.latency_samples())
-        .unwrap_or(0);
     let use_native_vad = gate_enabled
         && vad_probabilities.is_empty()
         && matches!(gate_mode, GateMode::VadAssisted | GateMode::VadOnly);
 
     let rendered = py.detach(move || -> Result<(Vec<f32>, usize), String> {
+        let (mut suppressor, suppressor_latency) = if suppressor_enabled {
+            let engine = new_noise_suppression_engine(suppressor_model, strength);
+            if !engine.backend_available() {
+                return Err(engine
+                    .backend_error()
+                    .unwrap_or("noise suppressor backend unavailable")
+                    .to_string());
+            }
+            let latency = engine.latency_samples();
+            (Some(engine), latency)
+        } else {
+            (None, 0)
+        };
         let mut native_vad = if use_native_vad {
             let mut vad = SileroVAD::new(sample_rate as u32, vad_threshold as f32)
                 .map_err(|error| format!("full_chain VAD initialization failed: {error}"))?;
@@ -727,22 +722,36 @@ pub fn simulate_gate_suppressor_order(
             "unknown noise model {model_id:?}"
         ))
     })?;
-    let mut suppressor = new_noise_suppression_engine(model, strength);
-    if !suppressor.backend_available() {
-        return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-            suppressor
-                .backend_error()
-                .unwrap_or("noise suppressor backend unavailable")
-                .to_string(),
+    let return_dry_audio = py_dict_bool(settings, "return_dry_audio", false)?;
+    if return_dry_audio && suppressor_before_gate {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "return_dry_audio requires suppressor_before_gate=false",
         ));
     }
-    let latency_samples = suppressor.latency_samples();
-    let latency_frames = latency_samples.div_ceil(RNNOISE_FRAME_SIZE);
-    let started = Instant::now();
-    let (output, gate_gain, gate_chatter_event_count, gate_noise_floor, gate_noise_floor_reliability, runtime_ms) =
-        py.detach(move || -> Result<_, String> {
+    let (
+        output,
+        gate_gain,
+        gate_chatter_event_count,
+        gate_noise_floor,
+        gate_noise_floor_reliability,
+        runtime_ms,
+        latency_samples,
+        dry_audio,
+    ) = py
+        .detach(move || -> Result<_, String> {
+            let mut suppressor = new_noise_suppression_engine(model, strength);
+            if !suppressor.backend_available() {
+                return Err(suppressor
+                    .backend_error()
+                    .unwrap_or("noise suppressor backend unavailable")
+                    .to_string());
+            }
+            let latency_samples = suppressor.latency_samples();
+            let latency_frames = latency_samples.div_ceil(RNNOISE_FRAME_SIZE);
+            let started = Instant::now();
             let mut output = Vec::with_capacity(audio.len() + latency_samples);
             let mut gate_gain = Vec::with_capacity(block_count);
+            let mut dry_audio = return_dry_audio.then(|| Vec::with_capacity(audio.len()));
 
             for (block_index, chunk) in audio.chunks(RNNOISE_FRAME_SIZE).enumerate() {
                 let mut frame = [0.0_f32; RNNOISE_FRAME_SIZE];
@@ -766,6 +775,9 @@ pub fn simulate_gate_suppressor_order(
                     gate.set_external_vad_probability(vad_probabilities[block_index], true);
                     gate.process_block_inplace(&mut frame);
                     gate_gain.push(gate.current_gain());
+                    if let Some(dry_audio) = dry_audio.as_mut() {
+                        dry_audio.extend_from_slice(&frame);
+                    }
                     if suppressor.push_samples(&frame) != RNNOISE_FRAME_SIZE {
                         return Err("suppressor rejected a complete input frame".to_string());
                     }
@@ -800,6 +812,9 @@ pub fn simulate_gate_suppressor_order(
                 }
             }
             output.truncate(audio.len());
+            if let Some(dry_audio) = dry_audio.as_mut() {
+                dry_audio.truncate(audio.len());
+            }
 
             Ok((
                 output,
@@ -808,6 +823,8 @@ pub fn simulate_gate_suppressor_order(
                 gate.noise_floor(),
                 gate.noise_floor_reliability(),
                 started.elapsed().as_secs_f64() * 1000.0,
+                latency_samples,
+                dry_audio,
             ))
         })
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
@@ -822,6 +839,9 @@ pub fn simulate_gate_suppressor_order(
     diagnostics.set_item("gate_mode", gate_mode as u8)?;
     diagnostics.set_item("suppressor_latency_samples", latency_samples)?;
     diagnostics.set_item("runtime_ms", runtime_ms)?;
+    if let Some(dry_audio) = dry_audio {
+        diagnostics.set_item("dry_audio", dry_audio)?;
+    }
     Ok(diagnostics.into_any().unbind())
 }
 

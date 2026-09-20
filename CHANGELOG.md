@@ -2,6 +2,10 @@
 
 ## v1.13.0 (unreleased)
 
+- Correct automatic makeup gain's loudness feedback and use speech/noise evidence and limiter feedback in full-chain previews and verification.
+- Save all seven verified Voice Setup stages and preserve capture validity when applying a candidate from Raw Monitor switches to Normal.
+- Handle refused or failed startup/device configuration writes without claiming success or preventing the main window from opening.
+- Include input resampling delay in reported engine latency for microphones running outside 48 kHz.
 - Use runtime only as a joint-tuning feasibility limit, preventing CPU timing differences from changing otherwise viable gate and suppression rankings.
 - Validate Voice Setup candidates and adjusted verification settings through the combined input cleanup, gate, suppression, typed EQ, and dynamics chain, using the original capture and applied settings.
 - Discard overdue parameter updates when newer controls are applied, preventing a delayed UI timer from silently restoring older processor values after a UI stall.

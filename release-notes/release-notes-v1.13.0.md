@@ -15,6 +15,11 @@ published release remains at 1.12.1.
 - Keep feasible gate and suppression rankings independent of CPU timing noise.
 - Validate the combined cleanup, gate, suppression, EQ and dynamics chain before
   offering the candidate, and recheck the actual applied settings on verification.
+- Correct automatic loudness feedback and include speech-aware gain control in
+  full-chain previews and verification.
+- Save complete calibration evidence, allow verification after leaving Raw Monitor,
+  and handle startup/device settings write failures without false success.
+- Include input sample-rate conversion in the engine latency estimate.
 - Recheck adjusted Voice Setup settings on the same verification take, with
   specific failure guidance and bounded retries that restore the previous sound.
 - Recover VAD worker state safely across dropped analysis blocks.

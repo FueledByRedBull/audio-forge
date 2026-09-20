@@ -1410,7 +1410,7 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
             type("Dev", (), {"name": "Out B", "is_default": True})(),
         ],
     )
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _cfg: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _cfg: True)
 
     window._refresh_devices()
 
@@ -1460,7 +1460,7 @@ def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
         "mic_eq.ui.main_window.list_output_devices",
         lambda: [type("Dev", (), {"name": "Out A", "is_default": True})()],
     )
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _cfg: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _cfg: True)
 
     window._refresh_devices()
 
@@ -1505,7 +1505,7 @@ def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatc
         "mic_eq.ui.main_window.list_output_devices",
         lambda: [type("Dev", (), {"name": "Out New", "is_default": True})()],
     )
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _cfg: None)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _cfg: True)
 
     window._refresh_devices()
 
@@ -1521,6 +1521,157 @@ def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatc
         "Destination 'Out Old' is disconnected" in message
         for message, _ in window.status_bar.messages
     )
+
+
+@pytest.mark.parametrize("write_failure", [False, OSError("config locked")])
+def test_startup_preset_write_failure_keeps_previous_selection(monkeypatch, write_failure):
+    window = MainWindow.__new__(MainWindow)
+    previous = _startup_builtin_id("flat")
+    window.config = AppConfig(startup_preset=previous)
+    window.status_bar = _FakeStatusBar()
+    window._update_startup_preset_menu = Mock()
+    save = Mock(
+        side_effect=write_failure if isinstance(write_failure, Exception) else None,
+        return_value=write_failure,
+    )
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", save)
+
+    MainWindow._set_startup_preset(window, _startup_builtin_id("voice"))
+
+    assert window.config.startup_preset == previous
+    assert "previous selection kept" in window.status_bar.messages[-1][0]
+    window._update_startup_preset_menu.assert_called_once_with(previous)
+
+
+@pytest.mark.parametrize("write_failure", [False, OSError("config locked")])
+def test_refresh_device_write_failure_keeps_live_route_and_reports_session_state(
+    monkeypatch, write_failure
+):
+    window = MainWindow.__new__(MainWindow)
+    window.processor = Mock()
+    window.processor.is_running.return_value = False
+    window.refresh_btn = _FakeControl()
+    window.device_warning_banner = _FakeLabel()
+    window.status_bar = _FakeStatusBar()
+    window.input_combo = _FakeCombo()
+    window.output_combo = _FakeCombo()
+    window.config = AppConfig(
+        last_input_device_identity=DeviceIdentity(name="Mic", direction="input"),
+        last_output_device_identity=DeviceIdentity(name="Cable", direction="output"),
+    )
+    window._apply_input_preferences_for_current_route = Mock()
+    window._apply_latency_compensation_for_current_devices = Mock()
+    window._apply_bound_preset_for_current_route = Mock()
+    window._sync_calibration_evidence = Mock()
+    window._update_session_summary = Mock()
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.list_input_devices",
+        lambda: [
+            SimpleNamespace(
+                name="Mic",
+                is_default=True,
+                endpoint_id="input-id",
+                host_api="WASAPI",
+                sample_rate=48_000,
+                channels=1,
+                name_ordinal=0,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.list_output_devices",
+        lambda: [
+            SimpleNamespace(
+                name="Cable",
+                is_default=True,
+                endpoint_id="output-id",
+                host_api="WASAPI",
+                sample_rate=48_000,
+                channels=2,
+                name_ordinal=0,
+            )
+        ],
+    )
+    save = Mock(
+        side_effect=write_failure if isinstance(write_failure, Exception) else None,
+        return_value=write_failure,
+    )
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", save)
+
+    window._refresh_devices()
+
+    assert window.input_combo.currentData().endpoint_id == "input-id"
+    assert window.output_combo.currentData().endpoint_id == "output-id"
+    assert "applied for this session" in window.status_bar.messages[-1][0]
+    assert "could not be saved" in window.status_bar.messages[-1][0]
+
+
+@pytest.mark.parametrize("write_failure", [False, OSError("config locked")])
+def test_restore_write_failure_keeps_canonicalized_route_in_session(
+    monkeypatch, write_failure
+):
+    window = MainWindow.__new__(MainWindow)
+    input_identity = DeviceIdentity(
+        name="Mic", endpoint_id="input-id", direction="input"
+    )
+    output_identity = DeviceIdentity(
+        name="Cable", endpoint_id="output-id", direction="output"
+    )
+    window.input_combo = _FakeCombo([("Mic", input_identity)])
+    window.output_combo = _FakeCombo([("Cable", output_identity)])
+    window.status_bar = _FakeStatusBar()
+    window.processor = Mock()
+    window.config = AppConfig(
+        last_input_device_identity=DeviceIdentity(name="Mic", direction="input"),
+        last_output_device_identity=DeviceIdentity(name="Cable", direction="output"),
+    )
+    window._restore_ui_state = Mock()
+    window._apply_latency_compensation_for_current_devices = Mock()
+    window._apply_bound_preset_for_current_route = Mock(return_value=False)
+    save = Mock(
+        side_effect=write_failure if isinstance(write_failure, Exception) else None,
+        return_value=write_failure,
+    )
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", save)
+
+    window._restore_from_config()
+
+    assert window.config.last_input_device_identity == input_identity
+    assert window.config.last_output_device_identity == output_identity
+    assert "applied for this session" in window.status_bar.messages[-1][0]
+    assert "could not be saved" in window.status_bar.messages[-1][0]
+
+
+@pytest.mark.parametrize("write_failure", [False, OSError("config locked")])
+def test_device_change_write_failure_keeps_active_route(monkeypatch, write_failure):
+    window = MainWindow.__new__(MainWindow)
+    input_identity = DeviceIdentity(
+        name="Mic", endpoint_id="input-id", direction="input"
+    )
+    output_identity = DeviceIdentity(
+        name="Cable", endpoint_id="output-id", direction="output"
+    )
+    window.input_combo = _FakeCombo([("Mic", input_identity)])
+    window.output_combo = _FakeCombo([("Cable", output_identity)])
+    window.status_bar = _FakeStatusBar()
+    window.config = AppConfig()
+    window._apply_input_preferences_for_current_route = Mock()
+    window._apply_latency_compensation_for_current_devices = Mock()
+    window._apply_bound_preset_for_current_route = Mock(return_value=False)
+    window._sync_calibration_evidence = Mock()
+    window._update_session_summary = Mock()
+    save = Mock(
+        side_effect=write_failure if isinstance(write_failure, Exception) else None,
+        return_value=write_failure,
+    )
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", save)
+
+    window._on_device_changed()
+
+    assert window.config.last_input_device_identity == input_identity
+    assert window.config.last_output_device_identity == output_identity
+    assert "applied for this session" in window.status_bar.messages[-1][0]
+    assert "could not be saved" in window.status_bar.messages[-1][0]
 
 
 def test_latency_profile_key_uses_structured_device_identity():

@@ -151,6 +151,13 @@ def _chain_settings(
         if not isinstance(current, Preset):
             raise TypeError("current processing configuration is unavailable")
         preset_payload = current.to_dict()
+        if hasattr(owner, "compressor_panel"):
+            calibration = owner.compressor_panel.get_compressor_settings(
+                include_calibration=True
+            )
+            preset_payload["compressor"]["noise_reference_reliability"] = calibration.get(
+                "noise_reference_reliability", 0.0
+            )
         return {
             **{
                 name: preset_payload[name]

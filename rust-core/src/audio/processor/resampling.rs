@@ -35,6 +35,7 @@ fn next_process_idle_sleep_us(consecutive_idle_wakeups: u32, input_callback_age_
 
 #[derive(Clone, Copy)]
 struct LatencyComponents {
+    input_resampler_delay_samples: u64,
     output_buffer_samples: u64,
     output_sample_rate: u32,
     output_resampler_delay_samples: u64,
@@ -46,6 +47,10 @@ struct LatencyComponents {
 }
 
 fn total_reported_latency_us(components: LatencyComponents, compensation_us: u64) -> u64 {
+    let input_resampler_latency_us = samples_to_micros(
+        components.input_resampler_delay_samples,
+        components.processing_sample_rate,
+    );
     let output_latency_us = samples_to_micros(
         components.output_buffer_samples,
         components.output_sample_rate,
@@ -72,6 +77,7 @@ fn total_reported_latency_us(components: LatencyComponents, compensation_us: u64
     };
 
     output_latency_us
+        .saturating_add(input_resampler_latency_us)
         .saturating_add(output_resampler_latency_us)
         .saturating_add(suppressor_latency_us)
         .saturating_add(limiter_latency_us)

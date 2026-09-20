@@ -43,6 +43,7 @@ pub struct OfflineDspBlockProcessor {
     normal_limiter_enabled: bool,
     output_protection_enabled: bool,
     eq_before_deesser: bool,
+    previous_true_peak_limiter_gain_reduction_db: f64,
 }
 
 impl OfflineDspBlockProcessor {
@@ -60,6 +61,7 @@ impl OfflineDspBlockProcessor {
             normal_limiter_enabled: true,
             output_protection_enabled: true,
             eq_before_deesser: false,
+            previous_true_peak_limiter_gain_reduction_db: 0.0,
         }
     }
 
@@ -81,6 +83,9 @@ impl OfflineDspBlockProcessor {
     pub fn set_limiter_enabled(&mut self, enabled: bool) {
         self.normal_limiter_enabled = enabled;
         self.output_protection_enabled = enabled;
+        if !enabled {
+            self.previous_true_peak_limiter_gain_reduction_db = 0.0;
+        }
         self.limiter.set_enabled(enabled);
     }
 
@@ -154,6 +159,18 @@ impl OfflineDspBlockProcessor {
         input: &mut [f32],
         output: &mut FixedAudioBuffer<f32, N>,
     ) -> OfflineDspBlockStats {
+        self.process_block_with_stats_and_activity_control(input, output, None)
+    }
+
+    /// Process a block with the causal frontend evidence used by live
+    /// auto-makeup control. `None` preserves the downstream-only simulator's
+    /// historical RMS fallback and limiter behavior.
+    fn process_block_with_stats_and_activity_control<const N: usize>(
+        &mut self,
+        input: &mut [f32],
+        output: &mut FixedAudioBuffer<f32, N>,
+        activity: Option<AutoMakeupActivityInput>,
+    ) -> OfflineDspBlockStats {
         let mut stats = OfflineDspBlockStats {
             input_sample_peak: input.iter().map(|sample| sample.abs()).fold(0.0_f32, f32::max),
             ..OfflineDspBlockStats::default()
@@ -184,7 +201,25 @@ impl OfflineDspBlockProcessor {
             self.tone_eq.process_block_inplace(block);
         }
         if self.compressor_enabled {
-            self.compressor.process_block_inplace(block);
+            if let Some(activity) = activity {
+                let limiter_feedback = if self.normal_limiter_enabled {
+                    self.limiter.current_gain_reduction().abs()
+                } else {
+                    0.0
+                };
+                let true_peak_feedback = if self.output_protection_enabled {
+                    self.previous_true_peak_limiter_gain_reduction_db
+                } else {
+                    0.0
+                };
+                self.compressor.set_limiter_feedback_gain_reduction_db(
+                    limiter_feedback.max(true_peak_feedback),
+                );
+                self.compressor
+                    .process_block_inplace_with_activity_control(block, Some(activity));
+            } else {
+                self.compressor.process_block_inplace(block);
+            }
             stats.compressor_gain_reduction_db =
                 self.compressor.block_peak_gain_reduction() as f32;
         }
@@ -200,6 +235,10 @@ impl OfflineDspBlockProcessor {
             stats.true_peak_limiter_input_peak = true_peak_stats.input_true_peak;
             stats.true_peak_limiter_gain_reduction_db = true_peak_stats.max_gain_reduction_db;
             stats.true_peak_limited_events = true_peak_stats.limited_events;
+            self.previous_true_peak_limiter_gain_reduction_db =
+                f64::from(true_peak_stats.max_gain_reduction_db);
+        } else {
+            self.previous_true_peak_limiter_gain_reduction_db = 0.0;
         }
 
         stats.output_sample_peak = block.iter().map(|sample| sample.abs()).fold(0.0_f32, f32::max);
@@ -213,5 +252,59 @@ impl OfflineDspBlockProcessor {
         output: &mut FixedAudioBuffer<f32, N>,
     ) {
         let _stats = self.process_block_with_stats(input, output);
+    }
+}
+
+#[cfg(test)]
+mod block_processor_tests {
+    use super::*;
+
+    #[test]
+    fn activity_control_reaches_offline_compressor() {
+        let mut with_evidence = OfflineDspBlockProcessor::new(48_000.0);
+        with_evidence.set_eq_enabled(false);
+        with_evidence.set_compressor_enabled(true);
+        with_evidence.set_limiter_enabled(false);
+        with_evidence.compressor_mut().set_auto_makeup_enabled(true);
+        with_evidence.compressor_mut().set_target_lufs(-12.0);
+
+        let mut without_evidence = OfflineDspBlockProcessor::new(48_000.0);
+        without_evidence.set_eq_enabled(false);
+        without_evidence.set_compressor_enabled(true);
+        without_evidence.set_limiter_enabled(false);
+        without_evidence
+            .compressor_mut()
+            .set_auto_makeup_enabled(true);
+        without_evidence
+            .compressor_mut()
+            .set_target_lufs(-12.0);
+
+        let evidence = AutoMakeupActivityInput {
+            vad_probability: 0.95,
+            vad_reliability: 1.0,
+            noise_floor_db: -60.0,
+            live_noise_reliability: 1.0,
+        };
+        let mut input_with_evidence = [0.001_f32; 480];
+        let mut input_without_evidence = input_with_evidence;
+        let mut output_with_evidence = FixedAudioBuffer::<f32, 480>::new();
+        let mut output_without_evidence = FixedAudioBuffer::<f32, 480>::new();
+
+        for _ in 0..60 {
+            with_evidence.process_block_with_stats_and_activity_control(
+                &mut input_with_evidence,
+                &mut output_with_evidence,
+                Some(evidence),
+            );
+            without_evidence.process_block_with_stats(
+                &mut input_without_evidence,
+                &mut output_without_evidence,
+            );
+        }
+
+        assert!(
+            with_evidence.compressor.current_makeup_gain()
+                > without_evidence.compressor.current_makeup_gain() + 0.1
+        );
     }
 }

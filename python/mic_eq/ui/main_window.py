@@ -1193,10 +1193,7 @@ class MainWindow(QMainWindow):
         saved = False
         if self.__dict__.get("config") is not None:
             self.config.user_muted = self.user_muted
-            try:
-                saved = save_config(self.config)
-            except (OSError, TypeError, ValueError):
-                pass
+            saved = self._save_config_safely()
         if self.__dict__.get("_output_mute_error"):
             message = "Output mute change could not be applied"
             if saved:
@@ -1342,6 +1339,14 @@ class MainWindow(QMainWindow):
     def _schedule_ui_state_save(self) -> None:
         self._ui_state_timer.start(200)
 
+    def _save_config_safely(self) -> bool:
+        """Persist config without letting a write failure disrupt the UI."""
+        try:
+            return bool(save_config(self.config))
+        except Exception:
+            logger.warning("Could not save AudioForge configuration", exc_info=True)
+            return False
+
     def _save_ui_state(self) -> bool:
         if (
             hasattr(self, "main_splitter")
@@ -1352,12 +1357,10 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, "control_tabs"):
             self.config.main_control_tab_index = int(self.control_tabs.currentIndex())
-        try:
-            return save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            logger.exception("Could not save window settings")
+        saved = self._save_config_safely()
+        if not saved:
             self.status_bar.showMessage("Could not save window settings", 5000)
-            return False
+        return saved
 
     def _clamp_splitter_sizes(self, sizes: list[int]) -> list[int]:
         total = max(sum(int(size) for size in sizes), self.width() - 150, 760)
@@ -1531,10 +1534,7 @@ class MainWindow(QMainWindow):
             cleanup_mode=cleanup_mode,
             provenance="explicit_user",
         )
-        try:
-            saved = save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            saved = False
+        saved = self._save_config_safely()
         if not saved:
             if previous is None:
                 del route_preferences[route_key]
@@ -1892,10 +1892,7 @@ class MainWindow(QMainWindow):
 
     def _on_close_to_tray_toggled(self, checked: bool) -> None:
         setattr(self.config, "close_to_tray", bool(checked))
-        try:
-            saved = save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            saved = False
+        saved = self._save_config_safely()
         message = "Close-to-tray enabled" if checked else "Close-to-tray disabled"
         if not saved:
             message += "; preference could not be saved"
@@ -1909,10 +1906,7 @@ class MainWindow(QMainWindow):
         else:
             self._unregister_mute_hotkey()
             registered = True
-        try:
-            saved = save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            saved = False
+        saved = self._save_config_safely()
         if checked and not registered:
             return
         message = (
@@ -1962,18 +1956,24 @@ class MainWindow(QMainWindow):
         Args:
             preset_id: Stable preset ID to load on startup (empty string = Last Used)
         """
-        # Update config
+        previous = self.config.startup_preset
         self.config.startup_preset = preset_id
 
-        # Save config
-        save_config(self.config)
+        saved = self._save_config_safely()
+        if not saved:
+            self.config.startup_preset = previous
+            self.status_bar.showMessage(
+                "Startup preset could not be saved; previous selection kept", 6000
+            )
+            self._update_startup_preset_menu(previous)
+            return
 
-        # Show status message
         if preset_id:
             preset_name = _startup_preset_display_name(preset_id)
-            self.status_bar.showMessage(f"Startup preset set to {preset_name}", 5000)
+            message = f"Startup preset set to {preset_name}"
         else:
-            self.status_bar.showMessage("Startup preset set to Last Used", 5000)
+            message = "Startup preset set to Last Used"
+        self.status_bar.showMessage(message, 5000)
 
         self._update_startup_preset_menu(preset_id)
 
@@ -2083,9 +2083,16 @@ class MainWindow(QMainWindow):
 
     def _on_auto_apply_device_presets_toggled(self, checked: bool) -> None:
         self.config.auto_apply_device_presets = bool(checked)
-        save_config(self.config)
+        saved = self._save_config_safely()
         if checked:
             self._apply_bound_preset_for_current_route()
+        if not saved:
+            state = "enabled" if checked else "disabled"
+            self.status_bar.showMessage(
+                f"Automatic route presets {state} for this session, "
+                "but the preference could not be saved",
+                6000,
+            )
 
     def _bind_current_route_preset(self, preset_id: str) -> None:
         route_key = self._current_device_route_key()
@@ -2094,11 +2101,22 @@ class MainWindow(QMainWindow):
                 "Connect and select both route devices before binding a preset", 5000
             )
             return
+        previous = self.config.device_preset_bindings.get(route_key)
         self.config.device_preset_bindings[route_key] = DevicePresetBinding(
             preset_id=preset_id,
             provenance="explicit_user",
         )
-        save_config(self.config)
+        if not self._save_config_safely():
+            if previous is None:
+                self.config.device_preset_bindings.pop(route_key, None)
+            else:
+                self.config.device_preset_bindings[route_key] = previous
+            self._update_device_preset_menu()
+            self.status_bar.showMessage(
+                "Preset binding could not be saved; previous binding kept",
+                6000,
+            )
+            return
         self._update_device_preset_menu()
         self.status_bar.showMessage(
             f"Bound {_startup_preset_display_name(preset_id)} to this device route",
@@ -2111,7 +2129,14 @@ class MainWindow(QMainWindow):
             return
         removed = self.config.device_preset_bindings.pop(route_key, None)
         if removed is not None:
-            save_config(self.config)
+            if not self._save_config_safely():
+                self.config.device_preset_bindings[route_key] = removed
+                self._update_device_preset_menu()
+                self.status_bar.showMessage(
+                    "Preset binding could not be cleared because the change could not be saved",
+                    6000,
+                )
+                return
         self._update_device_preset_menu()
         self.status_bar.showMessage("Cleared the preset binding for this route", 4000)
 
@@ -2242,10 +2267,7 @@ class MainWindow(QMainWindow):
             profiles[key] = profile
             if legacy_key != key and legacy_key in profiles:
                 del profiles[legacy_key]
-            try:
-                saved = save_config(self.config)
-            except (OSError, TypeError, ValueError):
-                saved = False
+            saved = self._save_config_safely()
             if not saved:
                 self.status_bar.showMessage("Updated latency profile could not be saved", 6000)
         return (
@@ -2322,10 +2344,7 @@ class MainWindow(QMainWindow):
     def _on_use_measured_latency_toggled(self, enabled: bool):
         self.config.use_measured_latency = bool(enabled)
         self._apply_latency_compensation_for_current_devices()
-        try:
-            saved = save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            saved = False
+        saved = self._save_config_safely()
         mode = "enabled" if enabled else "disabled"
         message = f"Measured route delay in latency estimate {mode}"
         if not saved:
@@ -2359,10 +2378,7 @@ class MainWindow(QMainWindow):
         except ValueError as error:
             self.status_bar.showMessage(str(error), 6000)
             return False
-        try:
-            saved = save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            saved = False
+        saved = self._save_config_safely()
         if not saved:
             self.config.latency_calibration_profiles = previous
             self.status_bar.showMessage("Latency calibration could not be saved; retry saving", 6000)
@@ -2390,10 +2406,7 @@ class MainWindow(QMainWindow):
                 del self.config.latency_calibration_profiles[candidate]
                 removed = True
         if removed:
-            try:
-                saved = save_config(self.config)
-            except (OSError, TypeError, ValueError):
-                saved = False
+            saved = self._save_config_safely()
             if not saved:
                 self.config.latency_calibration_profiles = previous
                 self.status_bar.showMessage("Latency calibration reset could not be saved", 6000)
@@ -2564,7 +2577,11 @@ class MainWindow(QMainWindow):
                 self._sync_calibration_evidence(force_reset=True)
 
         if config_dirty:
-            save_config(self.config)
+            if not self._save_config_safely():
+                self.status_bar.showMessage(
+                    "Device selections applied for this session, but could not be saved",
+                    6000,
+                )
         self._update_session_summary()
 
     def _restore_from_config(self):
@@ -2728,7 +2745,7 @@ class MainWindow(QMainWindow):
                             f"Previous preset '{preset_key}' not found, starting with defaults"
                         )
                         self.config.last_preset = ""
-                        save_config(self.config)
+                        config_dirty = True
                 else:
                     # It's a file path
                     preset_path = Path(self.config.last_preset)
@@ -2744,7 +2761,7 @@ class MainWindow(QMainWindow):
                             "Previous preset file not found, starting with defaults"
                         )
                         self.config.last_preset = ""
-                        save_config(self.config)
+                        config_dirty = True
             except (OSError, ValueError, PresetValidationError) as e:
                 logger.warning("Preset restore failed", exc_info=True)
                 warning = f"Could not restore the previous preset; starting with defaults. {e}"
@@ -2752,10 +2769,7 @@ class MainWindow(QMainWindow):
                     text for text in (self.config.load_warning, warning) if text
                 )
                 self.config.last_preset = ""
-                try:
-                    cleared = save_config(self.config)
-                except (OSError, TypeError, ValueError):
-                    cleared = False
+                cleared = self._save_config_safely()
                 if not cleared:
                     self.config.load_warning += "\nThe cleared preset reference could not be saved."
 
@@ -2796,7 +2810,11 @@ class MainWindow(QMainWindow):
             self.input_cleanup_mode_combo.blockSignals(False)
 
         if config_dirty:
-            save_config(self.config)
+            if not self._save_config_safely():
+                self.status_bar.showMessage(
+                    "Restored settings applied for this session, but could not be saved",
+                    6000,
+                )
 
     def _on_device_changed(self):
         """Handle device selection change - save to config."""
@@ -2812,10 +2830,15 @@ class MainWindow(QMainWindow):
                 output_identity
             )
             self._apply_input_preferences_for_current_route()
-            save_config(self.config)
+            saved = self._save_config_safely()
             self._apply_latency_compensation_for_current_devices()
             self._apply_bound_preset_for_current_route()
             self._sync_calibration_evidence(force_reset=True)
+            if not saved:
+                self.status_bar.showMessage(
+                    "Device route applied for this session, but could not be saved",
+                    6000,
+                )
             self._update_session_summary()
 
     def _on_input_channel_mode_changed(self):
@@ -2845,10 +2868,7 @@ class MainWindow(QMainWindow):
         self._sync_calibration_evidence(force_reset=True)
 
     def _save_input_preferences(self) -> None:
-        try:
-            saved = save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            saved = False
+        saved = self._save_config_safely()
         if not saved:
             self.status_bar.showMessage(
                 "Input settings applied for this session, but could not be saved", 6000
@@ -3305,10 +3325,7 @@ class MainWindow(QMainWindow):
 
             previous_last_preset = self.config.last_preset
             self.config.last_preset = str(filepath)
-            try:
-                persisted = save_config(self.config)
-            except (IOError, OSError, TypeError, ValueError):
-                persisted = False
+            persisted = self._save_config_safely()
             if not persisted:
                 self.config.last_preset = previous_last_preset
                 self._last_preset_identity_persisted = False
@@ -4356,15 +4373,9 @@ class MainWindow(QMainWindow):
 
         persisted = True
         if persist_identity:
-            try:
-                persisted = save_config(self.config)
-            except (IOError, OSError, TypeError, ValueError):
-                logger.warning(
-                    "Could not remember loaded preset %s",
-                    preset.name,
-                    exc_info=True,
-                )
-                persisted = False
+            persisted = self._save_config_safely()
+            if not persisted:
+                logger.warning("Could not remember loaded preset %s", preset.name)
             if not persisted:
                 self.config.last_preset = previous_last_preset
             self._last_preset_identity_persisted = bool(persisted)

@@ -53,6 +53,7 @@ mod tests {
             let lookahead_samples = limiter.lookahead_samples() as u64;
             let total = total_reported_latency_us(
                 LatencyComponents {
+                    input_resampler_delay_samples: 0,
                     output_buffer_samples: 0,
                     output_sample_rate: sample_rate,
                     output_resampler_delay_samples: 0,
@@ -147,20 +148,22 @@ mod tests {
 
             let low_settings = settings(1.0);
             let high_settings = settings(10.0);
-            let (low_gain, _) = simulate_input_frontend(
+            let low_gain = simulate_input_frontend_with_activity(
                 py,
                 audio.clone(),
                 48_000.0,
                 Some(&low_settings),
             )
-            .expect("native VAD should process the fixture");
-            let (high_gain, _) = simulate_input_frontend(
+            .expect("native VAD should process the fixture")
+            .rendered;
+            let high_gain = simulate_input_frontend_with_activity(
                 py,
                 audio,
                 48_000.0,
                 Some(&high_settings),
             )
-            .expect("native VAD should process the fixture");
+            .expect("native VAD should process the fixture")
+            .rendered;
 
             let low_energy = low_gain.iter().map(|sample| sample.abs()).sum::<f32>();
             let high_energy = high_gain.iter().map(|sample| sample.abs()).sum::<f32>();
@@ -175,6 +178,7 @@ mod tests {
     fn test_total_reported_latency_respects_output_vs_processing_rates() {
         let total = total_reported_latency_us(
             LatencyComponents {
+                input_resampler_delay_samples: 96,
                 output_buffer_samples: 882,
                 output_sample_rate: 44_100,
                 output_resampler_delay_samples: 64,
@@ -189,6 +193,7 @@ mod tests {
         assert_eq!(
             total,
             20_000
+                + 2_000
                 + samples_to_micros(64, 44_100)
                 + 10_000
                 + 2_000
@@ -201,6 +206,7 @@ mod tests {
     fn test_total_reported_latency_omits_both_limiter_delays_when_disabled() {
         let total = total_reported_latency_us(
             LatencyComponents {
+                input_resampler_delay_samples: 0,
                 output_buffer_samples: 0,
                 output_sample_rate: 48_000,
                 output_resampler_delay_samples: 0,

@@ -247,16 +247,21 @@ fn simulate_passthrough(
     Ok(diagnostics.into_any().unbind())
 }
 
-/// Run the live input stages before the deterministic downstream processor.
-/// The returned samples have the suppressor's measured latency removed so the
-/// caller can compare them on the original capture timeline.
+/// Frontend output plus the control evidence observed on its source timeline.
 #[cfg(feature = "vad")]
-fn simulate_input_frontend(
+struct SimulatedInputFrontend {
+    rendered: Vec<f32>,
+    suppressor_latency: usize,
+    activity_evidence: Vec<AutoMakeupActivityInput>,
+}
+
+#[cfg(feature = "vad")]
+fn simulate_input_frontend_with_activity(
     py: Python<'_>,
     audio: Vec<f32>,
     sample_rate: f64,
     settings: Option<&Bound<'_, pyo3::types::PyDict>>,
-) -> PyResult<(Vec<f32>, usize)> {
+) -> PyResult<SimulatedInputFrontend> {
     if (sample_rate - 48_000.0).abs() > f64::EPSILON {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
             "full_chain suppression simulation requires a 48000 Hz capture",
@@ -270,6 +275,12 @@ fn simulate_input_frontend(
     })?;
     let input_pre_filtered = py_dict_bool(settings, "input_pre_filtered", false)?;
     let gate_enabled = py_dict_bool(settings, "gate_enabled", true)?;
+    let vad_available = py_dict_bool(settings, "vad_available", true)?;
+    let compressor_auto_makeup_enabled = py_dict_bool(
+        settings,
+        "compressor_auto_makeup_enabled",
+        false,
+    )?;
     let gate_mode = match py_dict_u8(settings, "gate_mode", 0)? {
         0 => GateMode::ThresholdOnly,
         1 => GateMode::VadAssisted,
@@ -325,11 +336,12 @@ fn simulate_input_frontend(
         ))
     })?;
     let strength = Arc::new(AtomicU32::new((suppressor_strength as f32).to_bits()));
-    let use_native_vad = gate_enabled
+    let use_native_vad = vad_available
         && vad_probabilities.is_empty()
-        && matches!(gate_mode, GateMode::VadAssisted | GateMode::VadOnly);
+        && (compressor_auto_makeup_enabled
+            || (gate_enabled && matches!(gate_mode, GateMode::VadAssisted | GateMode::VadOnly)));
 
-    let rendered = py.detach(move || -> Result<(Vec<f32>, usize), String> {
+    let rendered = py.detach(move || -> Result<SimulatedInputFrontend, String> {
         let (mut suppressor, suppressor_latency) = if suppressor_enabled {
             let engine = new_noise_suppression_engine(suppressor_model, strength);
             if !engine.backend_available() {
@@ -364,6 +376,7 @@ fn simulate_input_frontend(
         let mut cleanup = AdaptiveInputCleanupState::new(sample_rate as f32);
         cleanup.set_mode(cleanup_mode);
         let mut delayed_output = Vec::with_capacity(audio.len() + suppressor_latency);
+        let mut activity_evidence = Vec::with_capacity(block_count);
         for (block_index, chunk) in audio.chunks(RNNOISE_FRAME_SIZE).enumerate() {
             let mut processed = chunk.to_vec();
             for sample in &mut processed {
@@ -386,26 +399,55 @@ fn simulate_input_frontend(
             if adaptive_cleanup_enabled {
                 cleanup.process_block(&mut processed);
             }
-            if gate_enabled {
-                if let Some(probability) = vad_probabilities.get(block_index) {
-                    gate.set_external_vad_probability(*probability, true);
-                } else if let Some(vad) = native_vad.as_mut() {
+            let mut vad_probability = 0.0_f64;
+            let mut vad_reliability = 0.0_f64;
+            if let Some(probability) = vad_probabilities.get(block_index) {
+                vad_probability = f64::from(*probability);
+                vad_reliability = 1.0;
+            }
+            if vad_probabilities.is_empty() {
+                if let Some(vad) = native_vad.as_mut() {
                     if let Some(probability) = vad
                         .process_latest(&processed)
                         .map_err(|error| format!("full_chain VAD inference failed: {error}"))?
                     {
                         latest_vad_probability = Some(probability.clamp(0.0, 1.0));
                     }
-                    if let Some(probability) = latest_vad_probability {
-                        gate.set_external_vad_probability(probability, true);
-                    } else {
-                        gate.set_external_vad_probability(0.0, false);
-                    }
+                }
+                if let Some(probability) = latest_vad_probability {
+                    vad_probability = f64::from(probability);
+                    // Offline inference has no worker scheduling age to
+                    // measure; each completed model result is treated as
+                    // fresh. A live worker can still lose reliability to
+                    // queue delay or a stalled callback.
+                    vad_reliability = 1.0;
+                } else {
+                    vad_reliability = 0.0;
+                }
+            }
+            if gate_enabled {
+                if vad_reliability > 0.0 {
+                    gate.set_external_vad_probability(vad_probability as f32, true);
                 } else {
                     gate.set_external_vad_probability(0.0, false);
                 }
                 gate.process_block_inplace(&mut processed);
             }
+
+            activity_evidence.push(AutoMakeupActivityInput {
+                vad_probability,
+                vad_reliability,
+                noise_floor_db: if gate_enabled {
+                    f64::from(gate.noise_floor())
+                } else {
+                    -60.0
+                },
+                live_noise_reliability: if gate_enabled {
+                    f64::from(gate.noise_floor_reliability())
+                } else {
+                    0.0
+                },
+            });
 
             if let Some(engine) = suppressor.as_mut() {
                 let mut frame = [0.0_f32; RNNOISE_FRAME_SIZE];
@@ -454,7 +496,11 @@ fn simulate_input_frontend(
             .min(delayed_output.len());
         let mut rendered = delayed_output[aligned_start..aligned_end].to_vec();
         rendered.resize(audio.len(), 0.0);
-        Ok((rendered, suppressor_latency))
+        Ok(SimulatedInputFrontend {
+            rendered,
+            suppressor_latency,
+            activity_evidence,
+        })
     });
 
     rendered.map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
@@ -913,12 +959,41 @@ pub fn simulate_auto_eq_chain(
         return simulate_passthrough(py, audio, &processing_mode);
     }
     let mut frontend_latency_samples = 0_usize;
+    let configured_vad_probabilities = py_dict_f32_vec(settings, "vad_probabilities")?.unwrap_or_default();
+    let configured_control_block_size = ten_ms_control_block_size(sample_rate);
+    if (!full_chain || processing_mode == "normal")
+        && !configured_vad_probabilities.is_empty()
+        && configured_vad_probabilities.len() != audio.len().div_ceil(configured_control_block_size)
+    {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected {} VAD probabilities at the 10 ms cadence, got {}",
+            audio.len().div_ceil(configured_control_block_size),
+            configured_vad_probabilities.len()
+        )));
+    }
+    let mut frontend_activity_evidence = if !full_chain || processing_mode == "normal" {
+        (!configured_vad_probabilities.is_empty()).then(|| {
+            configured_vad_probabilities
+                .iter()
+                .map(|probability| AutoMakeupActivityInput {
+                    vad_probability: f64::from(*probability),
+                    vad_reliability: 1.0,
+                    noise_floor_db: -60.0,
+                    live_noise_reliability: 0.0,
+                })
+                .collect()
+        })
+    } else {
+        None
+    };
     if full_chain && processing_mode == "normal" {
         #[cfg(feature = "vad")]
         {
-            let (rendered, latency) = simulate_input_frontend(py, audio, sample_rate, settings)?;
-            audio = rendered;
-            frontend_latency_samples = latency;
+            let frontend =
+                simulate_input_frontend_with_activity(py, audio, sample_rate, settings)?;
+            audio = frontend.rendered;
+            frontend_latency_samples = frontend.suppressor_latency;
+            frontend_activity_evidence = Some(frontend.activity_evidence);
         }
         #[cfg(not(feature = "vad"))]
         {
@@ -1050,6 +1125,11 @@ pub fn simulate_auto_eq_chain(
             "compressor_auto_makeup_enabled",
             false,
         )?);
+        compressor.set_noise_reference_reliability(py_dict_f64(
+            settings,
+            "compressor_noise_reference_reliability",
+            0.0,
+        )?);
         compressor.set_target_lufs(py_dict_f64(settings, "compressor_target_lufs", -18.0)?);
         compressor.set_sidechain_highpass_enabled(py_dict_bool(
             settings,
@@ -1085,6 +1165,7 @@ pub fn simulate_auto_eq_chain(
     }
 
     let processed_samples = audio.len();
+    let activity_control_cadence = frontend_activity_evidence.is_some();
     let simulation = py.detach(move || {
         let mut output = FixedAudioBuffer::<f32, RT_PROCESS_BUFFER_CAPACITY>::new();
     let mut input_square_sum = 0.0_f64;
@@ -1108,9 +1189,13 @@ pub fn simulate_auto_eq_chain(
     let flush_samples = chain_latency_samples.saturating_add(tail_flush_samples);
     let mut rendered_with_latency = Vec::with_capacity(audio.len() + flush_samples);
 
-    let analysis_block_samples = ((sample_rate * 0.020).round() as usize)
+    let analysis_block_samples = (if frontend_activity_evidence.is_some() {
+        ten_ms_control_block_size(sample_rate)
+    } else {
+        (sample_rate * 0.020).round() as usize
+    })
         .clamp(1, RT_PROCESS_BUFFER_CAPACITY);
-    for chunk in audio.chunks(analysis_block_samples) {
+    for (block_index, chunk) in audio.chunks(analysis_block_samples).enumerate() {
         let mut block = chunk.to_vec();
         let mut block_input_square_sum = 0.0_f64;
         for sample in block.iter_mut() {
@@ -1122,7 +1207,14 @@ pub fn simulate_auto_eq_chain(
             input_samples += 1;
         }
 
-        let stats = processor.process_block_with_stats(&mut block, &mut output);
+        let activity = frontend_activity_evidence
+            .as_ref()
+            .and_then(|evidence| evidence.get(block_index).copied());
+        let stats = processor.process_block_with_stats_and_activity_control(
+            &mut block,
+            &mut output,
+            activity,
+        );
         let block_input_rms = if chunk.is_empty() {
             0.0
         } else {
@@ -1411,7 +1503,10 @@ pub fn simulate_auto_eq_chain(
         "deesser_gain_reduction_p95_db",
         deesser_reduction_p95_db,
     )?;
-    diagnostics.set_item("analysis_block_ms", 20.0_f32)?;
+    diagnostics.set_item(
+        "analysis_block_ms",
+        if activity_control_cadence { 10.0_f32 } else { 20.0_f32 },
+    )?;
     diagnostics.set_item("chain_latency_samples", chain_latency_samples)?;
     diagnostics.set_item("suppressor_latency_samples", frontend_latency_samples)?;
     diagnostics.set_item("full_chain", full_chain)?;

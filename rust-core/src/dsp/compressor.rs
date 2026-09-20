@@ -640,7 +640,12 @@ impl Compressor {
                 }
                 return;
             }
-            let required_gain = self.target_lufs - self.current_lufs;
+            // The meter receives the compressor output after the currently
+            // applied makeup gain. Remove that gain before calculating the
+            // correction, otherwise feedback settles below the requested
+            // target by approximately the applied makeup amount.
+            let pre_makeup_lufs = self.current_lufs - self.smoothed_makeup_gain;
+            let required_gain = self.target_lufs - pre_makeup_lufs;
             let reliability_cap = (12.0 * self.auto_makeup_activity_reliability).clamp(3.0, 12.0);
             let headroom_cap =
                 (12.0 - self.limiter_feedback_gain_reduction_db * 2.0).clamp(0.0, reliability_cap);
@@ -1294,6 +1299,35 @@ mod tests {
 
         assert!(compressed.current_gain_reduction() > 1.0);
         assert!(compressed.current_makeup_gain() >= uncompressed.current_makeup_gain());
+    }
+
+    #[test]
+    fn test_auto_makeup_converges_to_target_after_feedback_compensation() {
+        let sample_rate = 48_000.0;
+        let mut compressor = Compressor::new(0.0, 1.0, 0.1, 200.0, 0.0, 0.0, sample_rate);
+        compressor.set_auto_makeup_enabled(true);
+        compressor.set_target_lufs(-14.0);
+
+        let amplitude = 10.0_f32.powf(-24.0 / 20.0) * 2.0_f32.sqrt();
+        let block_size = 480;
+        for block_index in 0..1_200 {
+            let mut block = vec![0.0_f32; block_size];
+            for (sample_index, sample) in block.iter_mut().enumerate() {
+                let phase = 2.0
+                    * std::f32::consts::PI
+                    * 1_000.0
+                    * (block_index * block_size + sample_index) as f32
+                    / sample_rate as f32;
+                *sample = amplitude * phase.sin();
+            }
+            compressor.process_block_inplace(&mut block);
+        }
+
+        assert!(
+            (compressor.current_lufs() + 14.0).abs() < 1.0,
+            "auto makeup failed to converge to target: {:.2} LUFS",
+            compressor.current_lufs()
+        );
     }
 
     #[test]

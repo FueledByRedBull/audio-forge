@@ -382,6 +382,10 @@ impl AudioProcessor {
             .as_ref()
             .map(|resampler| resampler.output_delay() as u64)
             .unwrap_or(0);
+        let input_resampler_delay_samples_for_latency = input_resampler
+            .as_ref()
+            .map(|resampler| resampler.output_delay() as u64)
+            .unwrap_or(0);
         self.input_resampler_active
             .store(input_resampler.is_some(), Ordering::Relaxed);
         self.output_resampler_active
@@ -1910,6 +1914,8 @@ impl AudioProcessor {
                                     };
                                 let total_latency = total_reported_latency_us(
                                     LatencyComponents {
+                                        input_resampler_delay_samples:
+                                            input_resampler_delay_samples_for_latency,
                                         output_buffer_samples,
                                         output_sample_rate: output_sample_rate_for_latency,
                                         output_resampler_delay_samples:

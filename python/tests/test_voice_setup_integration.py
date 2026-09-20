@@ -224,6 +224,16 @@ def test_accepted_full_voice_setup_is_one_undo_transaction(
         )
         dialog._on_start_clicked()
         assert len(accepted) == 1
+        assert len(window.config.calibration_results) == 1
+        assert window.config.calibration_results[0].verified_stages == (
+            "input_cleanup",
+            "gate",
+            "suppression",
+            "eq",
+            "deesser",
+            "compressor",
+            "limiter",
+        )
     finally:
         window._history_transaction_depth -= 1
 
@@ -260,6 +270,50 @@ def test_voice_setup_rejects_a_different_route_before_applying(
         assert window._get_current_preset().to_dict() == before
         assert "context changed" in messages[-1]
     finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_raw_monitor_verification_capture_allows_intended_mode_transition(
+    real_main_window, monkeypatch
+) -> None:
+    window = real_main_window
+    monkeypatch.setattr(
+        window,
+        "_calibration_context_key",
+        lambda: (
+            '["test-route","phase_safe_mono","off",null,"'
+            f'{window._processing_mode()}"]'
+        ),
+    )
+    window._set_processing_mode("raw")
+    window.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.73})
+    dialog = VoiceSetupDialog(parent=window)
+    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
+    _bind_capture_context(dialog, noise, speech)
+    dialog._capture_context_key = window._calibration_context_key()
+    _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
+    assert window._processing_mode() == "normal"
+    assert dialog._candidate_identity_error(window) is None
+
+    monkeypatch.setattr(
+        type(window.processor),
+        "start_raw_recording",
+        lambda *_args, **_kwargs: None,
+    )
+    dialog.setup_state = "verification_recording"
+    try:
+        dialog._begin_recording_capture()
+        assert dialog.setup_state == "verification_recording"
+        assert dialog.recording_timer.isActive()
+    finally:
+        dialog.recording_timer.stop()
+        dialog._cleanup_recording_tap()
+        assert dialog._restore_pre_setup_snapshot()
+        assert window._processing_mode() == "raw"
+        assert window.compressor_panel.get_compressor_settings(include_calibration=True)[
+            "noise_reference_reliability"
+        ] == pytest.approx(0.73)
         dialog.reject()
         dialog.deleteLater()
 

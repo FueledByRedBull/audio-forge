@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from collections.abc import Mapping
+import json
 import logging
 import threading
 import time
@@ -232,6 +233,31 @@ def _candidate_settings_error(
     if eq_error is not None and setup_result.get("eq_error"):
         return str(setup_result["eq_error"])
     return eq_error
+
+
+def _voice_setup_context_matches(
+    captured: object,
+    current: object,
+    *,
+    allow_raw_to_normal: bool = False,
+) -> bool:
+    if captured == current:
+        return True
+    if not allow_raw_to_normal or not isinstance(captured, str) or not isinstance(current, str):
+        return False
+    try:
+        captured_parts = json.loads(captured)
+        current_parts = json.loads(current)
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(captured_parts, list)
+        and isinstance(current_parts, list)
+        and len(captured_parts) == len(current_parts) == 5
+        and captured_parts[:4] == current_parts[:4]
+        and captured_parts[4] == "raw"
+        and current_parts[4] == "normal"
+    )
 
 
 class VoiceSetupWorker(QThread):
@@ -776,8 +802,8 @@ class VoiceSetupDialog(QDialog):
             self.warning_label.setText(
                 "Read naturally again. The raw passage will be rendered through "
                 "the complete proposed input, gate, suppression, EQ, and dynamics "
-                "chain and compared with the first capture. Live loudness "
-                "adaptation remains outside this offline check."
+                "chain and compared with the first capture. Live device timing "
+                "and worker scheduling remain outside this offline check."
             )
             self.warning_label.setStyleSheet(message_text_style("info", strong=True))
 
@@ -876,7 +902,15 @@ class VoiceSetupDialog(QDialog):
         context_key = _owner_calibration_context_key(parent)
         if self.setup_state == "noise_recording":
             self._capture_context_key = context_key
-        elif context_key != self._capture_context_key:
+        elif not _voice_setup_context_matches(
+            self._capture_context_key,
+            context_key,
+            allow_raw_to_normal=(
+                self.setup_state == "verification_recording"
+                and isinstance(self._pre_setup_snapshot, Mapping)
+                and self._pre_setup_snapshot.get("processing_mode") == "raw"
+            ),
+        ):
             self._on_recording_failed(
                 "Audio route or input cleanup context changed during setup."
             )
@@ -1370,7 +1404,14 @@ class VoiceSetupDialog(QDialog):
                 return "audio sample rate changed after analysis"
         except RuntimeError:
             return "candidate capture sample rate is unavailable"
-        if capture.get("context_key") != _owner_calibration_context_key(parent):
+        if not _voice_setup_context_matches(
+            capture.get("context_key"),
+            _owner_calibration_context_key(parent),
+            allow_raw_to_normal=(
+                isinstance(self._pre_setup_snapshot, Mapping)
+                and self._pre_setup_snapshot.get("processing_mode") == "raw"
+            ),
+        ):
             return "audio route or input cleanup context changed after capture"
         return None
 
@@ -1601,7 +1642,8 @@ class VoiceSetupDialog(QDialog):
         self.warning_label.setText(
             "Read the passage once more to accept, reduce, retry, or roll back "
             "using the exact combined input, gate, suppression, EQ, and dynamics "
-            "candidate. Live loudness adaptation remains outside this check."
+            "candidate. Live device timing and worker scheduling remain outside "
+            "this offline check."
         )
         self.warning_label.setStyleSheet(message_text_style("info", strong=True))
 
@@ -1926,7 +1968,11 @@ class VoiceSetupDialog(QDialog):
             if (
                 not snapshot_context
                 or not current_context
-                or snapshot_context != current_context
+                or not _voice_setup_context_matches(
+                    snapshot_context,
+                    current_context,
+                    allow_raw_to_normal=snapshot.get("processing_mode") == "raw",
+                )
             ):
                 reliability = 0.0
             compressor_metadata = deepcopy(snapshot.get("compressor_metadata") or {})
@@ -2031,7 +2077,7 @@ class VoiceSetupDialog(QDialog):
             "and limiter verification "
             "accepted the candidate after the final listening comparison.\n\n"
             + metrics_text
-            + "\n\nLive loudness adaptation remains outside this offline check; "
+            + "\n\nLive device timing and worker scheduling remain outside this offline check; "
             "this validates engineering constraints and listening preference.",
         )
         self._pre_setup_snapshot = None

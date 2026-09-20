@@ -109,6 +109,9 @@ def _flatten_chain_settings(chain_settings: dict[str, Any] | None) -> dict[str, 
         "compressor_base_release_ms": _as_float(compressor.get("base_release_ms"), 50.0),
         "compressor_auto_makeup_enabled": _as_bool(compressor.get("auto_makeup_enabled"), False),
         "compressor_target_lufs": _as_float(compressor.get("target_lufs"), -18.0),
+        "compressor_noise_reference_reliability": _as_float(
+            compressor.get("noise_reference_reliability"), 0.0
+        ),
         "compressor_sidechain_highpass_enabled": _as_bool(
             compressor.get("sidechain_highpass_enabled"),
             True,
@@ -172,6 +175,7 @@ def _flatten_chain_settings(chain_settings: dict[str, Any] | None) -> dict[str, 
         "input_cleanup_mode",
         "processing_mode",
         "vad_probabilities",
+        "vad_available",
     ):
         if key in chain_settings:
             flattened[key] = deepcopy(chain_settings[key])

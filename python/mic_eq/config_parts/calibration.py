@@ -123,12 +123,20 @@ class CalibrationResult:
             verification_hash = None
             compatibility = None
         stages = value.get("verified_stages")
-        if not isinstance(stages, (list, tuple)) or not stages or len(stages) > 6:
+        if not isinstance(stages, (list, tuple)) or not stages or len(stages) > 7:
             return None
         if any(
             not isinstance(stage, str)
             or stage
-            not in {"eq", "gate", "suppression", "deesser", "compressor", "limiter"}
+            not in {
+                "input_cleanup",
+                "eq",
+                "gate",
+                "suppression",
+                "deesser",
+                "compressor",
+                "limiter",
+            }
             for stage in stages
         ):
             return None

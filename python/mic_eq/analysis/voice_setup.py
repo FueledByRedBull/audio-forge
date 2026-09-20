@@ -791,6 +791,7 @@ def _calibrate_compressor_threshold(
     target_median_db: float,
     peak_cap_db: float,
     limiter_settings: Mapping[str, Any] | None = None,
+    vad_probabilities: np.ndarray | None = None,
     cancel_check: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, int], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -814,6 +815,21 @@ def _calibrate_compressor_threshold(
         "objective_weights": dict(_COMPRESSOR_OBJECTIVE_WEIGHTS),
     }
     started = time.perf_counter()
+    mapped_vad_probabilities: np.ndarray | None = None
+    if vad_probabilities is not None:
+        control_block_size = max(1, int(round(sample_rate * 0.010)))
+        block_count = (
+            speech_audio.size + control_block_size - 1
+        ) // control_block_size
+        frame_ends = np.minimum(
+            np.arange(1, block_count + 1, dtype=np.int64) * control_block_size,
+            speech_audio.size,
+        )
+        mapped_vad_probabilities = map_causal_vad_probabilities(
+            vad_probabilities,
+            frame_ends,
+            sample_rate,
+        )
     incumbent = {
         key: _clamp(
             float(calibrated[key]),
@@ -844,15 +860,18 @@ def _calibrate_compressor_threshold(
         # particular, auto makeup changes both loudness and downstream
         # headroom, so disabling it here would calibrate a different chain.
         simulation_compressor = dict(candidate)
+        simulation_chain: dict[str, Any] = {
+            "deesser": deesser_settings,
+            "compressor": simulation_compressor,
+            "limiter": dict(effective_limiter_settings),
+        }
+        if mapped_vad_probabilities is not None:
+            simulation_chain["vad_probabilities"] = mapped_vad_probabilities
         simulation = simulate_candidate_chain(
             speech_audio.astype(np.float32, copy=False),
             sample_rate,
             eq_settings,
-            {
-                "deesser": deesser_settings,
-                "compressor": simulation_compressor,
-                "limiter": dict(effective_limiter_settings),
-            },
+            simulation_chain,
         )
         if simulation.get("simulation_backend") != "rust":
             return (
@@ -1071,15 +1090,18 @@ def _calibrate_compressor_threshold(
     calibrated.update(best_values)
     check_analysis_cancelled(cancel_check)
     # Recheck the winner with the exact controls that will be applied.
+    winner_chain: dict[str, Any] = {
+        "deesser": deesser_settings,
+        "compressor": dict(calibrated),
+        "limiter": dict(effective_limiter_settings),
+    }
+    if mapped_vad_probabilities is not None:
+        winner_chain["vad_probabilities"] = mapped_vad_probabilities
     winner_verification = simulate_candidate_chain(
         speech_audio.astype(np.float32, copy=False),
         sample_rate,
         eq_settings,
-        {
-            "deesser": deesser_settings,
-            "compressor": dict(calibrated),
-            "limiter": dict(effective_limiter_settings),
-        },
+        winner_chain,
     )
     if winner_verification.get("simulation_backend") == "rust":
         best_simulation = winner_verification
@@ -1321,6 +1343,28 @@ def analyze_voice_setup(
         speech_snr_db=speech_snr_db,
         speech_dynamic_range_db=speech_dynamic_range_db,
     )
+    # Use one detector pass with the proposed gate controls for every
+    # downstream evaluation, including compressor auto-makeup calibration.
+    joint_vad_probabilities = vad_probabilities
+    joint_noise_vad_probabilities = noise_vad_probabilities
+    joint_vad_backend = vad_analysis_backend
+    joint_noise_vad_backend = noise_vad_backend
+    if vad_available:
+        joint_vad_probabilities, joint_vad_backend = analyze_offline_vad(
+            speech_arr,
+            sample_rate,
+            threshold=float(gate_settings["vad_threshold"]),
+            pre_gain=float(gate_settings["vad_pre_gain"]),
+        )
+        joint_noise_vad_probabilities, joint_noise_vad_backend = (
+            analyze_offline_vad(
+                noise_arr,
+                sample_rate,
+                threshold=float(gate_settings["vad_threshold"]),
+                pre_gain=float(gate_settings["vad_pre_gain"]),
+            )
+        )
+        check_analysis_cancelled(cancel_check)
     deesser_settings, deesser_diag = _recommend_deesser_settings(
         freqs=spectrum_result.freqs,
         spectrum_db=smoothed_spectrum,
@@ -1403,36 +1447,13 @@ def analyze_voice_setup(
                 ),
                 peak_cap_db=float(compressor_diag["peak_reduction_cap_db"]),
                 limiter_settings=effective_limiter_settings,
+                vad_probabilities=joint_vad_probabilities,
                 cancel_check=cancel_check,
                 progress_callback=progress_callback,
             )
         )
 
     check_analysis_cancelled(cancel_check)
-
-    # The initial VAD pass supplies stable measurement features. Re-run the
-    # detector with the settings we are about to evaluate so joint tuning sees
-    # the same threshold and input gain as the live gate.
-    joint_vad_probabilities = vad_probabilities
-    joint_noise_vad_probabilities = noise_vad_probabilities
-    joint_vad_backend = vad_analysis_backend
-    joint_noise_vad_backend = noise_vad_backend
-    if vad_available:
-        joint_vad_probabilities, joint_vad_backend = analyze_offline_vad(
-            speech_arr,
-            sample_rate,
-            threshold=float(gate_settings["vad_threshold"]),
-            pre_gain=float(gate_settings["vad_pre_gain"]),
-        )
-        joint_noise_vad_probabilities, joint_noise_vad_backend = (
-            analyze_offline_vad(
-                noise_arr,
-                sample_rate,
-                threshold=float(gate_settings["vad_threshold"]),
-                pre_gain=float(gate_settings["vad_pre_gain"]),
-            )
-        )
-        check_analysis_cancelled(cancel_check)
 
     incumbent_payload = dict(incumbent_settings or {})
     incumbent_gate = incumbent_payload.get("gate")
@@ -1556,6 +1577,7 @@ def analyze_voice_setup(
         "input_pre_filtered": not full_chain_raw_available,
         "input_cleanup_mode": str(input_cleanup_mode),
         "processing_mode": str(processing_mode),
+        "vad_available": bool(vad_available),
         "return_output_audio": True,
     }
     try:
@@ -1905,6 +1927,12 @@ def validate_voice_setup_verification(
     )
     if full_chain:
         chain = _comparison_chain_settings(setup_result, requested_chain)
+        if isinstance(requested_chain, Mapping) and "vad_available" in requested_chain:
+            chain["vad_available"] = bool(requested_chain["vad_available"])
+        else:
+            diagnostics = setup_result.get("diagnostics")
+            if isinstance(diagnostics, Mapping) and "vad_available" in diagnostics:
+                chain["vad_available"] = bool(diagnostics["vad_available"])
         raw_inputs = (raw_noise_audio, raw_verification_speech_audio)
         if all(audio is not None for audio in raw_inputs):
             chain["input_pre_filtered"] = False

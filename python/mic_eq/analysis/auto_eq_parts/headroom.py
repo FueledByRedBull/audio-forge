@@ -10,7 +10,7 @@ import numpy as np
 from scipy.signal import lfilter, resample_poly
 
 from ..eq_quality import evaluate_eq_quality, weighted_target_error
-from .constants import NUM_EQ_BANDS, REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD
+from .constants import NUM_EQ_BANDS, REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD, SAMPLE_RATE
 from .dynamic_bands import _voice_weights
 from .optimizer import _build_fit_context, _overall_confidence, _validation_confidence
 from ..cancellation import check_analysis_cancelled
@@ -464,6 +464,7 @@ def _refresh_scaled_eq_metadata(
     measured_db: np.ndarray | None,
     target_db: np.ndarray | None,
     fit_context: Mapping[str, Any] | None = None,
+    sample_rate: float = SAMPLE_RATE,
 ) -> None:
     gains = np.asarray(result["band_gains"], dtype=float)
     centers = np.asarray(result.get("band_freqs", []), dtype=float)
@@ -472,7 +473,12 @@ def _refresh_scaled_eq_metadata(
         return
 
     result["active_band_count"] = int(np.count_nonzero(np.abs(gains) >= 0.25))
-    result["eq_quality"] = evaluate_eq_quality(centers, gains, qs).to_dict()
+    result["eq_quality"] = evaluate_eq_quality(
+        centers,
+        gains,
+        qs,
+        sample_rate=sample_rate,
+    ).to_dict()
     result["max_adjacent_gain_difference_db"] = float(np.max(np.abs(np.diff(gains))))
     octave_gaps = np.maximum(np.diff(np.log2(np.clip(centers, 1e-6, None))), 1e-6)
     result["max_adjacent_gain_slope_db_per_octave"] = float(
@@ -497,10 +503,24 @@ def _refresh_scaled_eq_metadata(
             weights = fit_context.get("weights")
             weights = _voice_weights(freqs) if weights is None else np.asarray(weights, dtype=float)
             before_error = weighted_target_error(
-                freqs, measured, target, np.zeros_like(gains), qs, centers, weights
+                freqs,
+                measured,
+                target,
+                np.zeros_like(gains),
+                qs,
+                centers,
+                weights,
+                sample_rate=sample_rate,
             )
             after_error = weighted_target_error(
-                freqs, measured, target, gains, qs, centers, weights
+                freqs,
+                measured,
+                target,
+                gains,
+                qs,
+                centers,
+                weights,
+                sample_rate=sample_rate,
             )
             result["validation_before_error_db"] = before_error
             result["validation_after_error_db"] = after_error
@@ -591,7 +611,14 @@ def apply_headroom_validation(
     existing_scale = _as_float(result.get("validation_gain_scale"), 1.0)
     result["validation_gain_scale"] = float(existing_scale * selected_scale)
     result["headroom_gain_scale"] = float(selected_scale)
-    _refresh_scaled_eq_metadata(result, analysis_freqs, measured_db, target_db, fit_context)
+    _refresh_scaled_eq_metadata(
+        result,
+        analysis_freqs,
+        measured_db,
+        target_db,
+        fit_context,
+        sample_rate=sample_rate,
+    )
 
     meets_thresholds = _is_headroom_safe(selected)
     authoritative = selected.get("simulation_backend") == "rust"

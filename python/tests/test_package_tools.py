@@ -203,6 +203,36 @@ def test_release_build_selects_python_313_and_pinned_cpu_ort_explicitly():
     assert errors == []
 
 
+def test_release_metadata_checks_each_native_version_command_immediately():
+    workflow = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
+        encoding="utf-8"
+    )
+    lines = workflow.splitlines()
+
+    msi_index = next(
+        index
+        for index, line in enumerate(lines)
+        if "$msiVersion =" in line
+    )
+    prerelease_index = next(
+        index
+        for index, line in enumerate(lines)
+        if "$isPrerelease =" in line
+    )
+
+    assert lines[msi_index + 1].strip().startswith("if ($LASTEXITCODE -ne 0")
+    assert lines[prerelease_index + 1].strip().startswith("if ($LASTEXITCODE -ne 0")
+    assert '$isPrerelease -notin @("true", "false")' in lines[prerelease_index + 1]
+    assert (
+        "if ($LASTEXITCODE -ne 0 -or $sourceRevision -notmatch"
+        in workflow
+    )
+    assert (
+        'if ($LASTEXITCODE -ne 0 -or $tagCommit -ne "${{ needs.package-windows.outputs.source_revision }}")'
+        in workflow
+    )
+
+
 def test_ci_workflow_hydrates_cpu_ort_before_both_build_jobs():
     source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
     errors: list[str] = []
@@ -388,6 +418,14 @@ def test_workflow_gate_parser_excludes_disabled_and_non_blocking_steps():
                         "continue-on-error": "${{ true }}",
                         "run": "python expression-tolerated.py",
                     },
+                    {
+                        "continue-on-error": "${{true}}",
+                        "run": "python compact-expression-tolerated.py",
+                    },
+                    {
+                        "if": "${{false}}",
+                        "run": "python compact-expression-disabled.py",
+                    },
                     {"run": "# python comment.py\npython active.py"},
                 ],
             },
@@ -409,9 +447,36 @@ def test_workflow_gate_parser_excludes_disabled_and_non_blocking_steps():
     assert "disabled.py" not in active
     assert "tolerated.py" not in active
     assert "expression-tolerated.py" not in active
+    assert "compact-expression-tolerated.py" not in active
+    assert "compact-expression-disabled.py" not in active
     assert "disabled-job.py" not in active
     assert "tolerated-job.py" not in active
     assert "comment.py" not in active
+
+
+def test_workflow_gate_parser_excludes_disabled_and_non_blocking_actions():
+    document = {
+        "jobs": {
+            "active": {
+                "steps": [
+                    {"uses": "actions/download-artifact@" + "a" * 40},
+                    {"if": False, "uses": "actions/checkout@" + "b" * 40},
+                    {
+                        "continue-on-error": "${{true}}",
+                        "uses": "actions/upload-artifact@" + "c" * 40,
+                    },
+                ]
+            },
+            "disabled-job": {
+                "if": "${{false}}",
+                "steps": [{"uses": "actions/download-artifact@" + "d" * 40}],
+            },
+        }
+    }
+
+    active = check_workflows._active_uses(document)
+
+    assert active == ["actions/download-artifact@" + "a" * 40]
 
 
 @pytest.mark.parametrize(

@@ -139,6 +139,7 @@ def analyze_auto_eq(
         tilt_policy=tilt_policy,
         fit_context=fit_context,
         cancel_check=cancel_check,
+        sample_rate=requested_rate,
     )
     check_analysis_cancelled(cancel_check)
     eq_settings["target_mode"] = target_mode

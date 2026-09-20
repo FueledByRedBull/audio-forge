@@ -25,10 +25,11 @@ def _biquad_coefficients(
     q: float,
     fc: float,
     filter_type: str,
+    sample_rate: float = SAMPLE_RATE,
 ) -> tuple[float, float, float, float, float, float]:
     """Return RBJ biquad coefficients with un-normalized a0."""
     amplitude = 10 ** (gain_db / 40.0)
-    w0 = 2 * np.pi * fc / SAMPLE_RATE
+    w0 = 2 * np.pi * fc / sample_rate
     alpha = np.sin(w0) / (2.0 * q)
     cos_w0 = np.cos(w0)
 
@@ -64,19 +65,27 @@ def _predict_eq_response(
     qs,
     center_freqs,
     filter_types: list[str] | tuple[str, ...] | None = None,
+    *,
+    sample_rate: float = SAMPLE_RATE,
 ):
     """
     Predict how EQ settings affect frequency response.
 
     Simulates the combined effect of the full 10-band EQ, matching the live DSP
     topology with shelves on the first and last bands and peaking filters in between.
-    The live processor and this model are fixed at 48 kHz; the pipeline validates
-    that boundary before invoking the model.
+    The default matches the live processor at 48 kHz. Generic offline callers can
+    pass their capture rate explicitly.
     """
+    try:
+        sample_rate = float(sample_rate)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("EQ response sample rate must be finite and positive") from exc
+    if not np.isfinite(sample_rate) or sample_rate <= 0.0:
+        raise ValueError("EQ response sample rate must be finite and positive")
     freqs_arr = np.asarray(freqs, dtype=float)
     if freqs_arr.ndim != 1 or not np.all(np.isfinite(freqs_arr)):
         raise ValueError("EQ response frequencies must be finite and one-dimensional")
-    if np.any(freqs_arr < 0.0) or np.any(freqs_arr >= SAMPLE_RATE / 2.0):
+    if np.any(freqs_arr < 0.0) or np.any(freqs_arr >= sample_rate / 2.0):
         raise ValueError("EQ response frequencies must be below the Nyquist rate")
     gains_arr = np.asarray(gains, dtype=float)
     qs_arr = np.asarray(qs, dtype=float)
@@ -89,7 +98,7 @@ def _predict_eq_response(
         raise ValueError("filter_types length must match gains")
 
     response_linear = np.ones_like(freqs_arr, dtype=float)
-    w = 2 * np.pi * freqs_arr / SAMPLE_RATE
+    w = 2 * np.pi * freqs_arr / sample_rate
     z_inv = np.exp(-1j * w)
     z_inv_2 = z_inv * z_inv
 
@@ -101,6 +110,7 @@ def _predict_eq_response(
             float(q),
             float(fc),
             str(filter_type),
+            sample_rate,
         )
         numerator = b0 + b1 * z_inv + b2 * z_inv_2
         denominator = a0 + a1 * z_inv + a2 * z_inv_2

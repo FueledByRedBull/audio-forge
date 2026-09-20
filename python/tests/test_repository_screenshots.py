@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QComboBox, QWidget
 
 from mic_eq.config_parts import app_config
 from mic_eq.ui import main_window
@@ -14,9 +14,19 @@ from tools.capture_repository_screenshots import (
     SANITIZED_INPUT_DEVICES,
     SANITIZED_OUTPUT_DEVICES,
     SCREENSHOTS,
+    _select_data,
     _write_optimized_png,
     capture_screenshots,
 )
+
+
+def test_screenshot_selection_rejects_stale_identifiers(qapp):
+    combo = QComboBox()
+    combo.addItem("RNNoise", "rnnoise")
+    _select_data(combo, "rnnoise")
+    assert combo.currentData() == "rnnoise"
+    with pytest.raises(ValueError, match="unavailable"):
+        _select_data(combo, "deepfilter_ll")
 
 
 def test_screenshot_manifest_covers_required_views_and_alt_text() -> None:

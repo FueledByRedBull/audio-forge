@@ -102,12 +102,14 @@ def _is_boolean_expression(value: Any, expected: bool) -> bool:
         return False
     normalized = value.strip().lower()
     word = "true" if expected else "false"
-    return normalized in {word, f"${{{{ {word} }}}}"}
+    return normalized == word or re.fullmatch(
+        rf"\$\{{\{{\s*{word}\s*\}}\}}", normalized
+    ) is not None
 
 
-def _active_run_lines(document: dict[str, Any]) -> list[str]:
-    """Return executable run lines after excluding disabled/non-blocking jobs."""
-    active: list[str] = []
+def _active_steps(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return enabled, blocking workflow steps."""
+    active: list[dict[str, Any]] = []
     jobs = document.get("jobs")
     if not isinstance(jobs, dict):
         return active
@@ -119,18 +121,37 @@ def _active_run_lines(document: dict[str, Any]) -> list[str]:
         ):
             continue
         for step in raw_job["steps"]:
-            if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+            if not isinstance(step, dict) or not (
+                isinstance(step.get("run"), str)
+                or isinstance(step.get("uses"), str)
+            ):
                 continue
             if _is_boolean_expression(step.get("if"), False):
                 continue
             if _is_boolean_expression(step.get("continue-on-error"), True):
                 continue
-            active.extend(
-                line
-                for line in step["run"].splitlines()
-                if not line.lstrip().startswith("#")
-            )
+            active.append(step)
     return active
+
+
+def _active_run_lines(document: dict[str, Any]) -> list[str]:
+    """Return executable run lines after excluding disabled/non-blocking jobs."""
+    return [
+        line
+        for step in _active_steps(document)
+        if isinstance(step.get("run"), str)
+        for line in step["run"].splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+
+
+def _active_uses(document: dict[str, Any]) -> list[str]:
+    """Return action references from enabled, blocking workflow steps."""
+    return [
+        step["uses"]
+        for step in _active_steps(document)
+        if isinstance(step.get("uses"), str)
+    ]
 
 
 def _active_run_source(document: dict[str, Any]) -> str:
@@ -204,6 +225,8 @@ def _check_required_gates(
     active_run_lines = _active_run_lines(document)
 
     def has_gate(needle: str) -> bool:
+        if needle.startswith("actions/") and needle.endswith("@"):
+            return any(needle in action for action in _active_uses(document))
         if any(marker in needle for marker in RUN_REQUIRED_MARKERS):
             return _active_run_has_marker(active_run_lines, needle)
         return needle in source

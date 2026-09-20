@@ -239,6 +239,7 @@ def test_validation_failure_abstains_instead_of_applying_a_flat_curve(monkeypatc
         centers_hz,
         _weights,
         cancel_check=None,
+        sample_rate=48_000.0,
     ):
         flat = np.zeros_like(gains)
         return (
@@ -961,6 +962,36 @@ def test_21a_eq_quality_reports_positive_boost_and_cut_excursions_separately():
     assert flat.max_cut_db == 0.0
 
 
+def test_optimizer_threads_capture_rate_through_validation(monkeypatch):
+    sample_rate = 44_100.0
+    quality_rates = []
+    error_rates = []
+    real_quality = optimizer_module.evaluate_eq_quality
+    real_error = optimizer_module.weighted_target_error
+
+    def record_quality(*args, **kwargs):
+        quality_rates.append(kwargs.get("sample_rate"))
+        return real_quality(*args, **kwargs)
+
+    def record_error(*args, **kwargs):
+        error_rates.append(kwargs.get("sample_rate"))
+        return real_error(*args, **kwargs)
+
+    monkeypatch.setattr(optimizer_module, "evaluate_eq_quality", record_quality)
+    monkeypatch.setattr(optimizer_module, "weighted_target_error", record_error)
+
+    freqs = np.geomspace(20.0, 20_000.0, 128)
+    calculate_eq_bands(
+        freqs,
+        0.4 * np.sin(np.log(freqs)),
+        np.zeros_like(freqs),
+        sample_rate=sample_rate,
+    )
+
+    assert quality_rates and set(quality_rates) == {sample_rate}
+    assert error_rates and set(error_rates) == {sample_rate}
+
+
 def test_22_stable_speech_like_capture_has_useful_confidence():
     sample_rate = 48_000
     duration_s = 10
@@ -1148,6 +1179,42 @@ def test_headroom_validation_abstains_neutral_candidate_after_actual_attenuation
 
     assert settings["recommendation_status"] == "abstain"
     assert settings["apply_recommended"] is False
+
+
+def test_headroom_metadata_threads_capture_rate(monkeypatch):
+    sample_rate = 44_100.0
+    quality_rates = []
+    error_rates = []
+    real_quality = headroom_module.evaluate_eq_quality
+    real_error = headroom_module.weighted_target_error
+
+    def record_quality(*args, **kwargs):
+        quality_rates.append(kwargs.get("sample_rate"))
+        return real_quality(*args, **kwargs)
+
+    def record_error(*args, **kwargs):
+        error_rates.append(kwargs.get("sample_rate"))
+        return real_error(*args, **kwargs)
+
+    monkeypatch.setattr(headroom_module, "evaluate_eq_quality", record_quality)
+    monkeypatch.setattr(headroom_module, "weighted_target_error", record_error)
+
+    settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [2.0] + [0.0] * 9,
+        "band_qs": [1.41] * 10,
+    }
+    freqs = np.geomspace(20.0, 20_000.0, 128)
+    headroom_module._refresh_scaled_eq_metadata(
+        settings,
+        analysis_freqs=freqs,
+        measured_db=np.zeros_like(freqs),
+        target_db=np.zeros_like(freqs),
+        sample_rate=sample_rate,
+    )
+
+    assert quality_rates and set(quality_rates) == {sample_rate}
+    assert error_rates and set(error_rates) == {sample_rate}
 
 
 def test_headroom_zero_scale_clears_stale_apply_metadata():

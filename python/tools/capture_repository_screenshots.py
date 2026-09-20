@@ -137,8 +137,9 @@ def _load_capture_font(app: QApplication) -> dict[str, str]:
 
 def _select_data(combo: Any, value: str) -> None:
     index = combo.findData(value)
-    if index >= 0:
-        combo.setCurrentIndex(index)
+    if index < 0:
+        raise ValueError(f"Screenshot selection is unavailable: {value}")
+    combo.setCurrentIndex(index)
 
 
 def _prepare_main_window() -> MainWindow:
@@ -151,7 +152,7 @@ def _prepare_main_window() -> MainWindow:
     window.output_combo.setCurrentIndex(0)
     _select_data(window.input_channel_mode_combo, "average")
     _select_data(window.input_cleanup_mode_combo, "gentle")
-    _select_data(window.model_combo, "deepfilter_ll")
+    _select_data(window.model_combo, "rnnoise")
     window.rnnoise_checkbox.setChecked(True)
     window.strength_slider.setValue(72)
     window.eq_panel.apply_auto_eq_results(
@@ -209,7 +210,7 @@ def _prepare_main_window() -> MainWindow:
 def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
     dialog = VoiceSetupDialog(parent)
     dialog.recording_timer.stop()
-    dialog.resize(780, 940)
+    dialog.resize(780, 1280)
     _select_data(dialog.curve_combo, "broadcast")
     _select_data(dialog.dynamics_combo, "balanced")
     dialog.recording_group.setVisible(True)
@@ -229,8 +230,8 @@ def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
                 "gate_mode_label": "VAD assisted",
             },
             "eq_settings": {
+                **parent.eq_panel.get_settings(),
                 "analysis_confidence": 0.89,
-                "band_gains": [-1.8, -0.8, 0.2, 0.9, 1.6, 2.1, 1.1, -0.6, -0.9, -0.4],
             },
             "gate_settings": {"threshold_db": -43.0, "vad_threshold": 0.46},
             "deesser_settings": {
@@ -310,6 +311,7 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
         dialog = _prepare_voice_setup(window)
         dialog.show()
         app.processEvents()
+        eq_recommendation_shown = "max correction" in dialog.eq_label.text()
         specification = SCREENSHOTS[2]
         path = output_dir / specification["filename"]
         width, height = _write_optimized_png(dialog, path)
@@ -373,6 +375,7 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
             "eq_shown": True,
             "processing_shown": True,
             "auto_voice_setup_shown": True,
+            "eq_recommendation_shown": eq_recommendation_shown,
             "alt_text_present": all(bool(item["alt"].strip()) for item in outputs),
             "all_pngs_nonempty": all(item["bytes"] > 0 for item in outputs),
             "all_pngs_compressed": all(

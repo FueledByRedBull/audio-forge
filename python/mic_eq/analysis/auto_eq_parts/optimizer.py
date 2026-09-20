@@ -22,6 +22,7 @@ from .constants import (
     MAX_GAIN_SLOPE_DB_PER_OCTAVE,
     NUM_EQ_BANDS,
     REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD,
+    SAMPLE_RATE,
     SNR_MIN_DB,
     UNKNOWN_EVIDENCE_MAX_BOOST_DB,
     UNKNOWN_EVIDENCE_Q_MAX,
@@ -84,8 +85,15 @@ def _gain_only_residuals(
     center_freqs: list[float],
     fixed_qs: np.ndarray,
     weights: np.ndarray,
+    sample_rate: float = SAMPLE_RATE,
 ) -> np.ndarray:
-    eq_response = _predict_eq_response(dense_freqs, gains, fixed_qs, center_freqs)
+    eq_response = _predict_eq_response(
+        dense_freqs,
+        gains,
+        fixed_qs,
+        center_freqs,
+        sample_rate=sample_rate,
+    )
     error = target_dense_db - (measured_dense_db + eq_response)
     return np.sqrt(weights) * error
 
@@ -132,12 +140,19 @@ def _joint_gain_q_residuals(
     base_centers_hz: np.ndarray,
     weights: np.ndarray,
     q_prior: np.ndarray,
+    sample_rate: float = SAMPLE_RATE,
 ) -> np.ndarray:
     gains = params[:NUM_EQ_BANDS]
     qs = params[NUM_EQ_BANDS : 2 * NUM_EQ_BANDS]
     centers_hz = params[2 * NUM_EQ_BANDS :]
 
-    eq_response = _predict_eq_response(dense_freqs, gains, qs, centers_hz)
+    eq_response = _predict_eq_response(
+        dense_freqs,
+        gains,
+        qs,
+        centers_hz,
+        sample_rate=sample_rate,
+    )
     error = target_dense_db - (measured_dense_db + eq_response)
 
     q_regularization = np.log(qs / q_prior)
@@ -228,6 +243,7 @@ def _constrained_gain_refinement(
     gain_lower: np.ndarray | None = None,
     gain_upper: np.ndarray | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    sample_rate: float = SAMPLE_RATE,
 ) -> tuple[np.ndarray, bool]:
     """Re-optimize gains symmetrically inside the final safety bounds."""
     gains_arr = np.asarray(gains, dtype=float)
@@ -246,7 +262,13 @@ def _constrained_gain_refinement(
     gains_arr = np.clip(gains_arr, lower, upper)
 
     def objective(candidate: np.ndarray) -> float:
-        response = _predict_eq_response(dense_freqs, candidate, qs, centers_hz)
+        response = _predict_eq_response(
+            dense_freqs,
+            candidate,
+            qs,
+            centers_hz,
+            sample_rate=sample_rate,
+        )
         error = target_dense_db - (measured_dense_db + response)
         curvature = _log_frequency_gain_curvature(candidate, centers_hz)
         log_centers = np.log10(np.clip(centers_hz, 1e-6, None))
@@ -535,6 +557,7 @@ def _validate_and_attenuate_solution(
     centers_hz: np.ndarray,
     weights: np.ndarray,
     cancel_check: Callable[[], bool] | None = None,
+    sample_rate: float = SAMPLE_RATE,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     before_error = weighted_target_error(
         dense_freqs,
@@ -544,16 +567,27 @@ def _validate_and_attenuate_solution(
         qs,
         centers_hz,
         weights,
+        sample_rate=sample_rate,
     )
     best_gains = gains.copy()
     best_error = float("inf")
     best_scale = 1.0
-    best_metrics = evaluate_eq_quality(centers_hz, best_gains, qs).to_dict()
+    best_metrics = evaluate_eq_quality(
+        centers_hz,
+        best_gains,
+        qs,
+        sample_rate=sample_rate,
+    ).to_dict()
 
     for scale in (1.0, 0.85, 0.70, 0.55, 0.40, 0.25):
         check_analysis_cancelled(cancel_check)
         candidate = gains * scale
-        metrics = evaluate_eq_quality(centers_hz, candidate, qs)
+        metrics = evaluate_eq_quality(
+            centers_hz,
+            candidate,
+            qs,
+            sample_rate=sample_rate,
+        )
         after_error = weighted_target_error(
             dense_freqs,
             measured_dense_db,
@@ -562,6 +596,7 @@ def _validate_and_attenuate_solution(
             qs,
             centers_hz,
             weights,
+            sample_rate=sample_rate,
         )
         if (
             after_error < best_error
@@ -586,7 +621,12 @@ def _validate_and_attenuate_solution(
             before_error,
             before_error,
             0.0,
-            evaluate_eq_quality(centers_hz, flat, qs).to_dict(),
+            evaluate_eq_quality(
+                centers_hz,
+                flat,
+                qs,
+                sample_rate=sample_rate,
+            ).to_dict(),
         )
 
     return best_gains, before_error, best_error, best_scale, best_metrics
@@ -615,6 +655,7 @@ def calculate_eq_bands(
     tilt_policy="preserve",
     fit_context: dict[str, object] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    sample_rate: float = SAMPLE_RATE,
 ):
     """
     Calculate optimal 10-band EQ settings using least-squares optimization.
@@ -634,6 +675,12 @@ def calculate_eq_bands(
         eq_settings: Dict with 'band_gains' and 'band_qs' (10-element lists)
     """
     check_analysis_cancelled(cancel_check)
+    try:
+        sample_rate = float(sample_rate)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("EQ analysis sample rate must be finite and positive") from exc
+    if not np.isfinite(sample_rate) or sample_rate <= 0.0:
+        raise ValueError("EQ analysis sample rate must be finite and positive")
     freqs = _validated_frequency_series(freqs, label="frequency grid")
     measured_db = _validated_frequency_series(
         measured_db,
@@ -937,6 +984,7 @@ def calculate_eq_bands(
             center_freqs,
             qs_stage1,
             weights,
+            sample_rate,
         ),
         bounds=(dynamic_gain_lower, dynamic_gain_upper),
         method="trf",
@@ -972,6 +1020,7 @@ def calculate_eq_bands(
             base_centers_hz,
             weights,
             q_prior,
+            sample_rate,
         ),
         bounds=(params_lower, params_upper),
         method="trf",
@@ -1046,6 +1095,7 @@ def calculate_eq_bands(
         final_gain_lower,
         final_gain_upper,
         cancel_check,
+        sample_rate,
     )
     inactive_mask = np.abs(optimal_gains) < 0.25
     if np.any(inactive_mask):
@@ -1067,6 +1117,7 @@ def calculate_eq_bands(
                 inactive_gain_lower,
                 inactive_gain_upper,
                 cancel_check,
+                sample_rate,
             )
         )
         constraint_solver_success = bool(
@@ -1088,6 +1139,7 @@ def calculate_eq_bands(
     validation = _validate_and_attenuate_solution(
         *validation_args,
         cancel_check=cancel_check,
+        sample_rate=sample_rate,
     )
     (
         optimal_gains,
@@ -1134,6 +1186,7 @@ def calculate_eq_bands(
             optimal_centers_hz,
             optimal_gains,
             optimal_qs,
+            sample_rate=sample_rate,
         ).to_dict()
         validation_conf = _validation_confidence(
             before_error,

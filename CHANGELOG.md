@@ -2,6 +2,7 @@
 
 ## v1.13.0 (unreleased)
 
+- Use the supplied sample rate throughout generic offline EQ fitting and quality checks, matching native filter responses at 44.1, 48, and 96 kHz.
 - Score gate/suppression candidates with their causal loudness-control evidence, then calibrate compression on the selected input processing and exact applied EQ. Reuse the rendered input across compressor candidates.
 - Correct automatic makeup gain's loudness feedback and use speech/noise evidence and limiter feedback in full-chain previews and verification.
 - Save all seven verified Voice Setup stages and preserve capture validity when applying a candidate from Raw Monitor switches to Normal.

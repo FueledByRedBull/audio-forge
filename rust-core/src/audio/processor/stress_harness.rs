@@ -35,7 +35,8 @@ impl StressRng {
     }
 
     fn boolean(&mut self) -> bool {
-        (self.next_u64() & 1) != 0
+        // The LCG low bit only alternates and correlates with the draw cadence.
+        (self.next_u64() >> 63) != 0
     }
 }
 
@@ -297,7 +298,10 @@ pub fn run_seeded_control_dsp_stress(
                 apply_gate_control(&mut gate, &snapshot)
             });
             apply_snapshot!(eq_dirty, dsp_eq, |snapshot: EqControlSnapshot| {
-                chain.set_eq_layers(&snapshot.correction_bands, &snapshot.tone_bands)
+                chain.set_eq_enabled(snapshot.enabled);
+                chain.set_eq_layers(&snapshot.correction_bands, &snapshot.tone_bands);
+                assert_eq!(chain.correction_eq_mut().is_enabled(), snapshot.enabled);
+                assert_eq!(chain.eq_mut().is_enabled(), snapshot.enabled);
             });
             apply_snapshot!(compressor_dirty, dsp_compressor, |snapshot| {
                 apply_compressor_control(chain.compressor_mut(), &snapshot)

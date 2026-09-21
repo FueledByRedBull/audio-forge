@@ -1,11 +1,10 @@
 {
-  "source_revision": "76ed1e944399828de39f4122d4cf17a1b5047a99",
   "corpus_manifest_sha256": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6",
   "implementation_sha256": {
-    "python/tools/evaluate_product_tuning.py": "993f5a13fa9b3cfafa7ebc1c376fd63af85654b8a2f5874197eb1134264b2bd3",
-    "python/mic_eq/analysis/joint_tuning.py": "d43e0903f7f2637664e513a058f88e7f8cdeb7dc4a82b27c361950f9e2fa82e0",
-    "rust-core/src/audio/processor/python_api.rs": "fc4d1f19363ed8227326d1819f408a303eda26f5492309cdc69cbaa11cf18743",
-    "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "f47844f85ae2b753a91c2bde923720f49854d59e925ed3d123b99b0d6c1a3ac7",
+    "python/tools/evaluate_product_tuning.py": "446cd3a5ddcdc227688fac5027f8c090916a54a03cfe060a8625d48ff679c0e8",
+    "python/mic_eq/analysis/joint_tuning.py": "bd3d86e0181249357f76f33bf6daf3a63bd70327730a870c1754cb00c6b00d28",
+    "rust-core/src/audio/processor/python_api.rs": "daaa7641ed8697146f76e02f2f894e92f24dec8f91869345bcaf9c648ef38d13",
+    "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "89c07db58fc18ea38921d4d29c5d925b54202308bfaff19169a646a9ffb53388",
     "df.dll": "71878910f6d4767c58d47217bef883ce71b60a31070d8b1970552ee103f626f3",
     "release-assets.json": "a86a608d9be0644b05a925a0a5119870ea6f060feda41b311de7a3d60e71ad3e"
   },
@@ -32,448 +31,6 @@
   "case_count": 22,
   "all_gates_passed": true,
   "applied_candidates": 5,
-  "cases": [
-    {
-      "id": "p232_003",
-      "threshold_db": -40.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 29987.35029999989
-    },
-    {
-      "id": "p232_003",
-      "threshold_db": -22.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "apply_candidate",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": -0.01448049210011959,
-      "runtime_ms": 35960.769499999515
-    },
-    {
-      "id": "p232_005",
-      "threshold_db": -40.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 28749.19030000001
-    },
-    {
-      "id": "p232_005",
-      "threshold_db": -22.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 28552.16720000044
-    },
-    {
-      "id": "p232_006",
-      "threshold_db": -40.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 26372.53740000051
-    },
-    {
-      "id": "p232_006",
-      "threshold_db": -22.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 29230.383000000074
-    },
-    {
-      "id": "p232_009",
-      "threshold_db": -40.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 24292.614900000444
-    },
-    {
-      "id": "p232_009",
-      "threshold_db": -22.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 27114.274399999886
-    },
-    {
-      "id": "p232_011",
-      "threshold_db": -40.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 26189.59729999915
-    },
-    {
-      "id": "p232_011",
-      "threshold_db": -22.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 29906.11059999992
-    },
-    {
-      "id": "p232_012",
-      "threshold_db": -40.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 22022.876500000166
-    },
-    {
-      "id": "p232_012",
-      "threshold_db": -22.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "apply_candidate",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": -0.017883656546473503,
-      "runtime_ms": 24876.931900000272
-    },
-    {
-      "id": "p232_014",
-      "threshold_db": -40.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 22407.626199999868
-    },
-    {
-      "id": "p232_014",
-      "threshold_db": -22.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 25059.87709999954
-    },
-    {
-      "id": "p257_003",
-      "threshold_db": -40.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 23200.331899999583
-    },
-    {
-      "id": "p257_003",
-      "threshold_db": -22.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "apply_candidate",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": -0.02177298441529274,
-      "runtime_ms": 26502.529200000026
-    },
-    {
-      "id": "p257_006",
-      "threshold_db": -40.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 20636.747900000046
-    },
-    {
-      "id": "p257_006",
-      "threshold_db": -22.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 20997.84610000006
-    },
-    {
-      "id": "p257_008",
-      "threshold_db": -40.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 23935.122699999738
-    },
-    {
-      "id": "p257_008",
-      "threshold_db": -22.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "apply_candidate",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": -0.01407293789088726,
-      "runtime_ms": 27612.665599999673
-    },
-    {
-      "id": "p257_011",
-      "threshold_db": -40.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter",
-      "selected_strength": 1.0,
-      "decision": "apply_candidate",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 30.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.00019897898891940713,
-      "runtime_ms": 25342.717200000152
-    },
-    {
-      "id": "p257_011",
-      "threshold_db": -22.0,
-      "incumbent_model": "deepfilter-ll",
-      "selected_model": "deepfilter-ll",
-      "selected_strength": 1.0,
-      "decision": "retain_incumbent",
-      "model_selection_policy": "retain_deepfilter_family_v1",
-      "selected_latency_ms": 10.0,
-      "gates": {
-        "clean_speech_preserved": true,
-        "finite_output": true,
-        "no_clipping": true,
-        "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
-      },
-      "clean_error_increase": 0.0,
-      "runtime_ms": 23498.684399999547
-    }
-  ],
   "previous_unrestricted_baseline": {
     "report": "models/evaluation-details/product-joint-tuning-deepfilter-ll-unrestricted.json",
     "all_gates_passed": false,
@@ -494,24 +51,23 @@
   },
   "schema_version": 2,
   "audible_change": true,
-  "measurement_source_revision": "d64957c354f5a2f2e93e16e521aff547473e74a4",
   "measurement_implementation_sha256": {
-    "python/tools/evaluate_product_tuning.py": "993f5a13fa9b3cfafa7ebc1c376fd63af85654b8a2f5874197eb1134264b2bd3",
-    "python/mic_eq/analysis/joint_tuning.py": "d43e0903f7f2637664e513a058f88e7f8cdeb7dc4a82b27c361950f9e2fa82e0",
-    "rust-core/src/audio/processor/python_api.rs": "fc4d1f19363ed8227326d1819f408a303eda26f5492309cdc69cbaa11cf18743",
-    "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "f47844f85ae2b753a91c2bde923720f49854d59e925ed3d123b99b0d6c1a3ac7",
+    "python/tools/evaluate_product_tuning.py": "446cd3a5ddcdc227688fac5027f8c090916a54a03cfe060a8625d48ff679c0e8",
+    "python/mic_eq/analysis/joint_tuning.py": "bd3d86e0181249357f76f33bf6daf3a63bd70327730a870c1754cb00c6b00d28",
+    "rust-core/src/audio/processor/python_api.rs": "daaa7641ed8697146f76e02f2f894e92f24dec8f91869345bcaf9c648ef38d13",
+    "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "89c07db58fc18ea38921d4d29c5d925b54202308bfaff19169a646a9ffb53388",
     "df.dll": "71878910f6d4767c58d47217bef883ce71b60a31070d8b1970552ee103f626f3",
     "release-assets.json": "a86a608d9be0644b05a925a0a5119870ea6f060feda41b311de7a3d60e71ad3e"
   },
   "report_formatting": {
-    "metadata_only": true,
+    "metadata_only": false,
     "contract": "audioforge.audible-change.v2",
     "measurement_hashes_unchanged": true
   },
   "source_sha256": {
-    "python/tools/evaluate_product_tuning.py": "9e5348a839e0f0c608c4be8feaa3b52beb42fd782c349525abe1e79ebce013f2",
-    "python/mic_eq/analysis/joint_tuning.py": "a5f65027dd75cfa7b757009d5ada94e4176eb7b4e106085dded0560eafef4f25",
-    "rust-core/src/audio/processor/python_api.rs": "fc4d1f19363ed8227326d1819f408a303eda26f5492309cdc69cbaa11cf18743"
+    "python/tools/evaluate_product_tuning.py": "446cd3a5ddcdc227688fac5027f8c090916a54a03cfe060a8625d48ff679c0e8",
+    "python/mic_eq/analysis/joint_tuning.py": "bd3d86e0181249357f76f33bf6daf3a63bd70327730a870c1754cb00c6b00d28",
+    "rust-core/src/audio/processor/python_api.rs": "daaa7641ed8697146f76e02f2f894e92f24dec8f91869345bcaf9c648ef38d13"
   },
   "evaluation_contract": {
     "configuration": {
@@ -551,7 +107,7 @@
       },
       "native_extension": {
         "path": "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd",
-        "sha256": "f47844f85ae2b753a91c2bde923720f49854d59e925ed3d123b99b0d6c1a3ac7"
+        "sha256": "89c07db58fc18ea38921d4d29c5d925b54202308bfaff19169a646a9ffb53388"
       },
       "df.dll": "71878910f6d4767c58d47217bef883ce71b60a31070d8b1970552ee103f626f3",
       "release-assets.json": "a86a608d9be0644b05a925a0a5119870ea6f060feda41b311de7a3d60e71ad3e"
@@ -560,7 +116,7 @@
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "Offline candidate search does not measure realtime callback P99; per-case runtime_ms records total candidate-search time, not live processing time.",
       "case_runtime_ms_scope": "total candidate-search time",
-      "max_case_runtime_ms": 35960.769499999515,
+      "max_case_runtime_ms": 32432.230399999753,
       "sub_realtime_gate_scope": "selected native render runtime_ms compared with the clip duration"
     },
     "latency": {
@@ -571,16 +127,17 @@
     },
     "clean_preservation": {
       "metric": "normalized MSE change for selected output versus incumbent output on the paired clean capture",
-      "max_clean_error_increase": 0.00019897898891940713,
+      "max_clean_error_increase": 0.00021761609241366386,
       "gate_threshold": 0.01,
       "gates": {
         "clean_speech_preserved": true,
         "finite_output": true,
+        "heldout_or_exact_retention": true,
         "no_clipping": true,
         "selected_latency_within_35ms": true,
-        "sub_realtime": true,
-        "heldout_or_exact_retention": true
+        "sub_realtime": true
       }
     }
-  }
+  },
+  "measurement_source_revision": "b31dc8aa2516cd0c56c1593af9677211b42a5457"
 }

@@ -25,7 +25,7 @@ Routine test results and screenshot-generation reports belong under ignored
 | Manual typed EQ | `eq-filter-types-report.json` | Retain manual bell/notch/shelf/pass types and selectable slopes. |
 | Auto-EQ candidate pool | `eq-candidate-pool-report.json`, `sparse-auto-eq-filter-report.json` | Reject the tested nested wider pools and sparse type-selecting candidate. |
 | EQ stage split | `correction-tone-product-report.json`; historical `correction-tone-stage-report.json` | Retain the explicitly requested independent stages: 12 cases pass safety, EQ-kernel cost, schema and zero-added-latency gates. The historical proposal was closed before this product request. |
-| Joint gate/model tuning | `product-joint-tuning.json`, `product-joint-tuning-deepfilter-ll.json`, `product-joint-tuning-deepfilter.json` | All 66 cases pass; 17 candidates applied and 49 incumbents retained. DeepFilter incumbents stay within their family after unrestricted switches to RNNoise failed clean-speech checks. |
+| Joint gate/model tuning | `product-joint-tuning.json`, `product-joint-tuning-deepfilter-ll.json`, `product-joint-tuning-deepfilter.json` | All 66 cases pass at `b31dc8a`; 19 candidates applied and 47 incumbents retained. DeepFilter incumbents stay within their family after unrestricted switches to RNNoise failed clean-speech checks. |
 | RNNoise | `rnnoise-backend-comparison.json` | Retain `nnnoiseless`; upstream Xiph was materially slower and regressed clean preservation. |
 | DPDFNet | `dpdfnet-vs-deepfilternet3-report.json`, `dpdfnet-official-evalset-report.json` | Rejected and absent; historical clean failures are not independently reproducible from this checkout. |
 | ONNX Runtime backend | `onnxruntime-cpu-probe.json` | Official CPU-only 1.23.2 matched the preserved 3.12 baseline across 498 captures and 20,908 frames. |
@@ -43,7 +43,15 @@ Preserve those measurements; record exact source and asset identities when
 generating replacement evidence, rather than assigning guessed provenance.
 Reports with `source_revision` preserve the original committed measurement;
 hygiene verifies both the unchanged report and its source hashes at that commit.
-The three historical joint-tuning reports retain their original per-case evidence.
+The three current joint-tuning reports were measured from clean source
+`b31dc8aa2516cd0c56c1593af9677211b42a5457`, recorded in
+`measurement_source_revision`; their source hashes are verified at that commit.
+Native/DLL hashes identify the measured binaries and were compared locally;
+Git source-history validation alone cannot verify those binary objects.
+The previous reports and per-case evidence remain in Git at `76ed1e9`.
+Their declared joint-tuning implementation hash could not be reconciled with
+measurement revision `d64957c`; preserve them as historical measurements,
+not exact-source qualification or a reproducible baseline for the new reports.
 New joint-tuning runs write compact, model-specific reports; optional
 `--details-output models/evaluation-details/joint-tuning.json` keeps full case details.
 Corpora and model assets are hash-pinned under ignored `models/`

@@ -18,6 +18,10 @@ const AUTO_MAKEUP_ACTIVITY_SMOOTH_MS: f64 = 200.0;
 const NOISE_RELATIVE_ACTIVITY_START_DB: f64 = 3.0;
 const NOISE_RELATIVE_ACTIVITY_FULL_DB: f64 = 15.0;
 const MAKEUP_SILENCE_RELAX_MS: f64 = 1500.0;
+const AUTO_MAKEUP_SAMPLE_WINDOW_MS: f64 = 10.0;
+// Compressor callers accept generic rates through 192 kHz; reserve the full
+// 10 ms window at that rate even when the optional loudness meter is absent.
+const AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES: usize = 1_920;
 const SIDECHAIN_HIGHPASS_DEFAULT_HZ: f64 = 120.0;
 const SIDECHAIN_BAND_ENV_MS: f64 = 18.0;
 const PLOSIVE_RATIO_START: f64 = 1.25;
@@ -88,6 +92,14 @@ pub struct Compressor {
     slow_release_env_db: f64,
     /// Loudness meter for auto makeup gain
     loudness_meter: Option<crate::dsp::loudness::LoudnessMeter>,
+    /// Fixed storage for the sample API's auto-makeup control window.
+    auto_makeup_sample_window: [f32; AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES],
+    /// Number of output samples currently held for the sample API window.
+    auto_makeup_sample_window_len: usize,
+    /// Sum of per-sample activity evidence in the current sample window.
+    auto_makeup_sample_activity_sum: f64,
+    /// Number of samples in one sample API auto-makeup control window.
+    auto_makeup_sample_window_samples: usize,
     /// Auto makeup gain enabled
     auto_makeup_enabled: bool,
     /// Target LUFS for auto makeup gain
@@ -146,6 +158,13 @@ impl Compressor {
         let makeup_smoothing_coeff = util::time_constant_to_coeff(200.0, sample_rate);
 
         let loudness_meter = crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32).ok();
+        let auto_makeup_sample_window_samples = if sample_rate.is_finite() && sample_rate > 0.0 {
+            (sample_rate * AUTO_MAKEUP_SAMPLE_WINDOW_MS / 1_000.0)
+                .round()
+                .clamp(1.0, AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES as f64) as usize
+        } else {
+            1
+        };
 
         Self {
             threshold_db,
@@ -170,6 +189,10 @@ impl Compressor {
             fast_release_env_db: 0.0,
             slow_release_env_db: 0.0,
             loudness_meter,
+            auto_makeup_sample_window: [0.0; AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES],
+            auto_makeup_sample_window_len: 0,
+            auto_makeup_sample_activity_sum: 0.0,
+            auto_makeup_sample_window_samples,
             auto_makeup_enabled: false,
             target_lufs: -18.0,
             smoothed_makeup_gain: makeup_gain_db,
@@ -301,6 +324,9 @@ impl Compressor {
     /// Enable or disable the compressor
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
+        if !enabled {
+            self.clear_auto_makeup_sample_window();
+        }
     }
 
     /// Check if compressor is enabled
@@ -321,6 +347,9 @@ impl Compressor {
     /// Enable or disable auto makeup gain
     pub fn set_auto_makeup_enabled(&mut self, enabled: bool) {
         self.auto_makeup_enabled = enabled && self.loudness_meter.is_some();
+        if !self.auto_makeup_enabled {
+            self.clear_auto_makeup_sample_window();
+        }
         if !enabled {
             self.smoothed_makeup_gain = self.makeup_gain_db;
         }
@@ -713,6 +742,9 @@ impl Compressor {
         evidence: Option<AutoMakeupActivityInput>,
     ) {
         self.block_peak_gain_reduction_db = 0.0;
+        // A caller switching from the sample API must not mix an incomplete
+        // sample window into this block's loudness measurement.
+        self.clear_auto_makeup_sample_window();
         if !self.enabled {
             self.current_gain_reduction_db = 0.0;
             return;
@@ -730,6 +762,12 @@ impl Compressor {
             }
         }
         self.update_auto_makeup_gain(activity.activity, activity.reliability, buffer.len());
+    }
+
+    #[inline]
+    fn clear_auto_makeup_sample_window(&mut self) {
+        self.auto_makeup_sample_window_len = 0;
+        self.auto_makeup_sample_activity_sum = 0.0;
     }
 
     #[inline]
@@ -777,14 +815,34 @@ impl Compressor {
             .block_peak_gain_reduction_db
             .max(self.current_gain_reduction_db);
 
-        if update_makeup_gain {
+        if update_makeup_gain && !self.auto_makeup_enabled {
             let speech_activity = Self::speech_activity_from_rms_db(detector_db);
             self.update_auto_makeup_gain(speech_activity, 1.0, 1);
         }
 
         let output_gain = util::db_to_linear(-self.current_gain_reduction_db)
             * util::db_to_linear(self.smoothed_makeup_gain);
-        (input_f64 * output_gain) as f32
+        let output = (input_f64 * output_gain) as f32;
+
+        if update_makeup_gain && self.auto_makeup_enabled {
+            let speech_activity = Self::speech_activity_from_rms_db(detector_db);
+            let sample_index = self.auto_makeup_sample_window_len;
+            self.auto_makeup_sample_window[sample_index] = output;
+            self.auto_makeup_sample_activity_sum += speech_activity;
+            self.auto_makeup_sample_window_len += 1;
+
+            if self.auto_makeup_sample_window_len >= self.auto_makeup_sample_window_samples {
+                let window_len = self.auto_makeup_sample_window_len;
+                if let Some(meter) = &mut self.loudness_meter {
+                    meter.process(&self.auto_makeup_sample_window[..window_len]);
+                }
+                let activity = self.auto_makeup_sample_activity_sum / window_len as f64;
+                self.clear_auto_makeup_sample_window();
+                self.update_auto_makeup_gain(activity, 1.0, window_len);
+            }
+        }
+
+        output
     }
 
     /// Reset compressor state
@@ -803,6 +861,7 @@ impl Compressor {
         self.limiter_feedback_gain_reduction_db = 0.0;
         self.speech_activity_score = 0.0;
         self.auto_makeup_activity_reliability = 0.0;
+        self.clear_auto_makeup_sample_window();
         if let Some(meter) = &mut self.loudness_meter {
             if meter.reset().is_ok() {
                 self.current_lufs = -100.0;
@@ -1135,6 +1194,115 @@ mod tests {
         }
 
         assert!(comp.current_makeup_gain() > 0.1);
+    }
+
+    #[test]
+    fn test_auto_makeup_sample_api_updates_loudness_meter() {
+        for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
+            let mut compressor = Compressor::new(0.0, 1.0, 0.1, 200.0, 0.0, 0.0, sample_rate);
+            compressor.set_auto_makeup_enabled(true);
+            compressor.set_target_lufs(-14.0);
+
+            let amplitude = 10.0_f32.powf(-24.0 / 20.0) * 2.0_f32.sqrt();
+            let sample_count = sample_rate as usize;
+            for sample_index in 0..sample_count {
+                let phase =
+                    2.0 * std::f32::consts::PI * 1_000.0 * sample_index as f32 / sample_rate as f32;
+                compressor.process_sample(amplitude * phase.sin());
+            }
+
+            assert!(
+                compressor.current_lufs() > -90.0,
+                "sample processing must feed the auto-makeup loudness meter at {sample_rate} Hz: {:.2} LUFS",
+                compressor.current_lufs()
+            );
+        }
+    }
+
+    #[test]
+    fn test_auto_makeup_sample_and_block_paths_converge_to_same_level() {
+        for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
+            let mut sample_compressor =
+                Compressor::new(0.0, 1.0, 0.1, 200.0, 0.0, 0.0, sample_rate);
+            sample_compressor.set_auto_makeup_enabled(true);
+            sample_compressor.set_target_lufs(-14.0);
+
+            let mut block_compressor = Compressor::new(0.0, 1.0, 0.1, 200.0, 0.0, 0.0, sample_rate);
+            block_compressor.set_auto_makeup_enabled(true);
+            block_compressor.set_target_lufs(-14.0);
+
+            let amplitude = 10.0_f32.powf(-24.0 / 20.0) * 2.0_f32.sqrt();
+            let sample_count = sample_rate as usize * 4;
+            for sample_index in 0..sample_count {
+                let phase =
+                    2.0 * std::f32::consts::PI * 1_000.0 * sample_index as f32 / sample_rate as f32;
+                sample_compressor.process_sample(amplitude * phase.sin());
+            }
+
+            let block_size =
+                (sample_rate * AUTO_MAKEUP_SAMPLE_WINDOW_MS / 1_000.0).round() as usize;
+            let mut block = vec![0.0_f32; block_size];
+            for block_index in 0..(sample_count / block_size) {
+                for (sample_index, sample) in block.iter_mut().enumerate() {
+                    let absolute_index = block_index * block_size + sample_index;
+                    let phase = 2.0 * std::f32::consts::PI * 1_000.0 * absolute_index as f32
+                        / sample_rate as f32;
+                    *sample = amplitude * phase.sin();
+                }
+                block_compressor.process_block_inplace(&mut block);
+            }
+
+            assert!(
+                (sample_compressor.current_lufs() - block_compressor.current_lufs()).abs() < 1.0,
+                "sample/block meter mismatch at {sample_rate} Hz: sample={:.2} block={:.2}",
+                sample_compressor.current_lufs(),
+                block_compressor.current_lufs()
+            );
+            assert!(
+                (sample_compressor.current_makeup_gain() - block_compressor.current_makeup_gain()).abs()
+                    < 1.0,
+                "sample/block auto-makeup mismatch at {sample_rate} Hz: sample={:.2} block={:.2}, lufs={:.2}/{:.2}, activity={:.3}/{:.3}",
+                sample_compressor.current_makeup_gain(),
+                block_compressor.current_makeup_gain(),
+                sample_compressor.current_lufs(),
+                block_compressor.current_lufs(),
+                sample_compressor.auto_makeup_activity(),
+                block_compressor.auto_makeup_activity()
+            );
+        }
+    }
+
+    #[test]
+    fn test_auto_makeup_sample_window_covers_generic_rates() {
+        for (sample_rate, expected_window) in [
+            (44_100.0, 441),
+            (48_000.0, 480),
+            (96_000.0, 960),
+            (192_000.0, 1_920),
+        ] {
+            let compressor = Compressor::new(0.0, 1.0, 0.1, 200.0, 0.0, 0.0, sample_rate);
+            assert_eq!(
+                compressor.auto_makeup_sample_window_samples, expected_window,
+                "sample API auto-makeup window at {sample_rate} Hz"
+            );
+        }
+    }
+
+    #[test]
+    fn test_auto_makeup_sample_window_resets_when_api_or_state_changes() {
+        let mut compressor = Compressor::new(0.0, 1.0, 0.1, 200.0, 0.0, 0.0, 48_000.0);
+        compressor.set_auto_makeup_enabled(true);
+        compressor.process_sample(0.1);
+        assert_eq!(compressor.auto_makeup_sample_window_len, 1);
+
+        let mut block = vec![0.0_f32; 480];
+        compressor.process_block_inplace(&mut block);
+        assert_eq!(compressor.auto_makeup_sample_window_len, 0);
+
+        compressor.process_sample(0.1);
+        assert_eq!(compressor.auto_makeup_sample_window_len, 1);
+        compressor.reset();
+        assert_eq!(compressor.auto_makeup_sample_window_len, 0);
     }
 
     #[test]

@@ -322,7 +322,7 @@ def evaluate(corpus: Path, model: str) -> dict:
                 outputs.append(_run_gate_suppressor(simulate_gate_suppressor_order,
                     clean,
                     probabilities,
-                    controls,
+                    {**controls, "return_auto_makeup_activity": True},
                     suppressor_strength=strength,
                     noise_model=render_model,
                 ))
@@ -408,7 +408,7 @@ def evaluate(corpus: Path, model: str) -> dict:
                       *sorted((root / "python/mic_eq").glob("mic_eq_core*.pyd"))]
     evidence_files.extend((root / "df.dll", root / "release-assets.json"))
     return {"corpus_manifest_sha256": hashlib.sha256((corpus / "manifest.json").read_bytes()).hexdigest(),
-            "implementation_sha256": {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            "implementation_sha256": {path.relative_to(root).as_posix(): _portable_source_sha256(path)
                                       for path in evidence_files},
             "selection_split": "per-capture first half selects among eligible models under the active model selection policy; second half must pass all gates and improve on the incumbent; incumbent settings are retained exactly when evidence is inconclusive; selected suppressor latency must be <=35 ms; fallback noise floor comes from training noise only, while explicit noise_floor_db is precomputed context",
             "model": incumbent_model,

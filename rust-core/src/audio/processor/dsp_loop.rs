@@ -471,6 +471,10 @@ impl AudioProcessor {
         let vad_source_sample_end = Arc::clone(&self.vad_source_sample_end);
         #[cfg(feature = "vad")]
         let vad_source_discontinuity = Arc::clone(&self.vad_source_discontinuity);
+        #[cfg(feature = "vad")]
+        let vad_result_sequence = Arc::clone(&self.vad_result_sequence);
+        #[cfg(feature = "vad")]
+        let vad_result_generation = Arc::clone(&self.vad_result_generation);
         let compressor_current_release_ms = Arc::clone(&self.compressor_current_release_ms);
         let compressor_current_lufs = Arc::clone(&self.compressor_current_lufs);
         let compressor_current_makeup_gain = Arc::clone(&self.compressor_current_makeup_gain);
@@ -538,6 +542,16 @@ impl AudioProcessor {
         let (dsp_ready_tx, dsp_ready_rx) = mpsc::channel();
         let handle = std::thread::spawn(move || {
             let mut consumer = input_consumer;
+            #[cfg(feature = "vad")]
+            let vad_result = VadResultAtomics {
+                sequence: vad_result_sequence.as_ref(),
+                result_generation: vad_result_generation.as_ref(),
+                probability: vad_raw_probability.as_ref(),
+                backend_available: vad_backend_available.as_ref(),
+                last_update_us: vad_last_update_us.as_ref(),
+                source_sample_end: vad_source_sample_end.as_ref(),
+                source_discontinuity: vad_source_discontinuity.as_ref(),
+            };
             let mut input_buffer = FixedAudioBuffer::<f32, RT_INPUT_CHUNK_CAPACITY>::new();
             let mut temp_buffer = FixedAudioBuffer::<f32, RT_PROCESS_BUFFER_CAPACITY>::new();
             let mut rnnoise_output = FixedAudioBuffer::<f32, RT_SUPPRESSOR_OUTPUT_CAPACITY>::new();
@@ -753,48 +767,51 @@ impl AudioProcessor {
                         );
                         #[cfg(feature = "vad")]
                         {
-                            let last_update = vad_last_update_us.load(Ordering::Acquire);
-                            let wall_age_us = if last_update > 0 {
-                                now_micros().saturating_sub(last_update)
-                            } else {
-                                u64::MAX
-                            };
-                            let source_age_us = if last_update > 0 {
-                                vad_source_sample_clock
-                                    .saturating_sub(
-                                        vad_source_sample_end.load(Ordering::Acquire),
-                                    )
-                                    .saturating_mul(1_000_000)
-                                    / u64::from(sample_rate_for_latency.max(1))
-                            } else {
-                                u64::MAX
-                            };
-                            // Source age reflects audio actually waiting behind
-                            // the worker; wall age remains a watchdog for a
-                            // stalled callback or worker.
-                            let age_us = source_age_us.max(wall_age_us);
-                            let vad_reliability = if vad_backend_available.load(Ordering::Acquire)
-                                && age_us <= VAD_PROBABILITY_STALE_US
-                            {
-                                let freshness = if age_us <= VAD_PROBABILITY_STALE_US / 2 {
-                                    1.0
-                                } else {
-                                    1.0
-                                        - (age_us - VAD_PROBABILITY_STALE_US / 2) as f64
-                                            / (VAD_PROBABILITY_STALE_US / 2) as f64
-                                };
-                                let t = freshness.clamp(0.0, 1.0);
-                                t * t * (3.0 - 2.0 * t)
-                            } else {
-                                0.0
-                            };
+                            let vad_snapshot = vad_result.snapshot();
+                            let now_us = now_micros();
+                            let (vad_probability, vad_reliability) =
+                                vad_snapshot.map_or((0.0, 0.0), |snapshot| {
+                                    let wall_age_us = if snapshot.last_update_us > 0 {
+                                        now_us.saturating_sub(snapshot.last_update_us)
+                                    } else {
+                                        u64::MAX
+                                    };
+                                    let source_age_us = if snapshot.last_update_us > 0 {
+                                        vad_source_sample_clock
+                                            .saturating_sub(snapshot.source_sample_end)
+                                            .saturating_mul(1_000_000)
+                                            / u64::from(sample_rate_for_latency.max(1))
+                                    } else {
+                                        u64::MAX
+                                    };
+                                    // Source age reflects audio actually waiting
+                                    // behind the worker; wall age remains a
+                                    // watchdog for a stalled callback or worker.
+                                    let age_us = source_age_us.max(wall_age_us);
+                                    let reliability = if snapshot.backend_available
+                                        && age_us <= VAD_PROBABILITY_STALE_US
+                                    {
+                                        let freshness =
+                                            if age_us <= VAD_PROBABILITY_STALE_US / 2 {
+                                                1.0
+                                            } else {
+                                                1.0
+                                                    - (age_us - VAD_PROBABILITY_STALE_US / 2)
+                                                        as f64
+                                                        / (VAD_PROBABILITY_STALE_US / 2) as f64
+                                            };
+                                        let t = freshness.clamp(0.0, 1.0);
+                                        t * t * (3.0 - 2.0 * t)
+                                    } else {
+                                        0.0
+                                    };
+                                    (f64::from(snapshot.probability), reliability)
+                                });
                             let gate_is_enabled = gate_enabled.load(Ordering::Acquire);
                             compressor_rt.process_block_inplace_with_activity_control(
                                 $buffer,
                                 Some(AutoMakeupActivityInput {
-                                    vad_probability: f32::from_bits(
-                                        vad_raw_probability.load(Ordering::Acquire),
-                                    ) as f64,
+                                    vad_probability,
                                     vad_reliability,
                                     noise_floor_db: if gate_is_enabled {
                                         gate_rt.noise_floor() as f64
@@ -1172,6 +1189,8 @@ impl AudioProcessor {
                                     processing_path,
                                     vad_source_discontinuity.as_ref(),
                                 );
+                                #[cfg(feature = "vad")]
+                                vad_available.store(false, Ordering::Release);
                                 pre_filter_state = InputPreFilterState::default();
                                 adaptive_cleanup_state.reset_dynamic_state();
                                 publish_input_cleanup_bypassed(
@@ -1539,6 +1558,22 @@ impl AudioProcessor {
                                 }
 
                                 // Stage 1: Noise Gate
+                                #[cfg(feature = "vad")]
+                                let vad_snapshot = vad_result.snapshot();
+                                #[cfg(feature = "vad")]
+                                let vad_worker_available = vad_snapshot
+                                    .and_then(|snapshot| {
+                                        snapshot
+                                            .is_fresh(
+                                                vad_source_sample_clock,
+                                                now_micros(),
+                                                sample_rate_for_latency,
+                                            )
+                                            .then_some(snapshot.backend_available)
+                                    })
+                                    .unwrap_or(false);
+                                #[cfg(feature = "vad")]
+                                vad_available.store(vad_worker_available, Ordering::Relaxed);
                                 if gate_enabled.load(Ordering::Acquire) {
                                     if gate_dirty.swap(false, Ordering::AcqRel) {
                                         if let Some(control) = gate_rt_control.snapshot() {
@@ -1550,35 +1585,12 @@ impl AudioProcessor {
 
                                     #[cfg(feature = "vad")]
                                     {
-                                        let latest_prob =
-                                            f32::from_bits(
-                                                vad_raw_probability.load(Ordering::Acquire),
-                                            );
-                                        let last_update =
-                                            vad_last_update_us.load(Ordering::Acquire);
-                                        let wall_age_us = if last_update > 0 {
-                                            now_micros().saturating_sub(last_update)
-                                        } else {
-                                            u64::MAX
-                                        };
-                                        let source_age_us = if last_update > 0 {
-                                            vad_source_sample_clock
-                                                .saturating_sub(
-                                                    vad_source_sample_end.load(Ordering::Acquire),
-                                                )
-                                                .saturating_mul(1_000_000)
-                                                / u64::from(sample_rate_for_latency.max(1))
-                                        } else {
-                                            u64::MAX
-                                        };
-                                        let fresh = last_update > 0
-                                            && source_age_us.max(wall_age_us)
-                                                <= VAD_PROBABILITY_STALE_US;
-                                        let worker_available =
-                                            vad_backend_available.load(Ordering::Acquire) && fresh;
+                                        let latest_prob = vad_snapshot
+                                            .map(|snapshot| snapshot.probability)
+                                            .unwrap_or(0.0);
                                         gate_rt.set_external_vad_probability(
                                             latest_prob,
-                                            worker_available,
+                                            vad_worker_available,
                                         );
                                     }
                                     gate_rt.process_block_inplace(buffer);
@@ -1605,30 +1617,6 @@ impl AudioProcessor {
                                         );
                                         gate_fused_score.store(
                                             gate_rt.fused_gate_score().to_bits(),
-                                            Ordering::Relaxed,
-                                        );
-                                        let last_update =
-                                            vad_last_update_us.load(Ordering::Acquire);
-                                        let wall_age_us = if last_update > 0 {
-                                            now_micros().saturating_sub(last_update)
-                                        } else {
-                                            u64::MAX
-                                        };
-                                        let source_age_us = if last_update > 0 {
-                                            vad_source_sample_clock
-                                                .saturating_sub(
-                                                    vad_source_sample_end.load(Ordering::Acquire),
-                                                )
-                                                .saturating_mul(1_000_000)
-                                                / u64::from(sample_rate_for_latency.max(1))
-                                        } else {
-                                            u64::MAX
-                                        };
-                                        let fresh = last_update > 0
-                                            && source_age_us.max(wall_age_us)
-                                                <= VAD_PROBABILITY_STALE_US;
-                                        vad_available.store(
-                                            gate_rt.is_vad_available() && fresh,
                                             Ordering::Relaxed,
                                         );
                                     }

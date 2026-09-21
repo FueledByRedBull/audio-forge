@@ -115,6 +115,50 @@ mod tests {
 
     #[cfg(feature = "vad")]
     #[test]
+    fn test_vad_publication_rejects_discontinuity_after_final_generation_check() {
+        let sequence = AtomicU64::new(0);
+        let result_generation = AtomicU64::new(0);
+        let probability = AtomicU32::new(0.0_f32.to_bits());
+        let backend_available = AtomicBool::new(false);
+        let last_update_us = AtomicU64::new(0);
+        let source_sample_end = AtomicU64::new(0);
+        let source_discontinuity = AtomicU64::new(0);
+        let result = VadResultAtomics {
+            sequence: &sequence,
+            result_generation: &result_generation,
+            probability: &probability,
+            backend_available: &backend_available,
+            last_update_us: &last_update_us,
+            source_sample_end: &source_sample_end,
+            source_discontinuity: &source_discontinuity,
+        };
+
+        assert!(result.publish_vad_inference_result(0, 0.91, 48_000, 1_000, true));
+        let fresh = result.snapshot().expect("initial VAD result");
+        assert!(fresh.is_fresh(48_480, 1_010, 48_000));
+
+        source_discontinuity.fetch_add(1, Ordering::Release);
+        assert!(!result.publish_vad_inference_result(0, 0.33, 48_500, 1_015, true));
+        assert!(result.snapshot().is_none());
+        result.invalidate(true);
+        assert!(result.snapshot().is_some());
+
+        VAD_WORKER_FORCE_DISCONTINUITY_AFTER_FINAL_CHECK.with(|flag| flag.set(true));
+        assert!(result.publish_vad_inference_result(1, 0.12, 49_000, 1_020, true));
+        assert!(
+            result.snapshot().is_none(),
+            "a fresh source-age result must be rejected after its generation changes"
+        );
+
+        result.invalidate(true);
+        let reset = result.snapshot().expect("reset backend state");
+        assert!(reset.backend_available);
+        assert!(!reset.is_fresh(49_000, 1_020, 48_000));
+        VAD_WORKER_FORCE_DISCONTINUITY_AFTER_FINAL_CHECK.with(|flag| flag.set(false));
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
     #[ignore = "requires the local speech corpus and Silero model"]
     fn test_full_chain_vad_pre_gain_changes_gate_decision_on_cleaned_input() {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1952,11 +1996,11 @@ mod tests {
 
     #[test]
     fn test_output_writer_still_applies_limiter_ceiling_clamp() {
-        let rb = AudioRingBuffer::new(64);
+        let rb = AudioRingBuffer::new(2048);
         let (mut producer, mut consumer) = rb.split();
-        let mut control_scratch = FixedAudioBuffer::<f32, 32>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 32>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 32>::new();
+        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
         let mut drift_error_ema = 0.0_f32;
         let mut drift_retimer = DriftRetimer::default();
         let fade_remaining = Cell::new(0usize);
@@ -2000,8 +2044,8 @@ mod tests {
         };
 
         assert!(writer.write_chunk(&[2.0, -2.0, 0.5, 0.0, 0.0, 0.0, 0.0], true));
-        assert!(writer.write_chunk(&[0.0; 24], true));
-        let mut limited = [0.0_f32; 31];
+        assert!(writer.write_chunk(&[0.0; 1024], true));
+        let mut limited = [0.0_f32; 1031];
         assert_eq!(consumer.read(&mut limited), limited.len());
         assert!(limited.iter().all(|sample| sample.abs() <= 0.5 + 1e-6));
         assert!(limited.iter().any(|sample| sample.abs() > 0.1));
@@ -2009,11 +2053,11 @@ mod tests {
 
     #[test]
     fn test_output_writer_limits_true_peak_without_sample_clip() {
-        let rb = AudioRingBuffer::new(64);
-        let (mut producer, _consumer) = rb.split();
-        let mut control_scratch = FixedAudioBuffer::<f32, 32>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 32>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 32>::new();
+        let rb = AudioRingBuffer::new(2048);
+        let (mut producer, mut consumer) = rb.split();
+        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
         let mut true_peak_detector = TruePeakDetector::new();
         let mut drift_error_ema = 0.0_f32;
         let mut drift_retimer = DriftRetimer::default();
@@ -2071,8 +2115,17 @@ mod tests {
             limits: test_output_writer_limits(4, 8, 4),
         };
 
-        assert!(writer.write_chunk(&[0.0, 1.0, 1.0, 0.0, 0.0], true));
-        assert!(writer.write_chunk(&[0.0; 32], true));
+        // Include the limiter delay and detector tails in the same measured
+        // block; a short all-zero output could otherwise satisfy the peak check.
+        let mut input = [0.0_f32; 1024];
+        input[1] = 1.0;
+        input[2] = 1.0;
+        assert!(writer.write_chunk(&input, true));
+        let mut output = [0.0_f32; 1024];
+        assert_eq!(consumer.read(&mut output), output.len());
+        assert!(output.iter().any(|sample| sample.abs() > 0.1));
+        assert_eq!(output_short_write_dropped_samples.load(Ordering::Relaxed), 0);
+        assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
 
         assert_eq!(output_clip_event_count.load(Ordering::Relaxed), 0);
         assert_eq!(output_true_peak_event_count.load(Ordering::Relaxed), 1);
@@ -2262,6 +2315,40 @@ mod tests {
     }
 
     #[test]
+    fn test_offline_output_safety_matches_live_writer() {
+        let count = AtomicU64::new(0);
+        let state = AtomicU32::new(0);
+        let counters = output_writer_counters(
+            (&count, &count, &count), &count, &count, &state, &state, &count,
+        );
+        for enabled in [false, true] {
+            let mut processor = OfflineDspBlockProcessor::new(48_000.0);
+            processor.set_eq_enabled(false);
+            processor.eq_mut().reset();
+            processor.correction_eq_mut().reset();
+            processor.set_limiter_enabled(enabled);
+            processor.set_normal_limiter_enabled(false);
+            processor.limiter_mut().set_ceiling(-1.5);
+            let mut output = FixedAudioBuffer::<f32, 128>::new();
+            let mut safety = FixedAudioBuffer::<f32, 128>::new();
+            let mut detector = TruePeakDetector::new();
+            let mut limiter = TruePeakLimiter::default_settings(48_000.0);
+            let enable_control = AtomicBool::new(enabled);
+            let ceiling = Cell::new(10.0_f32.powf(-1.5 / 20.0));
+            // Cross block boundaries and include the limiter's delayed tail.
+            for value in [0.95, -1.5, 0.3, 0.0, 0.0] {
+                let mut input = [value; 128];
+                let live = OutputWriteContext::<128, 128, 128>::sanitize_and_limit(
+                    &input, &mut safety, &mut detector, &mut limiter,
+                    &enable_control, &ceiling, &counters,
+                );
+                processor.process_block(&mut input, &mut output);
+                assert_eq!(output.as_slice(), live, "enabled={enabled}, value={value}");
+            }
+        }
+    }
+
+    #[test]
     fn test_offline_bypass_keeps_output_safety_without_normal_limiter() {
         let sample_rate = TARGET_SAMPLE_RATE as f64;
         let mut processor = OfflineDspBlockProcessor::new(sample_rate);
@@ -2436,6 +2523,7 @@ mod tests {
         processor.compressor_mut().set_adaptive_release(true);
         processor.limiter_mut().set_ceiling(-6.0);
         processor.limiter_mut().set_release_time(55.0);
+        assert_eq!(processor.latency_samples(), 344);
 
         let mut noise_state = 0x6a09_e667_f3bc_c909_u64;
         let mut output = FixedAudioBuffer::<f32, 960>::new();
@@ -2498,14 +2586,17 @@ mod tests {
         }
 
         let rms = (square_sum / sample_count as f64).sqrt();
-        assert!((rms - 0.186_422_464_189).abs() <= 1.0e-6);
-        assert!((peak - 0.500_788_75).abs() <= 2.0e-6);
-        assert!((weighted_sum - 8_034.768_291_836).abs() <= 0.05);
+        assert!(
+            (rms - 0.185_686_033_818).abs() <= 1.0e-6,
+            "rms={rms:.12} peak={peak:.9} weighted={weighted_sum:.12} compressor={max_compressor_gr:.9} deesser={max_deesser_gr:.9} limiter={max_limiter_gr:.9} events={limited_events} checkpoints={checkpoints:?}"
+        );
+        assert!((peak - 0.500_301_66).abs() <= 2.0e-6);
+        assert!((weighted_sum - 2_566.455_958_423).abs() <= 0.05);
         assert!((max_compressor_gr - 8.746_429).abs() <= 0.001);
         assert!((max_deesser_gr - 10.0).abs() <= 0.001);
         assert!((max_limiter_gr - 4.348_602).abs() <= 0.001);
-        assert!((20..=24).contains(&limited_events));
-        let expected = [-0.123_054_266, 0.113_739_1, 0.093_510_956, 0.024_921_212];
+        assert!((25..=29).contains(&limited_events));
+        let expected = [-0.032_192_655, 0.352_205_4, 0.352_831_96, 0.064_956_3];
         assert_eq!(checkpoints.len(), expected.len());
         for (actual, expected) in checkpoints.into_iter().zip(expected) {
             assert!((actual - expected).abs() <= 2.0e-5);

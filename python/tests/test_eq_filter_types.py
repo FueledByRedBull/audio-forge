@@ -40,7 +40,8 @@ def test_raw_preview_measures_intersample_peak() -> None:
     audio = (0.8 * np.sin(2 * np.pi * 0.25 * np.arange(4800) + np.pi / 4)).astype(np.float32)
     bands = [(band.frequency_hz, 0.0, band.q) for band in EQSettings().bands]
     result = simulate_auto_eq_chain(
-        audio, 48_000.0, bands, {"full_chain": True, "processing_mode": "raw"}
+        audio, 48_000.0, bands,
+        {"full_chain": True, "processing_mode": "raw", "limiter_enabled": False},
     )
     assert result["output_true_peak_db"] > result["output_sample_peak_db"] + 2.0
     np.testing.assert_array_equal(result["output_audio"], audio)

@@ -153,7 +153,7 @@ User-facing tools:
 - Auto-EQ headroom validation through the native chain simulator; legacy Python-only estimates are advisory. Typed EQ and full-chain previews require native DSP rather than approximating unsupported filters or stages.
 - Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, and bounded native compressor calibration. EQ is fitted before compressor calibration; the compressor search includes the requested auto makeup and the final native full-chain headroom check. A target that cannot leave safe headroom remains advisory, so lower Target loudness and rerun instead of applying it. Natural / No Added Tone remains neutral.
 - Dynamic-EQ de-esser, compressor with speech-aware auto makeup gain driven by calibrated VAD and noise-floor evidence, and lookahead limiter.
-- Band-limited 4x true-peak detection and limiting, validated against an independent offline reference.
+- Band-limited 16x true-peak detection and limiting with independent offline burst and speech checks. Final peak protection uses 320 samples of lookahead when enabled (6.67 ms at 48 kHz), in addition to the other processing and device delays.
 - Stateful phase-safe mono alignment and adaptive 49-61 Hz hum/harmonic tracking for difficult input sources.
 - Per device-pair route-aware latency calibration profiles; measured output-to-input route delay is applied directly instead of assuming symmetric one-way latency.
 - Raw monitor and bypass paths for troubleshooting.

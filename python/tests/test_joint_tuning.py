@@ -1,6 +1,7 @@
 """Joint selection must keep exact incumbent settings when evidence is weak."""
 
 from dataclasses import asdict
+import hashlib
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -423,10 +424,8 @@ def _synthetic_product_report() -> dict[str, Any]:
     return {
         "corpus_manifest_sha256": "e" * 64,
         "implementation_sha256": {
-            "python/tools/evaluate_product_tuning.py": "a" * 64,
-            "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "b" * 64,
-            "df.dll": "c" * 64,
-            "release-assets.json": "d" * 64,
+            path: hashlib.sha256((REPO_ROOT / path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+            for path in ("python/tools/evaluate_product_tuning.py", "release-assets.json")
         },
         "selection_split": "per-capture first half selects among eligible models",
         "incumbent_model": "rnnoise",
@@ -446,6 +445,66 @@ def _synthetic_product_report() -> dict[str, Any]:
             }
         ],
     }
+
+
+def test_evaluator_clean_comparison_obeys_native_activity_contract(tmp_path, monkeypatch):
+    from scipy.io.wavfile import write
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    clean = (0.05 * np.sin(2 * np.pi * 220 * np.arange(192_000) / 48_000)).astype(np.float32)
+    write(corpus / "clean.wav", 48_000, clean)
+    write(corpus / "noisy.wav", 48_000, clean + np.float32(0.001))
+    (corpus / "manifest.json").write_text(json.dumps({"captures": [{
+        "id": "native-contract", "duration_seconds": 4.0,
+        "clean": {"path": "clean.wav"}, "noisy": {"path": "noisy.wav"},
+    }]}), encoding="utf-8")
+
+    def retain_incumbent(*_args, incumbent_settings, **_kwargs):
+        return {
+            "gate_settings": incumbent_settings["gate"],
+            "suppressor_settings": incumbent_settings["suppressor"],
+            "apply_recommended": False, "decision": "retain_incumbent", "runtime_ms": 0.0,
+        }
+
+    monkeypatch.setattr(evaluate_product_tuning, "tune_gate_suppression_dynamics", retain_incumbent)
+    # Keep the real helper and native renderer: omitted activity requests used
+    # to fail here only after the expensive candidate search had completed.
+    report = evaluate_product_tuning.evaluate(corpus, "rnnoise")
+
+    assert report["case_count"] == 2
+    assert all(case["gates"]["clean_speech_preserved"] for case in report["cases"])
+    assert all(case["gates"]["heldout_or_exact_retention"] for case in report["cases"])
+
+
+def test_evaluator_hashes_mixed_line_endings_portably(tmp_path, monkeypatch):
+    from mic_eq.ui import app_bootstrap
+
+    paths = (
+        "python/tools/evaluate_product_tuning.py",
+        "python/mic_eq/analysis/joint_tuning.py",
+        "rust-core/src/audio/processor/python_api.rs",
+        "release-assets.json",
+    )
+    for relative in paths:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"first\r\nsecond\n")
+    (tmp_path / "df.dll").write_bytes(b"binary\r\nidentity\n")
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "manifest.json").write_text('{"captures": []}', encoding="utf-8")
+    monkeypatch.setattr(evaluate_product_tuning, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(evaluate_product_tuning, "__file__", str(tmp_path / paths[0]))
+    monkeypatch.setattr(app_bootstrap, "configure_deepfilter_env", lambda: None)
+
+    report = evaluate_product_tuning.evaluate(corpus, "rnnoise")
+
+    expected = hashlib.sha256(b"first\nsecond\n").hexdigest()
+    assert all(report["implementation_sha256"][path] == expected for path in paths)
+    assert report["implementation_sha256"]["df.dll"] == hashlib.sha256(
+        b"binary\r\nidentity\n"
+    ).hexdigest()
 
 
 @pytest.mark.parametrize("revision", [None, "f" * 40])

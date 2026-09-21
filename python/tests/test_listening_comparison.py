@@ -36,6 +36,57 @@ def test_native_comparison_renders_aligned_finite_audio():
     assert np.isfinite(result.current.samples).all()
 
 
+@pytest.mark.parametrize("current_scope,proposed_scope", [
+    ("downstream", "downstream"), ("normal", "normal"),
+    ("downstream", "normal"), ("raw", "normal"), ("bypass", "normal"),
+])
+def test_comparison_describes_each_native_render_scope(current_scope, proposed_scope, qapp, monkeypatch):
+    def chain(scope):
+        return {
+            "full_chain": scope != "downstream",
+            "processing_mode": "normal" if scope == "downstream" else scope,
+            "vad_available": False, "gate_enabled": False,
+            "suppressor_enabled": False,
+            "deesser_enabled": True,
+        }
+
+    capture = (0.01 * np.sin(np.arange(4800) * 2 * np.pi / 48)).astype(np.float32)
+    result = comparison.render_comparison(
+        capture, 48000, _settings(), _settings(),
+        current_chain_settings=chain(current_scope),
+        proposed_chain_settings=chain(proposed_scope),
+    )
+    assert result.original.rendered_stages == ()
+    for clip, scope in [(result.current, current_scope), (result.proposed, proposed_scope)]:
+        assert scope in clip.render_scope.lower()
+        if scope == "raw":
+            assert clip.rendered_stages == ("output safety",)
+        elif scope == "bypass":
+            assert clip.rendered_stages == ("input pre-filter", "output safety")
+        else:
+            assert clip.rendered_stages.index("deesser") < clip.rendered_stages.index("tone EQ")
+            assert ("input cleanup" in clip.rendered_stages) is (scope == "normal")
+            assert "noise suppression" not in clip.rendered_stages
+    assert result.current.render_scope in result.scope_label
+    assert result.proposed.render_scope in result.scope_label
+    if current_scope != proposed_scope:
+        assert "current" in result.scope_label and "proposed" in result.scope_label
+
+    from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog
+
+    monkeypatch.setattr(ListeningComparisonDialog, "_start_render", lambda self: None)
+    dialog = ListeningComparisonDialog(
+        audio_data=capture, sample_rate=48000,
+        current_settings=_settings(), proposed_settings=_settings(),
+    )
+    dialog._on_render_ready(result)
+    assert result.scope_label in dialog.status_label.text()
+    for clip in (result.current, result.proposed):
+        assert clip.render_scope in dialog.scope_warning.text()
+        assert ", ".join(clip.rendered_stages) in dialog.scope_warning.text()
+    dialog.close()
+
+
 @pytest.mark.parametrize("sample_format,dtype", [
     (QAudioFormat.SampleFormat.Int16, "<i2"),
     (QAudioFormat.SampleFormat.Int32, "<i4"),
@@ -87,7 +138,7 @@ def test_render_comparison_keeps_one_capture_and_reports_native_delay(monkeypatc
     assert result.alignment_samples == 240
     assert result.alignment_ms == pytest.approx(5.0)
     assert result.native_authoritative is True
-    assert result.excluded_stages == ("input cleanup", "gate/VAD", "noise suppression")
+    assert result.excluded_stages == ("input cleanup", "gate/VAD", "noise suppression", "deesser")
 
 
 def test_level_match_preserves_actual_difference_and_matches_preview_level(monkeypatch):
@@ -294,7 +345,7 @@ def test_full_chain_leaves_vad_to_native_renderer(monkeypatch):
         assert gate["vad_threshold"] == 0.48
         assert suppressor["strength"] == 0.7
         assert suppressor["model"] == "rnnoise"
-    assert result.excluded_stages == ()
+    assert result.excluded_stages == ("deesser",)
 
 
 def test_full_chain_native_failure_is_visible(monkeypatch):

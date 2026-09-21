@@ -28,6 +28,14 @@ corresponding source. Hardware measurements are optional supporting evidence;
 release notes must identify their tested revision and any untested coverage.
 A self-hosted runner is not required to publish.
 
+Evaluation reports pin historical source commits that the evaluation checker
+requires to remain ancestors of the release source. Use a merge commit for
+branches carrying these reports, including PR #66, and run
+`python/tools/check_evaluation_hygiene.py` on the proposed integration result
+with the required history available. Squash/rebase merging can discard those
+commit identities. If integration policy requires rewritten history, resolve
+the evidence policy first; do not relabel historical measurements with a new SHA.
+
 ### Release candidates
 
 Release candidates use one canonical tag spelling: `vMAJOR.MINOR.PATCH-rc.N`.

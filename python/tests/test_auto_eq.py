@@ -192,6 +192,83 @@ def test_constrained_refinement_can_recover_from_an_undersized_initial_fit():
     assert np.linalg.norm(refined - desired) < np.linalg.norm(undersized - desired)
 
 
+@pytest.mark.parametrize("initial_gain", [0.0, 1.0e-3])
+def test_constrained_refinement_recovers_nonzero_target_from_zero_or_tiny_start(
+    initial_gain,
+):
+    dense_freqs = np.geomspace(20.0, 20_000.0, 256)
+    centers = np.geomspace(80.0, 16_000.0, 10)
+    qs = np.full(10, 1.2)
+    desired = np.zeros(10)
+    desired[4] = 4.0
+    target = _predict_eq_response(dense_freqs, desired, qs, centers)
+    initial = np.full(10, initial_gain)
+
+    refined, success = optimizer_module._constrained_gain_refinement(
+        initial,
+        dense_freqs,
+        np.zeros_like(dense_freqs),
+        target,
+        qs,
+        centers,
+        np.ones_like(dense_freqs),
+        np.full(10, -12.0),
+        np.full(10, 12.0),
+    )
+
+    assert success is True
+    assert refined[4] > 2.0
+
+
+@pytest.mark.parametrize("initial_gain", [0.0, 1.0e-3])
+def test_constrained_refinement_preserves_a_flat_target_from_zero_or_tiny_start(
+    initial_gain,
+):
+    dense_freqs = np.geomspace(20.0, 20_000.0, 256)
+    centers = np.geomspace(80.0, 16_000.0, 10)
+    qs = np.full(10, 1.2)
+    initial = np.full(10, initial_gain)
+
+    refined, success = optimizer_module._constrained_gain_refinement(
+        initial,
+        dense_freqs,
+        np.zeros_like(dense_freqs),
+        np.zeros_like(dense_freqs),
+        qs,
+        centers,
+        np.ones_like(dense_freqs),
+        np.full(10, -12.0),
+        np.full(10, 12.0),
+    )
+
+    assert success is True
+    assert np.max(np.abs(refined)) < 1.0e-4
+
+
+def test_constrained_refinement_can_activate_a_band_for_a_coupled_multiband_target():
+    dense_freqs = np.geomspace(20.0, 20_000.0, 256)
+    centers = np.geomspace(80.0, 16_000.0, 10)
+    qs = np.full(10, 1.2)
+    desired = np.asarray([0.0, 0.5, 1.5, 3.0, 5.0, 5.0, 3.0, 1.5, 0.5, 0.0])
+    target = _predict_eq_response(dense_freqs, desired, qs, centers)
+
+    refined, success = optimizer_module._constrained_gain_refinement(
+        np.zeros(10),
+        dense_freqs,
+        np.zeros_like(dense_freqs),
+        target,
+        qs,
+        centers,
+        np.ones_like(dense_freqs),
+        np.full(10, -12.0),
+        np.full(10, 12.0),
+    )
+
+    assert success is True
+    assert refined[4] > 4.0
+    assert refined[5] > 4.0
+
+
 def test_validation_is_final_and_reported_metrics_match_returned_curve(monkeypatch):
     freqs = np.geomspace(20.0, 20_000.0, 512)
     log_freqs = np.log10(freqs)

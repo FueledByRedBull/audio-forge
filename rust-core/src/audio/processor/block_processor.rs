@@ -2,6 +2,7 @@
 pub struct OfflineDspBlockStats {
     pub input_sample_peak: f32,
     pub output_sample_peak: f32,
+    pub pre_limiter_true_peak: f32,
     pub true_peak_limiter_input_peak: f32,
     pub output_true_peak: f32,
     pub limiter_peak_gain_reduction_db: f32,
@@ -16,6 +17,7 @@ impl Default for OfflineDspBlockStats {
         Self {
             input_sample_peak: 0.0,
             output_sample_peak: 0.0,
+            pre_limiter_true_peak: 0.0,
             true_peak_limiter_input_peak: 0.0,
             output_true_peak: 0.0,
             limiter_peak_gain_reduction_db: 0.0,
@@ -36,6 +38,7 @@ pub struct OfflineDspBlockProcessor {
     limiter: Limiter,
     true_peak_limiter: TruePeakLimiter,
     true_peak_detector: TruePeakDetector,
+    pre_limiter_true_peak_detector: TruePeakDetector,
     deesser_enabled: bool,
     compressor_enabled: bool,
     /// The normal lookahead limiter is separate from the final output safety
@@ -56,6 +59,7 @@ impl OfflineDspBlockProcessor {
             limiter: Limiter::default_settings(sample_rate),
             true_peak_limiter: TruePeakLimiter::default_settings(sample_rate as f32),
             true_peak_detector: TruePeakDetector::new(),
+            pre_limiter_true_peak_detector: TruePeakDetector::new(),
             deesser_enabled: false,
             compressor_enabled: false,
             normal_limiter_enabled: true,
@@ -84,6 +88,7 @@ impl OfflineDspBlockProcessor {
         self.normal_limiter_enabled = enabled;
         self.output_protection_enabled = enabled;
         if !enabled {
+            self.true_peak_limiter.reset();
             self.previous_true_peak_limiter_gain_reduction_db = 0.0;
         }
         self.limiter.set_enabled(enabled);
@@ -223,14 +228,21 @@ impl OfflineDspBlockProcessor {
             stats.compressor_gain_reduction_db =
                 self.compressor.block_peak_gain_reduction() as f32;
         }
+        stats.pre_limiter_true_peak = self.pre_limiter_true_peak_detector.process_block(block);
         if self.normal_limiter_enabled {
             self.limiter.process_block_inplace(block);
             stats.limiter_peak_gain_reduction_db =
                 self.limiter.peak_gain_reduction_and_reset() as f32;
         }
+        sanitize_non_finite_inplace(block);
+        let output_ceiling = if self.output_protection_enabled {
+            10.0_f32.powf(self.limiter.ceiling_db() as f32 / 20.0)
+        } else {
+            1.0
+        };
         if self.output_protection_enabled {
             self.true_peak_limiter
-                .set_ceiling_linear(10.0_f32.powf(self.limiter.ceiling_db() as f32 / 20.0));
+                .set_ceiling_linear(output_ceiling);
             let true_peak_stats = self.true_peak_limiter.process_block_inplace(block);
             stats.true_peak_limiter_input_peak = true_peak_stats.input_true_peak;
             stats.true_peak_limiter_gain_reduction_db = true_peak_stats.max_gain_reduction_db;
@@ -240,6 +252,8 @@ impl OfflineDspBlockProcessor {
         } else {
             self.previous_true_peak_limiter_gain_reduction_db = 0.0;
         }
+
+        sanitize_and_clamp_output_inplace(block, output_ceiling);
 
         stats.output_sample_peak = block.iter().map(|sample| sample.abs()).fold(0.0_f32, f32::max);
         stats.output_true_peak = self.true_peak_detector.process_block(block);
@@ -258,6 +272,29 @@ impl OfflineDspBlockProcessor {
 #[cfg(test)]
 mod block_processor_tests {
     use super::*;
+
+    #[test]
+    fn disabling_output_protection_discards_delayed_audio_before_reenable() {
+        let mut processor = OfflineDspBlockProcessor::new(48_000.0);
+        processor.set_eq_enabled(false);
+        processor.set_normal_limiter_enabled(false);
+        let mut output = FixedAudioBuffer::<f32, 1024>::new();
+        let mut hot = [0.75_f32; 64];
+        processor.process_block_with_stats(&mut hot, &mut output);
+        assert!(output.as_slice().iter().all(|sample| *sample == 0.0));
+
+        processor.set_limiter_enabled(false);
+        let mut disabled = [0.0_f32; 16];
+        processor.process_block_with_stats(&mut disabled, &mut output);
+        processor.set_limiter_enabled(true);
+        processor.set_normal_limiter_enabled(false);
+        let mut silence = [0.0_f32; 1024];
+        let stats = processor.process_block_with_stats(&mut silence, &mut output);
+
+        assert!(output.as_slice().iter().all(|sample| *sample == 0.0));
+        assert_eq!(stats.true_peak_limiter_input_peak, 0.0);
+        assert_eq!(stats.true_peak_limiter_gain_reduction_db, 0.0);
+    }
 
     #[test]
     fn activity_control_reaches_offline_compressor() {

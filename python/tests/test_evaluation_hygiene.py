@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 import check_evaluation_hygiene as hygiene
+import pytest
 
 
 def _write(path: Path, payload: dict) -> None:
@@ -21,6 +22,16 @@ def _contract() -> dict:
         "latency": {},
         "clean_preservation": {},
     }
+
+
+def _audible_report(**overrides: object) -> dict:
+    report: dict[str, object] = {
+        "schema_version": 2,
+        "audible_change": True,
+        "evaluation_contract": _contract(),
+    }
+    report.update(overrides)
+    return report
 
 
 def test_portable_audible_report_passes(tmp_path: Path, monkeypatch):
@@ -67,6 +78,68 @@ def test_audible_report_requires_source_hashes(tmp_path: Path):
     errors = hygiene.validate_report(path)
 
     assert any("lacks verifiable source SHA-256 hashes" in error for error in errors)
+
+
+def test_implementation_source_hashes_are_verified(tmp_path: Path, monkeypatch):
+    source = tmp_path / "implementation.py"
+    source.write_text("implementation\n", encoding="utf-8")
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text("{}\n", encoding="utf-8")
+    path = tmp_path / "report.json"
+    _write(
+        path,
+        _audible_report(
+            implementation_sha256={
+                "implementation.py": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "release-assets.json": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            },
+        ),
+    )
+    monkeypatch.setattr(hygiene, "REPO_ROOT", tmp_path)
+
+    assert hygiene.validate_report(path) == []
+
+
+def test_stale_implementation_source_hash_is_rejected(
+    tmp_path: Path, monkeypatch
+):
+    source = tmp_path / "implementation.py"
+    source.write_text("implementation\n", encoding="utf-8")
+    path = tmp_path / "report.json"
+    _write(
+        path,
+        _audible_report(
+            implementation_sha256={"implementation.py": "0" * 64},
+        ),
+    )
+    monkeypatch.setattr(hygiene, "REPO_ROOT", tmp_path)
+
+    errors = hygiene.validate_report(path)
+
+    assert any("stale source SHA-256" in error for error in errors)
+
+
+def test_implementation_artifact_hash_does_not_count_as_source_provenance(
+    tmp_path: Path,
+):
+    path = tmp_path / "report.json"
+    _write(
+        path,
+        _audible_report(
+            implementation_sha256={
+                "native_extension.pyd": "0" * 64,
+                "future.identity": "1" * 64,
+            },
+        ),
+    )
+
+    errors = hygiene.validate_report(path)
+
+    assert any("lacks verifiable source SHA-256 hashes" in error for error in errors)
+    unverified: list[str] = []
+    hygiene.validate_report(path, unverified=unverified)
+    assert len(unverified) == 2
+    assert all("retained implementation hash is unverified" in note for note in unverified)
 
 
 def test_machine_local_paths_are_rejected_recursively(tmp_path: Path):
@@ -232,3 +305,71 @@ def test_historical_hardware_report_requires_redaction_provenance(tmp_path: Path
     errors = hygiene.validate_report(path)
 
     assert any("lacks privacy-redaction provenance" in error for error in errors)
+
+
+def test_nonfinite_numeric_values_are_rejected_recursively(tmp_path: Path):
+    path = tmp_path / "report.json"
+    path.write_text('{"nested": {"value": 1e1000}}', encoding="utf-8")
+
+    errors = hygiene.validate_report(path)
+
+    assert any("non-finite numeric value" in error for error in errors)
+
+
+def test_nonstandard_json_constants_are_rejected(tmp_path: Path):
+    path = tmp_path / "report.json"
+    path.write_text('{"nested": [NaN]}', encoding="utf-8")
+
+    errors = hygiene.validate_report(path)
+
+    assert any("invalid JSON" in error for error in errors)
+
+
+def test_runtime_metrics_must_be_nonnegative_numbers(tmp_path: Path):
+    path = tmp_path / "report.json"
+    contract = _contract()
+    contract["runtime"] = {"max_p99_frame_seconds": -0.001}
+    _write(path, _audible_report(evaluation_contract=contract))
+
+    errors = hygiene.validate_report(path)
+
+    assert any("runtime.max_p99_frame_seconds" in error for error in errors)
+    assert any("non-negative" in error for error in errors)
+
+
+def test_runtime_boolean_measurements_are_rejected(tmp_path: Path):
+    path = tmp_path / "report.json"
+    contract = _contract()
+    contract["runtime"] = {"max_p99_frame_seconds": True}
+    _write(path, _audible_report(evaluation_contract=contract))
+
+    errors = hygiene.validate_report(path)
+
+    assert any("runtime.max_p99_frame_seconds" in error for error in errors)
+    assert any("finite nonnegative number" in error for error in errors)
+
+
+@pytest.mark.parametrize("value", ["1", {}, [], None, True])
+def test_named_runtime_duration_must_be_numeric(tmp_path: Path, value):
+    path = tmp_path / "report.json"
+    contract = _contract()
+    contract["runtime"] = {
+        "max_p99_frame_seconds": 0.001,
+        "max_case_runtime_ms": value,
+    }
+    _write(path, _audible_report(evaluation_contract=contract))
+
+    errors = hygiene.validate_report(path)
+
+    assert any("runtime.max_case_runtime_ms" in error for error in errors)
+    assert any("finite nonnegative number" in error for error in errors)
+
+
+def test_malformed_schema_version_is_a_controlled_validation_error(tmp_path: Path):
+    path = tmp_path / "report.json"
+    _write(path, _audible_report(schema_version="2"))
+
+    errors = hygiene.validate_report(path)
+
+    assert errors
+    assert any("schema_version must be a positive integer" in error for error in errors)

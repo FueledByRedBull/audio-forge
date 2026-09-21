@@ -1,9 +1,10 @@
 //! Dynamic-EQ de-esser using sidechain sibilance detection.
 //!
 //! Detection path:
-//! - High-pass at low cutoff (default 4kHz)
-//! - Low-pass at high cutoff (default 9kHz)
-//! - Envelope follower in dB domain
+//! - Three detector bands partition the configured cutoff interval.
+//! - High-pass at low cutoff (default 4 kHz)
+//! - Low-pass at high cutoff (default 11 kHz)
+//! - Absolute linear envelope smoothing followed by dB gain calculations.
 //!
 //! Gain computer:
 //! - Threshold/ratio above threshold
@@ -225,7 +226,7 @@ impl DeEsser {
     }
 
     fn rebuild_detector_filters(&mut self) {
-        let span = (self.high_cut_hz - self.low_cut_hz).max(600.0);
+        let span = self.high_cut_hz - self.low_cut_hz;
         let split_a = self.low_cut_hz + span / 3.0;
         let split_b = self.low_cut_hz + span * 2.0 / 3.0;
         let bounds = [
@@ -244,7 +245,7 @@ impl DeEsser {
         high_cut_hz: f64,
         sample_rate: f64,
     ) -> [DeEsserBand; DEESSER_BAND_COUNT] {
-        let span = (high_cut_hz - low_cut_hz).max(600.0);
+        let span = high_cut_hz - low_cut_hz;
         let split_a = low_cut_hz + span / 3.0;
         let split_b = low_cut_hz + span * 2.0 / 3.0;
         [
@@ -707,6 +708,42 @@ mod tests {
             max_err < 1e-4,
             "dynamic EQ should be identity with zero reduction"
         );
+    }
+
+    #[test]
+    fn test_detector_bands_partition_each_permitted_cutoff_width() {
+        for width_hz in [200.0, 399.0, 400.0, 599.0, 600.0] {
+            let low_cut_hz = 4000.0;
+            let high_cut_hz = low_cut_hz + width_hz;
+            let deesser = {
+                let mut value = DeEsser::new(48_000.0);
+                value.set_low_cut_hz(low_cut_hz);
+                value.set_high_cut_hz(high_cut_hz);
+                value
+            };
+
+            assert_eq!(deesser.low_cut_hz(), low_cut_hz);
+            assert_eq!(deesser.high_cut_hz(), high_cut_hz);
+
+            for (index, band) in deesser.bands.iter().enumerate() {
+                assert!(
+                    band.low_hz < band.high_hz,
+                    "band {index} must be ordered for {low_cut_hz}-{high_cut_hz} Hz"
+                );
+                assert!(
+                    band.low_hz >= low_cut_hz && band.high_hz <= high_cut_hz,
+                    "band {index} must stay inside {low_cut_hz}-{high_cut_hz} Hz: {}-{}",
+                    band.low_hz,
+                    band.high_hz
+                );
+                if let Some(previous) = index.checked_sub(1).and_then(|i| deesser.bands.get(i)) {
+                    assert_eq!(
+                        previous.high_hz, band.low_hz,
+                        "bands must remain contiguous for {low_cut_hz}-{high_cut_hz} Hz"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -2,6 +2,10 @@
 
 ## v1.13.0 (unreleased)
 
+- Correct short-burst true-peak limiting with longer peak detection and smoothed lookahead gain. Final peak protection adds 6.25 ms of latency at 48 kHz compared with the previous implementation.
+- Match Raw and limiter-disabled preview output to live safety behavior, and measure headroom before either limiter acts.
+- Keep de-esser subbands inside narrow cutoff intervals, remove the zero-gain dead zone from EQ fitting, and reject VAD results published across a stream discontinuity.
+- Keep sample-based automatic makeup metering active, describe each comparison clip's actual processing scope, and validate finite evaluation metrics and declared implementation-source hashes.
 - Use the supplied sample rate throughout generic offline EQ fitting and quality checks, matching native filter responses at 44.1, 48, and 96 kHz.
 - Score gate/suppression candidates with their causal loudness-control evidence, then calibrate compression on the selected input processing and exact applied EQ. Reuse the rendered input across compressor candidates.
 - Correct automatic makeup gain's loudness feedback and use speech/noise evidence and limiter feedback in full-chain previews and verification.

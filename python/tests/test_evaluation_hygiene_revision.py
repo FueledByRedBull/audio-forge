@@ -88,3 +88,46 @@ def test_historical_report_rejects_unavailable_revision(
     errors = hygiene.validate_report(report)
 
     assert any("source_revision is unavailable" in error for error in errors)
+
+
+def test_implementation_hashes_use_measurement_source_revision(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "repo"
+    source = root / "python" / "tools" / "evaluator.py"
+    report = root / "evaluation" / "report.json"
+    source.parent.mkdir(parents=True)
+    report.parent.mkdir()
+    source.write_bytes(b"measurement evaluator\n")
+    expected = hashlib.sha256(source.read_bytes()).hexdigest()
+    _git(root, "init", "--quiet")
+    _git(root, "config", "user.name", "hygiene-test")
+    _git(root, "config", "user.email", "hygiene-test@example.invalid")
+    _git(root, "add", ".")
+    _git(
+        root,
+        "-c",
+        "user.name=hygiene-test",
+        "-c",
+        "user.email=hygiene-test@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "measurement",
+    )
+    revision = _git(root, "rev-parse", "HEAD")
+    report.write_text(
+        json.dumps(
+            {
+                "implementation_sha256": {
+                    "python/tools/evaluator.py": expected
+                },
+                "measurement_source_revision": revision,
+            }
+        ),
+        encoding="utf-8",
+    )
+    source.write_bytes(b"current evaluator\n")
+    monkeypatch.setattr(hygiene, "REPO_ROOT", root)
+
+    assert hygiene.validate_report(report) == []

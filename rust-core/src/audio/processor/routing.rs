@@ -809,7 +809,6 @@ fn update_meter_block_stats(
     }
 }
 
-#[cfg(test)]
 #[inline]
 fn sanitize_and_clamp_output_inplace(buffer: &mut [f32], ceiling_linear: f32) {
     let ceiling = ceiling_linear.clamp(0.0, 1.0);

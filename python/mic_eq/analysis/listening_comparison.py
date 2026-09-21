@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from .auto_eq import simulate_candidate_chain
+from .auto_eq_parts.headroom import _flatten_chain_settings
 from .cancellation import AnalysisCancelled
 
 
@@ -27,11 +28,12 @@ RENDERED_STAGES = (
     "input cleanup",
     "gate/VAD",
     "noise suppression",
+    "deesser",
     "correction EQ",
     "tone EQ",
-    "deesser",
     "compressor",
     "limiter",
+    "output safety",
 )
 EXCLUDED_STAGES: tuple[str, ...] = ()
 
@@ -328,6 +330,8 @@ class RenderedComparisonClip:
     level_match_gain_db: float
     safety_gain_db: float
     simulation_backend: str
+    render_scope: str = "unaltered Original capture"
+    rendered_stages: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -349,7 +353,12 @@ class ComparisonRenderResult:
 
     @property
     def scope_label(self) -> str:
-        return "Offline full-chain input, EQ, suppression, and dynamics preview"
+        if self.current.render_scope == self.proposed.render_scope:
+            return f"Offline {self.current.render_scope} preview"
+        return (
+            f"Offline comparison: current {self.current.render_scope}; "
+            f"proposed {self.proposed.render_scope}"
+        )
 
     @property
     def clips(self) -> tuple[RenderedComparisonClip, ...]:
@@ -386,6 +395,36 @@ def _render_processed(
     return _simulation_audio(simulation, audio.size), simulation
 
 
+def _render_scope(
+    chain: Mapping[str, Any], settings: Mapping[str, Any],
+) -> tuple[str, tuple[str, ...]]:
+    """Describe enabled stages at one clip's actual rendering boundary."""
+    mode = str(chain.get("processing_mode", "normal")).strip().lower()
+    if chain.get("full_chain") and mode == "raw":
+        return "full-chain Raw output safety", ("output safety",)
+    if chain.get("full_chain") and mode == "bypass":
+        stages = ("output safety",) if chain.get("input_pre_filtered") else (
+            "input pre-filter", "output safety",
+        )
+        return "full-chain Bypass output", stages
+    controls = _flatten_chain_settings(dict(chain))
+    eq_enabled = _eq_settings(settings)["eq_enabled"]
+    stages = list(RENDERED_STAGES if chain.get("full_chain") else RENDERED_STAGES[3:])
+    for stage, enabled in (
+        ("gate/VAD", controls["gate_enabled"]),
+        ("noise suppression", controls["suppressor_enabled"]),
+        ("deesser", controls["deesser_enabled"]),
+        ("compressor", controls["compressor_enabled"]),
+        ("limiter", controls["limiter_enabled"]),
+        ("correction EQ", eq_enabled),
+        ("tone EQ", eq_enabled),
+    ):
+        if not enabled and stage in stages:
+            stages.remove(stage)
+    scope = "full-chain Normal processing" if chain.get("full_chain") else "downstream EQ and dynamics"
+    return scope, tuple(stages)
+
+
 def render_comparison(
     audio_data: Any,
     sample_rate: int,
@@ -414,9 +453,6 @@ def render_comparison(
 
     current_chain = _chain_settings(current_settings, current_chain_settings)
     proposed_chain = _chain_settings(proposed_settings, proposed_chain_settings)
-    full_chain = bool(
-        current_chain.get("full_chain") or proposed_chain.get("full_chain")
-    )
     _check_cancel(cancel_check)
     current_audio, current_simulation = _render_processed(
         audio, rate, current_settings, current_chain
@@ -467,8 +503,16 @@ def render_comparison(
         )
 
     original = prepare("original", audio, reference_level_db, None)
-    current = prepare("current", current_audio, current_level_db, current_simulation)
-    proposed = prepare("proposed", proposed_audio, proposed_level_db, proposed_simulation)
+    current_scope, current_stages = _render_scope(current_chain, current_settings)
+    proposed_scope, proposed_stages = _render_scope(proposed_chain, proposed_settings)
+    current = replace(
+        prepare("current", current_audio, current_level_db, current_simulation),
+        render_scope=current_scope, rendered_stages=current_stages,
+    )
+    proposed = replace(
+        prepare("proposed", proposed_audio, proposed_level_db, proposed_simulation),
+        render_scope=proposed_scope, rendered_stages=proposed_stages,
+    )
     clips = (original, current, proposed)
     common_safety_gain_db = _common_safety_gain_db(
         clip.samples for clip in clips
@@ -501,11 +545,12 @@ def render_comparison(
         speech_detection=detection,
         alignment_samples=alignment_samples,
         alignment_ms=float(alignment_samples * 1000.0 / rate),
-        rendered_stages=RENDERED_STAGES if full_chain else ("tone EQ", "deesser", "compressor", "limiter"),
-        excluded_stages=EXCLUDED_STAGES if full_chain else (
-            "input cleanup",
-            "gate/VAD",
-            "noise suppression",
+        # Shared fields describe only stages common to both clips. The per-clip
+        # metadata preserves mixed scopes without presenting their union as parity.
+        rendered_stages=tuple(stage for stage in current_stages if stage in proposed_stages),
+        excluded_stages=tuple(
+            stage for stage in RENDERED_STAGES
+            if stage not in current_stages and stage not in proposed_stages
         ),
         native_authoritative=native_authoritative,
     )

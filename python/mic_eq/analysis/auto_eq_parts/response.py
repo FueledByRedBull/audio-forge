@@ -103,7 +103,7 @@ def _predict_eq_response(
     z_inv_2 = z_inv * z_inv
 
     for gain_db, q, fc, filter_type in zip(gains_arr, qs_arr, centers_arr, filter_types):
-        if abs(gain_db) < 0.01:
+        if gain_db == 0.0:
             continue
         b0, b1, b2, a0, a1, a2 = _biquad_coefficients(
             float(gain_db),

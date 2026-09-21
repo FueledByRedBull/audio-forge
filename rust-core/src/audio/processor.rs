@@ -341,6 +341,12 @@ pub struct AudioProcessor {
     /// Incremented when the bounded VAD queue drops a block. The stateful
     /// model must restart at the next contiguous source sample.
     vad_source_discontinuity: Arc<AtomicU64>,
+    #[cfg(feature = "vad")]
+    /// Seqlock for the worker-owned VAD result fields.
+    vad_result_sequence: Arc<AtomicU64>,
+    #[cfg(feature = "vad")]
+    /// Source discontinuity generation bound to the published result.
+    vad_result_generation: Arc<AtomicU64>,
 
     /// Compressor current release time in milliseconds (for metering)
     compressor_current_release_ms: Arc<AtomicU64>,
@@ -653,6 +659,10 @@ impl AudioProcessor {
             vad_source_sample_end: Arc::new(AtomicU64::new(0)),
             #[cfg(feature = "vad")]
             vad_source_discontinuity: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "vad")]
+            vad_result_sequence: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "vad")]
+            vad_result_generation: Arc::new(AtomicU64::new(0)),
             compressor_current_release_ms: Arc::new(AtomicU64::new(
                 COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
             )),

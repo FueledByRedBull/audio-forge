@@ -274,67 +274,6 @@ fn gate_auto_makeup_activity(
     }
 }
 
-fn simulate_passthrough(
-    py: Python<'_>,
-    audio: Vec<f32>,
-    processing_mode: &str,
-    return_auto_makeup_activity: bool,
-) -> PyResult<Py<PyAny>> {
-    let input_peak = audio
-        .iter()
-        .copied()
-        .map(f32::abs)
-        .fold(0.0_f32, f32::max);
-    let input_rms = if audio.is_empty() {
-        0.0
-    } else {
-        (audio
-            .iter()
-            .map(|sample| f64::from(*sample) * f64::from(*sample))
-            .sum::<f64>()
-            / audio.len() as f64)
-            .sqrt() as f32
-    };
-    let peak_db = linear_to_db(input_peak);
-    let rms_db = linear_to_db(input_rms);
-    let mut true_peak_detector = TruePeakDetector::new();
-    let true_peak_db = linear_to_db(true_peak_detector.process_block(&audio));
-    let diagnostics = pyo3::types::PyDict::new(py);
-    diagnostics.set_item("simulation_backend", "rust")?;
-    diagnostics.set_item("safety_authority", "authoritative")?;
-    diagnostics.set_item("processing_mode", processing_mode)?;
-    diagnostics.set_item("input_sample_peak_db", peak_db)?;
-    diagnostics.set_item("input_rms_db", rms_db)?;
-    diagnostics.set_item("output_sample_peak_db", peak_db)?;
-    diagnostics.set_item("pre_limiter_true_peak_db", true_peak_db)?;
-    diagnostics.set_item("output_true_peak_db", true_peak_db)?;
-    diagnostics.set_item("output_rms_db", rms_db)?;
-    diagnostics.set_item("limiter_effective_ceiling_db", 0.0_f32)?;
-    diagnostics.set_item("sample_headroom_db", -peak_db)?;
-    diagnostics.set_item("pre_limiter_true_peak_headroom_db", -true_peak_db)?;
-    diagnostics.set_item("true_peak_headroom_db", -true_peak_db)?;
-    diagnostics.set_item("limiter_gain_reduction_db", 0.0_f32)?;
-    diagnostics.set_item("true_peak_limiter_gain_reduction_db", 0.0_f32)?;
-    diagnostics.set_item("true_peak_limited_events", 0_u64)?;
-    diagnostics.set_item("compressor_gain_reduction_db", 0.0_f32)?;
-    diagnostics.set_item("deesser_gain_reduction_db", 0.0_f32)?;
-    diagnostics.set_item("compressor_gain_reduction_median_db", 0.0_f32)?;
-    diagnostics.set_item("compressor_gain_reduction_p95_db", 0.0_f32)?;
-    diagnostics.set_item("compressor_gain_reduction_active_ratio", 0.0_f32)?;
-    diagnostics.set_item("deesser_gain_reduction_median_db", 0.0_f32)?;
-    diagnostics.set_item("deesser_gain_reduction_p95_db", 0.0_f32)?;
-    diagnostics.set_item("chain_latency_samples", 0_usize)?;
-    diagnostics.set_item("suppressor_latency_samples", 0_usize)?;
-    diagnostics.set_item("tail_flush_samples", 0_usize)?;
-    diagnostics.set_item("non_finite_output", false)?;
-    diagnostics.set_item("processed_samples", audio.len())?;
-    diagnostics.set_item("output_audio", audio)?;
-    if return_auto_makeup_activity {
-        diagnostics.set_item("auto_makeup_activity", py.None())?;
-    }
-    Ok(diagnostics.into_any().unbind())
-}
-
 /// Frontend output plus the control evidence observed on its source timeline.
 #[cfg(feature = "vad")]
 struct SimulatedInputFrontend {
@@ -1008,6 +947,7 @@ struct AutoEqSimulationResult {
     input_rms_db: f32,
     output_sample_peak_db: f32,
     pre_limiter_true_peak_db: f32,
+    true_peak_limiter_input_db: Option<f32>,
     output_true_peak_db: f32,
     output_rms_db: f32,
     limiter_peak_gain_reduction_db: f32,
@@ -1086,16 +1026,6 @@ pub fn simulate_auto_eq_chain(
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
             "auto_makeup_activity cannot be combined with vad_probabilities",
         ));
-    }
-    // Raw monitor explicitly bypasses all shaping, matching ProcessingPath::RawMonitor.
-    // Bypass still runs the fixed input pre-filter and final output safety below.
-    if full_chain && processing_mode == "raw" {
-        return simulate_passthrough(
-            py,
-            audio,
-            &processing_mode,
-            return_auto_makeup_activity,
-        );
     }
     let mut frontend_latency_samples = 0_usize;
     let configured_control_block_size = ten_ms_control_block_size(sample_rate);
@@ -1226,7 +1156,11 @@ pub fn simulate_auto_eq_chain(
     }
 
     let deesser_enabled = py_dict_bool(settings, "deesser_enabled", false)?;
-    let return_output_audio = py_dict_bool(settings, "return_output_audio", false)?;
+    let return_output_audio = py_dict_bool(
+        settings,
+        "return_output_audio",
+        full_chain && processing_mode == "raw",
+    )?;
     processor.set_eq_before_deesser(py_dict_bool(
         settings,
         "eq_before_deesser",
@@ -1285,15 +1219,18 @@ pub fn simulate_auto_eq_chain(
 
     let limiter_enabled = py_dict_bool(settings, "limiter_enabled", true)?;
     processor.set_limiter_enabled(limiter_enabled);
-    if full_chain && processing_mode == "bypass" {
-        // Live bypass skips the normal lookahead limiter; output_writer still
+    if full_chain && processing_mode != "normal" {
+        // Live Raw and bypass skip the normal lookahead limiter; output_writer still
         // applies the configured final true-peak safety stage.
         processor.set_normal_limiter_enabled(false);
     }
     let limiter_ceiling_db = py_dict_f64(settings, "limiter_ceiling_db", -0.5)?;
     let careful_output_enabled = py_dict_bool(settings, "limiter_careful_output_enabled", true)?;
-    let effective_ceiling_db =
-        effective_limiter_ceiling_db(limiter_ceiling_db, careful_output_enabled) as f32;
+    let effective_ceiling_db = if limiter_enabled {
+        effective_limiter_ceiling_db(limiter_ceiling_db, careful_output_enabled) as f32
+    } else {
+        0.0
+    };
     if limiter_enabled {
         processor
             .limiter_mut()
@@ -1326,6 +1263,7 @@ pub fn simulate_auto_eq_chain(
     let mut input_sample_peak = 0.0_f32;
     let mut output_sample_peak = 0.0_f32;
     let mut pre_limiter_true_peak = 0.0_f32;
+    let mut true_peak_limiter_input_peak = 0.0_f32;
     let mut output_true_peak = 0.0_f32;
     let mut limiter_peak_gain_reduction_db = 0.0_f32;
     let mut true_peak_limiter_gain_reduction_db = 0.0_f32;
@@ -1397,7 +1335,8 @@ pub fn simulate_auto_eq_chain(
         ));
         input_sample_peak = input_sample_peak.max(stats.input_sample_peak);
         output_sample_peak = output_sample_peak.max(stats.output_sample_peak);
-        pre_limiter_true_peak = pre_limiter_true_peak.max(stats.true_peak_limiter_input_peak);
+        pre_limiter_true_peak = pre_limiter_true_peak.max(stats.pre_limiter_true_peak);
+        true_peak_limiter_input_peak = true_peak_limiter_input_peak.max(stats.true_peak_limiter_input_peak);
         output_true_peak = output_true_peak.max(stats.output_true_peak);
         limiter_peak_gain_reduction_db =
             limiter_peak_gain_reduction_db.max(stats.limiter_peak_gain_reduction_db);
@@ -1427,7 +1366,8 @@ pub fn simulate_auto_eq_chain(
             rendered_with_latency.push(if sample.is_finite() { sample } else { 0.0 });
         }
         output_sample_peak = output_sample_peak.max(stats.output_sample_peak);
-        pre_limiter_true_peak = pre_limiter_true_peak.max(stats.true_peak_limiter_input_peak);
+        pre_limiter_true_peak = pre_limiter_true_peak.max(stats.pre_limiter_true_peak);
+        true_peak_limiter_input_peak = true_peak_limiter_input_peak.max(stats.true_peak_limiter_input_peak);
         output_true_peak = output_true_peak.max(stats.output_true_peak);
         limiter_peak_gain_reduction_db =
             limiter_peak_gain_reduction_db.max(stats.limiter_peak_gain_reduction_db);
@@ -1543,6 +1483,7 @@ pub fn simulate_auto_eq_chain(
             input_rms_db: linear_to_db(input_rms),
             output_sample_peak_db,
             pre_limiter_true_peak_db,
+            true_peak_limiter_input_db: limiter_enabled.then(|| linear_to_db(true_peak_limiter_input_peak)),
             output_true_peak_db,
             output_rms_db: linear_to_db(output_rms),
             limiter_peak_gain_reduction_db,
@@ -1574,6 +1515,7 @@ pub fn simulate_auto_eq_chain(
         input_rms_db,
         output_sample_peak_db,
         pre_limiter_true_peak_db,
+        true_peak_limiter_input_db,
         output_true_peak_db,
         output_rms_db,
         limiter_peak_gain_reduction_db,
@@ -1603,6 +1545,7 @@ pub fn simulate_auto_eq_chain(
     diagnostics.set_item("input_rms_db", input_rms_db)?;
     diagnostics.set_item("output_sample_peak_db", output_sample_peak_db)?;
     diagnostics.set_item("pre_limiter_true_peak_db", pre_limiter_true_peak_db)?;
+    diagnostics.set_item("true_peak_limiter_input_db", true_peak_limiter_input_db)?;
     diagnostics.set_item("output_true_peak_db", output_true_peak_db)?;
     diagnostics.set_item("output_rms_db", output_rms_db)?;
     diagnostics.set_item("limiter_effective_ceiling_db", effective_ceiling_db)?;

@@ -362,9 +362,7 @@ class ListeningComparisonDialog(QDialog):
         layout.addWidget(self.scope_label)
 
         self.scope_warning = QLabel(
-            "Preview includes the captured input stage, cleanup, gate/VAD, "
-            "noise suppression, correction and tone EQ, de-esser, compressor, "
-            "and limiter."
+            "Each processed clip follows its configured mode and enabled stages."
         )
         self.scope_warning.setWordWrap(True)
         self.scope_warning.setStyleSheet(status_chip_style("info"))
@@ -618,12 +616,17 @@ class ListeningComparisonDialog(QDialog):
             )
         self.keep_button.setEnabled(True)
         self._update_playback_buttons()
+        self.scope_warning.setText("\n".join(
+            f"{clip.label.capitalize()}: {clip.render_scope}; "
+            + ", ".join(clip.rendered_stages)
+            for clip in (result.current, result.proposed)
+        ))
         self.status_label.setText(
             f"{result.scope_label}. Native delay compensation: "
             f"{result.alignment_ms:.1f} ms. "
             f"Speech level source: {result.speech_detection}. "
             "The original clip is the unchanged capture; processed clips use "
-            "the same captured microphone signal before the input pre-filter."
+            "the same captured microphone signal."
         )
         self.status_label.setStyleSheet(
             message_text_style("ok" if result.native_authoritative else "warn")

@@ -433,6 +433,32 @@
     },
     {
       "build_role": "resolved Rust dependency",
+      "filename": "portable-atomic-1.13.1.crate",
+      "id": "cargo-portable-atomic-1.13.1",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0 OR MIT",
+      "lock_file": "Cargo.lock",
+      "name": "portable-atomic",
+      "sha256": "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49",
+      "source_of_truth": "https://crates.io/crates/portable-atomic/1.13.1",
+      "url": "https://crates.io/api/v1/crates/portable-atomic/1.13.1/download",
+      "version": "1.13.1"
+    },
+    {
+      "build_role": "resolved Rust dependency",
+      "filename": "portable-atomic-util-0.2.5.crate",
+      "id": "cargo-portable-atomic-util-0.2.5",
+      "kind": "cargo-crate",
+      "license": "Apache-2.0 OR MIT",
+      "lock_file": "Cargo.lock",
+      "name": "portable-atomic-util",
+      "sha256": "7a9db96d7fa8782dd8c15ce32ffe8680bbd1e978a43bf51a34d39483540495f5",
+      "source_of_truth": "https://crates.io/crates/portable-atomic-util/0.2.5",
+      "url": "https://crates.io/api/v1/crates/portable-atomic-util/0.2.5/download",
+      "version": "0.2.5"
+    },
+    {
+      "build_role": "resolved Rust dependency",
       "filename": "primal-check-0.3.4.crate",
       "id": "cargo-primal-check-0.3.4",
       "kind": "cargo-crate",
@@ -563,16 +589,16 @@
     },
     {
       "build_role": "resolved Rust dependency",
-      "filename": "ringbuf-0.3.3.crate",
-      "id": "cargo-ringbuf-0.3.3",
+      "filename": "ringbuf-0.5.2.crate",
+      "id": "cargo-ringbuf-0.5.2",
       "kind": "cargo-crate",
-      "license": "MIT/Apache-2.0",
+      "license": "MIT OR Apache-2.0",
       "lock_file": "Cargo.lock",
       "name": "ringbuf",
-      "sha256": "79abed428d1fd2a128201cec72c5f6938e2da607c6f3745f769fabea399d950a",
-      "source_of_truth": "https://crates.io/crates/ringbuf/0.3.3",
-      "url": "https://crates.io/api/v1/crates/ringbuf/0.3.3/download",
-      "version": "0.3.3"
+      "sha256": "0b123165531e325df9079f56c036f2da4103a5d5abfef9e2fda4b9c34d1ef7aa",
+      "source_of_truth": "https://crates.io/crates/ringbuf/0.5.2",
+      "url": "https://crates.io/api/v1/crates/ringbuf/0.5.2/download",
+      "version": "0.5.2"
     },
     {
       "build_role": "resolved Rust dependency",

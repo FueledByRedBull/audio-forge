@@ -8,6 +8,7 @@
 #![allow(clippy::useless_conversion)] // PyO3 proc-macro wrappers trigger false positives.
 
 use pyo3::prelude::*;
+use ringbuf::traits::{Consumer, Observer, Producer};
 use rubato::{
     calculate_cutoff, Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType,
     WindowFunction,
@@ -170,8 +171,8 @@ pub struct AudioProcessor {
     suppressor_rt_control: Arc<AtomicSuppressorControlState>,
     suppressor_dirty: Arc<AtomicBool>,
     suppressor_reset_requested: Arc<AtomicBool>,
-    pending_suppressor_tx: Arc<Mutex<Option<ringbuf::HeapProducer<NoiseSuppressionEngine>>>>,
-    retired_suppressor_rx: Arc<Mutex<Option<ringbuf::HeapConsumer<NoiseSuppressionEngine>>>>,
+    pending_suppressor_tx: Arc<Mutex<Option<ringbuf::HeapProd<NoiseSuppressionEngine>>>>,
+    retired_suppressor_rx: Arc<Mutex<Option<ringbuf::HeapCons<NoiseSuppressionEngine>>>>,
     suppressor_strength: Arc<AtomicU32>, // f32 bits stored as u32
     current_model: Arc<AtomicU8>,        // NoiseModel as u8
 

@@ -31,7 +31,7 @@ numpy = "0.29"
 # ndarray = { version = "0.15", optional = true }
 
 # Lock-free ring buffers
-ringbuf = "0.3"
+ringbuf = "0.5.2"
 
 # Dynamic library loading (for DeepFilterNet FFI)
 libloading = { version = "0.8", optional = true }

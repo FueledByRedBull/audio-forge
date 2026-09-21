@@ -41,7 +41,7 @@ impl AudioProcessor {
     fn drain_retired_suppressors(&self) {
         if let Ok(mut rx_guard) = self.retired_suppressor_rx.lock() {
             if let Some(rx) = rx_guard.as_mut() {
-                while let Some(_engine) = rx.pop() {}
+                while let Some(_engine) = rx.try_pop() {}
             }
         }
     }
@@ -1629,7 +1629,7 @@ impl AudioProcessor {
                                 let use_suppressor = suppressor_enabled.load(Ordering::Acquire);
                                 if use_suppressor {
                                     if let Some(retired) = deferred_suppressor_retire.take() {
-                                        if let Err(retired) = retired_suppressor_tx.push(retired) {
+                                        if let Err(retired) = retired_suppressor_tx.try_push(retired) {
                                             deferred_suppressor_retire = Some(retired);
                                         }
                                     }
@@ -1646,7 +1646,7 @@ impl AudioProcessor {
                                                         }
                                                         None => break,
                                                     };
-                                                let Some(candidate) = suppressor_rx.pop() else {
+                                                let Some(candidate) = suppressor_rx.try_pop() else {
                                                     break;
                                                 };
 
@@ -1656,7 +1656,7 @@ impl AudioProcessor {
                                                         candidate,
                                                     );
                                                     if let Err(retired) =
-                                                        retired_suppressor_tx.push(retired)
+                                                        retired_suppressor_tx.try_push(retired)
                                                     {
                                                         deferred_suppressor_retire = Some(retired);
                                                         rt_buffer_overflow_count
@@ -1668,7 +1668,7 @@ impl AudioProcessor {
                                                         break;
                                                     }
                                                 } else if let Err(candidate) =
-                                                    retired_suppressor_tx.push(candidate)
+                                                    retired_suppressor_tx.try_push(candidate)
                                                 {
                                                     deferred_suppressor_retire = Some(candidate);
                                                     rt_buffer_overflow_count

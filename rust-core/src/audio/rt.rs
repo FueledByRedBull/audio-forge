@@ -5,7 +5,7 @@
 //! not grow repo-owned buffers, block on locks, format/log, or call convenience
 //! APIs that allocate returned vectors.
 
-use ringbuf::{HeapConsumer, HeapProducer, HeapRb};
+use ringbuf::{traits::Split, HeapCons, HeapProd, HeapRb};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 #[repr(u32)]
@@ -250,7 +250,7 @@ impl<T, const N: usize> RtCommandQueue<T, N> {
         Self { rb: HeapRb::new(N) }
     }
 
-    pub fn split(self) -> (HeapProducer<T>, HeapConsumer<T>) {
+    pub fn split(self) -> (HeapProd<T>, HeapCons<T>) {
         self.rb.split()
     }
 }
@@ -258,5 +258,72 @@ impl<T, const N: usize> RtCommandQueue<T, N> {
 impl<T, const N: usize> Default for RtCommandQueue<T, N> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ringbuf::traits::{Consumer, Observer, Producer};
+    use std::cell::Cell;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    #[test]
+    fn command_queue_drops_panicking_items_once() {
+        struct DropProbe<'a> {
+            id: usize,
+            panic_at: usize,
+            drops: &'a [Cell<usize>; 4],
+        }
+
+        impl Drop for DropProbe<'_> {
+            fn drop(&mut self) {
+                let count = self.drops[self.id].get() + 1;
+                self.drops[self.id].set(count);
+                if self.id == self.panic_at && count == 1 {
+                    panic!("queue element destructor");
+                }
+            }
+        }
+
+        for clear in [false, true] {
+            for panic_at in 0..3 {
+                let drops = [const { Cell::new(0) }; 4];
+                let (mut producer, mut consumer) =
+                    RtCommandQueue::<DropProbe<'_>, 3>::new().split();
+                for id in 0..3 {
+                    assert!(producer
+                        .try_push(DropProbe {
+                            id,
+                            panic_at,
+                            drops: &drops
+                        })
+                        .is_ok());
+                }
+
+                assert!(catch_unwind(AssertUnwindSafe(|| {
+                    if clear {
+                        consumer.clear();
+                    } else {
+                        consumer.skip(3);
+                    }
+                }))
+                .is_err());
+                assert_eq!(consumer.occupied_len(), 2 - panic_at);
+                for id in panic_at + 1..3 {
+                    assert_eq!(consumer.try_pop().unwrap().id, id);
+                }
+                assert!(producer
+                    .try_push(DropProbe {
+                        id: 3,
+                        panic_at,
+                        drops: &drops
+                    })
+                    .is_ok());
+                drop(producer);
+                drop(consumer);
+                assert_eq!(drops.map(|count| count.get()), [1; 4]);
+            }
+        }
     }
 }

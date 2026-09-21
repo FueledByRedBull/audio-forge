@@ -230,11 +230,11 @@ pub fn run_seeded_control_dsp_stress(
                 let mut candidate =
                     new_noise_suppression_engine(model, Arc::clone(&control_strength));
                 loop {
-                    match command_tx.push(candidate) {
+                    match command_tx.try_push(candidate) {
                         Ok(()) => break,
                         Err(returned) => {
                             candidate = returned;
-                            while retire_rx.pop().is_some() {}
+                            while retire_rx.try_pop().is_some() {}
                             std::thread::yield_now();
                         }
                     }
@@ -246,12 +246,12 @@ pub fn run_seeded_control_dsp_stress(
             if index % 43 == 0 {
                 control_reset.store(true, Ordering::Release);
             }
-            while retire_rx.pop().is_some() {}
+            while retire_rx.try_pop().is_some() {}
             std::thread::yield_now();
         }
 
         control_finished.store(true, Ordering::Release);
-        while retire_rx.pop().is_some() {}
+        while retire_rx.try_pop().is_some() {}
         Ok((iterations, requested_switches))
     });
 
@@ -315,14 +315,14 @@ pub fn run_seeded_control_dsp_stress(
             });
 
             if let Some(retired) = deferred_retire.take() {
-                if let Err(returned) = retire_tx.push(retired) {
+                if let Err(returned) = retire_tx.try_push(retired) {
                     deferred_retire = Some(returned);
                 }
             }
             if suppressor_dirty.swap(false, Ordering::AcqRel) {
                 if let Some(snapshot) = dsp_suppressor.snapshot() {
                     while deferred_retire.is_none() {
-                        let Some(candidate) = command_rx.pop() else {
+                        let Some(candidate) = command_rx.try_pop() else {
                             break;
                         };
                         if candidate.model_type() == snapshot.model
@@ -330,12 +330,12 @@ pub fn run_seeded_control_dsp_stress(
                         {
                             let retired = std::mem::replace(&mut suppressor, candidate);
                             switches += 1;
-                            if let Err(returned) = retire_tx.push(retired) {
+                            if let Err(returned) = retire_tx.try_push(retired) {
                                 deferred_retire = Some(returned);
                             }
                             break;
                         }
-                        if let Err(returned) = retire_tx.push(candidate) {
+                        if let Err(returned) = retire_tx.try_push(candidate) {
                             deferred_retire = Some(returned);
                         }
                     }
@@ -395,7 +395,7 @@ pub fn run_seeded_control_dsp_stress(
         }
 
         if let Some(retired) = deferred_retire {
-            let _ = retire_tx.push(retired);
+            let _ = retire_tx.try_push(retired);
         }
         Ok(ControlDspStressReport {
             control_updates: 0,

@@ -510,7 +510,7 @@ mod tests {
         assert!(!processor.restart_requested.load(Ordering::Acquire));
         assert!(processor.suppressor_dirty.load(Ordering::Acquire));
         assert_eq!(
-            rx.pop().expect("rebuilt suppressor").model_type(),
+            rx.try_pop().expect("rebuilt suppressor").model_type(),
             NoiseModel::RNNoise
         );
         assert_eq!(processor.get_stream_restart_count(), 0);
@@ -576,7 +576,7 @@ mod tests {
             NoiseModel::RNNoise,
             Arc::clone(&processor.suppressor_strength),
         );
-        assert!(tx.push(queued_engine).is_ok());
+        assert!(tx.try_push(queued_engine).is_ok());
         *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
 
         assert!(!processor.set_noise_model(NoiseModel::RNNoise));

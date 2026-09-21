@@ -10,9 +10,9 @@ import numpy as np
 from scipy.signal import lfilter, resample_poly
 
 from ..eq_quality import evaluate_eq_quality, weighted_target_error
-from .constants import NUM_EQ_BANDS, REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD
+from .constants import NUM_EQ_BANDS, REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD, SAMPLE_RATE
 from .dynamic_bands import _voice_weights
-from .optimizer import _overall_confidence, _validation_confidence
+from .optimizer import _build_fit_context, _overall_confidence, _validation_confidence
 from ..cancellation import check_analysis_cancelled
 
 HEADROOM_TARGET_DB = 1.0
@@ -48,6 +48,16 @@ def _as_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _as_int(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed
+
+
 def _native_failure(kind: str, *, message: str) -> dict[str, str]:
     """Return a bounded, user-safe reason for an unavailable native path."""
     return {
@@ -61,8 +71,20 @@ def _flatten_chain_settings(chain_settings: dict[str, Any] | None) -> dict[str, 
     deesser = chain_settings.get("deesser") or {}
     compressor = chain_settings.get("compressor") or {}
     limiter = chain_settings.get("limiter") or {}
+    gate = (
+        chain_settings.get("gate")
+        or chain_settings.get("gate_settings")
+        or {}
+    )
+    suppressor = (
+        chain_settings.get("suppressor")
+        or chain_settings.get("suppression")
+        or chain_settings.get("rnnoise")
+        or chain_settings.get("suppressor_settings")
+        or {}
+    )
 
-    return {
+    flattened = {
         "return_output_audio": _as_bool(
             chain_settings.get("return_output_audio"),
             False,
@@ -87,6 +109,9 @@ def _flatten_chain_settings(chain_settings: dict[str, Any] | None) -> dict[str, 
         "compressor_base_release_ms": _as_float(compressor.get("base_release_ms"), 50.0),
         "compressor_auto_makeup_enabled": _as_bool(compressor.get("auto_makeup_enabled"), False),
         "compressor_target_lufs": _as_float(compressor.get("target_lufs"), -18.0),
+        "compressor_noise_reference_reliability": _as_float(
+            compressor.get("noise_reference_reliability"), 0.0
+        ),
         "compressor_sidechain_highpass_enabled": _as_bool(
             compressor.get("sidechain_highpass_enabled"),
             True,
@@ -99,6 +124,64 @@ def _flatten_chain_settings(chain_settings: dict[str, Any] | None) -> dict[str, 
             True,
         ),
     }
+    if isinstance(gate, Mapping):
+        flattened.update(
+            {
+                "gate_enabled": _as_bool(gate.get("enabled"), True),
+                "gate_threshold_db": _as_float(
+                    gate.get("threshold_db"), -40.0
+                ),
+                "gate_attack_ms": _as_float(gate.get("attack_ms"), 10.0),
+                "gate_release_ms": _as_float(
+                    gate.get("release_ms"), 100.0
+                ),
+                "gate_mode": _as_int(gate.get("gate_mode"), 0),
+                "gate_vad_threshold": _as_float(
+                    gate.get("vad_threshold"), 0.48
+                ),
+                "gate_vad_hold_time_ms": _as_float(
+                    gate.get("vad_hold_time_ms"), 200.0
+                ),
+                "gate_vad_pre_gain": _as_float(
+                    gate.get("vad_pre_gain"), 1.0
+                ),
+                "gate_auto_threshold_enabled": _as_bool(
+                    gate.get("auto_threshold_enabled"), True
+                ),
+                "gate_margin_db": _as_float(
+                    gate.get("gate_margin_db"), 10.0
+                ),
+            }
+        )
+    if isinstance(suppressor, Mapping):
+        flattened.update(
+            {
+                "suppressor_enabled": _as_bool(
+                    suppressor.get("enabled"), True
+                ),
+                "suppressor_strength": _as_float(
+                    suppressor.get("strength"), 1.0
+                ),
+                "noise_model": str(suppressor.get("model", "rnnoise")),
+            }
+        )
+    # Explicit native-boundary values override defaults derived from missing
+    # nested settings. Accept only the controls this adapter already knows.
+    for key in flattened.keys() & chain_settings.keys():
+        flattened[key] = deepcopy(chain_settings[key])
+    for key in (
+        "full_chain",
+        "input_pre_filtered",
+        "input_cleanup_mode",
+        "processing_mode",
+        "vad_probabilities",
+        "vad_available",
+        "auto_makeup_activity",
+        "return_auto_makeup_activity",
+    ):
+        if key in chain_settings:
+            flattened[key] = deepcopy(chain_settings[key])
+    return flattened
 
 
 def _bands_from_settings(eq_settings: dict[str, Any]) -> list[tuple[float, float, float]]:
@@ -241,7 +324,11 @@ def _simulate_fallback(
     flat_settings: dict[str, Any],
 ) -> dict[str, Any]:
     input_audio = np.asarray(audio_data, dtype=np.float32)
-    eq_output = _apply_eq_fallback(input_audio, sample_rate, bands)
+    eq_output = (
+        _apply_eq_fallback(input_audio, sample_rate, bands)
+        if flat_settings.get("eq_enabled", True)
+        else input_audio
+    )
     processed = eq_output.astype(np.float64, copy=True)
 
     compressor_gr = 0.0
@@ -308,8 +395,26 @@ def simulate_candidate_chain(
 ) -> dict[str, Any]:
     """Simulate the deterministic downstream chain for a candidate EQ."""
 
-    bands = _bands_from_settings(eq_settings)
     flat_settings = _flatten_chain_settings(chain_settings)
+    if "bands" in eq_settings:
+        from ...config import EQSettings
+
+        typed = EQSettings.from_dict({key: eq_settings[key] for key in
+                                     ("schema_version", "enabled", "bands", "layers") if key in eq_settings})
+        bands = [(band.frequency_hz, band.gain_db, band.q) for band in typed.bands]
+        flat_settings.update(
+            eq_enabled=typed.enabled,
+            eq_bands=[band.to_native() for band in typed.bands],
+        )
+        if typed.correction_bands:
+            flat_settings["correction_bands"] = [
+                band.to_native() for band in typed.correction_bands
+            ]
+    else:
+        bands = _bands_from_settings(eq_settings)
+        flat_settings["eq_enabled"] = _as_bool(
+            eq_settings.get("enabled", eq_settings.get("eq_enabled")), True
+        )
     native, native_failure = _native_simulate(
         audio_data, sample_rate, bands, flat_settings
     )
@@ -317,6 +422,10 @@ def simulate_candidate_chain(
         native["simulation_backend"] = "rust"
         native["safety_authority"] = "authoritative"
         return native
+
+    if "bands" in eq_settings or flat_settings.get("full_chain"):
+        reason = (native_failure or {}).get("message", "native simulator unavailable")
+        raise RuntimeError(f"This configuration requires native DSP simulation: {reason}")
 
     fallback = _simulate_fallback(audio_data, sample_rate, bands, flat_settings)
     fallback["simulation_backend"] = "python"
@@ -354,6 +463,8 @@ def _refresh_scaled_eq_metadata(
     analysis_freqs: np.ndarray | None,
     measured_db: np.ndarray | None,
     target_db: np.ndarray | None,
+    fit_context: Mapping[str, Any] | None = None,
+    sample_rate: float = SAMPLE_RATE,
 ) -> None:
     gains = np.asarray(result["band_gains"], dtype=float)
     centers = np.asarray(result.get("band_freqs", []), dtype=float)
@@ -362,25 +473,54 @@ def _refresh_scaled_eq_metadata(
         return
 
     result["active_band_count"] = int(np.count_nonzero(np.abs(gains) >= 0.25))
-    result["eq_quality"] = evaluate_eq_quality(centers, gains, qs).to_dict()
+    result["eq_quality"] = evaluate_eq_quality(
+        centers,
+        gains,
+        qs,
+        sample_rate=sample_rate,
+    ).to_dict()
     result["max_adjacent_gain_difference_db"] = float(np.max(np.abs(np.diff(gains))))
     octave_gaps = np.maximum(np.diff(np.log2(np.clip(centers, 1e-6, None))), 1e-6)
     result["max_adjacent_gain_slope_db_per_octave"] = float(
         np.max(np.abs(np.diff(gains)) / octave_gaps)
     )
 
-    arrays = (analysis_freqs, measured_db, target_db)
-    if all(value is not None for value in arrays):
-        freqs = np.asarray(analysis_freqs, dtype=float)
-        measured = np.asarray(measured_db, dtype=float)
-        target = np.asarray(target_db, dtype=float)
+    if fit_context is None and all(
+        value is not None for value in (analysis_freqs, measured_db, target_db)
+    ):
+        fit_context = _build_fit_context(
+            np.asarray(analysis_freqs, dtype=float),
+            np.asarray(measured_db, dtype=float),
+            np.asarray(target_db, dtype=float),
+            tilt_policy=str(result.get("spectral_tilt_policy", "voice_safe")),
+            smoothing_strength=str(result.get("smoothing_strength", "conservative")),
+        )
+    if fit_context is not None:
+        freqs = np.asarray(fit_context["freqs"], dtype=float)
+        measured = np.asarray(fit_context["measured_db"], dtype=float)
+        target = np.asarray(fit_context["target_db"], dtype=float)
         if freqs.shape == measured.shape == target.shape and freqs.size:
-            weights = _voice_weights(freqs)
+            weights = fit_context.get("weights")
+            weights = _voice_weights(freqs) if weights is None else np.asarray(weights, dtype=float)
             before_error = weighted_target_error(
-                freqs, measured, target, np.zeros_like(gains), qs, centers, weights
+                freqs,
+                measured,
+                target,
+                np.zeros_like(gains),
+                qs,
+                centers,
+                weights,
+                sample_rate=sample_rate,
             )
             after_error = weighted_target_error(
-                freqs, measured, target, gains, qs, centers, weights
+                freqs,
+                measured,
+                target,
+                gains,
+                qs,
+                centers,
+                weights,
+                sample_rate=sample_rate,
             )
             result["validation_before_error_db"] = before_error
             result["validation_after_error_db"] = after_error
@@ -405,8 +545,11 @@ def _refresh_scaled_eq_metadata(
     status = str(result.get("recommendation_status", "apply"))
     reasons = list(result.get("recommendation_reasons") or [])
     abstention_reasons = list(result.get("abstention_reasons") or [])
-    scale = _as_float(result.get("validation_gain_scale"), 1.0)
-    if not np.any(np.abs(gains) >= 0.25):
+    # ``validation_gain_scale`` belongs to the optimizer's spectral-fit
+    # attenuation.  Only the scale selected by this headroom simulation can
+    # make a neutral candidate lose its usable correction.
+    scale = _as_float(result.get("headroom_gain_scale"), 1.0)
+    if scale < 1.0 and not np.any(np.abs(gains) >= 0.25):
         status = "abstain"
         reason = "headroom validation removed the usable correction"
         if reason not in abstention_reasons:
@@ -435,6 +578,7 @@ def apply_headroom_validation(
     analysis_freqs: np.ndarray | None = None,
     measured_db: np.ndarray | None = None,
     target_db: np.ndarray | None = None,
+    fit_context: Mapping[str, Any] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Scale Auto-EQ boosts/cuts when offline chain simulation predicts headroom risk."""
@@ -466,7 +610,15 @@ def apply_headroom_validation(
     result["band_gains"] = selected_gains.tolist()
     existing_scale = _as_float(result.get("validation_gain_scale"), 1.0)
     result["validation_gain_scale"] = float(existing_scale * selected_scale)
-    _refresh_scaled_eq_metadata(result, analysis_freqs, measured_db, target_db)
+    result["headroom_gain_scale"] = float(selected_scale)
+    _refresh_scaled_eq_metadata(
+        result,
+        analysis_freqs,
+        measured_db,
+        target_db,
+        fit_context,
+        sample_rate=sample_rate,
+    )
 
     meets_thresholds = _is_headroom_safe(selected)
     authoritative = selected.get("simulation_backend") == "rust"

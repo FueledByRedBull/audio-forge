@@ -28,6 +28,14 @@ corresponding source. Hardware measurements are optional supporting evidence;
 release notes must identify their tested revision and any untested coverage.
 A self-hosted runner is not required to publish.
 
+Evaluation reports pin historical source commits that the evaluation checker
+requires to remain ancestors of the release source. Use a merge commit for
+branches carrying these reports, including PR #66, and run
+`python/tools/check_evaluation_hygiene.py` on the proposed integration result
+with the required history available. Squash/rebase merging can discard those
+commit identities. If integration policy requires rewritten history, resolve
+the evidence policy first; do not relabel historical measurements with a new SHA.
+
 ### Release candidates
 
 Release candidates use one canonical tag spelling: `vMAJOR.MINOR.PATCH-rc.N`.
@@ -166,7 +174,8 @@ Candidate and promotion:
    build and exact-archive validation must pass. Fix failed attempts on the
    branch without creating tags or changing the release version.
 4. Record the successful candidate run ID, source commit, and archive SHA-256.
-5. Create and push annotated tag `v1.12.1` at that exact source commit. Tag
+5. Create and push annotated tag `v1.13.0` at that exact source commit, after
+   package metadata has been updated and validated for that version. Tag
    pushes do not rebuild the candidate; subsequent gates use the same bytes.
 6. Review available hardware evidence and describe untested configurations in
    the release notes. Hardware runs are optional; retain the candidate revision

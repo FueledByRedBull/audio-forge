@@ -1,16 +1,11 @@
 """Regression checks for built-in preset catalog construction."""
 
-from mic_eq.config import EQSettings, GateSettings, Preset, RNNoiseSettings
+from mic_eq.config import RNNoiseSettings
 from mic_eq.config_parts.catalogs import build_builtin_presets
 
 
 def test_builtin_presets_share_values_without_sharing_mutable_defaults() -> None:
-    presets = build_builtin_presets(
-        Preset,
-        GateSettings,
-        EQSettings,
-        RNNoiseSettings,
-    )
+    presets = build_builtin_presets()
 
     assert {
         key: (

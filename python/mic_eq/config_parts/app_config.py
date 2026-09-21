@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .settings import LatencyCalibrationProfile
+from .calibration import CalibrationResult, parse_calibration_results
 from .shared import (
     DeviceIdentity,
     PresetValidationError,
@@ -49,6 +50,7 @@ _PRE_SETUP_CONFIG_FIELDS = frozenset(
         "last_output_device",
         "last_input_device_identity",
         "last_output_device_identity",
+        "preview_playback_device_id",
         "input_channel_mode",
         "input_cleanup_mode",
         "last_preset",
@@ -233,6 +235,8 @@ class AppConfig:
     last_output_device: str = ""
     last_input_device_identity: DeviceIdentity | None = None
     last_output_device_identity: DeviceIdentity | None = None
+    # Optional preview-only route; it never changes the live processing output.
+    preview_playback_device_id: str = ""
     input_channel_mode: str = "phase_safe_mono"
     input_cleanup_mode: str = "off"
     last_preset: str = ""
@@ -254,6 +258,9 @@ class AppConfig:
         default_factory=dict
     )
     user_muted: bool = False
+    close_to_tray: bool = False
+    mute_hotkey: str = ""
+    calibration_results: list[CalibrationResult] = field(default_factory=list)
     first_run_setup_state: str = "not_started"
     first_run_setup_step: str = "devices"
     first_run_setup_steps: dict[str, str] = field(
@@ -282,6 +289,7 @@ class AppConfig:
                 if self.last_output_device_identity is not None
                 else None
             ),
+            "preview_playback_device_id": self.preview_playback_device_id,
             "input_channel_mode": self.input_channel_mode,
             "input_cleanup_mode": self.input_cleanup_mode,
             "last_preset": self.last_preset,
@@ -311,6 +319,9 @@ class AppConfig:
                 for key, preference in self.route_input_preferences.items()
             },
             "user_muted": self.user_muted,
+            "close_to_tray": self.close_to_tray,
+            "mute_hotkey": self.mute_hotkey,
+            "calibration_results": [result.to_dict() for result in self.calibration_results[-16:]],
             "first_run_setup_state": self.first_run_setup_state,
             "first_run_setup_step": self.first_run_setup_step,
             "first_run_setup_steps": dict(self.first_run_setup_steps),
@@ -420,6 +431,13 @@ class AppConfig:
             first_run_steps = {
                 step: "skipped" for step in FIRST_RUN_SETUP_STEPS
             }
+        preview_device_id = data.get("preview_playback_device_id", "")
+        if not (
+            isinstance(preview_device_id, str)
+            and len(preview_device_id) <= 4096
+            and "\x00" not in preview_device_id
+        ):
+            preview_device_id = ""
 
         return cls(
             last_input_device=_coerce_device_name(
@@ -430,6 +448,7 @@ class AppConfig:
             ),
             last_input_device_identity=input_identity,
             last_output_device_identity=output_identity,
+            preview_playback_device_id=preview_device_id,
             input_channel_mode=_coerce_input_channel_mode(data.get("input_channel_mode")),
             input_cleanup_mode=_coerce_input_cleanup_mode(data.get("input_cleanup_mode")),
             last_preset=data.get("last_preset", "") if isinstance(data.get("last_preset", ""), str) else "",
@@ -469,6 +488,10 @@ class AppConfig:
             input_device_preferences=parsed_device_preferences,
             route_input_preferences=parsed_route_preferences,
             user_muted=_coerce_config_bool(data.get("user_muted", False), False),
+            close_to_tray=_coerce_config_bool(data.get("close_to_tray", False), False),
+            mute_hotkey=(data["mute_hotkey"] if isinstance(data.get("mute_hotkey"), str)
+                         and len(data["mute_hotkey"]) <= 80 else ""),
+            calibration_results=parse_calibration_results(data.get("calibration_results")),
             first_run_setup_state=(
                 "completed_with_skips"
                 if migrated_existing_install

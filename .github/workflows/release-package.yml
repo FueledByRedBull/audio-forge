@@ -61,7 +61,7 @@ jobs:
       - name: Bind source revision to checked-out release ref
         run: |
           $sourceRevision = (git rev-parse HEAD).Trim()
-          if ($sourceRevision -notmatch '^[0-9a-f]{40}$') {
+          if ($LASTEXITCODE -ne 0 -or $sourceRevision -notmatch '^[0-9a-f]{40}$') {
             throw "Checked-out source revision is not a full commit: $sourceRevision"
           }
           "AUDIOFORGE_SOURCE_REVISION=$sourceRevision" >> $env:GITHUB_ENV
@@ -130,9 +130,12 @@ jobs:
           }
 
           $msiVersion = (.\.venv\Scripts\python.exe python/tools/release_version.py msi $version).Trim()
-          $isPrerelease = (.\.venv\Scripts\python.exe python/tools/release_version.py prerelease $version).Trim()
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($msiVersion)) {
             throw "Project version '$version' cannot be represented by the MSI version mapping."
+          }
+          $isPrerelease = (.\.venv\Scripts\python.exe python/tools/release_version.py prerelease $version).Trim()
+          if ($LASTEXITCODE -ne 0 -or $isPrerelease -notin @("true", "false")) {
+            throw "Unable to classify project version '$version' as a release or prerelease."
           }
 
           $assetSourceTag = $env:INPUT_ASSET_SOURCE_TAG
@@ -575,7 +578,7 @@ jobs:
             throw "Corresponding-source extraction failed with exit code $LASTEXITCODE."
           }
           $tagCommit = (git rev-parse HEAD).Trim()
-          if ($tagCommit -ne "${{ needs.package-windows.outputs.source_revision }}") {
+          if ($LASTEXITCODE -ne 0 -or $tagCommit -ne "${{ needs.package-windows.outputs.source_revision }}") {
             throw "Candidate validation checkout does not match its source revision."
           }
           if ($tagCommit -notmatch '^[0-9a-f]{40}$') {

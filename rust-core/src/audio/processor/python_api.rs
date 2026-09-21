@@ -83,18 +83,26 @@ fn py_dict_string(
     Ok(default.to_string())
 }
 
-fn py_dict_eq_bands_v2(
+fn py_dict_eq_bands_v2_key(
     settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+    key: &str,
     sample_rate: f64,
 ) -> PyResult<Option<Vec<EqBandConfig>>> {
     let Some(settings) = settings else {
         return Ok(None);
     };
-    let Some(value) = settings.get_item("eq_bands_v2")? else {
+    let Some(value) = settings.get_item(key)? else {
         return Ok(None);
     };
     let bands = value.extract::<Vec<(String, f64, f64, f64, u8, bool)>>()?;
     crate::parse_eq_v2_bands(&bands, sample_rate).map(Some)
+}
+
+fn py_dict_eq_bands_v2(
+    settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+    sample_rate: f64,
+) -> PyResult<Option<Vec<EqBandConfig>>> {
+    py_dict_eq_bands_v2_key(settings, "eq_bands_v2", sample_rate)
 }
 
 fn linear_to_db(value: f32) -> f32 {
@@ -158,6 +166,355 @@ fn compressor_pumping_score(gr_trace_db: &[f32], cadence_hz: f32) -> f32 {
 
 fn ten_ms_control_block_size(sample_rate: f64) -> usize {
     (sample_rate * 0.010).round().max(1.0) as usize
+}
+
+fn py_dict_f32_vec(
+    settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+    key: &str,
+) -> PyResult<Option<Vec<f32>>> {
+    let Some(settings) = settings else {
+        return Ok(None);
+    };
+    let Some(value) = settings.get_item(key)? else {
+        return Ok(None);
+    };
+    let values = value.extract::<Vec<f32>>()?;
+    if values
+        .iter()
+        .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
+    {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "{key} must contain finite probabilities between 0 and 1"
+        )));
+    }
+    Ok(Some(values))
+}
+
+fn py_dict_auto_makeup_activity(
+    settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+    key: &str,
+    expected_len: usize,
+) -> PyResult<Option<Vec<AutoMakeupActivityInput>>> {
+    let Some(settings) = settings else {
+        return Ok(None);
+    };
+    let Some(value) = settings.get_item(key)? else {
+        return Ok(None);
+    };
+    let rows = value.extract::<Vec<(f64, f64, f64, f64)>>()?;
+    if rows.len() != expected_len {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected {expected_len} auto-makeup activity rows at the 10 ms cadence, got {}",
+            rows.len()
+        )));
+    }
+    let mut evidence = Vec::with_capacity(rows.len());
+    for (index, (vad_probability, vad_reliability, noise_floor_db, live_noise_reliability)) in
+        rows.into_iter().enumerate()
+    {
+        if !vad_probability.is_finite()
+            || !(0.0..=1.0).contains(&vad_probability)
+            || !vad_reliability.is_finite()
+            || !(0.0..=1.0).contains(&vad_reliability)
+            || !noise_floor_db.is_finite()
+            || !(-120.0..=0.0).contains(&noise_floor_db)
+            || !live_noise_reliability.is_finite()
+            || !(0.0..=1.0).contains(&live_noise_reliability)
+        {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "auto-makeup activity row {index} contains invalid evidence"
+            )));
+        }
+        evidence.push(AutoMakeupActivityInput {
+            vad_probability,
+            vad_reliability,
+            noise_floor_db,
+            live_noise_reliability,
+        });
+    }
+    Ok(Some(evidence))
+}
+
+fn serialize_auto_makeup_activity(
+    evidence: &[AutoMakeupActivityInput],
+) -> Vec<(f64, f64, f64, f64)> {
+    evidence
+        .iter()
+        .map(|item| {
+            (
+                item.vad_probability,
+                item.vad_reliability,
+                item.noise_floor_db,
+                item.live_noise_reliability,
+            )
+        })
+        .collect()
+}
+
+#[cfg(feature = "vad")]
+fn gate_auto_makeup_activity(
+    gate: &NoiseGate,
+    vad_probability: f32,
+    vad_reliability: f64,
+    gate_enabled: bool,
+) -> AutoMakeupActivityInput {
+    AutoMakeupActivityInput {
+        vad_probability: f64::from(vad_probability),
+        vad_reliability,
+        noise_floor_db: if gate_enabled {
+            f64::from(gate.noise_floor())
+        } else {
+            -60.0
+        },
+        live_noise_reliability: if gate_enabled {
+            f64::from(gate.noise_floor_reliability())
+        } else {
+            0.0
+        },
+    }
+}
+
+/// Frontend output plus the control evidence observed on its source timeline.
+#[cfg(feature = "vad")]
+struct SimulatedInputFrontend {
+    rendered: Vec<f32>,
+    suppressor_latency: usize,
+    activity_evidence: Vec<AutoMakeupActivityInput>,
+}
+
+#[cfg(feature = "vad")]
+fn simulate_input_frontend_with_activity(
+    py: Python<'_>,
+    audio: Vec<f32>,
+    sample_rate: f64,
+    settings: Option<&Bound<'_, pyo3::types::PyDict>>,
+) -> PyResult<SimulatedInputFrontend> {
+    if (sample_rate - 48_000.0).abs() > f64::EPSILON {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "full_chain suppression simulation requires a 48000 Hz capture",
+        ));
+    }
+    let cleanup_mode_id = py_dict_string(settings, "input_cleanup_mode", "off")?;
+    let cleanup_mode = InputCleanupMode::from_id(&cleanup_mode_id).ok_or_else(|| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "unknown input cleanup mode {cleanup_mode_id:?}"
+        ))
+    })?;
+    let input_pre_filtered = py_dict_bool(settings, "input_pre_filtered", false)?;
+    let gate_enabled = py_dict_bool(settings, "gate_enabled", true)?;
+    let vad_available = py_dict_bool(settings, "vad_available", true)?;
+    let gate_mode = match py_dict_u8(settings, "gate_mode", 0)? {
+        0 => GateMode::ThresholdOnly,
+        1 => GateMode::VadAssisted,
+        2 => GateMode::VadOnly,
+        mode => {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                "unknown gate mode {mode}; use 0, 1, or 2"
+            )))
+        }
+    };
+    let vad_threshold = py_dict_f64(settings, "gate_vad_threshold", 0.48)?;
+    let vad_probabilities = py_dict_f32_vec(settings, "vad_probabilities")?.unwrap_or_default();
+    let block_count = audio.len().div_ceil(RNNOISE_FRAME_SIZE);
+    if !vad_probabilities.is_empty() && vad_probabilities.len() != block_count {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected {block_count} VAD probabilities at the 10 ms cadence, got {}",
+            vad_probabilities.len()
+        )));
+    }
+
+    let mut gate = NoiseGate::new(
+        py_dict_f64(settings, "gate_threshold_db", -40.0)?,
+        py_dict_f64(settings, "gate_attack_ms", 10.0)?,
+        py_dict_f64(settings, "gate_release_ms", 100.0)?,
+        sample_rate,
+    );
+    let vad_auto_gate = VadAutoGate::without_backend(sample_rate as u32, vad_threshold as f32);
+    gate.set_vad_auto_gate(Some(vad_auto_gate));
+    gate.set_gate_mode(gate_mode);
+    gate.set_enabled(gate_enabled);
+    gate.set_vad_threshold(vad_threshold as f32);
+    gate.set_hold_time(py_dict_f64(settings, "gate_vad_hold_time_ms", 200.0)? as f32);
+    let vad_pre_gain = py_dict_f64(settings, "gate_vad_pre_gain", 1.0)? as f32;
+    gate.set_vad_pre_gain(vad_pre_gain);
+    gate.set_auto_threshold(py_dict_bool(
+        settings,
+        "gate_auto_threshold_enabled",
+        true,
+    )?);
+    gate.set_margin(py_dict_f64(settings, "gate_margin_db", 10.0)? as f32);
+
+    let suppressor_enabled = py_dict_bool(settings, "suppressor_enabled", true)?;
+    let suppressor_strength = py_dict_f64(settings, "suppressor_strength", 1.0)?;
+    if !(0.0..=1.0).contains(&suppressor_strength) {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "suppressor_strength must be between 0 and 1",
+        ));
+    }
+    let suppressor_model_id = py_dict_string(settings, "noise_model", "rnnoise")?;
+    let suppressor_model = NoiseModel::from_id(&suppressor_model_id).ok_or_else(|| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "unknown noise model {suppressor_model_id:?}"
+        ))
+    })?;
+    let strength = Arc::new(AtomicU32::new((suppressor_strength as f32).to_bits()));
+    let use_native_vad = vad_available && vad_probabilities.is_empty();
+
+    let rendered = py.detach(move || -> Result<SimulatedInputFrontend, String> {
+        let (mut suppressor, suppressor_latency) = if suppressor_enabled {
+            let engine = new_noise_suppression_engine(suppressor_model, strength);
+            if !engine.backend_available() {
+                return Err(engine
+                    .backend_error()
+                    .unwrap_or("noise suppressor backend unavailable")
+                    .to_string());
+            }
+            let latency = engine.latency_samples();
+            (Some(engine), latency)
+        } else {
+            (None, 0)
+        };
+        let mut native_vad = if use_native_vad {
+            let mut vad = SileroVAD::new(sample_rate as u32, vad_threshold as f32)
+                .map_err(|error| format!("full_chain VAD initialization failed: {error}"))?;
+            vad.set_pre_gain(vad_pre_gain);
+            Some(vad)
+        } else {
+            None
+        };
+        let mut latest_vad_probability = None;
+        let mut pre_filter_state = InputPreFilterState::default();
+        let mut pre_filter = Biquad::new(
+            BiquadType::HighPass,
+            INPUT_PREFILTER_HZ,
+            0.0,
+            INPUT_PREFILTER_Q,
+            sample_rate,
+        );
+        let adaptive_cleanup_enabled = cleanup_mode.is_enabled();
+        let mut cleanup = AdaptiveInputCleanupState::new(sample_rate as f32);
+        cleanup.set_mode(cleanup_mode);
+        let mut delayed_output = Vec::with_capacity(audio.len() + suppressor_latency);
+        let mut activity_evidence = Vec::with_capacity(block_count);
+        for (block_index, chunk) in audio.chunks(RNNOISE_FRAME_SIZE).enumerate() {
+            let mut processed = chunk.to_vec();
+            for sample in &mut processed {
+                if !sample.is_finite() {
+                    *sample = 0.0;
+                }
+                *sample = sample.clamp(-1.0, 1.0);
+            }
+            if adaptive_cleanup_enabled {
+                cleanup.analyze_input(&processed);
+            }
+            if !input_pre_filtered {
+                apply_input_pre_filter(
+                    &mut processed,
+                    &mut pre_filter_state,
+                    &mut pre_filter,
+                    !adaptive_cleanup_enabled,
+                );
+            }
+            if adaptive_cleanup_enabled {
+                cleanup.process_block(&mut processed);
+            }
+            let mut vad_probability = 0.0_f64;
+            let mut vad_reliability = 0.0_f64;
+            if let Some(probability) = vad_probabilities.get(block_index) {
+                vad_probability = f64::from(*probability);
+                vad_reliability = if vad_available { 1.0 } else { 0.0 };
+            }
+            if vad_probabilities.is_empty() {
+                if let Some(vad) = native_vad.as_mut() {
+                    if let Some(probability) = vad
+                        .process_latest(&processed)
+                        .map_err(|error| format!("full_chain VAD inference failed: {error}"))?
+                    {
+                        latest_vad_probability = Some(probability.clamp(0.0, 1.0));
+                    }
+                }
+                if let Some(probability) = latest_vad_probability {
+                    vad_probability = f64::from(probability);
+                    // Offline inference has no worker scheduling age to
+                    // measure; each completed model result is treated as
+                    // fresh. A live worker can still lose reliability to
+                    // queue delay or a stalled callback.
+                    vad_reliability = 1.0;
+                } else {
+                    vad_reliability = 0.0;
+                }
+            }
+            if gate_enabled {
+                if vad_reliability > 0.0 {
+                    gate.set_external_vad_probability(vad_probability as f32, true);
+                } else {
+                    gate.set_external_vad_probability(0.0, false);
+                }
+                gate.process_block_inplace(&mut processed);
+            }
+
+            activity_evidence.push(gate_auto_makeup_activity(
+                &gate,
+                vad_probability as f32,
+                vad_reliability,
+                gate_enabled,
+            ));
+
+            if let Some(engine) = suppressor.as_mut() {
+                let mut frame = [0.0_f32; RNNOISE_FRAME_SIZE];
+                frame[..processed.len()].copy_from_slice(&processed);
+                if engine.push_samples(&frame) != RNNOISE_FRAME_SIZE {
+                    return Err("suppressor rejected a complete input frame".to_string());
+                }
+                engine.process_frames();
+                let available = engine.available_samples();
+                if available > 0 {
+                    let mut output = vec![0.0_f32; available];
+                    let written = engine.pop_samples_into(&mut output);
+                    if written != available {
+                        return Err("suppressor returned an incomplete output frame".to_string());
+                    }
+                    delayed_output.extend_from_slice(&output);
+                }
+            } else {
+                delayed_output.extend_from_slice(&processed);
+            }
+        }
+
+        if let Some(engine) = suppressor.as_mut() {
+            let flush_frames = suppressor_latency.div_ceil(RNNOISE_FRAME_SIZE).max(1);
+            for _ in 0..flush_frames {
+                let frame = [0.0_f32; RNNOISE_FRAME_SIZE];
+                if engine.push_samples(&frame) != RNNOISE_FRAME_SIZE {
+                    return Err("suppressor rejected a flush frame".to_string());
+                }
+                engine.process_frames();
+                let available = engine.available_samples();
+                if available > 0 {
+                    let mut output = vec![0.0_f32; available];
+                    let written = engine.pop_samples_into(&mut output);
+                    if written != available {
+                        return Err("suppressor returned an incomplete flush frame".to_string());
+                    }
+                    delayed_output.extend_from_slice(&output);
+                }
+            }
+        }
+
+        let aligned_start = suppressor_latency.min(delayed_output.len());
+        let aligned_end = aligned_start
+            .saturating_add(audio.len())
+            .min(delayed_output.len());
+        let mut rendered = delayed_output[aligned_start..aligned_end].to_vec();
+        rendered.resize(audio.len(), 0.0);
+        Ok(SimulatedInputFrontend {
+            rendered,
+            suppressor_latency,
+            activity_evidence,
+        })
+    });
+
+    rendered.map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
 }
 
 /// Stream a capture through the production compressor auto-makeup controller.
@@ -403,7 +760,19 @@ pub fn simulate_gate_suppressor_order(
             )))
         }
     };
+    gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.48)));
     gate.set_gate_mode(gate_mode);
+    let gate_enabled = py_dict_bool(settings, "gate_enabled", true)?;
+    gate.set_enabled(gate_enabled);
+    gate.set_vad_threshold(py_dict_f64(settings, "gate_vad_threshold", 0.48)? as f32);
+    gate.set_hold_time(py_dict_f64(settings, "gate_vad_hold_time_ms", 200.0)? as f32);
+    gate.set_vad_pre_gain(py_dict_f64(settings, "gate_vad_pre_gain", 1.0)? as f32);
+    gate.set_auto_threshold(py_dict_bool(
+        settings,
+        "gate_auto_threshold_enabled",
+        gate.auto_threshold_enabled(),
+    )?);
+    gate.set_margin(py_dict_f64(settings, "gate_margin_db", f64::from(gate.margin()))? as f32);
     let strength = Arc::new(AtomicU32::new(suppressor_strength.to_bits()));
     let model_id = py_dict_string(settings, "noise_model", "rnnoise")?;
     let model = NoiseModel::from_id(&model_id).ok_or_else(|| {
@@ -411,22 +780,41 @@ pub fn simulate_gate_suppressor_order(
             "unknown noise model {model_id:?}"
         ))
     })?;
-    let mut suppressor = new_noise_suppression_engine(model, strength);
-    if !suppressor.backend_available() {
-        return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
-            suppressor
-                .backend_error()
-                .unwrap_or("noise suppressor backend unavailable")
-                .to_string(),
+    let vad_available = py_dict_bool(settings, "vad_available", true)?;
+    let return_dry_audio = py_dict_bool(settings, "return_dry_audio", false)?;
+    let return_auto_makeup_activity =
+        py_dict_bool(settings, "return_auto_makeup_activity", false)?;
+    if return_dry_audio && suppressor_before_gate {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "return_dry_audio requires suppressor_before_gate=false",
         ));
     }
-    let latency_samples = suppressor.latency_samples();
-    let latency_frames = latency_samples.div_ceil(RNNOISE_FRAME_SIZE);
-    let started = Instant::now();
-    let (output, gate_gain, gate_chatter_event_count, gate_noise_floor, gate_noise_floor_reliability, runtime_ms) =
-        py.detach(move || -> Result<_, String> {
+    let (
+        output,
+        gate_gain,
+        gate_chatter_event_count,
+        gate_noise_floor,
+        gate_noise_floor_reliability,
+        runtime_ms,
+        latency_samples,
+        dry_audio,
+        activity_evidence,
+    ) = py
+        .detach(move || -> Result<_, String> {
+            let mut suppressor = new_noise_suppression_engine(model, strength);
+            if !suppressor.backend_available() {
+                return Err(suppressor
+                    .backend_error()
+                    .unwrap_or("noise suppressor backend unavailable")
+                    .to_string());
+            }
+            let latency_samples = suppressor.latency_samples();
+            let latency_frames = latency_samples.div_ceil(RNNOISE_FRAME_SIZE);
+            let started = Instant::now();
             let mut output = Vec::with_capacity(audio.len() + latency_samples);
             let mut gate_gain = Vec::with_capacity(block_count);
+            let mut dry_audio = return_dry_audio.then(|| Vec::with_capacity(audio.len()));
+            let mut activity_evidence = Vec::with_capacity(block_count);
 
             for (block_index, chunk) in audio.chunks(RNNOISE_FRAME_SIZE).enumerate() {
                 let mut frame = [0.0_f32; RNNOISE_FRAME_SIZE];
@@ -441,15 +829,36 @@ pub fn simulate_gate_suppressor_order(
                     }
                     if block_index >= latency_frames {
                         let source_index = block_index - latency_frames;
-                        gate.set_external_vad_probability(vad_probabilities[source_index], true);
+                        gate.set_external_vad_probability(
+                            vad_probabilities[source_index],
+                            vad_available,
+                        );
                         gate.process_block_inplace(&mut frame);
                         gate_gain.push(gate.current_gain());
+                        activity_evidence.push(gate_auto_makeup_activity(
+                            &gate,
+                            vad_probabilities[source_index],
+                            if vad_available { 1.0 } else { 0.0 },
+                            gate_enabled,
+                        ));
                         output.extend_from_slice(&frame);
                     }
                 } else {
-                    gate.set_external_vad_probability(vad_probabilities[block_index], true);
+                    gate.set_external_vad_probability(
+                        vad_probabilities[block_index],
+                        vad_available,
+                    );
                     gate.process_block_inplace(&mut frame);
                     gate_gain.push(gate.current_gain());
+                    activity_evidence.push(gate_auto_makeup_activity(
+                        &gate,
+                        vad_probabilities[block_index],
+                        if vad_available { 1.0 } else { 0.0 },
+                        gate_enabled,
+                    ));
+                    if let Some(dry_audio) = dry_audio.as_mut() {
+                        dry_audio.extend_from_slice(&frame);
+                    }
                     if suppressor.push_samples(&frame) != RNNOISE_FRAME_SIZE {
                         return Err("suppressor rejected a complete input frame".to_string());
                     }
@@ -476,14 +885,26 @@ pub fn simulate_gate_suppressor_order(
                 if output_frame_index >= latency_frames && block_count > 0 {
                     if suppressor_before_gate {
                         let source_index = output_frame_index - latency_frames;
-                        gate.set_external_vad_probability(vad_probabilities[source_index], true);
+                        gate.set_external_vad_probability(
+                            vad_probabilities[source_index],
+                            vad_available,
+                        );
                         gate.process_block_inplace(&mut frame);
                         gate_gain.push(gate.current_gain());
+                        activity_evidence.push(gate_auto_makeup_activity(
+                            &gate,
+                            vad_probabilities[source_index],
+                            if vad_available { 1.0 } else { 0.0 },
+                            gate_enabled,
+                        ));
                     }
                     output.extend_from_slice(&frame);
                 }
             }
             output.truncate(audio.len());
+            if let Some(dry_audio) = dry_audio.as_mut() {
+                dry_audio.truncate(audio.len());
+            }
 
             Ok((
                 output,
@@ -492,6 +913,9 @@ pub fn simulate_gate_suppressor_order(
                 gate.noise_floor(),
                 gate.noise_floor_reliability(),
                 started.elapsed().as_secs_f64() * 1000.0,
+                latency_samples,
+                dry_audio,
+                activity_evidence,
             ))
         })
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
@@ -506,6 +930,15 @@ pub fn simulate_gate_suppressor_order(
     diagnostics.set_item("gate_mode", gate_mode as u8)?;
     diagnostics.set_item("suppressor_latency_samples", latency_samples)?;
     diagnostics.set_item("runtime_ms", runtime_ms)?;
+    if return_auto_makeup_activity {
+        diagnostics.set_item(
+            "auto_makeup_activity",
+            serialize_auto_makeup_activity(&activity_evidence),
+        )?;
+    }
+    if let Some(dry_audio) = dry_audio {
+        diagnostics.set_item("dry_audio", dry_audio)?;
+    }
     Ok(diagnostics.into_any().unbind())
 }
 
@@ -514,6 +947,7 @@ struct AutoEqSimulationResult {
     input_rms_db: f32,
     output_sample_peak_db: f32,
     pre_limiter_true_peak_db: f32,
+    true_peak_limiter_input_db: Option<f32>,
     output_true_peak_db: f32,
     output_rms_db: f32,
     limiter_peak_gain_reduction_db: f32,
@@ -556,14 +990,120 @@ pub fn simulate_auto_eq_chain(
             bands.len()
         )));
     }
-    let audio = audio.as_slice()?.to_vec();
+    let mut audio = audio.as_slice()?.to_vec();
     if audio.iter().any(|sample| !sample.is_finite()) {
         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
             "audio must contain only finite samples",
         ));
     }
+    let full_chain = py_dict_bool(settings, "full_chain", false)?;
+    let processing_mode = py_dict_string(settings, "processing_mode", "normal")?
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(processing_mode.as_str(), "normal" | "bypass" | "raw") {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "unknown processing mode {processing_mode:?}; use normal, bypass, or raw"
+        )));
+    }
+    let return_auto_makeup_activity =
+        py_dict_bool(settings, "return_auto_makeup_activity", false)?;
+    let has_auto_makeup_activity = match settings {
+        Some(settings) => settings.get_item("auto_makeup_activity")?.is_some(),
+        None => false,
+    };
+    let has_vad_probabilities = match settings {
+        Some(settings) => settings.get_item("vad_probabilities")?.is_some(),
+        None => false,
+    };
+    let configured_vad_probabilities =
+        py_dict_f32_vec(settings, "vad_probabilities")?.unwrap_or_default();
+    if has_auto_makeup_activity && full_chain {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "auto_makeup_activity is only valid for downstream simulation (full_chain=false)",
+        ));
+    }
+    if has_auto_makeup_activity && has_vad_probabilities {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "auto_makeup_activity cannot be combined with vad_probabilities",
+        ));
+    }
+    let mut frontend_latency_samples = 0_usize;
+    let configured_control_block_size = ten_ms_control_block_size(sample_rate);
+    let supplied_auto_makeup_activity = py_dict_auto_makeup_activity(
+        settings,
+        "auto_makeup_activity",
+        audio.len().div_ceil(configured_control_block_size),
+    )?;
+    if (!full_chain || processing_mode == "normal")
+        && !configured_vad_probabilities.is_empty()
+        && configured_vad_probabilities.len() != audio.len().div_ceil(configured_control_block_size)
+    {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "expected {} VAD probabilities at the 10 ms cadence, got {}",
+            audio.len().div_ceil(configured_control_block_size),
+            configured_vad_probabilities.len()
+        )));
+    }
+    let mut frontend_activity_evidence = if let Some(activity) = supplied_auto_makeup_activity {
+        Some(activity)
+    } else if !full_chain || processing_mode == "normal" {
+        (!configured_vad_probabilities.is_empty()).then(|| {
+            configured_vad_probabilities
+                .iter()
+                .map(|probability| AutoMakeupActivityInput {
+                    vad_probability: f64::from(*probability),
+                    vad_reliability: 1.0,
+                    noise_floor_db: -60.0,
+                    live_noise_reliability: 0.0,
+                })
+                .collect()
+        })
+    } else {
+        None
+    };
+    if full_chain && processing_mode == "normal" {
+        #[cfg(feature = "vad")]
+        {
+            let frontend =
+                simulate_input_frontend_with_activity(py, audio, sample_rate, settings)?;
+            audio = frontend.rendered;
+            frontend_latency_samples = frontend.suppressor_latency;
+            frontend_activity_evidence = Some(frontend.activity_evidence);
+        }
+        #[cfg(not(feature = "vad"))]
+        {
+            return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(
+                "full_chain simulation requires the VAD feature",
+            ));
+        }
+    }
+    if full_chain && processing_mode == "bypass" {
+        // ProcessingPath::Bypass sanitizes/clamps the input and applies the
+        // live DC blocker + fixed 80 Hz high-pass only to raw captures, while
+        // skipping gate, suppressor, EQ, de-esser, and compressor stages.
+        for sample in &mut audio {
+            *sample = sample.clamp(-1.0, 1.0);
+        }
+        if !py_dict_bool(settings, "input_pre_filtered", false)? {
+            let mut pre_filter_state = InputPreFilterState::default();
+            let mut pre_filter = Biquad::new(
+                BiquadType::HighPass,
+                INPUT_PREFILTER_HZ,
+                0.0,
+                INPUT_PREFILTER_Q,
+                sample_rate,
+            );
+            apply_input_pre_filter(&mut audio, &mut pre_filter_state, &mut pre_filter, true);
+        }
+    }
     let has_typed_bands = match settings {
-        Some(settings) => settings.get_item("eq_bands_v2")?.is_some(),
+        Some(settings) => {
+            settings.get_item("eq_bands_v2")?.is_some()
+                || settings.get_item("eq_correction_bands_v2")?.is_some()
+                || settings.get_item("eq_tone_bands_v2")?.is_some()
+                || settings.get_item("correction_bands")?.is_some()
+                || settings.get_item("eq_bands")?.is_some()
+        }
         None => false,
     };
     if !has_typed_bands {
@@ -578,12 +1118,35 @@ pub fn simulate_auto_eq_chain(
     }
 
     let mut processor = OfflineDspBlockProcessor::new(sample_rate);
-    processor.set_eq_enabled(true);
-    if let Some(configs) = py_dict_eq_bands_v2(settings, sample_rate)? {
-        for (index, config) in configs.into_iter().enumerate() {
-            processor.eq_mut().set_band_config(index, config);
-        }
-        processor.eq_mut().reset();
+    // `processing_mode` selects a path only for the explicit full-chain API;
+    // preserve the legacy downstream simulation when full_chain is omitted.
+    let full_processing = !full_chain || processing_mode == "normal";
+    let eq_enabled_default = py_dict_bool(settings, "enabled", true)?;
+    let eq_enabled = py_dict_bool(settings, "eq_enabled", eq_enabled_default)?;
+    processor.set_eq_enabled(full_processing && eq_enabled);
+    let correction_configs = py_dict_eq_bands_v2_key(
+        settings,
+        "eq_correction_bands_v2",
+        sample_rate,
+    )?
+    .or(py_dict_eq_bands_v2_key(settings, "correction_bands", sample_rate)?);
+    let tone_configs = py_dict_eq_bands_v2_key(settings, "eq_tone_bands_v2", sample_rate)?
+        .or(py_dict_eq_bands_v2_key(settings, "eq_bands", sample_rate)?);
+    if correction_configs.is_some() || tone_configs.is_some() {
+        let default_bands = || {
+            (0..NUM_BANDS)
+                .map(EqBandConfig::default_for_index)
+                .collect::<Vec<_>>()
+        };
+        let correction_configs = correction_configs.unwrap_or_else(default_bands);
+        let tone_configs = tone_configs.unwrap_or_else(default_bands);
+        let correction_bands = std::array::from_fn(|index| correction_configs[index]);
+        let tone_bands = std::array::from_fn(|index| tone_configs[index]);
+        processor.set_eq_layers(&correction_bands, &tone_bands);
+    } else if let Some(configs) = py_dict_eq_bands_v2(settings, sample_rate)? {
+        let correction_bands = std::array::from_fn(EqBandConfig::default_for_index);
+        let tone_bands = std::array::from_fn(|index| configs[index]);
+        processor.set_eq_layers(&correction_bands, &tone_bands);
     } else {
         for (index, (frequency, gain_db, q)) in bands.iter().copied().enumerate() {
             processor.eq_mut().set_band_frequency(index, frequency);
@@ -593,14 +1156,18 @@ pub fn simulate_auto_eq_chain(
     }
 
     let deesser_enabled = py_dict_bool(settings, "deesser_enabled", false)?;
-    let return_output_audio = py_dict_bool(settings, "return_output_audio", false)?;
+    let return_output_audio = py_dict_bool(
+        settings,
+        "return_output_audio",
+        full_chain && processing_mode == "raw",
+    )?;
     processor.set_eq_before_deesser(py_dict_bool(
         settings,
         "eq_before_deesser",
         false,
     )?);
-    processor.set_deesser_enabled(deesser_enabled);
-    if deesser_enabled {
+    processor.set_deesser_enabled(deesser_enabled && full_processing);
+    if deesser_enabled && full_processing {
         let deesser = processor.deesser_mut();
         deesser.set_auto_enabled(py_dict_bool(settings, "deesser_auto_enabled", true)?);
         deesser.set_auto_amount(py_dict_f64(settings, "deesser_auto_amount", 0.5)?);
@@ -614,8 +1181,8 @@ pub fn simulate_auto_eq_chain(
     }
 
     let compressor_enabled = py_dict_bool(settings, "compressor_enabled", true)?;
-    processor.set_compressor_enabled(compressor_enabled);
-    if compressor_enabled {
+    processor.set_compressor_enabled(compressor_enabled && full_processing);
+    if compressor_enabled && full_processing {
         let compressor = processor.compressor_mut();
         compressor.set_threshold(py_dict_f64(settings, "compressor_threshold_db", -20.0)?);
         compressor.set_ratio(py_dict_f64(settings, "compressor_ratio", 4.0)?);
@@ -637,6 +1204,11 @@ pub fn simulate_auto_eq_chain(
             "compressor_auto_makeup_enabled",
             false,
         )?);
+        compressor.set_noise_reference_reliability(py_dict_f64(
+            settings,
+            "compressor_noise_reference_reliability",
+            0.0,
+        )?);
         compressor.set_target_lufs(py_dict_f64(settings, "compressor_target_lufs", -18.0)?);
         compressor.set_sidechain_highpass_enabled(py_dict_bool(
             settings,
@@ -647,10 +1219,18 @@ pub fn simulate_auto_eq_chain(
 
     let limiter_enabled = py_dict_bool(settings, "limiter_enabled", true)?;
     processor.set_limiter_enabled(limiter_enabled);
+    if full_chain && processing_mode != "normal" {
+        // Live Raw and bypass skip the normal lookahead limiter; output_writer still
+        // applies the configured final true-peak safety stage.
+        processor.set_normal_limiter_enabled(false);
+    }
     let limiter_ceiling_db = py_dict_f64(settings, "limiter_ceiling_db", -0.5)?;
     let careful_output_enabled = py_dict_bool(settings, "limiter_careful_output_enabled", true)?;
-    let effective_ceiling_db =
-        effective_limiter_ceiling_db(limiter_ceiling_db, careful_output_enabled) as f32;
+    let effective_ceiling_db = if limiter_enabled {
+        effective_limiter_ceiling_db(limiter_ceiling_db, careful_output_enabled) as f32
+    } else {
+        0.0
+    };
     if limiter_enabled {
         processor
             .limiter_mut()
@@ -667,6 +1247,14 @@ pub fn simulate_auto_eq_chain(
     }
 
     let processed_samples = audio.len();
+    let auto_makeup_activity_output = if return_auto_makeup_activity {
+        frontend_activity_evidence
+            .as_ref()
+            .map(|evidence| serialize_auto_makeup_activity(evidence))
+    } else {
+        None
+    };
+    let activity_control_cadence = frontend_activity_evidence.is_some();
     let simulation = py.detach(move || {
         let mut output = FixedAudioBuffer::<f32, RT_PROCESS_BUFFER_CAPACITY>::new();
     let mut input_square_sum = 0.0_f64;
@@ -675,6 +1263,7 @@ pub fn simulate_auto_eq_chain(
     let mut input_sample_peak = 0.0_f32;
     let mut output_sample_peak = 0.0_f32;
     let mut pre_limiter_true_peak = 0.0_f32;
+    let mut true_peak_limiter_input_peak = 0.0_f32;
     let mut output_true_peak = 0.0_f32;
     let mut limiter_peak_gain_reduction_db = 0.0_f32;
     let mut true_peak_limiter_gain_reduction_db = 0.0_f32;
@@ -684,14 +1273,19 @@ pub fn simulate_auto_eq_chain(
     let mut analysis_rows: Vec<(f32, f32, f32, f32)> = Vec::new();
     let mut non_finite_output = false;
     let audio = audio.as_slice();
-    let chain_latency_samples = processor.latency_samples();
+    let downstream_latency_samples = processor.latency_samples();
+    let chain_latency_samples = frontend_latency_samples.saturating_add(downstream_latency_samples);
     let tail_flush_samples = (sample_rate * 0.250).round() as usize;
     let flush_samples = chain_latency_samples.saturating_add(tail_flush_samples);
     let mut rendered_with_latency = Vec::with_capacity(audio.len() + flush_samples);
 
-    let analysis_block_samples = ((sample_rate * 0.020).round() as usize)
+    let analysis_block_samples = (if frontend_activity_evidence.is_some() {
+        ten_ms_control_block_size(sample_rate)
+    } else {
+        (sample_rate * 0.020).round() as usize
+    })
         .clamp(1, RT_PROCESS_BUFFER_CAPACITY);
-    for chunk in audio.chunks(analysis_block_samples) {
+    for (block_index, chunk) in audio.chunks(analysis_block_samples).enumerate() {
         let mut block = chunk.to_vec();
         let mut block_input_square_sum = 0.0_f64;
         for sample in block.iter_mut() {
@@ -703,7 +1297,14 @@ pub fn simulate_auto_eq_chain(
             input_samples += 1;
         }
 
-        let stats = processor.process_block_with_stats(&mut block, &mut output);
+        let activity = frontend_activity_evidence
+            .as_ref()
+            .and_then(|evidence| evidence.get(block_index).copied());
+        let stats = processor.process_block_with_stats_and_activity_control(
+            &mut block,
+            &mut output,
+            activity,
+        );
         let block_input_rms = if chunk.is_empty() {
             0.0
         } else {
@@ -734,7 +1335,8 @@ pub fn simulate_auto_eq_chain(
         ));
         input_sample_peak = input_sample_peak.max(stats.input_sample_peak);
         output_sample_peak = output_sample_peak.max(stats.output_sample_peak);
-        pre_limiter_true_peak = pre_limiter_true_peak.max(stats.true_peak_limiter_input_peak);
+        pre_limiter_true_peak = pre_limiter_true_peak.max(stats.pre_limiter_true_peak);
+        true_peak_limiter_input_peak = true_peak_limiter_input_peak.max(stats.true_peak_limiter_input_peak);
         output_true_peak = output_true_peak.max(stats.output_true_peak);
         limiter_peak_gain_reduction_db =
             limiter_peak_gain_reduction_db.max(stats.limiter_peak_gain_reduction_db);
@@ -764,7 +1366,8 @@ pub fn simulate_auto_eq_chain(
             rendered_with_latency.push(if sample.is_finite() { sample } else { 0.0 });
         }
         output_sample_peak = output_sample_peak.max(stats.output_sample_peak);
-        pre_limiter_true_peak = pre_limiter_true_peak.max(stats.true_peak_limiter_input_peak);
+        pre_limiter_true_peak = pre_limiter_true_peak.max(stats.pre_limiter_true_peak);
+        true_peak_limiter_input_peak = true_peak_limiter_input_peak.max(stats.true_peak_limiter_input_peak);
         output_true_peak = output_true_peak.max(stats.output_true_peak);
         limiter_peak_gain_reduction_db =
             limiter_peak_gain_reduction_db.max(stats.limiter_peak_gain_reduction_db);
@@ -778,7 +1381,7 @@ pub fn simulate_auto_eq_chain(
             true_peak_limited_events.saturating_add(stats.true_peak_limited_events);
     }
 
-    let aligned_start = chain_latency_samples.min(rendered_with_latency.len());
+    let aligned_start = downstream_latency_samples.min(rendered_with_latency.len());
     let aligned_end = aligned_start
         .saturating_add(audio.len())
         .min(rendered_with_latency.len());
@@ -880,6 +1483,7 @@ pub fn simulate_auto_eq_chain(
             input_rms_db: linear_to_db(input_rms),
             output_sample_peak_db,
             pre_limiter_true_peak_db,
+            true_peak_limiter_input_db: limiter_enabled.then(|| linear_to_db(true_peak_limiter_input_peak)),
             output_true_peak_db,
             output_rms_db: linear_to_db(output_rms),
             limiter_peak_gain_reduction_db,
@@ -911,6 +1515,7 @@ pub fn simulate_auto_eq_chain(
         input_rms_db,
         output_sample_peak_db,
         pre_limiter_true_peak_db,
+        true_peak_limiter_input_db,
         output_true_peak_db,
         output_rms_db,
         limiter_peak_gain_reduction_db,
@@ -940,6 +1545,7 @@ pub fn simulate_auto_eq_chain(
     diagnostics.set_item("input_rms_db", input_rms_db)?;
     diagnostics.set_item("output_sample_peak_db", output_sample_peak_db)?;
     diagnostics.set_item("pre_limiter_true_peak_db", pre_limiter_true_peak_db)?;
+    diagnostics.set_item("true_peak_limiter_input_db", true_peak_limiter_input_db)?;
     diagnostics.set_item("output_true_peak_db", output_true_peak_db)?;
     diagnostics.set_item("output_rms_db", output_rms_db)?;
     diagnostics.set_item("limiter_effective_ceiling_db", effective_ceiling_db)?;
@@ -992,12 +1598,24 @@ pub fn simulate_auto_eq_chain(
         "deesser_gain_reduction_p95_db",
         deesser_reduction_p95_db,
     )?;
-    diagnostics.set_item("analysis_block_ms", 20.0_f32)?;
+    diagnostics.set_item(
+        "analysis_block_ms",
+        if activity_control_cadence { 10.0_f32 } else { 20.0_f32 },
+    )?;
     diagnostics.set_item("chain_latency_samples", chain_latency_samples)?;
+    diagnostics.set_item("suppressor_latency_samples", frontend_latency_samples)?;
+    diagnostics.set_item("full_chain", full_chain)?;
+    diagnostics.set_item("processing_mode", processing_mode)?;
     diagnostics.set_item("tail_flush_samples", tail_flush_samples)?;
     diagnostics.set_item("active_analysis_threshold_db", active_threshold_db)?;
     diagnostics.set_item("active_analysis_block_count", active_block_count)?;
     diagnostics.set_item("processed_samples", processed_samples)?;
+    if return_auto_makeup_activity {
+        match auto_makeup_activity_output {
+            Some(activity) => diagnostics.set_item("auto_makeup_activity", activity)?,
+            None => diagnostics.set_item("auto_makeup_activity", py.None())?,
+        }
+    }
     if return_output_audio {
         diagnostics.set_item("output_audio", rendered_audio)?;
     }
@@ -1489,6 +2107,41 @@ impl PyAudioProcessor {
             });
         }
         self.processor.apply_eq_settings_v2(parsed)
+    }
+
+    /// Apply independent microphone correction and user tone EQ stages.
+    ///
+    /// Each tuple is (filter_type, frequency_hz, gain_db, q,
+    /// slope_db_per_octave, enabled). Both lists must contain exactly ten
+    /// bands; validation completes before either layer is published.
+    fn apply_eq_layers(
+        &self,
+        correction_bands: Vec<(String, f64, f64, f64, u8, bool)>,
+        tone_bands: Vec<(String, f64, f64, f64, u8, bool)>,
+    ) -> PyResult<()> {
+        let parse = |bands: Vec<(String, f64, f64, f64, u8, bool)>| -> PyResult<Vec<EqBandConfig>> {
+            let mut parsed = Vec::with_capacity(bands.len());
+            for (index, (filter_type, frequency_hz, gain_db, q, slope, enabled)) in
+                bands.into_iter().enumerate()
+            {
+                let filter_type = EqFilterType::from_name(&filter_type).ok_or_else(|| {
+                    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                        "Band {index}: unsupported EQ filter type: {filter_type}"
+                    ))
+                })?;
+                parsed.push(EqBandConfig {
+                    filter_type,
+                    frequency_hz,
+                    gain_db,
+                    q,
+                    slope_db_per_octave: slope,
+                    enabled,
+                });
+            }
+            Ok(parsed)
+        };
+        self.processor
+            .apply_eq_layers(parse(correction_bands)?, parse(tone_bands)?)
     }
 
     // === De-Esser ===
@@ -2297,10 +2950,19 @@ impl PyAudioProcessor {
 
     // === RAW AUDIO RECORDING (for calibration) ===
 
-    /// Start recording raw audio for calibration (10 seconds @ 48kHz)
-    fn start_raw_recording(&mut self, duration_secs: f64) -> PyResult<()> {
+    /// Start recording raw audio for calibration (10 seconds @ 48kHz).
+    ///
+    /// `before_cleanup` is an opt-in audition tap. The default keeps the
+    /// historical calibration capture after the fixed pre-filter and pauses
+    /// adaptive cleanup while recording.
+    #[pyo3(signature = (duration_secs, before_cleanup=false))]
+    fn start_raw_recording(
+        &mut self,
+        duration_secs: f64,
+        before_cleanup: bool,
+    ) -> PyResult<()> {
         self.processor
-            .start_raw_recording(duration_secs)
+            .start_raw_recording_with_tap(duration_secs, before_cleanup)
             .map_err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>)
     }
 

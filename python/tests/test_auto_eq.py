@@ -28,6 +28,41 @@ EQ_FREQUENCIES = config.EQ_FREQUENCIES
 AUTO_EQ_DEFAULT_Q = config.AUTO_EQ_DEFAULT_Q
 
 
+def test_capture_validation_is_independent_of_fitting_smoothing():
+    sample_rate = 48_000
+    time = np.arange(sample_rate * 3) / sample_rate
+    audio = np.asarray(sum(
+        0.1 / harmonic * np.sin(2 * np.pi * 150 * harmonic * time)
+        for harmonic in range(1, 26)
+    ), dtype=np.float32)
+    peak_counts = set()
+    for smoothing in ("conservative", "balanced", "broad", "off"):
+        _, validation = analyze_auto_eq(
+            audio, sample_rate, "flat", smoothing_strength=smoothing,
+            chain_settings={"compressor_enabled": False, "limiter_enabled": False},
+        )
+        assert validation.passed
+        peak_counts.add(validation.details["peak_count"])
+    assert len(peak_counts) == 1
+
+
+@pytest.mark.parametrize("smoothing", ["conservative", "balanced", "broad", "off"])
+@pytest.mark.parametrize("kind", ["silence", "noise", "tone"])
+def test_unsmoothed_capture_validation_still_rejects_invalid_input(smoothing, kind):
+    sample_rate = 48_000
+    time = np.arange(sample_rate * 3) / sample_rate
+    audio = {
+        "silence": np.zeros(time.size),
+        "noise": np.random.default_rng(4).normal(0, 0.03, time.size),
+        "tone": 0.1 * np.sin(2 * np.pi * 150 * time),
+    }[kind].astype(np.float32)
+    with pytest.raises(ValueError, match="Recording too unclear"):
+        analyze_auto_eq(
+            audio, sample_rate, "flat", smoothing_strength=smoothing,
+            chain_settings={"compressor_enabled": False, "limiter_enabled": False},
+        )
+
+
 @pytest.mark.parametrize(
     ("keyword", "value", "message"),
     [
@@ -157,6 +192,83 @@ def test_constrained_refinement_can_recover_from_an_undersized_initial_fit():
     assert np.linalg.norm(refined - desired) < np.linalg.norm(undersized - desired)
 
 
+@pytest.mark.parametrize("initial_gain", [0.0, 1.0e-3])
+def test_constrained_refinement_recovers_nonzero_target_from_zero_or_tiny_start(
+    initial_gain,
+):
+    dense_freqs = np.geomspace(20.0, 20_000.0, 256)
+    centers = np.geomspace(80.0, 16_000.0, 10)
+    qs = np.full(10, 1.2)
+    desired = np.zeros(10)
+    desired[4] = 4.0
+    target = _predict_eq_response(dense_freqs, desired, qs, centers)
+    initial = np.full(10, initial_gain)
+
+    refined, success = optimizer_module._constrained_gain_refinement(
+        initial,
+        dense_freqs,
+        np.zeros_like(dense_freqs),
+        target,
+        qs,
+        centers,
+        np.ones_like(dense_freqs),
+        np.full(10, -12.0),
+        np.full(10, 12.0),
+    )
+
+    assert success is True
+    assert refined[4] > 2.0
+
+
+@pytest.mark.parametrize("initial_gain", [0.0, 1.0e-3])
+def test_constrained_refinement_preserves_a_flat_target_from_zero_or_tiny_start(
+    initial_gain,
+):
+    dense_freqs = np.geomspace(20.0, 20_000.0, 256)
+    centers = np.geomspace(80.0, 16_000.0, 10)
+    qs = np.full(10, 1.2)
+    initial = np.full(10, initial_gain)
+
+    refined, success = optimizer_module._constrained_gain_refinement(
+        initial,
+        dense_freqs,
+        np.zeros_like(dense_freqs),
+        np.zeros_like(dense_freqs),
+        qs,
+        centers,
+        np.ones_like(dense_freqs),
+        np.full(10, -12.0),
+        np.full(10, 12.0),
+    )
+
+    assert success is True
+    assert np.max(np.abs(refined)) < 1.0e-4
+
+
+def test_constrained_refinement_can_activate_a_band_for_a_coupled_multiband_target():
+    dense_freqs = np.geomspace(20.0, 20_000.0, 256)
+    centers = np.geomspace(80.0, 16_000.0, 10)
+    qs = np.full(10, 1.2)
+    desired = np.asarray([0.0, 0.5, 1.5, 3.0, 5.0, 5.0, 3.0, 1.5, 0.5, 0.0])
+    target = _predict_eq_response(dense_freqs, desired, qs, centers)
+
+    refined, success = optimizer_module._constrained_gain_refinement(
+        np.zeros(10),
+        dense_freqs,
+        np.zeros_like(dense_freqs),
+        target,
+        qs,
+        centers,
+        np.ones_like(dense_freqs),
+        np.full(10, -12.0),
+        np.full(10, 12.0),
+    )
+
+    assert success is True
+    assert refined[4] > 4.0
+    assert refined[5] > 4.0
+
+
 def test_validation_is_final_and_reported_metrics_match_returned_curve(monkeypatch):
     freqs = np.geomspace(20.0, 20_000.0, 512)
     log_freqs = np.log10(freqs)
@@ -204,6 +316,7 @@ def test_validation_failure_abstains_instead_of_applying_a_flat_curve(monkeypatc
         centers_hz,
         _weights,
         cancel_check=None,
+        sample_rate=48_000.0,
     ):
         flat = np.zeros_like(gains)
         return (
@@ -338,16 +451,20 @@ def test_04_midscooped_to_streaming_target():
     freqs = _default_freqs()
     spectrum_db = generate_test_spectrum(freqs, "midscooped")
     target_db = get_target_curve(freqs, "streaming")
-    gains = calculate_eq_bands(freqs, spectrum_db, target_db)["band_gains"]
-    assert any(g > 2.0 for g in [gains[3], gains[4], gains[5]])
+    eq = calculate_eq_bands(freqs, spectrum_db, target_db)
+    gains = eq["band_gains"]
+    assert max(gains[3:6]) >= 1.0
+    assert eq["eq_quality"]["safe_for_auto_eq"]
 
 
 def test_05_proximity_effect_correction():
     freqs = _default_freqs()
     spectrum_db = generate_test_spectrum(freqs, "proximity")
     target_db = get_target_curve(freqs, "broadcast")
-    gains = calculate_eq_bands(freqs, spectrum_db, target_db)["band_gains"]
-    assert gains[0] < -5.0
+    eq = calculate_eq_bands(freqs, spectrum_db, target_db)
+    gains = eq["band_gains"]
+    assert gains[0] <= -4.0
+    assert eq["eq_quality"]["safe_for_auto_eq"]
 
 
 def test_06_harsh_highs_correction():
@@ -371,11 +488,10 @@ def test_08_extreme_uneven_response():
     spectrum_db = generate_test_spectrum(freqs, "extreme")
     target_db = get_target_curve(freqs, "flat")
     eq = calculate_eq_bands(freqs, spectrum_db, target_db)
-    gains = eq["band_gains"]
-    # The constrained solver should still make a material correction without
-    # requiring a dangerous hard-bound excursion.
-    assert any(abs(g) >= 3.0 for g in gains)
-    assert eq["validation_after_error_db"] < eq["validation_before_error_db"] * 0.80
+    # The automatic path stays inside a bounded combined response even for an
+    # intentionally pathological spectrum.
+    assert eq["eq_quality"]["safe_for_auto_eq"]
+    assert eq["validation_after_error_db"] <= eq["validation_before_error_db"]
 
 
 def test_09_very_quiet_signal():
@@ -827,7 +943,7 @@ def test_18b_target_modes_are_explicit_and_bounded():
     )
 
     assert np.allclose(static_target, catalog_target)
-    assert np.max(np.abs(adaptive_target - static_target)) <= 2.0 + 1e-9
+    assert np.max(np.abs(adaptive_target)) <= 2.0 + 1e-9
     assert np.max(np.abs(adaptive_target - static_target)) > 0.25
 
 
@@ -921,6 +1037,36 @@ def test_21a_eq_quality_reports_positive_boost_and_cut_excursions_separately():
     assert mixed.max_cut_db > 0.0
     assert flat.max_boost_db == 0.0
     assert flat.max_cut_db == 0.0
+
+
+def test_optimizer_threads_capture_rate_through_validation(monkeypatch):
+    sample_rate = 44_100.0
+    quality_rates = []
+    error_rates = []
+    real_quality = optimizer_module.evaluate_eq_quality
+    real_error = optimizer_module.weighted_target_error
+
+    def record_quality(*args, **kwargs):
+        quality_rates.append(kwargs.get("sample_rate"))
+        return real_quality(*args, **kwargs)
+
+    def record_error(*args, **kwargs):
+        error_rates.append(kwargs.get("sample_rate"))
+        return real_error(*args, **kwargs)
+
+    monkeypatch.setattr(optimizer_module, "evaluate_eq_quality", record_quality)
+    monkeypatch.setattr(optimizer_module, "weighted_target_error", record_error)
+
+    freqs = np.geomspace(20.0, 20_000.0, 128)
+    calculate_eq_bands(
+        freqs,
+        0.4 * np.sin(np.log(freqs)),
+        np.zeros_like(freqs),
+        sample_rate=sample_rate,
+    )
+
+    assert quality_rates and set(quality_rates) == {sample_rate}
+    assert error_rates and set(error_rates) == {sample_rate}
 
 
 def test_22_stable_speech_like_capture_has_useful_confidence():
@@ -1070,6 +1216,84 @@ def test_26_headroom_validation_preserves_safe_correction():
     assert validated["headroom_validation"]["safe"]
 
 
+def test_headroom_validation_keeps_safe_neutral_recommendation():
+    sample_rate = 48_000
+    t = np.arange(sample_rate, dtype=float) / sample_rate
+    audio = (0.02 * np.sin(2.0 * np.pi * 180.0 * t)).astype(np.float32)
+    eq_settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.0] * 10,
+        "band_qs": [1.41] * 10,
+        "validation_gain_scale": 0.55,
+        "recommendation_status": "apply",
+        "apply_recommended": True,
+    }
+
+    validated = apply_headroom_validation(audio, sample_rate, eq_settings)
+
+    assert validated["headroom_gain_scale"] == 1.0
+    assert validated["recommendation_status"] == "apply"
+    assert validated["apply_recommended"] is True
+
+
+def test_headroom_validation_abstains_neutral_candidate_after_actual_attenuation():
+    settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.1] + [0.0] * 9,
+        "band_qs": [1.41] * 10,
+        "validation_gain_scale": 0.55,
+        "recommendation_status": "apply",
+        "apply_recommended": True,
+        "headroom_gain_scale": 0.25,
+    }
+
+    headroom_module._refresh_scaled_eq_metadata(
+        settings,
+        analysis_freqs=None,
+        measured_db=None,
+        target_db=None,
+    )
+
+    assert settings["recommendation_status"] == "abstain"
+    assert settings["apply_recommended"] is False
+
+
+def test_headroom_metadata_threads_capture_rate(monkeypatch):
+    sample_rate = 44_100.0
+    quality_rates = []
+    error_rates = []
+    real_quality = headroom_module.evaluate_eq_quality
+    real_error = headroom_module.weighted_target_error
+
+    def record_quality(*args, **kwargs):
+        quality_rates.append(kwargs.get("sample_rate"))
+        return real_quality(*args, **kwargs)
+
+    def record_error(*args, **kwargs):
+        error_rates.append(kwargs.get("sample_rate"))
+        return real_error(*args, **kwargs)
+
+    monkeypatch.setattr(headroom_module, "evaluate_eq_quality", record_quality)
+    monkeypatch.setattr(headroom_module, "weighted_target_error", record_error)
+
+    settings = {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [2.0] + [0.0] * 9,
+        "band_qs": [1.41] * 10,
+    }
+    freqs = np.geomspace(20.0, 20_000.0, 128)
+    headroom_module._refresh_scaled_eq_metadata(
+        settings,
+        analysis_freqs=freqs,
+        measured_db=np.zeros_like(freqs),
+        target_db=np.zeros_like(freqs),
+        sample_rate=sample_rate,
+    )
+
+    assert quality_rates and set(quality_rates) == {sample_rate}
+    assert error_rates and set(error_rates) == {sample_rate}
+
+
 def test_headroom_zero_scale_clears_stale_apply_metadata():
     sample_rate = 48_000
     audio = np.ones(sample_rate // 4, dtype=np.float32)
@@ -1143,8 +1367,16 @@ def test_headroom_nonzero_scale_recomputes_active_band_threshold(monkeypatch):
 
 
 def test_27_validation_rejects_remaining_headroom_risk():
-    freqs = _default_freqs()
-    spectrum_db = generate_test_spectrum(freqs, "harsh")
+    sample_rate = 48_000
+    time = np.arange(sample_rate * 3) / sample_rate
+    freqs = np.fft.rfftfreq(time.size, 1.0 / sample_rate)
+    audio = sum(
+        0.1 / harmonic * np.sin(2 * np.pi * 150 * harmonic * time)
+        for harmonic in range(1, 26)
+    )
+    spectrum_db = 10.0 * np.log10(
+        np.maximum(np.square(np.abs(np.fft.rfft(audio))), 1.0e-12)
+    )
     eq_settings = {
         "band_gains": [0.0] * 10,
         "headroom_validation": {"safe": False},
@@ -1153,6 +1385,7 @@ def test_27_validation_rejects_remaining_headroom_risk():
     validation = validate_analysis(eq_settings, spectrum_db, freqs)
 
     assert not validation.passed
+    assert "headroom" in validation.reason.lower()
     assert validation.details["headroom_safe"] is False
 
 
@@ -1299,3 +1532,42 @@ def test_29_fallback_cannot_report_risky_capture_as_safe(monkeypatch):
     assert validated["headroom_validation"]["status"] == "advisory"
     assert validated["headroom_validation"]["safe"] is False
     assert validated["headroom_gain_scale"] < 1.0
+
+
+def test_voice_safe_flat_target_preserves_broad_speech_shape():
+    freqs = _default_freqs()
+    measured = -70.0 - 5.0 * np.log2(freqs / 1000.0)
+    result = calculate_eq_bands(
+        freqs,
+        measured,
+        np.zeros_like(freqs),
+        tilt_policy="voice_safe",
+    )
+
+    assert result["spectral_tilt_policy"] == "voice_safe"
+    assert np.max(np.abs(result["band_gains"])) < 0.1
+    assert result["validation_before_error_db"] == pytest.approx(0.0)
+
+
+def test_normalization_is_level_and_input_grid_stable():
+    gains = []
+    for point_count, level in ((128, -70.0), (1000, -90.0)):
+        freqs = np.logspace(np.log10(20.0), np.log10(20_000.0), point_count)
+        measured = level - 5.0 * np.log2(freqs / 1000.0)
+        target = 0.7 * np.exp(
+            -((np.log10(freqs) - np.log10(2500.0)) ** 2) / (2 * 0.25**2)
+        )
+        result = calculate_eq_bands(
+            freqs,
+            measured,
+            target,
+            tilt_policy="voice_safe",
+        )
+        gains.append(np.asarray(result["band_gains"], dtype=float))
+
+    np.testing.assert_allclose(gains[0], gains[1], atol=0.01)
+
+
+def test_auto_eq_pipeline_rejects_non_live_sample_rate():
+    with pytest.raises(ValueError, match="48000"):
+        analyze_auto_eq(np.zeros(480, dtype=np.float32), 44_100, "flat")

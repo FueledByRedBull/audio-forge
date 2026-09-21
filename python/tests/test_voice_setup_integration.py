@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import time
 from typing import Any
 
 import numpy as np
 import pytest
 from PyQt6.QtTest import QSignalSpy
+from PyQt6.QtCore import QElapsedTimer
+from PyQt6.QtWidgets import QDialog
 
 from mic_eq.analysis.voice_setup import analyze_voice_setup
 from mic_eq.config import load_preset
@@ -27,6 +30,7 @@ def real_main_window(qapp, monkeypatch, tmp_path):
     assert main_window.load_config is app_config.load_config
     assert main_window.save_config is app_config.save_config
     window = MainWindow()
+    monkeypatch.setattr(window, "_calibration_context_key", lambda: "test-route/48000/mono")
     window.meter_timer.stop()
     window.diagnostics_timer.stop()
     try:
@@ -183,6 +187,10 @@ def test_accepted_full_voice_setup_is_one_undo_transaction(
         "mic_eq.ui.voice_setup_dialog.QMessageBox.information",
         lambda *_args, **_kwargs: None,
     )
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.QMessageBox.warning",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(window, "_prompt_save_current_preset", lambda **_kwargs: None)
 
     window._history_transaction_depth += 1
@@ -194,8 +202,38 @@ def test_accepted_full_voice_setup_is_one_undo_transaction(
         )
         accepted = QSignalSpy(dialog.setup_applied)
         dialog._complete_verification(speech)
-        assert accepted.wait(5000), dialog.warning_label.text()
+        verification_worker = dialog.analysis_worker
+        assert verification_worker is not None
+        finished = QSignalSpy(verification_worker.finished)
+        assert finished.wait(30_000)
+        assert dialog.setup_state == "final_comparison_ready"
+
+        class _AcceptedComparison:
+            def __init__(self, **_kwargs):
+                pass
+
+            def exec(self):
+                return int(QDialog.DialogCode.Accepted)
+
+            def deleteLater(self):
+                pass
+
+        monkeypatch.setattr(
+            "mic_eq.ui.listening_comparison_dialog.ListeningComparisonDialog",
+            _AcceptedComparison,
+        )
+        dialog._on_start_clicked()
         assert len(accepted) == 1
+        assert len(window.config.calibration_results) == 1
+        assert window.config.calibration_results[0].verified_stages == (
+            "input_cleanup",
+            "gate",
+            "suppression",
+            "eq",
+            "deesser",
+            "compressor",
+            "limiter",
+        )
     finally:
         window._history_transaction_depth -= 1
 
@@ -231,6 +269,164 @@ def test_voice_setup_rejects_a_different_route_before_applying(
         dialog._apply_setup()
         assert window._get_current_preset().to_dict() == before
         assert "context changed" in messages[-1]
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_raw_monitor_verification_capture_allows_intended_mode_transition(
+    real_main_window, monkeypatch
+) -> None:
+    window = real_main_window
+    monkeypatch.setattr(
+        window,
+        "_calibration_context_key",
+        lambda: (
+            '["test-route","phase_safe_mono","off",null,"'
+            f'{window._processing_mode()}"]'
+        ),
+    )
+    window._set_processing_mode("raw")
+    window.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.73})
+    dialog = VoiceSetupDialog(parent=window)
+    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
+    _bind_capture_context(dialog, noise, speech)
+    dialog._capture_context_key = window._calibration_context_key()
+    _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
+    assert window._processing_mode() == "normal"
+    assert dialog._candidate_identity_error(window) is None
+
+    monkeypatch.setattr(
+        type(window.processor),
+        "start_raw_recording",
+        lambda *_args, **_kwargs: None,
+    )
+    dialog.setup_state = "verification_recording"
+    try:
+        dialog._begin_recording_capture()
+        assert dialog.setup_state == "verification_recording"
+        assert dialog.recording_timer.isActive()
+    finally:
+        dialog.recording_timer.stop()
+        dialog._cleanup_recording_tap()
+        assert dialog._restore_pre_setup_snapshot()
+        assert window._processing_mode() == "raw"
+        assert window.compressor_panel.get_compressor_settings(include_calibration=True)[
+            "noise_reference_reliability"
+        ] == pytest.approx(0.73)
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_repeated_bad_verification_takes_stop_and_restore(real_main_window, monkeypatch, qapp):
+    window = real_main_window
+    before = window._get_current_preset().to_dict()
+    dialog = VoiceSetupDialog(parent=window)
+    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
+    _bind_capture_context(dialog, noise, speech)
+    _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.validate_voice_setup_verification",
+        lambda *_args, **_kwargs: {
+            "decision": "retry",
+            "reasons": ["verification passage was clipped; lower microphone gain"],
+        },
+    )
+    try:
+        for attempt in range(3):
+            dialog._complete_verification(speech)
+            timer = QElapsedTimer()
+            timer.start()
+            while dialog.setup_state == "verification_analyzing" and timer.elapsed() < 5000:
+                qapp.processEvents()
+                time.sleep(0.01)
+            assert dialog.setup_state != "verification_analyzing"
+            if attempt < 2:
+                assert dialog.setup_state == "verification_ready"
+        assert dialog.setup_state == "completed"
+        assert window._get_current_preset().to_dict() == before
+        assert "clipped" in dialog.warning_label.text()
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+@pytest.mark.parametrize("target,auto_makeup", [("limiter", True), ("limiter", False), ("deesser", False)])
+def test_stage_reductions_change_only_relevant_live_controls(real_main_window, target, auto_makeup):
+    window = real_main_window
+    dialog = VoiceSetupDialog(parent=window)
+    _bind_capture_context(dialog, *_short_voice_captures(int(window.processor.sample_rate())))
+    result = _voice_setup_result(window, dialog)
+    result["compressor_settings"].update(auto_makeup_enabled=auto_makeup, makeup_gain_db=4.0)
+    _apply_complete_candidate(window, dialog, result)
+    before = window._get_current_preset().to_dict()
+    try:
+        changed, _ = dialog._apply_verification_reduction(window, [target])
+        assert changed
+        after = window._get_current_preset().to_dict()
+        expected = deepcopy(before)
+        if target == "deesser":
+            assert after["deesser"]["auto_amount"] < before["deesser"]["auto_amount"]
+            expected["deesser"]["auto_amount"] = after["deesser"]["auto_amount"]
+        else:
+            field = "target_lufs" if auto_makeup else "makeup_gain_db"
+            assert after["compressor"][field] == pytest.approx(before["compressor"][field] - 1.0)
+            expected["compressor"][field] = after["compressor"][field]
+            if auto_makeup:
+                assert dialog.setup_result is not None
+                assert dialog.setup_result["verification_adjusted_target_lufs"] == after["compressor"][field]
+        assert after == expected
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+@pytest.mark.parametrize("converges", [True, False])
+def test_verification_adjustments_reuse_take_and_stop(real_main_window, monkeypatch, converges, qapp):
+    window = real_main_window
+    before = window._get_current_preset().to_dict()
+    dialog = VoiceSetupDialog(parent=window)
+    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
+    _bind_capture_context(dialog, noise, speech)
+    _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
+    calls = []
+
+    def verify(_noise, _original, take, _rate, candidate, *_args, **_kwargs):
+        calls.append(deepcopy(candidate))
+        np.testing.assert_array_equal(take, speech)
+        accepted = converges and len(calls) > 1
+        return {
+            "decision": "accept" if accepted else "reduce",
+            "reason_codes": [] if accepted else ["compressor_excess"],
+            "reduction_targets": [] if accepted else ["compressor"],
+            "reasons": ["passed" if accepted else "compressor p95 exceeds target"],
+            "compressor_gain_reduction_p95_db": 1.0 if accepted else 6.0,
+        }
+
+    monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.validate_voice_setup_verification", verify)
+    monkeypatch.setattr(
+        dialog, "_start_recording_phase",
+        lambda *_args: pytest.fail("Valid verification audio must be reused"),
+    )
+    try:
+        dialog._complete_verification(speech)
+        timer = QElapsedTimer()
+        timer.start()
+        while dialog.setup_state == "verification_analyzing" and timer.elapsed() < 5000:
+            qapp.processEvents()
+            time.sleep(0.01)
+        assert 2 <= len(calls) <= 4
+        assert calls[1]["compressor_settings"]["threshold_db"] > calls[0]["compressor_settings"]["threshold_db"]
+        assert calls[1]["deesser_settings"] == calls[0]["deesser_settings"]
+        assert calls[1]["limiter_settings"] == calls[0]["limiter_settings"]
+        if converges:
+            assert dialog.setup_state == "final_comparison_ready"
+            assert dialog._pre_setup_snapshot is not None
+            dialog.reject()
+        else:
+            assert len(calls) == 2
+            assert dialog.setup_state == "completed"
+        assert window._get_current_preset().to_dict() == before
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -278,7 +474,9 @@ def test_voice_setup_tone_and_lufs_survive_apply_save_and_restart(real_main_wind
         assert reloaded.current_preset_path == filepath
         assert reloaded.current_preset_name == "Broadcast Voice"
         assert restored.compressor.target_lufs == pytest.approx(-19.0)
-        assert restored.eq.band_gains == pytest.approx(expected_gains)
+        assert restored.eq.correction_bands is not None
+        assert [band.gain_db for band in restored.eq.correction_bands] == pytest.approx(expected_gains)
+        assert restored.eq.band_gains == [0.0] * 10
     finally:
         try:
             reloaded.processor.stop()

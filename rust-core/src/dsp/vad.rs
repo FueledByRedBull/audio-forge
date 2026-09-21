@@ -43,8 +43,24 @@ const NOISE_FLOOR_BIN_COUNT: usize = 61;
 const NOISE_FLOOR_BIN_MIN_DB: f32 = -80.0;
 const NOISE_FLOOR_BIN_STEP_DB: f32 = 1.0;
 const NOISE_FLOOR_ELIGIBLE_PROB_MAX: f32 = 0.3;
-const NOISE_FLOOR_UP_SLEW_DB_PER_FRAME: f32 = 0.5;
-const NOISE_FLOOR_DOWN_SLEW_DB_PER_FRAME: f32 = 0.1;
+/// Noise-floor history is sampled at a fixed audio cadence so callback block
+/// size does not change the adaptation speed.
+const NOISE_FLOOR_UPDATE_MS: f32 = 10.0;
+const NOISE_FLOOR_UP_SLEW_DB_PER_UPDATE: f32 = 0.5;
+const NOISE_FLOOR_DOWN_SLEW_DB_PER_UPDATE: f32 = 0.1;
+/// A sustained near-full-scale model window can poison Silero's recurrent
+/// state. Keep this recovery trigger narrow so ordinary speech is untouched.
+const VAD_SEVERE_RMS_START_DB: f32 = -6.0;
+const VAD_SEVERE_RMS_END_DB: f32 = -18.0;
+const VAD_SEVERE_MIN_FRAMES: u16 = 8;
+/// A confident speech run establishes a relative level reference. A long,
+/// quiet low-confidence tail then marks a speech boundary and clears only the
+/// recurrent model state. Relative levels cover attenuated clipped speech
+/// without treating ordinary medium-level speech as overload.
+const VAD_SPEECH_END_CONFIDENT_PROB_MIN: f32 = 0.65;
+const VAD_SPEECH_END_LOW_PROB_MAX: f32 = 0.20;
+const VAD_SPEECH_END_LEVEL_DROP_DB: f32 = 12.0;
+const VAD_SPEECH_END_MIN_FRAMES: u16 = 8;
 const VAD_RESAMPLER_TAPS: i32 = 31;
 /// LSTM hidden dimension
 const LSTM_HIDDEN_DIM: usize = 64;
@@ -69,6 +85,9 @@ pub enum VadError {
 
     #[error("Invalid input size: expected {expected} samples, got {actual}")]
     InvalidInputSize { expected: usize, actual: usize },
+
+    #[error("Unsupported VAD sample rate: {0} Hz")]
+    InvalidSampleRate(u32),
 
     #[error("ONNX Runtime error: {0}")]
     OnnxError(String),
@@ -107,6 +126,11 @@ pub struct SileroVAD {
     buffer: Vec<f32>,
     /// Read cursor into the accumulated input buffer
     buffer_read_pos: usize,
+    /// Number of input-rate samples consumed by completed model windows.
+    ///
+    /// The worker uses this to timestamp a probability against the source
+    /// audio rather than against the worker's publication time.
+    processed_input_samples: u64,
     /// Reusable input-rate window scratch
     input_window: Vec<f32>,
     /// Reusable 16kHz model input containing context plus the current frame
@@ -128,6 +152,14 @@ pub struct SileroVAD {
     smoothing: f32,
     /// Pre-gain applied to audio before VAD processing (boosts weak signals)
     pre_gain: f32,
+    /// Consecutive severe-level model windows not yet followed by recovery.
+    severe_rms_frames: u16,
+    /// Whether a sustained severe-level run has completed and awaits recovery.
+    severe_rms_armed: bool,
+    /// Highest effective model-window level during the current speech run.
+    speech_end_anchor_db: Option<f32>,
+    /// Consecutive low-confidence frames below the relative speech-end level.
+    speech_end_low_frames: u16,
 }
 
 impl SileroVAD {
@@ -190,6 +222,14 @@ impl SileroVAD {
     /// * `sample_rate` - Audio sample rate (typically 48000)
     /// * `threshold` - Speech probability threshold (0.0-1.0), default 0.5
     pub fn new(sample_rate: u32, threshold: f32) -> Result<Self, VadError> {
+        // The native worker consumes complete input-rate windows. Require an
+        // integral 512-sample-at-16-kHz conversion so a rate such as 44.1 kHz
+        // cannot accumulate a one-sample truncation on every model frame.
+        let has_integral_model_window = (u64::from(sample_rate) * SILERO_WINDOW_SIZE as u64)
+            .is_multiple_of(u64::from(SILERO_SAMPLE_RATE));
+        if !(8_000..=192_000).contains(&sample_rate) || !has_integral_model_window {
+            return Err(VadError::InvalidSampleRate(sample_rate));
+        }
         ensure_ort_telemetry_disabled()?;
         let model_path = Self::find_model_path()?;
 
@@ -234,6 +274,7 @@ impl SileroVAD {
             resample_ratio,
             buffer: Vec::with_capacity(window_size * 4),
             buffer_read_pos: 0,
+            processed_input_samples: 0,
             input_window: Vec::with_capacity(window_size),
             gained_audio: [0.0; SILERO_MODEL_INPUT_SIZE],
             audio_512: [0.0; SILERO_WINDOW_SIZE],
@@ -244,6 +285,10 @@ impl SileroVAD {
             has_inference: false,
             smoothing: 0.5, // Faster smoothing (less lag)
             pre_gain: 1.0,  // Default: no gain boost
+            severe_rms_frames: 0,
+            severe_rms_armed: false,
+            speech_end_anchor_db: None,
+            speech_end_low_frames: 0,
         })
     }
 
@@ -279,12 +324,21 @@ impl SileroVAD {
         Ok(probability)
     }
 
+    /// Return the input-rate position at the end of the newest completed
+    /// inference window.
+    pub fn processed_input_samples(&self) -> u64 {
+        self.processed_input_samples
+    }
+
     fn process_window(&mut self, window_size: usize) -> Result<f32, VadError> {
         self.input_window.clear();
         self.input_window.extend_from_slice(
             &self.buffer[self.buffer_read_pos..self.buffer_read_pos + window_size],
         );
         self.buffer_read_pos += window_size;
+        self.processed_input_samples = self
+            .processed_input_samples
+            .saturating_add(window_size as u64);
         self.compact_buffer_if_needed();
 
         // Resample to 16kHz if needed
@@ -304,6 +358,19 @@ impl SileroVAD {
         let copy_len = inference_input.len().min(SILERO_WINDOW_SIZE);
         self.audio_512[..copy_len].copy_from_slice(&inference_input[..copy_len]);
 
+        // Keep the triggering low-confidence result visible until the next
+        // complete model window. This preserves partial-buffer probability
+        // reads and clears recurrent state at an actual inference boundary.
+        if self.speech_end_low_frames >= VAD_SPEECH_END_MIN_FRAMES {
+            self.reset_recurrent_state();
+            self.clear_speech_end_tracking();
+        }
+
+        // Measure the actual 16 kHz model window before pre-gain. Include the
+        // configured gain in dB so offline (gain-before-resample) and live
+        // (gain-after-resample) paths use the same overload decision.
+        self.update_severe_level_state();
+
         // Run inference
         let prob = self.run_inference()?;
 
@@ -316,7 +383,76 @@ impl SileroVAD {
             self.has_inference = true;
         }
 
-        Ok(calibrate_silero_probability(self.smoothed_prob))
+        let probability = calibrate_silero_probability(self.smoothed_prob);
+        self.update_speech_end_state(probability);
+        Ok(probability)
+    }
+
+    fn update_severe_level_state(&mut self) {
+        let gain_db = 20.0 * self.pre_gain.max(0.1).log10();
+        let rms_db = compute_rms_db(&self.audio_512) + gain_db;
+
+        if self.severe_rms_armed {
+            if rms_db < VAD_SEVERE_RMS_END_DB {
+                self.reset_recurrent_state();
+                self.severe_rms_frames = 0;
+                self.severe_rms_armed = false;
+                self.clear_speech_end_tracking();
+            }
+            return;
+        }
+
+        if rms_db > VAD_SEVERE_RMS_START_DB {
+            self.severe_rms_frames = self.severe_rms_frames.saturating_add(1);
+            if self.severe_rms_frames >= VAD_SEVERE_MIN_FRAMES {
+                self.severe_rms_armed = true;
+            }
+        } else {
+            // Frames below the start threshold break an unarmed run. Once
+            // armed, the -18 dB hysteresis threshold above owns recovery.
+            self.severe_rms_frames = 0;
+        }
+    }
+
+    fn update_speech_end_state(&mut self, probability: f32) {
+        let gain_db = 20.0 * self.pre_gain.max(0.1).log10();
+        let level_db = compute_rms_db(&self.audio_512) + gain_db;
+
+        if probability >= VAD_SPEECH_END_CONFIDENT_PROB_MIN {
+            self.speech_end_low_frames = 0;
+            self.speech_end_anchor_db = Some(
+                self.speech_end_anchor_db
+                    .map_or(level_db, |anchor_db| anchor_db.max(level_db)),
+            );
+            return;
+        }
+
+        let Some(anchor_db) = self.speech_end_anchor_db else {
+            self.speech_end_low_frames = 0;
+            return;
+        };
+
+        if probability <= VAD_SPEECH_END_LOW_PROB_MAX
+            && level_db <= anchor_db - VAD_SPEECH_END_LEVEL_DROP_DB
+        {
+            self.speech_end_low_frames = self.speech_end_low_frames.saturating_add(1);
+        } else {
+            self.speech_end_low_frames = 0;
+        }
+    }
+
+    fn clear_speech_end_tracking(&mut self) {
+        self.speech_end_anchor_db = None;
+        self.speech_end_low_frames = 0;
+    }
+
+    /// Clear only recurrent inference state. Input buffering and its source
+    /// clock must survive this recovery boundary.
+    fn reset_recurrent_state(&mut self) {
+        self.context_audio.fill(0.0);
+        self.smoothed_prob = 0.0;
+        self.has_inference = false;
+        self.state.fill(0.0);
     }
 
     /// Get current speech probability (smoothed)
@@ -349,15 +485,15 @@ impl SileroVAD {
     pub fn reset(&mut self) {
         self.buffer.clear();
         self.buffer_read_pos = 0;
+        self.processed_input_samples = 0;
         self.input_window.clear();
         self.resample_scratch.clear();
         self.gained_audio.fill(0.0);
         self.audio_512.fill(0.0);
-        self.context_audio.fill(0.0);
-        self.smoothed_prob = 0.0;
-        self.has_inference = false;
-        // Reset combined LSTM state to zeros
-        self.state = Array3::<f32>::zeros((LSTM_NUM_LAYERS, 1, LSTM_STATE_DIM));
+        self.severe_rms_frames = 0;
+        self.severe_rms_armed = false;
+        self.clear_speech_end_tracking();
+        self.reset_recurrent_state();
     }
 
     #[inline]
@@ -644,6 +780,10 @@ pub struct VadAutoGate {
     noise_floor_history_cursor: usize,
     /// Incremental 1 dB histogram for bounded percentile extraction.
     noise_floor_bins: [u16; NOISE_FLOOR_BIN_COUNT],
+    /// Samples accumulated into the current fixed-duration floor-history bin.
+    noise_floor_pending_samples: usize,
+    /// Sum of squares accumulated into the current floor-history bin.
+    noise_floor_pending_sum_sq: f64,
 }
 
 impl VadAutoGate {
@@ -679,6 +819,8 @@ impl VadAutoGate {
             noise_floor_history_len: 0,
             noise_floor_history_cursor: 0,
             noise_floor_bins: [0; NOISE_FLOOR_BIN_COUNT],
+            noise_floor_pending_samples: 0,
+            noise_floor_pending_sum_sq: 0.0,
         }
     }
 
@@ -709,6 +851,8 @@ impl VadAutoGate {
             noise_floor_history_len: 0,
             noise_floor_history_cursor: 0,
             noise_floor_bins: [0; NOISE_FLOOR_BIN_COUNT],
+            noise_floor_pending_samples: 0,
+            noise_floor_pending_sum_sq: 0.0,
         }
     }
 
@@ -743,31 +887,63 @@ impl VadAutoGate {
             return (false, 0.0);
         }
 
-        self.external_probability_available = probability.is_some();
-        let prob = probability.unwrap_or(0.0).clamp(0.0, 1.0);
-        self.process_with_probability(samples, prob)
-    }
-
-    fn update_noise_floor_estimate(&mut self, current_rms: f32, prob: f32) {
-        if !self.auto_threshold_enabled || prob >= NOISE_FLOOR_ELIGIBLE_PROB_MAX {
-            return;
-        }
-        if current_rms <= -100.0 {
-            return;
-        }
-
-        self.push_noise_floor_sample(current_rms);
-        let Some(candidate_floor) = self.percentile_noise_floor() else {
-            return;
+        let Some(probability) = probability else {
+            // Unknown is not silence: do not teach the auto-threshold that a
+            // worker outage or stale result is a low-level background frame.
+            // Advance the hold as closed audio so a worker outage cannot keep
+            // an old speech tail open indefinitely.
+            self.external_probability_available = false;
+            self.current_probability = 0.0;
+            self.noise_floor_pending_samples = 0;
+            self.noise_floor_pending_sum_sq = 0.0;
+            self.apply_hold_time(false, samples.len());
+            return (false, 0.0);
         };
 
-        let delta = candidate_floor - self.noise_floor;
-        if delta > 0.0 {
-            self.noise_floor += delta.min(NOISE_FLOOR_UP_SLEW_DB_PER_FRAME);
-        } else {
-            self.noise_floor += delta.max(-NOISE_FLOOR_DOWN_SLEW_DB_PER_FRAME);
+        self.external_probability_available = true;
+        self.process_with_probability(samples, probability.clamp(0.0, 1.0))
+    }
+
+    fn update_noise_floor_estimate(&mut self, samples: &[f32], prob: f32) {
+        if !self.auto_threshold_enabled || prob >= NOISE_FLOOR_ELIGIBLE_PROB_MAX {
+            self.noise_floor_pending_samples = 0;
+            self.noise_floor_pending_sum_sq = 0.0;
+            return;
         }
-        self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
+
+        let update_samples = (NOISE_FLOOR_UPDATE_MS / 1000.0 * self.sample_rate as f32)
+            .round()
+            .max(1.0) as usize;
+        let mut offset = 0;
+        while offset < samples.len() {
+            let remaining = update_samples - self.noise_floor_pending_samples;
+            let count = remaining.min(samples.len() - offset);
+            for &sample in &samples[offset..offset + count] {
+                let sample = sample as f64;
+                self.noise_floor_pending_sum_sq += sample * sample;
+            }
+            self.noise_floor_pending_samples += count;
+            offset += count;
+
+            if self.noise_floor_pending_samples == update_samples {
+                let rms = (self.noise_floor_pending_sum_sq / update_samples as f64).sqrt();
+                self.noise_floor_pending_samples = 0;
+                self.noise_floor_pending_sum_sq = 0.0;
+                if rms > 1e-5 {
+                    let current_rms = 20.0 * (rms as f32).log10();
+                    self.push_noise_floor_sample(current_rms);
+                    if let Some(candidate_floor) = self.percentile_noise_floor() {
+                        let delta = candidate_floor - self.noise_floor;
+                        if delta > 0.0 {
+                            self.noise_floor += delta.min(NOISE_FLOOR_UP_SLEW_DB_PER_UPDATE);
+                        } else {
+                            self.noise_floor += delta.max(-NOISE_FLOOR_DOWN_SLEW_DB_PER_UPDATE);
+                        }
+                        self.noise_floor = self.noise_floor.clamp(-80.0, -20.0);
+                    }
+                }
+            }
+        }
     }
 
     fn push_noise_floor_sample(&mut self, sample_db: f32) {
@@ -839,7 +1015,7 @@ impl VadAutoGate {
         self.current_probability = prob;
 
         let vad_speech_detected = prob > self.vad_threshold;
-        self.update_noise_floor_estimate(compute_rms_db(samples), prob);
+        self.update_noise_floor_estimate(samples, prob);
         let level_above_threshold = self.level_above_threshold(samples);
 
         let gate_open = match self.gate_mode {
@@ -854,14 +1030,7 @@ impl VadAutoGate {
     }
 
     fn level_above_threshold(&self, samples: &[f32]) -> bool {
-        let threshold = if self.auto_threshold_enabled {
-            // Auto mode: noise_floor + margin
-            (self.noise_floor + self.margin).clamp(self.min_threshold, self.max_threshold)
-        } else {
-            // Manual mode: honor the user-configured gate threshold.
-            self.manual_threshold_db
-                .clamp(self.min_threshold, self.max_threshold)
-        };
+        let threshold = self.effective_threshold_db();
         let rms_db = compute_rms_db(samples);
         rms_db >= threshold
     }
@@ -928,6 +1097,21 @@ impl VadAutoGate {
         self.noise_floor
     }
 
+    /// Return the level threshold currently used by the auto-gate.
+    ///
+    /// Auto mode follows the learned floor plus its configured margin;
+    /// manual mode keeps the explicit user threshold. Keep the clamp here so
+    /// callers that share the level detector cannot drift from the nested
+    /// gate's opening decision.
+    pub fn effective_threshold_db(&self) -> f32 {
+        let threshold = if self.auto_threshold_enabled {
+            self.noise_floor + self.margin
+        } else {
+            self.manual_threshold_db
+        };
+        threshold.clamp(self.min_threshold, self.max_threshold)
+    }
+
     /// Set manual threshold used when auto-threshold is disabled
     pub fn set_manual_threshold(&mut self, threshold_db: f32) {
         self.manual_threshold_db = threshold_db.clamp(self.min_threshold, self.max_threshold);
@@ -936,6 +1120,10 @@ impl VadAutoGate {
     /// Enable/disable auto-threshold mode
     pub fn set_auto_threshold(&mut self, enabled: bool) {
         self.auto_threshold_enabled = enabled;
+        if !enabled {
+            self.noise_floor_pending_samples = 0;
+            self.noise_floor_pending_sum_sq = 0.0;
+        }
         if enabled {
             // Initialize noise floor from current RMS if needed
             if self.noise_floor <= -100.0 {
@@ -951,6 +1139,7 @@ impl VadAutoGate {
 
     pub fn reset(&mut self) {
         self.noise_floor = -60.0;
+        self.external_probability_available = false;
         self.hold_timer = 0.0;
         self.timer_running = false;
         self.prev_gate_open = false;
@@ -960,6 +1149,8 @@ impl VadAutoGate {
         self.noise_floor_history_len = 0;
         self.noise_floor_history_cursor = 0;
         self.noise_floor_bins = [0; NOISE_FLOOR_BIN_COUNT];
+        self.noise_floor_pending_samples = 0;
+        self.noise_floor_pending_sum_sq = 0.0;
         if let Some(vad) = &mut self.vad {
             vad.reset();
         }

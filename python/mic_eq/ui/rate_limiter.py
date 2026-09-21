@@ -54,6 +54,9 @@ class RateLimiter:
 
         if elapsed >= self.interval_ms:
             # Enough time has passed, execute immediately
+            # An overdue Qt timer may still hold an older update after a UI stall.
+            self._timer.stop()
+            self._pending_fn = None
             self._last_call_time = current_time
             fn()
         else:

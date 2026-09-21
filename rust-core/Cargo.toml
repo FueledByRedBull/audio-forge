@@ -1,6 +1,6 @@
 [package]
 name = "mic_eq_core"
-version = "1.12.1"
+version = "1.13.0"
 edition = "2021"
 rust-version = "1.94"
 description = "High-performance DSP engine for AudioForge - real-time noise suppression and equalization"
@@ -31,7 +31,7 @@ numpy = "0.29"
 # ndarray = { version = "0.15", optional = true }
 
 # Lock-free ring buffers
-ringbuf = "0.3"
+ringbuf = "0.5.2"
 
 # Dynamic library loading (for DeepFilterNet FFI)
 libloading = { version = "0.8", optional = true }

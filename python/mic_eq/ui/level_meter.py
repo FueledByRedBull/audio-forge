@@ -258,11 +258,16 @@ class ConfidenceMeter(QWidget):
         super().__init__(parent)
         self.setMinimumHeight(20)
         self.confidence = 0.0
+        self.threshold = 0.5
         self.setAutoFillBackground(False)
 
     def set_confidence(self, value: float):
         """Update confidence value (0.0 to 1.0)."""
         self.confidence = max(0.0, min(1.0, value))
+        self.update()
+
+    def set_threshold(self, value: float):
+        self.threshold = max(0.0, min(1.0, value))
         self.update()
 
     def paintEvent(self, event):
@@ -288,8 +293,7 @@ class ConfidenceMeter(QWidget):
 
             painter.fillRect(0, 0, fill_width, height, gradient)
 
-        # Threshold marker (default 0.5)
-        threshold_x = int(width * 0.5)
+        threshold_x = int(width * self.threshold)
         painter.setPen(QPen(qcolor(PALETTE.meter_peak), 2))
         painter.drawLine(threshold_x, 0, threshold_x, height)
 

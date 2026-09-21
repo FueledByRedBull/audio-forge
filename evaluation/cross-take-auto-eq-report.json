@@ -130,5 +130,6 @@
     "validated_input_file_count": 144
   },
   "schema_version": 3,
-  "status": "rejected"
+  "status": "rejected",
+  "source_revision": "6d2d10437e3e2da1988cfa6f1bf36d562753bdc6"
 }

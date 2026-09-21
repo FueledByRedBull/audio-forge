@@ -5,22 +5,100 @@ from __future__ import annotations
 from copy import deepcopy
 import threading
 import time
+from typing import Any
 
 import numpy as np
 import pytest
 
+import mic_eq
+from mic_eq.analysis import voice_setup as voice_setup_module
+from mic_eq.analysis import vad as vad_analysis
 from mic_eq.analysis.voice_setup import (
     _COMPRESSOR_SEARCH_BUDGET,
     _calibrate_compressor_threshold,
     _recommend_compressor_settings,
     _recommend_gate_settings,
+    _shape_error_db,
     _vad_masked_speech_features,
     analyze_voice_setup,
     validate_voice_setup_verification,
 )
-from mic_eq.analysis.auto_eq import simulate_candidate_chain
+from mic_eq.analysis.auto_eq import get_target_curve, simulate_candidate_chain
 from mic_eq.analysis.cancellation import AnalysisCancelled
-from mic_eq.ui.voice_setup_dialog import VoiceSetupVerificationWorker
+from mic_eq.ui.voice_setup_dialog import (
+    VoiceSetupVerificationWorker,
+    _candidate_settings_error,
+)
+
+
+def test_offline_vad_applies_live_pre_gain_before_inference(monkeypatch):
+    observed: dict[str, Any] = {}
+
+    def fake_analyze(samples, sample_rate, threshold):
+        observed["samples"] = np.asarray(samples).copy()
+        observed["sample_rate"] = sample_rate
+        observed["threshold"] = threshold
+        return [0.7]
+
+    monkeypatch.setattr(mic_eq, "CORE_AVAILABLE", True)
+    monkeypatch.setattr(mic_eq, "analyze_vad_probabilities", fake_analyze)
+
+    probabilities, backend = vad_analysis.analyze_offline_vad(
+        np.asarray([0.5, -0.25], dtype=np.float32),
+        48_000,
+        threshold=0.43,
+        pre_gain=2.0,
+    )
+
+    np.testing.assert_allclose(observed["samples"], [1.0, -0.5])
+    assert observed["sample_rate"] == 48_000
+    assert observed["threshold"] == 0.43
+    assert probabilities is not None
+    np.testing.assert_allclose(probabilities, [0.7])
+    assert backend == "silero"
+
+
+def test_causal_vad_mapping_keeps_exact_44k1_window_timing():
+    sample_rate = 44_100
+    frame_ends = np.arange(1, 2_001, dtype=np.int64) * 441
+    probabilities = np.arange(700, dtype=np.float32) / 700.0
+
+    mapped = vad_analysis.map_causal_vad_probabilities(
+        probabilities,
+        frame_ends,
+        sample_rate,
+    )
+    assert mapped is not None
+
+    np.testing.assert_array_equal(mapped[:3], 0.0)
+    # 1.6 s contains exactly 50 model windows; 20 s contains 625.
+    assert mapped[159] == pytest.approx(49 / 700)
+    assert mapped[-1] == pytest.approx(624 / 700)
+
+
+def test_voice_setup_rejects_unsupported_sample_rate_before_analysis():
+    with pytest.raises(ValueError, match="48000 Hz"):
+        analyze_voice_setup(
+            np.zeros(1, dtype=np.float32),
+            np.zeros(1, dtype=np.float32),
+            44_100,
+        )
+
+
+def test_missing_eq_surfaces_analysis_failure_reason():
+    reason = "The proposed processing exceeds safe headroom."
+    assert _candidate_settings_error(
+        {
+            "eq_settings": None,
+            "eq_error": reason,
+            "limiter_settings": {
+                "enabled": True,
+                "ceiling_db": -0.5,
+                "release_ms": 50.0,
+                "careful_output_enabled": True,
+            },
+        }
+    ) == reason
 
 
 def _make_noise(sample_rate: int, seconds: float = 2.0, amplitude: float = 0.0012) -> np.ndarray:
@@ -96,7 +174,33 @@ def test_short_capture_keeps_short_term_unavailable_and_labels_fallback():
     assert np.isfinite(features["short_term_lufs"])
 
 
-def test_voice_setup_uses_vad_assisted_when_available():
+def test_verification_scores_voice_safe_tone_delta_against_setup_capture():
+    freqs = np.geomspace(80.0, 12_000.0, 128)
+    reference = -60.0 - 5.0 * np.log2(freqs / 1000.0)
+    tone_delta = get_target_curve(
+        freqs,
+        "broadcast",
+        measured_db=reference,
+        target_mode="adaptive",
+    )
+    baseline_error = _shape_error_db(
+        freqs,
+        reference,
+        "broadcast",
+        reference_db=reference,
+    )
+    rendered_error = _shape_error_db(
+        freqs,
+        reference + tone_delta,
+        "broadcast",
+        reference_db=reference,
+    )
+
+    assert baseline_error > 0.0
+    assert rendered_error == pytest.approx(0.0, abs=1.0e-9)
+
+
+def test_voice_setup_uses_vad_assisted_when_available(monkeypatch):
     sample_rate = 48_000
     limiter = {
         "enabled": False,
@@ -104,6 +208,28 @@ def test_voice_setup_uses_vad_assisted_when_available():
         "release_ms": 175.0,
         "careful_output_enabled": False,
     }
+
+    def fake_offline_vad(audio, _sample_rate, *, threshold=0.48, pre_gain=1.0):
+        del threshold, pre_gain
+        frame_count = max(1, (np.asarray(audio).size + 511) // 512)
+        return np.full(frame_count, 0.8, dtype=np.float32), "silero"
+
+    real_simulate_candidate_chain = voice_setup_module.simulate_candidate_chain
+
+    def simulate_with_supplied_vad(audio, rate, eq_settings, chain_settings=None):
+        settings = dict(chain_settings or {})
+        if settings.get("full_chain") and settings.get("processing_mode") == "normal":
+            frame_count = max(1, (np.asarray(audio).size + 479) // 480)
+            settings["vad_probabilities"] = [0.8] * frame_count
+            settings["vad_available"] = True
+        return real_simulate_candidate_chain(audio, rate, eq_settings, settings)
+
+    monkeypatch.setattr(voice_setup_module, "analyze_offline_vad", fake_offline_vad)
+    monkeypatch.setattr(
+        voice_setup_module,
+        "simulate_candidate_chain",
+        simulate_with_supplied_vad,
+    )
     result = analyze_voice_setup(
         _make_noise(sample_rate),
         _make_voice(sample_rate),
@@ -461,9 +587,11 @@ def test_expanded_compressor_search_keeps_safe_profile_on_effective_tie(
 
 def test_compressor_calibration_uses_one_limiter_configuration(monkeypatch):
     observed_limiters: list[dict[str, object]] = []
+    observed_compressors: list[dict[str, object]] = []
 
     def fake_simulation(_audio, _sample_rate, _eq, chain):
         observed_limiters.append(dict(chain["limiter"]))
+        observed_compressors.append(dict(chain["compressor"]))
         return {
             "simulation_backend": "rust",
             "compressor_gain_reduction_db": 3.7,
@@ -518,10 +646,13 @@ def test_compressor_calibration_uses_one_limiter_configuration(monkeypatch):
 
     assert observed_limiters
     assert all(item == limiter for item in observed_limiters)
+    assert observed_compressors[-1]["auto_makeup_enabled"] is True
 
 
 def test_verification_uses_candidate_limiter_and_retries_without_it(monkeypatch):
     observed_limiters: list[dict[str, object]] = []
+    limiter_gain_reduction_db = 0.0
+    true_peak_limiter_gain_reduction_db = 0.0
 
     class FakeSpectrum:
         freqs = np.geomspace(80.0, 12_000.0, 16)
@@ -539,7 +670,13 @@ def test_verification_uses_candidate_limiter_and_retries_without_it(monkeypatch)
             "deesser_gain_reduction_p95_db": 0.0,
             "output_true_peak_db": -3.0,
             "limiter_effective_ceiling_db": -1.5,
-            "true_peak_limited_events": 0,
+            # A single event without measured limiter gain is a harmless
+            # boundary catch and must not force a reduction loop.
+            "true_peak_limited_events": 1,
+            "limiter_gain_reduction_db": limiter_gain_reduction_db,
+            "true_peak_limiter_gain_reduction_db": (
+                true_peak_limiter_gain_reduction_db
+            ),
             "output_rms_db": -30.0,
             "input_rms_db": -30.0,
         }
@@ -591,6 +728,49 @@ def test_verification_uses_candidate_limiter_and_retries_without_it(monkeypatch)
     )
 
     assert result["decision"] == "accept"
+    assert result["reason_codes"] == ["accepted"]
+    assert result["reduction_targets"] == []
+    assert result["limiter_activity_events"] == 1
+
+    true_peak_limiter_gain_reduction_db = 1.0
+    boundary = validate_voice_setup_verification(
+        audio,
+        audio,
+        audio,
+        48_000,
+        setup_result,
+        "broadcast",
+    )
+    assert boundary["decision"] == "accept"
+    assert boundary["limiter_pressure_db"] == pytest.approx(1.0)
+    assert boundary["reduction_targets"] == []
+
+    true_peak_limiter_gain_reduction_db = 1.25
+    pressure = validate_voice_setup_verification(
+        audio,
+        audio,
+        audio,
+        48_000,
+        setup_result,
+        "broadcast",
+    )
+    assert pressure["decision"] == "reduce"
+    assert pressure["reason_codes"] == ["limiter_excess"]
+    assert pressure["reduction_targets"] == ["limiter"]
+    assert pressure["limiter_pressure_db"] == pytest.approx(1.25)
+
+    delivery_retry = validate_voice_setup_verification(
+        audio,
+        audio,
+        np.full_like(audio, 0.1),
+        48_000,
+        setup_result,
+        "broadcast",
+    )
+    assert delivery_retry["decision"] == "retry"
+    assert delivery_retry["reason_codes"] == ["verification_delivery_mismatch"]
+    assert "delivery level delta" in delivery_retry["reasons"][0]
+
     assert observed_limiters
     assert all(item == limiter for item in observed_limiters)
     missing = dict(setup_result)
@@ -603,7 +783,8 @@ def test_verification_uses_candidate_limiter_and_retries_without_it(monkeypatch)
         missing,
         "broadcast",
     )
-    assert retry["decision"] == "retry"
+    assert retry["decision"] == "rollback"
+    assert retry["reason_codes"] == ["candidate_settings_incomplete"]
     assert retry["reasons"] == ["candidate limiter settings are missing"]
 
 
@@ -788,7 +969,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
     with monkeypatch.context() as patch:
         show_error = Mock()
         patch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.critical", show_error)
-        patch.setattr(owner.eq_panel, "apply_auto_eq_results",
+        patch.setattr(owner.eq_panel, "set_settings",
                       Mock(side_effect=RuntimeError("sentinel apply failure")))
         dialog._apply_setup()
         assert show_error.call_count == 1

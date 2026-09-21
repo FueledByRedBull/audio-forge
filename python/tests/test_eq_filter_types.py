@@ -36,6 +36,17 @@ def _typed_default_bands() -> list[tuple[str, float, float, float, int, bool]]:
     ]
 
 
+def test_raw_preview_measures_intersample_peak() -> None:
+    audio = (0.8 * np.sin(2 * np.pi * 0.25 * np.arange(4800) + np.pi / 4)).astype(np.float32)
+    bands = [(band.frequency_hz, 0.0, band.q) for band in EQSettings().bands]
+    result = simulate_auto_eq_chain(
+        audio, 48_000.0, bands,
+        {"full_chain": True, "processing_mode": "raw", "limiter_enabled": False},
+    )
+    assert result["output_true_peak_db"] > result["output_sample_peak_db"] + 2.0
+    np.testing.assert_array_equal(result["output_audio"], audio)
+
+
 def test_typed_native_eq_api_round_trips_every_runtime_field() -> None:
     processor = AudioProcessor()
     bands = _typed_default_bands()
@@ -146,6 +157,67 @@ def test_native_typed_eq_simulator_preserves_default_audio_exactly() -> None:
     assert result["algorithmic_latency_samples"] == 0
     assert result["non_finite_output"] is False
     assert result["max_response_db"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_native_eq_enabled_switch_bypasses_typed_eq() -> None:
+    sample_rate = 48_000.0
+    time = np.arange(48_000, dtype=np.float64) / sample_rate
+    audio = (0.05 * np.sin(2.0 * np.pi * 1_000.0 * time)).astype(np.float32)
+    typed = _typed_default_bands()
+    typed[4] = ("bell", 1_000.0, 9.0, 8.0, 12, True)
+    legacy = [
+        (band.frequency_hz, band.gain_db, band.q)
+        for band in EQSettings().bands
+    ]
+    base = {
+        "eq_bands_v2": typed,
+        "compressor_enabled": False,
+        "limiter_enabled": False,
+        "deesser_enabled": False,
+        "return_output_audio": True,
+    }
+
+    disabled = simulate_auto_eq_chain(
+        audio, sample_rate, legacy, {**base, "eq_enabled": False}
+    )
+    enabled = simulate_auto_eq_chain(
+        audio, sample_rate, legacy, {**base, "eq_enabled": True}
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(disabled["output_audio"], dtype=np.float32), audio, atol=1e-6
+    )
+    assert not np.allclose(
+        np.asarray(enabled["output_audio"], dtype=np.float32), audio, atol=1e-4
+    )
+
+
+def test_bypass_respects_already_prefiltered_capture() -> None:
+    audio = np.full(4_800, 0.1, dtype=np.float32)
+    bands = [
+        (band.frequency_hz, band.gain_db, band.q)
+        for band in EQSettings().bands
+    ]
+    common = {
+        "full_chain": True,
+        "processing_mode": "bypass",
+        "limiter_enabled": False,
+        "return_output_audio": True,
+    }
+
+    filtered = simulate_auto_eq_chain(
+        audio, 48_000.0, bands, {**common, "input_pre_filtered": False}
+    )
+    already_filtered = simulate_auto_eq_chain(
+        audio, 48_000.0, bands, {**common, "input_pre_filtered": True}
+    )
+
+    np.testing.assert_allclose(
+        np.asarray(already_filtered["output_audio"], dtype=np.float32), audio, atol=1e-6
+    )
+    assert not np.allclose(
+        np.asarray(filtered["output_audio"], dtype=np.float32), audio, atol=1e-4
+    )
 
 
 def test_native_typed_eq_simulator_rejects_non_finite_audio() -> None:

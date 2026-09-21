@@ -93,6 +93,8 @@ def start_processor_for_route(
     """Start the native processor on the exact selected route identities."""
     input_identity = coerce_device_identity(input_device)
     output_identity = coerce_device_identity(output_device)
+    if output_identity is None:
+        raise ValueError("Select a destination device before starting audio processing")
     start = getattr(processor, "start")
     return start(
         input_identity.name if input_identity is not None else None,

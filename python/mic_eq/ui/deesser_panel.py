@@ -401,8 +401,14 @@ class DeEsserPanel(QWidget):
             self.processor.set_deesser_enabled(enabled)
             self.processor.set_deesser_auto_enabled(auto_enabled)
             self.processor.set_deesser_auto_amount(auto_amount)
-            self.processor.set_deesser_low_cut_hz(low_cut_hz)
-            self.processor.set_deesser_high_cut_hz(high_cut_hz)
+            # Expand first so the native setters do not clamp a valid new
+            # interval against the previous narrow range.
+            if high_cut_hz > self.processor.get_deesser_high_cut_hz():
+                self.processor.set_deesser_high_cut_hz(high_cut_hz)
+                self.processor.set_deesser_low_cut_hz(low_cut_hz)
+            else:
+                self.processor.set_deesser_low_cut_hz(low_cut_hz)
+                self.processor.set_deesser_high_cut_hz(high_cut_hz)
             self.processor.set_deesser_threshold_db(threshold_db)
             self.processor.set_deesser_ratio(ratio)
             self.processor.set_deesser_attack_ms(attack_ms)

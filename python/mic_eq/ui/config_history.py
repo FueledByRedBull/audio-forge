@@ -176,6 +176,14 @@ def changed_configuration_paths(
     changed: set[str] = set()
 
     def visit(before: object, after: object, path: str) -> None:
+        if before is None and isinstance(after, Mapping):
+            before = {}
+        if after is None and isinstance(before, Mapping):
+            after = {}
+        if before is None and isinstance(after, list):
+            before = []
+        if after is None and isinstance(before, list):
+            after = []
         if isinstance(before, Mapping) and isinstance(after, Mapping):
             for key in sorted(set(before) | set(after)):
                 child = f"{path}.{key}" if path else str(key)
@@ -207,9 +215,14 @@ def explicit_provenance_after_edit(
     provenance_raw = previous_payload.get("value_provenance", {})
     if not isinstance(provenance_raw, dict):
         raise ValueError("snapshot value_provenance must be an object")
-    provenance = {str(key): str(value) for key, value in provenance_raw.items()}
+    from ..config_parts.presets import _preset_value_paths
+
+    valid_paths = _preset_value_paths(current_payload)
+    provenance = {str(key): str(value) for key, value in provenance_raw.items()
+                  if key in valid_paths}
     for path in changed_configuration_paths(previous_payload, current_payload):
-        provenance[path] = "explicit"
+        if path in valid_paths:
+            provenance[path] = "explicit"
     return provenance
 
 

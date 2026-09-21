@@ -15,7 +15,9 @@ runs locally through a Rust engine and a PyQt interface.
 
 **[Download](#download)** · [First setup](#using-the-app) · [Features](#what-it-does) · [Build from source](#quick-start-from-source) · [Get help](#help-and-contributing)
 
-Current version: `v1.12.1`
+Current version: `v1.13.0` (unreleased) — [planned release notes](release-notes/release-notes-v1.13.0.md).
+
+Latest published release: `v1.12.1`.
 
 ![AudioForge main window showing sanitized input and virtual-route output selection, cleanup controls, and the editable ten-band EQ.](docs/images/audioforge-routing-eq.png)
 
@@ -70,6 +72,47 @@ AudioForge opens with processing stopped; use **Start Processing** to send audio
 **Stop Processing** leaves the app open. Closing the main window or choosing
 **File > Exit** stops audio and quits. AudioForge does not start with Windows.
 
+### In the current source checkout (unreleased)
+
+- Use **Compare Recording** after calibration to hear the same passage as
+  original, current, and proposed processing. Choose headphones or speakers
+  explicitly. Optional level matching affects playback only; actual level
+  changes and peak protection remain visible. Switching stays aligned; Stop
+  ends playback, and the preview destination is saved separately. The preview includes input
+  cleanup, gating, suppression, both EQ stages, and dynamics. Recordings stay
+  in memory until the dialogs close.
+- **Options > Tray & Background** enables close-to-tray and the **Ctrl+Alt+M** global mute
+  shortcut. Both are optional. With close-to-tray enabled, closing the window
+  keeps audio running; **File > Exit** or **Quit AudioForge** in the tray stops it.
+  Relaunching shows the existing window; Details reveals technical health counters.
+- Select **Normal**, **Bypass**, or **Raw** from the processing-mode control.
+  Saved calibration status becomes stale when its route or processing settings change.
+- Calibration establishes an Auto-EQ stage; a separate tone stage
+  preserves it when you change gains, templates, filter types, or slopes.
+  Speech alone cannot identify the microphone's frequency response. Automatic
+  targets preserve the recorded voice and apply bounded tonal preferences;
+  Natural / No Added Tone does not attempt to flatten the voice spectrum.
+  Warm / Full Voice adds broad low-mid body with restrained upper presence;
+  Adaptive keeps it subtle, while Static uses the stronger catalog curve.
+  Older presets retain their combined EQ response as the tone stage.
+  Tone edits preserve matching microphone evidence; changed output settings
+  make previous output verification stale.
+- `Ctrl+S` updates your current saved preset; `Ctrl+Shift+S` saves a copy. Quit
+  and preset replacement offer Save, Discard, or Cancel for unsaved sound changes.
+- Auto Voice Setup tests gate and suppression choices across available RNNoise
+  and DeepFilterNet models with the proposed dynamics, within a 35 ms suppressor-latency bound.
+  DeepFilter settings stay within the DeepFilter family because automatic
+  switches back to RNNoise failed clean-speech preservation checks.
+  It keeps the current choices unless a candidate passes safety and speech
+  preservation checks and improves on a separate part of the capture.
+  Runtime is a pass/fail performance limit, so CPU timing differences do not
+  rank otherwise viable sound settings.
+  Final candidate and second-take checks render the combined cleanup, gate,
+  suppression, EQ, and dynamics settings; adjustments are checked again before
+  keeping the result.
+  Analysis reports the current stage and candidate progress; compression candidates
+  run in small parallel batches while retaining the same quality and safety checks.
+
 ## What It Does
 
 | Your goal | Tools in AudioForge |
@@ -107,10 +150,10 @@ User-facing tools:
   click-safe bypass, selectable 12–48 dB/octave Butterworth pass slopes, and
   constrained mouse/keyboard graph editing synchronized with numeric controls.
 - Auto-EQ calibration that combines energy and Silero speech posteriors, rejects shape outliers, uses matched noise-referenced per-band reliability when available, and abstains when a safe correction is unsupported.
-- Auto-EQ headroom validation through the native chain simulator; Python-only fallback results are visibly advisory.
-- Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, bounded multi-parameter native compressor calibration (threshold, ratio, attack, release), and guided second-passage verification.
+- Auto-EQ headroom validation through the native chain simulator; legacy Python-only estimates are advisory. Typed EQ and full-chain previews require native DSP rather than approximating unsupported filters or stages.
+- Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, and bounded native compressor calibration. EQ is fitted before compressor calibration; the compressor search includes the requested auto makeup and the final native full-chain headroom check. A target that cannot leave safe headroom remains advisory, so lower Target loudness and rerun instead of applying it. Natural / No Added Tone remains neutral.
 - Dynamic-EQ de-esser, compressor with speech-aware auto makeup gain driven by calibrated VAD and noise-floor evidence, and lookahead limiter.
-- Band-limited 4x true-peak detection and limiting, validated against an independent offline reference.
+- Band-limited 16x true-peak detection and limiting with independent offline burst and speech checks. Final peak protection uses 320 samples of lookahead when enabled (6.67 ms at 48 kHz), in addition to the other processing and device delays.
 - Stateful phase-safe mono alignment and adaptive 49-61 Hz hum/harmonic tracking for difficult input sources.
 - Per device-pair route-aware latency calibration profiles; measured output-to-input route delay is applied directly instead of assuming symmetric one-way latency.
 - Raw monitor and bypass paths for troubleshooting.
@@ -136,12 +179,16 @@ Useful behavior to know:
 
 - Device refresh keeps the current selection when the same device is still available.
 - Input/output stream setup prefers 48 kHz configs when available.
-- In VAD modes, auto threshold is the default path; the UI shows live noise floor and effective threshold.
+- VAD Assisted uses the tracked noise floor when auto threshold is enabled. VAD Only opens from speech confidence; its displayed noise floor is not the opening threshold.
 - Phase-safe mono retains fractional-delay history across input callbacks instead of re-estimating from isolated blocks.
 - Adaptive cleanup tracks off-nominal mains hum and its harmonic with fractional frequency/phase continuity, and selects one high-pass response instead of cascading filters.
-- Auto-EQ and Auto Voice Setup use native Silero posteriors when available and report an explicit energy-analysis fallback when they are not.
+- Auto-EQ and Auto Voice Setup analyze 48 kHz captures, use native Silero posteriors when available, and report an explicit energy-analysis fallback when they are not.
 - Auto Voice Setup rejects unusable room tone, restricts boosts for questionable references, and reports device/time/channel mismatch or recapture guidance.
-- Voice Setup candidates remain temporary until a second passage checks repeatability through EQ, de-essing, compression, and the selected limiter settings. Gate, noise suppression, input cleanup, and live loudness adaptation are outside this offline check; confirm the result in your destination app.
+- Auto Voice Setup keeps a candidate advisory when the requested target loudness cannot leave the native chain's required headroom; choose a lower (more negative) LUFS target and rerun the capture before applying it.
+- Voice Setup candidates remain temporary until a second passage checks repeatability through input cleanup, gate, noise suppression, EQ, de-essing, compression, and the selected limiter settings. Recorded verification cannot reproduce live device dropouts or worker scheduling delays; confirm the result in your destination app.
+- Verification reuses a valid second passage when adjusting processing. Only recording problems request another take; unsuccessful bounded adjustments restore your previous settings with the specific reason.
+- A realtime VAD queue overflow drops the whole affected analysis block and marks a discontinuity so the worker clears queued context and resets its recurrent state before publishing new probabilities.
+- VAD clears recurrent history after sustained near-full-scale audio and at speech endings identified by both low confidence and a sustained level drop. This helps normal speech recover after clipped loud passages, including quieter recordings of clipping. Audio buffering and source timing are preserved.
 - Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
 - Diagnostics separate input drops, backlog recovery, output recovery, output short-write loss, and active output underrun streaks. Historical output underrun and recovery totals stay visible without forcing the health chip into a warning state after the stream has recovered.
 - `Help > Export Diagnostics...` writes a versioned, size-bounded support
@@ -155,9 +202,9 @@ Useful behavior to know:
 ## Status
 
 AudioForge's compatibility targets are Windows 10 (1809 or later) and Windows
-11 x64. The final v1.12.0 portable EXE and MSI passed hosted software and package
-validation. Earlier candidate hardware tests passed on Windows 11 with USB and
-virtual routes at 48 kHz, including 30-minute runs and model switching. Those
+11 x64. Release-specific software and package validation results are recorded
+in each release's evidence archive. Earlier candidate hardware tests passed on
+Windows 11 with USB and virtual routes at 48 kHz, including 30-minute runs and model switching. Those
 measurements do not qualify the final binary, which has not repeated the full
 hardware run. Windows 10, analog input, 44.1 kHz, and physical device lifecycle
 cases remain unqualified. See the [release workflow](RELEASING.md#automated-workflow)
@@ -168,7 +215,8 @@ DeepFilterNet support is intentionally opt-in for source runs. Packaged builds r
 DeepFilter model/DLL initialization and Silero VAD inference are prepared off the realtime DSP loop; the audio path only swaps ready suppressor state and consumes cached VAD probabilities.
 
 Objective DSP decisions and release evidence are indexed in
-[`evaluation/README.md`](evaluation/README.md). Tracked reports contain compact
+[`evaluation/README.md`](evaluation/README.md), including historical provenance
+limits. New reports contain compact
 aggregates, gates, hashes, decisions, and limitations; raw per-case details are
 optional ignored outputs, not repository content.
 
@@ -209,6 +257,8 @@ These requirements are for **building from source**, not running the download.
 - CPython 3.13.15 x64
 - Rust 1.94.0, selected by `rust-toolchain.toml`
 - `maturin`
+- GitHub CLI (`gh`) configured for release downloads, and 7-Zip (`7z` on PATH
+  or installed in `C:/Program Files/7-Zip`), for runtime asset hydration.
 - A virtual environment in `.venv` is assumed by the packaging script.
 
 ## Quick Start From Source
@@ -343,11 +393,13 @@ release qualification gates as the portable archive.
 
 ## Create Release Archive
 
-The portable folder is intended to be archived as a single distributable:
+The portable folder is intended to be archived as a single distributable.
+For the planned 1.13.0 release, validate package metadata and rebuild
+the portable folder before using this archive name:
 
 ```powershell
 & "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.12.1-win64-ultra.7z .\dist\AudioForge\*
+  .\AudioForge-v1.13.0-win64-ultra.7z .\dist\AudioForge\*
 ```
 
 The v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz, tar.zst,

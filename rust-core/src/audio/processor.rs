@@ -8,6 +8,7 @@
 #![allow(clippy::useless_conversion)] // PyO3 proc-macro wrappers trigger false positives.
 
 use pyo3::prelude::*;
+use ringbuf::traits::{Consumer, Observer, Producer};
 use rubato::{
     calculate_cutoff, Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType,
     WindowFunction,
@@ -170,12 +171,13 @@ pub struct AudioProcessor {
     suppressor_rt_control: Arc<AtomicSuppressorControlState>,
     suppressor_dirty: Arc<AtomicBool>,
     suppressor_reset_requested: Arc<AtomicBool>,
-    pending_suppressor_tx: Arc<Mutex<Option<ringbuf::HeapProducer<NoiseSuppressionEngine>>>>,
-    retired_suppressor_rx: Arc<Mutex<Option<ringbuf::HeapConsumer<NoiseSuppressionEngine>>>>,
+    pending_suppressor_tx: Arc<Mutex<Option<ringbuf::HeapProd<NoiseSuppressionEngine>>>>,
+    retired_suppressor_rx: Arc<Mutex<Option<ringbuf::HeapCons<NoiseSuppressionEngine>>>>,
     suppressor_strength: Arc<AtomicU32>, // f32 bits stored as u32
     current_model: Arc<AtomicU8>,        // NoiseModel as u8
 
-    /// 10-band parametric EQ
+    /// Independent measured microphone correction and user tone EQ stages.
+    correction_eq: Arc<Mutex<ParametricEQ>>,
     eq: Arc<Mutex<ParametricEQ>>,
     eq_enabled: Arc<AtomicBool>,
     eq_control: Arc<EqControlState>,
@@ -331,6 +333,21 @@ pub struct AudioProcessor {
     #[cfg(feature = "vad")]
     /// Last successful non-realtime VAD inference timestamp.
     vad_last_update_us: Arc<AtomicU64>,
+    #[cfg(feature = "vad")]
+    /// Input-rate source position covered by the last successful VAD result.
+    /// This lets the DSP thread measure audio age independently of worker
+    /// scheduling and publication time.
+    vad_source_sample_end: Arc<AtomicU64>,
+    #[cfg(feature = "vad")]
+    /// Incremented when the bounded VAD queue drops a block. The stateful
+    /// model must restart at the next contiguous source sample.
+    vad_source_discontinuity: Arc<AtomicU64>,
+    #[cfg(feature = "vad")]
+    /// Seqlock for the worker-owned VAD result fields.
+    vad_result_sequence: Arc<AtomicU64>,
+    #[cfg(feature = "vad")]
+    /// Source discontinuity generation bound to the published result.
+    vad_result_generation: Arc<AtomicU64>,
 
     /// Compressor current release time in milliseconds (for metering)
     compressor_current_release_ms: Arc<AtomicU64>,
@@ -456,6 +473,9 @@ pub struct AudioProcessor {
     output_muted: Arc<AtomicBool>,
     /// Flag indicating recording is active (used to mute output to prevent user from hearing themselves)
     recording_active: Arc<AtomicBool>,
+    /// Whether the raw recording tap should run before adaptive input cleanup.
+    /// The default calibration tap remains after the fixed pre-filter.
+    raw_recording_before_cleanup: Arc<AtomicBool>,
     /// Producer for calibration probes rendered by the selected CPAL output stream.
     output_probe_producer: Arc<Mutex<Option<AudioProducer>>>,
     /// Whether the selected output callback should render the queued calibration probe.
@@ -546,6 +566,7 @@ impl AudioProcessor {
             retired_suppressor_rx: Arc::new(Mutex::new(None)),
             suppressor_strength, // Store Arc for PyO3 bindings
             current_model: Arc::new(AtomicU8::new(NoiseModel::RNNoise as u8)),
+            correction_eq: Arc::new(Mutex::new(ParametricEQ::new(sample_rate as f64))),
             eq: Arc::new(Mutex::new(ParametricEQ::new(sample_rate as f64))),
             eq_enabled: Arc::new(AtomicBool::new(true)),
             eq_control: Arc::new(EqControlState::new()),
@@ -635,6 +656,14 @@ impl AudioProcessor {
             vad_worker_running: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "vad")]
             vad_last_update_us: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "vad")]
+            vad_source_sample_end: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "vad")]
+            vad_source_discontinuity: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "vad")]
+            vad_result_sequence: Arc::new(AtomicU64::new(0)),
+            #[cfg(feature = "vad")]
+            vad_result_generation: Arc::new(AtomicU64::new(0)),
             compressor_current_release_ms: Arc::new(AtomicU64::new(
                 COMPRESSOR_DEFAULT_RELEASE_TENTH_MS,
             )),
@@ -702,6 +731,7 @@ impl AudioProcessor {
             recording_level_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             output_muted: Arc::new(AtomicBool::new(false)),
             recording_active: Arc::new(AtomicBool::new(false)),
+            raw_recording_before_cleanup: Arc::new(AtomicBool::new(false)),
             output_probe_producer: Arc::new(Mutex::new(None)),
             output_probe_active: Arc::new(AtomicBool::new(false)),
             output_probe_complete: Arc::new(AtomicBool::new(true)),

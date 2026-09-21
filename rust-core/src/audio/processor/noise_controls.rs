@@ -77,7 +77,7 @@ impl AudioProcessor {
         if self.running.load(Ordering::Acquire) {
             let queued = if let Ok(mut tx_guard) = self.pending_suppressor_tx.lock() {
                 if let Some(tx) = tx_guard.as_mut() {
-                    tx.push(new_engine).is_ok()
+                    tx.try_push(new_engine).is_ok()
                 } else {
                     false
                 }
@@ -127,7 +127,7 @@ impl AudioProcessor {
             .pending_suppressor_tx
             .lock()
             .ok()
-            .and_then(|mut tx| tx.as_mut().map(|tx| tx.push(engine).is_ok()))
+            .and_then(|mut tx| tx.as_mut().map(|tx| tx.try_push(engine).is_ok()))
             .unwrap_or(false);
         if !queued {
             return false;

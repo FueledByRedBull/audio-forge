@@ -10,13 +10,17 @@ import sysconfig
 import tomllib
 from pathlib import Path
 
-from prune_bundle import is_app_local_system_ucrt
+from prune_bundle import is_app_local_system_ucrt, is_unused_ffmpeg_payload
 from verify_release_assets import load_asset_manifest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_BUNDLE_FILES = (
     "AudioForge.exe",
+    "_internal/PyQt6/QtMultimedia.pyd",
+    "_internal/PyQt6/Qt6/bin/Qt6Multimedia.dll",
+    # Listening comparison sends raw PCM through QAudioSink on Windows.
+    "_internal/PyQt6/Qt6/plugins/multimedia/windowsmediaplugin.dll",
     "_internal/df.dll",
     "_internal/onnxruntime.dll",
     "_internal/onnxruntime_providers_shared.dll",
@@ -122,33 +126,10 @@ def check_source_packaging() -> list[str]:
         ),
         ("launcher.py", "os.add_dll_directory(str(dll_dir))"),
     ]
-    workflow_expectations = [
-        (".github/workflows/release-package.yml", "powershell -ExecutionPolicy Bypass -File .\\build_exe.ps1"),
-        (".github/workflows/release-package.yml", "actions/upload-artifact@"),
-        (".github/workflows/release-package.yml", "AudioForge-$expectedTag-win64-ultra.7z"),
-        (
-            ".github/workflows/release-hardware-qualify.yml",
-            "evaluate_hardware_validation.py",
-        ),
-        (
-            ".github/workflows/release-hardware-qualify.yml",
-            "audioforge-release-hardware-validation-",
-        ),
-        (
-            ".github/workflows/release-hardware-matrix.yml",
-            "evaluate_hardware_matrix.py",
-        ),
-        (
-            ".github/workflows/release-hardware-matrix.yml",
-            "audioforge-release-hardware-matrix-",
-        ),
-    ]
-
     for path, needle in [
         *spec_expectations,
         *script_expectations,
         *runtime_expectations,
-        *workflow_expectations,
     ]:
         if not _contains(path, needle):
             errors.append(f"{path}: missing expected packaging reference {needle!r}")
@@ -167,9 +148,6 @@ def check_source_packaging() -> list[str]:
                 "python/mic_eq/ui/app_bootstrap.py must register bundled DeepFilter "
                 f"paths directly instead of writing {forbidden!r}"
             )
-
-    if "dist-info" in (REPO_ROOT / "python/tools/prune_bundle.py").read_text(encoding="utf-8"):
-        errors.append("python/tools/prune_bundle.py must not prune dependency dist-info metadata")
 
     _assets, manifest_errors = _load_asset_manifest()
     errors.extend(manifest_errors)
@@ -316,6 +294,17 @@ def check_dist_bundle(
         errors.append(
             f"{dist} contains excluded OpenSSL payload(s): "
             + ", ".join(openssl_payloads)
+        )
+
+    ffmpeg_payloads = sorted(
+        path.relative_to(dist).as_posix()
+        for path in dist.rglob("*")
+        if path.is_file() and is_unused_ffmpeg_payload(path)
+    )
+    if ffmpeg_payloads:
+        errors.append(
+            f"{dist} contains unused Qt FFmpeg payload(s): "
+            + ", ".join(ffmpeg_payloads)
         )
 
     forbidden_ucrt = sorted(

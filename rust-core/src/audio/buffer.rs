@@ -3,14 +3,17 @@
 //! Thread-safe circular buffer for passing audio between threads.
 //! Adapted from Spectral Workbench project.
 
-use ringbuf::{HeapConsumer, HeapProducer, HeapRb};
+use ringbuf::{
+    traits::{Consumer, Observer, Producer, Split},
+    HeapCons, HeapProd, HeapRb,
+};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Thread-safe audio ring buffer
 pub struct AudioRingBuffer {
-    producer: HeapProducer<f32>,
-    consumer: HeapConsumer<f32>,
+    producer: HeapProd<f32>,
+    consumer: HeapCons<f32>,
     capacity: usize,
 }
 
@@ -56,7 +59,7 @@ impl AudioRingBuffer {
 
 /// Producer end of audio ring buffer (for writing)
 pub struct AudioProducer {
-    producer: HeapProducer<f32>,
+    producer: HeapProd<f32>,
     capacity: usize,
     dropped_count: Arc<AtomicU64>,
 }
@@ -81,7 +84,7 @@ impl AudioProducer {
 
     /// Get number of free slots
     pub fn free_len(&self) -> usize {
-        self.capacity - self.producer.len()
+        self.producer.vacant_len()
     }
 
     /// Get buffer capacity
@@ -107,7 +110,7 @@ impl AudioProducer {
 
 /// Consumer end of audio ring buffer (for reading)
 pub struct AudioConsumer {
-    consumer: HeapConsumer<f32>,
+    consumer: HeapCons<f32>,
     capacity: usize,
     last_sample: f32, // Track last sample for interpolation during underrun
 }
@@ -130,7 +133,7 @@ impl AudioConsumer {
 
     /// Get number of available samples
     pub fn len(&self) -> usize {
-        self.consumer.len()
+        self.consumer.occupied_len()
     }
 
     /// Check if buffer is empty

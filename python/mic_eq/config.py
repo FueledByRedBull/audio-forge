@@ -30,6 +30,7 @@ from .config_parts.settings import (
     DeEsserSettings,
     EQBandSettings,
     EQSettings,
+    build_eq_candidate_settings,
     EQ_BANDWIDTH_MODES,
     EQ_BAND_COUNT,
     EQ_FILTER_TYPES,
@@ -69,14 +70,9 @@ from .config_parts.validation import (
 )
 
 
-BUILTIN_PRESETS = build_builtin_presets(
-    Preset,
-    GateSettings,
-    EQSettings,
-    RNNoiseSettings,
-)
+BUILTIN_PRESETS = build_builtin_presets()
 
-TARGET_CURVES = build_target_curves(TargetCurve)
+TARGET_CURVES = build_target_curves()
 
 
 __all__ = [
@@ -97,6 +93,7 @@ __all__ = [
     "InputDevicePreference",
     "EQBandSettings",
     "EQSettings",
+    "build_eq_candidate_settings",
     "EQ_BANDWIDTH_MODES",
     "EQ_BAND_COUNT",
     "EQ_FILTER_TYPES",

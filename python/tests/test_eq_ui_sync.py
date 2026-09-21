@@ -55,26 +55,29 @@ def test_ui_synchronization(qapp):
         freq for freq, _gain, _q in auto_eq_bands
     ]
 
-    # Verify UI sliders updated.
+    # Calibration occupies its own stage; editable tone starts flat.
+    correction = panel.get_eq_settings().correction_bands
+    assert correction is not None
+    assert [(band.frequency_hz, band.gain_db, band.q) for band in correction] == auto_eq_bands
     for i, (expected_freq, expected_gain, expected_q) in enumerate(auto_eq_bands):
         slider = panel.band_sliders[i]
         actual_gain = slider.slider.value() / 10.0
         actual_q = slider.q_spinbox.value()
         actual_freq = slider.frequency_spinbox.value()
-        assert abs(actual_gain - expected_gain) <= 0.1
+        assert actual_gain == 0.0
         assert abs(actual_q - expected_q) <= 0.1
         assert abs(actual_freq - expected_freq) <= 0.1
         assert panel.band_freqs_hz[i] == expected_freq
         assert slider.freq_label.text()
 
-    # Verify processor state updated.
+    # Existing getters expose the independently editable tone stage.
     for i in range(10):
         params = processor.get_eq_band_params(i)
         assert params is not None
         freq, gain, q = params
         expected_freq, expected_gain, expected_q = auto_eq_bands[i]
         assert abs(freq - expected_freq) <= 0.1
-        assert abs(gain - expected_gain) <= 0.1
+        assert gain == 0.0
         assert abs(q - expected_q) <= 0.1
 
     # Manual frequency edits should move the active band and marker too.
@@ -86,11 +89,12 @@ def test_ui_synchronization(qapp):
     assert params is not None
     freq, gain, q = params
     assert abs(freq - 2310.0) <= 0.1
-    assert abs(gain - auto_eq_bands[5][1]) <= 0.1
+    assert gain == 0.0
     assert abs(q - auto_eq_bands[5][2]) <= 0.1
     assert abs(panel.band_freqs_hz[5] - 2310.0) <= 0.1
     assert abs(panel.get_settings()["band_freqs"][5] - 2310.0) <= 0.1
     assert abs(panel.curve_widget.band_markers[5] - 2310.0) <= 0.1
+    assert panel.get_eq_settings().correction_bands == correction
 
     _close_panel(panel, processor, qapp)
 

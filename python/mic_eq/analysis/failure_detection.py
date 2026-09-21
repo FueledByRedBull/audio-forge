@@ -121,7 +121,7 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
 
     Args:
         eq_settings: Calculated EQ settings (dict with band_gains)
-        spectrum_db: Smoothed spectrum in dB
+        spectrum_db: Measured spectrum before optional EQ-fitting smoothing, in dB
         freqs: Frequency array in Hz
 
     Returns:
@@ -245,10 +245,15 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
 
     # Build result
     if failures:
-        # Return GENERIC user-facing message (no technical details)
+        reason = (
+            "The proposed processing exceeds safe headroom. "
+            "Try a lower input level or a gentler dynamics profile."
+            if failures == ["headroom risk after downstream simulation"]
+            else "Recording too unclear. Please try again."
+        )
         return ValidationResult(
             passed=False,
-            reason="Recording too unclear. Please try again.",
+            reason=reason,
             details={
                 'peak_count': peak_count,
                 'dynamic_range_db': dynamic_range,

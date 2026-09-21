@@ -13,10 +13,11 @@ from typing import Type
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtGui import QIcon
-from PyQt6.QtWidgets import QApplication, QMainWindow
+from PyQt6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from .. import configure_deepfilter_runtime_paths
 from ..app_logging import configure_app_logging, get_log_file
+from .desktop_integration import SingleInstanceCoordinator, activate_window
 from .theme import application_palette
 
 
@@ -235,15 +236,43 @@ def _run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool) -> int:
     if not app_icon.isNull():
         app.setWindowIcon(app_icon)
 
-    configure_deepfilter_env()
-    configure_vad_env()
+    instance = None
+    if not smoke_test:
+        instance = SingleInstanceCoordinator()
+        instance_status = instance.acquire()
+        if instance_status == SingleInstanceCoordinator.FORWARDED:
+            return 0
+        if instance_status != SingleInstanceCoordinator.ACQUIRED:
+            logging.getLogger(__name__).error(
+                "Could not start the single AudioForge instance: %s",
+                instance.last_error or "unknown error",
+            )
+            QMessageBox.critical(
+                None,
+                "AudioForge Could Not Open",
+                "Another AudioForge session may already be running, but its window "
+                "could not be reached. Check the tray icon or close that session "
+                "before opening AudioForge again.\n\n"
+                + (instance.last_error or "The session lock could not be acquired."),
+            )
+            return 1
+        app.aboutToQuit.connect(instance.close)
 
-    window = window_cls()
-    if not app_icon.isNull():
-        window.setWindowIcon(app_icon)
-    apply_windows_window_icon(window)
-    apply_windows_taskbar_properties(window)
-    window.show()
+    try:
+        configure_deepfilter_env()
+        configure_vad_env()
+        window = window_cls()
+        if not app_icon.isNull():
+            window.setWindowIcon(app_icon)
+        apply_windows_window_icon(window)
+        apply_windows_taskbar_properties(window)
+        window.show()
+        if instance is not None:
+            instance.set_activation_callback(lambda: activate_window(window))
+    except Exception:
+        if instance is not None:
+            instance.close()
+        raise
 
     if smoke_test:
 

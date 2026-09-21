@@ -1,7 +1,7 @@
 """Constrained least-squares optimizer for Auto-EQ."""
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from scipy.optimize import least_squares, minimize
@@ -22,6 +22,7 @@ from .constants import (
     MAX_GAIN_SLOPE_DB_PER_OCTAVE,
     NUM_EQ_BANDS,
     REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD,
+    SAMPLE_RATE,
     SNR_MIN_DB,
     UNKNOWN_EVIDENCE_MAX_BOOST_DB,
     UNKNOWN_EVIDENCE_Q_MAX,
@@ -84,8 +85,15 @@ def _gain_only_residuals(
     center_freqs: list[float],
     fixed_qs: np.ndarray,
     weights: np.ndarray,
+    sample_rate: float = SAMPLE_RATE,
 ) -> np.ndarray:
-    eq_response = _predict_eq_response(dense_freqs, gains, fixed_qs, center_freqs)
+    eq_response = _predict_eq_response(
+        dense_freqs,
+        gains,
+        fixed_qs,
+        center_freqs,
+        sample_rate=sample_rate,
+    )
     error = target_dense_db - (measured_dense_db + eq_response)
     return np.sqrt(weights) * error
 
@@ -132,12 +140,19 @@ def _joint_gain_q_residuals(
     base_centers_hz: np.ndarray,
     weights: np.ndarray,
     q_prior: np.ndarray,
+    sample_rate: float = SAMPLE_RATE,
 ) -> np.ndarray:
     gains = params[:NUM_EQ_BANDS]
     qs = params[NUM_EQ_BANDS : 2 * NUM_EQ_BANDS]
     centers_hz = params[2 * NUM_EQ_BANDS :]
 
-    eq_response = _predict_eq_response(dense_freqs, gains, qs, centers_hz)
+    eq_response = _predict_eq_response(
+        dense_freqs,
+        gains,
+        qs,
+        centers_hz,
+        sample_rate=sample_rate,
+    )
     error = target_dense_db - (measured_dense_db + eq_response)
 
     q_regularization = np.log(qs / q_prior)
@@ -228,6 +243,7 @@ def _constrained_gain_refinement(
     gain_lower: np.ndarray | None = None,
     gain_upper: np.ndarray | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    sample_rate: float = SAMPLE_RATE,
 ) -> tuple[np.ndarray, bool]:
     """Re-optimize gains symmetrically inside the final safety bounds."""
     gains_arr = np.asarray(gains, dtype=float)
@@ -246,7 +262,13 @@ def _constrained_gain_refinement(
     gains_arr = np.clip(gains_arr, lower, upper)
 
     def objective(candidate: np.ndarray) -> float:
-        response = _predict_eq_response(dense_freqs, candidate, qs, centers_hz)
+        response = _predict_eq_response(
+            dense_freqs,
+            candidate,
+            qs,
+            centers_hz,
+            sample_rate=sample_rate,
+        )
         error = target_dense_db - (measured_dense_db + response)
         curvature = _log_frequency_gain_curvature(candidate, centers_hz)
         log_centers = np.log10(np.clip(centers_hz, 1e-6, None))
@@ -420,6 +442,90 @@ def _regularize_correction_residual(
     }
 
 
+def _log_frequency_mean(
+    freqs: np.ndarray,
+    values: np.ndarray,
+    low_hz: float = 100.0,
+    high_hz: float = 8000.0,
+) -> float:
+    """Return a spectrum mean weighted uniformly per octave.
+
+    The FFT grid can change with capture length. Reusing the fixed dense log
+    grid keeps the reference level independent of that input grid density.
+    """
+    freqs_arr = np.asarray(freqs, dtype=float)
+    values_arr = np.asarray(values, dtype=float)
+    if freqs_arr.size == 0:
+        return 0.0
+    dense_freqs = _build_dense_log_grid(freqs_arr)
+    dense_values = np.interp(dense_freqs, freqs_arr, values_arr)
+    voice_mask = (dense_freqs >= low_hz) & (dense_freqs <= high_hz)
+    return float(np.mean(dense_values[voice_mask])) if np.any(voice_mask) else float(np.mean(dense_values))
+
+
+def _build_fit_context(
+    freqs: np.ndarray,
+    measured_db: np.ndarray,
+    target_db: np.ndarray,
+    *,
+    tilt_policy: str = "voice_safe",
+    smoothing_strength: str = "conservative",
+    weights: np.ndarray | None = None,
+    fit_context: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Build the one normalized grid used by fitting and final rescoring."""
+    measured = np.asarray(measured_db, dtype=float)
+    target = np.asarray(target_db, dtype=float)
+    voice_avg = _log_frequency_mean(freqs, measured)
+    measured_normalized = measured - voice_avg
+    policy = str(tilt_policy or "voice_safe").strip().lower()
+    if policy not in {"preserve", "detrend", "voice_safe"}:
+        raise ValueError(f"Unknown spectral tilt policy: {policy}")
+
+    _tilt_component, tilt_slope, tilt_fit_r2 = _spectral_tilt_fit(
+        freqs,
+        measured_normalized,
+    )
+    if policy == "detrend":
+        measured_for_fit, tilt_slope = _remove_spectral_tilt(
+            freqs,
+            measured_normalized,
+        )
+    else:
+        measured_for_fit = measured_normalized
+
+    dense_freqs = _build_dense_log_grid(freqs)
+    measured_dense_db = np.interp(dense_freqs, freqs, measured_for_fit)
+    target_dense_db = np.interp(dense_freqs, freqs, target)
+    if policy == "voice_safe":
+        # A speech recording is not an independent microphone transfer
+        # measurement. Keep its measured shape and apply only the explicitly
+        # requested, bounded tone layer.
+        target_dense_db = measured_dense_db + target_dense_db
+
+    target_residual_dense = target_dense_db - measured_dense_db
+    target_residual_dense, residual_regularization = _regularize_correction_residual(
+        dense_freqs,
+        target_residual_dense,
+        smoothing_strength,
+    )
+    target_dense_db = measured_dense_db + target_residual_dense
+    context: dict[str, object] = {
+        "freqs": dense_freqs,
+        "measured_db": measured_dense_db,
+        "target_db": target_dense_db,
+        "weights": weights,
+        "normalization_level_db": float(voice_avg),
+        "spectral_tilt_policy": policy,
+        "spectral_tilt_slope_db_per_decade": float(tilt_slope),
+        "spectral_tilt_fit_r2": float(tilt_fit_r2),
+        "residual_regularization": residual_regularization,
+    }
+    if fit_context is not None:
+        fit_context.update(context)
+    return context
+
+
 def _overall_confidence(
     band_confidences: np.ndarray,
     gains: np.ndarray,
@@ -451,6 +557,7 @@ def _validate_and_attenuate_solution(
     centers_hz: np.ndarray,
     weights: np.ndarray,
     cancel_check: Callable[[], bool] | None = None,
+    sample_rate: float = SAMPLE_RATE,
 ) -> tuple[np.ndarray, float, float, float, dict[str, object]]:
     before_error = weighted_target_error(
         dense_freqs,
@@ -460,16 +567,27 @@ def _validate_and_attenuate_solution(
         qs,
         centers_hz,
         weights,
+        sample_rate=sample_rate,
     )
     best_gains = gains.copy()
     best_error = float("inf")
     best_scale = 1.0
-    best_metrics = evaluate_eq_quality(centers_hz, best_gains, qs).to_dict()
+    best_metrics = evaluate_eq_quality(
+        centers_hz,
+        best_gains,
+        qs,
+        sample_rate=sample_rate,
+    ).to_dict()
 
     for scale in (1.0, 0.85, 0.70, 0.55, 0.40, 0.25):
         check_analysis_cancelled(cancel_check)
         candidate = gains * scale
-        metrics = evaluate_eq_quality(centers_hz, candidate, qs)
+        metrics = evaluate_eq_quality(
+            centers_hz,
+            candidate,
+            qs,
+            sample_rate=sample_rate,
+        )
         after_error = weighted_target_error(
             dense_freqs,
             measured_dense_db,
@@ -478,13 +596,22 @@ def _validate_and_attenuate_solution(
             qs,
             centers_hz,
             weights,
+            sample_rate=sample_rate,
         )
-        if after_error < best_error and metrics.risk_score < 1.8:
+        if (
+            after_error < best_error
+            and metrics.risk_score < 1.8
+            and metrics.safe_for_auto_eq
+        ):
             best_error = after_error
             best_gains = candidate
             best_scale = scale
             best_metrics = metrics.to_dict()
-        if after_error <= before_error * 0.98 and metrics.risk_score < 1.0:
+        if (
+            after_error <= before_error * 0.98
+            and metrics.risk_score < 1.0
+            and metrics.safe_for_auto_eq
+        ):
             return candidate, before_error, after_error, scale, metrics.to_dict()
 
     if not np.isfinite(best_error) or best_error > before_error:
@@ -494,7 +621,12 @@ def _validate_and_attenuate_solution(
             before_error,
             before_error,
             0.0,
-            evaluate_eq_quality(centers_hz, flat, qs).to_dict(),
+            evaluate_eq_quality(
+                centers_hz,
+                flat,
+                qs,
+                sample_rate=sample_rate,
+            ).to_dict(),
         )
 
     return best_gains, before_error, best_error, best_scale, best_metrics
@@ -521,7 +653,9 @@ def calculate_eq_bands(
     used_spectrum_fallback=False,
     smoothing_strength="conservative",
     tilt_policy="preserve",
+    fit_context: dict[str, object] | None = None,
     cancel_check: Callable[[], bool] | None = None,
+    sample_rate: float = SAMPLE_RATE,
 ):
     """
     Calculate optimal 10-band EQ settings using least-squares optimization.
@@ -533,11 +667,20 @@ def calculate_eq_bands(
         freqs: Frequency array (Hz)
         measured_db: Measured spectrum in dBFS (dB relative to full scale)
         target_db: Target curve in dB (relative adjustments)
+        tilt_policy: 'preserve' for explicit mic-shape correction,
+            'detrend' for the legacy broad-tilt experiment, or 'voice_safe'
+            for the reference-free production tone path.
 
     Returns:
         eq_settings: Dict with 'band_gains' and 'band_qs' (10-element lists)
     """
     check_analysis_cancelled(cancel_check)
+    try:
+        sample_rate = float(sample_rate)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("EQ analysis sample rate must be finite and positive") from exc
+    if not np.isfinite(sample_rate) or sample_rate <= 0.0:
+        raise ValueError("EQ analysis sample rate must be finite and positive")
     freqs = _validated_frequency_series(freqs, label="frequency grid")
     measured_db = _validated_frequency_series(
         measured_db,
@@ -632,56 +775,39 @@ def calculate_eq_bands(
         f"[EQ_CALC] Target curve range: [{target_db.min():.1f}, {target_db.max():.1f}] dB"
     )
 
-    # CRITICAL FIX: Normalize measured spectrum to relative dB
-    # The measured spectrum is in dBFS (always negative for speech)
-    # The target curve is relative adjustments (0 to +4 dB)
-    # We need to normalize the measured spectrum to compare like-to-like
-    #
-    # Approach: Find the average level in the voice range (100-8000 Hz)
-    # and normalize relative to that average
-    voice_range_mask = (freqs >= 100) & (freqs <= 8000)
-    if np.any(voice_range_mask):
-        voice_avg = np.mean(measured_db[voice_range_mask])
-    else:
-        voice_avg = np.mean(measured_db)
+    fit = _build_fit_context(
+        freqs,
+        measured_db,
+        target_db,
+        tilt_policy=tilt_policy,
+        smoothing_strength=smoothing_strength,
+        fit_context=fit_context,
+    )
+    tilt_policy = str(fit["spectral_tilt_policy"])
+    tilt_slope = float(cast(float, fit["spectral_tilt_slope_db_per_decade"]))
+    tilt_fit_r2 = float(cast(float, fit["spectral_tilt_fit_r2"]))
+    dense_freqs = np.asarray(cast(np.ndarray, fit["freqs"]), dtype=float)
+    measured_dense_db = np.asarray(cast(np.ndarray, fit["measured_db"]), dtype=float)
+    target_dense_db = np.asarray(cast(np.ndarray, fit["target_db"]), dtype=float)
 
-    # Normalize: subtract the average to get relative dB
-    measured_db_normalized = measured_db - voice_avg
-
-    debug_log(f"[EQ_CALC] Voice range average: {voice_avg:.1f} dB")
     debug_log(
-        f"[EQ_CALC] Normalized measured range: [{measured_db_normalized.min():.1f}, {measured_db_normalized.max():.1f}] dB"
+        f"[EQ_CALC] Voice range average: "
+        f"{float(cast(float, fit['normalization_level_db'])):.1f} dB"
     )
     debug_log(
-        f"[EQ_CALC] Difference (target - normalized): avg {(target_db - measured_db_normalized).mean():.2f} dB"
+        f"[EQ_CALC] Normalized measured range: [{measured_dense_db.min():.1f}, {measured_dense_db.max():.1f}] dB"
     )
-
-    # Preserve broad microphone/voice tilt unless the caller explicitly opts
-    # into the legacy detrending experiment. Silent detrending can erase the
-    # exact dark/bright response a static target is intended to correct.
-    measured_db = measured_db_normalized
-    tilt_policy = str(tilt_policy or "preserve").strip().lower()
-    if tilt_policy not in {"preserve", "detrend"}:
-        raise ValueError(f"Unknown spectral tilt policy: {tilt_policy}")
-    _tilt_component, tilt_slope, tilt_fit_r2 = _spectral_tilt_fit(freqs, measured_db)
-    if tilt_policy == "detrend":
-        measured_db, tilt_slope = _remove_spectral_tilt(freqs, measured_db)
+    debug_log(
+        f"[EQ_CALC] Difference (target - normalized): avg "
+        f"{(target_dense_db - measured_dense_db).mean():.2f} dB"
+    )
     debug_log(
         f"[EQ_CALC] Spectral tilt: {tilt_slope:.3f} dB/log10(Hz), "
         f"R2={tilt_fit_r2:.3f}, policy={tilt_policy}"
     )
-
-    # Use a dense log-spaced frequency grid for optimization to reduce center-only artifacts.
-    dense_freqs = _build_dense_log_grid(freqs)
-    measured_dense_db = np.interp(dense_freqs, freqs, measured_db)
-    target_dense_db = np.interp(dense_freqs, freqs, target_db)
-    target_residual_dense = target_dense_db - measured_dense_db
-    target_residual_dense, residual_regularization = _regularize_correction_residual(
-        dense_freqs,
-        target_residual_dense,
-        smoothing_strength,
+    residual_regularization = cast(
+        dict[str, float | str], fit["residual_regularization"]
     )
-    target_dense_db = measured_dense_db + target_residual_dense
     repeatability_dense = None
     if spectral_repeatability is not None:
         repeatability_arr = np.asarray(spectral_repeatability, dtype=float)
@@ -827,6 +953,8 @@ def calculate_eq_bands(
             base_centers_hz,
             effective_band_snr_db,
         )
+    if fit_context is not None:
+        fit_context["weights"] = weights.copy()
 
     measured_db_at_centers = np.interp(center_freqs, dense_freqs, measured_dense_db)
     target_db_at_centers = np.interp(center_freqs, dense_freqs, target_dense_db)
@@ -856,6 +984,7 @@ def calculate_eq_bands(
             center_freqs,
             qs_stage1,
             weights,
+            sample_rate,
         ),
         bounds=(dynamic_gain_lower, dynamic_gain_upper),
         method="trf",
@@ -891,6 +1020,7 @@ def calculate_eq_bands(
             base_centers_hz,
             weights,
             q_prior,
+            sample_rate,
         ),
         bounds=(params_lower, params_upper),
         method="trf",
@@ -965,6 +1095,7 @@ def calculate_eq_bands(
         final_gain_lower,
         final_gain_upper,
         cancel_check,
+        sample_rate,
     )
     inactive_mask = np.abs(optimal_gains) < 0.25
     if np.any(inactive_mask):
@@ -986,6 +1117,7 @@ def calculate_eq_bands(
                 inactive_gain_lower,
                 inactive_gain_upper,
                 cancel_check,
+                sample_rate,
             )
         )
         constraint_solver_success = bool(
@@ -1007,6 +1139,7 @@ def calculate_eq_bands(
     validation = _validate_and_attenuate_solution(
         *validation_args,
         cancel_check=cancel_check,
+        sample_rate=sample_rate,
     )
     (
         optimal_gains,
@@ -1053,6 +1186,7 @@ def calculate_eq_bands(
             optimal_centers_hz,
             optimal_gains,
             optimal_qs,
+            sample_rate=sample_rate,
         ).to_dict()
         validation_conf = _validation_confidence(
             before_error,

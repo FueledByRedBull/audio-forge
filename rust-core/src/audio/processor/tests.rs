@@ -53,6 +53,7 @@ mod tests {
             let lookahead_samples = limiter.lookahead_samples() as u64;
             let total = total_reported_latency_us(
                 LatencyComponents {
+                    input_resampler_delay_samples: 0,
                     output_buffer_samples: 0,
                     output_sample_rate: sample_rate,
                     output_resampler_delay_samples: 0,
@@ -112,10 +113,116 @@ mod tests {
         assert!(!processor.is_vad_available());
     }
 
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_publication_rejects_discontinuity_after_final_generation_check() {
+        let sequence = AtomicU64::new(0);
+        let result_generation = AtomicU64::new(0);
+        let probability = AtomicU32::new(0.0_f32.to_bits());
+        let backend_available = AtomicBool::new(false);
+        let last_update_us = AtomicU64::new(0);
+        let source_sample_end = AtomicU64::new(0);
+        let source_discontinuity = AtomicU64::new(0);
+        let result = VadResultAtomics {
+            sequence: &sequence,
+            result_generation: &result_generation,
+            probability: &probability,
+            backend_available: &backend_available,
+            last_update_us: &last_update_us,
+            source_sample_end: &source_sample_end,
+            source_discontinuity: &source_discontinuity,
+        };
+
+        assert!(result.publish_vad_inference_result(0, 0.91, 48_000, 1_000, true));
+        let fresh = result.snapshot().expect("initial VAD result");
+        assert!(fresh.is_fresh(48_480, 1_010, 48_000));
+
+        source_discontinuity.fetch_add(1, Ordering::Release);
+        assert!(!result.publish_vad_inference_result(0, 0.33, 48_500, 1_015, true));
+        assert!(result.snapshot().is_none());
+        result.invalidate(true);
+        assert!(result.snapshot().is_some());
+
+        VAD_WORKER_FORCE_DISCONTINUITY_AFTER_FINAL_CHECK.with(|flag| flag.set(true));
+        assert!(result.publish_vad_inference_result(1, 0.12, 49_000, 1_020, true));
+        assert!(
+            result.snapshot().is_none(),
+            "a fresh source-age result must be rejected after its generation changes"
+        );
+
+        result.invalidate(true);
+        let reset = result.snapshot().expect("reset backend state");
+        assert!(reset.backend_available);
+        assert!(!reset.is_fresh(49_000, 1_020, 48_000));
+        VAD_WORKER_FORCE_DISCONTINUITY_AFTER_FINAL_CHECK.with(|flag| flag.set(false));
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    #[ignore = "requires the local speech corpus and Silero model"]
+    fn test_full_chain_vad_pre_gain_changes_gate_decision_on_cleaned_input() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../models/vad_eval_silero_test.wav");
+        let wav = std::fs::read(fixture).expect("local speech fixture is required");
+        let start_frame = 17 * 16_000;
+        let frame_count = 16_000;
+        let start = 44 + start_frame * 2;
+        let end = start + frame_count * 2;
+        let mut audio = Vec::with_capacity(frame_count * 3);
+        for sample in wav[start..end].chunks_exact(2) {
+            let sample = f32::from(i16::from_le_bytes([sample[0], sample[1]]))
+                / f32::from(i16::MAX)
+                * 0.03;
+            audio.extend([sample, sample, sample]);
+        }
+
+        Python::initialize();
+        Python::attach(|py| {
+            let settings = |pre_gain: f64| {
+                let settings = PyDict::new(py);
+                settings.set_item("input_cleanup_mode", "off").unwrap();
+                settings.set_item("input_pre_filtered", false).unwrap();
+                settings.set_item("gate_enabled", true).unwrap();
+                settings.set_item("gate_mode", 2_u8).unwrap();
+                settings.set_item("gate_vad_threshold", 0.48_f64).unwrap();
+                settings.set_item("gate_vad_hold_time_ms", 0.0_f64).unwrap();
+                settings.set_item("gate_vad_pre_gain", pre_gain).unwrap();
+                settings
+            };
+
+            let low_settings = settings(1.0);
+            let high_settings = settings(10.0);
+            let low_gain = simulate_input_frontend_with_activity(
+                py,
+                audio.clone(),
+                48_000.0,
+                Some(&low_settings),
+            )
+            .expect("native VAD should process the fixture")
+            .rendered;
+            let high_gain = simulate_input_frontend_with_activity(
+                py,
+                audio,
+                48_000.0,
+                Some(&high_settings),
+            )
+            .expect("native VAD should process the fixture")
+            .rendered;
+
+            let low_energy = low_gain.iter().map(|sample| sample.abs()).sum::<f32>();
+            let high_energy = high_gain.iter().map(|sample| sample.abs()).sum::<f32>();
+            assert!(
+                high_energy > low_energy * 1.5,
+                "VAD pre-gain did not change the cleaned-input gate decision: low={low_energy:.3}, high={high_energy:.3}"
+            );
+        });
+    }
+
     #[test]
     fn test_total_reported_latency_respects_output_vs_processing_rates() {
         let total = total_reported_latency_us(
             LatencyComponents {
+                input_resampler_delay_samples: 96,
                 output_buffer_samples: 882,
                 output_sample_rate: 44_100,
                 output_resampler_delay_samples: 64,
@@ -130,6 +237,7 @@ mod tests {
         assert_eq!(
             total,
             20_000
+                + 2_000
                 + samples_to_micros(64, 44_100)
                 + 10_000
                 + 2_000
@@ -142,6 +250,7 @@ mod tests {
     fn test_total_reported_latency_omits_both_limiter_delays_when_disabled() {
         let total = total_reported_latency_us(
             LatencyComponents {
+                input_resampler_delay_samples: 0,
                 output_buffer_samples: 0,
                 output_sample_rate: 48_000,
                 output_resampler_delay_samples: 0,
@@ -401,7 +510,7 @@ mod tests {
         assert!(!processor.restart_requested.load(Ordering::Acquire));
         assert!(processor.suppressor_dirty.load(Ordering::Acquire));
         assert_eq!(
-            rx.pop().expect("rebuilt suppressor").model_type(),
+            rx.try_pop().expect("rebuilt suppressor").model_type(),
             NoiseModel::RNNoise
         );
         assert_eq!(processor.get_stream_restart_count(), 0);
@@ -467,7 +576,7 @@ mod tests {
             NoiseModel::RNNoise,
             Arc::clone(&processor.suppressor_strength),
         );
-        assert!(tx.push(queued_engine).is_ok());
+        assert!(tx.try_push(queued_engine).is_ok());
         *processor.pending_suppressor_tx.lock().unwrap() = Some(tx);
 
         assert!(!processor.set_noise_model(NoiseModel::RNNoise));
@@ -504,6 +613,8 @@ mod tests {
     #[test]
     fn test_vad_worker_restarts_after_exit_and_inference_error() {
         let mut processor = AudioProcessor::new();
+        processor.set_vad_pre_gain(3.5);
+        VAD_WORKER_LAST_PRE_GAIN_BITS.store(0.0_f32.to_bits(), Ordering::Release);
         let finished = std::thread::spawn(|| {});
         let finished_id = finished.thread().id();
         while !finished.is_finished() {
@@ -536,6 +647,11 @@ mod tests {
             .vad_backend_available
             .load(Ordering::Acquire)));
 
+        assert_eq!(producer.write(&[0.1; 4096]), 4096);
+        assert!(wait_until(&|| {
+            f32::from_bits(VAD_WORKER_LAST_PRE_GAIN_BITS.load(Ordering::Acquire)) == 3.5
+        }));
+
         VAD_WORKER_FORCE_INFERENCE_ERROR.store(true, Ordering::Release);
         assert_eq!(producer.write(&[0.1; 4096]), 4096);
         assert!(wait_until(&|| !processor
@@ -545,13 +661,57 @@ mod tests {
             .vad_backend_available
             .load(Ordering::Acquire)));
 
+        processor.set_vad_pre_gain(2.0);
         assert_eq!(producer.write(&[0.1; 4096]), 4096);
-        std::thread::sleep(Duration::from_millis(50));
+        assert!(wait_until(&|| {
+            f32::from_bits(VAD_WORKER_LAST_PRE_GAIN_BITS.load(Ordering::Acquire)) == 2.0
+        }));
         assert!(processor
             .vad_worker_thread
             .as_ref()
             .is_some_and(|worker| !worker.is_finished()));
         assert!(processor.vad_backend_available.load(Ordering::Acquire));
+
+        let model_inits = VAD_WORKER_MODEL_INITS.load(Ordering::Acquire);
+        let reset_count = VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire);
+        processor
+            .vad_source_discontinuity
+            .fetch_add(1, Ordering::Release);
+        assert!(wait_until(&|| {
+            VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire) > reset_count
+        }));
+        assert_eq!(producer.write(&[0.1; 4096]), 4096);
+        assert!(wait_until(&|| processor
+            .vad_backend_available
+            .load(Ordering::Acquire)));
+        assert_eq!(VAD_WORKER_MODEL_INITS.load(Ordering::Acquire), model_inits);
+
+        // Hold the worker in its existing error backoff, fill the queue, then
+        // publish a gap. The worker must flush the accepted queue before it
+        // resets the recurrent state.
+        VAD_WORKER_FORCE_INFERENCE_ERROR.store(true, Ordering::Release);
+        assert_eq!(producer.write(&[0.1; 4096]), 4096);
+        assert!(wait_until(&|| !processor
+            .vad_backend_available
+            .load(Ordering::Acquire)));
+        let reset_count = VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire);
+        let flushed_count = VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES.load(Ordering::Acquire);
+        assert_eq!(
+            producer.write(&[0.2; VAD_WORKER_MAX_BUFFER_SAMPLES]),
+            VAD_WORKER_MAX_BUFFER_SAMPLES
+        );
+        processor
+            .vad_source_discontinuity
+            .fetch_add(1, Ordering::Release);
+        assert!(wait_until(&|| {
+            VAD_WORKER_DISCONTINUITY_RESETS.load(Ordering::Acquire) > reset_count
+        }));
+        assert!(wait_until(&|| processor
+            .vad_backend_available
+            .load(Ordering::Acquire)));
+        assert!(VAD_WORKER_DISCONTINUITY_FLUSHED_SAMPLES.load(Ordering::Acquire)
+            >= flushed_count + VAD_WORKER_MAX_BUFFER_SAMPLES as u64);
+
         processor.stop_vad_worker();
     }
 
@@ -599,6 +759,29 @@ mod tests {
     }
 
     #[test]
+    fn test_raw_recording_before_cleanup_is_opt_in_and_cleared_on_stop() {
+        let mut processor = AudioProcessor::new();
+        install_raw_recording_consumer(&processor);
+
+        processor
+            .start_raw_recording_with_tap(0.01, true)
+            .unwrap();
+        assert!(processor
+            .raw_recording_before_cleanup
+            .load(Ordering::Acquire));
+
+        processor.stop_raw_recording();
+        assert!(!processor
+            .raw_recording_before_cleanup
+            .load(Ordering::Acquire));
+
+        processor.start_raw_recording(0.01).unwrap();
+        assert!(!processor
+            .raw_recording_before_cleanup
+            .load(Ordering::Acquire));
+    }
+
+    #[test]
     fn test_raw_monitor_path_selection_and_clean_write_mode() {
         let raw = select_processing_path(true, false);
         let bypass = select_processing_path(false, true);
@@ -611,6 +794,47 @@ mod tests {
         assert!(uses_clean_write_path(raw));
         assert!(!uses_clean_write_path(bypass));
         assert!(!uses_clean_write_path(full));
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_full_path_transitions_publish_vad_discontinuity() {
+        let discontinuity = AtomicU64::new(0);
+
+        publish_vad_processing_path_discontinuity(
+            ProcessingPath::Full,
+            ProcessingPath::Bypass,
+            &discontinuity,
+        );
+        assert_eq!(discontinuity.load(Ordering::Acquire), 1);
+
+        publish_vad_processing_path_discontinuity(
+            ProcessingPath::Bypass,
+            ProcessingPath::Full,
+            &discontinuity,
+        );
+        assert_eq!(discontinuity.load(Ordering::Acquire), 2);
+
+        // Raw↔Bypass never feeds the VAD and therefore does not need a
+        // recurrent-state boundary of its own.
+        publish_vad_processing_path_discontinuity(
+            ProcessingPath::RawMonitor,
+            ProcessingPath::Bypass,
+            &discontinuity,
+        );
+        publish_vad_processing_path_discontinuity(
+            ProcessingPath::Bypass,
+            ProcessingPath::RawMonitor,
+            &discontinuity,
+        );
+        assert_eq!(discontinuity.load(Ordering::Acquire), 2);
+
+        publish_vad_processing_path_discontinuity(
+            ProcessingPath::RawMonitor,
+            ProcessingPath::Full,
+            &discontinuity,
+        );
+        assert_eq!(discontinuity.load(Ordering::Acquire), 3);
     }
 
     #[test]
@@ -1772,11 +1996,11 @@ mod tests {
 
     #[test]
     fn test_output_writer_still_applies_limiter_ceiling_clamp() {
-        let rb = AudioRingBuffer::new(64);
+        let rb = AudioRingBuffer::new(2048);
         let (mut producer, mut consumer) = rb.split();
-        let mut control_scratch = FixedAudioBuffer::<f32, 32>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 32>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 32>::new();
+        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
         let mut drift_error_ema = 0.0_f32;
         let mut drift_retimer = DriftRetimer::default();
         let fade_remaining = Cell::new(0usize);
@@ -1820,8 +2044,8 @@ mod tests {
         };
 
         assert!(writer.write_chunk(&[2.0, -2.0, 0.5, 0.0, 0.0, 0.0, 0.0], true));
-        assert!(writer.write_chunk(&[0.0; 24], true));
-        let mut limited = [0.0_f32; 31];
+        assert!(writer.write_chunk(&[0.0; 1024], true));
+        let mut limited = [0.0_f32; 1031];
         assert_eq!(consumer.read(&mut limited), limited.len());
         assert!(limited.iter().all(|sample| sample.abs() <= 0.5 + 1e-6));
         assert!(limited.iter().any(|sample| sample.abs() > 0.1));
@@ -1829,11 +2053,11 @@ mod tests {
 
     #[test]
     fn test_output_writer_limits_true_peak_without_sample_clip() {
-        let rb = AudioRingBuffer::new(64);
-        let (mut producer, _consumer) = rb.split();
-        let mut control_scratch = FixedAudioBuffer::<f32, 32>::new();
-        let mut fade_scratch = FixedAudioBuffer::<f32, 32>::new();
-        let mut safety_scratch = FixedAudioBuffer::<f32, 32>::new();
+        let rb = AudioRingBuffer::new(2048);
+        let (mut producer, mut consumer) = rb.split();
+        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
         let mut true_peak_detector = TruePeakDetector::new();
         let mut drift_error_ema = 0.0_f32;
         let mut drift_retimer = DriftRetimer::default();
@@ -1891,8 +2115,17 @@ mod tests {
             limits: test_output_writer_limits(4, 8, 4),
         };
 
-        assert!(writer.write_chunk(&[0.0, 1.0, 1.0, 0.0, 0.0], true));
-        assert!(writer.write_chunk(&[0.0; 32], true));
+        // Include the limiter delay and detector tails in the same measured
+        // block; a short all-zero output could otherwise satisfy the peak check.
+        let mut input = [0.0_f32; 1024];
+        input[1] = 1.0;
+        input[2] = 1.0;
+        assert!(writer.write_chunk(&input, true));
+        let mut output = [0.0_f32; 1024];
+        assert_eq!(consumer.read(&mut output), output.len());
+        assert!(output.iter().any(|sample| sample.abs() > 0.1));
+        assert_eq!(output_short_write_dropped_samples.load(Ordering::Relaxed), 0);
+        assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
 
         assert_eq!(output_clip_event_count.load(Ordering::Relaxed), 0);
         assert_eq!(output_true_peak_event_count.load(Ordering::Relaxed), 1);
@@ -2082,6 +2315,67 @@ mod tests {
     }
 
     #[test]
+    fn test_offline_output_safety_matches_live_writer() {
+        let count = AtomicU64::new(0);
+        let state = AtomicU32::new(0);
+        let counters = output_writer_counters(
+            (&count, &count, &count), &count, &count, &state, &state, &count,
+        );
+        for enabled in [false, true] {
+            let mut processor = OfflineDspBlockProcessor::new(48_000.0);
+            processor.set_eq_enabled(false);
+            processor.eq_mut().reset();
+            processor.correction_eq_mut().reset();
+            processor.set_limiter_enabled(enabled);
+            processor.set_normal_limiter_enabled(false);
+            processor.limiter_mut().set_ceiling(-1.5);
+            let mut output = FixedAudioBuffer::<f32, 128>::new();
+            let mut safety = FixedAudioBuffer::<f32, 128>::new();
+            let mut detector = TruePeakDetector::new();
+            let mut limiter = TruePeakLimiter::default_settings(48_000.0);
+            let enable_control = AtomicBool::new(enabled);
+            let ceiling = Cell::new(10.0_f32.powf(-1.5 / 20.0));
+            // Cross block boundaries and include the limiter's delayed tail.
+            for value in [0.95, -1.5, 0.3, 0.0, 0.0] {
+                let mut input = [value; 128];
+                let live = OutputWriteContext::<128, 128, 128>::sanitize_and_limit(
+                    &input, &mut safety, &mut detector, &mut limiter,
+                    &enable_control, &ceiling, &counters,
+                );
+                processor.process_block(&mut input, &mut output);
+                assert_eq!(output.as_slice(), live, "enabled={enabled}, value={value}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_offline_bypass_keeps_output_safety_without_normal_limiter() {
+        let sample_rate = TARGET_SAMPLE_RATE as f64;
+        let mut processor = OfflineDspBlockProcessor::new(sample_rate);
+        processor.set_eq_enabled(false);
+        processor.set_deesser_enabled(false);
+        processor.set_compressor_enabled(false);
+        processor.set_limiter_enabled(true);
+        processor.set_normal_limiter_enabled(false);
+        processor.limiter_mut().set_ceiling(-6.0);
+
+        let true_peak_latency = processor.true_peak_limiter_mut().lookahead_samples();
+        assert_eq!(processor.latency_samples(), true_peak_latency);
+
+        let mut input = [0.0_f32; 512];
+        input.fill(1.0);
+        let mut output = FixedAudioBuffer::<f32, 512>::new();
+        let stats = processor.process_block_with_stats(&mut input, &mut output);
+
+        assert_eq!(stats.limiter_peak_gain_reduction_db, 0.0);
+        assert!(stats.true_peak_limiter_gain_reduction_db > 0.0);
+        assert!(output
+            .as_slice()
+            .iter()
+            .all(|sample| sample.is_finite() && sample.abs() <= 1.0));
+    }
+
+    #[test]
     fn test_offline_block_processor_runs_eq_bypass_transition() {
         let sample_rate = TARGET_SAMPLE_RATE as f64;
         let mut processor = OfflineDspBlockProcessor::new(sample_rate);
@@ -2229,6 +2523,7 @@ mod tests {
         processor.compressor_mut().set_adaptive_release(true);
         processor.limiter_mut().set_ceiling(-6.0);
         processor.limiter_mut().set_release_time(55.0);
+        assert_eq!(processor.latency_samples(), 344);
 
         let mut noise_state = 0x6a09_e667_f3bc_c909_u64;
         let mut output = FixedAudioBuffer::<f32, 960>::new();
@@ -2291,14 +2586,17 @@ mod tests {
         }
 
         let rms = (square_sum / sample_count as f64).sqrt();
-        assert!((rms - 0.186_422_464_189).abs() <= 1.0e-6);
-        assert!((peak - 0.500_788_75).abs() <= 2.0e-6);
-        assert!((weighted_sum - 8_034.768_291_836).abs() <= 0.05);
+        assert!(
+            (rms - 0.185_686_033_818).abs() <= 1.0e-6,
+            "rms={rms:.12} peak={peak:.9} weighted={weighted_sum:.12} compressor={max_compressor_gr:.9} deesser={max_deesser_gr:.9} limiter={max_limiter_gr:.9} events={limited_events} checkpoints={checkpoints:?}"
+        );
+        assert!((peak - 0.500_301_66).abs() <= 2.0e-6);
+        assert!((weighted_sum - 2_566.455_958_423).abs() <= 0.05);
         assert!((max_compressor_gr - 8.746_429).abs() <= 0.001);
         assert!((max_deesser_gr - 10.0).abs() <= 0.001);
         assert!((max_limiter_gr - 4.348_602).abs() <= 0.001);
-        assert!((20..=24).contains(&limited_events));
-        let expected = [-0.123_054_266, 0.113_739_1, 0.093_510_956, 0.024_921_212];
+        assert!((25..=29).contains(&limited_events));
+        let expected = [-0.032_192_655, 0.352_205_4, 0.352_831_96, 0.064_956_3];
         assert_eq!(checkpoints.len(), expected.len());
         for (actual, expected) in checkpoints.into_iter().zip(expected) {
             assert!((actual - expected).abs() <= 2.0e-5);
@@ -2484,7 +2782,7 @@ mod tests {
         assert!(!config.enabled);
 
         let snapshot = processor.eq_control.snapshot().expect("stable EQ state");
-        assert_eq!(snapshot.bands[4], config);
+        assert_eq!(snapshot.tone_bands[4], config);
     }
 
     #[test]
@@ -2549,6 +2847,63 @@ mod tests {
         for (index, expected) in configs.into_iter().enumerate() {
             assert_eq!(processor.get_eq_band_config(index), Some(expected));
         }
+    }
+
+    #[test]
+    fn test_tone_batch_updates_preserve_measured_correction_layer() {
+        let processor = AudioProcessor::new();
+        let mut correction: [EqBandConfig; NUM_BANDS] =
+            std::array::from_fn(EqBandConfig::default_for_index);
+        correction[1].gain_db = 4.5;
+        correction[1].frequency_hz = 850.0;
+        let tone: [EqBandConfig; NUM_BANDS] =
+            std::array::from_fn(EqBandConfig::default_for_index);
+
+        processor
+            .apply_eq_layers(correction.to_vec(), tone.to_vec())
+            .unwrap();
+
+        let mut updated_tone = tone;
+        updated_tone[6].gain_db = -3.0;
+        updated_tone[6].q = 1.7;
+        processor
+            .apply_eq_settings_v2(updated_tone.to_vec())
+            .unwrap();
+
+        let snapshot = processor.eq_control.snapshot().expect("stable EQ state");
+        assert_eq!(snapshot.correction_bands, correction);
+        assert_eq!(snapshot.tone_bands, updated_tone);
+    }
+
+    #[test]
+    fn test_invalid_eq_layer_update_leaves_both_layers_unchanged() {
+        let processor = AudioProcessor::new();
+        let mut correction: [EqBandConfig; NUM_BANDS] =
+            std::array::from_fn(EqBandConfig::default_for_index);
+        correction[0].gain_db = 3.0;
+        let mut tone: [EqBandConfig; NUM_BANDS] =
+            std::array::from_fn(EqBandConfig::default_for_index);
+        tone[4].gain_db = -2.0;
+        processor
+            .apply_eq_layers(correction.to_vec(), tone.to_vec())
+            .unwrap();
+        let before = processor.eq_control.snapshot().expect("stable EQ state");
+
+        let mut invalid_tone = tone;
+        invalid_tone[4].q = 11.0;
+        assert!(processor
+            .apply_eq_layers(correction.to_vec(), invalid_tone.to_vec())
+            .is_err());
+
+        let mut invalid_correction = correction;
+        invalid_correction[0].frequency_hz = 1.0;
+        assert!(processor
+            .apply_eq_layers(invalid_correction.to_vec(), tone.to_vec())
+            .is_err());
+
+        let after = processor.eq_control.snapshot().expect("stable EQ state");
+        assert_eq!(after.correction_bands, before.correction_bands);
+        assert_eq!(after.tone_bands, before.tone_bands);
     }
 
     #[test]
@@ -2884,10 +3239,50 @@ mod tests {
         let source = include_str!("dsp_loop.rs");
         let region = marked_region(source, "dsp_processing_loop");
 
-        assert!(region.contains("let written = vad_worker_producer.write(buffer);"));
+        assert!(region.contains("Self::enqueue_vad_block"));
         assert!(region.contains("if written < buffer.len()"));
         assert!(region.contains("store_rt_error("));
         assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_vad_enqueue_overflow_drops_whole_block_and_recovers() {
+        let block = vec![0.2_f32; 1024];
+        let rb = AudioRingBuffer::new(VAD_WORKER_MAX_BUFFER_SAMPLES);
+        let (mut producer, mut consumer) = rb.split();
+        let fill = vec![0.1_f32; VAD_WORKER_MAX_BUFFER_SAMPLES - block.len() + 1];
+        assert_eq!(producer.write(&fill), fill.len());
+
+        let queue_len_before = consumer.len();
+        let mut source_clock = 123_u64;
+        let discontinuities = AtomicU64::new(0);
+        assert_eq!(
+            AudioProcessor::enqueue_vad_block(
+                &mut producer,
+                &block,
+                &mut source_clock,
+                &discontinuities,
+            ),
+            0
+        );
+        assert_eq!(consumer.len(), queue_len_before);
+        assert_eq!(source_clock, 123);
+        assert_eq!(discontinuities.load(Ordering::Acquire), 1);
+
+        let mut drained = vec![0.0_f32; queue_len_before];
+        assert_eq!(consumer.read(&mut drained), queue_len_before);
+        assert_eq!(
+            AudioProcessor::enqueue_vad_block(
+                &mut producer,
+                &block,
+                &mut source_clock,
+                &discontinuities,
+            ),
+            block.len()
+        );
+        assert_eq!(source_clock, 123 + block.len() as u64);
+        assert_eq!(consumer.len(), block.len());
     }
 
     #[test]

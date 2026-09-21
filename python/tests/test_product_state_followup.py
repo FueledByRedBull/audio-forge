@@ -98,6 +98,7 @@ def test_start_applies_persisted_mute_before_and_after_native_start(
 
     processor = Processor()
     cast(Any, window).processor = processor
+    window.output_combo.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
     window.user_muted = True
     window._temporary_mute_reasons = set()
     window._apply_input_preferences_for_current_route = lambda: None
@@ -115,6 +116,20 @@ def test_start_applies_persisted_mute_before_and_after_native_start(
         window.close()
         window.deleteLater()
         qapp.processEvents()
+
+
+def test_start_refuses_retained_configuration_mute() -> None:
+    owner = cast(Any, MainWindow.__new__(MainWindow))
+    owner.processor = SimpleNamespace(is_running=lambda: False, start=Mock())
+    owner._temporary_mute_reasons = {"configuration"}
+    owner.status_bar = Mock()
+    owner._sync_processing_controls = Mock()
+
+    MainWindow._start_processing(owner)
+
+    owner.processor.start.assert_not_called()
+    owner._sync_processing_controls.assert_called_once_with()
+    assert "reload the preset" in owner.status_bar.showMessage.call_args.args[0]
 
 
 def test_legacy_input_modes_migrate_only_to_the_known_stable_device() -> None:
@@ -472,7 +487,10 @@ def test_failed_mute_application_stays_pending() -> None:
 def test_eq_only_scope_preserves_the_rest_of_the_processing_chain() -> None:
     owner = cast(Any, MainWindow.__new__(MainWindow))
     applied_eq: dict[str, object] = {}
-    owner.eq_panel = SimpleNamespace(set_settings=applied_eq.update)
+    owner.eq_panel = SimpleNamespace(
+        enabled_checkbox=SimpleNamespace(setChecked=lambda value: applied_eq.update(enabled=value)),
+        _apply_typed_bands=lambda bands, **kwargs: applied_eq.update(bands=bands, **kwargs),
+    )
     owner.status_bar = SimpleNamespace(showMessage=lambda *args: None)
     owner._history_ready = False
     owner._history_replaying = False
@@ -496,7 +514,7 @@ def test_eq_only_scope_preserves_the_rest_of_the_processing_chain() -> None:
     MainWindow._apply_preset(owner, replacement, scope="eq")
 
     assert owner.gate_panel.get_settings() == before
-    assert applied_eq == replacement.eq.to_dict()
+    assert applied_eq == {"enabled": False, "bands": replacement.eq.bands, "layer": "tone"}
     assert owner.preset_modified is True
 
 

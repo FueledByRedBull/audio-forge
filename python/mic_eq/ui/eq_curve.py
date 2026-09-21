@@ -56,6 +56,7 @@ class EQCurveWidget(QWidget):
             for band in EQSettings().bands
         ]
         self.band_markers = []
+        self.correction_bands = []
         self.interaction_warnings = []
         self._selected_band_index: int | None = None
         self._drag_band_index: int | None = None
@@ -325,17 +326,22 @@ class EQCurveWidget(QWidget):
     def _update_response(self):
         """Calculate combined frequency response for all bands."""
         self.response_db = self._native_response(self.bands)
-        freqs = [band[1] for band in self.bands]
-        gains = [
-            band[2]
-            if band[0] in {"bell", "low_shelf", "high_shelf"} and band[5]
-            else 0.0
-            for band in self.bands
-        ]
-        qs = [band[3] for band in self.bands]
-        warnings = list(
-            evaluate_eq_quality(freqs, gains, qs, self.sample_rate).warnings
-        )
+        if self.correction_bands:
+            correction = self._native_response(self.correction_bands)
+            self.response_db = [tone + measured for tone, measured in zip(self.response_db, correction, strict=True)]
+        warnings = []
+        for stage in (self.bands, self.correction_bands):
+            if not stage:
+                continue
+            freqs = [band[1] for band in stage]
+            gains = [
+                band[2]
+                if band[0] in {"bell", "low_shelf", "high_shelf"} and band[5]
+                else 0.0
+                for band in stage
+            ]
+            qs = [band[3] for band in stage]
+            warnings.extend(evaluate_eq_quality(freqs, gains, qs, self.sample_rate).warnings)
         max_index = max(
             range(len(self.response_db)),
             key=self.response_db.__getitem__,
@@ -356,11 +362,12 @@ class EQCurveWidget(QWidget):
         warnings.sort(key=lambda warning: warning.severity, reverse=True)
         self.interaction_warnings = warnings
 
-    def set_all_params(self, bands):
+    def set_all_params(self, bands, *, correction=()):
         """
         Update all bands at once.
         Accept native v2 tuples or legacy (frequency, gain, Q) tuples.
         """
+        self.correction_bands = list(correction)
         for i, band in enumerate(bands):
             if i < len(self.bands):
                 if len(band) == 3:

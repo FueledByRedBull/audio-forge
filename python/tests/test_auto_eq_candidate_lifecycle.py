@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 from PyQt6.QtWidgets import QMessageBox, QWidget
 
+from mic_eq.config import EQSettings, Preset
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 
 
@@ -87,6 +88,31 @@ class _Owner(QWidget):
         super().__init__()
         self.processor = _ProcessorStub()
         self.eq_panel = _EqPanelStub()
+
+    def _get_current_preset(self) -> Preset:
+        return Preset(eq=EQSettings(enabled=self.eq_panel.enabled))
+
+    def _processing_mode(self) -> str:
+        return "normal"
+
+    def apply_processing_configuration(
+        self,
+        preset: Preset,
+        *,
+        noise_reference_reliability: float | None = None,
+        processing_mode: str | None = None,
+        compressor_metadata: dict[str, object] | None = None,
+    ) -> None:
+        del noise_reference_reliability, processing_mode, compressor_metadata
+        correction = preset.eq.correction_bands or preset.eq.bands
+        if any(band.gain_db for band in correction):
+            self.eq_panel.apply_auto_eq_results(
+                [
+                    (band.frequency_hz, band.gain_db, band.q)
+                    for band in correction
+                ]
+            )
+        self.eq_panel.set_settings({"enabled": preset.eq.enabled})
 
 
 def _candidate(gain: float = 1.0) -> dict:
@@ -186,7 +212,7 @@ def test_failed_native_apply_does_not_enable_eq(qapp, monkeypatch):
         dialog._on_start_clicked()
 
         assert owner.eq_panel.enabled is False
-        assert owner.eq_panel.operations == ["apply"]
+        assert owner.eq_panel.operations == ["apply", "enabled"]
         assert dialog.recording_state == "ready"
     finally:
         if not dialog._close_requested:

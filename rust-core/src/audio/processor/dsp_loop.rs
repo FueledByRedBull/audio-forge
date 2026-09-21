@@ -1,8 +1,47 @@
+#[cfg(feature = "vad")]
+#[inline]
+fn publish_vad_processing_path_discontinuity(
+    previous_path: ProcessingPath,
+    current_path: ProcessingPath,
+    source_discontinuity: &AtomicU64,
+) {
+    if (previous_path == ProcessingPath::Full) != (current_path == ProcessingPath::Full) {
+        source_discontinuity.fetch_add(1, Ordering::Release);
+    }
+}
+
 impl AudioProcessor {
+    #[cfg(feature = "vad")]
+    #[inline]
+    fn enqueue_vad_block(
+        producer: &mut AudioProducer,
+        samples: &[f32],
+        source_sample_clock: &mut u64,
+        source_discontinuity: &AtomicU64,
+    ) -> usize {
+        // A partial write would make the next accepted sample look contiguous
+        // to Silero even though the dropped tail is a source gap. Drop the
+        // whole block and publish the boundary before any later write.
+        let queue_would_overflow = producer.free_len() < samples.len();
+        if queue_would_overflow {
+            source_discontinuity.fetch_add(1, Ordering::Release);
+            return 0;
+        }
+
+        let written = producer.write(samples);
+        *source_sample_clock = source_sample_clock.saturating_add(written as u64);
+        if written < samples.len() {
+            // The free-space check is conservative; preserve the marker if a
+            // short write is reported despite sufficient space.
+            source_discontinuity.fetch_add(1, Ordering::Release);
+        }
+        written
+    }
+
     fn drain_retired_suppressors(&self) {
         if let Ok(mut rx_guard) = self.retired_suppressor_rx.lock() {
             if let Some(rx) = rx_guard.as_mut() {
-                while let Some(_engine) = rx.pop() {}
+                while let Some(_engine) = rx.try_pop() {}
             }
         }
     }
@@ -64,6 +103,8 @@ impl AudioProcessor {
 
         // Clear stale capture state; explicit output mute survives restarts.
         self.recording_active.store(false, Ordering::Release);
+        self.raw_recording_before_cleanup
+            .store(false, Ordering::Release);
         self.raw_recording_pos.store(0, Ordering::Release);
         self.raw_recording_target.store(0, Ordering::Release);
         self.recording_level_db
@@ -341,6 +382,10 @@ impl AudioProcessor {
             .as_ref()
             .map(|resampler| resampler.output_delay() as u64)
             .unwrap_or(0);
+        let input_resampler_delay_samples_for_latency = input_resampler
+            .as_ref()
+            .map(|resampler| resampler.output_delay() as u64)
+            .unwrap_or(0);
         self.input_resampler_active
             .store(input_resampler.is_some(), Ordering::Relaxed);
         self.output_resampler_active
@@ -422,6 +467,14 @@ impl AudioProcessor {
         let vad_backend_available = Arc::clone(&self.vad_backend_available);
         #[cfg(feature = "vad")]
         let vad_last_update_us = Arc::clone(&self.vad_last_update_us);
+        #[cfg(feature = "vad")]
+        let vad_source_sample_end = Arc::clone(&self.vad_source_sample_end);
+        #[cfg(feature = "vad")]
+        let vad_source_discontinuity = Arc::clone(&self.vad_source_discontinuity);
+        #[cfg(feature = "vad")]
+        let vad_result_sequence = Arc::clone(&self.vad_result_sequence);
+        #[cfg(feature = "vad")]
+        let vad_result_generation = Arc::clone(&self.vad_result_generation);
         let compressor_current_release_ms = Arc::clone(&self.compressor_current_release_ms);
         let compressor_current_lufs = Arc::clone(&self.compressor_current_lufs);
         let compressor_current_makeup_gain = Arc::clone(&self.compressor_current_makeup_gain);
@@ -479,6 +532,7 @@ impl AudioProcessor {
         let rt_buffer_overflow_count = Arc::clone(&self.rt_buffer_overflow_count);
         let suppressor_strength = Arc::clone(&self.suppressor_strength);
         let recording_active_thread = Arc::clone(&recording_active);
+        let raw_recording_before_cleanup = Arc::clone(&self.raw_recording_before_cleanup);
 
         // Clone raw recording buffer atomics
         let raw_recording_pos = Arc::clone(&self.raw_recording_pos);
@@ -488,6 +542,16 @@ impl AudioProcessor {
         let (dsp_ready_tx, dsp_ready_rx) = mpsc::channel();
         let handle = std::thread::spawn(move || {
             let mut consumer = input_consumer;
+            #[cfg(feature = "vad")]
+            let vad_result = VadResultAtomics {
+                sequence: vad_result_sequence.as_ref(),
+                result_generation: vad_result_generation.as_ref(),
+                probability: vad_raw_probability.as_ref(),
+                backend_available: vad_backend_available.as_ref(),
+                last_update_us: vad_last_update_us.as_ref(),
+                source_sample_end: vad_source_sample_end.as_ref(),
+                source_discontinuity: vad_source_discontinuity.as_ref(),
+            };
             let mut input_buffer = FixedAudioBuffer::<f32, RT_INPUT_CHUNK_CAPACITY>::new();
             let mut temp_buffer = FixedAudioBuffer::<f32, RT_PROCESS_BUFFER_CAPACITY>::new();
             let mut rnnoise_output = FixedAudioBuffer::<f32, RT_SUPPRESSOR_OUTPUT_CAPACITY>::new();
@@ -521,7 +585,8 @@ impl AudioProcessor {
                     VadAutoGate::without_backend(sample_rate_for_latency, control.vad_threshold);
                 gate_rt.set_vad_auto_gate(Some(vad_auto_gate));
             }
-            let mut eq_rt = ParametricEQ::new(sample_rate_for_latency as f64);
+            let mut correction_eq_rt = ParametricEQ::new(sample_rate_for_latency as f64);
+            let mut tone_eq_rt = ParametricEQ::new(sample_rate_for_latency as f64);
             let mut compressor_rt = Compressor::default_voice(sample_rate_for_latency as f64);
             let mut deesser_rt = DeEsser::new(sample_rate_for_latency as f64);
             let mut limiter_rt = Limiter::default_settings(sample_rate_for_latency as f64);
@@ -555,7 +620,7 @@ impl AudioProcessor {
                 &suppressor_rt,
             );
             let eq_snapshot = eq_control.snapshot().unwrap_or_else(EqControlSnapshot::new);
-            apply_eq_control(&mut eq_rt, &eq_snapshot);
+            apply_eq_control(&mut correction_eq_rt, &mut tone_eq_rt, &eq_snapshot);
             let compressor_snapshot = compressor_rt_control
                 .snapshot()
                 .unwrap_or_else(CompressorControlState::new);
@@ -609,6 +674,8 @@ impl AudioProcessor {
             let mut last_suppressor_output = Instant::now();
             let mut non_finite_window_started_at: Option<Instant> = None;
             let mut non_finite_window_count: u32 = 0;
+            #[cfg(feature = "vad")]
+            let mut vad_source_sample_clock = 0_u64;
 
             // Helper: compute peak and RMS from buffer, update atomics
             let measure_levels = |buffer: &[f32],
@@ -645,7 +712,7 @@ impl AudioProcessor {
                     }
                     if eq_dirty.swap(false, Ordering::AcqRel) {
                         if let Some(eq_snapshot) = eq_control.snapshot() {
-                            apply_eq_control(&mut eq_rt, &eq_snapshot);
+                            apply_eq_control(&mut correction_eq_rt, &mut tone_eq_rt, &eq_snapshot);
                         } else {
                             eq_dirty.store(true, Ordering::Release);
                         }
@@ -685,7 +752,8 @@ impl AudioProcessor {
                         deesser_detector_confidence.store(0.0_f32.to_bits(), Ordering::Relaxed);
                     }
 
-                    eq_rt.process_block_inplace($buffer);
+                    correction_eq_rt.process_block_inplace($buffer);
+                    tone_eq_rt.process_block_inplace($buffer);
 
                     if compressor_enabled.load(Ordering::Acquire) {
                         let true_peak_pressure = f32::from_bits(
@@ -699,34 +767,51 @@ impl AudioProcessor {
                         );
                         #[cfg(feature = "vad")]
                         {
-                            let last_update = vad_last_update_us.load(Ordering::Acquire);
-                            let age_us = if last_update > 0 {
-                                now_micros().saturating_sub(last_update)
-                            } else {
-                                u64::MAX
-                            };
-                            let vad_reliability = if vad_backend_available.load(Ordering::Acquire)
-                                && age_us <= VAD_PROBABILITY_STALE_US
-                            {
-                                let freshness = if age_us <= VAD_PROBABILITY_STALE_US / 2 {
-                                    1.0
-                                } else {
-                                    1.0
-                                        - (age_us - VAD_PROBABILITY_STALE_US / 2) as f64
-                                            / (VAD_PROBABILITY_STALE_US / 2) as f64
-                                };
-                                let t = freshness.clamp(0.0, 1.0);
-                                t * t * (3.0 - 2.0 * t)
-                            } else {
-                                0.0
-                            };
+                            let vad_snapshot = vad_result.snapshot();
+                            let now_us = now_micros();
+                            let (vad_probability, vad_reliability) =
+                                vad_snapshot.map_or((0.0, 0.0), |snapshot| {
+                                    let wall_age_us = if snapshot.last_update_us > 0 {
+                                        now_us.saturating_sub(snapshot.last_update_us)
+                                    } else {
+                                        u64::MAX
+                                    };
+                                    let source_age_us = if snapshot.last_update_us > 0 {
+                                        vad_source_sample_clock
+                                            .saturating_sub(snapshot.source_sample_end)
+                                            .saturating_mul(1_000_000)
+                                            / u64::from(sample_rate_for_latency.max(1))
+                                    } else {
+                                        u64::MAX
+                                    };
+                                    // Source age reflects audio actually waiting
+                                    // behind the worker; wall age remains a
+                                    // watchdog for a stalled callback or worker.
+                                    let age_us = source_age_us.max(wall_age_us);
+                                    let reliability = if snapshot.backend_available
+                                        && age_us <= VAD_PROBABILITY_STALE_US
+                                    {
+                                        let freshness =
+                                            if age_us <= VAD_PROBABILITY_STALE_US / 2 {
+                                                1.0
+                                            } else {
+                                                1.0
+                                                    - (age_us - VAD_PROBABILITY_STALE_US / 2)
+                                                        as f64
+                                                        / (VAD_PROBABILITY_STALE_US / 2) as f64
+                                            };
+                                        let t = freshness.clamp(0.0, 1.0);
+                                        t * t * (3.0 - 2.0 * t)
+                                    } else {
+                                        0.0
+                                    };
+                                    (f64::from(snapshot.probability), reliability)
+                                });
                             let gate_is_enabled = gate_enabled.load(Ordering::Acquire);
                             compressor_rt.process_block_inplace_with_activity_control(
                                 $buffer,
                                 Some(AutoMakeupActivityInput {
-                                    vad_probability: f32::from_bits(
-                                        vad_raw_probability.load(Ordering::Acquire),
-                                    ) as f64,
+                                    vad_probability,
                                     vad_reliability,
                                     noise_floor_db: if gate_is_enabled {
                                         gate_rt.noise_floor() as f64
@@ -1098,6 +1183,14 @@ impl AudioProcessor {
                                 bypass.load(Ordering::SeqCst),
                             );
                             if processing_path != previous_processing_path {
+                                #[cfg(feature = "vad")]
+                                publish_vad_processing_path_discontinuity(
+                                    previous_processing_path,
+                                    processing_path,
+                                    vad_source_discontinuity.as_ref(),
+                                );
+                                #[cfg(feature = "vad")]
+                                vad_available.store(false, Ordering::Release);
                                 pre_filter_state = InputPreFilterState::default();
                                 adaptive_cleanup_state.reset_dynamic_state();
                                 publish_input_cleanup_bypassed(
@@ -1145,7 +1238,8 @@ impl AudioProcessor {
                                 } else {
                                     gate_dirty.store(true, Ordering::Release);
                                 }
-                                eq_rt.reset();
+                                correction_eq_rt.reset();
+                                tone_eq_rt.reset();
                                 compressor_rt.reset();
                                 deesser_rt.reset();
                                 limiter_rt.reset();
@@ -1276,9 +1370,12 @@ impl AudioProcessor {
                                 input_cleanup_mode.load(Ordering::Acquire),
                             )
                             .unwrap_or_default();
+                            let recording_active_now = recording_active.load(Ordering::Relaxed);
+                            let raw_tap_before_cleanup =
+                                raw_recording_before_cleanup.load(Ordering::Relaxed);
                             let adaptive_cleanup_enabled = processing_path == ProcessingPath::Full
                                 && cleanup_mode.is_enabled()
-                                && !recording_active.load(Ordering::Relaxed);
+                                && (!recording_active_now || raw_tap_before_cleanup);
                             adaptive_cleanup_state.set_mode(cleanup_mode);
                             if adaptive_cleanup_enabled {
                                 adaptive_cleanup_state.analyze_input(buffer);
@@ -1290,6 +1387,40 @@ impl AudioProcessor {
                                     input_cleanup_high_pass_hz.as_ref(),
                                 );
                             }
+                            // An explicit pre-cleanup audition captures the
+                            // sanitized microphone samples before either the
+                            // fixed DC/80 Hz pre-filter or adaptive cleanup.
+                            if recording_active_now && raw_tap_before_cleanup {
+                                let target = raw_recording_target.load(Ordering::Acquire);
+                                let pos = raw_recording_pos.load(Ordering::Acquire);
+                                if pos < target {
+                                    let remaining = target - pos;
+                                    let to_copy = n.min(remaining);
+                                    let written = recording_producer.write(&buffer[..to_copy]);
+                                    let new_pos = pos.saturating_add(written);
+                                    raw_recording_pos.store(new_pos, Ordering::Release);
+
+                                    let window_len = (sample_rate_for_latency as usize / 10).max(1);
+                                    let level_start = to_copy.saturating_sub(window_len);
+                                    let level_slice = &buffer[level_start..to_copy];
+                                    let level_rms = if level_slice.is_empty() {
+                                        -120.0
+                                    } else {
+                                        let sum_sq: f32 = level_slice
+                                            .iter()
+                                            .map(|sample| sample * sample)
+                                            .sum();
+                                        let rms = (sum_sq / level_slice.len() as f32).sqrt();
+                                        if rms > 1e-6 {
+                                            20.0 * rms.log10()
+                                        } else {
+                                            -120.0
+                                        }
+                                    };
+                                    recording_level_db
+                                        .store(level_rms.to_bits(), Ordering::Relaxed);
+                                }
+                            }
                             apply_input_pre_filter(
                                 buffer,
                                 &mut pre_filter_state,
@@ -1300,7 +1431,7 @@ impl AudioProcessor {
                             // === RAW AUDIO RECORDING TAP (for calibration) ===
                             // Capture audio AFTER pre-filter, BEFORE noise gate
                             // This is the raw microphone response needed for EQ analysis
-                            if recording_active.load(Ordering::Relaxed) {
+                            if recording_active_now && !raw_tap_before_cleanup {
                                 let target = raw_recording_target.load(Ordering::Acquire);
                                 let pos = raw_recording_pos.load(Ordering::Acquire);
                                 if pos < target {
@@ -1406,7 +1537,17 @@ impl AudioProcessor {
                             } else {
                                 #[cfg(feature = "vad")]
                                 {
-                                    let written = vad_worker_producer.write(buffer);
+                                    let written = Self::enqueue_vad_block(
+                                        &mut vad_worker_producer,
+                                        buffer,
+                                        &mut vad_source_sample_clock,
+                                        vad_source_discontinuity.as_ref(),
+                                    );
+                                    // Keep the source clock on samples the worker
+                                    // can actually consume. Dropped blocks are
+                                    // absent from this analysis timeline; the
+                                    // wall-clock watchdog still invalidates
+                                    // results if the worker stalls.
                                     if written < buffer.len() {
                                         rt_buffer_overflow_count.fetch_add(1, Ordering::Relaxed);
                                         store_rt_error(
@@ -1417,6 +1558,22 @@ impl AudioProcessor {
                                 }
 
                                 // Stage 1: Noise Gate
+                                #[cfg(feature = "vad")]
+                                let vad_snapshot = vad_result.snapshot();
+                                #[cfg(feature = "vad")]
+                                let vad_worker_available = vad_snapshot
+                                    .and_then(|snapshot| {
+                                        snapshot
+                                            .is_fresh(
+                                                vad_source_sample_clock,
+                                                now_micros(),
+                                                sample_rate_for_latency,
+                                            )
+                                            .then_some(snapshot.backend_available)
+                                    })
+                                    .unwrap_or(false);
+                                #[cfg(feature = "vad")]
+                                vad_available.store(vad_worker_available, Ordering::Relaxed);
                                 if gate_enabled.load(Ordering::Acquire) {
                                     if gate_dirty.swap(false, Ordering::AcqRel) {
                                         if let Some(control) = gate_rt_control.snapshot() {
@@ -1428,20 +1585,12 @@ impl AudioProcessor {
 
                                     #[cfg(feature = "vad")]
                                     {
-                                        let latest_prob =
-                                            f32::from_bits(
-                                                vad_raw_probability.load(Ordering::Acquire),
-                                            );
-                                        let last_update =
-                                            vad_last_update_us.load(Ordering::Acquire);
-                                        let fresh = last_update > 0
-                                            && now_micros().saturating_sub(last_update)
-                                                <= VAD_PROBABILITY_STALE_US;
-                                        let worker_available =
-                                            vad_backend_available.load(Ordering::Acquire) && fresh;
+                                        let latest_prob = vad_snapshot
+                                            .map(|snapshot| snapshot.probability)
+                                            .unwrap_or(0.0);
                                         gate_rt.set_external_vad_probability(
                                             latest_prob,
-                                            worker_available,
+                                            vad_worker_available,
                                         );
                                     }
                                     gate_rt.process_block_inplace(buffer);
@@ -1470,15 +1619,6 @@ impl AudioProcessor {
                                             gate_rt.fused_gate_score().to_bits(),
                                             Ordering::Relaxed,
                                         );
-                                        let last_update =
-                                            vad_last_update_us.load(Ordering::Acquire);
-                                        let fresh = last_update > 0
-                                            && now_micros().saturating_sub(last_update)
-                                                <= VAD_PROBABILITY_STALE_US;
-                                        vad_available.store(
-                                            gate_rt.is_vad_available() && fresh,
-                                            Ordering::Relaxed,
-                                        );
                                     }
                                 } else {
                                     gate_gain_meter.store(1.0_f32.to_bits(), Ordering::Relaxed);
@@ -1489,7 +1629,7 @@ impl AudioProcessor {
                                 let use_suppressor = suppressor_enabled.load(Ordering::Acquire);
                                 if use_suppressor {
                                     if let Some(retired) = deferred_suppressor_retire.take() {
-                                        if let Err(retired) = retired_suppressor_tx.push(retired) {
+                                        if let Err(retired) = retired_suppressor_tx.try_push(retired) {
                                             deferred_suppressor_retire = Some(retired);
                                         }
                                     }
@@ -1506,7 +1646,7 @@ impl AudioProcessor {
                                                         }
                                                         None => break,
                                                     };
-                                                let Some(candidate) = suppressor_rx.pop() else {
+                                                let Some(candidate) = suppressor_rx.try_pop() else {
                                                     break;
                                                 };
 
@@ -1516,7 +1656,7 @@ impl AudioProcessor {
                                                         candidate,
                                                     );
                                                     if let Err(retired) =
-                                                        retired_suppressor_tx.push(retired)
+                                                        retired_suppressor_tx.try_push(retired)
                                                     {
                                                         deferred_suppressor_retire = Some(retired);
                                                         rt_buffer_overflow_count
@@ -1528,7 +1668,7 @@ impl AudioProcessor {
                                                         break;
                                                     }
                                                 } else if let Err(candidate) =
-                                                    retired_suppressor_tx.push(candidate)
+                                                    retired_suppressor_tx.try_push(candidate)
                                                 {
                                                     deferred_suppressor_retire = Some(candidate);
                                                     rt_buffer_overflow_count
@@ -1762,6 +1902,8 @@ impl AudioProcessor {
                                     };
                                 let total_latency = total_reported_latency_us(
                                     LatencyComponents {
+                                        input_resampler_delay_samples:
+                                            input_resampler_delay_samples_for_latency,
                                         output_buffer_samples,
                                         output_sample_rate: output_sample_rate_for_latency,
                                         output_resampler_delay_samples:
@@ -1867,6 +2009,8 @@ impl AudioProcessor {
 
         // Clear capture state without changing the caller's output mute.
         self.recording_active.store(false, Ordering::Release);
+        self.raw_recording_before_cleanup
+            .store(false, Ordering::Release);
         self.raw_recording_pos.store(0, Ordering::Release);
         self.raw_recording_target.store(0, Ordering::Release);
         self.recording_level_db
@@ -1904,6 +2048,9 @@ impl AudioProcessor {
             if let Ok(control) = self.gate_control.lock() {
                 apply_gate_control(&mut g, &control);
             }
+        }
+        if let Ok(mut e) = self.correction_eq.lock() {
+            e.reset();
         }
         if let Ok(mut e) = self.eq.lock() {
             e.reset();

@@ -203,6 +203,36 @@ def test_release_build_selects_python_313_and_pinned_cpu_ort_explicitly():
     assert errors == []
 
 
+def test_release_metadata_checks_each_native_version_command_immediately():
+    workflow = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
+        encoding="utf-8"
+    )
+    lines = workflow.splitlines()
+
+    msi_index = next(
+        index
+        for index, line in enumerate(lines)
+        if "$msiVersion =" in line
+    )
+    prerelease_index = next(
+        index
+        for index, line in enumerate(lines)
+        if "$isPrerelease =" in line
+    )
+
+    assert lines[msi_index + 1].strip().startswith("if ($LASTEXITCODE -ne 0")
+    assert lines[prerelease_index + 1].strip().startswith("if ($LASTEXITCODE -ne 0")
+    assert '$isPrerelease -notin @("true", "false")' in lines[prerelease_index + 1]
+    assert (
+        "if ($LASTEXITCODE -ne 0 -or $sourceRevision -notmatch"
+        in workflow
+    )
+    assert (
+        'if ($LASTEXITCODE -ne 0 -or $tagCommit -ne "${{ needs.package-windows.outputs.source_revision }}")'
+        in workflow
+    )
+
+
 def test_ci_workflow_hydrates_cpu_ort_before_both_build_jobs():
     source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
     errors: list[str] = []
@@ -388,6 +418,14 @@ def test_workflow_gate_parser_excludes_disabled_and_non_blocking_steps():
                         "continue-on-error": "${{ true }}",
                         "run": "python expression-tolerated.py",
                     },
+                    {
+                        "continue-on-error": "${{true}}",
+                        "run": "python compact-expression-tolerated.py",
+                    },
+                    {
+                        "if": "${{false}}",
+                        "run": "python compact-expression-disabled.py",
+                    },
                     {"run": "# python comment.py\npython active.py"},
                 ],
             },
@@ -409,9 +447,36 @@ def test_workflow_gate_parser_excludes_disabled_and_non_blocking_steps():
     assert "disabled.py" not in active
     assert "tolerated.py" not in active
     assert "expression-tolerated.py" not in active
+    assert "compact-expression-tolerated.py" not in active
+    assert "compact-expression-disabled.py" not in active
     assert "disabled-job.py" not in active
     assert "tolerated-job.py" not in active
     assert "comment.py" not in active
+
+
+def test_workflow_gate_parser_excludes_disabled_and_non_blocking_actions():
+    document = {
+        "jobs": {
+            "active": {
+                "steps": [
+                    {"uses": "actions/download-artifact@" + "a" * 40},
+                    {"if": False, "uses": "actions/checkout@" + "b" * 40},
+                    {
+                        "continue-on-error": "${{true}}",
+                        "uses": "actions/upload-artifact@" + "c" * 40,
+                    },
+                ]
+            },
+            "disabled-job": {
+                "if": "${{false}}",
+                "steps": [{"uses": "actions/download-artifact@" + "d" * 40}],
+            },
+        }
+    }
+
+    active = check_workflows._active_uses(document)
+
+    assert active == ["actions/download-artifact@" + "a" * 40]
 
 
 @pytest.mark.parametrize(
@@ -664,6 +729,22 @@ def test_package_smoke_accepts_required_assets_and_metadata(tmp_path):
     assert package_smoke.check_dist_bundle(bundle) == []
 
 
+def test_package_smoke_requires_windows_audio_backend(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
+    (bundle / "AudioForge.exe").write_bytes(b"x")
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        if relative_path.endswith("windowsmediaplugin.dll"):
+            continue
+        _write_bundle_file(bundle, relative_path)
+    _write_valid_build_info(bundle)
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert any("windowsmediaplugin.dll" in error for error in errors)
+
+
 def test_package_smoke_rejects_duplicate_native_extension(tmp_path):
     bundle = tmp_path / "AudioForge"
     (bundle / "AudioForge.exe").parent.mkdir(parents=True)
@@ -741,6 +822,21 @@ def test_package_smoke_rejects_excluded_openssl_payload(tmp_path):
     assert any("excluded OpenSSL payload" in error for error in errors)
 
 
+def test_package_smoke_rejects_unused_qt_ffmpeg_payload(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    (bundle / "AudioForge.exe").parent.mkdir(parents=True)
+    (bundle / "AudioForge.exe").write_bytes(b"x")
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
+        _write_bundle_file(bundle, relative_path)
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+    _write_bundle_file(bundle, "_internal/PyQt6/Qt6/bin/avcodec-61.dll")
+    _write_bundle_file(bundle, "_internal/PyQt6/Qt6/plugins/multimedia/ffmpegmediaplugin.dll")
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert any("unused Qt FFmpeg payload" in error for error in errors)
+
+
 def test_prune_bundle_removes_duplicate_native_extension_only_when_packaged_copy_exists(
     tmp_path,
 ):
@@ -793,6 +889,40 @@ def test_prune_bundle_removes_excluded_openssl_payload(tmp_path):
 
     assert sorted(path.as_posix() for path in removed) == sorted(relative_paths)
     assert not any((bundle / relative_path).exists() for relative_path in relative_paths)
+
+
+def test_prune_bundle_removes_unused_qt_ffmpeg_payload_and_keeps_windows_backend(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    relative_paths = (
+        "_internal/PyQt6/Qt6/bin/avcodec-61.dll",
+        "_internal/PyQt6/Qt6/bin/avformat-61.dll",
+        "_internal/PyQt6/Qt6/bin/avutil-59.dll",
+        "_internal/PyQt6/Qt6/bin/swresample-5.dll",
+        "_internal/PyQt6/Qt6/bin/swscale-8.dll",
+        "_internal/PyQt6/Qt6/plugins/multimedia/ffmpegmediaplugin.dll",
+    )
+    for relative_path in relative_paths:
+        _write_bundle_file(bundle, relative_path)
+    windows_backend = bundle / "_internal/PyQt6/Qt6/plugins/multimedia/windowsmediaplugin.dll"
+    windows_backend.parent.mkdir(parents=True, exist_ok=True)
+    windows_backend.write_bytes(b"x")
+
+    removed = prune_bundle.prune_bundle(bundle)
+
+    assert sorted(path.as_posix() for path in removed) == sorted(relative_paths)
+    assert not any((bundle / relative_path).exists() for relative_path in relative_paths)
+    assert windows_backend.is_file()
+
+
+def test_prune_bundle_keeps_dependency_dist_info_metadata(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    metadata = bundle / "_internal/example.dist-info/METADATA"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text("Name: example\n", encoding="utf-8")
+
+    prune_bundle.prune_bundle(bundle)
+
+    assert metadata.is_file()
 
 
 def test_package_smoke_rejects_external_windows_icu(tmp_path):

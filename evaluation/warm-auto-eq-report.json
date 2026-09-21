@@ -1,0 +1,153 @@
+{
+  "schema_version": 2,
+  "source_revision": "f71eade89dcc0f8a170ab062ef712fe62de0619d",
+  "audible_change": true,
+  "baseline_revision": "a0d785a6772fff311110d9553de973b717b74217",
+  "source_sha256": {
+    "python/mic_eq/analysis/auto_eq_parts/__init__.py": "7f3507a5c2f8732fae436872175efc6993aafd1a76b4f6aa72b3e6a03a749ad3",
+    "python/mic_eq/analysis/auto_eq_parts/constants.py": "2dda97dcc188e3e0f8305eca11681033dd8674ec35bd60a4cd80259460f52161",
+    "python/mic_eq/analysis/auto_eq_parts/cross_take.py": "82e41ae6cc39559bb919c20d8e24640e7d66d9fcdd9c0e0fdae9dac1c17358ca",
+    "python/mic_eq/analysis/auto_eq_parts/dynamic_bands.py": "c7d31f975fc3a55fdbef5531be1afea8ff03035de42d67b15c6309869cebab6d",
+    "python/mic_eq/analysis/auto_eq_parts/headroom.py": "db65339cf4aca7cd00d91ad372fd034337e24cfb5e839bb722ea2b0924df2d29",
+    "python/mic_eq/analysis/auto_eq_parts/optimizer.py": "92b2679ab0f3ba27a387399c9612b3a81c42b67cb5fe9271fac811d49cd53667",
+    "python/mic_eq/analysis/auto_eq_parts/pipeline.py": "0858118062a66d8d0776a5b4073d49eaa015f9ba9e108ea4ed0ebbe72ef887ab",
+    "python/mic_eq/analysis/auto_eq_parts/response.py": "46a3b5e7f3f1b81aa9d7f9fcd85c234f5073c5b30dd1ba553bfa0d33d8ecd474",
+    "python/mic_eq/analysis/auto_eq_parts/target.py": "30503139d67d2184a3a02a832f1478514b2ef63da1553a76f426cad6e1d7d7ff",
+    "python/mic_eq/analysis/failure_detection.py": "6b72deed8460e595331247dd55794afcdc0cc0ee74d05b6335d1362a3ea10351",
+    "python/mic_eq/analysis/spectrum.py": "0995607c678228b228a0246aa5b997f9d15fd85e8804e324292f3f7e1fd8381f",
+    "python/mic_eq/config_parts/catalogs.py": "4d66f3233bd08228d7ebe891c3835d161494021432541668262c6bd7583aee5d",
+    "python/tools/evaluate_voice_regressions.py": "890dafe128f254958b7ad08e986ba6683071c1b637e1e76bbd1aad813d9fa42e"
+  },
+  "evaluation_contract": {
+    "configuration": {
+      "sample_rate": 48000,
+      "targets": [
+        "broadcast",
+        "podcast",
+        "streaming",
+        "warm",
+        "flat"
+      ],
+      "target_modes": [
+        "adaptive",
+        "static"
+      ],
+      "smoothing": [
+        "conservative",
+        "balanced",
+        "broad",
+        "off"
+      ],
+      "policies": [
+        "voice_safe",
+        "preserve",
+        "detrend"
+      ],
+      "rendering": "EQ only; fixed input prefilter shared by before/after. No cleanup, suppression, gate, dynamics, limiter, existing tone or room-noise reference.",
+      "held_out_eq": "Six speakers, two statements per speaker, all five adaptive targets."
+    },
+    "asset_hashes": {
+      "native": "9fed4e5cc5f0dd4ddb39971c99f7d073ab793e44b8d72fcf35d96d823baa10a0",
+      "eq_corpus_manifest": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc",
+      "speech": {
+        "downloaded": {
+          "audio_sha256": "6c62969d60f4728cae203fbb2b1f47ae94b42d46ff2acc995e5198411b2885fd",
+          "source": {
+            "url": "https://huggingface.co/datasets/Narsil/asr_dummy/resolve/main/1.flac",
+            "sha256": "30885601173f96b0d8ddd020dc959b055c6c1582b85a33e3fcab8c4b08ed94c2",
+            "source_rate": 16000,
+            "seconds_used": 10.0,
+            "resampled_rate": 48000
+          }
+        },
+        "fullband": {
+          "audio_sha256": "c743584a9d9bd45c0d874d6b3cffb0d3dad1e4b9c930ec8b2cd7e7e2c8357d5e",
+          "source": {
+            "url": "https://datashare.ed.ac.uk/handle/10283/2791",
+            "source_rate": 48000,
+            "seconds_used": 10,
+            "source_clips": [
+              {
+                "id": "p232_003",
+                "sha256": "85bd30db189b8abdde6719efb07b34965fb5fb9b6e476ae23f6e6b2d4fd720db"
+              },
+              {
+                "id": "p232_005",
+                "sha256": "89b1ebdeabff150a3cc12629178e5b98a2366e052f3e8028ea853c2059f69494"
+              }
+            ],
+            "note": "Previously downloaded clean corpus; two consecutive utterances from one speaker, joined and trimmed to 10 seconds."
+          }
+        }
+      }
+    },
+    "runtime": {
+      "measurement": null,
+      "scope": "No performance change or callback timing claim.",
+      "max_p99_frame_seconds": null
+    },
+    "latency": {
+      "measurement": null,
+      "scope": "Same native EQ chain; no measured hardware latency claim."
+    },
+    "clean_preservation": {
+      "metric": "Combined response bounds, neutral preservation, finite unclipped native output; warm body exceeds upper presence."
+    }
+  },
+  "predefined_gates": {
+    "dialog_clean_capture_rejections_max": 0,
+    "neutral_max_change_db": 0.25,
+    "adaptive_style_max_change_db": 3.0,
+    "static_style_max_change_db": 6.0,
+    "warm_body_mean_100_300_hz_min_db": 0,
+    "warm_body_mean_must_exceed_presence_mean_2000_6000_hz": true,
+    "output_peak_max": 1.0,
+    "invalid_silence_noise_tone_rejected_at_all_four_smoothing_strengths": true
+  },
+  "results": {
+    "speech_matrix": {
+      "downloaded": {
+        "attempts": 120,
+        "rejected": 0,
+        "dialog_cases": 30,
+        "dialog_rejected": 0
+      },
+      "fullband": {
+        "attempts": 120,
+        "rejected": 0,
+        "dialog_cases": 30,
+        "dialog_rejected": 0
+      }
+    },
+    "previous_four_target_dialog_rejections": 40,
+    "previous_four_target_dialog_cases": 48,
+    "current_four_target_dialog_rejections": 0,
+    "held_out_eq_cases": 60,
+    "held_out_eq_passed": true,
+    "held_out_eq_max_change_db": 2.21320524494861,
+    "neutral_max_change_db": 0.0,
+    "warm_adaptive_max_change_db": 1.223403159924537,
+    "warm_static_max_change_db": 2.7766020344215607,
+    "invalid_capture_checks": "Silence, white noise and a pure tone remain rejected at all four smoothing settings.",
+    "gate_regression": {
+      "speech_cases": 72,
+      "noise_cases": 6,
+      "speech_p10_delta_db": 0.1608888972464513,
+      "noise_max_delta_db": 0.971226056956711,
+      "passed": true
+    },
+    "passed": true
+  },
+  "decision": "Retain capture validation before fitting smoothing and the bounded Warm / Full Voice target.",
+  "limitations": [
+    "Two short recordings do not cover every voice, microphone, room or continuous manual control.",
+    "Spectrograms and objective bounds do not establish subjective naturalness or remove room echo.",
+    "API-only preserve/detrend policies retain their historical absolute-spectrum behavior; normal dialogs use voice_safe.",
+    "No conclusion about the live post-yell VAD symptom."
+  ],
+  "reproduce": [
+    "Run python/tests/test_auto_eq.py and python/tests/test_warm_target.py.",
+    "Run python/tools/evaluate_voice_regressions.py with --eq-corpus models/cross_take_eval and the retained baseline.",
+    "Speech matrices and before/after spectrograms are local artifacts under build/eq-listening-study/after-fix; preserve the original study alongside them."
+  ]
+}

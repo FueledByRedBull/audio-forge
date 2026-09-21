@@ -306,6 +306,7 @@ def test_app_config_latency_profiles_round_trip():
     cfg = AppConfig(
         last_input_device="Mic A",
         last_output_device="Out B",
+        preview_playback_device_id="preview-id",
         last_input_device_identity=input_identity,
         last_output_device_identity=output_identity,
         input_channel_mode="phase_safe_mono",
@@ -326,6 +327,7 @@ def test_app_config_latency_profiles_round_trip():
     assert key in restored.latency_calibration_profiles
     assert restored.last_input_device_identity == input_identity
     assert restored.last_output_device_identity == output_identity
+    assert restored.preview_playback_device_id == "preview-id"
     restored_profile = restored.latency_calibration_profiles[key]
     assert restored_profile.measured_round_trip_ms == 36.5
     assert restored_profile.estimated_one_way_ms == 18.25

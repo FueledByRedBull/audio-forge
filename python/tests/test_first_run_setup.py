@@ -192,6 +192,17 @@ def test_setup_resumes_at_saved_step_and_delegates_route_check(qapp, monkeypatch
     assert dialog.current_step == "voice"
 
 
+def test_setup_mute_control_tracks_external_owner_changes(qapp):
+    owner = _Owner(AppConfig(), _Processor())
+    dialog = FirstRunSetupDialog(owner)
+
+    assert not dialog.mute_checkbox.isChecked()
+    owner.user_mute_checkbox.setChecked(True)
+    assert dialog.mute_checkbox.isChecked()
+    owner.user_mute_checkbox.setChecked(False)
+    assert not dialog.mute_checkbox.isChecked()
+
+
 def test_setup_records_skips_and_can_resume_them(qapp, monkeypatch):
     monkeypatch.setattr(
         "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: True

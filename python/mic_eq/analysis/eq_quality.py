@@ -7,6 +7,7 @@ from typing import Iterable
 
 import numpy as np
 
+from .auto_eq_parts.constants import SAMPLE_RATE
 from .auto_eq_parts.response import _predict_eq_response
 
 
@@ -43,6 +44,15 @@ class EqQualityMetrics:
             + self.narrow_boost_risk * 0.5
         )
 
+    @property
+    def safe_for_auto_eq(self) -> bool:
+        """Whether the combined response stays inside the automatic bounds."""
+        return (
+            self.max_boost_db <= 6.0 + 1e-9
+            and self.max_cut_db <= 6.0 + 1e-9
+            and self.ripple_db <= 8.0 + 1e-9
+        )
+
     def to_dict(self) -> dict[str, object]:
         return {
             "max_boost_db": self.max_boost_db,
@@ -52,6 +62,7 @@ class EqQualityMetrics:
             "shelf_peak_stacking": self.shelf_peak_stacking,
             "narrow_boost_risk": self.narrow_boost_risk,
             "risk_score": self.risk_score,
+            "safe_for_auto_eq": self.safe_for_auto_eq,
             "warnings": [
                 {
                     "kind": warning.kind,
@@ -82,7 +93,7 @@ def evaluate_eq_quality(
     freqs: Iterable[float],
     gains: Iterable[float],
     qs: Iterable[float],
-    sample_rate: float = 48_000.0,
+    sample_rate: float = SAMPLE_RATE,
 ) -> EqQualityMetrics:
     """Evaluate live EQ interaction risks from band frequency/gain/Q values."""
     centers, gains_db, q_values = _as_arrays(freqs, gains, qs)
@@ -90,7 +101,13 @@ def evaluate_eq_quality(
         return EqQualityMetrics(0.0, 0.0, 0.0, 0, 0, 0, ())
 
     grid = np.logspace(np.log10(20.0), np.log10(min(20_000.0, sample_rate / 2.0 - 1.0)), 256)
-    response = _predict_eq_response(grid, gains_db, q_values, centers)
+    response = _predict_eq_response(
+        grid,
+        gains_db,
+        q_values,
+        centers,
+        sample_rate=sample_rate,
+    )
     voice_mask = (grid >= 80.0) & (grid <= 12_000.0)
     voice_response = response[voice_mask] if np.any(voice_mask) else response
 
@@ -201,12 +218,20 @@ def weighted_target_error(
     qs: Iterable[float],
     center_freqs: Iterable[float],
     weights: np.ndarray | None = None,
+    *,
+    sample_rate: float = SAMPLE_RATE,
 ) -> float:
     """Return weighted RMS target error after applying an EQ curve."""
     gains_arr = np.asarray(list(gains), dtype=float)
     qs_arr = np.asarray(list(qs), dtype=float)
     centers_arr = np.asarray(list(center_freqs), dtype=float)
-    response = _predict_eq_response(freqs, gains_arr, qs_arr, centers_arr)
+    response = _predict_eq_response(
+        freqs,
+        gains_arr,
+        qs_arr,
+        centers_arr,
+        sample_rate=sample_rate,
+    )
     error = target_db - (measured_db + response)
     if weights is None:
         weights = np.ones_like(freqs, dtype=float)

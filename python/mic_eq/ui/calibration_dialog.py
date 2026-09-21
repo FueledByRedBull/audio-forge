@@ -27,7 +27,16 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 import numpy as np
 
-from ..config import DeviceIdentity, TARGET_CURVES, coerce_device_identity
+from .. import CORE_AVAILABLE
+from ..config import (
+    DeviceIdentity,
+    EQ_FREQUENCIES,
+    EQSettings,
+    Preset,
+    TARGET_CURVES,
+    build_eq_candidate_settings,
+    coerce_device_identity,
+)
 from .analysis_worker import AnalysisWorker
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
@@ -64,6 +73,47 @@ TOO_LOUD_DB = -3.0  # Warn if louder than this (clipping risk)
 RECORDING_DURATION = 10.0  # Seconds
 
 
+def _eq_candidate_preset(parent: Any, eq_settings: Mapping[str, Any]) -> Preset | None:
+    """Merge an EQ-only candidate into the current complete preset."""
+    getter = getattr(parent, "_get_current_preset", None)
+    if not callable(getter):
+        return None
+    current = getter()
+    if not isinstance(current, Preset):
+        return None
+    payload = deepcopy(current.to_dict())
+    base_eq = payload.get("eq")
+    if not isinstance(base_eq, Mapping):
+        raise ValueError("current EQ settings are unavailable")
+    if "bands" in eq_settings:
+        candidate_eq = {
+            key: deepcopy(eq_settings[key])
+            for key in ("schema_version", "enabled", "bands", "layers")
+            if key in eq_settings
+        }
+        candidate_eq.setdefault(
+            "schema_version", int(base_eq.get("schema_version", 1))
+        )
+        candidate_eq.setdefault("enabled", True)
+        typed_eq = EQSettings.from_dict(candidate_eq)
+    else:
+        frequencies = list(eq_settings.get("band_freqs") or EQ_FREQUENCIES)
+        gains = list(eq_settings.get("band_gains") or ())
+        qs = list(eq_settings.get("band_qs") or ())
+        if not (len(frequencies) == len(gains) == len(qs) == len(EQ_FREQUENCIES)):
+            raise ValueError("Auto-EQ candidate does not contain 10 complete bands")
+        typed_eq = build_eq_candidate_settings(
+            current.eq,
+            frequencies,
+            gains,
+            qs,
+            layer="correction",
+            enabled=bool(eq_settings.get("enabled", True)),
+        )
+    payload["eq"] = typed_eq.to_dict()
+    return Preset.from_dict(payload)
+
+
 def _find_processor_owner(widget: object) -> Any | None:
     parent: Any = widget
     while parent and not hasattr(parent, "processor"):
@@ -89,7 +139,35 @@ def _processor_sample_rate(owner: Any) -> int:
     return sample_rate
 
 
-def _chain_settings(owner: Any) -> dict[str, Any]:
+def _chain_settings(
+    owner: Any,
+    *,
+    full_chain: bool = False,
+    input_pre_filtered: bool = False,
+    preset: Preset | None = None,
+) -> dict[str, Any]:
+    if full_chain:
+        current = preset if preset is not None else owner._get_current_preset()
+        if not isinstance(current, Preset):
+            raise TypeError("current processing configuration is unavailable")
+        preset_payload = current.to_dict()
+        if hasattr(owner, "compressor_panel"):
+            calibration = owner.compressor_panel.get_compressor_settings(
+                include_calibration=True
+            )
+            preset_payload["compressor"]["noise_reference_reliability"] = calibration.get(
+                "noise_reference_reliability", 0.0
+            )
+        return {
+            **{
+                name: preset_payload[name]
+                for name in ("gate", "rnnoise", "deesser", "compressor", "limiter")
+            },
+            "full_chain": True,
+            "input_pre_filtered": bool(input_pre_filtered),
+            "input_cleanup_mode": owner.processor.get_input_cleanup_mode(),
+            "processing_mode": owner._processing_mode(),
+        }
     settings: dict[str, Any] = {}
     if owner is None:
         return settings
@@ -111,6 +189,35 @@ def _chain_settings(owner: Any) -> dict[str, Any]:
                 exc_info=True,
             )
     return settings
+
+
+def _filtered_capture_for_analysis(
+    audio_data: np.ndarray,
+    sample_rate: int,
+) -> np.ndarray:
+    """Apply only the live fixed pre-filter for existing analysis paths."""
+    audio = np.ascontiguousarray(np.asarray(audio_data, dtype=np.float32).reshape(-1))
+    if audio.size == 0:
+        return audio.copy()
+    if not CORE_AVAILABLE:
+        raise RuntimeError("Native input conditioning is unavailable")
+    from ..mic_eq_core import simulate_auto_eq_chain
+
+    result = simulate_auto_eq_chain(
+        audio,
+        float(sample_rate),
+        [(1000.0, 0.0, 1.41)] * 10,
+        {
+            "full_chain": True,
+            "processing_mode": "bypass",
+            "limiter_enabled": False,
+            "return_output_audio": True,
+        },
+    )
+    output = np.asarray(result.get("output_audio"), dtype=np.float32).reshape(-1)
+    if output.size != audio.size or not np.isfinite(output).all():
+        raise ValueError("fixed pre-filter returned invalid audio")
+    return np.ascontiguousarray(output, dtype=np.float32)
 
 
 def _selected_device_pair(owner: Any) -> tuple[str | None, str | None]:
@@ -316,6 +423,7 @@ class CalibrationDialog(QDialog):
         # Recording state
         self.recording_state = "idle"  # idle, recording, analyzing, ready
         self.audio_data: np.ndarray | None = None
+        self.preview_audio_data: np.ndarray | None = None
         self.eq_settings: dict | None = None
         self._candidate_target_metadata: tuple[str, str, str] | None = None
         self._candidate_metadata: dict[str, Any] | None = None
@@ -494,6 +602,12 @@ class CalibrationDialog(QDialog):
         self.retake_btn.clicked.connect(self._on_retake_clicked)
         control_layout.addWidget(self.retake_btn)
 
+        self.compare_button = QPushButton("Compare Recording")
+        self.compare_button.setEnabled(False)
+        self.compare_button.setToolTip("Listen to this same passage with current and proposed processing")
+        self.compare_button.clicked.connect(self._compare_recording)
+        control_layout.addWidget(self.compare_button)
+
         # Cancel button
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self._on_cancel_clicked)
@@ -581,23 +695,6 @@ class CalibrationDialog(QDialog):
             )
             return
 
-        # Build all band tuples before touching the live EQ state.
-        from ..config import EQ_FREQUENCIES as BAND_FREQUENCIES_HZ
-
-        try:
-            freqs_hz = eq_settings.get("band_freqs", BAND_FREQUENCIES_HZ)
-            gains = eq_settings["band_gains"]
-            qs = eq_settings.get("band_qs", [1.41] * len(BAND_FREQUENCIES_HZ))
-            if any(
-                len(values) != len(BAND_FREQUENCIES_HZ)
-                for values in (freqs_hz, gains, qs)
-            ):
-                raise ValueError("Auto-EQ candidate does not contain 10 complete bands")
-            bands = [(freq, gains[i], qs[i]) for i, freq in enumerate(freqs_hz)]
-        except (KeyError, TypeError, ValueError) as error:
-            QMessageBox.critical(self, "Error", f"Invalid Auto-EQ candidate: {error}")
-            return
-
         get_eq_settings = getattr(parent.eq_panel, "get_settings", None)
         if not callable(get_eq_settings):
             QMessageBox.critical(
@@ -606,26 +703,60 @@ class CalibrationDialog(QDialog):
                 "Could not snapshot current EQ settings; no changes were applied.",
             )
             return
-        try:
-            eq_snapshot = deepcopy(get_eq_settings())
-        except Exception as error:
-            logger.warning("Failed to snapshot EQ before candidate apply", exc_info=True)
+        apply_configuration = getattr(parent, "apply_processing_configuration", None)
+        if not callable(apply_configuration):
             QMessageBox.critical(
                 self,
                 "Error",
-                f"Could not snapshot current EQ settings; no changes were applied: {error}",
+                "The processing owner does not support transactional configuration; "
+                "no changes were applied.",
+            )
+            return
+        mode_getter = getattr(parent, "_processing_mode", None)
+        if not callable(mode_getter):
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Could not capture the current processing mode; no changes were applied.",
+            )
+            return
+        try:
+            snapshot_preset = parent._get_current_preset()
+            snapshot_mode = str(mode_getter())
+        except Exception as error:
+            logger.warning(
+                "Failed to snapshot complete configuration before candidate apply",
+                exc_info=True,
+            )
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Could not snapshot current processing settings; no changes were applied: "
+                f"{error}",
+            )
+            return
+        if not isinstance(snapshot_preset, Preset):
+            QMessageBox.critical(
+                self,
+                "Error",
+                "Could not snapshot current processing settings; no changes were applied.",
             )
             return
 
         try:
-            parent.eq_panel.apply_auto_eq_results(bands, diagnostics=eq_settings)
-            parent.eq_panel.set_settings({"enabled": True})
+            candidate_preset = _eq_candidate_preset(parent, eq_settings)
+            if candidate_preset is None:
+                raise ValueError("current processing configuration is unavailable")
+            apply_configuration(candidate_preset, processing_mode=snapshot_mode)
             parent.eq_panel.set_auto_eq_diagnostics(eq_settings)
             accepted_eq = deepcopy(get_eq_settings())
             if not isinstance(accepted_eq, Mapping):
                 raise TypeError("EQ panel returned invalid settings")
             if "enabled" in accepted_eq and not bool(accepted_eq["enabled"]):
                 raise ValueError("EQ panel did not accept the enabled state")
+            for key in ("schema_version", "bands", "layers"):
+                if key in accepted_eq:
+                    eq_settings[key] = deepcopy(accepted_eq[key])
             for key in ("enabled", "band_freqs", "band_gains", "band_qs"):
                 if key in accepted_eq:
                     value = accepted_eq[key]
@@ -635,18 +766,13 @@ class CalibrationDialog(QDialog):
         except Exception as error:
             restore_error = None
             try:
-                current_eq = parent.eq_panel.get_settings()
-            except Exception:
-                current_eq = None
-            if current_eq != eq_snapshot:
-                try:
-                    parent.eq_panel.set_settings(eq_snapshot)
-                except Exception as restore_exc:
-                    restore_error = restore_exc
-                    logger.warning(
-                        "Failed to restore EQ after candidate apply failure",
-                        exc_info=True,
-                    )
+                apply_configuration(snapshot_preset, processing_mode=snapshot_mode)
+            except Exception as restore_exc:
+                restore_error = restore_exc
+                logger.warning(
+                    "Failed to restore processing configuration after candidate apply failure",
+                    exc_info=True,
+                )
             logger.warning("Failed to apply Auto-EQ candidate", exc_info=True)
             message = f"Could not apply Auto-EQ settings: {error}"
             if restore_error is not None:
@@ -668,6 +794,9 @@ class CalibrationDialog(QDialog):
             else self._candidate_target_metadata[0]
         )
         self.auto_eq_applied.emit(target_curve)
+        from .calibration_history import persist_calibration
+
+        persist_calibration(self, parent, "eq_only", target_curve, ("eq",))
 
         if DEBUG:
             logger.debug(
@@ -676,6 +805,47 @@ class CalibrationDialog(QDialog):
 
         # Close dialog
         self.accept()
+
+    def _compare_recording(self) -> None:
+        if self.recording_state != "ready" or self.audio_data is None or self.eq_settings is None:
+            return
+        owner = _find_eq_panel_owner(self.parent())
+        if owner is None:
+            return
+        error = self._candidate_identity_error(self.eq_settings, owner)
+        if error:
+            QMessageBox.warning(self, "Stale recording", error)
+            return
+        from .listening_comparison_dialog import ListeningComparisonDialog
+
+        try:
+            chain = _chain_settings(
+                owner,
+                full_chain=True,
+                input_pre_filtered=self.preview_audio_data is None,
+            )
+        except Exception as error:
+            QMessageBox.warning(self, "Comparison unavailable", str(error))
+            return
+        dialog = ListeningComparisonDialog(
+            audio_data=self.preview_audio_data
+            if self.preview_audio_data is not None
+            else self.audio_data,
+            sample_rate=_processor_sample_rate(owner),
+            current_settings=owner.eq_panel.get_settings(),
+            proposed_settings=self.eq_settings,
+            current_chain_settings=chain,
+            proposed_chain_settings=chain,
+            parent=self,
+        )
+        _set_temporary_mute(owner, "listening_comparison", True)
+        try:
+            keep = dialog.exec() == int(QDialog.DialogCode.Accepted)
+        finally:
+            _set_temporary_mute(owner, "listening_comparison", False)
+            dialog.deleteLater()
+        if keep:
+            self._apply_eq_settings()
 
     def _candidate_identity_error(
         self, eq_settings: Mapping[str, Any], parent: Any
@@ -843,7 +1013,10 @@ class CalibrationDialog(QDialog):
         try:
             _set_temporary_mute(parent, _TEMPORARY_MUTE_REASON, True)
             parent.processor.set_recovery_suppressed(True)
-            parent.processor.start_raw_recording(RECORDING_DURATION)
+            parent.processor.start_raw_recording(
+                RECORDING_DURATION,
+                before_cleanup=True,
+            )
         except Exception as e:
             self._on_recording_failed(f"Recording error: {e}")
             return
@@ -921,14 +1094,23 @@ class CalibrationDialog(QDialog):
         """Handle recording completion."""
         if DEBUG:
             logger.debug("Recording complete: %d samples", len(audio_data))
-            import numpy as np
 
             rms = np.mean(audio_data**2) ** 0.5
             peak_db = 20 * np.log10(max(np.abs(audio_data).max(), 1e-6))
             rms_db = 20 * np.log10(max(rms, 1e-6))
             logger.debug("Audio stats - Peak: %.1f dB, RMS: %.1f dB", peak_db, rms_db)
 
-        self.audio_data = audio_data
+        self.preview_audio_data = np.ascontiguousarray(
+            np.asarray(audio_data, dtype=np.float32).reshape(-1).copy()
+        )
+        try:
+            sample_rate = _processor_sample_rate(_find_processor_owner(self.parent()))
+        except Exception:
+            sample_rate = 48_000
+        self.audio_data = _filtered_capture_for_analysis(
+            self.preview_audio_data,
+            sample_rate,
+        )
         self._clear_eq_candidate()
         self.recording_state = "analyzing"
 
@@ -1114,6 +1296,7 @@ class CalibrationDialog(QDialog):
         else:
             self._clear_eq_candidate()
         self.recording_state = "ready"
+        self.compare_button.setEnabled(apply_recommended)
         if apply_recommended:
             self.warning_label.setText(
                 "Analysis complete! Max correction: "
@@ -1279,6 +1462,7 @@ class CalibrationDialog(QDialog):
 
     def _reset_recording_ui(self):
         """Reset UI to initial idle state."""
+        self.compare_button.setEnabled(False)
         self._capture_start_timer.stop()
         self.recording_timer.stop()
         self._cancel_analysis_workers()
@@ -1290,6 +1474,7 @@ class CalibrationDialog(QDialog):
         self.recording_state = "idle"
         self._clear_eq_candidate()
         self.audio_data = None
+        self.preview_audio_data = None
         self._capture_context_key = None
         self.progress_bar.setValue(0)
         self.time_label.setText(f"Time remaining: {RECORDING_DURATION:.0f}s")
@@ -1378,6 +1563,8 @@ class CalibrationDialog(QDialog):
             worker.deleteLater()
         self._analysis_workers.clear()
         self._close_requested = False
+        self.audio_data = None
+        self.preview_audio_data = None
         QDialog.done(self, int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected))
 
     def _wait_for_analysis_workers(self) -> None:
@@ -1426,7 +1613,7 @@ class CalibrationDialog(QDialog):
         Return the selected target curve key.
 
         Returns:
-            str: Target curve key ('broadcast', 'podcast', 'streaming', or 'flat')
+            str: Selected target key from the built-in curve catalog
         """
         return self.curve_combo.currentData()
 

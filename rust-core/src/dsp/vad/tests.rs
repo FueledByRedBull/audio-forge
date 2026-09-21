@@ -187,7 +187,7 @@ mod tests {
         let _ = gate.process_with_probability(&loud, 0.1);
         let after_rise = gate.noise_floor();
         assert!(
-            after_rise - before_rise <= NOISE_FLOOR_UP_SLEW_DB_PER_FRAME + 1e-6,
+            after_rise - before_rise <= NOISE_FLOOR_UP_SLEW_DB_PER_UPDATE + 1e-6,
             "rise slew exceeded per-frame limit"
         );
 
@@ -201,9 +201,65 @@ mod tests {
         let _ = gate.process_with_probability(&quiet, 0.1);
         let after_fall = gate.noise_floor();
         assert!(
-            before_fall - after_fall <= NOISE_FLOOR_DOWN_SLEW_DB_PER_FRAME + 1e-6,
+            before_fall - after_fall <= NOISE_FLOOR_DOWN_SLEW_DB_PER_UPDATE + 1e-6,
             "fall slew exceeded per-frame limit"
         );
+    }
+
+    #[test]
+    fn test_unknown_external_probability_does_not_train_noise_floor() {
+        let mut gate = VadAutoGate::without_backend(48_000, 0.5);
+        gate.set_auto_threshold(true);
+        let frame = vec![10f32.powf(-45.0 / 20.0); 480];
+
+        for _ in 0..10 {
+            let _ = gate.process_with_external_probability(&frame, Some(0.1));
+        }
+        let trained_floor = gate.noise_floor();
+
+        for _ in 0..100 {
+            let (open, probability) = gate.process_with_external_probability(&frame, None);
+            assert!(!open);
+            assert_eq!(probability, 0.0);
+        }
+
+        assert_eq!(gate.noise_floor(), trained_floor);
+        assert!(!gate.is_available());
+        gate.process_with_external_probability(&frame, Some(0.9));
+        assert!(gate.is_available());
+        gate.reset();
+        assert!(!gate.is_available());
+    }
+
+    #[test]
+    fn test_noise_floor_cadence_is_independent_of_block_size() {
+        let mut ten_ms = VadAutoGate::without_backend(48_000, 0.5);
+        let mut one_second = VadAutoGate::without_backend(48_000, 0.5);
+        let ten_ms_frame = vec![10f32.powf(-45.0 / 20.0); 480];
+        let one_second_frame = vec![10f32.powf(-45.0 / 20.0); 48_000];
+
+        for _ in 0..100 {
+            let _ = ten_ms.process_with_probability(&ten_ms_frame, 0.1);
+        }
+        let _ = one_second.process_with_probability(&one_second_frame, 0.1);
+
+        assert!((ten_ms.noise_floor() - one_second.noise_floor()).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_vad_rejects_unsupported_sample_rates_before_loading_model() {
+        assert!(matches!(
+            SileroVAD::new(0, 0.5),
+            Err(VadError::InvalidSampleRate(0))
+        ));
+        assert!(matches!(
+            SileroVAD::new(192_001, 0.5),
+            Err(VadError::InvalidSampleRate(192_001))
+        ));
+        assert!(matches!(
+            SileroVAD::new(44_100, 0.5),
+            Err(VadError::InvalidSampleRate(44_100))
+        ));
     }
 
     #[test]
@@ -536,6 +592,158 @@ mod tests {
         let samples = vec![0.0_f32; vad.window_size() - 1];
 
         assert_eq!(vad.process_latest(&samples).unwrap(), None);
+    }
+
+    #[test]
+    fn test_pinned_silero_severe_run_requires_eight_complete_windows() {
+        let mut vad = SileroVAD::new(SILERO_SAMPLE_RATE, 0.35)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let window_size = vad.window_size();
+        let loud = vec![1.0_f32; window_size];
+        let normal = vec![0.25_f32; window_size];
+        let quiet = vec![0.01_f32; window_size];
+
+        for _ in 0..VAD_SEVERE_MIN_FRAMES * 2 {
+            let _ = vad.process(&normal).unwrap();
+        }
+        assert_eq!(vad.severe_rms_frames, 0);
+        assert!(!vad.severe_rms_armed);
+
+        for _ in 0..VAD_SEVERE_MIN_FRAMES - 1 {
+            let _ = vad.process(&loud).unwrap();
+        }
+        assert_eq!(vad.severe_rms_frames, VAD_SEVERE_MIN_FRAMES - 1);
+        assert!(!vad.severe_rms_armed);
+
+        let _ = vad.process(&quiet).unwrap();
+        assert_eq!(vad.severe_rms_frames, 0);
+        assert!(!vad.severe_rms_armed);
+
+        vad.set_pre_gain(2.5);
+        let normal_with_gain = vec![0.06_f32; window_size];
+        for _ in 0..VAD_SEVERE_MIN_FRAMES * 2 {
+            let _ = vad.process(&normal_with_gain).unwrap();
+        }
+        assert_eq!(vad.severe_rms_frames, 0);
+        assert!(!vad.severe_rms_armed);
+
+        vad.set_pre_gain(1.0);
+        for _ in 0..VAD_SEVERE_MIN_FRAMES {
+            let _ = vad.process(&loud).unwrap();
+        }
+        assert!(vad.severe_rms_armed);
+        vad.reset();
+        assert_eq!(vad.severe_rms_frames, 0);
+        assert!(!vad.severe_rms_armed);
+        assert_eq!(vad.processed_input_samples(), 0);
+    }
+
+    #[test]
+    fn test_pinned_silero_severe_recovery_preserves_clock_and_matches_fresh_state() {
+        let mut vad = SileroVAD::new(SILERO_SAMPLE_RATE, 0.35)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let mut fresh = SileroVAD::new(SILERO_SAMPLE_RATE, 0.35)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let window_size = vad.window_size();
+        let loud = vec![1.0_f32; window_size];
+        let partial = vec![0.0_f32; window_size / 2];
+        let quiet_tail = vec![0.01_f32; window_size / 2];
+        let mut quiet_window = partial.clone();
+        quiet_window.extend_from_slice(&quiet_tail);
+
+        for _ in 0..VAD_SEVERE_MIN_FRAMES {
+            let _ = vad.process(&loud).unwrap();
+        }
+        assert!(vad.severe_rms_armed);
+        assert_eq!(vad.processed_input_samples(), (window_size * 8) as u64);
+
+        // The recovery frame is split across calls to prove that only the
+        // recurrent state is cleared; the input buffer and source clock stay.
+        let _ = vad.process(&partial).unwrap();
+        assert_eq!(vad.available_samples(), window_size / 2);
+        let actual = vad.process(&quiet_tail).unwrap();
+        let expected = fresh.process(&quiet_window).unwrap();
+
+        assert!((actual - expected).abs() < 1.0e-6);
+        assert_eq!(vad.processed_input_samples(), (window_size * 9) as u64);
+        assert_eq!(vad.available_samples(), 0);
+        assert_eq!(vad.severe_rms_frames, 0);
+        assert!(!vad.severe_rms_armed);
+    }
+
+    #[test]
+    fn test_pinned_silero_speech_end_reset_requires_relative_drop_and_eight_frames() {
+        let mut vad = SileroVAD::new(SILERO_SAMPLE_RATE, 0.35)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let anchor_level = 10.0_f32.powf(-10.0 / 20.0);
+        let near_anchor_level = 10.0_f32.powf(-20.0 / 20.0);
+        let low_level = 10.0_f32.powf(-23.0 / 20.0);
+
+        vad.state.fill(1.0);
+        vad.context_audio.fill(1.0);
+        vad.has_inference = true;
+
+        // Low levels without a confident speech anchor cannot reset history.
+        vad.audio_512.fill(low_level);
+        for _ in 0..VAD_SPEECH_END_MIN_FRAMES * 2 {
+            vad.update_speech_end_state(0.1);
+        }
+        assert!(vad.speech_end_anchor_db.is_none());
+        assert_eq!(vad.speech_end_low_frames, 0);
+        assert!(vad.has_inference);
+
+        vad.audio_512.fill(anchor_level);
+        vad.update_speech_end_state(0.9);
+        assert!(vad.speech_end_anchor_db.is_some());
+
+        // A smaller level drop must not trigger a recurrent-state reset.
+        vad.audio_512.fill(near_anchor_level);
+        for _ in 0..VAD_SPEECH_END_MIN_FRAMES * 2 {
+            vad.update_speech_end_state(0.1);
+        }
+        assert_eq!(vad.speech_end_low_frames, 0);
+        assert!(vad.speech_end_anchor_db.is_some());
+        assert!(vad.has_inference);
+        assert!(vad.state.iter().all(|sample| *sample == 1.0));
+
+        // The required relative drop resets only recurrent state after eight
+        // complete low-confidence windows.
+        vad.audio_512.fill(low_level);
+        for _ in 0..VAD_SPEECH_END_MIN_FRAMES - 1 {
+            vad.update_speech_end_state(0.1);
+        }
+        assert_eq!(vad.speech_end_low_frames, VAD_SPEECH_END_MIN_FRAMES - 1);
+        assert!(vad.has_inference);
+
+        vad.update_speech_end_state(0.1);
+        assert_eq!(vad.speech_end_low_frames, VAD_SPEECH_END_MIN_FRAMES);
+        assert!(vad.speech_end_anchor_db.is_some());
+        assert!(vad.has_inference);
+
+        // A partial input call must keep the triggering probability and clock
+        // until the next complete model window reaches the reset boundary.
+        vad.smoothed_prob = 0.73;
+        let cached_probability = vad.probability();
+        let partial = vec![0.0_f32; SILERO_WINDOW_SIZE / 2];
+        assert!((vad.process(&partial).unwrap() - cached_probability).abs() < 1.0e-6);
+        assert_eq!(vad.processed_input_samples(), 0);
+        assert_eq!(vad.speech_end_low_frames, VAD_SPEECH_END_MIN_FRAMES);
+
+        let mut fresh = SileroVAD::new(SILERO_SAMPLE_RATE, 0.35)
+            .expect("the pinned release model must satisfy the Silero contract");
+        let quiet_tail = vec![0.0_f32; SILERO_WINDOW_SIZE / 2];
+        let mut complete_window = partial.clone();
+        complete_window.extend_from_slice(&quiet_tail);
+        let expected = fresh.process(&complete_window).unwrap();
+        let actual = vad.process(&quiet_tail).unwrap();
+
+        assert!((actual - expected).abs() < 1.0e-6);
+        assert_eq!(vad.processed_input_samples(), SILERO_WINDOW_SIZE as u64);
+        assert_eq!(vad.available_samples(), 0);
+        assert!(vad.speech_end_anchor_db.is_none());
+        assert_eq!(vad.speech_end_low_frames, 0);
+        assert!(vad.has_inference);
+        assert_eq!(vad.state, fresh.state);
     }
 
     #[test]

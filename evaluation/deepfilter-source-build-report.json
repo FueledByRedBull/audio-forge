@@ -321,6 +321,7 @@
     },
     "repository": "https://github.com/Rikorose/DeepFilterNet.git"
   },
+  "source_revision": "42855a105ce9cf0e7d8ba8f8bb304f1f425e96d8",
   "source_sha256": {
     "python/tools/evaluate_deepfilter_source_build.py": "0d855cd432e8d8ca02145a8bb7e1d210dc4693540b36f66cf56c5af4390c5565",
     "rust-core/src/bin/deepfilter_benchmark.rs": "ed7f006433c3c919420ac49eba61f6292d9b6938497ae7172990c2a61133cb08",

@@ -32,9 +32,10 @@ from PyQt6.QtWidgets import (
     QSpinBox,
     QDoubleSpinBox,
     QSizePolicy,
+    QSystemTrayIcon,
 )
 from PyQt6.QtCore import Qt, QTimer, QRect
-from PyQt6.QtGui import QAction, QGuiApplication
+from PyQt6.QtGui import QAction, QGuiApplication, QIcon
 import os
 import sys
 import json
@@ -92,6 +93,7 @@ from .startup_presets import (
     startup_preset_display_name as _startup_preset_display_name,
 )
 from .theme import prefers_reduced_motion
+from .desktop_integration import GlobalMuteHotkey, activate_window, build_tray_tooltip
 from .. import AudioProcessor, __version__, list_input_devices, list_output_devices
 from ..diagnostics_export import (
     build_diagnostics_snapshot,
@@ -141,6 +143,12 @@ INPUT_CLEANUP_MODE_OPTIONS = (
     ("Strong", "strong"),
 )
 INPUT_PHASE_WARNING_CORRELATION = -0.75
+PROCESSING_MODE_OPTIONS = (
+    ("Normal", "normal"),
+    ("Bypass", "bypass"),
+    ("Raw Monitor", "raw"),
+)
+DEFAULT_MUTE_HOTKEY = "Ctrl+Alt+M"
 DEFAULT_WINDOW_WIDTH = 1280
 DEFAULT_WINDOW_HEIGHT = 850
 MINIMUM_WINDOW_WIDTH = 900
@@ -220,6 +228,7 @@ class MainWindow(QMainWindow):
         self.current_preset_name = "Default"
         self.preset_modified = False
         self._saved_preset_payload: str | None = None
+        self._last_preset_identity_persisted = True
         self._temporary_mute_reasons: set[str] = set()
         self._output_mute_error: str | None = None
         self.user_muted = bool(getattr(self.config, "user_muted", False))
@@ -249,6 +258,13 @@ class MainWindow(QMainWindow):
         self._last_gate_chatter_event_count = 0
         self._responsive_layout_compact: bool | None = None
         self._splitter_is_vertical: bool | None = None
+        self._quitting = False
+        self._tray_icon: QSystemTrayIcon | None = None
+        self._tray_menu: QMenu | None = None
+        self._tray_mute_action: QAction | None = None
+        self._mute_hotkey: GlobalMuteHotkey | None = None
+        self._close_to_tray_action: QAction | None = None
+        self._mute_hotkey_action: QAction | None = None
         self._ui_state_timer = QTimer(self)
         self._ui_state_timer.setSingleShot(True)
         self._ui_state_timer.timeout.connect(self._save_ui_state)
@@ -258,6 +274,7 @@ class MainWindow(QMainWindow):
         self._setup_menubar()
         self._setup_options_menu()
         self._setup_statusbar()
+        self._setup_desktop_integration()
         self.user_mute_checkbox.blockSignals(True)
         self.user_mute_checkbox.setChecked(self.user_muted)
         self.user_mute_checkbox.blockSignals(False)
@@ -513,11 +530,13 @@ class MainWindow(QMainWindow):
         self.preset_status_label = QLabel("Preset: Default (saved)")
         self.transmission_status_label = QLabel("Transmission: Stopped")
         self.health_summary_label = QLabel("Health: --")
+        self.calibration_status_label = QLabel("No saved calibration")
         for label, name in (
             (self.route_status_label, "Current audio route"),
             (self.preset_status_label, "Active preset and saved state"),
             (self.transmission_status_label, "Audio transmission state"),
             (self.health_summary_label, "Compact audio health summary"),
+            (self.calibration_status_label, "Saved calibration validity"),
         ):
             label.setAccessibleName(name)
             label.setStyleSheet(SUBDUED_TEXT_STYLE)
@@ -528,10 +547,12 @@ class MainWindow(QMainWindow):
         session_layout.addWidget(self.preset_status_label, 0, 1)
         session_layout.addWidget(self.transmission_status_label, 0, 2)
         session_layout.addWidget(self.health_summary_label, 0, 3)
+        session_layout.addWidget(self.calibration_status_label, 0, 4)
         session_layout.setColumnStretch(0, 1)
         session_layout.setColumnStretch(1, 1)
         session_layout.setColumnStretch(2, 1)
         session_layout.setColumnStretch(3, 1)
+        session_layout.setColumnStretch(4, 1)
         control_stack.addLayout(session_layout)
 
         self.action_layout = QGridLayout()
@@ -574,19 +595,23 @@ class MainWindow(QMainWindow):
         )
         self._undo_auto_eq_button.clicked.connect(self.undo_configuration)
 
-        self.bypass_checkbox = QCheckBox("Master Bypass")
-        self.bypass_checkbox.setToolTip(
-            "Bypass voice effects; input conditioning and configured output protection remain. "
-            "Raw Monitor takes precedence when enabled."
+        processing_mode_label = QLabel("Mode:")
+        self.processing_mode_combo = QComboBox()
+        for label, mode in PROCESSING_MODE_OPTIONS:
+            self.processing_mode_combo.addItem(label, mode)
+        self.processing_mode_combo.setMinimumWidth(128)
+        self.processing_mode_combo.setToolTip(
+            "Normal applies the voice chain. Bypass keeps input conditioning and output protection. "
+            "Raw Monitor skips input filtering and the voice chain for diagnostics."
         )
-        self.bypass_checkbox.toggled.connect(self._on_bypass_toggled)
-
-        self.raw_monitor_checkbox = QCheckBox("Raw Monitor")
-        self.raw_monitor_checkbox.setToolTip(
-            "Diagnostic monitoring before input filtering and voice effects; "
-            "configured output protection remains. Takes precedence over Master Bypass."
+        bind_label(
+            processing_mode_label,
+            self.processing_mode_combo,
+            name="Processing mode",
         )
-        self.raw_monitor_checkbox.toggled.connect(self._on_raw_monitor_toggled)
+        self.processing_mode_combo.currentIndexChanged.connect(
+            self._on_processing_mode_changed
+        )
         self.user_mute_checkbox = QCheckBox("Mute Output")
         self.user_mute_checkbox.setToolTip(
             "Keep transmission muted until you uncheck this control. "
@@ -600,11 +625,24 @@ class MainWindow(QMainWindow):
             self.auto_eq_button,
             self.auto_voice_setup_button,
             self._undo_auto_eq_button,
-            self.bypass_checkbox,
-            self.raw_monitor_checkbox,
+            processing_mode_label,
+            self.processing_mode_combo,
         )
         control_stack.addLayout(self.action_layout)
 
+        self.health_details_button = QPushButton("Show Details")
+        self.health_details_button.setCheckable(True)
+        self.health_details_button.setAccessibleName("Show audio health details")
+        control_stack.addWidget(self.health_details_button)
+        self.health_details = QWidget()
+        details_layout = QVBoxLayout(self.health_details)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        self.health_details_button.toggled.connect(self.health_details.setVisible)
+        self.health_details_button.toggled.connect(
+            lambda shown: self.health_details_button.setText("Hide Details" if shown else "Show Details")
+        )
+        self.health_details.hide()
+        control_stack.addWidget(self.health_details)
         self.health_decision_layout = QGridLayout()
         self.health_decision_layout.setSpacing(SPACING_NORMAL)
         self.health_decision_layout.setContentsMargins(0, 2, 0, 0)
@@ -646,7 +684,7 @@ class MainWindow(QMainWindow):
             self.callback_health_label,
             self.underrun_health_label,
         )
-        control_stack.addLayout(self.health_decision_layout)
+        details_layout.addLayout(self.health_decision_layout)
 
         self.health_layout = QGridLayout()
         self.health_layout.setSpacing(SPACING_NORMAL)
@@ -680,7 +718,7 @@ class MainWindow(QMainWindow):
             self.dropped_label,
             self.recovery_diag_label,
         )
-        control_stack.addLayout(self.health_layout)
+        details_layout.addLayout(self.health_layout)
         main_layout.addWidget(control_group)
 
         self._reset_health_labels()
@@ -712,8 +750,7 @@ class MainWindow(QMainWindow):
         self.setTabOrder(self.stop_btn, self.auto_eq_button)
         self.setTabOrder(self.auto_eq_button, self.auto_voice_setup_button)
         self.setTabOrder(self.auto_voice_setup_button, self._undo_auto_eq_button)
-        self.setTabOrder(self._undo_auto_eq_button, self.bypass_checkbox)
-        self.setTabOrder(self.bypass_checkbox, self.raw_monitor_checkbox)
+        self.setTabOrder(self._undo_auto_eq_button, self.processing_mode_combo)
 
     @staticmethod
     def _remove_grid_widgets(layout: QGridLayout, widgets: tuple[QWidget, ...]) -> None:
@@ -787,7 +824,7 @@ class MainWindow(QMainWindow):
         widgets = self._action_layout_widgets
         self._remove_grid_widgets(self.action_layout, widgets)
         action_buttons = widgets[:5]
-        bypass_checkbox, raw_monitor_checkbox = widgets[5:]
+        mode_label, mode_combo = widgets[5:]
         if compact:
             for index, button in enumerate(action_buttons):
                 row, column = divmod(index, 3)
@@ -795,15 +832,17 @@ class MainWindow(QMainWindow):
             for column in range(3):
                 self.action_layout.setColumnStretch(column, 1)
             self.action_layout.addWidget(
-                bypass_checkbox,
+                mode_label,
                 1,
                 3,
                 Qt.AlignmentFlag.AlignVCenter,
             )
             self.action_layout.addWidget(
-                raw_monitor_checkbox,
+                mode_combo,
                 1,
                 4,
+                1,
+                1,
                 Qt.AlignmentFlag.AlignVCenter,
             )
             return
@@ -812,13 +851,13 @@ class MainWindow(QMainWindow):
             self.action_layout.addWidget(button, 0, column)
         self.action_layout.setColumnStretch(5, 1)
         self.action_layout.addWidget(
-            bypass_checkbox,
+            mode_label,
             0,
             6,
             Qt.AlignmentFlag.AlignVCenter,
         )
         self.action_layout.addWidget(
-            raw_monitor_checkbox,
+            mode_combo,
             0,
             7,
             Qt.AlignmentFlag.AlignVCenter,
@@ -1054,6 +1093,69 @@ class MainWindow(QMainWindow):
         except Exception:
             logger.debug("Failed to apply input cleanup mode", exc_info=True)
 
+    @staticmethod
+    def _is_valid_processing_mode(mode: object) -> bool:
+        return isinstance(mode, str) and any(
+            mode == option_mode for _label, option_mode in PROCESSING_MODE_OPTIONS
+        )
+
+    def _processing_mode(self) -> str:
+        """Return the selected mode, or its last applied value during initialization."""
+        combo = self.__dict__.get("processing_mode_combo")
+        if combo is not None:
+            mode = combo.currentData()
+            if self._is_valid_processing_mode(mode):
+                return str(mode)
+        return self.__dict__.get("_applied_processing_mode", "normal")
+
+    def _set_processing_mode(self, mode: str, *, notify: bool = False) -> None:
+        target = mode if self._is_valid_processing_mode(mode) else "normal"
+        combo = self.__dict__.get("processing_mode_combo")
+        if combo is not None:
+            index = combo.findData(target)
+            if index >= 0 and combo.currentIndex() != index:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(index)
+                combo.blockSignals(False)
+
+        try:
+            if hasattr(self.processor, "set_raw_monitor_enabled"):
+                self.processor.set_raw_monitor_enabled(target == "raw")
+            if hasattr(self.processor, "set_bypass"):
+                self.processor.set_bypass(target == "bypass")
+        except Exception as error:
+            raise RuntimeError(f"Processing mode could not be applied: {error}") from error
+        self._applied_processing_mode = target
+
+        if notify:
+            message = {
+                "normal": "Processing active",
+                "bypass": (
+                    "Voice effects bypassed; input conditioning and configured "
+                    "output protection remain"
+                ),
+                "raw": "Raw monitor enabled - skipping pre-filter and DSP chain",
+            }[target]
+            self.status_bar.showMessage(message)
+        update_summary = getattr(self, "_update_session_summary", None)
+        if callable(update_summary):
+            update_summary()
+
+    def _on_processing_mode_changed(self, _index: int) -> None:
+        previous = self.__dict__.get("_applied_processing_mode", "normal")
+        try:
+            self._set_processing_mode(self._processing_mode(), notify=True)
+        except RuntimeError as error:
+            try:
+                self._set_processing_mode(previous)
+            except RuntimeError:
+                self.set_temporary_output_mute(True, "processing_mode_error")
+                self.status_bar.showMessage(f"{error}; output muted because restoration failed")
+                return
+            self.status_bar.showMessage(f"{error}; previous mode restored", 6000)
+        else:
+            self.set_temporary_output_mute(False, "processing_mode_error")
+
     def _apply_output_mute(self) -> None:
         """Apply user and temporary mute state without either one clearing the other."""
         muted = bool(
@@ -1066,6 +1168,11 @@ class MainWindow(QMainWindow):
         except Exception:
             self._output_mute_error = "unavailable"
             logger.debug("Failed to apply output mute state", exc_info=True)
+        tray_mute_action = self.__dict__.get("_tray_mute_action")
+        if tray_mute_action is not None:
+            tray_mute_action.blockSignals(True)
+            tray_mute_action.setChecked(bool(self.user_muted))
+            tray_mute_action.blockSignals(False)
         self._update_session_summary()
 
     def set_temporary_output_mute(
@@ -1086,10 +1193,7 @@ class MainWindow(QMainWindow):
         saved = False
         if self.__dict__.get("config") is not None:
             self.config.user_muted = self.user_muted
-            try:
-                saved = save_config(self.config)
-            except (OSError, TypeError, ValueError):
-                pass
+            saved = self._save_config_safely()
         if self.__dict__.get("_output_mute_error"):
             message = "Output mute change could not be applied"
             if saved:
@@ -1111,14 +1215,16 @@ class MainWindow(QMainWindow):
         ) or "Default input"
         output_name = self._device_name_from_identity(
             self._combo_device_identity(self.output_combo)
-        ) or "Default output"
+        ) or "Select a destination"
         self.route_status_label.setText(f"Route: {input_name} -> {output_name}")
         state = "unsaved changes" if self.preset_modified else "saved"
         self.preset_status_label.setText(
             f"Preset: {self.current_preset_name or 'Default'} ({state})"
         )
         running = bool(getattr(self, "processor", None) and self.processor.is_running())
-        transmission = "Running" if running else "Stopped"
+        mode = self._processing_mode()
+        mode_label = next(label for label, value in PROCESSING_MODE_OPTIONS if value == mode)
+        transmission = f"{'Running' if running else 'Stopped'} / {mode_label}"
         if self.__dict__.get("_output_mute_error"):
             transmission += " / Mute pending"
         elif self.__dict__.get("user_muted", False) or self.__dict__.get(
@@ -1126,6 +1232,57 @@ class MainWindow(QMainWindow):
         ):
             transmission += " / Muted"
         self.transmission_status_label.setText(f"Transmission: {transmission}")
+        tray = self.__dict__.get("_tray_icon")
+        if tray is not None:
+            tray.setToolTip(build_tray_tooltip(
+                processing=running,
+                muted=bool(self.user_muted or self._temporary_mute_reasons),
+                health=self.health_summary_label.text().removeprefix("Health: "),
+                route=f"{input_name} -> {output_name}",
+            ))
+        if self.__dict__.get("_history_ready") and not self.__dict__.get("_calibration_dialog_open"):
+            self._refresh_calibration_status()
+
+    def _refresh_calibration_status(self) -> None:
+        from .calibration_history import calibration_summary
+
+        self.calibration_status_label.setText(calibration_summary(self))
+
+    def _sync_calibration_evidence(self, *, force_reset: bool = False) -> None:
+        """Apply calibration-derived DSP state after an explicit state change.
+
+        Rendering calibration status is deliberately read-only. This method is
+        called by configuration and route commands so a matching capture keeps
+        its noise reference after a tone edit, while a changed route or
+        correction clears it explicitly.
+        """
+        if self.__dict__.get("_calibration_dialog_open") or self.__dict__.get(
+            "_history_replaying"
+        ):
+            return
+        if not hasattr(self, "config") or not hasattr(self, "compressor_panel"):
+            return
+        from .calibration_history import current_calibration
+
+        records = getattr(self.config, "calibration_results", ())
+        if not records:
+            if not force_reset and not self.__dict__.get(
+                "_persisted_calibration_active", False
+            ):
+                return
+            result = None
+        else:
+            result = current_calibration(self, "full_voice_setup")
+        reliability = result.noise_reference_reliability if result is not None else 0.0
+        current = self.compressor_panel.get_compressor_settings(
+            include_calibration=True
+        )
+        current_reliability = current["noise_reference_reliability"]
+        if current_reliability != reliability:
+            self.compressor_panel.set_compressor_settings(
+                {"noise_reference_reliability": reliability}
+            )
+        self._persisted_calibration_active = result is not None
 
     def _set_preset_identity(
         self,
@@ -1136,6 +1293,7 @@ class MainWindow(QMainWindow):
         persist_last_used: bool = True,
     ) -> None:
         self.current_preset_name = str(preset.name or "Default")
+        self.current_preset_description = preset.description
         self.current_preset_path = path
         self._saved_preset_payload = self._preset_payload(preset)
         if persist_last_used:
@@ -1181,6 +1339,14 @@ class MainWindow(QMainWindow):
     def _schedule_ui_state_save(self) -> None:
         self._ui_state_timer.start(200)
 
+    def _save_config_safely(self) -> bool:
+        """Persist config without letting a write failure disrupt the UI."""
+        try:
+            return bool(save_config(self.config))
+        except Exception:
+            logger.warning("Could not save AudioForge configuration", exc_info=True)
+            return False
+
     def _save_ui_state(self) -> bool:
         if (
             hasattr(self, "main_splitter")
@@ -1191,12 +1357,10 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, "control_tabs"):
             self.config.main_control_tab_index = int(self.control_tabs.currentIndex())
-        try:
-            return save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            logger.exception("Could not save window settings")
+        saved = self._save_config_safely()
+        if not saved:
             self.status_bar.showMessage("Could not save window settings", 5000)
-            return False
+        return saved
 
     def _clamp_splitter_sizes(self, sizes: list[int]) -> list[int]:
         total = max(sum(int(size) for size in sizes), self.width() - 150, 760)
@@ -1370,10 +1534,7 @@ class MainWindow(QMainWindow):
             cleanup_mode=cleanup_mode,
             provenance="explicit_user",
         )
-        try:
-            saved = save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            saved = False
+        saved = self._save_config_safely()
         if not saved:
             if previous is None:
                 del route_preferences[route_key]
@@ -1431,7 +1592,7 @@ class MainWindow(QMainWindow):
 
         exit_action = QAction("E&xit", self)
         exit_action.setShortcut("Ctrl+Q")
-        exit_action.triggered.connect(self.close)
+        exit_action.triggered.connect(self._quit_from_tray)
         file_menu.addAction(exit_action)
 
         # Edit menu
@@ -1454,10 +1615,14 @@ class MainWindow(QMainWindow):
         presets_menu = menubar.addMenu("&Presets")
         assert presets_menu is not None
 
-        save_preset_action = QAction("Save &Complete Preset...", self)
+        save_preset_action = QAction("&Save Preset", self)
         save_preset_action.setShortcut("Ctrl+S")
         save_preset_action.triggered.connect(self._save_preset)
         presets_menu.addAction(save_preset_action)
+        save_as_action = QAction("Save Preset &As...", self)
+        save_as_action.setShortcut("Ctrl+Shift+S")
+        save_as_action.triggered.connect(self._save_preset_as)
+        presets_menu.addAction(save_as_action)
 
         load_preset_action = QAction("&Load Complete Preset...", self)
         load_preset_action.setShortcut("Ctrl+O")
@@ -1632,24 +1797,183 @@ class MainWindow(QMainWindow):
         )
         options_menu.addAction(latency_calibration_action)
 
+        options_menu.addSeparator()
+
+        desktop_menu = options_menu.addMenu("Tray &Background")
+        assert desktop_menu is not None
+        self._close_to_tray_action = QAction(
+            "Keep running in tray when window is closed", self
+        )
+        self._close_to_tray_action.setCheckable(True)
+        self._close_to_tray_action.setChecked(
+            bool(getattr(self.config, "close_to_tray", False))
+        )
+        self._close_to_tray_action.setToolTip(
+            "Hide the window while audio continues; use the tray menu to show or quit."
+        )
+        self._close_to_tray_action.toggled.connect(self._on_close_to_tray_toggled)
+        desktop_menu.addAction(self._close_to_tray_action)
+
+        self._mute_hotkey_action = QAction(
+            f"Enable global mute shortcut ({DEFAULT_MUTE_HOTKEY})", self
+        )
+        self._mute_hotkey_action.setCheckable(True)
+        self._mute_hotkey_action.setChecked(bool(getattr(self.config, "mute_hotkey", "")))
+        self._mute_hotkey_action.setToolTip(
+            "Toggle Output Mute from any application while AudioForge is running."
+        )
+        self._mute_hotkey_action.toggled.connect(self._on_mute_hotkey_toggled)
+        desktop_menu.addAction(self._mute_hotkey_action)
+
+    def _setup_desktop_integration(self) -> None:
+        """Create the optional tray icon and register the configured hotkey."""
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._mark_quitting)
+
+        configured_hotkey = str(getattr(self.config, "mute_hotkey", "") or "")
+        if configured_hotkey:
+            self._register_mute_hotkey(configured_hotkey)
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            if self._close_to_tray_action is not None:
+                self._close_to_tray_action.setEnabled(False)
+                self._close_to_tray_action.blockSignals(True)
+                self._close_to_tray_action.setChecked(False)
+                self._close_to_tray_action.blockSignals(False)
+            return
+
+        icon = self.windowIcon()
+        if icon.isNull() and isinstance(app, QGuiApplication):
+            icon = app.windowIcon()
+        if icon.isNull():
+            icon = QIcon.fromTheme("audio-card")
+        self._tray_icon = QSystemTrayIcon(icon, self)
+        self._tray_icon.setToolTip("AudioForge microphone processor")
+        self._tray_menu = QMenu(self)
+
+        show_action = QAction("Show AudioForge", self)
+        show_action.triggered.connect(self._show_from_tray)
+        self._tray_menu.addAction(show_action)
+
+        self._tray_mute_action = QAction("Mute Output", self)
+        self._tray_mute_action.setCheckable(True)
+        self._tray_mute_action.setChecked(self.user_muted)
+        self._tray_mute_action.toggled.connect(self._on_tray_mute_toggled)
+        self._tray_menu.addAction(self._tray_mute_action)
+        self._tray_menu.addSeparator()
+
+        if self._close_to_tray_action is not None:
+            self._tray_menu.addAction(self._close_to_tray_action)
+        self._tray_menu.addSeparator()
+        quit_action = QAction("Quit AudioForge", self)
+        quit_action.triggered.connect(self._quit_from_tray)
+        self._tray_menu.addAction(quit_action)
+        self._tray_icon.setContextMenu(self._tray_menu)
+        self._tray_icon.activated.connect(self._on_tray_activated)
+        self._tray_icon.show()
+        self._update_session_summary()
+
+    def _mark_quitting(self) -> None:
+        self._quitting = True
+
+    def _show_from_tray(self) -> None:
+        activate_window(self)
+
+    def _on_tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._show_from_tray()
+
+    def _on_tray_mute_toggled(self, checked: bool) -> None:
+        if self.user_mute_checkbox.isChecked() != bool(checked):
+            self.user_mute_checkbox.setChecked(bool(checked))
+
+    def _on_close_to_tray_toggled(self, checked: bool) -> None:
+        setattr(self.config, "close_to_tray", bool(checked))
+        saved = self._save_config_safely()
+        message = "Close-to-tray enabled" if checked else "Close-to-tray disabled"
+        if not saved:
+            message += "; preference could not be saved"
+        self.status_bar.showMessage(message, 5000 if not saved else 3000)
+
+    def _on_mute_hotkey_toggled(self, checked: bool) -> None:
+        configured_hotkey = DEFAULT_MUTE_HOTKEY if checked else ""
+        setattr(self.config, "mute_hotkey", configured_hotkey)
+        if checked:
+            registered = self._register_mute_hotkey(configured_hotkey)
+        else:
+            self._unregister_mute_hotkey()
+            registered = True
+        saved = self._save_config_safely()
+        if checked and not registered:
+            return
+        message = (
+            f"Global mute shortcut {'enabled' if checked else 'disabled'}"
+        )
+        if not saved:
+            message += "; preference could not be saved"
+        self.status_bar.showMessage(message, 5000 if not saved else 3000)
+
+    def _register_mute_hotkey(self, shortcut: str) -> bool:
+        self._unregister_mute_hotkey()
+        hotkey = GlobalMuteHotkey(shortcut, self._toggle_mute_from_hotkey)
+        registered, error = hotkey.register()
+        if not registered:
+            self.config.mute_hotkey = ""
+            if self._mute_hotkey_action is not None:
+                self._mute_hotkey_action.blockSignals(True)
+                self._mute_hotkey_action.setChecked(False)
+                self._mute_hotkey_action.blockSignals(False)
+            self.status_bar.showMessage(
+                f"Global mute shortcut unavailable: {error}",
+                8000,
+            )
+            return False
+        self._mute_hotkey = hotkey
+        return True
+
+    def _unregister_mute_hotkey(self) -> None:
+        if self._mute_hotkey is None:
+            return
+        self._mute_hotkey.unregister()
+        self._mute_hotkey = None
+
+    def _toggle_mute_from_hotkey(self) -> None:
+        self.user_mute_checkbox.setChecked(not self.user_mute_checkbox.isChecked())
+
+    def _quit_from_tray(self) -> None:
+        self._quitting = True
+        if self.close():
+            app = QGuiApplication.instance()
+            if app is not None:
+                app.quit()
+
     def _set_startup_preset(self, preset_id: str):
         """Set the startup preset and update checked states.
 
         Args:
             preset_id: Stable preset ID to load on startup (empty string = Last Used)
         """
-        # Update config
+        previous = self.config.startup_preset
         self.config.startup_preset = preset_id
 
-        # Save config
-        save_config(self.config)
+        saved = self._save_config_safely()
+        if not saved:
+            self.config.startup_preset = previous
+            self.status_bar.showMessage(
+                "Startup preset could not be saved; previous selection kept", 6000
+            )
+            self._update_startup_preset_menu(previous)
+            return
 
-        # Show status message
         if preset_id:
             preset_name = _startup_preset_display_name(preset_id)
-            self.status_bar.showMessage(f"Startup preset set to {preset_name}", 5000)
+            message = f"Startup preset set to {preset_name}"
         else:
-            self.status_bar.showMessage("Startup preset set to Last Used", 5000)
+            message = "Startup preset set to Last Used"
+        self.status_bar.showMessage(message, 5000)
 
         self._update_startup_preset_menu(preset_id)
 
@@ -1759,9 +2083,16 @@ class MainWindow(QMainWindow):
 
     def _on_auto_apply_device_presets_toggled(self, checked: bool) -> None:
         self.config.auto_apply_device_presets = bool(checked)
-        save_config(self.config)
+        saved = self._save_config_safely()
         if checked:
             self._apply_bound_preset_for_current_route()
+        if not saved:
+            state = "enabled" if checked else "disabled"
+            self.status_bar.showMessage(
+                f"Automatic route presets {state} for this session, "
+                "but the preference could not be saved",
+                6000,
+            )
 
     def _bind_current_route_preset(self, preset_id: str) -> None:
         route_key = self._current_device_route_key()
@@ -1770,11 +2101,22 @@ class MainWindow(QMainWindow):
                 "Connect and select both route devices before binding a preset", 5000
             )
             return
+        previous = self.config.device_preset_bindings.get(route_key)
         self.config.device_preset_bindings[route_key] = DevicePresetBinding(
             preset_id=preset_id,
             provenance="explicit_user",
         )
-        save_config(self.config)
+        if not self._save_config_safely():
+            if previous is None:
+                self.config.device_preset_bindings.pop(route_key, None)
+            else:
+                self.config.device_preset_bindings[route_key] = previous
+            self._update_device_preset_menu()
+            self.status_bar.showMessage(
+                "Preset binding could not be saved; previous binding kept",
+                6000,
+            )
+            return
         self._update_device_preset_menu()
         self.status_bar.showMessage(
             f"Bound {_startup_preset_display_name(preset_id)} to this device route",
@@ -1787,7 +2129,14 @@ class MainWindow(QMainWindow):
             return
         removed = self.config.device_preset_bindings.pop(route_key, None)
         if removed is not None:
-            save_config(self.config)
+            if not self._save_config_safely():
+                self.config.device_preset_bindings[route_key] = removed
+                self._update_device_preset_menu()
+                self.status_bar.showMessage(
+                    "Preset binding could not be cleared because the change could not be saved",
+                    6000,
+                )
+                return
         self._update_device_preset_menu()
         self.status_bar.showMessage("Cleared the preset binding for this route", 4000)
 
@@ -1841,8 +2190,7 @@ class MainWindow(QMainWindow):
             preset = BUILTIN_PRESETS.get(key)
             if preset is None:
                 return False
-            self._apply_preset(preset, preset_key=key, persist_last_used=False)
-            return True
+            return self._apply_preset(preset, preset_key=key, persist_last_used=False)
         if not preset_id.startswith(STARTUP_CUSTOM_PREFIX):
             return False
         custom_id = preset_id[len(STARTUP_CUSTOM_PREFIX) :]
@@ -1855,11 +2203,9 @@ class MainWindow(QMainWindow):
             return False
         _name, filepath = candidates[0]
         preset = load_preset(filepath)
-        self._apply_preset(
+        return self._apply_preset(
             preset, preset_path=filepath, persist_last_used=False
         )
-        save_config(self.config)
-        return True
 
     def _apply_bound_preset_for_current_route(self) -> bool:
         if not self.config.auto_apply_device_presets:
@@ -1921,10 +2267,7 @@ class MainWindow(QMainWindow):
             profiles[key] = profile
             if legacy_key != key and legacy_key in profiles:
                 del profiles[legacy_key]
-            try:
-                saved = save_config(self.config)
-            except (OSError, TypeError, ValueError):
-                saved = False
+            saved = self._save_config_safely()
             if not saved:
                 self.status_bar.showMessage("Updated latency profile could not be saved", 6000)
         return (
@@ -2001,10 +2344,7 @@ class MainWindow(QMainWindow):
     def _on_use_measured_latency_toggled(self, enabled: bool):
         self.config.use_measured_latency = bool(enabled)
         self._apply_latency_compensation_for_current_devices()
-        try:
-            saved = save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            saved = False
+        saved = self._save_config_safely()
         mode = "enabled" if enabled else "disabled"
         message = f"Measured route delay in latency estimate {mode}"
         if not saved:
@@ -2038,10 +2378,7 @@ class MainWindow(QMainWindow):
         except ValueError as error:
             self.status_bar.showMessage(str(error), 6000)
             return False
-        try:
-            saved = save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            saved = False
+        saved = self._save_config_safely()
         if not saved:
             self.config.latency_calibration_profiles = previous
             self.status_bar.showMessage("Latency calibration could not be saved; retry saving", 6000)
@@ -2069,10 +2406,7 @@ class MainWindow(QMainWindow):
                 del self.config.latency_calibration_profiles[candidate]
                 removed = True
         if removed:
-            try:
-                saved = save_config(self.config)
-            except (OSError, TypeError, ValueError):
-                saved = False
+            saved = self._save_config_safely()
             if not saved:
                 self.config.latency_calibration_profiles = previous
                 self.status_bar.showMessage("Latency calibration reset could not be saved", 6000)
@@ -2183,14 +2517,12 @@ class MainWindow(QMainWindow):
                     )
                 if previous_output is not None:
                     if not self._select_combo_identity(self.output_combo, previous_output):
-                        fallback_index = self._default_combo_index(self.output_combo)
-                        if fallback_index >= 0:
-                            self.output_combo.setCurrentIndex(fallback_index)
-                        if previous_output.name:
-                            self.status_bar.showMessage(
-                                f"Previous output device '{previous_output.name}' is disconnected; "
-                                "using the default until it returns"
-                            )
+                        self.output_combo.setCurrentIndex(-1)
+                        self.output_combo.setPlaceholderText("Select a replacement destination")
+                        self.status_bar.showMessage(
+                            f"Destination '{previous_output.name}' is disconnected; "
+                            "select a replacement or reconnect it before starting"
+                        )
                     else:
                         resolved = self._combo_device_identity(self.output_combo)
                         if (
@@ -2237,16 +2569,19 @@ class MainWindow(QMainWindow):
             )
             route_changed = previous_route != current_route
             if route_changed or capture_format_changed:
-                self.compressor_panel.set_compressor_settings(
-                    {"noise_reference_reliability": 0.0}
-                )
                 self._apply_input_preferences_for_current_route()
                 self._apply_latency_compensation_for_current_devices()
             if route_changed:
                 self._apply_bound_preset_for_current_route()
+            if route_changed or capture_format_changed:
+                self._sync_calibration_evidence(force_reset=True)
 
         if config_dirty:
-            save_config(self.config)
+            if not self._save_config_safely():
+                self.status_bar.showMessage(
+                    "Device selections applied for this session, but could not be saved",
+                    6000,
+                )
         self._update_session_summary()
 
     def _restore_from_config(self):
@@ -2300,9 +2635,10 @@ class MainWindow(QMainWindow):
                     config_dirty = True
                 restored_count += 1
             else:
+                self.output_combo.setCurrentIndex(-1)
+                self.output_combo.setPlaceholderText("Select a replacement destination")
                 self.status_bar.showMessage(
-                    f"Previous output device '{output_identity.name}' is disconnected; "
-                    "using the default until it returns"
+                    f"Destination '{output_identity.name}' is disconnected; select a replacement"
                 )
 
         # Restore preset (startup preset takes priority over last used)
@@ -2324,13 +2660,13 @@ class MainWindow(QMainWindow):
                 preset_key = preset_id[len(STARTUP_BUILTIN_PREFIX) :]
                 if preset_key in BUILTIN_PRESETS:
                     preset = BUILTIN_PRESETS[preset_key]
-                    self._apply_preset(
+                    preset_loaded = self._apply_preset(
                         preset,
                         preset_key=preset_key,
                         persist_last_used=False,
                     )
-                    self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
-                    preset_loaded = True
+                    if preset_loaded:
+                        self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
             # Try custom presets
             elif preset_id.startswith(STARTUP_CUSTOM_PREFIX):
                 custom_name = preset_id[len(STARTUP_CUSTOM_PREFIX) :]
@@ -2338,15 +2674,15 @@ class MainWindow(QMainWindow):
                     if name == custom_name:
                         try:
                             preset = load_preset(filepath)
-                            self._apply_preset(
+                            preset_loaded = self._apply_preset(
                                 preset,
                                 preset_path=filepath,
                                 persist_last_used=False,
                             )
-                            self.status_bar.showMessage(
-                                f"Startup preset: {preset_name}", 5000
-                            )
-                            preset_loaded = True
+                            if preset_loaded:
+                                self.status_bar.showMessage(
+                                    f"Startup preset: {preset_name}", 5000
+                                )
                         except Exception:
                             logger.warning(
                                 "Failed to load startup preset %s",
@@ -2363,15 +2699,15 @@ class MainWindow(QMainWindow):
                     if name == preset_id:
                         try:
                             preset = load_preset(filepath)
-                            self._apply_preset(
+                            preset_loaded = self._apply_preset(
                                 preset,
                                 preset_path=filepath,
                                 persist_last_used=False,
                             )
-                            self.status_bar.showMessage(
-                                f"Startup preset: {preset_name}", 5000
-                            )
-                            preset_loaded = True
+                            if preset_loaded:
+                                self.status_bar.showMessage(
+                                    f"Startup preset: {preset_name}", 5000
+                                )
                         except Exception:
                             logger.warning(
                                 "Failed to load startup preset %s",
@@ -2399,31 +2735,33 @@ class MainWindow(QMainWindow):
                     preset_key = self.config.last_preset[8:]  # Remove "builtin:" prefix
                     if preset_key in BUILTIN_PRESETS:
                         preset = BUILTIN_PRESETS[preset_key]
-                        self._apply_preset(preset, preset_key=preset_key)
-                        # Re-save config to persist preset for next session
-                        save_config(self.config)
-                        restored_count += 1
+                        preset_loaded = self._apply_preset(preset, preset_key=preset_key)
+                        if not preset_loaded:
+                            self.config.last_preset = ""
+                            config_dirty = True
+                        restored_count += int(preset_loaded)
                     else:
                         self.status_bar.showMessage(
                             f"Previous preset '{preset_key}' not found, starting with defaults"
                         )
                         self.config.last_preset = ""
-                        save_config(self.config)
+                        config_dirty = True
                 else:
                     # It's a file path
                     preset_path = Path(self.config.last_preset)
                     if preset_path.exists():
                         preset = load_preset(preset_path)
-                        self._apply_preset(preset, preset_path=preset_path)
-                        # Re-save config to persist preset for next session
-                        save_config(self.config)
-                        restored_count += 1
+                        preset_loaded = self._apply_preset(preset, preset_path=preset_path)
+                        if not preset_loaded:
+                            self.config.last_preset = ""
+                            config_dirty = True
+                        restored_count += int(preset_loaded)
                     else:
                         self.status_bar.showMessage(
                             "Previous preset file not found, starting with defaults"
                         )
                         self.config.last_preset = ""
-                        save_config(self.config)
+                        config_dirty = True
             except (OSError, ValueError, PresetValidationError) as e:
                 logger.warning("Preset restore failed", exc_info=True)
                 warning = f"Could not restore the previous preset; starting with defaults. {e}"
@@ -2431,16 +2769,18 @@ class MainWindow(QMainWindow):
                     text for text in (self.config.load_warning, warning) if text
                 )
                 self.config.last_preset = ""
-                try:
-                    cleared = save_config(self.config)
-                except (OSError, TypeError, ValueError):
-                    cleared = False
+                cleared = self._save_config_safely()
                 if not cleared:
                     self.config.load_warning += "\nThe cleared preset reference could not be saved."
 
         # Show appropriate status message
         if self.config.load_warning:
             self.status_bar.showMessage(self.config.load_warning)
+        elif self.__dict__.get("_last_preset_identity_persisted") is False:
+            self.status_bar.showMessage(
+                "Preset applied for this session, but could not be remembered for the next launch",
+                6000,
+            )
         elif restored_count == 0:
             self.status_bar.showMessage("Ready")
         elif restored_count < 3:
@@ -2470,12 +2810,15 @@ class MainWindow(QMainWindow):
             self.input_cleanup_mode_combo.blockSignals(False)
 
         if config_dirty:
-            save_config(self.config)
+            if not self._save_config_safely():
+                self.status_bar.showMessage(
+                    "Restored settings applied for this session, but could not be saved",
+                    6000,
+                )
 
     def _on_device_changed(self):
         """Handle device selection change - save to config."""
         if hasattr(self, "config"):  # Check config is initialized
-            self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
             input_identity = self._combo_device_identity(self.input_combo)
             output_identity = self._combo_device_identity(self.output_combo)
             self.config.last_input_device_identity = input_identity
@@ -2487,9 +2830,15 @@ class MainWindow(QMainWindow):
                 output_identity
             )
             self._apply_input_preferences_for_current_route()
-            save_config(self.config)
+            saved = self._save_config_safely()
             self._apply_latency_compensation_for_current_devices()
             self._apply_bound_preset_for_current_route()
+            self._sync_calibration_evidence(force_reset=True)
+            if not saved:
+                self.status_bar.showMessage(
+                    "Device route applied for this session, but could not be saved",
+                    6000,
+                )
             self._update_session_summary()
 
     def _on_input_channel_mode_changed(self):
@@ -2502,8 +2851,8 @@ class MainWindow(QMainWindow):
         cleanup_mode = getattr(self.config, "input_cleanup_mode", "off")
         self._store_input_preference(channel_mode=mode, cleanup_mode=cleanup_mode)
         self._apply_input_channel_mode(mode)
-        self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
         self._save_input_preferences()
+        self._sync_calibration_evidence(force_reset=True)
 
     def _on_input_cleanup_mode_changed(self):
         """Persist and apply the selected adaptive input cleanup mode."""
@@ -2515,14 +2864,11 @@ class MainWindow(QMainWindow):
         channel_mode = getattr(self.config, "input_channel_mode", "phase_safe_mono")
         self._store_input_preference(channel_mode=channel_mode, cleanup_mode=mode)
         self._apply_input_cleanup_mode(mode)
-        self.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.0})
         self._save_input_preferences()
+        self._sync_calibration_evidence(force_reset=True)
 
     def _save_input_preferences(self) -> None:
-        try:
-            saved = save_config(self.config)
-        except (OSError, TypeError, ValueError):
-            saved = False
+        saved = self._save_config_safely()
         if not saved:
             self.status_bar.showMessage(
                 "Input settings applied for this session, but could not be saved", 6000
@@ -2533,6 +2879,19 @@ class MainWindow(QMainWindow):
         if self.processor.is_running():
             if DEBUG:
                 logger.debug("Start processing clicked, but processor already running")
+            return
+
+        if "configuration" in self.__dict__.get("_temporary_mute_reasons", set()):
+            self.status_bar.showMessage(
+                "Audio remains stopped and muted because configuration recovery failed; "
+                "reload the preset or restart AudioForge before starting",
+                7000,
+            )
+            self._sync_processing_controls()
+            return
+
+        if self._combo_device_identity(self.output_combo) is None:
+            self.status_bar.showMessage("Select an available destination before starting")
             return
 
         input_device = self._device_selection_to_name(self.input_combo) or None
@@ -2652,6 +3011,7 @@ class MainWindow(QMainWindow):
         finally:
             self._history_transaction_depth -= 1
             self._calibration_dialog_open = False
+        self._sync_calibration_evidence()
         if DEBUG:
             logger.debug("Calibration dialog closed, result=%s", dialog.result())
             is_running = self.processor.is_running()
@@ -2676,6 +3036,7 @@ class MainWindow(QMainWindow):
         finally:
             self._history_transaction_depth -= 1
             self._calibration_dialog_open = False
+        self._sync_calibration_evidence()
         return applied
 
     def capture_pre_auto_eq_state(self):
@@ -2702,6 +3063,7 @@ class MainWindow(QMainWindow):
             self._saved_preset_payload = self._preset_payload(preset)
             self.preset_modified = False
         self._history_ready = True
+        self._sync_calibration_evidence()
         self._update_history_actions()
         self._update_session_summary()
 
@@ -2714,6 +3076,7 @@ class MainWindow(QMainWindow):
             self.config.input_channel_mode,
             self.config.input_cleanup_mode,
             self._current_capture_format_context(),
+            self._processing_mode(),
         ))
 
     def _connect_configuration_history_inputs(self) -> None:
@@ -2735,6 +3098,7 @@ class MainWindow(QMainWindow):
             getattr(self, "output_combo", None),
             getattr(self, "input_channel_mode_combo", None),
             getattr(self, "input_cleanup_mode_combo", None),
+            getattr(self, "processing_mode_combo", None),
         )
         for combo in self.findChildren(QComboBox):
             if combo in ignored_combos:
@@ -2776,6 +3140,7 @@ class MainWindow(QMainWindow):
         ):
             return
         self.preset_modified = True
+        self._sync_calibration_evidence()
         self._update_session_summary()
         self._history_timer.start()
 
@@ -2820,6 +3185,7 @@ class MainWindow(QMainWindow):
                 5000,
             )
             return False
+        self._sync_calibration_evidence()
         if recorded:
             self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
             if source == "ui":
@@ -2834,35 +3200,18 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Restore one validated snapshot without creating a new entry."""
         preset = snapshot.to_preset()
-        previous_preset = self._get_current_preset()
-        previous_compressor = self.compressor_panel.get_compressor_settings(
-            include_calibration=True
-        )
-        previous_provenance = dict(self._current_value_provenance)
         self._history_replaying = True
-        self._history_timer.stop()
         try:
-            self._apply_preset(preset, require_exact=True)
-            self.compressor_panel.set_compressor_settings({
-                "noise_reference_reliability": (
+            self.apply_processing_configuration(
+                preset,
+                noise_reference_reliability=(
                     snapshot.noise_reference_reliability
                     if snapshot.calibration_context_key is not None
                     and snapshot.calibration_context_key == self._calibration_context_key()
                     else 0.0
-                )
-            })
-            self._current_value_provenance = dict(preset.value_provenance)
+                ),
+            )
             self._set_preset_modified()
-        except Exception:
-            try:
-                self._apply_preset(previous_preset, require_exact=True)
-                self.compressor_panel.set_compressor_settings(previous_compressor)
-                self._current_value_provenance = previous_provenance
-            except Exception:
-                logger.exception(
-                    "Configuration-history rollback failed after restore error"
-                )
-            raise
         finally:
             self._history_replaying = False
 
@@ -2955,24 +3304,13 @@ class MainWindow(QMainWindow):
         preset.name = preset_name
         preset.description = description
         preset.version = __version__
-        if self._save_preset_file(preset) is None:
-            return
-        saved_message = f"Preset '{preset_name}' saved successfully."
-        if not self._last_preset_identity_persisted:
-            saved_message += (
-                " AudioForge could not remember it for the next launch."
-            )
-        QMessageBox.information(
-            self,
-            "Preset Saved",
-            saved_message,
-        )
+        self._save_preset_file(preset)
 
-    def _save_preset_file(self, preset: Preset) -> Path | None:
+    def _save_preset_file(self, preset: Preset, *, filepath: Path | None = None) -> Path | None:
         self._last_preset_identity_persisted = True
         try:
             try:
-                filepath = save_preset(preset, overwrite=False)
+                filepath = save_preset(preset, filepath=filepath, overwrite=filepath is not None)
             except FileExistsError:
                 confirm_reply = QMessageBox.question(
                     self,
@@ -2985,21 +3323,19 @@ class MainWindow(QMainWindow):
                     return None
                 filepath = save_preset(preset, overwrite=True)
 
-            previous_path = self.current_preset_path
             previous_last_preset = self.config.last_preset
             self.config.last_preset = str(filepath)
-            try:
-                persisted = save_config(self.config)
-            except (IOError, OSError, ValueError):
-                persisted = False
+            persisted = self._save_config_safely()
             if not persisted:
                 self.config.last_preset = previous_last_preset
-                self.current_preset_path = previous_path
                 self._last_preset_identity_persisted = False
-                return filepath
-            self._set_preset_identity(preset, path=filepath)
+            self._set_preset_identity(preset, path=filepath, persist_last_used=persisted)
+            message = f"Preset saved: {filepath.name}"
+            if not persisted:
+                message += "; could not remember it for the next launch"
+            self.status_bar.showMessage(message, 6000 if not persisted else 3000)
             return filepath
-        except (IOError, OSError, ValueError) as exc:
+        except (IOError, OSError, TypeError, ValueError) as exc:
             logger.warning("Preset save failed", exc_info=True)
             QMessageBox.critical(
                 self,
@@ -3057,24 +3393,32 @@ class MainWindow(QMainWindow):
         )
 
     def _on_bypass_toggled(self, checked):
-        """Handle bypass toggle."""
+        """Handle the legacy bypass signal while the mode combo is present."""
+        if self.__dict__.get("processing_mode_combo") is not None:
+            target = "bypass" if checked else "normal"
+            self._set_processing_mode(target, notify=True)
+            return
         self.processor.set_bypass(checked)
-        if checked:
-            self.status_bar.showMessage(
-                "Voice effects bypassed; input conditioning and configured output protection remain"
-            )
-        else:
-            self.status_bar.showMessage("Processing active")
+        self.status_bar.showMessage(
+            "Voice effects bypassed; input conditioning and configured output protection remain"
+            if checked
+            else "Processing active"
+        )
 
     def _on_raw_monitor_toggled(self, checked):
-        """Handle raw monitor toggle."""
-        self.processor.set_raw_monitor_enabled(checked)
-        if checked:
-            self.status_bar.showMessage(
-                "Raw monitor enabled - skipping pre-filter and DSP chain"
+        """Handle the legacy raw-monitor signal while preserving bypass state."""
+        if self.__dict__.get("processing_mode_combo") is not None:
+            target = "raw" if checked else (
+                "bypass" if self._processing_mode() == "bypass" else "normal"
             )
-        else:
-            self.status_bar.showMessage("Raw monitor disabled")
+            self._set_processing_mode(target, notify=True)
+            return
+        self.processor.set_raw_monitor_enabled(checked)
+        self.status_bar.showMessage(
+            "Raw monitor enabled - skipping pre-filter and DSP chain"
+            if checked
+            else "Raw monitor disabled"
+        )
 
     def _on_rnnoise_toggled(self, checked):
         """Handle RNNoise toggle."""
@@ -3086,55 +3430,40 @@ class MainWindow(QMainWindow):
         self.strength_label.setText(f"{value}%")
         self.processor.set_rnnoise_strength(strength)
 
+    def _apply_noise_model(self, model_id: str) -> None:
+        """Apply manual or calibrated selection without disguising a failed switch."""
+        index = self.model_combo.findData(model_id)
+        if index < 0 or not self.processor.set_noise_model(model_id):
+            raise ValueError(f"Noise model {model_id!r} is unavailable; previous model retained")
+        blocked = self.model_combo.blockSignals(True)
+        try:
+            self.model_combo.setCurrentIndex(index)
+        finally:
+            self.model_combo.blockSignals(blocked)
+        self._set_noise_suppression_latency_label(model_id)
+
     def _on_model_changed(self, index: int):
-        """Handle noise model selection change."""
+        """Apply a manual selection, restoring the actual model on failure."""
         model_id = self.model_combo.itemData(index)
         if not model_id:
             return
-
+        previous_model = self.processor.get_noise_model()
         try:
-            success = self.processor.set_noise_model(model_id)
-            if not success:
-                # Model switch failed - show error and revert
-                QMessageBox.warning(
-                    self,
-                    "Model Switch Failed",
-                    f"Could not switch to {self.model_combo.currentText()}.\n\n"
-                    f"The model may not be available in this build.\n"
-                    f"Reverting to previous model.",
-                )
-                # Revert to RNNoise by its stable item data.
-                rnnoise_index = self.model_combo.findData("rnnoise")
-                if rnnoise_index >= 0:
-                    self.model_combo.setCurrentIndex(rnnoise_index)
-                    return
-            else:
-                self._set_noise_suppression_latency_label(model_id)
-                self.status_bar.showMessage(
-                    f"Switched to {self.model_combo.currentText()}"
-                )
-        except Exception as e:
-            # Unexpected error - show detailed dialog with guidance
-            logger.exception("Model switch error")
-            QMessageBox.critical(
-                self,
-                "Error Switching Model",
-                f"An unexpected error occurred while switching noise models:\n\n"
-                f"{type(e).__name__}: {e}\n\n"
-                f"This may indicate a problem with the selected neural backend.\n"
-                f"Please try:\n"
-                f"1. Restarting the application\n"
-                f"2. Using RNNoise model as fallback\n"
-                f"3. Verifying the bundled model/runtime assets",
-            )
-            # Revert to RNNoise by its stable item data.
-            rnnoise_index = self.model_combo.findData("rnnoise")
-            if rnnoise_index >= 0:
-                self.model_combo.setCurrentIndex(rnnoise_index)
-                return
+            self._apply_noise_model(model_id)
+        except Exception as error:
+            blocked = self.model_combo.blockSignals(True)
+            try:
+                self.model_combo.setCurrentIndex(self.model_combo.findData(previous_model))
+            finally:
+                self.model_combo.blockSignals(blocked)
+            QMessageBox.warning(self, "Model Switch Failed", str(error))
+        else:
+            self.status_bar.showMessage(f"Switched to {self.model_combo.currentText()}")
 
     def _update_meters(self):
         """Update level meters from processor (called by timer)."""
+        if self.__dict__.get("_hidden_to_tray") and self.isHidden():
+            return
         if self.processor.is_running():
             input_rms = self.processor.get_input_rms_db()
             input_peak = self.processor.get_input_peak_db()
@@ -3638,7 +3967,12 @@ class MainWindow(QMainWindow):
             state = next((level for level in ("bad", "warn", "ok") if level in states), "idle")
             if self.__dict__.get("_output_mute_error") and state in {"ok", "idle"}:
                 state = "warn"
-            self._set_health_chip(self.health_summary_label, f"Health: {state.upper()}", state)
+            issues = [
+                label.text() for label in self._health_decision_widgets + self._health_layout_widgets
+                if label.property("health_state") in {"bad", "warn"}
+            ]
+            text = issues[0] if issues else f"Health: {state.upper()}"
+            self._set_health_chip(self.health_summary_label, text, state)
             self._update_session_summary()
 
     def _service_stream_recovery(
@@ -3849,9 +4183,116 @@ class MainWindow(QMainWindow):
             deesser=DeEsserSettings(**deesser_settings),
             compressor=CompressorSettings(**compressor_settings),
             limiter=LimiterSettings(**limiter_settings),
-            bypass=self.bypass_checkbox.isChecked(),
+            bypass=self._processing_mode() == "bypass",
             value_provenance=dict(self._current_value_provenance),
         )
+
+    def _write_processing_configuration(self, preset: Preset) -> None:
+        """Write a validated chain while the caller owns history and output mute."""
+        model = preset.rnnoise.model
+        index = self.model_combo.findData(model)
+        if index < 0 or not self.processor.set_noise_model(model):
+            raise RuntimeError(f"Noise model {model!r} is unavailable")
+        self.model_combo.blockSignals(True)
+        self.model_combo.setCurrentIndex(index)
+        self.model_combo.blockSignals(False)
+        self._set_noise_suppression_latency_label(model)
+        self.gate_panel.set_settings(asdict(preset.gate))
+        self.eq_panel.set_settings(preset.eq.to_dict())
+        self.rnnoise_checkbox.setChecked(preset.rnnoise.enabled)
+        self.processor.set_rnnoise_enabled(preset.rnnoise.enabled)
+        self.strength_slider.setValue(round(preset.rnnoise.strength * 100))
+        self._on_strength_changed(self.strength_slider.value())
+        self.deesser_panel.set_settings(asdict(preset.deesser))
+        self.compressor_panel.set_compressor_settings(asdict(preset.compressor))
+        self.compressor_panel.set_limiter_settings(asdict(preset.limiter))
+        self._set_processing_mode("bypass" if preset.bypass else "normal")
+        self._current_value_provenance = dict(preset.value_provenance)
+
+    def apply_processing_configuration(
+        self,
+        preset: Preset,
+        *,
+        noise_reference_reliability: float | None = None,
+        processing_mode: str | None = None,
+        compressor_metadata: dict[str, object] | None = None,
+    ) -> None:
+        """Apply all settings or restore them, without changing preset identity/history."""
+        if processing_mode is not None and not self._is_valid_processing_mode(
+            processing_mode
+        ):
+            raise ValueError(f"Unknown processing mode: {processing_mode!r}")
+        if compressor_metadata is not None and compressor_metadata.keys() - {
+            "dynamics_intensity", "dynamics_profile", "dynamics_customized",
+        }:
+            raise ValueError("Unknown compressor calibration metadata")
+        candidate = ConfigurationSnapshot.from_preset(
+            preset, label="Apply", source="configuration",
+            noise_reference_reliability=noise_reference_reliability or 0.0,
+        ).to_preset()
+        previous = self._get_current_preset()
+        previous_mode = self._processing_mode()
+        previous_compressor = self.compressor_panel.get_compressor_settings(
+            include_calibration=True
+        )
+        replaying = self.__dict__.get("_history_replaying", False)
+        self._history_replaying = True
+        timer = self.__dict__.get("_history_timer")
+        if timer is not None:
+            timer.stop()
+        release_mute = True
+        try:
+            self.set_temporary_output_mute(True, "configuration")
+            if self.__dict__.get("_output_mute_error") and self.processor.is_running():
+                self.processor.stop()
+                raise RuntimeError("Audio stopped because configuration mute failed")
+            try:
+                self._write_processing_configuration(candidate)
+                if processing_mode is not None:
+                    self._set_processing_mode(processing_mode)
+                if noise_reference_reliability is not None or compressor_metadata:
+                    self.compressor_panel.set_compressor_settings({
+                        **(compressor_metadata or {}),
+                        "noise_reference_reliability": noise_reference_reliability or 0.0,
+                    })
+                if noise_reference_reliability is None and not self.__dict__.get("_calibration_dialog_open"):
+                    self._history_replaying = False
+                    try:
+                        self._sync_calibration_evidence(force_reset=True)
+                    finally:
+                        self._history_replaying = True
+            except Exception as error:
+                try:
+                    self._write_processing_configuration(previous)
+                    self._set_processing_mode(previous_mode)
+                    self.compressor_panel.set_compressor_settings(previous_compressor)
+                except Exception as restore_error:
+                    release_mute = False
+                    try:
+                        self.processor.stop()
+                    except Exception as stop_error:
+                        self.status_bar.showMessage(
+                            "Audio remains muted, but configuration restoration and "
+                            "processor stop both failed; restart AudioForge",
+                            7000,
+                        )
+                        raise RuntimeError(
+                            f"Configuration failed ({error}); restoration failed ({restore_error}); "
+                            f"processor stop failed ({stop_error}). Audio remains muted."
+                        ) from stop_error
+                    self.status_bar.showMessage(
+                        "Audio stopped and muted: configuration restoration failed",
+                        7000,
+                    )
+                    raise RuntimeError(
+                        f"Configuration failed ({error}); restoration failed ({restore_error}). "
+                        "Audio is stopped and muted."
+                    ) from restore_error
+                raise RuntimeError(f"Configuration was not applied; previous sound restored: {error}") from error
+        finally:
+            self._history_replaying = replaying
+            if release_mute:
+                self.set_temporary_output_mute(False, "configuration")
 
     def _apply_preset(
         self,
@@ -3862,7 +4303,7 @@ class MainWindow(QMainWindow):
         scope: str = "complete",
         preset_path: Path | None = None,
         persist_last_used: bool = True,
-    ):
+    ) -> bool:
         """Apply a preset to the UI and processor.
 
         Args:
@@ -3873,7 +4314,8 @@ class MainWindow(QMainWindow):
         if scope not in {"complete", "eq"}:
             raise ValueError(f"Unknown preset scope: {scope}")
         if scope == "eq":
-            self.eq_panel.set_settings(preset.eq.to_dict())
+            self.eq_panel.enabled_checkbox.setChecked(preset.eq.enabled)
+            self.eq_panel._apply_typed_bands(preset.eq.bands, layer="tone")
             self.status_bar.showMessage(f"Applied EQ-only template: {preset.name}")
             if self.__dict__.get("_history_ready", False) and not self.__dict__.get(
                 "_history_replaying", False
@@ -3884,133 +4326,42 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self._set_preset_modified(True)
-            return
+            return True
 
-        requested_model = getattr(preset.rnnoise, "model", "rnnoise")
-        requested_model_index = self.model_combo.findData(requested_model)
-        model_fallback_warning: str | None = None
-        if require_exact and requested_model_index < 0:
-            raise RuntimeError(
-                f"Noise model {requested_model!r} is not present in this runtime"
-            )
-
-        # Apply gate settings (including VAD mode and auto-threshold)
-        self.gate_panel.set_settings(asdict(preset.gate))
-
-        # Apply EQ settings
-        self.eq_panel.set_settings(preset.eq.to_dict())
-
-        # Apply RNNoise settings
-        self.rnnoise_checkbox.setChecked(preset.rnnoise.enabled)
-        self.processor.set_rnnoise_enabled(preset.rnnoise.enabled)
-
-        # Apply strength
-        strength_percent = round(preset.rnnoise.strength * 100)
-        self.strength_slider.setValue(strength_percent)
-        self._on_strength_changed(self.strength_slider.value())
-
-        # Apply model selection
-        model = requested_model
-        model_index = requested_model_index
-        model_found = model_index >= 0
-        if model_found:
-            # Block signals to prevent duplicate model initialization.
-            # setCurrentIndex triggers currentIndexChanged which calls
-            # set_noise_model, so call it directly below instead.
-            self.model_combo.blockSignals(True)
-            self.model_combo.setCurrentIndex(model_index)
-            self.model_combo.blockSignals(False)
-            # Try to set model, handle errors gracefully.
-            try:
-                success = self.processor.set_noise_model(model)
-                if success:
-                    self._set_noise_suppression_latency_label(model)
-                else:
-                    if require_exact:
-                        raise RuntimeError(f"Noise model {model!r} is unavailable")
-                    logger.warning(
-                        "Failed to switch to %s from preset; using RNNoise", model
-                    )
-                    self.status_bar.showMessage(
-                        f"Note: Preset specifies {model} but not available, using RNNoise",
-                        5000,
-                    )
-                    model_fallback_warning = (
-                        f"{model} was unavailable; using RNNoise"
-                    )
-                    rnnoise_index = self.model_combo.findData("rnnoise")
-                    if rnnoise_index >= 0:
-                        self.model_combo.blockSignals(True)
-                        self.model_combo.setCurrentIndex(rnnoise_index)
-                        self.model_combo.blockSignals(False)
-                        self.processor.set_noise_model("rnnoise")
-                        self._set_noise_suppression_latency_label("rnnoise")
-            except Exception:
-                if require_exact:
-                    raise
-                logger.exception("Error switching model in preset")
-                self.status_bar.showMessage(
-                    "Error loading preset model, using RNNoise", 5000
-                )
-                model_fallback_warning = f"{model} failed to load; using RNNoise"
-                rnnoise_index = self.model_combo.findData("rnnoise")
-                if rnnoise_index >= 0:
-                    self.model_combo.blockSignals(True)
-                    self.model_combo.setCurrentIndex(rnnoise_index)
-                    self.model_combo.blockSignals(False)
-                    self.processor.set_noise_model("rnnoise")
-                    self._set_noise_suppression_latency_label("rnnoise")
-
-        if not model_found:
-            logger.warning("Preset model %r not found in available models", model)
-            rnnoise_index = self.model_combo.findData("rnnoise")
-            if rnnoise_index < 0:
-                raise RuntimeError("RNNoise fallback is not present in this runtime")
-            self.model_combo.blockSignals(True)
-            self.model_combo.setCurrentIndex(rnnoise_index)
-            self.model_combo.blockSignals(False)
-            if not self.processor.set_noise_model("rnnoise"):
-                raise RuntimeError("RNNoise fallback could not be activated")
-            self._set_noise_suppression_latency_label("rnnoise")
-            self.status_bar.showMessage(
-                f"Note: Preset model {model!r} is unavailable; using RNNoise",
-                5000,
-            )
-            model_fallback_warning = f"{model} was unavailable; using RNNoise"
-
-        # Apply de-esser settings
-        self.deesser_panel.set_settings(asdict(preset.deesser))
-
-        # Apply compressor settings
-        self.compressor_panel.set_compressor_settings(asdict(preset.compressor))
-
-        # Apply limiter settings
-        self.compressor_panel.set_limiter_settings(asdict(preset.limiter))
-
-        # Apply bypass
-        self.bypass_checkbox.setChecked(preset.bypass)
-        self.processor.set_bypass(preset.bypass)
-
-        # Preserve migration provenance across apply, undo, and redo. A later
-        # manual edit marks only changed paths explicit when it is committed.
-        normalized_preset = Preset.from_dict(preset.to_dict())
-        self._current_value_provenance = dict(normalized_preset.value_provenance)
-
-        if model_fallback_warning is None:
-            self.status_bar.showMessage(f"Loaded preset: {preset.name}")
-        else:
-            self.status_bar.showMessage(
-                f"Loaded preset: {preset.name} ({model_fallback_warning})",
-                6000,
-            )
-
+        if (
+            self.__dict__.get("_history_ready", False)
+            and not self.__dict__.get("_history_replaying", False)
+            and not self._confirm_discard_changes()
+        ):
+            return False
+        try:
+            self.apply_processing_configuration(preset)
+        except Exception as error:
+            if require_exact:
+                raise
+            if self.__dict__.get("_history_ready", False):
+                QMessageBox.critical(self, "Preset Not Applied", str(error))
+            else:
+                self.config.load_warning = "\n".join(filter(None, (
+                    self.config.load_warning, f"Could not restore preset: {error}"
+                )))
+            return False
         history_ready = bool(self.__dict__.get("_history_ready", False))
         history_replaying = bool(self.__dict__.get("_history_replaying", False))
+        preset_id = f"builtin:{preset_key}" if preset_key else None
+        persist_identity = (
+            persist_last_used
+            and not history_replaying
+            and (preset_id is not None or preset_path is not None)
+        )
+        previous_last_preset = ""
+        if persist_identity:
+            previous_last_preset = self.config.last_preset
         if not history_replaying:
             self._set_preset_identity(
                 preset,
                 path=preset_path,
-                preset_id=(f"builtin:{preset_key}" if preset_key else None),
+                preset_id=preset_id,
                 persist_last_used=persist_last_used,
             )
         if history_ready and not history_replaying:
@@ -4020,47 +4371,59 @@ class MainWindow(QMainWindow):
                 provenance=self._current_value_provenance,
             )
 
-        # Save to config if preset_key provided (built-in preset)
-        if preset_key and persist_last_used:
-            self.config.last_preset = f"builtin:{preset_key}"
-            save_config(self.config)
-            self.current_preset_path = None  # Built-in, not a file
+        persisted = True
+        if persist_identity:
+            persisted = self._save_config_safely()
+            if not persisted:
+                logger.warning("Could not remember loaded preset %s", preset.name)
+            if not persisted:
+                self.config.last_preset = previous_last_preset
+            self._last_preset_identity_persisted = bool(persisted)
 
-    def _save_preset(self):
-        """Save current settings as a preset."""
-        # Get preset name from user
+        message = f"Loaded preset: {preset.name}"
+        if persist_identity and not persisted:
+            message += "; applied for this session, but could not be remembered for the next launch"
+        self.status_bar.showMessage(message, 6000 if persist_identity and not persisted else 3000)
+        return True
+
+    def _confirm_discard_changes(self) -> bool:
+        if not self.__dict__.get("_history_ready", False):
+            return True
+        self._set_preset_modified()
+        if not self.preset_modified:
+            return True
+        reply = QMessageBox.question(
+            self, "Unsaved Sound Changes",
+            "Save your sound changes before continuing?",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if reply == QMessageBox.StandardButton.Save:
+            return self._save_preset()
+        return reply == QMessageBox.StandardButton.Discard
+
+    def _save_preset(self) -> bool:
+        """Update an owned preset; imported and built-in sounds require Save As."""
+        path = self.__dict__.get("current_preset_path")
+        if path is None or Path(path).resolve().parent != get_presets_dir().resolve():
+            return self._save_preset_as()
+        preset = self._get_current_preset()
+        preset.name = self.current_preset_name
+        preset.description = self.__dict__.get("current_preset_description", "")
+        return self._save_preset_file(preset, filepath=Path(path)) is not None
+
+    def _save_preset_as(self) -> bool:
         name, ok = QInputDialog.getText(
-            self, "Save Preset", "Enter preset name:", text="My Preset"
+            self, "Save Preset As", "Preset name:",
+            text=self.__dict__.get("current_preset_name", "My Preset"),
         )
         if not ok or not name.strip():
-            return
-
-        # Get current settings
+            return False
         preset = self._get_current_preset()
         preset.name = name.strip()
-
-        # Get description (optional)
-        description, ok = QInputDialog.getText(
-            self,
-            "Save Preset",
-            "Enter description (optional):",
-        )
-        if not ok:
-            return
-        preset.description = description.strip()
-
-        filepath = self._save_preset_file(preset)
-        if filepath is None:
-            return
-        self.status_bar.showMessage(f"Preset saved: {filepath}")
-        saved_message = f"Preset '{name}' saved to:\n{filepath}"
-        if not self._last_preset_identity_persisted:
-            saved_message += (
-                "\n\nAudioForge could not remember it for the next launch."
-            )
-        QMessageBox.information(
-            self, "Preset Saved", saved_message
-        )
+        preset.description = self.__dict__.get("current_preset_description", "")
+        return self._save_preset_file(preset) is not None
 
     def _load_preset(self):
         """Load a preset from file."""
@@ -4083,9 +4446,8 @@ class MainWindow(QMainWindow):
                 preset_path = requested_path
             except PresetValidationError:
                 preset, preset_path = import_preset(requested_path)
-            self._apply_preset(preset, preset_path=preset_path)
-            # Save to config for persistence
-            save_config(self.config)
+            if not self._apply_preset(preset, preset_path=preset_path):
+                return
         except PresetValidationError as e:
             # Actionable error for validation failures
             logger.warning("Preset validation failed", exc_info=True)
@@ -4131,6 +4493,38 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Handle window close."""
+        if (
+            not self._quitting
+            and self._tray_icon is not None
+            and self._tray_icon.isVisible()
+            and self._close_to_tray_action is not None
+            and self._close_to_tray_action.isChecked()
+        ):
+            if not self.__dict__.get("_hidden_to_tray"):
+                self._tray_icon.showMessage(
+                    "AudioForge is running in the background",
+                    "Audio continues while the window is closed. "
+                    "Use the tray icon to show the window or Quit AudioForge.",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    8000,
+                )
+            self._hidden_to_tray = True
+            self.hide()
+            event.ignore()
+            self.status_bar.showMessage(
+                "AudioForge is still running in the tray; use Quit AudioForge to exit",
+                5000,
+            )
+            return
+
+        if not self._confirm_discard_changes():
+            self._quitting = False
+            event.ignore()
+            return
+        self._quitting = True
+        self._unregister_mute_hotkey()
+        if self._tray_icon is not None:
+            self._tray_icon.hide()
         self.config.window_geometry = {
             "x": self.x(),
             "y": self.y(),

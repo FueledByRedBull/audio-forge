@@ -43,7 +43,7 @@ class AnalysisWorker(QThread):
         Args:
             audio_data: Recorded audio samples (float32 NumPy array)
             sample_rate: Sample rate in Hz from the active processor
-            target_preset: Target curve name ('broadcast', 'podcast', 'streaming', 'flat')
+            target_preset: Target key from the built-in curve catalog
             target_mode: Target behavior ('adaptive' or 'static')
             smoothing_strength: Auto-EQ smoothing strength
             chain_settings: Current deterministic DSP settings for offline headroom simulation

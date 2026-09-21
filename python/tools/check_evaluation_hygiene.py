@@ -463,8 +463,6 @@ def validate_report(path: Path, *, unverified: list[str] | None = None) -> list[
         resolved = REPO_ROOT / source_path
         if not resolved.is_file():
             errors.append(f"{path}: declared source file is missing: {raw_path}")
-        elif not re.fullmatch(r"[0-9a-f]{64}", expected):
-            errors.append(f"{path}: invalid source SHA-256 for {raw_path}")
         elif expected not in _portable_source_sha256(resolved):
             errors.append(f"{path}: stale source SHA-256 for {raw_path}")
 

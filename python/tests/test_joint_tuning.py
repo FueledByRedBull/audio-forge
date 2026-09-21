@@ -450,6 +450,24 @@ def _synthetic_product_report() -> dict[str, Any]:
 def test_evaluator_clean_comparison_obeys_native_activity_contract(tmp_path, monkeypatch):
     from scipy.io.wavfile import write
 
+    evidence_paths = (
+        "python/tools/evaluate_product_tuning.py",
+        "python/mic_eq/analysis/joint_tuning.py",
+        "rust-core/src/audio/processor/python_api.rs",
+        "release-assets.json",
+    )
+    for relative in evidence_paths:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"native-contract fixture\n")
+    (tmp_path / "df.dll").write_bytes(b"native-contract fixture\n")
+    monkeypatch.setattr(evaluate_product_tuning, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        evaluate_product_tuning,
+        "__file__",
+        str(tmp_path / evidence_paths[0]),
+    )
+
     corpus = tmp_path / "corpus"
     corpus.mkdir()
     clean = (0.05 * np.sin(2 * np.pi * 220 * np.arange(192_000) / 48_000)).astype(np.float32)

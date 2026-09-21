@@ -15,9 +15,7 @@ runs locally through a Rust engine and a PyQt interface.
 
 **[Download](#download)** · [First setup](#using-the-app) · [Features](#what-it-does) · [Build from source](#quick-start-from-source) · [Get help](#help-and-contributing)
 
-Current version: `v1.13.0` (unreleased) — [planned release notes](release-notes/release-notes-v1.13.0.md).
-
-Latest published release: `v1.12.1`.
+Current version: `v1.13.0` — [release notes](release-notes/release-notes-v1.13.0.md).
 
 ![AudioForge main window showing sanitized input and virtual-route output selection, cleanup controls, and the editable ten-band EQ.](docs/images/audioforge-routing-eq.png)
 
@@ -394,7 +392,7 @@ release qualification gates as the portable archive.
 ## Create Release Archive
 
 The portable folder is intended to be archived as a single distributable.
-For the planned 1.13.0 release, validate package metadata and rebuild
+For a local 1.13.0 build, validate package metadata and rebuild
 the portable folder before using this archive name:
 
 ```powershell

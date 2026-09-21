@@ -1,7 +1,8 @@
 # Changelog
 
-## v1.13.0 (unreleased)
+## v1.13.0
 
+- Upgrade ringbuf to 0.5.2 to address the RustSec advisory affecting the previous queue dependency.
 - Correct short-burst true-peak limiting with longer peak detection and smoothed lookahead gain. Final peak protection adds 6.25 ms of latency at 48 kHz compared with the previous implementation.
 - Match Raw and limiter-disabled preview output to live safety behavior, and measure headroom before either limiter acts.
 - Keep de-esser subbands inside narrow cutoff intervals, remove the zero-gain dead zone from EQ fitting, and reject VAD results published across a stream discontinuity.

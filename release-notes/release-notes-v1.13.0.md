@@ -1,10 +1,17 @@
-# AudioForge 1.13.0 (unreleased)
+# AudioForge 1.13.0
 
-PR #66 targets this version. It has not been tagged or published; the latest
-published release remains at 1.12.1.
+AudioForge 1.13.0 improves voice calibration, full-chain comparisons, peak
+protection, and everyday device and preset handling.
 
 ## Changes
 
+- Correct short-burst true-peak limiting and match preview safety behavior to
+  live processing. Final peak protection adds 6.25 ms of latency at 48 kHz
+  compared with the previous implementation.
+- Keep de-esser bands within their selected interval, remove the zero-gain
+  dead zone from EQ fitting, and reject stale VAD results after stream gaps.
+- Upgrade ringbuf to 0.5.2 to address the RustSec advisory affecting the previous
+  queue dependency.
 - Preserve voice character during Auto-EQ, add the Warm / Full Voice target,
   and keep microphone correction separate from editable tone.
 - Compare the full processing chain on one recording before applying settings.
@@ -33,11 +40,23 @@ published release remains at 1.12.1.
 - Add tray/background controls, a mute shortcut, unified processing modes,
   and safer preset, device and calibration handling.
 
-See the [1.13.0 changelog](../CHANGELOG.md) for the complete change list.
+See the [1.13.0 changelog](https://github.com/FueledByRedBull/audio-forge/blob/master/CHANGELOG.md#v1130)
+for the complete change list.
 
-## Validation limits
+## Downloads
 
-Recorded-audio, native DSP, UI and portable-package checks cover the local
-development build. They do not qualify a future release artifact or establish
-live hardware recovery across every microphone and route. Release validation
-and publication still follow [RELEASING.md](../RELEASING.md).
+Choose the per-user MSI installer or extract the complete portable archive.
+The release also includes corresponding source, one evidence archive containing
+validation and provenance records, and one SHA256SUMS file for the downloads.
+
+## Validation and compatibility
+
+The release candidate at `fd02f793b11c90618461132e341efa4107a6c984` passed CI
+and exact-artifact qualification, including portable startup, installer lifecycle,
+payload provenance, and corresponding-source checks. Publication promotes those
+same validated bytes without rebuilding them.
+
+Windows 10/11 is the supported target. Automated checks and recorded-audio
+evaluations do not establish physical reconnect, sleep recovery, accessibility,
+or listening results for every microphone, device route, and display setup.
+Those configurations remain outside this release's qualification claims.

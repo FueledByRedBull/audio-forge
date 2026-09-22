@@ -22,6 +22,9 @@ jobs:
   python:
     runs-on: windows-latest
     timeout-minutes: 40
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -82,6 +85,12 @@ jobs:
           path: semgrep-results.sarif
           if-no-files-found: error
           retention-days: 14
+      - name: Upload Semgrep results to GitHub Code Scanning
+        if: always() && github.event_name == 'push' && hashFiles('semgrep-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
 
   rust:
     runs-on: windows-latest

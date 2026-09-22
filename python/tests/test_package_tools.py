@@ -175,6 +175,32 @@ def test_repository_workflow_release_gates_are_current():
     assert check_workflows.check_workflows() == []
 
 
+def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
+    workflow = check_workflows.yaml.safe_load(
+        (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    )
+    python_job = workflow["jobs"]["python"]
+    assert python_job["permissions"] == {
+        "contents": "read",
+        "security-events": "write",
+    }
+    upload = next(
+        step
+        for step in python_job["steps"]
+        if step.get("name") == "Upload Semgrep results to GitHub Code Scanning"
+    )
+    assert upload["uses"].startswith("github/codeql-action/upload-sarif@")
+    assert upload["with"] == {
+        "sarif_file": "semgrep-results.sarif",
+        "category": "semgrep",
+    }
+    assert "github.event_name == 'push'" in upload["if"]
+
+    errors: list[str] = []
+    check_workflows._check_permissions("ci.yml", workflow, errors)
+    assert errors == []
+
+
 def test_build_script_propagates_pyinstaller_failure_code():
     source = (check_workflows.REPO_ROOT / "build_exe.ps1").read_text(encoding="utf-8")
 

@@ -66,6 +66,16 @@ def _check_permissions(
     for job_name, raw_job in jobs.items():
         job = _mapping(raw_job, f"{name}: job {job_name}", errors)
         permissions = job.get("permissions")
+        if name == "ci.yml" and job_name == "python":
+            if permissions != {
+                "contents": "read",
+                "security-events": "write",
+            }:
+                errors.append(
+                    "ci.yml: python must have only contents: read and "
+                    "security-events: write"
+                )
+            continue
         if name == "release-promote.yml" and job_name == "promote-release":
             if permissions != {"actions": "read", "contents": "write"}:
                 errors.append(

@@ -6,11 +6,12 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
-from PyQt6.QtWidgets import QDialog, QWidget
+from PyQt6.QtWidgets import QDialog, QMessageBox, QWidget
 
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
-from mic_eq.config import Preset
+from mic_eq.config import EQSettings, Preset
+from mic_eq.ui.calibration_support import AutoEqCandidate
 
 
 @pytest.mark.parametrize("dialog_type", [CalibrationDialog, VoiceSetupDialog])
@@ -25,6 +26,10 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
     owner.eq_panel = SimpleNamespace(get_settings=lambda: {"band_gains": [0.0] * 10})
     owner.set_temporary_output_mute = Mock()
     dialog = dialog_type(owner)
+    def unexpected_warning(_parent, title, message):
+        pytest.fail(f"Unexpected comparison warning: {title}: {message}")
+
+    monkeypatch.setattr(QMessageBox, "warning", unexpected_warning)
     audio = np.zeros(48000, dtype=np.float32)
     monkeypatch.setattr(dialog, "_candidate_identity_error", lambda *args: None)
     apply = Mock()
@@ -32,6 +37,11 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
         dialog.audio_data = audio
         dialog.preview_audio_data = audio
         dialog.eq_settings = {"band_gains": [1.0] * 10}
+        dialog._candidate_proposal = AutoEqCandidate.create(
+            Preset(),
+            EQSettings(band_gains=[1.0] * 10),
+            {"full_chain": True, "input_pre_filtered": False, "processing_mode": "raw"},
+        )
         dialog.recording_state = "ready"
         monkeypatch.setattr(dialog, "_apply_eq_settings", apply)
     else:

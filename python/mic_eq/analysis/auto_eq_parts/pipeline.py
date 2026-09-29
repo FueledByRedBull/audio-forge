@@ -16,6 +16,9 @@ def analyze_auto_eq(
     target_mode="adaptive",
     smoothing_strength="conservative",
     chain_settings=None,
+    headroom_candidate_base_eq_settings=None,
+    headroom_audio_data=None,
+    headroom_chain_settings=None,
     vad_probabilities=None,
     noise_audio=None,
     noise_spectrum_override=None,
@@ -169,14 +172,19 @@ def analyze_auto_eq(
         noise_reference_status
     )
     eq_settings = apply_headroom_validation(
-        audio_data,
+        audio_data if headroom_audio_data is None else headroom_audio_data,
         sample_rate,
         eq_settings,
-        chain_settings=chain_settings,
+        chain_settings=(
+            chain_settings
+            if headroom_candidate_base_eq_settings is None
+            else headroom_chain_settings
+        ),
         analysis_freqs=freqs,
         measured_db=spectrum_smoothed,
         target_db=target_db,
         fit_context=fit_context,
+        candidate_base_eq_settings=headroom_candidate_base_eq_settings,
         cancel_check=cancel_check,
     )
     check_analysis_cancelled(cancel_check)

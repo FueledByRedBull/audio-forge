@@ -615,7 +615,7 @@ def build_eq_candidate_settings(
     """Convert legacy Auto-EQ arrays using the live panel's layer semantics."""
     candidate = _legacy_bands(frequencies, gains, qs)
     if layer == "correction":
-        tone = tuple(replace(band, gain_db=0.0) for band in candidate)
+        tone = current.tone_bands or current.bands
         return EQSettings(
             enabled=enabled,
             bands=tone,

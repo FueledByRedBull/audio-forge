@@ -16,6 +16,7 @@ OCTAVE_CENTERS_HZ = np.asarray(
     [125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0],
     dtype=float,
 )
+REFERENCE_SPECTRUM_FRAME_SIZE = 4096
 
 
 @dataclass(frozen=True)
@@ -115,8 +116,15 @@ def _db_peak(audio: np.ndarray) -> float:
     return float(20.0 * np.log10(max(peak, 1e-9)))
 
 
-def _frame_analysis(audio: np.ndarray, sample_rate: int) -> _FrameAnalysis | None:
-    frame_size = max(512, int(round(sample_rate * 0.20)))
+def _frame_analysis(
+    audio: np.ndarray,
+    sample_rate: int,
+    *,
+    frame_size: int | None = None,
+    hamming_window: bool = False,
+) -> _FrameAnalysis | None:
+    if frame_size is None:
+        frame_size = max(512, int(round(sample_rate * 0.20)))
     if audio.size < frame_size:
         return None
     hop_size = max(1, frame_size // 2)
@@ -128,7 +136,7 @@ def _frame_analysis(audio: np.ndarray, sample_rate: int) -> _FrameAnalysis | Non
     frame_power = np.mean(np.square(centered, dtype=np.float64), axis=1)
     frame_rms_db = 10.0 * np.log10(np.maximum(frame_power, 1e-18))
 
-    window = np.hanning(frame_size)
+    window = np.hamming(frame_size) if hamming_window else np.hanning(frame_size)
     normalization = max(float(np.sum(window * window)), 1e-18)
     spectra_power = np.square(np.abs(np.fft.rfft(centered * window, axis=1)))
     spectra_power /= normalization
@@ -245,7 +253,10 @@ def _metadata_mismatches(
 
     age_s: float | None = None
     if noise.captured_at_unix_s is not None and speech.captured_at_unix_s is not None:
-        age_s = max(0.0, speech.captured_at_unix_s - noise.captured_at_unix_s)
+        age_s = speech.captured_at_unix_s - noise.captured_at_unix_s
+        if age_s < 0.0:
+            reasons.append("room-noise capture timestamp is after voice capture")
+            age_s = None
     return reasons, age_s
 
 
@@ -306,6 +317,18 @@ def analyze_noise_reference(
         float(np.mean(np.abs(noise) <= 1e-12)) if noise.size else 1.0
     )
     noise_frames = _frame_analysis(noise, sample_rate)
+    noise_snr_frames = _frame_analysis(
+        noise,
+        sample_rate,
+        frame_size=REFERENCE_SPECTRUM_FRAME_SIZE,
+        hamming_window=True,
+    )
+    if noise_snr_frames is None:
+        frequencies = np.fft.rfftfreq(max(2, noise.size), 1.0 / sample_rate)
+        explicit_spectrum = np.full(frequencies.shape, -120.0, dtype=float)
+    else:
+        frequencies = noise_snr_frames.frequencies
+        explicit_spectrum = noise_snr_frames.median_spectrum_db
 
     reasons: list[str] = []
     guidance: list[str] = []
@@ -336,14 +359,10 @@ def analyze_noise_reference(
     if noise_frames is None:
         invalid = True
         reasons.append("room-noise capture has too few analysis windows")
-        frequencies = np.fft.rfftfreq(max(2, noise.size), 1.0 / sample_rate)
-        explicit_spectrum = np.full(frequencies.shape, -120.0, dtype=float)
         rms_spread_db = 120.0
         octave_stability_db = 120.0
         spectral_flux_db = 120.0
     else:
-        frequencies = noise_frames.frequencies
-        explicit_spectrum = noise_frames.median_spectrum_db
         rms_spread_db = noise_frames.rms_spread_db
         octave_stability_db = noise_frames.octave_stability_db
         spectral_flux_db = noise_frames.spectral_flux_db
@@ -397,7 +416,9 @@ def analyze_noise_reference(
     if metadata_reasons:
         invalid = True
         reasons.extend(metadata_reasons)
-        guidance.append("Use the same microphone, channel mode, and sample rate for both captures.")
+        guidance.append(
+            "Record room noise before voice using the same microphone, channel mode, and sample rate."
+        )
     if capture_age_s is not None:
         if capture_age_s > INVALID_CAPTURE_AGE_S:
             invalid = True
@@ -414,7 +435,16 @@ def analyze_noise_reference(
         else np.empty(0, dtype=float)
     )
     speech = np.where(np.isfinite(speech), speech, 0.0)
-    speech_frames = _frame_analysis(speech, sample_rate) if speech.size else None
+    speech_frames = (
+        _frame_analysis(
+            speech,
+            sample_rate,
+            frame_size=REFERENCE_SPECTRUM_FRAME_SIZE,
+            hamming_window=True,
+        )
+        if speech.size
+        else None
+    )
     in_capture_spectrum, in_capture_rms_db, in_capture_frame_count = (
         _select_in_capture_noise(speech_frames, speech_vad_probabilities)
     )

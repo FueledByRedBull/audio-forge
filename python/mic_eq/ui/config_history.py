@@ -33,6 +33,11 @@ class ConfigurationSnapshot:
     source: str
     noise_reference_reliability: float = 0.0
     calibration_context_key: str | None = None
+    processing_mode: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.processing_mode not in {None, "normal", "bypass", "raw"}:
+            raise ValueError("processing mode must be normal, bypass, or raw")
 
     @classmethod
     def from_preset(
@@ -43,7 +48,9 @@ class ConfigurationSnapshot:
         source: str,
         noise_reference_reliability: float = 0.0,
         calibration_context_key: str | None = None,
+        processing_mode: str | None = None,
     ) -> "ConfigurationSnapshot":
+        preset = Preset.from_dict(preset.to_dict())
         payload_json = json.dumps(
             preset.to_dict(),
             allow_nan=False,
@@ -53,7 +60,7 @@ class ConfigurationSnapshot:
         )
         snapshot = cls(
             payload_json, str(label), str(source),
-            noise_reference_reliability, calibration_context_key,
+            noise_reference_reliability, calibration_context_key, processing_mode,
         )
         snapshot.to_preset()
         return snapshot
@@ -128,6 +135,7 @@ class BoundedConfigurationHistory:
             current.payload_json == snapshot.payload_json
             and current.noise_reference_reliability == snapshot.noise_reference_reliability
             and current.calibration_context_key == snapshot.calibration_context_key
+            and current.processing_mode == snapshot.processing_mode
         ):
             return False
         if self._cursor < len(self._entries) - 1:

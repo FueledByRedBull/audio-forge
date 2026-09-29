@@ -36,3 +36,18 @@ def test_burst_keeps_latest_value_and_flushes_once(qapp, monkeypatch):
     limiter.flush()
     limiter._execute_pending()
     assert values == [1, 3]
+
+
+def test_bulk_write_cancels_old_pending_edit_and_runs_synchronously(qapp, monkeypatch):
+    monkeypatch.setattr(rate_limiter.time, "monotonic", lambda: 100.0)
+    limiter = rate_limiter.RateLimiter(interval_ms=500)
+    values = []
+    limiter.call(lambda: values.append("old-immediate"))
+    limiter.call(lambda: values.append("stale"))
+
+    limiter.call_now(lambda: values.append("bulk"))
+    limiter._execute_pending()
+
+    assert values == ["old-immediate", "bulk"]
+    assert limiter._pending_fn is None
+    assert not limiter._timer.isActive()

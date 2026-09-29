@@ -9,7 +9,12 @@ from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.config import Preset
 
 
-def _run(progress_callback=None, cancel_check=None, vad_probabilities=None):
+def _run(
+    progress_callback=None,
+    cancel_check=None,
+    vad_probabilities=None,
+    allow_expanded_search=False,
+):
     preset = Preset()
     t = np.arange(4800, dtype=np.float32) / 48000
     return voice_setup._calibrate_compressor_threshold(
@@ -24,6 +29,7 @@ def _run(progress_callback=None, cancel_check=None, vad_probabilities=None):
         vad_probabilities=vad_probabilities,
         progress_callback=progress_callback,
         cancel_check=cancel_check,
+        allow_expanded_search=allow_expanded_search,
     )
 
 
@@ -33,10 +39,14 @@ def test_parallel_compressor_search_matches_serial_native_results(monkeypatch):
     parallel, parallel_diag = _run(
         lambda text, value: progress.append(value),
         vad_probabilities=model_probabilities,
+        allow_expanded_search=True,
     )
     pool = voice_setup.ThreadPoolExecutor
     monkeypatch.setattr(voice_setup, "ThreadPoolExecutor", lambda **_: pool(max_workers=1))
-    serial, serial_diag = _run(vad_probabilities=model_probabilities)
+    serial, serial_diag = _run(
+        vad_probabilities=model_probabilities,
+        allow_expanded_search=True,
+    )
     assert parallel == serial
     for key in parallel_diag:
         if key != "search_runtime_ms":
@@ -101,7 +111,7 @@ def test_compressor_search_reuses_frontend_audio_and_activity(monkeypatch):
             "limiter_effective_ceiling_db": -1.5,
             "pre_limiter_true_peak_headroom_db": 2.0,
             "compressor_pumping_score_db": 0.0,
-            "silence_output_gain_db": 0.0,
+            "silence_level_delta_db": 0.0,
             "non_finite_output": False,
         }
 

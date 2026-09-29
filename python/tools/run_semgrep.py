@@ -8,7 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -96,6 +96,11 @@ def _scan_command(scan_output: Path) -> list[str]:
         "--exclude=.ruff_cache",
         "--exclude=.pyright",
         "--exclude=static_analysis_semgrep_*",
+        "--exclude=.tmp*",
+        "--exclude=.pytest-tmp*",
+        "--exclude=pytest-cache-files-*",
+        "--exclude=target-local*",
+        "--exclude=IGNORE*",
         # Never feed a previous scanner report back into the next scan. SARIF
         # embeds matched examples and can therefore look like source secrets.
         "--exclude=*.sarif",
@@ -104,6 +109,16 @@ def _scan_command(scan_output: Path) -> list[str]:
         command.extend(("--config", ruleset))
     command.append(str(REPO_ROOT))
     return command
+
+
+def _sarif_file_uris(value: dict[str, object]) -> dict[str, object]:
+    uri = value.get("uri")
+    if isinstance(uri, str):
+        path = PureWindowsPath(uri)
+        if path.is_absolute():
+            # Semgrep emits native Windows paths; SARIF requires URI syntax.
+            value["uri"] = path.as_uri()
+    return value
 
 
 def main() -> int:
@@ -121,7 +136,10 @@ def main() -> int:
     child_env.update(PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
     completed = subprocess.run(command, cwd=REPO_ROOT, env=child_env, check=False)
     if scan_output.is_file():
-        shutil.copyfile(scan_output, sarif_path)
+        payload = json.loads(
+            scan_output.read_text(encoding="utf-8"), object_hook=_sarif_file_uris,
+        )
+        sarif_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
         scan_output.unlink()
     if completed.returncode != 0:
         return completed.returncode

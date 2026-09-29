@@ -78,6 +78,10 @@ pub struct Limiter {
     release_coeff: f64,
     /// Current gain reduction (linear, 0.0 to 1.0)
     gain_reduction: f64,
+    /// Immediate ceiling envelope, averaged across the available attack window.
+    instant_gain: f64,
+    gain_history: Vec<f64>,
+    gain_history_sum: f64,
     /// Peak hold for metering
     peak_gain_reduction_db: f64,
     /// Sample rate
@@ -119,6 +123,9 @@ impl Limiter {
             ceiling_linear: util::db_to_linear(ceiling_db),
             release_coeff,
             gain_reduction: 1.0,
+            instant_gain: 1.0,
+            gain_history: vec![1.0; lookahead_samples],
+            gain_history_sum: lookahead_samples as f64,
             peak_gain_reduction_db: 0.0,
             sample_rate,
             lookahead_samples,
@@ -137,8 +144,23 @@ impl Limiter {
 
     /// Set ceiling in dB
     pub fn set_ceiling(&mut self, ceiling_db: f64) {
+        let previous_ceiling = self.ceiling_linear;
         self.ceiling_db = ceiling_db.min(0.0);
         self.ceiling_linear = util::db_to_linear(self.ceiling_db);
+        let pending_peak = self.lookahead_peak_abs();
+        if self.ceiling_linear < previous_ceiling && pending_peak > self.ceiling_linear {
+            // A stricter ceiling must take effect immediately, even for audio
+            // planned under the old limit. Reduce its gain instead of clipping
+            // queued peaks while the lookahead history catches up.
+            let gain_cap = self.ceiling_linear / pending_peak;
+            self.instant_gain = self.instant_gain.min(gain_cap);
+            self.gain_history_sum = 0.0;
+            for gain in &mut self.gain_history {
+                *gain = gain.min(gain_cap);
+                self.gain_history_sum += *gain;
+            }
+            self.gain_reduction = self.gain_history_sum / self.lookahead_samples as f64;
+        }
     }
 
     /// Get current ceiling in dB
@@ -161,6 +183,7 @@ impl Limiter {
         if samples != self.lookahead_samples {
             self.lookahead_samples = samples;
             self.delay_buffer.resize(samples, 0.0);
+            self.gain_history.resize(samples, 1.0);
             self.reset();
         }
     }
@@ -256,19 +279,28 @@ impl Limiter {
         // Current sample is then written into the future side of the ring.
         self.delay_buffer[self.write_idx] = input;
         self.push_lookahead_sample((input as f64).abs());
-        self.write_idx = (self.write_idx + 1) % self.lookahead_samples;
         let target_gain = if peak > self.ceiling_linear {
             self.ceiling_linear / peak
         } else {
             1.0
         };
 
-        if target_gain < self.gain_reduction {
-            self.gain_reduction = target_gain;
+        if target_gain < self.instant_gain {
+            self.instant_gain = target_gain;
         } else {
-            self.gain_reduction =
-                self.release_coeff * self.gain_reduction + (1.0 - self.release_coeff) * target_gain;
+            self.instant_gain =
+                self.release_coeff * self.instant_gain + (1.0 - self.release_coeff) * target_gain;
         }
+
+        // Every envelope value in this average already includes the delayed
+        // sample's peak. The ramp therefore reaches its ceiling gain before
+        // that sample exits the delay, without a one-sample attack step.
+        let old_gain = self.gain_history[self.write_idx];
+        self.gain_history[self.write_idx] = self.instant_gain;
+        self.gain_history_sum += self.instant_gain - old_gain;
+        self.gain_reduction =
+            (self.gain_history_sum / self.lookahead_samples as f64).clamp(0.0, 1.0);
+        self.write_idx = (self.write_idx + 1) % self.lookahead_samples;
 
         let reduction_db = if self.gain_reduction < 1.0 {
             -util::linear_to_db(self.gain_reduction, 1e-10)
@@ -297,6 +329,9 @@ impl Limiter {
     /// Reset limiter state
     pub fn reset(&mut self) {
         self.gain_reduction = 1.0;
+        self.instant_gain = 1.0;
+        self.gain_history.fill(1.0);
+        self.gain_history_sum = self.lookahead_samples as f64;
         self.peak_gain_reduction_db = 0.0;
         self.next_input_index = 0;
         self.write_idx = 0;
@@ -308,6 +343,65 @@ impl Limiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lowering_ceiling_replans_pending_audio_before_the_safety_clamp() {
+        let mut limiter = Limiter::new(-0.5, 50.0, 48_000.0);
+        for index in 0..96 {
+            limiter.process_sample(if index % 2 == 0 { 0.9 } else { 0.1 });
+        }
+        limiter.set_ceiling(-6.0);
+        for index in 0..96 {
+            let delayed = limiter.delay_buffer[limiter.write_idx] as f64;
+            let output = limiter.process_sample(if index % 2 == 0 { 0.9 } else { 0.1 });
+            let unclamped = delayed * limiter.gain_reduction;
+            assert!(
+                unclamped.abs() <= limiter.ceiling_linear + 1e-7,
+                "old gain history exceeded the new ceiling before clamp: {unclamped}"
+            );
+            assert!((output as f64 - unclamped).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn lookahead_spreads_attack_before_the_peak_without_relying_on_clipping() {
+        for rate in [44_100.0, 48_000.0, 96_000.0] {
+            let mut limiter = Limiter::new(-6.0, 50.0, rate);
+            let delay = limiter.lookahead_samples();
+            for _ in 0..delay * 2 {
+                limiter.process_sample(0.25);
+            }
+            let target = limiter.ceiling_linear;
+            let before = limiter.gain_reduction;
+            let first = limiter.process_sample(1.0);
+            let attack_step = before - limiter.gain_reduction;
+            assert!(attack_step <= (1.0 - target) / delay as f64 + 1e-10);
+            assert!(limiter.gain_reduction > target + 0.1);
+            assert!((first as f64 - 0.25 * limiter.gain_reduction).abs() < 1e-7);
+            for _ in 1..delay {
+                limiter.process_sample(0.25);
+            }
+            let peak_output = limiter.process_sample(0.25);
+            assert!((peak_output as f64 - target).abs() < 1e-7);
+        }
+    }
+
+    #[test]
+    fn lookahead_gain_bounds_delayed_peaks_before_the_safety_clamp() {
+        let mut limiter = Limiter::new(-3.0, 50.0, 48_000.0);
+        let mut state = 0x9e3779b9_u32;
+        for _ in 0..20_000 {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let input = (state as f64 / u32::MAX as f64 * 4.0 - 2.0) as f32;
+            let delayed = limiter.delay_buffer[limiter.write_idx] as f64;
+            let output = limiter.process_sample(input);
+            let unclamped = delayed * limiter.gain_reduction;
+            assert!(unclamped.abs() <= limiter.ceiling_linear + 1e-10);
+            assert!((output as f64 - unclamped).abs() < 1e-7);
+        }
+    }
 
     #[test]
     fn test_lookahead_scales_with_sample_rate() {

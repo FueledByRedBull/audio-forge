@@ -5,7 +5,6 @@ DEBUG: Added terminal logging for calibration workflow
 """
 
 import logging
-import time
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
@@ -27,15 +26,11 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 import numpy as np
 
-from .. import CORE_AVAILABLE
 from ..config import (
-    DeviceIdentity,
-    EQ_FREQUENCIES,
     EQSettings,
     Preset,
     TARGET_CURVES,
     build_eq_candidate_settings,
-    coerce_device_identity,
 )
 from .analysis_worker import AnalysisWorker
 from .accessibility import bind_label, set_accessible_group
@@ -47,7 +42,34 @@ from .layout_constants import (
     status_chip_style,
 )
 from .level_meter import LevelMeter
-from .device_selection import start_processor_for_route
+from .capture_session import (
+    CaptureSession,
+    active_device_identities as _active_device_identities,
+    device_label as _device_label,
+    device_name as _device_name,
+    find_eq_panel_owner as _find_eq_panel_owner,
+    find_processor_owner as _find_processor_owner,
+    owner_calibration_context_key as _owner_calibration_context_key,
+    processor_sample_rate as _processor_sample_rate,
+    restart_processor_for_route as _restart_processor_for_route,
+    route_identities_match as _route_identities_match,
+    selected_device_identities as _selected_device_identities,
+    set_temporary_mute as _set_temporary_mute,
+    start_selected_route as _start_selected_route,
+    sync_owner_processing_controls as _sync_owner_processing_controls,
+)
+from .calibration_support import (
+    AutoEqCandidate,
+    RAINBOW_PASSAGE,
+    TOO_LOUD_DB,
+    TOO_QUIET_DB,
+    candidate_metadata as _candidate_metadata,
+    chain_settings as _chain_settings,
+    diagnostic_state as _diagnostic_state,
+    filtered_capture_for_analysis as _filtered_capture_for_analysis,
+    format_db as _format_db,
+    format_percent as _format_percent,
+)
 from .theme import (
     DESCRIPTION_LABEL_STYLE,
     PRIMARY_ACTION_BUTTON_STYLE,
@@ -63,350 +85,11 @@ logger = logging.getLogger(__name__)
 
 _TEMPORARY_MUTE_REASON = "auto_eq_calibration"
 
-# Rainbow Passage - standard calibration text from audiometry
-RAINBOW_PASSAGE = """The Rainbow Passage
-The rainbow is a division of white light into many beautiful colors. These take the shape of a long round arch, with its path high above, and its two ends apparently beyond the horizon. There is, according to legend, a boiling pot of gold at one end. People look, but no one ever finds it. When a man looks for something beyond his reach, his friends say he is looking for the pot of gold at the end of the rainbow. Throughout the centuries, men have been fascinated by this spectacle of the sky. They have tried to find explanations for it. Scientists, however, have found that it is caused by the reflection and refraction of sunlight on drops of water in the air."""
-
-# Recording validation thresholds (dB)
-TOO_QUIET_DB = -40.0  # Warn if quieter than this
-TOO_LOUD_DB = -3.0  # Warn if louder than this (clipping risk)
 RECORDING_DURATION = 10.0  # Seconds
-
-
-def _eq_candidate_preset(parent: Any, eq_settings: Mapping[str, Any]) -> Preset | None:
-    """Merge an EQ-only candidate into the current complete preset."""
-    getter = getattr(parent, "_get_current_preset", None)
-    if not callable(getter):
-        return None
-    current = getter()
-    if not isinstance(current, Preset):
-        return None
-    payload = deepcopy(current.to_dict())
-    base_eq = payload.get("eq")
-    if not isinstance(base_eq, Mapping):
-        raise ValueError("current EQ settings are unavailable")
-    if "bands" in eq_settings:
-        candidate_eq = {
-            key: deepcopy(eq_settings[key])
-            for key in ("schema_version", "enabled", "bands", "layers")
-            if key in eq_settings
-        }
-        candidate_eq.setdefault(
-            "schema_version", int(base_eq.get("schema_version", 1))
-        )
-        candidate_eq.setdefault("enabled", True)
-        typed_eq = EQSettings.from_dict(candidate_eq)
-    else:
-        frequencies = list(eq_settings.get("band_freqs") or EQ_FREQUENCIES)
-        gains = list(eq_settings.get("band_gains") or ())
-        qs = list(eq_settings.get("band_qs") or ())
-        if not (len(frequencies) == len(gains) == len(qs) == len(EQ_FREQUENCIES)):
-            raise ValueError("Auto-EQ candidate does not contain 10 complete bands")
-        typed_eq = build_eq_candidate_settings(
-            current.eq,
-            frequencies,
-            gains,
-            qs,
-            layer="correction",
-            enabled=bool(eq_settings.get("enabled", True)),
-        )
-    payload["eq"] = typed_eq.to_dict()
-    return Preset.from_dict(payload)
-
-
-def _find_processor_owner(widget: object) -> Any | None:
-    parent: Any = widget
-    while parent and not hasattr(parent, "processor"):
-        parent = parent.parent()
-    return parent
-
-
-def _find_eq_panel_owner(widget: object) -> Any | None:
-    parent: Any = widget
-    while parent and not hasattr(parent, "eq_panel"):
-        parent = parent.parent()
-    return parent
-
-
-def _processor_sample_rate(owner: Any) -> int:
-    if owner is None or not hasattr(owner, "processor"):
-        raise RuntimeError("Could not find audio processor")
-
-    sample_rate = int(owner.processor.sample_rate())
-    if sample_rate <= 0:
-        raise RuntimeError("Processor sample rate is unavailable")
-
-    return sample_rate
-
-
-def _chain_settings(
-    owner: Any,
-    *,
-    full_chain: bool = False,
-    input_pre_filtered: bool = False,
-    preset: Preset | None = None,
-) -> dict[str, Any]:
-    if full_chain:
-        current = preset if preset is not None else owner._get_current_preset()
-        if not isinstance(current, Preset):
-            raise TypeError("current processing configuration is unavailable")
-        preset_payload = current.to_dict()
-        if hasattr(owner, "compressor_panel"):
-            calibration = owner.compressor_panel.get_compressor_settings(
-                include_calibration=True
-            )
-            preset_payload["compressor"]["noise_reference_reliability"] = calibration.get(
-                "noise_reference_reliability", 0.0
-            )
-        return {
-            **{
-                name: preset_payload[name]
-                for name in ("gate", "rnnoise", "deesser", "compressor", "limiter")
-            },
-            "full_chain": True,
-            "input_pre_filtered": bool(input_pre_filtered),
-            "input_cleanup_mode": owner.processor.get_input_cleanup_mode(),
-            "processing_mode": owner._processing_mode(),
-        }
-    settings: dict[str, Any] = {}
-    if owner is None:
-        return settings
-    if hasattr(owner, "deesser_panel"):
-        try:
-            settings["deesser"] = owner.deesser_panel.get_settings()
-        except Exception:
-            logger.debug(
-                "Failed to collect de-esser settings for Auto-EQ simulation",
-                exc_info=True,
-            )
-    if hasattr(owner, "compressor_panel"):
-        try:
-            settings["compressor"] = owner.compressor_panel.get_compressor_settings()
-            settings["limiter"] = owner.compressor_panel.get_limiter_settings()
-        except Exception:
-            logger.debug(
-                "Failed to collect dynamics settings for Auto-EQ simulation",
-                exc_info=True,
-            )
-    return settings
-
-
-def _filtered_capture_for_analysis(
-    audio_data: np.ndarray,
-    sample_rate: int,
-) -> np.ndarray:
-    """Apply only the live fixed pre-filter for existing analysis paths."""
-    audio = np.ascontiguousarray(np.asarray(audio_data, dtype=np.float32).reshape(-1))
-    if audio.size == 0:
-        return audio.copy()
-    if not CORE_AVAILABLE:
-        raise RuntimeError("Native input conditioning is unavailable")
-    from ..mic_eq_core import simulate_auto_eq_chain
-
-    result = simulate_auto_eq_chain(
-        audio,
-        float(sample_rate),
-        [(1000.0, 0.0, 1.41)] * 10,
-        {
-            "full_chain": True,
-            "processing_mode": "bypass",
-            "limiter_enabled": False,
-            "return_output_audio": True,
-        },
-    )
-    output = np.asarray(result.get("output_audio"), dtype=np.float32).reshape(-1)
-    if output.size != audio.size or not np.isfinite(output).all():
-        raise ValueError("fixed pre-filter returned invalid audio")
-    return np.ascontiguousarray(output, dtype=np.float32)
-
 
 def _selected_device_pair(owner: Any) -> tuple[str | None, str | None]:
     selected_input, selected_output = _selected_device_identities(owner)
     return _device_name(selected_input), _device_name(selected_output)
-
-
-def _selected_device_identities(
-    owner: Any,
-) -> tuple[DeviceIdentity | None, DeviceIdentity | None]:
-    if owner is None:
-        return None, None
-
-    input_device = None
-    output_device = None
-
-    if hasattr(owner, "input_combo"):
-        input_device = owner.input_combo.currentData() or None
-    if hasattr(owner, "output_combo"):
-        output_device = owner.output_combo.currentData() or None
-
-    return coerce_device_identity(input_device), coerce_device_identity(output_device)
-
-
-def _active_device_identities(
-    processor: Any,
-) -> tuple[DeviceIdentity | None, DeviceIdentity | None]:
-    """Read the exact route used by the running native stream."""
-
-    def read_identity(direction: str) -> DeviceIdentity | None:
-        get_name = getattr(processor, f"get_active_{direction}_device", None)
-        get_endpoint_id = getattr(
-            processor, f"get_active_{direction}_device_endpoint_id", None
-        )
-        get_name_ordinal = getattr(
-            processor, f"get_active_{direction}_device_name_ordinal", None
-        )
-        return coerce_device_identity({
-            "name": get_name() if callable(get_name) else None,
-            "endpoint_id": get_endpoint_id() if callable(get_endpoint_id) else None,
-            "name_ordinal": get_name_ordinal() if callable(get_name_ordinal) else None,
-            "direction": direction,
-        })
-
-    return read_identity("input"), read_identity("output")
-
-
-def _route_identity_matches(
-    selected: DeviceIdentity | None,
-    active: DeviceIdentity | None,
-) -> bool:
-    """Match endpoint IDs first, with ordinal-safe legacy fallback."""
-    if selected is None or active is None:
-        return selected is None and active is None
-
-    if selected.endpoint_id:
-        return bool(active.endpoint_id) and (
-            selected.endpoint_id.casefold() == active.endpoint_id.casefold()
-        )
-
-    return (
-        " ".join(selected.name.casefold().split())
-        == " ".join(active.name.casefold().split())
-        and (selected.name_ordinal or 0) == (active.name_ordinal or 0)
-    )
-
-
-def _route_identities_match(
-    selected: tuple[DeviceIdentity | None, DeviceIdentity | None],
-    active: tuple[DeviceIdentity | None, DeviceIdentity | None],
-) -> bool:
-    return _route_identity_matches(selected[0], active[0]) and _route_identity_matches(
-        selected[1], active[1]
-    )
-
-
-def _start_selected_route(owner: Any) -> object:
-    """Start the processor on the exact identities selected by the owner UI."""
-    input_device = (
-        owner.input_combo.currentData() if hasattr(owner, "input_combo") else None
-    )
-    output_device = (
-        owner.output_combo.currentData() if hasattr(owner, "output_combo") else None
-    )
-    return start_processor_for_route(owner.processor, input_device, output_device)
-
-
-def _restart_processor_for_route(
-    processor: Any,
-    selected: tuple[DeviceIdentity | None, DeviceIdentity | None],
-    previous: tuple[DeviceIdentity | None, DeviceIdentity | None],
-) -> object:
-    """Restart on a selected route, restoring the old route when startup fails."""
-    if any(device is None for device in previous):
-        raise RuntimeError("Cannot identify the current route; stop processing before switching devices")
-    processor.stop()
-    try:
-        return start_processor_for_route(processor, selected[0], selected[1])
-    except Exception as switch_error:
-        try:
-            start_processor_for_route(processor, previous[0], previous[1])
-        except Exception as restore_error:
-            raise RuntimeError(
-                f"{switch_error}; failed to restore previous route: {restore_error}"
-            ) from switch_error
-        raise RuntimeError(f"{switch_error}; previous route restored") from switch_error
-
-
-def _sync_owner_processing_controls(owner: Any) -> None:
-    """Let an owner refresh start/stop controls after a native handoff error."""
-    sync = getattr(owner, "_sync_processing_controls", None)
-    if callable(sync):
-        sync()
-
-
-def _device_name(device: object) -> str | None:
-    identity = coerce_device_identity(device)
-    if identity is not None:
-        return identity.name
-    return device if isinstance(device, str) and device else None
-
-
-def _device_label(device: str | None, default_label: str) -> str:
-    return device if device else default_label
-
-
-def _format_percent(value: Any) -> str:
-    try:
-        return f"{float(value) * 100.0:.0f}%"
-    except (TypeError, ValueError):
-        return "--"
-
-
-def _format_db(value: Any) -> str:
-    try:
-        return f"{float(value):.1f} dB"
-    except (TypeError, ValueError):
-        return "--"
-
-
-def _diagnostic_state(confidence: float) -> str:
-    if confidence >= 0.72:
-        return "ok"
-    if confidence >= 0.45:
-        return "warn"
-    return "bad"
-
-
-def _set_temporary_mute(owner: Any, reason: str, enabled: bool) -> None:
-    """Mute only this dialog's temporary capture reason when supported."""
-    setter = getattr(owner, "set_temporary_output_mute", None)
-    if callable(setter):
-        setter(bool(enabled), reason)
-        return
-    processor = getattr(owner, "processor", None)
-    setter = getattr(processor, "set_output_mute", None)
-    if callable(setter):
-        # Standalone dialog owners have no reason registry. Preserve their
-        # user mute flag when using the processor-only test/runtime fallback.
-        setter(bool(enabled or getattr(owner, "user_muted", False)))
-
-
-def _candidate_metadata(
-    scope: str,
-    *,
-    target: dict[str, Any],
-    capture: dict[str, Any],
-    options: dict[str, Any],
-    allowed_scope: tuple[str, ...],
-    verified_stages: tuple[str, ...] = (),
-) -> dict[str, Any]:
-    """Describe the captured candidate without retaining audio buffers."""
-    return {
-        "scope": scope,
-        "allowed_scope": list(allowed_scope),
-        "target": deepcopy(target),
-        "capture_identity": deepcopy(capture),
-        "options": deepcopy(options),
-        "verified_stages": list(verified_stages),
-    }
-
-
-def _owner_calibration_context_key(owner: Any) -> str | None:
-    """Read the owner's route/format/channel/cleanup identity when available."""
-    getter = getattr(owner, "_calibration_context_key", None)
-    if not callable(getter):
-        return None
-    value = getter()
-    return value if isinstance(value, str) and value else None
 
 
 class CalibrationDialog(QDialog):
@@ -427,6 +110,9 @@ class CalibrationDialog(QDialog):
         self.eq_settings: dict | None = None
         self._candidate_target_metadata: tuple[str, str, str] | None = None
         self._candidate_metadata: dict[str, Any] | None = None
+        self._candidate_proposal: AutoEqCandidate | None = None
+        self._analysis_incumbent_preset: Preset | None = None
+        self._analysis_headroom_chain: dict[str, Any] | None = None
         self._capture_context_key: str | None = None
         self.analysis_worker: AnalysisWorker | None = None
         self._analysis_workers: list[AnalysisWorker] = []
@@ -434,7 +120,7 @@ class CalibrationDialog(QDialog):
         self._close_requested = False
         self._close_result = False
         self._started_processor = False  # Track if we started processor ourselves
-        self._recording_started_at = 0.0
+        self._capture_session: CaptureSession | None = None
         self._capture_start_timer = QTimer(self)
         self._capture_start_timer.setSingleShot(True)
         self._capture_start_timer.timeout.connect(self._begin_recording_capture)
@@ -695,12 +381,12 @@ class CalibrationDialog(QDialog):
             )
             return
 
-        get_eq_settings = getattr(parent.eq_panel, "get_settings", None)
-        if not callable(get_eq_settings):
+        get_typed_eq_settings = getattr(parent.eq_panel, "get_eq_settings", None)
+        if not callable(get_typed_eq_settings):
             QMessageBox.critical(
                 self,
                 "Error",
-                "Could not snapshot current EQ settings; no changes were applied.",
+                "Could not verify the typed EQ candidate; no changes were applied.",
             )
             return
         apply_configuration = getattr(parent, "apply_processing_configuration", None)
@@ -744,25 +430,19 @@ class CalibrationDialog(QDialog):
             return
 
         try:
-            candidate_preset = _eq_candidate_preset(parent, eq_settings)
-            if candidate_preset is None:
-                raise ValueError("current processing configuration is unavailable")
+            proposal = self._candidate_proposal
+            if proposal is None:
+                raise ValueError("validated EQ proposal is unavailable")
+            candidate_preset = proposal.proposed_preset
             apply_configuration(candidate_preset, processing_mode=snapshot_mode)
             parent.eq_panel.set_auto_eq_diagnostics(eq_settings)
-            accepted_eq = deepcopy(get_eq_settings())
-            if not isinstance(accepted_eq, Mapping):
-                raise TypeError("EQ panel returned invalid settings")
-            if "enabled" in accepted_eq and not bool(accepted_eq["enabled"]):
-                raise ValueError("EQ panel did not accept the enabled state")
-            for key in ("schema_version", "bands", "layers"):
-                if key in accepted_eq:
-                    eq_settings[key] = deepcopy(accepted_eq[key])
-            for key in ("enabled", "band_freqs", "band_gains", "band_qs"):
-                if key in accepted_eq:
-                    value = accepted_eq[key]
-                    eq_settings[key] = (
-                        bool(value) if key == "enabled" else list(value)
-                    )
+            accepted_eq = get_typed_eq_settings()
+            if not isinstance(accepted_eq, EQSettings):
+                raise TypeError("EQ panel returned invalid typed settings")
+            expected_eq = candidate_preset.eq
+            if accepted_eq.to_dict() != expected_eq.to_dict():
+                raise ValueError("EQ panel did not install the validated candidate")
+            eq_settings.update(expected_eq.to_dict())
         except Exception as error:
             restore_error = None
             try:
@@ -807,7 +487,13 @@ class CalibrationDialog(QDialog):
         self.accept()
 
     def _compare_recording(self) -> None:
-        if self.recording_state != "ready" or self.audio_data is None or self.eq_settings is None:
+        preview_audio_data = self.preview_audio_data
+        if (
+            self.recording_state != "ready"
+            or self.audio_data is None
+            or preview_audio_data is None
+            or self.eq_settings is None
+        ):
             return
         owner = _find_eq_panel_owner(self.parent())
         if owner is None:
@@ -819,21 +505,18 @@ class CalibrationDialog(QDialog):
         from .listening_comparison_dialog import ListeningComparisonDialog
 
         try:
-            chain = _chain_settings(
-                owner,
-                full_chain=True,
-                input_pre_filtered=self.preview_audio_data is None,
-            )
-        except Exception as error:
+            proposal = self._candidate_proposal
+            if proposal is None:
+                raise ValueError("validated EQ proposal is unavailable")
+            chain = proposal.chain
+        except (TypeError, ValueError) as error:
             QMessageBox.warning(self, "Comparison unavailable", str(error))
             return
         dialog = ListeningComparisonDialog(
-            audio_data=self.preview_audio_data
-            if self.preview_audio_data is not None
-            else self.audio_data,
+            audio_data=preview_audio_data,
             sample_rate=_processor_sample_rate(owner),
-            current_settings=owner.eq_panel.get_settings(),
-            proposed_settings=self.eq_settings,
+            current_settings=proposal.incumbent_preset.eq.to_dict(),
+            proposed_settings=proposal.proposed_preset.eq.to_dict(),
             current_chain_settings=chain,
             proposed_chain_settings=chain,
             parent=self,
@@ -850,6 +533,24 @@ class CalibrationDialog(QDialog):
     def _candidate_identity_error(
         self, eq_settings: Mapping[str, Any], parent: Any
     ) -> str | None:
+        proposal = self._candidate_proposal
+        if proposal is None:
+            return "Validated Auto-EQ proposal is unavailable"
+        headroom = eq_settings.get("headroom_validation")
+        if (
+            not isinstance(headroom, Mapping)
+            or headroom.get("authoritative") is not True
+            or headroom.get("safe") is not True
+        ):
+            return "Auto-EQ candidate lacks safe native full-chain validation"
+        try:
+            validated_eq = EQSettings.from_dict(
+                dict(eq_settings.get("validated_candidate_eq") or {})
+            )
+        except (TypeError, ValueError):
+            return "Validated Auto-EQ candidate is missing"
+        if validated_eq.to_dict() != proposal.proposed_preset.eq.to_dict():
+            return "Auto-EQ candidate changed after headroom validation"
         candidate = eq_settings.get("_candidate")
         expected = self._candidate_metadata
         if not isinstance(candidate, Mapping) or not isinstance(expected, Mapping):
@@ -858,6 +559,10 @@ class CalibrationDialog(QDialog):
             return "Auto-EQ candidate scope is invalid"
         if tuple(candidate.get("allowed_scope") or ()) != ("eq",):
             return "Auto-EQ candidate scope is incomplete"
+        if candidate.get("incumbent_signature") != proposal.incumbent_signature:
+            return "Auto-EQ incumbent identity is unavailable"
+        if candidate.get("configuration_signature") != proposal.proposed_signature:
+            return "Auto-EQ proposal identity is unavailable"
         for key in ("scope", "allowed_scope", "target", "options", "capture_identity"):
             if candidate.get(key) != expected.get(key):
                 return "Auto-EQ candidate options or capture identity changed"
@@ -882,6 +587,20 @@ class CalibrationDialog(QDialog):
             return "Auto-EQ capture sample rate is unavailable"
         if capture.get("context_key") != _owner_calibration_context_key(parent):
             return "Audio route or input cleanup context changed after capture"
+        try:
+            incumbent = parent._get_current_preset()
+            if not isinstance(incumbent, Preset):
+                return "Current processing configuration is unavailable"
+            current_chain = _chain_settings(
+                parent,
+                full_chain=True,
+                input_pre_filtered=False,
+                preset=incumbent,
+            )
+            if not proposal.matches(incumbent, current_chain):
+                return "Processing configuration changed after analysis"
+        except Exception:
+            return "Current processing configuration cannot be verified"
         generation = capture.get("generation")
         if generation != self._analysis_generation:
             return "Auto-EQ candidate is stale"
@@ -1010,18 +729,13 @@ class CalibrationDialog(QDialog):
             self._on_recording_failed("Could not find audio processor")
             return
 
+        self._capture_session = CaptureSession(parent, _TEMPORARY_MUTE_REASON)
         try:
-            _set_temporary_mute(parent, _TEMPORARY_MUTE_REASON, True)
-            parent.processor.set_recovery_suppressed(True)
-            parent.processor.start_raw_recording(
-                RECORDING_DURATION,
-                before_cleanup=True,
-            )
+            self._capture_session.start(RECORDING_DURATION, before_cleanup=True)
         except Exception as e:
             self._on_recording_failed(f"Recording error: {e}")
             return
 
-        self._recording_started_at = time.time()
         self.recording_timer.start()
         if DEBUG:
             logger.debug("Started main-thread recording capture")
@@ -1040,6 +754,15 @@ class CalibrationDialog(QDialog):
 
         try:
             progress_float = float(parent.processor.recording_progress())
+            failure = (
+                self._capture_session.failure_reason(progress_float)
+                if self._capture_session is not None
+                else None
+            )
+            if failure is not None:
+                self.recording_timer.stop()
+                self._on_recording_failed(failure)
+                return
             progress_pct = int(progress_float * 100)
             self._on_progress_update(progress_pct)
             self._on_time_remaining(
@@ -1052,8 +775,12 @@ class CalibrationDialog(QDialog):
 
             if progress_pct >= 100 or parent.processor.is_recording_complete():
                 self.recording_timer.stop()
-                audio = parent.processor.stop_raw_recording()
-                _set_temporary_mute(parent, _TEMPORARY_MUTE_REASON, False)
+                session, self._capture_session = self._capture_session, None
+                audio = (
+                    session.stop_recording()
+                    if session is not None
+                    else parent.processor.stop_raw_recording()
+                )
                 if audio is None:
                     self._on_recording_failed("Recording failed - no audio data")
                     return
@@ -1138,10 +865,9 @@ class CalibrationDialog(QDialog):
 
     def _on_recording_failed(self, error: str):
         """Handle recording failure."""
-        self.recording_timer.stop()
+        self._reset_recording_ui()
         self.warning_label.setText(f"❌ Recording failed: {error}")
         self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
-        self._reset_recording_ui()
 
     def _start_analysis(self):
         """Start analysis worker."""
@@ -1193,7 +919,29 @@ class CalibrationDialog(QDialog):
         self.curve_combo.setEnabled(False)
         self.target_mode_combo.setEnabled(False)
         self.smoothing_combo.setEnabled(False)
-        chain_settings = _chain_settings(parent)
+        if self.preview_audio_data is None:
+            self._on_analysis_failed(
+                "Raw capture is unavailable for full-chain headroom validation"
+            )
+            return
+        try:
+            incumbent = parent._get_current_preset()
+            if not isinstance(incumbent, Preset):
+                raise TypeError("current processing configuration is unavailable")
+            incumbent = Preset.from_dict(incumbent.to_dict())
+            chain_settings = _chain_settings(
+                parent,
+                full_chain=True,
+                input_pre_filtered=False,
+                preset=incumbent,
+            )
+        except Exception as error:
+            self._on_analysis_failed(
+                f"Full-chain headroom setup failed: {error}"
+            )
+            return
+        self._analysis_incumbent_preset = incumbent
+        self._analysis_headroom_chain = deepcopy(chain_settings)
 
         if DEBUG:
             logger.debug(
@@ -1217,6 +965,9 @@ class CalibrationDialog(QDialog):
                 target_mode=target_mode,
                 smoothing_strength=smoothing_strength,
                 chain_settings=chain_settings,
+                headroom_candidate_base_eq_settings=incumbent.eq.to_dict(),
+                headroom_audio_data=self.preview_audio_data,
+                headroom_chain_settings=chain_settings,
             )
         except Exception as error:
             self._on_analysis_failed(f"Analysis setup failed: {error}")
@@ -1286,12 +1037,72 @@ class CalibrationDialog(QDialog):
             logger.debug("Max correction: %.1f dB", round(max_gain, 1))
 
         eq_settings = deepcopy(eq_settings)
+        headroom = eq_settings.get("headroom_validation")
+        validated_eq_payload = eq_settings.get("validated_candidate_eq")
+        headroom_error = None
+        if not isinstance(headroom, Mapping):
+            headroom_error = "full-chain headroom validation result is unavailable"
+        elif headroom.get("authoritative") is not True:
+            detail = headroom.get("reason")
+            headroom_error = str(detail or "native full-chain headroom validation is unavailable")
+        elif headroom.get("safe") is not True:
+            headroom_error = "the merged candidate did not pass full-chain headroom validation"
+        elif not isinstance(validated_eq_payload, Mapping):
+            headroom_error = "validated merged EQ candidate is unavailable"
+        elif (
+            self._analysis_incumbent_preset is None
+            or self._analysis_headroom_chain is None
+        ):
+            headroom_error = "incumbent processing snapshot is unavailable"
+
+        proposal = None
+        if (
+            headroom_error is None
+            and isinstance(validated_eq_payload, Mapping)
+            and self._analysis_incumbent_preset is not None
+            and self._analysis_headroom_chain is not None
+        ):
+            try:
+                validated_eq = EQSettings.from_dict(dict(validated_eq_payload))
+                expected_eq = build_eq_candidate_settings(
+                    self._analysis_incumbent_preset.eq,
+                    eq_settings.get("band_freqs", ()),
+                    eq_settings.get("band_gains", ()),
+                    eq_settings.get("band_qs", ()),
+                    layer="correction",
+                    enabled=bool(eq_settings.get("enabled", True)),
+                )
+                if validated_eq.to_dict() != expected_eq.to_dict():
+                    raise ValueError(
+                        "headroom candidate does not match the final correction"
+                    )
+                proposal = AutoEqCandidate.create(
+                    self._analysis_incumbent_preset,
+                    validated_eq,
+                    self._analysis_headroom_chain,
+                )
+            except (TypeError, ValueError) as error:
+                headroom_error = str(error)
+
         candidate = deepcopy(self._candidate_metadata or {})
         if isinstance(candidate, dict):
             candidate["verified_stages"] = []
+            if proposal is not None:
+                candidate["incumbent_signature"] = proposal.incumbent_signature
+                candidate["configuration_signature"] = proposal.proposed_signature
         eq_settings["_candidate"] = candidate
-        apply_recommended = bool(eq_settings.get("apply_recommended", True))
+        apply_recommended = bool(eq_settings.get("apply_recommended", False))
+        if headroom_error is not None:
+            reasons = list(eq_settings.get("abstention_reasons") or [])
+            reason = f"Full-chain headroom validation failed: {headroom_error}"
+            if reason not in reasons:
+                reasons.append(reason)
+            eq_settings["abstention_reasons"] = reasons
+            eq_settings["recommendation_status"] = "abstain"
+            eq_settings["apply_recommended"] = False
+            apply_recommended = False
         if apply_recommended:
+            self._candidate_proposal = proposal
             self.eq_settings = eq_settings
         else:
             self._clear_eq_candidate()
@@ -1340,7 +1151,7 @@ class CalibrationDialog(QDialog):
         headroom = eq_settings.get("headroom_validation") or {}
         headroom_after = headroom.get("after") if isinstance(headroom, dict) else None
         headroom_safe = (
-            bool(headroom.get("safe", True)) if isinstance(headroom, dict) else True
+            bool(headroom.get("safe", False)) if isinstance(headroom, dict) else False
         )
         headroom_advisory = (
             bool(headroom.get("advisory", False))
@@ -1386,6 +1197,9 @@ class CalibrationDialog(QDialog):
             headroom_status = (
                 "advisory only (Rust simulator unavailable)"
                 if headroom_advisory
+                else "full-chain validation unavailable"
+                if isinstance(headroom, dict)
+                and headroom.get("status") == "unavailable"
                 else "safe correction"
                 if headroom_safe
                 else "headroom risk"
@@ -1493,6 +1307,7 @@ class CalibrationDialog(QDialog):
     def _clear_eq_candidate(self) -> None:
         """Discard the only candidate that may be applied."""
         self.eq_settings = None
+        self._candidate_proposal = None
         self._candidate_target_metadata = None
         self._candidate_metadata = None
 
@@ -1514,28 +1329,9 @@ class CalibrationDialog(QDialog):
 
     def _cleanup_recording_tap(self):
         """Best-effort cleanup for tap/mute state across cancel/close paths."""
-        parent = _find_processor_owner(self.parent())
-
-        if not parent:
-            return
-
-        try:
-            parent.processor.stop_raw_recording()
-        except RuntimeError as e:
-            if "No recording in progress" not in str(e):
-                logger.warning("Failed to stop raw recording during cleanup: %s", e)
-        except Exception as e:
-            logger.warning("Failed to stop raw recording during cleanup: %s", e)
-
-        try:
-            _set_temporary_mute(parent, _TEMPORARY_MUTE_REASON, False)
-        except Exception as e:
-            logger.warning("Failed to unmute output during cleanup: %s", e)
-
-        try:
-            parent.processor.set_recovery_suppressed(False)
-        except Exception as e:
-            logger.warning("Failed to re-enable recovery after cleanup: %s", e)
+        session, self._capture_session = self._capture_session, None
+        if session is not None:
+            session.cleanup()
 
     def _cancel_analysis_workers(self) -> None:
         """Cancel work without dropping ownership of a running QThread."""

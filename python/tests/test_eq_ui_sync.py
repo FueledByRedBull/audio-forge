@@ -485,3 +485,150 @@ def test_auto_eq_explicitly_restores_historical_filter_layout(qapp):
     panel.close()
     panel.deleteLater()
     qapp.processEvents()
+
+
+def test_single_band_edits_make_one_layer_update_and_one_curve_refresh(
+    qapp, monkeypatch
+):
+    processor = AudioProcessor()
+
+    class CountingProcessor:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.calls = {"layers": 0, "gain": 0, "q": 0, "frequency": 0}
+
+        def __getattr__(self, name):
+            return getattr(self.delegate, name)
+
+        def apply_eq_layers(self, correction, tone):
+            self.calls["layers"] += 1
+            return self.delegate.apply_eq_layers(correction, tone)
+
+        def set_eq_band_gain(self, *args):
+            self.calls["gain"] += 1
+            return self.delegate.set_eq_band_gain(*args)
+
+        def set_eq_band_q(self, *args):
+            self.calls["q"] += 1
+            return self.delegate.set_eq_band_q(*args)
+
+        def set_eq_band_frequency(self, *args):
+            self.calls["frequency"] += 1
+            return self.delegate.set_eq_band_frequency(*args)
+
+    counted = CountingProcessor(processor)
+    panel = EQPanel(counted)
+    band = panel.band_sliders[4]
+    curve_calls = 0
+    original_set_all_params = panel.curve_widget.set_all_params
+
+    def count_curve_refresh(*args, **kwargs):
+        nonlocal curve_calls
+        curve_calls += 1
+        return original_set_all_params(*args, **kwargs)
+
+    monkeypatch.setattr(panel.curve_widget, "set_all_params", count_curve_refresh)
+
+    def reset_counts():
+        counted.calls = {"layers": 0, "gain": 0, "q": 0, "frequency": 0}
+        nonlocal curve_calls
+        curve_calls = 0
+
+    try:
+        band.slider.setValue(10)
+        band._rate_limiter.flush()
+        assert counted.calls == {"layers": 1, "gain": 0, "q": 0, "frequency": 0}
+        assert curve_calls == 1
+
+        reset_counts()
+        band.q_spinbox.setValue(2.1)
+        band._rate_limiter.flush()
+        assert counted.calls == {"layers": 1, "gain": 0, "q": 0, "frequency": 0}
+        assert curve_calls == 1
+
+        reset_counts()
+        band.frequency_spinbox.setValue(3000.0)
+        band._frequency_rate_limiter.flush()
+        assert counted.calls == {"layers": 1, "gain": 0, "q": 0, "frequency": 0}
+        assert curve_calls == 1
+        band_config = processor.get_eq_band_config(4)
+        assert band_config is not None
+        assert band_config[1] == 3000.0
+    finally:
+        _close_panel(panel, processor, qapp)
+
+
+def test_eq_drag_coalesces_native_updates_and_curve_refreshes(qapp, monkeypatch):
+    processor = AudioProcessor()
+
+    class CountingProcessor:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.layer_calls = 0
+
+        def __getattr__(self, name):
+            return getattr(self.delegate, name)
+
+        def apply_eq_layers(self, correction, tone):
+            self.layer_calls += 1
+            return self.delegate.apply_eq_layers(correction, tone)
+
+    counted = CountingProcessor(processor)
+    panel = EQPanel(counted)
+    curve_calls = 0
+    original_set_all_params = panel.curve_widget.set_all_params
+
+    def count_curve_refresh(*args, **kwargs):
+        nonlocal curve_calls
+        curve_calls += 1
+        return original_set_all_params(*args, **kwargs)
+
+    monkeypatch.setattr(panel.curve_widget, "set_all_params", count_curve_refresh)
+    panel._curve_rate_limiter._last_call_time = 0.0
+    try:
+        panel._on_curve_band_dragged(4, 3200.0, 2.0)
+        panel._on_curve_band_dragged(4, 3300.0, 2.1)
+        panel._on_curve_band_dragged(4, 3400.0, 2.2)
+        panel._on_curve_drag_finished(4, 3400.0, 2.2)
+
+        assert counted.layer_calls == 2
+        assert curve_calls == 2
+        config = processor.get_eq_band_config(4)
+        assert config is not None and config[1:3] == (3400.0, 2.2)
+    finally:
+        _close_panel(panel, processor, qapp)
+
+
+def test_eq_activity_summary_matches_effective_filters_and_layer_state(qapp):
+    from mic_eq.ui.eq_panel import EQPanel
+
+    processor = AudioProcessor()
+    panel = EQPanel(processor)
+    payload = EQSettings().to_dict()
+    correction = [dict(band) for band in payload["bands"]]
+    correction[0].update(filter_type="high_pass", gain_db=0.0, enabled=True)
+    correction[1].update(filter_type="notch", gain_db=0.0, enabled=True)
+    correction[2].update(filter_type="bell", gain_db=3.0, enabled=False)
+    correction[3].update(filter_type="low_shelf", gain_db=0.0, enabled=True)
+    payload["layers"] = {
+        "correction": correction,
+        "tone": [dict(band) for band in payload["bands"]],
+    }
+
+    try:
+        panel.set_settings(payload)
+        assert "Auto-EQ: 2 active band(s)" in panel._eq_group.title()
+        assert "Tone: 0 active band(s)" in panel._eq_group.title()
+
+        payload["enabled"] = False
+        panel.set_settings(payload)
+        assert "Auto-EQ: 0 active band(s)" in panel._eq_group.title()
+        assert "Tone: 0 active band(s)" in panel._eq_group.title()
+    finally:
+        _close_panel(panel, processor, qapp)
+
+
+def test_bass_cut_description_matches_shelf_contour():
+    description = EQPanel._preset_bass_cut.__doc__ or ""
+    assert "low-shelf" in description
+    assert "high-pass" in description

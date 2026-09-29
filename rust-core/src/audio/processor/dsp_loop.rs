@@ -335,10 +335,14 @@ impl AudioProcessor {
 
         self.input_device_name = Some(input_device_name.clone());
         self.input_device_name_ordinal = input_device_name_ordinal;
-        self.input_device_endpoint_id = input_device_endpoint_id.map(ToOwned::to_owned);
+        // Bind recovery to the endpoints actually opened, including a user's
+        // initial default-device choice, even if another same-name device appears.
+        self.input_device_endpoint_id = input.device_info().endpoint_id.clone()
+            .or_else(|| input_device_endpoint_id.map(ToOwned::to_owned));
         self.output_device_name = Some(output_device_name.clone());
         self.output_device_name_ordinal = output_device_name_ordinal;
-        self.output_device_endpoint_id = output_device_endpoint_id.map(ToOwned::to_owned);
+        self.output_device_endpoint_id = output.device_info().endpoint_id.clone()
+            .or_else(|| output_device_endpoint_id.map(ToOwned::to_owned));
         self.audio_input = Some(input);
         self.audio_output = Some(output);
 
@@ -659,15 +663,11 @@ impl AudioProcessor {
             let mut output_rms_acc: f32 = 0.0;
             let meter_coeff =
                 smoothing_coeff_for_time_constant(sample_rate_for_latency as f32, 100.0);
-            let short_term_loudness_coeff =
-                smoothing_coeff_for_time_constant(sample_rate_for_latency as f32, 3000.0);
             let mut output_short_term_power: f32 = 0.0;
 
             // Latency tracking
             let mut last_latency_update = Instant::now();
-            let mut last_heartbeat = Instant::now();
             let latency_update_interval = std::time::Duration::from_millis(100); // Update every 100ms
-            const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
             const SUPPRESSOR_STARVATION_MS: u64 = 400;
             const NON_FINITE_REBUILD_THRESHOLD: u32 = 3;
             const NON_FINITE_REBUILD_WINDOW_MS: u64 = 2000;
@@ -690,8 +690,13 @@ impl AudioProcessor {
                 crest_atomic.store(stats.crest_factor_db.to_bits(), Ordering::Relaxed);
 
                 if let Some((short_power, loudness_atomic)) = short_term {
-                    *short_power = short_term_loudness_coeff * *short_power
-                        + (1.0 - short_term_loudness_coeff) * stats.mean_power;
+                    let block_coeff = smoothing_coeff_for_block(
+                        sample_rate_for_latency as f32,
+                        3000.0,
+                        buffer.len(),
+                    );
+                    *short_power = block_coeff * *short_power
+                        + (1.0 - block_coeff) * stats.mean_power;
                     let loudness = if *short_power > 1.0e-12 {
                         10.0 * (*short_power).log10() - 0.691
                     } else {
@@ -1069,7 +1074,7 @@ impl AudioProcessor {
                                 );
                                 resample_input.clear();
                                 if let Some(outbuf) = resampler_out.as_mut() {
-                                    outbuf[0].clear();
+                                    clear_resampler_output_samples(outbuf);
                                 }
                                 if !raw_monitor_enabled.load(Ordering::Acquire) {
                                     discontinuity_fade_remaining.set(discontinuity_fade_samples);
@@ -1120,20 +1125,29 @@ impl AudioProcessor {
                                         break;
                                     }
                                     let in_slices = [&resampler_input_frame[..input_frames_needed]];
-                                    if let Ok((_nbr_in, nbr_out)) =
-                                        resampler.process_into_buffer(&in_slices, outbuf, None)
-                                    {
-                                        let channel_out = &outbuf[0];
-                                        for &sample in channel_out.iter().take(nbr_out) {
-                                            if !temp_buffer.push(sample as f32) {
-                                                rt_buffer_overflow_count
-                                                    .fetch_add(1, Ordering::Relaxed);
-                                                store_rt_error(
-                                                    rt_error_code.as_ref(),
-                                                    RtErrorCode::FixedBufferOverflow,
-                                                );
-                                                break;
+                                    match resampler.process_into_buffer(&in_slices, outbuf, None) {
+                                        Ok((_nbr_in, nbr_out)) => {
+                                            let channel_out = &outbuf[0];
+                                            for &sample in channel_out.iter().take(nbr_out) {
+                                                if !temp_buffer.push(sample as f32) {
+                                                    rt_buffer_overflow_count
+                                                        .fetch_add(1, Ordering::Relaxed);
+                                                    store_rt_error(
+                                                        rt_error_code.as_ref(),
+                                                        RtErrorCode::FixedBufferOverflow,
+                                                    );
+                                                    break;
+                                                }
                                             }
+                                        }
+                                        Err(_) => {
+                                            signal_input_resampler_failure(
+                                                rt_error_code.as_ref(),
+                                                restart_requested_for_dsp.as_ref(),
+                                            );
+                                            resample_input.clear();
+                                            temp_buffer.clear();
+                                            break;
                                         }
                                     }
                                 }
@@ -1272,36 +1286,14 @@ impl AudioProcessor {
                                 );
 
                                 if recording_active.load(Ordering::Relaxed) {
-                                    let target = raw_recording_target.load(Ordering::Acquire);
-                                    let pos = raw_recording_pos.load(Ordering::Acquire);
-                                    if pos < target {
-                                        let remaining = target - pos;
-                                        let to_copy = n.min(remaining);
-                                        let written = recording_producer.write(&buffer[..to_copy]);
-                                        let new_pos = pos.saturating_add(written);
-                                        raw_recording_pos.store(new_pos, Ordering::Release);
-
-                                        let window_len =
-                                            (sample_rate_for_latency as usize / 10).max(1);
-                                        let level_start = to_copy.saturating_sub(window_len);
-                                        let level_slice = &buffer[level_start..to_copy];
-                                        let level_rms = if level_slice.is_empty() {
-                                            -120.0
-                                        } else {
-                                            let sum_sq: f32 = level_slice
-                                                .iter()
-                                                .map(|sample| sample * sample)
-                                                .sum();
-                                            let rms = (sum_sq / level_slice.len() as f32).sqrt();
-                                            if rms > 1e-6 {
-                                                20.0 * rms.log10()
-                                            } else {
-                                                -120.0
-                                            }
-                                        };
-                                        recording_level_db
-                                            .store(level_rms.to_bits(), Ordering::Relaxed);
-                                    }
+                                    record_raw_recording_block(
+                                        buffer,
+                                        sample_rate_for_latency,
+                                        &mut recording_producer,
+                                        raw_recording_pos.as_ref(),
+                                        raw_recording_target.as_ref(),
+                                        recording_level_db.as_ref(),
+                                    );
                                 }
 
                                 measure_levels(
@@ -1391,35 +1383,14 @@ impl AudioProcessor {
                             // sanitized microphone samples before either the
                             // fixed DC/80 Hz pre-filter or adaptive cleanup.
                             if recording_active_now && raw_tap_before_cleanup {
-                                let target = raw_recording_target.load(Ordering::Acquire);
-                                let pos = raw_recording_pos.load(Ordering::Acquire);
-                                if pos < target {
-                                    let remaining = target - pos;
-                                    let to_copy = n.min(remaining);
-                                    let written = recording_producer.write(&buffer[..to_copy]);
-                                    let new_pos = pos.saturating_add(written);
-                                    raw_recording_pos.store(new_pos, Ordering::Release);
-
-                                    let window_len = (sample_rate_for_latency as usize / 10).max(1);
-                                    let level_start = to_copy.saturating_sub(window_len);
-                                    let level_slice = &buffer[level_start..to_copy];
-                                    let level_rms = if level_slice.is_empty() {
-                                        -120.0
-                                    } else {
-                                        let sum_sq: f32 = level_slice
-                                            .iter()
-                                            .map(|sample| sample * sample)
-                                            .sum();
-                                        let rms = (sum_sq / level_slice.len() as f32).sqrt();
-                                        if rms > 1e-6 {
-                                            20.0 * rms.log10()
-                                        } else {
-                                            -120.0
-                                        }
-                                    };
-                                    recording_level_db
-                                        .store(level_rms.to_bits(), Ordering::Relaxed);
-                                }
+                                record_raw_recording_block(
+                                    buffer,
+                                    sample_rate_for_latency,
+                                    &mut recording_producer,
+                                    raw_recording_pos.as_ref(),
+                                    raw_recording_target.as_ref(),
+                                    recording_level_db.as_ref(),
+                                );
                             }
                             apply_input_pre_filter(
                                 buffer,
@@ -1432,33 +1403,14 @@ impl AudioProcessor {
                             // Capture audio AFTER pre-filter, BEFORE noise gate
                             // This is the raw microphone response needed for EQ analysis
                             if recording_active_now && !raw_tap_before_cleanup {
-                                let target = raw_recording_target.load(Ordering::Acquire);
-                                let pos = raw_recording_pos.load(Ordering::Acquire);
-                                if pos < target {
-                                    let remaining = target - pos;
-                                    let to_copy = n.min(remaining);
-                                    let written = recording_producer.write(&buffer[..to_copy]);
-                                    let new_pos = pos.saturating_add(written);
-                                    raw_recording_pos.store(new_pos, Ordering::Release);
-
-                                    let window_len = (sample_rate_for_latency as usize / 10).max(1);
-                                    let level_start = to_copy.saturating_sub(window_len);
-                                    let level_slice = &buffer[level_start..to_copy];
-                                    let level_rms = if level_slice.is_empty() {
-                                        -120.0
-                                    } else {
-                                        let sum_sq: f32 =
-                                            level_slice.iter().map(|sample| sample * sample).sum();
-                                        let rms = (sum_sq / level_slice.len() as f32).sqrt();
-                                        if rms > 1e-6 {
-                                            20.0 * rms.log10()
-                                        } else {
-                                            -120.0
-                                        }
-                                    };
-                                    recording_level_db
-                                        .store(level_rms.to_bits(), Ordering::Relaxed);
-                                }
+                                record_raw_recording_block(
+                                    buffer,
+                                    sample_rate_for_latency,
+                                    &mut recording_producer,
+                                    raw_recording_pos.as_ref(),
+                                    raw_recording_target.as_ref(),
+                                    recording_level_db.as_ref(),
+                                );
                             }
                             // === END RECORDING TAP ===
 
@@ -1921,9 +1873,6 @@ impl AudioProcessor {
                             }
                         } else {
                             // No data available, sleep briefly to avoid busy-wait
-                            if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
-                                last_heartbeat = Instant::now();
-                            }
                             consecutive_idle_wakeups = consecutive_idle_wakeups.saturating_add(1);
                             let last_input_callback =
                                 last_input_callback_time_us_for_dsp.load(Ordering::Relaxed);
@@ -2026,20 +1975,6 @@ impl AudioProcessor {
         }
         if let Ok(mut rx) = self.retired_suppressor_rx.lock() {
             *rx = None;
-        }
-
-        // Reinitialize suppressor state so stop/start can recover from poisoned model state.
-        if let Ok(mut s) = self.suppressor.lock() {
-            let was_enabled = s.is_enabled();
-            let model = s.model_type();
-            *s = new_noise_suppression_engine(model, Arc::clone(&self.suppressor_strength));
-            s.set_enabled(was_enabled);
-            update_backend_diagnostics(
-                &self.noise_backend_available,
-                &self.noise_backend_failed,
-                self.noise_backend_error.as_ref(),
-                &s,
-            );
         }
 
         // Reset DSP state so stop/start can recover from stuck envelopes.

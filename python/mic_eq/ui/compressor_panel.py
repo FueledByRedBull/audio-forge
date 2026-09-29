@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QHBoxLayout,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 
 from .level_meter import GainReductionMeter
 from .rate_limiter import RateLimiter
@@ -40,6 +40,8 @@ logger = logging.getLogger(__name__)
 class CompressorPanel(QWidget):
     """Compressor and Limiter control panel."""
 
+    configurationEdited = pyqtSignal(str)
+
     def __init__(self, processor):
         super().__init__()
         self.processor = processor
@@ -48,6 +50,10 @@ class CompressorPanel(QWidget):
         self._dynamics_customized = False
         self._calibrated_controls: dict[str, float | bool] | None = None
         self._applying_settings = False
+        self._synchronous_updates = False
+        self._bulk_applying = False
+        self._exact_values: dict[str, float] = {}
+        self._exact_display_values: dict[str, float] = {}
         self._comp_rate_limiter = RateLimiter(interval_ms=33)
         self._limiter_rate_limiter = RateLimiter(interval_ms=33)
         self._setup_ui()
@@ -220,7 +226,7 @@ class CompressorPanel(QWidget):
         advanced_layout.addWidget(self.base_release_spinbox, 1, 1)
 
         # Current release time display (with METER_LABEL_STYLE)
-        self.current_release_label = QLabel("200 ms")
+        self.current_release_label = QLabel("--")
         self.current_release_label.setStyleSheet(METER_LABEL_STYLE)
         self.current_release_label.setToolTip(
             "Current release time (adaptive or manual)"
@@ -259,7 +265,7 @@ class CompressorPanel(QWidget):
         advanced_layout.addWidget(self.target_lufs_spinbox, 5, 1)
 
         # Current LUFS display (with METER_LABEL_STYLE)
-        self.current_lufs_label = QLabel("-18.0 LUFS")
+        self.current_lufs_label = QLabel("--")
         self.current_lufs_label.setStyleSheet(METER_LABEL_STYLE)
         self.current_lufs_label.setToolTip(
             "Current measured loudness (EBU R128 momentary)"
@@ -268,7 +274,7 @@ class CompressorPanel(QWidget):
         advanced_layout.addWidget(self.current_lufs_label, 6, 1)
 
         # Current makeup gain display (with METER_LABEL_STYLE)
-        self.current_makeup_gain_label = QLabel("0.0 dB")
+        self.current_makeup_gain_label = QLabel("--")
         self.current_makeup_gain_label.setStyleSheet(METER_LABEL_STYLE)
         self.current_makeup_gain_label.setToolTip("Current auto makeup gain applied")
         advanced_layout.addWidget(QLabel("Auto Gain:"), 7, 0)
@@ -345,8 +351,8 @@ class CompressorPanel(QWidget):
 
         # Info label
         info_label = QLabel(
-            "Limiter uses lookahead and instant gain reduction\n"
-            "to catch transients before final output."
+            "Limiter looks ahead 0.5 ms and ramps its gain down\n"
+            "before transients reach the final output."
         )
         info_label.setStyleSheet(INFO_LABEL_STYLE)
         info_label.setWordWrap(True)
@@ -453,15 +459,59 @@ class CompressorPanel(QWidget):
         self._update_compressor()
         self._update_limiter()
 
+    def _precise_value(self, key: str, control: QDoubleSpinBox) -> float:
+        value = float(control.value())
+        if key not in self._exact_values or self._exact_display_values.get(key) != value:
+            self._exact_values[key] = value
+            self._exact_display_values[key] = value
+        return self._exact_values[key]
+
+    def _remember_exact_values(self, settings: dict) -> None:
+        controls = {
+            "threshold_db": self.threshold_spinbox,
+            "ratio": self.ratio_spinbox,
+            "attack_ms": self.attack_spinbox,
+            "release_ms": self.release_spinbox,
+            "makeup_gain_db": self.makeup_spinbox,
+            "base_release_ms": self.base_release_spinbox,
+            "target_lufs": self.target_lufs_spinbox,
+            "ceiling_db": self.ceiling_spinbox,
+            "limiter_release_ms": self.limiter_release_spinbox,
+        }
+        for key, control in controls.items():
+            if key in settings:
+                self._exact_values[key] = float(settings[key])
+                self._exact_display_values[key] = float(control.value())
+
+    def apply_processing_settings_synchronously(
+        self, compressor: dict, limiter: dict
+    ) -> None:
+        """Apply both dynamics stages inline and discard superseded UI writes."""
+        self._comp_rate_limiter.cancel()
+        self._limiter_rate_limiter.cancel()
+        self._synchronous_updates = True
+        try:
+            self.set_compressor_settings(compressor)
+            self.set_limiter_settings(limiter)
+        finally:
+            self._synchronous_updates = False
+
     def _update_compressor(self):
         """Update compressor configuration."""
+        if self._applying_settings:
+            return
         self._mark_dynamics_customized()
         enabled = self.comp_enabled_checkbox.isChecked()
-        threshold = self.threshold_spinbox.value()
-        ratio = self.ratio_spinbox.value()
-        attack = self.attack_spinbox.value()
-        release = self.release_spinbox.value()
-        makeup = self.makeup_spinbox.value()
+        threshold = self._precise_value("threshold_db", self.threshold_spinbox)
+        ratio = self._precise_value("ratio", self.ratio_spinbox)
+        attack = self._precise_value("attack_ms", self.attack_spinbox)
+        adaptive = self.adaptive_release_checkbox.isChecked()
+        release = (
+            self._precise_value("base_release_ms", self.base_release_spinbox)
+            if adaptive
+            else self._precise_value("release_ms", self.release_spinbox)
+        )
+        makeup = self._precise_value("makeup_gain_db", self.makeup_spinbox)
         sidechain_highpass = self.sidechain_highpass_checkbox.isChecked()
 
         def apply():
@@ -469,21 +519,31 @@ class CompressorPanel(QWidget):
             self.processor.set_compressor_threshold(threshold)
             self.processor.set_compressor_ratio(ratio)
             self.processor.set_compressor_attack(attack)
-            self.processor.set_compressor_release(release)
+            if adaptive:
+                self.processor.set_compressor_base_release(release)
+            else:
+                self.processor.set_compressor_release(release)
             self.processor.set_compressor_makeup_gain(makeup)
             if hasattr(self.processor, "set_compressor_sidechain_highpass_enabled"):
                 self.processor.set_compressor_sidechain_highpass_enabled(
                     sidechain_highpass
                 )
 
-        self._comp_rate_limiter.call(apply)
+        if self._synchronous_updates:
+            self._comp_rate_limiter.call_now(apply)
+        else:
+            self._comp_rate_limiter.call(apply)
+        if not self._applying_settings and not self._bulk_applying:
+            self.configurationEdited.emit("Compressor edit")
 
     def _update_limiter(self):
         """Update limiter configuration."""
+        if self._applying_settings:
+            return
         enabled = self.limiter_enabled_checkbox.isChecked()
         careful_output = self.careful_output_checkbox.isChecked()
-        ceiling = self.ceiling_spinbox.value()
-        release = self.limiter_release_spinbox.value()
+        ceiling = self._precise_value("ceiling_db", self.ceiling_spinbox)
+        release = self._precise_value("limiter_release_ms", self.limiter_release_spinbox)
 
         def apply():
             self.processor.set_limiter_enabled(enabled)
@@ -492,7 +552,12 @@ class CompressorPanel(QWidget):
             self.processor.set_limiter_ceiling(ceiling)
             self.processor.set_limiter_release(release)
 
-        self._limiter_rate_limiter.call(apply)
+        if self._synchronous_updates:
+            self._limiter_rate_limiter.call_now(apply)
+        else:
+            self._limiter_rate_limiter.call(apply)
+        if not self._applying_settings and not self._bulk_applying:
+            self.configurationEdited.emit("Limiter edit")
 
     def _dynamics_control_values(self) -> dict[str, float | bool]:
         return {
@@ -525,13 +590,23 @@ class CompressorPanel(QWidget):
 
     def _update_adaptive_release(self):
         """Update adaptive release configuration."""
+        if self._applying_settings:
+            return
         self._mark_dynamics_customized()
         try:
             adaptive = self.adaptive_release_checkbox.isChecked()
-            base_release = self.base_release_spinbox.value()
+            release = (
+                self._precise_value("base_release_ms", self.base_release_spinbox)
+                if adaptive
+                else self._precise_value("release_ms", self.release_spinbox)
+            )
 
+            self._comp_rate_limiter.flush()
             self.processor.set_compressor_adaptive_release(adaptive)
-            self.processor.set_compressor_base_release(base_release)
+            if adaptive:
+                self.processor.set_compressor_base_release(release)
+            else:
+                self.processor.set_compressor_release(release)
 
             # When adaptive is enabled, disable manual release control
             self.release_spinbox.setEnabled(not adaptive)
@@ -541,22 +616,42 @@ class CompressorPanel(QWidget):
             self._update_current_release()
 
         except Exception:
+            if self._synchronous_updates:
+                raise
             logger.debug("Adaptive release update failed", exc_info=True)
+        if not self._applying_settings and not self._bulk_applying:
+            self.configurationEdited.emit("Adaptive release edit")
 
     def _update_current_release(self):
         """Update current release time display from processor."""
         try:
-            current_release = self.processor.get_compressor_current_release()
-            self.current_release_label.setText(f"{current_release:.0f} ms")
-        except Exception:
-            logger.debug("Current release read failed", exc_info=True)
+            processor = self.processor
+            processing_compressor = (
+                processor.is_running()
+                and processor.is_compressor_enabled()
+                and not processor.is_bypass()
+                and not processor.is_raw_monitor_enabled()
+            )
+            current_release = (
+                processor.get_compressor_current_release()
+                if processing_compressor
+                else None
+            )
+            text = (f"{current_release:.0f} ms"
+                    if current_release is not None and math.isfinite(current_release) else "--")
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            text = "--"
+        if self.current_release_label.text() != text:
+            self.current_release_label.setText(text)
 
     def _update_auto_makeup(self):
         """Update auto makeup gain configuration."""
+        if self._applying_settings:
+            return
         self._mark_dynamics_customized()
         try:
             auto_makeup = self.auto_makeup_checkbox.isChecked()
-            target_lufs = self.target_lufs_spinbox.value()
+            target_lufs = self._precise_value("target_lufs", self.target_lufs_spinbox)
 
             self.processor.set_compressor_auto_makeup_enabled(auto_makeup)
             self.processor.set_compressor_target_lufs(target_lufs)
@@ -567,14 +662,23 @@ class CompressorPanel(QWidget):
             self.makeup_slider.setEnabled(not auto_makeup)
 
         except Exception:
+            if self._synchronous_updates:
+                raise
             logger.debug("Auto makeup gain update failed", exc_info=True)
+        if not self._applying_settings and not self._bulk_applying:
+            self.configurationEdited.emit("Auto makeup edit")
 
-    def update_auto_makeup_meters(self, current_lufs: float, makeup_gain: float):
-        """Update auto makeup gain metering displays (call from timer)."""
-        self.current_lufs_label.setText(f"{current_lufs:.1f} LUFS")
-        self.current_makeup_gain_label.setText(f"{makeup_gain:.1f} dB")
+    def update_auto_makeup_meters(self, current_lufs: float | None, makeup_gain: float | None):
+        """Update auto makeup readings without substituting plausible defaults."""
+        for label, value, unit in (
+            (self.current_lufs_label, current_lufs, "LUFS"),
+            (self.current_makeup_gain_label, makeup_gain, "dB"),
+        ):
+            text = f"{value:.1f} {unit}" if value is not None and math.isfinite(value) else "--"
+            if label.text() != text:
+                label.setText(text)
 
-    def update_gain_reduction(self, gr_db: float):
+    def update_gain_reduction(self, gr_db: float | None):
         """Update the gain reduction meter (call from timer)."""
         self.gr_meter.set_gain_reduction(gr_db)
 
@@ -582,15 +686,15 @@ class CompressorPanel(QWidget):
         """Get compressor settings, optionally including transient calibration."""
         settings = {
             "enabled": self.comp_enabled_checkbox.isChecked(),
-            "threshold_db": self.threshold_spinbox.value(),
-            "ratio": self.ratio_spinbox.value(),
-            "attack_ms": self.attack_spinbox.value(),
-            "release_ms": self.release_spinbox.value(),
-            "makeup_gain_db": self.makeup_spinbox.value(),
+            "threshold_db": self._precise_value("threshold_db", self.threshold_spinbox),
+            "ratio": self._precise_value("ratio", self.ratio_spinbox),
+            "attack_ms": self._precise_value("attack_ms", self.attack_spinbox),
+            "release_ms": self._precise_value("release_ms", self.release_spinbox),
+            "makeup_gain_db": self._precise_value("makeup_gain_db", self.makeup_spinbox),
             "adaptive_release": self.adaptive_release_checkbox.isChecked(),
-            "base_release_ms": self.base_release_spinbox.value(),
+            "base_release_ms": self._precise_value("base_release_ms", self.base_release_spinbox),
             "auto_makeup_enabled": self.auto_makeup_checkbox.isChecked(),
-            "target_lufs": self.target_lufs_spinbox.value(),
+            "target_lufs": self._precise_value("target_lufs", self.target_lufs_spinbox),
             "sidechain_highpass_enabled": self.sidechain_highpass_checkbox.isChecked(),
         }
         if include_calibration:
@@ -606,13 +710,19 @@ class CompressorPanel(QWidget):
         """Get current limiter settings as a dictionary."""
         return {
             "enabled": self.limiter_enabled_checkbox.isChecked(),
-            "ceiling_db": self.ceiling_spinbox.value(),
-            "release_ms": self.limiter_release_spinbox.value(),
+            "ceiling_db": self._precise_value("ceiling_db", self.ceiling_spinbox),
+            "release_ms": self._precise_value("limiter_release_ms", self.limiter_release_spinbox),
             "careful_output_enabled": self.careful_output_checkbox.isChecked(),
         }
 
     def set_compressor_settings(self, settings: dict) -> None:
         """Apply compressor settings from a dictionary."""
+        was_synchronous = self._synchronous_updates
+        was_applying = self._applying_settings
+        was_bulk_applying = self._bulk_applying
+        self._comp_rate_limiter.cancel()
+        self._synchronous_updates = True
+        self._bulk_applying = True
         self._applying_settings = True
         try:
             if "enabled" in settings:
@@ -647,11 +757,17 @@ class CompressorPanel(QWidget):
                     settings["sidechain_highpass_enabled"]
                 )
 
+            self._remember_exact_values(settings)
+        finally:
+            self._applying_settings = was_applying
+
+        try:
             self._update_compressor()
             self._update_adaptive_release()
             self._update_auto_makeup()
         finally:
-            self._applying_settings = False
+            self._bulk_applying = was_bulk_applying
+            self._synchronous_updates = was_synchronous
 
         profile = settings.get("dynamics_profile", settings.get("dynamics_intensity"))
         if profile in {"gentle", "balanced", "dense", "custom"}:
@@ -693,13 +809,33 @@ class CompressorPanel(QWidget):
 
     def set_limiter_settings(self, settings: dict) -> None:
         """Apply limiter settings from a dictionary."""
-        if "enabled" in settings:
-            self.limiter_enabled_checkbox.setChecked(settings["enabled"])
-        if "careful_output_enabled" in settings:
-            self.careful_output_checkbox.setChecked(settings["careful_output_enabled"])
-        if "ceiling_db" in settings:
-            self.ceiling_spinbox.setValue(settings["ceiling_db"])
-            self.ceiling_slider.setValue(int(settings["ceiling_db"] * 10))
-        if "release_ms" in settings:
-            self.limiter_release_spinbox.setValue(settings["release_ms"])
-        self._update_limiter()
+        was_synchronous = self._synchronous_updates
+        was_applying = self._applying_settings
+        was_bulk_applying = self._bulk_applying
+        self._limiter_rate_limiter.cancel()
+        self._synchronous_updates = True
+        self._bulk_applying = True
+        self._applying_settings = True
+        try:
+            if "enabled" in settings:
+                self.limiter_enabled_checkbox.setChecked(settings["enabled"])
+            if "careful_output_enabled" in settings:
+                self.careful_output_checkbox.setChecked(settings["careful_output_enabled"])
+            if "ceiling_db" in settings:
+                self.ceiling_spinbox.setValue(settings["ceiling_db"])
+                self.ceiling_slider.setValue(int(settings["ceiling_db"] * 10))
+                self._exact_values["ceiling_db"] = float(settings["ceiling_db"])
+                self._exact_display_values["ceiling_db"] = float(self.ceiling_spinbox.value())
+            if "release_ms" in settings:
+                self.limiter_release_spinbox.setValue(settings["release_ms"])
+                self._exact_values["limiter_release_ms"] = float(settings["release_ms"])
+                self._exact_display_values["limiter_release_ms"] = float(
+                    self.limiter_release_spinbox.value()
+                )
+        finally:
+            self._applying_settings = was_applying
+        try:
+            self._update_limiter()
+        finally:
+            self._bulk_applying = was_bulk_applying
+            self._synchronous_updates = was_synchronous

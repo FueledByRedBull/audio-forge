@@ -1,52 +1,77 @@
 # Changelog
 
+## v1.14.0
+
+### Sound and dynamics
+
+- Measure compressor presence from a real 2 kHz presence band instead of low-frequency energy, capture single-sample peaks at 48-192 kHz, and apply the attack and release settings in one gain smoother instead of two.
+- Make Adaptive Release's Base Release change the applied release, keep adaptive state when unrelated compressor controls change, and smooth manual makeup-gain edits instead of stepping them.
+- Ramp limiter gain across its 0.5 ms lookahead instead of applying an instant step; output true-peak overshoot remains zero.
+- Base the de-esser's voice reference on a separate 250-2000 Hz body band instead of subtracting overlapping band levels, and remove two abrupt detection steps.
+- Clear stereo alignment history across input gaps so stale audio cannot leak into mono output.
+- Calibrate compression by threshold only and keep the current settings when no candidate qualifies; a missed loudness target now blocks Apply. The expanded compressor search failed held-out qualification and stays disabled.
+
+### Calibration and EQ
+
+- Auto Voice Setup now changes gate and noise-suppression settings less often (4 of 66 evaluation cases instead of 19), because candidates are scored through the updated compressor; every safety and speech-preservation gate still passes.
+- Audition and apply one immutable merged EQ candidate; changing current settings invalidates it. Apply stays disabled when native headroom validation is unavailable.
+- Show EQ interaction warnings from each band's actual filter type, enabled state, and slope, and count enabled pass and notch filters as active.
+- Share one typed EQ parser across live and offline native paths, and return contiguous float32 arrays from native renders.
+
+### Devices, settings, and health
+
+- Recover only the selected input and output devices instead of falling back to defaults, surface resampler failures for safe recovery, and keep resampler buffers intact on reset.
+- Apply configuration while muted with synchronous rollback, and cancel captures without blocking the window.
+- Match VAD threshold controls to the engine's 0.30-0.70 range.
+- Validate current-schema presets strictly, keep exact values behind rounded controls, migrate a legacy startup preset name only when it is unique, and record every logical edit, including processing mode, in undo history.
+- Separate current health from cumulative history, show unavailable meters instead of stale values when stopped or failed, and skip redundant UI refreshes.
+- Include bounded correction and tone EQ data in diagnostics exports.
+
+### Packaging and CI
+
+- Verify downloaded runtime assets and attestations before replacing installed copies.
+- Upload Semgrep results to GitHub Code Scanning from trusted pushes with valid Windows file URIs.
+- Ignore only the dev-only PyJWT JWK Set advisory (CVE-2026-102274) in the development dependency audit until Semgrep permits the fixed PyJWT; the runtime audit has no exceptions.
+
 ## v1.13.0
 
-- Upgrade ringbuf to 0.5.2 to address the RustSec advisory affecting the previous queue dependency.
-- Correct short-burst true-peak limiting with longer peak detection and smoothed lookahead gain. Final peak protection adds 6.25 ms of latency at 48 kHz compared with the previous implementation.
-- Match Raw and limiter-disabled preview output to live safety behavior, and measure headroom before either limiter acts.
-- Keep de-esser subbands inside narrow cutoff intervals, remove the zero-gain dead zone from EQ fitting, and reject VAD results published across a stream discontinuity.
-- Keep sample-based automatic makeup metering active, describe each comparison clip's actual processing scope, and validate finite evaluation metrics and declared implementation-source hashes.
-- Use the supplied sample rate throughout generic offline EQ fitting and quality checks, matching native filter responses at 44.1, 48, and 96 kHz.
-- Score gate/suppression candidates with their causal loudness-control evidence, then calibrate compression on the selected input processing and exact applied EQ. Reuse the rendered input across compressor candidates.
-- Correct automatic makeup gain's loudness feedback and use speech/noise evidence and limiter feedback in full-chain previews and verification.
-- Save all seven verified Voice Setup stages and preserve capture validity when applying a candidate from Raw Monitor switches to Normal.
-- Handle refused or failed startup/device configuration writes without claiming success or preventing the main window from opening.
-- Include input resampling delay in reported engine latency for microphones running outside 48 kHz.
-- Use runtime only as a joint-tuning feasibility limit, preventing CPU timing differences from changing otherwise viable gate and suppression rankings.
-- Validate Voice Setup candidates and adjusted verification settings through the combined input cleanup, gate, suppression, typed EQ, and dynamics chain, using the original capture and applied settings.
-- Discard overdue parameter updates when newer controls are applied, preventing a delayed UI timer from silently restoring older processor values after a UI stall.
+### Calibration and comparison
 
-- Validate Auto-EQ recording quality before optional fitting smoothing, avoiding false rejection of clear speech while retaining invalid-capture checks.
-- Add Warm / Full Voice, a bounded low-mid target with restrained upper presence in Adaptive and Static modes.
+- Preserve the recorded voice's spectral shape with bounded tonal targets. Add Warm / Full Voice with restrained upper presence in Adaptive and Static modes; keep Natural / No Added Tone neutral.
+- Keep calibrated Auto-EQ and editable tone in separate stages, including custom filter types and slopes; tone edits preserve matching microphone calibration.
+- Validate recording quality before optional fitting smoothing, retain invalid-capture checks, and score final EQ with the optimizer's normalized data and weights after headroom reduction.
+- Fit EQ before compression on the selected input processing. Score compressor candidates with the requested auto makeup and causal speech/noise and loudness-control evidence, reusing the rendered input.
+- Evaluate bounded gate/suppression choices across available models alongside proposed dynamics. Retain current settings when held-out evidence is inconclusive, and use runtime only as a feasibility limit so CPU timing does not change sound rankings.
+- Use causal, detector-matched VAD decisions and an explicit candidate set; distinguish later-segment evidence from independent whole-pipeline validation.
+- Validate candidates and adjusted verification settings through the combined cleanup, gate, suppression, typed EQ, and dynamics chain using the original capture and applied settings. Keep unsafe headroom advisory; lower target loudness and rerun.
+- Reuse a valid verification take for bounded, stage-specific adjustments, explain failed checks, tolerate minor peak limiting, and restore the previous sound if verification cannot converge. Require approval of the final verified candidate.
+- Save all seven verified stages, show whether calibration still matches the route/settings, and preserve capture validity when applying from Raw switches to Normal.
+- Compare one passage through current and proposed full processing, with accurate scope labels, aligned switching, Stop, playback-device refresh, and a separate saved preview destination.
+- Reuse aligned suppression renders across mix strengths, keep native initialization off the Python interpreter lock, run compressor candidates in bounded parallel batches, and show analysis stage and candidate progress.
 
-- Preserve the recorded voice's spectral shape in automatic EQ; treat targets as bounded tonal adjustments and keep Natural / No Added Tone neutral.
-- Score final EQ with the same normalized fitting data and weights used by the optimizer, including after headroom reduction.
-- Honor global EQ bypass and gate/suppressor settings in previews, preserve level matching through shared peak protection, and measure raw true peak correctly.
-- Reject unsupported typed Python preview approximations and report a failed correction snapshot instead of clearing the correction layer.
-- Evaluate tuning with causal, detector-matched VAD decisions and an explicit candidate set; describe later-segment evidence separately from independent whole-pipeline validation.
-- Reset VAD gate history with the stream, keep unavailable probabilities out of noise learning, and base floor adaptation on elapsed audio rather than callback count.
-- Compare one captured passage through current and proposed input cleanup, gating, suppression, EQ, and dynamics before applying it.
-- Add opt-in close-to-tray operation, tray mute, and a Windows global mute shortcut.
-- Unify Normal, Bypass, and Raw monitoring in one processing-mode selector.
-- Save calibration evidence and show whether it still matches the current route and settings.
-- Keep calibrated Auto-EQ and voice character in independent EQ stages, including custom filter types and slopes; tone edits preserve the calibrated layer.
-- Fit Auto Voice Setup EQ before compressor calibration, score compressor candidates with the requested auto makeup, and keep the result advisory when the native full-chain simulation cannot leave safe headroom; lower the target loudness and rerun rather than applying an unsafe candidate. Natural / No Added Tone remains neutral.
-- Evaluate bounded gate and suppression choices across the available noise models alongside proposed dynamics, retaining current settings when held-out evidence is inconclusive.
-- Apply VAD pre-gain changes to the live inference worker, including changes made while processing.
-- Drop a whole VAD analysis block on queue overflow, publish a discontinuity marker, and reset the worker's recurrent context after draining stale queued samples so a source gap cannot be bridged.
-- Recover VAD speech detection after sustained near-full-scale audio by clearing recurrent history when the level drops, while preserving buffered audio and source timing.
-- Use the automatic level threshold consistently throughout VAD Assisted detection and attenuation; retain the manual threshold when VAD is unavailable.
-- Reset VAD worker history across Normal/Bypass/Raw transitions that interrupt its input.
-- Match the confidence meter marker to the selected VAD threshold and distinguish VAD Only noise-floor tracking from its speech-confidence opening threshold.
-- Clear recurrent VAD history at a sustained, low-confidence speech ending to recover from quieter clipped passages without resetting audio buffering or source timing.
-- Reuse aligned suppression renders across mix strengths, keep native initialization off the Python interpreter lock, evaluate compressor candidates in bounded parallel batches, and show actual Voice Setup analysis stages and candidate progress.
-- Reuse a valid Voice Setup verification take for bounded, stage-specific adjustments; explain the failing check, tolerate minor peak limiting, and restore the previous sound when verification cannot converge instead of repeatedly requesting speech.
-- Restore the previous sound if a configuration fails, and offer Save, Discard, or Cancel before replacing unsaved settings or quitting.
-- Separate Save from Save As, retain matching microphone calibration across tone edits, and require approval of the final verified Voice Setup candidate.
-- Add aligned comparison switching, Stop, playback-device refresh, and a separate saved preview destination.
-- Keep technical health counters behind Details, show background status in the tray, and activate the existing window on a second launch.
-- Require an explicit replacement when a saved output disappears; recovery and calibration cannot silently choose the default speakers.
+### DSP and speech detection
+
+- Correct short-burst true-peak limiting with longer peak detection and smoothed lookahead gain. Final peak protection adds 6.25 ms at 48 kHz compared with the previous implementation.
+- Match Raw and limiter-disabled preview safety to live processing, honor global EQ bypass and gate/suppressor settings, retain level matching through shared peak protection, measure raw true peak correctly, and measure headroom before either limiter acts.
+- Keep de-esser subbands inside narrow cutoff intervals and remove the zero-gain dead zone from EQ fitting.
+- Use the supplied sample rate throughout offline EQ fitting and quality checks, matching native responses at 44.1, 48, and 96 kHz. Include input resampling delay in reported engine latency outside 48 kHz.
+- Keep sample-based automatic makeup metering active, correct its loudness feedback, and include speech/noise evidence and limiter feedback in full-chain previews and verification.
+- Reject unsupported typed Python preview approximations and report failed correction snapshots without clearing the correction layer.
+- Reject VAD results across stream discontinuities. On queue overflow, drop the whole analysis block, mark the gap, drain stale samples, and reset recurrent context; also reset worker history across Normal/Bypass/Raw input interruptions.
+- Recover VAD after sustained near-full-scale audio and quieter clipped passages by clearing recurrent history at a level drop or sustained low-confidence speech ending, preserving buffered audio and source timing.
+- Reset VAD gate history with the stream, exclude unavailable probabilities from noise learning, and adapt the floor by elapsed audio instead of callback count.
+- Apply VAD pre-gain changes during processing, use automatic thresholds consistently in VAD Assisted detection/attenuation, and retain the manual threshold when VAD is unavailable.
+- Match the confidence marker to the selected VAD threshold and distinguish VAD Only noise-floor tracking from its speech-confidence opening threshold.
+
+### Daily use and packaging
+
+- Add opt-in close-to-tray, tray mute, and a Windows global mute shortcut; show background status in the tray and activate the existing window on a second launch.
+- Unify Normal, Bypass, and Raw in one processing-mode selector and keep technical health counters behind Details.
+- Separate Save from Save As, offer Save/Discard/Cancel before replacing unsaved settings or quitting, and restore the previous sound if configuration fails.
+- Handle refused or failed startup/device writes without false success or blocking the main window. Require explicit replacement of a missing saved output rather than silently selecting default speakers.
+- Discard overdue parameter updates when newer controls apply, preventing delayed timers from restoring old values after a UI stall.
+- Upgrade ringbuf to 0.5.2 to address the previous queue dependency's RustSec advisory.
+- Validate finite evaluation metrics and declared implementation-source hashes.
 - Include Qt Multimedia corresponding source and remove unused FFmpeg media components from the portable package.
 
 ## v1.12.1

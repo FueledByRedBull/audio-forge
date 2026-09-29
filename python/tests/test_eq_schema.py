@@ -20,6 +20,7 @@ from mic_eq.config import (
 
 def _legacy_preset() -> dict:
     payload = Preset(name="Legacy").to_dict()
+    payload["version"] = "1.12.0"
     payload["eq"] = {
         "enabled": True,
         "band_freqs": [

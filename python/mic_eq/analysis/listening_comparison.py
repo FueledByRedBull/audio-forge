@@ -275,7 +275,7 @@ def _simulation_audio(simulation: Mapping[str, Any], expected_size: int) -> np.n
         raise RuntimeError("offline simulator returned audio with the wrong length")
     if not np.isfinite(output).all():
         raise RuntimeError("offline simulator returned non-finite audio")
-    return np.ascontiguousarray(output, dtype=np.float32).copy()
+    return np.ascontiguousarray(output, dtype=np.float32)
 
 
 def _playback_safe(
@@ -441,8 +441,8 @@ def render_comparison(
     The existing Rust simulation removes its deterministic chain latency before
     returning ``output_audio``. ``alignment_samples`` reports that native
     offset so callers can show the evidence while the three clips share the
-    capture timeline. Python fallback output is same-length and marked
-    advisory by ``native_authoritative``.
+    capture timeline. Unavailable native simulation raises instead of returning
+    an approximate comparison.
     """
     audio = _validate_capture(audio_data, sample_rate)
     rate = int(sample_rate)

@@ -162,6 +162,21 @@ def test_route_health_fails_closed_without_valid_callback_heartbeats():
     assert "stream health value is invalid" in reason
 
 
+def test_route_health_allows_stable_recovery_without_clearing_history():
+    from mic_eq.ui.health import RecentStreamHealth
+
+    processor = _Processor(running=True)
+    processor.diagnostics["output_callback_error_count"] = 1
+    processor.diagnostics["stream_restart_count"] = 2
+    window = RecentStreamHealth()
+    assert not route_health_reason(processor, health_window=window, now=0.0)[0]
+    assert route_health_reason(processor, health_window=window, now=5.0)[0]
+    assert processor.diagnostics["output_callback_error_count"] == 1
+    assert processor.diagnostics["stream_restart_count"] == 2
+    processor.diagnostics["stream_restart_count"] += 1
+    assert not route_health_reason(processor, health_window=window, now=6.0)[0]
+
+
 def test_setup_resumes_at_saved_step_and_delegates_route_check(qapp, monkeypatch):
     monkeypatch.setattr(
         "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: True
@@ -618,5 +633,7 @@ def test_route_feedback_shows_idle_levels_when_processor_stops(qapp, monkeypatch
 
     assert dialog.route_input_meter.rms_db == -60.0
     assert dialog.route_output_meter.rms_db == -60.0
+    assert not dialog.route_input_meter.measurement_available
+    assert not dialog.route_output_meter.measurement_available
     assert dialog.route_input_health_label.text() == "Input: --"
     assert dialog.route_output_health_label.text() == "Output: --"

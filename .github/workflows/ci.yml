@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["master"]
+    branches: ["master", "fix/semgrep-code-scanning-upload"]
   pull_request:
 
 permissions:
@@ -22,6 +22,9 @@ jobs:
   python:
     runs-on: windows-latest
     timeout-minutes: 40
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,7 +63,8 @@ jobs:
         run: |
           python -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
           if ($LASTEXITCODE -ne 0) { throw "Runtime dependency audit failed with exit code $LASTEXITCODE." }
-          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
+          # GHSA-w6j9-cwv2-h6wq: every Semgrep release pins pyjwt~=2.13.0; dev-only, see RELEASING.md.
+          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-102274
           if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
       - name: Ruff
         run: python -m ruff check python/mic_eq python/tests python/tools
@@ -82,6 +86,12 @@ jobs:
           path: semgrep-results.sarif
           if-no-files-found: error
           retention-days: 14
+      - name: Upload Semgrep results to GitHub Code Scanning
+        if: always() && github.event_name == 'push' && hashFiles('semgrep-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@1c5b675653bb5c22dbe9b12b556ec555138e09fd # v4
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
 
   rust:
     runs-on: windows-latest

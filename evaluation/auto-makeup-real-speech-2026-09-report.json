@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "audible_change": true,
+  "generated_at_utc": "2026-09-29T18:55:27.335130+00:00",
+  "experiment": "VAD/noise-reliability auto-makeup versus RMS-only fallback",
+  "retained": true,
+  "predefined_gates": {
+    "minimum_active_block_ratio": 0.05,
+    "minimum_inactive_block_ratio": 0.02,
+    "minimum_candidate_active_makeup_db": 0.5,
+    "maximum_active_makeup_regret_db": 1.0,
+    "maximum_inactive_makeup_regression_db": 0.25,
+    "maximum_pumping_score_regression": 0.05,
+    "maximum_p99_boundary_excess_linear": 0.01,
+    "maximum_boundary_regression_linear": 0.001,
+    "maximum_p99_block_runtime_ms": 10.0
+  },
+  "metrics": {
+    "median_candidate_active_makeup_db": 9.199263095855713,
+    "median_baseline_active_makeup_db": 9.243032932281494,
+    "median_candidate_inactive_makeup_db": 1.540758103132248,
+    "median_baseline_inactive_makeup_db": 9.977011442184448,
+    "median_candidate_pumping_score": 0.020256022521949482,
+    "median_baseline_pumping_score": 0.050113246373484396,
+    "p95_candidate_p99_boundary_excess_linear": 0.03548310026340186,
+    "p95_baseline_p99_boundary_excess_linear": 0.041356562267988915,
+    "max_candidate_p99_block_runtime_ms": 0.5376400947570801,
+    "minimum_active_block_ratio": 0.19033333333333333,
+    "minimum_inactive_block_ratio": 0.49533333333333335
+  },
+  "gates": {
+    "all_clips_contain_active_and_inactive_evidence": true,
+    "speech_convergence_retained": true,
+    "inactive_gain_not_worse_than_rms_fallback": true,
+    "pumping_not_worse_than_rms_fallback": true,
+    "boundary_discontinuity_not_worse_than_rms_fallback": true,
+    "p99_control_work_within_10ms_deadline": true
+  },
+  "source_sha256": {
+    "python/tools/evaluate_auto_makeup_real_speech.py": "bcc6a7ea415dbb5d39c8a6143b7e395c12aa0c5f07e85a314c5ed2e9d5e6d860",
+    "python/tools/_eval_common.py": "4bb90b66bfb77fe762d55e76ebc54e30674538e82d61598854299c63ecdb70ba",
+    "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
+    "rust-core/src/audio/processor/python_api.rs": "07ec0a6fa7d78173ebb2814dd5197e7ac3726ff998de5362bc6e87804fd4c839",
+    "rust-core/src/dsp/compressor.rs": "1bdf4f33b732969cd97ff2a6baaabfd2a66247d9fd2cd5a51be9c2de3433d216",
+    "rust-core/src/dsp/vad.rs": "b7574df86bf79c1bf07b74e6fa6b48b598b85ad5c041035a218e09e2988f1cf9"
+  },
+  "evaluation_contract": {
+    "configuration": {
+      "sample_rate": 48000,
+      "control_block_size": 480,
+      "vad_threshold": 0.48,
+      "compressor": {
+        "threshold_db": -24.0,
+        "ratio": 3.0,
+        "attack_ms": 10.0,
+        "release_ms": 180.0,
+        "target_lufs": -18.0,
+        "adaptive_release": true
+      }
+    },
+    "asset_hashes": {
+      "models/silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+      "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
+    },
+    "runtime": {
+      "max_p99_frame_seconds": 0.00053764009475708,
+      "control_deadline_seconds": 0.01,
+      "platform": "Windows-11-10.0.26200-SP0",
+      "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
+    },
+    "latency": {
+      "control_block_samples": 480,
+      "additional_audio_latency_samples": 0
+    },
+    "clean_preservation": {
+      "method": "The controller changes compressor makeup only; active-speech gain retention is gated against the RMS-only fallback.",
+      "active_makeup_regret_db": 0.04376983642578125
+    }
+  },
+  "limitations": [
+    "The supplied corpus contains simulated mixtures rather than native 48 kHz close-mic captures.",
+    "Clean-reference Silero posteriors define active/inactive evaluation masks; the controller consumes noisy-mixture posteriors.",
+    "The 12-language sample is one 30-second segment per language, so condition and speaker breadth remain limited."
+  ]
+}

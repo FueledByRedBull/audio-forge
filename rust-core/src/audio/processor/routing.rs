@@ -230,7 +230,7 @@ struct AdaptiveInputCleanupState {
     hum_harmonic_bins: [HumBin; HUM_TRACK_BINS],
     hum_window_samples: usize,
     hum_window_pos: usize,
-    hum_windows_observed: u32,
+    hum_windows_observed: u64,
     hum_candidate_windows: u8,
     hum_total_energy: f32,
     hum_hold_samples: u32,
@@ -492,12 +492,15 @@ impl AdaptiveInputCleanupState {
             // tracking without ever allowing a wrapped phase jump to retune
             // the notch by tens of hertz.
             let window_seconds = self.hum_window_samples as f32 / self.sample_rate.max(1.0);
-            let center_sample = (self.hum_windows_observed as f32 + 0.5)
-                * self.hum_window_samples as f32;
+            // Reduce cycles in f64 before converting to radians so the window
+            // counter never creates an imprecise, unbounded f32 phase.
+            let center_turns = ((self.hum_windows_observed as f64 + 0.5)
+                * best_frequency_hz as f64
+                * self.hum_window_samples as f64
+                / self.sample_rate.max(1.0) as f64)
+                .rem_euclid(1.0);
             let absolute_phase = wrap_phase(
-                -best_primary_phase
-                    + 2.0 * std::f32::consts::PI * best_frequency_hz * center_sample
-                        / self.sample_rate.max(1.0),
+                -best_primary_phase + (std::f64::consts::TAU * center_turns) as f32,
             );
             let phase_frequency = if self.hum_phase_valid && window_seconds > 0.0 {
                 let phase_delta = wrap_phase(absolute_phase - self.hum_previous_absolute_phase);
@@ -609,15 +612,16 @@ impl AdaptiveInputCleanupState {
 }
 
 #[inline]
-fn wrap_phase(mut phase: f32) -> f32 {
+fn wrap_phase(phase: f32) -> f32 {
     let two_pi = 2.0 * std::f32::consts::PI;
-    while phase > std::f32::consts::PI {
-        phase -= two_pi;
+    let wrapped = phase.rem_euclid(two_pi);
+    if wrapped > std::f32::consts::PI {
+        wrapped - two_pi
+    } else if wrapped == std::f32::consts::PI && phase.is_sign_negative() {
+        -std::f32::consts::PI
+    } else {
+        wrapped
     }
-    while phase < -std::f32::consts::PI {
-        phase += two_pi;
-    }
-    phase
 }
 
 #[cfg(test)]
@@ -649,6 +653,79 @@ mod adaptive_cleanup_tests {
             (state.hum_line_hz - frequency_hz).abs() < 0.8,
             "tracked={} expected={frequency_hz}",
             state.hum_line_hz
+        );
+    }
+
+    #[test]
+    fn hum_tracker_preserves_fractional_frequency_after_five_simulated_days() {
+        const SAMPLE_RATE: f32 = 48_000.0;
+        const SIGNAL_HZ: f64 = 50.37;
+        const BIN_HZ: f64 = 50.0;
+        const WINDOWS_PER_DAY: u64 = 4 * 60 * 60 * 24;
+        const ELAPSED_WINDOWS: u64 = WINDOWS_PER_DAY * 5;
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut state = AdaptiveInputCleanupState::new(SAMPLE_RATE);
+            state.set_mode(InputCleanupMode::Gentle);
+            state.hum_windows_observed = ELAPSED_WINDOWS - 1;
+            state.hum_candidate_windows = 2;
+            state.hum_phase_valid = true;
+
+            let phase_at_center = |frequency_hz: f64, window_index: u64| {
+                let turns = ((window_index as f64 + 0.5)
+                    * state.hum_window_samples as f64
+                    * frequency_hz
+                    / SAMPLE_RATE as f64)
+                    .rem_euclid(1.0);
+                (std::f64::consts::TAU * turns) as f32
+            };
+            state.hum_previous_absolute_phase =
+                phase_at_center(SIGNAL_HZ, ELAPSED_WINDOWS - 1);
+
+            let window_index = ELAPSED_WINDOWS;
+            let bin_phase = wrap_phase(
+                phase_at_center(BIN_HZ, window_index)
+                    - phase_at_center(SIGNAL_HZ, window_index),
+            );
+            let window_samples = state.hum_window_samples as f32;
+            for (index, bin) in state.hum_bins.iter_mut().enumerate() {
+                let power = match index {
+                    0 | 2 => 1.0e-3,
+                    1 => 4.0e-3,
+                    _ => 0.0,
+                };
+                let magnitude = (power * window_samples * window_samples * 0.5).sqrt();
+                let phase = if index == 1 { bin_phase } else { 0.0 };
+                bin.i_acc = magnitude * phase.cos();
+                bin.q_acc = magnitude * phase.sin();
+            }
+            state.hum_total_energy = 4.0e-3 * window_samples;
+
+            state.finish_hum_window();
+            let _ = sender.send(state.hum_line_hz);
+        });
+
+        let tracked_hz = receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("hum phase tracking must stay bounded after five simulated days");
+        assert!(
+            (tracked_hz - 50.0925).abs() < 0.01,
+            "tracked={tracked_hz}, expected fractional phase update near 50.0925 Hz"
+        );
+    }
+
+    #[test]
+    fn hum_window_counter_advances_past_u32_limit() {
+        let mut state = AdaptiveInputCleanupState::new(48_000.0);
+        state.set_mode(InputCleanupMode::Gentle);
+        state.hum_windows_observed = u64::from(u32::MAX);
+
+        state.finish_hum_window();
+
+        assert_eq!(
+            state.hum_windows_observed,
+            u64::from(u32::MAX) + 1
         );
     }
 

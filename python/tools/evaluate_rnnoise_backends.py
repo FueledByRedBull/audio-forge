@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import platform
 import subprocess
 import tempfile
@@ -13,8 +12,10 @@ from pathlib import Path
 from typing import Any, cast
 from release_provenance import sha256_file as _sha256
 
+from _eval_common import resample_audio, si_sdr as _si_sdr
+
 import numpy as np
-from scipy.signal import correlate, correlation_lags, resample_poly, stft
+from scipy.signal import correlate, correlation_lags, stft
 
 from mic_eq.analysis.wav_io import read_mono_wav
 
@@ -39,13 +40,7 @@ def _relative(path: Path) -> str:
 
 
 def _resample(audio: np.ndarray, source_rate: int) -> np.ndarray:
-    if source_rate == SAMPLE_RATE:
-        return np.asarray(audio, dtype=np.float64)
-    divisor = math.gcd(source_rate, SAMPLE_RATE)
-    return np.asarray(
-        resample_poly(audio, SAMPLE_RATE // divisor, source_rate // divisor),
-        dtype=np.float64,
-    )
+    return resample_audio(audio, source_rate, SAMPLE_RATE, dtype=np.float64)
 
 
 def _paired_paths(root: Path, max_languages: int) -> list[tuple[Path, Path]]:
@@ -133,23 +128,6 @@ def _delay_samples(reference: np.ndarray, estimate: np.ndarray) -> int:
     lags = correlation_lags(left.size, right.size, mode="full")
     allowed = np.abs(lags) <= 2 * FRAME_SIZE
     return int(lags[allowed][np.argmax(correlation[allowed])])
-
-
-def _si_sdr(reference: np.ndarray, estimate: np.ndarray) -> float:
-    reference = reference - np.mean(reference)
-    estimate = estimate - np.mean(estimate)
-    energy = float(np.dot(reference, reference))
-    if energy <= 1e-12:
-        return 0.0
-    target = reference * (float(np.dot(estimate, reference)) / energy)
-    residual = estimate - target
-    return float(
-        10.0
-        * np.log10(
-            (float(np.dot(target, target)) + 1e-12)
-            / (float(np.dot(residual, residual)) + 1e-12)
-        )
-    )
 
 
 def _speech_lsd(reference: np.ndarray, estimate: np.ndarray) -> float:

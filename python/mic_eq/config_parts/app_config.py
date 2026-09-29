@@ -92,7 +92,7 @@ class DevicePresetBinding:
             provenance = str(value.get("provenance", "explicit_user")).strip()
         else:
             return None
-        if not preset_id.startswith(("builtin:", "custom:")):
+        if not preset_id.startswith(("builtin:", "custom:", "custom-file:")):
             return None
         if provenance not in DEVICE_PRESET_PROVENANCE:
             provenance = "legacy_migration"

@@ -134,6 +134,20 @@ def test_capture_identity_and_age_mismatch_are_invalid():
     assert "stale" in combined
 
 
+def test_noise_capture_timestamp_after_voice_is_invalid():
+    sample_rate = 48_000
+    result = analyze_noise_reference(
+        _stationary_noise(sample_rate),
+        _speech_with_quiet_gaps(sample_rate),
+        sample_rate,
+        noise_metadata=CaptureMetadata(captured_at_unix_s=10_000.0),
+        speech_metadata=CaptureMetadata(captured_at_unix_s=1_000.0),
+    )
+
+    assert result.status == "invalid"
+    assert any("timestamp" in reason for reason in result.reasons)
+
+
 def test_mismatched_in_capture_noise_uses_conservative_spectrum():
     sample_rate = 48_000
     explicit = _stationary_noise(sample_rate, amplitude=0.0005)

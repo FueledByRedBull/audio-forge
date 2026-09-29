@@ -7,7 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from mic_eq.config import AppConfig, Preset
+from mic_eq.config import AppConfig, Preset, build_eq_candidate_settings
 from mic_eq.ui.config_history import (
     BoundedConfigurationHistory,
     ConfigurationSnapshot,
@@ -16,6 +16,7 @@ from mic_eq.ui.config_history import (
 )
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.calibration_dialog import CalibrationDialog, _candidate_metadata
+from mic_eq.ui.calibration_support import chain_settings as _chain_settings
 
 
 def _snapshot(
@@ -131,6 +132,19 @@ def test_malformed_snapshot_is_rejected_without_corrupting_history() -> None:
     assert history.current == baseline
 
 
+def test_snapshot_stores_validated_canonical_legacy_values():
+    preset = Preset()
+    preset.version = "1.12.1"
+    preset.gate.vad_threshold = 0.73
+
+    snapshot = ConfigurationSnapshot.from_preset(
+        preset, label="migrated", source="preset"
+    )
+
+    assert snapshot.to_preset().gate.vad_threshold == pytest.approx(0.7)
+    assert snapshot.payload()["gate"]["vad_threshold"] == pytest.approx(0.7)
+
+
 def test_migration_provenance_survives_and_only_changed_path_becomes_explicit() -> None:
     preset = Preset()
     payload = preset.to_dict()
@@ -204,6 +218,8 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
 
     window.gate_panel.threshold_spinbox.setValue(baseline + 2.0)
     qapp.processEvents()
+
+
     assert window._commit_pending_configuration_snapshot()
     assert window._configuration_history.can_undo
 
@@ -223,7 +239,16 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
     dialog.recording_state = "analyzing"
     dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
     dialog.audio_data = np.zeros(16, dtype=np.float32)
+    dialog.preview_audio_data = dialog.audio_data.copy()
     dialog._analysis_generation = 1
+    incumbent_preset = window._get_current_preset()
+    dialog._analysis_incumbent_preset = incumbent_preset
+    dialog._analysis_headroom_chain = _chain_settings(
+        window,
+        full_chain=True,
+        input_pre_filtered=False,
+        preset=incumbent_preset,
+    )
     dialog._candidate_metadata = _candidate_metadata(
         "eq_only",
         target={"curve": "broadcast", "mode": "adaptive", "smoothing": "conservative"},
@@ -241,11 +266,26 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
         lambda _parent, _title, message: pytest.fail(message),
     )
     dialog.auto_eq_applied.connect(window.on_auto_eq_applied)
+    candidate_eq = build_eq_candidate_settings(
+        incumbent_preset.eq,
+        [band[0] for band in auto_eq_bands],
+        [band[1] for band in auto_eq_bands],
+        [band[2] for band in auto_eq_bands],
+        enabled=True,
+    )
     dialog._on_analysis_complete({
         "band_freqs": [band[0] for band in auto_eq_bands],
         "band_gains": [band[1] for band in auto_eq_bands],
         "band_qs": [band[2] for band in auto_eq_bands],
+        "enabled": True,
         "apply_recommended": True,
+        "validated_candidate_eq": candidate_eq.to_dict(),
+        "headroom_validation": {
+            "safe": True,
+            "authoritative": True,
+            "advisory": False,
+            "status": "safe",
+        },
     })
     dialog._on_start_clicked()
     correction = window.eq_panel.get_eq_settings().correction_bands
@@ -294,6 +334,46 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
     window.close()
     window.deleteLater()
     qapp.processEvents()
+
+
+def test_domain_edits_update_history_and_ignore_presentation_controls(
+    qapp, monkeypatch
+):
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
+    for name in ("list_presets", "list_input_devices", "list_output_devices"):
+        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    window = MainWindow()
+    try:
+        baseline = window._preset_payload(window._get_current_preset())
+
+        window.eq_panel._preset_voice()
+        assert window.current_preset_modified is True
+        window._commit_pending_configuration_snapshot()
+        assert window._configuration_history.can_undo
+        window.undo_configuration()
+        assert window._preset_payload(window._get_current_preset()) == baseline
+
+        window.processing_mode_combo.setCurrentIndex(
+            window.processing_mode_combo.findData("raw")
+        )
+        assert window.current_preset_modified is True
+        window._commit_pending_configuration_snapshot()
+        assert window._configuration_history.can_undo
+        assert window.current_preset_modified is True
+        window.undo_configuration()
+        assert window._processing_mode() == "normal"
+        assert window.current_preset_modified is False
+
+        history_size = window._configuration_history.size
+        window.health_details_button.click()
+        qapp.processEvents()
+        assert not window._commit_pending_configuration_snapshot()
+        assert window._configuration_history.size == history_size
+    finally:
+        window.close()
+        window.deleteLater()
+        qapp.processEvents()
 
 
 def test_main_window_failed_history_restore_rolls_back_partial_state(

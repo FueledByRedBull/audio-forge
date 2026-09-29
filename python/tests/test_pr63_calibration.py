@@ -9,7 +9,13 @@ import numpy as np
 from PyQt6.QtWidgets import QMessageBox, QWidget
 
 from mic_eq.analysis.voice_setup import _recommend_compressor_settings
-from mic_eq.config import DeviceIdentity, EQ_FREQUENCIES, EQSettings, Preset
+from mic_eq.config import (
+    DeviceIdentity,
+    EQ_FREQUENCIES,
+    EQSettings,
+    Preset,
+    build_eq_candidate_settings,
+)
 from mic_eq.ui.calibration_dialog import (
     CalibrationDialog,
     _active_device_identities,
@@ -17,6 +23,7 @@ from mic_eq.ui.calibration_dialog import (
     _route_identities_match,
     _set_temporary_mute,
 )
+from mic_eq.ui.calibration_support import AutoEqCandidate, chain_settings
 from mic_eq.ui.compressor_panel import CompressorPanel
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
@@ -60,9 +67,14 @@ class _RouteProcessor:
 
 class _EqPanel:
     def __init__(self) -> None:
-        self.snapshot_error = False
         self.restore_error = False
         self.apply_calls = 0
+        self.typed_settings = EQSettings(
+            enabled=False,
+            band_freqs=list(EQ_FREQUENCIES),
+            band_gains=[0.0] * 10,
+            band_qs=[1.41] * 10,
+        )
         self.state = {
             "enabled": False,
             "band_freqs": list(EQ_FREQUENCIES),
@@ -71,9 +83,13 @@ class _EqPanel:
         }
 
     def get_settings(self) -> dict:
-        if self.snapshot_error:
-            raise RuntimeError("snapshot unavailable")
         return deepcopy(self.state)
+
+    def get_eq_settings(self) -> EQSettings:
+        return self.typed_settings
+
+    def set_eq_settings(self, settings: EQSettings) -> None:
+        self.typed_settings = EQSettings.from_dict(settings.to_dict())
 
     def apply_auto_eq_results(self, _bands, diagnostics=None) -> None:
         self.apply_calls += 1
@@ -101,18 +117,11 @@ class _CalibrationOwner(QWidget):
         super().__init__()
         self.processor = Mock()
         self.processor.sample_rate.return_value = 48_000
+        self.processor.get_input_cleanup_mode.return_value = "off"
         self.eq_panel = _EqPanel()
 
     def _get_current_preset(self) -> Preset:
-        current = self.eq_panel.get_settings()
-        return Preset(
-            eq=EQSettings(
-                enabled=bool(current["enabled"]),
-                band_freqs=current["band_freqs"],
-                band_gains=current["band_gains"],
-                band_qs=current["band_qs"],
-            )
-        )
+        return Preset(eq=self.eq_panel.get_eq_settings())
 
     def _processing_mode(self) -> str:
         return "normal"
@@ -135,6 +144,7 @@ class _CalibrationOwner(QWidget):
                 ]
             )
             self.eq_panel.set_settings({"enabled": preset.eq.enabled})
+            self.eq_panel.set_eq_settings(preset.eq)
             return
         self.eq_panel.set_settings(
             {
@@ -144,6 +154,7 @@ class _CalibrationOwner(QWidget):
                 "band_qs": [band.q for band in preset.eq.bands],
             }
         )
+        self.eq_panel.set_eq_settings(preset.eq)
 
 
 class _ContextCalibrationOwner(_CalibrationOwner):
@@ -261,14 +272,70 @@ def _eq_candidate_metadata(context_key: str | None = None) -> dict:
     }
 
 
-def _eq_candidate() -> dict:
+def _eq_candidate(
+    *,
+    band_freqs: list[float] | None = None,
+    band_gains: list[float] | None = None,
+    band_qs: list[float] | None = None,
+) -> dict:
     return {
-        "band_freqs": [80.0, 160.0, 320.0, 640.0, 1280.0, 2500.0, 5000.0, 8000.0, 12000.0, 16000.0],
-        "band_gains": [1.0] * 10,
-        "band_qs": [1.41] * 10,
+        "band_freqs": (
+            [80.0, 160.0, 320.0, 640.0, 1280.0, 2500.0, 5000.0, 8000.0, 12000.0, 16000.0]
+            if band_freqs is None
+            else band_freqs
+        ),
+        "band_gains": [1.0] * 10 if band_gains is None else band_gains,
+        "band_qs": [1.41] * 10 if band_qs is None else band_qs,
         "apply_recommended": True,
-        "_candidate": _eq_candidate_metadata(),
     }
+
+
+def _install_eq_candidate(
+    dialog: CalibrationDialog,
+    owner: _CalibrationOwner,
+    *,
+    band_freqs: list[float] | None = None,
+    band_gains: list[float] | None = None,
+    band_qs: list[float] | None = None,
+) -> None:
+    candidate = _eq_candidate(
+        band_freqs=band_freqs,
+        band_gains=band_gains,
+        band_qs=band_qs,
+    )
+    incumbent = owner._get_current_preset()
+    candidate_eq = build_eq_candidate_settings(
+        incumbent.eq,
+        candidate["band_freqs"],
+        candidate["band_gains"],
+        candidate["band_qs"],
+        layer="correction",
+        enabled=True,
+    )
+    chain = chain_settings(
+        owner,
+        full_chain=True,
+        input_pre_filtered=False,
+        preset=incumbent,
+    )
+    proposal = AutoEqCandidate.create(incumbent, candidate_eq, chain)
+    context_getter = getattr(owner, "_calibration_context_key", None)
+    context_value = context_getter() if callable(context_getter) else None
+    context_key = context_value if isinstance(context_value, str) else None
+    metadata = _eq_candidate_metadata(context_key)
+    metadata["incumbent_signature"] = proposal.incumbent_signature
+    metadata["configuration_signature"] = proposal.proposed_signature
+    candidate["validated_candidate_eq"] = candidate_eq.to_dict()
+    candidate["headroom_validation"] = {"safe": True, "authoritative": True}
+    candidate["_candidate"] = deepcopy(metadata)
+
+    dialog.recording_state = "ready"
+    dialog.audio_data = np.zeros(16, dtype=np.float32)
+    dialog._analysis_generation = 1
+    dialog.eq_settings = candidate
+    dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
+    dialog._candidate_metadata = deepcopy(metadata)
+    dialog._candidate_proposal = proposal
 
 
 def _voice_candidate_metadata(context_key: str | None = None) -> dict:
@@ -424,12 +491,7 @@ def test_eq_apply_failure_restores_partial_native_mutation(qapp, monkeypatch) ->
     dialog = CalibrationDialog(owner)
     before = owner.eq_panel.get_settings()
     try:
-        dialog.recording_state = "ready"
-        dialog.audio_data = np.zeros(16, dtype=np.float32)
-        dialog._analysis_generation = 1
-        dialog.eq_settings = _eq_candidate()
-        dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
-        dialog._candidate_metadata = _eq_candidate_metadata()
+        _install_eq_candidate(dialog, owner)
         monkeypatch.setattr(QMessageBox, "critical", lambda *_args, **_kwargs: None)
 
         dialog._apply_eq_settings()
@@ -446,24 +508,29 @@ def test_eq_apply_requires_snapshot_and_reports_restore_failure(qapp, monkeypatc
     dialog = CalibrationDialog(owner)
     messages: list[str] = []
     try:
-        dialog.recording_state = "ready"
-        dialog.audio_data = np.zeros(16, dtype=np.float32)
-        dialog._analysis_generation = 1
-        dialog.eq_settings = _eq_candidate()
-        dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
-        dialog._candidate_metadata = _eq_candidate_metadata()
+        _install_eq_candidate(dialog, owner)
         monkeypatch.setattr(
             QMessageBox,
             "critical",
             lambda _parent, _title, message: messages.append(str(message)),
         )
 
-        owner.eq_panel.snapshot_error = True
+        get_current_preset = owner._get_current_preset
+        snapshot_calls = 0
+
+        def fail_apply_snapshot() -> Preset:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            if snapshot_calls == 2:
+                raise RuntimeError("snapshot unavailable")
+            return get_current_preset()
+
+        monkeypatch.setattr(owner, "_get_current_preset", fail_apply_snapshot)
         dialog._apply_eq_settings()
         assert owner.eq_panel.apply_calls == 0
         assert "no changes were applied" in messages[-1]
 
-        owner.eq_panel.snapshot_error = False
+        monkeypatch.setattr(owner, "_get_current_preset", get_current_preset)
         owner.eq_panel.restore_error = True
         dialog._apply_eq_settings()
         assert "EQ restoration failed" in messages[-1]
@@ -564,15 +631,20 @@ def test_eq_apply_reads_back_accepted_values(qapp, monkeypatch) -> None:
     dialog = CalibrationDialog(owner)
     monkeypatch.setattr(QMessageBox, "critical", lambda *_args, **_kwargs: None)
     try:
-        dialog.recording_state = "ready"
-        dialog.audio_data = np.zeros(16, dtype=np.float32)
-        dialog._analysis_generation = 1
-        dialog.eq_settings = _eq_candidate()
-        dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
-        dialog._candidate_metadata = _eq_candidate_metadata()
+        _install_eq_candidate(
+            dialog,
+            owner,
+            band_freqs=[100.0] * 10,
+            band_gains=[6.0] * 10,
+            band_qs=[1.0] * 10,
+        )
+        proposal = dialog._candidate_proposal
+        assert proposal is not None
+        expected_eq = proposal.proposed_preset.eq.to_dict()
         dialog._apply_eq_settings()
         assert owner.eq_panel.get_settings()["band_gains"] == [6.0] * 10
         assert owner.eq_panel.get_settings()["enabled"] is True
+        assert owner.eq_panel.get_eq_settings().to_dict() == expected_eq
     finally:
         dialog.reject()
         owner.close()
@@ -588,14 +660,7 @@ def test_eq_candidate_rejects_changed_route_context(qapp, monkeypatch) -> None:
         lambda _parent, _title, message: messages.append(str(message)),
     )
     try:
-        metadata = _eq_candidate_metadata("route-a")
-        dialog.recording_state = "ready"
-        dialog.audio_data = np.zeros(16, dtype=np.float32)
-        dialog._analysis_generation = 1
-        dialog.eq_settings = _eq_candidate()
-        dialog.eq_settings["_candidate"] = deepcopy(metadata)
-        dialog._candidate_target_metadata = ("broadcast", "adaptive", "conservative")
-        dialog._candidate_metadata = metadata
+        _install_eq_candidate(dialog, owner)
         owner.context_key = "route-b"
         dialog._apply_eq_settings()
         assert owner.eq_panel.apply_calls == 0

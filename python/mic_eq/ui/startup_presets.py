@@ -4,6 +4,7 @@ from ..config import BUILTIN_PRESETS
 
 STARTUP_BUILTIN_PREFIX = "builtin:"
 STARTUP_CUSTOM_PREFIX = "custom:"
+STARTUP_CUSTOM_FILE_PREFIX = "custom-file:"
 
 
 def startup_builtin_id(preset_key: str) -> str:
@@ -14,12 +15,18 @@ def startup_custom_id(preset_name: str) -> str:
     return f"{STARTUP_CUSTOM_PREFIX}{preset_name}"
 
 
+def startup_custom_file_id(filename: str) -> str:
+    return f"{STARTUP_CUSTOM_FILE_PREFIX}{filename}"
+
+
 def normalize_startup_preset_id(value: str, custom_names: tuple[str, ...] = ()) -> str:
     """Return the stable startup preset ID, accepting legacy stored display names."""
     preset_id = str(value or "")
     if not preset_id:
         return ""
-    if preset_id.startswith((STARTUP_BUILTIN_PREFIX, STARTUP_CUSTOM_PREFIX)):
+    if preset_id.startswith(
+        (STARTUP_BUILTIN_PREFIX, STARTUP_CUSTOM_PREFIX, STARTUP_CUSTOM_FILE_PREFIX)
+    ):
         return preset_id
     if preset_id in BUILTIN_PRESETS:
         return startup_builtin_id(preset_id)
@@ -38,4 +45,6 @@ def startup_preset_display_name(preset_id: str) -> str:
             return BUILTIN_PRESETS[preset_key].name
     if preset_id.startswith(STARTUP_CUSTOM_PREFIX):
         return preset_id[len(STARTUP_CUSTOM_PREFIX):]
+    if preset_id.startswith(STARTUP_CUSTOM_FILE_PREFIX):
+        return preset_id[len(STARTUP_CUSTOM_FILE_PREFIX):]
     return preset_id

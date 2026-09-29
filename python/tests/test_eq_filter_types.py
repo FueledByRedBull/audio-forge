@@ -36,6 +36,64 @@ def _typed_default_bands() -> list[tuple[str, float, float, float, int, bool]]:
     ]
 
 
+def _call_typed_eq_boundary(entrypoint, bands):
+    audio = np.zeros(480, dtype=np.float32)
+    if entrypoint == "response":
+        return eq_magnitude_response_v2([1000.0], bands, 48_000.0)
+    if entrypoint == "render":
+        return simulate_eq_v2(audio, 48_000.0, bands)
+    if entrypoint in {"chain", "chain_layers"}:
+        settings = {"eq_bands_v2": bands} if entrypoint == "chain" else {
+            "eq_correction_bands_v2": _typed_default_bands(), "eq_tone_bands_v2": bands,
+        }
+        legacy = [(b.frequency_hz, b.gain_db, b.q) for b in EQSettings().bands]
+        return simulate_auto_eq_chain(audio, 48_000.0, legacy, settings)
+    processor = AudioProcessor()
+    before = [processor.get_eq_band_config(i) for i in range(10)]
+    try:
+        if entrypoint == "live":
+            processor.apply_eq_settings_v2(bands)
+        else:
+            processor.apply_eq_layers(_typed_default_bands(), bands)
+    except (ValueError, TypeError):
+        assert [processor.get_eq_band_config(i) for i in range(10)] == before
+        raise
+    finally:
+        del processor
+
+
+@pytest.mark.parametrize("entrypoint", ["response", "render", "chain", "chain_layers", "live", "live_layers"])
+@pytest.mark.parametrize("invalid", ["type", "slope", "nan", "infinite_gain", "q", "nyquist", "length"])
+def test_typed_eq_entrypoints_share_rejection_contract(entrypoint, invalid):
+    bands = _typed_default_bands()
+    band = ["bell", 1000.0, 0.0, 1.0, 12, False]
+    if invalid == "type":
+        band[0] = "unknown"
+    elif invalid == "slope":
+        band[4] = 18
+    elif invalid == "nan":
+        band[1] = float("nan")
+    elif invalid == "infinite_gain":
+        band[2] = float("inf")
+    elif invalid == "q":
+        band[3] = 0.0
+    elif invalid == "nyquist":
+        band[1] = 24_000.0
+    bands[4] = tuple(band)
+    if invalid == "length":
+        bands.pop()
+    with pytest.raises(ValueError):
+        _call_typed_eq_boundary(entrypoint, bands)
+
+
+@pytest.mark.parametrize("entrypoint", ["response", "render", "chain", "chain_layers", "live", "live_layers"])
+@pytest.mark.parametrize("filter_type", ["bell", "notch", "high_pass", "low_pass", "high_shelf", "low_shelf"])
+def test_typed_eq_entrypoints_accept_every_filter(entrypoint, filter_type):
+    bands = _typed_default_bands()
+    bands[4] = (filter_type, 1000.0, 0.0, 1.0, 12, True)
+    _call_typed_eq_boundary(entrypoint, bands)
+
+
 def test_raw_preview_measures_intersample_peak() -> None:
     audio = (0.8 * np.sin(2 * np.pi * 0.25 * np.arange(4800) + np.pi / 4)).astype(np.float32)
     bands = [(band.frequency_hz, 0.0, band.q) for band in EQSettings().bands]

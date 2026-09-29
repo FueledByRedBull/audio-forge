@@ -372,7 +372,7 @@ def test_failed_retake_clears_old_profile_before_accept(qapp, monkeypatch):
     monkeypatch.setattr(latency_module.QMessageBox, "information", information)
     monkeypatch.setattr(
         latency_module,
-        "start_processor_for_route",
+        "start_selected_route",
         Mock(side_effect=RuntimeError("start failed")),
     )
     owner.route = "route-b"
@@ -436,7 +436,7 @@ def test_running_stream_on_different_route_is_rejected(qapp, monkeypatch):
     owner = Owner()
     dialog = LatencyCalibrationDialog(owner)
     start = Mock()
-    monkeypatch.setattr(latency_module, "start_processor_for_route", start)
+    monkeypatch.setattr(latency_module, "start_selected_route", start)
 
     dialog._on_run_clicked()
 

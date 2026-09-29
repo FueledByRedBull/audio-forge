@@ -117,6 +117,13 @@ impl Default for PhaseSafeMonoState {
 }
 
 impl PhaseSafeMonoState {
+    fn reset_alignment(&mut self) {
+        self.left_history.fill(0.0);
+        self.right_history.fill(0.0);
+        self.filled = 0;
+        self.last_candidate = None;
+    }
+
     #[inline]
     fn push(&mut self, left: f32, right: f32) {
         self.left_history
@@ -459,6 +466,38 @@ impl AudioInput {
         best_channel
     }
 
+    fn single_active_stereo_channel<T>(interleaved: &[T], frame_count: usize) -> Option<usize>
+    where
+        T: Sample + Copy,
+        f32: FromSample<T>,
+    {
+        if frame_count == 0 {
+            return None;
+        }
+        let mut mean = [0.0_f64; 2];
+        for frame in interleaved.as_chunks::<2>().0.iter().take(frame_count) {
+            mean[0] += Self::normalize_input_sample(frame[0]) as f64;
+            mean[1] += Self::normalize_input_sample(frame[1]) as f64;
+        }
+        mean[0] /= frame_count as f64;
+        mean[1] /= frame_count as f64;
+
+        let mut energy = [0.0_f64; 2];
+        for frame in interleaved.as_chunks::<2>().0.iter().take(frame_count) {
+            for channel in 0..2 {
+                let centered = Self::normalize_input_sample(frame[channel]) as f64 - mean[channel];
+                energy[channel] += centered * centered;
+            }
+        }
+
+        let channel = usize::from(energy[1] > energy[0]);
+        let stronger_energy = energy[channel];
+        let weaker_energy = energy[1 - channel];
+        (stronger_energy > frame_count as f64 * 1.0e-12
+            && weaker_energy <= stronger_energy * 1.0e-6)
+            .then_some(channel)
+    }
+
     fn stereo_correlation<T>(interleaved: &[T], frame_count: usize) -> Option<f32>
     where
         T: Sample + Copy,
@@ -561,15 +600,31 @@ impl AudioInput {
         T: Sample + Copy,
         f32: FromSample<T>,
     {
+        // A normalized correlation cannot exceed 1.0, so this route cannot
+        // improve enough to produce an alignment candidate.
+        if current_correlation > 1.0 - PHASE_SAFE_MIN_IMPROVEMENT {
+            return None;
+        }
+
         let mut best_delay = 0_i32;
         let mut best_polarity = 1.0_f32;
         let mut best_corr = f32::NEG_INFINITY;
+        let mut correlations = [None; PHASE_SAFE_MAX_DELAY_SAMPLES as usize * 2 + 1];
+
+        for delay in -PHASE_SAFE_MAX_DELAY_SAMPLES..=PHASE_SAFE_MAX_DELAY_SAMPLES {
+            let index = (delay + PHASE_SAFE_MAX_DELAY_SAMPLES) as usize;
+            correlations[index] = Self::delayed_correlation(interleaved, frame_count, delay, 1.0);
+        }
 
         for polarity in [1.0_f32, -1.0_f32] {
             for delay in -PHASE_SAFE_MAX_DELAY_SAMPLES..=PHASE_SAFE_MAX_DELAY_SAMPLES {
-                if let Some(corr) =
-                    Self::delayed_correlation(interleaved, frame_count, delay, polarity)
-                {
+                let index = (delay + PHASE_SAFE_MAX_DELAY_SAMPLES) as usize;
+                if let Some(base_corr) = correlations[index] {
+                    let corr = if polarity < 0.0 {
+                        -base_corr
+                    } else {
+                        base_corr
+                    };
                     if corr > best_corr {
                         best_corr = corr;
                         best_delay = delay;
@@ -587,10 +642,14 @@ impl AudioInput {
 
         let mut refined_delay = best_delay as f32;
         if best_delay > -PHASE_SAFE_MAX_DELAY_SAMPLES && best_delay < PHASE_SAFE_MAX_DELAY_SAMPLES {
+            let correlation_for = |delay: i32| {
+                let index = (delay + PHASE_SAFE_MAX_DELAY_SAMPLES) as usize;
+                correlations[index].map(|corr| if best_polarity < 0.0 { -corr } else { corr })
+            };
             if let (Some(prev), Some(center), Some(next)) = (
-                Self::delayed_correlation(interleaved, frame_count, best_delay - 1, best_polarity),
-                Self::delayed_correlation(interleaved, frame_count, best_delay, best_polarity),
-                Self::delayed_correlation(interleaved, frame_count, best_delay + 1, best_polarity),
+                correlation_for(best_delay - 1),
+                correlation_for(best_delay),
+                correlation_for(best_delay + 1),
             ) {
                 let denom = prev - 2.0 * center + next;
                 if denom.abs() > 1e-6 {
@@ -625,6 +684,29 @@ impl AudioInput {
         T: Sample + Copy,
         f32: FromSample<T>,
     {
+        if stereo_correlation.is_none() {
+            if let Some(channel) = Self::single_active_stereo_channel(interleaved, frame_count) {
+                // Rebuild alignment history from cold state after a silent-peer dropout.
+                state.reset_alignment();
+                for (frame_idx, frame) in interleaved
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .take(frame_count)
+                    .enumerate()
+                {
+                    mono[frame_idx] = Self::normalize_input_sample(frame[channel]);
+                }
+                let diagnostics = PhaseSafeMixDiagnostics {
+                    strategy: PhaseRescueStrategy::MaxRmsFallback,
+                    estimated_delay_samples: 0.0,
+                    polarity_flipped: false,
+                };
+                state.smooth_strategy_transition(&mut mono[..frame_count], diagnostics);
+                return diagnostics;
+            }
+        }
+
         let current_correlation = stereo_correlation.unwrap_or(1.0);
         let detected_candidate =
             Self::best_phase_alignment(interleaved, frame_count, current_correlation);
@@ -635,6 +717,9 @@ impl AudioInput {
         }
         let candidate = detected_candidate.or(state.last_candidate);
         let Some(candidate) = candidate else {
+            // No aligned samples are appended on these paths. A future delay
+            // must warm up from contiguous input, never from before this gap.
+            state.reset_alignment();
             if current_correlation < INPUT_PHASE_WARNING_CORRELATION {
                 let channel = Self::strongest_channel_index(interleaved, 2, frame_count);
                 for (frame_idx, chunk) in interleaved
@@ -762,6 +847,9 @@ impl AudioInput {
         T: Sample + Copy,
         f32: FromSample<T>,
     {
+        if mode != InputChannelMode::PhaseSafeMono || num_channels != 2 {
+            *phase_state = PhaseSafeMonoState::default();
+        }
         if num_channels == 0 || mono.is_empty() {
             return (0, None, PhaseSafeMixDiagnostics::default());
         }
@@ -1504,6 +1592,73 @@ mod tests {
     }
 
     #[test]
+    fn test_phase_safe_mono_preserves_level_when_one_stereo_channel_is_silent() {
+        let interleaved = [0.75_f32, 0.0, -0.5, 0.0, 0.25, 0.0];
+        let mut mono = [0.0_f32; 3];
+
+        let (written, correlation, diagnostics) = AudioInput::mix_interleaved_to_mono_with_mode(
+            &interleaved,
+            2,
+            InputChannelMode::PhaseSafeMono,
+            &mut mono,
+        );
+
+        assert_eq!(correlation, None);
+        assert_eq!(written, 3);
+        assert_eq!(mono, [0.75, -0.5, 0.25]);
+        assert_eq!(diagnostics.strategy, PhaseRescueStrategy::MaxRmsFallback);
+    }
+
+    #[test]
+    fn test_phase_safe_mono_preserves_level_with_dc_only_peer() {
+        let interleaved = [0.75_f32, 0.002, -0.5, 0.002, 0.25, 0.002];
+        let mut mono = [0.0_f32; 3];
+
+        let (written, correlation, diagnostics) = AudioInput::mix_interleaved_to_mono_with_mode(
+            &interleaved,
+            2,
+            InputChannelMode::PhaseSafeMono,
+            &mut mono,
+        );
+
+        assert_eq!(written, 3);
+        assert_eq!(correlation, None);
+        assert_eq!(mono, [0.75, -0.5, 0.25]);
+        assert_eq!(diagnostics.strategy, PhaseRescueStrategy::MaxRmsFallback);
+    }
+
+    #[test]
+    fn test_single_active_stereo_clears_phase_history_and_discards_stale_candidate() {
+        let interleaved = [0.1_f32, 0.0, 0.2, 0.0, 0.3, 0.0, 0.4, 0.0];
+        let mut mono = [0.0_f32; 4];
+        let mut state = PhaseSafeMonoState::default();
+        state.left_history.fill(0.8);
+        state.right_history.fill(-0.6);
+        state.filled = PHASE_SAFE_HISTORY_SAMPLES;
+        state.last_candidate = Some(PhaseAlignmentCandidate {
+            strategy: PhaseRescueStrategy::FractionalDelay,
+            delay_samples: 3.0,
+            polarity: 1.0,
+            correlation: 0.95,
+        });
+
+        let (written, _, diagnostics) = AudioInput::mix_interleaved_to_mono_with_mode_and_state(
+            &interleaved,
+            2,
+            InputChannelMode::PhaseSafeMono,
+            &mut mono,
+            &mut state,
+        );
+
+        assert_eq!(written, 4);
+        assert_eq!(diagnostics.strategy, PhaseRescueStrategy::MaxRmsFallback);
+        assert_eq!(state.filled, 0);
+        assert!(state.left_history.iter().all(|sample| *sample == 0.0));
+        assert!(state.right_history.iter().all(|sample| *sample == 0.0));
+        assert!(state.last_candidate.is_none());
+    }
+
+    #[test]
     fn test_lagrange_fractional_delay_reduces_sweep_null_error_vs_linear() {
         let sample_rate = 48_000.0_f64;
         let duration_samples = 48_000usize;
@@ -1601,6 +1756,83 @@ mod tests {
     }
 
     #[test]
+    fn test_phase_safe_history_does_not_bridge_unaligned_or_mode_gaps() {
+        let signal = |n: f64| {
+            (0.22 * (2.0 * std::f64::consts::PI * 3100.0 * n / 48_000.0).sin()
+                + 0.16 * (2.0 * std::f64::consts::PI * 9100.0 * n / 48_000.0).sin())
+                as f32
+        };
+        let delayed: Vec<f32> = (0..128)
+            .flat_map(|n| [signal(n as f64), signal(n as f64 - 3.4)])
+            .collect();
+        let resumed: Vec<f32> = (0..128)
+            .flat_map(|n| {
+                [
+                    signal(n as f64 + 400.0) * 0.1,
+                    signal(n as f64 + 396.6) * 0.1,
+                ]
+            })
+            .collect();
+        for mode in [
+            InputChannelMode::PhaseSafeMono,
+            InputChannelMode::Average,
+            InputChannelMode::Left,
+            InputChannelMode::Right,
+            InputChannelMode::MaxRms,
+        ] {
+            for gap_frames in [2, 128] {
+                let mut state = PhaseSafeMonoState::default();
+                let mut output = [0.0; 128];
+                let (_, _, first) = AudioInput::mix_interleaved_to_mono_with_mode_and_state(
+                    &delayed,
+                    2,
+                    InputChannelMode::PhaseSafeMono,
+                    &mut output,
+                    &mut state,
+                );
+                assert_eq!(first.strategy, PhaseRescueStrategy::FractionalDelay);
+                let gap: Vec<f32> = (0..gap_frames)
+                    .flat_map(|n| [signal(n as f64 + 128.0); 2])
+                    .collect();
+                AudioInput::mix_interleaved_to_mono_with_mode_and_state(
+                    &gap,
+                    2,
+                    mode,
+                    &mut output,
+                    &mut state,
+                );
+                // Preserve transition smoothing, but use no audio from before the gap.
+                let mut reference = state.clone();
+                reference.left_history.fill(0.0);
+                reference.right_history.fill(0.0);
+                reference.filled = 0;
+                reference.last_candidate = None;
+                let mut expected = [0.0; 128];
+                AudioInput::mix_interleaved_to_mono_with_mode_and_state(
+                    &resumed,
+                    2,
+                    InputChannelMode::PhaseSafeMono,
+                    &mut expected,
+                    &mut reference,
+                );
+                AudioInput::mix_interleaved_to_mono_with_mode_and_state(
+                    &resumed,
+                    2,
+                    InputChannelMode::PhaseSafeMono,
+                    &mut output,
+                    &mut state,
+                );
+                let error = output
+                    .iter()
+                    .zip(expected)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f32, f32::max);
+                assert!(error < 1e-6, "mode={mode:?} gap={gap_frames} error={error}");
+            }
+        }
+    }
+
+    #[test]
     fn test_phase_safe_strategy_change_has_no_added_boundary_jump() {
         let sample_rate = TARGET_SAMPLE_RATE as f32;
         let frames = 256usize;
@@ -1651,6 +1883,138 @@ mod tests {
             boundary_step <= natural_max_step * 1.25 + 1.0e-3,
             "boundary_step={boundary_step} natural_max_step={natural_max_step}"
         );
+    }
+
+    fn reference_best_phase_alignment<T>(
+        interleaved: &[T],
+        frame_count: usize,
+        current_correlation: f32,
+    ) -> Option<PhaseAlignmentCandidate>
+    where
+        T: Sample + Copy,
+        f32: FromSample<T>,
+    {
+        let mut best_delay = 0_i32;
+        let mut best_polarity = 1.0_f32;
+        let mut best_corr = f32::NEG_INFINITY;
+        for polarity in [1.0_f32, -1.0_f32] {
+            for delay in -PHASE_SAFE_MAX_DELAY_SAMPLES..=PHASE_SAFE_MAX_DELAY_SAMPLES {
+                if let Some(corr) =
+                    AudioInput::delayed_correlation(interleaved, frame_count, delay, polarity)
+                {
+                    if corr > best_corr {
+                        best_corr = corr;
+                        best_delay = delay;
+                        best_polarity = polarity;
+                    }
+                }
+            }
+        }
+
+        if best_corr < PHASE_SAFE_MIN_CORRELATION
+            || best_corr - current_correlation < PHASE_SAFE_MIN_IMPROVEMENT
+        {
+            return None;
+        }
+
+        let mut refined_delay = best_delay as f32;
+        if best_delay > -PHASE_SAFE_MAX_DELAY_SAMPLES && best_delay < PHASE_SAFE_MAX_DELAY_SAMPLES {
+            if let (Some(prev), Some(center), Some(next)) = (
+                AudioInput::delayed_correlation(
+                    interleaved,
+                    frame_count,
+                    best_delay - 1,
+                    best_polarity,
+                ),
+                AudioInput::delayed_correlation(
+                    interleaved,
+                    frame_count,
+                    best_delay,
+                    best_polarity,
+                ),
+                AudioInput::delayed_correlation(
+                    interleaved,
+                    frame_count,
+                    best_delay + 1,
+                    best_polarity,
+                ),
+            ) {
+                let denom = prev - 2.0 * center + next;
+                if denom.abs() > 1e-6 {
+                    refined_delay += (0.5 * (prev - next) / denom).clamp(-0.5, 0.5);
+                }
+            }
+        }
+
+        let strategy = if best_polarity < 0.0 && refined_delay.abs() < 0.25 {
+            PhaseRescueStrategy::PolarityFlip
+        } else {
+            PhaseRescueStrategy::FractionalDelay
+        };
+        Some(PhaseAlignmentCandidate {
+            strategy,
+            delay_samples: refined_delay,
+            polarity: best_polarity,
+            correlation: best_corr,
+        })
+    }
+
+    fn assert_same_phase_candidate(
+        actual: Option<PhaseAlignmentCandidate>,
+        expected: Option<PhaseAlignmentCandidate>,
+    ) {
+        match (actual, expected) {
+            (None, None) => {}
+            (Some(actual), Some(expected)) => {
+                assert_eq!(actual.strategy, expected.strategy);
+                assert_eq!(
+                    actual.delay_samples.to_bits(),
+                    expected.delay_samples.to_bits()
+                );
+                assert_eq!(actual.polarity.to_bits(), expected.polarity.to_bits());
+                assert_eq!(actual.correlation.to_bits(), expected.correlation.to_bits());
+            }
+            pair => panic!("phase candidate changed: {pair:?}"),
+        }
+    }
+
+    #[test]
+    fn test_phase_alignment_decisions_match_full_reference_search() {
+        for (delay, polarity) in [(0.0_f32, 1.0_f32), (3.4, 1.0), (0.0, -1.0), (-4.0, -1.0)] {
+            let frame_count = 96;
+            let source: Vec<f32> = (0..frame_count)
+                .map(|index| {
+                    let n = index as f32;
+                    (0.31 * (n * 0.19).sin() + 0.17 * (n * 0.071).cos())
+                        + if index % 13 == 0 { 0.03 } else { 0.0 }
+                })
+                .collect();
+            let mut interleaved = vec![0.0_f32; frame_count * 2];
+            for index in 0..frame_count {
+                let right_position = index as f32 - delay;
+                let left = source[index];
+                let right = if right_position >= 0.0 && right_position < frame_count as f32 {
+                    let lower = right_position.floor() as usize;
+                    let fraction = right_position - lower as f32;
+                    if lower + 1 < frame_count {
+                        source[lower] * (1.0 - fraction) + source[lower + 1] * fraction
+                    } else {
+                        source[lower]
+                    }
+                } else {
+                    0.0
+                };
+                interleaved[index * 2] = left;
+                interleaved[index * 2 + 1] = right * polarity;
+            }
+            let current_correlation =
+                AudioInput::stereo_correlation(&interleaved, frame_count).unwrap_or(1.0);
+            let expected =
+                reference_best_phase_alignment(&interleaved, frame_count, current_correlation);
+            let actual =
+                AudioInput::best_phase_alignment(&interleaved, frame_count, current_correlation);
+            assert_same_phase_candidate(actual, expected);
+        }
     }
 
     #[test]

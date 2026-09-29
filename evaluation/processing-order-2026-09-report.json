@@ -1,0 +1,134 @@
+{
+  "schema_version": 4,
+  "audible_change": true,
+  "generated_at_utc": "2026-09-29T19:00:02.311551+00:00",
+  "status": "incumbents-retained-objective-gates-failed",
+  "decision": {
+    "product_chain_changed": false,
+    "gate_suppressor": "retain_gate_before_suppressor",
+    "eq_deesser": "retain_deesser_before_eq",
+    "reason": "Both candidates fail their predefined objective gates, so the shipping processing order remains unchanged."
+  },
+  "gate_suppressor": {
+    "predefined_gates": {
+      "material_win": ">=10% chatter reduction, >=1 point false-closure reduction, or >=5% tail retention improvement",
+      "active_and_tail_retention_min_ratio_vs_baseline": 0.98,
+      "pumping_regression_max": 0.03,
+      "runtime_ratio_max": 1.1
+    },
+    "metrics": {
+      "baseline_chatter_events": 0,
+      "candidate_chatter_events": 0,
+      "median_baseline_false_closure_rate": 0.0,
+      "median_candidate_false_closure_rate": 0.0,
+      "median_baseline_active_retained_ratio": 0.28878104653874076,
+      "median_candidate_active_retained_ratio": 0.37164493309300695,
+      "median_baseline_tail_retained_ratio": 0.008164051758719561,
+      "median_candidate_tail_retained_ratio": 0.012187818985173626,
+      "median_baseline_pumping_score": 0.23182015717013243,
+      "median_candidate_pumping_score": 0.2923524330341167,
+      "median_runtime_ratio": 0.9338809511412464
+    },
+    "non_regression": {
+      "false_closure": true,
+      "active_retention": true,
+      "tail_retention": true,
+      "pumping": false,
+      "runtime": true
+    },
+    "material_win": true,
+    "per_condition": {},
+    "objective_candidate_passes": false,
+    "decision": "retain_gate_before_suppressor"
+  },
+  "eq_deesser": {
+    "predefined_gates": {
+      "positive_reduction_improvement_db_min": 0.25,
+      "negative_reduction_regression_db_max": 0.1,
+      "bright_hf_attenuation_regression_db_max": 0.25
+    },
+    "metrics": {
+      "positive_baseline_peak_reduction_db": 6.0,
+      "positive_candidate_peak_reduction_db": 6.0,
+      "negative_baseline_peak_reduction_db": 0.0,
+      "negative_candidate_peak_reduction_db": 0.3196459859609604,
+      "bright_baseline_hf_change_db": 4.9361998936757185,
+      "bright_candidate_hf_change_db": 4.9029909722129705
+    },
+    "gates": {
+      "positive_reduction_improves_by_0_25_db": false,
+      "negative_reduction_regression_at_most_0_10_db": false,
+      "bright_hf_attenuation_regression_at_most_0_25_db": true
+    },
+    "decision": "retain_deesser_before_eq"
+  },
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
+  },
+  "provenance": {
+    "source_hashes": {
+      "python/tools/evaluate_processing_order.py": "8ad60e7383226aa5c83db31824e5032b1566f2de3d1be67731b248dad7fd7445",
+      "python/tools/_eval_common.py": "4bb90b66bfb77fe762d55e76ebc54e30674538e82d61598854299c63ecdb70ba",
+      "rust-core/src/audio/processor/block_processor.rs": "3ef55aca4020d5dade7a137f98df1108a9ef1d1827581680a2f906da27ce61cf",
+      "rust-core/src/audio/processor/python_api.rs": "07ec0a6fa7d78173ebb2814dd5197e7ac3726ff998de5362bc6e87804fd4c839",
+      "rust-core/src/dsp/deesser.rs": "5aebd76c8017829e55f003e1d58473594f864f88b1f01f62e52770e8f9898e21",
+      "rust-core/src/dsp/eq.rs": "3dc1fd2c14496a7d76b34840011a2eb9a90e2d6a12ec2f67c5ace0be869855c9",
+      "rust-core/src/dsp/gate.rs": "f38e39bf268e57cf3ca30be39989ce06efcd917c5ee1b8e44d0e02f5d1192e54",
+      "rust-core/src/dsp/noise_suppressor.rs": "6c81089b03d0bc276cbb2ea975df51df6ade2e0cf57c01ef060fc514db58bb09",
+      "rust-core/src/dsp/rnnoise.rs": "4f473389c120de55be1754c97fd4f0db235a496ee416ae6fe1beb9a9de8a54ae"
+    },
+    "asset_hashes": {
+      "models/silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+      "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
+    },
+    "proxy_corpus_pair_count": 12,
+    "proxy_corpus_license": "Apache-2.0",
+    "native_simulation_backend": "mic_eq_core"
+  },
+  "evaluation_contract": {
+    "configuration": {
+      "sample_rate": 48000,
+      "frame_size": 480,
+      "comparisons": [
+        "gate-before-suppressor vs suppressor-before-gate",
+        "deesser-before-EQ vs EQ-before-deesser"
+      ],
+      "product_defaults_changed": false
+    },
+    "asset_hashes": {
+      "assets": {
+        "models/silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+        "models/dpdfnet_eval_subset/manifest.json": "5e1706817cb4a6521a7269554a377bb5b1daa6ceddef6bae3b0a3fd847f5e6e5"
+      }
+    },
+    "runtime": {
+      "gate_suppressor_median_runtime_ratio": 0.9338809511412464,
+      "max_p99_frame_seconds": null,
+      "max_p99_frame_seconds_reason": "The native simulators report whole-clip timing; the ordering candidate is rejected before realtime callback qualification.",
+      "platform": "Windows-11-10.0.26200-SP0"
+    },
+    "latency": {
+      "algorithmic_latency_delta_samples": 0,
+      "reason": "Each comparison reorders the same processing components."
+    },
+    "clean_preservation": {
+      "gate_suppressor_non_regression": {
+        "false_closure": true,
+        "active_retention": true,
+        "tail_retention": true,
+        "pumping": false,
+        "runtime": true
+      },
+      "eq_deesser_gates": {
+        "positive_reduction_improves_by_0_25_db": false,
+        "negative_reduction_regression_at_most_0_10_db": false,
+        "bright_hf_attenuation_regression_at_most_0_25_db": true
+      }
+    }
+  },
+  "limitations": [
+    "The gate/suppressor comparison uses the pinned multilingual paired corpus.",
+    "The EQ/de-esser comparison uses deterministic proxy cases; because the candidate fails those objective gates, no product-order change is justified."
+  ]
+}

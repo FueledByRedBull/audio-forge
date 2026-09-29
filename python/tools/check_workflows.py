@@ -35,6 +35,7 @@ RUN_REQUIRED_MARKERS = frozenset(
         "msi_smoke.py",
         "release_provenance.py",
         "gh release upload",
+        "gh release download",
         "gh release create",
         "gh release edit",
         "gh run download",
@@ -66,6 +67,16 @@ def _check_permissions(
     for job_name, raw_job in jobs.items():
         job = _mapping(raw_job, f"{name}: job {job_name}", errors)
         permissions = job.get("permissions")
+        if name == "ci.yml" and job_name == "python":
+            if permissions != {
+                "contents": "read",
+                "security-events": "write",
+            }:
+                errors.append(
+                    "ci.yml: python must have only contents: read and "
+                    "security-events: write"
+                )
+            continue
         if name == "release-promote.yml" and job_name == "promote-release":
             if permissions != {"actions": "read", "contents": "write"}:
                 errors.append(
@@ -89,8 +100,9 @@ def _check_permissions(
                     f"{name}: assemble must have only actions: read and contents: read"
                 )
             continue
-        if isinstance(permissions, dict) and any(
-            access == "write" for access in permissions.values()
+        if permissions == "write-all" or (
+            isinstance(permissions, dict)
+            and any(access == "write" for access in permissions.values())
         ):
             errors.append(f"{name}: job {job_name} must not request write permission")
 
@@ -253,6 +265,13 @@ def _check_required_gates(
             "package_smoke.py --dist",
             "--smoke-test",
             "gh release upload",
+            "gh release download",
+            "Assert-AssetMatches $assetPath (Join-Path $verifyDir $assetName) $assetName",
+            "gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY "
+            '--title "AudioForge $version" --notes-file $notesPath',
+            "Assert-ReleaseAssetNames $release $expectedAssetNames -AllowMissing",
+            "Assert-ReleaseAssetNames $release $expectedAssetNames",
+            "Compare-Object -ReferenceObject $ExpectedNames -DifferenceObject $actualNames -CaseSensitive",
         )
         for needle in required:
             if not has_gate(needle):

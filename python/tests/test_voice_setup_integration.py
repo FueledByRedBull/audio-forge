@@ -183,9 +183,12 @@ def test_accepted_full_voice_setup_is_one_undo_transaction(
     _bind_capture_context(dialog, noise, speech)
     result = _voice_setup_result(window, dialog)
     dialog.setup_applied.connect(window.on_voice_setup_applied)
+    information_messages: list[str] = []
     monkeypatch.setattr(
         "mic_eq.ui.voice_setup_dialog.QMessageBox.information",
-        lambda *_args, **_kwargs: None,
+        lambda *_args, **_kwargs: information_messages.append(str(_args[-1]))
+        if _args
+        else None,
     )
     monkeypatch.setattr(
         "mic_eq.ui.voice_setup_dialog.QMessageBox.warning",
@@ -225,6 +228,10 @@ def test_accepted_full_voice_setup_is_one_undo_transaction(
         dialog._on_start_clicked()
         assert len(accepted) == 1
         assert len(window.config.calibration_results) == 1
+        accepted_message = information_messages[-1].casefold()
+        assert "accepted" in accepted_message
+        assert "listening comparison" not in accepted_message
+        assert "was heard" not in accepted_message
         assert window.config.calibration_results[0].verified_stages == (
             "input_cleanup",
             "gate",

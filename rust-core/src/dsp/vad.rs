@@ -122,6 +122,9 @@ pub struct SileroVAD {
     threshold: f32,
     /// Resampling ratio (silero_sr / target_sr)
     resample_ratio: f32,
+    /// Window-specific sinc weights; built once because the input rate and
+    /// Silero window size do not change after construction.
+    resample_kernel: Option<ResampleKernel>,
     /// Internal buffer for accumulating samples
     buffer: Vec<f32>,
     /// Read cursor into the accumulated input buffer
@@ -262,6 +265,8 @@ impl SileroVAD {
         let window_size = ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32)
             / SILERO_SAMPLE_RATE as f32)
             .ceil() as usize;
+        let resample_kernel = (sample_rate != SILERO_SAMPLE_RATE)
+            .then(|| ResampleKernel::new(window_size, resample_ratio));
 
         // Initialize combined LSTM state to zeros - shape [2, 1, 128]
         // Silero VAD uses a single combined state (h and c concatenated)
@@ -272,6 +277,7 @@ impl SileroVAD {
             sample_rate,
             threshold: threshold.clamp(0.0, 1.0),
             resample_ratio,
+            resample_kernel,
             buffer: Vec::with_capacity(window_size * 4),
             buffer_read_pos: 0,
             processed_input_samples: 0,
@@ -343,9 +349,10 @@ impl SileroVAD {
 
         // Resample to 16kHz if needed
         let inference_input = if self.sample_rate != SILERO_SAMPLE_RATE {
-            anti_aliased_resample_into(
+            anti_aliased_resample_into_with_kernel(
                 &self.input_window,
                 self.resample_ratio,
+                self.resample_kernel.as_ref(),
                 &mut self.resample_scratch,
             );
             self.resample_scratch.as_slice()
@@ -678,6 +685,97 @@ fn prepare_silero_model_input(
     {
         *dst = src * gain;
     }
+}
+
+struct ResampleKernelRow {
+    center_idx: i32,
+    weights: [f32; VAD_RESAMPLER_TAPS as usize],
+}
+
+struct ResampleKernel {
+    input_len: usize,
+    ratio_bits: u32,
+    rows: Vec<ResampleKernelRow>,
+}
+
+impl ResampleKernel {
+    fn new(input_len: usize, ratio: f32) -> Self {
+        let output_len = (input_len as f32 * ratio).ceil() as usize;
+        let cutoff = (0.5 * ratio.min(1.0)).clamp(0.01, 0.49);
+        let half_taps = VAD_RESAMPLER_TAPS / 2;
+        let mut rows = Vec::with_capacity(output_len);
+        for out_idx in 0..output_len {
+            let center = out_idx as f32 / ratio;
+            let center_idx = center.floor() as i32;
+            let mut weights = [0.0; VAD_RESAMPLER_TAPS as usize];
+            for tap in -half_taps..=half_taps {
+                let input_idx = center_idx + tap;
+                if !(0..input_len as i32).contains(&input_idx) {
+                    continue;
+                }
+                let distance = center - input_idx as f32;
+                let sinc_arg = 2.0 * cutoff * distance;
+                let sinc = if sinc_arg.abs() < 1e-6 {
+                    1.0
+                } else {
+                    let x = std::f32::consts::PI * sinc_arg;
+                    x.sin() / x
+                };
+                let window_pos = (tap + half_taps) as f32 / (VAD_RESAMPLER_TAPS - 1) as f32;
+                let window = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * window_pos).cos();
+                weights[(tap + half_taps) as usize] = 2.0 * cutoff * sinc * window;
+            }
+            rows.push(ResampleKernelRow {
+                center_idx,
+                weights,
+            });
+        }
+        Self {
+            input_len,
+            ratio_bits: ratio.to_bits(),
+            rows,
+        }
+    }
+}
+
+fn anti_aliased_resample_into_with_kernel(
+    input: &[f32],
+    ratio: f32,
+    kernel: Option<&ResampleKernel>,
+    output: &mut Vec<f32>,
+) {
+    if (ratio - 1.0).abs() < f32::EPSILON {
+        output.clear();
+        output.extend_from_slice(input);
+        return;
+    }
+
+    if let Some(kernel) = kernel
+        .filter(|kernel| kernel.input_len == input.len() && kernel.ratio_bits == ratio.to_bits())
+    {
+        output.clear();
+        output.resize(kernel.rows.len(), 0.0);
+        let half_taps = VAD_RESAMPLER_TAPS / 2;
+        for (sample, row) in output.iter_mut().zip(&kernel.rows) {
+            let mut acc = 0.0_f32;
+            let mut weight_sum = 0.0_f32;
+            for (tap_idx, weight) in row.weights.iter().enumerate() {
+                let input_idx = row.center_idx + tap_idx as i32 - half_taps;
+                if (0..input.len() as i32).contains(&input_idx) {
+                    acc += input[input_idx as usize] * weight;
+                    weight_sum += weight;
+                }
+            }
+            *sample = if weight_sum.abs() > 1e-6 {
+                acc / weight_sum
+            } else {
+                0.0
+            };
+        }
+        return;
+    }
+
+    anti_aliased_resample_into(input, ratio, output);
 }
 
 fn anti_aliased_resample_into(input: &[f32], ratio: f32, output: &mut Vec<f32>) {

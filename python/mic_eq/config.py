@@ -61,13 +61,7 @@ from .config_parts.shared import (
     legacy_latency_profile_key,
     parse_latency_profile_key,
 )
-from .config_parts.validation import (
-    VALIDATION_RANGES,
-    _coerce_config_bool,
-    _coerce_window_geometry,
-    _validate_bool,
-    _validate_range,
-)
+from .config_parts.validation import VALIDATION_RANGES
 
 
 BUILTIN_PRESETS = build_builtin_presets()
@@ -112,10 +106,6 @@ __all__ = [
     "TARGET_CURVES",
     "TargetCurve",
     "VALIDATION_RANGES",
-    "_coerce_config_bool",
-    "_coerce_window_geometry",
-    "_validate_bool",
-    "_validate_range",
     "build_latency_profile_key",
     "build_device_route_key",
     "build_input_device_preference_key",

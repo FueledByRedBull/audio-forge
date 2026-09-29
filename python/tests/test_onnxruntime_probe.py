@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -139,7 +140,7 @@ def test_candidate_runtime_files_are_bound_to_pinned_hashes(
         path = tmp_path / name
         payload = b"x" * index
         path.write_bytes(payload)
-        digest = probe.hashlib.sha256(path.read_bytes()).hexdigest()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
         assets.append(
             {
                 "path": f"target/onnxruntime-cpu/lib/{name}",

@@ -6,6 +6,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from mic_eq.analysis.noise_reference import analyze_noise_reference
+
 
 SPECTRUM_PATH = Path(__file__).parent.parent / "mic_eq" / "analysis" / "spectrum.py"
 spectrum_spec = importlib.util.spec_from_file_location(
@@ -90,6 +92,51 @@ def test_explicit_noise_capture_produces_frequency_dependent_snr():
     assert result.noise_spectrum_db is not None
     assert result.spectral_snr_db.shape == result.freqs.shape
     assert result.snr_db > 10.0
+
+
+@pytest.mark.parametrize(("signal_scale", "expected_snr_db"), [(1.0, 0.0), (10.0, 20.0)])
+@pytest.mark.parametrize("noise_kind", ["tonal", "broadband"])
+def test_noise_reference_snr_matches_rms_for_tonal_and_broadband_noise(
+    noise_kind,
+    signal_scale,
+    expected_snr_db,
+):
+    fs = 48_000
+    t = np.arange(fs * 4, dtype=float) / fs
+    noise_rms = 0.001 / np.sqrt(2.0)
+    if noise_kind == "tonal":
+        noise = 0.001 * np.sin(2.0 * np.pi * 100.0 * t)
+    else:
+        rng = np.random.default_rng(6813)
+        broadband = rng.normal(size=t.size)
+        broadband_freqs = np.fft.rfftfreq(t.size, 1.0 / fs)
+        broadband_spectrum = np.fft.rfft(broadband)
+        broadband_spectrum[(broadband_freqs < 80.0) | (broadband_freqs > 8000.0)] = 0.0
+        noise = np.fft.irfft(broadband_spectrum, n=t.size)
+        noise *= noise_rms / np.sqrt(np.mean(np.square(noise)))
+    speech_signal = 0.001 * signal_scale * np.sin(2.0 * np.pi * 1000.0 * t)
+    speech = noise + speech_signal
+
+    noise_reference = analyze_noise_reference(
+        noise,
+        speech,
+        fs,
+        speech_vad_probabilities=np.ones(20),
+    )
+    result = analyze_voice_spectrum(
+        speech,
+        fs,
+        noise_spectrum_override=(
+            noise_reference.frequencies,
+            noise_reference.conservative_spectrum_db,
+        ),
+    )
+
+    measured_snr_db = 10.0 * np.log10(
+        np.mean(np.square(speech_signal)) / np.mean(np.square(noise))
+    )
+    assert measured_snr_db == pytest.approx(expected_snr_db, abs=0.1)
+    assert result.snr_db == pytest.approx(expected_snr_db, abs=3.0)
 
 
 def test_sparse_fallback_snr_uses_the_same_power_scale_as_noise_reference():

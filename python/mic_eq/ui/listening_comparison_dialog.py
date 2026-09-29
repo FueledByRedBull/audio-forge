@@ -353,8 +353,8 @@ class ListeningComparisonDialog(QDialog):
         layout.setSpacing(10)
 
         self.scope_label = QLabel(
-            "Same captured passage; listen to the original, current processing, "
-            "and proposed processing before deciding."
+            "Same captured passage; playback is optional. Keep the rendered "
+            "proposal or close to discard it."
         )
         self.scope_label.setWordWrap(True)
         self.scope_label.setStyleSheet(DESCRIPTION_LABEL_STYLE)

@@ -73,3 +73,16 @@ def test_deesser_panel_moves_narrow_range_without_native_clamping(qapp):
         panel._rate_limiter.flush()
         assert processor.get_deesser_low_cut_hz() == low
         assert processor.get_deesser_high_cut_hz() == high
+
+
+def test_deesser_native_setter_failure_reaches_configuration_caller(qapp):
+    processor = Mock()
+    processor.get_deesser_high_cut_hz.return_value = 11000.0
+    panel = DeEsserPanel(processor)
+    processor.set_deesser_threshold_db.side_effect = RuntimeError(
+        "native de-esser write failed"
+    )
+    panel._rate_limiter._last_call_time = 0.0
+
+    with pytest.raises(RuntimeError, match="native de-esser write failed"):
+        panel.set_settings({"threshold_db": -11.0})

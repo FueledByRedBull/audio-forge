@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from mic_eq.analysis import listening_comparison as comparison
-from PyQt6.QtMultimedia import QAudioFormat
+from PyQt6.QtMultimedia import QAudioFormat, QMediaDevices
 from mic_eq.ui.listening_comparison_dialog import (
     _pcm_bytes,
     _preview_samples,
@@ -85,6 +85,31 @@ def test_comparison_describes_each_native_render_scope(current_scope, proposed_s
         assert clip.render_scope in dialog.scope_warning.text()
         assert ", ".join(clip.rendered_stages) in dialog.scope_warning.text()
     dialog.close()
+
+
+def test_rendered_proposal_can_be_kept_without_playback_device(qapp, monkeypatch):
+    from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog
+
+    monkeypatch.setattr(QMediaDevices, "audioOutputs", lambda: [])
+    monkeypatch.setattr(ListeningComparisonDialog, "_start_render", lambda self: None)
+    capture = np.full(1024, 0.05, dtype=np.float32)
+    dialog = ListeningComparisonDialog(
+        audio_data=capture,
+        sample_rate=48_000,
+        current_settings=_settings(),
+        proposed_settings=_settings(2.0),
+    )
+    try:
+        result = comparison.render_comparison(
+            capture, 48_000, _settings(), _settings(2.0)
+        )
+        dialog._on_render_ready(result)
+
+        assert dialog._current_playback_device() is None
+        assert dialog.keep_button.isEnabled()
+        assert "optional" in dialog.scope_label.text().casefold()
+    finally:
+        dialog.close()
 
 
 @pytest.mark.parametrize("sample_format,dtype", [

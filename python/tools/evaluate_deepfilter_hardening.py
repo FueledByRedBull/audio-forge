@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import platform
 import subprocess
 import tempfile
@@ -13,8 +12,10 @@ from pathlib import Path
 from typing import Any, cast
 from release_provenance import sha256_file as _sha256
 
+from _eval_common import resample_audio, si_sdr as _si_sdr
+
 import numpy as np
-from scipy.signal import correlate, correlation_lags, resample_poly, stft
+from scipy.signal import correlate, correlation_lags, stft
 
 from mic_eq.analysis.wav_io import read_mono_wav
 
@@ -35,13 +36,7 @@ def _relative(path: Path) -> str:
 
 
 def _resample(audio: np.ndarray, source_rate: int) -> np.ndarray:
-    if source_rate == SAMPLE_RATE:
-        return np.asarray(audio, dtype=np.float64)
-    divisor = math.gcd(source_rate, SAMPLE_RATE)
-    return np.asarray(
-        resample_poly(audio, SAMPLE_RATE // divisor, source_rate // divisor),
-        dtype=np.float64,
-    )
+    return resample_audio(audio, source_rate, SAMPLE_RATE, dtype=np.float64)
 
 
 def _paired_paths(corpus_root: Path, max_languages: int) -> list[tuple[Path, Path]]:
@@ -220,24 +215,6 @@ def _active_mask(reference: np.ndarray) -> np.ndarray:
     peak_db = 20.0 * np.log10(max(float(np.percentile(rms, 95)), 1e-9))
     threshold_db = max(-45.0, peak_db - 35.0)
     return 20.0 * np.log10(np.maximum(rms, 1e-9)) >= threshold_db
-
-
-def _si_sdr(reference: np.ndarray, estimate: np.ndarray) -> float:
-    reference = reference - np.mean(reference)
-    estimate = estimate - np.mean(estimate)
-    reference_energy = float(np.dot(reference, reference))
-    if reference_energy <= 1e-12:
-        return 0.0
-    scale = float(np.dot(estimate, reference)) / reference_energy
-    target = scale * reference
-    residual = estimate - target
-    return float(
-        10.0
-        * np.log10(
-            (float(np.dot(target, target)) + 1e-12)
-            / (float(np.dot(residual, residual)) + 1e-12)
-        )
-    )
 
 
 def _speech_lsd(reference: np.ndarray, estimate: np.ndarray) -> float:
@@ -719,6 +696,7 @@ def main() -> int:
     }
     source_paths = (
         "python/tools/evaluate_deepfilter_hardening.py",
+        "python/tools/_eval_common.py",
         "python/mic_eq/analysis/wav_io.py",
         "rust-core/src/bin/deepfilter_benchmark.rs",
         "rust-core/src/dsp/deepfilter_ffi.rs",

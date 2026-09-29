@@ -147,7 +147,8 @@ fn compressor_pumping_score(gr_trace_db: &[f32], cadence_hz: f32) -> f32 {
         highpass = highpass_alpha * (highpass + value - previous_input);
         bandpass += lowpass_alpha * (highpass - bandpass);
         bandpass_abs.push(bandpass.abs());
-        deltas.push((value - previous_input).abs());
+        // Express slew over the same 20 ms interval at either trace cadence.
+        deltas.push((value - previous_input).abs() * cadence_hz / 50.0);
         previous_input = value;
     }
     let robust_limit = percentile_f32(&mut bandpass_abs.clone(), 0.95);
@@ -699,7 +700,7 @@ pub fn simulate_auto_makeup_control(
             .unwrap_or(0.0),
     )?;
     if return_output_audio {
-        diagnostics.set_item("output_audio", output_audio)?;
+        diagnostics.set_item("output_audio", numpy::PyArray1::from_vec(py, output_audio))?;
     }
     Ok(diagnostics.into_any().unbind())
 }
@@ -921,7 +922,7 @@ pub fn simulate_gate_suppressor_order(
         .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
 
     let diagnostics = pyo3::types::PyDict::new(py);
-    diagnostics.set_item("output_audio", output)?;
+    diagnostics.set_item("output_audio", numpy::PyArray1::from_vec(py, output))?;
     diagnostics.set_item("gate_gain", gate_gain)?;
     diagnostics.set_item("gate_chatter_event_count", gate_chatter_event_count)?;
     diagnostics.set_item("gate_noise_floor_db", gate_noise_floor)?;
@@ -937,7 +938,7 @@ pub fn simulate_gate_suppressor_order(
         )?;
     }
     if let Some(dry_audio) = dry_audio {
-        diagnostics.set_item("dry_audio", dry_audio)?;
+        diagnostics.set_item("dry_audio", numpy::PyArray1::from_vec(py, dry_audio))?;
     }
     Ok(diagnostics.into_any().unbind())
 }
@@ -959,8 +960,9 @@ struct AutoEqSimulationResult {
     compressor_reduction_p95_db: f32,
     compressor_active_ratio: f32,
     active_output_gain_db: f32,
-    silence_output_gain_db: f32,
-    silence_level_delta_db: f32,
+    silence_analysis_block_count: usize,
+    silence_level_delta_db: Option<f32>,
+    analysis_block_samples: usize,
     compressor_pumping_score_db: f32,
     non_finite_output: bool,
     candidate_runtime_ms: f64,
@@ -1184,21 +1186,26 @@ pub fn simulate_auto_eq_chain(
     processor.set_compressor_enabled(compressor_enabled && full_processing);
     if compressor_enabled && full_processing {
         let compressor = processor.compressor_mut();
-        compressor.set_threshold(py_dict_f64(settings, "compressor_threshold_db", -20.0)?);
-        compressor.set_ratio(py_dict_f64(settings, "compressor_ratio", 4.0)?);
-        compressor.set_attack_time(py_dict_f64(settings, "compressor_attack_ms", 10.0)?);
-        compressor.set_release_time(py_dict_f64(settings, "compressor_release_ms", 200.0)?);
-        compressor.set_makeup_gain(py_dict_f64(settings, "compressor_makeup_gain_db", 0.0)?);
-        compressor.set_adaptive_release(py_dict_bool(
-            settings,
-            "compressor_adaptive_release",
-            false,
-        )?);
-        compressor.set_base_release_time(py_dict_f64(
-            settings,
-            "compressor_base_release_ms",
-            50.0,
-        )?);
+        // Render an established configuration, not a live makeup-slider transition.
+        // Starting the ramp at zero would understate short-capture headroom use.
+        *compressor = Compressor::new(
+            py_dict_f64(settings, "compressor_threshold_db", -20.0)?,
+            py_dict_f64(settings, "compressor_ratio", 4.0)?,
+            py_dict_f64(settings, "compressor_attack_ms", 10.0)?,
+            py_dict_f64(settings, "compressor_release_ms", 200.0)?,
+            py_dict_f64(settings, "compressor_makeup_gain_db", 0.0)?,
+            6.0,
+            sample_rate,
+        );
+        let adaptive_release = py_dict_bool(settings, "compressor_adaptive_release", false)?;
+        compressor.set_adaptive_release(adaptive_release);
+        if adaptive_release {
+            compressor.set_base_release_time(py_dict_f64(
+                settings,
+                "compressor_base_release_ms",
+                50.0,
+            )?);
+        }
         compressor.set_auto_makeup_enabled(py_dict_bool(
             settings,
             "compressor_auto_makeup_enabled",
@@ -1254,7 +1261,6 @@ pub fn simulate_auto_eq_chain(
     } else {
         None
     };
-    let activity_control_cadence = frontend_activity_evidence.is_some();
     let simulation = py.detach(move || {
         let mut output = FixedAudioBuffer::<f32, RT_PROCESS_BUFFER_CAPACITY>::new();
     let mut input_square_sum = 0.0_f64;
@@ -1460,24 +1466,28 @@ pub fn simulate_auto_eq_chain(
         .filter(|row| row.0 >= active_threshold_db && row.0 > -100.0)
         .map(|row| row.1 - row.0)
         .collect();
-    let mut silence_level_delta_db: Vec<f32> = analysis_rows
+    // Require a distinguishable quiet interval and measurable input energy.
+    // With no such evidence, report unavailable rather than zero noise boost.
+    let has_quiet_interval = input_p90_db - input_floor_db >= 6.0;
+    let mut silence_level_deltas: Vec<f32> = analysis_rows
         .iter()
-        .filter(|row| row.0 < active_threshold_db && row.0 > -100.0)
+        .filter(|row| has_quiet_interval && row.0 < active_threshold_db && row.0 > -100.0)
         .map(|row| row.1 - row.0)
         .collect();
-    let mut silence_output_gain_db: Vec<f32> = analysis_rows
-        .iter()
-        .filter(|row| row.0 < active_threshold_db)
-        .map(|row| -row.2.max(0.0))
-        .collect();
+    let silence_analysis_block_count = silence_level_deltas.len();
+    let silence_level_delta_db = (!silence_level_deltas.is_empty())
+        .then(|| percentile_f32(&mut silence_level_deltas, 0.50));
     let active_output_gain_db = percentile_f32(&mut active_output_gain_db, 0.50);
-    let silence_output_gain_db = percentile_f32(&mut silence_output_gain_db, 0.50);
-    let silence_level_delta_db = percentile_f32(&mut silence_level_delta_db, 0.50);
+    // A partial final block has a different duration. Exclude it from the
+    // uniformly sampled GR trace (it still contributes to audio/level metrics).
     let compressor_gr_trace = analysis_rows
         .iter()
+        .take(audio.len() / analysis_block_samples)
         .map(|row| row.2.max(0.0))
         .collect::<Vec<_>>();
-    let compressor_pumping_score_db = compressor_pumping_score(&compressor_gr_trace, 50.0);
+    let compressor_pumping_score_db = compressor_pumping_score(
+        &compressor_gr_trace, (sample_rate / analysis_block_samples as f64) as f32,
+    );
         AutoEqSimulationResult {
             input_sample_peak_db: linear_to_db(input_sample_peak),
             input_rms_db: linear_to_db(input_rms),
@@ -1495,7 +1505,8 @@ pub fn simulate_auto_eq_chain(
             compressor_reduction_p95_db,
             compressor_active_ratio,
             active_output_gain_db,
-            silence_output_gain_db,
+            silence_analysis_block_count,
+            analysis_block_samples,
             silence_level_delta_db,
             compressor_pumping_score_db,
             non_finite_output,
@@ -1527,7 +1538,8 @@ pub fn simulate_auto_eq_chain(
         compressor_reduction_p95_db,
         compressor_active_ratio,
         active_output_gain_db,
-        silence_output_gain_db,
+        silence_analysis_block_count,
+        analysis_block_samples,
         silence_level_delta_db,
         compressor_pumping_score_db,
         non_finite_output,
@@ -1582,7 +1594,7 @@ pub fn simulate_auto_eq_chain(
         compressor_active_ratio,
     )?;
     diagnostics.set_item("active_output_gain_db", active_output_gain_db)?;
-    diagnostics.set_item("silence_output_gain_db", silence_output_gain_db)?;
+    diagnostics.set_item("silence_analysis_block_count", silence_analysis_block_count)?;
     diagnostics.set_item("silence_level_delta_db", silence_level_delta_db)?;
     diagnostics.set_item("compressor_pumping_score_db", compressor_pumping_score_db)?;
     diagnostics.set_item("non_finite_output", non_finite_output)?;
@@ -1600,7 +1612,7 @@ pub fn simulate_auto_eq_chain(
     )?;
     diagnostics.set_item(
         "analysis_block_ms",
-        if activity_control_cadence { 10.0_f32 } else { 20.0_f32 },
+        1000.0 * analysis_block_samples as f64 / sample_rate,
     )?;
     diagnostics.set_item("chain_latency_samples", chain_latency_samples)?;
     diagnostics.set_item("suppressor_latency_samples", frontend_latency_samples)?;
@@ -1617,7 +1629,7 @@ pub fn simulate_auto_eq_chain(
         }
     }
     if return_output_audio {
-        diagnostics.set_item("output_audio", rendered_audio)?;
+        diagnostics.set_item("output_audio", numpy::PyArray1::from_vec(py, rendered_audio))?;
     }
     Ok(diagnostics.into_any().unbind())
 }
@@ -1708,6 +1720,22 @@ mod compressor_metric_tests {
             compressor_pumping_score(&fast, 50.0)
                 > 2.0 * compressor_pumping_score(&slow, 50.0)
         );
+    }
+
+    #[test]
+    fn pumping_score_uses_trace_cadence_for_known_modulation() {
+        for frequency in [0.2, 4.0, 18.0] {
+            let score = |cadence: f32| {
+                let trace = (0..(10.0 * cadence) as usize)
+                    .map(|n| 3.0 + (2.0 * std::f32::consts::PI * frequency * n as f32 / cadence).sin())
+                    .collect::<Vec<_>>();
+                compressor_pumping_score(&trace, cadence)
+            };
+            let fifty = score(50.0);
+            let hundred = score(100.0);
+            assert!((fifty - hundred).abs() / fifty < 0.25,
+                    "{frequency} Hz: 20ms={fifty}, 10ms={hundred}");
+        }
     }
 }
 
@@ -2088,24 +2116,7 @@ impl PyAudioProcessor {
         &self,
         bands: Vec<(String, f64, f64, f64, u8, bool)>,
     ) -> PyResult<()> {
-        let mut parsed = Vec::with_capacity(bands.len());
-        for (index, (filter_type, frequency_hz, gain_db, q, slope, enabled)) in
-            bands.into_iter().enumerate()
-        {
-            let filter_type = EqFilterType::from_name(&filter_type).ok_or_else(|| {
-                PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                    "Band {index}: unsupported EQ filter type: {filter_type}"
-                ))
-            })?;
-            parsed.push(EqBandConfig {
-                filter_type,
-                frequency_hz,
-                gain_db,
-                q,
-                slope_db_per_octave: slope,
-                enabled,
-            });
-        }
+        let parsed = crate::parse_eq_v2_bands(&bands, self.processor.sample_rate as f64)?;
         self.processor.apply_eq_settings_v2(parsed)
     }
 
@@ -2119,29 +2130,10 @@ impl PyAudioProcessor {
         correction_bands: Vec<(String, f64, f64, f64, u8, bool)>,
         tone_bands: Vec<(String, f64, f64, f64, u8, bool)>,
     ) -> PyResult<()> {
-        let parse = |bands: Vec<(String, f64, f64, f64, u8, bool)>| -> PyResult<Vec<EqBandConfig>> {
-            let mut parsed = Vec::with_capacity(bands.len());
-            for (index, (filter_type, frequency_hz, gain_db, q, slope, enabled)) in
-                bands.into_iter().enumerate()
-            {
-                let filter_type = EqFilterType::from_name(&filter_type).ok_or_else(|| {
-                    PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                        "Band {index}: unsupported EQ filter type: {filter_type}"
-                    ))
-                })?;
-                parsed.push(EqBandConfig {
-                    filter_type,
-                    frequency_hz,
-                    gain_db,
-                    q,
-                    slope_db_per_octave: slope,
-                    enabled,
-                });
-            }
-            Ok(parsed)
-        };
-        self.processor
-            .apply_eq_layers(parse(correction_bands)?, parse(tone_bands)?)
+        let sample_rate = self.processor.sample_rate as f64;
+        let correction = crate::parse_eq_v2_bands(&correction_bands, sample_rate)?;
+        let tone = crate::parse_eq_v2_bands(&tone_bands, sample_rate)?;
+        self.processor.apply_eq_layers(correction, tone)
     }
 
     // === De-Esser ===

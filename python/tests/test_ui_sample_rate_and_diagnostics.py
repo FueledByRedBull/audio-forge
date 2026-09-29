@@ -37,8 +37,10 @@ from mic_eq.ui.main_window import (
     MainWindow,
     _normalize_startup_preset_id,
     _startup_builtin_id,
-    _startup_custom_id,
 )
+from mic_eq.ui.health import RecentStreamHealth
+from mic_eq.ui.rate_limiter import RateLimiter
+from mic_eq.ui.startup_presets import startup_custom_id as _startup_custom_id
 from mic_eq.ui.stream_recovery import StreamRecoveryManager
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 from mic_eq.config import (
@@ -84,6 +86,9 @@ class _CaptureWorkerStub:
         target_mode="adaptive",
         smoothing_strength="conservative",
         chain_settings=None,
+        headroom_candidate_base_eq_settings=None,
+        headroom_audio_data=None,
+        headroom_chain_settings=None,
     ):
         self.audio_data = audio_data
         self.sample_rate = sample_rate
@@ -98,6 +103,9 @@ class _CaptureWorkerStub:
             "target_mode": target_mode,
             "smoothing_strength": smoothing_strength,
             "chain_settings": chain_settings,
+            "headroom_candidate_base_eq_settings": headroom_candidate_base_eq_settings,
+            "headroom_audio_data": headroom_audio_data,
+            "headroom_chain_settings": headroom_chain_settings,
         }
         self.step_progress = _SignalStub()
         self.result_ready = _SignalStub()
@@ -152,11 +160,21 @@ class _FakeProcessor:
     def output_sample_rate(self) -> int:
         return self._output_sample_rate
 
+    def get_input_cleanup_mode(self) -> str:
+        return "gentle"
+
 
 class _FakeOwner(QWidget):
     def __init__(self, processor: _FakeProcessor):
         super().__init__()
         self.processor = processor
+        self.preset = Preset()
+
+    def _get_current_preset(self) -> Preset:
+        return Preset.from_dict(self.preset.to_dict())
+
+    def _processing_mode(self) -> str:
+        return "normal"
 
 
 class _FakeCombo:
@@ -292,6 +310,8 @@ class _PresetPanel:
         self.settings = None
         self.compressor_settings = None
         self.limiter_settings = None
+        self.band_sliders = []
+        self._curve_rate_limiter = RateLimiter()
 
     def set_settings(self, settings):
         self.settings = settings
@@ -332,9 +352,11 @@ def test_save_preset_file_handles_collision_and_errors(monkeypatch, save_results
     window.config = AppConfig()
     window.current_preset_path = None
     window.status_bar = _FakeStatusBar()
-    result = MainWindow._save_preset_file(
-        window, Preset(name="My Preset")
-    )
+    preset = Preset(name="My Preset")
+    window._get_current_preset = lambda: preset
+    window._processing_mode = lambda: "normal"
+    window._update_session_summary = lambda: None
+    result = MainWindow._save_preset_file(window, preset)
 
     expected_path = save_results[-1] if isinstance(save_results[-1], Path) else None
     overwrite_flags = [False] + (
@@ -344,6 +366,8 @@ def test_save_preset_file_handles_collision_and_errors(monkeypatch, save_results
         save_results[-1], FileExistsError
     )
     assert result == expected_path
+    if expected_path is not None:
+        assert window.preset_modified is False
     assert [call.kwargs["overwrite"] for call in save_mock.call_args_list] == [
         *overwrite_flags
     ]
@@ -605,6 +629,7 @@ def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
     owner = _FakeOwner(_FakeProcessor(sample_rate=44_100))
     dialog = CalibrationDialog(parent=owner)
     dialog.audio_data = np.ones(256, dtype=np.float32)
+    dialog.preview_audio_data = dialog.audio_data.copy()
     monkeypatch.setattr(
         "mic_eq.ui.calibration_dialog.AnalysisWorker", _CaptureWorkerStub
     )
@@ -615,7 +640,14 @@ def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
     assert _CaptureWorkerStub.last_init["sample_rate"] == 44_100
     assert _CaptureWorkerStub.last_init["target_mode"] == "adaptive"
     assert _CaptureWorkerStub.last_init["smoothing_strength"] == "conservative"
-    assert _CaptureWorkerStub.last_init["chain_settings"] == {}
+    assert _CaptureWorkerStub.last_init["chain_settings"]["full_chain"] is True
+    assert _CaptureWorkerStub.last_init["headroom_chain_settings"]["full_chain"] is True
+    assert _CaptureWorkerStub.last_init["headroom_candidate_base_eq_settings"] == (
+        owner.preset.eq.to_dict()
+    )
+    np.testing.assert_array_equal(
+        _CaptureWorkerStub.last_init["headroom_audio_data"], dialog.audio_data
+    )
     assert dialog.analysis_worker is not None
     assert dialog.analysis_worker.sample_rate == 44_100
 
@@ -693,6 +725,7 @@ def test_analysis_close_waits_for_a_slow_worker_and_ignores_its_result(
     owner = _FakeOwner(_FakeProcessor())
     dialog = CalibrationDialog(parent=owner)
     dialog.audio_data = np.ones(256, dtype=np.float32)
+    dialog.preview_audio_data = dialog.audio_data.copy()
     dialog._start_analysis()
     worker = dialog.analysis_worker
     assert worker is not None and worker.isRunning()
@@ -734,6 +767,36 @@ def test_analysis_worker_passes_cooperative_cancellation_into_pipeline(
     assert worker.wait(2_000)
     assert len(callbacks) == 1
     assert callable(callbacks[0])
+
+
+def test_analysis_worker_passes_exact_candidate_headroom_inputs(monkeypatch):
+    received: dict[str, object] = {}
+    analysis_audio = np.arange(256, dtype=np.float32)
+    raw_audio = np.arange(256, dtype=np.float32) / 2.0
+    incumbent_eq = Preset().eq.to_dict()
+    analysis_chain = {"full_chain": True, "input_pre_filtered": True}
+    headroom_chain = {"full_chain": True, "input_pre_filtered": False}
+
+    def analyze(*_args, **kwargs):
+        received.update(kwargs)
+        return {}, SimpleNamespace(passed=True, reason="")
+
+    monkeypatch.setattr("mic_eq.ui.analysis_worker.analyze_auto_eq", analyze)
+    worker = AnalysisWorker(
+        analysis_audio,
+        48_000,
+        chain_settings=analysis_chain,
+        headroom_candidate_base_eq_settings=incumbent_eq,
+        headroom_audio_data=raw_audio,
+        headroom_chain_settings=headroom_chain,
+    )
+
+    worker.run()
+
+    assert received["chain_settings"] == analysis_chain
+    assert received["headroom_candidate_base_eq_settings"] == incumbent_eq
+    np.testing.assert_array_equal(received["headroom_audio_data"], raw_audio)
+    assert received["headroom_chain_settings"] == headroom_chain
 
 
 def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
@@ -1746,7 +1809,8 @@ def test_stopped_diagnostics_continue_native_recovery_and_reconcile_controls(qap
     assert window.stop_btn.enabled is True
 
 
-def test_stale_output_underrun_and_recovery_totals_do_not_warn():
+def test_stale_output_underrun_and_recovery_totals_do_not_warn(monkeypatch):
+    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: 10.0)
     window = _RecoveryWindow()
     diagnostics = {
         "input_dropped_samples": 0,
@@ -1776,6 +1840,8 @@ def test_stale_output_underrun_and_recovery_totals_do_not_warn():
         "recovery_suppressed": False,
         "last_restart_reason": None,
     }
+    window._stream_health = RecentStreamHealth()
+    window._stream_health.observe(diagnostics, now=0.0)
     window._last_output_underrun_total = 4
 
     window._update_diagnostic_labels(
@@ -1793,7 +1859,9 @@ def test_stale_output_underrun_and_recovery_totals_do_not_warn():
     assert window.recovery_diag_label.state == "ok"
 
 
-def test_new_output_underrun_total_warns_once():
+def test_new_output_underrun_total_warns_for_stability_window(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
     window = _RecoveryWindow()
     diagnostics = {
         "input_dropped_samples": 0,
@@ -1829,6 +1897,7 @@ def test_new_output_underrun_total_warns_once():
     )
 
     assert window.dropped_label.state == "warn"
+    clock[0] += 5.1
 
     window._update_diagnostic_labels(
         diagnostics=diagnostics,
@@ -1959,7 +2028,9 @@ def test_new_output_true_peak_event_warns_once():
     assert window.dropped_label.state == "ok"
 
 
-def test_new_gate_chatter_event_warns_once():
+def test_new_gate_chatter_event_warns_for_stability_window(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
     window = _RecoveryWindow()
     diagnostics = {
         "input_dropped_samples": 0,
@@ -2000,6 +2071,7 @@ def test_new_gate_chatter_event_warns_once():
 
     assert "GCH:1" in window.dropped_label.tooltip
     assert window.dropped_label.state == "warn"
+    clock[0] += 5.1
 
     window._update_diagnostic_labels(
         diagnostics=diagnostics,
@@ -2102,6 +2174,195 @@ def test_configuration_writer_rejects_model_load_failure_before_panel_edits(qapp
         MainWindow._write_processing_configuration(window, preset)
     assert window.model_combo.currentData() == "rnnoise"
     assert window.gate_panel.settings is None
+
+
+class _DeferredPresetPanel:
+    def __init__(self, events, name, *, fail_value=None):
+        self.events = events
+        self.name = name
+        self.fail_value = fail_value
+        self.failed = False
+        self.settings = None
+        self._rate_limiter = RateLimiter(interval_ms=5000)
+        self._rate_limiter._last_call_time = time.monotonic() * 1000
+
+    def set_settings(self, settings):
+        self.settings = dict(settings)
+        snapshot = dict(settings)
+
+        def apply():
+            if (
+                not self.failed
+                and self.fail_value is not None
+                and snapshot.get("threshold_db") == self.fail_value
+            ):
+                self.failed = True
+                raise RuntimeError("deferred de-esser setter failed")
+            self.events.append(("native", self.name, snapshot))
+
+        self._rate_limiter.call(apply)
+
+
+class _DeferredCompressorPanel:
+    def __init__(self, events):
+        self.events = events
+        self._comp_rate_limiter = RateLimiter(interval_ms=5000)
+        self._limiter_rate_limiter = RateLimiter(interval_ms=5000)
+        now = time.monotonic() * 1000
+        self._comp_rate_limiter._last_call_time = now
+        self._limiter_rate_limiter._last_call_time = now
+
+    def get_compressor_settings(self, *, include_calibration=False):
+        settings = asdict(Preset().compressor)
+        if include_calibration:
+            settings["noise_reference_reliability"] = 0.0
+        return settings
+
+    def set_compressor_settings(self, settings):
+        snapshot = dict(settings)
+        self._comp_rate_limiter.call(
+            lambda: self.events.append(("native", "compressor", snapshot))
+        )
+
+    def set_limiter_settings(self, settings):
+        snapshot = dict(settings)
+        self._limiter_rate_limiter.call(
+            lambda: self.events.append(("native", "limiter", snapshot))
+        )
+
+
+class _DeferredEQPanel:
+    def __init__(self, events):
+        self.events = events
+        self.band_sliders = [
+            SimpleNamespace(
+                _rate_limiter=RateLimiter(interval_ms=5000),
+                _frequency_rate_limiter=RateLimiter(interval_ms=5000),
+            )
+        ]
+        self._curve_rate_limiter = RateLimiter(interval_ms=5000)
+        now = time.monotonic() * 1000
+        for limiter in (
+            self.band_sliders[0]._rate_limiter,
+            self.band_sliders[0]._frequency_rate_limiter,
+            self._curve_rate_limiter,
+        ):
+            limiter._last_call_time = now
+
+    def queue_preexisting_edits(self):
+        band = self.band_sliders[0]
+        band._rate_limiter.call(
+            lambda: self.events.append(("native", "old-eq-gain"))
+        )
+        band._frequency_rate_limiter.call(
+            lambda: self.events.append(("native", "old-eq-frequency"))
+        )
+        self._curve_rate_limiter.call(
+            lambda: self.events.append(("native", "old-eq-curve"))
+        )
+
+    def set_settings(self, _settings):
+        self.events.append(("native", "eq-snapshot"))
+
+
+def _deferred_configuration_window(events, *, fail_deesser_value=None):
+    from PyQt6.QtWidgets import QSlider
+
+    window = MainWindow.__new__(MainWindow)
+    window.gate_panel = _DeferredPresetPanel(events, "gate")
+    window.eq_panel = _PresetPanel()
+    window.deesser_panel = _DeferredPresetPanel(
+        events, "de-esser", fail_value=fail_deesser_value
+    )
+    window.compressor_panel = _DeferredCompressorPanel(events)
+    window.rnnoise_checkbox = _FakeControl()
+    window.strength_slider = QSlider()
+    window.strength_slider.setRange(0, 100)
+    window.strength_label = _FakeLabel()
+    window.model_combo = _FakeCombo([("RNNoise", "rnnoise")])
+    window.rnnoise_latency_label = _FakeLabel()
+    window.bypass_checkbox = _FakeControl()
+    window.processor = _PresetProcessor()
+    window._current_value_provenance = {}
+    window._history_replaying = False
+    window._get_current_preset = Preset
+    window._processing_mode = lambda: "normal"
+    window._set_noise_suppression_latency_label = lambda _model: None
+    window._on_strength_changed = lambda _value: None
+    window._set_processing_mode = lambda _mode: None
+    window._sync_calibration_evidence = lambda **_kwargs: None
+    window.set_temporary_output_mute = lambda muted, _reason: events.append(
+        ("mute", muted)
+    )
+    return window
+
+
+def test_configuration_finishes_rate_limited_native_writes_before_unmute(qapp):
+    events = []
+    window = _deferred_configuration_window(events)
+
+    MainWindow.apply_processing_configuration(window, Preset())
+
+    unmute_index = events.index(("mute", False))
+    native_events = [event for event in events if event[0] == "native"]
+    assert {event[1] for event in native_events} == {
+        "gate", "de-esser", "compressor", "limiter"
+    }
+    assert all(event[0] == "native" for event in events[1:unmute_index])
+    assert not window.gate_panel._rate_limiter._timer.isActive()
+    assert not window.deesser_panel._rate_limiter._timer.isActive()
+    assert not window.compressor_panel._comp_rate_limiter._timer.isActive()
+    assert not window.compressor_panel._limiter_rate_limiter._timer.isActive()
+
+
+def test_deferred_setter_failure_rolls_back_before_unmute(qapp):
+    events = []
+    window = _deferred_configuration_window(events, fail_deesser_value=-11.0)
+    candidate = Preset()
+    candidate.deesser.threshold_db = -11.0
+
+    with pytest.raises(RuntimeError, match="deferred de-esser setter failed"):
+        MainWindow.apply_processing_configuration(window, candidate)
+
+    rollback_index = next(
+        index
+        for index, event in enumerate(events)
+        if event[0] == "native"
+        and event[1] == "de-esser"
+        and event[2]["threshold_db"] == -28.0
+    )
+    unmute_index = events.index(("mute", False))
+    assert rollback_index < unmute_index
+    assert events[-1] == ("mute", False)
+
+
+def test_configuration_cancels_superseded_eq_edits_before_snapshot_and_unmute(qapp):
+    events = []
+    window = _deferred_configuration_window(events)
+    eq_panel = _DeferredEQPanel(events)
+    eq_panel.queue_preexisting_edits()
+    window.eq_panel = eq_panel
+
+    MainWindow.apply_processing_configuration(window, Preset())
+
+    eq_native_labels = [
+        event[1]
+        for event in events
+        if event[:1] == ("native",)
+        and (event[1].startswith("old-eq-") or event[1] == "eq-snapshot")
+    ]
+    snapshot_index = eq_native_labels.index("eq-snapshot")
+    assert eq_native_labels[:snapshot_index] == []
+    assert eq_native_labels[snapshot_index + 1 :] == []
+    assert all(
+        not limiter._timer.isActive()
+        for limiter in (
+            eq_panel.band_sliders[0]._rate_limiter,
+            eq_panel.band_sliders[0]._frequency_rate_limiter,
+            eq_panel._curve_rate_limiter,
+        )
+    )
+    assert events.index(("native", "eq-snapshot")) < events.index(("mute", False))
 
 
 class _LatencyProcessor:

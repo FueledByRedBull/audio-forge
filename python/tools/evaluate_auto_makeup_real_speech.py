@@ -4,15 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import platform
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from release_provenance import sha256_file as _sha256
 
+from _eval_common import resample_audio
+
 import numpy as np
-from scipy.signal import resample_poly
 
 from mic_eq import analyze_vad_probabilities
 from mic_eq.mic_eq_core import simulate_auto_makeup_control
@@ -32,13 +32,7 @@ def _relative(path: Path) -> str:
 
 
 def _resample(audio: np.ndarray, source_rate: int) -> np.ndarray:
-    if source_rate == SAMPLE_RATE:
-        return np.asarray(audio, dtype=np.float32)
-    divisor = math.gcd(source_rate, SAMPLE_RATE)
-    return np.asarray(
-        resample_poly(audio, SAMPLE_RATE // divisor, source_rate // divisor),
-        dtype=np.float32,
-    )
+    return resample_audio(audio, source_rate, SAMPLE_RATE, dtype=np.float32)
 
 
 def _pairs(corpus_root: Path, max_languages: int) -> list[tuple[Path, Path]]:
@@ -369,6 +363,7 @@ def main() -> int:
     )
     source_paths = (
         "python/tools/evaluate_auto_makeup_real_speech.py",
+        "python/tools/_eval_common.py",
         "python/mic_eq/analysis/wav_io.py",
         "rust-core/src/audio/processor/python_api.rs",
         "rust-core/src/dsp/compressor.rs",

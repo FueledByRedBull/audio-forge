@@ -1,53 +1,44 @@
-# AudioForge 1.13.0
-
 AudioForge 1.13.0 improves voice calibration, full-chain comparisons, peak
 protection, and everyday device and preset handling.
 
+## Which file do I need?
+
+Download **one** of these. Not sure? Choose the installer.
+
+| File | Choose it if |
+| --- | --- |
+| [AudioForge-v1.13.0-win64.msi](https://github.com/FueledByRedBull/audio-forge/releases/download/v1.13.0/AudioForge-v1.13.0-win64.msi) (about 110 MB) | You want a normal install for your Windows user. **Recommended.** |
+| [AudioForge-v1.13.0-win64-ultra.7z](https://github.com/FueledByRedBull/audio-forge/releases/download/v1.13.0/AudioForge-v1.13.0-win64-ultra.7z) (about 97 MB) | You want a portable folder. Extract everything, then run `AudioForge.exe`. "Ultra" is the compression level. |
+
+You don't need the other files to run AudioForge: the SHA256SUMS file checks
+your download, the evidence archive holds validation records, and the source
+archive is the corresponding source for redistribution.
+
+To use AudioForge in Discord, OBS, Zoom, or Teams you also need a virtual audio
+cable such as [VB-CABLE](https://vb-audio.com/Cable/); see the
+[setup steps](https://github.com/FueledByRedBull/audio-forge#set-up).
+AudioForge isn't code-signed, so Windows SmartScreen may warn before it runs.
+Compare `Get-FileHash <file>` with `AudioForge-v1.13.0-SHA256SUMS.txt`, then
+choose **More info > Run anyway**.
+
 ## Changes
 
-- Correct short-burst true-peak limiting and match preview safety behavior to
-  live processing. Final peak protection adds 6.25 ms of latency at 48 kHz
-  compared with the previous implementation.
-- Keep de-esser bands within their selected interval, remove the zero-gain
-  dead zone from EQ fitting, and reject stale VAD results after stream gaps.
-- Upgrade ringbuf to 0.5.2 to address the RustSec advisory affecting the previous
-  queue dependency.
-- Preserve voice character during Auto-EQ, add the Warm / Full Voice target,
-  and keep microphone correction separate from editable tone.
-- Compare the full processing chain on one recording before applying settings.
-- Calibrate Auto Voice Setup with the actual auto-makeup settings, explain
-  headroom constraints, and keep neutral EQ free of false abstention warnings.
-- Fit compression after selecting input processing, reusing its rendered audio
-  and speech/noise confidence in scoring and calibration.
-- Reduce repeated suppression work, run compressor candidates in bounded parallel
-  batches, and keep analysis responsive with stage and candidate progress.
-- Keep feasible gate and suppression rankings independent of CPU timing noise.
-- Validate the combined cleanup, gate, suppression, EQ and dynamics chain before
-  offering the candidate, and recheck the actual applied settings on verification.
-- Correct automatic loudness feedback and include speech-aware gain control in
-  full-chain previews and verification.
-- Save complete calibration evidence, allow verification after leaving Raw Monitor,
-  and handle startup/device settings write failures without false success.
-- Include input sample-rate conversion in the engine latency estimate.
-- Recheck adjusted Voice Setup settings on the same verification take, with
-  specific failure guidance and bounded retries that restore the previous sound.
-- Recover VAD worker state safely across dropped analysis blocks.
-- Keep VAD Assisted automatic thresholds consistent, reset VAD history across
-  bypass/raw input gaps, and show the actual selected speech threshold.
-- Recover speech detection after sustained near-full-scale audio and quieter
-  clipped passages using speech-ending boundaries, without restarting
-  processing or resetting the audio buffer and source clock.
-- Add tray/background controls, a mute shortcut, unified processing modes,
-  and safer preset, device and calibration handling.
+- Improve short-burst true-peak limiting and preview safety. Final peak
+  protection adds 6.25 ms of latency at 48 kHz compared with 1.12.1; ringbuf
+  0.5.2 addresses the previous queue dependency's RustSec advisory.
+- Preserve voice character in Auto-EQ, add Warm / Full Voice, and separate
+  calibration from editable tone.
+- Compare the complete processing chain on one recording. Voice Setup calibrates
+  against the applied input processing and auto makeup, validates combined
+  headroom, and reuses verification takes for bounded adjustments.
+- Keep calibration responsive with shared renders, bounded candidate batches,
+  progress reporting, and sound rankings independent of CPU timing noise.
+- Improve VAD recovery, de-essing, sample-rate latency reporting, saved calibration
+  evidence, and device/preset error handling. Add optional tray operation, a mute
+  shortcut, and unified processing modes.
 
 See the [1.13.0 changelog](https://github.com/FueledByRedBull/audio-forge/blob/master/CHANGELOG.md#v1130)
 for the complete change list.
-
-## Downloads
-
-Choose the per-user MSI installer or extract the complete portable archive.
-The release also includes corresponding source, one evidence archive containing
-validation and provenance records, and one SHA256SUMS file for the downloads.
 
 ## Validation and compatibility
 
@@ -56,7 +47,8 @@ and exact-artifact qualification, including portable startup, installer lifecycl
 payload provenance, and corresponding-source checks. Publication promotes those
 same validated bytes without rebuilding them.
 
-Windows 10/11 is the supported target. Automated checks and recorded-audio
-evaluations do not establish physical reconnect, sleep recovery, accessibility,
-or listening results for every microphone, device route, and display setup.
-Those configurations remain outside this release's qualification claims.
+AudioForge is built for Windows 10 (1809 or later) and Windows 11, 64-bit.
+Automated checks and recorded-audio evaluations do not establish physical
+reconnect, sleep recovery, accessibility, or listening results for every
+microphone, device route, and display setup. Those configurations remain outside
+this release's qualification claims.

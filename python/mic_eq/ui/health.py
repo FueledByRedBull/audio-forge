@@ -2,15 +2,60 @@
 
 from __future__ import annotations
 
+import math
+import time
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any
+
+
+STREAM_EVENT_COUNTERS = frozenset({
+    "input_callback_error_count", "output_callback_error_count",
+    "input_stream_error_count", "output_stream_error_count", "stream_restart_count",
+    "input_dropped_samples", "input_backlog_dropped_samples", "jitter_dropped_samples",
+    "output_short_write_dropped_samples", "output_underrun_total",
+    "rt_buffer_overflow_count", "input_backlog_recovery_count",
+    "output_recovery_count", "output_recovery_event_count", "gate_chatter_event_count",
+    "lock_contention_count", "suppressor_non_finite_count",
+})
+
+
+@dataclass(slots=True)
+class RecentStreamHealth:
+    """Keep a five-second warning window without changing cumulative evidence."""
+
+    _counts: dict[str, int] = field(default_factory=dict)
+    _last_events: dict[str, float] = field(default_factory=dict)
+    recent_events: frozenset[str] = frozenset()
+
+    def observe(self, diagnostics: Mapping[str, Any], *, now: float | None = None) -> frozenset[str]:
+        current = time.monotonic() if now is None else now
+        counts: dict[str, int] = {}
+        for name in STREAM_EVENT_COUNTERS:
+            value = diagnostics.get(name, self._counts.get(name, 0))
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or value < 0 or (isinstance(value, float)
+                                    and (not math.isfinite(value) or not value.is_integer()))):
+                raise ValueError(f"Invalid stream event counter: {name}")
+            counts[name] = int(value)
+        for name, count in counts.items():
+            if count > self._counts.get(name, 0):
+                self._last_events[name] = current
+        self._counts = counts
+        self._last_events = {
+            name: timestamp for name, timestamp in self._last_events.items()
+            if current - timestamp < 5.0
+        }
+        self.recent_events = frozenset(self._last_events)
+        return self.recent_events
 
 
 def _float_or_none(value: Any) -> float | None:
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
-    return parsed
+    return parsed if math.isfinite(parsed) else None
 
 
 def input_health_state(
@@ -25,6 +70,8 @@ def input_health_state(
 ) -> tuple[str, str]:
     """Return compact input health text/state."""
 
+    rms_db = _float_or_none(rms_db)
+    crest_factor_db = _float_or_none(crest_factor_db)
     if clip_delta:
         return "Input: CLIPPING", "bad"
     if phase_rescue_active:
@@ -60,10 +107,15 @@ def output_health_state(
 ) -> tuple[str, str]:
     """Return compact output health text/state."""
 
+    rms_db = _float_or_none(rms_db)
     true_peak_headroom = _float_or_none(true_peak_headroom_db)
+    limiter_history = _float_or_none(limiter_history_db)
+    true_peak_limiter_history = _float_or_none(true_peak_limiter_history_db)
     if clip_delta:
         return f"Output: CLIP (OCL:{output_clip_count})", "bad"
-    if limiter_history_db >= 6.0 or true_peak_limiter_history_db >= 3.0:
+    if limiter_history is None or true_peak_limiter_history is None:
+        return "Output: --", "idle"
+    if limiter_history >= 6.0 or true_peak_limiter_history >= 3.0:
         return (
             f"Output: LIMITING HARD (L:{limiter_history_db:.1f} TP:{true_peak_limiter_history_db:.1f})",
             "warn",

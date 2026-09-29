@@ -87,3 +87,14 @@ class RateLimiter:
             fn = self._pending_fn
             self._pending_fn = None
             fn()
+
+    def cancel(self) -> None:
+        """Discard an interactive edit superseded by a bulk configuration."""
+        self._timer.stop()
+        self._pending_fn = None
+
+    def call_now(self, fn: Callable[[], Any]) -> None:
+        """Cancel stale work and run a configuration write before returning."""
+        self.cancel()
+        self._last_call_time = time.monotonic() * 1000
+        fn()

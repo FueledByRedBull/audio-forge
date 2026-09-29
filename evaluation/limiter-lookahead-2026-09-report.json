@@ -1,0 +1,405 @@
+{
+  "aggregates": {
+    "0.5": {
+      "all": {
+        "all_finite": true,
+        "cases": 15,
+        "max_true_peak_limiter_gain_reduction_db": 1.5275949239730835,
+        "median_gain_envelope_variation_db": 8.015850760174562,
+        "median_runtime_ms": 338.25899999999996,
+        "median_transient_shape_error_db": -0.1193455430271273,
+        "minimum_main_peak_gain_reduction_db": 0.0,
+        "minimum_pre_true_peak_overshoot_db": 0.0,
+        "p90_transient_shape_error_db": -0.02909230511243481,
+        "p95_runtime_ms": 711.2614449999998,
+        "p95_runtime_realtime_factor": 0.1551771699459618,
+        "total_true_peak_limited_events": 22,
+        "worst_output_true_peak_overshoot_db": 0.0,
+        "worst_pre_true_peak_overshoot_db": 4.696058750152588
+      },
+      "controlled": {
+        "all_finite": true,
+        "cases": 3,
+        "max_true_peak_limiter_gain_reduction_db": 0.008690123446285725,
+        "median_gain_envelope_variation_db": 6.700498667875311,
+        "median_runtime_ms": 341.24100000000004,
+        "median_transient_shape_error_db": -1.6061136471441577,
+        "minimum_main_peak_gain_reduction_db": 0.0,
+        "minimum_pre_true_peak_overshoot_db": 0.0,
+        "p90_transient_shape_error_db": -0.32122272942883145,
+        "p95_runtime_ms": 544.6912409999999,
+        "p95_runtime_realtime_factor": 0.10831855753815402,
+        "total_true_peak_limited_events": 1,
+        "worst_output_true_peak_overshoot_db": 0.0,
+        "worst_pre_true_peak_overshoot_db": 4.696058750152588
+      },
+      "real_speech": {
+        "all_finite": true,
+        "cases": 12,
+        "max_true_peak_limiter_gain_reduction_db": 1.5275949239730835,
+        "median_gain_envelope_variation_db": 8.241148093299017,
+        "median_runtime_ms": 325.61935,
+        "median_transient_shape_error_db": -0.1049833187066408,
+        "minimum_main_peak_gain_reduction_db": 2.9995598793029785,
+        "minimum_pre_true_peak_overshoot_db": 3.000195026397705,
+        "p90_transient_shape_error_db": -0.033893898798191935,
+        "p95_runtime_ms": 750.8860974999999,
+        "p95_runtime_realtime_factor": 0.1591890083101527,
+        "total_true_peak_limited_events": 21,
+        "worst_output_true_peak_overshoot_db": 0.0,
+        "worst_pre_true_peak_overshoot_db": 3.804258346557617
+      }
+    },
+    "1.0": {
+      "all": {
+        "all_finite": true,
+        "cases": 15,
+        "max_true_peak_limiter_gain_reduction_db": 1.5278456211090088,
+        "median_gain_envelope_variation_db": 8.74578652031888,
+        "median_runtime_ms": 346.88980000000004,
+        "median_transient_shape_error_db": -0.043419618231232346,
+        "minimum_main_peak_gain_reduction_db": 0.0,
+        "minimum_pre_true_peak_overshoot_db": 0.0,
+        "p90_transient_shape_error_db": -0.006326890402255297,
+        "p95_runtime_ms": 705.6840219999997,
+        "p95_runtime_realtime_factor": 0.1361243014842503,
+        "total_true_peak_limited_events": 22,
+        "worst_output_true_peak_overshoot_db": 0.0,
+        "worst_pre_true_peak_overshoot_db": 4.696058750152588
+      },
+      "controlled": {
+        "all_finite": true,
+        "cases": 3,
+        "max_true_peak_limiter_gain_reduction_db": 0.008690123446285725,
+        "median_gain_envelope_variation_db": 9.482454263673144,
+        "median_runtime_ms": 346.88980000000004,
+        "median_transient_shape_error_db": -0.005420573900824949,
+        "minimum_main_peak_gain_reduction_db": 0.0,
+        "minimum_pre_true_peak_overshoot_db": 0.0,
+        "p90_transient_shape_error_db": -0.0010841147801649896,
+        "p95_runtime_ms": 529.1759069999999,
+        "p95_runtime_realtime_factor": 0.1086909200691249,
+        "total_true_peak_limited_events": 1,
+        "worst_output_true_peak_overshoot_db": 0.0,
+        "worst_pre_true_peak_overshoot_db": 4.696058750152588
+      },
+      "real_speech": {
+        "all_finite": true,
+        "cases": 12,
+        "max_true_peak_limiter_gain_reduction_db": 1.5278456211090088,
+        "median_gain_envelope_variation_db": 8.550269588143824,
+        "median_runtime_ms": 336.3603,
+        "median_transient_shape_error_db": -0.048948684259099325,
+        "minimum_main_peak_gain_reduction_db": 2.9995598793029785,
+        "minimum_pre_true_peak_overshoot_db": 3.000195026397705,
+        "p90_transient_shape_error_db": -0.024597197466072047,
+        "p95_runtime_ms": 737.1265179999998,
+        "p95_runtime_realtime_factor": 0.1394771988214172,
+        "total_true_peak_limited_events": 21,
+        "worst_output_true_peak_overshoot_db": 0.0,
+        "worst_pre_true_peak_overshoot_db": 3.804258346557617
+      }
+    },
+    "2.0": {
+      "all": {
+        "all_finite": true,
+        "cases": 15,
+        "max_true_peak_limiter_gain_reduction_db": 1.5279715061187744,
+        "median_gain_envelope_variation_db": 9.022258422963304,
+        "median_runtime_ms": 331.6797,
+        "median_transient_shape_error_db": -0.04330353974112422,
+        "minimum_main_peak_gain_reduction_db": 0.0,
+        "minimum_pre_true_peak_overshoot_db": 0.0,
+        "p90_transient_shape_error_db": -0.008767544561361447,
+        "p95_runtime_ms": 542.1416429999999,
+        "p95_runtime_realtime_factor": 0.11826968556755778,
+        "total_true_peak_limited_events": 24,
+        "worst_output_true_peak_overshoot_db": 0.0,
+        "worst_pre_true_peak_overshoot_db": 4.696058750152588
+      },
+      "controlled": {
+        "all_finite": true,
+        "cases": 3,
+        "max_true_peak_limiter_gain_reduction_db": 0.008690123446285725,
+        "median_gain_envelope_variation_db": 41.15701791720011,
+        "median_runtime_ms": 336.9706,
+        "median_transient_shape_error_db": -0.281021222955702,
+        "minimum_main_peak_gain_reduction_db": 0.0,
+        "minimum_pre_true_peak_overshoot_db": 0.0,
+        "p90_transient_shape_error_db": -0.05620424459114038,
+        "p95_runtime_ms": 381.806647,
+        "p95_runtime_realtime_factor": 0.08490851610485331,
+        "total_true_peak_limited_events": 1,
+        "worst_output_true_peak_overshoot_db": 0.0,
+        "worst_pre_true_peak_overshoot_db": 4.696058750152588
+      },
+      "real_speech": {
+        "all_finite": true,
+        "cases": 12,
+        "max_true_peak_limiter_gain_reduction_db": 1.5279715061187744,
+        "median_gain_envelope_variation_db": 8.956804080957259,
+        "median_runtime_ms": 327.3466,
+        "median_transient_shape_error_db": -0.04060670528116153,
+        "minimum_main_peak_gain_reduction_db": 2.9995598793029785,
+        "minimum_pre_true_peak_overshoot_db": 3.000195026397705,
+        "p90_transient_shape_error_db": -0.010896769303614811,
+        "p95_runtime_ms": 548.5942695,
+        "p95_runtime_realtime_factor": 0.1206314800605065,
+        "total_true_peak_limited_events": 23,
+        "worst_output_true_peak_overshoot_db": 0.0,
+        "worst_pre_true_peak_overshoot_db": 3.804258346557617
+      }
+    }
+  },
+  "audible_change": true,
+  "candidate_checks": {
+    "0.5": {
+      "checks": {
+        "downstream_true_peak_event_regression_at_most_1_per_case": true,
+        "downstream_true_peak_gr_regression_at_most_0_10_db": true,
+        "finite_output": true,
+        "gain_envelope_variation_regression_at_most_0_25_db": true,
+        "material_latency_reduction_at_least_1_5_ms": true,
+        "median_runtime_ratio_at_most_1_15": true,
+        "output_true_peak_overshoot_at_most_0_01_db": true,
+        "p95_realtime_factor_at_most_0_25": true,
+        "pre_true_peak_overshoot_regression_at_most_0_10_db": true,
+        "real_speech_exercises_main_limiter_within_0_10_db": true,
+        "real_transient_shape_p90_regression_at_most_1_db": true
+      },
+      "objective_passes": true,
+      "paired_event_deltas": {
+        "increased_case_count": 0,
+        "maximum": 0,
+        "sum": -2
+      }
+    },
+    "1.0": {
+      "checks": {
+        "downstream_true_peak_event_regression_at_most_1_per_case": true,
+        "downstream_true_peak_gr_regression_at_most_0_10_db": true,
+        "finite_output": true,
+        "gain_envelope_variation_regression_at_most_0_25_db": true,
+        "material_latency_reduction_at_least_1_5_ms": false,
+        "median_runtime_ratio_at_most_1_15": true,
+        "output_true_peak_overshoot_at_most_0_01_db": true,
+        "p95_realtime_factor_at_most_0_25": true,
+        "pre_true_peak_overshoot_regression_at_most_0_10_db": true,
+        "real_speech_exercises_main_limiter_within_0_10_db": true,
+        "real_transient_shape_p90_regression_at_most_1_db": true
+      },
+      "objective_passes": false,
+      "paired_event_deltas": {
+        "increased_case_count": 0,
+        "maximum": 0,
+        "sum": -2
+      }
+    }
+  },
+  "configuration": {
+    "alignment": "lookahead samples plus 20-sample true-peak stage delay",
+    "baseline_lookahead_ms": 2.0,
+    "chain": {
+      "compressor_adaptive_release": false,
+      "compressor_attack_ms": 10.0,
+      "compressor_auto_makeup_enabled": false,
+      "compressor_enabled": true,
+      "compressor_makeup_gain_db": 0.0,
+      "compressor_ratio": 4.0,
+      "compressor_release_ms": 200.0,
+      "compressor_sidechain_highpass_enabled": true,
+      "compressor_threshold_db": -20.0,
+      "deesser_enabled": false,
+      "limiter_careful_output_enabled": true,
+      "limiter_ceiling_db": -0.5,
+      "limiter_enabled": true,
+      "limiter_lookahead_ms": "varied",
+      "limiter_release_ms": 50.0,
+      "return_output_audio": true
+    },
+    "lookahead_ms": [
+      0.5,
+      1.0,
+      2.0
+    ],
+    "runtime_repetitions": 7,
+    "sample_rate": 48000
+  },
+  "corpus": {
+    "controlled": {
+      "case_count": 3,
+      "fixtures": [
+        "controlled-clipped-voice",
+        "controlled-impulses",
+        "controlled-sine-bursts"
+      ],
+      "generator_sha256": "08fdba9a64d62298fb925d43e6b09b4f1ef2e085caba2b31298d54b60609e32d"
+    },
+    "real_speech": {
+      "case_count": 12,
+      "dataset": "RAVDESS neutral speech repeated-take slice",
+      "dataset_page": "https://doi.org/10.5281/zenodo.1188976",
+      "license": "CC BY-NC-SA 4.0",
+      "manifest_sha256": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc",
+      "redistribution": "Local non-commercial evaluation only; audio is ignored by Git and must never enter release assets.",
+      "selection": "Twelve unique speakers across the frozen split, alternating fixed statements/deliveries and source takes before metrics are viewed."
+    }
+  },
+  "decision": "adopt_0.5ms",
+  "environment": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD"
+  },
+  "evaluation_contract": {
+    "asset_hashes": {
+      "native_extension": {
+        "path": "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd",
+        "sha256": "a4cb583960c8ca643686ec6e993eb056cc2db9e4399febbbc786041548dab931"
+      },
+      "real_case_source_sha256": [
+        "099f330317e03d0d97c9a9e572863d9db3f514d7c28bd2b4f050c5bddabaae04",
+        "0cc836606d00aa0a8650050cdee26a062e1df2c899e036f130cd29b705d4bab6",
+        "0dfcfb0866382b52757dd979d228e3b41e706cbf7dada669a1bad20106b483ef",
+        "24d343ffb0366cf703934f8769b7f0df3767da851273cc3e47c86271170ad0fb",
+        "2c6d4735dfb5468f4c79c7ac763fccb2c1b69e67880ad1f18cca7ef39d298ac7",
+        "40fb00d0c4e20439d8818367c4ebeeaac154e4cce49ee1191331dc1be34dad13",
+        "4348df5138548a05cf58615016519e8f1071570f4f0f060183a8326e13c166d0",
+        "50b32d6b2ccfd135c6665e386d57da34d92aa3e935cbc083332e38c39580ce24",
+        "549e9f918fff0f3d7ab5fb500ab9c8c52672fcbaaadd28cf4f64175c472d1de1",
+        "594d258faa4826a8962717a7449719b9812c2e32455121f94f5344c7d5c736d1",
+        "b4481f1fff9c1e375a5202797ab92bbad04bd2ea7b03f4b7da2e0173fb0a70e4",
+        "cd2421bba3634596dbd0a40131a08d87ba7d01d678d901878675aac585301e34"
+      ],
+      "real_manifest": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc",
+      "source": {
+        "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
+        "python/tools/evaluate_limiter_lookahead.py": "08fdba9a64d62298fb925d43e6b09b4f1ef2e085caba2b31298d54b60609e32d",
+        "rust-core/src/audio/processor/python_api.rs": "07ec0a6fa7d78173ebb2814dd5197e7ac3726ff998de5362bc6e87804fd4c839",
+        "rust-core/src/dsp/limiter.rs": "5b5cae3a45b10d7cb58ba690ac67c382452837893c6f16c7bb436d85f145ce45",
+        "rust-core/src/dsp/true_peak.rs": "538713a3cc6a8a8b04f3488f843b3e388b9a7b5b61edc3965be7f00f258700f5"
+      }
+    },
+    "clean_preservation": {
+      "all_outputs_finite": true,
+      "candidate_checks": {
+        "0.5": {
+          "checks": {
+            "downstream_true_peak_event_regression_at_most_1_per_case": true,
+            "downstream_true_peak_gr_regression_at_most_0_10_db": true,
+            "finite_output": true,
+            "gain_envelope_variation_regression_at_most_0_25_db": true,
+            "material_latency_reduction_at_least_1_5_ms": true,
+            "median_runtime_ratio_at_most_1_15": true,
+            "output_true_peak_overshoot_at_most_0_01_db": true,
+            "p95_realtime_factor_at_most_0_25": true,
+            "pre_true_peak_overshoot_regression_at_most_0_10_db": true,
+            "real_speech_exercises_main_limiter_within_0_10_db": true,
+            "real_transient_shape_p90_regression_at_most_1_db": true
+          },
+          "objective_passes": true,
+          "paired_event_deltas": {
+            "increased_case_count": 0,
+            "maximum": 0,
+            "sum": -2
+          }
+        },
+        "1.0": {
+          "checks": {
+            "downstream_true_peak_event_regression_at_most_1_per_case": true,
+            "downstream_true_peak_gr_regression_at_most_0_10_db": true,
+            "finite_output": true,
+            "gain_envelope_variation_regression_at_most_0_25_db": true,
+            "material_latency_reduction_at_least_1_5_ms": false,
+            "median_runtime_ratio_at_most_1_15": true,
+            "output_true_peak_overshoot_at_most_0_01_db": true,
+            "p95_realtime_factor_at_most_0_25": true,
+            "pre_true_peak_overshoot_regression_at_most_0_10_db": true,
+            "real_speech_exercises_main_limiter_within_0_10_db": true,
+            "real_transient_shape_p90_regression_at_most_1_db": true
+          },
+          "objective_passes": false,
+          "paired_event_deltas": {
+            "increased_case_count": 0,
+            "maximum": 0,
+            "sum": -2
+          }
+        }
+      },
+      "incumbent_real_transient_shape_p90_db": -0.010896769303614811
+    },
+    "configuration": {
+      "baseline_lookahead_ms": 2.0,
+      "chain": {
+        "compressor_adaptive_release": false,
+        "compressor_attack_ms": 10.0,
+        "compressor_auto_makeup_enabled": false,
+        "compressor_enabled": true,
+        "compressor_makeup_gain_db": 0.0,
+        "compressor_ratio": 4.0,
+        "compressor_release_ms": 200.0,
+        "compressor_sidechain_highpass_enabled": true,
+        "compressor_threshold_db": -20.0,
+        "deesser_enabled": false,
+        "limiter_careful_output_enabled": true,
+        "limiter_ceiling_db": -0.5,
+        "limiter_enabled": true,
+        "limiter_lookahead_ms": "varied",
+        "limiter_release_ms": 50.0,
+        "return_output_audio": true
+      },
+      "lookahead_ms": [
+        0.5,
+        1.0,
+        2.0
+      ],
+      "runtime_repetitions": 7,
+      "sample_rate": 48000
+    },
+    "latency": {
+      "downstream_true_peak_delay_samples": 20,
+      "flush_samples": 116,
+      "lookahead_samples": {
+        "0.5": 24,
+        "1.0": 48,
+        "2.0": 96
+      }
+    },
+    "runtime": {
+      "candidate_p95_realtime_factor": 0.1551771699459618,
+      "max_p99_frame_seconds": null,
+      "max_p99_frame_seconds_reason": "The native simulator reports whole-render timing; seven timed renders plus warmup are recorded instead of callback P99.",
+      "platform": "Windows-11-10.0.26200-SP0"
+    }
+  },
+  "generated_at_utc": "2026-09-29T18:58:48.890594+00:00",
+  "limitations": [
+    "Real speech receives one recorded static gain, calibrated through the protected chain to 3 dB of main-limiter gain reduction; the source waveform is otherwise unchanged.",
+    "Transient shape error removes one local static gain and is not a perceptual score.",
+    "True-peak event counts are block-activation diagnostics; the gate compares paired cases and does not claim audibility.",
+    "A shorter candidate must pass every safety/quality gate and save at least 1.5 ms; a smaller latency change is not material against the measured product path."
+  ],
+  "objective_candidate_lookahead_ms": 0.5,
+  "predefined_gates": {
+    "downstream_true_peak_event_regression_per_case_max": 1,
+    "downstream_true_peak_gr_regression_db_max": 0.1,
+    "finite_output_required": true,
+    "gain_envelope_variation_regression_db_max": 0.25,
+    "median_runtime_ratio_max": 1.15,
+    "minimum_material_lookahead_reduction_ms": 1.5,
+    "output_true_peak_overshoot_db_max": 0.01,
+    "p95_realtime_factor_max": 0.25,
+    "pre_true_peak_overshoot_regression_db_max": 0.1,
+    "real_main_limiter_gain_reduction_target_db": 3.0,
+    "real_main_limiter_gain_reduction_tolerance_db": 0.1,
+    "real_transient_shape_p90_regression_db_max": 1.0
+  },
+  "schema_version": 5,
+  "selected_lookahead_ms": 0.5,
+  "source_sha256": {
+    "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
+    "python/tools/evaluate_limiter_lookahead.py": "08fdba9a64d62298fb925d43e6b09b4f1ef2e085caba2b31298d54b60609e32d",
+    "rust-core/src/audio/processor/python_api.rs": "07ec0a6fa7d78173ebb2814dd5197e7ac3726ff998de5362bc6e87804fd4c839",
+    "rust-core/src/dsp/limiter.rs": "5b5cae3a45b10d7cb58ba690ac67c382452837893c6f16c7bb436d85f145ce45",
+    "rust-core/src/dsp/true_peak.rs": "538713a3cc6a8a8b04f3488f843b3e388b9a7b5b61edc3965be7f00f258700f5"
+  }
+}

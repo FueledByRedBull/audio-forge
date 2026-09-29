@@ -185,3 +185,36 @@ impl AudioProcessor {
         }
     }
 }
+
+#[inline]
+fn record_raw_recording_block(
+    samples: &[f32],
+    sample_rate: u32,
+    producer: &mut AudioProducer,
+    pos: &AtomicUsize,
+    target: &AtomicUsize,
+    level_db: &AtomicU32,
+) -> usize {
+    let target = target.load(Ordering::Acquire);
+    let current = pos.load(Ordering::Acquire);
+    if current >= target {
+        return 0;
+    }
+
+    let to_copy = samples.len().min(target - current);
+    let written = producer.write(&samples[..to_copy]);
+    pos.store(current.saturating_add(written), Ordering::Release);
+
+    let window_len = (sample_rate as usize / 10).max(1);
+    let level_slice = &samples[to_copy.saturating_sub(window_len)..to_copy];
+    let sum_sq: f32 = level_slice.iter().map(|sample| sample * sample).sum();
+    let rms = (sum_sq / level_slice.len().max(1) as f32).sqrt();
+    let level = if rms > 1.0e-6 {
+        20.0 * rms.log10()
+    } else {
+        -120.0
+    };
+    level_db.store(level.to_bits(), Ordering::Relaxed);
+
+    written
+}

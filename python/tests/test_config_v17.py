@@ -567,6 +567,16 @@ def test_device_preset_bindings_round_trip_with_provenance_and_legacy_migration(
         "builtin:broadcast", "explicit_user"
     )
 
+    file_bound = AppConfig(
+        device_preset_bindings={
+            route_key: DevicePresetBinding("custom-file:Voice.json", "explicit_user")
+        }
+    )
+    file_restored = AppConfig.from_dict(file_bound.to_dict())
+    assert file_restored.device_preset_bindings[route_key] == DevicePresetBinding(
+        "custom-file:Voice.json", "explicit_user"
+    )
+
     migrated = AppConfig.from_dict(
         {"device_preset_bindings": {"Mic||Cable": "custom:Voice.json"}}
     )
@@ -908,6 +918,52 @@ def test_preset_rejects_string_booleans():
         assert False, "Expected string boolean to be rejected"
     except config.PresetValidationError as e:
         assert "must be true or false" in str(e)
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value", "related"),
+    [
+        ("rnnoise", "model", "unknown-model", None),
+        ("gate", "gate_mode", 1.5, None),
+        ("deesser", "low_cut_hz", 12000.0, {"high_cut_hz": 11000.0}),
+        ("gate", "vad_threshold", float("nan"), None),
+        ("compressor", "ratio", [4], None),
+    ],
+)
+def test_current_schema_rejects_semantic_repairs(section, field, value, related):
+    payload = Preset().to_dict()
+    payload[section][field] = value
+    if related:
+        payload[section].update(related)
+
+    with pytest.raises(config.PresetValidationError):
+        Preset.from_dict(payload)
+
+
+def test_save_rejects_invalid_current_schema_without_overwriting_existing_file(
+    tmp_path,
+):
+    destination = tmp_path / "existing.json"
+    destination.write_text("preserve me", encoding="utf-8")
+    preset = Preset()
+    preset.rnnoise.model = "unknown-model"
+
+    with pytest.raises(config.PresetValidationError):
+        config.save_preset(preset, destination, overwrite=True)
+
+    assert destination.read_text(encoding="utf-8") == "preserve me"
+
+
+@pytest.mark.parametrize("mutation", ["unknown", "missing"])
+def test_current_schema_rejects_unknown_or_missing_section_fields(mutation):
+    payload = Preset().to_dict()
+    if mutation == "unknown":
+        payload["gate"]["threshold_dbb"] = -30.0
+    else:
+        del payload["gate"]["release_ms"]
+
+    with pytest.raises(config.PresetValidationError):
+        Preset.from_dict(payload)
 
 
 def test_eq_band_frequencies_round_trip():

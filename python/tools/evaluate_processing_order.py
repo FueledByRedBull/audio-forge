@@ -5,15 +5,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import platform
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from release_provenance import sha256_file as _sha256
 
+from _eval_common import resample_audio
+
 import numpy as np
-from scipy.signal import resample_poly
 
 from mic_eq import analyze_vad_probabilities
 from mic_eq.mic_eq_core import (
@@ -40,13 +40,7 @@ def _read_mono(path: Path) -> tuple[int, np.ndarray]:
 
 
 def _resample(audio: np.ndarray, source_rate: int) -> np.ndarray:
-    if source_rate == SAMPLE_RATE:
-        return np.asarray(audio, dtype=np.float32)
-    divisor = math.gcd(source_rate, SAMPLE_RATE)
-    return np.asarray(
-        resample_poly(audio, SAMPLE_RATE // divisor, source_rate // divisor),
-        dtype=np.float32,
-    )
+    return resample_audio(audio, source_rate, SAMPLE_RATE, dtype=np.float32)
 
 
 def _control_probabilities(probabilities: np.ndarray, sample_count: int) -> np.ndarray:
@@ -507,6 +501,7 @@ def main() -> int:
     ]
     source_paths = (
         Path(__file__).resolve(),
+        REPO_ROOT / "python/tools/_eval_common.py",
         REPO_ROOT / "rust-core/src/audio/processor/block_processor.rs",
         REPO_ROOT / "rust-core/src/audio/processor/python_api.rs",
         REPO_ROOT / "rust-core/src/dsp/deesser.rs",

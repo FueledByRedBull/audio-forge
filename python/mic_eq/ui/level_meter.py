@@ -5,6 +5,8 @@ Shows RMS level as a filled bar with peak hold indicator.
 Color gradient: green → yellow → red
 """
 
+import math
+
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QTimer, QRectF
 from PyQt6.QtGui import QPainter, QLinearGradient, QPen, QFont
@@ -55,6 +57,8 @@ class LevelMeter(QWidget):
         super().__init__(parent)
         self.label_text = label
         self.show_scale = show_scale
+        self.measurement_available = False
+        self.peak_available = False
         self.rms_db = -120.0
         self.peak_db = -120.0
         self.peak_hold_db = -120.0
@@ -68,38 +72,82 @@ class LevelMeter(QWidget):
         # Peak hold decay timer
         self.decay_timer = QTimer(self)
         self.decay_timer.timeout.connect(self._decay_peak_hold)
-        self.decay_timer.start(50)  # 20 Hz update
+        self.decay_timer.setInterval(50)  # Animate only visible, measured peaks.
 
-    def set_levels(self, rms_db: float, peak_db: float):
-        """Update the meter levels."""
+    def _sync_decay_timer(self) -> None:
+        active = (self.isVisible() and self.measurement_available and self.peak_available
+                  and (self.peak_hold_db > self.DB_MIN or self.clip_flash_counter > 0))
+        if active and not self.decay_timer.isActive():
+            self.decay_timer.start()
+        elif not active:
+            self.decay_timer.stop()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._sync_decay_timer()
+
+    def hideEvent(self, event):
+        self.decay_timer.stop()
+        super().hideEvent(event)
+
+    def set_levels(self, rms_db: float | None, peak_db: float | None):
+        """Update measured levels; unavailable peaks are never estimated."""
+        if rms_db is None or not math.isfinite(rms_db):
+            self.set_unavailable()
+            return
+        if peak_db is None or not math.isfinite(peak_db):
+            self.set_rms_level(rms_db)
+            return
+        previous = (self.rms_db, self.peak_db, self.measurement_available, self.peak_available)
+        self.measurement_available = self.peak_available = True
         self.rms_db = max(self.DB_MIN, min(self.DB_MAX, rms_db))
         self.peak_db = max(self.DB_MIN, min(self.DB_MAX, peak_db))
-
-        # Update peak hold (only increases)
         if self.peak_db > self.peak_hold_db:
             self.peak_hold_db = self.peak_db
-
-        # Check for clipping
         if peak_db >= -0.5:
             self.is_clipping = True
-            self.clip_flash_counter = 10  # Flash for ~0.5 seconds
+            self.clip_flash_counter = 10
+        self._sync_decay_timer()
+        if previous != (self.rms_db, self.peak_db, True, True):
+            self.update()
 
-        self.update()
+    def set_rms_level(self, rms_db: float) -> None:
+        """Show RMS when no peak measurement is available."""
+        if not math.isfinite(rms_db):
+            self.set_unavailable()
+            return
+        previous = (self.rms_db, self.measurement_available, self.peak_available)
+        self.measurement_available = True
+        self.peak_available = False
+        self.rms_db = max(self.DB_MIN, min(self.DB_MAX, rms_db))
+        self.peak_db = self.peak_hold_db = self.DB_MIN
+        self.is_clipping = False
+        self.clip_flash_counter = 0
+        self._sync_decay_timer()
+        if previous != (self.rms_db, True, False):
+            self.update()
+
+    def set_unavailable(self) -> None:
+        changed = self.measurement_available
+        self.measurement_available = self.peak_available = False
+        self.rms_db = self.peak_db = self.peak_hold_db = self.DB_MIN
+        self.is_clipping = False
+        self.clip_flash_counter = 0
+        self.decay_timer.stop()
+        if changed:
+            self.update()
 
     def _decay_peak_hold(self):
-        """Decay the peak hold indicator over time."""
-        decay_amount = self.PEAK_DECAY_RATE * 0.05  # 50ms intervals
-        self.peak_hold_db -= decay_amount
-        if self.peak_hold_db < self.DB_MIN:
-            self.peak_hold_db = self.DB_MIN
-
-        # Decay clip flash
+        """Decay measured peak hold; stop repainting once it reaches the floor."""
+        previous = (self.peak_hold_db, self.clip_flash_counter)
+        self.peak_hold_db = max(self.DB_MIN, self.peak_hold_db - self.PEAK_DECAY_RATE * 0.05)
         if self.clip_flash_counter > 0:
             self.clip_flash_counter -= 1
             if self.clip_flash_counter == 0:
                 self.is_clipping = False
-
-        self.update()
+        self._sync_decay_timer()
+        if previous != (self.peak_hold_db, self.clip_flash_counter):
+            self.update()
 
     def _db_to_y(self, db: float, height: float) -> float:
         """Convert dB value to Y coordinate (0 = top, height = bottom)."""
@@ -132,6 +180,10 @@ class LevelMeter(QWidget):
         # Calculate bar positions
         rms_y = self._db_to_y(self.rms_db, meter_height) + 4
         peak_hold_y = self._db_to_y(self.peak_hold_db, meter_height) + 4
+
+        if not self.measurement_available:
+            painter.setPen(QPen(self.COLOR_SCALE))
+            painter.drawText(QRectF(2, 4, meter_width - 2, meter_height), Qt.AlignmentFlag.AlignCenter, "--")
 
         # Draw RMS bar with gradient
         if self.rms_db > self.DB_MIN:
@@ -213,14 +265,19 @@ class GainReductionMeter(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.measurement_available = False
         self.gain_reduction_db = 0.0
         self.setMinimumHeight(16)
         self.setMaximumHeight(20)
 
-    def set_gain_reduction(self, db: float):
-        """Update the gain reduction display (positive dB = reduction)."""
-        self.gain_reduction_db = max(0.0, min(24.0, db))
-        self.update()
+    def set_gain_reduction(self, db: float | None):
+        """Update reduction, keeping unavailable distinct from measured zero."""
+        available = db is not None and math.isfinite(db)
+        value = max(0.0, min(24.0, db)) if available and db is not None else 0.0
+        if (value, available) != (self.gain_reduction_db, self.measurement_available):
+            self.gain_reduction_db = value
+            self.measurement_available = available
+            self.update()
 
     def paintEvent(self, event):
         """Paint the gain reduction meter."""
@@ -245,7 +302,7 @@ class GainReductionMeter(QWidget):
         font = QFont()
         font.setPointSize(8)
         painter.setFont(font)
-        text = f"GR: {self.gain_reduction_db:.1f} dB"
+        text = f"GR: {self.gain_reduction_db:.1f} dB" if self.measurement_available else "GR: --"
         painter.drawText(0, 0, width, height, Qt.AlignmentFlag.AlignCenter, text)
 
         painter.end()
@@ -257,14 +314,19 @@ class ConfidenceMeter(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setMinimumHeight(20)
+        self.measurement_available = False
         self.confidence = 0.0
         self.threshold = 0.5
         self.setAutoFillBackground(False)
 
-    def set_confidence(self, value: float):
-        """Update confidence value (0.0 to 1.0)."""
-        self.confidence = max(0.0, min(1.0, value))
-        self.update()
+    def set_confidence(self, value: float | None):
+        """Update confidence, or explicitly clear an unavailable measurement."""
+        available = value is not None and math.isfinite(value)
+        confidence = max(0.0, min(1.0, value)) if available and value is not None else 0.0
+        if (confidence, available) != (self.confidence, self.measurement_available):
+            self.confidence = confidence
+            self.measurement_available = available
+            self.update()
 
     def set_threshold(self, value: float):
         self.threshold = max(0.0, min(1.0, value))
@@ -280,6 +342,10 @@ class ConfidenceMeter(QWidget):
 
         # Background (dark gray)
         painter.fillRect(rect, qcolor(PALETTE.data_surface_raised))
+
+        if not self.measurement_available:
+            painter.setPen(QPen(qcolor(PALETTE.meter_scale)))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "--")
 
         # Fill based on confidence with color gradient
         fill_width = int(width * self.confidence)

@@ -334,14 +334,18 @@ class EQCurveWidget(QWidget):
             if not stage:
                 continue
             freqs = [band[1] for band in stage]
-            gains = [
-                band[2]
-                if band[0] in {"bell", "low_shelf", "high_shelf"} and band[5]
-                else 0.0
-                for band in stage
-            ]
             qs = [band[3] for band in stage]
-            warnings.extend(evaluate_eq_quality(freqs, gains, qs, self.sample_rate).warnings)
+            warnings.extend(
+                evaluate_eq_quality(
+                    freqs,
+                    [band[2] for band in stage],
+                    qs,
+                    self.sample_rate,
+                    filter_types=[band[0] for band in stage],
+                    enabled=[band[5] for band in stage],
+                    slopes_db_per_octave=[band[4] for band in stage],
+                ).warnings
+            )
         max_index = max(
             range(len(self.response_db)),
             key=self.response_db.__getitem__,

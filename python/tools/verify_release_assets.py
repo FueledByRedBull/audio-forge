@@ -10,7 +10,7 @@ import sys
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import Any, Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -251,7 +251,8 @@ def _verify_pinned_archive_metadata(asset: dict[str, Any], raw_path: str) -> lis
 
 
 def _verify_source_build_attestation(
-    asset: dict[str, Any], path: Path, raw_path: str
+    asset: dict[str, Any], path: Path, raw_path: str,
+    staged_paths: Mapping[str, Path] | None = None,
 ) -> list[str]:
     from release_provenance import (
         DEEPFILTER_RECIPE_FILES,
@@ -269,7 +270,10 @@ def _verify_source_build_attestation(
         return [f"{raw_path}: source-built asset must declare origin.attestation_path"]
     if path_error := _validate_manifest_path(raw_attestation, "asset attestation_path"):
         return [path_error]
-    attestation_path = REPO_ROOT / raw_attestation.replace("\\", "/")
+    normalized_attestation = raw_attestation.replace("\\", "/")
+    attestation_path = (staged_paths or {}).get(
+        normalized_attestation, REPO_ROOT / normalized_attestation
+    )
     if not attestation_path.is_file():
         return [f"{raw_path}: attestation missing: {raw_attestation}"]
     attestation, read_error = _read_json(attestation_path, f"{raw_path} attestation")
@@ -359,6 +363,8 @@ def _verify_source_build_attestation(
 def verify_assets(
     manifest_path: Path = MANIFEST_PATH,
     selected_paths: set[str] | None = None,
+    *,
+    staged_paths: Mapping[str, Path] | None = None,
 ) -> list[str]:
     try:
         manifest = load_asset_manifest(manifest_path)
@@ -381,7 +387,7 @@ def verify_assets(
         if normalized_selected is not None:
             seen_selected.add(normalized_path)
 
-        path = REPO_ROOT / raw_path.replace("\\", "/")
+        path = (staged_paths or {}).get(normalized_path, REPO_ROOT / normalized_path)
         if not path.is_file():
             errors.append(f"{raw_path}: missing")
             continue
@@ -404,7 +410,7 @@ def verify_assets(
         assert isinstance(expected_sha, str) and HEX_SHA256.fullmatch(expected_sha)
 
         if source_built:
-            errors.extend(_verify_source_build_attestation(asset, path, raw_path))
+            errors.extend(_verify_source_build_attestation(asset, path, raw_path, staged_paths))
         else:
             actual_sha = _sha256(path)
             if actual_sha.lower() != expected_sha.lower():

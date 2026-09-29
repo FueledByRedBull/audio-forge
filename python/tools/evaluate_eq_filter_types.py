@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from release_provenance import sha256_file as _sha256
 
+from _eval_common import amplitude_ratio_db as _db_ratio
+
 import numpy as np
 
 from mic_eq import (
@@ -74,10 +76,6 @@ def _default_bands() -> list[TypedBand]:
         )
         for band in EQSettings().bands
     ]
-
-
-def _db_ratio(numerator: float, denominator: float) -> float:
-    return 20.0 * math.log10(max(numerator, 1.0e-15) / max(denominator, 1.0e-15))
 
 
 def _read_audio(path: Path, duration_seconds: float) -> tuple[np.ndarray, int]:
@@ -447,6 +445,7 @@ def _source_hashes() -> dict[str, str]:
         "python/mic_eq/ui/eq_curve.py",
         "python/mic_eq/analysis/wav_io.py",
         "python/tools/evaluate_eq_filter_types.py",
+        "python/tools/_eval_common.py",
     )
     return {
         path: _sha256(REPO_ROOT / path)

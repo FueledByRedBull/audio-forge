@@ -74,7 +74,8 @@ impl AudioProcessor {
             return false;
         }
 
-        if self.running.load(Ordering::Acquire) {
+        let running = self.running.load(Ordering::Acquire);
+        if running {
             let queued = if let Ok(mut tx_guard) = self.pending_suppressor_tx.lock() {
                 if let Some(tx) = tx_guard.as_mut() {
                     tx.try_push(new_engine).is_ok()
@@ -88,14 +89,20 @@ impl AudioProcessor {
             if !queued {
                 return false;
             }
+            store_backend_diagnostics(
+                &self.noise_backend_available,
+                &self.noise_backend_failed,
+                self.noise_backend_error.as_ref(),
+                backend_diagnostics,
+            );
+        } else {
+            update_backend_diagnostics(
+                &self.noise_backend_available,
+                &self.noise_backend_failed,
+                self.noise_backend_error.as_ref(),
+                &new_engine,
+            );
         }
-
-        store_backend_diagnostics(
-            &self.noise_backend_available,
-            &self.noise_backend_failed,
-            self.noise_backend_error.as_ref(),
-            backend_diagnostics,
-        );
 
         if let Ok(mut control) = self.suppressor_control.lock() {
             control.model = model;

@@ -228,7 +228,7 @@ def test_initial_analysis_renders_raw_full_chain_with_the_applied_eq_layers(monk
     assert calibration["eq_settings"] == observed["expected_eq"]
     expected_frontend_eq = {**observed["expected_eq"], "enabled": False}
     assert eq == expected_frontend_eq
-    assert eq["layers"]["tone"][0]["gain_db"] == 0.0
+    assert eq["layers"]["tone"][0]["gain_db"] == 2.5
     assert observed["progress"] == sorted(observed["progress"])
     assert 55 in observed["progress"]
     assert result["diagnostics"]["offline_validation_passed"] is True

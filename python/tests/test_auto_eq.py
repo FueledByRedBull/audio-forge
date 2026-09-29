@@ -11,16 +11,18 @@ from mic_eq import config
 from mic_eq.analysis import auto_eq
 from mic_eq.analysis.auto_eq_parts import headroom as headroom_module
 from mic_eq.analysis.auto_eq_parts import optimizer as optimizer_module
+from mic_eq.analysis.auto_eq_parts.dynamic_bands import (
+    _remove_spectral_tilt,
+    _snr_aware_gain_upper_bounds,
+)
+from mic_eq.analysis.auto_eq_parts.optimizer import _log_frequency_gain_curvature
+from mic_eq.analysis.auto_eq_parts.response import _predict_eq_response
 from mic_eq.analysis.failure_detection import validate_analysis
 from mic_eq.analysis.spectrum import analyze_voice_spectrum, smooth_spectrum_perceptual
 
-_predict_eq_response = auto_eq._predict_eq_response
 calculate_eq_bands = auto_eq.calculate_eq_bands
 analyze_auto_eq = auto_eq.analyze_auto_eq
 get_target_curve = auto_eq.get_target_curve
-_remove_spectral_tilt = auto_eq._remove_spectral_tilt
-_log_frequency_gain_curvature = auto_eq._log_frequency_gain_curvature
-_snr_aware_gain_upper_bounds = auto_eq._snr_aware_gain_upper_bounds
 evaluate_eq_quality = auto_eq.evaluate_eq_quality
 apply_headroom_validation = auto_eq.apply_headroom_validation
 simulate_candidate_chain = auto_eq.simulate_candidate_chain
@@ -1389,7 +1391,37 @@ def test_27_validation_rejects_remaining_headroom_risk():
     assert validation.details["headroom_safe"] is False
 
 
-def test_28_python_headroom_fallback_is_explicitly_advisory(monkeypatch):
+def test_unavailable_headroom_is_unknown_not_a_capture_quality_failure():
+    sample_rate = 48_000
+    time = np.arange(sample_rate * 3) / sample_rate
+    freqs = np.fft.rfftfreq(time.size, 1.0 / sample_rate)
+    audio = sum(
+        0.1 / harmonic * np.sin(2 * np.pi * 150 * harmonic * time)
+        for harmonic in range(1, 26)
+    )
+    spectrum_db = 10.0 * np.log10(
+        np.maximum(np.square(np.abs(np.fft.rfft(audio))), 1.0e-12)
+    )
+
+    validation = validate_analysis(
+        {
+            "band_gains": [0.0] * 10,
+            "headroom_validation": {
+                "safe": False,
+                "authoritative": False,
+                "status": "unavailable",
+                "reason": "native simulator unavailable",
+            },
+        },
+        spectrum_db,
+        freqs,
+    )
+
+    assert all("headroom" not in reason.lower() for reason in validation.details["failures"])
+    assert validation.details["headroom_safe"] is False
+
+
+def test_28_unavailable_headroom_does_not_fabricate_metrics(monkeypatch):
     monkeypatch.setattr(
         headroom_module,
         "_native_simulate",
@@ -1407,26 +1439,17 @@ def test_28_python_headroom_fallback_is_explicitly_advisory(monkeypatch):
         "analysis_confidence": 0.95,
     }
 
-    validated = apply_headroom_validation(
-        audio,
-        48_000,
-        eq_settings,
-        {
-            "compressor": {"enabled": False},
-            "deesser": {"enabled": False},
-            "limiter": {"enabled": True, "careful_output_enabled": True},
-        },
-    )
-    headroom = validated["headroom_validation"]
-
-    assert headroom["status"] == "advisory"
-    assert headroom["advisory"] is True
-    assert headroom["authoritative"] is False
-    assert headroom["safe"] is False
-    assert validated["headroom_safe"] is False
-    assert validated["validation_confidence"] <= 0.42
-    assert headroom["after"]["simulation_backend"] == "python"
-    assert headroom["after"]["limitations"]
+    with pytest.raises(RuntimeError, match="native simulator unavailable"):
+        apply_headroom_validation(
+            audio,
+            48_000,
+            eq_settings,
+            {
+                "compressor": {"enabled": False},
+                "deesser": {"enabled": False},
+                "limiter": {"enabled": True, "careful_output_enabled": True},
+            },
+        )
 
 
 def test_28b_native_headroom_failure_preserves_a_bounded_cause(monkeypatch):
@@ -1444,20 +1467,13 @@ def test_28b_native_headroom_failure_preserves_a_bounded_cause(monkeypatch):
         "band_qs": [1.41] * 10,
     }
 
-    validated = apply_headroom_validation(
-        np.zeros(4096, dtype=np.float32),
-        48_000,
-        eq_settings,
-        {"compressor": {"enabled": False}, "deesser": {"enabled": False}},
-    )
-
-    assert validated["headroom_validation"]["native_simulation_failure"] == {
-        "kind": "runtime_error",
-        "message": "native simulator failed: test",
-    }
-    assert validated["headroom_validation"]["after"]["native_simulation_failure"][
-        "kind"
-    ] == "runtime_error"
+    with pytest.raises(RuntimeError, match="native simulator failed: test"):
+        apply_headroom_validation(
+            np.zeros(4096, dtype=np.float32),
+            48_000,
+            eq_settings,
+            {"compressor": {"enabled": False}, "deesser": {"enabled": False}},
+        )
 
 
 @pytest.mark.parametrize(
@@ -1501,7 +1517,7 @@ def test_headroom_safety_fails_closed_for_missing_metrics():
     assert headroom_module._is_headroom_safe({}) is False
 
 
-def test_29_fallback_cannot_report_risky_capture_as_safe(monkeypatch):
+def test_29_native_failure_cannot_report_risky_capture_as_safe(monkeypatch):
     monkeypatch.setattr(
         headroom_module,
         "_native_simulate",
@@ -1518,20 +1534,17 @@ def test_29_fallback_cannot_report_risky_capture_as_safe(monkeypatch):
         "band_qs": [1.41] * 10,
     }
 
-    validated = apply_headroom_validation(
-        audio,
-        48_000,
-        eq_settings,
-        {
-            "compressor": {"enabled": False},
-            "deesser": {"enabled": False},
-            "limiter": {"enabled": True, "careful_output_enabled": True},
-        },
-    )
-
-    assert validated["headroom_validation"]["status"] == "advisory"
-    assert validated["headroom_validation"]["safe"] is False
-    assert validated["headroom_gain_scale"] < 1.0
+    with pytest.raises(RuntimeError, match="native simulator unavailable"):
+        apply_headroom_validation(
+            audio,
+            48_000,
+            eq_settings,
+            {
+                "compressor": {"enabled": False},
+                "deesser": {"enabled": False},
+                "limiter": {"enabled": True, "careful_output_enabled": True},
+            },
+        )
 
 
 def test_voice_safe_flat_target_preserves_broad_speech_shape():

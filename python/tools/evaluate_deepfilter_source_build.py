@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+
+from release_provenance import sha256_file as _sha256
 
 import numpy as np
 from scipy.io import wavfile
@@ -35,11 +36,6 @@ SEGMENTS = (
 )
 MODELS = (("ll", 480), ("standard", 1_440))
 P99_GATE_MS = 10.0
-
-
-def _sha256(path: Path) -> str:
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _relative(path: Path) -> str:

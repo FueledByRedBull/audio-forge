@@ -15,6 +15,7 @@ from release_provenance import sha256_file as _sha256
 import numpy as np
 from mic_eq import analyze_vad_probabilities
 from mic_eq.analysis import auto_eq
+from mic_eq.analysis.auto_eq_parts.response import _predict_eq_response
 from mic_eq.analysis.auto_eq_parts.constants import (
     GLOBAL_CAPTURE_CONFIDENCE_THRESHOLD,
     LOCAL_ABSTENTION_CONFIDENCE_THRESHOLD,
@@ -165,7 +166,7 @@ def _solve(
 
 
 def _response(result: dict[str, Any], frequencies: np.ndarray) -> np.ndarray:
-    return auto_eq._predict_eq_response(
+    return _predict_eq_response(
         frequencies,
         result["pre_abstention_band_gains"],
         result["band_qs"],

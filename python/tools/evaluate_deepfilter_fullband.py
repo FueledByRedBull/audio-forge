@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any, cast
 from release_provenance import sha256_file as _sha256
 
+from _eval_common import amplitude_ratio_db as _db_ratio, percentile_or_zero as _percentile
+
 import numpy as np
 from scipy.signal import stft, welch
 
@@ -110,16 +112,6 @@ def _manifest_audio(
 
 def _rms(audio: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.square(audio, dtype=np.float64)) + 1e-15))
-
-
-def _db_ratio(numerator: float, denominator: float) -> float:
-    return 20.0 * math.log10(max(numerator, 1e-15) / max(denominator, 1e-15))
-
-
-def _percentile(values: list[float], percentile: float) -> float:
-    if not values:
-        return 0.0
-    return float(np.percentile(np.asarray(values, dtype=np.float64), percentile))
 
 
 def _si_sdr(reference: np.ndarray, estimate: np.ndarray) -> float:
@@ -841,6 +833,7 @@ def evaluate(
         )
     tracked_source_paths = (
         Path(__file__).resolve(),
+        REPO_ROOT / "python/tools/_eval_common.py",
         REPO_ROOT / "rust-core/src/bin/deepfilter_benchmark.rs",
         REPO_ROOT / "rust-core/src/dsp/deepfilter_ffi.rs",
     )

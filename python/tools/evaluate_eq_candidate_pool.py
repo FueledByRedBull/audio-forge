@@ -29,7 +29,7 @@ from mic_eq.analysis.auto_eq_parts.dynamic_bands import (
     _estimate_q_from_residual,
     _select_dynamic_band_layout,
 )
-from mic_eq.analysis.auto_eq_parts.response import FILTER_PEAK
+from mic_eq.analysis.auto_eq_parts.response import FILTER_PEAK, _predict_eq_response
 
 CASES = (
     ("bassy", "broadcast"),
@@ -146,7 +146,7 @@ def _candidate_pool_selector(
         )
         basis = np.column_stack(
             [
-                auto_eq._predict_eq_response(
+                _predict_eq_response(
                     dense_freqs,
                     [1.0],
                     [candidate_q[index]],
@@ -287,7 +287,7 @@ def _error(
 ) -> float:
     voice = (freqs >= 100.0) & (freqs <= 8000.0)
     normalized = measured - float(np.mean(measured[voice]))
-    response = auto_eq._predict_eq_response(
+    response = _predict_eq_response(
         freqs,
         result["band_gains"],
         result["band_qs"],

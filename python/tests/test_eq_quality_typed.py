@@ -221,28 +221,3 @@ def test_typed_python_response_fallback_handles_notch_and_pass_filters(
     )
 
     np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1.0e-8)
-
-
-def test_headroom_fallback_uses_the_requested_high_center_coefficients() -> None:
-    from mic_eq.analysis.auto_eq_parts import headroom
-
-    actual_b, actual_a = headroom._biquad_coefficients(
-        "peaking", 21_000.0, 6.0, 1.2, 44_100.0
-    )
-    raw = response._biquad_coefficients(
-        6.0, 1.2, 21_000.0, "peak", 44_100.0
-    )
-    b0, b1, b2, a0, a1, a2 = raw
-
-    np.testing.assert_allclose(
-        actual_b,
-        np.asarray([b0, b1, b2]) / a0,
-        rtol=0.0,
-        atol=1.0e-14,
-    )
-    np.testing.assert_allclose(
-        actual_a,
-        np.asarray([1.0, a1 / a0, a2 / a0]),
-        rtol=0.0,
-        atol=1.0e-14,
-    )

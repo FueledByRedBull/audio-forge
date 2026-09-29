@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib
 import json
 import os
@@ -14,6 +13,8 @@ import sysconfig
 import tempfile
 from pathlib import Path
 from typing import Any
+
+from release_provenance import sha256_file as _sha256
 
 import numpy as np
 
@@ -76,11 +77,6 @@ SOFTWARE_GATE_NAMES = (
     "whole_clip_throughput_measured",
     "distinct_native_extensions",
 )
-
-
-def _sha256(path: Path) -> str:
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _portable_path(path: Path) -> str:

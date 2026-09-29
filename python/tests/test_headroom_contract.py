@@ -108,13 +108,22 @@ def test_full_chain_explicitly_unavailable_vad_does_not_require_model(
     assert np.isfinite(np.asarray(result["output_audio"], dtype=np.float32)).all()
 
 
-def test_typed_preview_rejects_inaccurate_fallback(monkeypatch):
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("full_chain", [False, True])
+def test_preview_requires_native_simulation(monkeypatch, typed, full_chain):
     monkeypatch.setattr(
         headroom, "_native_simulate", lambda *_: (None, {"message": "test unavailable"})
     )
     with pytest.raises(RuntimeError, match="requires native DSP simulation"):
         headroom.simulate_candidate_chain(
-            np.zeros(480, dtype=np.float32), 48_000, EQSettings().to_dict()
+            np.zeros(480, dtype=np.float32),
+            48_000,
+            EQSettings().to_dict() if typed else {
+                "band_freqs": [1000.0] * 10,
+                "band_gains": [0.0] * 10,
+                "band_qs": [1.41] * 10,
+            },
+            {"full_chain": full_chain},
         )
 
 

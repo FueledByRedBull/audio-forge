@@ -3478,36 +3478,6 @@ class MainWindow(QMainWindow):
             ),
         )
 
-    def _on_bypass_toggled(self, checked):
-        """Handle the legacy bypass signal while the mode combo is present."""
-        if self.__dict__.get("processing_mode_combo") is not None:
-            target = "bypass" if checked else "normal"
-            self._set_processing_mode(target, notify=True)
-            return
-        self.processor.set_bypass(checked)
-        self._queue_configuration_snapshot()
-        self.status_bar.showMessage(
-            "Voice effects bypassed; input conditioning and configured output protection remain"
-            if checked
-            else "Processing active"
-        )
-
-    def _on_raw_monitor_toggled(self, checked):
-        """Handle the legacy raw-monitor signal while preserving bypass state."""
-        if self.__dict__.get("processing_mode_combo") is not None:
-            target = "raw" if checked else (
-                "bypass" if self._processing_mode() == "bypass" else "normal"
-            )
-            self._set_processing_mode(target, notify=True)
-            return
-        self.processor.set_raw_monitor_enabled(checked)
-        self._queue_configuration_snapshot()
-        self.status_bar.showMessage(
-            "Raw monitor enabled for this session; it is not stored in presets"
-            if checked
-            else "Raw monitor disabled"
-        )
-
     def _on_rnnoise_toggled(self, checked):
         """Handle RNNoise toggle."""
         self.processor.set_rnnoise_enabled(checked)

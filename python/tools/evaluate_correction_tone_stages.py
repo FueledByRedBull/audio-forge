@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, TypeAlias
 from release_provenance import sha256_file as _sha256
 
+from _eval_common import percentile_or_none as _percentile
+
 import numpy as np
 
 from mic_eq import eq_magnitude_response_v2
@@ -383,10 +385,6 @@ def _render_case(
     }
 
 
-def _percentile(values: list[float], percentile: float) -> float | None:
-    return float(np.percentile(values, percentile)) if values else None
-
-
 def _aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     incumbent_rtfs = [float(row["render"]["incumbent_realtime_factor"]) for row in rows]
     candidate_rtfs = [float(row["render"]["candidate_realtime_factor"]) for row in rows]
@@ -449,6 +447,7 @@ def _gate(aggregate: dict[str, Any]) -> dict[str, bool]:
 def _source_hashes() -> dict[str, str]:
     paths = (
         "python/tools/evaluate_correction_tone_stages.py",
+        "python/tools/_eval_common.py",
         "python/mic_eq/analysis/wav_io.py",
         "python/mic_eq/config_parts/settings.py",
         "rust-core/src/dsp/eq.rs",

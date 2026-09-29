@@ -828,6 +828,63 @@ def test_semgrep_scan_includes_untracked_source_and_excludes_generated_reports(
         assert secret_pattern in exclusions
 
 
+def test_semgrep_publishes_windows_file_uris_without_changing_findings(
+    tmp_path, monkeypatch,
+):
+    source_uri = r"D:\\a\\audio-forge\\audio-forge\\python\\tools\\example.py"
+    trace_uri = r"C:\work space\café#100%.py"
+    payload = {
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {"name": "Semgrep"}},
+            "results": [{
+                "ruleId": "example-rule",
+                "level": "warning",
+                "message": {"text": source_uri},
+                "locations": [{"physicalLocation": {
+                    "artifactLocation": {"uri": source_uri, "uriBaseId": "%SRCROOT%"},
+                    "region": {"startLine": 42},
+                }}],
+                "relatedLocations": [{"physicalLocation": {
+                    "artifactLocation": {"uri": trace_uri},
+                }}],
+                "partialFingerprints": {"matchBasedId/v1": "original-fingerprint"},
+                "suppressions": [{"kind": "inSource", "status": "accepted"}],
+            }],
+            "artifacts": [
+                {"location": {"uri": r"\\server\share\source file.py"}},
+                {"location": {"uri": "file:///D:/already%20encoded.py"}},
+                {"location": {"uri": "https://example.com/source.py"}},
+                {"location": {"uri": "python/relative.py"}},
+            ],
+        }],
+    }
+    output = tmp_path / "published.sarif"
+    monkeypatch.setattr(run_semgrep, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(run_semgrep, "_scan_command", lambda path: ["semgrep"])
+    monkeypatch.setattr(sys, "argv", ["run_semgrep.py", "--sarif", str(output)])
+
+    def scan(command, *, cwd, env, check):
+        assert cwd == tmp_path
+        (cwd / ".semgrep-results.sarif").write_text(json.dumps(payload), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(run_semgrep.subprocess, "run", scan)
+    assert run_semgrep.main() == 0
+    result = payload["runs"][0]["results"][0]
+    result["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] = (
+        "file:///D:/a/audio-forge/audio-forge/python/tools/example.py"
+    )
+    result["relatedLocations"][0]["physicalLocation"]["artifactLocation"]["uri"] = (
+        "file:///C:/work%20space/caf%C3%A9%23100%25.py"
+    )
+    payload["runs"][0]["artifacts"][0]["location"]["uri"] = (
+        "file://server/share/source%20file.py"
+    )
+    assert json.loads(output.read_text(encoding="utf-8")) == payload
+    assert not (tmp_path / ".semgrep-results.sarif").exists()
+
+
 def test_cpython313_offline_imports_work_without_ssl(tmp_path):
     if sys.version_info < (3, 13):
         pytest.skip("portable runtime is CPython 3.13+")

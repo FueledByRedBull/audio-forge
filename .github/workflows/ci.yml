@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: ["master", "fix/semgrep-code-scanning-upload"]
+    branches: ["master"]
   pull_request:
 
 permissions:

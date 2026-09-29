@@ -146,7 +146,7 @@ Run the release validation checks:
 .\.venv\Scripts\python.exe -m pyright
 .\.venv\Scripts\python.exe -m pytest python/tests -q
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-102274
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py
@@ -227,6 +227,12 @@ Candidate and promotion:
   audit ignores only its two reviewed unmaintained-crate notices
   (`RUSTSEC-2024-0436` and `RUSTSEC-2024-0370`); vulnerability findings remain
   release blockers.
+- The development-dependency audit ignores only CVE-2026-102274
+  (GHSA-w6j9-cwv2-h6wq, a PyJWT denial of service when parsing a malformed JWK
+  Set). Every current Semgrep release pins `pyjwt~=2.13.0`, so the fixed 2.14.0
+  cannot be locked. PyJWT is not a runtime dependency and the offline Semgrep
+  scan parses no JWK Sets. Remove the ignore as soon as Semgrep permits
+  `pyjwt>=2.14.0`; the runtime audit has no ignores.
 - Obtain CPU-only ONNX Runtime and model files from the exact upstream
   package/blob identities in `release-assets.json`. Build `df.dll` with the
   pinned recipe and retain its per-build attestation; matching source and

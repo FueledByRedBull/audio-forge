@@ -351,8 +351,8 @@ class CompressorPanel(QWidget):
 
         # Info label
         info_label = QLabel(
-            "Limiter uses lookahead and instant gain reduction\n"
-            "to catch transients before final output."
+            "Limiter looks ahead 0.5 ms and ramps its gain down\n"
+            "before transients reach the final output."
         )
         info_label.setStyleSheet(INFO_LABEL_STYLE)
         info_label.setWordWrap(True)

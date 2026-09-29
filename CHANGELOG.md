@@ -13,6 +13,7 @@
 
 ### Calibration and EQ
 
+- Auto Voice Setup now changes gate and noise-suppression settings less often (4 of 66 evaluation cases instead of 19), because candidates are scored through the updated compressor; every safety and speech-preservation gate still passes.
 - Audition and apply one immutable merged EQ candidate; changing current settings invalidates it. Apply stays disabled when native headroom validation is unavailable.
 - Show EQ interaction warnings from each band's actual filter type, enabled state, and slope, and count enabled pass and notch filters as active.
 - Share one typed EQ parser across live and offline native paths, and return contiguous float32 arrays from native renders.

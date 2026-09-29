@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Sound and dynamics
+
+- Measure compressor presence from a real 2 kHz presence band instead of low-frequency energy, capture single-sample peaks at 48-192 kHz, and apply the attack and release settings in one gain smoother instead of two.
+- Make Adaptive Release's Base Release change the applied release, keep adaptive state when unrelated compressor controls change, and smooth manual makeup-gain edits instead of stepping them.
+- Ramp limiter gain across its 0.5 ms lookahead instead of applying an instant step; output true-peak overshoot remains zero.
+- Base the de-esser's voice reference on a separate 250-2000 Hz body band instead of subtracting overlapping band levels, and remove two abrupt detection steps.
+- Clear stereo alignment history across input gaps so stale audio cannot leak into mono output.
+- Calibrate compression by threshold only and keep the current settings when no candidate qualifies; a missed loudness target now blocks Apply. The expanded compressor search failed held-out qualification and stays disabled.
+
+### Calibration and EQ
+
+- Audition and apply one immutable merged EQ candidate; changing current settings invalidates it. Apply stays disabled when native headroom validation is unavailable.
+- Show EQ interaction warnings from each band's actual filter type, enabled state, and slope, and count enabled pass and notch filters as active.
+- Share one typed EQ parser across live and offline native paths, and return contiguous float32 arrays from native renders.
+
+### Devices, settings, and health
+
+- Recover only the selected input and output devices instead of falling back to defaults, surface resampler failures for safe recovery, and keep resampler buffers intact on reset.
+- Apply configuration while muted with synchronous rollback, and cancel captures without blocking the window.
+- Match VAD threshold controls to the engine's 0.30-0.70 range.
+- Validate current-schema presets strictly, keep exact values behind rounded controls, migrate a legacy startup preset name only when it is unique, and record every logical edit, including processing mode, in undo history.
+- Separate current health from cumulative history, show unavailable meters instead of stale values when stopped or failed, and skip redundant UI refreshes.
+- Include bounded correction and tone EQ data in diagnostics exports.
+
+### Packaging and CI
+
+- Verify downloaded runtime assets and attestations before replacing installed copies.
+- Upload Semgrep results to GitHub Code Scanning from trusted pushes with valid Windows file URIs.
+
 ## v1.13.0
 
 ### Calibration and comparison

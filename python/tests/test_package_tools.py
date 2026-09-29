@@ -179,6 +179,11 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     workflow = check_workflows.yaml.safe_load(
         (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
     )
+    triggers = workflow.get("on", workflow.get(True))
+    assert set(triggers) == {"push", "pull_request"}
+    assert triggers["push"] == {
+        "branches": ["master", "fix/semgrep-code-scanning-upload"],
+    }
     python_job = workflow["jobs"]["python"]
     assert python_job["permissions"] == {
         "contents": "read",
@@ -194,11 +199,45 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
         "sarif_file": "semgrep-results.sarif",
         "category": "semgrep",
     }
-    assert "github.event_name == 'push'" in upload["if"]
+    assert upload["if"] == (
+        "always() && github.event_name == 'push' && "
+        "hashFiles('semgrep-results.sarif') != ''"
+    )
+    artifact = next(
+        step
+        for step in python_job["steps"]
+        if step.get("name") == "Upload Semgrep SARIF"
+    )
+    assert artifact["uses"].startswith("actions/upload-artifact@")
+    assert artifact["if"] == "always() && hashFiles('semgrep-results.sarif') != ''"
+    assert artifact["with"]["path"] == "semgrep-results.sarif"
+    assert artifact["with"]["if-no-files-found"] == "error"
 
     errors: list[str] = []
     check_workflows._check_permissions("ci.yml", workflow, errors)
     assert errors == []
+
+
+@pytest.mark.parametrize(
+    ("scope", "permissions"),
+    [
+        ("top", {"contents": "write"}),
+        ("top", "write-all"),
+        ("python", {"contents": "read", "security-events": "write", "actions": "write"}),
+        ("python", "write-all"),
+        ("rust", {"contents": "write"}),
+        ("rust", "write-all"),
+    ],
+)
+def test_workflow_permission_checker_rejects_unapproved_writes(scope, permissions):
+    workflow = check_workflows.yaml.safe_load(
+        (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    )
+    target = workflow if scope == "top" else workflow["jobs"][scope]
+    target["permissions"] = permissions
+    errors: list[str] = []
+    check_workflows._check_permissions("ci.yml", workflow, errors)
+    assert errors
 
 
 def test_build_script_propagates_pyinstaller_failure_code():

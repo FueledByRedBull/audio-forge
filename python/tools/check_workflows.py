@@ -100,8 +100,9 @@ def _check_permissions(
                     f"{name}: assemble must have only actions: read and contents: read"
                 )
             continue
-        if isinstance(permissions, dict) and any(
-            access == "write" for access in permissions.values()
+        if permissions == "write-all" or (
+            isinstance(permissions, dict)
+            and any(access == "write" for access in permissions.values())
         ):
             errors.append(f"{name}: job {job_name} must not request write permission")
 

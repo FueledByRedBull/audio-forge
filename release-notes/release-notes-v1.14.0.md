@@ -42,6 +42,12 @@ for the complete change list.
 
 ## Validation and compatibility
 
+The release candidate at `804f728cd0591d9e30178e308661f72452a80739` passed CI
+and exact-artifact qualification, including portable startup, installer smoke
+and upgrade, payload and installer provenance, package smoke, and
+corresponding-source checks. Publication promotes those same validated bytes
+without rebuilding them.
+
 Before tagging, the existing objective evaluators were re-run on this source:
 automatic makeup, dynamics aliasing, limiter lookahead, processing order, voice
 preservation against 1.13.0, and joint gate/suppression tuning all pass their

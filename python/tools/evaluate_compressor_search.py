@@ -26,6 +26,17 @@ def _portable_path(path: Path) -> str:
     except ValueError:
         return resolved.name
 
+
+def _finite_float_or_none(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return result if np.isfinite(result) else None
+
+
 CONDITIONS = {"clean_48k", "noise_5db_48k", "noise_20db_48k", "quiet"}
 EQ_SETTINGS = {
     "band_freqs": [80, 160, 315, 630, 1250, 2500, 4000, 6300, 10000, 16000],
@@ -77,71 +88,131 @@ def evaluate(manifest_path: Path, limit: int) -> dict[str, Any]:
             target_p95_db=3.5,
             target_median_db=1.4,
             peak_cap_db=8.0,
+            allow_expanded_search=True,
         )
-        baseline = float(diagnostics["threshold_only_objective"])
-        candidate = float(diagnostics["total_objective"])
+        baseline = _finite_float_or_none(
+            diagnostics.get("threshold_only_objective")
+        )
+        candidate = _finite_float_or_none(diagnostics.get("total_objective"))
         improvement = (
             (baseline - candidate) / baseline
-            if np.isfinite(baseline) and baseline > 0.0
-            else 0.0
+            if baseline is not None and candidate is not None and baseline > 0.0
+            else None
+        )
+        raw_candidate_count = diagnostics.get("candidate_count")
+        candidate_count = (
+            raw_candidate_count
+            if isinstance(raw_candidate_count, int)
+            and not isinstance(raw_candidate_count, bool)
+            and raw_candidate_count >= 0
+            else None
         )
         rows.append(
             {
                 "path": capture["path"],
                 "condition": capture["condition"],
+                "calibration_backend": diagnostics.get("backend"),
+                "expanded_search_status": diagnostics.get("expanded_search_status"),
                 "threshold_only_objective": baseline,
                 "expanded_objective": candidate,
                 "relative_improvement": improvement,
-                "expanded_selected": diagnostics["expanded_search_selected"],
-                "candidate_count": diagnostics["candidate_count"],
-                "search_runtime_ms": diagnostics["search_runtime_ms"],
+                "expanded_selected": diagnostics.get("expanded_search_selected"),
+                "candidate_count": candidate_count,
+                "search_runtime_ms": _finite_float_or_none(
+                    diagnostics.get("search_runtime_ms")
+                ),
                 "winner": {
                     key: settings[key]
                     for key in ("threshold_db", "ratio", "attack_ms", "release_ms")
                 },
-                "median_gain_reduction_db": diagnostics[
-                    "measured_median_gain_reduction_db"
-                ],
-                "p95_gain_reduction_db": diagnostics[
-                    "measured_p95_gain_reduction_db"
-                ],
-                "peak_gain_reduction_db": diagnostics[
-                    "measured_peak_gain_reduction_db"
-                ],
-                "pumping_score_db": diagnostics["compressor_pumping_score_db"],
-                "silence_output_gain_db": diagnostics["silence_output_gain_db"],
-                "pre_limiter_true_peak_headroom_db": diagnostics[
-                    "pre_limiter_true_peak_headroom_db"
-                ],
-                "peak_cap_passed": diagnostics["peak_cap_passed"],
-                "output_true_peak_db": diagnostics["output_true_peak_db"],
+                "median_gain_reduction_db": _finite_float_or_none(
+                    diagnostics.get("measured_median_gain_reduction_db")
+                ),
+                "p95_gain_reduction_db": _finite_float_or_none(
+                    diagnostics.get("measured_p95_gain_reduction_db")
+                ),
+                "peak_gain_reduction_db": _finite_float_or_none(
+                    diagnostics.get("measured_peak_gain_reduction_db")
+                ),
+                "pumping_score_db": _finite_float_or_none(
+                    diagnostics.get("compressor_pumping_score_db")
+                ),
+                "silence_level_delta_db": _finite_float_or_none(
+                    diagnostics.get("silence_level_delta_db")
+                ),
+                "pre_limiter_true_peak_headroom_db": _finite_float_or_none(
+                    diagnostics.get("pre_limiter_true_peak_headroom_db")
+                ),
+                "peak_cap_passed": diagnostics.get("peak_cap_passed"),
+                "output_true_peak_db": _finite_float_or_none(
+                    diagnostics.get("output_true_peak_db")
+                ),
             }
         )
 
-    improvements = np.asarray(
-        [row["relative_improvement"] for row in rows],
-        dtype=float,
+    measurable_improvements = [
+        row["relative_improvement"]
+        for row in rows
+        if row["relative_improvement"] is not None
+    ]
+    median_improvement = (
+        float(np.median(measurable_improvements))
+        if measurable_improvements
+        else None
     )
-    median_improvement = float(np.median(improvements))
-    improved_fraction = float(np.mean(improvements > 0.0))
+    improved_fraction = (
+        float(
+            sum(
+                row["relative_improvement"] is not None
+                and row["relative_improvement"] > 0.0
+                for row in rows
+            )
+            / len(rows)
+        )
+        if rows
+        else 0.0
+    )
+    measurable_rows = [
+        row
+        for row in rows
+        if row["calibration_backend"] == "rust"
+        and row["relative_improvement"] is not None
+        and row["candidate_count"] is not None
+        and row["median_gain_reduction_db"] is not None
+        and row["p95_gain_reduction_db"] is not None
+        and row["pumping_score_db"] is not None
+        and row["silence_level_delta_db"] is not None
+        and row["pre_limiter_true_peak_headroom_db"] is not None
+        and row["peak_cap_passed"] is not None
+        and row["output_true_peak_db"] is not None
+    ]
+    measurement_complete = len(measurable_rows) == len(rows)
     safety_passed = all(
-        row["peak_cap_passed"]
+        row["peak_cap_passed"] is True
+        and row["candidate_count"] is not None
         and row["candidate_count"] <= _COMPRESSOR_SEARCH_BUDGET
-        and np.isfinite(row["output_true_peak_db"])
+        and row["output_true_peak_db"] is not None
+        and row["median_gain_reduction_db"] is not None
+        and row["p95_gain_reduction_db"] is not None
+        and row["pumping_score_db"] is not None
         and abs(row["median_gain_reduction_db"] - 1.4) <= 1.5
         and abs(row["p95_gain_reduction_db"] - 3.5) <= 1.5
         and row["pumping_score_db"] <= 2.0
-        and row["silence_output_gain_db"] <= 0.25
+        and row["silence_level_delta_db"] is not None
+        and row["silence_level_delta_db"] <= 0.25
+        and row["pre_limiter_true_peak_headroom_db"] is not None
         and row["pre_limiter_true_peak_headroom_db"] >= 0.0
         for row in rows
     )
     retained = bool(
-        median_improvement >= 0.05
+        measurement_complete
+        and median_improvement is not None
+        and median_improvement >= 0.05
         and improved_fraction >= 0.60
         and safety_passed
     )
     return {
-        "schema_version": 1,
+        "schema_version": 3,
         "method": "held-out VAD corpus; exact 33-point threshold baseline versus bounded expanded search",
         "manifest": _portable_path(manifest_path),
         "manifest_sha256": _sha256(manifest_path),
@@ -153,16 +224,21 @@ def evaluate(manifest_path: Path, limit: int) -> dict[str, Any]:
             "median_gain_reduction_error_db_max": 1.5,
             "p95_gain_reduction_error_db_max": 1.5,
             "pumping_score_db_max": 2.0,
-            "silence_output_gain_db_max": 0.25,
+            "silence_level_delta_db_max": 0.25,
             "pre_limiter_true_peak_headroom_db_min": 0.0,
         },
         "median_relative_improvement": median_improvement,
         "improved_fraction": improved_fraction,
+        "measurement_complete": measurement_complete,
+        "measurable_capture_count": len(measurable_rows),
+        "unmeasurable_capture_count": len(rows) - len(measurable_rows),
         "safety_passed": safety_passed,
         "retained": retained,
         "rows": rows,
         "limitations": [
             "The held-out speech source is isolated spoken digits, not long-form narration.",
+            "The adaptive incumbent keeps Base Release fixed at 80 ms; the expanded "
+            "release_ms axis is inactive, so this experiment does not qualify release tuning.",
             "Perceptual listening remains required before release.",
         ],
     }

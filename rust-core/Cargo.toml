@@ -27,9 +27,6 @@ nnnoiseless = { version = "0.5", default-features = false }
 pyo3 = "0.29"
 numpy = "0.29"
 
-# Array operations (not needed for FFI mode)
-# ndarray = { version = "0.15", optional = true }
-
 # Lock-free ring buffers
 ringbuf = "0.5.2"
 

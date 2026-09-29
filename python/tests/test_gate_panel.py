@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from unittest.mock import Mock
+
+import pytest
+
 from mic_eq.ui.gate_panel import GatePanel
 
 
@@ -52,6 +56,26 @@ def test_gate_panel_uses_calibrated_vad_default(qapp):
 
     assert panel.vad_threshold_slider.value() == 48
     assert panel.vad_threshold_spinbox.value() == 0.48
+
+
+def test_vad_threshold_controls_match_native_range_and_endpoint(qapp):
+    panel = GatePanel(_GateProcessor(vad_available=True))
+
+    assert panel.vad_threshold_slider.minimum() == 30
+    assert panel.vad_threshold_slider.maximum() == 70
+    assert panel.vad_threshold_spinbox.minimum() == pytest.approx(0.3)
+    assert panel.vad_threshold_spinbox.maximum() == pytest.approx(0.7)
+    panel.set_settings({"vad_threshold": 0.7})
+    assert panel.get_settings()["vad_threshold"] == pytest.approx(0.7)
+
+
+def test_bulk_gate_apply_propagates_vad_native_failure(qapp):
+    processor = _GateProcessor(vad_available=True)
+    processor.set_vad_threshold = Mock(side_effect=RuntimeError("VAD write failed"))
+    panel = GatePanel(processor)
+
+    with pytest.raises(RuntimeError, match="VAD write failed"):
+        panel.set_settings({"vad_threshold": 0.6})
 
 
 def test_gate_slider_and_spinbox_stay_synchronized(qapp):
@@ -120,11 +144,11 @@ def test_vad_only_displays_confidence_threshold_and_moves_marker(qapp):
     assert panel.auto_threshold_checkbox.text() == "Track Noise Floor"
     assert not panel.margin_spinbox.isEnabled()
 
-    panel.vad_threshold_spinbox.setValue(0.8)
+    panel.vad_threshold_spinbox.setValue(0.7)
     after = panel.confidence_meter.grab().toImage()
     assert before != after
-    assert panel.confidence_meter.threshold == 0.8
-    assert "VAD Threshold: 0.80" in panel.threshold_status_label.text()
+    assert panel.confidence_meter.threshold == 0.7
+    assert "VAD Threshold: 0.70" in panel.threshold_status_label.text()
 
     panel.gate_mode_combo.setCurrentIndex(1)
     assert panel.auto_threshold_checkbox.text() == "Auto Threshold"

@@ -390,7 +390,7 @@ fn simulate_eq_v2(
     diagnostics.set_item("algorithmic_latency_samples", 0)?;
     diagnostics.set_item("non_finite_output", non_finite_output)?;
     if return_output_audio {
-        diagnostics.set_item("output_audio", output)?;
+        diagnostics.set_item("output_audio", numpy::PyArray1::from_vec(py, output))?;
     }
     Ok(diagnostics.into_any().unbind())
 }

@@ -186,8 +186,10 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
     gain_rms = float(np.sqrt(np.mean(np.square(band_gains)))) if band_gains.size else 0.0
     headroom = eq_settings.get("headroom_validation") or {}
     headroom_safe = True
+    headroom_unavailable = False
     if isinstance(headroom, dict):
-        headroom_safe = bool(headroom.get("safe", True))
+        headroom_safe = bool(headroom.get("safe", False))
+        headroom_unavailable = headroom.get("status") == "unavailable"
 
     # Evaluate all criteria. Use tiered gating to reduce false rejections.
     hard_fail_reasons = []
@@ -203,7 +205,7 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
         hard_fail_reasons.append(f"clipped_gains ({clipped_gains} >= 6)")
     if gain_rms > 10.0:
         hard_fail_reasons.append(f"gain_rms ({gain_rms:.1f} > 10.0 dB)")
-    if not headroom_safe:
+    if not headroom_safe and not headroom_unavailable:
         hard_fail_reasons.append("headroom risk after downstream simulation")
 
     if peak_count < ANALYSIS_MIN_PEAK_COUNT:

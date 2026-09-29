@@ -28,18 +28,16 @@ from PyQt6.QtWidgets import (
     QScrollArea,
     QFrame,
     QTabWidget,
-    QAbstractButton,
-    QSpinBox,
-    QDoubleSpinBox,
     QSizePolicy,
     QSystemTrayIcon,
 )
-from PyQt6.QtCore import Qt, QTimer, QRect
+from PyQt6.QtCore import QEvent, Qt, QTimer, QRect
 from PyQt6.QtGui import QAction, QGuiApplication, QIcon
 import os
 import sys
 import json
 import logging
+import math
 from dataclasses import asdict
 from pathlib import Path
 
@@ -48,6 +46,7 @@ from .eq_panel import EQPanel
 from .compressor_panel import CompressorPanel
 from .deesser_panel import DeEsserPanel
 from .level_meter import LevelMeter
+from .health import RecentStreamHealth
 from .health import input_health_state as build_input_health_state
 from .health import output_health_state as build_output_health_state
 from .calibration_dialog import CalibrationDialog
@@ -87,9 +86,10 @@ from .layout_constants import (
 from .startup_presets import (
     STARTUP_BUILTIN_PREFIX,
     STARTUP_CUSTOM_PREFIX,
+    STARTUP_CUSTOM_FILE_PREFIX,
     normalize_startup_preset_id as _normalize_startup_preset_id,
     startup_builtin_id as _startup_builtin_id,
-    startup_custom_id as _startup_custom_id,
+    startup_custom_file_id as _startup_custom_file_id,
     startup_preset_display_name as _startup_preset_display_name,
 )
 from .theme import prefers_reduced_motion
@@ -125,6 +125,54 @@ from ..config import (
     legacy_latency_profile_key,
     LatencyCalibrationProfile,
 )
+
+
+def _startup_preset_selection(
+    preset_id: str,
+    custom_presets: list[tuple[str, Path]],
+) -> tuple[str, tuple[str, Path] | None]:
+    """Resolve custom startup IDs by filename and migrate older name IDs."""
+    normalized = _normalize_startup_preset_id(
+        preset_id, tuple(name for name, _filepath in custom_presets)
+    )
+    if normalized.startswith(STARTUP_CUSTOM_FILE_PREFIX):
+        identity = normalized[len(STARTUP_CUSTOM_FILE_PREFIX) :]
+        matches = [item for item in custom_presets if item[1].name == identity]
+        return normalized, matches[0] if len(matches) == 1 else None
+    if not normalized.startswith(STARTUP_CUSTOM_PREFIX):
+        return normalized, None
+
+    identity = normalized[len(STARTUP_CUSTOM_PREFIX) :]
+    matches = [item for item in custom_presets if item[0] == identity]
+    if len(matches) != 1:
+        return normalized, None
+    name, filepath = matches[0]
+    return _startup_custom_file_id(filepath.name), (name, filepath)
+
+
+def _route_custom_preset_selection(
+    preset_id: str,
+    custom_presets: list[tuple[str, Path]],
+) -> tuple[str, tuple[str, Path]] | None:
+    """Resolve route preset IDs, rejecting ambiguous legacy filename/name IDs."""
+    if preset_id.startswith(STARTUP_CUSTOM_FILE_PREFIX):
+        identity = preset_id[len(STARTUP_CUSTOM_FILE_PREFIX) :]
+        matches = [item for item in custom_presets if item[1].name == identity]
+    elif preset_id.startswith(STARTUP_CUSTOM_PREFIX):
+        identity = preset_id[len(STARTUP_CUSTOM_PREFIX) :]
+        matches = [
+            item
+            for item in custom_presets
+            if item[0] == identity or item[1].name == identity
+        ]
+    else:
+        return None
+
+    if len(matches) != 1:
+        return None
+    name, filepath = matches[0]
+    return _startup_custom_file_id(filepath.name), (name, filepath)
+
 
 # Enable debug logging
 DEBUG = False
@@ -227,6 +275,7 @@ class MainWindow(QMainWindow):
         self.current_preset_path = None
         self.current_preset_name = "Default"
         self.preset_modified = False
+        self._rnnoise_strength_exact = 1.0
         self._saved_preset_payload: str | None = None
         self._last_preset_identity_persisted = True
         self._temporary_mute_reasons: set[str] = set()
@@ -249,6 +298,7 @@ class MainWindow(QMainWindow):
         self._undo_auto_eq_button = None
         self._calibration_dialog_open = False
         self._stream_recovery = StreamRecoveryManager()
+        self._stream_health = RecentStreamHealth()
         self._last_backend_warning = None
         self._last_output_underrun_total = 0
         self._last_input_clip_event_count = 0
@@ -313,7 +363,8 @@ class MainWindow(QMainWindow):
         # Meter update timer (60 FPS)
         self.meter_timer = QTimer(self)
         self.meter_timer.timeout.connect(self._update_meters)
-        self.meter_timer.start(100 if prefers_reduced_motion() else 16)
+        self.meter_timer.setInterval(100 if prefers_reduced_motion() else 16)
+        self._sync_meter_timer()
 
         # Slower diagnostics/recovery service timer.
         self.diagnostics_timer = QTimer(self)
@@ -602,7 +653,8 @@ class MainWindow(QMainWindow):
         self.processing_mode_combo.setMinimumWidth(128)
         self.processing_mode_combo.setToolTip(
             "Normal applies the voice chain. Bypass keeps input conditioning and output protection. "
-            "Raw Monitor skips input filtering and the voice chain for diagnostics."
+            "Raw Monitor skips input filtering and the voice chain for diagnostics; it is session-only "
+            "and is not stored in presets."
         )
         bind_label(
             processing_mode_label,
@@ -1017,9 +1069,11 @@ class MainWindow(QMainWindow):
         return group
 
     def _set_health_chip(self, label: QLabel, text: str, state: str) -> None:
-        label.setText(text)
-        label.setStyleSheet(status_chip_style(state))
-        label.setProperty("health_state", state)
+        if label.text() != text:
+            label.setText(text)
+        if label.property("health_state") != state:
+            label.setStyleSheet(status_chip_style(state))
+            label.setProperty("health_state", state)
 
     def _reset_health_labels(self) -> None:
         self._set_health_chip(self.health_summary_label, "Health: --", "idle")
@@ -1033,8 +1087,10 @@ class MainWindow(QMainWindow):
         self._set_health_chip(self.dropped_label, "Drops: --", "idle")
         self._set_health_chip(self.backend_diag_label, "Backend: --", "idle")
         self._set_health_chip(self.recovery_diag_label, "Recovery: --", "idle")
-        self.dropped_label.setToolTip(DROPPED_DIAGNOSTICS_TOOLTIP)
-        self.dropped_label.setAccessibleDescription("")
+        if self.dropped_label.toolTip() != DROPPED_DIAGNOSTICS_TOOLTIP:
+            self.dropped_label.setToolTip(DROPPED_DIAGNOSTICS_TOOLTIP)
+        if self.dropped_label.accessibleDescription():
+            self.dropped_label.setAccessibleDescription("")
 
     @staticmethod
     def _diag_token(label: str, value) -> str | None:
@@ -1134,7 +1190,7 @@ class MainWindow(QMainWindow):
                     "Voice effects bypassed; input conditioning and configured "
                     "output protection remain"
                 ),
-                "raw": "Raw monitor enabled - skipping pre-filter and DSP chain",
+                "raw": "Raw monitor enabled for this session; it is not stored in presets",
             }[target]
             self.status_bar.showMessage(message)
         update_summary = getattr(self, "_update_session_summary", None)
@@ -1155,6 +1211,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"{error}; previous mode restored", 6000)
         else:
             self.set_temporary_output_mute(False, "processing_mode_error")
+            self._queue_configuration_snapshot()
 
     def _apply_output_mute(self) -> None:
         """Apply user and temporary mute state without either one clearing the other."""
@@ -1296,12 +1353,13 @@ class MainWindow(QMainWindow):
         self.current_preset_description = preset.description
         self.current_preset_path = path
         self._saved_preset_payload = self._preset_payload(preset)
+        self._saved_processing_mode = "bypass" if preset.bypass else "normal"
         if persist_last_used:
             if preset_id is not None:
                 self.config.last_preset = preset_id
             elif path is not None:
                 self.config.last_preset = str(path)
-        self._set_preset_modified(False)
+        self._set_preset_modified()
 
     @staticmethod
     def _preset_payload(preset: Preset) -> str:
@@ -1326,6 +1384,8 @@ class MainWindow(QMainWindow):
                     modified = (
                         self._preset_payload(self._get_current_preset())
                         != saved_payload
+                        or self._processing_mode()
+                        != self.__dict__.get("_saved_processing_mode", "normal")
                     )
                 except (PresetValidationError, TypeError, ValueError):
                     modified = True
@@ -1969,7 +2029,14 @@ class MainWindow(QMainWindow):
             return
 
         if preset_id:
-            preset_name = _startup_preset_display_name(preset_id)
+            _normalized_id, custom_preset = _startup_preset_selection(
+                preset_id, list_presets()
+            )
+            preset_name = (
+                custom_preset[0]
+                if custom_preset is not None
+                else _startup_preset_display_name(preset_id)
+            )
             message = f"Startup preset set to {preset_name}"
         else:
             message = "Startup preset set to Last Used"
@@ -1992,14 +2059,13 @@ class MainWindow(QMainWindow):
             action.deleteLater()
         self._startup_custom_actions.clear()
 
-        custom_names = tuple(name for name, _filepath in custom_presets)
-        startup_preset_id = _normalize_startup_preset_id(
-            self.config.startup_preset, custom_names
+        startup_preset_id, _custom_preset = _startup_preset_selection(
+            self.config.startup_preset, custom_presets
         )
-        for name, _filepath in custom_presets:
+        for name, filepath in custom_presets:
             action = QAction(name, self)
             action.setCheckable(True)
-            preset_id = _startup_custom_id(name)
+            preset_id = _startup_custom_file_id(filepath.name)
             action.setData(preset_id)
             action.triggered.connect(
                 lambda _checked, item_id=preset_id: self._set_startup_preset(item_id)
@@ -2118,8 +2184,16 @@ class MainWindow(QMainWindow):
             )
             return
         self._update_device_preset_menu()
+        _normalized_id, custom_preset = _startup_preset_selection(
+            preset_id, list_presets()
+        )
+        preset_name = (
+            custom_preset[0]
+            if custom_preset is not None
+            else _startup_preset_display_name(preset_id)
+        )
         self.status_bar.showMessage(
-            f"Bound {_startup_preset_display_name(preset_id)} to this device route",
+            f"Bound {preset_name} to this device route",
             5000,
         )
 
@@ -2155,7 +2229,7 @@ class MainWindow(QMainWindow):
         if custom_presets:
             self._device_custom_separator = self._device_preset_menu.addSeparator()
         for name, filepath in custom_presets:
-            preset_id = _startup_custom_id(filepath.name)
+            preset_id = _startup_custom_file_id(filepath.name)
             action = QAction(name, self)
             action.setCheckable(True)
             action.setData(preset_id)
@@ -2178,7 +2252,12 @@ class MainWindow(QMainWindow):
             else None
         )
         selected_id = binding.preset_id if binding is not None else ""
-        self._clear_route_preset_action.setChecked(not selected_id)
+        if selected_id.startswith(
+            (STARTUP_CUSTOM_PREFIX, STARTUP_CUSTOM_FILE_PREFIX)
+        ):
+            selection = _route_custom_preset_selection(selected_id, list_presets())
+            selected_id = selection[0] if selection is not None else ""
+        self._clear_route_preset_action.setChecked(binding is None)
         self._clear_route_preset_action.setEnabled(route_key is not None)
         for preset_id, action in self._device_preset_actions.items():
             action.setChecked(preset_id == selected_id)
@@ -2191,17 +2270,14 @@ class MainWindow(QMainWindow):
             if preset is None:
                 return False
             return self._apply_preset(preset, preset_key=key, persist_last_used=False)
-        if not preset_id.startswith(STARTUP_CUSTOM_PREFIX):
+        if not preset_id.startswith(
+            (STARTUP_CUSTOM_PREFIX, STARTUP_CUSTOM_FILE_PREFIX)
+        ):
             return False
-        custom_id = preset_id[len(STARTUP_CUSTOM_PREFIX) :]
-        candidates = [
-            (name, filepath)
-            for name, filepath in list_presets()
-            if filepath.name == custom_id or name == custom_id
-        ]
-        if len(candidates) != 1:
+        selection = _route_custom_preset_selection(preset_id, list_presets())
+        if selection is None:
             return False
-        _name, filepath = candidates[0]
+        _normalized_id, (_name, filepath) = selection
         preset = load_preset(filepath)
         return self._apply_preset(
             preset, preset_path=filepath, persist_last_used=False
@@ -2222,8 +2298,22 @@ class MainWindow(QMainWindow):
             logger.warning("Failed to apply route preset", exc_info=True)
             loaded = False
         if loaded:
+            selection = _route_custom_preset_selection(
+                binding.preset_id, list_presets()
+            )
+            preset_name = (
+                selection[1][0]
+                if selection is not None
+                else _startup_preset_display_name(binding.preset_id)
+            )
+            if selection is not None and selection[0] != binding.preset_id:
+                self.config.device_preset_bindings[route_key] = DevicePresetBinding(
+                    preset_id=selection[0], provenance=binding.provenance
+                )
+                if not self._save_config_safely():
+                    self.config.device_preset_bindings[route_key] = binding
             self.status_bar.showMessage(
-                f"Route preset: {_startup_preset_display_name(binding.preset_id)}",
+                f"Route preset: {preset_name}",
                 5000,
             )
         else:
@@ -2647,14 +2737,17 @@ class MainWindow(QMainWindow):
         # Check startup preset first
         if self.config.startup_preset:
             custom_presets = list_presets()
-            preset_id = _normalize_startup_preset_id(
-                self.config.startup_preset,
-                tuple(name for name, _filepath in custom_presets),
+            preset_id, custom_startup_preset = _startup_preset_selection(
+                self.config.startup_preset, custom_presets
             )
             if preset_id != self.config.startup_preset:
                 self.config.startup_preset = preset_id
                 config_dirty = True
-            preset_name = _startup_preset_display_name(preset_id)
+            preset_name = (
+                custom_startup_preset[0]
+                if custom_startup_preset is not None
+                else _startup_preset_display_name(preset_id)
+            )
             # Try built-in presets
             if preset_id.startswith(STARTUP_BUILTIN_PREFIX):
                 preset_key = preset_id[len(STARTUP_BUILTIN_PREFIX) :]
@@ -2668,31 +2761,31 @@ class MainWindow(QMainWindow):
                     if preset_loaded:
                         self.status_bar.showMessage(f"Startup preset: {preset_name}", 5000)
             # Try custom presets
-            elif preset_id.startswith(STARTUP_CUSTOM_PREFIX):
-                custom_name = preset_id[len(STARTUP_CUSTOM_PREFIX) :]
-                for name, filepath in custom_presets:
-                    if name == custom_name:
-                        try:
-                            preset = load_preset(filepath)
-                            preset_loaded = self._apply_preset(
-                                preset,
-                                preset_path=filepath,
-                                persist_last_used=False,
-                            )
-                            if preset_loaded:
-                                self.status_bar.showMessage(
-                                    f"Startup preset: {preset_name}", 5000
-                                )
-                        except Exception:
-                            logger.warning(
-                                "Failed to load startup preset %s",
-                                preset_name,
-                                exc_info=True,
-                            )
+            elif preset_id.startswith(
+                (STARTUP_CUSTOM_PREFIX, STARTUP_CUSTOM_FILE_PREFIX)
+            ):
+                if custom_startup_preset is not None:
+                    _custom_name, filepath = custom_startup_preset
+                    try:
+                        preset = load_preset(filepath)
+                        preset_loaded = self._apply_preset(
+                            preset,
+                            preset_path=filepath,
+                            persist_last_used=False,
+                        )
+                        if preset_loaded:
                             self.status_bar.showMessage(
-                                f"Failed to load startup preset: {preset_name}", 5000
+                                f"Startup preset: {preset_name}", 5000
                             )
-                        break
+                    except Exception:
+                        logger.warning(
+                            "Failed to load startup preset %s",
+                            preset_name,
+                            exc_info=True,
+                        )
+                        self.status_bar.showMessage(
+                            f"Failed to load startup preset: {preset_name}", 5000
+                        )
             # Try legacy unresolved custom display name.
             else:
                 for name, filepath in custom_presets:
@@ -2926,6 +3019,7 @@ class MainWindow(QMainWindow):
             self.refresh_btn.setEnabled(False)
             self._stream_recovery.mark_processing_started()
             self._update_session_summary()
+            self._sync_meter_timer()
             if DEBUG:
                 logger.debug("Processing started: %s", result)
         except Exception as e:
@@ -2965,6 +3059,9 @@ class MainWindow(QMainWindow):
         update_summary = getattr(self, "_update_session_summary", None)
         if callable(update_summary):
             update_summary()
+        sync_meters = getattr(self, "_sync_meter_timer", None)
+        if callable(sync_meters):
+            sync_meters()
 
     def _stop_processing(self):
         """Stop audio processing."""
@@ -2986,6 +3083,7 @@ class MainWindow(QMainWindow):
             self.output_combo.setEnabled(True)
             self.refresh_btn.setEnabled(True)
             self._stream_recovery.mark_processing_stopped()
+            self._sync_meter_timer()
             self._update_session_summary()
             if DEBUG:
                 logger.debug("Processing stopped")
@@ -3054,6 +3152,7 @@ class MainWindow(QMainWindow):
                 include_calibration=True
             )["noise_reference_reliability"],
             calibration_context_key=self._calibration_context_key(),
+            processing_mode=self._processing_mode(),
         )
         self._configuration_history.initialize(snapshot)
         self._current_value_provenance = dict(snapshot.to_preset().value_provenance)
@@ -3061,6 +3160,7 @@ class MainWindow(QMainWindow):
             self.current_preset_name = "Default"
             self.current_preset_path = None
             self._saved_preset_payload = self._preset_payload(preset)
+            self._saved_processing_mode = self._processing_mode()
             self.preset_modified = False
         self._history_ready = True
         self._sync_calibration_evidence()
@@ -3087,31 +3187,13 @@ class MainWindow(QMainWindow):
         self.eq_panel.configurationEditFinished.connect(
             self._end_configuration_transaction
         )
-        for slider in self.findChildren(QSlider):
-            slider.valueChanged.connect(self._queue_configuration_snapshot)
-        for spinbox in self.findChildren(QSpinBox):
-            spinbox.valueChanged.connect(self._queue_configuration_snapshot)
-        for spinbox in self.findChildren(QDoubleSpinBox):
-            spinbox.valueChanged.connect(self._queue_configuration_snapshot)
-        ignored_combos = (
-            getattr(self, "input_combo", None),
-            getattr(self, "output_combo", None),
-            getattr(self, "input_channel_mode_combo", None),
-            getattr(self, "input_cleanup_mode_combo", None),
-            getattr(self, "processing_mode_combo", None),
-        )
-        for combo in self.findChildren(QComboBox):
-            if combo in ignored_combos:
-                continue
-            combo.currentIndexChanged.connect(self._queue_configuration_snapshot)
-        ignored_buttons = (
-            getattr(self, "raw_monitor_checkbox", None),
-            getattr(self, "user_mute_checkbox", None),
-        )
-        for button in self.findChildren(QAbstractButton):
-            if button in ignored_buttons:
-                continue
-            button.toggled.connect(self._queue_configuration_snapshot)
+        for panel in (
+            self.eq_panel,
+            self.gate_panel,
+            self.deesser_panel,
+            self.compressor_panel,
+        ):
+            panel.configurationEdited.connect(self._queue_configuration_snapshot)
 
     def _begin_configuration_transaction(self) -> None:
         """Suppress intermediate history entries for a compound gesture."""
@@ -3173,6 +3255,7 @@ class MainWindow(QMainWindow):
                     include_calibration=True
                 )["noise_reference_reliability"],
                 calibration_context_key=self._calibration_context_key(),
+                processing_mode=self._processing_mode(),
             )
             recorded = self._configuration_history.record(snapshot)
         except (PresetValidationError, TypeError, ValueError) as error:
@@ -3210,6 +3293,7 @@ class MainWindow(QMainWindow):
                     and snapshot.calibration_context_key == self._calibration_context_key()
                     else 0.0
                 ),
+                processing_mode=snapshot.processing_mode,
             )
             self._set_preset_modified()
         finally:
@@ -3331,6 +3415,8 @@ class MainWindow(QMainWindow):
                 self._last_preset_identity_persisted = False
             self._set_preset_identity(preset, path=filepath, persist_last_used=persisted)
             message = f"Preset saved: {filepath.name}"
+            if self._processing_mode() == "raw":
+                message += "; Raw Monitor is session-only and was not stored in the preset"
             if not persisted:
                 message += "; could not remember it for the next launch"
             self.status_bar.showMessage(message, 6000 if not persisted else 3000)
@@ -3399,6 +3485,7 @@ class MainWindow(QMainWindow):
             self._set_processing_mode(target, notify=True)
             return
         self.processor.set_bypass(checked)
+        self._queue_configuration_snapshot()
         self.status_bar.showMessage(
             "Voice effects bypassed; input conditioning and configured output protection remain"
             if checked
@@ -3414,8 +3501,9 @@ class MainWindow(QMainWindow):
             self._set_processing_mode(target, notify=True)
             return
         self.processor.set_raw_monitor_enabled(checked)
+        self._queue_configuration_snapshot()
         self.status_bar.showMessage(
-            "Raw monitor enabled - skipping pre-filter and DSP chain"
+            "Raw monitor enabled for this session; it is not stored in presets"
             if checked
             else "Raw monitor disabled"
         )
@@ -3423,12 +3511,15 @@ class MainWindow(QMainWindow):
     def _on_rnnoise_toggled(self, checked):
         """Handle RNNoise toggle."""
         self.processor.set_rnnoise_enabled(checked)
+        self._queue_configuration_snapshot()
 
     def _on_strength_changed(self, value: int):
         """Handle RNNoise strength slider change."""
         strength = value / 100.0  # Convert 0-100 to 0.0-1.0
+        self._rnnoise_strength_exact = strength
         self.strength_label.setText(f"{value}%")
         self.processor.set_rnnoise_strength(strength)
+        self._queue_configuration_snapshot()
 
     def _apply_noise_model(self, model_id: str) -> None:
         """Apply manual or calibrated selection without disguising a failed switch."""
@@ -3459,65 +3550,91 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Model Switch Failed", str(error))
         else:
             self.status_bar.showMessage(f"Switched to {self.model_combo.currentText()}")
+            self._queue_configuration_snapshot()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._sync_meter_timer()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._sync_meter_timer()
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._sync_meter_timer()
+
+    def _sync_meter_timer(self) -> None:
+        timer = self.__dict__.get("meter_timer")
+        if timer is None:
+            return
+        try:
+            running = self.processor.is_running()
+        except (AttributeError, OSError, RuntimeError):
+            running = False
+        if running and self.isVisible() and not self.isMinimized():
+            if not timer.isActive():
+                timer.start()
+        else:
+            timer.stop()
+            if not running:
+                self._invalidate_live_meters()
+
+    def _invalidate_live_meters(self) -> None:
+        if self.__dict__.get("_live_meters_invalidated"):
+            return
+        self.input_meter.set_unavailable()
+        self.output_meter.set_unavailable()
+        self.compressor_panel.update_gain_reduction(None)
+        self.compressor_panel.update_auto_makeup_meters(None, None)
+        self.compressor_panel.current_release_label.setText("--")
+        self.deesser_panel.update_gain_reduction(None)
+        self.gate_panel.update_vad_confidence(None)
+        self._live_meters_invalidated = True
 
     def _update_meters(self):
-        """Update level meters from processor (called by timer)."""
-        if self.__dict__.get("_hidden_to_tray") and self.isHidden():
-            return
-        if self.processor.is_running():
-            input_rms = self.processor.get_input_rms_db()
-            input_peak = self.processor.get_input_peak_db()
-            output_rms = self.processor.get_output_rms_db()
-            output_peak = self.processor.get_output_peak_db()
-            gr_db = self.processor.get_compressor_gain_reduction_db()
-            deesser_gr_db = self.processor.get_deesser_gain_reduction_db()
-
-            # Update meters
-            self.input_meter.set_levels(input_rms, input_peak)
-            self.output_meter.set_levels(output_rms, output_peak)
-            self.compressor_panel.update_gain_reduction(gr_db)
-            if hasattr(self, "deesser_panel"):
-                self.deesser_panel.update_gain_reduction(deesser_gr_db)
-
-            # Update compressor current release time
-            try:
-                self.compressor_panel._update_current_release()
-            except Exception:
-                pass
-
-            # Update auto makeup gain meters (if enabled)
-            try:
-                if hasattr(self, "compressor_panel"):
-                    auto_makeup_enabled = (
-                        self.processor.get_compressor_auto_makeup_enabled()
-                    )
-                    if auto_makeup_enabled and hasattr(
-                        self.compressor_panel, "update_auto_makeup_meters"
-                    ):
-                        current_lufs = self.processor.get_compressor_current_lufs()
-                        makeup_gain = (
-                            self.processor.get_compressor_current_makeup_gain()
-                        )
-                        self.compressor_panel.update_auto_makeup_meters(
-                            current_lufs, makeup_gain
-                        )
-            except Exception:
-                logger.debug("Auto makeup meter update error", exc_info=True)
-
-            # Update VAD confidence meter (if VAD is available)
-            try:
-                vad_prob = self.processor.get_vad_probability()
-                self.gate_panel.update_vad_confidence(vad_prob)
-            except (AttributeError, Exception):
-                # VAD not available in this build
-                pass
-
-        else:
+        """Refresh available live measurements; keep recovery on its own timer."""
+        try:
+            running = self.processor.is_running()
+        except (AttributeError, OSError, RuntimeError):
+            running = False
+        if not running:
+            self._invalidate_live_meters()
             self._last_backend_warning = None
             self._reset_health_labels()
+            return
+        if self.__dict__.get("_hidden_to_tray") and self.isHidden():
+            return
+        self._live_meters_invalidated = False
+
+        def reading(name: str) -> float | None:
+            try:
+                value = float(getattr(self.processor, name)())
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
+                return None
+            return value if math.isfinite(value) else None
+
+        self.input_meter.set_levels(reading("get_input_rms_db"), reading("get_input_peak_db"))
+        self.output_meter.set_levels(reading("get_output_rms_db"), reading("get_output_peak_db"))
+        self.compressor_panel.update_gain_reduction(reading("get_compressor_gain_reduction_db"))
+        self.deesser_panel.update_gain_reduction(reading("get_deesser_gain_reduction_db"))
+        self.compressor_panel._update_current_release()
+        try:
+            auto_makeup_enabled = self.processor.get_compressor_auto_makeup_enabled()
+        except (AttributeError, OSError, RuntimeError):
+            auto_makeup_enabled = False
+        self.compressor_panel.update_auto_makeup_meters(
+            reading("get_compressor_current_lufs") if auto_makeup_enabled else None,
+            reading("get_compressor_current_makeup_gain") if auto_makeup_enabled else None,
+        )
+        self.gate_panel.update_vad_confidence(reading("get_vad_probability"))
 
     def _update_diagnostics(self):
         """Update slower diagnostics and service recovery."""
+        sync_meters = getattr(self, "_sync_meter_timer", None)
+        if callable(sync_meters):
+            sync_meters()
         if not self.processor.is_running():
             self._stream_recovery.mark_processing_stopped()
             self._last_backend_warning = None
@@ -3533,16 +3650,30 @@ class MainWindow(QMainWindow):
             self._sync_processing_controls()
             return
 
-        diagnostics = self.processor.get_runtime_diagnostics()
-        input_rms = self.processor.get_input_rms_db()
-        output_rms = self.processor.get_output_rms_db()
-        output_buf = self.processor.get_output_buffer_samples()
-        latency_ms = self.processor.get_latency_ms()
-        dsp_time_ms = self.processor.get_dsp_time_smoothed_ms()
-        input_buf = self.processor.get_input_buffer_smoothed_samples()
-        rnnoise_buf = self.processor.get_buffer_smoothed_samples()
-        input_callback_age_ms = self.processor.get_input_callback_age_ms()
-        output_callback_age_ms = self.processor.get_output_callback_age_ms()
+        try:
+            diagnostics = self.processor.get_runtime_diagnostics()
+            input_rms = self.processor.get_input_rms_db()
+            output_rms = self.processor.get_output_rms_db()
+            output_buf = self.processor.get_output_buffer_samples()
+            latency_ms = self.processor.get_latency_ms()
+            dsp_time_ms = self.processor.get_dsp_time_smoothed_ms()
+            input_buf = self.processor.get_input_buffer_smoothed_samples()
+            rnnoise_buf = self.processor.get_buffer_smoothed_samples()
+            input_callback_age_ms = self.processor.get_input_callback_age_ms()
+            output_callback_age_ms = self.processor.get_output_callback_age_ms()
+            if not isinstance(diagnostics, dict) or not all(math.isfinite(value) for value in (
+                input_rms, output_rms, output_buf, latency_ms, dsp_time_ms,
+                input_buf, rnnoise_buf, input_callback_age_ms, output_callback_age_ms,
+            )):
+                raise ValueError("Invalid live telemetry")
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
+            self._reset_health_labels()
+            self._set_health_chip(self.health_summary_label, "Health: telemetry unavailable", "warn")
+            # Missing presentation data must not suppress native recovery service.
+            self._service_stream_recovery(
+                diagnostics={}, input_rms=float("nan"), output_rms=float("nan"), output_buf=0,
+            )
+            return
 
         self._update_diagnostic_labels(
             diagnostics=diagnostics,
@@ -3578,6 +3709,22 @@ class MainWindow(QMainWindow):
         output_callback_age_ms: int | None = None,
     ) -> None:
         """Update diagnostic status labels from a runtime diagnostic snapshot."""
+        if not hasattr(self, "_stream_health"):
+            self._stream_health = RecentStreamHealth()
+        try:
+            recent_events = self._stream_health.observe(diagnostics)
+        except ValueError:
+            self._reset_health_labels()
+            self._set_health_chip(self.recovery_diag_label, "Health data unavailable", "warn")
+            return
+        recovery_pending = False
+        for name in ("is_recovering", "is_recovery_requested"):
+            getter = getattr(getattr(self, "processor", None), name, None)
+            if callable(getter):
+                try:
+                    recovery_pending = recovery_pending or bool(getter())
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    recovery_pending = True
         self._set_health_chip(
             self.latency_label,
             f"Latency: ~{latency_ms:.0f}ms | DSP {dsp_time_ms:.1f}ms",
@@ -3647,9 +3794,6 @@ class MainWindow(QMainWindow):
             )
             or 0
         )
-        output_short_write_dropped = int(
-            diagnostics.get("output_short_write_dropped_samples", 0) or 0
-        )
         input_clip_count = int(diagnostics.get("clip_event_count", 0) or 0)
         previous_input_clip_count = int(
             getattr(self, "_last_input_clip_event_count", input_clip_count) or 0
@@ -3674,15 +3818,8 @@ class MainWindow(QMainWindow):
         )
         self._last_output_true_peak_event_count = output_true_peak_count
         gate_chatter_count = int(diagnostics.get("gate_chatter_event_count", 0) or 0)
-        previous_gate_chatter_count = int(
-            getattr(self, "_last_gate_chatter_event_count", gate_chatter_count) or 0
-        )
-        new_gate_chatter_observed = gate_chatter_count > previous_gate_chatter_count
-        self._last_gate_chatter_event_count = gate_chatter_count
+        new_gate_chatter_observed = "gate_chatter_event_count" in recent_events
         gate_auto_relax_active = bool(diagnostics.get("gate_auto_relax_active", False))
-        rt_overflows = diagnostics.get("rt_buffer_overflow_count", 0)
-        input_callback_errors = diagnostics.get("input_callback_error_count", 0)
-        output_callback_errors = diagnostics.get("output_callback_error_count", 0)
         rt_error_name = diagnostics.get("rt_error_name")
         rt_error_active = bool(rt_error_name and rt_error_name != "none")
         input_crest_db = diagnostics.get("input_crest_factor_db")
@@ -3852,15 +3989,10 @@ class MainWindow(QMainWindow):
         dropped_state = (
             "ok"
             if (
-                dropped == 0
+                not recent_events
+                and not recovery_pending
                 and underrun_streak == 0
                 and not new_underruns_observed
-                and lock_contention == 0
-                and non_finite == 0
-                and output_short_write_dropped == 0
-                and rt_overflows == 0
-                and input_callback_errors == 0
-                and output_callback_errors == 0
                 and not rt_error_active
                 and not new_input_clip_observed
                 and not new_output_clip_observed
@@ -3948,14 +4080,23 @@ class MainWindow(QMainWindow):
             if suppressed:
                 recovery_bits.append("SUPP")
             reason = diagnostics.get("last_restart_reason")
-            if reason:
+            recent_recovery = bool(recent_events & {
+                "stream_restart_count", "output_recovery_count", "output_recovery_event_count",
+                "input_backlog_recovery_count",
+            })
+            if recovery_pending:
+                recovery_bits.append("PENDING")
+            elif recent_recovery:
                 recovery_bits.append("RECENT")
             self._set_health_chip(
                 self.recovery_diag_label,
                 f"Recovery: {' '.join(recovery_bits)}",
                 "warn"
-                if restart_count or output_recovery_count or reason
+                if recovery_pending or recent_recovery
                 else ("info" if suppressed else "ok"),
+            )
+            self.recovery_diag_label.setToolTip(
+                f"Last recovery: {reason}" if reason else "No recovery recorded."
             )
         except Exception:
             logger.debug("Diagnostic label update failed", exc_info=True)
@@ -4041,12 +4182,12 @@ class MainWindow(QMainWindow):
                         err_msg = ""
                     if err_msg:
                         self.status_bar.showMessage(
-                            f"Auto-recovery failed: {err_msg}",
+                            f"Selected route unavailable; retrying: {err_msg}",
                             6000,
                         )
                     else:
                         self.status_bar.showMessage(
-                            "Auto-recovery failed",
+                            "Selected route unavailable; retrying recovery",
                             6000,
                         )
                 self._sync_processing_controls()
@@ -4177,7 +4318,7 @@ class MainWindow(QMainWindow):
             eq=eq_settings,
             rnnoise=RNNoiseSettings(
                 enabled=self.rnnoise_checkbox.isChecked(),
-                strength=self.strength_slider.value() / 100.0,
+                strength=float(getattr(self, "_rnnoise_strength_exact", 1.0)),
                 model=self.model_combo.currentData() or "rnnoise",
             ),
             deesser=DeEsserSettings(**deesser_settings),
@@ -4197,17 +4338,96 @@ class MainWindow(QMainWindow):
         self.model_combo.setCurrentIndex(index)
         self.model_combo.blockSignals(False)
         self._set_noise_suppression_latency_label(model)
-        self.gate_panel.set_settings(asdict(preset.gate))
+        gate_settings = asdict(preset.gate)
+        gate_apply = getattr(self.gate_panel, "apply_settings_synchronously", None)
+        if callable(gate_apply):
+            gate_apply(gate_settings)
+        else:
+            self.gate_panel.set_settings(gate_settings)
         self.eq_panel.set_settings(preset.eq.to_dict())
-        self.rnnoise_checkbox.setChecked(preset.rnnoise.enabled)
+        block_signals = getattr(self.rnnoise_checkbox, "blockSignals", None)
+        blocked = block_signals(True) if callable(block_signals) else None
+        try:
+            self.rnnoise_checkbox.setChecked(preset.rnnoise.enabled)
+        finally:
+            if callable(block_signals):
+                block_signals(blocked)
         self.processor.set_rnnoise_enabled(preset.rnnoise.enabled)
-        self.strength_slider.setValue(round(preset.rnnoise.strength * 100))
-        self._on_strength_changed(self.strength_slider.value())
-        self.deesser_panel.set_settings(asdict(preset.deesser))
-        self.compressor_panel.set_compressor_settings(asdict(preset.compressor))
-        self.compressor_panel.set_limiter_settings(asdict(preset.limiter))
+        self._rnnoise_strength_exact = float(preset.rnnoise.strength)
+        blocked = self.strength_slider.blockSignals(True)
+        try:
+            self.strength_slider.setValue(round(self._rnnoise_strength_exact * 100))
+        finally:
+            self.strength_slider.blockSignals(blocked)
+        self.strength_label.setText(f"{self.strength_slider.value()}%")
+        self.processor.set_rnnoise_strength(self._rnnoise_strength_exact)
+        deesser_settings = asdict(preset.deesser)
+        deesser_apply = getattr(self.deesser_panel, "apply_settings_synchronously", None)
+        if callable(deesser_apply):
+            deesser_apply(deesser_settings)
+        else:
+            self.deesser_panel.set_settings(deesser_settings)
+        compressor_settings = asdict(preset.compressor)
+        limiter_settings = asdict(preset.limiter)
+        dynamics_apply = getattr(
+            self.compressor_panel,
+            "apply_processing_settings_synchronously",
+            None,
+        )
+        if callable(dynamics_apply):
+            dynamics_apply(compressor_settings, limiter_settings)
+        else:
+            self.compressor_panel.set_compressor_settings(compressor_settings)
+            self.compressor_panel.set_limiter_settings(limiter_settings)
         self._set_processing_mode("bypass" if preset.bypass else "normal")
         self._current_value_provenance = dict(preset.value_provenance)
+
+    def _cancel_processing_configuration_writes(self) -> None:
+        """Discard interactive writes superseded by the bulk configuration."""
+        limiters = []
+        for band in getattr(self.eq_panel, "band_sliders", ()):
+            for name in ("_rate_limiter", "_frequency_rate_limiter"):
+                limiter = getattr(band, name, None)
+                if limiter is not None:
+                    limiters.append(limiter)
+        panel_limiters = (
+            (self.eq_panel, ("_curve_rate_limiter",)),
+            (self.gate_panel, ("_rate_limiter",)),
+            (self.deesser_panel, ("_rate_limiter",)),
+            (self.compressor_panel, ("_comp_rate_limiter", "_limiter_rate_limiter")),
+        )
+        for panel, names in panel_limiters:
+            limiters.extend(
+                limiter
+                for name in names
+                if (limiter := getattr(panel, name, None)) is not None
+            )
+        for limiter in limiters:
+            limiter.cancel()
+
+    def _flush_eq_configuration_writes(self) -> None:
+        """Drain compatible queued writes while configuration mute is held."""
+        for band in getattr(self.eq_panel, "band_sliders", ()):
+            for name in ("_rate_limiter", "_frequency_rate_limiter"):
+                limiter = getattr(band, name, None)
+                if limiter is not None:
+                    limiter.flush()
+        curve_limiter = getattr(self.eq_panel, "_curve_rate_limiter", None)
+        if curve_limiter is not None:
+            curve_limiter.flush()
+
+    def _flush_processing_configuration_writes(self) -> None:
+        """Finish any compatibility-path panel writes before unmuting."""
+        self._flush_eq_configuration_writes()
+        for panel, names in (
+            (self.gate_panel, ("_rate_limiter",)),
+            (self.deesser_panel, ("_rate_limiter",)),
+            (self.compressor_panel, ("_comp_rate_limiter", "_limiter_rate_limiter")),
+        ):
+            for name in names:
+                limiter = getattr(panel, name, None)
+                if limiter is not None:
+                    limiter.flush()
 
     def apply_processing_configuration(
         self,
@@ -4247,6 +4467,7 @@ class MainWindow(QMainWindow):
                 self.processor.stop()
                 raise RuntimeError("Audio stopped because configuration mute failed")
             try:
+                self._cancel_processing_configuration_writes()
                 self._write_processing_configuration(candidate)
                 if processing_mode is not None:
                     self._set_processing_mode(processing_mode)
@@ -4261,11 +4482,14 @@ class MainWindow(QMainWindow):
                         self._sync_calibration_evidence(force_reset=True)
                     finally:
                         self._history_replaying = True
+                self._flush_processing_configuration_writes()
             except Exception as error:
                 try:
+                    self._cancel_processing_configuration_writes()
                     self._write_processing_configuration(previous)
                     self._set_processing_mode(previous_mode)
                     self.compressor_panel.set_compressor_settings(previous_compressor)
+                    self._flush_processing_configuration_writes()
                 except Exception as restore_error:
                     release_mute = False
                     try:
@@ -4392,9 +4616,12 @@ class MainWindow(QMainWindow):
         self._set_preset_modified()
         if not self.preset_modified:
             return True
+        question = "Save your sound changes before continuing?"
+        if self._processing_mode() == "raw":
+            question += "\nRaw Monitor is session-only and will not be restored from a preset."
         reply = QMessageBox.question(
             self, "Unsaved Sound Changes",
-            "Save your sound changes before continuing?",
+            question,
             QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
             | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Save,

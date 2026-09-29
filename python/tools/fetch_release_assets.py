@@ -53,13 +53,6 @@ def _default_asset_source_tag() -> str:
     return tag
 
 
-def _manifest_entries() -> dict[str, dict[str, object]]:
-    try:
-        return load_asset_manifest(MANIFEST_PATH).entries
-    except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
-
-
 def _manifest_assets(
     manifest: AssetManifest, *, only_cpu_runtime: bool
 ) -> list[AssetPlan]:
@@ -365,7 +358,7 @@ def _build_source_asset(
     attestation_relative = Path(raw_attestation.replace("\\", "/"))
     if attestation_relative.is_absolute() or ".." in attestation_relative.parts:
         raise RuntimeError("source-build attestation_path must stay inside the repository")
-    attestation = REPO_ROOT / attestation_relative
+    attestation = temporary / attestation_relative
     output = temporary / str(asset["name"])
     output.parent.mkdir(parents=True, exist_ok=True)
     powershell = shutil.which("pwsh") or shutil.which("powershell")
@@ -402,6 +395,28 @@ def _atomic_copy(source: Path, destination: Path) -> None:
     finally:
         if staged.exists():
             staged.unlink()
+
+
+def _install_verified_asset(
+    source: Path, destination: Path, *,
+    attestation: tuple[Path, Path] | None = None,
+) -> None:
+    relative = destination.relative_to(REPO_ROOT).as_posix()
+    staged_paths = {relative: source}
+    if attestation is not None:
+        receipt, installed_receipt = attestation
+        staged_paths[installed_receipt.relative_to(REPO_ROOT).as_posix()] = receipt
+    errors = verify_assets(
+        MANIFEST_PATH, selected_paths={relative}, staged_paths=staged_paths
+    )
+    if errors:
+        raise RuntimeError("Staged asset failed verification:\n  " + "\n  ".join(errors))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_copy(source, destination)
+    if attestation is not None:
+        receipt, installed_receipt = attestation
+        installed_receipt.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_copy(receipt, installed_receipt)
 
 
 def main() -> int:
@@ -490,8 +505,13 @@ def main() -> int:
             source_build_entry = _source_build_entry(asset, manifest_entries)
             if source_build_entry is not None:
                 source = _build_source_asset(asset, source_build_entry, temp_dir)
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                _atomic_copy(source, destination)
+                origin = source_build_entry["origin"]
+                assert isinstance(origin, dict)
+                relative_receipt = Path(str(origin["attestation_path"]))
+                _install_verified_asset(
+                    source, destination,
+                    attestation=(temp_dir / relative_receipt, REPO_ROOT / relative_receipt),
+                )
                 print(f"Built {asset['name']} from pinned source -> {destination.relative_to(REPO_ROOT)}")
                 continue
 
@@ -510,8 +530,7 @@ def main() -> int:
                 source = _extract_pinned_zip_member(
                     archive, pinned_extracted_root, archive_member
                 )
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                _atomic_copy(source, destination)
+                _install_verified_asset(source, destination)
                 print(
                     f"Installed {asset['name']} from pinned CPU ONNX Runtime archive -> "
                     f"{destination.relative_to(REPO_ROOT)}"
@@ -536,8 +555,7 @@ def main() -> int:
                     archive_path = temp_dir / archive_name
                 source = _extract_archive_asset(archive_path, extracted_root, asset["archive_path"])
 
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_copy(source, destination)
+            _install_verified_asset(source, destination)
             print(f"Installed {asset['name']} -> {destination.relative_to(REPO_ROOT)}")
 
     selected_paths = (

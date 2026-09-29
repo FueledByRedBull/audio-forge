@@ -275,7 +275,7 @@ def _simulation_audio(simulation: Mapping[str, Any], expected_size: int) -> np.n
         raise RuntimeError("offline simulator returned audio with the wrong length")
     if not np.isfinite(output).all():
         raise RuntimeError("offline simulator returned non-finite audio")
-    return np.ascontiguousarray(output, dtype=np.float32).copy()
+    return np.ascontiguousarray(output, dtype=np.float32)
 
 
 def _playback_safe(

@@ -420,6 +420,12 @@ jobs:
           if ([bool]$release.isPrerelease -ne $expectedPrerelease) {
             throw "Release '$env:RELEASE_TAG' has an unexpected prerelease state."
           }
+          if ($release.isDraft) {
+            gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --title "AudioForge $version" --notes-file $notesPath
+            if ($LASTEXITCODE -ne 0) {
+              throw "Draft release '$env:RELEASE_TAG' title and notes could not be synchronized."
+            }
+          }
 
           function Get-ReleaseAssets {
             param([object]$Release)
@@ -430,6 +436,29 @@ jobs:
               }
             }
             return $assets
+          }
+          function Assert-ReleaseAssetNames {
+            param(
+              [object]$Release,
+              [string[]]$ExpectedNames,
+              [switch]$AllowMissing
+            )
+            $actualNames = @($Release.assets | ForEach-Object { [string]$_.name })
+            $differences = @(
+              Compare-Object -ReferenceObject $ExpectedNames -DifferenceObject $actualNames -CaseSensitive
+            )
+            $unexpected = @($differences | Where-Object SideIndicator -eq "=>")
+            $missing = @($differences | Where-Object SideIndicator -eq "<=")
+            if ($unexpected.Count -gt 0 -or (-not $AllowMissing -and $missing.Count -gt 0)) {
+              $details = @()
+              if ($unexpected.Count -gt 0) {
+                $details += "unexpected: $(@($unexpected | ForEach-Object InputObject) -join ', ')"
+              }
+              if (-not $AllowMissing -and $missing.Count -gt 0) {
+                $details += "missing: $(@($missing | ForEach-Object InputObject) -join ', ')"
+              }
+              throw "Release '$env:RELEASE_TAG' asset names do not match the validated candidate ($($details -join '; '))."
+            }
           }
           function Assert-AssetMatches {
             param(
@@ -449,7 +478,9 @@ jobs:
 
           $verifyDir = Join-Path $env:RUNNER_TEMP ("audioforge-release-assets-" + [guid]::NewGuid().ToString("N"))
           New-Item -ItemType Directory -Force -Path $verifyDir | Out-Null
+          $expectedAssetNames = @($assetPaths | ForEach-Object { [IO.Path]::GetFileName($_) })
           $remoteAssets = Get-ReleaseAssets $release
+          Assert-ReleaseAssetNames $release $expectedAssetNames -AllowMissing
           $toUpload = @()
           foreach ($assetPath in $assetPaths) {
             $assetName = [IO.Path]::GetFileName($assetPath)
@@ -478,15 +509,12 @@ jobs:
             throw "Release '$env:RELEASE_TAG' could not be read after asset upload."
           }
           $release = $releaseJson | ConvertFrom-Json
-          $remoteAssets = Get-ReleaseAssets $release
           if ([bool]$release.isPrerelease -ne $expectedPrerelease) {
             throw "Release '$env:RELEASE_TAG' changed prerelease state during promotion."
           }
+          Assert-ReleaseAssetNames $release $expectedAssetNames
           foreach ($assetPath in $assetPaths) {
             $assetName = [IO.Path]::GetFileName($assetPath)
-            if (-not $remoteAssets.ContainsKey($assetName)) {
-              throw "Release '$env:RELEASE_TAG' is missing validated asset '$assetName'."
-            }
             gh release download $env:RELEASE_TAG `
               --repo $env:GITHUB_REPOSITORY `
               --pattern $assetName `

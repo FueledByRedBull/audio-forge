@@ -653,10 +653,28 @@ def analyze_voice_spectrum(
         nperseg,
     )
     median_spectrum, inlier_ratio = _robust_median_spectrum(freqs, smoothed_spectra)
-    if noise_spectrum_db is not None and reference_freqs is not None:
+    snr_speech_spectrum = median_spectrum
+    if (
+        noise_spectrum_db is not None
+        and reference_freqs is not None
+        and reference_speech_db is not None
+    ):
         noise_spectrum_db = np.interp(freqs, reference_freqs, noise_spectrum_db)
-        spectral_snr_db = _spectral_snr_db(median_spectrum, noise_spectrum_db)
-    snr_db = _estimate_snr_from_spectrum(freqs, median_spectrum, noise_spectrum_db)
+        aligned_speech_spectrum = np.interp(
+            freqs,
+            reference_freqs,
+            reference_speech_db,
+        )
+        snr_speech_spectrum = aligned_speech_spectrum
+        spectral_snr_db = _spectral_snr_db(
+            aligned_speech_spectrum,
+            noise_spectrum_db,
+        )
+    snr_db = _estimate_snr_from_spectrum(
+        freqs,
+        snr_speech_spectrum,
+        noise_spectrum_db,
+    )
     snr_confidence = (
         float(np.clip((snr_db - 3.0) / 15.0, 0.0, 1.0))
         if noise_spectrum_db is not None

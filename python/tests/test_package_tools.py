@@ -342,6 +342,124 @@ def test_promotion_keeps_package_gates_without_hardware_runner():
     assert "git fetch --no-tags origin $env:GITHUB_SHA --depth=1" in source
 
 
+@pytest.mark.parametrize(
+    ("is_draft", "should_update"), [(True, True), (False, False)]
+)
+def test_promotion_refreshes_release_metadata_only_while_draft(
+    tmp_path, is_draft, should_update
+):
+    shell = shutil.which("pwsh")
+    if shell is None:
+        pytest.skip("PowerShell is required for the Windows promotion workflow")
+    source = (check_workflows.WORKFLOW_DIR / "release-promote.yml").read_text()
+    start = source.index("          $releaseJson = gh release view")
+    end = source.index("          function Get-ReleaseAssets", start)
+    script = source[start:end]
+    notes = tmp_path / "release-notes.md"
+    notes.write_text("# AudioForge 1.13.0\n\nSelected notes.\n", encoding="utf-8")
+    setup = f'''
+$ErrorActionPreference = 'Stop'
+$version = '1.13.0'
+$expectedPrerelease = $false
+$notesPath = '{notes.as_posix()}'
+$env:RELEASE_TAG = 'v1.13.0'
+$env:GITHUB_REPOSITORY = 'example/audio-forge'
+$script:editArgs = @()
+function gh {{
+  if ($args[1] -eq 'view') {{
+    $global:LASTEXITCODE = 0
+    return '{{"isDraft":{str(is_draft).lower()},"isPrerelease":false,"assets":[]}}'
+  }}
+  if ($args[1] -eq 'edit') {{
+    $script:editArgs = @($args)
+    $global:LASTEXITCODE = 0
+  }}
+}}
+'''
+    expected_update = "$true" if should_update else "$false"
+    assertions = f'''
+$hasExpectedMetadata =
+  $script:editArgs -contains '--title' -and
+  $script:editArgs -contains 'AudioForge 1.13.0' -and
+  $script:editArgs -contains '--notes-file' -and
+  $script:editArgs -contains $notesPath
+if ($hasExpectedMetadata -ne {expected_update}) {{ exit 1 }}
+'''
+    result = subprocess.run(
+        [
+            shell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            setup + script + assertions,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_promotion_rejects_extra_and_case_mismatched_asset_names():
+    shell = shutil.which("pwsh")
+    if shell is None:
+        pytest.skip("PowerShell is required for the Windows promotion workflow")
+    source = (check_workflows.WORKFLOW_DIR / "release-promote.yml").read_text()
+    start = source.find("          function Assert-ReleaseAssetNames")
+    assert start >= 0, "promotion must enforce exact release asset names"
+    end = source.index("          function Assert-AssetMatches", start)
+    helper = source[start:end]
+    assertions = r'''
+$expected = @('AudioForge.7z')
+$matching = [pscustomobject]@{ assets = @([pscustomobject]@{ name = 'AudioForge.7z' }) }
+$partial = [pscustomobject]@{ assets = @() }
+$extra = [pscustomobject]@{ assets = @(
+  [pscustomobject]@{ name = 'AudioForge.7z' },
+  [pscustomobject]@{ name = 'unexpected.txt' }
+) }
+$caseMismatch = [pscustomobject]@{ assets = @([pscustomobject]@{ name = 'audioforge.7z' }) }
+Assert-ReleaseAssetNames $matching $expected
+Assert-ReleaseAssetNames $partial $expected -AllowMissing
+foreach ($release in @($extra, $caseMismatch)) {
+  $rejected = $false
+  try { Assert-ReleaseAssetNames $release $expected -AllowMissing }
+  catch { $rejected = $true }
+  if (-not $rejected) { exit 1 }
+}
+$rejected = $false
+try { Assert-ReleaseAssetNames $partial $expected }
+catch { $rejected = $true }
+if (-not $rejected) { exit 1 }
+'''
+    result = subprocess.run(
+        [
+            shell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            helper + assertions,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_promotion_checks_asset_names_before_publishing():
+    source = (check_workflows.WORKFLOW_DIR / "release-promote.yml").read_text()
+
+    allow_missing = source.index(
+        "Assert-ReleaseAssetNames $release $expectedAssetNames -AllowMissing"
+    )
+    upload = source.index("gh release upload $env:RELEASE_TAG")
+    exact_set = source.index(
+        "Assert-ReleaseAssetNames $release $expectedAssetNames", allow_missing + 1
+    )
+    publish = source.index(
+        "gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false"
+    )
+    assert allow_missing < upload < exact_set < publish
+
+
 @pytest.mark.parametrize("digest", ["matching", "sha256:" + "0" * 64, ""])
 def test_promotion_preflight_checks_digest_without_downloading(tmp_path, digest):
     shell = shutil.which("pwsh")
@@ -1274,6 +1392,32 @@ def test_verify_release_assets_accepts_attested_source_build(tmp_path, monkeypat
 
     assert verify_release_assets.verify_assets(manifest) == []
 
+    # A source build's DLL and receipt must both validate before either replaces
+    # the installed pair. Recipe metadata is still checked against the checkout.
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    staged_dll = staging / "df.dll"
+    staged_receipt = staging / "attestation.json"
+    staged_dll.write_bytes(dll.read_bytes())
+    valid_receipt = (tmp_path / "attestation.json").read_bytes()
+    staged_receipt.write_text("{}")
+    dll.write_bytes(b"previous-good-build")
+    installed_receipt = tmp_path / "attestation.json"
+    installed_receipt.write_bytes(b"previous-good-receipt")
+    monkeypatch.setattr(fetch_release_assets, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(fetch_release_assets, "MANIFEST_PATH", manifest)
+    with pytest.raises(RuntimeError, match="verification"):
+        fetch_release_assets._install_verified_asset(
+            staged_dll, dll, attestation=(staged_receipt, installed_receipt)
+        )
+    assert dll.read_bytes() == b"previous-good-build"
+    assert installed_receipt.read_bytes() == b"previous-good-receipt"
+    staged_receipt.write_bytes(valid_receipt)
+    fetch_release_assets._install_verified_asset(
+        staged_dll, dll, attestation=(staged_receipt, installed_receipt)
+    )
+    assert verify_release_assets.verify_assets(manifest) == []
+
     (tmp_path / "models/DeepFilterNet3_onnx.tar.gz").write_bytes(b"tampered")
     errors = verify_release_assets.verify_assets(manifest)
     assert any("recipe hash mismatch" in error for error in errors)
@@ -1436,6 +1580,57 @@ def test_fetch_source_asset_invokes_pinned_builder_without_release_fallback(
     assert len(commands) == 1
     assert "build_deepfilter.ps1" in " ".join(commands[0])
     assert "gh" not in commands[0]
+    assert not (tmp_path / "target/deepfilter/df.dll.provenance.json").exists()
+    assert (tmp_path / "tmp/target/deepfilter/df.dll.provenance.json").is_file()
+
+
+@pytest.mark.parametrize("payload", [b"", b"evil", b"too-long-payload"])
+@pytest.mark.parametrize("source_kind", ["direct", "release", "archive", "pinned"])
+def test_forced_hydration_rejects_bad_bytes_before_replacing_asset(
+    tmp_path, monkeypatch, payload, source_kind
+):
+    installed = tmp_path / "model.bin"
+    installed.write_bytes(b"good")
+    entry = {
+        "path": "model.bin", "size": 4,
+        "sha256": hashlib.sha256(b"good").hexdigest(),
+    }
+    if source_kind == "direct":
+        entry.update(source="https://example.com/model.bin",
+                     origin={"status": "pinned-upstream-model"})
+    elif source_kind == "pinned":
+        entry.update(source="https://github.com/example/runtime/releases/download/v1/runtime.zip",
+                     origin={"status": "verified-upstream-archive", "runtime": "CPU-only Windows x64",
+                             "archive_sha256": "a" * 64, "archive_size": 123,
+                             "archive_member": "package/model.bin"})
+    manifest = tmp_path / "release-assets.json"
+    manifest.write_text(json.dumps({"fallback_release_tag": "v1.0.0", "assets": [entry]}))
+    monkeypatch.setattr(fetch_release_assets, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verify_release_assets, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(fetch_release_assets, "MANIFEST_PATH", manifest)
+    monkeypatch.setattr(fetch_release_assets.sys, "argv", ["fetch", "--force"])
+    monkeypatch.setattr(fetch_release_assets.shutil, "which", lambda _: "gh")
+    monkeypatch.setattr(fetch_release_assets, "_release_asset_names", lambda *_: {
+        "model.bin" if source_kind == "release" else "AudioForge-test-win64-ultra.7z"
+    })
+    monkeypatch.setattr(fetch_release_assets, "_download_direct_url",
+                        lambda _url, dest: dest.write_bytes(payload))
+    monkeypatch.setattr(fetch_release_assets, "_download_asset",
+                        lambda _tag, _repo, name, dest: (dest / name).write_bytes(payload))
+
+    def extract(_archive, root, relative):
+        output = root / relative
+        output.parent.mkdir(parents=True)
+        output.write_bytes(payload)
+        return output
+
+    monkeypatch.setattr(fetch_release_assets, "_extract_archive_asset", extract)
+    monkeypatch.setattr(fetch_release_assets, "_download_pinned_archive",
+                        lambda _entry, root, _cache: root / "archive.zip")
+    monkeypatch.setattr(fetch_release_assets, "_extract_pinned_zip_member", extract)
+    with pytest.raises(RuntimeError, match="verification"):
+        fetch_release_assets.main()
+    assert installed.read_bytes() == b"good"
 
 
 def test_version_check_rejects_stale_readme_hydration_tag(tmp_path, monkeypatch):

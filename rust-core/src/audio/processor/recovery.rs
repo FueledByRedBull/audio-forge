@@ -55,10 +55,7 @@ pub fn service_recovery(&mut self) -> Option<bool> {
 
     self.stop();
 
-    let mut success = false;
-    let mut last_error: Option<String> = None;
-
-    match self.start_with_device_ordinals_and_ids(
+    let (success, last_error) = match self.start_with_device_ordinals_and_ids(
         input_name.as_deref(),
         input_name_ordinal,
         input_endpoint_id.as_deref(),
@@ -66,24 +63,12 @@ pub fn service_recovery(&mut self) -> Option<bool> {
         output_name_ordinal,
         output_endpoint_id.as_deref(),
     ) {
-        Ok(_) => {
-            success = true;
-        }
-        Err(err) => {
-            last_error = Some(format!("Restart failed for selected devices: {}", err));
-            match self.start(None, None) {
-                Ok(_) => {
-                    success = true;
-                }
-                Err(fallback_err) => {
-                    last_error = Some(format!(
-                        "Restart failed for selected + default devices: {}",
-                        fallback_err
-                    ));
-                }
-            }
-        }
-    }
+        Ok(_) => (true, None),
+        Err(err) => (
+            false,
+            Some(format!("Restart failed for selected devices: {err}")),
+        ),
+    };
 
     if let Ok(mut state) = self.recovery_state.lock() {
         if success {

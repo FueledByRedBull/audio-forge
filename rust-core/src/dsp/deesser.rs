@@ -17,18 +17,26 @@
 use super::biquad::{Biquad, BiquadType};
 use crate::dsp::util;
 
-const VOICE_REFERENCE_SIDECHAIN_DISCOUNT: f64 = 0.6;
 const DETECTOR_RATIO_GATE_DB: f64 = 1.5;
 const DETECTOR_RATIO_FULL_DB: f64 = 10.0;
 const DETECTOR_LEVEL_GATE_DB: f64 = -62.0;
 const DETECTOR_LEVEL_FULL_DB: f64 = -24.0;
 const DETECTOR_VOICE_GATE_DB: f64 = -58.0;
 const DETECTOR_VOICE_FULL_DB: f64 = -34.0;
-const AUTO_BASELINE_FALL_MS: f64 = 13.88;
-const AUTO_BASELINE_RISE_MS: f64 = 34.72;
-const AUTO_BASELINE_INACTIVE_DECAY_MS: f64 = 20.82;
+const NARROW_SIBILANCE_SUPPORT_START_DB: f64 = 6.0;
+const NARROW_SIBILANCE_SUPPORT_START_LEVEL_DB: f64 = -45.0;
+// Heuristic control-envelope time constants, chosen as simple response times
+// rather than claimed psychoacoustic measurements.
+const AUTO_BASELINE_FALL_MS: f64 = 14.0;
+const AUTO_BASELINE_RISE_MS: f64 = 35.0;
+const AUTO_BASELINE_INACTIVE_DECAY_MS: f64 = 21.0;
 const DEESSER_BAND_COUNT: usize = 3;
 const DEESSER_DEFAULT_HIGH_CUT_HZ: f64 = 11_000.0;
+const VOICE_REFERENCE_LOW_HZ: f64 = 250.0;
+const VOICE_REFERENCE_HIGH_HZ: f64 = 2_000.0;
+// These section Qs form the fourth-order Butterworth body-reference low-pass.
+const VOICE_REFERENCE_LOW_PASS_Q1: f64 = 0.541_196_100_146_197;
+const VOICE_REFERENCE_LOW_PASS_Q2: f64 = 1.306_562_964_876_377;
 const BROADBAND_NARROWNESS_GATE: f64 = 0.34;
 const BROADBAND_NARROWNESS_FULL: f64 = 0.68;
 
@@ -96,9 +104,15 @@ pub struct DeEsser {
     release_coeff: f64,
     detector_attack_coeff: f64,
     detector_release_coeff: f64,
+    auto_baseline_fall_coeff: f64,
+    auto_baseline_rise_coeff: f64,
+    auto_baseline_inactive_decay_coeff: f64,
     max_reduction_db: f64,
     current_reduction_db: f64,
-    broadband_env: f64,
+    voice_reference_env: f64,
+    voice_reference_high_pass: Biquad,
+    voice_reference_low_pass_q1: Biquad,
+    voice_reference_low_pass_q2: Biquad,
     detector_confidence: f64,
     low_cut_hz: f64,
     high_cut_hz: f64,
@@ -123,9 +137,42 @@ impl DeEsser {
             release_coeff: util::time_constant_to_coeff(80.0, sample_rate),
             detector_attack_coeff: util::time_constant_to_coeff(1.5, sample_rate),
             detector_release_coeff: util::time_constant_to_coeff(60.0, sample_rate),
+            auto_baseline_fall_coeff: util::time_constant_to_coeff(
+                AUTO_BASELINE_FALL_MS,
+                sample_rate,
+            ),
+            auto_baseline_rise_coeff: util::time_constant_to_coeff(
+                AUTO_BASELINE_RISE_MS,
+                sample_rate,
+            ),
+            auto_baseline_inactive_decay_coeff: util::time_constant_to_coeff(
+                AUTO_BASELINE_INACTIVE_DECAY_MS,
+                sample_rate,
+            ),
             max_reduction_db: 6.0,
             current_reduction_db: 0.0,
-            broadband_env: 0.0,
+            voice_reference_env: 0.0,
+            voice_reference_high_pass: Biquad::new(
+                BiquadType::HighPass,
+                VOICE_REFERENCE_LOW_HZ,
+                0.0,
+                0.707,
+                sample_rate,
+            ),
+            voice_reference_low_pass_q1: Biquad::new(
+                BiquadType::LowPass,
+                VOICE_REFERENCE_HIGH_HZ.min(sample_rate * 0.45),
+                0.0,
+                VOICE_REFERENCE_LOW_PASS_Q1,
+                sample_rate,
+            ),
+            voice_reference_low_pass_q2: Biquad::new(
+                BiquadType::LowPass,
+                VOICE_REFERENCE_HIGH_HZ.min(sample_rate * 0.45),
+                0.0,
+                VOICE_REFERENCE_LOW_PASS_Q2,
+                sample_rate,
+            ),
             detector_confidence: 0.0,
             low_cut_hz,
             high_cut_hz,
@@ -193,14 +240,21 @@ impl DeEsser {
         );
 
         // Strong narrow-band sibilance should still be detected when the voice body is brief.
-        let narrow_sibilance_support = if spectral_ratio_db > 6.0 && sidechain_level_db > -45.0 {
-            0.75
-        } else {
-            0.0
-        };
+        let narrow_sibilance_support =
+            0.75 * Self::normalize_range(
+                spectral_ratio_db,
+                NARROW_SIBILANCE_SUPPORT_START_DB,
+                DETECTOR_RATIO_FULL_DB,
+            ) * Self::normalize_range(
+                sidechain_level_db,
+                NARROW_SIBILANCE_SUPPORT_START_LEVEL_DB,
+                DETECTOR_LEVEL_FULL_DB,
+            );
         let voice_support = voice_conf.max(narrow_sibilance_support);
-        let balance_conf = if ratio_conf > 0.12 {
-            ratio_conf.max(voice_support * 0.65)
+        let voice_support_floor = voice_support * 0.65;
+        let balance_conf = if voice_support_floor > 0.12 {
+            let support_blend = Self::normalize_range(ratio_conf, 0.12, voice_support_floor);
+            ratio_conf + (voice_support_floor - ratio_conf).max(0.0) * support_blend
         } else {
             ratio_conf
         };
@@ -266,21 +320,6 @@ impl DeEsser {
         (Self::dynamic_eq_center_hz(low_cut_hz, high_cut_hz) / bandwidth).clamp(0.5, 6.0)
     }
 
-    #[inline]
-    fn auto_baseline_fall_coeff(&self) -> f64 {
-        util::time_constant_to_coeff(AUTO_BASELINE_FALL_MS, self.sample_rate)
-    }
-
-    #[inline]
-    fn auto_baseline_rise_coeff(&self) -> f64 {
-        util::time_constant_to_coeff(AUTO_BASELINE_RISE_MS, self.sample_rate)
-    }
-
-    #[inline]
-    fn auto_baseline_inactive_decay_coeff(&self) -> f64 {
-        util::time_constant_to_coeff(AUTO_BASELINE_INACTIVE_DECAY_MS, self.sample_rate)
-    }
-
     /// Enable or disable de-essing.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
@@ -311,19 +350,31 @@ impl DeEsser {
 
     /// Set detector low cutoff (high-pass edge) in Hz.
     pub fn set_low_cut_hz(&mut self, low_cut_hz: f64) {
-        self.low_cut_hz = low_cut_hz.clamp(2000.0, 12000.0);
-        if self.high_cut_hz <= self.low_cut_hz + 200.0 {
-            self.high_cut_hz = (self.low_cut_hz + 200.0).clamp(2200.0, 16000.0);
+        let low_cut_hz = low_cut_hz.clamp(2000.0, 12000.0);
+        let mut high_cut_hz = self.high_cut_hz;
+        if high_cut_hz <= low_cut_hz + 200.0 {
+            high_cut_hz = (low_cut_hz + 200.0).clamp(2200.0, 16000.0);
         }
+        if low_cut_hz == self.low_cut_hz && high_cut_hz == self.high_cut_hz {
+            return;
+        }
+        self.low_cut_hz = low_cut_hz;
+        self.high_cut_hz = high_cut_hz;
         self.rebuild_detector_filters();
     }
 
     /// Set detector high cutoff (low-pass edge) in Hz.
     pub fn set_high_cut_hz(&mut self, high_cut_hz: f64) {
-        self.high_cut_hz = high_cut_hz.clamp(2200.0, 16000.0);
-        if self.high_cut_hz <= self.low_cut_hz + 200.0 {
-            self.low_cut_hz = (self.high_cut_hz - 200.0).clamp(2000.0, 12000.0);
+        let high_cut_hz = high_cut_hz.clamp(2200.0, 16000.0);
+        let mut low_cut_hz = self.low_cut_hz;
+        if high_cut_hz <= low_cut_hz + 200.0 {
+            low_cut_hz = (high_cut_hz - 200.0).clamp(2000.0, 12000.0);
         }
+        if low_cut_hz == self.low_cut_hz && high_cut_hz == self.high_cut_hz {
+            return;
+        }
+        self.low_cut_hz = low_cut_hz;
+        self.high_cut_hz = high_cut_hz;
         self.rebuild_detector_filters();
     }
 
@@ -410,8 +461,14 @@ impl DeEsser {
             return input;
         }
 
-        let broadband_level = input.abs() as f64;
-        self.broadband_env = self.update_env(self.broadband_env, broadband_level);
+        let voice_body = self
+            .voice_reference_low_pass_q2
+            .process_sample(
+                self.voice_reference_low_pass_q1
+                    .process_sample(self.voice_reference_high_pass.process_sample(input)),
+            )
+            .abs() as f64;
+        self.voice_reference_env = self.update_env(self.voice_reference_env, voice_body);
 
         let detector_attack = self.detector_attack_coeff;
         let detector_release = self.detector_release_coeff;
@@ -433,11 +490,10 @@ impl DeEsser {
             band_level_db[index] = util::linear_to_db(band.env, 1e-10);
         }
 
-        // Estimate "voice body" reference by discounting all sibilance-band energy.
-        let voice_reference_level = (self.broadband_env
-            - total_sibilance_env * VOICE_REFERENCE_SIDECHAIN_DISCOUNT)
-            .max(1e-8);
-        let voice_reference_db = util::linear_to_db(voice_reference_level, 1e-10);
+        // Measure low voice-body energy on its own low-pass path; detector bands
+        // are non-orthogonal, so subtracting their envelopes from broadband level
+        // can erase this reference when sibilance is strong.
+        let voice_reference_db = util::linear_to_db(self.voice_reference_env, 1e-10);
         let narrowness = if total_sibilance_env > 1e-10 {
             max_sibilance_env / total_sibilance_env
         } else {
@@ -449,9 +505,9 @@ impl DeEsser {
         let slope = Self::lerp(0.08, 1.9, amount);
         let auto_cap = Self::lerp(0.8, 14.0, amount);
         let confidence_floor = Self::lerp(0.28, 0.06, amount);
-        let baseline_fall = self.auto_baseline_fall_coeff();
-        let baseline_rise = self.auto_baseline_rise_coeff();
-        let baseline_inactive = self.auto_baseline_inactive_decay_coeff();
+        let baseline_fall = self.auto_baseline_fall_coeff;
+        let baseline_rise = self.auto_baseline_rise_coeff;
+        let baseline_inactive = self.auto_baseline_inactive_decay_coeff;
         let mut target_reductions = [0.0_f64; DEESSER_BAND_COUNT];
         let mut target_sum = 0.0_f64;
         let mut aggregate_confidence = 0.0_f64;
@@ -573,8 +629,11 @@ impl DeEsser {
     /// Reset internal state.
     pub fn reset(&mut self) {
         self.current_reduction_db = 0.0;
-        self.broadband_env = 0.0;
+        self.voice_reference_env = 0.0;
         self.detector_confidence = 0.0;
+        self.voice_reference_high_pass.reset();
+        self.voice_reference_low_pass_q1.reset();
+        self.voice_reference_low_pass_q2.reset();
         for band in &mut self.bands {
             band.reset();
         }
@@ -620,6 +679,51 @@ mod tests {
     }
 
     #[test]
+    fn test_recommended_fixture_sibilance_triggers_deessing() {
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        deesser.set_auto_enabled(true);
+        deesser.set_auto_amount(0.831_076_770_5);
+        deesser.set_low_cut_hz(4_800.0);
+        deesser.set_high_cut_hz(8_600.0);
+        deesser.set_threshold_db(-28.0);
+        deesser.set_ratio(5.5);
+        deesser.set_attack_ms(2.0);
+        deesser.set_release_ms(80.0);
+        deesser.set_max_reduction_db(8.0);
+
+        let sample_rate = 48_000.0;
+        let mut max_reduction = 0.0f32;
+        for n in 0..240_000 {
+            let t = n as f64 / sample_rate;
+            let gate = ((t * 3.0).floor() as usize % 4) != 3;
+            let envelope = if gate {
+                0.55 + 0.25 * (2.0 * std::f64::consts::PI * 2.1 * t).sin().powi(2)
+            } else {
+                0.0
+            };
+            let phase = t % 1.25;
+            let sibilance = if (0.72..=0.88).contains(&phase) {
+                0.30 * (2.0 * std::f64::consts::PI * 6_500.0 * t).sin()
+            } else {
+                0.004 * (2.0 * std::f64::consts::PI * 6_500.0 * t).sin()
+            };
+            let voice = envelope
+                * (0.11 * (2.0 * std::f64::consts::PI * 140.0 * t).sin()
+                    + 0.07 * (2.0 * std::f64::consts::PI * 220.0 * t).sin()
+                    + 0.05 * (2.0 * std::f64::consts::PI * 440.0 * t).sin()
+                    + sibilance);
+            deesser.process_sample(voice as f32);
+            max_reduction = max_reduction.max(deesser.current_gain_reduction_db());
+        }
+
+        assert!(
+            max_reduction > 0.25,
+            "recommended 6.5 kHz fixture bursts should engage the de-esser; max GR was {max_reduction} dB"
+        );
+    }
+
+    #[test]
     fn test_max_reduction_cap() {
         let mut deesser = DeEsser::new(48_000.0);
         deesser.set_enabled(true);
@@ -629,12 +733,21 @@ mod tests {
         deesser.set_max_reduction_db(3.0);
 
         let mut max_seen = 0.0f32;
-        for _ in 0..10_000 {
-            let _ = deesser.process_sample(0.8);
-            max_seen = max_seen.max(deesser.current_gain_reduction_db());
+        for n in 0..24_000 {
+            let x = (2.0 * std::f64::consts::PI * 7_000.0 * n as f64 / 48_000.0).sin() as f32 * 0.8;
+            let _ = deesser.process_sample(x);
+            // Inspect the actual filter budget, not the separately clamped meter.
+            max_seen = max_seen.max(deesser.band_gain_reductions_db().iter().sum());
         }
 
-        assert!(max_seen <= 3.2, "Expected reduction to be capped near 3dB");
+        assert!(
+            max_seen > 0.5,
+            "The cap must be tested with an engaged detector: {max_seen}"
+        );
+        assert!(
+            max_seen <= 3.001,
+            "Expected reduction to be capped near 3dB: {max_seen}"
+        );
     }
 
     #[test]
@@ -673,18 +786,159 @@ mod tests {
     }
 
     #[test]
-    fn test_auto_baseline_coefficients_are_sample_rate_aware() {
+    fn test_voice_reference_survives_single_and_overlapping_sibilance() {
+        fn reference_db(sibilance_amplitudes: [f32; 3]) -> f64 {
+            let mut deesser = DeEsser::new(48_000.0);
+            deesser.set_enabled(true);
+            let sample_rate = 48_000.0;
+            for n in 0..24_000 {
+                let t = n as f64 / sample_rate;
+                let body = (2.0 * std::f64::consts::PI * 250.0 * t).sin() as f32 * 0.02;
+                let sibilance = [4_800.0, 7_000.0, 9_500.0]
+                    .into_iter()
+                    .zip(sibilance_amplitudes)
+                    .map(|(frequency, amplitude)| {
+                        (2.0 * std::f64::consts::PI * frequency * t).sin() as f32 * amplitude
+                    })
+                    .sum::<f32>();
+                deesser.process_sample(body + sibilance);
+            }
+
+            util::linear_to_db(deesser.voice_reference_env, 1e-10)
+        }
+
+        let body_only = reference_db([0.0, 0.0, 0.0]);
+        for sibilance in [[0.0, 0.32, 0.0], [0.08, 0.08, 0.08]] {
+            let with_sibilance = reference_db(sibilance);
+            assert!(
+                (with_sibilance - body_only).abs() < 3.0,
+                "the same 250 Hz voice body moved from {body_only:.2} dB to {with_sibilance:.2} dB for {sibilance:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_sibilance_strength_response_is_smooth_and_gain_reduction_bounded() {
+        fn render(sibilance_amplitude: f32) -> (f32, f32) {
+            let mut deesser = DeEsser::new(48_000.0);
+            deesser.set_enabled(true);
+            deesser.set_auto_enabled(true);
+            deesser.set_auto_amount(1.0);
+            let sample_rate = 48_000.0;
+            for n in 0..24_000 {
+                let t = n as f64 / sample_rate;
+                let body = (2.0 * std::f64::consts::PI * 250.0 * t).sin() as f32 * 0.08;
+                let sibilance =
+                    (2.0 * std::f64::consts::PI * 7_000.0 * t).sin() as f32 * sibilance_amplitude;
+                deesser.process_sample(body + sibilance);
+            }
+            (
+                deesser.detector_confidence(),
+                deesser.current_gain_reduction_db(),
+            )
+        }
+
+        let mut previous_confidence = None;
+        for step in 4..=10 {
+            let amplitude = step as f32 * 0.02;
+            let (confidence, reduction) = render(amplitude);
+            assert!((0.0..=1.0).contains(&confidence));
+            assert!(
+                reduction <= 6.001,
+                "reduction exceeded default cap: {reduction}"
+            );
+            if let Some(previous) = previous_confidence {
+                assert!(
+                    confidence + 0.005 >= previous,
+                    "confidence fell from {previous:.4} to {confidence:.4} at amplitude {amplitude:.2}"
+                );
+                assert!(
+                    confidence - previous <= 0.10,
+                    "confidence jumped from {previous:.4} to {confidence:.4} at amplitude {amplitude:.2}"
+                );
+            }
+            previous_confidence = Some(confidence);
+        }
+    }
+
+    #[test]
+    fn test_detector_confidence_is_continuous_at_support_boundaries() {
+        let target = |sidechain_level_db: f64, voice_reference_db: f64| {
+            DeEsser::detector_confidence_target(sidechain_level_db, voice_reference_db, 0.8)
+        };
+        let epsilon = 1e-6;
+        let boundaries = [
+            // Narrow-band voice support starts at 6 dB of spectral contrast.
+            (-44.0, -50.0, 6.0),
+            // Narrow-band level support starts at -45 dBFS.
+            (-45.0, -60.0, 15.0),
+            // Ratio confidence crosses the former 0.12 balance gate at 2.52 dB.
+            (-35.0, -37.52, 2.52),
+        ];
+
+        for (sidechain_level_db, voice_reference_db, ratio_db) in boundaries {
+            let (before, after) = if ratio_db == 15.0 {
+                (
+                    target(sidechain_level_db - epsilon, voice_reference_db - epsilon),
+                    target(sidechain_level_db + epsilon, voice_reference_db + epsilon),
+                )
+            } else {
+                (
+                    target(sidechain_level_db, voice_reference_db + epsilon),
+                    target(sidechain_level_db, voice_reference_db - epsilon),
+                )
+            };
+            assert!(
+                (after - before).abs() < 1e-5,
+                "confidence changed discontinuously around {ratio_db} dB contrast / {sidechain_level_db} dBFS level: {before} -> {after}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_low_frequency_voice_body_alone_does_not_trigger_deessing() {
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        let mut max_reduction = 0.0_f32;
+        for n in 0..24_000 {
+            let voice =
+                (2.0 * std::f64::consts::PI * 250.0 * n as f64 / 48_000.0).sin() as f32 * 0.2;
+            deesser.process_sample(voice);
+            max_reduction = max_reduction.max(deesser.current_gain_reduction_db());
+        }
+        assert!(
+            max_reduction <= 0.01,
+            "250 Hz voice body alone should not trigger de-essing: {max_reduction} dB"
+        );
+    }
+
+    #[test]
+    fn test_auto_baseline_coefficients_are_cached_and_sample_rate_aware() {
         let deesser_44 = DeEsser::new(44_100.0);
         let deesser_96 = DeEsser::new(96_000.0);
 
         let one_second_44 = deesser_44
-            .auto_baseline_rise_coeff()
+            .auto_baseline_rise_coeff
             .powf(deesser_44.sample_rate);
         let one_second_96 = deesser_96
-            .auto_baseline_rise_coeff()
+            .auto_baseline_rise_coeff
             .powf(deesser_96.sample_rate);
+        let expected = (-1000.0 / AUTO_BASELINE_RISE_MS).exp();
 
         assert!((one_second_44 - one_second_96).abs() < 1e-6);
+        assert!((one_second_44 - expected).abs() < 1e-12);
+        assert!(
+            (deesser_44.auto_baseline_fall_coeff.powf(44_100.0)
+                - (-1000.0 / AUTO_BASELINE_FALL_MS).exp())
+            .abs()
+                < 1e-12
+        );
+        assert!(
+            (deesser_44.auto_baseline_inactive_decay_coeff.powf(44_100.0)
+                - (-1000.0 / AUTO_BASELINE_INACTIVE_DECAY_MS).exp())
+            .abs()
+                < 1e-12
+        );
     }
 
     #[test]
@@ -747,6 +1001,57 @@ mod tests {
     }
 
     #[test]
+    fn test_reapplying_effective_cutoffs_does_not_restart_filter_crossfades() {
+        fn all_filters_settled(deesser: &DeEsser) -> bool {
+            !deesser.voice_reference_high_pass.is_crossfading()
+                && !deesser.voice_reference_low_pass_q1.is_crossfading()
+                && !deesser.voice_reference_low_pass_q2.is_crossfading()
+                && deesser.bands.iter().all(|band| {
+                    !band.detector_hp.is_crossfading()
+                        && !band.detector_lp.is_crossfading()
+                        && !band.dynamic_eq.is_crossfading()
+                })
+        }
+
+        for low_cut in [true, false] {
+            let mut deesser = DeEsser::new(48_000.0);
+            deesser.set_enabled(true);
+            deesser.set_max_reduction_db(0.0);
+            if low_cut {
+                deesser.set_low_cut_hz(2_000.0);
+            } else {
+                deesser.set_high_cut_hz(16_000.0);
+            }
+            assert!(
+                !deesser.voice_reference_high_pass.is_crossfading()
+                    && !deesser.voice_reference_low_pass_q1.is_crossfading()
+                    && !deesser.voice_reference_low_pass_q2.is_crossfading(),
+                "detector cutoff changes must not reconfigure the fixed voice reference"
+            );
+
+            for _ in 0..60 {
+                deesser.process_sample(0.1);
+            }
+            if low_cut {
+                // Both requests clamp to the same effective 2 kHz low edge.
+                deesser.set_low_cut_hz(-1_000.0);
+            } else {
+                // Both requests clamp to the same effective 16 kHz high edge.
+                deesser.set_high_cut_hz(20_000.0);
+            }
+            for _ in 0..12 {
+                deesser.process_sample(0.1);
+            }
+
+            assert!(
+                all_filters_settled(&deesser),
+                "reapplying the same effective {} cutoff restarted a filter transition",
+                if low_cut { "low" } else { "high" }
+            );
+        }
+    }
+
+    #[test]
     fn test_dynamic_eq_output_stays_finite() {
         let mut deesser = DeEsser::new(48_000.0);
         deesser.set_enabled(true);
@@ -785,18 +1090,36 @@ mod tests {
         deesser.set_max_reduction_db(12.0);
 
         let sr = 48_000.0f64;
-        let mut low_sum_in = 0.0f64;
-        let mut low_sum_out = 0.0f64;
-        for n in 0..12_000 {
+        let mut low_projection = [0.0_f64; 2];
+        let mut high_projection = [0.0_f64; 2];
+        // Half a second of settled signal contains integer periods of both
+        // tones. Quadrature projection separates LF preservation from HF loss.
+        for n in 0..48_000 {
             let t = n as f64 / sr;
-            let low = (2.0 * std::f64::consts::PI * 250.0 * t).sin() as f32 * 0.25;
+            let low = (2.0 * std::f64::consts::PI * 250.0 * t).sin() as f32 * 0.05;
             let sib = (2.0 * std::f64::consts::PI * 7_000.0 * t).sin() as f32 * 0.35;
             let y = deesser.process_sample(low + sib);
-            low_sum_in += low.abs() as f64;
-            low_sum_out += (y as f64).abs();
+            if n >= 24_000 {
+                for (frequency, projection) in [
+                    (250.0, &mut low_projection),
+                    (7_000.0, &mut high_projection),
+                ] {
+                    let phase = 2.0 * std::f64::consts::PI * frequency * t;
+                    projection[0] += y as f64 * phase.sin();
+                    projection[1] += y as f64 * phase.cos();
+                }
+            }
         }
 
-        assert!(low_sum_out > low_sum_in * 0.5);
+        let amplitude = |projection: [f64; 2]| 2.0 * projection[0].hypot(projection[1]) / 24_000.0;
+        let low_gain_db = 20.0 * (amplitude(low_projection) / 0.05).log10();
+        let high_gain_db = 20.0 * (amplitude(high_projection) / 0.35).log10();
+        assert!(
+            deesser.current_gain_reduction_db() > 0.5,
+            "Detector must engage"
+        );
+        assert!(low_gain_db.abs() < 0.15, "LF changed by {low_gain_db} dB");
+        assert!(high_gain_db < -1.0, "HF attenuation only {high_gain_db} dB");
     }
 
     #[test]

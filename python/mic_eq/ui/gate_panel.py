@@ -5,6 +5,7 @@ Adapted from Spectral Workbench project.
 """
 
 import logging
+import math
 
 from PyQt6.QtWidgets import (
     QWidget,
@@ -18,7 +19,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QComboBox,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from .rate_limiter import RateLimiter
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
@@ -37,12 +38,18 @@ logger = logging.getLogger(__name__)
 class GatePanel(QWidget):
     """Noise Gate parameter control panel."""
 
+    configurationEdited = pyqtSignal(str)
+
     def __init__(self, processor):
         super().__init__()
         self.processor = processor
         self._rate_limiter = RateLimiter(interval_ms=33)
-        self._latest_noise_floor_db = -60.0
+        self._latest_noise_floor_db: float | None = None
         self._preserve_unavailable_vad_mode = False
+        self._applying_settings = False
+        self._synchronous_updates = False
+        self._exact_values: dict[str, float] = {}
+        self._exact_display_values: dict[str, float] = {}
         self._setup_ui()
         self._connect_signals()
 
@@ -141,18 +148,18 @@ class GatePanel(QWidget):
         # VAD threshold slider
         vad_threshold_layout = QHBoxLayout()
         self.vad_threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self.vad_threshold_slider.setRange(30, 80)  # 0.3 to 0.8
+        self.vad_threshold_slider.setRange(30, 70)  # Native range: 0.3 to 0.7
         self.vad_threshold_slider.setValue(48)
         self.vad_threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.vad_threshold_slider.setTickInterval(10)
         vad_threshold_layout.addWidget(self.vad_threshold_slider)
 
         self.vad_threshold_spinbox = QDoubleSpinBox()
-        self.vad_threshold_spinbox.setRange(0.3, 0.8)
+        self.vad_threshold_spinbox.setRange(0.3, 0.7)
         self.vad_threshold_spinbox.setSingleStep(0.01)
         self.vad_threshold_spinbox.setValue(0.48)
         self.vad_threshold_spinbox.setDecimals(2)
-        self.vad_threshold_spinbox.setToolTip("Speech probability threshold (0.3-0.8)")
+        self.vad_threshold_spinbox.setToolTip("Speech probability threshold (0.3-0.7)")
         fit_spinbox_to_contents(self.vad_threshold_spinbox)
         vad_threshold_layout.addWidget(self.vad_threshold_spinbox)
 
@@ -358,12 +365,46 @@ class GatePanel(QWidget):
         self._update_auto_threshold()
         self._refresh_threshold_summary()
 
+    def _precise_value(self, key: str, control: QDoubleSpinBox) -> float:
+        value = float(control.value())
+        previous_display = self._exact_display_values.get(key)
+        if key not in self._exact_values or previous_display != value:
+            self._exact_values[key] = value
+            self._exact_display_values[key] = value
+        return self._exact_values[key]
+
+    def _remember_exact_values(self, settings: dict) -> None:
+        controls = {
+            "threshold_db": self.threshold_spinbox,
+            "attack_ms": self.attack_spinbox,
+            "release_ms": self.release_spinbox,
+            "vad_threshold": self.vad_threshold_spinbox,
+            "vad_hold_time_ms": self.vad_hold_spinbox,
+            "vad_pre_gain": self.vad_pre_gain_spinbox,
+            "gate_margin_db": self.margin_spinbox,
+        }
+        for key, control in controls.items():
+            if key in settings:
+                self._exact_values[key] = float(settings[key])
+                self._exact_display_values[key] = float(control.value())
+
+    def apply_settings_synchronously(self, settings: dict) -> None:
+        """Apply a bulk config before returning, canceling stale slider writes."""
+        self._rate_limiter.cancel()
+        self._synchronous_updates = True
+        self._applying_settings = True
+        try:
+            self.set_settings(settings, propagate_errors=True)
+        finally:
+            self._applying_settings = False
+            self._synchronous_updates = False
+
     def _update_gate(self):
         """Update noise gate configuration."""
         enabled = self.enabled_checkbox.isChecked()
-        threshold = self.threshold_spinbox.value()
-        attack = self.attack_spinbox.value()
-        release = self.release_spinbox.value()
+        threshold = self._precise_value("threshold_db", self.threshold_spinbox)
+        attack = self._precise_value("attack_ms", self.attack_spinbox)
+        release = self._precise_value("release_ms", self.release_spinbox)
 
         def apply():
             self.processor.set_gate_enabled(enabled)
@@ -371,7 +412,12 @@ class GatePanel(QWidget):
             self.processor.set_gate_attack(attack)
             self.processor.set_gate_release(release)
 
-        self._rate_limiter.call(apply)
+        if self._synchronous_updates:
+            self._rate_limiter.call_now(apply)
+        else:
+            self._rate_limiter.call(apply)
+        if not self._applying_settings:
+            self.configurationEdited.emit("Noise gate edit")
 
     def _is_vad_available(self) -> bool:
         """Return True when Rust VAD backend is available."""
@@ -406,6 +452,7 @@ class GatePanel(QWidget):
         manual_threshold = self.threshold_spinbox.value()
         self.noise_floor_label.setText(
             f"Noise Floor: {self._latest_noise_floor_db:.1f} dB"
+            if self._latest_noise_floor_db is not None else "Noise Floor: --"
         )
         if self.gate_mode_combo.currentIndex() == 2:
             self.threshold_label.setText("Level Fallback:")
@@ -413,7 +460,10 @@ class GatePanel(QWidget):
                 f"VAD Threshold: {self.vad_threshold_spinbox.value():.2f} | "
                 f"Level fallback when VAD is unavailable: {manual_threshold:.1f} dB"
             )
-        elif self._is_auto_threshold_active():
+        elif self._is_auto_threshold_active() and self._latest_noise_floor_db is None:
+            self.threshold_label.setText("Manual Threshold (fallback):")
+            self.threshold_status_label.setText("Effective Threshold: -- (noise floor unavailable)")
+        elif self._is_auto_threshold_active() and self._latest_noise_floor_db is not None:
             margin_db = self.margin_spinbox.value()
             effective_threshold = max(
                 -80.0, min(-10.0, self._latest_noise_floor_db + margin_db)
@@ -436,7 +486,7 @@ class GatePanel(QWidget):
         self._update_vad_controls_enabled()
         self._set_vad_status_text(mode, vad_available)
 
-    def _update_vad_mode(self):
+    def _update_vad_mode(self, *, propagate_errors: bool = False):
         """Update VAD mode and settings."""
         self.confidence_meter.set_threshold(self.vad_threshold_spinbox.value())
         try:
@@ -455,19 +505,31 @@ class GatePanel(QWidget):
                 mode = 0
 
             self.processor.set_gate_mode(mode)
-            self.processor.set_vad_threshold(self.vad_threshold_spinbox.value())
-            self.processor.set_vad_hold_time(self.vad_hold_spinbox.value())
-            self.processor.set_vad_pre_gain(self.vad_pre_gain_spinbox.value())
+            self.processor.set_vad_threshold(
+                self._precise_value("vad_threshold", self.vad_threshold_spinbox)
+            )
+            self.processor.set_vad_hold_time(
+                self._precise_value("vad_hold_time_ms", self.vad_hold_spinbox)
+            )
+            self.processor.set_vad_pre_gain(
+                self._precise_value("vad_pre_gain", self.vad_pre_gain_spinbox)
+            )
             self.refresh_vad_status()
         except AttributeError:
+            if propagate_errors:
+                raise
             # VAD not available - show shorter error message
             self.vad_info_label.setText("VAD: Not available")
         except Exception as e:
+            if propagate_errors:
+                raise
             # Truncate long error messages to prevent layout issues
             error_msg = str(e)
             if len(error_msg) > 40:
                 error_msg = error_msg[:37] + "..."
             self.vad_info_label.setText(f"VAD: {error_msg}")
+        if not self._applying_settings:
+            self.configurationEdited.emit("VAD setting edit")
 
     def _update_vad_controls_enabled(self):
         """Enable/disable VAD controls based on gate mode and auto-threshold state."""
@@ -515,46 +577,74 @@ class GatePanel(QWidget):
         self.margin_spinbox.setEnabled(auto_threshold_enabled)
         self._refresh_threshold_summary()
 
-    def _update_auto_threshold(self):
+    def _update_auto_threshold(self, *, propagate_errors: bool = False):
         """Update auto-threshold configuration."""
         # Always update UI enable/disable states first (before PyO3 calls)
         self._update_vad_controls_enabled()
 
         try:
             enabled = self.auto_threshold_checkbox.isChecked()
-            margin = self.margin_spinbox.value()
+            margin = self._precise_value("gate_margin_db", self.margin_spinbox)
             self.processor.set_auto_threshold(enabled)
             self.processor.set_gate_margin(margin)
             self._refresh_threshold_summary()
         except AttributeError:
+            if propagate_errors:
+                raise
             logger.debug("Auto-threshold controls unavailable", exc_info=True)
-
-    def update_vad_confidence(self, confidence: float):
-        """Update VAD confidence meter (called from main window)."""
-        self.confidence_meter.set_confidence(confidence)
-        try:
-            self._latest_noise_floor_db = float(self.processor.get_noise_floor())
         except Exception:
-            self._latest_noise_floor_db = -60.0
+            if propagate_errors:
+                raise
+            logger.debug("Auto-threshold update failed", exc_info=True)
+        if not self._applying_settings:
+            self.configurationEdited.emit("Gate threshold edit")
+
+    def update_vad_confidence(self, confidence: float | None):
+        """Update measured confidence and noise floor, including unavailable state."""
+        vad_available = self._is_vad_available()
+        self.confidence_meter.set_confidence(confidence if vad_available else None)
+        self._latest_noise_floor_db = None
+        if confidence is not None and math.isfinite(confidence) and vad_available:
+            try:
+                floor = float(self.processor.get_noise_floor())
+                if math.isfinite(floor):
+                    self._latest_noise_floor_db = floor
+            except (AttributeError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
+                pass
         self.refresh_vad_status()
+        self._refresh_threshold_summary()
 
     def get_settings(self) -> dict:
         """Get current gate settings as a dictionary."""
         settings = {
             "enabled": self.enabled_checkbox.isChecked(),
-            "threshold_db": self.threshold_spinbox.value(),
-            "attack_ms": self.attack_spinbox.value(),
-            "release_ms": self.release_spinbox.value(),
+            "threshold_db": self._precise_value("threshold_db", self.threshold_spinbox),
+            "attack_ms": self._precise_value("attack_ms", self.attack_spinbox),
+            "release_ms": self._precise_value("release_ms", self.release_spinbox),
             "gate_mode": self.gate_mode_combo.currentIndex(),
-            "vad_threshold": self.vad_threshold_spinbox.value(),
-            "vad_hold_time_ms": self.vad_hold_spinbox.value(),
-            "vad_pre_gain": self.vad_pre_gain_spinbox.value(),
+            "vad_threshold": self._precise_value("vad_threshold", self.vad_threshold_spinbox),
+            "vad_hold_time_ms": self._precise_value("vad_hold_time_ms", self.vad_hold_spinbox),
+            "vad_pre_gain": self._precise_value("vad_pre_gain", self.vad_pre_gain_spinbox),
             "auto_threshold_enabled": self.auto_threshold_checkbox.isChecked(),
-            "gate_margin_db": self.margin_spinbox.value(),
+            "gate_margin_db": self._precise_value("gate_margin_db", self.margin_spinbox),
         }
         return settings
 
-    def set_settings(self, settings: dict) -> None:
+    def set_settings(self, settings: dict, *, propagate_errors: bool = True) -> None:
+        was_synchronous = self._synchronous_updates
+        was_applying = self._applying_settings
+        self._rate_limiter.cancel()
+        self._synchronous_updates = True
+        self._applying_settings = True
+        try:
+            self._set_settings(settings, propagate_errors=propagate_errors)
+        finally:
+            self._applying_settings = was_applying
+            self._synchronous_updates = was_synchronous
+
+    def _set_settings(
+        self, settings: dict, *, propagate_errors: bool = True
+    ) -> None:
         """Apply settings from a dictionary with proper signal blocking."""
         if "enabled" in settings:
             self.enabled_checkbox.blockSignals(True)
@@ -613,13 +703,17 @@ class GatePanel(QWidget):
             self.margin_spinbox.blockSignals(False)
             self.margin_slider.blockSignals(False)
 
+        self._remember_exact_values(settings)
+
+        self._remember_exact_values(settings)
+
         # Preserve stored VAD modes during preset restore even if the backend
         # has not reported availability yet. Interactive changes still fall back.
         self._preserve_unavailable_vad_mode = True
         try:
             self._update_gate()
-            self._update_vad_mode()
+            self._update_vad_mode(propagate_errors=propagate_errors)
             self._update_vad_controls_enabled()
-            self._update_auto_threshold()
+            self._update_auto_threshold(propagate_errors=propagate_errors)
         finally:
             self._preserve_unavailable_vad_mode = False

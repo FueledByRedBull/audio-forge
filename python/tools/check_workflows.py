@@ -35,6 +35,7 @@ RUN_REQUIRED_MARKERS = frozenset(
         "msi_smoke.py",
         "release_provenance.py",
         "gh release upload",
+        "gh release download",
         "gh release create",
         "gh release edit",
         "gh run download",
@@ -253,6 +254,13 @@ def _check_required_gates(
             "package_smoke.py --dist",
             "--smoke-test",
             "gh release upload",
+            "gh release download",
+            "Assert-AssetMatches $assetPath (Join-Path $verifyDir $assetName) $assetName",
+            "gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY "
+            '--title "AudioForge $version" --notes-file $notesPath',
+            "Assert-ReleaseAssetNames $release $expectedAssetNames -AllowMissing",
+            "Assert-ReleaseAssetNames $release $expectedAssetNames",
+            "Compare-Object -ReferenceObject $ExpectedNames -DifferenceObject $actualNames -CaseSensitive",
         )
         for needle in required:
             if not has_gate(needle):

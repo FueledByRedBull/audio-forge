@@ -6,7 +6,7 @@ Controls sibilance reduction stage placed between noise suppression and EQ.
 
 import logging
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
@@ -38,10 +38,16 @@ logger = logging.getLogger(__name__)
 class DeEsserPanel(QWidget):
     """De-esser parameter control panel."""
 
+    configurationEdited = pyqtSignal(str)
+
     def __init__(self, processor):
         super().__init__()
         self.processor = processor
         self._rate_limiter = RateLimiter(interval_ms=33)
+        self._applying_settings = False
+        self._synchronous_updates = False
+        self._exact_values: dict[str, float] = {}
+        self._exact_display_values: dict[str, float] = {}
         self._setup_ui()
         self._connect_signals()
 
@@ -320,6 +326,22 @@ class DeEsserPanel(QWidget):
         self._update_auto_controls_enabled()
         self._update_deesser()
 
+    def _precise_value(self, key: str, control: QDoubleSpinBox) -> float:
+        value = float(control.value())
+        if key not in self._exact_values or self._exact_display_values.get(key) != value:
+            self._exact_values[key] = value
+            self._exact_display_values[key] = value
+        return self._exact_values[key]
+
+    def apply_settings_synchronously(self, settings: dict) -> None:
+        """Apply a bulk config inline and cancel any superseded slider edit."""
+        self._rate_limiter.cancel()
+        self._synchronous_updates = True
+        try:
+            self.set_settings(settings)
+        finally:
+            self._synchronous_updates = False
+
     def _update_auto_controls_enabled(self):
         auto_enabled = self.auto_checkbox.isChecked()
         self.threshold_slider.setEnabled(not auto_enabled)
@@ -385,60 +407,83 @@ class DeEsserPanel(QWidget):
         self._enforce_band_gap("high")
         self._update_deesser()
 
-    def _update_deesser(self):
+    def _update_deesser(self, *, propagate_errors: bool = False):
         enabled = self.enabled_checkbox.isChecked()
         auto_enabled = self.auto_checkbox.isChecked()
-        auto_amount = self.auto_amount_spinbox.value()
-        low_cut_hz = self.low_cut_spinbox.value()
-        high_cut_hz = self.high_cut_spinbox.value()
-        threshold_db = self.threshold_spinbox.value()
-        ratio = self.ratio_spinbox.value()
-        attack_ms = self.attack_spinbox.value()
-        release_ms = self.release_spinbox.value()
-        max_reduction_db = self.max_reduction_spinbox.value()
+        auto_amount = self._precise_value("auto_amount", self.auto_amount_spinbox)
+        low_cut_hz = self._precise_value("low_cut_hz", self.low_cut_spinbox)
+        high_cut_hz = self._precise_value("high_cut_hz", self.high_cut_spinbox)
+        threshold_db = self._precise_value("threshold_db", self.threshold_spinbox)
+        ratio = self._precise_value("ratio", self.ratio_spinbox)
+        attack_ms = self._precise_value("attack_ms", self.attack_spinbox)
+        release_ms = self._precise_value("release_ms", self.release_spinbox)
+        max_reduction_db = self._precise_value("max_reduction_db", self.max_reduction_spinbox)
 
         def apply():
-            self.processor.set_deesser_enabled(enabled)
-            self.processor.set_deesser_auto_enabled(auto_enabled)
-            self.processor.set_deesser_auto_amount(auto_amount)
-            # Expand first so the native setters do not clamp a valid new
-            # interval against the previous narrow range.
-            if high_cut_hz > self.processor.get_deesser_high_cut_hz():
-                self.processor.set_deesser_high_cut_hz(high_cut_hz)
-                self.processor.set_deesser_low_cut_hz(low_cut_hz)
-            else:
-                self.processor.set_deesser_low_cut_hz(low_cut_hz)
-                self.processor.set_deesser_high_cut_hz(high_cut_hz)
-            self.processor.set_deesser_threshold_db(threshold_db)
-            self.processor.set_deesser_ratio(ratio)
-            self.processor.set_deesser_attack_ms(attack_ms)
-            self.processor.set_deesser_release_ms(release_ms)
-            self.processor.set_deesser_max_reduction_db(max_reduction_db)
+            try:
+                self.processor.set_deesser_enabled(enabled)
+                self.processor.set_deesser_auto_enabled(auto_enabled)
+                self.processor.set_deesser_auto_amount(auto_amount)
+                # Expand first so the native setters do not clamp a valid new
+                # interval against the previous narrow range.
+                if high_cut_hz > self.processor.get_deesser_high_cut_hz():
+                    self.processor.set_deesser_high_cut_hz(high_cut_hz)
+                    self.processor.set_deesser_low_cut_hz(low_cut_hz)
+                else:
+                    self.processor.set_deesser_low_cut_hz(low_cut_hz)
+                    self.processor.set_deesser_high_cut_hz(high_cut_hz)
+                self.processor.set_deesser_threshold_db(threshold_db)
+                self.processor.set_deesser_ratio(ratio)
+                self.processor.set_deesser_attack_ms(attack_ms)
+                self.processor.set_deesser_release_ms(release_ms)
+                self.processor.set_deesser_max_reduction_db(max_reduction_db)
+            except Exception:
+                if propagate_errors:
+                    raise
+                logger.debug("De-esser update failed", exc_info=True)
 
-        try:
+        if self._synchronous_updates:
+            self._rate_limiter.call_now(apply)
+        else:
             self._rate_limiter.call(apply)
-        except Exception:
-            logger.debug("De-esser update failed", exc_info=True)
+        if not self._applying_settings:
+            self.configurationEdited.emit("De-esser edit")
 
-    def update_gain_reduction(self, gr_db: float):
+    def update_gain_reduction(self, gr_db: float | None):
         self.gr_meter.set_gain_reduction(gr_db)
 
     def get_settings(self) -> dict:
         return {
             "enabled": self.enabled_checkbox.isChecked(),
             "auto_enabled": self.auto_checkbox.isChecked(),
-            "auto_amount": self.auto_amount_spinbox.value(),
-            "low_cut_hz": self.low_cut_spinbox.value(),
-            "high_cut_hz": self.high_cut_spinbox.value(),
-            "threshold_db": self.threshold_spinbox.value(),
-            "ratio": self.ratio_spinbox.value(),
-            "attack_ms": self.attack_spinbox.value(),
-            "release_ms": self.release_spinbox.value(),
-            "max_reduction_db": self.max_reduction_spinbox.value(),
+            "auto_amount": self._precise_value("auto_amount", self.auto_amount_spinbox),
+            "low_cut_hz": self._precise_value("low_cut_hz", self.low_cut_spinbox),
+            "high_cut_hz": self._precise_value("high_cut_hz", self.high_cut_spinbox),
+            "threshold_db": self._precise_value("threshold_db", self.threshold_spinbox),
+            "ratio": self._precise_value("ratio", self.ratio_spinbox),
+            "attack_ms": self._precise_value("attack_ms", self.attack_spinbox),
+            "release_ms": self._precise_value("release_ms", self.release_spinbox),
+            "max_reduction_db": self._precise_value("max_reduction_db", self.max_reduction_spinbox),
         }
 
     def set_settings(self, settings: dict):
-        self.enabled_checkbox.setChecked(settings.get("enabled", False))
+        was_applying = self._applying_settings
+        was_synchronous = self._synchronous_updates
+        self._rate_limiter.cancel()
+        self._applying_settings = True
+        self._synchronous_updates = True
+        try:
+            self._set_settings(settings)
+        finally:
+            self._applying_settings = was_applying
+            self._synchronous_updates = was_synchronous
+
+    def _set_settings(self, settings: dict):
+        enabled_blocked = self.enabled_checkbox.blockSignals(True)
+        try:
+            self.enabled_checkbox.setChecked(settings.get("enabled", False))
+        finally:
+            self.enabled_checkbox.blockSignals(enabled_blocked)
         auto_enabled = bool(settings.get("auto_enabled", True))
 
         low = float(settings.get("low_cut_hz", 4000.0))
@@ -496,4 +541,27 @@ class DeEsserPanel(QWidget):
 
         self._enforce_band_gap("low")
         self._update_auto_controls_enabled()
-        self._update_deesser()
+        exact_values = {
+            "auto_amount": auto_amount,
+            "low_cut_hz": low,
+            "high_cut_hz": high,
+            "threshold_db": threshold,
+            "ratio": ratio,
+            "attack_ms": attack,
+            "release_ms": release,
+            "max_reduction_db": max_red,
+        }
+        controls = {
+            "auto_amount": self.auto_amount_spinbox,
+            "low_cut_hz": self.low_cut_spinbox,
+            "high_cut_hz": self.high_cut_spinbox,
+            "threshold_db": self.threshold_spinbox,
+            "ratio": self.ratio_spinbox,
+            "attack_ms": self.attack_spinbox,
+            "release_ms": self.release_spinbox,
+            "max_reduction_db": self.max_reduction_spinbox,
+        }
+        for key, exact in exact_values.items():
+            self._exact_values[key] = float(exact)
+            self._exact_display_values[key] = float(controls[key].value())
+        self._update_deesser(propagate_errors=True)

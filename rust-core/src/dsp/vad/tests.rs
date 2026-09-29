@@ -273,6 +273,66 @@ mod tests {
     }
 
     #[test]
+    fn test_precomputed_resampler_matches_reference_samples_at_supported_rates() {
+        for sample_rate in [48_000_u32, 96_000, 192_000] {
+            let input_len =
+                ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32) / SILERO_SAMPLE_RATE as f32)
+                    .ceil() as usize;
+            let input: Vec<f32> = (0..input_len)
+                .map(|index| {
+                    let time = index as f32 / sample_rate as f32;
+                    let body = 0.3 * (2.0 * std::f32::consts::PI * 233.0 * time).sin()
+                        + 0.1 * (2.0 * std::f32::consts::PI * 3_100.0 * time).sin();
+                    body + if index == 0 || index + 1 == input_len { 0.25 } else { 0.0 }
+                })
+                .collect();
+            let ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
+            let kernel = ResampleKernel::new(input.len(), ratio);
+            let mut expected = Vec::new();
+            let mut actual = Vec::new();
+
+            anti_aliased_resample_into(&input, ratio, &mut expected);
+            anti_aliased_resample_into_with_kernel(&input, ratio, Some(&kernel), &mut actual);
+
+            assert_eq!(actual, expected, "sample_rate={sample_rate}");
+        }
+    }
+
+    #[test]
+    #[ignore = "release-mode VAD resampler hot-path cost measurement"]
+    fn benchmark_vad_resampler_cost() {
+        const REPEATS: usize = 400;
+        for sample_rate in [48_000_u32, 96_000, 192_000] {
+            let input_len =
+                ((SILERO_WINDOW_SIZE as f32 * sample_rate as f32) / SILERO_SAMPLE_RATE as f32)
+                    .ceil() as usize;
+            let input: Vec<f32> = (0..input_len)
+                .map(|index| {
+                    let time = index as f32 / sample_rate as f32;
+                    (0.3 * (2.0 * std::f32::consts::PI * 233.0 * time).sin())
+                        + (0.1 * (2.0 * std::f32::consts::PI * 3_100.0 * time).sin())
+                })
+                .collect();
+            let ratio = SILERO_SAMPLE_RATE as f32 / sample_rate as f32;
+            let kernel = ResampleKernel::new(input.len(), ratio);
+            let mut output = Vec::with_capacity(SILERO_WINDOW_SIZE);
+            for _ in 0..5 {
+                anti_aliased_resample_into_with_kernel(&input, ratio, Some(&kernel), &mut output);
+            }
+            let started = std::time::Instant::now();
+            for _ in 0..REPEATS {
+                anti_aliased_resample_into_with_kernel(&input, ratio, Some(&kernel), &mut output);
+                std::hint::black_box(&output);
+            }
+            let elapsed = started.elapsed();
+            println!(
+                "VAD resampler {sample_rate} Hz: {:.2} ns/output sample",
+                elapsed.as_nanos() as f64 / (REPEATS * output.len()) as f64
+            );
+        }
+    }
+
+    #[test]
     fn test_silero_model_input_prepends_context_and_applies_gain() {
         let mut context = [0.0_f32; SILERO_CONTEXT_SIZE];
         for (index, sample) in context.iter_mut().enumerate() {
@@ -514,11 +574,45 @@ mod tests {
         };
 
         let frame = vec![0.0f32; vad.window_size()];
+        let scratch_capacity = vad.resample_scratch.capacity();
         let _ = vad.process(&frame);
 
         assert_eq!(vad.audio_512.len(), SILERO_WINDOW_SIZE);
         assert_eq!(vad.gained_audio.len(), SILERO_MODEL_INPUT_SIZE);
         assert_eq!(vad.resample_scratch.len(), SILERO_WINDOW_SIZE);
+        assert_eq!(vad.resample_scratch.capacity(), scratch_capacity);
+    }
+
+    #[test]
+    fn test_model_optional_vad_decisions_match_reference_resampling() {
+        let Some(mut optimized) = optional_silero_vad(48_000, 0.5) else {
+            return;
+        };
+        let Some(mut reference) = optional_silero_vad(48_000, 0.5) else {
+            return;
+        };
+        reference.resample_kernel = None;
+        let window_size = optimized.window_size();
+
+        for frame_index in 0..12 {
+            let amplitude = if frame_index < 6 { 0.22 } else { 0.006 };
+            let frame: Vec<f32> = (0..window_size)
+                .map(|sample_index| {
+                    let sample = frame_index * window_size + sample_index;
+                    let time = sample as f32 / 48_000.0;
+                    amplitude
+                        * ((2.0 * std::f32::consts::PI * 223.0 * time).sin()
+                            + 0.3 * (2.0 * std::f32::consts::PI * 1_970.0 * time).sin())
+                })
+                .collect();
+            let optimized_probability = optimized.process_latest(&frame).unwrap();
+            let reference_probability = reference.process_latest(&frame).unwrap();
+            assert_eq!(
+                optimized_probability.map(f32::to_bits),
+                reference_probability.map(f32::to_bits),
+                "frame_index={frame_index}"
+            );
+        }
     }
 
     #[test]

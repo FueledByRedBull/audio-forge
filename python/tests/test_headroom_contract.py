@@ -5,7 +5,7 @@ import pytest
 from types import SimpleNamespace
 
 from mic_eq.analysis.auto_eq_parts import headroom
-from mic_eq.config import EQSettings, Preset
+from mic_eq.config import EQBandSettings, EQSettings, Preset
 from mic_eq.analysis.auto_eq_parts.optimizer import calculate_eq_bands
 from mic_eq import CORE_AVAILABLE
 
@@ -116,6 +116,106 @@ def test_typed_preview_rejects_inaccurate_fallback(monkeypatch):
         headroom.simulate_candidate_chain(
             np.zeros(480, dtype=np.float32), 48_000, EQSettings().to_dict()
         )
+
+
+def test_candidate_headroom_simulates_the_merged_typed_eq_once_and_returns_it(
+    monkeypatch,
+):
+    tone = list(EQSettings().bands)
+    tone[0] = EQBandSettings(
+        filter_type="high_pass",
+        frequency_hz=125.0,
+        gain_db=0.0,
+        q=0.71,
+        slope_db_per_octave=48,
+    )
+    tone[4] = EQBandSettings(
+        filter_type="notch",
+        frequency_hz=2200.0,
+        gain_db=-4.0,
+        q=3.2,
+    )
+    incumbent = EQSettings(bands=tone)
+    observed: list[tuple[list[tuple[float, float, float]], dict]] = []
+
+    def simulate(_audio, _rate, bands, settings):
+        observed.append((bands, settings))
+        return (
+            {
+                "pre_limiter_true_peak_headroom_db": 2.0,
+                "limiter_gain_reduction_db": 0.0,
+                "true_peak_limiter_gain_reduction_db": 0.0,
+            },
+            None,
+        )
+
+    monkeypatch.setattr(headroom, "_native_simulate", simulate)
+    result = headroom.apply_headroom_validation(
+        np.zeros(480, dtype=np.float32),
+        48_000,
+        {
+            "band_freqs": [
+                80.0, 160.0, 320.0, 640.0, 1280.0,
+                2500.0, 5000.0, 8000.0, 12000.0, 16000.0,
+            ],
+            "band_gains": [1.0] * 10,
+            "band_qs": [1.41] * 10,
+            "enabled": True,
+            "apply_recommended": True,
+        },
+        chain_settings={
+            "full_chain": True,
+            "input_pre_filtered": False,
+            "processing_mode": "normal",
+        },
+        candidate_base_eq_settings=incumbent.to_dict(),
+    )
+
+    assert result["headroom_validation"]["authoritative"] is True
+    assert result["headroom_validation"]["safe"] is True
+    assert result["validated_candidate_eq"] is not None
+    candidate = EQSettings.from_dict(result["validated_candidate_eq"])
+    assert candidate.tone_bands == tuple(tone)
+    assert len(observed) == 1
+    native_bands, native_settings = observed[0]
+    assert native_bands == [
+        (band.frequency_hz, band.gain_db, band.q) for band in tone
+    ]
+    assert native_settings["full_chain"] is True
+    assert native_settings["eq_bands"] == [band.to_native() for band in tone]
+    assert native_settings["correction_bands"] == [
+        band.to_native() for band in candidate.correction_bands or ()
+    ]
+
+
+def test_candidate_headroom_native_failure_is_non_applicable(monkeypatch):
+    monkeypatch.setattr(
+        headroom,
+        "_native_simulate",
+        lambda *_: (None, {"kind": "invalid_result", "message": "metrics missing"}),
+    )
+    result = headroom.apply_headroom_validation(
+        np.zeros(480, dtype=np.float32),
+        48_000,
+        {
+            "band_freqs": [
+                80.0, 160.0, 320.0, 640.0, 1280.0,
+                2500.0, 5000.0, 8000.0, 12000.0, 16000.0,
+            ],
+            "band_gains": [1.0] * 10,
+            "band_qs": [1.41] * 10,
+            "apply_recommended": True,
+        },
+        chain_settings={"full_chain": True, "input_pre_filtered": False},
+        candidate_base_eq_settings=EQSettings().to_dict(),
+    )
+
+    assert result["apply_recommended"] is False
+    assert result["recommendation_status"] == "abstain"
+    assert result["validated_candidate_eq"] is None
+    assert result["headroom_validation"]["status"] == "unavailable"
+    assert "metrics missing" in result["headroom_validation"]["reason"]
+    assert result["abstention_reasons"]
 
 
 @pytest.mark.skipif(not CORE_AVAILABLE, reason="native extension is not built")

@@ -2586,17 +2586,19 @@ mod tests {
         }
 
         let rms = (square_sum / sample_count as f64).sqrt();
+        // Deterministic multi-block integration fingerprint; component tests
+        // independently check envelope timing, spectral response, and ceilings.
         assert!(
-            (rms - 0.185_686_033_818).abs() <= 1.0e-6,
+            (rms - 0.141_322_069_092).abs() <= 1.0e-6,
             "rms={rms:.12} peak={peak:.9} weighted={weighted_sum:.12} compressor={max_compressor_gr:.9} deesser={max_deesser_gr:.9} limiter={max_limiter_gr:.9} events={limited_events} checkpoints={checkpoints:?}"
         );
-        assert!((peak - 0.500_301_66).abs() <= 2.0e-6);
-        assert!((weighted_sum - 2_566.455_958_423).abs() <= 0.05);
-        assert!((max_compressor_gr - 8.746_429).abs() <= 0.001);
-        assert!((max_deesser_gr - 10.0).abs() <= 0.001);
-        assert!((max_limiter_gr - 4.348_602).abs() <= 0.001);
-        assert!((25..=29).contains(&limited_events));
-        let expected = [-0.032_192_655, 0.352_205_4, 0.352_831_96, 0.064_956_3];
+        assert!((peak - 0.498_408_62).abs() <= 2.0e-6);
+        assert!((weighted_sum - 1_701.332_711_963).abs() <= 0.05);
+        assert!((max_compressor_gr - 11.566_024).abs() <= 0.001);
+        assert!((max_deesser_gr - 4.712_847).abs() <= 0.001);
+        assert!((max_limiter_gr - 0.826_814_9).abs() <= 0.001);
+        assert!((5..=9).contains(&limited_events));
+        let expected = [-0.012_534_169, 0.209_899_89, 0.251_204_85, 0.091_641_47];
         assert_eq!(checkpoints.len(), expected.len());
         for (actual, expected) in checkpoints.into_iter().zip(expected) {
             assert!((actual - expected).abs() <= 2.0e-5);
@@ -3058,6 +3060,208 @@ mod tests {
             .map(|offset| body_start + offset)
             .unwrap_or_else(|| panic!("missing {end_marker}"));
         &source[body_start..end]
+    }
+
+    #[test]
+    fn native_audit_02_backlog_reset_keeps_resampler_output_writable() {
+        for input_rate in [44_100, 96_000] {
+            let mut resampler = build_sinc_resampler(input_rate, TARGET_SAMPLE_RATE, 1024).unwrap();
+            let mut output = resampler.output_buffer_allocate(true);
+            let output_len = output[0].len();
+
+            // Backlog recovery resets scratch contents without changing the
+            // output slice length required by Rubato.
+            clear_resampler_output_samples(&mut output);
+            assert_eq!(output[0].len(), output_len);
+
+            let frame_len = resampler.input_frames_next();
+            let input = vec![0.25; frame_len];
+            let input_slices = [input.as_slice()];
+            assert!(resampler
+                .process_into_buffer(&input_slices, &mut output, None)
+                .is_ok());
+        }
+    }
+
+    #[test]
+    fn native_audit_02_input_resampler_errors_request_observable_recovery() {
+        let source = include_str!("dsp_loop.rs");
+        assert!(source.contains("signal_input_resampler_failure("));
+        assert!(include_str!("resampling.rs").contains("RtErrorCode::InputResamplerFailed"));
+
+        let error = AtomicU32::new(RtErrorCode::None as u32);
+        let restart = AtomicBool::new(false);
+        signal_input_resampler_failure(&error, &restart);
+        assert_eq!(
+            RtErrorCode::from_u32(error.load(Ordering::Acquire)),
+            RtErrorCode::InputResamplerFailed
+        );
+        assert!(restart.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn native_audit_03_recovery_never_falls_back_to_default_devices() {
+        let source = include_str!("recovery.rs");
+        let service = source_between(
+            source,
+            "pub fn service_recovery(",
+            "/// Whether a restart has been requested",
+        );
+        assert!(service.contains("input_endpoint_id.as_deref()"));
+        assert!(service.contains("output_endpoint_id.as_deref()"));
+        assert!(!service.contains("start(None, None)"));
+    }
+
+    #[test]
+    fn native_audit_01_hum_tracker_keeps_50_and_60_hz_inputs_finite() {
+        for frequency_hz in [50.0_f32, 60.0] {
+            let sample_rate = 48_000.0_f32;
+            let mut state = AdaptiveInputCleanupState::new(sample_rate);
+            state.set_mode(InputCleanupMode::Gentle);
+            let sample_count = state.hum_window_samples * 4;
+            let input: Vec<f32> = (0..sample_count)
+                .map(|index| {
+                    0.08 * (2.0 * std::f32::consts::PI * frequency_hz * index as f32
+                        / sample_rate)
+                        .sin()
+                })
+                .collect();
+
+            state.analyze_input(&input);
+
+            assert!(state.hum_phase_valid);
+            assert!(state.hum_line_hz.is_finite());
+            assert!(
+                (state.hum_line_hz - frequency_hz).abs() < 1.0,
+                "tracked={} expected={frequency_hz}",
+                state.hum_line_hz
+            );
+            state.reset_dynamic_state();
+            assert!(!state.hum_phase_valid);
+            assert_eq!(state.hum_windows_observed, 0);
+        }
+    }
+
+    #[test]
+    fn native_audit_11_output_meter_uses_the_processed_block_duration() {
+        let source = include_str!("dsp_loop.rs");
+        assert!(source.contains("smoothing_coeff_for_block"));
+
+        let meter_after_three_seconds = |blocks: &[usize]| {
+            let mut power = 0.0_f32;
+            let mut samples_left = 3 * 48_000;
+            for requested in blocks {
+                let block = (*requested).min(samples_left);
+                let coefficient = smoothing_coeff_for_block(48_000.0, 3_000.0, block);
+                power = coefficient * power + (1.0 - coefficient);
+                samples_left -= block;
+                if samples_left == 0 {
+                    break;
+                }
+            }
+            assert_eq!(samples_left, 0);
+            power
+        };
+
+        let regular_240 = meter_after_three_seconds(&vec![240; 600]);
+        let regular_480 = meter_after_three_seconds(&vec![480; 300]);
+        let pattern = [137, 503, 1_081, 29, 240, 900];
+        let mut irregular = Vec::new();
+        let mut samples = 0;
+        while samples < 3 * 48_000 {
+            let next = pattern[irregular.len() % pattern.len()]
+                .min(3 * 48_000 - samples);
+            irregular.push(next);
+            samples += next;
+        }
+        let irregular = meter_after_three_seconds(&irregular);
+        let expected = 1.0 - (-1.0_f32).exp();
+        assert!((regular_240 - expected).abs() < 1.0e-5);
+        assert!((regular_480 - expected).abs() < 1.0e-5);
+        assert!((irregular - expected).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn native_audit_22_stop_does_not_rebuild_the_shadow_noise_engine() {
+        let source = include_str!("dsp_loop.rs");
+        let stop = source_between(source, "pub fn stop(", "// Reset DSP state");
+        assert!(!stop.contains("new_noise_suppression_engine"));
+        assert_eq!(source.matches("new_noise_suppression_engine(").count(), 1);
+
+        let processor = include_str!("../processor.rs");
+        let constructor = source_between(
+            processor,
+            "pub fn new() -> Self {",
+            "impl Default for AudioProcessor",
+        );
+        assert!(!constructor.contains("new_noise_suppression_engine"));
+    }
+
+    #[test]
+    fn native_audit_28_capture_partial_completion_progress_level_and_restart() {
+        let rb = AudioRingBuffer::new(16);
+        let (mut producer, mut consumer) = rb.split();
+        let pos = AtomicUsize::new(0);
+        let target = AtomicUsize::new(5);
+        let level = AtomicU32::new((-120.0_f32).to_bits());
+
+        assert_eq!(
+            record_raw_recording_block(
+                &[0.1, 0.2, 0.3, 0.4],
+                20,
+                &mut producer,
+                &pos,
+                &target,
+                &level,
+            ),
+            4
+        );
+        assert_eq!(pos.load(Ordering::Acquire), 4);
+        assert!((pos.load(Ordering::Acquire) as f32 / target.load(Ordering::Acquire) as f32 - 0.8).abs() < 1e-6);
+        let expected_level = 20.0 * ((0.3_f32.powi(2) + 0.4_f32.powi(2)) / 2.0).sqrt().log10();
+        assert!((f32::from_bits(level.load(Ordering::Relaxed)) - expected_level).abs() < 1e-5);
+
+        assert_eq!(
+            record_raw_recording_block(
+                &[0.8, 0.9, 1.0],
+                20,
+                &mut producer,
+                &pos,
+                &target,
+                &level,
+            ),
+            1
+        );
+        assert_eq!(pos.load(Ordering::Acquire), target.load(Ordering::Acquire));
+        let mut captured = [0.0; 5];
+        assert_eq!(consumer.read(&mut captured), 5);
+        assert_eq!(captured, [0.1, 0.2, 0.3, 0.4, 0.8]);
+
+        // A canceled/restarted capture begins at zero and contains only its
+        // new tap samples.
+        pos.store(0, Ordering::Release);
+        target.store(2, Ordering::Release);
+        assert_eq!(
+            record_raw_recording_block(
+                &[-0.5, -0.25, 0.25],
+                20,
+                &mut producer,
+                &pos,
+                &target,
+                &level,
+            ),
+            2
+        );
+        let mut restarted = [0.0; 2];
+        assert_eq!(consumer.read(&mut restarted), 2);
+        assert_eq!(restarted, [-0.5, -0.25]);
+    }
+
+    #[test]
+    fn native_audit_31_dsp_loop_has_no_inert_heartbeat_timer() {
+        let source = include_str!("dsp_loop.rs");
+        assert!(!source.contains("last_heartbeat"));
+        assert!(!source.contains("HEARTBEAT_INTERVAL"));
     }
 
     fn source_between<'a>(source: &'a str, start_marker: &str, end_marker: &str) -> &'a str {

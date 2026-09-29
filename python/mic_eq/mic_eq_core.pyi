@@ -229,7 +229,9 @@ def simulate_eq_v2(
     sample_rate: float,
     bands: Sequence[tuple[str, float, float, float, int, bool]],
     return_output_audio: bool = False,
-) -> dict[str, Any]: ...
+) -> dict[str, Any]:
+    """When requested, output_audio is an owned contiguous NDArray[float32]."""
+    ...
 def measure_integrated_loudness(
     audio: npt.NDArray[np.float32], sample_rate: int
 ) -> float: ...
@@ -243,7 +245,14 @@ def simulate_auto_eq_chain(
     sample_rate: float,
     bands: Sequence[tuple[float, float, float]],
     settings: Mapping[str, object] | None = None,
-) -> dict[str, Any]: ...
+) -> dict[str, Any]:
+    """output_audio is an owned contiguous NDArray[float32] when requested.
+
+    silence_level_delta_db is float | None: aligned output minus input RMS
+    on measurable quiet blocks, or None when no such evidence exists.
+    silence_analysis_block_count reports the number of measured quiet blocks.
+    """
+    ...
 def simulate_auto_makeup_control(
     audio: npt.NDArray[np.float32],
     sample_rate: float,
@@ -251,7 +260,9 @@ def simulate_auto_makeup_control(
     noise_floor_db: float,
     noise_reliability: float,
     settings: Mapping[str, object] | None = None,
-) -> dict[str, Any]: ...
+) -> dict[str, Any]:
+    """When requested, output_audio is an owned contiguous NDArray[float32]."""
+    ...
 def simulate_product_resampler(
     samples: Sequence[float],
     input_rate: int,
@@ -267,7 +278,9 @@ def simulate_gate_suppressor_order(
     suppressor_before_gate: bool,
     suppressor_strength: float = 1.0,
     settings: Mapping[str, object] | None = None,
-) -> dict[str, Any]: ...
+) -> dict[str, Any]:
+    """output_audio and optional dry_audio are owned contiguous NDArray[float32]."""
+    ...
 def configure_deepfilter_runtime_paths(
     library_path: str | None = None, model_path: str | None = None
 ) -> None: ...

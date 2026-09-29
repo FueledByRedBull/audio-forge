@@ -154,27 +154,27 @@ impl AtomicGateControlState {
 
     fn snapshot(&self) -> Option<GateControlState> {
         stable_control_snapshot(&self.seq, || GateControlState {
-                enabled: self.enabled.load(Ordering::Relaxed),
-                threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
-                attack_ms: f64::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
-                release_ms: f64::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
-                #[cfg(feature = "vad")]
-                gate_mode: match self.gate_mode.load(Ordering::Relaxed) {
-                    1 => GateMode::VadAssisted,
-                    2 => GateMode::VadOnly,
-                    _ => GateMode::ThresholdOnly,
-                },
-                #[cfg(feature = "vad")]
-                vad_threshold: f32::from_bits(self.vad_threshold_bits.load(Ordering::Relaxed)),
-                #[cfg(feature = "vad")]
-                hold_ms: f32::from_bits(self.hold_ms_bits.load(Ordering::Relaxed)),
-                #[cfg(feature = "vad")]
-                pre_gain: f32::from_bits(self.pre_gain_bits.load(Ordering::Relaxed)),
-                #[cfg(feature = "vad")]
-                auto_threshold: self.auto_threshold.load(Ordering::Relaxed),
-                #[cfg(feature = "vad")]
-                margin_db: f32::from_bits(self.margin_db_bits.load(Ordering::Relaxed)),
-            })
+            enabled: self.enabled.load(Ordering::Relaxed),
+            threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
+            attack_ms: f64::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
+            release_ms: f64::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
+            #[cfg(feature = "vad")]
+            gate_mode: match self.gate_mode.load(Ordering::Relaxed) {
+                1 => GateMode::VadAssisted,
+                2 => GateMode::VadOnly,
+                _ => GateMode::ThresholdOnly,
+            },
+            #[cfg(feature = "vad")]
+            vad_threshold: f32::from_bits(self.vad_threshold_bits.load(Ordering::Relaxed)),
+            #[cfg(feature = "vad")]
+            hold_ms: f32::from_bits(self.hold_ms_bits.load(Ordering::Relaxed)),
+            #[cfg(feature = "vad")]
+            pre_gain: f32::from_bits(self.pre_gain_bits.load(Ordering::Relaxed)),
+            #[cfg(feature = "vad")]
+            auto_threshold: self.auto_threshold.load(Ordering::Relaxed),
+            #[cfg(feature = "vad")]
+            margin_db: f32::from_bits(self.margin_db_bits.load(Ordering::Relaxed)),
+        })
     }
 
     fn set_enabled(&self, enabled: bool) {
@@ -304,9 +304,9 @@ impl AtomicSuppressorControlState {
 
     fn snapshot(&self) -> Option<SuppressorControlState> {
         stable_control_snapshot(&self.seq, || SuppressorControlState {
-                enabled: self.enabled.load(Ordering::Relaxed),
-                model: noise_model_from_u8(self.model.load(Ordering::Relaxed)),
-            })
+            enabled: self.enabled.load(Ordering::Relaxed),
+            model: noise_model_from_u8(self.model.load(Ordering::Relaxed)),
+        })
     }
 
     fn set_enabled(&self, enabled: bool) {
@@ -416,21 +416,18 @@ impl EqControlState {
                               slope_db_per_octave: &[AtomicU8; NUM_BANDS],
                               band_enabled: &[AtomicBool; NUM_BANDS]| {
                 std::array::from_fn(|index| {
-                    let frequency =
-                        f64::from_bits(frequency_bits[index].load(Ordering::Relaxed));
+                    let frequency = f64::from_bits(frequency_bits[index].load(Ordering::Relaxed));
                     let gain = f64::from_bits(gain_bits[index].load(Ordering::Relaxed));
                     let q = f64::from_bits(q_bits[index].load(Ordering::Relaxed));
-                    let filter_type = EqFilterType::from_id(
-                        filter_type[index].load(Ordering::Relaxed),
-                    )
-                    .unwrap_or_else(|| EqBandConfig::default_for_index(index).filter_type);
+                    let filter_type =
+                        EqFilterType::from_id(filter_type[index].load(Ordering::Relaxed))
+                            .unwrap_or_else(|| EqBandConfig::default_for_index(index).filter_type);
                     EqBandConfig {
                         filter_type,
                         frequency_hz: frequency,
                         gain_db: gain,
                         q,
-                        slope_db_per_octave: slope_db_per_octave[index]
-                            .load(Ordering::Relaxed),
+                        slope_db_per_octave: slope_db_per_octave[index].load(Ordering::Relaxed),
                         enabled: band_enabled[index].load(Ordering::Relaxed),
                     }
                 })
@@ -512,23 +509,19 @@ impl EqControlState {
                     .store(correction.frequency_hz.to_bits(), Ordering::Relaxed);
                 state.correction_gain_bits[index]
                     .store(correction.gain_db.to_bits(), Ordering::Relaxed);
-                state.correction_q_bits[index]
-                    .store(correction.q.to_bits(), Ordering::Relaxed);
+                state.correction_q_bits[index].store(correction.q.to_bits(), Ordering::Relaxed);
                 state.correction_filter_type[index]
                     .store(correction.filter_type as u8, Ordering::Relaxed);
                 state.correction_slope_db_per_octave[index]
                     .store(correction.slope_db_per_octave, Ordering::Relaxed);
-                state.correction_band_enabled[index]
-                    .store(correction.enabled, Ordering::Relaxed);
+                state.correction_band_enabled[index].store(correction.enabled, Ordering::Relaxed);
 
                 let tone = tone_bands[index];
-                state.frequency_bits[index]
-                    .store(tone.frequency_hz.to_bits(), Ordering::Relaxed);
+                state.frequency_bits[index].store(tone.frequency_hz.to_bits(), Ordering::Relaxed);
                 state.gain_bits[index].store(tone.gain_db.to_bits(), Ordering::Relaxed);
                 state.q_bits[index].store(tone.q.to_bits(), Ordering::Relaxed);
                 state.filter_type[index].store(tone.filter_type as u8, Ordering::Relaxed);
-                state.slope_db_per_octave[index]
-                    .store(tone.slope_db_per_octave, Ordering::Relaxed);
+                state.slope_db_per_octave[index].store(tone.slope_db_per_octave, Ordering::Relaxed);
                 state.band_enabled[index].store(tone.enabled, Ordering::Relaxed);
             }
         });
@@ -609,19 +602,17 @@ impl AtomicDeesserControlState {
 
     fn snapshot(&self) -> Option<DeesserControlState> {
         stable_control_snapshot(&self.seq, || DeesserControlState {
-                enabled: self.enabled.load(Ordering::Relaxed),
-                auto_enabled: self.auto_enabled.load(Ordering::Relaxed),
-                auto_amount: f64::from_bits(self.auto_amount_bits.load(Ordering::Relaxed)),
-                low_cut_hz: f64::from_bits(self.low_cut_hz_bits.load(Ordering::Relaxed)),
-                high_cut_hz: f64::from_bits(self.high_cut_hz_bits.load(Ordering::Relaxed)),
-                threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
-                ratio: f64::from_bits(self.ratio_bits.load(Ordering::Relaxed)),
-                attack_ms: f64::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
-                release_ms: f64::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
-                max_reduction_db: f64::from_bits(
-                    self.max_reduction_db_bits.load(Ordering::Relaxed),
-                ),
-            })
+            enabled: self.enabled.load(Ordering::Relaxed),
+            auto_enabled: self.auto_enabled.load(Ordering::Relaxed),
+            auto_amount: f64::from_bits(self.auto_amount_bits.load(Ordering::Relaxed)),
+            low_cut_hz: f64::from_bits(self.low_cut_hz_bits.load(Ordering::Relaxed)),
+            high_cut_hz: f64::from_bits(self.high_cut_hz_bits.load(Ordering::Relaxed)),
+            threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
+            ratio: f64::from_bits(self.ratio_bits.load(Ordering::Relaxed)),
+            attack_ms: f64::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
+            release_ms: f64::from_bits(self.release_ms_bits.load(Ordering::Relaxed)),
+            max_reduction_db: f64::from_bits(self.max_reduction_db_bits.load(Ordering::Relaxed)),
+        })
     }
 
     fn set_enabled(&self, enabled: bool) {
@@ -633,19 +624,35 @@ impl AtomicDeesserControlState {
     }
 
     fn set_auto_amount(&self, value: f64) {
-        self.update(|state| state.auto_amount_bits.store(value.to_bits(), Ordering::Relaxed));
+        self.update(|state| {
+            state
+                .auto_amount_bits
+                .store(value.to_bits(), Ordering::Relaxed)
+        });
     }
 
     fn set_low_cut_hz(&self, value: f64) {
-        self.update(|state| state.low_cut_hz_bits.store(value.to_bits(), Ordering::Relaxed));
+        self.update(|state| {
+            state
+                .low_cut_hz_bits
+                .store(value.to_bits(), Ordering::Relaxed)
+        });
     }
 
     fn set_high_cut_hz(&self, value: f64) {
-        self.update(|state| state.high_cut_hz_bits.store(value.to_bits(), Ordering::Relaxed));
+        self.update(|state| {
+            state
+                .high_cut_hz_bits
+                .store(value.to_bits(), Ordering::Relaxed)
+        });
     }
 
     fn set_threshold_db(&self, value: f64) {
-        self.update(|state| state.threshold_db_bits.store(value.to_bits(), Ordering::Relaxed));
+        self.update(|state| {
+            state
+                .threshold_db_bits
+                .store(value.to_bits(), Ordering::Relaxed)
+        });
     }
 
     fn set_ratio(&self, value: f64) {
@@ -653,11 +660,19 @@ impl AtomicDeesserControlState {
     }
 
     fn set_attack_ms(&self, value: f64) {
-        self.update(|state| state.attack_ms_bits.store(value.to_bits(), Ordering::Relaxed));
+        self.update(|state| {
+            state
+                .attack_ms_bits
+                .store(value.to_bits(), Ordering::Relaxed)
+        });
     }
 
     fn set_release_ms(&self, value: f64) {
-        self.update(|state| state.release_ms_bits.store(value.to_bits(), Ordering::Relaxed));
+        self.update(|state| {
+            state
+                .release_ms_bits
+                .store(value.to_bits(), Ordering::Relaxed)
+        });
     }
 
     fn set_max_reduction_db(&self, value: f64) {
@@ -749,27 +764,21 @@ impl AtomicCompressorControlState {
 
     fn snapshot(&self) -> Option<CompressorControlState> {
         stable_control_snapshot(&self.seq, || CompressorControlState {
-                enabled: self.enabled.load(Ordering::Relaxed),
-                threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
-                ratio: f64::from_bits(self.ratio_bits.load(Ordering::Relaxed)),
-                attack_ms: f64::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
-                base_release_ms: f64::from_bits(
-                    self.base_release_ms_bits.load(Ordering::Relaxed),
-                ),
-                makeup_gain_db: f64::from_bits(
-                    self.makeup_gain_db_bits.load(Ordering::Relaxed),
-                ),
-                adaptive_release: self.adaptive_release.load(Ordering::Relaxed),
-                auto_makeup_enabled: self.auto_makeup_enabled.load(Ordering::Relaxed),
-                target_lufs: f64::from_bits(self.target_lufs_bits.load(Ordering::Relaxed)),
-                noise_reference_reliability: f64::from_bits(
-                    self.noise_reference_reliability_bits
-                        .load(Ordering::Relaxed),
-                ),
-                sidechain_highpass_enabled: self
-                    .sidechain_highpass_enabled
+            enabled: self.enabled.load(Ordering::Relaxed),
+            threshold_db: f64::from_bits(self.threshold_db_bits.load(Ordering::Relaxed)),
+            ratio: f64::from_bits(self.ratio_bits.load(Ordering::Relaxed)),
+            attack_ms: f64::from_bits(self.attack_ms_bits.load(Ordering::Relaxed)),
+            base_release_ms: f64::from_bits(self.base_release_ms_bits.load(Ordering::Relaxed)),
+            makeup_gain_db: f64::from_bits(self.makeup_gain_db_bits.load(Ordering::Relaxed)),
+            adaptive_release: self.adaptive_release.load(Ordering::Relaxed),
+            auto_makeup_enabled: self.auto_makeup_enabled.load(Ordering::Relaxed),
+            target_lufs: f64::from_bits(self.target_lufs_bits.load(Ordering::Relaxed)),
+            noise_reference_reliability: f64::from_bits(
+                self.noise_reference_reliability_bits
                     .load(Ordering::Relaxed),
-            })
+            ),
+            sidechain_highpass_enabled: self.sidechain_highpass_enabled.load(Ordering::Relaxed),
+        })
     }
 
     fn set_enabled(&self, enabled: bool) {
@@ -777,7 +786,11 @@ impl AtomicCompressorControlState {
     }
 
     fn set_threshold_db(&self, value: f64) {
-        self.update(|state| state.threshold_db_bits.store(value.to_bits(), Ordering::Relaxed));
+        self.update(|state| {
+            state
+                .threshold_db_bits
+                .store(value.to_bits(), Ordering::Relaxed)
+        });
     }
 
     fn set_ratio(&self, value: f64) {
@@ -785,7 +798,11 @@ impl AtomicCompressorControlState {
     }
 
     fn set_attack_ms(&self, value: f64) {
-        self.update(|state| state.attack_ms_bits.store(value.to_bits(), Ordering::Relaxed));
+        self.update(|state| {
+            state
+                .attack_ms_bits
+                .store(value.to_bits(), Ordering::Relaxed)
+        });
     }
 
     fn set_base_release_ms(&self, value: f64) {
@@ -813,7 +830,11 @@ impl AtomicCompressorControlState {
     }
 
     fn set_target_lufs(&self, value: f64) {
-        self.update(|state| state.target_lufs_bits.store(value.to_bits(), Ordering::Relaxed));
+        self.update(|state| {
+            state
+                .target_lufs_bits
+                .store(value.to_bits(), Ordering::Relaxed)
+        });
     }
 
     fn set_noise_reference_reliability(&self, value: f64) {
@@ -897,11 +918,19 @@ impl AtomicLimiterControlState {
     }
 
     fn set_ceiling_db(&self, value: f64) {
-        self.update(|state| state.ceiling_db_bits.store(value.to_bits(), Ordering::Relaxed));
+        self.update(|state| {
+            state
+                .ceiling_db_bits
+                .store(value.to_bits(), Ordering::Relaxed)
+        });
     }
 
     fn set_release_ms(&self, value: f64) {
-        self.update(|state| state.release_ms_bits.store(value.to_bits(), Ordering::Relaxed));
+        self.update(|state| {
+            state
+                .release_ms_bits
+                .store(value.to_bits(), Ordering::Relaxed)
+        });
     }
 
     fn set_careful_output_enabled(&self, enabled: bool) {
@@ -964,17 +993,29 @@ fn apply_deesser_control(deesser: &mut DeEsser, control: &DeesserControlState) {
 
 fn apply_compressor_control(compressor: &mut Compressor, control: &CompressorControlState) {
     compressor.set_enabled(control.enabled);
-    compressor.set_threshold(control.threshold_db);
-    compressor.set_ratio(control.ratio);
+    if compressor.threshold_db() != control.threshold_db {
+        compressor.set_threshold(control.threshold_db);
+    }
+    if compressor.ratio() != control.ratio {
+        compressor.set_ratio(control.ratio);
+    }
     compressor.set_attack_time(control.attack_ms);
-    compressor.set_base_release_time(control.base_release_ms);
-    if !control.adaptive_release {
+    if compressor.base_release_ms() != control.base_release_ms {
+        compressor.set_base_release_time(control.base_release_ms);
+    }
+    if !control.adaptive_release && compressor.current_release_time() != control.base_release_ms {
         compressor.set_release_time(control.base_release_ms);
     }
     compressor.set_makeup_gain(control.makeup_gain_db);
-    compressor.set_adaptive_release(control.adaptive_release);
-    compressor.set_auto_makeup_enabled(control.auto_makeup_enabled);
-    compressor.set_target_lufs(control.target_lufs);
+    if compressor.adaptive_release() != control.adaptive_release {
+        compressor.set_adaptive_release(control.adaptive_release);
+    }
+    if compressor.auto_makeup_enabled() != control.auto_makeup_enabled {
+        compressor.set_auto_makeup_enabled(control.auto_makeup_enabled);
+    }
+    if compressor.target_lufs() != control.target_lufs {
+        compressor.set_target_lufs(control.target_lufs);
+    }
     compressor.set_noise_reference_reliability(control.noise_reference_reliability);
     compressor.set_sidechain_highpass_enabled(control.sidechain_highpass_enabled);
 }
@@ -996,9 +1037,42 @@ fn apply_limiter_control(limiter: &mut Limiter, control: &LimiterControlState) {
     limiter.set_enabled(control.enabled);
 }
 
-fn apply_true_peak_limiter_control(
-    limiter: &mut TruePeakLimiter,
-    control: &LimiterControlState,
-) {
+fn apply_true_peak_limiter_control(limiter: &mut TruePeakLimiter, control: &LimiterControlState) {
     limiter.set_release_ms(control.release_ms as f32);
+}
+
+#[cfg(test)]
+mod compressor_control_tests {
+    use super::*;
+
+    #[test]
+    fn applying_manual_makeup_control_does_not_step_output_gain() {
+        let control = CompressorControlState {
+            enabled: true,
+            threshold_db: -20.0,
+            ratio: 4.0,
+            attack_ms: 10.0,
+            base_release_ms: 50.0,
+            makeup_gain_db: 12.0,
+            adaptive_release: false,
+            auto_makeup_enabled: false,
+            target_lufs: -18.0,
+            noise_reference_reliability: 0.0,
+            sidechain_highpass_enabled: true,
+        };
+        let mut compressor = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 6.0, 48_000.0);
+        let before = compressor.process_sample(0.1);
+        apply_compressor_control(&mut compressor, &control);
+
+        assert!(
+            compressor.current_makeup_gain() < 0.01,
+            "manual makeup jumped immediately to {:.2} dB",
+            compressor.current_makeup_gain()
+        );
+        let after = compressor.process_sample(0.1);
+        assert!(
+            after / before < 1.01,
+            "control application caused an output step"
+        );
+    }
 }

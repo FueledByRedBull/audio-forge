@@ -1389,6 +1389,36 @@ def test_27_validation_rejects_remaining_headroom_risk():
     assert validation.details["headroom_safe"] is False
 
 
+def test_unavailable_headroom_is_unknown_not_a_capture_quality_failure():
+    sample_rate = 48_000
+    time = np.arange(sample_rate * 3) / sample_rate
+    freqs = np.fft.rfftfreq(time.size, 1.0 / sample_rate)
+    audio = sum(
+        0.1 / harmonic * np.sin(2 * np.pi * 150 * harmonic * time)
+        for harmonic in range(1, 26)
+    )
+    spectrum_db = 10.0 * np.log10(
+        np.maximum(np.square(np.abs(np.fft.rfft(audio))), 1.0e-12)
+    )
+
+    validation = validate_analysis(
+        {
+            "band_gains": [0.0] * 10,
+            "headroom_validation": {
+                "safe": False,
+                "authoritative": False,
+                "status": "unavailable",
+                "reason": "native simulator unavailable",
+            },
+        },
+        spectrum_db,
+        freqs,
+    )
+
+    assert all("headroom" not in reason.lower() for reason in validation.details["failures"])
+    assert validation.details["headroom_safe"] is False
+
+
 def test_28_python_headroom_fallback_is_explicitly_advisory(monkeypatch):
     monkeypatch.setattr(
         headroom_module,

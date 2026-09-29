@@ -187,6 +187,145 @@ def test_analyze_latency_repeated_probe_selects_direct_path_with_echo_and_noise(
     assert abs(result.measured_round_trip_ms - expected_ms) < 2.0
 
 
+def test_analyze_latency_recovers_direct_path_before_louder_echo():
+    sample_rate = 48_000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+
+    playback_start_samples = int(0.550 * sample_rate)
+    direct_route_samples = int(0.145 * sample_rate)
+    direct_start = playback_start_samples + direct_route_samples
+    echo_start = direct_start + int(0.055 * sample_rate)
+    recording = np.zeros(echo_start + len(probe) + 4096, dtype=np.float32)
+    rng = np.random.default_rng(12012)
+    recording += rng.normal(0.0, 0.005, recording.size).astype(np.float32)
+    recording[direct_start : direct_start + len(probe)] += probe
+    recording[echo_start : echo_start + len(probe)] += probe * 2.0
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        expected_playback_start_ms=550.0,
+        expected_playback_jitter_ms=50.0,
+    )
+
+    expected_ms = (direct_route_samples * 1000.0) / sample_rate
+    assert result.success
+    assert abs(result.route_latency_ms - expected_ms) < 2.0
+
+
+def test_analyze_latency_rejects_louder_echo_when_earlier_path_is_unresolved():
+    sample_rate = 48_000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+
+    playback_start_samples = int(0.550 * sample_rate)
+    direct_route_samples = int(0.145 * sample_rate)
+    direct_start = playback_start_samples + direct_route_samples
+    echo_start = direct_start + int(0.055 * sample_rate)
+    recording = np.zeros(echo_start + len(probe) + 4096, dtype=np.float32)
+    rng = np.random.default_rng(1441)
+    recording += rng.normal(0.0, 0.01, recording.size).astype(np.float32)
+    recording[direct_start : direct_start + len(probe)] += probe * 0.005
+    recording[echo_start : echo_start + len(probe)] += probe * 2.0
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        expected_playback_start_ms=550.0,
+        expected_playback_jitter_ms=50.0,
+    )
+
+    assert not result.success
+    assert "ambigu" in result.message.lower()
+
+
+def test_analyze_latency_rejects_weak_direct_path_before_louder_echo_across_noise_seeds():
+    sample_rate = 48_000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+
+    playback_start_samples = int(0.550 * sample_rate)
+    direct_start = playback_start_samples + int(0.145 * sample_rate)
+    echo_start = direct_start + int(0.055 * sample_rate)
+    recording_length = echo_start + len(probe) + 4096
+    unresolved_results: list[tuple[int, bool, str]] = []
+
+    for seed in range(12):
+        recording = np.zeros(recording_length, dtype=np.float32)
+        rng = np.random.default_rng(seed)
+        recording += rng.normal(0.0, 0.01, recording_length).astype(np.float32)
+        recording[direct_start : direct_start + len(probe)] += probe * 0.005
+        recording[echo_start : echo_start + len(probe)] += probe * 2.0
+
+        result = lat.analyze_latency(
+            reference_probe=probe,
+            recorded_signal=recording,
+            sample_rate=sample_rate,
+            expected_playback_start_ms=550.0,
+            expected_playback_jitter_ms=50.0,
+        )
+        if result.success or "ambigu" not in result.message.lower():
+            unresolved_results.append((seed, result.success, result.message))
+
+    assert not unresolved_results, (
+        f"weak earlier paths were not rejected as ambiguous: {unresolved_results}"
+    )
+
+
+def test_analyze_latency_rejects_earlier_path_with_a_later_echo_too():
+    sample_rate = 48_000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+
+    playback_start_samples = int(0.550 * sample_rate)
+    direct_start = playback_start_samples + int(0.145 * sample_rate)
+    dominant_echo_start = direct_start + int(0.055 * sample_rate)
+    later_echo_start = dominant_echo_start + int(0.055 * sample_rate)
+    recording_length = later_echo_start + len(probe) + 4096
+    recording = np.random.default_rng(0).normal(0.0, 0.01, recording_length).astype(
+        np.float32
+    )
+    recording[direct_start : direct_start + len(probe)] += probe * 0.005
+    recording[dominant_echo_start : dominant_echo_start + len(probe)] += probe * 2.0
+    recording[later_echo_start : later_echo_start + len(probe)] += probe * 0.05
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        expected_playback_start_ms=550.0,
+        expected_playback_jitter_ms=50.0,
+    )
+
+    assert not result.success
+    assert "ambigu" in result.message.lower()
+
+
+def test_analyze_latency_accepts_exact_custom_fir_probe_without_noise():
+    sample_rate = 48_000
+    base_probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)
+    probe = np.convolve(base_probe, [0.65, 0.35], mode="full")[:-1].astype(
+        np.float32
+    )
+
+    playback_start_samples = int(0.550 * sample_rate)
+    route_latency_samples = int(0.145 * sample_rate)
+    probe_start = playback_start_samples + route_latency_samples
+    recording = np.zeros(probe_start + len(probe) + 1024, dtype=np.float32)
+    recording[probe_start : probe_start + len(probe)] = probe
+
+    result = lat.analyze_latency(
+        reference_probe=probe,
+        recorded_signal=recording,
+        sample_rate=sample_rate,
+        expected_playback_start_ms=550.0,
+        expected_playback_jitter_ms=50.0,
+    )
+
+    expected_ms = route_latency_samples * 1000.0 / sample_rate
+    assert result.success
+    assert abs(result.route_latency_ms - expected_ms) < 2.0
+
+
 def test_analyze_latency_subsample_refinement_beats_integer_peak():
     sample_rate = 48000
     probe = lat.generate_probe_signal(sample_rate=sample_rate, duration_ms=80.0)

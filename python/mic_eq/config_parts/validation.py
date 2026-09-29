@@ -100,14 +100,15 @@ def _parse_range_args(args: tuple[object, ...]) -> tuple[float, float, str, str]
     return float(min_val), float(max_val), param_name, section
 
 
-def _validate_range(value: object, *args: object) -> float:
+def _validate_range(value: object, *args: object, strict: bool = False) -> float:
     min_val, max_val, param_name, section = _parse_range_args(args)
     if isinstance(value, bool):
         raise PresetValidationError(
             f"Invalid {param_name} in {section}: {value!r} "
             f"(must be a finite number between {min_val} and {max_val})"
         )
-    if not isinstance(value, (int, float, str)):
+    accepted_types = (int, float) if strict else (int, float, str)
+    if not isinstance(value, accepted_types):
         raise PresetValidationError(
             f"Invalid {param_name} in {section}: {value!r} "
             f"(must be a finite number between {min_val} and {max_val})"
@@ -124,6 +125,14 @@ def _validate_range(value: object, *args: object) -> float:
             f"Invalid {param_name} in {section}: {value!r} "
             f"(must be a finite number between {min_val} and {max_val})"
         )
+
+    if strict:
+        if numeric_value < min_val or numeric_value > max_val:
+            raise PresetValidationError(
+                f"Invalid {param_name} in {section}: {numeric_value} "
+                f"(must be between {min_val} and {max_val})"
+            )
+        return numeric_value
 
     tolerance = (max_val - min_val) * 0.1
     if numeric_value < min_val - tolerance or numeric_value > max_val + tolerance:

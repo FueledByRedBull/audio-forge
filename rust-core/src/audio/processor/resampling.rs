@@ -22,6 +22,36 @@ fn smoothing_coeff_for_time_constant(sample_rate_hz: f32, time_constant_ms: f32)
     }
 }
 
+fn smoothing_coeff_for_block(
+    sample_rate_hz: f32,
+    time_constant_ms: f32,
+    block_samples: usize,
+) -> f32 {
+    if block_samples == 0 {
+        return 1.0;
+    }
+    if !sample_rate_hz.is_finite()
+        || sample_rate_hz <= 0.0
+        || !time_constant_ms.is_finite()
+        || time_constant_ms <= 0.0
+    {
+        return 0.0;
+    }
+
+    (-(block_samples as f32) / (sample_rate_hz * (time_constant_ms / 1000.0))).exp()
+}
+
+fn clear_resampler_output_samples(output: &mut [Vec<f64>]) {
+    for channel in output {
+        channel.fill(0.0);
+    }
+}
+
+fn signal_input_resampler_failure(rt_error_code: &AtomicU32, restart_requested: &AtomicBool) {
+    store_rt_error(rt_error_code, RtErrorCode::InputResamplerFailed);
+    restart_requested.store(true, Ordering::Release);
+}
+
 fn next_process_idle_sleep_us(consecutive_idle_wakeups: u32, input_callback_age_us: u64) -> u64 {
     if input_callback_age_us <= PROCESS_IDLE_RECENT_INPUT_WINDOW_US {
         return PROCESS_IDLE_SLEEP_US;

@@ -17,7 +17,7 @@ from typing import Any
 
 
 SCHEMA_NAME = "audioforge-support-snapshot"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_SERIALIZED_BYTES = 128 * 1024
 MIN_PSEUDONYM_KEY_BYTES = 16
 
@@ -58,7 +58,7 @@ _PROCESSING_FIELDS = {
             "gate_margin_db",
         }
     ),
-    "eq": frozenset({"schema_version", "enabled", "bands"}),
+    "eq": frozenset({"schema_version", "enabled", "bands", "layers"}),
     "rnnoise": frozenset({"enabled", "strength", "model"}),
     "deesser": frozenset(
         {
@@ -347,6 +347,29 @@ def _sanitized_config(config: object) -> dict[str, object]:
     return result
 
 
+def _sanitized_eq_bands(value: object) -> list[dict[str, object]] | None:
+    if not isinstance(value, list) or len(value) > 32:
+        return None
+    bands: list[dict[str, object]] = []
+    for raw_band in value:
+        if not isinstance(raw_band, Mapping):
+            continue
+        band: dict[str, object] = {}
+        for key in sorted(_EQ_BAND_FIELDS):
+            band_value = raw_band.get(key)
+            enum_values = _EQ_BAND_ENUMS.get(key)
+            if enum_values is not None:
+                band[key] = _safe_enum(band_value, enum_values)
+            elif isinstance(band_value, bool) or band_value is None:
+                band[key] = band_value
+            else:
+                number = _finite_number(band_value)
+                if number is not None:
+                    band[key] = number
+        bands.append(band)
+    return bands
+
+
 def _sanitized_processing(
     processing_settings: object,
 ) -> dict[str, object]:
@@ -362,30 +385,17 @@ def _sanitized_processing(
             if enum_values is not None:
                 clean_section[key] = _safe_enum(value, enum_values)
             elif section == "eq" and key == "bands":
-                if isinstance(value, list) and len(value) <= 32:
-                    bands: list[dict[str, object]] = []
-                    for raw_band in value:
-                        if not isinstance(raw_band, Mapping):
-                            continue
-                        band: dict[str, object] = {}
-                        for band_key in sorted(_EQ_BAND_FIELDS):
-                            band_value = raw_band.get(band_key)
-                            band_enum = _EQ_BAND_ENUMS.get(band_key)
-                            if band_enum is not None:
-                                band[band_key] = _safe_enum(
-                                    band_value,
-                                    band_enum,
-                                )
-                            elif isinstance(band_value, bool):
-                                band[band_key] = band_value
-                            elif band_value is None:
-                                band[band_key] = None
-                            else:
-                                number = _finite_number(band_value)
-                                if number is not None:
-                                    band[band_key] = number
-                        bands.append(band)
+                bands = _sanitized_eq_bands(value)
+                if bands is not None:
                     clean_section[key] = bands
+            elif section == "eq" and key == "layers":
+                if isinstance(value, Mapping):
+                    layers: dict[str, object] = {}
+                    for layer in ("correction", "tone"):
+                        bands = _sanitized_eq_bands(value.get(layer))
+                        if bands is not None:
+                            layers[layer] = bands
+                    clean_section[key] = layers
             elif isinstance(value, bool):
                 clean_section[key] = value
             elif isinstance(value, (list, tuple)):
@@ -582,12 +592,21 @@ def serialize_diagnostics_snapshot(snapshot: Mapping[str, object]) -> bytes:
             )
     eq = processing.get("eq")
     if isinstance(eq, Mapping):
-        bands = eq.get("bands")
-        if bands is not None:
-            if not isinstance(bands, list) or any(
-                not isinstance(band, Mapping)
-                or not set(band) <= _EQ_BAND_FIELDS
-                for band in bands
+        band_arrays = [eq.get("bands")]
+        layers = eq.get("layers")
+        if layers is not None:
+            if not isinstance(layers, Mapping) or not set(layers) <= {"correction", "tone"}:
+                raise ValueError("diagnostics snapshot contains unexpected EQ layers")
+            band_arrays.extend(layers.values())
+        for bands in band_arrays:
+            if bands is not None and (
+                not isinstance(bands, list)
+                or len(bands) > 32
+                or any(
+                    not isinstance(band, Mapping)
+                    or not set(band) <= _EQ_BAND_FIELDS
+                    for band in bands
+                )
             ):
                 raise ValueError(
                     "diagnostics snapshot contains unexpected EQ band fields"

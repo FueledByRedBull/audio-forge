@@ -13,6 +13,7 @@ from ..eq_quality import evaluate_eq_quality, weighted_target_error
 from .constants import NUM_EQ_BANDS, REDUCED_RECOMMENDATION_CONFIDENCE_THRESHOLD, SAMPLE_RATE
 from .dynamic_bands import _voice_weights
 from .optimizer import _build_fit_context, _overall_confidence, _validation_confidence
+from .response import _biquad_coefficients as _response_biquad_coefficients
 from ..cancellation import check_analysis_cancelled
 
 HEADROOM_TARGET_DB = 1.0
@@ -260,36 +261,9 @@ def _biquad_coefficients(
     q: float,
     sample_rate: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    omega = 2.0 * np.pi * np.clip(frequency_hz, 20.0, sample_rate * 0.45) / sample_rate
-    sin_omega = np.sin(omega)
-    cos_omega = np.cos(omega)
-    q = max(float(q), 1.0e-6)
-    alpha = sin_omega / (2.0 * q)
-    a = 10.0 ** (gain_db / 40.0)
-
-    if kind == "peaking":
-        b0 = 1.0 + alpha * a
-        b1 = -2.0 * cos_omega
-        b2 = 1.0 - alpha * a
-        a0 = 1.0 + alpha / a
-        a1 = -2.0 * cos_omega
-        a2 = 1.0 - alpha / a
-    elif kind == "low_shelf":
-        two_sqrt_a_alpha = 2.0 * np.sqrt(a) * alpha
-        b0 = a * ((a + 1.0) - (a - 1.0) * cos_omega + two_sqrt_a_alpha)
-        b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cos_omega)
-        b2 = a * ((a + 1.0) - (a - 1.0) * cos_omega - two_sqrt_a_alpha)
-        a0 = (a + 1.0) + (a - 1.0) * cos_omega + two_sqrt_a_alpha
-        a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cos_omega)
-        a2 = (a + 1.0) + (a - 1.0) * cos_omega - two_sqrt_a_alpha
-    else:
-        two_sqrt_a_alpha = 2.0 * np.sqrt(a) * alpha
-        b0 = a * ((a + 1.0) + (a - 1.0) * cos_omega + two_sqrt_a_alpha)
-        b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cos_omega)
-        b2 = a * ((a + 1.0) + (a - 1.0) * cos_omega - two_sqrt_a_alpha)
-        a0 = (a + 1.0) - (a - 1.0) * cos_omega + two_sqrt_a_alpha
-        a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cos_omega)
-        a2 = (a + 1.0) - (a - 1.0) * cos_omega - two_sqrt_a_alpha
+    b0, b1, b2, a0, a1, a2 = _response_biquad_coefficients(
+        float(gain_db), max(float(q), 1.0e-6), float(frequency_hz), kind, float(sample_rate)
+    )
 
     return (
         np.array([b0 / a0, b1 / a0, b2 / a0], dtype=float),
@@ -458,6 +432,15 @@ def _is_headroom_safe(simulation: dict[str, Any]) -> bool:
     )
 
 
+def _add_abstention(result: dict[str, Any], reason: str) -> None:
+    reasons = list(result.get("abstention_reasons") or [])
+    if reason not in reasons:
+        reasons.append(reason)
+    result["abstention_reasons"] = reasons
+    result["recommendation_status"] = "abstain"
+    result["apply_recommended"] = False
+
+
 def _refresh_scaled_eq_metadata(
     result: dict[str, Any],
     analysis_freqs: np.ndarray | None,
@@ -579,6 +562,7 @@ def apply_headroom_validation(
     measured_db: np.ndarray | None = None,
     target_db: np.ndarray | None = None,
     fit_context: Mapping[str, Any] | None = None,
+    candidate_base_eq_settings: Mapping[str, Any] | None = None,
     cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Scale Auto-EQ boosts/cuts when offline chain simulation predicts headroom risk."""
@@ -589,21 +573,127 @@ def apply_headroom_validation(
     if original_gains.size != NUM_EQ_BANDS:
         return result
 
+    typed_base_eq = None
+    if candidate_base_eq_settings is not None:
+        from ...config import EQSettings
+
+        try:
+            typed_base_eq = EQSettings.from_dict(dict(candidate_base_eq_settings))
+        except (TypeError, ValueError) as exc:
+            result["validated_candidate_eq"] = None
+            result["headroom_validation"] = {
+                "safe": False,
+                "authoritative": False,
+                "advisory": False,
+                "status": "unavailable",
+                "reason": f"incumbent EQ settings are invalid: {exc}"[:256],
+            }
+            result["headroom_safe"] = False
+            result["headroom_advisory"] = False
+            _add_abstention(result, "incumbent EQ is unavailable for full-chain validation")
+            return result
+        if (
+            chain_settings is None
+            or chain_settings.get("full_chain") is not True
+            or not isinstance(chain_settings.get("input_pre_filtered"), bool)
+        ):
+            reason = "complete-chain settings are unavailable"
+            result["validated_candidate_eq"] = None
+            result["headroom_validation"] = {
+                "safe": False,
+                "authoritative": False,
+                "advisory": False,
+                "status": "unavailable",
+                "reason": reason,
+            }
+            result["headroom_safe"] = False
+            result["headroom_advisory"] = False
+            _add_abstention(result, reason)
+            return result
+
+    def simulate_scale(scale: float) -> tuple[dict[str, Any], Any | None]:
+        candidate_gains = original_gains * scale
+        if typed_base_eq is None:
+            simulation_settings = deepcopy(result)
+            simulation_settings["band_gains"] = candidate_gains.tolist()
+            return (
+                simulate_candidate_chain(
+                    audio, sample_rate, simulation_settings, chain_settings
+                ),
+                None,
+            )
+
+        from ...config import build_eq_candidate_settings
+
+        candidate_eq = build_eq_candidate_settings(
+            typed_base_eq,
+            result.get("band_freqs", []),
+            candidate_gains.tolist(),
+            result.get("band_qs", []),
+            layer="correction",
+            enabled=bool(result.get("enabled", True)),
+        )
+        return (
+            simulate_candidate_chain(
+                audio,
+                sample_rate,
+                candidate_eq.to_dict(),
+                chain_settings,
+            ),
+            candidate_eq,
+        )
+
     check_analysis_cancelled(cancel_check)
-    before = simulate_candidate_chain(audio, sample_rate, result, chain_settings)
+    try:
+        before, before_candidate = simulate_scale(1.0)
+    except Exception as exc:
+        if typed_base_eq is None:
+            raise
+        reason = f"native full-chain headroom validation failed: {type(exc).__name__}: {exc}"[:256]
+        result["validated_candidate_eq"] = None
+        result["headroom_validation"] = {
+            "safe": False,
+            "authoritative": False,
+            "advisory": False,
+            "status": "unavailable",
+            "reason": reason,
+        }
+        result["headroom_safe"] = False
+        result["headroom_advisory"] = False
+        _add_abstention(result, reason)
+        return result
     selected = before
+    selected_candidate = before_candidate
     selected_scale = 1.0
     selected_gains = original_gains.copy()
     if not _is_headroom_safe(before):
         for scale in HEADROOM_SCALES[1:]:
             check_analysis_cancelled(cancel_check)
-            candidate = deepcopy(result)
-            candidate_gains = (original_gains * scale).tolist()
-            candidate["band_gains"] = candidate_gains
-            simulation = simulate_candidate_chain(audio, sample_rate, candidate, chain_settings)
+            try:
+                simulation, candidate_eq = simulate_scale(scale)
+            except Exception as exc:
+                if typed_base_eq is None:
+                    raise
+                reason = (
+                    "native full-chain headroom validation failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )[:256]
+                result["validated_candidate_eq"] = None
+                result["headroom_validation"] = {
+                    "safe": False,
+                    "authoritative": False,
+                    "advisory": False,
+                    "status": "unavailable",
+                    "reason": reason,
+                }
+                result["headroom_safe"] = False
+                result["headroom_advisory"] = False
+                _add_abstention(result, reason)
+                return result
             selected = simulation
+            selected_candidate = candidate_eq
             selected_scale = scale
-            selected_gains = np.asarray(candidate_gains, dtype=float)
+            selected_gains = original_gains * scale
             if _is_headroom_safe(simulation):
                 break
 
@@ -651,4 +741,13 @@ def apply_headroom_validation(
     result["headroom_safe"] = safe
     result["headroom_advisory"] = not authoritative
     result["headroom_gain_scale"] = selected_scale
+    if typed_base_eq is not None:
+        if safe and selected_candidate is not None:
+            result["validated_candidate_eq"] = selected_candidate.to_dict()
+        else:
+            result["validated_candidate_eq"] = None
+            _add_abstention(
+                result,
+                "no safe candidate remained after full-chain headroom validation",
+            )
     return result

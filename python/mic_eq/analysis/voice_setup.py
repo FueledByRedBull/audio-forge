@@ -738,6 +738,7 @@ def _recommend_compressor_settings(
 
 
 _COMPRESSOR_SEARCH_BUDGET = 68
+_COMPRESSOR_P95_TARGET_TOLERANCE_DB = 0.75
 _COMPRESSOR_SEARCH_BOUNDS = {
     "threshold_db": (-55.0, -6.0),
     "ratio": (1.5, 6.0),
@@ -763,6 +764,34 @@ _COMPRESSOR_OBJECTIVE_WEIGHTS = {
     "activity": 0.25,
     "prior": 0.08,
 }
+
+
+def _compressor_p95_target_status(
+    calibration: Mapping[str, Any],
+    target_p95_db: float,
+) -> tuple[bool, str | None]:
+    measured = calibration.get(
+        "measured_p95_gain_reduction_db",
+        calibration.get("measured_gain_reduction_db"),
+    )
+    if (
+        calibration.get("backend") != "rust"
+        or not isinstance(measured, (int, float))
+        or isinstance(measured, bool)
+        or not np.isfinite(float(measured))
+        or not np.isfinite(float(target_p95_db))
+    ):
+        return False, "compressor p95 gain reduction target is unavailable"
+
+    measured_db = float(measured)
+    if abs(measured_db - float(target_p95_db)) <= _COMPRESSOR_P95_TARGET_TOLERANCE_DB:
+        return True, None
+    return (
+        False,
+        "compressor p95 gain reduction target missed: "
+        f"measured {measured_db:.2f} dB, target {target_p95_db:.2f} dB "
+        f"(±{_COMPRESSOR_P95_TARGET_TOLERANCE_DB:.2f} dB)",
+    )
 
 
 def _huber(value: float) -> float:
@@ -795,25 +824,35 @@ def _calibrate_compressor_threshold(
     auto_makeup_activity: list[tuple[float, float, float, float]] | None = None,
     cancel_check: Callable[[], bool] | None = None,
     progress_callback: Callable[[str, int], None] | None = None,
+    allow_expanded_search: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Fit four compressor controls with a bounded deterministic DSP search."""
+    """Calibrate compressor threshold; broader control search is explicit opt-in."""
     calibrated = dict(compressor_settings)
     effective_limiter_settings = _normalise_limiter_settings(limiter_settings)
     if effective_limiter_settings is None:
         raise ValueError("limiter settings are incomplete")
     diagnostics: dict[str, Any] = {
         "backend": "unavailable",
-        "objective": "bounded_multi_objective_compressor_search_v1",
+        "objective": "bounded_multi_objective_compressor_search_v2",
         "target_p95_gain_reduction_db": target_p95_db,
         "target_median_gain_reduction_db": target_median_db,
+        "target_p95_tolerance_db": _COMPRESSOR_P95_TARGET_TOLERANCE_DB,
+        "target_p95_met": False,
         "peak_gain_reduction_cap_db": peak_cap_db,
-        "measured_p95_gain_reduction_db": 0.0,
-        "measured_median_gain_reduction_db": 0.0,
-        "measured_peak_gain_reduction_db": 0.0,
+        "measured_p95_gain_reduction_db": None,
+        "measured_median_gain_reduction_db": None,
+        "measured_peak_gain_reduction_db": None,
+        "silence_level_delta_db": None,
+        "silence_analysis_block_count": 0,
         "iterations": 0,
         "candidate_budget": _COMPRESSOR_SEARCH_BUDGET,
         "objective_normalizers": dict(_COMPRESSOR_OBJECTIVE_NORMALIZERS),
         "objective_weights": dict(_COMPRESSOR_OBJECTIVE_WEIGHTS),
+        "expanded_search_status": (
+            "experimental_opt_in" if allow_expanded_search else "disabled_unqualified"
+        ),
+        "expanded_search_selected": False,
+        "expanded_candidate_objective": None,
     }
     started = time.perf_counter()
     mapped_vad_probabilities: np.ndarray | None = None
@@ -913,7 +952,8 @@ def _calibrate_compressor_threshold(
             simulation.get("pre_limiter_true_peak_headroom_db", -120.0)
         )
         pumping = float(simulation.get("compressor_pumping_score_db", 120.0))
-        silence_gain = float(simulation.get("silence_output_gain_db", 120.0))
+        silence_delta = simulation.get("silence_level_delta_db", float("inf"))
+        silence_gain = float("inf") if silence_delta is None else float(silence_delta)
         non_finite = bool(simulation.get("non_finite_output", True))
         finite_values = np.asarray(
             [
@@ -1010,13 +1050,14 @@ def _calibrate_compressor_threshold(
         threshold_candidate = dict(incumbent)
         threshold_candidate["threshold_db"] = float(threshold)
         initial_candidates.append(threshold_candidate)
-    for index in range(1, 17):
-        check_analysis_cancelled(cancel_check)
-        candidate = {}
-        for key, base in zip(_COMPRESSOR_SEARCH_BOUNDS, (2, 3, 5, 7)):
-            lower, upper = _COMPRESSOR_SEARCH_BOUNDS[key]
-            candidate[key] = lower + _halton(index, base) * (upper - lower)
-        initial_candidates.append(candidate)
+    if allow_expanded_search:
+        for index in range(1, 17):
+            check_analysis_cancelled(cancel_check)
+            candidate = {}
+            for key, base in zip(_COMPRESSOR_SEARCH_BOUNDS, (2, 3, 5, 7)):
+                lower, upper = _COMPRESSOR_SEARCH_BOUNDS[key]
+                candidate[key] = lower + _halton(index, base) * (upper - lower)
+            initial_candidates.append(candidate)
     evaluate_batch(initial_candidates)
 
     feasible = sorted(
@@ -1028,39 +1069,40 @@ def _calibrate_compressor_threshold(
         diagnostics["search_runtime_ms"] = (time.perf_counter() - started) * 1000.0
         return calibrated, diagnostics
 
-    local_steps = {
-        "threshold_db": 3.0,
-        "ratio": 0.5,
-        "attack_ms": 3.0,
-        "release_ms": 25.0,
-    }
-    refinement_seeds = [feasible[0]]
-    multivariable_seed = next(
-        (
-            item
-            for item in feasible
-            if any(
-                abs(item[2][key] - incumbent[key]) > 1.0e-6
-                for key in ("ratio", "attack_ms", "release_ms")
-            )
-        ),
-        None,
-    )
-    if multivariable_seed is not None and key_for(multivariable_seed[2]) != key_for(
-        refinement_seeds[0][2]
-    ):
-        refinement_seeds.append(multivariable_seed)
-    else:
-        refinement_seeds.extend(feasible[1:2])
-    refinement_candidates = []
-    for _, _, seed in refinement_seeds:
-        check_analysis_cancelled(cancel_check)
-        for key, step in local_steps.items():
-            for direction in (-1.0, 1.0):
-                candidate = dict(seed)
-                candidate[key] += direction * step
-                refinement_candidates.append(candidate)
-    evaluate_batch(refinement_candidates)
+    if allow_expanded_search:
+        local_steps = {
+            "threshold_db": 3.0,
+            "ratio": 0.5,
+            "attack_ms": 3.0,
+            "release_ms": 25.0,
+        }
+        refinement_seeds = [feasible[0]]
+        multivariable_seed = next(
+            (
+                item
+                for item in feasible
+                if any(
+                    abs(item[2][key] - incumbent[key]) > 1.0e-6
+                    for key in ("ratio", "attack_ms", "release_ms")
+                )
+            ),
+            None,
+        )
+        if multivariable_seed is not None and key_for(multivariable_seed[2]) != key_for(
+            refinement_seeds[0][2]
+        ):
+            refinement_seeds.append(multivariable_seed)
+        else:
+            refinement_seeds.extend(feasible[1:2])
+        refinement_candidates = []
+        for _, _, seed in refinement_seeds:
+            check_analysis_cancelled(cancel_check)
+            for key, step in local_steps.items():
+                for direction in (-1.0, 1.0):
+                    candidate = dict(seed)
+                    candidate[key] += direction * step
+                    refinement_candidates.append(candidate)
+        evaluate_batch(refinement_candidates)
 
     feasible = sorted(
         (item for item in evaluated.values() if np.isfinite(item[0])),
@@ -1078,18 +1120,27 @@ def _calibrate_compressor_threshold(
         key=lambda item: (item[0], key_for(item[2])),
         default=None,
     )
-    expanded = feasible[0]
-    if threshold_only is None:
-        expanded_selected = True
-        best_score, best_simulation, best_values = expanded
+    expanded: tuple[float, dict[str, Any], dict[str, float]] | None = None
+    if allow_expanded_search:
+        expanded = feasible[0]
+        if threshold_only is None:
+            expanded_selected = True
+            best_score, best_simulation, best_values = expanded
+        else:
+            required_tie_break_improvement = max(0.001, 0.01 * threshold_only[0])
+            expanded_selected = bool(
+                threshold_only[0] - expanded[0] > required_tie_break_improvement
+            )
+            best_score, best_simulation, best_values = (
+                expanded if expanded_selected else threshold_only
+            )
     else:
-        required_tie_break_improvement = max(0.001, 0.01 * threshold_only[0])
-        expanded_selected = bool(
-            threshold_only[0] - expanded[0] > required_tie_break_improvement
-        )
-        best_score, best_simulation, best_values = (
-            expanded if expanded_selected else threshold_only
-        )
+        if threshold_only is None:
+            diagnostics["iterations"] = len(evaluated)
+            diagnostics["search_runtime_ms"] = (time.perf_counter() - started) * 1000.0
+            return calibrated, diagnostics
+        expanded_selected = False
+        best_score, best_simulation, best_values = threshold_only
     calibrated.update(best_values)
     check_analysis_cancelled(cancel_check)
     # Recheck the winner with the exact controls that will be applied.
@@ -1114,6 +1165,13 @@ def _calibrate_compressor_threshold(
     p95 = float(best_simulation["compressor_gain_reduction_p95_db"])
     peak = float(best_simulation["compressor_gain_reduction_db"])
     active_ratio = float(best_simulation["compressor_gain_reduction_active_ratio"])
+    target_p95_met, _target_status_reason = _compressor_p95_target_status(
+        {
+            "backend": "rust",
+            "measured_p95_gain_reduction_db": p95,
+        },
+        target_p95_db,
+    )
     threshold_only_scores = [
         score
         for score, _, values in evaluated.values()
@@ -1126,6 +1184,8 @@ def _calibrate_compressor_threshold(
     diagnostics.update(
         {
             "backend": "rust",
+            "target_p95_met": target_p95_met,
+            "target_p95_tolerance_db": _COMPRESSOR_P95_TARGET_TOLERANCE_DB,
             "measured_median_gain_reduction_db": median,
             "measured_p95_gain_reduction_db": p95,
             "measured_peak_gain_reduction_db": peak,
@@ -1136,14 +1196,15 @@ def _calibrate_compressor_threshold(
                 incumbent_entry[0] if incumbent_entry is not None else float("inf")
             ),
             "threshold_only_objective": min(threshold_only_scores, default=float("inf")),
-            "expanded_candidate_objective": expanded[0],
+            "expanded_candidate_objective": (
+                expanded[0] if expanded is not None else None
+            ),
             "expanded_search_selected": expanded_selected,
             "active_output_gain_db": float(
                 best_simulation.get("active_output_gain_db", 0.0)
             ),
-            "silence_output_gain_db": float(
-                best_simulation.get("silence_output_gain_db", 0.0)
-            ),
+            "silence_level_delta_db": best_simulation.get("silence_level_delta_db"),
+            "silence_analysis_block_count": int(best_simulation.get("silence_analysis_block_count", 0)),
             "compressor_pumping_score_db": float(
                 best_simulation.get("compressor_pumping_score_db", 0.0)
             ),
@@ -1432,8 +1493,14 @@ def analyze_voice_setup(
     }
     compressor_calibration: dict[str, Any] = {
         "backend": "unavailable",
-        "target_gain_reduction_db": 0.0,
-        "measured_gain_reduction_db": 0.0,
+        "target_gain_reduction_db": float(compressor_diag["target_p95_reduction_db"]),
+        "measured_gain_reduction_db": None,
+        "target_p95_gain_reduction_db": float(
+            compressor_diag["target_p95_reduction_db"]
+        ),
+        "measured_p95_gain_reduction_db": None,
+        "target_p95_tolerance_db": _COMPRESSOR_P95_TARGET_TOLERANCE_DB,
+        "target_p95_met": False,
         "iterations": 0,
     }
     check_analysis_cancelled(cancel_check)
@@ -1643,6 +1710,16 @@ def analyze_voice_setup(
 
     uncertainty_reasons: list[str] = []
     uncertainty_reasons.extend(noise_reference.reasons)
+    compressor_target_met, compressor_target_reason = _compressor_p95_target_status(
+        compressor_calibration,
+        float(compressor_diag["target_p95_reduction_db"]),
+    )
+    compressor_calibration["target_p95_met"] = compressor_target_met
+    compressor_calibration[
+        "target_p95_tolerance_db"
+    ] = _COMPRESSOR_P95_TARGET_TOLERANCE_DB
+    if compressor_target_reason is not None:
+        uncertainty_reasons.append(compressor_target_reason)
     if float(features["active_duration_s"]) < 2.0:
         uncertainty_reasons.append("too little VAD-active speech")
     if noise_referenced_snr_db < 8.0:
@@ -1687,6 +1764,7 @@ def analyze_voice_setup(
         not weak_capture
         and eq_apply_recommended
         and offline_validation_passed
+        and compressor_target_met
     )
     if weak_capture:
         setup_confidence = min(setup_confidence, 0.49)

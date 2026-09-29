@@ -1,4 +1,5 @@
 {
+  "source_revision": "b108c4d5fc4be48ccd132f61ad5d4fb0517da02a",
   "corpus_manifest_sha256": "f390ba32bcf9e15ae90a83aa113c9ea8c384965561162ea231ccfe143e8a16b6",
   "implementation_sha256": {
     "python/tools/evaluate_product_tuning.py": "446cd3a5ddcdc227688fac5027f8c090916a54a03cfe060a8625d48ff679c0e8",

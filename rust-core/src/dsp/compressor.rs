@@ -24,6 +24,11 @@ const AUTO_MAKEUP_SAMPLE_WINDOW_MS: f64 = 10.0;
 const AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES: usize = 1_920;
 const SIDECHAIN_HIGHPASS_DEFAULT_HZ: f64 = 120.0;
 const SIDECHAIN_BAND_ENV_MS: f64 = 18.0;
+const PRESENCE_HIGHPASS_HZ: f64 = 2_000.0;
+const PEAK_DETECTOR_RELEASE_MS: f64 = 5.0;
+const ADAPTIVE_SLOW_RELEASE_MULTIPLIER: f64 = 8.0;
+const ADAPTIVE_RELEASE_MAX_MS: f64 = 1_000.0;
+const ADAPTIVE_RELEASE_COEFF_UPDATE_MS: f64 = 1.0;
 const PLOSIVE_RATIO_START: f64 = 1.25;
 const PLOSIVE_RATIO_FULL: f64 = 5.0;
 const PLOSIVE_MIN_DETECTOR_GAIN: f64 = 0.35;
@@ -56,14 +61,20 @@ pub struct Compressor {
     attack_coeff: f64,
     /// Release time constant for gain-reduction smoothing
     release_coeff: f64,
-    /// Release time constant for the peak detector envelope
-    detector_release_coeff: f64,
+    /// Fixed coefficients used by the adaptive release controller.
+    adaptive_fast_release_coeff: f64,
+    adaptive_slow_charge_coeff: f64,
+    adaptive_slow_release_coeff: f64,
+    /// Fixed smoothing coefficient for sidechain-band energy measurements.
+    sidechain_band_env_coeff: f64,
     /// Makeup gain in dB to compensate for gain reduction
     makeup_gain_db: f64,
     /// Knee width in dB for soft-knee transition
     knee_db: f64,
-    /// AR-smoothed log-domain peak detector (dBFS)
-    peak_envelope_db: f64,
+    /// Instant-attack peak capture with fixed-time amplitude release smoothing.
+    peak_envelope: f64,
+    /// Peak-envelope decay is independent of configured gain reduction.
+    detector_release_coeff: f64,
     /// Fixed-time RMS detector state (squared amplitude)
     rms_envelope_sq: f64,
     /// RMS smoothing coefficient (single-pole IIR, fixed 20ms)
@@ -86,6 +97,9 @@ pub struct Compressor {
     target_release_ms: f64,
     /// Release smoothing coefficient (100ms hysteresis)
     release_smoothing_coeff: f64,
+    /// Recompute the adaptive gain-release coefficient at 1 ms cadence.
+    adaptive_release_coeff_update_samples: usize,
+    adaptive_release_coeff_samples_until_update: usize,
     /// Fast adaptive release envelope in dB.
     fast_release_env_db: f64,
     /// Slow adaptive release envelope in dB.
@@ -124,16 +138,23 @@ pub struct Compressor {
     sidechain_highpass_enabled: bool,
     /// Sidechain high-pass coefficient.
     sidechain_highpass_coeff: f64,
+    /// Presence-band high-pass coefficient applied to the voiced sidechain.
+    presence_highpass_coeff: f64,
     /// Previous sidechain high-pass input sample.
     sidechain_highpass_prev_input: f64,
     /// Previous sidechain high-pass output sample.
     sidechain_highpass_prev_output: f64,
+    /// Previous presence high-pass input and output samples.
+    presence_highpass_prev_input: f64,
+    presence_highpass_prev_output: f64,
     /// Low-band detector energy used for plosive discrimination.
     low_band_env_sq: f64,
     /// Voiced-band detector energy used for plosive discrimination.
     voiced_band_env_sq: f64,
     /// Presence-band detector energy used to keep consonants forward.
     presence_band_env_sq: f64,
+    /// Low/mid portion of the voiced band, complementary to the presence band.
+    non_presence_band_env_sq: f64,
     /// Smoothed low/voiced ratio exposed for diagnostics and tests.
     plosive_ratio: f64,
     /// Previous limiter pressure used to keep auto makeup inside headroom.
@@ -153,9 +174,27 @@ impl Compressor {
     ) -> Self {
         let attack_coeff = util::time_constant_to_coeff(attack_ms, sample_rate);
         let release_coeff = util::time_constant_to_coeff(release_ms, sample_rate);
+        let detector_release_coeff =
+            util::time_constant_to_coeff(PEAK_DETECTOR_RELEASE_MS, sample_rate);
         let rms_coeff = util::time_constant_to_coeff(20.0, sample_rate);
         let release_smoothing_coeff = util::time_constant_to_coeff(100.0, sample_rate);
         let makeup_smoothing_coeff = util::time_constant_to_coeff(200.0, sample_rate);
+        let adaptive_fast_release_coeff =
+            util::time_constant_to_coeff(ADAPTIVE_FAST_RELEASE_MS, sample_rate);
+        let adaptive_slow_charge_coeff =
+            util::time_constant_to_coeff(ADAPTIVE_SLOW_CHARGE_MS, sample_rate);
+        let adaptive_slow_release_coeff =
+            util::time_constant_to_coeff(ADAPTIVE_SLOW_RELEASE_MS, sample_rate);
+        let sidechain_band_env_coeff =
+            util::time_constant_to_coeff(SIDECHAIN_BAND_ENV_MS, sample_rate);
+        let adaptive_release_coeff_update_samples = if sample_rate.is_finite() && sample_rate > 0.0
+        {
+            (sample_rate * ADAPTIVE_RELEASE_COEFF_UPDATE_MS / 1_000.0)
+                .round()
+                .clamp(1.0, 1_000_000.0) as usize
+        } else {
+            1
+        };
 
         let loudness_meter = crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32).ok();
         let auto_makeup_sample_window_samples = if sample_rate.is_finite() && sample_rate > 0.0 {
@@ -171,10 +210,14 @@ impl Compressor {
             ratio: ratio.max(1.0),
             attack_coeff,
             release_coeff,
-            detector_release_coeff: release_coeff,
+            detector_release_coeff,
+            adaptive_fast_release_coeff,
+            adaptive_slow_charge_coeff,
+            adaptive_slow_release_coeff,
+            sidechain_band_env_coeff,
             makeup_gain_db,
             knee_db: knee_db.max(0.0),
-            peak_envelope_db: -120.0,
+            peak_envelope: 0.0,
             rms_envelope_sq: 0.0,
             rms_coeff,
             current_gain_reduction_db: 0.0,
@@ -186,6 +229,8 @@ impl Compressor {
             current_release_ms: release_ms,
             target_release_ms: release_ms,
             release_smoothing_coeff,
+            adaptive_release_coeff_update_samples,
+            adaptive_release_coeff_samples_until_update: 1,
             fast_release_env_db: 0.0,
             slow_release_env_db: 0.0,
             loudness_meter,
@@ -214,11 +259,18 @@ impl Compressor {
                 SIDECHAIN_HIGHPASS_DEFAULT_HZ,
                 sample_rate,
             ),
+            presence_highpass_coeff: Self::sidechain_highpass_coeff(
+                PRESENCE_HIGHPASS_HZ,
+                sample_rate,
+            ),
             sidechain_highpass_prev_input: 0.0,
             sidechain_highpass_prev_output: 0.0,
+            presence_highpass_prev_input: 0.0,
+            presence_highpass_prev_output: 0.0,
             low_band_env_sq: 0.0,
             voiced_band_env_sq: 0.0,
             presence_band_env_sq: 0.0,
+            non_presence_band_env_sq: 0.0,
             plosive_ratio: 0.0,
             limiter_feedback_gain_reduction_db: 0.0,
         }
@@ -231,6 +283,9 @@ impl Compressor {
 
     /// Set threshold in dB
     pub fn set_threshold(&mut self, threshold_db: f64) {
+        if self.threshold_db == threshold_db {
+            return;
+        }
         self.threshold_db = threshold_db;
         self.reset_adaptive_release_state();
     }
@@ -257,17 +312,25 @@ impl Compressor {
 
     /// Set release time in ms
     pub fn set_release_time(&mut self, release_ms: f64) {
+        if self.base_release_ms == release_ms {
+            return;
+        }
         self.base_release_ms = release_ms;
-        if !self.adaptive_release {
+        if self.adaptive_release {
+            self.update_adaptive_release_time_meter();
+            self.adaptive_release_coeff_samples_until_update = 1;
+        } else {
             self.current_release_ms = release_ms;
             self.target_release_ms = release_ms;
             self.release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
         }
-        self.detector_release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
     }
 
     /// Enable or disable adaptive release
     pub fn set_adaptive_release(&mut self, enabled: bool) {
+        if self.adaptive_release == enabled {
+            return;
+        }
         self.adaptive_release = enabled;
         if !enabled {
             self.current_release_ms = self.base_release_ms;
@@ -279,7 +342,9 @@ impl Compressor {
         } else {
             self.fast_release_env_db = self.current_gain_reduction_db;
             self.slow_release_env_db = 0.0;
+            self.update_adaptive_release_time_meter();
         }
+        self.adaptive_release_coeff_samples_until_update = 1;
     }
 
     /// Check if adaptive release is enabled
@@ -289,8 +354,14 @@ impl Compressor {
 
     /// Set base release time
     pub fn set_base_release_time(&mut self, release_ms: f64) {
+        if self.base_release_ms == release_ms {
+            return;
+        }
         self.base_release_ms = release_ms;
-        if !self.adaptive_release {
+        if self.adaptive_release {
+            self.update_adaptive_release_time_meter();
+            self.adaptive_release_coeff_samples_until_update = 1;
+        } else {
             self.current_release_ms = release_ms;
             self.target_release_ms = release_ms;
             self.release_coeff = util::time_constant_to_coeff(release_ms, self.sample_rate);
@@ -316,9 +387,6 @@ impl Compressor {
     /// Set makeup gain in dB
     pub fn set_makeup_gain(&mut self, makeup_gain_db: f64) {
         self.makeup_gain_db = makeup_gain_db;
-        if !self.auto_makeup_enabled {
-            self.smoothed_makeup_gain = makeup_gain_db;
-        }
     }
 
     /// Enable or disable the compressor
@@ -346,12 +414,13 @@ impl Compressor {
 
     /// Enable or disable auto makeup gain
     pub fn set_auto_makeup_enabled(&mut self, enabled: bool) {
-        self.auto_makeup_enabled = enabled && self.loudness_meter.is_some();
-        if !self.auto_makeup_enabled {
-            self.clear_auto_makeup_sample_window();
+        let enabled = enabled && self.loudness_meter.is_some();
+        if self.auto_makeup_enabled == enabled {
+            return;
         }
+        self.auto_makeup_enabled = enabled;
         if !enabled {
-            self.smoothed_makeup_gain = self.makeup_gain_db;
+            self.clear_auto_makeup_sample_window();
         }
     }
 
@@ -362,7 +431,10 @@ impl Compressor {
 
     /// Set target LUFS for auto makeup gain
     pub fn set_target_lufs(&mut self, target: f64) {
-        self.target_lufs = target.clamp(-24.0, -12.0);
+        let target = target.clamp(-24.0, -12.0);
+        if self.target_lufs != target {
+            self.target_lufs = target;
+        }
     }
 
     /// Get target LUFS
@@ -430,9 +502,12 @@ impl Compressor {
     fn reset_sidechain_highpass_state(&mut self) {
         self.sidechain_highpass_prev_input = 0.0;
         self.sidechain_highpass_prev_output = 0.0;
+        self.presence_highpass_prev_input = 0.0;
+        self.presence_highpass_prev_output = 0.0;
         self.low_band_env_sq = 0.0;
         self.voiced_band_env_sq = 0.0;
         self.presence_band_env_sq = 0.0;
+        self.non_presence_band_env_sq = 0.0;
         self.plosive_ratio = 0.0;
     }
 
@@ -450,6 +525,25 @@ impl Compressor {
     }
 
     #[inline]
+    fn process_presence_highpass_sample(&mut self, input: f64) -> f64 {
+        let output = self.presence_highpass_coeff
+            * (self.presence_highpass_prev_output + input - self.presence_highpass_prev_input);
+        self.presence_highpass_prev_input = input;
+        self.presence_highpass_prev_output = output;
+        output
+    }
+
+    #[inline]
+    fn update_peak_envelope(&mut self, input_abs: f64) {
+        if input_abs >= self.peak_envelope {
+            self.peak_envelope = input_abs;
+        } else {
+            let coeff = self.detector_release_coeff;
+            self.peak_envelope = coeff * self.peak_envelope + (1.0 - coeff) * input_abs;
+        }
+    }
+
+    #[inline]
     fn update_sidechain_band_metrics(&mut self, full_band_input: f64, detector_input: f64) -> f64 {
         if !self.sidechain_highpass_enabled {
             self.plosive_ratio = 0.0;
@@ -458,8 +552,9 @@ impl Compressor {
 
         let low_component = full_band_input - detector_input;
         let voiced_component = detector_input;
-        let presence_component = 0.65 * detector_input + 0.35 * (detector_input - low_component);
-        let coeff = util::time_constant_to_coeff(SIDECHAIN_BAND_ENV_MS, self.sample_rate);
+        let presence_component = self.process_presence_highpass_sample(voiced_component);
+        let non_presence_component = voiced_component - presence_component;
+        let coeff = self.sidechain_band_env_coeff;
 
         self.low_band_env_sq =
             coeff * self.low_band_env_sq + (1.0 - coeff) * low_component * low_component;
@@ -467,17 +562,20 @@ impl Compressor {
             coeff * self.voiced_band_env_sq + (1.0 - coeff) * voiced_component * voiced_component;
         self.presence_band_env_sq = coeff * self.presence_band_env_sq
             + (1.0 - coeff) * presence_component * presence_component;
+        self.non_presence_band_env_sq = coeff * self.non_presence_band_env_sq
+            + (1.0 - coeff) * non_presence_component * non_presence_component;
 
         let low_rms = self.low_band_env_sq.sqrt();
         let voiced_rms = self.voiced_band_env_sq.sqrt().max(1e-8);
         let presence_rms = self.presence_band_env_sq.sqrt();
+        let non_presence_rms = self.non_presence_band_env_sq.sqrt().max(1e-8);
         self.plosive_ratio = (low_rms / voiced_rms).clamp(0.0, 32.0);
 
         let plosive_amount = ((self.plosive_ratio - PLOSIVE_RATIO_START)
             / (PLOSIVE_RATIO_FULL - PLOSIVE_RATIO_START))
             .clamp(0.0, 1.0);
         let plosive_penalty = 1.0 - plosive_amount * (1.0 - PLOSIVE_MIN_DETECTOR_GAIN);
-        let presence_ratio = (presence_rms / voiced_rms).clamp(0.0, 4.0);
+        let presence_ratio = (presence_rms / non_presence_rms).clamp(0.0, 4.0);
         let presence_weight = 1.0 + 0.18 * (presence_ratio - 0.75).clamp(0.0, 1.0);
         (plosive_penalty * presence_weight).clamp(PLOSIVE_MIN_DETECTOR_GAIN, 1.15)
     }
@@ -494,8 +592,12 @@ impl Compressor {
             / (SLOW_RELEASE_TRIGGER_DB + 4.0))
             .clamp(0.0, 1.0);
         let syllabic = (sustained * sustained * (1.0 - 0.35 * transient_bias)).clamp(0.0, 1.0);
-        self.target_release_ms = ADAPTIVE_FAST_RELEASE_MS
-            + syllabic * (ADAPTIVE_SLOW_RELEASE_MS - ADAPTIVE_FAST_RELEASE_MS);
+        let minimum_release_ms = self.base_release_ms.max(0.001);
+        let maximum_release_ms = (minimum_release_ms * ADAPTIVE_SLOW_RELEASE_MULTIPLIER)
+            .min(ADAPTIVE_RELEASE_MAX_MS)
+            .max(minimum_release_ms);
+        self.target_release_ms =
+            minimum_release_ms + syllabic * (maximum_release_ms - minimum_release_ms);
     }
 
     fn smooth_gain_reduction(&mut self, target_gain_reduction_db: f64) {
@@ -512,29 +614,28 @@ impl Compressor {
             return;
         }
 
-        let fast_release_coeff =
-            util::time_constant_to_coeff(ADAPTIVE_FAST_RELEASE_MS, self.sample_rate);
-        let slow_charge_coeff =
-            util::time_constant_to_coeff(ADAPTIVE_SLOW_CHARGE_MS, self.sample_rate);
-        let slow_release_coeff =
-            util::time_constant_to_coeff(ADAPTIVE_SLOW_RELEASE_MS, self.sample_rate);
-
         if target_gain_reduction_db > self.current_gain_reduction_db {
             self.fast_release_env_db = self.attack_coeff * self.current_gain_reduction_db
                 + (1.0 - self.attack_coeff) * target_gain_reduction_db;
         } else {
-            self.fast_release_env_db = fast_release_coeff * self.fast_release_env_db
-                + (1.0 - fast_release_coeff) * target_gain_reduction_db;
+            self.fast_release_env_db = self.adaptive_fast_release_coeff * self.fast_release_env_db
+                + (1.0 - self.adaptive_fast_release_coeff) * target_gain_reduction_db;
         }
 
         if target_gain_reduction_db > SLOW_RELEASE_TRIGGER_DB {
-            self.slow_release_env_db = slow_charge_coeff * self.slow_release_env_db
-                + (1.0 - slow_charge_coeff) * target_gain_reduction_db;
+            self.slow_release_env_db = self.adaptive_slow_charge_coeff * self.slow_release_env_db
+                + (1.0 - self.adaptive_slow_charge_coeff) * target_gain_reduction_db;
         } else {
-            self.slow_release_env_db *= slow_release_coeff;
+            self.slow_release_env_db *= self.adaptive_slow_release_coeff;
         }
 
-        self.current_gain_reduction_db = self.fast_release_env_db.max(self.slow_release_env_db);
+        let gr_coeff = if target_gain_reduction_db > self.current_gain_reduction_db {
+            self.attack_coeff
+        } else {
+            self.release_coeff
+        };
+        self.current_gain_reduction_db =
+            gr_coeff * self.current_gain_reduction_db + (1.0 - gr_coeff) * target_gain_reduction_db;
     }
 
     fn speech_activity_from_rms_db(rms_db: f64) -> f64 {
@@ -634,24 +735,32 @@ impl Compressor {
         reliability: f64,
         elapsed_samples: usize,
     ) {
-        let elapsed_samples = elapsed_samples.max(1) as f64;
-        let makeup_coeff = self.makeup_smoothing_coeff.powf(elapsed_samples);
-        let silence_relax_coeff = self.makeup_silence_relax_coeff.powf(elapsed_samples);
+        let elapsed_samples = elapsed_samples.max(1);
+        let makeup_coeff = if elapsed_samples == 1 {
+            self.makeup_smoothing_coeff
+        } else {
+            self.makeup_smoothing_coeff.powf(elapsed_samples as f64)
+        };
+        let silence_relax_coeff = if elapsed_samples == 1 {
+            self.makeup_silence_relax_coeff
+        } else {
+            self.makeup_silence_relax_coeff.powf(elapsed_samples as f64)
+        };
         if !self.auto_makeup_enabled {
             let target = self.makeup_gain_db;
-            let diff = target - self.smoothed_makeup_gain;
-            if diff.abs() > 0.1 {
-                self.smoothed_makeup_gain =
-                    makeup_coeff * self.smoothed_makeup_gain + (1.0 - makeup_coeff) * target;
-            } else {
-                self.smoothed_makeup_gain = target;
-            }
+            self.smoothed_makeup_gain =
+                makeup_coeff * self.smoothed_makeup_gain + (1.0 - makeup_coeff) * target;
             return;
         }
 
         if let Some(meter) = &self.loudness_meter {
             self.current_lufs = meter.loudness_momentary() as f64;
-            let activity_coeff = self.speech_activity_smoothing_coeff.powf(elapsed_samples);
+            let activity_coeff = if elapsed_samples == 1 {
+                self.speech_activity_smoothing_coeff
+            } else {
+                self.speech_activity_smoothing_coeff
+                    .powf(elapsed_samples as f64)
+            };
             self.speech_activity_score = activity_coeff * self.speech_activity_score
                 + (1.0 - activity_coeff) * speech_activity.clamp(0.0, 1.0);
             self.auto_makeup_activity_reliability = reliability.clamp(0.0, 1.0);
@@ -680,13 +789,8 @@ impl Compressor {
                 (12.0 - self.limiter_feedback_gain_reduction_db * 2.0).clamp(0.0, reliability_cap);
             let clamped_gain = required_gain.clamp(0.0, headroom_cap);
 
-            let diff = clamped_gain - self.smoothed_makeup_gain;
-            if diff.abs() > 0.1 {
-                self.smoothed_makeup_gain =
-                    makeup_coeff * self.smoothed_makeup_gain + (1.0 - makeup_coeff) * clamped_gain;
-            } else {
-                self.smoothed_makeup_gain = clamped_gain;
-            }
+            self.smoothed_makeup_gain =
+                makeup_coeff * self.smoothed_makeup_gain + (1.0 - makeup_coeff) * clamped_gain;
         }
     }
 
@@ -761,7 +865,9 @@ impl Compressor {
                 meter.process(buffer);
             }
         }
-        self.update_auto_makeup_gain(activity.activity, activity.reliability, buffer.len());
+        if self.auto_makeup_enabled {
+            self.update_auto_makeup_gain(activity.activity, activity.reliability, buffer.len());
+        }
     }
 
     #[inline]
@@ -771,7 +877,7 @@ impl Compressor {
     }
 
     #[inline]
-    fn process_sample_impl(&mut self, input: f32, update_makeup_gain: bool) -> f32 {
+    fn process_sample_impl(&mut self, input: f32, collect_sample_auto_makeup: bool) -> f32 {
         if !self.enabled {
             self.current_gain_reduction_db = 0.0;
             return input;
@@ -780,23 +886,16 @@ impl Compressor {
         let input_f64 = input as f64;
         let detector_input = self.process_sidechain_sample(input_f64);
         let detector_weight = self.update_sidechain_band_metrics(input_f64, detector_input);
-        let detector_abs = detector_input.abs();
-        let inst_peak_db = util::linear_to_db(detector_abs, 1e-10);
-        let peak_coeff = if inst_peak_db > self.peak_envelope_db {
-            self.attack_coeff
-        } else {
-            self.detector_release_coeff
-        };
-        self.peak_envelope_db =
-            peak_coeff * self.peak_envelope_db + (1.0 - peak_coeff) * inst_peak_db;
+        self.update_peak_envelope(detector_input.abs());
 
         let input_squared = detector_input * detector_input;
         self.rms_envelope_sq =
             self.rms_coeff * self.rms_envelope_sq + (1.0 - self.rms_coeff) * input_squared;
         let rms_db = util::linear_to_db(self.rms_envelope_sq.sqrt(), 1e-10);
 
-        let detector_db = Self::blended_detector_db(self.peak_envelope_db, rms_db)
-            + util::linear_to_db(detector_weight, 1e-10);
+        let peak_db = util::linear_to_db(self.peak_envelope, 1e-10);
+        let detector_db =
+            Self::blended_detector_db(peak_db, rms_db) + util::linear_to_db(detector_weight, 1e-10);
 
         self.update_adaptive_release_time_meter();
         let release_diff = self.target_release_ms - self.current_release_ms;
@@ -806,8 +905,16 @@ impl Compressor {
         } else {
             self.current_release_ms = self.target_release_ms;
         }
-        self.release_coeff =
-            util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
+        if self.adaptive_release {
+            if self.adaptive_release_coeff_samples_until_update <= 1 {
+                self.release_coeff =
+                    util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
+                self.adaptive_release_coeff_samples_until_update =
+                    self.adaptive_release_coeff_update_samples;
+            } else {
+                self.adaptive_release_coeff_samples_until_update -= 1;
+            }
+        }
 
         let target_gain_reduction_db = self.compute_gain_reduction(detector_db);
         self.smooth_gain_reduction(target_gain_reduction_db);
@@ -815,7 +922,7 @@ impl Compressor {
             .block_peak_gain_reduction_db
             .max(self.current_gain_reduction_db);
 
-        if update_makeup_gain && !self.auto_makeup_enabled {
+        if !self.auto_makeup_enabled {
             let speech_activity = Self::speech_activity_from_rms_db(detector_db);
             self.update_auto_makeup_gain(speech_activity, 1.0, 1);
         }
@@ -824,7 +931,7 @@ impl Compressor {
             * util::db_to_linear(self.smoothed_makeup_gain);
         let output = (input_f64 * output_gain) as f32;
 
-        if update_makeup_gain && self.auto_makeup_enabled {
+        if collect_sample_auto_makeup && self.auto_makeup_enabled {
             let speech_activity = Self::speech_activity_from_rms_db(detector_db);
             let sample_index = self.auto_makeup_sample_window_len;
             self.auto_makeup_sample_window[sample_index] = output;
@@ -847,7 +954,7 @@ impl Compressor {
 
     /// Reset compressor state
     pub fn reset(&mut self) {
-        self.peak_envelope_db = -120.0;
+        self.peak_envelope = 0.0;
         self.rms_envelope_sq = 0.0;
         self.current_gain_reduction_db = 0.0;
         self.block_peak_gain_reduction_db = 0.0;
@@ -857,6 +964,7 @@ impl Compressor {
         self.target_release_ms = self.base_release_ms;
         self.release_coeff =
             util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
+        self.adaptive_release_coeff_samples_until_update = 1;
         self.reset_sidechain_highpass_state();
         self.limiter_feedback_gain_reduction_db = 0.0;
         self.speech_activity_score = 0.0;
@@ -882,6 +990,84 @@ mod tests {
         let input = 0.001f32;
         let output = comp.process_sample(input);
         assert!((output - input).abs() < 0.0001);
+    }
+
+    #[test]
+    #[ignore = "release-mode compressor hot-path cost measurement"]
+    fn benchmark_compressor_process_sample_cost() {
+        const SAMPLES: usize = 480_000;
+        const REPEATS: usize = 5;
+        let input: Vec<f32> = (0..SAMPLES)
+            .map(|index| {
+                let phase = 2.0 * std::f64::consts::PI * 187.0 * index as f64 / 48_000.0;
+                (0.3 * phase.sin()) as f32
+            })
+            .collect();
+
+        for adaptive_release in [false, true] {
+            for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
+                let mut durations = [std::time::Duration::ZERO; REPEATS];
+                for duration in &mut durations {
+                    let mut compressor =
+                        Compressor::new(-24.0, 3.0, 10.0, 180.0, 0.0, 6.0, sample_rate);
+                    compressor.set_adaptive_release(adaptive_release);
+                    for sample in input.iter().take(10_000) {
+                        std::hint::black_box(
+                            compressor.process_sample(std::hint::black_box(*sample)),
+                        );
+                    }
+                    let started = std::time::Instant::now();
+                    for sample in &input {
+                        std::hint::black_box(
+                            compressor.process_sample(std::hint::black_box(*sample)),
+                        );
+                    }
+                    *duration = started.elapsed();
+                }
+                durations.sort_unstable();
+                println!(
+                    "compressor {sample_rate:.0} Hz adaptive={adaptive_release}: {:.2} ns/sample (median)",
+                    durations[REPEATS / 2].as_nanos() as f64 / SAMPLES as f64
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_sample_path_remains_finite_across_control_transitions() {
+        let mut compressor = Compressor::new(-27.0, 4.5, 4.0, 110.0, 1.25, 7.0, 48_000.0);
+        compressor.set_sidechain_highpass_enabled(true);
+
+        for index in 0..4_096 {
+            match index {
+                1_024 => {
+                    compressor.set_attack_time(1.5);
+                    compressor.set_release_time(80.0);
+                    compressor.set_adaptive_release(true);
+                }
+                2_048 => compressor.set_base_release_time(240.0),
+                3_072 => compressor.set_adaptive_release(false),
+                3_584 => compressor.set_release_time(65.0),
+                _ => {}
+            }
+
+            let amplitude = match index {
+                0..=511 => 0.03,
+                512..=1_535 => 0.65,
+                1_536..=2_047 => 0.12,
+                2_048..=3_071 => 0.42,
+                _ => 0.08,
+            };
+            let phase = 2.0 * std::f64::consts::PI * 223.0 * index as f64 / 48_000.0;
+            let sample = (amplitude * (phase.sin() + 0.17 * (phase * 5.1).sin())) as f32;
+            let output = compressor.process_sample(sample);
+            assert!(output.is_finite());
+            assert!(output.abs() <= sample.abs() * 1.2 + 1e-6);
+        }
+
+        assert!((compressor.current_release_time() - 65.0).abs() < 1e-12);
+        assert!(compressor.current_gain_reduction().is_finite());
+        assert!((0.0..=32.0).contains(&compressor.plosive_ratio()));
     }
 
     #[test]
@@ -1081,15 +1267,15 @@ mod tests {
 
         assert!(adaptive.current_release_time() > fixed.current_release_time());
 
-        let fixed_peak_before = fixed.peak_envelope_db;
-        let adaptive_peak_before = adaptive.peak_envelope_db;
+        let fixed_peak_before = fixed.peak_envelope;
+        let adaptive_peak_before = adaptive.peak_envelope;
         for _ in 0..2_400 {
             fixed.process_sample(0.001);
             adaptive.process_sample(0.001);
         }
 
-        let fixed_drop = fixed_peak_before - fixed.peak_envelope_db;
-        let adaptive_drop = adaptive_peak_before - adaptive.peak_envelope_db;
+        let fixed_drop = fixed_peak_before - fixed.peak_envelope;
+        let adaptive_drop = adaptive_peak_before - adaptive.peak_envelope;
         assert!((fixed_drop - adaptive_drop).abs() < 1e-9);
     }
 
@@ -1538,7 +1724,7 @@ mod tests {
             block.fill(0.04);
         }
 
-        assert!((comp.current_makeup_gain() - 6.0).abs() < 1e-9);
+        assert!((comp.current_makeup_gain() - 6.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1554,6 +1740,288 @@ mod tests {
             "peak={} endpoint={}",
             comp.block_peak_gain_reduction(),
             comp.current_gain_reduction()
+        );
+    }
+
+    #[test]
+    fn test_peak_detector_tracks_single_sample_and_has_rate_independent_release() {
+        for sample_rate in [48_000.0, 96_000.0, 192_000.0] {
+            let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, sample_rate);
+            let transient = 0.5_f32;
+            comp.process_sample(transient);
+            assert_eq!(
+                comp.peak_envelope,
+                f64::from(transient),
+                "one-sample peak was under-read at {sample_rate:.0} Hz"
+            );
+
+            let peak_before = comp.peak_envelope;
+            for _ in 0..(sample_rate * PEAK_DETECTOR_RELEASE_MS / 1_000.0) as usize {
+                comp.process_sample(0.0);
+            }
+            let remaining = comp.peak_envelope / peak_before;
+            assert!(
+                (0.33..=0.41).contains(&remaining),
+                "5 ms peak-envelope release should leave about e^-1 amplitude at {sample_rate:.0} Hz, got {remaining:.4}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_peak_detector_tracks_sine_peaks_independently_of_gr_controls() {
+        const AMPLITUDE: f64 = 0.8;
+        for frequency_hz in [100.0, 1_000.0] {
+            for attack_ms in [5.0, 20.0] {
+                for release_ms in [20.0, 200.0] {
+                    let mut comp =
+                        Compressor::new(-20.0, 4.0, attack_ms, release_ms, 0.0, 0.0, 48_000.0);
+                    let mut min_peak = f64::INFINITY;
+                    let mut max_peak = 0.0_f64;
+                    let mut peak_sum = 0.0;
+                    let mut min_gain_reduction = f64::INFINITY;
+                    let mut count = 0;
+                    for index in 0..48_000 {
+                        let phase =
+                            2.0 * std::f64::consts::PI * frequency_hz * index as f64 / 48_000.0;
+                        comp.process_sample((AMPLITUDE * phase.sin()) as f32);
+                        if index >= 43_200 {
+                            let peak = comp.peak_envelope;
+                            min_peak = min_peak.min(peak);
+                            max_peak = max_peak.max(peak);
+                            peak_sum += peak;
+                            min_gain_reduction =
+                                min_gain_reduction.min(comp.current_gain_reduction());
+                            count += 1;
+                        }
+                    }
+                    let mean_peak = peak_sum / count as f64;
+                    let ripple = max_peak - min_peak;
+                    assert!(
+                        (AMPLITUDE * 0.985..=AMPLITUDE * 1.001).contains(&max_peak),
+                        "sample-peak capture missed or exceeded the {frequency_hz:.0} Hz sine peak: max={max_peak:.4}, mean={mean_peak:.4}, ripple={ripple:.4}, attack={attack_ms} ms, release={release_ms} ms"
+                    );
+                    assert!(mean_peak > AMPLITUDE * 0.5 && mean_peak < max_peak);
+                    assert!(ripple < AMPLITUDE * 0.75);
+                    assert!(
+                        min_gain_reduction > 0.0,
+                        "gain reduction collapsed at sine zero crossings: min={min_gain_reduction:.3} dB, frequency={frequency_hz:.0} Hz, attack={attack_ms} ms, release={release_ms} ms"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_configured_attack_and_release_calibrate_gain_reduction_smoothing() {
+        for (attack_ms, release_ms) in [(5.0, 20.0), (10.0, 80.0), (20.0, 200.0)] {
+            let mut comp = Compressor::new(-20.0, 4.0, attack_ms, release_ms, 0.0, 0.0, 48_000.0);
+            for _ in 0..(attack_ms * 48.0) as usize {
+                comp.smooth_gain_reduction(6.0);
+            }
+            let expected_attack = 6.0 * (1.0 - (-1.0_f64).exp());
+            assert!((comp.current_gain_reduction() - expected_attack).abs() < 0.02);
+
+            for _ in 0..(release_ms * 48.0) as usize {
+                comp.smooth_gain_reduction(0.0);
+            }
+            let expected_release = expected_attack * (-1.0_f64).exp();
+            assert!(
+                (comp.current_gain_reduction() - expected_release).abs() < 0.02,
+                "user release was not applied once at {release_ms} ms: actual={:.4}, expected={expected_release:.4}",
+                comp.current_gain_reduction()
+            );
+        }
+    }
+
+    #[test]
+    fn test_end_to_end_silence_recovery_follows_short_vs_default_release() {
+        fn reduction_after_early_silence(release_ms: f64) -> f64 {
+            let mut comp = Compressor::new(-30.0, 4.0, 1.0, release_ms, 0.0, 0.0, 48_000.0);
+            for _ in 0..24_000 {
+                comp.process_sample(0.5);
+            }
+            for _ in 0..960 {
+                comp.process_sample(0.0);
+            }
+            comp.current_gain_reduction()
+        }
+
+        let fast = reduction_after_early_silence(20.0);
+        let default = reduction_after_early_silence(200.0);
+        assert!(
+            fast < default,
+            "20 ms release did not recover faster than 200 ms: fast={fast:.3} dB default={default:.3} dB"
+        );
+    }
+
+    #[test]
+    fn test_user_release_is_applied_once_after_detector_falls_below_threshold() {
+        fn gain_reduction_after_one_release_time(release_ms: f64) -> f64 {
+            let mut comp = Compressor::new(-30.0, 4.0, 1.0, release_ms, 0.0, 0.0, 48_000.0);
+            for _ in 0..24_000 {
+                comp.process_sample(0.5);
+            }
+            for _ in 0..4_800 {
+                comp.process_sample(0.0);
+            }
+
+            let peak_db = util::linear_to_db(comp.peak_envelope, 1e-10);
+            let rms_db = util::linear_to_db(comp.rms_envelope_sq.sqrt(), 1e-10);
+            let detector_db = Compressor::blended_detector_db(peak_db, rms_db);
+            assert!(
+                comp.compute_gain_reduction(detector_db) == 0.0,
+                "detector is not below threshold after 100 ms: {detector_db:.2} dB"
+            );
+
+            let before = comp.current_gain_reduction();
+            assert!(before > 0.0);
+            for _ in 0..(release_ms * 48.0) as usize {
+                comp.process_sample(0.0);
+            }
+            comp.current_gain_reduction() / before
+        }
+
+        for release_ms in [20.0, 200.0] {
+            let remaining = gain_reduction_after_one_release_time(release_ms);
+            assert!(
+                (remaining - (-1.0_f64).exp()).abs() < 0.03,
+                "after one {release_ms} ms user release, GR fraction={remaining:.4}, expected e^-1"
+            );
+        }
+    }
+
+    #[test]
+    fn test_reapplying_unchanged_release_controls_is_idempotent() {
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 80.0, 0.0, 0.0, 48_000.0);
+        comp.set_adaptive_release(true);
+        comp.fast_release_env_db = 4.0;
+        comp.slow_release_env_db = 3.0;
+        comp.set_threshold(comp.threshold_db());
+        assert_eq!(comp.fast_release_env_db, 4.0);
+        assert_eq!(comp.slow_release_env_db, 3.0);
+        comp.set_adaptive_release(true);
+        assert_eq!(comp.fast_release_env_db, 4.0);
+        assert_eq!(comp.slow_release_env_db, 3.0);
+    }
+
+    #[test]
+    fn test_adaptive_release_uses_base_release_as_its_lower_bound() {
+        fn response_for_base(base_release_ms: f64) -> (f64, f64) {
+            let mut comp = Compressor::new(-30.0, 4.0, 1.0, 200.0, 0.0, 0.0, 48_000.0);
+            comp.set_base_release_time(base_release_ms);
+            comp.set_adaptive_release(true);
+            for _ in 0..96_000 {
+                comp.process_sample(0.7);
+            }
+            let release_ms = comp.current_release_time();
+            let gain_before_silence = comp.current_gain_reduction();
+            for _ in 0..12_000 {
+                comp.process_sample(0.0);
+            }
+            (
+                release_ms,
+                comp.current_gain_reduction() / gain_before_silence,
+            )
+        }
+
+        let (short, short_remaining) = response_for_base(40.0);
+        let (long, long_remaining) = response_for_base(100.0);
+        assert!(
+            long > short * 1.8,
+            "adaptive release readout ignored base release: short={short:.1} ms long={long:.1} ms"
+        );
+        assert!(
+            long_remaining > short_remaining * 1.2,
+            "base release did not change the audible recovery: short={short_remaining:.3} long={long_remaining:.3}"
+        );
+    }
+
+    #[test]
+    fn test_manual_makeup_gain_changes_are_click_safe() {
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 48_000.0);
+        let input = 0.1_f32;
+        let before = comp.process_sample(input);
+
+        comp.set_makeup_gain(12.0);
+        assert!(
+            comp.current_makeup_gain() < 0.01,
+            "manual makeup jumped immediately to {} dB",
+            comp.current_makeup_gain()
+        );
+        let first_after_edit = comp.process_sample(input);
+        assert!(
+            first_after_edit / before < 1.01,
+            "first output after a manual gain edit stepped by {:.2} dB",
+            20.0 * (first_after_edit / before).abs().log10()
+        );
+
+        for _ in 1..9_600 {
+            comp.process_sample(input);
+        }
+        assert!(
+            (7.2..=8.0).contains(&comp.current_makeup_gain()),
+            "manual makeup did not follow its 200 ms smoothing time: {:.3} dB",
+            comp.current_makeup_gain()
+        );
+    }
+
+    #[test]
+    fn test_manual_makeup_gain_changes_are_sample_smoothed_in_block_api() {
+        let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 48_000.0);
+        let before = comp.process_sample(0.1);
+        comp.set_makeup_gain(12.0);
+        let mut block = vec![0.1_f32; 480];
+        comp.process_block_inplace(&mut block);
+
+        let first_step_db = 20.0 * (f64::from(block[0]) / f64::from(before)).abs().log10();
+        assert!(
+            first_step_db < 0.01,
+            "first block sample stepped by {first_step_db:.4} dB"
+        );
+        let largest_step_db = block
+            .windows(2)
+            .map(|samples| {
+                20.0 * (f64::from(samples[1]) / f64::from(samples[0]))
+                    .abs()
+                    .log10()
+            })
+            .fold(0.0_f64, f64::max);
+        assert!(
+            largest_step_db < 0.01,
+            "manual makeup created a block-path gain step of {largest_step_db:.4} dB"
+        );
+        assert!(
+            (0.55..=0.65).contains(&comp.current_makeup_gain()),
+            "10 ms block did not advance the 200 ms makeup ramp smoothly: {:.3} dB",
+            comp.current_makeup_gain()
+        );
+    }
+
+    #[test]
+    fn test_presence_metric_is_high_frequency_weighted_not_bass_weighted() {
+        fn presence_metric_at(frequency_hz: f64) -> (f64, f64) {
+            let mut comp = Compressor::new(-30.0, 4.0, 1.0, 100.0, 0.0, 0.0, 48_000.0);
+            comp.set_sidechain_highpass_enabled(true);
+            let mut detector_weight = 1.0;
+            for index in 0..48_000 {
+                let phase = 2.0 * std::f64::consts::PI * frequency_hz * index as f64 / 48_000.0;
+                let input = 0.5 * phase.sin();
+                let detector = comp.process_sidechain_sample(input);
+                detector_weight = comp.update_sidechain_band_metrics(input, detector);
+            }
+            let ratio = (comp.presence_band_env_sq / comp.non_presence_band_env_sq).sqrt();
+            (ratio, detector_weight)
+        }
+
+        let (bass_ratio, bass_weight) = presence_metric_at(250.0);
+        let (presence_ratio, presence_weight) = presence_metric_at(4_000.0);
+        assert!(
+            presence_ratio > bass_ratio * 2.0,
+            "presence detector should favor presence over bass: bass={bass_ratio:.3} presence={presence_ratio:.3}"
+        );
+        assert!(
+            presence_weight >= bass_weight + 0.14,
+            "presence weighting did not favor high-frequency content: bass={bass_weight:.3} presence={presence_weight:.3}"
         );
     }
 

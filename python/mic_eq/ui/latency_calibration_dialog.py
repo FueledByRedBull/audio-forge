@@ -28,14 +28,19 @@ from ..analysis.latency_calibration import (
     generate_probe_signal,
     result_to_profile,
 )
-from ..config import coerce_device_identity
 from .accessibility import set_accessible_group
 from .level_meter import LevelMeter
-from .device_selection import start_processor_for_route
-from .calibration_dialog import (
-    _active_device_identities,
-    _route_identities_match,
-    _selected_device_identities,
+from .capture_session import (
+    CaptureSession,
+    active_device_identities as _active_device_identities,
+    capture_route_context,
+    device_name,
+    known_capture_format_context as _known_capture_format_context,
+    processor_output_sample_rate as _output_sample_rate,
+    processor_sample_rate as _capture_sample_rate,
+    route_identities_match as _route_identities_match,
+    selected_device_identities as _selected_device_identities,
+    start_selected_route,
 )
 from .layout_constants import configure_resizable_dialog, create_scrollable_dialog_body
 
@@ -44,68 +49,7 @@ logger = logging.getLogger(__name__)
 
 
 DEBUG = False
-
-
-def _device_name(device: object) -> str | None:
-    identity = coerce_device_identity(device)
-    if identity is not None:
-        return identity.name
-    return device if isinstance(device, str) and device else None
-
-
-def _capture_sample_rate(owner: Any) -> int:
-    if owner is None or not hasattr(owner, "processor"):
-        raise RuntimeError("Could not find audio processor.")
-
-    sample_rate = int(owner.processor.sample_rate())
-    if sample_rate <= 0:
-        raise RuntimeError("Processing sample rate is unavailable.")
-
-    return sample_rate
-
-
-def _output_sample_rate(owner: Any) -> int:
-    if owner is None or not hasattr(owner, "processor"):
-        raise RuntimeError("Could not find audio processor.")
-    sample_rate = int(owner.processor.output_sample_rate())
-    if sample_rate <= 0:
-        raise RuntimeError("Output sample rate is unavailable.")
-    return sample_rate
-
-
-def _known_capture_format_context(value: object) -> tuple[int, int, int, int] | None:
-    if not isinstance(value, (list, tuple)) or len(value) != 4:
-        return None
-    if any(
-        isinstance(item, bool) or not isinstance(item, int) or item <= 0
-        for item in value
-    ):
-        return None
-    return tuple(value)  # type: ignore[return-value]
-
-
-def _owner_calibration_context(
-    owner: Any,
-) -> tuple[str | None, tuple[int, int, int, int] | None, str | None]:
-    route_getter = getattr(owner, "_current_device_route_key", None)
-    format_getter = getattr(owner, "_current_capture_format_context", None)
-    context_getter = getattr(owner, "_calibration_context_key", None)
-    if (
-        not callable(route_getter)
-        or not callable(format_getter)
-    ):
-        return None, None, None
-    try:
-        route_key = route_getter()
-        format_context = _known_capture_format_context(format_getter())
-        context_key = context_getter() if callable(context_getter) else None
-    except Exception:
-        return None, None, None
-    if not isinstance(route_key, str) or not route_key:
-        route_key = None
-    if not isinstance(context_key, str) or not context_key:
-        context_key = None
-    return route_key, format_context, context_key
+_device_name = device_name
 
 
 def _resample_probe(
@@ -146,7 +90,7 @@ def engine_config_signature(processor: Any) -> str:
 class LatencyCalibrationWorker(QThread):
     """Background worker for CPU-only latency analysis."""
 
-    finished = pyqtSignal(dict)
+    result_ready = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
     def __init__(
@@ -200,7 +144,7 @@ class LatencyCalibrationWorker(QThread):
                     engine_config_signature=self.engine_config_signature,
                 ),
             }
-            self.finished.emit(payload)
+            self.result_ready.emit(payload)
         except Exception as e:
             self.failed.emit(f"Latency calibration failed: {type(e).__name__}: {e}")
 
@@ -220,6 +164,9 @@ class LatencyCalibrationDialog(QDialog):
         self.setModal(True)
 
         self.worker: LatencyCalibrationWorker | None = None
+        self._capture_session: CaptureSession | None = None
+        self._close_requested = False
+        self._close_result = False
         self._started_processor = False
         self._latest_profile: dict | None = existing_profile
         self._capture_timer = QTimer(self)
@@ -241,9 +188,9 @@ class LatencyCalibrationDialog(QDialog):
         self._measurement_context_key: str | None = None
         owner = self._get_processor_owner()
         if owner is not None:
-            route_key, _format_context, context_key = _owner_calibration_context(owner)
-            self._measurement_route_key = route_key
-            self._measurement_context_key = context_key
+            context = capture_route_context(owner)
+            self._measurement_route_key = context.route_key
+            self._measurement_context_key = context.context_key
         if existing_profile is not None:
             self._measurement_format_context = _known_capture_format_context(
                 existing_profile.get("capture_format_context")
@@ -371,6 +318,9 @@ class LatencyCalibrationDialog(QDialog):
         return parent
 
     def _on_run_clicked(self):
+        if self._close_requested or (self.worker is not None and self.worker.isRunning()):
+            self.status_label.setText("Wait for the previous latency analysis to stop.")
+            return
         owner = self._get_processor_owner()
         if owner is None:
             QMessageBox.critical(self, "Error", "Could not find audio processor.")
@@ -400,13 +350,7 @@ class LatencyCalibrationDialog(QDialog):
 
         try:
             if not owner.processor.is_running():
-                input_device = getattr(owner, "input_combo", None)
-                output_device = getattr(owner, "output_combo", None)
-                start_processor_for_route(
-                    owner.processor,
-                    input_device.currentData() if input_device else None,
-                    output_device.currentData() if output_device else None,
-                )
+                start_selected_route(owner)
                 self._started_processor = True
             else:
                 self._started_processor = False
@@ -416,11 +360,10 @@ class LatencyCalibrationDialog(QDialog):
             )
             return
 
-        (
-            self._measurement_route_key,
-            self._measurement_format_context,
-            self._measurement_context_key,
-        ) = _owner_calibration_context(owner)
+        context = capture_route_context(owner)
+        self._measurement_route_key = context.route_key
+        self._measurement_format_context = context.format_context
+        self._measurement_context_key = context.context_key
         if (
             self._measurement_route_key is None
             or self._measurement_format_context is None
@@ -436,7 +379,6 @@ class LatencyCalibrationDialog(QDialog):
         self.status_label.setText("Preparing probe...")
 
         try:
-            owner.processor.set_recovery_suppressed(True)
             self._capture_sample_rate = _capture_sample_rate(owner)
             self._probe = generate_probe_signal(
                 sample_rate=self._capture_sample_rate,
@@ -449,7 +391,8 @@ class LatencyCalibrationDialog(QDialog):
             )
             self._engine_signature = engine_config_signature(owner.processor)
             self._engine_latency_samples = []
-            owner.processor.start_raw_recording(self._recording_duration_s)
+            self._capture_session = CaptureSession(owner, "latency_calibration")
+            self._capture_session.start(self._recording_duration_s)
         except Exception as e:
             self._on_worker_failed(
                 f"Latency calibration failed: {type(e).__name__}: {e}"
@@ -502,7 +445,12 @@ class LatencyCalibrationDialog(QDialog):
                 return
 
             self.status_label.setText("Analyzing captured signal...")
-            raw = owner.processor.stop_raw_recording()
+            session, self._capture_session = self._capture_session, None
+            raw = (
+                session.stop_recording()
+                if session is not None
+                else owner.processor.stop_raw_recording()
+            )
             if raw is None:
                 self._on_worker_failed("Failed to capture recording for calibration.")
                 return
@@ -531,8 +479,12 @@ class LatencyCalibrationDialog(QDialog):
                 ),
                 engine_config_signature=self._engine_signature,
             )
-            self.worker.finished.connect(self._on_worker_finished)
+            self.worker.result_ready.connect(self._on_worker_finished)
             self.worker.failed.connect(self._on_worker_failed)
+            self.worker.finished.connect(self.worker.deleteLater)
+            self.worker.finished.connect(
+                lambda worker=self.worker: self._on_thread_finished(worker)
+            )
             self.worker.start()
         except Exception as e:
             self._on_worker_failed(
@@ -540,9 +492,11 @@ class LatencyCalibrationDialog(QDialog):
             )
 
     def _on_level_update(self, rms_db: float):
-        self.level_meter.set_levels(rms_db, rms_db + 6.0)
+        self.level_meter.set_rms_level(rms_db)
 
     def _on_worker_finished(self, payload: dict):
+        if self._close_requested:
+            return
         analysis = payload.get("analysis")
         profile = payload.get("profile")
         if not isinstance(profile, dict) or self._measurement_format_context is None:
@@ -580,6 +534,8 @@ class LatencyCalibrationDialog(QDialog):
         self._teardown_worker()
 
     def _on_worker_failed(self, message: str):
+        if self._close_requested:
+            return
         self.status_label.setText(message)
         self.run_button.setEnabled(True)
         self.accept_button.setEnabled(self._latest_profile is not None)
@@ -632,14 +588,14 @@ class LatencyCalibrationDialog(QDialog):
             return
 
         owner = self._get_processor_owner()
-        route_key, format_context, context_key = _owner_calibration_context(owner)
+        context = capture_route_context(owner)
         profile_context = _known_capture_format_context(
             self._latest_profile.get("capture_format_context")
         )
         if (
-            route_key != self._measurement_route_key
-            or format_context != self._measurement_format_context
-            or context_key != self._measurement_context_key
+            context.route_key != self._measurement_route_key
+            or context.format_context != self._measurement_format_context
+            or context.context_key != self._measurement_context_key
             or profile_context != self._measurement_format_context
         ):
             self.status_label.setText(
@@ -686,42 +642,58 @@ class LatencyCalibrationDialog(QDialog):
 
         self._started_processor = False
 
+    def _on_thread_finished(self, worker: LatencyCalibrationWorker) -> None:
+        if self.worker is worker:
+            self.worker = None
+        if self._close_requested:
+            self._finish_close()
+
     def _teardown_worker(self):
         self._capture_timer.stop()
         owner = self._get_processor_owner()
 
         if self.worker is not None and self.worker.isRunning():
             self.worker.stop()
-            self.worker.wait(1500)
-
-        self.worker = None
+        session, self._capture_session = self._capture_session, None
+        if session is not None:
+            session.cleanup()
         if owner is not None:
             try:
-                owner.processor.stop_raw_recording()
-            except Exception:
-                pass
-            try:
                 owner.processor.cancel_output_probe()
-            except Exception:
-                pass
-            try:
-                owner.processor.set_recovery_suppressed(False)
             except Exception:
                 pass
         self._probe_started = False
         self._played_probe = False
 
-    def closeEvent(self, event):
+    def _finish_close(self) -> None:
+        if not self._close_requested or self.worker is not None:
+            return
+        self._close_requested = False
+        QDialog.done(
+            self,
+            int(QDialog.DialogCode.Accepted if self._close_result else QDialog.DialogCode.Rejected),
+        )
+
+    def _request_close(self, accepted: bool) -> None:
+        if self._close_requested:
+            return
+        self._close_requested = True
+        self._close_result = accepted
         self._teardown_worker()
         self._stop_owned_processor()
-        super().closeEvent(event)
+        if self.worker is not None:
+            self.run_button.setEnabled(False)
+            self.accept_button.setEnabled(False)
+            self.status_label.setText("Canceling latency analysis...")
+            return
+        self._finish_close()
+
+    def closeEvent(self, event):
+        self._request_close(False)
+        event.ignore()
 
     def reject(self):
-        self._teardown_worker()
-        self._stop_owned_processor()
-        super().reject()
+        self._request_close(False)
 
     def accept(self):
-        self._teardown_worker()
-        self._stop_owned_processor()
-        super().accept()
+        self._request_close(True)

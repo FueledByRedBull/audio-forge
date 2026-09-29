@@ -19,6 +19,7 @@ pub enum RtErrorCode {
     SuppressorBackendFailed = 5,
     SuppressorNonFinite = 6,
     FixedBufferOverflow = 7,
+    InputResamplerFailed = 8,
 }
 
 impl RtErrorCode {
@@ -31,6 +32,7 @@ impl RtErrorCode {
             5 => Self::SuppressorBackendFailed,
             6 => Self::SuppressorNonFinite,
             7 => Self::FixedBufferOverflow,
+            8 => Self::InputResamplerFailed,
             _ => Self::None,
         }
     }
@@ -45,6 +47,7 @@ impl RtErrorCode {
             Self::SuppressorBackendFailed => "suppressor backend failed",
             Self::SuppressorNonFinite => "suppressor produced non-finite output",
             Self::FixedBufferOverflow => "fixed real-time buffer overflow",
+            Self::InputResamplerFailed => "input resampler failed",
         }
     }
 }
@@ -267,6 +270,18 @@ mod tests {
     use ringbuf::traits::{Consumer, Observer, Producer};
     use std::cell::Cell;
     use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    #[test]
+    fn input_resampler_failure_has_a_stable_diagnostic_code() {
+        assert_eq!(
+            RtErrorCode::from_u32(RtErrorCode::InputResamplerFailed as u32),
+            RtErrorCode::InputResamplerFailed
+        );
+        assert_eq!(
+            RtErrorCode::InputResamplerFailed.as_str(),
+            "input resampler failed"
+        );
+    }
 
     #[test]
     fn command_queue_drops_panicking_items_once() {

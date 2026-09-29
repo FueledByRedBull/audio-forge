@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 from ..config import coerce_device_identity, save_config
 from ..config_parts.app_config import FIRST_RUN_SETUP_STEPS
 from .accessibility import bind_label, set_accessible_group
+from .health import RecentStreamHealth
 from .layout_constants import (
     PRIMARY_ACTION_BUTTON_STYLE,
     SECONDARY_ACTION_BUTTON_STYLE,
@@ -67,7 +68,10 @@ STEP_CONTENT = {
 }
 
 
-def route_health_reason(processor: object) -> tuple[bool, str]:
+def route_health_reason(
+    processor: object, *, health_window: RecentStreamHealth | None = None,
+    now: float | None = None,
+) -> tuple[bool, str]:
     """Return a conservative live-stream health decision for setup."""
     is_running = getattr(processor, "is_running", None)
     try:
@@ -84,26 +88,28 @@ def route_health_reason(processor: object) -> tuple[bool, str]:
         return False, "Audio stream health could not be read. Retry the route."
     if not isinstance(diagnostics, dict):
         diagnostics = {}
-    error_fields = (
-        "input_callback_error_count",
-        "output_callback_error_count",
-        "input_stream_error_count",
-        "output_stream_error_count",
-    )
+    window = health_window if health_window is not None else RecentStreamHealth()
     try:
-        callback_error_present = any(
-            int(diagnostics.get(field, 0) or 0) > 0 for field in error_fields
-        )
-    except (TypeError, ValueError, OverflowError):
+        recent_events = window.observe(diagnostics, now=now)
+    except ValueError:
         return (
             False,
             "Audio stream health data was invalid. Restart AudioForge and retry.",
         )
-    if callback_error_present:
+    if recent_events - {"gate_chatter_event_count"}:
         return (
             False,
-            "The audio stream reported an error. Check the selected route and retry.",
+            "The audio stream reported an error or recovery recently. "
+            "Wait for five stable seconds, then retry the route.",
         )
+    for name in ("is_recovering", "is_recovery_requested"):
+        getter = getattr(processor, name, None)
+        if callable(getter):
+            try:
+                if getter():
+                    return False, "Audio stream recovery is pending. Check the selected route."
+            except (TypeError, ValueError, OSError, RuntimeError):
+                return False, "Audio stream recovery status could not be read. Retry the route."
 
     for label, getter_name in (
         ("input", "get_input_callback_age_ms"),
@@ -146,6 +152,7 @@ class FirstRunSetupDialog(QDialog):
     def __init__(self, owner: Any, *, restart_completed: bool = False):
         super().__init__(owner)
         self.owner = owner
+        self._stream_health = getattr(owner, "_stream_health", None) or RecentStreamHealth()
         self.config = owner.config
         self._finalized = False
         self._progress_unsaved = False
@@ -369,8 +376,6 @@ class FirstRunSetupDialog(QDialog):
         if active:
             if not self._route_feedback_timer.isActive():
                 self._route_feedback_timer.start()
-            for meter in (self.route_input_meter, self.route_output_meter):
-                meter.decay_timer.start()
             self._update_route_feedback()
             return
 
@@ -389,13 +394,20 @@ class FirstRunSetupDialog(QDialog):
             if running:
                 source_meter = getattr(self.owner, f"{direction}_meter")
                 source_label = getattr(self.owner, f"{direction}_health_label")
-                meter.set_levels(source_meter.rms_db, source_meter.peak_db)
-                label.setText(source_label.text())
-                label.setStyleSheet(source_label.styleSheet())
+                if not getattr(source_meter, "measurement_available", True):
+                    meter.set_unavailable()
+                elif not getattr(source_meter, "peak_available", True):
+                    meter.set_rms_level(source_meter.rms_db)
+                else:
+                    meter.set_levels(source_meter.rms_db, source_meter.peak_db)
+                text, style = source_label.text(), source_label.styleSheet()
             else:
-                meter.set_levels(LevelMeter.DB_MIN, LevelMeter.DB_MIN)
-                label.setText(f"{direction.title()}: --")
-                label.setStyleSheet(message_text_style("idle"))
+                meter.set_unavailable()
+                text, style = f"{direction.title()}: --", message_text_style("idle")
+            if label.text() != text:
+                label.setText(text)
+            if label.styleSheet() != style:
+                label.setStyleSheet(style)
 
     def _save_progress(self) -> bool:
         self.config.first_run_setup_step = self.current_step
@@ -570,7 +582,9 @@ class FirstRunSetupDialog(QDialog):
                 )
                 return
             if self._route_check_phase == "destination":
-                healthy, reason = route_health_reason(self.owner.processor)
+                healthy, reason = route_health_reason(
+                    self.owner.processor, health_window=self._stream_health
+                )
                 if not healthy:
                     self._route_check_phase = "speech"
                     self._set_status(reason, "error")
@@ -616,7 +630,9 @@ class FirstRunSetupDialog(QDialog):
         self._route_check_timer.stop()
         self._route_check_pending = False
         self.action_button.setEnabled(True)
-        healthy, reason = route_health_reason(self.owner.processor)
+        healthy, reason = route_health_reason(
+            self.owner.processor, health_window=self._stream_health
+        )
         if healthy:
             self._route_check_phase = "destination"
             self._set_status(

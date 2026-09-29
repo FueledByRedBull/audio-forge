@@ -43,29 +43,32 @@ from ..config import (
     build_eq_candidate_settings,
 )
 from .accessibility import bind_label, set_accessible_group
-from .calibration_dialog import (
+from .capture_session import (
+    CaptureSession,
+    active_device_identities as _active_device_identities,
+    device_label as _device_label,
+    device_name as _device_name,
+    find_eq_panel_owner as _find_eq_panel_owner,
+    find_processor_owner as _find_processor_owner,
+    owner_calibration_context_key as _owner_calibration_context_key,
+    processor_sample_rate as _processor_sample_rate,
+    restart_processor_for_route as _restart_processor_for_route,
+    route_identities_match as _route_identities_match,
+    selected_device_identities as _selected_device_identities,
+    set_temporary_mute as _set_temporary_mute,
+    start_selected_route as _start_selected_route,
+    sync_owner_processing_controls as _sync_owner_processing_controls,
+)
+from .calibration_support import (
     RAINBOW_PASSAGE,
     TOO_LOUD_DB,
     TOO_QUIET_DB,
-    _candidate_metadata,
-    _chain_settings,
-    _filtered_capture_for_analysis,
-    _active_device_identities,
-    _owner_calibration_context_key,
-    _restart_processor_for_route,
-    _route_identities_match,
-    _selected_device_identities,
-    _set_temporary_mute,
-    _sync_owner_processing_controls,
-    _device_label,
-    _device_name,
-    _diagnostic_state,
-    _find_eq_panel_owner,
-    _find_processor_owner,
-    _format_db,
-    _format_percent,
-    _processor_sample_rate,
-    _start_selected_route,
+    candidate_metadata as _candidate_metadata,
+    chain_settings as _chain_settings,
+    diagnostic_state as _diagnostic_state,
+    filtered_capture_for_analysis as _filtered_capture_for_analysis,
+    format_db as _format_db,
+    format_percent as _format_percent,
 )
 from .layout_constants import (
     SUBDUED_TEXT_STYLE,
@@ -453,6 +456,7 @@ class VoiceSetupDialog(QDialog):
         self._close_result = False
         self._started_processor = False
         self._recording_duration = NOISE_RECORDING_DURATION
+        self._capture_session: CaptureSession | None = None
         self._verification_audio: np.ndarray | None = None
         self._verification_adjustment_count = 0
         self._verification_bad_capture_count = 0
@@ -917,7 +921,6 @@ class VoiceSetupDialog(QDialog):
             return
 
         try:
-            _set_temporary_mute(parent, _VOICE_SETUP_MUTE_REASON, True)
             get_input = getattr(parent.processor, "get_active_input_device", None)
             get_mode = getattr(parent.processor, "get_input_channel_mode", None)
             self._current_capture_metadata = CaptureMetadata(
@@ -927,8 +930,8 @@ class VoiceSetupDialog(QDialog):
                 channel_mode=str(get_mode() or "") if callable(get_mode) else "",
                 channel_count=1,
             )
-            parent.processor.set_recovery_suppressed(True)
-            parent.processor.start_raw_recording(
+            self._capture_session = CaptureSession(parent, _VOICE_SETUP_MUTE_REASON)
+            self._capture_session.start(
                 self._recording_duration,
                 before_cleanup=True,
             )
@@ -954,6 +957,15 @@ class VoiceSetupDialog(QDialog):
 
         try:
             progress = float(parent.processor.recording_progress())
+            failure = (
+                self._capture_session.failure_reason(progress)
+                if self._capture_session is not None
+                else None
+            )
+            if failure is not None:
+                self.recording_timer.stop()
+                self._on_recording_failed(failure)
+                return
             progress_pct = int(progress * 100)
             self.progress_bar.setValue(progress_pct)
             self._update_time_remaining(
@@ -966,8 +978,12 @@ class VoiceSetupDialog(QDialog):
 
             if progress_pct >= 100 or parent.processor.is_recording_complete():
                 self.recording_timer.stop()
-                audio = parent.processor.stop_raw_recording()
-                _set_temporary_mute(parent, _VOICE_SETUP_MUTE_REASON, False)
+                session, self._capture_session = self._capture_session, None
+                audio = (
+                    session.stop_recording()
+                    if session is not None
+                    else parent.processor.stop_raw_recording()
+                )
                 if audio is None:
                     self._on_recording_failed("Recording failed - no audio data")
                     return
@@ -2018,7 +2034,7 @@ class VoiceSetupDialog(QDialog):
         self._start_verification_worker(self._verification_audio)
 
     def _finalize_verified_setup(self) -> None:
-        """Persist and close only after the verified candidate was heard."""
+        """Persist and close after the verified candidate is accepted."""
         if self.setup_result is None:
             return
         parent = _find_eq_panel_owner(self.parent())
@@ -2075,10 +2091,10 @@ class VoiceSetupDialog(QDialog):
             "Voice Setup Verified",
             "Combined input cleanup, gate, suppression, EQ, de-esser, compressor, "
             "and limiter verification "
-            "accepted the candidate after the final listening comparison.\n\n"
+            "passed; the proposed candidate was accepted in the final comparison.\n\n"
             + metrics_text
             + "\n\nLive device timing and worker scheduling remain outside this offline check; "
-            "this validates engineering constraints and listening preference.",
+            "it validates the engineering constraints.",
         )
         self._pre_setup_snapshot = None
         self._final_comparison_pending = False
@@ -2169,7 +2185,7 @@ class VoiceSetupDialog(QDialog):
             self.compare_button.setEnabled(True)
             self.start_button.setEnabled(False)
             self.start_button.setText("Compare Final Candidate")
-            self.phase_label.setText("Verification accepted; listening required")
+            self.phase_label.setText("Verification passed; final comparison ready")
             adjustment_note = self.setup_result.get("verification_adjustment_note")
             adjusted_target_lufs = self.setup_result.get(
                 "verification_adjusted_target_lufs"
@@ -2184,9 +2200,9 @@ class VoiceSetupDialog(QDialog):
                     f" Effective auto target loudness: {float(adjusted_target_lufs):.0f} LUFS."
                 )
             self.warning_label.setText(
-                "The measured candidate passed verification. Compare it with the "
-                "original processing before keeping it; closing this comparison "
-                "restores the original settings."
+                "The measured candidate passed verification. The rendered "
+                "comparison is ready; keeping it applies the proposal, while "
+                "closing the comparison restores the original settings."
                 + adjustment_suffix
             )
             self.warning_label.setStyleSheet(message_text_style("info", strong=True))
@@ -2457,27 +2473,9 @@ class VoiceSetupDialog(QDialog):
         self._started_processor = False
 
     def _cleanup_recording_tap(self) -> None:
-        parent = _find_processor_owner(self.parent())
-        if not parent:
-            return
-
-        try:
-            parent.processor.stop_raw_recording()
-        except RuntimeError as exc:
-            if "No recording in progress" not in str(exc):
-                logger.warning("Failed to stop raw recording during cleanup: %s", exc)
-        except Exception as exc:
-            logger.warning("Failed to stop raw recording during cleanup: %s", exc)
-
-        try:
-            _set_temporary_mute(parent, _VOICE_SETUP_MUTE_REASON, False)
-        except Exception as exc:
-            logger.warning("Failed to unmute output during cleanup: %s", exc)
-
-        try:
-            parent.processor.set_recovery_suppressed(False)
-        except Exception as exc:
-            logger.warning("Failed to re-enable recovery after cleanup: %s", exc)
+        session, self._capture_session = self._capture_session, None
+        if session is not None:
+            session.cleanup()
 
     def _cancel_analysis_workers(self) -> None:
         """Cancel work without dropping ownership of a running QThread."""

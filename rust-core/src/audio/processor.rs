@@ -164,8 +164,6 @@ pub struct AudioProcessor {
     gate_rt_control: Arc<AtomicGateControlState>,
     gate_dirty: Arc<AtomicBool>,
 
-    /// Noise suppression engine (RNNoise or DeepFilterNet)
-    suppressor: Arc<Mutex<NoiseSuppressionEngine>>,
     suppressor_enabled: Arc<AtomicBool>,
     suppressor_control: Arc<Mutex<SuppressorControlState>>,
     suppressor_rt_control: Arc<AtomicSuppressorControlState>,
@@ -528,10 +526,6 @@ impl AudioProcessor {
         // Create strength Arc BEFORE noise suppressor (share reference)
         let suppressor_strength = Arc::new(AtomicU32::new(1.0_f32.to_bits()));
 
-        // Create noise suppression engine (default to RNNoise)
-        let suppressor =
-            new_noise_suppression_engine(NoiseModel::RNNoise, suppressor_strength.clone());
-
         Self {
             gate: {
                 let gate = Arc::new(Mutex::new(NoiseGate::new(
@@ -556,7 +550,6 @@ impl AudioProcessor {
             gate_control: Arc::new(Mutex::new(gate_control_state)),
             gate_rt_control: Arc::new(AtomicGateControlState::new()),
             gate_dirty: Arc::new(AtomicBool::new(false)),
-            suppressor: Arc::new(Mutex::new(suppressor)),
             suppressor_enabled: Arc::new(AtomicBool::new(true)),
             suppressor_control: Arc::new(Mutex::new(suppressor_control_state)),
             suppressor_rt_control: Arc::new(AtomicSuppressorControlState::new()),

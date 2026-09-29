@@ -168,6 +168,183 @@ def _normalized_correlation_scores(
     return lag_window, normalized_scores
 
 
+def _earlier_probe_match_z(
+    rec: np.ndarray,
+    ref: np.ndarray,
+    *,
+    min_lag: int,
+    max_lag: int,
+    late_center: int,
+    exclude_radius: int,
+) -> float:
+    """Measure earlier matches after projecting out the selected probe copies."""
+    ref_energy = float(np.dot(ref, ref))
+    if ref_energy <= 1e-12:
+        return 0.0
+
+    recording_correlations = correlate(rec, ref, mode="full", method="fft")
+    reference_correlations = correlate(ref, ref, mode="full", method="fft")
+    reference_size = ref.size
+    lag_offset = reference_size - 1
+    base_lags = np.arange(
+        max(0, late_center - 5),
+        min(late_center + 5, rec.size - reference_size) + 1,
+    )
+    if base_lags.size == 0:
+        return 0.0
+
+    def autocorrelation_at(lag: int) -> float:
+        if abs(lag) >= reference_size:
+            return 0.0
+        return float(reference_correlations[lag + lag_offset])
+
+    def shifted_cross_correlations(lags: np.ndarray, position: float) -> np.ndarray:
+        relative_lags = lags - position
+        lower = np.floor(relative_lags).astype(np.int64)
+        fraction = relative_lags - lower
+        cross = np.zeros(lags.size, dtype=np.float64)
+        lower_valid = np.abs(lower) < reference_size
+        upper = lower + 1
+        upper_valid = np.abs(upper) < reference_size
+        cross[lower_valid] += (1.0 - fraction[lower_valid]) * reference_correlations[
+            lower[lower_valid] + lag_offset
+        ]
+        cross[upper_valid] += fraction[upper_valid] * reference_correlations[
+            upper[upper_valid] + lag_offset
+        ]
+        return cross
+
+    def shifted_energy(position: float) -> float:
+        base = int(np.floor(position))
+        fraction = position - base
+        adjacent = autocorrelation_at(1)
+        return ref_energy + 2.0 * fraction * (1.0 - fraction) * (
+            adjacent - ref_energy
+        )
+
+    def recording_correlation_at(position: float) -> float:
+        base = int(np.floor(position))
+        fraction = position - base
+        return float(
+            (1.0 - fraction) * recording_correlations[base + lag_offset]
+            + fraction * recording_correlations[base + 1 + lag_offset]
+        )
+
+    fractions = np.linspace(0.0, 1.0, 101)
+    adjacent_correlation = float(reference_correlations[lag_offset + 1])
+    template_energies = ref_energy + (
+        2.0 * fractions * (1.0 - fractions) * (adjacent_correlation - ref_energy)
+    )
+    best_score = -1.0
+    late_lag = float(late_center)
+    late_energy = ref_energy
+    late_correlation = 0.0
+    for base_lag in base_lags:
+        first = recording_correlations[base_lag + lag_offset]
+        second = recording_correlations[base_lag + 1 + lag_offset]
+        scores = np.abs((1.0 - fractions) * first + fractions * second) / np.sqrt(
+            template_energies
+        )
+        fraction_index = int(np.argmax(scores))
+        score = float(scores[fraction_index])
+        if score > best_score:
+            fraction = float(fractions[fraction_index])
+            late_lag = float(base_lag) + fraction
+            late_energy = float(template_energies[fraction_index])
+            late_correlation = float((1.0 - fraction) * first + fraction * second)
+            best_score = score
+
+    candidate_lags = np.arange(
+        min_lag,
+        min(max_lag, rec.size - reference_size) + 1,
+    )
+    first_cross = shifted_cross_correlations(candidate_lags, late_lag)
+    first_projection = first_cross / late_energy
+    residual_energy = np.maximum(
+        ref_energy - (first_cross * first_projection), 1e-12
+    )
+    candidate_correlations = recording_correlations[candidate_lags + lag_offset]
+    residual_correlations = candidate_correlations - first_projection * late_correlation
+
+    noise_sigma = 1.4826 * float(np.median(np.abs(rec - np.median(rec))))
+    noise_sigma = max(noise_sigma, 1e-8)
+    first_z_scores = np.abs(residual_correlations) / (
+        noise_sigma * np.sqrt(residual_energy)
+    )
+    first_gains = np.abs(residual_correlations) / residual_energy
+    reference_peak = float(np.max(np.abs(ref)))
+    recording_peak = float(np.max(np.abs(rec)))
+    gain_floor = 1e-5 * recording_peak / max(reference_peak, 1e-12)
+    later = candidate_lags > late_lag + exclude_radius
+    later &= first_gains >= gain_floor
+    later_index = int(np.argmax(np.where(later, first_z_scores, -1.0)))
+
+    if np.any(later) and first_z_scores[later_index] >= 6.0:
+        later_position = float(candidate_lags[later_index])
+        if 0 < later_index < candidate_lags.size - 1:
+            later_position += _parabolic_peak_offset(first_z_scores, later_index)
+        second_energy = shifted_energy(later_position)
+        second_correlation = recording_correlation_at(later_position)
+        first_fraction = late_lag - np.floor(late_lag)
+        first_base = int(np.floor(late_lag))
+        second_base = int(np.floor(later_position))
+        second_fraction = later_position - second_base
+        first_second_cross = (
+            (1.0 - first_fraction)
+            * (
+                (1.0 - second_fraction)
+                * autocorrelation_at(first_base - second_base)
+                + second_fraction
+                * autocorrelation_at(first_base - second_base - 1)
+            )
+            + first_fraction
+            * (
+                (1.0 - second_fraction)
+                * autocorrelation_at(first_base + 1 - second_base)
+                + second_fraction
+                * autocorrelation_at(first_base - second_base)
+            )
+        )
+        determinant = late_energy * second_energy - first_second_cross**2
+        if determinant > 1e-10 * late_energy * second_energy:
+            first_beta = (
+                late_correlation * second_energy
+                - second_correlation * first_second_cross
+            ) / determinant
+            second_beta = (
+                second_correlation * late_energy
+                - late_correlation * first_second_cross
+            ) / determinant
+            if abs(second_beta) >= gain_floor:
+                second_cross = shifted_cross_correlations(
+                    candidate_lags, later_position
+                )
+                first_solution = (
+                    second_energy * first_cross - first_second_cross * second_cross
+                ) / determinant
+                second_solution = (
+                    late_energy * second_cross - first_second_cross * first_cross
+                ) / determinant
+                residual_correlations = (
+                    candidate_correlations
+                    - first_cross * first_beta
+                    - second_cross * second_beta
+                )
+                residual_energy = np.maximum(
+                    ref_energy
+                    - first_cross * first_solution
+                    - second_cross * second_solution,
+                    1e-12,
+                )
+
+    z_scores = np.abs(residual_correlations) / (
+        noise_sigma * np.sqrt(residual_energy)
+    )
+    gains = np.abs(residual_correlations) / residual_energy
+    earlier = (candidate_lags < late_lag - exclude_radius) & (gains >= gain_floor)
+    return float(np.max(z_scores[earlier], initial=0.0))
+
+
 def _phat_lag_hint(
     rec: np.ndarray,
     ref: np.ndarray,
@@ -343,12 +520,43 @@ def analyze_latency(
             peak_sample_offset=0,
             message="Search window does not overlap captured audio.",
         )
-    coarse_start, full_peak, full_margin, full_ambiguity, _background = _pick_peak(
+    # Individual bursts reveal the earliest direct arrival even when a louder
+    # delayed copy dominates correlation against the full repeated probe.
+    coarse_lags, coarse_scores = _normalized_correlation_scores(
+        rec,
+        burst,
+        min_lag=min_lag,
+        max_lag=max_lag,
+    )
+    coarse_start, coarse_peak, _, _, _ = _pick_peak(
+        coarse_lags,
+        coarse_scores,
+        direct_path_bias=0.94,
+    )
+    _, full_peak, full_margin, full_ambiguity, _background = _pick_peak(
         full_lags,
         full_scores,
         direct_path_bias=0.985,
     )
     local_radius = max(int(round(sample_rate * 0.010)), burst.size)
+    full_max_lag = int(full_lags[np.argmax(full_scores)])
+    earlier_probe_z = 0.0
+    if abs(full_max_lag - coarse_start) <= local_radius:
+        earlier_probe_z = _earlier_probe_match_z(
+            rec,
+            ref,
+            min_lag=min_lag,
+            max_lag=max_lag,
+            late_center=full_max_lag,
+            exclude_radius=local_radius,
+        )
+    unresolved_earlier_path = bool(
+        np.any(
+            (coarse_lags < coarse_start - local_radius)
+            & (coarse_scores >= 0.25)
+        )
+        or earlier_probe_z >= 6.0
+    )
 
     estimates: list[float] = []
     peak_values: list[float] = [full_peak]
@@ -476,16 +684,21 @@ def analyze_latency(
     if expected_window_used:
         confidence = 0.88 * confidence + 0.12 * alignment_score
 
+    # Short-burst normalized matches are more common in noise than full probes.
     success = (
         confidence >= 0.32
         and measured_round_trip_ms > 0.0
         and peak_value >= 0.07
+        and coarse_peak >= 0.35
+        and not unresolved_earlier_path
         and ambiguity_score < 0.90
         and len(estimates) >= min(2, len(offsets))
         and agreement_ms <= 6.0
     )
     if success:
         message = "ok"
+    elif unresolved_earlier_path:
+        message = "Echo ambiguity: an earlier path could not be resolved reliably."
     elif agreement_ms > 6.0 and len(estimates) > 1:
         message = "Repeated probes disagree; echoes or bleed make latency ambiguous."
     elif ambiguity_score > 0.82:

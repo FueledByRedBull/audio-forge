@@ -67,8 +67,8 @@ def _runtime() -> dict[str, object]:
     }
 
 
-def _build(*, key: bytes = b"K" * 32) -> dict[str, Any]:
-    processing = Preset().to_dict()
+def _build(*, key: bytes = b"K" * 32, processing: dict[str, Any] | None = None) -> dict[str, Any]:
+    processing = Preset().to_dict() if processing is None else processing
     processing["eq"]["bands"][0]["gain_db"] = float("inf")
     return build_diagnostics_snapshot(
         app_version="1.10.1",
@@ -135,6 +135,40 @@ def test_report_local_key_changes_device_pseudonyms() -> None:
         first["audio_engine"]["input_device"]["pseudonym"]
         != second["audio_engine"]["input_device"]["pseudonym"]
     )
+
+
+def test_snapshot_preserves_private_bounded_eq_layers() -> None:
+    processing = Preset().to_dict()
+    correction = [dict(band) for band in processing["eq"]["bands"]]
+    tone = [dict(band) for band in processing["eq"]["bands"]]
+    correction[0].update(gain_db=-3.25, private_path="C:/Users/private/measurement.wav")
+    tone[0].update(gain_db=2.75, label="secret-value", q=float("nan"))
+    processing["eq"]["layers"] = {
+        "correction": correction, "tone": tone, "secret-value": "private-path",
+    }
+    snapshot = _build(processing=processing)
+    layers = snapshot["processing"]["eq"]["layers"]
+    assert set(layers) == {"correction", "tone"}
+    assert layers["correction"][0]["gain_db"] == -3.25
+    assert layers["tone"][0]["gain_db"] == 2.75
+    assert "q" not in layers["tone"][0]
+    payload = serialize_diagnostics_snapshot(snapshot)
+    assert b"private" not in payload and b"secret-value" not in payload
+    assert len(payload) < MAX_SERIALIZED_BYTES
+
+    layers["tone"][0]["private_path"] = "must not escape"
+    with pytest.raises(ValueError, match="EQ band"):
+        serialize_diagnostics_snapshot(snapshot)
+
+
+def test_snapshot_omits_oversized_or_malformed_eq_layers() -> None:
+    processing = Preset().to_dict()
+    processing["eq"]["layers"] = {
+        "correction": processing["eq"]["bands"] * 4,
+        "tone": {"path": "private"},
+    }
+    snapshot = _build(processing=processing)
+    assert snapshot["processing"]["eq"]["layers"] == {}
 
 
 def test_same_named_endpoint_devices_have_distinct_private_pseudonyms() -> None:

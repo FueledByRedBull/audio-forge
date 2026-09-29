@@ -6,6 +6,8 @@ Runs audio analysis in background thread with step-by-step progress signals.
 import logging
 import threading
 import time
+from copy import deepcopy
+import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from ..analysis.auto_eq import analyze_auto_eq
@@ -36,6 +38,9 @@ class AnalysisWorker(QThread):
         target_mode="adaptive",
         smoothing_strength="conservative",
         chain_settings=None,
+        headroom_candidate_base_eq_settings=None,
+        headroom_audio_data=None,
+        headroom_chain_settings=None,
     ):
         """
         Initialize analysis worker.
@@ -55,6 +60,15 @@ class AnalysisWorker(QThread):
         self.target_mode = target_mode
         self.smoothing_strength = smoothing_strength
         self.chain_settings = chain_settings
+        self.headroom_candidate_base_eq_settings = deepcopy(
+            headroom_candidate_base_eq_settings
+        )
+        self.headroom_audio_data = (
+            None
+            if headroom_audio_data is None
+            else np.ascontiguousarray(headroom_audio_data, dtype=np.float32).copy()
+        )
+        self.headroom_chain_settings = deepcopy(headroom_chain_settings)
         self._start_time = None
         self._stop_event = threading.Event()
 
@@ -86,6 +100,11 @@ class AnalysisWorker(QThread):
                 target_mode=self.target_mode,
                 smoothing_strength=self.smoothing_strength,
                 chain_settings=self.chain_settings,
+                headroom_candidate_base_eq_settings=(
+                    self.headroom_candidate_base_eq_settings
+                ),
+                headroom_audio_data=self.headroom_audio_data,
+                headroom_chain_settings=self.headroom_chain_settings,
                 cancel_check=self._should_stop,
             )
             if self._should_stop():

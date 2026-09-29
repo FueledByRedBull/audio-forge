@@ -148,8 +148,7 @@ User-facing tools:
   click-safe bypass, selectable 12–48 dB/octave Butterworth pass slopes, and
   constrained mouse/keyboard graph editing synchronized with numeric controls.
 - Auto-EQ calibration that combines energy and Silero speech posteriors, rejects shape outliers, uses matched noise-referenced per-band reliability when available, and abstains when a safe correction is unsupported.
-- Auto-EQ headroom validation through the native chain simulator; legacy Python-only estimates are advisory. Typed EQ and full-chain previews require native DSP rather than approximating unsupported filters or stages.
-- Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, and bounded native compressor calibration. EQ is fitted before compressor calibration; the compressor search includes the requested auto makeup and the final native full-chain headroom check. A target that cannot leave safe headroom remains advisory, so lower Target loudness and rerun instead of applying it. Natural / No Added Tone remains neutral.
+- Auto Voice Setup with noise-reference integrity checks, Silero-posterior-aware speech masking, calibrated soft de-esser fusion, independent Gentle/Balanced/Dense/Custom dynamics intensity, and bounded native compressor calibration. EQ is fitted before compressor calibration; the compressor search includes the requested auto makeup and the final native full-chain headroom check. Native DSP validates the complete candidate; unavailable or unsafe headroom blocks Apply. Lower Target loudness and rerun when the requested level cannot leave safe headroom. Natural / No Added Tone remains neutral.
 - Dynamic-EQ de-esser, compressor with speech-aware auto makeup gain driven by calibrated VAD and noise-floor evidence, and lookahead limiter.
 - Band-limited 16x true-peak detection and limiting with independent offline burst and speech checks. Final peak protection uses 320 samples of lookahead when enabled (6.67 ms at 48 kHz), in addition to the other processing and device delays.
 - Stateful phase-safe mono alignment and adaptive 49-61 Hz hum/harmonic tracking for difficult input sources.
@@ -158,19 +157,11 @@ User-facing tools:
 - Bounded full-processing undo/redo (`Ctrl+Z` / `Ctrl+Shift+Z`) for manual
   edits, presets, Auto-EQ, and Auto Voice Setup, with realtime state excluded.
 
-Presets use a versioned typed-band schema; migration tests preserve explicit
-user values and response parity. The graph and numeric controls share that
-schema and the native Rust response renderer. Undo snapshots contain validated
-processing settings only—not audio, device handles, DSP delay state, or meter
-history. These contracts are enforced by the config, EQ, graph, and history
-tests rather than duplicated across separate design documents.
-
 Operational tools:
 
 - Input/output meters and runtime diagnostics.
 - Dropped-sample, backlog, callback-stall, and recovery counters.
 - Stream restart/backoff handling.
-- Device refresh that preserves current selections when possible.
 - Portable PyInstaller packaging with bundled runtime assets.
 
 Useful behavior to know:
@@ -182,11 +173,8 @@ Useful behavior to know:
 - Adaptive cleanup tracks off-nominal mains hum and its harmonic with fractional frequency/phase continuity, and selects one high-pass response instead of cascading filters.
 - Auto-EQ and Auto Voice Setup analyze 48 kHz captures, use native Silero posteriors when available, and report an explicit energy-analysis fallback when they are not.
 - Auto Voice Setup rejects unusable room tone, restricts boosts for questionable references, and reports device/time/channel mismatch or recapture guidance.
-- Auto Voice Setup keeps a candidate advisory when the requested target loudness cannot leave the native chain's required headroom; choose a lower (more negative) LUFS target and rerun the capture before applying it.
 - Voice Setup candidates remain temporary until a second passage checks repeatability through input cleanup, gate, noise suppression, EQ, de-essing, compression, and the selected limiter settings. Recorded verification cannot reproduce live device dropouts or worker scheduling delays; confirm the result in your destination app.
 - Verification reuses a valid second passage when adjusting processing. Only recording problems request another take; unsuccessful bounded adjustments restore your previous settings with the specific reason.
-- A realtime VAD queue overflow drops the whole affected analysis block and marks a discontinuity so the worker clears queued context and resets its recurrent state before publishing new probabilities.
-- VAD clears recurrent history after sustained near-full-scale audio and at speech endings identified by both low confidence and a sustained level drop. This helps normal speech recover after clipped loud passages, including quieter recordings of clipping. Audio buffering and source timing are preserved.
 - Preset loading preserves saved `VAD Assisted` and `VAD Only` gate modes instead of collapsing them back to `Threshold Only`.
 - Diagnostics separate input drops, backlog recovery, output recovery, output short-write loss, and active output underrun streaks. Historical output underrun and recovery totals stay visible without forcing the health chip into a warning state after the stream has recovered.
 - `Help > Export Diagnostics...` writes a versioned, size-bounded support
@@ -208,9 +196,6 @@ hardware run. Windows 10, analog input, 44.1 kHz, and physical device lifecycle
 cases remain unqualified. See the [release workflow](RELEASING.md#automated-workflow)
 for validation and optional hardware evidence.
 Linux and macOS builds are not supported.
-
-DeepFilterNet support is intentionally opt-in for source runs. Packaged builds register and enable verified bundled assets during application bootstrap; RNNoise remains the safe default when those assets are absent. External DLL/model paths are ignored unless `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` is explicitly set.
-DeepFilter model/DLL initialization and Silero VAD inference are prepared off the realtime DSP loop; the audio path only swaps ready suppressor state and consumes cached VAD probabilities.
 
 Objective DSP decisions and release evidence are indexed in
 [`evaluation/README.md`](evaluation/README.md), including historical provenance
@@ -276,193 +261,28 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
 .\.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
 
-.\.venv\Scripts\python.exe -m maturin develop --release
+.\.venv\Scripts\python.exe -m maturin develop --release --locked
 .\.venv\Scripts\python.exe -m mic_eq
 ```
 
-You can also use the installed console entrypoint:
-
-```powershell
-.\.venv\Scripts\mic-eq.exe
-```
+The fallback release is pinned once in `release-assets.json`; it supplies
+runtime assets independently of the application version. Hydration verifies
+each asset against the manifest.
 
 ## Configuration
 
-RNNoise is the default safe noise-suppression backend. DeepFilterNet is opt-in for source and development runs; set `AUDIOFORGE_ENABLE_DEEPFILTER=1` after registering app-owned assets or when intentionally using opted-in external assets. Packaged builds register canonical bundled DLL/model paths and auto-enable DeepFilterNet when both are present.
+RNNoise is the default suppression backend. For source runs, enable DeepFilterNet
+with `AUDIOFORGE_ENABLE_DEEPFILTER=1` after hydrating the runtime assets. Packaged
+builds enable verified bundled DeepFilter assets automatically. External DLL/model
+paths require an explicit opt-in; see [runtime configuration](CONTRIBUTING.md#runtime-assets-and-configuration).
 
-See [Development Assets](#development-assets) for the full runtime asset and environment-variable list.
+## Development and Packaging
 
-<details>
-<summary>Developer reference: assets, packaging, tests, and repository layout</summary>
-
-## Development Assets
-
-Full-feature development and release builds use the tracked `release-assets.json` manifest. Obtain each listed asset from the documented source, place it at the manifest `path`, and verify before packaging:
-
-```powershell
-.\.venv\Scripts\python.exe python/tools/verify_release_assets.py
-```
-
-For a cleaner fresh-clone setup, you can hydrate those assets from the matching GitHub release:
-
-```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
-```
-
-The fallback release is pinned once in `release-assets.json`; it is an asset
-source, not the application version. Silero v6.2.1 is downloaded directly from
-the immutable source recorded in the same manifest; every file is then verified
-by size and SHA-256.
-
-Create `models/` in the repo root for local runtime discovery:
-
-- `models/DeepFilterNet3_ll_onnx.tar.gz`
-- `models/DeepFilterNet3_onnx.tar.gz`
-- `models/silero_vad.onnx`
-
-Native runtime libraries:
-
-- `df.dll` in the repo root for development runs.
-- `target/onnxruntime-cpu/lib/onnxruntime.dll` and `onnxruntime_providers_shared.dll` from the pinned CPU-only ONNX Runtime package.
-- Bundled under `dist/AudioForge/_internal` for portable builds.
-
-Environment variables:
-
-- `AUDIOFORGE_ENABLE_DEEPFILTER=1`
-- `AUDIOFORGE_ALLOW_EXTERNAL_DF=1`
-- `DEEPFILTER_MODEL_PATH`
-- `DEEPFILTER_LIB_PATH`
-- `VAD_MODEL_PATH`
-- `AUDIOFORGE_FIXED_INPUT_BUFFER_FRAMES`
-- `AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES`
-
-Packaged builds use bootstrap-registered canonical DeepFilter assets by default. Ambient `DEEPFILTER_LIB_PATH` and `DEEPFILTER_MODEL_PATH` values are ignored. Set `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` only when you intentionally want a valid external path to take precedence; any missing external path falls back to the registered bundled asset.
-
-The two fixed-buffer variables are optional diagnostics for callback-size
-consistency. Values must be 16–8192 frames and fit the endpoint's advertised
-range; AudioForge preflights the request and otherwise keeps the driver default.
-
-## Build Portable EXE
-
-The packaging entry point rebuilds the Rust extension before freezing:
-
-```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
-powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
-```
-
-Packaging script behavior:
-
-- Rebuilds `python/mic_eq/mic_eq_core*.pyd` from the current source and lockfile.
-- Validates required full-feature runtime assets against `release-assets.json`.
-- Reuses PyInstaller's analysis cache by default; pass `-Clean` for a cold PyInstaller rebuild.
-- Bundles the Python runtime with PyInstaller.
-- Bundles GPLv3 distribution terms, dependency inventory, and retained license notices.
-- Writes `_internal/audioforge-build.json`; package smoke rejects a bundle whose version differs from the source tree.
-- Prunes unused Qt payload, duplicate native-extension payload, and app-local
-  UCRT/API-set files with `python/tools/prune_bundle.py` while retaining
-  dependency metadata and licenses. AudioForge targets Windows 10/11 and
-  relies on the operating system UCRT, which Windows always uses on those
-  versions even if a local copy is present.
-- The release profile strips native symbols, and packaging excludes only unused
-  SciPy namespaces plus Qt SVG payloads. Each candidate emits generated
-  artifact metadata and a per-file bundle manifest; do not copy candidate
-  sizes, file counts, or hashes into pre-release prose.
-- Keeps the application self-contained in `dist/AudioForge`.
-
-Portable output:
-
-- `dist/AudioForge/AudioForge.exe`
-- Bundled assets and runtime files under `dist/AudioForge/_internal`
-
-## Build the MSI installer
-
-After building the portable payload, run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\build_msi.ps1
-```
-
-The installer uses the same portable payload and installs for the current user.
-The script acquires and verifies its pinned WiX tooling. CI compares the
-extracted and installed file tree with the portable bundle and checks uninstall
-preserves user configuration. MSI candidates are published only after the same
-release qualification gates as the portable archive.
-
-## Create Release Archive
-
-The portable folder is intended to be archived as a single distributable.
-For a local 1.13.0 build, validate package metadata and rebuild
-the portable folder before using this archive name:
-
-```powershell
-& "C:/Program Files/7-Zip/7z.exe" a -t7z -mx=9 -m0=lzma2 -mmt=on -ms=on `
-  .\AudioForge-v1.13.0-win64-ultra.7z .\dist\AudioForge\*
-```
-
-The v1.10.0 bundle was measured with ZIP/Deflate, tar.gz, tar.xz, tar.zst,
-solid LZMA, and solid LZMA2. The command above was the smallest verified
-format. Treat the generated `.metadata.json`, `.manifest.json`, and `.sha256`
-sidecars in the release evidence archive as authoritative. See
-`evaluation/archive-format-benchmark.json` for the historical format
-comparison.
-
-## Testing
-
-CI-equivalent checks:
-
-```powershell
-.\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
-.\.venv\Scripts\python.exe -m pyright
-.\.venv\Scripts\python.exe -m pytest python/tests -q
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
-.\.venv\Scripts\python.exe python/tools/run_semgrep.py --sarif semgrep-results.sarif
-.\.venv\Scripts\python.exe python/tools/check_versions.py
-.\.venv\Scripts\python.exe python/tools/check_workflows.py
-.\.venv\Scripts\python.exe python/tools/package_smoke.py --source-only
-cargo fmt --check
-cargo audit
-cargo test -p mic_eq_core
-cargo test --release -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
-cargo test --release -p mic_eq_core audio::input::tests::benchmark_phase_safe_mono_callback_cost -- --ignored --nocapture
-cargo test --release -p mic_eq_core dsp::biquad::tests::benchmark_biquad_morph_cost -- --ignored --nocapture
-cargo clippy -p mic_eq_core --all-targets -- -D warnings
-```
-
-Packaged-build smoke check after `build_exe.ps1`:
-
-```powershell
-.\.venv\Scripts\python.exe python/tools/verify_release_assets.py
-.\.venv\Scripts\python.exe python/tools/package_smoke.py
-```
-
-Headless runtime checks:
-
-```powershell
-.\.venv\Scripts\python.exe python/tools/health_check.py --duration 1800
-.\.venv\Scripts\python.exe python/tools/self_test.py
-.\.venv\Scripts\python.exe python/tools/evaluate_hardware_validation.py `
-  --health-input "<microphone>" --health-output "<virtual output>" `
-  --correlation-input "<loopback input>" --correlation-output "<loopback output>"
-```
-
-## Repository Layout
-
-Regenerate the sanitized README screenshots with
-`python/tools/capture_repository_screenshots.py`; existing checks cover their
-dimensions, hashes, alt text, and privacy boundary.
-
-- `python/mic_eq`: PyQt application, analysis code, persistence, and source/development entrypoints.
-- `rust-core`: Rust audio engine exposed through PyO3.
-- `python/tests`: Python test suite.
-- `python/tools`: health, package, and release validation helpers.
-- `.github/workflows/ci.yml`: Windows CI for Python and Rust checks.
-- `build_exe.ps1`: PyInstaller packaging script.
-- `AudioForge.spec`: canonical portable package definition.
-- `launcher.py`: PyInstaller/frozen-app launcher used by `AudioForge.spec`; source/development runs use `python -m mic_eq` or the `mic-eq` console entrypoint.
-
-</details>
+- [CONTRIBUTING.md](CONTRIBUTING.md): development checks, runtime configuration,
+  and sanitized screenshot generation.
+- [RELEASING.md](RELEASING.md): portable/MSI builds, package validation,
+  release archives, and publication.
+- [evaluation/README.md](evaluation/README.md): objective DSP evidence and retention.
 
 ## Roadmap
 

@@ -101,7 +101,7 @@ Build the Rust extension with all configured features:
 
 ```powershell
 .\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
-.\.venv\Scripts\python.exe -m maturin develop --release
+.\.venv\Scripts\python.exe -m maturin develop --release --locked
 ```
 
 Verify the source runtime assets. Stale files already under `dist/` are not valid packaging inputs:
@@ -139,25 +139,17 @@ sidecars; the source archive receives a checksum and receipt metadata sidecar.
 Validate extraction plus per-user installation/uninstallation with
 `python/tools/msi_smoke.py`; the installed payload must match the portable files.
 
-Run the release validation checks:
+Run the [development checks](CONTRIBUTING.md), including the release-mode
+realtime benchmarks, then the release-specific checks:
 
 ```powershell
-.\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
-.\.venv\Scripts\python.exe -m pyright
-.\.venv\Scripts\python.exe -m pytest python/tests -q
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py
 .\.venv\Scripts\python.exe python\tools\package_smoke.py --source-only
-cargo fmt --check
 cargo audit
-cargo test -p mic_eq_core
-cargo test --release -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
-cargo test --release -p mic_eq_core audio::input::tests::benchmark_phase_safe_mono_callback_cost -- --ignored --nocapture
-cargo test --release -p mic_eq_core dsp::biquad::tests::benchmark_biquad_morph_cost -- --ignored --nocapture
-cargo clippy -p mic_eq_core --all-targets -- -D warnings
 .\.venv\Scripts\python.exe python\tools\package_smoke.py
 .\.venv\Scripts\python.exe python\tools\self_test.py
 ```
@@ -196,6 +188,8 @@ Candidate and promotion:
   `target/deepfilter/df.dll.provenance.json`. Retain that per-build attestation
   with its DLL; the recipe alone does not attest to a particular binary.
 - `AudioForge.spec` is the canonical package definition.
+- Release validation includes fixed-buffer overflow/drop diagnostics and model-discovery smoke checks. Bundled DeepFilter and Silero assets must take precedence over CWD/user-directory assets unless explicitly overridden.
+- Runtime-asset and bundle paths must stay repository-relative without `..` traversal.
 - Packaged builds register canonical bundled DeepFilter paths. Ambient paths stay disabled unless `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` deliberately enables an external override.
 - Install `requirements/dev.txt` with `--require-hashes`; do not release from an environment resolved directly from open-ended `pyproject.toml` constraints.
 - Review every Semgrep warning in the generated SARIF. The CI gate fails reviewed ERROR-severity findings, while warning-level FFI and process-boundary findings require human triage.
@@ -248,11 +242,3 @@ Python installation, hydrated runtime DLLs, source receipts, and unpublished
 measurements. Preserve virtual environments, `models/`, corpora, and any inputs
 needed to reproduce retained evidence. Check resolved paths and directory links;
 an ignored path is not proof that its contents are disposable.
-
-## Strict realtime regression gates
-
-- The CPAL input callback, CPAL output callback, and post-initialization DSP loop are strict RT regions. They must not use blocking locks, `try_lock`, formatting/logging, vector growth APIs, or Vec-returning suppressor convenience APIs.
-- Keep the RT source-scan tests passing whenever code inside a marked `RT_REGION_*` block changes.
-- Keep control changes flowing through atomic snapshots or bounded queues; model loading and suppressor construction must remain outside the RT loop.
-- Release validation must include fixed-buffer overflow/drop diagnostics checks and a model-discovery smoke pass proving bundled DeepFilter and Silero assets are preferred over CWD/user-directory assets unless an explicit override is set.
-- `release-assets.json` paths and bundle paths must stay repository-relative and must not contain `..` traversal.

@@ -77,7 +77,7 @@
     "neutral_max_change_db": 0.0,
     "style_max_change_db": 2.1968785360463845
   },
-  "decision": "PR #68 preserves v1.13.0 gate output exactly (0 dB delta in all 78 cases) and keeps neutral and styled EQ within the predefined limits.",
+  "decision": "PR #68 leaves measured gate energy retention unchanged from v1.13.0 (0.0 dB delta in all 78 cases) and keeps neutral and styled EQ within the predefined limits. The comparison measures speech-region energy, not sample-identical output.",
   "limitations": [
     "Gate-only offline rendering; does not model asynchronous worker scheduling or measure perceptual naturalness.",
     "Checks bounded tonal change and neutral preservation, not microphone-response recovery or subjective quality.",

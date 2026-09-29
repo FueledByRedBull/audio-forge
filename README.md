@@ -142,7 +142,7 @@ doesn't start with Windows.
   back to RNNoise failed clean-speech checks. CPU timing is only a pass/fail
   limit; it never ranks sound quality.
 - **Compression and loudness.** EQ is fitted first. Compression calibration
-  then tunes the threshold with your requested automatic makeup gain. If your
+  then tunes the compressor with your requested automatic makeup gain. If your
   target loudness can't leave safe headroom, the result stays advisory: choose
   a lower (more negative) LUFS target and run it again.
 - **Verified before it sticks.** A suggestion stays temporary until a second
@@ -179,7 +179,7 @@ Reliability and diagnostics:
 
 - Input/output meters, health indicators, and technical counters behind
   **Details**.
-- Automatic stream restart that stays on your selected devices.
+- Automatic stream restart after device errors.
 - Device refresh keeps your selection when the device is still available.
   Streams prefer 48 kHz when the device supports it.
 - **Help > Export Diagnostics...** writes a size-limited support file. It

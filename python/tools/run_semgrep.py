@@ -23,6 +23,16 @@ def _rulesets() -> list[str]:
     ]
 
 
+def _suppressed_in_source(result: dict[str, object]) -> bool:
+    suppressions = result.get("suppressions")
+    return isinstance(suppressions, list) and any(
+        isinstance(suppression, dict)
+        and suppression.get("kind") == "inSource"
+        and suppression.get("status") in (None, "accepted")
+        for suppression in suppressions
+    )
+
+
 def _error_findings(sarif_path: Path) -> list[str]:
     payload = json.loads(sarif_path.read_text(encoding="utf-8"))
     findings: list[str] = []
@@ -36,14 +46,7 @@ def _error_findings(sarif_path: Path) -> list[str]:
         for result in run.get("results", []):
             rule_id = str(result.get("ruleId", "unknown-rule"))
             severity = str(result.get("level") or rules.get(rule_id, ""))
-            suppressions = result.get("suppressions")
-            suppressed_in_source = isinstance(suppressions, list) and any(
-                isinstance(suppression, dict)
-                and suppression.get("kind") == "inSource"
-                and suppression.get("status") in (None, "accepted")
-                for suppression in suppressions
-            )
-            if severity == "error" and not suppressed_in_source:
+            if severity == "error" and not _suppressed_in_source(result):
                 findings.append(str(result.get("ruleId", "unknown-rule")))
     return findings
 
@@ -139,6 +142,15 @@ def main() -> int:
         payload = json.loads(
             scan_output.read_text(encoding="utf-8"), object_hook=_sarif_file_uris,
         )
+        for run in payload.get("runs", []):
+            # GitHub Code Scanning ignores SARIF suppressions, so reviewed
+            # `nosemgrep` findings would otherwise stay open as alerts.
+            if isinstance(run.get("results"), list):
+                run["results"] = [
+                    result
+                    for result in run["results"]
+                    if not _suppressed_in_source(result)
+                ]
         sarif_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
         scan_output.unlink()
     if completed.returncode != 0:

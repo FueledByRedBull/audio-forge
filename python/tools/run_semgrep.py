@@ -96,6 +96,11 @@ def _scan_command(scan_output: Path) -> list[str]:
         "--exclude=.ruff_cache",
         "--exclude=.pyright",
         "--exclude=static_analysis_semgrep_*",
+        "--exclude=.tmp*",
+        "--exclude=.pytest-tmp*",
+        "--exclude=pytest-cache-files-*",
+        "--exclude=target-local*",
+        "--exclude=IGNORE*",
         # Never feed a previous scanner report back into the next scan. SARIF
         # embeds matched examples and can therefore look like source secrets.
         "--exclude=*.sarif",

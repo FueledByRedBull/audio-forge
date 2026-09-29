@@ -826,6 +826,8 @@ def test_semgrep_scan_includes_untracked_source_and_excludes_generated_reports(
     assert ".venv" not in exclusions
     for secret_pattern in (".env", ".env.*", "credentials.*", "secrets.*"):
         assert secret_pattern in exclusions
+    for temp_pattern in (".tmp*", ".pytest-tmp*", "IGNORE*"):
+        assert temp_pattern in exclusions
 
 
 def test_semgrep_publishes_windows_file_uris_without_changing_findings(

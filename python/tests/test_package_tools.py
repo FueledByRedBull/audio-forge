@@ -182,7 +182,7 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     triggers = workflow.get("on", workflow.get(True))
     assert set(triggers) == {"push", "pull_request"}
     assert triggers["push"] == {
-        "branches": ["master", "fix/semgrep-code-scanning-upload"],
+        "branches": ["master"],
     }
     python_job = workflow["jobs"]["python"]
     assert python_job["permissions"] == {

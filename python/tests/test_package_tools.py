@@ -851,7 +851,7 @@ def test_semgrep_publishes_windows_file_uris_without_changing_findings(
                     "artifactLocation": {"uri": trace_uri},
                 }}],
                 "partialFingerprints": {"matchBasedId/v1": "original-fingerprint"},
-                "suppressions": [{"kind": "inSource", "status": "accepted"}],
+                "suppressions": [{"kind": "external", "status": "accepted"}],
             }],
             "artifacts": [
                 {"location": {"uri": r"\\server\share\source file.py"}},
@@ -885,6 +885,33 @@ def test_semgrep_publishes_windows_file_uris_without_changing_findings(
     )
     assert json.loads(output.read_text(encoding="utf-8")) == payload
     assert not (tmp_path / ".semgrep-results.sarif").exists()
+
+
+def test_semgrep_publishes_only_findings_not_suppressed_in_source(
+    tmp_path, monkeypatch,
+):
+    results = [
+        {"ruleId": "accepted", "suppressions": [{"kind": "inSource", "status": "accepted"}]},
+        {"ruleId": "implicit", "suppressions": [{"kind": "inSource"}]},
+        {"ruleId": "rejected", "suppressions": [{"kind": "inSource", "status": "rejected"}]},
+        {"ruleId": "external", "suppressions": [{"kind": "external"}]},
+        {"ruleId": "active"},
+    ]
+    output = tmp_path / "published.sarif"
+    monkeypatch.setattr(run_semgrep, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(run_semgrep, "_scan_command", lambda path: ["semgrep"])
+    monkeypatch.setattr(sys, "argv", ["run_semgrep.py", "--sarif", str(output)])
+
+    def scan(command, *, cwd, env, check):
+        (cwd / ".semgrep-results.sarif").write_text(
+            json.dumps({"runs": [{"results": results}]}), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(run_semgrep.subprocess, "run", scan)
+    assert run_semgrep.main() == 0
+    published = json.loads(output.read_text(encoding="utf-8"))["runs"][0]["results"]
+    assert [result["ruleId"] for result in published] == ["rejected", "external", "active"]
 
 
 def test_cpython313_offline_imports_work_without_ssl(tmp_path):

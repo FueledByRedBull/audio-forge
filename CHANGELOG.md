@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.14.0
 
 ### Sound and dynamics
 
@@ -31,6 +31,7 @@
 
 - Verify downloaded runtime assets and attestations before replacing installed copies.
 - Upload Semgrep results to GitHub Code Scanning from trusted pushes with valid Windows file URIs.
+- Ignore only the dev-only PyJWT JWK Set advisory (CVE-2026-102274) in the development dependency audit until Semgrep permits the fixed PyJWT; the runtime audit has no exceptions.
 
 ## v1.13.0
 

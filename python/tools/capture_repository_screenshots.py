@@ -58,24 +58,25 @@ SCREENSHOTS: tuple[dict[str, str], ...] = (
         "filename": "audioforge-routing-eq.png",
         "view": "routing_eq",
         "alt": (
-            "AudioForge main window showing sanitized input and virtual-route "
-            "output selection, cleanup controls, and the editable ten-band EQ."
+            "AudioForge main window routing a studio microphone to the CABLE Input "
+            "virtual cable, with noise gate and RNNoise controls, level meters, "
+            "and the ten-band EQ showing an Auto-EQ correction."
         ),
     },
     {
         "filename": "audioforge-processing.png",
         "view": "processing",
         "alt": (
-            "AudioForge dynamics view showing compressor and limiter controls, "
-            "health indicators, and the editable EQ."
+            "AudioForge Dynamics tab with compressor and limiter controls, green "
+            "health indicators, and the ten-band EQ."
         ),
     },
     {
         "filename": "audioforge-auto-voice-setup.png",
         "view": "voice_setup",
         "alt": (
-            "AudioForge Auto Voice Setup dialog showing target and dynamics "
-            "choices plus sanitized validated recommendation summaries."
+            "AudioForge Auto Voice Setup dialog with target voice and dynamics "
+            "choices and a verified recommendation summary."
         ),
     },
 )
@@ -203,8 +204,20 @@ def _prepare_main_window() -> MainWindow:
     window._set_health_chip(window.buffer_label, "Buffer: OK", "ok")
     window._set_health_chip(window.dropped_label, "Drops: 0", "ok")
     window._set_health_chip(window.recovery_diag_label, "Recovery: idle", "idle")
-    window.status_bar.showMessage("Ready - sanitized documentation capture")
+    window.status_bar.clearMessage()
     return window
+
+
+def _show_running_state(window: MainWindow) -> None:
+    """Match the session controls to the live meters and health chips above.
+
+    Tab changes refresh the session summary from the stopped processor, so this
+    runs immediately before each main-window grab.
+    """
+    window.start_btn.setEnabled(False)
+    window.stop_btn.setEnabled(True)
+    window.transmission_status_label.setText("Transmission: Running / Normal")
+    window._set_health_chip(window.health_summary_label, "Health: OK", "ok")
 
 
 def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
@@ -293,6 +306,8 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
                 scrollbar.setValue(processing_scroll_maximum)
                 processing_scroll_position = scrollbar.value()
                 app.processEvents()
+            _show_running_state(window)
+            app.processEvents()
             path = output_dir / specification["filename"]
             width, height = _write_optimized_png(window, path)
             outputs.append(

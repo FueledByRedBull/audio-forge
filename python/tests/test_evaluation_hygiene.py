@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import check_evaluation_hygiene as hygiene
@@ -178,6 +179,39 @@ def test_stale_declared_source_hash_is_rejected(tmp_path: Path, monkeypatch):
     errors = hygiene.validate_report(path)
 
     assert any("stale source SHA-256" in error for error in errors)
+
+
+def test_report_unchanged_since_release_is_verified_at_the_release(
+    tmp_path: Path, monkeypatch
+):
+    global_config = tmp_path / "gitconfig"
+    global_config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+            cwd=tmp_path, check=True, capture_output=True,
+        )
+
+    source = tmp_path / "source.py"
+    source.write_text("before\n", encoding="utf-8")
+    released = tmp_path / "released.json"
+    edited = tmp_path / "edited.json"
+    for path in (released, edited):
+        _write(path, {"source_sha256": {"source.py": hashlib.sha256(b"before\n").hexdigest()}})
+    git("init", "-q")
+    git("add", ".")
+    git("commit", "-q", "-m", "release")
+    git("tag", "v1.0.0")
+    source.write_text("after\n", encoding="utf-8")
+    _write(edited, {"source_sha256": {"source.py": hashlib.sha256(b"before\n").hexdigest()},
+                    "note": "edited after the release"})
+    monkeypatch.setattr(hygiene, "REPO_ROOT", tmp_path)
+
+    assert hygiene.validate_report(released) == []
+    assert any("stale source SHA-256" in error for error in hygiene.validate_report(edited))
 
 
 def test_declared_text_source_hash_is_portable_across_line_endings(

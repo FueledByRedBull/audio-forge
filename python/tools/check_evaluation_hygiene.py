@@ -61,8 +61,11 @@ IMPLEMENTATION_SOURCE_SUFFIXES = {
 
 
 def _portable_source_sha256(path: Path) -> set[str]:
-    data = path.read_bytes()
-    if path.suffix.casefold() not in PORTABLE_TEXT_SUFFIXES or b"\0" in data:
+    return _portable_sha256(path.read_bytes(), path.suffix)
+
+
+def _portable_sha256(data: bytes, suffix: str) -> set[str]:
+    if suffix.casefold() not in PORTABLE_TEXT_SUFFIXES or b"\0" in data:
         return {hashlib.sha256(data).hexdigest()}
     lf = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
     crlf = lf.replace(b"\n", b"\r\n")
@@ -208,6 +211,11 @@ def _resolve_source_revision(
     if result is None or result.returncode != 0:
         return None, f"{field_name} is not an ancestor of HEAD: {value}"
     return value, None
+
+
+def _latest_release_revision() -> str | None:
+    tag = _git_text("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD")
+    return None if tag is None else _git_text("rev-parse", "--verify", f"{tag}^{{commit}}")
 
 
 def _report_path_at_revision(path: Path, report: dict[str, Any], revision: str) -> list[str]:
@@ -436,6 +444,12 @@ def validate_report(path: Path, *, unverified: list[str] | None = None) -> list[
     if "source_revision" in report:
         if source_revision is not None:
             errors.extend(_report_path_at_revision(path, report, source_revision))
+    else:
+        # A report unchanged since the latest release was verified there; later
+        # source edits don't make it stale. New or edited reports use the tree.
+        released = _latest_release_revision()
+        if released is not None and not _report_path_at_revision(path, report, released):
+            resolved_revisions["source_revision"] = released
 
     declared_source_hash_records = _declared_source_hash_records(report)
     for raw_path, expected, revision_field in declared_source_hash_records:
@@ -455,7 +469,7 @@ def validate_report(path: Path, *, unverified: list[str] | None = None) -> list[
                 errors.append(
                     f"{path}: declared source file is missing at {revision_field}: {raw_path}"
                 )
-            elif hashlib.sha256(blob).hexdigest() != expected:
+            elif expected not in _portable_sha256(blob, source_path.suffix):
                 errors.append(
                     f"{path}: stale source SHA-256 in {revision_field} for {raw_path}"
                 )

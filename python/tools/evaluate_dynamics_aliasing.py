@@ -16,7 +16,7 @@ from mic_eq.mic_eq_core import simulate_auto_eq_chain
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REPORT = REPO_ROOT / "evaluation" / "dynamics-aliasing-report.json"
+DEFAULT_REPORT = REPO_ROOT / "evaluation" / "dynamics-aliasing-2026-09-report.json"
 BASE_RATE = 48_000
 REFERENCE_RATE = 192_000
 CASES = (

@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Sound and dynamics
+
+- Turning the limiter off or on no longer jumps the audio timeline: both limiter stages stay in the signal path at unity gain, so engine latency is the same either way. Turning it back on, or lowering the ceiling, while audio is above the ceiling applies the new ceiling to already-queued audio at once as a gain step, without true-peak overs.
+- Turning the compressor off or on ramps its gain over 10 ms instead of stepping, and re-enabling starts from fresh detector state. Offline previews and verification renders now fade the same way when the compressor is toggled mid-render, and a stream starts with the compressor and EQ already in their configured state.
+- Re-enabling the EQ no longer replays filter ringing frozen when it was bypassed.
+- The fade-in after an output dropout now lands at the dropout instead of about 7 ms later.
+- Limiter lookahead scoring no longer shifts already-aligned audio; the corrected qualification still selects 0.5 ms.
+- Auto Voice Setup's and the offline previews' simulations gate each 10 ms block with the newest speech-detection result finished before it, as the live engine does; they previously used a result that finished inside the block, which made VAD gate modes look slightly better than they are live.
+
+### Auto-EQ
+
+- Target curves are described as tone presets, and the Auto-EQ window is titled Auto-EQ Voice Tone. Speech alone cannot measure a microphone's response (a new study confirms it), and the Adaptive layer's voice-balance inputs saturate for nearly every real voice, so Adaptive is effectively a gentler fixed version of each preset.
+
+### Dependencies and CI
+
+- Update Semgrep to 1.179.0, PyJWT to 2.15.1 and urllib3 to 2.8.0 in the development lock, clearing the PyJWT and urllib3 advisories that failed the dependency audit; the development audit no longer needs an ignore.
+- Update github/codeql-action/upload-sarif to 4.38.2.
+
+### Evaluation and repository
+
+- Re-evaluated the noise gate on a fullband EARS/DEMAND corpus with causal VAD timing: the gate stays before noise suppression, and a speech-presence gate replacement failed its predefined rule, so the current gate is kept.
+- Removed nine superseded evaluation reports, the evaluators of closed decisions, and the published v1.12.0-v1.13.0 release notes (they remain on GitHub Releases and in tagged source).
+- Evaluation hygiene checks a report unchanged since the latest release at that release, so later code changes no longer force edits to released evidence.
+- October studies on simulated users (VoiceBank speech, DEMAND noise, synthetic rooms) kept the current behavior where a predefined rule did not support a change: a simpler fixed-grid Auto-EQ fitter, microphone correction from speech, fixed Adaptive-layer offsets, turning the gate off or to VAD Assisted under a neural suppressor (it costs 4-7 dB at phrase onsets but keeps long pauses 6-10 dB quieter), and refitting the de-esser's setup model (its realtime auto mode barely acts on a persistently harsh voice).
+- Auto Voice Setup's gate and noise-suppression tuner never changed settings for simulated users although a tested candidate was clearly better for about half of them; its absolute checks grade the frontend through a compressor that is calibrated only later. Relative checks and a fitted selector were tested and did not meet their predefined rule, so the tuner is unchanged.
+
 ## v1.14.0
 
 ### Sound and dynamics

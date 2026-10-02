@@ -100,7 +100,7 @@ class CalibrationDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Auto-EQ Calibration")
+        self.setWindowTitle("Auto-EQ Voice Tone")
         self.setModal(True)  # Modal dialog - blocks main window
 
         # Recording state

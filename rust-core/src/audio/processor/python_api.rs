@@ -426,6 +426,9 @@ fn simulate_input_frontend_with_activity(
                 vad_reliability = if vad_available { 1.0 } else { 0.0 };
             }
             if vad_probabilities.is_empty() {
+                // As in the live loop, a block is gated with the newest result
+                // finished before it; its own samples reach the model after.
+                let control_probability = latest_vad_probability;
                 if let Some(vad) = native_vad.as_mut() {
                     if let Some(probability) = vad
                         .process_latest(&processed)
@@ -434,7 +437,7 @@ fn simulate_input_frontend_with_activity(
                         latest_vad_probability = Some(probability.clamp(0.0, 1.0));
                     }
                 }
-                if let Some(probability) = latest_vad_probability {
+                if let Some(probability) = control_probability {
                     vad_probability = f64::from(probability);
                     // Offline inference has no worker scheduling age to
                     // measure; each completed model result is treated as

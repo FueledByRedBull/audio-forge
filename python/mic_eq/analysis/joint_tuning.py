@@ -97,10 +97,9 @@ def _align_probabilities(
     values = np.asarray(probabilities, dtype=float).reshape(-1)
     if values.size == 0 or not np.isfinite(values).all():
         return np.zeros(target_count, dtype=np.float32)
-    frame_ends = (np.arange(target_count, dtype=np.int64) + 1) * _FRAME_SAMPLES
     mapped = map_causal_vad_probabilities(
         values,
-        frame_ends,
+        np.arange(target_count, dtype=np.int64) * _FRAME_SAMPLES,
         _SIMULATION_RATE,
     )
     return np.zeros(target_count, dtype=np.float32) if mapped is None else mapped

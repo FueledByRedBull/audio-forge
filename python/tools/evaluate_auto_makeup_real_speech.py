@@ -15,13 +15,14 @@ from _eval_common import resample_audio
 import numpy as np
 
 from mic_eq import analyze_vad_probabilities
+from mic_eq.analysis.vad import map_causal_vad_probabilities
 from mic_eq.mic_eq_core import simulate_auto_makeup_control
 from mic_eq.analysis.wav_io import read_mono_wav
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CORPUS_ROOT = REPO_ROOT / "models" / "dpdfnet_eval_subset"
-DEFAULT_REPORT = REPO_ROOT / "evaluation" / "auto-makeup-real-speech-report.json"
+DEFAULT_REPORT = REPO_ROOT / "evaluation" / "auto-makeup-real-speech-2026-09-report.json"
 SAMPLE_RATE = 48_000
 CONTROL_BLOCK_SIZE = 480
 CONTROL_CADENCE_HZ = SAMPLE_RATE / CONTROL_BLOCK_SIZE
@@ -99,20 +100,12 @@ def _control_probabilities(
     sample_count: int,
     block_count: int,
 ) -> np.ndarray:
-    if frame_probabilities.size == 0:
-        return np.zeros(block_count, dtype=np.float64)
-    duration = sample_count / SAMPLE_RATE
-    source_times = (np.arange(frame_probabilities.size) + 0.5) * (
-        duration / frame_probabilities.size
-    )
-    target_times = (np.arange(block_count) + 0.5) / CONTROL_CADENCE_HZ
-    return np.interp(
-        target_times,
-        source_times,
+    control = map_causal_vad_probabilities(
         frame_probabilities,
-        left=float(frame_probabilities[0]),
-        right=float(frame_probabilities[-1]),
+        np.minimum(np.arange(block_count) * CONTROL_BLOCK_SIZE, sample_count),
+        SAMPLE_RATE,
     )
+    return np.zeros(block_count) if control is None else control.astype(np.float64)
 
 
 def _block_rms_db(audio: np.ndarray) -> np.ndarray:

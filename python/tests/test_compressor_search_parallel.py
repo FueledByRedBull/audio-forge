@@ -71,10 +71,7 @@ def test_compressor_search_reuses_one_causal_vad_array(monkeypatch):
 
     expected = voice_setup.map_causal_vad_probabilities(
         model_probabilities,
-        np.minimum(
-            np.arange(1, 11, dtype=np.int64) * 480,
-            4_800,
-        ),
+        np.arange(10, dtype=np.int64) * 480,
         48_000,
     )
     assert expected is not None

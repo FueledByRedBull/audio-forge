@@ -376,10 +376,11 @@ impl ParametricEQ {
     }
 
     /// Process a block of samples in-place
+    ///
+    /// Bands keep running while bypassed so their state follows the live
+    /// signal; re-enabling then crossfades into a warm filter instead of
+    /// replaying state frozen at bypass time.
     pub fn process_block_inplace(&mut self, buffer: &mut [f32]) {
-        if !self.enabled && self.transition_remaining == 0 {
-            return;
-        }
         if self.enabled && self.transition_remaining == 0 {
             for band in &mut self.bands {
                 band.process_block_inplace(buffer);
@@ -394,10 +395,6 @@ impl ParametricEQ {
     /// Process a single sample through all bands
     #[inline]
     pub fn process_sample(&mut self, mut sample: f32) -> f32 {
-        if !self.enabled && self.transition_remaining == 0 {
-            return sample;
-        }
-
         let dry = sample;
         for band in &mut self.bands {
             sample = band.process_sample(sample);
@@ -415,6 +412,9 @@ impl ParametricEQ {
             }
         }
 
+        if self.wet_mix <= 0.0 {
+            return dry;
+        }
         (dry as f64 * (1.0 - self.wet_mix) + sample as f64 * self.wet_mix) as f32
     }
 
@@ -658,6 +658,35 @@ mod tests {
         let output = eq.process_sample(input);
 
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_eq_reenable_after_bypassed_silence_does_not_revive_old_signal() {
+        let sample_rate = 48_000.0;
+        let mut eq = ParametricEQ::new(sample_rate);
+        let mut config = eq.get_band_config(1).unwrap();
+        config.frequency_hz = 100.0;
+        config.gain_db = 12.0;
+        config.q = 10.0;
+        eq.set_band_config(1, config);
+        eq.reset();
+
+        let mut loud = [0.0_f32; 4_800];
+        for (n, sample) in loud.iter_mut().enumerate() {
+            *sample = (0.8 * (2.0 * PI * 100.0 * n as f64 / sample_rate).sin()) as f32;
+        }
+        eq.process_block_inplace(&mut loud);
+        eq.set_enabled(false);
+        let mut silence = [0.0_f32; 48_000];
+        eq.process_block_inplace(&mut silence);
+
+        eq.set_enabled(true);
+        let mut after = [0.0_f32; 4_800];
+        eq.process_block_inplace(&mut after);
+        let revived = after
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        assert!(revived < 1e-6, "re-enable revived {revived}");
     }
 
     #[test]

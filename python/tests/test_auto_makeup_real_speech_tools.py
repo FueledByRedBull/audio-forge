@@ -40,16 +40,15 @@ def _write_pair_manifest(root: Path) -> tuple[Path, Path]:
     return clean, noisy
 
 
-def test_control_probabilities_interpolate_to_exact_block_count():
+def test_control_probabilities_use_only_windows_finished_before_each_block():
     result = evaluation._control_probabilities(
-        np.asarray([0.0, 0.5, 1.0]),
+        np.asarray([0.2, 0.5, 1.0]),
         sample_count=4_800,
         block_count=10,
     )
 
-    assert result.shape == (10,)
-    assert np.all(np.diff(result) >= 0.0)
-    assert 0.0 <= result[0] <= result[-1] <= 1.0
+    # 32 ms windows end at samples 1536, 3072 and 4608.
+    np.testing.assert_allclose(result, [0, 0, 0, 0, 0.2, 0.2, 0.2, 0.5, 0.5, 0.5])
 
 
 def test_pumping_score_prefers_two_to_eight_hz_modulation():

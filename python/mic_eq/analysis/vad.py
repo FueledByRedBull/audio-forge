@@ -18,14 +18,20 @@ VAD_ANALYSIS_SAMPLE_RATE = 48_000
 
 def map_causal_vad_probabilities(
     probabilities: np.ndarray | None,
-    frame_ends: np.ndarray,
+    positions: np.ndarray,
     sample_rate: int,
 ) -> np.ndarray | None:
-    """Map model posteriors without making a frame see a future window."""
+    """Return, per position, the newest posterior whose window ended by it.
+
+    To control processing, pass each block's first sample: the live loop
+    reads the VAD before the worker can see that block, so a window ending
+    inside a block cannot control it. Offline analysis that only labels
+    frames may pass frame ends.
+    """
     if probabilities is None or sample_rate <= 0:
         return None
     values = np.asarray(probabilities, dtype=float).reshape(-1)
-    ends = np.asarray(frame_ends, dtype=np.int64).reshape(-1)
+    ends = np.asarray(positions, dtype=np.int64).reshape(-1)
     if values.size == 0 or ends.size == 0 or not np.isfinite(values).all():
         return None
 

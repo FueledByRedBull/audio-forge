@@ -75,7 +75,7 @@ def test_native_gate_enabled_matches_requested_control():
     assert np.max(np.abs(open_gate["output_audio"])) > 0.005
 
 
-def test_vad_alignment_waits_for_a_complete_window_and_holds_last_probability():
+def test_vad_alignment_waits_for_a_window_finished_before_the_block():
     aligned = joint_tuning._align_probabilities(
         np.asarray([0.2, 0.8], dtype=np.float32),
         4_800,
@@ -84,7 +84,7 @@ def test_vad_alignment_waits_for_a_complete_window_and_holds_last_probability():
 
     np.testing.assert_allclose(
         aligned,
-        [0.0, 0.0, 0.0, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8, 0.8],
+        [0.0, 0.0, 0.0, 0.0, 0.2, 0.2, 0.2, 0.8, 0.8, 0.8],
     )
 
 

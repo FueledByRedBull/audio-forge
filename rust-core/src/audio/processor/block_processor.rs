@@ -40,7 +40,9 @@ pub struct OfflineDspBlockProcessor {
     true_peak_detector: TruePeakDetector,
     pre_limiter_true_peak_detector: TruePeakDetector,
     deesser_enabled: bool,
-    compressor_enabled: bool,
+    /// Whether any block has been processed; enable changes before the first
+    /// block apply instantly, later ones ramp like the live path.
+    started: bool,
     /// The normal lookahead limiter is separate from the final output safety
     /// limiter so bypass can match the live path.
     normal_limiter_enabled: bool,
@@ -51,17 +53,20 @@ pub struct OfflineDspBlockProcessor {
 
 impl OfflineDspBlockProcessor {
     pub fn new(sample_rate: f64) -> Self {
+        let mut compressor = Compressor::new(-18.0, 3.0, 5.0, 100.0, 0.0, 6.0, sample_rate);
+        compressor.set_enabled(false);
+        compressor.finish_enable_transition();
         Self {
             deesser: DeEsser::new(sample_rate),
             correction_eq: ParametricEQ::new(sample_rate),
             tone_eq: ParametricEQ::new(sample_rate),
-            compressor: Compressor::new(-18.0, 3.0, 5.0, 100.0, 0.0, 6.0, sample_rate),
+            compressor,
             limiter: Limiter::default_settings(sample_rate),
             true_peak_limiter: TruePeakLimiter::default_settings(sample_rate as f32),
             true_peak_detector: TruePeakDetector::new(),
             pre_limiter_true_peak_detector: TruePeakDetector::new(),
             deesser_enabled: false,
-            compressor_enabled: false,
+            started: false,
             normal_limiter_enabled: true,
             output_protection_enabled: true,
             eq_before_deesser: false,
@@ -80,25 +85,28 @@ impl OfflineDspBlockProcessor {
     }
 
     pub fn set_compressor_enabled(&mut self, enabled: bool) {
-        self.compressor_enabled = enabled;
         self.compressor.set_enabled(enabled);
+        if !self.started {
+            self.compressor.finish_enable_transition();
+        }
     }
 
+    /// Match the live limiter toggle: both stages stay in the path (and keep
+    /// their delay) while limiting is disabled.
     pub fn set_limiter_enabled(&mut self, enabled: bool) {
-        self.normal_limiter_enabled = enabled;
+        self.normal_limiter_enabled = true;
         self.output_protection_enabled = enabled;
         if !enabled {
-            self.true_peak_limiter.reset();
             self.previous_true_peak_limiter_gain_reduction_db = 0.0;
         }
         self.limiter.set_enabled(enabled);
     }
 
-    /// Enable or disable only the configured lookahead limiter stage.
-    /// Output safety remains controlled by `set_limiter_enabled`.
+    /// Include or skip the configured lookahead limiter stage, as the live
+    /// Raw and Bypass paths do. Output safety remains controlled by
+    /// `set_limiter_enabled`.
     pub fn set_normal_limiter_enabled(&mut self, enabled: bool) {
         self.normal_limiter_enabled = enabled;
-        self.limiter.set_enabled(enabled);
     }
 
     pub fn set_eq_before_deesser(&mut self, enabled: bool) {
@@ -151,12 +159,7 @@ impl OfflineDspBlockProcessor {
         } else {
             0
         };
-        let output_safety_latency = if self.output_protection_enabled {
-            self.true_peak_limiter.lookahead_samples()
-        } else {
-            0
-        };
-        normal_latency + output_safety_latency
+        normal_latency + self.true_peak_limiter.lookahead_samples()
     }
 
     pub fn process_block_with_stats<const N: usize>(
@@ -180,6 +183,7 @@ impl OfflineDspBlockProcessor {
             input_sample_peak: input.iter().map(|sample| sample.abs()).fold(0.0_f32, f32::max),
             ..OfflineDspBlockStats::default()
         };
+        self.started = true;
 
         output.clear();
         let count = input.len().min(output.capacity());
@@ -205,7 +209,7 @@ impl OfflineDspBlockProcessor {
             self.correction_eq.process_block_inplace(block);
             self.tone_eq.process_block_inplace(block);
         }
-        if self.compressor_enabled {
+        if self.compressor.is_active() {
             if let Some(activity) = activity {
                 let limiter_feedback = if self.normal_limiter_enabled {
                     self.limiter.current_gain_reduction().abs()
@@ -240,10 +244,16 @@ impl OfflineDspBlockProcessor {
         } else {
             1.0
         };
+        // Same order as the live output writer: ceiling first, so a re-enable
+        // plans queued audio against the configured ceiling.
         if self.output_protection_enabled {
             self.true_peak_limiter
                 .set_ceiling_linear(output_ceiling);
-            let true_peak_stats = self.true_peak_limiter.process_block_inplace(block);
+        }
+        self.true_peak_limiter
+            .set_enabled(self.output_protection_enabled);
+        let true_peak_stats = self.true_peak_limiter.process_block_inplace(block);
+        if self.output_protection_enabled {
             stats.true_peak_limiter_input_peak = true_peak_stats.input_true_peak;
             stats.true_peak_limiter_gain_reduction_db = true_peak_stats.max_gain_reduction_db;
             stats.true_peak_limited_events = true_peak_stats.limited_events;
@@ -274,26 +284,108 @@ mod block_processor_tests {
     use super::*;
 
     #[test]
-    fn disabling_output_protection_discards_delayed_audio_before_reenable() {
+    fn limiter_toggle_keeps_delayed_audio_in_the_timeline() {
         let mut processor = OfflineDspBlockProcessor::new(48_000.0);
         processor.set_eq_enabled(false);
-        processor.set_normal_limiter_enabled(false);
-        let mut output = FixedAudioBuffer::<f32, 1024>::new();
-        let mut hot = [0.75_f32; 64];
-        processor.process_block_with_stats(&mut hot, &mut output);
-        assert!(output.as_slice().iter().all(|sample| *sample == 0.0));
+        processor.eq_mut().reset();
+        processor.correction_eq_mut().reset();
+        let latency = processor.latency_samples();
+        let level = 0.25_f32;
+        let mut output = FixedAudioBuffer::<f32, 256>::new();
+        let mut emitted = Vec::new();
+
+        for enabled in [true, false, true, false] {
+            processor.set_limiter_enabled(enabled);
+            assert_eq!(processor.latency_samples(), latency);
+            let mut block = [level; 256];
+            processor.process_block_with_stats(&mut block, &mut output);
+            emitted.extend_from_slice(output.as_slice());
+        }
+
+        assert!(emitted[..latency].iter().all(|sample| *sample == 0.0));
+        assert!(emitted[latency..]
+            .iter()
+            .all(|sample| (*sample - level).abs() < 1e-5));
+    }
+
+    #[test]
+    fn limiter_reenable_keeps_queued_intersample_overs_under_the_ceiling() {
+        use crate::dsp::TruePeakDetector;
+
+        let mut processor = OfflineDspBlockProcessor::new(48_000.0);
+        processor.set_eq_enabled(false);
+        processor.eq_mut().reset();
+        processor.correction_eq_mut().reset();
+        processor.limiter_mut().set_ceiling(-6.0);
+        let ceiling = 10.0_f32.powf(-6.0 / 20.0);
+        // 12 kHz tone: samples at 0.64, true peak 0.9.
+        let block_at = |start: usize| -> Vec<f32> {
+            (start..start + 480)
+                .map(|n| {
+                    0.9 * (std::f32::consts::PI * n as f32 / 2.0 + std::f32::consts::PI / 4.0)
+                        .sin()
+                })
+                .collect()
+        };
+        let mut detector = TruePeakDetector::new();
+        let mut output = FixedAudioBuffer::<f32, 480>::new();
 
         processor.set_limiter_enabled(false);
-        let mut disabled = [0.0_f32; 16];
-        processor.process_block_with_stats(&mut disabled, &mut output);
+        for index in 0..10 {
+            let mut block = block_at(index * 480);
+            processor.process_block_with_stats(&mut block, &mut output);
+            detector.process_block(output.as_slice());
+        }
         processor.set_limiter_enabled(true);
-        processor.set_normal_limiter_enabled(false);
-        let mut silence = [0.0_f32; 1024];
-        let stats = processor.process_block_with_stats(&mut silence, &mut output);
+        let mut peak = 0.0_f32;
+        for index in 10..20 {
+            let mut block = block_at(index * 480);
+            processor.process_block_with_stats(&mut block, &mut output);
+            if index == 10 {
+                // The first block carries the queued audio. Skip only the
+                // unlimited audio's 16-sample reconstruction tail plus the
+                // detector's 128-sample latency.
+                detector.process_block(&output.as_slice()[..144]);
+                peak = peak.max(detector.process_block(&output.as_slice()[144..]));
+            } else {
+                peak = peak.max(detector.process_block(output.as_slice()));
+            }
+        }
+        assert!(peak <= ceiling * 1.01, "true peak {peak} over ceiling {ceiling}");
+    }
 
-        assert!(output.as_slice().iter().all(|sample| *sample == 0.0));
-        assert_eq!(stats.true_peak_limiter_input_peak, 0.0);
-        assert_eq!(stats.true_peak_limiter_gain_reduction_db, 0.0);
+    #[test]
+    fn offline_compressor_toggle_fades_like_live_after_audio_starts() {
+        let mut processor = OfflineDspBlockProcessor::new(48_000.0);
+        processor.set_eq_enabled(false);
+        processor.eq_mut().reset();
+        processor.correction_eq_mut().reset();
+        processor.set_limiter_enabled(false);
+        processor.set_compressor_enabled(true);
+        processor.compressor_mut().set_makeup_gain(9.0);
+        let mut output = FixedAudioBuffer::<f32, 480>::new();
+        for _ in 0..100 {
+            let mut block = [0.3_f32; 480];
+            processor.process_block_with_stats(&mut block, &mut output);
+        }
+        let compressed = *output.as_slice().last().unwrap();
+        assert!((compressed - 0.3).abs() > 0.05, "compressed={compressed}");
+
+        processor.set_compressor_enabled(false);
+        let mut emitted = vec![compressed];
+        for _ in 0..3 {
+            let mut block = [0.3_f32; 480];
+            processor.process_block_with_stats(&mut block, &mut output);
+            emitted.extend_from_slice(output.as_slice());
+        }
+        let max_step = emitted
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0_f32, f32::max);
+        // A ramp moves a small fraction of the processed/dry difference per
+        // sample; skipping the compressor would step by all of it.
+        assert!(max_step < (compressed - 0.3).abs() / 20.0, "max_step={max_step}");
+        assert!((emitted.last().unwrap() - 0.3).abs() < 1e-4);
     }
 
     #[test]

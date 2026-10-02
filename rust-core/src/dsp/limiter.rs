@@ -147,20 +147,29 @@ impl Limiter {
         let previous_ceiling = self.ceiling_linear;
         self.ceiling_db = ceiling_db.min(0.0);
         self.ceiling_linear = util::db_to_linear(self.ceiling_db);
-        let pending_peak = self.lookahead_peak_abs();
-        if self.ceiling_linear < previous_ceiling && pending_peak > self.ceiling_linear {
-            // A stricter ceiling must take effect immediately, even for audio
-            // planned under the old limit. Reduce its gain instead of clipping
-            // queued peaks while the lookahead history catches up.
-            let gain_cap = self.ceiling_linear / pending_peak;
-            self.instant_gain = self.instant_gain.min(gain_cap);
-            self.gain_history_sum = 0.0;
-            for gain in &mut self.gain_history {
-                *gain = gain.min(gain_cap);
-                self.gain_history_sum += *gain;
-            }
-            self.gain_reduction = self.gain_history_sum / self.lookahead_samples as f64;
+        if self.enabled && self.ceiling_linear < previous_ceiling {
+            self.replan_pending_audio();
         }
+    }
+
+    /// Apply the current ceiling to audio already queued in the delay line.
+    ///
+    /// A stricter limit (tighter ceiling or re-enable) must take effect
+    /// immediately, even for audio planned under the old one. Reduce its gain
+    /// instead of clipping queued peaks while the lookahead history catches up.
+    fn replan_pending_audio(&mut self) {
+        let pending_peak = self.lookahead_peak_abs();
+        if pending_peak <= self.ceiling_linear {
+            return;
+        }
+        let gain_cap = self.ceiling_linear / pending_peak;
+        self.instant_gain = self.instant_gain.min(gain_cap);
+        self.gain_history_sum = 0.0;
+        for gain in &mut self.gain_history {
+            *gain = gain.min(gain_cap);
+            self.gain_history_sum += *gain;
+        }
+        self.gain_reduction = self.gain_history_sum / self.lookahead_samples as f64;
     }
 
     /// Get current ceiling in dB
@@ -198,12 +207,16 @@ impl Limiter {
         self.lookahead_samples as f64 / self.sample_rate * 1000.0
     }
 
-    /// Enable or disable the limiter
+    /// Enable or disable limiting.
+    ///
+    /// The delay line keeps running while disabled so toggling never shifts
+    /// the output timeline; disabling releases the gain toward unity.
     pub fn set_enabled(&mut self, enabled: bool) {
-        if self.enabled != enabled {
-            self.reset();
-        }
+        let enabling = enabled && !self.enabled;
         self.enabled = enabled;
+        if enabling {
+            self.replan_pending_audio();
+        }
     }
 
     /// Check if limiter is enabled
@@ -267,10 +280,6 @@ impl Limiter {
     /// Process a single sample
     #[inline]
     pub fn process_sample(&mut self, input: f32) -> f32 {
-        if !self.enabled {
-            return input;
-        }
-
         // Compute planning peak before overwriting the slot so the delayed
         // sample being output now remains part of the decision window.
         let delayed = self.delay_buffer[self.write_idx] as f64;
@@ -279,7 +288,7 @@ impl Limiter {
         // Current sample is then written into the future side of the ring.
         self.delay_buffer[self.write_idx] = input;
         self.push_lookahead_sample((input as f64).abs());
-        let target_gain = if peak > self.ceiling_linear {
+        let target_gain = if self.enabled && peak > self.ceiling_linear {
             self.ceiling_linear / peak
         } else {
             1.0
@@ -312,15 +321,15 @@ impl Limiter {
         }
 
         let limited = delayed * self.gain_reduction;
-        self.apply_ceiling(limited) as f32
+        if self.enabled {
+            self.apply_ceiling(limited) as f32
+        } else {
+            limited as f32
+        }
     }
 
     /// Process a block of samples in-place
     pub fn process_block_inplace(&mut self, buffer: &mut [f32]) {
-        if !self.enabled {
-            return;
-        }
-
         for sample in buffer.iter_mut() {
             *sample = self.process_sample(*sample);
         }
@@ -441,13 +450,82 @@ mod tests {
     }
 
     #[test]
-    fn test_limiter_disabled() {
+    fn test_limiter_disabled_is_unity_gain_through_the_same_delay() {
         let mut lim = Limiter::new(-6.0, 50.0, 48_000.0);
         lim.set_enabled(false);
+        let delay = lim.lookahead_samples();
 
-        let input = 0.9f32;
-        let output = lim.process_sample(input);
-        assert_eq!(output, input);
+        let input: Vec<f32> = (0..delay + 64)
+            .map(|n| 0.9 * (n as f32 * 0.05).sin())
+            .collect();
+        let output: Vec<f32> = input.iter().map(|&x| lim.process_sample(x)).collect();
+
+        assert!(output[..delay].iter().all(|&y| y == 0.0));
+        assert_eq!(&output[delay..], &input[..64]);
+    }
+
+    #[test]
+    fn test_limiter_toggle_below_ceiling_never_shifts_the_timeline() {
+        let mut lim = Limiter::new(-6.0, 50.0, 48_000.0);
+        let delay = lim.lookahead_samples();
+        let signal = |n: usize| 0.3 * (n as f32 * 0.021).sin();
+
+        for n in 0..4_000 {
+            match n {
+                1_000 => lim.set_enabled(false),
+                2_500 => lim.set_enabled(true),
+                _ => {}
+            }
+            let output = lim.process_sample(signal(n));
+            let expected = if n >= delay { signal(n - delay) } else { 0.0 };
+            assert!(
+                (output - expected).abs() < 1e-6,
+                "sample {n}: {output} != {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_limiter_disable_while_limiting_releases_smoothly() {
+        let sample_rate = 48_000.0;
+        let mut lim = Limiter::new(-6.0, 50.0, sample_rate);
+        let signal = |n: usize| {
+            (0.9 * (2.0 * std::f64::consts::PI * 220.0 * n as f64 / sample_rate).sin()) as f32
+        };
+        // Largest per-sample change of the unprocessed sine.
+        let sine_slope = (0.9 * 2.0 * std::f64::consts::PI * 220.0 / sample_rate) as f32;
+
+        let mut previous = 0.0_f32;
+        let mut max_step = 0.0_f32;
+        for n in 0..24_000 {
+            if n == 12_000 {
+                assert!(lim.current_gain_reduction() < -3.0);
+                lim.set_enabled(false);
+            }
+            let output = lim.process_sample(signal(n));
+            if n > 6_000 {
+                max_step = max_step.max((output - previous).abs());
+            }
+            previous = output;
+        }
+
+        assert!(max_step < sine_slope * 1.05, "max step {max_step}");
+        assert!(lim.current_gain_reduction() > -0.1);
+    }
+
+    #[test]
+    fn test_limiter_enable_with_queued_overs_still_holds_the_ceiling() {
+        let mut lim = Limiter::new(-6.0, 50.0, 48_000.0);
+        let ceiling = 10.0_f32.powf(-6.0 / 20.0);
+        lim.set_enabled(false);
+        for _ in 0..lim.lookahead_samples() {
+            lim.process_sample(0.9);
+        }
+
+        lim.set_enabled(true);
+        for _ in 0..(lim.lookahead_samples() * 4) {
+            assert!(lim.process_sample(0.9).abs() <= ceiling + 1e-6);
+        }
     }
 
     #[test]
@@ -528,50 +606,6 @@ mod tests {
         let mut lim = Limiter::new(-6.0, 50.0, 48_000.0);
         lim.set_ceiling(3.0);
         assert_eq!(lim.ceiling_db(), 0.0);
-    }
-
-    #[test]
-    fn test_limiter_disable_transition_resets_stale_state() {
-        let mut lim = Limiter::new(-6.0, 50.0, 48_000.0);
-
-        let lookahead = lim.lookahead_samples();
-        lim.process_sample(0.95);
-        for _ in 0..lookahead {
-            lim.process_sample(0.0);
-        }
-
-        assert!(lim.current_gain_reduction() < 0.95);
-
-        lim.set_enabled(false);
-        assert_eq!(lim.current_gain_reduction(), 0.0);
-        assert_eq!(lim.peak_gain_reduction_and_reset(), 0.0);
-
-        lim.set_enabled(true);
-        let output = lim.process_sample(0.0);
-        assert_eq!(output, 0.0);
-        assert_eq!(lim.current_gain_reduction(), 0.0);
-    }
-
-    #[test]
-    fn test_limiter_enable_transition_clears_previous_delay_line() {
-        let mut lim = Limiter::new(-6.0, 50.0, 48_000.0);
-
-        let lookahead = lim.lookahead_samples();
-        lim.process_sample(0.9);
-        for _ in 0..(lookahead / 2).max(1) {
-            lim.process_sample(0.0);
-        }
-
-        lim.set_enabled(false);
-        lim.set_enabled(true);
-
-        let mut outputs = Vec::with_capacity(lookahead + 1);
-        for _ in 0..=lookahead {
-            outputs.push(lim.process_sample(0.0));
-        }
-
-        assert!(outputs.iter().all(|sample| sample.abs() < 1e-6));
-        assert_eq!(lim.current_gain_reduction(), 0.0);
     }
 
     #[test]

@@ -1,0 +1,742 @@
+{
+  "audible_change": false,
+  "candidate_identity": {
+    "extension": "mic_eq_core.cp313-win_amd64.pyd",
+    "extension_sha256": "644bd363779e60face973b60bffad3bfc716ff516693f08d68506a256026d692"
+  },
+  "candidate_source": {
+    "base_revision": "4f77bb020605d88550b60dfadc07c76d2bee6ec7",
+    "calibration": {
+      "adopted_bias": {
+        "vad_assisted": 0.9140625,
+        "vad_only": 3.31640625
+      },
+      "incumbent_identity": {
+        "extension": "mic_eq_core.cp313-win_amd64.pyd",
+        "extension_sha256": "587cfc9e93955ba08d0b8c04772e9684d37e6ccc8b984589895ef01a353d558c"
+      },
+      "matched_bias": {
+        "deepfilter-ll": {
+          "vad_assisted": 1.27734375,
+          "vad_only": 4.27734375
+        },
+        "rnnoise": {
+          "vad_assisted": 0.55078125,
+          "vad_only": 2.35546875
+        }
+      }
+    },
+    "extension_copy": "models/evaluation-details/gate-speech-presence-2026-10/candidate-mic_eq_core.pyd",
+    "fit": {
+      "fused": [
+        0.389809567727247,
+        0.18221633394095887,
+        -0.5529314741163596
+      ],
+      "level_only": [
+        0.22344331269107032,
+        -0.8742253266313996
+      ],
+      "train_speech_fraction": [
+        0.7449859689666557
+      ],
+      "vad_only": [
+        0.5026233181894156,
+        0.9092702133824437
+      ]
+    },
+    "incumbent_extension_copy": "models/evaluation-details/gate-speech-presence-2026-10/incumbent-mic_eq_core.pyd",
+    "patch": "models/evaluation-details/gate-speech-presence-2026-10/candidate-vs-4f77bb0.patch",
+    "patch_sha256": "5e21ec6f8334f859d58a1c0d1c24d17f1998345ad5fa055b84ff85e0186bf81a"
+  },
+  "candidate_source_sha256": {
+    "rust-core/src/dsp/gate.rs": "a7efa3fef3dd92c0a0bda465a71f16159d394994ce863a8155a2a61b11797ef0",
+    "rust-core/src/dsp/vad.rs": "3d91dcbc6340dc9f689dd2da701290ee3e0145aaf00c0c23452cf5def47f1ab3"
+  },
+  "corpus": {
+    "environments": [
+      "DKITCHEN",
+      "DLIVING",
+      "DWASHING",
+      "OOFFICE",
+      "OMEETING",
+      "OHALLWAY",
+      "PCAFETER",
+      "STRAFFIC"
+    ],
+    "held_out_mixtures": 72,
+    "manifest_sha256": "67dac07c2d7dda239a31b485a52abc3cc613b1a35ab1b9812fbfe42e69cd6105",
+    "snr_db": [
+      5.0,
+      15.0,
+      25.0
+    ],
+    "speakers_train_test": [
+      12,
+      12
+    ]
+  },
+  "decision": {
+    "vad_assisted": "retain_incumbent",
+    "vad_only": "retain_incumbent"
+  },
+  "delta_candidate_minus_incumbent": {
+    "deepfilter-ll": {
+      "vad_assisted_available": {
+        "deep_pause_db": [
+          -1.5221653570293467,
+          -2.6040290576877156,
+          -0.49595853895110503
+        ],
+        "estoi": [
+          0.002870119856727134,
+          0.0019393160429052635,
+          0.003881168440341241
+        ],
+        "floor_modulation_db": [
+          2.048085462389978,
+          1.1151880312940141,
+          3.011232476866966
+        ],
+        "onset_db": [
+          -0.696731625738787,
+          -1.1683244522352092,
+          -0.26071658199299513
+        ],
+        "pause_db": [
+          -0.11886575967443846,
+          -0.538745349366541,
+          0.31696359885005265
+        ],
+        "si_sdr": [
+          -0.17978831132692294,
+          -0.4544629951337191,
+          0.03294091549824084
+        ],
+        "tail_db": [
+          0.5259201053606307,
+          0.2509367663094921,
+          0.8458888993104108
+        ]
+      },
+      "vad_assisted_unavailable": {
+        "deep_pause_db": [
+          -0.6258546381896999,
+          -1.155141830693691,
+          -0.27786335728665756
+        ],
+        "estoi": [
+          0.0001341812345893813,
+          -0.00034196395960861515,
+          0.0005688688379820076
+        ],
+        "floor_modulation_db": [
+          0.05540116317067905,
+          -0.2517063889353716,
+          0.37178051839385856
+        ],
+        "onset_db": [
+          -0.241098845520647,
+          -0.4825804646519914,
+          -0.047198235990724736
+        ],
+        "pause_db": [
+          -0.6778141501344803,
+          -1.0308488678612961,
+          -0.40368499709712635
+        ],
+        "si_sdr": [
+          -0.1224563877475611,
+          -0.32635878642560395,
+          0.06130334257503984
+        ],
+        "tail_db": [
+          -0.5704534750190208,
+          -0.8681138704341956,
+          -0.34489348411714815
+        ]
+      },
+      "vad_only_available": {
+        "deep_pause_db": [
+          17.06794653986298,
+          13.857338650273931,
+          20.279033663534275
+        ],
+        "estoi": [
+          0.04672922119031786,
+          0.0384305476001208,
+          0.0555027249992531
+        ],
+        "floor_modulation_db": [
+          -19.502055616587455,
+          -22.550978488854092,
+          -16.272494256968436
+        ],
+        "onset_db": [
+          16.620457249385897,
+          10.73628729074318,
+          22.852691276459087
+        ],
+        "pause_db": [
+          -0.6460811284738565,
+          -2.5472626161706575,
+          0.9686318860164694
+        ],
+        "si_sdr": [
+          3.013760516925408,
+          2.3347667340273675,
+          3.738216282497882
+        ],
+        "tail_db": [
+          -2.4341090767244755,
+          -4.149716258528013,
+          -1.061668755244523
+        ]
+      },
+      "vad_only_unavailable": {
+        "deep_pause_db": [
+          7.573087333454968,
+          5.971769397465577,
+          9.069784956546254
+        ],
+        "estoi": [
+          0.0032373101086148486,
+          0.0017526357450294528,
+          0.004875079755501108
+        ],
+        "floor_modulation_db": [
+          -8.16504474291219,
+          -9.614760503822659,
+          -6.672044139247723
+        ],
+        "onset_db": [
+          0.846685563291453,
+          -0.18191492661671413,
+          2.612677331015489
+        ],
+        "pause_db": [
+          -0.08056469980398726,
+          -0.6394208261591477,
+          0.42373997201495217
+        ],
+        "si_sdr": [
+          -0.12098147097380714,
+          -0.46242271135154805,
+          0.21615903061903127
+        ],
+        "tail_db": [
+          -0.5919574094572218,
+          -1.0921379545236591,
+          -0.14681916024262628
+        ]
+      }
+    },
+    "rnnoise": {
+      "vad_assisted_available": {
+        "deep_pause_db": [
+          -0.19574903269638325,
+          -0.845983966132504,
+          0.3804458890731066
+        ],
+        "estoi": [
+          0.004507044706075155,
+          0.003401376961078649,
+          0.00576252286193332
+        ],
+        "floor_modulation_db": [
+          0.6905614277499941,
+          -0.11103628964958136,
+          1.6400046540860422
+        ],
+        "onset_db": [
+          0.3410698165807778,
+          -0.8144630097314007,
+          1.4155403692739719
+        ],
+        "pause_db": [
+          0.354402443420575,
+          0.027017005403277564,
+          0.8100476748319388
+        ],
+        "si_sdr": [
+          0.018131288718188348,
+          0.0039873466932765595,
+          0.033011478279058905
+        ],
+        "tail_db": [
+          0.49481239505361096,
+          0.19317857815591222,
+          0.849940900073695
+        ]
+      },
+      "vad_assisted_unavailable": {
+        "deep_pause_db": [
+          0.08749816548080355,
+          -0.00540554910248144,
+          0.21190436015586567
+        ],
+        "estoi": [
+          0.0005648759717006499,
+          0.00023555628672925697,
+          0.0009393402291633289
+        ],
+        "floor_modulation_db": [
+          -0.11516687067742619,
+          -0.23558364710299065,
+          -0.019681220329000163
+        ],
+        "onset_db": [
+          0.16037886223580897,
+          -0.013090486066366962,
+          0.39832865422574787
+        ],
+        "pause_db": [
+          0.004677000883126799,
+          -0.12601601043806981,
+          0.12238296246319719
+        ],
+        "si_sdr": [
+          0.006598835185937155,
+          -0.0006372011721085874,
+          0.019461787385830754
+        ],
+        "tail_db": [
+          -0.02766870519662263,
+          -0.0682005500553324,
+          0.015144040570185452
+        ]
+      },
+      "vad_only_available": {
+        "deep_pause_db": [
+          14.474726385274998,
+          10.905960257713536,
+          18.05742862555037
+        ],
+        "estoi": [
+          0.034934162310405754,
+          0.02578190650527507,
+          0.04367165065687543
+        ],
+        "floor_modulation_db": [
+          -15.225246165752266,
+          -19.163325705338007,
+          -11.353820830171408
+        ],
+        "onset_db": [
+          14.792070788433206,
+          9.194729889542177,
+          20.56648370425555
+        ],
+        "pause_db": [
+          0.5402927796502269,
+          -0.15269295008109596,
+          1.3455581965962895
+        ],
+        "si_sdr": [
+          1.0728534206173983,
+          0.6478399684185469,
+          1.724654215837152
+        ],
+        "tail_db": [
+          -0.7505197804772696,
+          -1.329248493731455,
+          -0.2621499659218119
+        ]
+      },
+      "vad_only_unavailable": {
+        "deep_pause_db": [
+          7.687294062767551,
+          6.151123066803991,
+          9.229987226853005
+        ],
+        "estoi": [
+          0.004119323518034278,
+          0.0027670231661320378,
+          0.005618262690194838
+        ],
+        "floor_modulation_db": [
+          -7.391462709346093,
+          -8.910298255146683,
+          -5.92653528112275
+        ],
+        "onset_db": [
+          2.358704196781564,
+          0.5592383612120255,
+          4.5173022415449715
+        ],
+        "pause_db": [
+          0.709058366616697,
+          0.38962895053162916,
+          1.0246030097543462
+        ],
+        "si_sdr": [
+          0.014752959671350105,
+          0.004641481581941378,
+          0.028597517351581194
+        ],
+        "tail_db": [
+          0.29583135342145767,
+          0.04570404835556503,
+          0.5805560118353802
+        ]
+      }
+    }
+  },
+  "evaluation_contract": {
+    "asset_hashes": {
+      "corpus_manifest": "67dac07c2d7dda239a31b485a52abc3cc613b1a35ab1b9812fbfe42e69cd6105",
+      "models/silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    },
+    "clean_preservation": {
+      "vad_assisted": {
+        "adopt": false,
+        "deepfilter-ll_available_estoi_noninferior": true,
+        "deepfilter-ll_available_pause_not_louder": true,
+        "deepfilter-ll_available_results_complete": true,
+        "deepfilter-ll_available_si_sdr_noninferior": false,
+        "deepfilter-ll_available_tail_not_louder": true,
+        "deepfilter-ll_unavailable_estoi_noninferior": true,
+        "deepfilter-ll_unavailable_pause_not_louder": true,
+        "deepfilter-ll_unavailable_results_complete": true,
+        "deepfilter-ll_unavailable_si_sdr_noninferior": false,
+        "deepfilter-ll_unavailable_tail_not_louder": true,
+        "rnnoise_available_estoi_noninferior": true,
+        "rnnoise_available_pause_not_louder": true,
+        "rnnoise_available_results_complete": true,
+        "rnnoise_available_si_sdr_noninferior": true,
+        "rnnoise_available_tail_not_louder": true,
+        "rnnoise_material_win": true,
+        "rnnoise_unavailable_estoi_noninferior": true,
+        "rnnoise_unavailable_pause_not_louder": true,
+        "rnnoise_unavailable_results_complete": true,
+        "rnnoise_unavailable_si_sdr_noninferior": true,
+        "rnnoise_unavailable_tail_not_louder": true
+      },
+      "vad_only": {
+        "adopt": false,
+        "deepfilter-ll_available_estoi_noninferior": true,
+        "deepfilter-ll_available_pause_not_louder": true,
+        "deepfilter-ll_available_results_complete": true,
+        "deepfilter-ll_available_si_sdr_noninferior": true,
+        "deepfilter-ll_available_tail_not_louder": true,
+        "deepfilter-ll_unavailable_estoi_noninferior": true,
+        "deepfilter-ll_unavailable_pause_not_louder": true,
+        "deepfilter-ll_unavailable_results_complete": true,
+        "deepfilter-ll_unavailable_si_sdr_noninferior": false,
+        "deepfilter-ll_unavailable_tail_not_louder": true,
+        "rnnoise_available_estoi_noninferior": true,
+        "rnnoise_available_pause_not_louder": false,
+        "rnnoise_available_results_complete": true,
+        "rnnoise_available_si_sdr_noninferior": true,
+        "rnnoise_available_tail_not_louder": true,
+        "rnnoise_material_win": true,
+        "rnnoise_unavailable_estoi_noninferior": true,
+        "rnnoise_unavailable_pause_not_louder": false,
+        "rnnoise_unavailable_results_complete": true,
+        "rnnoise_unavailable_si_sdr_noninferior": true,
+        "rnnoise_unavailable_tail_not_louder": true
+      }
+    },
+    "configuration": {
+      "gate_attack_ms": 10.0,
+      "gate_auto_threshold_enabled": true,
+      "gate_margin_db": 10.0,
+      "gate_release_ms": 100.0,
+      "gate_threshold_db": -40.0,
+      "gate_vad_hold_time_ms": 200.0,
+      "gate_vad_threshold": 0.48,
+      "noise_models": [
+        "rnnoise",
+        "deepfilter-ll"
+      ],
+      "order": "gate_before_suppressor",
+      "vad_control": "causal: last 32 ms window ended by each block's first sample"
+    },
+    "latency": {
+      "added_latency_samples": 0,
+      "reason": "Gain law only; no lookahead."
+    },
+    "runtime": {
+      "max_p99_frame_seconds": null,
+      "max_p99_frame_seconds_reason": "Offline renders through the native simulator; the gate's per-sample work is unchanged in kind and covered by the realtime tests."
+    }
+  },
+  "generated_at_utc": "2026-10-02T03:56:29.977981+00:00",
+  "incumbent_and_candidate_means": {
+    "deepfilter-ll": {
+      "vad_assisted_available": {
+        "deep_pause_db": [
+          -19.939817348427315,
+          -21.461982705456663
+        ],
+        "estoi": [
+          0.8147622368385173,
+          0.8176323566952445
+        ],
+        "floor_modulation_db": [
+          6.643441946481468,
+          8.691527408871446
+        ],
+        "onset_db": [
+          -5.274155161036217,
+          -5.9708867867750035
+        ],
+        "pause_db": [
+          -15.338479683438216,
+          -15.457345443112652
+        ],
+        "si_sdr": [
+          12.82207813220039,
+          12.642289820873467
+        ],
+        "tail_db": [
+          -13.40074687928462,
+          -12.874826773923992
+        ]
+      },
+      "vad_assisted_unavailable": {
+        "deep_pause_db": [
+          -17.580035610866908,
+          -18.20589024905661
+        ],
+        "estoi": [
+          0.8215250502919341,
+          0.8216592315265235
+        ],
+        "floor_modulation_db": [
+          4.618814550032784,
+          4.674215713203463
+        ],
+        "onset_db": [
+          -3.73008996010995,
+          -3.9711888056305966
+        ],
+        "pause_db": [
+          -14.300472913352852,
+          -14.978287063487333
+        ],
+        "si_sdr": [
+          13.226502951552103,
+          13.104046563804543
+        ],
+        "tail_db": [
+          -13.065592538172897,
+          -13.636046013191917
+        ]
+      },
+      "vad_only_available": {
+        "deep_pause_db": [
+          -37.445881931346975,
+          -20.377935391483994
+        ],
+        "estoi": [
+          0.7710432366625597,
+          0.8177724578528776
+        ],
+        "floor_modulation_db": [
+          26.77444438450503,
+          7.272388767917578
+        ],
+        "onset_db": [
+          -22.63318455069916,
+          -6.012727301313256
+        ],
+        "pause_db": [
+          -14.795864666884857,
+          -15.441945795358713
+        ],
+        "si_sdr": [
+          8.800985099425594,
+          11.814745616351
+        ],
+        "tail_db": [
+          -10.77580902418071,
+          -13.209918100905188
+        ]
+      },
+      "vad_only_unavailable": {
+        "deep_pause_db": [
+          -25.77897758251158,
+          -18.20589024905661
+        ],
+        "estoi": [
+          0.8184219214179086,
+          0.8216592315265235
+        ],
+        "floor_modulation_db": [
+          12.839260456115653,
+          4.674215713203463
+        ],
+        "onset_db": [
+          -4.81787436892205,
+          -3.9711888056305966
+        ],
+        "pause_db": [
+          -14.897722363683345,
+          -14.978287063487333
+        ],
+        "si_sdr": [
+          13.22502803477835,
+          13.104046563804543
+        ],
+        "tail_db": [
+          -13.044088603734695,
+          -13.636046013191917
+        ]
+      }
+    },
+    "rnnoise": {
+      "vad_assisted_available": {
+        "deep_pause_db": [
+          -35.66689352965415,
+          -35.86264256235053
+        ],
+        "estoi": [
+          0.7640661710914752,
+          0.7685732157975504
+        ],
+        "floor_modulation_db": [
+          14.26309057144555,
+          14.953651999195541
+        ],
+        "onset_db": [
+          -14.950988227904752,
+          -14.609918411323978
+        ],
+        "pause_db": [
+          -24.291004932162796,
+          -23.936602488742224
+        ],
+        "si_sdr": [
+          6.897136485932701,
+          6.915267774650889
+        ],
+        "tail_db": [
+          -21.50817443554737,
+          -21.01336204049376
+        ]
+      },
+      "vad_assisted_unavailable": {
+        "deep_pause_db": [
+          -32.706404901172384,
+          -32.61890673569158
+        ],
+        "estoi": [
+          0.7730487008060751,
+          0.7736135767777758
+        ],
+        "floor_modulation_db": [
+          12.031445380414324,
+          11.9162785097369
+        ],
+        "onset_db": [
+          -12.229825803348966,
+          -12.069446941113155
+        ],
+        "pause_db": [
+          -23.301471560322387,
+          -23.296794559439263
+        ],
+        "si_sdr": [
+          6.983069047385031,
+          6.989667882570968
+        ],
+        "tail_db": [
+          -20.77933099809683,
+          -20.806999703293457
+        ]
+      },
+      "vad_only_available": {
+        "deep_pause_db": [
+          -48.59353797454723,
+          -34.11881158927224
+        ],
+        "estoi": [
+          0.7361623439843776,
+          0.7710965062947833
+        ],
+        "floor_modulation_db": [
+          28.852771309676502,
+          13.627525143924228
+        ],
+        "onset_db": [
+          -28.346464710525506,
+          -13.5543939220923
+        ],
+        "pause_db": [
+          -24.175565705225967,
+          -23.63527292557574
+        ],
+        "si_sdr": [
+          5.744001198162832,
+          6.816854618780231
+        ],
+        "tail_db": [
+          -19.845138142209514,
+          -20.595657922686783
+        ]
+      },
+      "vad_only_unavailable": {
+        "deep_pause_db": [
+          -40.30620079845913,
+          -32.61890673569158
+        ],
+        "estoi": [
+          0.7694942532597415,
+          0.7736135767777758
+        ],
+        "floor_modulation_db": [
+          19.30774121908299,
+          11.9162785097369
+        ],
+        "onset_db": [
+          -14.428151137894721,
+          -12.069446941113155
+        ],
+        "pause_db": [
+          -24.005852926055958,
+          -23.296794559439263
+        ],
+        "si_sdr": [
+          6.974914922899618,
+          6.989667882570968
+        ],
+        "tail_db": [
+          -21.102831056714916,
+          -20.806999703293457
+        ]
+      }
+    }
+  },
+  "incumbent_identity": {
+    "extension": "mic_eq_core.cp313-win_amd64.pyd",
+    "extension_sha256": "587cfc9e93955ba08d0b8c04772e9684d37e6ccc8b984589895ef01a353d558c"
+  },
+  "invalid_cases": {
+    "deepfilter-ll": {
+      "vad_assisted_available": 0,
+      "vad_assisted_unavailable": 0,
+      "vad_only_available": 0,
+      "vad_only_unavailable": 0
+    },
+    "rnnoise": {
+      "vad_assisted_available": 0,
+      "vad_assisted_unavailable": 0,
+      "vad_only_available": 0,
+      "vad_only_unavailable": 0
+    }
+  },
+  "limitations": [
+    "Objective metrics on one synthetic-mixture corpus; no listening test.",
+    "Pauses are inserted between EARS phrases because EARS trims silences.",
+    "The incumbent build is the committed source the candidate replaces.",
+    "The candidate is not in the product; rebuild it from the preserved patch to reproduce."
+  ],
+  "predefined_rule": "evaluate_gate_corpus.py module docstring",
+  "schema_version": 1,
+  "source_sha256": {
+    "python/tools/_eval_common.py": "f6bccabedc531161d1577b1e807c30391bdfe291faf1fd0eba438729b7e006e0",
+    "python/tools/evaluate_gate_corpus.py": "5416ef195a9c29c1bfac3f8100a24a565d48d2679f4ffcbc9dc8a7dd2a0a1c36"
+  },
+  "summary": "Speech-presence gain law (OM-LSA form) for the VAD gate modes, fitted and bias-calibrated on 12 training speakers, scored against the committed gate on 12 held-out speakers with causal VAD timing. Both modes fail the predefined rule, so the product keeps the incumbent gate."
+}

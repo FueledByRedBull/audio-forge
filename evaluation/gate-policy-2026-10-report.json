@@ -1,0 +1,306 @@
+{
+  "schema_version": 1,
+  "audible_change": false,
+  "generated_at_utc": "2026-10-02T02:53:53.293246+00:00",
+  "decision": "keep_factory_gate",
+  "summary": "With RNNoise, DeepFilter or DeepFilter LL on, the factory Threshold Only gate costs 4-7 dB at phrase onsets but keeps long pauses 6-10 dB quieter. Turning it off passed the first rule only because that rule's pause measure was swamped by reverberant tails; with long pauses counted, neither gate off nor VAD Assisted is better, so the factory gate stays.",
+  "arms": {
+    "factory": "factory gate (Threshold Only, -40 dBFS)",
+    "gate_off": "gate disabled",
+    "vad_assisted": "factory gate in VAD Assisted mode"
+  },
+  "rule": "An arm replaces the factory gate for a model if (share of users where it dominates factory) - (share where factory dominates it) has a speaker-clustered 95% CI lower bound above 0 and its ESTOI difference has a CI lower bound >= -0.005. Dominance: no metric worse beyond tolerance and one better by it (ESTOI 0.01; onset, pause and tail 1 dB). Rerun 6b added long pauses (>= 600 ms from speech, 1 dB).",
+  "runs": {
+    "6_test_split_without_long_pauses": {
+      "deepfilter": {
+        "decision": "gate_off",
+        "arms": {
+          "gate_off": {
+            "net_dominance": [
+              0.55,
+              0.43333333333333335,
+              0.6667968750000004
+            ],
+            "estoi_difference": [
+              0.00161196213928723,
+              -0.0002484850278538418,
+              0.003678667555963673
+            ],
+            "mean_onset_db_difference": 5.32401358679144,
+            "mean_pause_db_difference": -0.0003470085504879705,
+            "deep_pause_db_difference": [
+              8.703520439007175,
+              6.4615340851796494,
+              11.399626530844573
+            ],
+            "qualifies": true
+          },
+          "vad_assisted": {
+            "net_dominance": [
+              0.08333333333333333,
+              -0.08196721311475409,
+              0.2413793103448276
+            ],
+            "estoi_difference": [
+              -0.00011063739252949456,
+              -0.0019917290407296196,
+              0.0020180916231924127
+            ],
+            "mean_onset_db_difference": 1.1743297173919252,
+            "mean_pause_db_difference": -0.03800048085476391,
+            "deep_pause_db_difference": [
+              2.670285036719192,
+              0.7258656629751361,
+              5.013908109108867
+            ],
+            "qualifies": false
+          }
+        }
+      },
+      "deepfilter-ll": {
+        "decision": "gate_off",
+        "arms": {
+          "gate_off": {
+            "net_dominance": [
+              0.43333333333333335,
+              0.3,
+              0.5689655172413793
+            ],
+            "estoi_difference": [
+              0.003917783858283278,
+              0.002063839427563624,
+              0.006206656317926786
+            ],
+            "mean_onset_db_difference": 4.405486717922543,
+            "mean_pause_db_difference": 0.339424979768605,
+            "deep_pause_db_difference": [
+              9.516247290776157,
+              7.046203085391668,
+              12.471475228440637
+            ],
+            "qualifies": true
+          },
+          "vad_assisted": {
+            "net_dominance": [
+              -0.08333333333333333,
+              -0.26666666666666666,
+              0.1
+            ],
+            "estoi_difference": [
+              -2.325484835502545e-06,
+              -0.0021621430194658374,
+              0.0023955404842398026
+            ],
+            "mean_onset_db_difference": 0.6791100510490451,
+            "mean_pause_db_difference": -0.0007682434220292577,
+            "deep_pause_db_difference": [
+              3.1916654203458847,
+              1.2897264130173622,
+              5.4632022356300824
+            ],
+            "qualifies": false
+          }
+        }
+      },
+      "rnnoise": {
+        "decision": "gate_off",
+        "arms": {
+          "gate_off": {
+            "net_dominance": [
+              0.65,
+              0.4666666666666667,
+              0.8032786885245902
+            ],
+            "estoi_difference": [
+              0.010570161452234975,
+              0.008061930662066778,
+              0.013331810957104293
+            ],
+            "mean_onset_db_difference": 7.1083488345653425,
+            "mean_pause_db_difference": 0.045782487548599704,
+            "deep_pause_db_difference": [
+              10.12170518191868,
+              7.752365599588635,
+              12.655082180559562
+            ],
+            "qualifies": true
+          },
+          "vad_assisted": {
+            "net_dominance": [
+              -0.16666666666666666,
+              -0.35,
+              0.01639344262295082
+            ],
+            "estoi_difference": [
+              -0.0018363784232488265,
+              -0.005569151297658107,
+              0.0016977980480250127
+            ],
+            "mean_onset_db_difference": -0.033922630734447394,
+            "mean_pause_db_difference": 0.022323246611089212,
+            "deep_pause_db_difference": [
+              2.348321738909998,
+              0.5547145048805516,
+              4.267323790897023
+            ],
+            "qualifies": false
+          }
+        }
+      }
+    },
+    "6b_calibrate_split_with_long_pauses": {
+      "deepfilter": {
+        "decision": "factory",
+        "arms": {
+          "gate_off": {
+            "net_dominance": [
+              0.06666666666666667,
+              -0.08196721311475409,
+              0.21666666666666667
+            ],
+            "estoi_difference": [
+              0.0007681446755848179,
+              -0.0005054159615017704,
+              0.002148852890911349
+            ],
+            "mean_onset_db_difference": 4.055139613054799,
+            "mean_pause_db_difference": -0.05226121797283246,
+            "deep_pause_db_difference": [
+              6.288699427762331,
+              4.112274993092793,
+              8.546734100342356
+            ],
+            "qualifies": false
+          },
+          "vad_assisted": {
+            "net_dominance": [
+              0.03333333333333333,
+              -0.11475409836065574,
+              0.1724137931034483
+            ],
+            "estoi_difference": [
+              -0.00013373817881013513,
+              -0.0017935072392724592,
+              0.001469929239572893
+            ],
+            "mean_onset_db_difference": 1.5426850023678398,
+            "mean_pause_db_difference": -0.2133960436022047,
+            "deep_pause_db_difference": [
+              1.6226424251378593,
+              -0.06383546714851085,
+              3.329877762113524
+            ],
+            "qualifies": false
+          }
+        }
+      },
+      "deepfilter-ll": {
+        "decision": "factory",
+        "arms": {
+          "gate_off": {
+            "net_dominance": [
+              -0.06666666666666667,
+              -0.1896551724137931,
+              0.06779661016949153
+            ],
+            "estoi_difference": [
+              0.003117316778016904,
+              0.0016974982812643885,
+              0.004697636104466542
+            ],
+            "mean_onset_db_difference": 3.7689616885868142,
+            "mean_pause_db_difference": 0.6542303502119814,
+            "deep_pause_db_difference": [
+              7.2342811727825875,
+              5.065792674329742,
+              9.412898088434131
+            ],
+            "qualifies": false
+          },
+          "vad_assisted": {
+            "net_dominance": [
+              -0.08333333333333333,
+              -0.234375,
+              0.08196721311475409
+            ],
+            "estoi_difference": [
+              -0.0006546016400841921,
+              -0.0026826334190252063,
+              0.0012084451908383376
+            ],
+            "mean_onset_db_difference": 1.2816689803284895,
+            "mean_pause_db_difference": 0.10885580881811213,
+            "deep_pause_db_difference": [
+              1.8550804362171998,
+              0.2506002037581687,
+              3.387066668753674
+            ],
+            "qualifies": false
+          }
+        }
+      },
+      "rnnoise": {
+        "decision": "factory",
+        "arms": {
+          "gate_off": {
+            "net_dominance": [
+              -0.03333333333333333,
+              -0.16129032258064516,
+              0.09840163934426244
+            ],
+            "estoi_difference": [
+              0.01038662765183167,
+              0.008220794737205104,
+              0.012629843572046308
+            ],
+            "mean_onset_db_difference": 4.967435294947916,
+            "mean_pause_db_difference": 0.19114891147220572,
+            "deep_pause_db_difference": [
+              7.086863811439991,
+              4.8732892356606925,
+              9.313638225513023
+            ],
+            "qualifies": false
+          },
+          "vad_assisted": {
+            "net_dominance": [
+              -0.16666666666666666,
+              -0.3,
+              -0.03333333333333333
+            ],
+            "estoi_difference": [
+              -0.00044393377376235793,
+              -0.0023307518717889013,
+              0.0014206892008967568
+            ],
+            "mean_onset_db_difference": 0.10455097437250742,
+            "mean_pause_db_difference": 0.04385697276484717,
+            "deep_pause_db_difference": [
+              1.0154310777527151,
+              -0.8920016868238757,
+              2.922094279516669
+            ],
+            "qualifies": false
+          }
+        }
+      }
+    }
+  },
+  "why_6_was_not_adopted": "Pause frames are labelled from the dry speech, so in reverberant rooms they hold the speech's echo tail, which hides what the gate does to the room noise.",
+  "corpus": {
+    "voice_setup_eval_manifest_sha256": "569f3debce837922e9ea91f4487eb9bdd4cb5eca27c15d18a5e6174d800d7225",
+    "users_per_model_per_split": 60
+  },
+  "source_sha256": {
+    "python/tools/evaluate_voice_setup.py": "c7ac2ec418a97cb882e45bb1720eb52f0a7b490a7d1767aa6501c0fa64acd05b"
+  },
+  "measurement_identity": {
+    "extension": "mic_eq_core.cp313-win_amd64.pyd",
+    "extension_sha256": "d64ad6d10873bbdf15d220c3bb2526d5b8ce670e3f3be6a5ea127b78bc9b9029",
+    "note": "6 ran before the harness gained long pauses; 6b after"
+  },
+  "limitations": [
+    "Synthetic rooms and simulated users; no real-device captures.",
+    "An onset-safe gate (opening ahead of onsets) was not tested and needs its own study."
+  ]
+}

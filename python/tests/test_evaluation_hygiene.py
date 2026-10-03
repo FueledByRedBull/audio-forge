@@ -213,6 +213,12 @@ def test_report_unchanged_since_release_is_verified_at_the_release(
     assert hygiene.validate_report(released) == []
     assert any("stale source SHA-256" in error for error in hygiene.validate_report(edited))
 
+    # A later release ships the edited source; the released report is still
+    # checked at the release that first shipped it.
+    git("commit", "-q", "-a", "-m", "next release")
+    git("tag", "v2.0.0")
+    assert hygiene.validate_report(released) == []
+
 
 def test_declared_text_source_hash_is_portable_across_line_endings(
     tmp_path: Path, monkeypatch

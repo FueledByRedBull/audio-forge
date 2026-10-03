@@ -213,9 +213,20 @@ def _resolve_source_revision(
     return value, None
 
 
-def _latest_release_revision() -> str | None:
-    tag = _git_text("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*", "HEAD")
-    return None if tag is None else _git_text("rev-parse", "--verify", f"{tag}^{{commit}}")
+def _first_release_revision(path: Path) -> str | None:
+    """Earliest release tag in HEAD's history that holds the report's last change."""
+    try:
+        relative_path = path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    except ValueError:
+        return None
+    changed = _git_text("log", "-1", "--format=%H", "--", relative_path)
+    if not changed:
+        return None
+    tags = _git_text(
+        "tag", "--list", "v[0-9]*", "--merged", "HEAD", "--contains", changed,
+        "--sort=creatordate",
+    )
+    return tags.split()[0] if tags else None
 
 
 def _report_path_at_revision(path: Path, report: dict[str, Any], revision: str) -> list[str]:
@@ -445,9 +456,9 @@ def validate_report(path: Path, *, unverified: list[str] | None = None) -> list[
         if source_revision is not None:
             errors.extend(_report_path_at_revision(path, report, source_revision))
     else:
-        # A report unchanged since the latest release was verified there; later
-        # source edits don't make it stale. New or edited reports use the tree.
-        released = _latest_release_revision()
+        # A report was verified at the first release that shipped it unchanged;
+        # later source edits don't make it stale. New or edited reports use the tree.
+        released = _first_release_revision(path)
         if released is not None and not _report_path_at_revision(path, report, released):
             resolved_revisions["source_revision"] = released
 

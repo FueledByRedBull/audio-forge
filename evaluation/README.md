@@ -121,9 +121,9 @@ for the Auto-EQ, makeup, DeepFilter and RNNoise evaluations),
 `python/tools/check_evaluation_hygiene.py` rejects absolute paths, stale
 source hashes, malformed audible-change contracts, privacy leaks, and
 oversized reports. A report with `source_revision` was committed unchanged at
-that revision and its source hashes are checked there. A report unchanged
-since the latest release tag is checked at that tag, so later code changes
-don't make released evidence stale. New or edited reports are checked against
+that revision and its source hashes are checked there. A released report is
+checked at the first release tag that shipped it unchanged, so later code
+changes don't make released evidence stale. New or edited reports are checked against
 the working tree. Merge branches that carry reports with a merge commit, since
 squash or rebase drops the pinned commits. Superseded reports and the
 evaluators of closed decisions (DPDFNet EvalSet, RNNoise backends, Auto-EQ

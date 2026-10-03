@@ -24,7 +24,7 @@
 
 - Re-evaluated the noise gate on a fullband EARS/DEMAND corpus with causal VAD timing: the gate stays before noise suppression, and a speech-presence gate replacement failed its predefined rule, so the current gate is kept.
 - Removed nine superseded evaluation reports, the evaluators of closed decisions, and the published v1.12.0-v1.13.0 release notes (they remain on GitHub Releases and in tagged source).
-- Evaluation hygiene checks a report unchanged since the latest release at that release, so later code changes no longer force edits to released evidence.
+- Evaluation hygiene checks a released report at the first release that shipped it unchanged, so later code changes no longer force edits to released evidence.
 - October studies on simulated users (VoiceBank speech, DEMAND noise, synthetic rooms) kept the current behavior where a predefined rule did not support a change: a simpler fixed-grid Auto-EQ fitter, microphone correction from speech, fixed Adaptive-layer offsets, turning the gate off or to VAD Assisted under a neural suppressor (it costs 4-7 dB at phrase onsets but keeps long pauses 6-10 dB quieter), and refitting the de-esser's setup model (its realtime auto mode barely acts on a persistently harsh voice).
 - Auto Voice Setup's gate and noise-suppression tuner never changed settings for simulated users although a tested candidate was clearly better for about half of them; its absolute checks grade the frontend through a compressor that is calibrated only later. Relative checks and a fitted selector were tested and did not meet their predefined rule, so the tuner is unchanged.
 

@@ -376,11 +376,10 @@ impl ParametricEQ {
     }
 
     /// Process a block of samples in-place
-    ///
-    /// Bands keep running while bypassed so their state follows the live
-    /// signal; re-enabling then crossfades into a warm filter instead of
-    /// replaying state frozen at bypass time.
     pub fn process_block_inplace(&mut self, buffer: &mut [f32]) {
+        if !self.enabled && self.transition_remaining == 0 {
+            return;
+        }
         if self.enabled && self.transition_remaining == 0 {
             for band in &mut self.bands {
                 band.process_block_inplace(buffer);
@@ -395,6 +394,10 @@ impl ParametricEQ {
     /// Process a single sample through all bands
     #[inline]
     pub fn process_sample(&mut self, mut sample: f32) -> f32 {
+        if !self.enabled && self.transition_remaining == 0 {
+            return sample;
+        }
+
         let dry = sample;
         for band in &mut self.bands {
             sample = band.process_sample(sample);
@@ -412,9 +415,6 @@ impl ParametricEQ {
             }
         }
 
-        if self.wet_mix <= 0.0 {
-            return dry;
-        }
         (dry as f64 * (1.0 - self.wet_mix) + sample as f64 * self.wet_mix) as f32
     }
 
@@ -506,6 +506,15 @@ impl ParametricEQ {
     pub fn set_enabled(&mut self, enabled: bool) {
         if self.enabled == enabled {
             return;
+        }
+        if enabled && self.transition_remaining == 0 {
+            // Resume from full bypass with cleared filter memory, not the
+            // state frozen when processing stopped.
+            for band in &mut self.bands {
+                for section in &mut band.sections {
+                    section.reset();
+                }
+            }
         }
         self.enabled = enabled;
         self.transition_start_mix = self.wet_mix;

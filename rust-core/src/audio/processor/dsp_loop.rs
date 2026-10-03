@@ -862,9 +862,10 @@ impl AudioProcessor {
                     // Always run the limiter: disabled means unity gain through
                     // the same delay, so toggling never shifts the timeline.
                     limiter_rt.process_block_inplace($buffer);
+                    // Read the peak every block so a disabled limiter's release
+                    // tail is not published when limiting is turned back on.
+                    let limiter_peak_gr = limiter_rt.peak_gain_reduction_and_reset() as f32;
                     if limiter_enabled.load(Ordering::Acquire) {
-                        let limiter_peak_gr =
-                            limiter_rt.peak_gain_reduction_and_reset() as f32;
                         limiter_gain_reduction_db.store(
                             (limiter_rt.current_gain_reduction().abs() as f32).to_bits(),
                             Ordering::Relaxed,

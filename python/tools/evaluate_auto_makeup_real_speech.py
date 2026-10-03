@@ -22,7 +22,6 @@ from mic_eq.analysis.wav_io import read_mono_wav
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CORPUS_ROOT = REPO_ROOT / "models" / "dpdfnet_eval_subset"
-DEFAULT_REPORT = REPO_ROOT / "evaluation" / "auto-makeup-real-speech-2026-09-report.json"
 SAMPLE_RATE = 48_000
 CONTROL_BLOCK_SIZE = 480
 CONTROL_CADENCE_HZ = SAMPLE_RATE / CONTROL_BLOCK_SIZE
@@ -272,7 +271,7 @@ def _percentile(rows: list[dict[str, Any]], key: str, value: float) -> float:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus-root", type=Path, default=DEFAULT_CORPUS_ROOT)
-    parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument("--report", type=Path, required=True)
     parser.add_argument(
         "--details-output",
         type=Path,

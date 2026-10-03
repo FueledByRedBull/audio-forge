@@ -16,7 +16,6 @@ from mic_eq.mic_eq_core import simulate_auto_eq_chain
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REPORT = REPO_ROOT / "evaluation" / "dynamics-aliasing-2026-09-report.json"
 BASE_RATE = 48_000
 REFERENCE_RATE = 192_000
 CASES = (
@@ -148,7 +147,7 @@ def _case(case_id: str, carrier_hz: float, modulation_hz: float) -> dict[str, An
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
     rows = [_case(*case) for case in CASES]
     metrics = {

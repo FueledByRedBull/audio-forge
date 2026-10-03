@@ -507,6 +507,15 @@ impl ParametricEQ {
         if self.enabled == enabled {
             return;
         }
+        if enabled && self.transition_remaining == 0 {
+            // Resume from full bypass with cleared filter memory, not the
+            // state frozen when processing stopped.
+            for band in &mut self.bands {
+                for section in &mut band.sections {
+                    section.reset();
+                }
+            }
+        }
         self.enabled = enabled;
         self.transition_start_mix = self.wet_mix;
         self.transition_total = coefficient_crossfade_samples(self.sample_rate);
@@ -658,6 +667,35 @@ mod tests {
         let output = eq.process_sample(input);
 
         assert_eq!(output, input);
+    }
+
+    #[test]
+    fn test_eq_reenable_after_bypassed_silence_does_not_revive_old_signal() {
+        let sample_rate = 48_000.0;
+        let mut eq = ParametricEQ::new(sample_rate);
+        let mut config = eq.get_band_config(1).unwrap();
+        config.frequency_hz = 100.0;
+        config.gain_db = 12.0;
+        config.q = 10.0;
+        eq.set_band_config(1, config);
+        eq.reset();
+
+        let mut loud = [0.0_f32; 4_800];
+        for (n, sample) in loud.iter_mut().enumerate() {
+            *sample = (0.8 * (2.0 * PI * 100.0 * n as f64 / sample_rate).sin()) as f32;
+        }
+        eq.process_block_inplace(&mut loud);
+        eq.set_enabled(false);
+        let mut silence = [0.0_f32; 48_000];
+        eq.process_block_inplace(&mut silence);
+
+        eq.set_enabled(true);
+        let mut after = [0.0_f32; 4_800];
+        eq.process_block_inplace(&mut after);
+        let revived = after
+            .iter()
+            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+        assert!(revived < 1e-6, "re-enable revived {revived}");
     }
 
     #[test]

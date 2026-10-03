@@ -252,6 +252,10 @@ impl MaxHoldDeque {
         debug_assert!(self.len != 0);
         self.values[self.head]
     }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -276,6 +280,7 @@ pub struct TruePeakLimiter {
     last_output_true_peak: f32,
     peak_gain_reduction_db: f32,
     sample_rate: f32,
+    enabled: bool,
 }
 
 impl TruePeakLimiter {
@@ -302,6 +307,7 @@ impl TruePeakLimiter {
             last_output_true_peak: 0.0,
             peak_gain_reduction_db: 0.0,
             sample_rate: sample_rate.max(1.0),
+            enabled: true,
         };
         limiter.set_release_ms(release_ms);
         limiter
@@ -335,8 +341,47 @@ impl TruePeakLimiter {
         TRUE_PEAK_LIMITER_LOOKAHEAD_SAMPLES
     }
 
+    /// Enable or disable limiting. Detection and the delay line keep running
+    /// while disabled so toggling never shifts the output timeline. Set the
+    /// ceiling before enabling so queued audio is planned against it.
+    pub fn set_enabled(&mut self, enabled: bool) {
+        let enabling = enabled && !self.enabled;
+        self.enabled = enabled;
+        if enabling {
+            self.replan_queued_audio();
+        }
+    }
+
     pub fn set_ceiling_linear(&mut self, ceiling_linear: f32) {
+        let previous = self.ceiling_linear;
         self.ceiling_linear = ceiling_linear.clamp(0.000_001, 1.0);
+        if self.enabled && self.ceiling_linear < previous {
+            self.replan_queued_audio();
+        }
+    }
+
+    /// Apply the current ceiling to audio already in the delay line.
+    ///
+    /// Audio queued while limiting was off (or under a looser ceiling) was
+    /// never planned for this ceiling, and the gain average cannot reach it
+    /// before that audio leaves; sample clipping would then leave true-peak
+    /// overs. The held peak covers the whole delay line, so capping the gain
+    /// history to it protects every queued sample, at the cost of a gain step.
+    fn replan_queued_audio(&mut self) {
+        if self.held_peaks.is_empty() {
+            return;
+        }
+        let gain_cap = (self.ceiling_linear * TRUE_PEAK_TARGET_MARGIN
+            / self.held_peaks.front().max(1e-20))
+        .clamp(0.0, 1.0);
+        self.instant_gain = self.instant_gain.min(gain_cap);
+        self.gain_history_sum = 0.0;
+        for gain in &mut self.gain_history {
+            *gain = gain.min(gain_cap);
+            self.gain_history_sum += f64::from(*gain);
+        }
+        self.gain_reduction =
+            (self.gain_history_sum / TRUE_PEAK_GAIN_AVERAGE_SAMPLES as f64).clamp(0.0, 1.0) as f32;
     }
 
     pub fn set_release_ms(&mut self, release_ms: f32) {
@@ -395,9 +440,12 @@ impl TruePeakLimiter {
             self.held_peaks.push(self.sample_index, detected_peak);
             self.sample_index = self.sample_index.wrapping_add(1);
             let held_peak = self.held_peaks.front();
-            let target_gain = (self.ceiling_linear * TRUE_PEAK_TARGET_MARGIN
-                / held_peak.max(1e-20))
-            .clamp(0.0, 1.0);
+            let target_gain = if self.enabled {
+                (self.ceiling_linear * TRUE_PEAK_TARGET_MARGIN / held_peak.max(1e-20))
+                    .clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
             if target_gain < self.instant_gain {
                 limited = true;
                 self.instant_gain = target_gain;
@@ -417,8 +465,12 @@ impl TruePeakLimiter {
             self.peak_gain_reduction_db = self.peak_gain_reduction_db.max(reduction_db);
             stats.max_gain_reduction_db = stats.max_gain_reduction_db.max(reduction_db);
 
-            let output =
-                (delayed * self.gain_reduction).clamp(-self.ceiling_linear, self.ceiling_linear);
+            let output = delayed * self.gain_reduction;
+            let output = if self.enabled {
+                output.clamp(-self.ceiling_linear, self.ceiling_linear)
+            } else {
+                output
+            };
             let output = if output.is_finite() { output } else { 0.0 };
             let output_peak = self.output_oversampler.observe(output);
             self.last_output_true_peak = output_peak;
@@ -507,6 +559,99 @@ mod tests {
         for (&actual, &expected) in block.iter().skip(delay).zip(input.iter()) {
             assert!((actual - expected).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn disabled_true_peak_limiter_keeps_its_delay_and_releases_to_unity() {
+        let mut limiter = TruePeakLimiter::new(48_000.0, -6.0, 20.0);
+        let delay = limiter.lookahead_samples();
+        let input: Vec<f32> = (0..4 * delay)
+            .map(|index| 0.9 * (index as f32 * 0.037).sin())
+            .collect();
+        let mut block = input.clone();
+        limiter.process_block_inplace(&mut block);
+        assert!(limiter.current_gain_reduction_db() > 3.0);
+
+        limiter.set_enabled(false);
+        let tail: Vec<f32> = (0..48_000)
+            .map(|index| 0.9 * ((4 * delay + index) as f32 * 0.037).sin())
+            .collect();
+        let mut previous = *block.last().unwrap();
+        let mut tail_block = tail.clone();
+        let stats = limiter.process_block_inplace(&mut tail_block);
+        for &sample in &tail_block {
+            // Toggling never jumps: the sine slope bounds every step.
+            assert!((sample - previous).abs() < 0.9 * 0.037 * 1.05);
+            previous = sample;
+        }
+
+        assert_eq!(stats.limited_events, 0);
+        assert!(limiter.current_gain_reduction_db() < 0.01);
+        let settled = &tail_block[tail_block.len() - 1_000..];
+        let source = &tail[tail.len() - 1_000 - delay..tail.len() - delay];
+        for (&actual, &expected) in settled.iter().zip(source.iter()) {
+            assert!((actual - expected).abs() < 1e-4);
+        }
+    }
+
+    /// 12 kHz tone whose samples sit at 0.64 while its true peak is 0.9.
+    fn intersample_over(range: std::ops::Range<usize>) -> Vec<f32> {
+        range
+            .map(|n| {
+                0.9 * (std::f32::consts::PI * n as f32 / 2.0 + std::f32::consts::PI / 4.0).sin()
+            })
+            .collect()
+    }
+
+    /// Run `warm`, apply `change`, run `after`, and return the true peak of
+    /// the continuous output from 16 samples after the change onward. Earlier
+    /// output was legitimately unlimited; its reconstruction tails decay within
+    /// those 16 samples, and the detector reports each value
+    /// `TRUE_PEAK_LONG_TAPS_PER_PHASE / 2` samples late.
+    fn true_peak_after_change(
+        limiter: &mut TruePeakLimiter,
+        change: impl FnOnce(&mut TruePeakLimiter),
+    ) -> f32 {
+        let skip = 16 + TRUE_PEAK_LONG_TAPS_PER_PHASE / 2;
+        let mut detector = TruePeakDetector::new();
+        let mut warm = intersample_over(0..4_800);
+        limiter.process_block_inplace(&mut warm);
+        detector.process_block(&warm);
+        change(limiter);
+        let mut after = intersample_over(4_800..9_600);
+        limiter.process_block_inplace(&mut after);
+        detector.process_block(&after[..skip]);
+        detector.process_block(&after[skip..])
+    }
+
+    #[test]
+    fn reenabling_keeps_queued_intersample_overs_under_the_ceiling() {
+        let ceiling = util::db_to_linear(-6.0) as f32;
+        let mut limiter = TruePeakLimiter::new(48_000.0, -6.0, 50.0);
+        limiter.set_ceiling_linear(ceiling);
+        limiter.set_enabled(false);
+
+        let peak = true_peak_after_change(&mut limiter, |limiter| limiter.set_enabled(true));
+        assert!(
+            peak <= ceiling * 1.01,
+            "true peak {:.2} dB",
+            util::linear_to_db(peak as f64, 1e-10)
+        );
+    }
+
+    #[test]
+    fn tightening_the_ceiling_keeps_queued_audio_under_the_new_ceiling() {
+        let ceiling = util::db_to_linear(-6.0) as f32;
+        let mut limiter = TruePeakLimiter::new(48_000.0, 0.0, 50.0);
+        limiter.set_ceiling_linear(1.0);
+
+        let peak =
+            true_peak_after_change(&mut limiter, |limiter| limiter.set_ceiling_linear(ceiling));
+        assert!(
+            peak <= ceiling * 1.01,
+            "true peak {:.2} dB",
+            util::linear_to_db(peak as f64, 1e-10)
+        );
     }
 
     #[test]

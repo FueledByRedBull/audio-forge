@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "audible_change": false,
+  "generated_at_utc": "2026-10-01T18:08:08.307182+00:00",
+  "decision": "not_adopted_research_only",
+  "summary": "Estimating a microphone's coloration from 10 s of speech with a population prior made the residual coloration worse, so automatic microphone correction from speech stays out of the product.",
+  "method": "Empirical Bayes per 1/3-octave band (100 Hz-8 kHz): estimate = w (measured - population mean), w = s_c^2 / (s_c^2 + s_speaker^2). Prior from fit-split users without coloration, s_c from calibrate-split users with coloration, tested on test-split users. Colorations: low shelf, high shelf and two bells, each within +-6 dB, applied to the noisy reverberant capture.",
+  "predefined_rule": "lower residual coloration RMS than no correction, speaker-clustered 95% CI of the reduction above 0, and at most 5% of users more than 1 dB RMS worse",
+  "corpus": {
+    "voice_setup_eval_manifest_sha256": "569f3debce837922e9ea91f4487eb9bdd4cb5eca27c15d18a5e6174d800d7225",
+    "speech": "VoiceBank clean sets (VCTK subset), CC BY 4.0, 48 kHz, 88 speakers",
+    "noise": "DEMAND channel 1, CC BY 4.0 (Zenodo record 1227121), 18 environments",
+    "rooms": "synthetic 48 kHz stochastic room responses (RT60 0.2-0.7 s)",
+    "splits": "speakers, noise environments and room seeds disjoint: fit / calibrate / test"
+  },
+  "results": {
+    "test_users": 60,
+    "mean_rms_uncorrected_db": 1.6712041578790617,
+    "mean_rms_corrected_db": 1.8542066496676106,
+    "rms_reduction_db_mean_lo_hi": [
+      -0.18300249178854877,
+      -0.3118327805510973,
+      -0.05935039030318903
+    ],
+    "users_worse_by_1db": 0.05,
+    "speaker_sd_db_range": [
+      2.060333865118952,
+      9.218374601497915
+    ]
+  },
+  "evaluator": {
+    "path": "models/evaluation-details/mic-coloration-2026-10/evaluate_mic_coloration.py",
+    "sha256": "11a41624e60895a9941daa7587c0933eb82622598aff7099eb8b7cfb733d59fe"
+  },
+  "measurement_identity": {
+    "extension": "mic_eq_core.cp313-win_amd64.pyd",
+    "extension_sha256": "8a374bd72ca439c748a8c16c38707e1b2dd9cc2f2d2502ba4e61e87521de0ad3"
+  },
+  "limitations": [
+    "Speaker, room and noise spread (2-9 dB per band) is as large as the simulated colorations.",
+    "Per-model microphone profiles remain a separate possibility, limited by distance and placement."
+  ]
+}

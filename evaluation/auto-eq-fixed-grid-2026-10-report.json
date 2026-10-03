@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "audible_change": false,
+  "generated_at_utc": "2026-10-01T18:08:08.296692+00:00",
+  "decision": "retain_dynamic_fitter",
+  "summary": "A simpler Auto-EQ fitter (fixed band grid, gains only) fits the intended tone curve more closely on average but fails the predefined rule on 56 of 2084 cases, so the current fitter stays.",
+  "candidate": {
+    "layout": "low shelf 100 Hz, eight bells log-spaced 160 Hz-9 kHz, high shelf 12 kHz, Q 0.8, gains only",
+    "chosen_on": "target fit over 4 development passages (indices 0, 13, 26, 39), excluded below",
+    "patch": "models/evaluation-details/auto-eq-fixed-grid-2026-10/fixed-grid-vs-4f77bb0.patch",
+    "patch_sha256": "46fe416bcb64590c88140f59023cfc931e8b3c9238d45f1506a84082a40cd2b5",
+    "evaluator": "models/evaluation-details/auto-eq-fixed-grid-2026-10/evaluate_tone_fitter.py",
+    "evaluator_sha256": "40fb8ad36f983201500f81f595f2459e6005f62da84fa49a7cb4192b886e1182"
+  },
+  "predefined_rules": {
+    "equivalence": "final response within 0.25 dB of today's on every case; failed on the development passages because today's fitter itself misses its target by up to ~0.5 dB",
+    "rule_7b": "same failure and recommendation status on every case; target RMS error <= today's + 0.05 dB on every case and lower on average; largest correction <= today's + 0.25 dB"
+  },
+  "cases": {
+    "total": 2084,
+    "passing": 2028,
+    "composition": "44 cross-take passages x 5 targets x 2 modes x 4 smoothing; their -1 dBFS versions; 4 invalid captures; 20 fit-split harness captures x 5 targets"
+  },
+  "results": {
+    "mean_target_rms_db": {
+      "dynamic": 0.1341185272261477,
+      "fixed_grid": 0.05996571801078798
+    },
+    "worst_target_rms_increase_db": 0.13229119639464423,
+    "worst_correction_increase_db": 0.1426958230339026,
+    "failures": {
+      "worse_target_fit": 42,
+      "status_flips_apply_reduced": 14
+    },
+    "worst_area": "Warm target with Broad smoothing (fixed grid 0.22 vs 0.10 dB RMS)"
+  },
+  "measurement_identity": {
+    "extension": "mic_eq_core.cp313-win_amd64.pyd",
+    "extension_sha256": "8a374bd72ca439c748a8c16c38707e1b2dd9cc2f2d2502ba4e61e87521de0ad3"
+  },
+  "limitations": [
+    "Target fit measures closeness to the intended curve, not perceptual quality.",
+    "Recommendation status depends on band placement, so a different layout can flip apply/reduced."
+  ]
+}

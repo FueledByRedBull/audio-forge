@@ -9,7 +9,7 @@ from pathlib import Path
 
 import evaluate_limiter_lookahead as limiter_eval
 
-REPORT_PATH = Path(__file__).resolve().parents[2] / "evaluation/limiter-lookahead-report.json"
+REPORT_PATH = Path(__file__).resolve().parents[2] / "evaluation/limiter-lookahead-2026-10-report.json"
 
 
 def test_limiter_cases_are_finite_and_four_seconds_long():
@@ -54,12 +54,38 @@ def test_gain_envelope_metric_ignores_static_gain_but_detects_modulation():
     assert limiter_eval._gain_envelope_variation_db(reference, modulated) > 1.0
 
 
+def test_case_scores_an_already_aligned_render_without_shifting(monkeypatch):
+    """The native render is latency-compensated; scoring must not shift it."""
+
+    def aligned_render(audio, lookahead_ms):
+        del lookahead_ms
+        return {
+            "output_audio": 0.5 * np.asarray(audio, dtype=np.float64),
+            "limiter_effective_ceiling_db": 0.0,
+            "pre_limiter_true_peak_db": -6.0,
+            "output_true_peak_db": -6.0,
+            "limiter_gain_reduction_db": 0.0,
+            "true_peak_limiter_gain_reduction_db": 0.0,
+            "true_peak_limited_events": 0,
+            "candidate_runtime_ms": 1.0,
+            "non_finite_output": False,
+            "processed_samples": int(np.asarray(audio).size),
+        }
+
+    monkeypatch.setattr(limiter_eval, "_render", aligned_render)
+    for audio in limiter_eval._cases().values():
+        for lookahead_ms in limiter_eval.LOOKAHEAD_MS:
+            row = limiter_eval._case("fixture", audio, lookahead_ms)
+            assert row["gain_envelope_variation_db"] < 1e-6
+            assert row["transient_shape_error_db"] < -100.0
+
+
 def test_report_uses_real_speech_and_applies_objective_materiality_gate():
     import json
 
     report = json.loads(REPORT_PATH.read_text(encoding="utf-8"))
 
-    assert report["schema_version"] == 5
+    assert report["schema_version"] == 6
     assert report["corpus"]["real_speech"]["case_count"] == 12
     assert report["aggregates"]["2.0"]["all"]["all_finite"] is True
     assert report["selected_lookahead_ms"] == 0.5

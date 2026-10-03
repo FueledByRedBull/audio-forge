@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "audible_change": false,
+  "generated_at_utc": "2026-10-02T02:43:24.803300+00:00",
+  "decision": "keep_current_tone_layer",
+  "summary": "Auto-EQ's Adaptive tone layer is effectively fixed for real voices: its three voice-balance inputs saturate for 97-100% of speakers, so where it measures the voice cannot matter. Replacing the measurement with the saturated values failed its equivalence rule on noisy captures (max 0.68 dB), and against the clean-voice curve neither version was better, so the code stays and the curves are described as tone presets rather than voice-adapted.",
+  "findings": {
+    "saturation": {
+      "speakers": 30,
+      "split": "fit",
+      "inputs_unclipped_median": {
+        "body_minus_presence_over_8_db": 1.81,
+        "sibilance_minus_presence_over_7_db": -1.62,
+        "tilt_over_4_db_per_octave": -1.51
+      },
+      "share_saturated": {
+        "body_presence": 1.0,
+        "sibilance_presence": 0.97,
+        "tilt": 1.0
+      }
+    },
+    "measurement_point": "decided without a run: the measurement cannot change the intended curve"
+  },
+  "rule_8b": {
+    "rule": "fixed offsets within 0.1 dB of today's in >= 95% of cases and within 0.5 dB in all; status identical in >= 99%",
+    "cases": 756,
+    "share_within_0_1_db": 0.9695767195767195,
+    "max_deviation_db": 0.6845079257891328,
+    "share_same_status": 1.0,
+    "decision": "keep_measured_offsets",
+    "note": "all deviations were on noisy harness captures; every cross-take case matched exactly"
+  },
+  "rule_8c": {
+    "rule": "fixed offsets closer to the clean-voice curve: mean RMS lower with speaker-clustered 95% CI of the difference above 0, and worse by > 0.25 dB in <= 5% of cases",
+    "cases": 180,
+    "mean_rms_from_truth_db": {
+      "measured": 0.0032335004914243975,
+      "fixed": 0.003014543723000172
+    },
+    "measured_minus_fixed_rms_db": [
+      0.00021895676842422597,
+      -0.0014937398275767593,
+      0.0023228701446550695
+    ],
+    "decision": "keep_measured_offsets"
+  },
+  "candidate": {
+    "patch": "models/evaluation-details/auto-eq-tone-layer-2026-10/fixed-offsets-vs-4f77bb0.patch",
+    "patch_sha256": "ce5e85bb11ad5ca7a9bb143a173d903601dc7b0d6fb1bd38f8fdd94699085e3d",
+    "evaluators": {
+      "evaluate_tone_offsets.py": "c76abae479fde9e8c0b95cb54affe0b07474edce194aa2756f221c507134a263",
+      "evaluate_eq_measurement.py": "e9038378090fc914432accc4cce43227f60be59732843494e656ddeb3539c86b"
+    }
+  },
+  "corpus": {
+    "voice_setup_eval_manifest_sha256": "569f3debce837922e9ea91f4487eb9bdd4cb5eca27c15d18a5e6174d800d7225",
+    "cross_take_manifest_sha256": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc"
+  },
+  "measurement_identity": {
+    "extension": "mic_eq_core.cp313-win_amd64.pyd",
+    "extension_sha256": "d64ad6d10873bbdf15d220c3bb2526d5b8ce670e3f3be6a5ea127b78bc9b9029"
+  },
+  "limitations": [
+    "Saturation was measured on VoiceBank read speech; unusual voices or microphones may fall inside the range.",
+    "The intended curve is compared, not perceptual quality."
+  ]
+}

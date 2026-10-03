@@ -168,8 +168,10 @@ Sound processing:
   and declines to correct when a safe correction isn't supported.
 - Dynamic-EQ de-esser, compressor with speech-aware automatic makeup gain, and
   lookahead limiter.
-- True-peak protection that uses 320 samples of lookahead (6.67 ms at 48 kHz)
-  when enabled, in addition to other processing and device delays.
+- True-peak protection with 320 samples of lookahead (6.67 ms at 48 kHz), in
+  addition to other processing and device delays. Turning the limiter off
+  keeps that delay, so toggling it never shifts your timing. Turning it back
+  on while audio is above the ceiling applies the ceiling immediately.
 - Mono alignment for stereo microphones and adaptive 50/60 Hz hum removal.
 - Latency calibration for each input/output pair. It measures your route and
   improves the reported estimate; it can't reduce physical delay.
@@ -215,11 +217,12 @@ Audio passes through these stages in order:
 6. Compressor
 7. Limiter and true-peak protection
 
-**Bypass** skips voice effects but keeps input cleanup and output protection.
-**Raw** also skips input cleanup and takes precedence over Bypass. The latency
-shown in the app includes engine and noise-suppression delay, plus your
-measured route when you calibrate it. End-to-end latency still depends on your
-devices, driver, buffer sizes, and routing.
+The noise gate runs before suppression: with the default threshold gate,
+moving it after suppression clipped the starts of phrases in testing. See
+**Processing mode** above for Bypass and Raw. The latency shown in the app
+includes engine and noise-suppression delay, plus your measured route when
+you calibrate it. End-to-end latency still depends on your devices, driver,
+buffer sizes, and routing.
 
 ## Help and Contributing
 
@@ -260,11 +263,10 @@ assets. Packaged builds enable verified bundled DeepFilter assets
 automatically. External DLL/model paths require an explicit opt-in; see
 [runtime configuration](CONTRIBUTING.md#runtime-assets-and-configuration).
 
-- [CONTRIBUTING.md](CONTRIBUTING.md): development checks, runtime configuration,
-  and screenshot generation.
-- [RELEASING.md](RELEASING.md): portable/MSI builds, package validation,
-  release archives, and publication.
-- [evaluation/README.md](evaluation/README.md): objective DSP evidence and retention.
+[CONTRIBUTING.md](CONTRIBUTING.md) covers development checks and runtime
+configuration, [RELEASING.md](RELEASING.md) covers packaging and publication,
+and [evaluation/README.md](evaluation/README.md) records the measured DSP
+decisions.
 
 ## Roadmap
 

@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "audible_change": false,
+  "generated_at_utc": "2026-10-02T02:44:02.766007+00:00",
+  "decision": "no_change_realtime_redesign_needs_its_own_study",
+  "summary": "On real speech the setup-time de-esser model hardly separates harsh from ordinary voices, and the realtime de-esser cuts the sibilance band by only ~0.3-0.7 dB because its auto mode compares sibilance with a running baseline of the speaker's own sibilance, which absorbs a persistent harsh resonance. Refitting the setup model alone cannot change the audio, so nothing changes here.",
+  "method": "Fit-split simulated users heard through three microphones: ordinary, bright (+6 dB shelf from 4 kHz) and harsh (+8 dB resonance at 5.5-8 kHz, Q 1.5-3). Detection uses Voice Setup's own setup-time path; audio is rendered through the native de-esser with the recommended and the factory settings; sibilant frames are labelled on the uncolored clean speech.",
+  "results": {
+    "users_per_condition": 40,
+    "enabled_rate_mean_lo_hi": {
+      "ordinary": [
+        0.425,
+        0.23076923076923078,
+        0.6098183175709311
+      ],
+      "bright": [
+        0.625,
+        0.4594594594594595,
+        0.7674418604651163
+      ],
+      "harsh": [
+        0.65,
+        0.4864671814671815,
+        0.7954545454545454
+      ]
+    },
+    "recommended_sibilant_band_change_db": {
+      "ordinary": [
+        -0.25728057457679976,
+        -0.3709526647167705,
+        -0.15051007093533905
+      ],
+      "bright": [
+        -0.6738436490711438,
+        -0.8347911126095895,
+        -0.5030919624773326
+      ],
+      "harsh": [
+        -0.6838544558521938,
+        -0.860426071204074,
+        -0.509890737976114
+      ]
+    },
+    "recommended_voiced_band_change_db": {
+      "ordinary": [
+        -0.03167035508566215,
+        -0.04594203206824797,
+        -0.01851968809011008
+      ],
+      "bright": [
+        -0.09406480042006622,
+        -0.11858865831889738,
+        -0.06749695186929972
+      ],
+      "harsh": [
+        -0.09518954458215212,
+        -0.11978721624804782,
+        -0.06898872114975403
+      ]
+    }
+  },
+  "source_revision": "cc52e91731644e7dd1e18e4118033e47db010704",
+  "source_sha256": {
+    "python/tools/evaluate_deesser_real_speech.py": "6f98eb055978c837abbb43c845b3ebc1d2d64f25c773d51659851d825c4d3953",
+    "rust-core/src/dsp/deesser.rs": "5aebd76c8017829e55f003e1d58473594f864f88b1f01f62e52770e8f9898e21"
+  },
+  "corpus": {
+    "voice_setup_eval_manifest_sha256": "569f3debce837922e9ea91f4487eb9bdd4cb5eca27c15d18a5e6174d800d7225"
+  },
+  "measurement_identity": {
+    "extension": "mic_eq_core.cp313-win_amd64.pyd",
+    "extension_sha256": "d64ad6d10873bbdf15d220c3bb2526d5b8ce670e3f3be6a5ea127b78bc9b9029"
+  },
+  "limitations": [
+    "A constant resonance is one model of harshness; occasional piercing sibilants are what the auto mode targets.",
+    "Whether a sibilant needs attenuation is partly taste; the injected excess defines it here.",
+    "Fit split only; no adoption rule was run because no candidate was proposed."
+  ]
+}

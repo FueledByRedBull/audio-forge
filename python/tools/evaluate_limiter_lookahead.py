@@ -20,7 +20,7 @@ from mic_eq.mic_eq_core import simulate_auto_eq_chain
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REPORT = REPO_ROOT / "evaluation" / "limiter-lookahead-report.json"
+DEFAULT_REPORT = REPO_ROOT / "evaluation" / "limiter-lookahead-2026-10-report.json"
 DEFAULT_REAL_MANIFEST = REPO_ROOT / "models/cross_take_eval/manifest.json"
 SAMPLE_RATE = 48_000
 LOOKAHEAD_MS = (0.5, 1.0, 2.0)
@@ -30,7 +30,6 @@ RUNTIME_REPETITIONS = 7
 REAL_MAIN_LIMITER_GAIN_REDUCTION_TARGET_DB = 3.0
 REAL_MAIN_LIMITER_GAIN_REDUCTION_TOLERANCE_DB = 0.10
 MIN_MATERIAL_LOOKAHEAD_REDUCTION_MS = 1.5
-FLUSH_SAMPLES = int(round(max(LOOKAHEAD_MS) / 1000.0 * SAMPLE_RATE)) + 20
 
 
 def _cases() -> dict[str, np.ndarray]:
@@ -287,15 +286,15 @@ def _case(
     kind: str = "controlled",
     provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    render_input = np.pad(audio, (0, FLUSH_SAMPLES))
+    render_input = audio
     _render(render_input, lookahead_ms)
     results = [
         _render(render_input, lookahead_ms) for _ in range(RUNTIME_REPETITIONS)
     ]
     result = results[-1]
     output = np.asarray(result.pop("output_audio"), dtype=np.float64)
-    delay = int(round(lookahead_ms / 1000.0 * SAMPLE_RATE)) + 20
-    aligned = output[delay : delay + audio.size]
+    # The native render already removes the chain latency and flushes its tail.
+    aligned = output[: audio.size]
     reference = audio.astype(np.float64)
     gain_variation = _gain_envelope_variation_db(reference, aligned)
     ceiling_db = float(result["limiter_effective_ceiling_db"])
@@ -331,8 +330,6 @@ def _case(
             not result["non_finite_output"] and np.all(np.isfinite(output))
         ),
         "processed_samples": int(result["processed_samples"]),
-        "declared_alignment_samples": delay,
-        "flush_samples": FLUSH_SAMPLES,
         "provenance": dict(provenance or {}),
     }
 
@@ -517,7 +514,7 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
         for path in source_paths
     }
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "audible_change": True,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "configuration": {
@@ -527,7 +524,7 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
             "runtime_repetitions": RUNTIME_REPETITIONS,
             "chain": _settings(BASELINE_LOOKAHEAD_MS)
             | {"limiter_lookahead_ms": "varied", "return_output_audio": True},
-            "alignment": "lookahead samples plus 20-sample true-peak stage delay",
+            "alignment": "native render is latency-compensated; no evaluator shift",
         },
         "corpus": {
             "controlled": {
@@ -611,8 +608,7 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
                     str(value): int(round(value * SAMPLE_RATE / 1000.0))
                     for value in LOOKAHEAD_MS
                 },
-                "downstream_true_peak_delay_samples": 20,
-                "flush_samples": FLUSH_SAMPLES,
+                "alignment": "native render removes chain latency and flushes its tail",
             },
             "clean_preservation": {
                 "all_outputs_finite": all(

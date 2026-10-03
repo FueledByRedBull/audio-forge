@@ -32,6 +32,8 @@ const ADAPTIVE_RELEASE_COEFF_UPDATE_MS: f64 = 1.0;
 const PLOSIVE_RATIO_START: f64 = 1.25;
 const PLOSIVE_RATIO_FULL: f64 = 5.0;
 const PLOSIVE_MIN_DETECTOR_GAIN: f64 = 0.35;
+/// Enable/disable ramps between processed and unity gain instead of stepping.
+const ENABLE_TRANSITION_MS: f64 = 10.0;
 
 /// Non-realtime speech evidence used only by auto-makeup measurement/control.
 ///
@@ -87,6 +89,9 @@ pub struct Compressor {
     sample_rate: f64,
     /// Whether compressor is enabled
     enabled: bool,
+    /// Enable-ramp position: 0 is bypassed, `enable_ramp_samples` is fully processed.
+    enable_ramp_position: usize,
+    enable_ramp_samples: usize,
     /// Whether adaptive release is enabled
     adaptive_release: bool,
     /// Base release time in milliseconds (user-controlled)
@@ -197,6 +202,13 @@ impl Compressor {
         };
 
         let loudness_meter = crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32).ok();
+        let enable_ramp_samples = if sample_rate.is_finite() && sample_rate > 0.0 {
+            (sample_rate * ENABLE_TRANSITION_MS / 1_000.0)
+                .round()
+                .max(1.0) as usize
+        } else {
+            1
+        };
         let auto_makeup_sample_window_samples = if sample_rate.is_finite() && sample_rate > 0.0 {
             (sample_rate * AUTO_MAKEUP_SAMPLE_WINDOW_MS / 1_000.0)
                 .round()
@@ -224,6 +236,8 @@ impl Compressor {
             block_peak_gain_reduction_db: 0.0,
             sample_rate,
             enabled: true,
+            enable_ramp_position: enable_ramp_samples,
+            enable_ramp_samples,
             adaptive_release: false,
             base_release_ms: release_ms,
             current_release_ms: release_ms,
@@ -389,8 +403,13 @@ impl Compressor {
         self.makeup_gain_db = makeup_gain_db;
     }
 
-    /// Enable or disable the compressor
+    /// Enable or disable the compressor with a short gain ramp.
     pub fn set_enabled(&mut self, enabled: bool) {
+        if enabled && !self.enabled && self.enable_ramp_position == 0 {
+            // Resume from full bypass with fresh detector state, not the
+            // envelope frozen when processing stopped.
+            self.reset_detector_state();
+        }
         self.enabled = enabled;
         if !enabled {
             self.clear_auto_makeup_sample_window();
@@ -400,6 +419,20 @@ impl Compressor {
     /// Check if compressor is enabled
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Whether the compressor still affects audio (enabled or fading out).
+    pub fn is_active(&self) -> bool {
+        self.enabled || self.enable_ramp_position > 0
+    }
+
+    /// Complete any enable/disable ramp now, for state set before audio starts.
+    pub fn finish_enable_transition(&mut self) {
+        self.enable_ramp_position = if self.enabled {
+            self.enable_ramp_samples
+        } else {
+            0
+        };
     }
 
     /// Get current gain reduction in dB (for metering)
@@ -509,6 +542,16 @@ impl Compressor {
         self.presence_band_env_sq = 0.0;
         self.non_presence_band_env_sq = 0.0;
         self.plosive_ratio = 0.0;
+    }
+
+    fn reset_detector_state(&mut self) {
+        self.peak_envelope = 0.0;
+        self.rms_envelope_sq = 0.0;
+        self.current_gain_reduction_db = 0.0;
+        self.block_peak_gain_reduction_db = 0.0;
+        self.fast_release_env_db = 0.0;
+        self.slow_release_env_db = 0.0;
+        self.reset_sidechain_highpass_state();
     }
 
     #[inline]
@@ -849,7 +892,7 @@ impl Compressor {
         // A caller switching from the sample API must not mix an incomplete
         // sample window into this block's loudness measurement.
         self.clear_auto_makeup_sample_window();
-        if !self.enabled {
+        if !self.is_active() {
             self.current_gain_reduction_db = 0.0;
             return;
         }
@@ -857,6 +900,10 @@ impl Compressor {
         let activity = self.estimate_auto_makeup_activity(Self::block_rms_db(buffer), evidence);
         for sample in buffer.iter_mut() {
             *sample = self.process_sample_impl(*sample, false);
+        }
+        if !self.enabled {
+            // A fade-out block is partly dry; keep it out of loudness control.
+            return;
         }
         if activity.activity > AUTO_MAKEUP_ACTIVE_MIN
             && activity.reliability >= AUTO_MAKEUP_RELIABILITY_MIN
@@ -878,7 +925,7 @@ impl Compressor {
 
     #[inline]
     fn process_sample_impl(&mut self, input: f32, collect_sample_auto_makeup: bool) -> f32 {
-        if !self.enabled {
+        if !self.is_active() {
             self.current_gain_reduction_db = 0.0;
             return input;
         }
@@ -927,11 +974,25 @@ impl Compressor {
             self.update_auto_makeup_gain(speech_activity, 1.0, 1);
         }
 
-        let output_gain = util::db_to_linear(-self.current_gain_reduction_db)
+        let mut output_gain = util::db_to_linear(-self.current_gain_reduction_db)
             * util::db_to_linear(self.smoothed_makeup_gain);
+        let ramp_target = if self.enabled {
+            self.enable_ramp_samples
+        } else {
+            0
+        };
+        if self.enable_ramp_position != ramp_target {
+            if self.enabled {
+                self.enable_ramp_position += 1;
+            } else {
+                self.enable_ramp_position -= 1;
+            }
+            let mix = self.enable_ramp_position as f64 / self.enable_ramp_samples as f64;
+            output_gain = 1.0 + mix * (output_gain - 1.0);
+        }
         let output = (input_f64 * output_gain) as f32;
 
-        if collect_sample_auto_makeup && self.auto_makeup_enabled {
+        if collect_sample_auto_makeup && self.auto_makeup_enabled && self.enabled {
             let speech_activity = Self::speech_activity_from_rms_db(detector_db);
             let sample_index = self.auto_makeup_sample_window_len;
             self.auto_makeup_sample_window[sample_index] = output;
@@ -954,18 +1015,13 @@ impl Compressor {
 
     /// Reset compressor state
     pub fn reset(&mut self) {
-        self.peak_envelope = 0.0;
-        self.rms_envelope_sq = 0.0;
-        self.current_gain_reduction_db = 0.0;
-        self.block_peak_gain_reduction_db = 0.0;
-        self.fast_release_env_db = 0.0;
-        self.slow_release_env_db = 0.0;
+        self.reset_detector_state();
+        self.finish_enable_transition();
         self.current_release_ms = self.base_release_ms;
         self.target_release_ms = self.base_release_ms;
         self.release_coeff =
             util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
         self.adaptive_release_coeff_samples_until_update = 1;
-        self.reset_sidechain_highpass_state();
         self.limiter_feedback_gain_reduction_db = 0.0;
         self.speech_activity_score = 0.0;
         self.auto_makeup_activity_reliability = 0.0;
@@ -1096,8 +1152,57 @@ mod tests {
         let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 6.0, 0.0, 48_000.0);
         comp.set_enabled(false);
         let input = 0.5f32;
-        let output = comp.process_sample(input);
-        assert_eq!(output, input);
+        for _ in 0..480 {
+            comp.process_sample(input);
+        }
+        assert!(!comp.is_active());
+        assert_eq!(comp.process_sample(input), input);
+    }
+
+    #[test]
+    fn test_compressor_toggle_ramps_active_reduction_and_makeup() {
+        let sample_rate = 48_000.0;
+        let mut comp = Compressor::new(-30.0, 8.0, 20.0, 100.0, 9.0, 0.0, sample_rate);
+        let signal = |n: usize| {
+            (0.8 * (2.0 * std::f64::consts::PI * 150.0 * n as f64 / sample_rate).sin()) as f32
+        };
+        let mut previous_gain: Option<f64> = None;
+        // Largest per-sample gain change in steady compression, around the
+        // disable, and around the re-enable.
+        let mut max_step_db = [0.0_f64; 3];
+        for n in 0..48_000 {
+            match n {
+                12_000 => {
+                    assert!(comp.current_gain_reduction() > 6.0);
+                    comp.set_enabled(false);
+                }
+                30_000 => comp.set_enabled(true),
+                _ => {}
+            }
+            let input = signal(n);
+            let output = comp.process_sample(input);
+            if input.abs() < 0.05 {
+                previous_gain = None;
+                continue;
+            }
+            let gain_db = 20.0 * (output / input).abs().log10() as f64;
+            let region = match n {
+                6_000..=11_999 => Some(0),
+                12_000..=12_999 => Some(1),
+                30_000..=30_999 => Some(2),
+                _ => None,
+            };
+            if let (Some(region), Some(previous)) = (region, previous_gain) {
+                max_step_db[region] = max_step_db[region].max((gain_db - previous).abs());
+            }
+            previous_gain = Some(gain_db);
+        }
+        // Steady compression moves ~0.0004 dB per sample; a 10 ms ramp across
+        // the ~16 dB processed/unity swing stays below 0.1 dB per sample,
+        // where an instantaneous toggle would step by the whole swing.
+        assert!(max_step_db[0] < 0.01, "steady {:.4} dB", max_step_db[0]);
+        assert!(max_step_db[1] < 0.25, "disable {:.4} dB", max_step_db[1]);
+        assert!(max_step_db[2] < 0.25, "enable {:.4} dB", max_step_db[2]);
     }
 
     #[test]

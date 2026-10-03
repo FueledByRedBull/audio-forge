@@ -861,13 +861,9 @@ def _calibrate_compressor_threshold(
         block_count = (
             speech_audio.size + control_block_size - 1
         ) // control_block_size
-        frame_ends = np.minimum(
-            np.arange(1, block_count + 1, dtype=np.int64) * control_block_size,
-            speech_audio.size,
-        )
         mapped_vad_probabilities = map_causal_vad_probabilities(
             vad_probabilities,
-            frame_ends,
+            np.arange(block_count, dtype=np.int64) * control_block_size,
             sample_rate,
         )
     incumbent = {

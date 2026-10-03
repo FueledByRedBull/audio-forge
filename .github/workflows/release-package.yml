@@ -250,8 +250,7 @@ jobs:
         run: |
           .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
           if ($LASTEXITCODE -ne 0) { throw "Runtime dependency audit failed with exit code $LASTEXITCODE." }
-          # GHSA-w6j9-cwv2-h6wq: every Semgrep release pins pyjwt~=2.13.0; dev-only, see RELEASING.md.
-          .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-102274
+          .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
           if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
 
       - name: Python release gates

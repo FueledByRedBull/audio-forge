@@ -429,7 +429,6 @@ impl AudioProcessor {
         let restart_requested_for_dsp = Arc::clone(&self.restart_requested);
         let eq_control = Arc::clone(&self.eq_control);
         let eq_dirty = Arc::clone(&self.eq_dirty);
-        let compressor_enabled = Arc::clone(&self.compressor_enabled);
         let compressor_rt_control = Arc::clone(&self.compressor_rt_control);
         let compressor_dirty = Arc::clone(&self.compressor_dirty);
         let deesser_enabled = Arc::clone(&self.deesser_enabled);
@@ -629,6 +628,10 @@ impl AudioProcessor {
                 .snapshot()
                 .unwrap_or_else(CompressorControlState::new);
             apply_compressor_control(&mut compressor_rt, &compressor_snapshot);
+            // Start in the configured state; enable ramps are for live changes.
+            compressor_rt.finish_enable_transition();
+            correction_eq_rt.reset();
+            tone_eq_rt.reset();
             let deesser_snapshot = deesser_rt_control
                 .snapshot()
                 .unwrap_or_else(DeesserControlState::new);
@@ -760,7 +763,9 @@ impl AudioProcessor {
                     correction_eq_rt.process_block_inplace($buffer);
                     tone_eq_rt.process_block_inplace($buffer);
 
-                    if compressor_enabled.load(Ordering::Acquire) {
+                    // The compressor owns its enable ramp; keep processing
+                    // until a disable has faded out.
+                    if compressor_rt.is_active() {
                         let true_peak_pressure = f32::from_bits(
                             output_true_peak_gain_reduction_db.load(Ordering::Relaxed),
                         ) as f64;
@@ -854,10 +859,13 @@ impl AudioProcessor {
                         compressor_current_makeup_gain.store(0.0_f64.to_bits(), Ordering::Relaxed);
                     }
 
+                    // Always run the limiter: disabled means unity gain through
+                    // the same delay, so toggling never shifts the timeline.
+                    limiter_rt.process_block_inplace($buffer);
+                    // Read the peak every block so a disabled limiter's release
+                    // tail is not published when limiting is turned back on.
+                    let limiter_peak_gr = limiter_rt.peak_gain_reduction_and_reset() as f32;
                     if limiter_enabled.load(Ordering::Acquire) {
-                        limiter_rt.process_block_inplace($buffer);
-                        let limiter_peak_gr =
-                            limiter_rt.peak_gain_reduction_and_reset() as f32;
                         limiter_gain_reduction_db.store(
                             (limiter_rt.current_gain_reduction().abs() as f32).to_bits(),
                             Ordering::Relaxed,
@@ -936,6 +944,7 @@ impl AudioProcessor {
                 drift_error_ema: &mut output_drift_error_ema,
                 drift_retimer: &mut output_drift_retimer,
                 discontinuity_fade_remaining: &discontinuity_fade_remaining,
+                output_fade_remaining: 0,
                 limiter_enabled: limiter_enabled.as_ref(),
                 output_ceiling_linear: &output_ceiling_linear,
                 counters: OutputWriteCounters {
@@ -1864,7 +1873,6 @@ impl AudioProcessor {
                                         limiter_lookahead_samples: limiter_lookahead_samples
                                             .load(Ordering::Relaxed),
                                         true_peak_lookahead_samples,
-                                        limiter_enabled: limiter_enabled.load(Ordering::Acquire),
                                         processing_sample_rate: sample_rate_for_latency,
                                     },
                                     latency_compensation_us.load(Ordering::Relaxed),

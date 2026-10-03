@@ -60,7 +60,6 @@ mod tests {
                     suppressor_latency_samples: 0,
                     limiter_lookahead_samples: lookahead_samples,
                     true_peak_lookahead_samples: 20,
-                    limiter_enabled: true,
                     processing_sample_rate: sample_rate,
                 },
                 0,
@@ -218,6 +217,25 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_full_chain_gates_each_block_with_a_vad_result_finished_before_it() {
+        // The first 32 ms window ends at sample 1536, inside block 3
+        // [1440, 1920). Live, block 3 cannot use it; block 4 can.
+        let audio = vec![0.01_f32; RNNOISE_FRAME_SIZE * 8];
+        Python::initialize();
+        Python::attach(|py| {
+            let settings = PyDict::new(py);
+            settings.set_item("gate_mode", 2_u8).unwrap();
+            let evidence =
+                simulate_input_frontend_with_activity(py, audio, 48_000.0, Some(&settings))
+                    .expect("native VAD should process the fixture")
+                    .activity_evidence;
+            assert!(evidence[..4].iter().all(|block| block.vad_reliability == 0.0));
+            assert_eq!(evidence[4].vad_reliability, 1.0);
+        });
+    }
+
     #[test]
     fn test_total_reported_latency_respects_output_vs_processing_rates() {
         let total = total_reported_latency_us(
@@ -229,7 +247,6 @@ mod tests {
                 suppressor_latency_samples: 480,
                 limiter_lookahead_samples: 96,
                 true_peak_lookahead_samples: 20,
-                limiter_enabled: true,
                 processing_sample_rate: 48_000,
             },
             500,
@@ -244,25 +261,6 @@ mod tests {
                 + samples_to_micros(20, 44_100)
                 + 500
         );
-    }
-
-    #[test]
-    fn test_total_reported_latency_omits_both_limiter_delays_when_disabled() {
-        let total = total_reported_latency_us(
-            LatencyComponents {
-                input_resampler_delay_samples: 0,
-                output_buffer_samples: 0,
-                output_sample_rate: 48_000,
-                output_resampler_delay_samples: 0,
-                suppressor_latency_samples: 0,
-                limiter_lookahead_samples: 96,
-                true_peak_lookahead_samples: 20,
-                limiter_enabled: false,
-                processing_sample_rate: 48_000,
-            },
-            0,
-        );
-        assert_eq!(total, 0);
     }
 
     #[test]
@@ -1628,6 +1626,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1715,6 +1714,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1771,6 +1771,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1796,7 +1797,8 @@ mod tests {
         );
         assert_eq!(output_retime_adjustment_count.load(Ordering::Relaxed), 0);
         assert_eq!(output_recovery_event_count.load(Ordering::Relaxed), 1);
-        assert_eq!(fade_remaining.get(), 4);
+        assert_eq!(writer.output_fade_remaining, 4);
+        assert_eq!(fade_remaining.get(), 0);
         assert_eq!(output_buffer_len.load(Ordering::Relaxed), 4);
 
         let mut drained = [0.0_f32; 4];
@@ -1837,6 +1839,7 @@ mod tests {
             drift_error_ema: &mut expand_drift_error_ema,
             drift_retimer: &mut expand_drift_retimer,
             discontinuity_fade_remaining: &expand_fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1896,6 +1899,7 @@ mod tests {
             drift_error_ema: &mut compress_drift_error_ema,
             drift_retimer: &mut compress_drift_retimer,
             discontinuity_fade_remaining: &compress_fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1962,6 +1966,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1979,12 +1984,25 @@ mod tests {
             limits: test_output_writer_limits(4, 8, 4),
         };
 
-        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], false));
+        // Fill the true-peak delay so the output stream carries the signal.
+        let mut drain = [0.0_f32; 8];
+        consumer.read(&mut drain);
+        for _ in 0..(TruePeakLimiter::default().lookahead_samples() / 4 + 4) {
+            assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
+            consumer.read(&mut drain);
+        }
+        assert_eq!(writer.output_fade_remaining, 0);
+        assert_eq!(writer.output_producer.write(&[0.0; 6]), 6);
+
+        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
         let mut first_drain = [0.0_f32; 8];
         assert_eq!(consumer.read(&mut first_drain), 8);
-        assert_eq!(fade_remaining.get(), 4);
+        // The dropout is in the output stream, after the true-peak delay, so
+        // its fade-in is owed there rather than to the upstream timeline.
+        assert_eq!(writer.output_fade_remaining, 4);
+        assert_eq!(fade_remaining.get(), 0);
 
-        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], false));
+        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
         let mut faded = [0.0_f32; 4];
         assert_eq!(consumer.read(&mut faded), 4);
         assert!(faded[0] > 0.0);
@@ -2026,6 +2044,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -2091,6 +2110,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: OutputWriteCounters {
@@ -2309,9 +2329,18 @@ mod tests {
         let mut output = FixedAudioBuffer::<f32, 4>::new();
 
         processor.process_block(&mut input, &mut output);
-
         assert_eq!(output.len(), 4);
-        assert_eq!(output.as_slice(), &input[..4]);
+
+        // Disabled limiting keeps both limiter delays, so the probe returns
+        // unchanged after the constant chain latency.
+        let latency = processor.latency_samples();
+        let mut emitted = output.as_slice().to_vec();
+        while emitted.len() < latency + 4 {
+            let mut silence = [0.0_f32; 4];
+            processor.process_block(&mut silence, &mut output);
+            emitted.extend_from_slice(output.as_slice());
+        }
+        assert_eq!(&emitted[latency..latency + 4], &input[..4]);
     }
 
     #[test]

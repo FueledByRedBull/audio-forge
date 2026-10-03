@@ -52,7 +52,9 @@ def test_full_chain_final_output_is_bounded(mode, limiter_enabled):
         -6.0 if limiter_enabled else 0.0
     )
     if mode == "raw":
-        assert result["chain_latency_samples"] == (320 if limiter_enabled else 0)
+        # Raw skips the normal limiter; the true-peak stage keeps its delay
+        # whether or not limiting is enabled.
+        assert result["chain_latency_samples"] == 320
         assert result["limiter_gain_reduction_db"] == 0
 
 

@@ -32,6 +32,7 @@ candidate dominates its choice. EQ and dynamics are outside this stage.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -239,19 +240,30 @@ def _arm_key(model: str, strength: float, gate: dict[str, Any]) -> str:
     return json.dumps([model, round(float(strength), 4), sorted(gate.items())], default=str)
 
 
+_VAD_CACHE: dict[tuple[bytes, float, float], np.ndarray | None] = {}
+
+
+def _offline_vad(capture: np.ndarray, threshold: float, pre_gain: float) -> np.ndarray | None:
+    """Silero posteriors of a capture; arms that share its VAD settings reuse them."""
+    from mic_eq.analysis.vad import analyze_offline_vad
+
+    key = (hashlib.sha256(capture.tobytes()).digest(), threshold, pre_gain)
+    if key not in _VAD_CACHE:
+        _VAD_CACHE[key] = analyze_offline_vad(capture, SAMPLE_RATE, threshold=threshold, pre_gain=pre_gain)[0]
+    return _VAD_CACHE[key]
+
+
 def render_arm(capture: np.ndarray, arm: dict[str, Any], noise_floor_db: float) -> np.ndarray:
     from mic_eq.analysis.joint_tuning import (
         _align_probabilities, _candidate_settings, _load_native_simulator, _run_gate_suppressor,
     )
-    from mic_eq.analysis.vad import analyze_offline_vad
 
     gate, simulator_gate = _candidate_settings(
         arm["gate"], noise_floor_db=noise_floor_db, strength=arm["strength"],
         threshold_delta_db=0.0, release_delta_ms=0.0,
     )
-    probabilities, _backend = analyze_offline_vad(
-        capture, SAMPLE_RATE, threshold=float(gate.get("vad_threshold", 0.48)),
-        pre_gain=float(gate.get("vad_pre_gain", 1.0)),
+    probabilities = _offline_vad(
+        capture, float(gate.get("vad_threshold", 0.48)), float(gate.get("vad_pre_gain", 1.0)),
     )
     control = _align_probabilities(probabilities, capture.size, capture.size)
     simulator = _load_native_simulator()
@@ -495,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--first", type=int, default=0, help="run: index of the first user")
     parser.add_argument("--users", type=int, default=8)
     parser.add_argument("--models", default="rnnoise,deepfilter-ll")
-    parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) // 2))
+    parser.add_argument("--workers", type=int, default=min(4, max(1, (os.cpu_count() or 2) // 2)))
     parser.add_argument("--rows", type=Path, help="report: rows written by run")
     parser.add_argument("--output", type=Path, help="write the JSON result here")
     args = parser.parse_args(argv)
@@ -504,10 +516,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     jobs = [(str(args.root), args.split, index, model) for model in args.models.split(",")
             for index in range(args.first, args.first + args.users)]
+    partial = None
     if args.command in ("run", "policy"):
         if args.output is None:
             parser.error(f"{args.command} needs --output")
-        partial = args.output.with_suffix(".partial.jsonl")
+        # ponytail: an interrupted run resumes its rows whatever code wrote them;
+        # delete the file to start over, or record the build per row if that bites.
+        partial = args.output.with_suffix(f".{args.command}.partial.jsonl")
         rows = run(evaluate_user if args.command == "run" else evaluate_policy, jobs, args.workers, partial)
         result = {"schema_version": 1, "generated_at_utc": datetime.now(timezone.utc).isoformat(),
                   "split": args.split, "rows": rows}
@@ -518,6 +533,8 @@ def main(argv: list[str] | None = None) -> int:
     text = json.dumps(result, indent=2, sort_keys=True, default=float) + "\n"
     if args.output:
         args.output.write_text(text, encoding="utf-8")
+        if partial is not None:
+            partial.unlink()  # finished: the next run to this output starts fresh
     shown = {"report": result, "policy": result.get("summary")}.get(args.command)
     sys.stdout.write(json.dumps(shown, indent=2, default=float) + "\n" if shown else f"{len(result['rows'])} rows\n")
     return 0

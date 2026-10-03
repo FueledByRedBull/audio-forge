@@ -126,3 +126,16 @@ def test_build_subprocess_receives_the_requested_corpus(monkeypatch, tmp_path):
 
     command = seen["command"]
     assert command[command.index("--root") + 1] == str(tmp_path / "fresh-corpus")
+
+
+def test_calibrate_rejects_a_build_that_ignores_the_overrides(monkeypatch, tmp_path):
+    table = {"identity": {}, "rows": {
+        model: {f"s01|ENV|5.0|{mode}|True": {"pause_db": -3.0} for mode in gate_eval.MODES}
+        for model in gate_eval.QUALIFY_MODELS
+    }}
+    monkeypatch.setattr(gate_eval, "rows_with_build", lambda *args: table)
+    monkeypatch.setattr(gate_eval, "rows", lambda *args: table)
+    monkeypatch.setattr(gate_eval, "_configure_deepfilter", lambda models: None)
+
+    with pytest.raises(RuntimeError, match="gate_spp"):
+        gate_eval.calibrate(tmp_path, tmp_path, {"fused": [1.0, 1.0, 0.0], "vad_only": [1.0, 0.0]})

@@ -291,6 +291,7 @@
     "voice_setup_eval_manifest_sha256": "569f3debce837922e9ea91f4487eb9bdd4cb5eca27c15d18a5e6174d800d7225",
     "users_per_model_per_split": 60
   },
+  "source_revision": "cc52e91731644e7dd1e18e4118033e47db010704",
   "source_sha256": {
     "python/tools/evaluate_voice_setup.py": "c7ac2ec418a97cb882e45bb1720eb52f0a7b490a7d1767aa6501c0fa64acd05b"
   },

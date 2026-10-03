@@ -10,8 +10,10 @@ frame evidence, the fitted soft-fusion model) decides from the setup capture.
 Audio: the evaluation capture is rendered through the native de-esser twice,
 with Voice Setup's recommended settings and with the factory settings, and
 the 5-9 kHz level change is measured on sibilant frames and on other voiced
-frames. Sibilant frames are labeled on the uncolored clean speech, where
-fricatives carry most of their energy above 4 kHz.
+frames. Both renders force the de-esser on, so they show what it does when
+enabled; ``enabled_rate`` says how often Voice Setup would enable it.
+Sibilant frames are labeled on the uncolored clean speech, where fricatives
+carry most of their energy above 4 kHz.
 """
 
 from __future__ import annotations
@@ -105,7 +107,7 @@ def _render(capture: np.ndarray, settings: dict[str, Any]) -> np.ndarray:
     from mic_eq.mic_eq_core import simulate_auto_eq_chain
 
     chain = {f"deesser_{key}": value for key, value in settings.items()
-             if key in ("enabled", "auto_enabled", "auto_amount", "low_cut_hz", "high_cut_hz",
+             if key in ("auto_enabled", "auto_amount", "low_cut_hz", "high_cut_hz",
                         "threshold_db", "ratio", "attack_ms", "release_ms", "max_reduction_db")}
     chain |= {"deesser_enabled": True, "compressor_enabled": False, "limiter_enabled": False,
               "return_output_audio": True}
@@ -161,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--split", choices=harness.SPLITS, default="fit")
     parser.add_argument("--users", type=int, default=USERS)
-    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     jobs = [(args.split, index, condition) for index in range(args.users) for condition in CONDITIONS]

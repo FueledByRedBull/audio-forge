@@ -734,6 +734,7 @@
   ],
   "predefined_rule": "evaluate_gate_corpus.py module docstring",
   "schema_version": 1,
+  "source_revision": "cc52e91731644e7dd1e18e4118033e47db010704",
   "source_sha256": {
     "python/tools/_eval_common.py": "f6bccabedc531161d1577b1e807c30391bdfe291faf1fd0eba438729b7e006e0",
     "python/tools/evaluate_gate_corpus.py": "5416ef195a9c29c1bfac3f8100a24a565d48d2679f4ffcbc9dc8a7dd2a0a1c36"

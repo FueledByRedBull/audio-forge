@@ -293,13 +293,20 @@ def causal_control(probabilities: np.ndarray, sample_count: int) -> np.ndarray:
     return np.zeros(count, np.float32) if control is None else control
 
 
+_VAD_CONTROL: dict[bytes, np.ndarray] = {}
+
+
 def vad_control(noisy: np.ndarray) -> np.ndarray:
+    """Causal VAD control of a mixture; repeated renders of it (calibrate) reuse it."""
     from mic_eq import analyze_vad_probabilities
 
-    probabilities = np.asarray(
-        analyze_vad_probabilities(noisy.astype(np.float32), SAMPLE_RATE, 0.48), np.float32
-    )
-    return causal_control(probabilities, noisy.size)
+    key = hashlib.sha256(noisy.tobytes()).digest()
+    if key not in _VAD_CONTROL:
+        probabilities = np.asarray(
+            analyze_vad_probabilities(noisy.astype(np.float32), SAMPLE_RATE, 0.48), np.float32
+        )
+        _VAD_CONTROL[key] = causal_control(probabilities, noisy.size)
+    return _VAD_CONTROL[key]
 
 
 def _frame_labels(labels: np.ndarray) -> np.ndarray:
@@ -426,15 +433,22 @@ def calibrate(root: Path, incumbent: Path, weights: dict[str, list[float]]) -> d
 
     def match(model: str, mode: int) -> float:
         low, high = -6.0, 6.0
+        pauses = set()
         for _ in range(9):
             bias = 0.5 * (low + high)
             models = {"vad_assisted": [fused[0], fused[1], bias], "vad_only": [vad_only[0], 0.0, bias]}
             table = rows(root, "train", [model], 1, [(mode, True)], models)["rows"][model]
+            pauses.add(_mean_pause(table, mode))
             # A higher bias opens the gate more and makes pauses louder.
             if _mean_pause(table, mode) > _mean_pause(target["rows"][model], mode):
                 high = bias
             else:
                 low = bias
+        if len(pauses) == 1:
+            # The simulator ignores settings it does not know.
+            raise RuntimeError(
+                "the build ignores the gate_spp_* overrides; pass the speech-presence candidate with --build"
+            )
         return 0.5 * (low + high)
 
     _configure_deepfilter(list(QUALIFY_MODELS))
@@ -522,6 +536,7 @@ def qualify(root: Path, incumbent: Path, candidate: Path) -> dict[str, Any]:
     comparison = compare_rows(old, new)
     deltas, means, verdict = comparison["deltas"], comparison["means"], comparison["verdict"]
     manifest = root / "manifest.json"
+    train, test = split(root)
     tools = ("python/tools/evaluate_gate_corpus.py", "python/tools/_eval_common.py")
     candidate_sources = ("rust-core/src/dsp/gate.rs", "rust-core/src/dsp/vad.rs")
     return {
@@ -531,9 +546,9 @@ def qualify(root: Path, incumbent: Path, candidate: Path) -> dict[str, Any]:
         "decision": {name: "adopt" if v["adopt"] else "retain_incumbent" for name, v in verdict.items()},
         "predefined_rule": "evaluate_gate_corpus.py module docstring",
         "corpus": {
-            "manifest_sha256": _sha256(manifest), "speakers_train_test": [12, 12],
+            "manifest_sha256": _sha256(manifest), "speakers_train_test": [len(train), len(test)],
             "environments": list(DEMAND_ENVIRONMENTS), "snr_db": list(SNRS_DB),
-            "held_out_mixtures": 72,
+            "held_out_mixtures": len({key.rsplit("|", 2)[0] for key in new["rows"][QUALIFY_MODELS[0]]}),
         },
         "evaluation_contract": {
             "configuration": GATE_SETTINGS | {

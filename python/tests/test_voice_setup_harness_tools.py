@@ -86,3 +86,11 @@ def test_report_counts_harm_and_missed_improvement():
     assert summary["harmed"][0] == 1.0
     assert summary["missed"][0] == 1.0
     assert summary["improved"][0] == 0.0
+
+
+def test_finished_run_removes_its_resume_file(tmp_path):
+    output = tmp_path / "rows.json"
+
+    assert harness.main(["run", "--users", "0", "--workers", "1", "--output", str(output)]) == 0
+
+    assert [path.name for path in tmp_path.iterdir()] == ["rows.json"]

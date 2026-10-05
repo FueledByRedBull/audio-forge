@@ -144,10 +144,10 @@ cargo audit
   process-boundary findings) by hand in the SARIF.
 - **RustSec:** `cargo audit` must be clean for the application lockfile; never
   add an ignore just to release. The separate
-  `build-support/deepfilter/Cargo.lock` graph is pinned to the upstream
-  recipe, so unmaintained-crate notices there are printed without blocking;
-  vulnerabilities, unsound crates and yanked crates still block. CI runs the
-  same audit, so a new finding shows up on a pull request, not at release time.
+  `build-support/deepfilter/Cargo.lock` graph ignores only three reviewed
+  unmaintained-crate notices (`RUSTSEC-2024-0436`, `RUSTSEC-2024-0370`,
+  `RUSTSEC-2026-0319`); vulnerabilities there still block. CI runs the same
+  audit, so a new notice shows up on a pull request, not at release time.
 - **Python:** install `requirements/dev.txt` with `--require-hashes`; never
   release from an environment resolved from open `pyproject.toml` ranges.
   Neither the runtime nor the development audit has ignores; Semgrep 1.179.0

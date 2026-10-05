@@ -344,6 +344,7 @@ def _check_required_gates(
     if name == "release-package.yml":
         required += (
             "python/tools/check_versions.py",
+            "PYTHONPATH: ${{ github.workspace }}\\.venv\\Lib\\site-packages;${{ github.workspace }}\\python",
             "python/tools/package_smoke.py --source-only",
             "python/tools/verify_release_assets.py",
             "powershell -ExecutionPolicy Bypass -File .\\build_exe.ps1",

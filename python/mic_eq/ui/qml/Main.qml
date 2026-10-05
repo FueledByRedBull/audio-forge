@@ -381,6 +381,7 @@ Rectangle {
         property string hint: proxy ? proxy.toolTip : ""
         visible: root.t.iconFont !== ""
         enabled: proxy ? proxy.enabled : true
+        opacity: enabled ? 1 : 0.4
         implicitWidth: 30
         implicitHeight: 30
         onClicked: if (proxy) root.press(this, proxy)
@@ -707,6 +708,19 @@ Rectangle {
         contentHeight: column.implicitHeight + 24
         boundsBehavior: Flickable.StopAtBounds
         clip: true
+        // Keep the control that has keyboard focus on screen.
+        readonly property Item focusItem: Window.activeFocusItem
+        onFocusItemChanged: {
+            var item = focusItem
+            for (var p = item; p && p !== column; p = p.parent) {}
+            if (!visible || !p)
+                return
+            var top = item.mapToItem(contentItem, 0, 0).y
+            if (top < contentY + 12)
+                contentY = Math.max(0, top - 12)
+            else if (top + item.height > contentY + height - 12)
+                contentY = Math.min(contentHeight - height, top + item.height - height + 12)
+        }
         ScrollBar.vertical: ScrollBar {
             id: bar
             policy: page.contentHeight > page.height ? ScrollBar.AlwaysOn : ScrollBar.AlwaysOff
@@ -949,7 +963,11 @@ Rectangle {
                         }
                     }
                     Btn { proxy: root.m.presets.menu }
-                    Btn { proxy: root.m.presets.undo }
+                    IconBtn { proxy: root.m.presets.undo; glyph: root.m.glyphs.undo }
+                    IconBtn { proxy: root.m.presets.redo; glyph: root.m.glyphs.redo }
+                    // Without a system icon font the two are spelled out.
+                    Btn { proxy: root.m.presets.undo; visible: root.t.iconFont === "" }
+                    Btn { proxy: root.m.presets.redo; visible: root.t.iconFont === "" }
                     Btn { proxy: root.m.presets.testSound }
                     Btn { proxy: root.m.presets.autoEq }
                     Btn { proxy: root.m.presets.voiceSetup; look: "primary" }

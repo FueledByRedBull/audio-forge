@@ -503,6 +503,11 @@ class MainWindow(QMainWindow):
         self.nav_group.button(index).setChecked(True)
         with QSignalBlocker(self.health_details_button):
             self.health_details_button.setChecked(index == self.HEALTH_PAGE_INDEX)
+        # The shortcut can be removed or disabled outside the app.
+        if self.page_stack.widget(index) is self.settings_page and hasattr(
+            self, "_login_startup_action"
+        ):
+            self._refresh_login_startup_action()
 
     def _build_top_bar(self) -> QFrame:
         bar = QFrame()
@@ -612,6 +617,10 @@ class MainWindow(QMainWindow):
             "Undo the most recent processing-configuration edit (Ctrl+Z)"
         )
         self._undo_auto_eq_button.clicked.connect(self.undo_configuration)
+        self.redo_button = QPushButton("Redo")
+        self.redo_button.setEnabled(False)
+        self.redo_button.setToolTip("Redo the edit that was just undone (Ctrl+Shift+Z)")
+        self.redo_button.clicked.connect(self.redo_configuration)
 
         self.auto_eq_button = QPushButton("Auto-EQ")
         self.auto_eq_button.setToolTip(
@@ -644,6 +653,7 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.preset_status_label, stretch=1)
         actions.addWidget(self.presets_button)
         actions.addWidget(self._undo_auto_eq_button)
+        actions.addWidget(self.redo_button)
         actions.addWidget(self.test_sound_button)
         actions.addWidget(self.auto_eq_button)
         actions.addWidget(self.auto_voice_setup_button)
@@ -1886,6 +1896,8 @@ class MainWindow(QMainWindow):
         self._login_startup_action.setChecked(state == "configured")
         self._login_startup_action.setEnabled(packaged and state in {"absent", "configured"})
         self._login_startup_action.blockSignals(False)
+        # The Settings row follows changed(), which the block suppressed.
+        self._login_startup_action.changed.emit()
         messages = {
             "absent": "No login shortcut configured",
             "configured": "Shortcut configured; Windows may disable it",
@@ -2009,6 +2021,8 @@ class MainWindow(QMainWindow):
                 self._close_to_tray_action.blockSignals(True)
                 self._close_to_tray_action.setChecked(False)
                 self._close_to_tray_action.blockSignals(False)
+                # The Settings row follows changed(), which the block suppressed.
+                self._close_to_tray_action.changed.emit()
             return
 
         if self._close_to_tray_action is not None:
@@ -2016,6 +2030,8 @@ class MainWindow(QMainWindow):
             self._close_to_tray_action.blockSignals(True)
             self._close_to_tray_action.setChecked(bool(self.config.close_to_tray))
             self._close_to_tray_action.blockSignals(False)
+            # The Settings row follows changed(), which the block suppressed.
+            self._close_to_tray_action.changed.emit()
 
         icon = self.windowIcon()
         if icon.isNull() and isinstance(app, QGuiApplication):
@@ -2101,6 +2117,8 @@ class MainWindow(QMainWindow):
                 self._mute_hotkey_action.blockSignals(True)
                 self._mute_hotkey_action.setChecked(False)
                 self._mute_hotkey_action.blockSignals(False)
+                # The Settings row follows changed(), which the block suppressed.
+                self._mute_hotkey_action.changed.emit()
             self.status_bar.showMessage(
                 f"Global mute shortcut unavailable: {error}",
                 8000,
@@ -3466,6 +3484,7 @@ class MainWindow(QMainWindow):
         if self._redo_action is not None:
             self._redo_action.setEnabled(history.can_redo)
             self._redo_action.setText(f"&Redo {redo_label}" if redo_label else "&Redo")
+        self.redo_button.setEnabled(history.can_redo)
         if self._undo_auto_eq_button is not None:
             self._undo_auto_eq_button.setEnabled(history.can_undo)
             self._undo_auto_eq_button.setToolTip(

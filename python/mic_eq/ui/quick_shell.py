@@ -162,6 +162,8 @@ class WidgetProxy(QObject):
         target = self.target
         if isinstance(target, QWidget) and "update" not in target.__dict__:
             original = target.update
+            # WidgetItem pins the widget to the item's size; kept for unwatch.
+            self._size_limits = (target.minimumSize(), target.maximumSize())
 
             def update(*args) -> None:
                 original(*args)
@@ -170,7 +172,10 @@ class WidgetProxy(QObject):
             target.update = update  # type: ignore[method-assign]
 
     def unwatch_repaints(self) -> None:
-        self.target.__dict__.pop("update", None)
+        target = self.target
+        if target.__dict__.pop("update", None) is not None and isinstance(target, QWidget):
+            target.setMinimumSize(self._size_limits[0])
+            target.setMaximumSize(self._size_limits[1])
 
     def refresh(self) -> None:
         state = self._read()
@@ -204,6 +209,9 @@ class WidgetProxy(QObject):
         elif isinstance(target, (QSlider, QSpinBox)):
             target.setValue(round(value))
         self.refresh()
+        # The scene control already moved; make it read back even when the
+        # widget clamped or refused the value and nothing changed here.
+        self.changed.emit()
 
     @Slot(str)
     def setText(self, text: str) -> None:
@@ -235,6 +243,7 @@ class WidgetProxy(QObject):
         if isinstance(target, (QComboBox, QStackedWidget)):
             target.setCurrentIndex(index)
         self.refresh()
+        self.changed.emit()
 
     @Slot()
     def click(self) -> None:
@@ -398,6 +407,13 @@ class QuickBridge(QObject):
             self._trace_timer.start()
 
     model = Property(dict, lambda self: self._model, constant=True)
+
+    def release(self) -> None:
+        """Give the widgets back to the widget view and go away."""
+
+        for proxy in self._proxies:
+            proxy.unwatch_repaints()
+        self.deleteLater()
 
     def refresh(self) -> None:
         if self._window.isVisible() and not self._window.isMinimized():
@@ -620,6 +636,8 @@ class QuickBridge(QObject):
                 "next": Glyph.NEXT,
                 "expand": Glyph.EXPAND,
                 "refresh": Glyph.REFRESH,
+                "undo": Glyph.UNDO,
+                "redo": Glyph.REDO,
             },
             "page": self._proxy(w.page_stack),
             "healthPage": w.HEALTH_PAGE_INDEX,
@@ -646,6 +664,7 @@ class QuickBridge(QObject):
                 ),
                 "menu": self._proxy(w.presets_button),
                 "undo": self._proxy(w._undo_auto_eq_button),
+                "redo": self._proxy(w.redo_button),
                 "testSound": self._proxy(w.test_sound_button),
                 "autoEq": self._proxy(w.auto_eq_button),
                 "voiceSetup": self._proxy(w.auto_voice_setup_button),
@@ -727,7 +746,7 @@ def install_quick_shell(window) -> bool:
             "; ".join(error.toString() for error in view.errors()),
         )
         view.deleteLater()
-        bridge.deleteLater()
+        bridge.release()
         _announce_fallback(window)
         return False
 
@@ -767,8 +786,6 @@ def restore_widget_shell(window, reason: str) -> None:
     if bridge is None:
         return
     _LOG.error("Qt Quick view stopped rendering: %s", reason)
-    for proxy in bridge._proxies:
-        proxy.unwatch_repaints()
     shell = window.__dict__.pop("widget_shell")
     view = window.takeCentralWidget()
     shell.hide()
@@ -779,4 +796,4 @@ def restore_widget_shell(window, reason: str) -> None:
     window.statusBar().show()
     _announce_fallback(window)
     view.deleteLater()
-    bridge.deleteLater()
+    bridge.release()

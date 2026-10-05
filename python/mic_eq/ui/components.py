@@ -46,6 +46,8 @@ class Glyph:
     NEXT = ""
     EXPAND = ""
     REFRESH = ""
+    UNDO = ""
+    REDO = ""
 
 
 # Short stand-ins for machines without a system icon font.

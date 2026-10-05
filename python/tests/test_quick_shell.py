@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QEvent, QPointF, Qt, qInstallMessageHandler
+from PySide6.QtCore import QEvent, QPointF, QSignalBlocker, Qt, qInstallMessageHandler
 from PySide6.QtGui import QImage, QMouseEvent, QPainter
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import QLabel
@@ -277,3 +277,91 @@ def test_scene_gets_structured_values_instead_of_parsing_labels(quick_window) ->
         "Drops",
         "Recovery",
     ]
+
+
+def _settings_row(window, text: str):
+    cards = window.quick_bridge.model["settings"]["cards"]
+    return next(
+        row["proxy"] for card in cards for row in card["rows"] if row["proxy"].text.startswith(text)
+    )
+
+
+def test_settings_switch_follows_an_action_the_window_corrects_silently(
+    quick_window, monkeypatch
+) -> None:
+    """A refused global shortcut unchecks its action with signals blocked."""
+
+    monkeypatch.setattr(
+        "mic_eq.ui.main_window.GlobalMuteHotkey.register", lambda _self: (False, "in use")
+    )
+    action = quick_window._mute_hotkey_action
+    row = _settings_row(quick_window, "Enable global mute shortcut")
+    with QSignalBlocker(action):
+        action.setChecked(True)
+    action.changed.emit()
+    quick_window.quick_bridge.refresh()
+    assert row.checked
+
+    assert not quick_window._register_mute_hotkey("Ctrl+Alt+M")
+    quick_window.quick_bridge.refresh()
+    assert not action.isChecked()
+    assert not row.checked
+
+
+def test_scene_control_is_told_to_read_back_a_choice_the_widget_refused(quick_window) -> None:
+    mode = quick_window.quick_bridge.model["top"]["mode"]
+    combo = quick_window.processing_mode_combo
+    # The handler puts the old entry back, as a failed backend switch does.
+    combo.currentIndexChanged.connect(
+        lambda _index: (combo.blockSignals(True), combo.setCurrentIndex(0), combo.blockSignals(False))
+    )
+    notified: list[bool] = []
+    mode.changed.connect(lambda: notified.append(True))
+    mode.setIndex(1)
+    assert combo.currentIndex() == 0 and mode.index == 0
+    assert notified
+
+
+def test_redo_button_follows_the_history(quick_window) -> None:
+    redo = quick_window.quick_bridge.model["presets"]["redo"]
+    assert not quick_window.redo_button.isEnabled()
+    quick_window.gate_panel.enabled_checkbox.click()
+    quick_window.undo_configuration()
+    assert quick_window.redo_button.isEnabled() == quick_window._redo_action.isEnabled()
+    assert quick_window.redo_button.isEnabled()
+    quick_window.quick_bridge.refresh()
+    assert redo.enabled
+
+
+def test_keyboard_focus_scrolls_its_control_into_view(quick_window, qapp) -> None:
+    quick_window.resize(900, 600)
+    quick_window.activateWindow()
+    view = quick_window.centralWidget()
+    view.setFocus()
+    qapp.processEvents()
+    limiter = quick_window.quick_bridge.model["stages"][-1]
+    toggle = _find(view.rootObject(), "Toggle", limiter["toggle"])
+    assert toggle is not None
+    page = toggle
+    while page is not None and page.property("contentY") is None:
+        page = page.parentItem()
+    assert page is not None and page.property("contentY") == 0
+    toggle.forceActiveFocus()
+    qapp.processEvents()
+    assert page.property("contentY") > 0
+
+
+def test_fallback_gives_painted_widgets_their_size_limits_back(quick_window) -> None:
+    curve = quick_window.eq_panel.curve_widget
+    item = WidgetItem()
+    item.setWidth(640)
+    item.setHeight(200)
+    item.proxy = quick_window.quick_bridge.model["eq"]["curve"]
+    image = QImage(640, 200, QImage.Format.Format_ARGB32_Premultiplied)
+    painter = QPainter(image)
+    item.paint(painter)
+    painter.end()
+    assert curve.minimumWidth() == curve.maximumWidth() == 640
+    restore_widget_shell(quick_window, "no graphics adapter")
+    # Free to follow the window width again, as in the widget view.
+    assert curve.minimumWidth() < 640 < curve.maximumWidth()

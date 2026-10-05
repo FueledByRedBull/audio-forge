@@ -8,9 +8,9 @@ from typing import Any
 
 import numpy as np
 import pytest
-from PyQt6.QtTest import QSignalSpy
-from PyQt6.QtCore import QElapsedTimer
-from PyQt6.QtWidgets import QDialog
+from PySide6.QtTest import QSignalSpy
+from PySide6.QtCore import QElapsedTimer, QEventLoop, QThread, QTimer
+from PySide6.QtWidgets import QDialog
 
 from mic_eq.analysis.voice_setup import analyze_voice_setup
 from mic_eq.config import load_preset
@@ -173,7 +173,7 @@ def _apply_complete_candidate(
 
 
 def test_accepted_full_voice_setup_is_one_undo_transaction(
-    real_main_window, monkeypatch
+    real_main_window, monkeypatch, qapp
 ) -> None:
     window = real_main_window
     before = window._get_current_preset().to_dict()
@@ -204,11 +204,30 @@ def test_accepted_full_voice_setup_is_one_undo_transaction(
             lambda *_args, **_kwargs: {'decision': 'accept'},
         )
         accepted = QSignalSpy(dialog.setup_applied)
+        result_on_gui_thread = []
+        original_complete = dialog._on_verification_complete
+
+        def record_result_thread(*args):
+            result_on_gui_thread.append(QThread.currentThread() == qapp.thread())
+            original_complete(*args)
+
+        monkeypatch.setattr(dialog, "_on_verification_complete", record_result_thread)
         dialog._complete_verification(speech)
         verification_worker = dialog.analysis_worker
         assert verification_worker is not None
-        finished = QSignalSpy(verification_worker.finished)
-        assert finished.wait(30_000)
+        # Run the same Qt event loop as the application; QSignalSpy.wait can
+        # block a Python QThread body in PySide rather than yield to it.
+        loop = QEventLoop()
+        deadline = QTimer(loop)
+        deadline.setSingleShot(True)
+        deadline.timeout.connect(loop.quit)
+        verification_worker.finished.connect(loop.quit)
+        if verification_worker.isRunning():
+            deadline.start(30_000)
+            loop.exec()
+        deadline.stop()
+        qapp.processEvents()
+        assert result_on_gui_thread == [True]
         assert dialog.setup_state == "final_comparison_ready"
 
         class _AcceptedComparison:
@@ -226,7 +245,7 @@ def test_accepted_full_voice_setup_is_one_undo_transaction(
             _AcceptedComparison,
         )
         dialog._on_start_clicked()
-        assert len(accepted) == 1
+        assert accepted.count() == 1
         assert len(window.config.calibration_results) == 1
         accepted_message = information_messages[-1].casefold()
         assert "accepted" in accepted_message

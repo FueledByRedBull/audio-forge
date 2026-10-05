@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import os
 import sys
 
-from PyQt6.QtGui import QColor, QPalette
+from PySide6.QtGui import QColor, QPalette
 
 
 @dataclass(frozen=True)

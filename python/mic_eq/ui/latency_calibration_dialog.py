@@ -10,8 +10,8 @@ from math import gcd
 from typing import Any
 
 import numpy as np
-from PyQt6.QtCore import QThread, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QThread, QTimer, Signal
+from PySide6.QtWidgets import (
     QDialog,
     QGridLayout,
     QGroupBox,
@@ -90,8 +90,8 @@ def engine_config_signature(processor: Any) -> str:
 class LatencyCalibrationWorker(QThread):
     """Background worker for CPU-only latency analysis."""
 
-    result_ready = pyqtSignal(dict)
-    failed = pyqtSignal(str)
+    result_ready = Signal(dict)
+    failed = Signal(str)
 
     def __init__(
         self,
@@ -155,8 +155,8 @@ class LatencyCalibrationWorker(QThread):
 class LatencyCalibrationDialog(QDialog):
     """Dialog that runs and applies latency calibration."""
 
-    calibration_saved = pyqtSignal(dict)
-    calibration_reset = pyqtSignal()
+    calibration_saved = Signal(dict)
+    calibration_reset = Signal()
 
     def __init__(self, parent=None, existing_profile: dict | None = None):
         super().__init__(parent)

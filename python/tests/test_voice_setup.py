@@ -13,8 +13,9 @@ import pytest
 import mic_eq
 from mic_eq.analysis import voice_setup as voice_setup_module
 from mic_eq.analysis import vad as vad_analysis
+from mic_eq.analysis.compressor_calibration import _COMPRESSOR_SEARCH_BUDGET
+from tools.evaluate_compressor_search import _calibrate_compressor_expanded
 from mic_eq.analysis.voice_setup import (
-    _COMPRESSOR_SEARCH_BUDGET,
     _calibrate_compressor_threshold,
     _recommend_compressor_settings,
     _recommend_gate_settings,
@@ -499,7 +500,7 @@ def test_expanded_compressor_search_is_bounded_deterministic_and_improves(
         }
 
     monkeypatch.setattr(
-        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        "mic_eq.analysis.compressor_calibration.simulate_candidate_chain",
         fake_simulation,
     )
     compressor = {
@@ -519,7 +520,7 @@ def test_expanded_compressor_search_is_bounded_deterministic_and_improves(
     }
 
     def run_search():
-        return _calibrate_compressor_threshold(
+        return _calibrate_compressor_expanded(
             speech_audio=np.zeros(4800, dtype=np.float32),
             sample_rate=48000,
             eq_settings=eq,
@@ -528,7 +529,6 @@ def test_expanded_compressor_search_is_bounded_deterministic_and_improves(
             target_p95_db=3.5,
             target_median_db=1.4,
             peak_cap_db=8.0,
-            allow_expanded_search=True,
         )
 
     first, first_diag = run_search()
@@ -569,7 +569,12 @@ def test_compressor_target_miss_alone_blocks_recommendation(monkeypatch):
     monkeypatch.setattr(
         voice_setup_module,
         "tune_gate_suppression_dynamics",
-        lambda *_args, **_kwargs: {"status": "retained", "apply_recommended": False},
+        lambda *args, **_kwargs: {
+            "status": "accepted",
+            "apply_recommended": True,
+            "gate_settings": dict(args[3]),
+            "suppressor_settings": {"enabled": True, "strength": 0.75, "model": "rnnoise"},
+        },
     )
 
     def fake_calibration(**kwargs):
@@ -624,6 +629,8 @@ def test_compressor_target_miss_alone_blocks_recommendation(monkeypatch):
         raw_speech_audio=speech,
     )
     assert missed["diagnostics"]["weak_capture"] is False
+    assert missed["diagnostics"]["joint_tuning"]["apply_recommended"] is True
+    assert missed["suppressor_settings"]["strength"] == 0.75
     assert missed["eq_settings"]["apply_recommended"] is True
     assert missed["diagnostics"]["offline_validation_passed"] is True
     assert missed["diagnostics"]["compressor_calibration"]["target_p95_met"] is False
@@ -693,7 +700,7 @@ def test_production_compressor_search_keeps_nonthreshold_controls(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        "mic_eq.analysis.compressor_calibration.simulate_candidate_chain",
         fake_simulation,
     )
     compressor = {
@@ -739,6 +746,31 @@ def test_production_compressor_search_keeps_nonthreshold_controls(monkeypatch):
     assert diagnostics["expanded_candidate_objective"] is None
 
 
+def test_production_compressor_calibration_cannot_enable_expanded_search(monkeypatch):
+    monkeypatch.setattr(
+        "mic_eq.analysis.compressor_calibration.simulate_candidate_chain",
+        lambda *_args: {"simulation_backend": "unavailable"},
+    )
+    unqualified_option: dict[str, Any] = {"allow_expanded_search": True}
+    with pytest.raises(TypeError, match="allow_expanded_search"):
+        _calibrate_compressor_threshold(
+            speech_audio=np.zeros(4800, dtype=np.float32),
+            sample_rate=48_000,
+            eq_settings={},
+            deesser_settings={"enabled": False},
+            compressor_settings={
+                "threshold_db": -24.0,
+                "ratio": 3.0,
+                "attack_ms": 10.0,
+                "release_ms": 180.0,
+            },
+            target_p95_db=3.5,
+            target_median_db=1.4,
+            peak_cap_db=8.0,
+            **unqualified_option,
+        )
+
+
 def test_compressor_search_requires_measured_quiet_level(monkeypatch):
     all_quiet_unavailable = False
 
@@ -764,7 +796,7 @@ def test_compressor_search_requires_measured_quiet_level(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        "mic_eq.analysis.compressor_calibration.simulate_candidate_chain",
         fake_simulation,
     )
     compressor = {
@@ -835,7 +867,7 @@ def test_compressor_search_evaluator_keeps_unmeasurable_capture_failed(
     )
     monkeypatch.setattr(
         evaluate_compressor_search,
-        "_calibrate_compressor_threshold",
+        "_calibrate_compressor_expanded",
         lambda **_kwargs: (
             dict(evaluate_compressor_search.INCUMBENT),
             {
@@ -886,7 +918,7 @@ def test_expanded_compressor_search_keeps_safe_profile_on_effective_tie(
         }
 
     monkeypatch.setattr(
-        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        "mic_eq.analysis.compressor_calibration.simulate_candidate_chain",
         tied_simulation,
     )
     compressor = {
@@ -899,7 +931,7 @@ def test_expanded_compressor_search_keeps_safe_profile_on_effective_tie(
         "target_lufs": -18.0,
         "measured_short_term_lufs": -22.0,
     }
-    calibrated, diagnostics = _calibrate_compressor_threshold(
+    calibrated, diagnostics = _calibrate_compressor_expanded(
         speech_audio=np.zeros(4800, dtype=np.float32),
         sample_rate=48000,
         eq_settings={
@@ -912,7 +944,6 @@ def test_expanded_compressor_search_keeps_safe_profile_on_effective_tie(
         target_p95_db=3.5,
         target_median_db=1.4,
         peak_cap_db=8.0,
-        allow_expanded_search=True,
     )
 
     assert diagnostics["expanded_search_selected"] is False
@@ -944,7 +975,7 @@ def test_compressor_calibration_uses_one_limiter_configuration(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        "mic_eq.analysis.compressor_calibration.simulate_candidate_chain",
         fake_simulation,
     )
     limiter = {
@@ -1330,7 +1361,7 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
         assert entered.wait(2.0)
         # Deliver an event while verification is blocked, then close cooperatively.
         events = []
-        from PyQt6.QtCore import QTimer
+        from PySide6.QtCore import QTimer
         QTimer.singleShot(0, lambda: events.append("responsive"))
         qapp.processEvents()
         assert events == ["responsive"]
@@ -1520,10 +1551,10 @@ def test_expanded_compressor_search_handles_no_safe_threshold_only_candidate(
         }
 
     monkeypatch.setattr(
-        "mic_eq.analysis.voice_setup.simulate_candidate_chain",
+        "mic_eq.analysis.compressor_calibration.simulate_candidate_chain",
         simulation_with_rejected_threshold_only,
     )
-    calibrated, diagnostics = _calibrate_compressor_threshold(
+    calibrated, diagnostics = _calibrate_compressor_expanded(
         speech_audio=np.zeros(4800, dtype=np.float32),
         sample_rate=48000,
         eq_settings={
@@ -1543,7 +1574,6 @@ def test_expanded_compressor_search_handles_no_safe_threshold_only_candidate(
         target_p95_db=3.5,
         target_median_db=1.4,
         peak_cap_db=8.0,
-        allow_expanded_search=True,
     )
 
     assert diagnostics["expanded_search_selected"] is True

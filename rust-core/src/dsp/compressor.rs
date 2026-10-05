@@ -4,24 +4,15 @@
 
 use crate::dsp::util;
 
+mod makeup;
+use makeup::MakeupController;
+
 const DETECTOR_PEAK_WEIGHT: f64 = 0.6;
 const DETECTOR_RMS_WEIGHT: f64 = 0.4;
 const ADAPTIVE_FAST_RELEASE_MS: f64 = 50.0;
 const ADAPTIVE_SLOW_CHARGE_MS: f64 = 250.0;
 const ADAPTIVE_SLOW_RELEASE_MS: f64 = 400.0;
 const SLOW_RELEASE_TRIGGER_DB: f64 = 3.0;
-const SPEECH_ACTIVE_RMS_MIN_DB: f64 = -55.0;
-const SPEECH_ACTIVE_RMS_MAX_DB: f64 = -6.0;
-const AUTO_MAKEUP_ACTIVE_MIN: f64 = 0.20;
-const AUTO_MAKEUP_RELIABILITY_MIN: f64 = 0.35;
-const AUTO_MAKEUP_ACTIVITY_SMOOTH_MS: f64 = 200.0;
-const NOISE_RELATIVE_ACTIVITY_START_DB: f64 = 3.0;
-const NOISE_RELATIVE_ACTIVITY_FULL_DB: f64 = 15.0;
-const MAKEUP_SILENCE_RELAX_MS: f64 = 1500.0;
-const AUTO_MAKEUP_SAMPLE_WINDOW_MS: f64 = 10.0;
-// Compressor callers accept generic rates through 192 kHz; reserve the full
-// 10 ms window at that rate even when the optional loudness meter is absent.
-const AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES: usize = 1_920;
 const SIDECHAIN_HIGHPASS_DEFAULT_HZ: f64 = 120.0;
 const SIDECHAIN_BAND_ENV_MS: f64 = 18.0;
 const PRESENCE_HIGHPASS_HZ: f64 = 2_000.0;
@@ -47,12 +38,6 @@ pub struct AutoMakeupActivityInput {
     pub live_noise_reliability: f64,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct AutoMakeupActivityEstimate {
-    activity: f64,
-    reliability: f64,
-}
-
 /// Downward compressor with soft-knee gain reduction
 pub struct Compressor {
     /// Threshold in dB - compression starts above this level
@@ -69,8 +54,6 @@ pub struct Compressor {
     adaptive_slow_release_coeff: f64,
     /// Fixed smoothing coefficient for sidechain-band energy measurements.
     sidechain_band_env_coeff: f64,
-    /// Makeup gain in dB to compensate for gain reduction
-    makeup_gain_db: f64,
     /// Knee width in dB for soft-knee transition
     knee_db: f64,
     /// Instant-attack peak capture with fixed-time amplitude release smoothing.
@@ -109,36 +92,8 @@ pub struct Compressor {
     fast_release_env_db: f64,
     /// Slow adaptive release envelope in dB.
     slow_release_env_db: f64,
-    /// Loudness meter for auto makeup gain
-    loudness_meter: Option<crate::dsp::loudness::LoudnessMeter>,
-    /// Fixed storage for the sample API's auto-makeup control window.
-    auto_makeup_sample_window: [f32; AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES],
-    /// Number of output samples currently held for the sample API window.
-    auto_makeup_sample_window_len: usize,
-    /// Sum of per-sample activity evidence in the current sample window.
-    auto_makeup_sample_activity_sum: f64,
-    /// Number of samples in one sample API auto-makeup control window.
-    auto_makeup_sample_window_samples: usize,
-    /// Auto makeup gain enabled
-    auto_makeup_enabled: bool,
-    /// Target LUFS for auto makeup gain
-    target_lufs: f64,
-    /// Smoothed makeup gain (for transitions)
-    smoothed_makeup_gain: f64,
-    /// Makeup gain smoothing coefficient (200ms time constant)
-    makeup_smoothing_coeff: f64,
-    /// Current measured loudness (for metering)
-    current_lufs: f64,
-    /// Smoothed speech activity score for auto makeup.
-    speech_activity_score: f64,
-    /// Speech-activity smoothing coefficient, expressed per sample.
-    speech_activity_smoothing_coeff: f64,
-    /// Reliability of the most recent auto-makeup activity estimate.
-    auto_makeup_activity_reliability: f64,
-    /// Reliability of the room-noise reference supplied by Auto Voice Setup.
-    noise_reference_reliability: f64,
-    /// Slow relaxation coefficient used when auto makeup sees silence/noise.
-    makeup_silence_relax_coeff: f64,
+    /// Slow loudness and makeup-gain controller.
+    makeup: MakeupController,
     /// Whether the detector sidechain ignores most plosive/rumble energy.
     sidechain_highpass_enabled: bool,
     /// Sidechain high-pass coefficient.
@@ -162,8 +117,6 @@ pub struct Compressor {
     non_presence_band_env_sq: f64,
     /// Smoothed low/voiced ratio exposed for diagnostics and tests.
     plosive_ratio: f64,
-    /// Previous limiter pressure used to keep auto makeup inside headroom.
-    limiter_feedback_gain_reduction_db: f64,
 }
 
 impl Compressor {
@@ -183,7 +136,6 @@ impl Compressor {
             util::time_constant_to_coeff(PEAK_DETECTOR_RELEASE_MS, sample_rate);
         let rms_coeff = util::time_constant_to_coeff(20.0, sample_rate);
         let release_smoothing_coeff = util::time_constant_to_coeff(100.0, sample_rate);
-        let makeup_smoothing_coeff = util::time_constant_to_coeff(200.0, sample_rate);
         let adaptive_fast_release_coeff =
             util::time_constant_to_coeff(ADAPTIVE_FAST_RELEASE_MS, sample_rate);
         let adaptive_slow_charge_coeff =
@@ -201,18 +153,10 @@ impl Compressor {
             1
         };
 
-        let loudness_meter = crate::dsp::loudness::LoudnessMeter::new(sample_rate as u32).ok();
         let enable_ramp_samples = if sample_rate.is_finite() && sample_rate > 0.0 {
             (sample_rate * ENABLE_TRANSITION_MS / 1_000.0)
                 .round()
                 .max(1.0) as usize
-        } else {
-            1
-        };
-        let auto_makeup_sample_window_samples = if sample_rate.is_finite() && sample_rate > 0.0 {
-            (sample_rate * AUTO_MAKEUP_SAMPLE_WINDOW_MS / 1_000.0)
-                .round()
-                .clamp(1.0, AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES as f64) as usize
         } else {
             1
         };
@@ -227,7 +171,6 @@ impl Compressor {
             adaptive_slow_charge_coeff,
             adaptive_slow_release_coeff,
             sidechain_band_env_coeff,
-            makeup_gain_db,
             knee_db: knee_db.max(0.0),
             peak_envelope: 0.0,
             rms_envelope_sq: 0.0,
@@ -247,27 +190,7 @@ impl Compressor {
             adaptive_release_coeff_samples_until_update: 1,
             fast_release_env_db: 0.0,
             slow_release_env_db: 0.0,
-            loudness_meter,
-            auto_makeup_sample_window: [0.0; AUTO_MAKEUP_SAMPLE_WINDOW_MAX_SAMPLES],
-            auto_makeup_sample_window_len: 0,
-            auto_makeup_sample_activity_sum: 0.0,
-            auto_makeup_sample_window_samples,
-            auto_makeup_enabled: false,
-            target_lufs: -18.0,
-            smoothed_makeup_gain: makeup_gain_db,
-            makeup_smoothing_coeff,
-            current_lufs: -100.0,
-            speech_activity_score: 0.0,
-            speech_activity_smoothing_coeff: util::time_constant_to_coeff(
-                AUTO_MAKEUP_ACTIVITY_SMOOTH_MS,
-                sample_rate,
-            ),
-            auto_makeup_activity_reliability: 0.0,
-            noise_reference_reliability: 0.0,
-            makeup_silence_relax_coeff: util::time_constant_to_coeff(
-                MAKEUP_SILENCE_RELAX_MS,
-                sample_rate,
-            ),
+            makeup: MakeupController::new(makeup_gain_db, sample_rate),
             sidechain_highpass_enabled: false,
             sidechain_highpass_coeff: Self::sidechain_highpass_coeff(
                 SIDECHAIN_HIGHPASS_DEFAULT_HZ,
@@ -286,7 +209,6 @@ impl Compressor {
             presence_band_env_sq: 0.0,
             non_presence_band_env_sq: 0.0,
             plosive_ratio: 0.0,
-            limiter_feedback_gain_reduction_db: 0.0,
         }
     }
 
@@ -400,7 +322,7 @@ impl Compressor {
 
     /// Set makeup gain in dB
     pub fn set_makeup_gain(&mut self, makeup_gain_db: f64) {
-        self.makeup_gain_db = makeup_gain_db;
+        self.makeup.set_makeup_gain(makeup_gain_db);
     }
 
     /// Enable or disable the compressor with a short gain ramp.
@@ -412,7 +334,7 @@ impl Compressor {
         }
         self.enabled = enabled;
         if !enabled {
-            self.clear_auto_makeup_sample_window();
+            self.makeup.clear_auto_makeup_sample_window();
         }
     }
 
@@ -447,57 +369,47 @@ impl Compressor {
 
     /// Enable or disable auto makeup gain
     pub fn set_auto_makeup_enabled(&mut self, enabled: bool) {
-        let enabled = enabled && self.loudness_meter.is_some();
-        if self.auto_makeup_enabled == enabled {
-            return;
-        }
-        self.auto_makeup_enabled = enabled;
-        if !enabled {
-            self.clear_auto_makeup_sample_window();
-        }
+        self.makeup.set_auto_makeup_enabled(enabled);
     }
 
     /// Check if auto makeup is enabled
     pub fn auto_makeup_enabled(&self) -> bool {
-        self.auto_makeup_enabled
+        self.makeup.auto_makeup_enabled()
     }
 
     /// Set target LUFS for auto makeup gain
     pub fn set_target_lufs(&mut self, target: f64) {
-        let target = target.clamp(-24.0, -12.0);
-        if self.target_lufs != target {
-            self.target_lufs = target;
-        }
+        self.makeup.set_target_lufs(target);
     }
 
     /// Get target LUFS
     pub fn target_lufs(&self) -> f64 {
-        self.target_lufs
+        self.makeup.target_lufs()
     }
 
     /// Get current measured loudness (for metering)
     pub fn current_lufs(&self) -> f64 {
-        self.current_lufs
+        self.makeup.current_lufs()
     }
 
     /// Get current applied makeup gain (for metering)
     pub fn current_makeup_gain(&self) -> f64 {
-        self.smoothed_makeup_gain
+        self.makeup.current_makeup_gain()
     }
 
     /// Set confidence in the room-noise reference used by auto makeup.
     pub fn set_noise_reference_reliability(&mut self, reliability: f64) {
-        self.noise_reference_reliability = Self::finite_unit(reliability).unwrap_or(0.0);
+        self.makeup.set_noise_reference_reliability(reliability);
     }
 
     /// Return the latest soft speech-activity estimate used by auto makeup.
     pub fn auto_makeup_activity(&self) -> f64 {
-        self.speech_activity_score
+        self.makeup.auto_makeup_activity()
     }
 
     /// Return the latest reliability attached to the auto-makeup estimate.
     pub fn auto_makeup_activity_reliability(&self) -> f64 {
-        self.auto_makeup_activity_reliability
+        self.makeup.auto_makeup_activity_reliability()
     }
 
     /// Enable or disable the detector sidechain high-pass.
@@ -521,7 +433,8 @@ impl Compressor {
     /// Feed previous limiter pressure into auto makeup so it does not chase
     /// loudness targets through unavailable headroom.
     pub fn set_limiter_feedback_gain_reduction_db(&mut self, gain_reduction_db: f64) {
-        self.limiter_feedback_gain_reduction_db = gain_reduction_db.clamp(0.0, 24.0);
+        self.makeup
+            .set_limiter_feedback_gain_reduction_db(gain_reduction_db);
     }
 
     #[inline]
@@ -681,162 +594,6 @@ impl Compressor {
             gr_coeff * self.current_gain_reduction_db + (1.0 - gr_coeff) * target_gain_reduction_db;
     }
 
-    fn speech_activity_from_rms_db(rms_db: f64) -> f64 {
-        if !(SPEECH_ACTIVE_RMS_MIN_DB..=SPEECH_ACTIVE_RMS_MAX_DB).contains(&rms_db) {
-            return 0.0;
-        }
-        let onset = ((rms_db - SPEECH_ACTIVE_RMS_MIN_DB) / 12.0).clamp(0.0, 1.0);
-        let overload = ((SPEECH_ACTIVE_RMS_MAX_DB - rms_db) / 6.0).clamp(0.0, 1.0);
-        onset.min(overload)
-    }
-
-    fn finite_unit(value: f64) -> Option<f64> {
-        value.is_finite().then(|| value.clamp(0.0, 1.0))
-    }
-
-    fn smoothstep(edge0: f64, edge1: f64, value: f64) -> f64 {
-        if !value.is_finite() || !edge0.is_finite() || !edge1.is_finite() || edge1 <= edge0 {
-            return 0.0;
-        }
-        let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
-        t * t * (3.0 - 2.0 * t)
-    }
-
-    fn estimate_auto_makeup_activity(
-        &self,
-        rms_db: f64,
-        evidence: Option<AutoMakeupActivityInput>,
-    ) -> AutoMakeupActivityEstimate {
-        let absolute_activity = Self::speech_activity_from_rms_db(rms_db);
-        let Some(evidence) = evidence else {
-            return AutoMakeupActivityEstimate {
-                activity: absolute_activity,
-                reliability: 1.0,
-            };
-        };
-
-        let mut vad_reliability = Self::finite_unit(evidence.vad_reliability).unwrap_or(0.0);
-        let vad_probability = match Self::finite_unit(evidence.vad_probability) {
-            Some(probability) => probability,
-            None => {
-                vad_reliability = 0.0;
-                0.0
-            }
-        };
-        let configured_noise_reliability =
-            Self::finite_unit(self.noise_reference_reliability).unwrap_or(0.0);
-        let live_noise_reliability =
-            Self::finite_unit(evidence.live_noise_reliability).unwrap_or(0.0);
-        let mut noise_reliability = if configured_noise_reliability > 0.0 {
-            live_noise_reliability.min(configured_noise_reliability)
-        } else {
-            live_noise_reliability
-        };
-        let relative_activity = if evidence.noise_floor_db.is_finite()
-            && (-120.0..=0.0).contains(&evidence.noise_floor_db)
-        {
-            Self::smoothstep(
-                evidence.noise_floor_db + NOISE_RELATIVE_ACTIVITY_START_DB,
-                evidence.noise_floor_db + NOISE_RELATIVE_ACTIVITY_FULL_DB,
-                rms_db,
-            )
-        } else {
-            noise_reliability = 0.0;
-            0.0
-        };
-
-        let fallback_activity =
-            noise_reliability * relative_activity + (1.0 - noise_reliability) * absolute_activity;
-        let activity =
-            vad_reliability * vad_probability + (1.0 - vad_reliability) * fallback_activity;
-        let reliability = vad_reliability.max(0.75 * noise_reliability);
-
-        AutoMakeupActivityEstimate {
-            activity: activity.clamp(0.0, 1.0),
-            reliability: reliability.clamp(0.0, 1.0),
-        }
-    }
-
-    fn block_rms_db(buffer: &[f32]) -> f64 {
-        if buffer.is_empty() {
-            return -120.0;
-        }
-        let power = buffer
-            .iter()
-            .map(|sample| {
-                let sample = *sample as f64;
-                sample * sample
-            })
-            .sum::<f64>()
-            / buffer.len() as f64;
-        util::linear_to_db(power.sqrt(), 1e-10)
-    }
-
-    fn update_auto_makeup_gain(
-        &mut self,
-        speech_activity: f64,
-        reliability: f64,
-        elapsed_samples: usize,
-    ) {
-        let elapsed_samples = elapsed_samples.max(1);
-        let makeup_coeff = if elapsed_samples == 1 {
-            self.makeup_smoothing_coeff
-        } else {
-            self.makeup_smoothing_coeff.powf(elapsed_samples as f64)
-        };
-        let silence_relax_coeff = if elapsed_samples == 1 {
-            self.makeup_silence_relax_coeff
-        } else {
-            self.makeup_silence_relax_coeff.powf(elapsed_samples as f64)
-        };
-        if !self.auto_makeup_enabled {
-            let target = self.makeup_gain_db;
-            self.smoothed_makeup_gain =
-                makeup_coeff * self.smoothed_makeup_gain + (1.0 - makeup_coeff) * target;
-            return;
-        }
-
-        if let Some(meter) = &self.loudness_meter {
-            self.current_lufs = meter.loudness_momentary() as f64;
-            let activity_coeff = if elapsed_samples == 1 {
-                self.speech_activity_smoothing_coeff
-            } else {
-                self.speech_activity_smoothing_coeff
-                    .powf(elapsed_samples as f64)
-            };
-            self.speech_activity_score = activity_coeff * self.speech_activity_score
-                + (1.0 - activity_coeff) * speech_activity.clamp(0.0, 1.0);
-            self.auto_makeup_activity_reliability = reliability.clamp(0.0, 1.0);
-            if self.speech_activity_score < AUTO_MAKEUP_ACTIVE_MIN {
-                self.smoothed_makeup_gain = silence_relax_coeff * self.smoothed_makeup_gain
-                    + (1.0 - silence_relax_coeff) * self.makeup_gain_db;
-                return;
-            }
-            if self.auto_makeup_activity_reliability < AUTO_MAKEUP_RELIABILITY_MIN {
-                let conservative_cap = self.makeup_gain_db
-                    + 3.0 * (self.auto_makeup_activity_reliability / AUTO_MAKEUP_RELIABILITY_MIN);
-                if self.smoothed_makeup_gain > conservative_cap {
-                    self.smoothed_makeup_gain = makeup_coeff * self.smoothed_makeup_gain
-                        + (1.0 - makeup_coeff) * conservative_cap;
-                }
-                return;
-            }
-            // The meter receives the compressor output after the currently
-            // applied makeup gain. Remove that gain before calculating the
-            // correction, otherwise feedback settles below the requested
-            // target by approximately the applied makeup amount.
-            let pre_makeup_lufs = self.current_lufs - self.smoothed_makeup_gain;
-            let required_gain = self.target_lufs - pre_makeup_lufs;
-            let reliability_cap = (12.0 * self.auto_makeup_activity_reliability).clamp(3.0, 12.0);
-            let headroom_cap =
-                (12.0 - self.limiter_feedback_gain_reduction_db * 2.0).clamp(0.0, reliability_cap);
-            let clamped_gain = required_gain.clamp(0.0, headroom_cap);
-
-            self.smoothed_makeup_gain =
-                makeup_coeff * self.smoothed_makeup_gain + (1.0 - makeup_coeff) * clamped_gain;
-        }
-    }
-
     /// Calculate gain reduction in dB for a given detector level.
     #[inline]
     fn compute_gain_reduction(&self, detector_db: f64) -> f64 {
@@ -891,13 +648,15 @@ impl Compressor {
         self.block_peak_gain_reduction_db = 0.0;
         // A caller switching from the sample API must not mix an incomplete
         // sample window into this block's loudness measurement.
-        self.clear_auto_makeup_sample_window();
+        self.makeup.clear_auto_makeup_sample_window();
         if !self.is_active() {
             self.current_gain_reduction_db = 0.0;
             return;
         }
 
-        let activity = self.estimate_auto_makeup_activity(Self::block_rms_db(buffer), evidence);
+        let activity = self
+            .makeup
+            .estimate_auto_makeup_activity(MakeupController::block_rms_db(buffer), evidence);
         for sample in buffer.iter_mut() {
             *sample = self.process_sample_impl(*sample, false);
         }
@@ -905,22 +664,7 @@ impl Compressor {
             // A fade-out block is partly dry; keep it out of loudness control.
             return;
         }
-        if activity.activity > AUTO_MAKEUP_ACTIVE_MIN
-            && activity.reliability >= AUTO_MAKEUP_RELIABILITY_MIN
-        {
-            if let Some(meter) = &mut self.loudness_meter {
-                meter.process(buffer);
-            }
-        }
-        if self.auto_makeup_enabled {
-            self.update_auto_makeup_gain(activity.activity, activity.reliability, buffer.len());
-        }
-    }
-
-    #[inline]
-    fn clear_auto_makeup_sample_window(&mut self) {
-        self.auto_makeup_sample_window_len = 0;
-        self.auto_makeup_sample_activity_sum = 0.0;
+        self.makeup.process_block_output(buffer, activity);
     }
 
     #[inline]
@@ -969,13 +713,10 @@ impl Compressor {
             .block_peak_gain_reduction_db
             .max(self.current_gain_reduction_db);
 
-        if !self.auto_makeup_enabled {
-            let speech_activity = Self::speech_activity_from_rms_db(detector_db);
-            self.update_auto_makeup_gain(speech_activity, 1.0, 1);
-        }
+        self.makeup.advance_manual_gain(detector_db);
 
         let mut output_gain = util::db_to_linear(-self.current_gain_reduction_db)
-            * util::db_to_linear(self.smoothed_makeup_gain);
+            * util::db_to_linear(self.makeup.current_makeup_gain());
         let ramp_target = if self.enabled {
             self.enable_ramp_samples
         } else {
@@ -992,22 +733,8 @@ impl Compressor {
         }
         let output = (input_f64 * output_gain) as f32;
 
-        if collect_sample_auto_makeup && self.auto_makeup_enabled && self.enabled {
-            let speech_activity = Self::speech_activity_from_rms_db(detector_db);
-            let sample_index = self.auto_makeup_sample_window_len;
-            self.auto_makeup_sample_window[sample_index] = output;
-            self.auto_makeup_sample_activity_sum += speech_activity;
-            self.auto_makeup_sample_window_len += 1;
-
-            if self.auto_makeup_sample_window_len >= self.auto_makeup_sample_window_samples {
-                let window_len = self.auto_makeup_sample_window_len;
-                if let Some(meter) = &mut self.loudness_meter {
-                    meter.process(&self.auto_makeup_sample_window[..window_len]);
-                }
-                let activity = self.auto_makeup_sample_activity_sum / window_len as f64;
-                self.clear_auto_makeup_sample_window();
-                self.update_auto_makeup_gain(activity, 1.0, window_len);
-            }
+        if collect_sample_auto_makeup && self.makeup.auto_makeup_enabled() && self.enabled {
+            self.makeup.process_sample_output(output, detector_db);
         }
 
         output
@@ -1022,22 +749,13 @@ impl Compressor {
         self.release_coeff =
             util::time_constant_to_coeff(self.current_release_ms, self.sample_rate);
         self.adaptive_release_coeff_samples_until_update = 1;
-        self.limiter_feedback_gain_reduction_db = 0.0;
-        self.speech_activity_score = 0.0;
-        self.auto_makeup_activity_reliability = 0.0;
-        self.clear_auto_makeup_sample_window();
-        if let Some(meter) = &mut self.loudness_meter {
-            if meter.reset().is_ok() {
-                self.current_lufs = -100.0;
-            }
-        } else {
-            self.current_lufs = -100.0;
-        }
+        self.makeup.reset();
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::makeup::{AUTO_MAKEUP_ACTIVE_MIN, AUTO_MAKEUP_SAMPLE_WINDOW_MS};
     use super::*;
 
     #[test]
@@ -1443,7 +1161,7 @@ mod tests {
             let mut remaining = 48_000;
             while remaining > 0 {
                 let elapsed = remaining.min(block_size);
-                compressor.update_auto_makeup_gain(1.0, 1.0, elapsed);
+                compressor.makeup.update_auto_makeup_gain(1.0, 1.0, elapsed);
                 remaining -= elapsed;
             }
             compressor.auto_makeup_activity()
@@ -1573,7 +1291,7 @@ mod tests {
         ] {
             let compressor = Compressor::new(0.0, 1.0, 0.1, 200.0, 0.0, 0.0, sample_rate);
             assert_eq!(
-                compressor.auto_makeup_sample_window_samples, expected_window,
+                compressor.makeup.auto_makeup_sample_window_samples, expected_window,
                 "sample API auto-makeup window at {sample_rate} Hz"
             );
         }
@@ -1584,16 +1302,16 @@ mod tests {
         let mut compressor = Compressor::new(0.0, 1.0, 0.1, 200.0, 0.0, 0.0, 48_000.0);
         compressor.set_auto_makeup_enabled(true);
         compressor.process_sample(0.1);
-        assert_eq!(compressor.auto_makeup_sample_window_len, 1);
+        assert_eq!(compressor.makeup.auto_makeup_sample_window_len, 1);
 
         let mut block = vec![0.0_f32; 480];
         compressor.process_block_inplace(&mut block);
-        assert_eq!(compressor.auto_makeup_sample_window_len, 0);
+        assert_eq!(compressor.makeup.auto_makeup_sample_window_len, 0);
 
         compressor.process_sample(0.1);
-        assert_eq!(compressor.auto_makeup_sample_window_len, 1);
+        assert_eq!(compressor.makeup.auto_makeup_sample_window_len, 1);
         compressor.reset();
-        assert_eq!(compressor.auto_makeup_sample_window_len, 0);
+        assert_eq!(compressor.makeup.auto_makeup_sample_window_len, 0);
     }
 
     #[test]
@@ -1644,7 +1362,7 @@ mod tests {
     fn test_stale_vad_degrades_continuously_to_noise_relative_fallback() {
         let comp = Compressor::default_voice(48_000.0);
         let rms_db = -52.0;
-        let fresh = comp.estimate_auto_makeup_activity(
+        let fresh = comp.makeup.estimate_auto_makeup_activity(
             rms_db,
             Some(AutoMakeupActivityInput {
                 vad_probability: 0.9,
@@ -1653,7 +1371,7 @@ mod tests {
                 live_noise_reliability: 1.0,
             }),
         );
-        let fading = comp.estimate_auto_makeup_activity(
+        let fading = comp.makeup.estimate_auto_makeup_activity(
             rms_db,
             Some(AutoMakeupActivityInput {
                 vad_probability: 0.9,
@@ -1662,7 +1380,7 @@ mod tests {
                 live_noise_reliability: 1.0,
             }),
         );
-        let stale = comp.estimate_auto_makeup_activity(
+        let stale = comp.makeup.estimate_auto_makeup_activity(
             rms_db,
             Some(AutoMakeupActivityInput {
                 vad_probability: 0.9,
@@ -1683,7 +1401,7 @@ mod tests {
         let mut comp = Compressor::default_voice(48_000.0);
         comp.set_noise_reference_reliability(1.0);
 
-        let estimate = comp.estimate_auto_makeup_activity(
+        let estimate = comp.makeup.estimate_auto_makeup_activity(
             -53.0,
             Some(AutoMakeupActivityInput {
                 vad_probability: 0.0,
@@ -1696,7 +1414,7 @@ mod tests {
         assert_eq!(estimate.reliability, 0.0);
         assert_eq!(
             estimate.activity,
-            Compressor::speech_activity_from_rms_db(-53.0)
+            MakeupController::speech_activity_from_rms_db(-53.0)
         );
     }
 
@@ -1705,7 +1423,7 @@ mod tests {
         let mut comp = Compressor::default_voice(48_000.0);
         comp.set_noise_reference_reliability(0.25);
 
-        let estimate = comp.estimate_auto_makeup_activity(
+        let estimate = comp.makeup.estimate_auto_makeup_activity(
             -53.0,
             Some(AutoMakeupActivityInput {
                 vad_probability: 0.0,
@@ -2133,7 +1851,7 @@ mod tests {
     #[test]
     fn test_reset_clears_reported_loudness() {
         let mut comp = Compressor::default_voice(48_000.0);
-        comp.current_lufs = -18.0;
+        comp.makeup.current_lufs = -18.0;
 
         comp.reset();
 
@@ -2143,8 +1861,8 @@ mod tests {
     #[test]
     fn test_reset_clears_reported_loudness_without_meter() {
         let mut comp = Compressor::new(-20.0, 4.0, 10.0, 200.0, 0.0, 0.0, 12_345.0);
-        assert!(comp.loudness_meter.is_none());
-        comp.current_lufs = -18.0;
+        assert!(comp.makeup.loudness_meter.is_none());
+        comp.makeup.current_lufs = -18.0;
 
         comp.reset();
 

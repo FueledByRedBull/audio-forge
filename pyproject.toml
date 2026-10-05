@@ -16,7 +16,9 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
 ]
 dependencies = [
-    "PyQt6>=6.6.0",
+    "PySide6-Essentials==6.11.1",
+    "PySide6-Addons==6.11.1",
+    "shiboken6==6.11.1",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
     "pywin32>=311; sys_platform == 'win32'",

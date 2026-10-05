@@ -121,7 +121,7 @@ def test_compressor_search_penalizes_measured_room_noise_boost(monkeypatch):
             "silence_level_delta_db": abs(threshold + 36.0) if has_silence else None,
         }
 
-    monkeypatch.setattr("mic_eq.analysis.voice_setup.simulate_candidate_chain", simulation)
+    monkeypatch.setattr("mic_eq.analysis.compressor_calibration.simulate_candidate_chain", simulation)
 
     def search():
         return _calibrate_compressor_threshold(

@@ -394,6 +394,7 @@
   },
   "schema_version": 6,
   "selected_lookahead_ms": 0.5,
+  "source_revision": "dacb9f6eac0c92a3575eb12096539bb3885467d9",
   "source_sha256": {
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
     "python/tools/evaluate_limiter_lookahead.py": "0342c2b6a9c54157ad370bc936f73a0dcc53f6b6a13528f96f214d1f78f83b2e",

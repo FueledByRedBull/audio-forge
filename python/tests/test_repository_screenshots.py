@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from PyQt6.QtWidgets import QComboBox, QWidget
+from PySide6.QtWidgets import QComboBox, QWidget
 
 from mic_eq.config_parts import app_config
 from mic_eq.ui import main_window

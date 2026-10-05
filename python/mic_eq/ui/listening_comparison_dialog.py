@@ -8,15 +8,15 @@ import threading
 from typing import Any
 
 import numpy as np
-from PyQt6.QtCore import QByteArray, QBuffer, QIODevice, QThread, QTimer, pyqtSignal
-from PyQt6.QtMultimedia import (
-    QAudio,
+from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QThread, QTimer, Signal, Slot
+from PySide6.QtMultimedia import (
+    QtAudio,
     QAudioDevice,
     QAudioFormat,
     QAudioSink,
     QMediaDevices,
 )
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QCheckBox,
     QApplication,
     QComboBox,
@@ -61,7 +61,7 @@ def _device_key(device: QAudioDevice | None) -> bytes | None:
     if device is None:
         return None
     try:
-        return device.id().data()
+        return bytes(device.id().data())
     except (AttributeError, TypeError):
         return None
 
@@ -213,10 +213,10 @@ def _pcm_bytes(samples: np.ndarray, audio_format: QAudioFormat, source_rate: int
 class ListeningComparisonWorker(QThread):
     """Render the three clips away from the Qt event loop."""
 
-    progress = pyqtSignal(str, int)
-    result_ready = pyqtSignal(object)
-    failed = pyqtSignal(str)
-    canceled = pyqtSignal()
+    progress = Signal(str, int)
+    result_ready = Signal(object)
+    failed = Signal(str)
+    canceled = Signal()
 
     def __init__(
         self,
@@ -279,7 +279,7 @@ class ListeningComparisonWorker(QThread):
 class ListeningComparisonDialog(QDialog):
     """Play one capture as original, current, or proposed processing."""
 
-    comparison_decided = pyqtSignal(bool)
+    comparison_decided = Signal(bool)
 
     def __init__(
         self,
@@ -743,7 +743,7 @@ class ListeningComparisonDialog(QDialog):
             self._playback_start_sample = start
             self._playback_sample_rate = int(result.sample_rate)
             sink.start(audio_buffer)
-            if sink.error() != QAudio.Error.NoError:
+            if sink.error() != QtAudio.Error.NoError:
                 raise RuntimeError(f"audio output failed ({sink.error().name})")
             self.status_label.setText(f"Playing {clip.label} on {device.description()}.")
             self.status_label.setStyleSheet(message_text_style("info"))
@@ -753,12 +753,13 @@ class ListeningComparisonDialog(QDialog):
             self.status_label.setText(f"Playback failed: {error}")
             self.status_label.setStyleSheet(message_text_style("bad"))
 
-    def _on_audio_state_changed(self, state: Any) -> None:
+    @Slot()
+    def _on_audio_state_changed(self) -> None:
         if self._audio_sink is None:
             return
-        if state in (
-            QAudio.State.IdleState,
-            QAudio.State.StoppedState,
+        if self._audio_sink.state() in (
+            QtAudio.State.IdleState,
+            QtAudio.State.StoppedState,
         ):
             self._stop_playback()
 

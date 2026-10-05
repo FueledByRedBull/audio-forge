@@ -1,6 +1,6 @@
 """Unavailable meter state and bounded painting work."""
 
-from PyQt6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QTimer
 
 from mic_eq.ui.level_meter import ConfidenceMeter, GainReductionMeter, LevelMeter
 

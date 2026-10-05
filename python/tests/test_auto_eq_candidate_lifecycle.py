@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Any
 
 import numpy as np
-from PyQt6.QtWidgets import QMessageBox, QWidget
+from PySide6.QtWidgets import QMessageBox, QWidget
 
 from mic_eq.config import (
     EQSettings,
@@ -288,7 +288,7 @@ def test_apply_uses_captured_target_and_enables_eq_after_bands(qapp, monkeypatch
 def test_typed_tone_candidate_matches_audition_and_applied_configuration(
     qapp, monkeypatch
 ):
-    from PyQt6.QtWidgets import QDialog
+    from PySide6.QtWidgets import QDialog
 
     from mic_eq.analysis import listening_comparison as analysis_comparison
     from mic_eq.ui import listening_comparison_dialog

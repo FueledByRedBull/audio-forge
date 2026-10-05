@@ -406,6 +406,19 @@ fn measure_integrated_loudness(
         .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
 }
 
+#[pyfunction]
+fn _k_weighted_48k<'py>(
+    py: Python<'py>,
+    audio: numpy::PyReadonlyArray1<'py, f64>,
+) -> Bound<'py, numpy::PyArray1<f64>> {
+    let mut samples: Vec<f64> = audio.as_array().iter().copied().collect();
+    let output = py.detach(move || {
+        dsp::loudness::k_weighted_48k_inplace(&mut samples);
+        samples
+    });
+    numpy::PyArray1::from_vec(py, output)
+}
+
 /// Python module initialization
 #[pymodule]
 fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -445,6 +458,7 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eq_magnitude_response_v2, m)?)?;
     m.add_function(wrap_pyfunction!(simulate_eq_v2, m)?)?;
     m.add_function(wrap_pyfunction!(measure_integrated_loudness, m)?)?;
+    m.add_function(wrap_pyfunction!(_k_weighted_48k, m)?)?;
 
     #[cfg(feature = "vad")]
     m.add_function(wrap_pyfunction!(

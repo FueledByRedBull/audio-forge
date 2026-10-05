@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QVBoxLayout,
@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QProgressBar,
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PySide6.QtCore import Qt, QTimer, Signal
 import numpy as np
 
 from ..config import (
@@ -96,7 +96,7 @@ class CalibrationDialog(QDialog):
     """Auto-EQ calibration dialog with target curve selection."""
 
     # Signal emitted when auto-EQ is applied (emits target curve name)
-    auto_eq_applied = pyqtSignal(str)
+    auto_eq_applied = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)

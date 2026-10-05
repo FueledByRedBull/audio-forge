@@ -18,9 +18,9 @@ os.environ.setdefault("QT_SCALE_FACTOR", "1")
 os.environ.setdefault("QT_FONT_DPI", "96")
 os.environ.setdefault("AUDIOFORGE_REDUCED_MOTION", "1")
 
-from PyQt6.QtCore import QByteArray
-from PyQt6.QtGui import QFont, QFontDatabase, QImageWriter
-from PyQt6.QtWidgets import QApplication, QScrollArea, QWidget
+from PySide6.QtCore import QByteArray
+from PySide6.QtGui import QFont, QFontDatabase, QImageWriter
+from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
 
 from mic_eq.config import AppConfig
 from mic_eq.ui import main_window as main_window_module

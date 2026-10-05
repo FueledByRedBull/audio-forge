@@ -362,6 +362,55 @@ impl<
     }
 }
 
+/// Recovery is tied to aligned model output, before downstream delay/resampling.
+/// Counting the already-invalid prefix does not hold or buffer any audio.
+struct SuppressorRecoveryFade {
+    invalid_samples: usize,
+    remaining: usize,
+    total: usize,
+}
+
+impl SuppressorRecoveryFade {
+    fn new(total: usize) -> Self {
+        Self {
+            invalid_samples: 0,
+            remaining: 0,
+            total: total.max(1),
+        }
+    }
+
+    fn restart(&mut self, latency: usize) {
+        self.invalid_samples = latency;
+        // Direct/unavailable backends retain the output writer's existing fade.
+        self.remaining = if latency > 0 { self.total } else { 0 };
+    }
+
+    fn restart_for_suppressor(
+        &mut self,
+        suppressor: &NoiseSuppressionEngine,
+        writer_remaining: &Cell<usize>,
+        writer_total: usize,
+    ) {
+        // Frame buffering alone does not make an invalid output prefix. An
+        // unavailable/disabled backend emits valid dry audio immediately.
+        let model_delay = if suppressor.is_enabled()
+            && (suppressor.backend_available() || suppressor.backend_failed())
+        {
+            suppressor.latency_samples()
+        } else {
+            0
+        };
+        self.restart(model_delay);
+        writer_remaining.set(if model_delay > 0 { 0 } else { writer_total });
+    }
+
+    fn apply(&mut self, samples: &mut [f32]) {
+        let skip = self.invalid_samples.min(samples.len());
+        self.invalid_samples -= skip;
+        fade_in(&mut samples[skip..], &mut self.remaining, self.total);
+    }
+}
+
 /// Multiply the start of `samples` by the remaining part of a linear fade-in.
 fn fade_in(samples: &mut [f32], remaining: &mut usize, total: usize) {
     let count = (*remaining).min(samples.len());

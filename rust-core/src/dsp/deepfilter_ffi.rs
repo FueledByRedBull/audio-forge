@@ -44,6 +44,11 @@ const DEEPFILTER_MAX_LATENCY_SAMPLES: usize = DEEPFILTER_FRAME_SIZE * 3;
 pub const DEFAULT_DEEPFILTER_ATTENUATION_LIMIT_DB: f32 = 30.0;
 pub const DEFAULT_DEEPFILTER_POST_FILTER_BETA: f32 = 0.0;
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_FAIL_PROCESS_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DeepFilterRuntimeConfig {
     attenuation_limit_db: f32,
@@ -559,6 +564,18 @@ impl DeepFilterFFI {
 
             let df_process_frame = self._lib.df_process_frame;
             let lsnr = df_process_frame(state_ptr, input_ptr, output_ptr);
+            #[cfg(test)]
+            let lsnr = TEST_FAIL_PROCESS_AFTER.with(|remaining| match remaining.get() {
+                Some(0) => {
+                    remaining.set(None);
+                    f32::NAN
+                }
+                Some(count) => {
+                    remaining.set(Some(count - 1));
+                    lsnr
+                }
+                None => lsnr,
+            });
 
             if !lsnr.is_finite() {
                 return Err(DeepFilterProcessError::NonFiniteSnr);
@@ -636,6 +653,7 @@ pub struct DeepFilterProcessor {
     aligned_dry_frame: [f32; DEEPFILTER_FRAME_SIZE],
     dry_delay: [f32; DEEPFILTER_MAX_LATENCY_SAMPLES],
     dry_delay_index: usize,
+    invalid_wet_samples: usize,
     load_error: Option<String>, // Store load error for reporting
     model: DeepFilterModel,     // Track which model variant we're using
     backend_failed: bool,
@@ -669,6 +687,7 @@ impl DeepFilterProcessor {
                 aligned_dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
                 dry_delay: [0.0; DEEPFILTER_MAX_LATENCY_SAMPLES],
                 dry_delay_index: 0,
+                invalid_wet_samples: 0,
                 load_error: Some(
                     "DeepFilterNet disabled; set AUDIOFORGE_ENABLE_DEEPFILTER=1 to enable"
                         .to_string(),
@@ -725,6 +744,7 @@ impl DeepFilterProcessor {
             aligned_dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
             dry_delay: [0.0; DEEPFILTER_MAX_LATENCY_SAMPLES],
             dry_delay_index: 0,
+            invalid_wet_samples: 0,
             load_error,
             model,
             backend_failed: false,
@@ -761,6 +781,7 @@ impl DeepFilterProcessor {
         self.dry_delay.fill(0.0);
         self.aligned_dry_frame.fill(0.0);
         self.dry_delay_index = 0;
+        self.invalid_wet_samples = self.model.latency_samples();
     }
 
     /// Process frames through FFI or fallback
@@ -795,6 +816,11 @@ impl DeepFilterProcessor {
                         Ok(_lsnr) => {
                             self.successful_inference_frames =
                                 self.successful_inference_frames.saturating_add(1);
+                            // Preserved model overlap predates a soft reset. Only
+                            // the wet prefix is invalid; aligned dry stays intact.
+                            let invalid = self.invalid_wet_samples.min(DEEPFILTER_FRAME_SIZE);
+                            self.output_frame[..invalid].fill(0.0);
+                            self.invalid_wet_samples -= invalid;
                             mix_wet_with_aligned_dry(
                                 &mut self.output_frame,
                                 &self.aligned_dry_frame,

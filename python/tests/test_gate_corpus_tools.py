@@ -43,6 +43,59 @@ def test_scores_are_neutral_for_unprocessed_input_and_reward_quiet_pauses():
     assert scored["estoi"] == pytest.approx(unprocessed["estoi"], abs=0.02)
 
 
+@pytest.mark.parametrize("trailing_start", [200, 280])
+def test_score_ignores_incomplete_onsets_without_poisoning_complete_windows(
+    monkeypatch, trailing_start
+):
+    monkeypatch.setattr(gate_eval, "si_sdr", lambda *args: 0.0)
+    monkeypatch.setattr(gate_eval, "estoi", lambda *args: 0.0)
+    clean = _speech(3.0)
+    labels = np.zeros(clean.size, dtype=bool)
+    labels[10 * gate_eval.FRAME : 150 * gate_eval.FRAME] = True
+    labels[trailing_start * gate_eval.FRAME :] = True
+    output = clean.copy()
+    output[10 * gate_eval.FRAME : 20 * gate_eval.FRAME] *= 0.5
+    output[trailing_start * gate_eval.FRAME :] *= 0.01
+
+    result = gate_eval.score({"clean": clean, "noisy": clean, "labels": labels}, output)
+
+    assert result["onset_db"] == pytest.approx(20.0 * np.log10(0.5), abs=1e-6)
+    assert result["onset_windows_total"] == 2
+    assert result["onset_windows_scored"] == 1
+
+
+@pytest.mark.parametrize("start", [None, 200, 280])
+def test_score_without_complete_onset_support_stays_invalid(monkeypatch, start):
+    monkeypatch.setattr(gate_eval, "si_sdr", lambda *args: 0.0)
+    monkeypatch.setattr(gate_eval, "estoi", lambda *args: 0.0)
+    clean = _speech(3.0)
+    labels = np.zeros(clean.size, dtype=bool)
+    if start is not None:
+        labels[start * gate_eval.FRAME :] = True
+
+    result = gate_eval.score({"clean": clean, "noisy": clean, "labels": labels}, clean)
+
+    assert np.isnan(result["onset_db"])
+    assert result["onset_windows_total"] == (0 if start is None else 1)
+    assert result["onset_windows_scored"] == 0
+
+
+def test_score_accepts_complete_onset_body_ending_at_capture_boundary(monkeypatch):
+    monkeypatch.setattr(gate_eval, "si_sdr", lambda *args: 0.0)
+    monkeypatch.setattr(gate_eval, "estoi", lambda *args: 0.0)
+    clean = _speech(3.0)
+    labels = np.zeros(clean.size, dtype=bool)
+    labels[170 * gate_eval.FRAME :] = True
+    output = clean.copy()
+    output[170 * gate_eval.FRAME : 180 * gate_eval.FRAME] *= 0.5
+
+    result = gate_eval.score({"clean": clean, "noisy": clean, "labels": labels}, output)
+
+    assert result["onset_db"] == pytest.approx(20.0 * np.log10(0.5), abs=1e-6)
+    assert result["onset_windows_total"] == 1
+    assert result["onset_windows_scored"] == 1
+
+
 def test_vad_control_only_uses_windows_finished_before_each_block():
     windows = np.arange(1, 11, dtype=np.float32) / 10  # window k reports (k + 1) / 10
     control = gate_eval.causal_control(windows, 10 * gate_eval.VAD_WINDOW_SAMPLES)

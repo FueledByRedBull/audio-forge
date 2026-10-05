@@ -8,7 +8,8 @@ import pytest
 # Run Qt tests headlessly by default.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QCoreApplication, QEvent
 
 from mic_eq.ui.theme import application_palette
 
@@ -28,7 +29,7 @@ def qapp():
 @pytest.fixture(autouse=True)
 def discard_unsaved_test_windows(monkeypatch):
     """Discard test edits during window cleanup; tests can override the decision."""
-    from PyQt6.QtWidgets import QMessageBox
+    from PySide6.QtWidgets import QMessageBox
 
     question = QMessageBox.question
 
@@ -38,3 +39,18 @@ def discard_unsaved_test_windows(monkeypatch):
         return question(parent, title, *args, **kwargs)
 
     monkeypatch.setattr(QMessageBox, "question", answer)
+
+
+@pytest.fixture(autouse=True)
+def dispose_test_windows(monkeypatch):
+    """Destroy each test's Qt parents through the event loop before Python GC."""
+    app = QApplication.instance()
+    existing = set(app.topLevelWidgets()) if isinstance(app, QApplication) else set()
+    yield
+    app = QApplication.instance()
+    if not isinstance(app, QApplication):
+        return
+    created = set(app.topLevelWidgets()) - existing
+    for widget in created:
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

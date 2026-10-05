@@ -187,6 +187,99 @@ mod tests {
     }
 
     #[test]
+    fn soft_reset_and_failure_preserve_dry_alignment_without_allocating() {
+        for model in [DeepFilterModel::LowLatency, DeepFilterModel::Standard] {
+            let mut processor =
+                DeepFilterProcessor::new(Arc::new(AtomicU32::new(0.37_f32.to_bits())), model);
+            let loaded = processor.df.is_some();
+            processor.push_samples(&[0.1; 600]);
+            processor.process_frames();
+            assert_eq!(processor.pending_input(), 120);
+            assert_eq!(processor.available_samples(), 480);
+            let strength = processor.smoothed_strength;
+            let successes = processor.successful_inference_frames();
+            if loaded {
+                processor.mark_backend_failed_rt(DeepFilterProcessError::NonFiniteOutput);
+            }
+            let latency = processor.latency_samples();
+            crate::test_alloc::assert_no_allocations("DeepFilter recovery", || {
+                processor.soft_reset();
+                assert_eq!(processor.pending_input(), 0);
+                assert_eq!(processor.available_samples(), 0);
+                assert_eq!(processor.smoothed_strength, strength);
+                for frame in 0..5 {
+                    let gated = [if frame == 0 { 0.25 } else { 0.0 }; 480];
+                    processor.push_samples(&gated);
+                    processor.process_frames();
+                    let mut output = [0.0; 480];
+                    assert_eq!(processor.pop_samples_into(&mut output), 480);
+                    let dry_frame = if loaded {
+                        model.latency_samples() / 480
+                    } else {
+                        0
+                    };
+                    assert_eq!(output, [if frame == dry_frame { 0.25 } else { 0.0 }; 480]);
+                    assert_eq!(processor.latency_samples(), latency);
+                    assert_eq!(processor.successful_inference_frames(), successes);
+                    assert_eq!(processor.backend_failed(), loaded);
+                }
+            });
+            processor.soft_reset();
+            processor.set_enabled(false);
+            processor.push_samples(&[0.2; 480]);
+            processor.process_frames();
+            let mut output = [0.0; 480];
+            assert_eq!(processor.pop_samples_into(&mut output), 480);
+            assert_eq!(output, [0.2; 480]);
+        }
+    }
+
+    #[test]
+    fn native_soft_reset_mutes_only_the_reported_model_overlap() {
+        let before = std::array::from_fn::<_, 480, _>(|index| {
+            (index as f32 * 0.047).sin() * 0.25
+        });
+        let after = std::array::from_fn::<_, 480, _>(|index| {
+            (index as f32 * 0.091).sin() * -0.17
+        });
+        for model in [DeepFilterModel::LowLatency, DeepFilterModel::Standard] {
+            for gain in [0.3, 1.0] {
+                for strength in [0.0_f32, 0.37, 1.0] {
+                    let mut processor = DeepFilterProcessor::new(
+                        Arc::new(AtomicU32::new(strength.to_bits())), model,
+                    );
+                    if !processor.is_ffi_available() {
+                        eprintln!("Skipping native reset regression: {:?}", processor.backend_error());
+                        return;
+                    }
+                    let mut output = [0.0; 480];
+                    for _ in 0..20 {
+                        processor.push_samples(&before);
+                        processor.process_frames();
+                        processor.pop_samples_into(&mut output);
+                    }
+                    processor.push_samples(&before[..123]);
+                    processor.soft_reset();
+                    assert_eq!(processor.pending_input(), 0);
+                    let dry = after.map(|sample| sample * gain);
+                    let delay_frames = model.latency_samples() / 480;
+                    for frame in 0..=delay_frames {
+                        processor.push_samples(&dry);
+                        processor.process_frames();
+                        assert_eq!(processor.pop_samples_into(&mut output), 480);
+                        assert!(!processor.backend_failed());
+                        if frame < delay_frames {
+                            assert!(output.iter().all(|sample| *sample == 0.0));
+                        } else if strength == 0.0 {
+                            assert_eq!(output, dry);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn long_digital_silence_keeps_ffi_finite_under_rt_fp_mode() {
         const SILENCE_FRAMES: usize = 7_800;
         const TONE_FRAMES: usize = 20;

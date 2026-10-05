@@ -44,7 +44,7 @@ def is_unused_ffmpeg_payload(path: Path) -> bool:
 
 def prune_bundle(bundle_root: Path) -> list[Path]:
     removed: list[Path] = []
-    translations_dir = bundle_root / "_internal" / "PyQt6" / "Qt6" / "translations"
+    translations_dir = bundle_root / "_internal" / "PySide6" / "translations"
     if translations_dir.exists():
         shutil.rmtree(translations_dir)
         print(f"Pruned Qt translations: {translations_dir}")
@@ -89,13 +89,25 @@ def prune_bundle(bundle_root: Path) -> list[Path]:
             print(f"Removed unused FFmpeg payload: {candidate}")
 
     for relative_path in (
-        Path("_internal/PyQt6/Qt6/bin/Qt6Pdf.dll"),
-        Path("_internal/PyQt6/Qt6/bin/Qt6Svg.dll"),
-        Path("_internal/PyQt6/QtPdf.pyd"),
-        Path("_internal/PyQt6/QtPdfWidgets.pyd"),
-        Path("_internal/PyQt6/Qt6/plugins/iconengines/qsvgicon.dll"),
-        Path("_internal/PyQt6/Qt6/plugins/imageformats/qsvg.dll"),
-        Path("_internal/PyQt6/Qt6/plugins/imageformats/qpdf.dll"),
+        Path("_internal/PySide6/Qt6Pdf.dll"),
+        Path("_internal/PySide6/Qt6Svg.dll"),
+        Path("_internal/PySide6/QtPdf.pyd"),
+        Path("_internal/PySide6/QtPdfWidgets.pyd"),
+        Path("_internal/PySide6/plugins/iconengines/qsvgicon.dll"),
+        Path("_internal/PySide6/plugins/imageformats/qsvg.dll"),
+        Path("_internal/PySide6/plugins/imageformats/qpdf.dll"),
+        # QtGui's broad plugin collection pulls in the unused GPL-only virtual
+        # keyboard and its QML dependencies. Windows supplies native input.
+        Path("_internal/PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll"),
+        Path("_internal/PySide6/Qt6VirtualKeyboard.dll"),
+        Path("_internal/PySide6/Qt6Qml.dll"),
+        Path("_internal/PySide6/Qt6QmlMeta.dll"),
+        Path("_internal/PySide6/Qt6QmlModels.dll"),
+        Path("_internal/PySide6/Qt6QmlWorkerScript.dll"),
+        Path("_internal/PySide6/Qt6Quick.dll"),
+        Path("_internal/PySide6/Qt6OpenGL.dll"),
+        Path("_internal/PySide6/Qt6MultimediaWidgets.dll"),
+        Path("_internal/PySide6/QtMultimediaWidgets.pyd"),
     ):
         candidate = bundle_root / relative_path
         if candidate.exists():

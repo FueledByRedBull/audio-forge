@@ -5,7 +5,7 @@ Prevents flooding the audio thread with rapid parameter changes.
 Uses throttling (not debouncing) to ensure updates still feel responsive.
 """
 
-from PyQt6.QtCore import QTimer
+from PySide6.QtCore import QTimer
 from typing import Callable, Any
 import time
 

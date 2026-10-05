@@ -26,7 +26,7 @@ from tools.check_evaluation_hygiene import validate_report
 def _tuning_args() -> tuple[Any, ...]:
     preset = Preset()
     return (
-        np.full(48_000, 0.001, dtype=np.float32),
+        np.full(96_000, 0.001, dtype=np.float32),
         np.full(48_000, 0.1, dtype=np.float32),
         48_000,
         asdict(preset.gate),
@@ -58,10 +58,11 @@ def _downstream_metrics(audio: np.ndarray, *_args: Any, **_kwargs: Any) -> dict[
 
 
 def _activity_tape(audio: np.ndarray, settings: dict[str, Any]) -> list[tuple[float, float, float, float]]:
-    probability = 0.2 if float(np.mean(np.abs(audio))) < 0.01 else 0.8
     reliability = float(bool(settings.get("vad_available", True)))
-    frame_count = (audio.size + 479) // 480
-    return [(probability, reliability, -60.0, 0.0)] * frame_count
+    return [
+        (0.2 if rms < 0.01 else 0.8, reliability, -60.0, 0.0)
+        for rms in joint_tuning._frame_rms(audio)
+    ]
 
 
 def test_native_gate_enabled_matches_requested_control():
@@ -108,8 +109,9 @@ def test_joint_unavailable_keeps_incumbent_and_cancellation_propagates(monkeypat
         joint_tuning.tune_gate_suppression_dynamics(*args, **kwargs, cancel_check=lambda: True)
 
 
+@pytest.mark.parametrize("with_neural_vad", [True, False])
 def test_joint_selection_evaluates_each_model_and_selects_lower_noise_model(
-    monkeypatch,
+    monkeypatch, with_neural_vad,
 ):
     observed_releases: list[float] = []
 
@@ -117,11 +119,9 @@ def test_joint_selection_evaluates_each_model_and_selects_lower_noise_model(
         model = settings["noise_model"]
         observed_releases.append(float(settings["gate_release_ms"]))
         latency = {"rnnoise": 480, "deepfilter-ll": 480, "deepfilter": 1_440}[model]
-        is_noise = float(np.mean(np.abs(audio))) < 0.01
         attenuation = {"rnnoise": 0.5, "deepfilter-ll": 0.1, "deepfilter": 0.05}[model]
-        output = np.asarray(audio, dtype=np.float32) * (
-            attenuation if is_noise else 0.98
-        )
+        values = np.asarray(audio, dtype=np.float32)
+        output = values * np.where(np.abs(values) < 0.01, attenuation, 0.98)
         return {
             "output_audio": output,
             "dry_audio": output,
@@ -140,8 +140,8 @@ def test_joint_selection_evaluates_each_model_and_selects_lower_noise_model(
     }
     result = joint_tuning.tune_gate_suppression_dynamics(
         *args,
-        vad_probabilities=np.ones(frame_count, dtype=np.float32),
-        noise_vad_probabilities=np.zeros(frame_count, dtype=np.float32),
+        vad_probabilities=np.ones(frame_count, dtype=np.float32) if with_neural_vad else None,
+        noise_vad_probabilities=np.zeros(frame_count, dtype=np.float32) if with_neural_vad else None,
         incumbent_settings=incumbent,
         max_suppressor_latency_ms=15.0,
     )
@@ -167,6 +167,219 @@ def test_joint_selection_evaluates_each_model_and_selects_lower_noise_model(
     assert deepfilter_candidates
     assert all(not candidate["gates"]["suppressor_latency"] for candidate in deepfilter_candidates)
     assert float(args[3]["release_ms"]) + 70.0 in observed_releases
+
+
+def test_frontend_selection_is_independent_of_uncalibrated_compression(monkeypatch):
+    def simulate(audio, _probabilities, _before_gate, _strength, settings):
+        model = settings["noise_model"]
+        attenuation = {"rnnoise": 0.5, "deepfilter-ll": 0.1, "deepfilter": 0.05}
+        values = np.asarray(audio, dtype=np.float32)
+        output = values * np.where(np.abs(values) < 0.01, attenuation[model], 0.98)
+        return {
+            "output_audio": output,
+            "dry_audio": output,
+            "suppressor_latency_samples": 1_440 if model == "deepfilter" else 480,
+            "runtime_ms": 0.0,
+            "auto_makeup_activity": _activity_tape(audio, settings),
+        }
+
+    # Stub only the neural backend; the downstream compressor and selection
+    # run normally, including the second-half candidate verification.
+    monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulate)
+    args = list(_tuning_args())
+    args[1] = (0.1 * np.sin(2 * np.pi * 180 * np.arange(48_000) / 48_000)).astype(np.float32)
+    args[5] = {**args[5], "enabled": False}
+    args[6] = {"enabled": False}
+    compressor = dict(args[4])
+    results = []
+    for threshold, ratio, target in ((-55.0, 10.0, 3.5), (-12.0, 1.5, 9.0)):
+        args[4] = {
+            **compressor,
+            "enabled": True,
+            "threshold_db": threshold,
+            "ratio": ratio,
+            "target_p95_reduction_db": target,
+            "target_median_reduction_db": target / 2.0,
+            "auto_makeup_enabled": False,
+            "makeup_gain_db": 12.0,
+        }
+        result = joint_tuning.tune_gate_suppression_dynamics(
+            *args,
+            vad_probabilities=np.ones(100, dtype=np.float32),
+            noise_vad_probabilities=np.zeros(100, dtype=np.float32),
+            max_suppressor_latency_ms=15.0,
+        )
+        assert result["apply_recommended"], [
+            name for name, passed in result["gates"].items() if not passed
+        ]
+        assert result["holdout_passed"]
+        assert result["suppressor_settings"]["model"] == "deepfilter-ll"
+        results.append(result)
+
+    assert results[0]["gate_settings"] == results[1]["gate_settings"]
+    assert results[0]["suppressor_settings"] == results[1]["suppressor_settings"]
+    assert [c["score"] for c in results[0]["candidates"]] == [
+        c["score"] for c in results[1]["candidates"]
+    ]
+
+
+@pytest.mark.parametrize("leaking_split", ["training", "holdout", None])
+def test_joint_tuning_preserves_noise_after_speech(monkeypatch, leaking_split):
+    def simulate(audio, _probabilities, _before_gate, _strength, settings):
+        values = np.asarray(audio, dtype=np.float32)
+        quiet = np.abs(values) < 0.01
+        model = settings["noise_model"]
+        contains_speech = bool(np.any(~quiet))
+        split = "training" if values[0] < 0.15 else "holdout"
+        # Reset noise-only probes favor the candidate. After speech it can
+        # leave more noise, while still meeting the absolute attenuation gate.
+        noise_gain = 0.5 if model == "rnnoise" else 0.1
+        if model != "rnnoise" and contains_speech and split == leaking_split:
+            noise_gain = 0.7
+        speech_gain = 0.6 if model == "rnnoise" else 0.98
+        output = values * np.where(quiet, noise_gain, speech_gain)
+        return {
+            "output_audio": output,
+            "dry_audio": output,
+            "suppressor_latency_samples": 1_440 if model == "deepfilter" else 480,
+            "runtime_ms": 0.0,
+            "auto_makeup_activity": _activity_tape(audio, settings),
+        }
+
+    monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulate)
+    monkeypatch.setattr(joint_tuning, "simulate_candidate_chain", _downstream_metrics)
+    args = list(_tuning_args())
+    args[0] = np.full(96_000, 0.001, dtype=np.float32)
+    args[1] = np.concatenate((
+        np.full(48_000, 0.1, dtype=np.float32),
+        np.full(48_000, 0.2, dtype=np.float32),
+    ))
+    result = joint_tuning.tune_gate_suppression_dynamics(
+        *args,
+        vad_probabilities=np.ones(100, dtype=np.float32),
+        noise_vad_probabilities=np.zeros(100, dtype=np.float32),
+        max_suppressor_latency_ms=15.0,
+    )
+
+    assert result["apply_recommended"] is (leaking_split is None)
+    if leaking_split == "training":
+        candidates = [c for c in result["candidates"] if c["noise_model"] == "deepfilter-ll"]
+        assert candidates and all(not c["gates"]["post_speech_noise"] for c in candidates)
+    elif leaking_split == "holdout":
+        assert result["holdout_evaluated"]
+        assert not result["holdout_gates"]["post_speech_noise"]
+    else:
+        assert result["suppressor_settings"]["model"] == "deepfilter-ll"
+        assert result["holdout_passed"]
+
+
+def test_joined_captures_keep_partial_frame_padding_and_causal_control():
+    speech = np.full(481, 0.1, dtype=np.float32)
+    noise = np.full(477, 0.001, dtype=np.float32)
+    audio, probabilities, noise_start = joint_tuning._join_captures(
+        speech, noise,
+        np.array([0.2, 0.8], dtype=np.float32),
+        np.array([0.1], dtype=np.float32),
+    )
+
+    assert noise_start == 960
+    np.testing.assert_array_equal(audio[:speech.size], speech)
+    np.testing.assert_array_equal(audio[speech.size:noise_start], np.zeros(479))
+    np.testing.assert_array_equal(audio[noise_start:], noise)
+    np.testing.assert_allclose(probabilities, [0.2, 0.8, 0.1])
+
+
+def test_continuous_render_splits_aligned_audio_and_activity_after_settling(monkeypatch):
+    observed_segments: set[tuple[str, int]] = set()
+    speech_sizes = (24_000, 24_023)
+    noise_sizes = (48_000, 48_017)
+
+    def simulate(audio, probabilities, _before_gate, _strength, settings):
+        values = np.asarray(audio, dtype=np.float32)
+        noise_start = int(np.flatnonzero(values == np.float32(0.001))[0])
+        assert noise_start % 480 == 0
+        frame_count = (values.size + 479) // 480
+        assert len(probabilities) == frame_count
+        assert all(p == 0.0 for p in probabilities[noise_start // 480:])
+        model = settings["noise_model"]
+        gain = {"rnnoise": 0.5, "deepfilter-ll": 0.1, "deepfilter": 0.05}[model]
+        output = values * np.where(np.abs(values) < 0.01, gain, 0.98)
+        # The first 600 ms may still contain a detector/gate/model tail. It
+        # must not be counted as settled noise, nor change the speech slice.
+        output[noise_start:noise_start + 28_800] = 0.05
+        return {
+            "output_audio": output,
+            "dry_audio": output,
+            "suppressor_latency_samples": 1_440 if model == "deepfilter" else 480,
+            "runtime_ms": 0.0,
+            "auto_makeup_activity": [
+                (index / frame_count, 1.0, -60.0, 0.0) for index in range(frame_count)
+            ],
+        }
+
+    def downstream(audio, _rate, _eq, chain):
+        activity = chain["auto_makeup_activity"]
+        assert len(activity) == (len(audio) + 479) // 480
+        if len(audio) in speech_sizes:
+            part = speech_sizes.index(len(audio))
+            kind, first_frame = "speech", 0
+            np.testing.assert_allclose(audio, 0.098, atol=1.0e-7)
+        else:
+            part = noise_sizes.index(len(audio))
+            kind = "noise"
+            first_frame = (speech_sizes[part] + 479) // 480
+            np.testing.assert_allclose(audio[:28_800], 0.05, atol=1.0e-7)
+        frames = (speech_sizes[part] + 479) // 480 + (noise_sizes[part] + 479) // 480
+        np.testing.assert_allclose(
+            [row[0] for row in activity],
+            np.arange(first_frame, first_frame + len(activity)) / frames,
+        )
+        observed_segments.add((kind, len(audio)))
+        return _downstream_metrics(audio)
+
+    monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulate)
+    monkeypatch.setattr(joint_tuning, "simulate_candidate_chain", downstream)
+    args = list(_tuning_args())
+    args[0] = np.full(sum(noise_sizes), 0.001, dtype=np.float32)
+    args[1] = np.full(sum(speech_sizes), 0.1, dtype=np.float32)
+    result = joint_tuning.tune_gate_suppression_dynamics(
+        *args,
+        vad_probabilities=np.ones(100, dtype=np.float32),
+        noise_vad_probabilities=np.zeros(100, dtype=np.float32),
+    )
+
+    assert result["apply_recommended"], result.get("failure_reasons")
+    assert result["holdout_passed"]
+    assert observed_segments == {
+        ("speech", speech_sizes[0]), ("speech", speech_sizes[1]),
+        ("noise", noise_sizes[0]), ("noise", noise_sizes[1]),
+    }
+    selected = result["selected_candidate"]["metrics"]
+    assert selected["post_speech_noise_frame_count"] == 40
+    assert selected["noise_attenuation_db"] == pytest.approx(20.0, abs=1.0e-5)
+
+
+@pytest.mark.parametrize("noise_samples", [57_600, 57_617])
+def test_joint_tuning_retains_incumbent_without_settled_noise_support(monkeypatch, noise_samples):
+    def simulate(audio, _probabilities, _before_gate, _strength, settings):
+        return {
+            "output_audio": audio,
+            "dry_audio": audio,
+            "suppressor_latency_samples": 480,
+            "runtime_ms": 0.0,
+            "auto_makeup_activity": _activity_tape(audio, settings),
+        }
+
+    monkeypatch.setattr(joint_tuning, "_load_native_simulator", lambda: simulate)
+    monkeypatch.setattr(joint_tuning, "simulate_candidate_chain", _downstream_metrics)
+    args = list(_tuning_args())
+    args[0] = np.full(noise_samples, 0.001, dtype=np.float32)
+    result = joint_tuning.tune_gate_suppression_dynamics(*args)
+
+    assert not result["apply_recommended"]
+    assert result["gate_settings"] == args[3]
+    assert not result["gates"]["post_speech_noise_evidence"]
+    assert any("no complete frame after the 600 ms" in reason for reason in result["reasons"])
 
 
 def test_joint_selection_reports_unavailable_models_and_retains_incumbent(monkeypatch):
@@ -250,9 +463,11 @@ def test_joint_tuning_refreshes_probabilities_for_incumbent_pre_gain(monkeypatch
         assert result["gate_settings"] == incumbent_gate
 
 
-@pytest.mark.parametrize("with_neural_vad", [True, False])
+@pytest.mark.parametrize("speech_neural_vad,noise_neural_vad", [
+    (True, True), (False, False), (True, False), (False, True),
+])
 def test_joint_downstream_uses_neural_vad_separately_from_energy_fallback(
-    monkeypatch, with_neural_vad
+    monkeypatch, speech_neural_vad, noise_neural_vad,
 ):
     monkeypatch.setattr(joint_tuning, "_model_order", lambda _model: ["rnnoise"])
     args = list(_tuning_args())
@@ -284,16 +499,28 @@ def test_joint_downstream_uses_neural_vad_separately_from_energy_fallback(
             "suppressor": {"model": "rnnoise", "enabled": True, "strength": 1.0},
         },
     }
-    if with_neural_vad:
-        kwargs.update(
-            vad_probabilities=speech_vad,
-            noise_vad_probabilities=noise_vad,
-        )
+    if speech_neural_vad:
+        kwargs["vad_probabilities"] = speech_vad
+    if noise_neural_vad:
+        kwargs["noise_vad_probabilities"] = noise_vad
 
-    joint_tuning.tune_gate_suppression_dynamics(*args, **kwargs)
+    result = joint_tuning.tune_gate_suppression_dynamics(*args, **kwargs)
 
+    if speech_neural_vad != noise_neural_vad:
+        assert not observed
+        assert not result["apply_recommended"]
+        assert result["gate_settings"] == args[3]
+        assert result["status"] == "unavailable"
+        assert "VAD availability differs" in result["reason"]
+        return
     assert observed
-    if not with_neural_vad:
+    assert result["candidates"]
+    assert all(
+        bool(candidate["metrics"]["continuous_vad_available"])
+        == (speech_neural_vad and noise_neural_vad)
+        for candidate in result["candidates"]
+    )
+    if not (speech_neural_vad and noise_neural_vad):
         assert all("vad_probabilities" not in chain for _, chain in observed)
         assert all(
             all(row[1] == 0.0 for row in chain["auto_makeup_activity"])
@@ -386,6 +613,7 @@ def test_latency_gate_accepts_the_configured_35_ms_boundary():
         "false_closure_rate": 0.0,
         "tail_retained_ratio": 0.60,
         "noise_attenuation_db": 6.0,
+        "post_speech_noise_frame_count": 20.0,
         "chatter_events": 0.0,
         "compressor_p95_db": 3.5,
         "compressor_target_p95_db": 3.5,

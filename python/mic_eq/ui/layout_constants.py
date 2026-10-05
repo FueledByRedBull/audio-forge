@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PyQt6.QtCore import QSignalBlocker, QSize, Qt
-from PyQt6.QtGui import QGuiApplication
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import QSignalBlocker, QSize, Qt
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDoubleSpinBox,

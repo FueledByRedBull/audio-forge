@@ -6,7 +6,7 @@ Adapted from Spectral Workbench project.
 DEBUG: Added terminal logging for processor state tracking
 """
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QMainWindow,
     QDialog,
     QWidget,
@@ -31,13 +31,14 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSystemTrayIcon,
 )
-from PyQt6.QtCore import QEvent, Qt, QTimer, QRect
-from PyQt6.QtGui import QAction, QGuiApplication, QIcon
+from PySide6.QtCore import QEvent, Qt, QTimer, QRect, QUrl
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QIcon
 import os
 import sys
 import json
 import logging
 import math
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -94,6 +95,7 @@ from .startup_presets import (
 )
 from .theme import prefers_reduced_motion
 from .desktop_integration import GlobalMuteHotkey, activate_window, build_tray_tooltip
+from . import login_startup
 from .. import AudioProcessor, __version__, list_input_devices, list_output_devices
 from ..diagnostics_export import (
     build_diagnostics_snapshot,
@@ -263,7 +265,7 @@ class MainWindow(QMainWindow):
     COMPACT_LAYOUT_BREAKPOINT = 1200
     VERTICAL_SPLITTER_BREAKPOINT = 1160
 
-    def __init__(self):
+    def __init__(self, *, login_startup: bool = False):
         super().__init__()
         self.setWindowTitle("AudioForge - Microphone Audio Processor")
 
@@ -272,6 +274,16 @@ class MainWindow(QMainWindow):
 
         # Load configuration
         self.config = load_config()
+        self._login_startup = login_startup
+        self._login_startup_deadline: float | None = None
+        self._login_startup_next_retry = 0.0
+        self._login_startup_message = ""
+        # Capture the persisted IDs before normal UI restoration can enrich a
+        # name-only selection from today's enumeration.
+        self._login_startup_route = (
+            self.config.last_input_device_identity, self.config.last_output_device_identity
+        )
+        self._startup_restore_ready = False
         self.current_preset_path = None
         self.current_preset_name = "Default"
         self.preset_modified = False
@@ -358,7 +370,8 @@ class MainWindow(QMainWindow):
                 0,
                 lambda: self.status_bar.showMessage(warning),
             )
-        QTimer.singleShot(0, self._maybe_show_first_run_setup)
+        if not self._login_startup:
+            QTimer.singleShot(0, self._maybe_show_first_run_setup)
 
         # Meter update timer (60 FPS)
         self.meter_timer = QTimer(self)
@@ -1076,7 +1089,11 @@ class MainWindow(QMainWindow):
             label.setProperty("health_state", state)
 
     def _reset_health_labels(self) -> None:
-        self._set_health_chip(self.health_summary_label, "Health: --", "idle")
+        startup_message = self.__dict__.get("_login_startup_message", "")
+        self._set_health_chip(
+            self.health_summary_label, startup_message or "Health: --",
+            "warning" if startup_message else "idle",
+        )
         self._set_health_chip(self.input_health_label, "Input: --", "idle")
         self._set_health_chip(self.output_health_label, "Output: --", "idle")
         self._set_health_chip(self.gate_health_label, "Gate: --", "idle")
@@ -1723,6 +1740,14 @@ class MainWindow(QMainWindow):
 
         help_menu.addSeparator()
 
+        licenses_action = QAction("&Licenses...", self)
+        licenses_action.triggered.connect(self._show_licenses)
+        help_menu.addAction(licenses_action)
+
+        qt_action = QAction("About &Qt", self)
+        qt_action.triggered.connect(lambda: QMessageBox.aboutQt(self))
+        help_menu.addAction(qt_action)
+
         about_action = QAction("&About", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
@@ -1885,14 +1910,140 @@ class MainWindow(QMainWindow):
         self._mute_hotkey_action.toggled.connect(self._on_mute_hotkey_toggled)
         desktop_menu.addAction(self._mute_hotkey_action)
 
-    def _setup_desktop_integration(self) -> None:
+        desktop_menu.addSeparator()
+        self._login_startup_action = QAction("Configure login shortcut for this copy", self)
+        self._login_startup_action.setCheckable(True)
+        self._login_startup_action.toggled.connect(self._on_login_startup_toggled)
+        desktop_menu.addAction(self._login_startup_action)
+        self._login_startup_status_action = QAction("", self)
+        desktop_menu.addAction(self._login_startup_status_action)
+        self._login_startup_status_action.setEnabled(False)
+        desktop_menu.aboutToShow.connect(self._refresh_login_startup_action)
+        self._refresh_login_startup_action()
+
+    def _refresh_login_startup_action(self) -> None:
+        packaged = sys.platform == "win32" and bool(getattr(sys, "frozen", False))
+        state = login_startup.registration_state(Path(sys.executable)) if packaged else "absent"
+        self._login_startup_action.blockSignals(True)
+        self._login_startup_action.setChecked(state == "configured")
+        self._login_startup_action.setEnabled(packaged and state in {"absent", "configured"})
+        self._login_startup_action.blockSignals(False)
+        messages = {
+            "absent": "No login shortcut configured",
+            "configured": "Shortcut configured; Windows may disable it",
+            "other": "Login shortcut belongs to another copy or is unrecognized",
+            "unreadable": "Login shortcut could not be read; left unchanged",
+        }
+        self._login_startup_status_action.setText(
+            messages[state] if packaged else "Login startup requires the packaged executable"
+        )
+        self._login_startup_action.setToolTip(
+            "Windows Settings > Apps > Startup controls whether this shortcut runs. "
+            "Moving a portable copy requires removing its shortcut before moving it."
+        )
+
+    def _on_login_startup_toggled(self, checked: bool) -> None:
+        if not checked:
+            self._cancel_login_startup()
+        try:
+            login_startup.set_login_startup(Path(sys.executable), checked)
+        except Exception as error:
+            logger.exception("Could not change the login shortcut")
+            self.status_bar.showMessage(str(error), 8000)
+        self._refresh_login_startup_action()
+
+    def begin_login_startup(self) -> None:
+        """Wait up to a minute for the tray and the exact saved route, without focus."""
+        self._hidden_to_tray = True
+        self._login_startup_deadline = time.monotonic() + 60.0
+        self._login_startup_next_retry = 0.0
+        self._service_login_startup()
+
+    def _cancel_login_startup(self, message: str = "") -> None:
+        pending = self.__dict__.get("_login_startup_deadline") is not None
+        self._login_startup_deadline = None
+        self._login_startup = False
+        if pending or message:
+            self._login_startup_message = message
+            if message:
+                logger.warning(message)
+                self.status_bar.showMessage(message)
+            self._update_session_summary()
+
+    def _service_login_startup(self) -> None:
+        deadline = self.__dict__.get("_login_startup_deadline")
+        if deadline is None or self._quitting:
+            return
+        now = time.monotonic()
+        if now < self._login_startup_next_retry:
+            return
+        self._login_startup_next_retry = now + 1.0
+        if self._tray_icon is None:
+            self._setup_desktop_integration(tray_only=True)
+        if self._tray_icon is None or not self._tray_icon.isVisible():
+            if now >= deadline:
+                self._cancel_login_startup("Login stopped: Windows tray unavailable; exiting")
+                app = QGuiApplication.instance()
+                if app is not None:
+                    app.exit(1)
+            return
+        if login_startup.registration_state(Path(sys.executable)) != "configured":
+            self._cancel_login_startup("Login stopped: this copy's shortcut is no longer configured")
+            return
+        if (
+            not self._startup_restore_ready or self.config.load_warning
+            or self.config.save_blocked_reason
+        ):
+            self._cancel_login_startup("Login stopped: saved settings could not be restored")
+            return
+        saved_input, saved_output = self._login_startup_route
+        if any(identity is None or not identity.endpoint_id for identity in self._login_startup_route):
+            self._cancel_login_startup("Login stopped: select and save both exact audio endpoints")
+            return
+        if now >= deadline:
+            self._cancel_login_startup("Login stopped: saved endpoints did not become available")
+            return
+        self._refresh_devices()
+        indices = (
+            find_identity_index(self._combo_identities(self.input_combo), saved_input),
+            find_identity_index(self._combo_identities(self.output_combo), saved_output),
+        )
+        if min(indices) < 0:
+            self._login_startup_message = "Login waiting for saved audio endpoints"
+            self.status_bar.showMessage(self._login_startup_message)
+            self.stop_btn.setEnabled(True)
+            return
+        for combo, index in zip((self.input_combo, self.output_combo), indices):
+            blocked = combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(blocked)
+        self._apply_input_preferences_for_current_route()
+        self._apply_latency_compensation_for_current_devices()
+        route_key = self._current_device_route_key()
+        if (
+            self.config.auto_apply_device_presets
+            and route_key in self.config.device_preset_bindings
+            and not self._apply_bound_preset_for_current_route()
+        ):
+            self._cancel_login_startup("Login stopped: saved route preset could not be restored")
+            return
+        self._cancel_login_startup()
+        if not self._start_processing(interactive=False):
+            message = (
+                "Login needs attention: audio may still be running; use Stop"
+                if self.processor.is_running()
+                else "Login stopped: audio could not start safely; open AudioForge"
+            )
+            self._cancel_login_startup(message)
+
+    def _setup_desktop_integration(self, *, tray_only: bool = False) -> None:
         """Create the optional tray icon and register the configured hotkey."""
         app = QGuiApplication.instance()
-        if app is not None:
+        if app is not None and not tray_only:
             app.aboutToQuit.connect(self._mark_quitting)
 
         configured_hotkey = str(getattr(self.config, "mute_hotkey", "") or "")
-        if configured_hotkey:
+        if configured_hotkey and not tray_only:
             self._register_mute_hotkey(configured_hotkey)
         if not QSystemTrayIcon.isSystemTrayAvailable():
             if self._close_to_tray_action is not None:
@@ -1901,6 +2052,12 @@ class MainWindow(QMainWindow):
                 self._close_to_tray_action.setChecked(False)
                 self._close_to_tray_action.blockSignals(False)
             return
+
+        if self._close_to_tray_action is not None:
+            self._close_to_tray_action.setEnabled(True)
+            self._close_to_tray_action.blockSignals(True)
+            self._close_to_tray_action.setChecked(bool(self.config.close_to_tray))
+            self._close_to_tray_action.blockSignals(False)
 
         icon = self.windowIcon()
         if icon.isNull() and isinstance(app, QGuiApplication):
@@ -2076,7 +2233,7 @@ class MainWindow(QMainWindow):
         self._update_startup_preset_menu(startup_preset_id)
 
     def _maybe_show_first_run_setup(self) -> None:
-        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get(
+        if self.__dict__.get("_login_startup", False) or os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get(
             "AUDIOFORGE_SMOKE_TEST"
         ):
             return
@@ -2561,13 +2718,19 @@ class MainWindow(QMainWindow):
                     )
                 if previous_input is not None:
                     if not self._select_combo_identity(self.input_combo, previous_input):
-                        fallback_index = self._default_combo_index(self.input_combo)
+                        fallback_index = (
+                            -1 if self.__dict__.get("_login_startup", False)
+                            else self._default_combo_index(self.input_combo)
+                        )
+                        self.input_combo.setCurrentIndex(fallback_index)
                         if fallback_index >= 0:
-                            self.input_combo.setCurrentIndex(fallback_index)
-                        if previous_input.name:
                             self.status_bar.showMessage(
                                 f"Previous input device '{previous_input.name}' is disconnected; "
                                 "using the default until it returns"
+                            )
+                        elif previous_input.name:
+                            self.status_bar.showMessage(
+                                f"Saved input device '{previous_input.name}' is disconnected"
                             )
                     else:
                         resolved = self._combo_device_identity(self.input_combo)
@@ -2661,7 +2824,7 @@ class MainWindow(QMainWindow):
             if route_changed or capture_format_changed:
                 self._apply_input_preferences_for_current_route()
                 self._apply_latency_compensation_for_current_devices()
-            if route_changed:
+            if route_changed and not self.__dict__.get("_login_startup", False):
                 self._apply_bound_preset_for_current_route()
             if route_changed or capture_format_changed:
                 self._sync_calibration_evidence(force_reset=True)
@@ -2678,6 +2841,7 @@ class MainWindow(QMainWindow):
         """Restore settings from loaded config."""
         restored_count = 0
         config_dirty = False
+        requested_preset = bool(self.config.startup_preset or self.config.last_preset)
 
         self.input_combo.blockSignals(True)
         self.output_combo.blockSignals(True)
@@ -2700,9 +2864,12 @@ class MainWindow(QMainWindow):
                     config_dirty = True
                 restored_count += 1
             else:
+                if self.__dict__.get("_login_startup", False):
+                    self.input_combo.setCurrentIndex(-1)
                 self.status_bar.showMessage(
                     f"Previous input device '{input_identity.name}' is disconnected; "
-                    "using the default until it returns"
+                    + ("waiting for the saved endpoint" if self.__dict__.get("_login_startup", False)
+                       else "using the default until it returns")
                 )
 
         # Restore output device
@@ -2820,6 +2987,7 @@ class MainWindow(QMainWindow):
                     f"Startup preset '{preset_name}' not found", 5000
                 )
 
+        startup_preset_failed = bool(self.config.startup_preset) and not preset_loaded
         # Fall back to last_preset if startup_preset not set or not found
         if not preset_loaded and self.config.last_preset:
             try:
@@ -2866,6 +3034,9 @@ class MainWindow(QMainWindow):
                 if not cleared:
                     self.config.load_warning += "\nThe cleared preset reference could not be saved."
 
+        self._startup_restore_ready = (
+            not startup_preset_failed and (preset_loaded or not requested_preset)
+        )
         # Show appropriate status message
         if self.config.load_warning:
             self.status_bar.showMessage(self.config.load_warning)
@@ -2893,7 +3064,8 @@ class MainWindow(QMainWindow):
 
         # Route-specific DSP is more specific than the generic startup/last-used
         # preset and is intentionally applied only after both endpoints resolve.
-        self._apply_bound_preset_for_current_route()
+        if not self.__dict__.get("_login_startup", False):
+            self._apply_bound_preset_for_current_route()
 
         self.input_combo.blockSignals(False)
         self.output_combo.blockSignals(False)
@@ -2911,6 +3083,9 @@ class MainWindow(QMainWindow):
 
     def _on_device_changed(self):
         """Handle device selection change - save to config."""
+        if self.__dict__.get("_login_startup_deadline") is not None:
+            self._cancel_login_startup()
+        self._login_startup = False
         if hasattr(self, "config"):  # Check config is initialized
             input_identity = self._combo_device_identity(self.input_combo)
             output_identity = self._combo_device_identity(self.output_combo)
@@ -2967,12 +3142,17 @@ class MainWindow(QMainWindow):
                 "Input settings applied for this session, but could not be saved", 6000
             )
 
-    def _start_processing(self):
+    def _start_processing(self, *, interactive: bool = True) -> bool:
         """Start audio processing."""
+        if interactive:
+            if self.__dict__.get("_login_startup_deadline") is not None:
+                self._cancel_login_startup()
+            self._login_startup = False
+            self._login_startup_message = ""
         if self.processor.is_running():
             if DEBUG:
                 logger.debug("Start processing clicked, but processor already running")
-            return
+            return True
 
         if "configuration" in self.__dict__.get("_temporary_mute_reasons", set()):
             self.status_bar.showMessage(
@@ -2981,17 +3161,19 @@ class MainWindow(QMainWindow):
                 7000,
             )
             self._sync_processing_controls()
-            return
+            return False
 
         if self._combo_device_identity(self.output_combo) is None:
             self.status_bar.showMessage("Select an available destination before starting")
-            return
+            return False
 
         input_device = self._device_selection_to_name(self.input_combo) or None
         output_device = self._device_selection_to_name(self.output_combo) or None
         self._apply_input_preferences_for_current_route()
         # Set the persisted mute before native startup so the first buffer is safe.
         self._apply_output_mute()
+        if not interactive and self._output_mute_error is not None:
+            return False
 
         if DEBUG:
             logger.debug(
@@ -3011,6 +3193,9 @@ class MainWindow(QMainWindow):
             if DEBUG:
                 logger.debug("Restoring output mute state after processing start")
             self._apply_output_mute()
+            if not interactive and self._output_mute_error is not None:
+                self.processor.stop()
+                raise RuntimeError("Output mute state could not be restored")
             self.status_bar.showMessage(f"Processing: {result}")
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
@@ -3022,8 +3207,14 @@ class MainWindow(QMainWindow):
             self._sync_meter_timer()
             if DEBUG:
                 logger.debug("Processing started: %s", result)
+            return True
         except Exception as e:
             logger.exception("Start processing failed")
+            if not interactive and self.processor.is_running():
+                try:
+                    self.processor.stop()
+                except Exception:
+                    logger.exception("Could not stop audio after failed login startup")
             error_msg = str(e)
             # Provide actionable guidance based on error type
             if "device" in error_msg.lower() or "audio" in error_msg.lower():
@@ -3040,19 +3231,21 @@ class MainWindow(QMainWindow):
                     "1. Stop and restart the application\n"
                     "2. Check that no other app is using the audio device"
                 )
-            QMessageBox.critical(
-                self,
-                "Error Starting Processing",
-                f"Failed to start audio processing:\n\n{e}\n\n{guidance}",
-            )
+            if interactive:
+                QMessageBox.critical(
+                    self,
+                    "Error Starting Processing",
+                    f"Failed to start audio processing:\n\n{e}\n\n{guidance}",
+                )
             self.status_bar.showMessage(f"Error: {e}")
             self._sync_processing_controls()
+            return False
 
     def _sync_processing_controls(self) -> None:
         """Reflect the native processor state after recovery or a failed start."""
         running = bool(self.processor.is_running())
         self.start_btn.setEnabled(not running)
-        self.stop_btn.setEnabled(running)
+        self.stop_btn.setEnabled(running or self.__dict__.get("_login_startup_deadline") is not None)
         self.input_combo.setEnabled(not running)
         self.output_combo.setEnabled(not running)
         self.refresh_btn.setEnabled(not running)
@@ -3065,6 +3258,8 @@ class MainWindow(QMainWindow):
 
     def _stop_processing(self):
         """Stop audio processing."""
+        if self.__dict__.get("_login_startup_deadline") is not None:
+            self._cancel_login_startup()
         if not self.processor.is_running():
             self._sync_processing_controls()
             if DEBUG:
@@ -3602,6 +3797,16 @@ class MainWindow(QMainWindow):
 
     def _update_diagnostics(self):
         """Update slower diagnostics and service recovery."""
+        if self.__dict__.get("_login_startup_deadline") is not None:
+            try:
+                self._service_login_startup()
+            except Exception:
+                logger.exception("Login route restoration failed")
+                self._cancel_login_startup("Login stopped: route restoration failed; open AudioForge")
+                if self._tray_icon is None or not self._tray_icon.isVisible():
+                    app = QGuiApplication.instance()
+                    if app is not None:
+                        app.exit(1)
         sync_meters = getattr(self, "_sync_meter_timer", None)
         if callable(sync_meters):
             sync_meters()
@@ -4236,6 +4441,19 @@ class MainWindow(QMainWindow):
             "environment variables, secrets, or arbitrary paths.",
         )
 
+    def _show_licenses(self):
+        """Open the notices shipped with this copy of AudioForge."""
+        root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
+        notices = root / "licenses"
+        if not (notices / "THIRD_PARTY_NOTICES.md").is_file() or not QDesktopServices.openUrl(
+            QUrl.fromLocalFile(str(notices))
+        ):
+            QMessageBox.warning(
+                self,
+                "License Notices",
+                f"Unable to open the bundled license notices. Check: {notices}",
+            )
+
     def _show_about(self):
         """Show about dialog."""
         QMessageBox.about(
@@ -4243,6 +4461,9 @@ class MainWindow(QMainWindow):
             "About AudioForge",
             f"<h2>AudioForge v{__version__}</h2>"
             "<p>Low-latency microphone audio processor</p>"
+            "<p>AudioForge source: MIT. Uses Qt and PySide6 under LGPLv3, "
+            "with separately licensed dependencies. See Help &gt; Licenses "
+            "for the complete notices and library replacement instructions.</p>"
             "<p>Inspired by SteelSeries GG Sonar ClearCast AI</p>"
             "<h3>Processing Chain:</h3>"
             "<p>Mic -&gt; Input Cleanup -&gt; Gate -&gt; AI Noise -&gt; De-Esser -&gt; EQ -&gt; Comp -&gt; True-Peak Limiter -&gt; Output</p>"
@@ -4533,7 +4754,7 @@ class MainWindow(QMainWindow):
         except Exception as error:
             if require_exact:
                 raise
-            if self.__dict__.get("_history_ready", False):
+            if self.__dict__.get("_history_ready", False) and self.__dict__.get("_login_startup_deadline") is None:
                 QMessageBox.critical(self, "Preset Not Applied", str(error))
             else:
                 self.config.load_warning = "\n".join(filter(None, (

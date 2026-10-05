@@ -7,7 +7,7 @@ Adapted from Spectral Workbench project.
 import logging
 import math
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QGroupBox,
@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QComboBox,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PySide6.QtCore import Qt, Signal
 from .rate_limiter import RateLimiter
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 class GatePanel(QWidget):
     """Noise Gate parameter control panel."""
 
-    configurationEdited = pyqtSignal(str)
+    configurationEdited = Signal(str)
 
     def __init__(self, processor):
         super().__init__()

@@ -12,8 +12,8 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
-from PyQt6.QtCore import QEventLoop, QThread, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QMessageBox, QWidget
+from PySide6.QtCore import QEventLoop, QThread, QTimer, Signal
+from PySide6.QtWidgets import QMessageBox, QWidget
 
 from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.ui.calibration_dialog import CalibrationDialog, _selected_device_pair
@@ -131,9 +131,9 @@ class _CaptureWorkerStub:
 class _SlowAnalysisWorker(QThread):
     """Non-cooperative worker used to verify asynchronous dialog teardown."""
 
-    step_progress = pyqtSignal(str, int)
-    result_ready = pyqtSignal(dict)
-    failed = pyqtSignal(str)
+    step_progress = Signal(str, int)
+    result_ready = Signal(dict)
+    failed = Signal(str)
     instances: list["_SlowAnalysisWorker"] = []
 
     def __init__(self, *args, **kwargs):
@@ -2103,7 +2103,7 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
     window.deesser_panel = _PresetPanel()
     window.compressor_panel = _PresetPanel()
     window.rnnoise_checkbox = _FakeControl()
-    from PyQt6.QtWidgets import QSlider
+    from PySide6.QtWidgets import QSlider
     window.strength_slider = QSlider()
     window.strength_slider.setRange(0, 100)
     window.strength_label = _FakeLabel()
@@ -2155,7 +2155,7 @@ def test_configuration_writer_rejects_model_load_failure_before_panel_edits(qapp
     window.deesser_panel = _PresetPanel()
     window.compressor_panel = _PresetPanel()
     window.rnnoise_checkbox = _FakeControl()
-    from PyQt6.QtWidgets import QSlider
+    from PySide6.QtWidgets import QSlider
     window.strength_slider = QSlider()
     window.strength_slider.setRange(0, 100)
     window.strength_label = _FakeLabel()
@@ -2266,7 +2266,7 @@ class _DeferredEQPanel:
 
 
 def _deferred_configuration_window(events, *, fail_deesser_value=None):
-    from PyQt6.QtWidgets import QSlider
+    from PySide6.QtWidgets import QSlider
 
     window = MainWindow.__new__(MainWindow)
     window.gate_panel = _DeferredPresetPanel(events, "gate")

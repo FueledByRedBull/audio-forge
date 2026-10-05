@@ -505,6 +505,15 @@ fn simulate_input_frontend_with_activity(
             }
         }
 
+        if let Some(engine) = suppressor.as_ref() {
+            if engine.backend_failed() {
+                return Err(engine
+                    .backend_error()
+                    .unwrap_or("noise suppressor failed during offline rendering")
+                    .to_string());
+            }
+        }
+
         let aligned_start = suppressor_latency.min(delayed_output.len());
         let aligned_end = aligned_start
             .saturating_add(audio.len())
@@ -904,6 +913,12 @@ pub fn simulate_gate_suppressor_order(
                     }
                     output.extend_from_slice(&frame);
                 }
+            }
+            if suppressor.backend_failed() {
+                return Err(suppressor
+                    .backend_error()
+                    .unwrap_or("noise suppressor failed during offline rendering")
+                    .to_string());
             }
             output.truncate(audio.len());
             if let Some(dry_audio) = dry_audio.as_mut() {
@@ -1709,14 +1724,10 @@ mod compressor_metric_tests {
     #[test]
     fn pumping_score_focuses_on_fast_gain_modulation() {
         let fast = (0..500)
-            .map(|index| {
-                3.0 + (2.0 * std::f32::consts::PI * 4.0 * index as f32 / 50.0).sin()
-            })
+            .map(|index| 3.0 + (2.0 * std::f32::consts::PI * 4.0 * index as f32 / 50.0).sin())
             .collect::<Vec<_>>();
         let slow = (0..500)
-            .map(|index| {
-                3.0 + (2.0 * std::f32::consts::PI * 0.2 * index as f32 / 50.0).sin()
-            })
+            .map(|index| 3.0 + (2.0 * std::f32::consts::PI * 0.2 * index as f32 / 50.0).sin())
             .collect::<Vec<_>>();
 
         assert!(
@@ -1730,7 +1741,9 @@ mod compressor_metric_tests {
         for frequency in [0.2, 4.0, 18.0] {
             let score = |cadence: f32| {
                 let trace = (0..(10.0 * cadence) as usize)
-                    .map(|n| 3.0 + (2.0 * std::f32::consts::PI * frequency * n as f32 / cadence).sin())
+                    .map(|n| {
+                        3.0 + (2.0 * std::f32::consts::PI * frequency * n as f32 / cadence).sin()
+                    })
                     .collect::<Vec<_>>();
                 compressor_pumping_score(&trace, cadence)
             };

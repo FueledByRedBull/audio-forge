@@ -7,8 +7,8 @@ import time
 from unittest.mock import Mock
 
 import numpy as np
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QWidget
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui import latency_calibration_dialog as latency_ui
 

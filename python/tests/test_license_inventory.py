@@ -29,6 +29,40 @@ def test_same_basename_different_notices_are_preserved(tmp_path: Path):
         assert hashlib.sha256(file.read_bytes()).hexdigest() == notice["sha256"]
 
 
+def test_qt_notices_cover_normalized_wheel_distribution_names(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.14.0"\n', encoding="utf-8")
+    (tmp_path / "requirements").mkdir()
+    (tmp_path / "requirements/runtime.txt").write_text(
+        "pyside6-essentials==6.11.1\npyside6-addons==6.11.1\nshiboken6==6.11.1\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "licenses").mkdir()
+    notice = tmp_path / "licenses/QtForPython-6.11.1-NOTICES.txt"
+    notice.write_text("Complete upstream license collection", encoding="utf-8")
+    names = {
+        "pyside6-essentials": "PySide6_Essentials",
+        "pyside6-addons": "PySide6_Addons",
+        "shiboken6": "shiboken6",
+    }
+    monkeypatch.setattr(license_inventory, "ROOT", tmp_path)
+    monkeypatch.setattr(license_inventory.metadata, "distribution", lambda name: SimpleNamespace(
+        version="6.11.1", files=[], metadata={"Name": names.get(name, name)},
+    ))
+    monkeypatch.setattr(license_inventory.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(
+        stdout=json.dumps({"resolve": {"nodes": []}, "packages": []}),
+    ))
+    monkeypatch.setattr(license_inventory, "_deepfilter_rust_components", lambda *args: [])
+    monkeypatch.setattr(license_inventory, "load_asset_manifest", lambda *args: SimpleNamespace(assets=[]))
+    monkeypatch.setattr(license_inventory, "source_distribution_status", lambda *args: {})
+    output = tmp_path / "build/dependency-licenses"
+    inventory = license_inventory.build_inventory(output)
+    for component in inventory["python_components"]:
+        if component["name"] in names.values():
+            assert len(component["notices"]) == 1, component["name"]
+            bundled = output / component["notices"][0]["file"]
+            assert bundled.read_bytes() == notice.read_bytes()
+
+
 def test_spec_bundles_only_current_verified_notices(tmp_path: Path):
     root = Path(__file__).resolve().parents[2]
     directory = tmp_path / "build" / "dependency-licenses"

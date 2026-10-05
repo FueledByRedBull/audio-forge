@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QAbstractButton,
     QComboBox,
     QDoubleSpinBox,

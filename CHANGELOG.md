@@ -10,6 +10,13 @@
 - The fade-in after an output dropout now lands at the dropout instead of about 7 ms later.
 - Limiter lookahead scoring no longer shifts already-aligned audio; the corrected qualification still selects 0.5 ms.
 - Auto Voice Setup's and the offline previews' simulations gate each 10 ms block with the newest speech-detection result finished before it, as the live engine does; they previously used a result that finished inside the block, which made VAD gate modes look slightly better than they are live.
+- Auto Voice Setup evaluates gate and noise-suppression candidates with compression bypassed, then calibrates compression and validates the full chain. It checks noise following speech without resetting the gate or suppressor, and rejects candidates that make settled post-speech noise at least 1 dB louder than the current settings.
+- Recovery after a capture gap discards partial input frames and stale suppressor overlap. The recovery fade starts when valid delayed audio arrives, rather than being spent on the suppressor's empty output prefix.
+- Share threshold-only compressor calibration between setup and evaluation, and separate the existing slow automatic makeup controller from compressor detection and gain smoothing. Render/state parity is preserved; the rejected multidimensional search remains in the offline evaluator.
+
+### Desktop and setup
+
+- Add a default-off login shortcut for packaged copies under Options > Tray & Background. A login launch stays in the tray, waits up to 60 seconds for the exact saved devices, and preserves output mute. Missing devices never select replacements automatically; Windows can disable a configured shortcut. Installer and Windows-shell lifecycle checks remain outstanding as documented in [RELEASING.md](RELEASING.md#login-startup-lifecycle).
 
 ### Auto-EQ
 
@@ -19,14 +26,18 @@
 
 - Update Semgrep to 1.179.0, PyJWT to 2.15.1 and urllib3 to 2.8.0 in the development lock, clearing the PyJWT and urllib3 advisories that failed the dependency audit; the development audit no longer needs an ignore.
 - Update github/codeql-action/upload-sarif to 4.38.2.
+- Migrate the interface and package to pinned PySide6 Essentials/Addons and shiboken6 6.11.1, with component notices, a corresponding-source manifest and Qt library replacement instructions. Previously published PyQt6 packages retain their GPLv3 terms.
+- Reuse the native 48 kHz K-weighting filter for setup loudness analysis, and use NumPy correlation for latency calibration. Numerical and decision checks preserve the existing behavior; SciPy remains a runtime dependency.
+- Add per-component bundle-size reporting and retain both DeepFilterNet models. The measured portable tree is larger; startup and idle-memory comparisons remain unqualified.
+- Add `dev.ps1` bootstrap, run, test and offline doctor commands using the existing pinned tools and hash-locked requirements. Bootstrap preserves incomplete environments; system prerequisites are installed separately.
 
 ### Evaluation and repository
 
 - Re-evaluated the noise gate on a fullband EARS/DEMAND corpus with causal VAD timing: the gate stays before noise suppression, and a speech-presence gate replacement failed its predefined rule, so the current gate is kept.
 - Removed nine superseded evaluation reports, the evaluators of closed decisions, and the published v1.12.0-v1.13.0 release notes (they remain on GitHub Releases and in tagged source).
 - Evaluation hygiene checks a released report at the first release that shipped it unchanged, so later code changes no longer force edits to released evidence.
-- October studies on simulated users (VoiceBank speech, DEMAND noise, synthetic rooms) kept the current behavior where a predefined rule did not support a change: a simpler fixed-grid Auto-EQ fitter, microphone correction from speech, fixed Adaptive-layer offsets, turning the gate off or to VAD Assisted under a neural suppressor (it costs 4-7 dB at phrase onsets but keeps long pauses 6-10 dB quieter), and refitting the de-esser's setup model (its realtime auto mode barely acts on a persistently harsh voice).
-- Auto Voice Setup's gate and noise-suppression tuner never changed settings for simulated users although a tested candidate was clearly better for about half of them; its absolute checks grade the frontend through a compressor that is calibrated only later. Relative checks and a fitted selector were tested and did not meet their predefined rule, so the tuner is unchanged.
+- The original October studies on simulated users (VoiceBank speech, DEMAND noise, synthetic rooms) kept the then-current behavior where a predefined rule did not support a change: a simpler fixed-grid Auto-EQ fitter, microphone correction from speech, fixed Adaptive-layer offsets, turning the gate off or to VAD Assisted under a neural suppressor (it costs 4-7 dB at phrase onsets but keeps long pauses 6-10 dB quieter), and refitting the de-esser's setup model (its realtime auto mode barely acts on a persistently harsh voice).
+- Before the check-ordering repair above, Auto Voice Setup's gate and noise-suppression tuner never changed settings for simulated users although a tested candidate was clearly better for about half of them: its absolute checks graded the frontend through an uncalibrated compressor. The relative checks and fitted selector tested in that study failed their predefined rule and remain rejected; the historical report is unchanged.
 
 ## v1.14.0
 

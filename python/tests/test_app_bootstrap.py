@@ -309,7 +309,7 @@ def test_windows_taskbar_relaunch_command_quotes_executable_path(qapp, monkeypat
     executable = r"C:\Program Files\AudioForge\AudioForge.exe"
     monkeypatch.setattr(app_bootstrap.sys, "executable", executable)
 
-    from PyQt6.QtWidgets import QMainWindow
+    from PySide6.QtWidgets import QMainWindow
 
     window = QMainWindow()
     try:
@@ -324,7 +324,7 @@ def test_windows_taskbar_relaunch_command_quotes_executable_path(qapp, monkeypat
 
 def test_packaged_startup_smoke_runs_real_event_loop_in_isolated_config():
     script = """
-from PyQt6.QtWidgets import QMainWindow
+from PySide6.QtWidgets import QMainWindow
 from mic_eq.ui.app_bootstrap import run_smoke_test
 
 class Processor:

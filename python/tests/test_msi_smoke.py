@@ -221,6 +221,24 @@ def test_msi_defines_per_user_shortcut_and_upgrade_policy() -> None:
     assert '<RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />' in source
 
 
+def test_login_cleanup_runs_from_installed_exe_only_on_real_uninstall() -> None:
+    import xml.etree.ElementTree as ET
+
+    root = ET.parse(Path(__file__).parents[2] / "installer" / "AudioForge.wxs").getroot()
+    ns = {"w": "http://wixtoolset.org/schemas/v4/wxs"}
+    action = root.find(".//w:CustomAction[@Id='RemoveLoginStartup']", ns)
+    assert action is not None
+    assert action.attrib["Directory"] == "INSTALLFOLDER"
+    assert action.attrib["ExeCommand"] == '"[INSTALLFOLDER]AudioForge.exe" --remove-login-startup'
+    assert action.attrib["Execute"] == "deferred"
+    assert action.attrib["Impersonate"] == "yes"
+    assert action.attrib["Return"] == "ignore"
+    sequence = root.find(".//w:InstallExecuteSequence/w:Custom[@Action='RemoveLoginStartup']", ns)
+    assert sequence is not None
+    assert sequence.attrib["Before"] == "RemoveFiles"
+    assert sequence.attrib["Condition"] == 'REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE'
+
+
 def test_msi_build_script_targets_x64() -> None:
     source = (Path(__file__).parents[2] / "build_msi.ps1").read_text(
         encoding="utf-8"

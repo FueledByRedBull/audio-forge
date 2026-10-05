@@ -7,9 +7,9 @@ import re
 from pathlib import Path
 
 import pytest
-from PyQt6.QtCore import QRect, Qt
-from PyQt6.QtGui import QPalette
-from PyQt6.QtWidgets import QLabel, QScrollArea, QWidget
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QLabel, QScrollArea, QWidget
 
 from mic_eq.config import AppConfig
 from mic_eq.ui.accessibility import audit_widget_tree, set_accessible

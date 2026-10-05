@@ -223,6 +223,28 @@ def test_release_manifest_rejects_stale_qt_source_identity():
         source_tool._validate_manifest(manifest, release=True)
 
 
+@pytest.mark.parametrize("name", source_tool.PYSIDE_PACKAGES)
+def test_pyside_mapping_rejects_missing_or_different_wheel_versions(name):
+    runtime = {package.casefold(): "6.11.1" for package in source_tool.PYSIDE_PACKAGES}
+    for wrong in (None, "6.11.0", "6.12.0"):
+        changed = dict(runtime)
+        if wrong is None:
+            del changed[name.casefold()]
+        else:
+            changed[name.casefold()] = wrong
+        with pytest.raises(SourceDistributionError, match="verified source mapping"):
+            source_tool._pyside_source_entries(changed)
+
+
+@pytest.mark.parametrize("field", ["sha256", "url", "source_of_truth"])
+def test_release_manifest_rejects_changed_pyside_archive_identity(field):
+    manifest = json.loads(source_tool.DEFAULT_MANIFEST.read_text(encoding="utf-8"))
+    entry = next(item for item in manifest["entries"] if item["name"] == "PySide6-Essentials")
+    entry[field] = "0" * 64 if field == "sha256" else "https://download.qt.io/changed.tar.xz"
+    with pytest.raises(SourceDistributionError, match="stale: python-pyside6-"):
+        source_tool._validate_manifest(manifest, release=True)
+
+
 def test_validate_project_archive_accepts_real_git_archive(tmp_path: Path):
     revision = source_tool._git_text("rev-parse", "--verify", "HEAD^{commit}")
     project_version = tomllib.loads(

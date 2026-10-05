@@ -6,8 +6,8 @@ from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
-from PyQt6.QtWidgets import QMainWindow, QMenu, QMessageBox
-from PyQt6.QtGui import QCloseEvent
+from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox
+from PySide6.QtGui import QCloseEvent
 
 from mic_eq.config import AppConfig, DevicePresetBinding, Preset
 from mic_eq.ui import main_window
@@ -449,11 +449,11 @@ def _submenu(window: QMainWindow, title: str) -> QMenu:
     menubar = window.menuBar()
     assert menubar is not None
     for action in menubar.actions():
-        menu = action.menu()
+        menu = QMenu.menuInAction(action)
         if menu is None:
             continue
         for child in menu.actions():
-            submenu = child.menu()
+            submenu = QMenu.menuInAction(child)
             if submenu is not None and submenu.title() == title:
                 return submenu
     raise AssertionError(f"missing submenu {title!r}")

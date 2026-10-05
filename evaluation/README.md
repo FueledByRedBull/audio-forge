@@ -13,7 +13,7 @@ ignored `models/evaluation-details/`, or a CI artifact).
 | Area | Decision | Evidence |
 | --- | --- | --- |
 | Noise gate, VAD modes | Keep the current gate; a speech-presence replacement failed its rule in both modes (October 2026). | [Gate study](#gate-study-october-2026); `gate-speech-presence-2026-10-report.json` |
-| Voice Setup gate/suppression tuner | Keep, with a known limit. On simulated users it never changed settings though a tested candidate was clearly better for about half of them: its absolute checks grade the frontend through an uncalibrated compressor. Relative checks and a fitted selector did not meet their rule, and no reference-free onset measure validated (October 2026). | `voice-setup-tuner-2026-10-report.json` |
+| Voice Setup gate/suppression tuner | Corrected check ordering: select the frontend with compression bypassed, then calibrate compression and verify the full chain. Continuous speech-then-noise processing checks post-speech noise against the incumbent. The original October study graded an uncalibrated compressor and never changed settings; its rejected relative checks, fitted selector and reference-free onset measures remain rejected. | Current [implementation](../python/mic_eq/analysis/joint_tuning.py) and [regressions](../python/tests/test_joint_tuning.py); historical study: `voice-setup-tuner-2026-10-report.json` |
 | Gate with a neural suppressor | Keep the factory gate. On top of RNNoise or DeepFilter it costs 4–7 dB at phrase onsets but keeps long pauses 6–10 dB quieter; gate off and VAD Assisted were not better once long pauses were counted (October 2026). An onset-safe gate needs its own study. | `gate-policy-2026-10-report.json` |
 | Processing order | Gate before noise suppression; de-esser before EQ. | `processing-order-2026-10-report.json` (gate); `processing-order-2026-09-report.json` (de-esser/EQ) |
 | Limiter | 0.5 ms lookahead, zero output true-peak overshoot. | `limiter-lookahead-2026-10-report.json`. Its removed predecessors shifted already-aligned audio, so their gain-envelope and transient-shape metrics were invalid; correctly aligned, the three lookaheads score within 0.01 dB. |
@@ -32,11 +32,21 @@ ignored `models/evaluation-details/`, or a CI artifact).
 | Auto-EQ Adaptive layer | Keep. Its voice-balance inputs saturate for 97–100% of real voices, so Adaptive is effectively a gentler fixed version of each preset and where it measures cannot matter; fixing the offsets explicitly failed its equivalence rule on noisy captures and was no closer to the clean-voice curve (October 2026). | `auto-eq-tone-layer-2026-10-report.json` |
 | Microphone correction | Not automated. Estimating a mic's coloration from 10 s of speech with a population prior made it worse (+0.18 dB RMS), because speaker, room and noise differences (2–9 dB per band) are as large as the colorations (October 2026). | `mic-coloration-prior-2026-10-report.json` |
 | EQ stages | Independent correction and tone stages (requested product change); 12 cases pass safety, cost, schema, and zero-added-latency gates. | `correction-tone-product-report.json` |
-| Joint gate/model tuning | All 66 cases pass; DeepFilter incumbents stay within their family because switches to RNNoise failed clean-speech checks. | `product-joint-tuning-2026-09-report.json`, `product-joint-tuning-deepfilter-2026-09-report.json`, `product-joint-tuning-deepfilter-ll-2026-09-report.json` |
+| Joint gate/model tuning | September qualification: all 66 cases pass; DeepFilter incumbents stay within their family because switches to RNNoise failed clean-speech checks. | `product-joint-tuning-2026-09-report.json`, `product-joint-tuning-deepfilter-2026-09-report.json`, `product-joint-tuning-deepfilter-ll-2026-09-report.json` |
 | RNNoise backend | Keep `nnnoiseless`; upstream Xiph was slower and regressed clean preservation. | `rnnoise-backend-comparison.json` |
 | DPDFNet | Rejected; it failed clean-speech preservation. Historical failures aren't independently reproducible from this checkout. | `dpdfnet-vs-deepfilternet3-report.json`, `dpdfnet-official-evalset-report.json` |
 | ONNX Runtime | Official CPU-only 1.23.2 matched the preserved baseline across 498 captures. | `onnxruntime-cpu-probe.json` |
 | Release integrity | Reviewed package paths gate the candidate; archive sidecars own artifact facts. | `release-bundle-path-baseline.json`, `archive-format-benchmark.json` |
+
+The historical reports retain their measured pipeline and source identities.
+The tuner ordering repair leaves compression calibration and full-chain
+verification in place; it does not qualify the selectors rejected by the older
+study. Compressor ownership changes preserve render/state parity, and calibration
+still searches threshold only. Shared native K-weighting and NumPy correlation
+passed numerical and decision checks; no speed improvement is claimed. Package
+size reporting found a larger portable tree, and startup/idle-memory comparison
+did not qualify. These implementation checks do not establish a new held-out
+audio-quality result.
 
 ## Gate study (October 2026)
 

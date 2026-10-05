@@ -8,7 +8,7 @@ import threading
 import time
 from copy import deepcopy
 import numpy as np
-from PyQt6.QtCore import QThread, pyqtSignal
+from PySide6.QtCore import QThread, Signal
 
 from ..analysis.auto_eq import analyze_auto_eq
 from ..analysis.cancellation import AnalysisCancelled
@@ -26,9 +26,9 @@ class AnalysisWorker(QThread):
     """
 
     # Signals
-    step_progress = pyqtSignal(str, int)  # (step_name, percentage)
-    result_ready = pyqtSignal(dict)        # Emits eq_settings dict
-    failed = pyqtSignal(str)               # Emits error message (generic)
+    step_progress = Signal(str, int)  # (step_name, percentage)
+    result_ready = Signal(dict)        # Emits eq_settings dict
+    failed = Signal(str)               # Emits error message (generic)
 
     def __init__(
         self,

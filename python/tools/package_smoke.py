@@ -17,10 +17,10 @@ from verify_release_assets import load_asset_manifest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_BUNDLE_FILES = (
     "AudioForge.exe",
-    "_internal/PyQt6/QtMultimedia.pyd",
-    "_internal/PyQt6/Qt6/bin/Qt6Multimedia.dll",
+    "_internal/PySide6/QtMultimedia.pyd",
+    "_internal/PySide6/Qt6Multimedia.dll",
     # Listening comparison sends raw PCM through QAudioSink on Windows.
-    "_internal/PyQt6/Qt6/plugins/multimedia/windowsmediaplugin.dll",
+    "_internal/PySide6/plugins/multimedia/windowsmediaplugin.dll",
     "_internal/df.dll",
     "_internal/onnxruntime.dll",
     "_internal/onnxruntime_providers_shared.dll",
@@ -36,6 +36,7 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/licenses/ONNXRuntime-ThirdPartyNotices.txt",
     "_internal/licenses/Silero-VAD-LICENSE.txt",
     "_internal/licenses/THIRD_PARTY_NOTICES.md",
+    "_internal/licenses/QtForPython-6.11.1-NOTICES.txt",
 )
 REQUIRED_MANIFEST_ASSETS = (
     "df.dll",
@@ -335,8 +336,21 @@ def check_dist_bundle(
         errors.append(f"{dist} contains app-local Windows ICU: " + ", ".join(bundled_system_icu))
 
     for plugin in ("qpdf.dll", "qsvg.dll"):
-        if (dist / "_internal/PyQt6/Qt6/plugins/imageformats" / plugin).exists():
+        if (dist / "_internal/PySide6/plugins/imageformats" / plugin).exists():
             errors.append(f"{dist} contains unused image plugin without its Qt module: {plugin}")
+
+    # These modules are covered by the selected qtbase/qtmultimedia sources and
+    # notices. New transitive modules need an explicit dependency/license review.
+    selected_qt_dlls = {
+        "qt6core.dll", "qt6gui.dll", "qt6widgets.dll",
+        "qt6network.dll", "qt6multimedia.dll",
+    }
+    for module in (dist / "_internal/PySide6").glob("Qt6*.dll"):
+        if module.name.casefold() not in selected_qt_dlls:
+            errors.append(f"{dist} contains an unselected Qt module: {module.name}")
+    virtual_keyboard = dist / "_internal/PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll"
+    if virtual_keyboard.exists():
+        errors.append(f"{dist} contains an unselected Qt module plugin: {virtual_keyboard.name}")
 
     errors.extend(_check_bundle_identity(dist))
 

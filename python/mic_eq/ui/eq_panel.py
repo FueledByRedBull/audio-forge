@@ -3,7 +3,7 @@
 from dataclasses import replace
 from typing import Any
 
-from PyQt6.QtWidgets import (
+from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QSizePolicy,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PySide6.QtCore import Qt, Signal
 from .auto_eq_explanation import explain_auto_eq
 from .eq_curve import EQCurveWidget
 from .rate_limiter import RateLimiter
@@ -616,9 +616,9 @@ class EQPanel(QWidget):
     BAND_COLUMN_OPTIONS = (10, 5, 4, 3, 2, 1)
     WIDE_PRESET_LAYOUT_WIDTH = 520
 
-    configurationEditStarted = pyqtSignal()
-    configurationEditFinished = pyqtSignal(str)
-    configurationEdited = pyqtSignal(str)
+    configurationEditStarted = Signal()
+    configurationEditFinished = Signal(str)
+    configurationEdited = Signal(str)
 
     def __init__(self, processor):
         super().__init__()

@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import numpy as np
-from scipy.signal import correlate, correlation_lags
 
 
 BARKER_13 = np.array(
@@ -134,6 +133,14 @@ def _parabolic_peak_offset(scores: np.ndarray, index: int) -> float:
     return float(np.clip(0.5 * (left - right) / denom, -0.5, 0.5))
 
 
+def _full_correlation(rec: np.ndarray, ref: np.ndarray) -> np.ndarray:
+    """Linear full correlation of nonempty real, one-dimensional audio."""
+    length = rec.size + ref.size - 1
+    fft_length = 1 << (length - 1).bit_length()
+    spectrum = np.fft.rfft(rec, n=fft_length) * np.fft.rfft(ref[::-1], n=fft_length)
+    return np.fft.irfft(spectrum, n=fft_length)[:length]
+
+
 def _normalized_correlation_scores(
     rec: np.ndarray,
     ref: np.ndarray,
@@ -141,8 +148,8 @@ def _normalized_correlation_scores(
     min_lag: int,
     max_lag: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    corr = correlate(rec, ref, mode="full", method="fft")
-    lags = correlation_lags(rec.size, ref.size, mode="full")
+    corr = _full_correlation(rec, ref)
+    lags = np.arange(1 - ref.size, rec.size)
     valid_mask = (lags >= min_lag) & (lags <= max_lag)
     if not np.any(valid_mask):
         return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float64)
@@ -182,8 +189,8 @@ def _earlier_probe_match_z(
     if ref_energy <= 1e-12:
         return 0.0
 
-    recording_correlations = correlate(rec, ref, mode="full", method="fft")
-    reference_correlations = correlate(ref, ref, mode="full", method="fft")
+    recording_correlations = _full_correlation(rec, ref)
+    reference_correlations = _full_correlation(ref, ref)
     reference_size = ref.size
     lag_offset = reference_size - 1
     base_lags = np.arange(

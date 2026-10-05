@@ -2,9 +2,12 @@
 
 import importlib.util
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
+import pytest
+from scipy.signal import correlate
 
 
 LATENCY_PATH = (
@@ -17,6 +20,63 @@ assert spec is not None and spec.loader is not None
 lat = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = lat
 spec.loader.exec_module(lat)
+
+
+@pytest.mark.parametrize("sizes", [(1, 1), (7, 4), (16, 5), (13, 16), (4097, 312)])
+def test_real_correlation_matches_independent_reference(sizes):
+    rng = np.random.default_rng(810)
+    recording, reference = (rng.standard_normal(size) for size in sizes)
+    expected = correlate(recording, reference, mode="full", method="direct")
+    actual = lat._full_correlation(recording, reference)
+    tolerance = 1e-11 * np.linalg.norm(recording) * np.linalg.norm(reference)
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=tolerance)
+
+
+@pytest.mark.parametrize("lag_limits", [(-20, 50), (3, 9), (60, 70), (7, 2)])
+def test_normalized_correlation_lags_and_scores_match_direct_windows(lag_limits):
+    rng = np.random.default_rng(811)
+    recording = rng.standard_normal(49)
+    reference = rng.standard_normal(12)
+    low, high = lag_limits
+    expected_lags = np.arange(max(0, low), min(49 - 12, high) + 1, dtype=np.int64)
+    expected_scores = [
+        abs(np.dot(recording[lag : lag + 12], reference))
+        / np.sqrt(
+            max(np.dot(recording[lag : lag + 12], recording[lag : lag + 12]), 1e-12)
+            * (np.dot(reference, reference) + 1e-12)
+        )
+        for lag in expected_lags
+    ]
+    lags, scores = lat._normalized_correlation_scores(
+        recording, reference, min_lag=low, max_lag=high
+    )
+    np.testing.assert_array_equal(lags, expected_lags)
+    np.testing.assert_allclose(scores, expected_scores, rtol=0, atol=1e-10)
+
+
+@pytest.mark.parametrize("case", ["direct", "echo", "noise", "wrong-window"])
+def test_latency_result_matches_scipy_reference(monkeypatch, case):
+    sample_rate = 48_000
+    probe = lat.generate_probe_signal(sample_rate=sample_rate)
+    rng = np.random.default_rng(812)
+    recording = rng.normal(0, 0.002, 36_000)
+    if case != "noise":
+        recording[5904 : 5904 + probe.size] += probe * 0.4
+    if case == "echo":
+        recording[7920 : 7920 + probe.size] += probe * 0.7
+    kwargs = {"min_search_ms": 200 if case == "wrong-window" else 5}
+    actual = asdict(lat.analyze_latency(probe, recording, sample_rate, **kwargs))
+    monkeypatch.setattr(
+        lat, "_full_correlation",
+        lambda left, right: correlate(left, right, mode="full", method="fft"),
+    )
+    expected = asdict(lat.analyze_latency(probe, recording, sample_rate, **kwargs))
+    assert actual.keys() == expected.keys()
+    for name, value in expected.items():
+        if isinstance(value, float):
+            assert actual[name] == pytest.approx(value, abs=1e-8, rel=0), name
+        else:
+            assert actual[name] == value, name
 
 
 def test_generate_probe_signal_shape_and_peak():

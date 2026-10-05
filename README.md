@@ -89,11 +89,21 @@ and compare the result with the matching line in
    EQ and dynamics yourself. Press **Ctrl+S** to save a preset when it sounds
    right.
 
-AudioForge opens with processing stopped. **Stop Processing** keeps the window
-open. Closing the window stops audio and quits, unless you turn on
+Opening AudioForge normally leaves processing stopped. **Stop Processing** keeps
+the window open. Closing the window stops audio and quits, unless you turn on
 close-to-tray in **Options > Tray & Background**. Then audio keeps running and
-you quit from **File > Exit** or **Quit AudioForge** in the tray. AudioForge
-doesn't start with Windows.
+you quit from **File > Exit** or **Quit AudioForge** in the tray.
+
+The unreleased source includes opt-in login startup, off by default. Copies
+built from it offer **Options > Tray & Background > Configure login shortcut
+for this copy**. When launched by that
+shortcut, AudioForge stays in the tray and waits up to 60 seconds for your exact
+saved input and output devices before starting, preserving output mute. Missing
+devices leave processing stopped. Windows Settings or Task Manager can disable
+the shortcut; AudioForge reports it as configured without overriding that choice.
+Before moving a portable copy, remove its shortcut using the same menu and
+configure it again from the new location. See the
+[startup lifecycle and testing limits](RELEASING.md#login-startup-lifecycle).
 
 ### No sound?
 
@@ -135,7 +145,8 @@ doesn't start with Windows.
   Voice adds low-mid body with restrained upper presence; Adaptive keeps it
   subtle and Static uses the stronger catalog curve.
 - **Suggestions have to earn a change.** Auto Voice Setup tries gate and noise
-  suppression options with the proposed dynamics on part of your recording.
+  suppression options before calibrating compression. It tests speech followed
+  by noise without resetting the processing, so pause noise is checked too.
   It keeps your current settings unless a candidate passes safety and
   speech-preservation checks and improves a separate part of the recording.
   DeepFilterNet settings stay within DeepFilterNet, because automatic switches
@@ -236,30 +247,43 @@ buffer sizes, and routing.
 [![CI on master](https://github.com/FueledByRedBull/audio-forge/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/FueledByRedBull/audio-forge/actions/workflows/ci.yml?query=branch%3Amaster)
 
 These steps are for building AudioForge, not for running the download. The
-engine is written in Rust and the interface in PyQt6. You need Windows 10
-(1809+) or 11 x64, CPython 3.13.15 x64, the Rust toolchain selected by
-`rust-toolchain.toml`, GitHub CLI (`gh`), and 7-Zip.
+engine is written in Rust and the interface in PySide6. You need Windows 10
+(1809+) or 11 x64, PowerShell 7+, Git, CPython 3.13.15 x64, uv, rustup with the
+toolchain selected by `rust-toolchain.toml`, MSVC C++ Build Tools, GitHub CLI
+(`gh`), and 7-Zip. Install these prerequisites separately; `dev.ps1` does not
+install system tools or download Python.
 
 ```powershell
 git clone https://github.com/FueledByRedBull/audio-forge.git
 cd audio-forge
 
-py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements/dev.txt
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
-.\.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
-
-.\.venv\Scripts\python.exe -m maturin develop --release --locked
-.\.venv\Scripts\python.exe -m mic_eq
+.\dev.ps1 bootstrap -PythonPath (py -3.13 -c "import sys; print(sys.executable)")
+.\dev.ps1 doctor
+.\dev.ps1 run
 ```
+
+Without the Python Launcher (`py`), pass your existing Python executable's
+path to `-PythonPath`. Bootstrap checks the exact Python pin from
+`licenses/source-manifest.json`, creates or reuses `.venv`, installs
+`requirements/dev.txt` with hash verification, hydrates assets, and runs
+`maturin develop --release --locked`. It preserves an incomplete environment
+and asks you to repair it or choose another path. For an existing `.venv313`
+checkout, add `-VenvPath .venv313` to each command.
+
+Doctor is offline and checks prerequisites, interpreter/toolchain pins,
+asset hashes, installed dependency consistency, and the native import. It does
+not prove exact dependency-lock parity or replace build/release validation.
+Use `-DryRun` to inspect any command's steps without executing them; see
+[contributor commands](CONTRIBUTING.md) for focused tests.
 
 The fallback release is pinned once in `release-assets.json`; it supplies
 runtime assets independently of the application version. Hydration verifies
 each asset against the manifest.
 
-RNNoise is the default suppression backend. For source runs, enable
-DeepFilterNet with `AUDIOFORGE_ENABLE_DEEPFILTER=1` after hydrating the runtime
-assets. Packaged builds enable verified bundled DeepFilter assets
+RNNoise is the default suppression backend. `dev.ps1 run` verifies the bundled
+assets and enables DeepFilterNet for that process, then restores the shell's
+environment. Direct source launches can set `AUDIOFORGE_ENABLE_DEEPFILTER=1`
+after hydrating assets. Packaged builds enable verified bundled DeepFilter assets
 automatically. External DLL/model paths require an explicit opt-in; see
 [runtime configuration](CONTRIBUTING.md#runtime-assets-and-configuration).
 
@@ -277,11 +301,13 @@ and issues labeled
 
 ## License
 
-AudioForge's original source is MIT-licensed; see [LICENSE](LICENSE). The
-portable and MSI downloads include PyQt6 and are distributed under GPLv3, with
-the notices in [licenses/THIRD_PARTY_NOTICES.md](licenses/THIRD_PARTY_NOTICES.md)
-and the corresponding source described in
-[licenses/SOURCE_DISTRIBUTION.md](licenses/SOURCE_DISTRIBUTION.md).
+AudioForge's original source is MIT-licensed; see [LICENSE](LICENSE). This
+source checkout uses PySide6 and LGPLv3 Qt modules. Complete component terms
+and library replacement instructions are available through Help > Licenses,
+in [third-party notices](licenses/THIRD_PARTY_NOTICES.md), and in the
+[corresponding-source instructions](licenses/SOURCE_DISTRIBUTION.md).
+Previously published portable and MSI packages containing PyQt6 retain their
+GPLv3 distribution terms; this source migration does not relicense them.
 
 ## Acknowledgments
 

@@ -6,7 +6,7 @@ from copy import deepcopy
 from unittest.mock import Mock
 
 import numpy as np
-from PyQt6.QtWidgets import QMessageBox, QWidget
+from PySide6.QtWidgets import QMessageBox, QWidget
 
 from mic_eq.analysis.voice_setup import _recommend_compressor_settings
 from mic_eq.config import (

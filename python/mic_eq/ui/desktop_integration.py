@@ -15,9 +15,9 @@ from collections.abc import Callable
 from ctypes import wintypes
 from pathlib import Path
 
-from PyQt6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QLockFile, QTimer
-from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-from PyQt6.QtWidgets import QMainWindow
+from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QLockFile, QTimer
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtWidgets import QMainWindow
 
 
 logger = logging.getLogger(__name__)
@@ -218,6 +218,7 @@ class SingleInstanceCoordinator:
 
     ACQUIRED = "acquired"
     FORWARDED = "forwarded"
+    ALREADY_RUNNING = "already_running"
     FAILED = "failed"
 
     def __init__(
@@ -240,12 +241,17 @@ class SingleInstanceCoordinator:
         self.last_error: str | None = None
         self._closed = False
 
-    def acquire(self) -> str:
+    def acquire(self, *, activate_existing: bool = True) -> str:
         """Acquire this instance or forward activation to the current owner."""
 
         lock_file = QLockFile(str(self._lock_path))
         lock_file.setStaleLockTime(0)
         if not lock_file.tryLock(0):
+            if not activate_existing:
+                if lock_file.error() == QLockFile.LockError.LockFailedError:
+                    return self.ALREADY_RUNNING
+                self.last_error = f"could not acquire the session lock: {lock_file.error().name}"
+                return self.FAILED
             return self.FORWARDED if self._request_activation() else self.FAILED
         self._lock_file = lock_file
 

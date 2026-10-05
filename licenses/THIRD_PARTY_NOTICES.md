@@ -1,14 +1,17 @@
 # AudioForge third-party notices
 
 AudioForge's original source remains under the MIT license in `LICENSE`.
-The combined PyQt6 application is distributed under GNU GPL version 3; see
-`GPL-3.0.txt`. This applies to both the portable application and MSI distribution.
+This source checkout uses PySide6 and the Qt modules permitted under LGPLv3,
+with complete component terms retained in `QtForPython-6.11.1-NOTICES.txt`.
 Dependency copyright, attribution, and applicable license terms remain in force.
+The notice collection includes alternative upstream licenses and source
+components that may not be present in a particular bundle; the generated
+inventory identifies the bundled components.
 
-PyQt6 is GPLv3 or commercially licensed, not LGPL. These releases use the GPL
-route, as documented by [Riverbank](https://www.riverbankcomputing.com/software/pyqt/intro).
-The Qt libraries in the PyQt wheels have their own LGPLv3/GPLv3 terms and
-third-party notices; see [Qt licensing](https://doc.qt.io/qt-6/licensing.html).
+Earlier releases containing PyQt6 remain distributed under GNU GPL version 3;
+see their original notices and `GPL-3.0.txt`. This migration does not change
+the terms of those previously published packages. For the current bindings,
+see [Qt for Python licensing](https://doc.qt.io/qtforpython-6/licenses.html).
 
 Each build collects versioned component identities and license texts under
 `licenses/dependencies/` in the bundle. Its `inventory.json` distinguishes the
@@ -19,9 +22,8 @@ the wheel `.dist-info` notices and this inventory when redistributing.
 | Component | Applicable notices |
 |---|---|
 | CPython runtime and standard library | PSF license and bundled third-party notices |
-| PyQt6 | GPL-3.0-only |
-| Qt6 | Qt's LGPLv3/GPLv3 and included third-party notices |
-| PyQt6-sip | BSD-2-Clause |
+| PySide6-Essentials, PySide6-Addons and shiboken6 | LGPLv3 and included third-party notices in `QtForPython-6.11.1-NOTICES.txt` |
+| Bundled Qt6 modules and plugins | LGPLv3 and included third-party notices in the same collection; no GPL-only module is selected |
 | NumPy and SciPy, including their BLAS/native payloads | Their complete retained wheel license collections |
 | pywin32 | PSF license |
 | PyInstaller bootloader | GPLv2 with the upstream bootloader exception; retained upstream license |
@@ -55,7 +57,7 @@ system components and are not claimed as project source.
 
 Release preparation must make the corresponding source and build instructions
 for the distributed application and copyleft components available alongside the
-binaries, including the exact AudioForge revision, Python/Qt/PyQt source, and
+binaries, including the exact AudioForge revision, Python/Qt/PySide source, and
 required dependency modifications. An inventory or an unversioned upstream link
 alone is not fulfillment of that obligation. Preserve upstream source archives
 and notices for the exact component versions before publishing a final release.

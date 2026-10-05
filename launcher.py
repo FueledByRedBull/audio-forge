@@ -3,6 +3,7 @@
 AudioForge launcher script for PyInstaller
 """
 import os
+import logging
 import sys
 from pathlib import Path
 
@@ -31,6 +32,18 @@ _SMOKE_TEST_FLAG = "--smoke-test"
 
 
 def _run() -> int:
+    if sys.argv[1:] == ["--remove-login-startup"]:
+        if not getattr(sys, "frozen", False):
+            return 1
+        from mic_eq.ui.login_startup import set_login_startup
+
+        try:
+            set_login_startup(Path(sys.executable), False)
+        except Exception:
+            logging.getLogger(__name__).exception("Login shortcut cleanup failed; left unchanged")
+            return 1
+        return 0
+
     if _SMOKE_TEST_FLAG in sys.argv:
         sys.argv = [arg for arg in sys.argv if arg != _SMOKE_TEST_FLAG]
         from mic_eq.ui.app_bootstrap import run_smoke_test  # noqa: E402

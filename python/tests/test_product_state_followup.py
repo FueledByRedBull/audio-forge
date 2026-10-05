@@ -7,7 +7,7 @@ from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
-from PyQt6.QtWidgets import QComboBox, QWidget
+from PySide6.QtWidgets import QComboBox, QWidget
 
 from mic_eq.config import (
     AppConfig,

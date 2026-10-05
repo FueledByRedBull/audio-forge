@@ -499,7 +499,7 @@ def test_history_restore_refuses_an_unavailable_noise_backend(
 
 
 def test_normal_preset_load_retains_sound_when_noise_backend_is_absent(qapp, monkeypatch):
-    from PyQt6.QtWidgets import QMessageBox
+    from PySide6.QtWidgets import QMessageBox
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
     monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
     for name in ("list_presets", "list_input_devices", "list_output_devices"):

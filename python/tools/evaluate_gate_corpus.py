@@ -332,8 +332,13 @@ def score(case: dict[str, Any], output: np.ndarray) -> dict[str, float]:
     out_db = _frame_rms_db(output)[:count]
     in_db = _frame_rms_db(case["noisy"])[:count]
     clean_db = _frame_rms_db(case["clean"])[:count]
+    onset_starts = np.flatnonzero(speech[1:] & ~speech[:-1]) + 1
     onset_ratio = []
-    for start in np.flatnonzero(speech[1:] & ~speech[:-1]) + 1:
+    for start in onset_starts:
+        # A partial body changes the reference interval; an empty one poisons
+        # the entire median. Keep the same windows only when both are complete.
+        if start + 130 > count:
+            continue
         onset = np.zeros(count, bool)
         body = np.zeros(count, bool)
         onset[start : start + 10] = True
@@ -349,7 +354,9 @@ def score(case: dict[str, Any], output: np.ndarray) -> dict[str, float]:
         "deep_pause_db": _energy_mean_db(out_db, deep) - _energy_mean_db(in_db, deep),
         "tail_db": _energy_mean_db(out_db, tail) - _energy_mean_db(in_db, tail),
         "floor_modulation_db": _energy_mean_db(out_db, tail) - _energy_mean_db(out_db, deep),
-        "onset_db": float(np.median(onset_ratio)),
+        "onset_db": float(np.median(onset_ratio)) if onset_ratio else float("nan"),
+        "onset_windows_total": int(onset_starts.size),
+        "onset_windows_scored": len(onset_ratio),
     }
 
 
@@ -552,7 +559,7 @@ def qualify(root: Path, incumbent: Path, candidate: Path) -> dict[str, Any]:
         },
         "evaluation_contract": {
             "configuration": GATE_SETTINGS | {
-                "noise_models": list(QUALIFY_MODELS), "order": "gate_before_suppressor",
+                "noise_models": list(QUALIFY_MODELS), "order": "gate/suppressor route of each supplied native build",
                 "vad_control": "causal: last 32 ms window ended by each block's first sample",
             },
             "asset_hashes": {
@@ -562,11 +569,14 @@ def qualify(root: Path, incumbent: Path, candidate: Path) -> dict[str, Any]:
             "runtime": {
                 "max_p99_frame_seconds": None,
                 "max_p99_frame_seconds_reason": (
-                    "Offline renders through the native simulator; the gate's per-sample "
-                    "work is unchanged in kind and covered by the realtime tests."
+                    "Offline renders through the native simulator; realtime timing and "
+                    "allocation checks are recorded in the accompanying qualification evidence."
                 ),
             },
-            "latency": {"added_latency_samples": 0, "reason": "Gain law only; no lookahead."},
+            "latency": {
+                "added_latency_samples": None,
+                "reason": "Compare reported native latency for both supplied builds in the accompanying qualification evidence.",
+            },
             "clean_preservation": verdict,
         },
         "incumbent_identity": old["identity"],
@@ -579,7 +589,7 @@ def qualify(root: Path, incumbent: Path, candidate: Path) -> dict[str, Any]:
         "limitations": [
             "Objective metrics on one synthetic-mixture corpus; no listening test.",
             "Pauses are inserted between EARS phrases because EARS trims silences.",
-            "The incumbent build is the committed source the candidate replaces.",
+            "The incumbent is the supplied reference build; its source and runtime identities are recorded separately.",
         ],
     }
 

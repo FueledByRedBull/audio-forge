@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from PySide6.QtWidgets import QComboBox
+from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QSlider, QWidget
 
 from mic_eq.ui.desktop_integration import (
     MOD_ALT,
@@ -16,6 +16,7 @@ from mic_eq.ui.desktop_integration import (
     parse_global_hotkey,
 )
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
 from mic_eq.ui import desktop_integration
 
 
@@ -149,22 +150,44 @@ def test_failed_hotkey_registration_is_not_shown_or_saved_as_enabled(monkeypatch
 
 
 def test_failed_model_switch_retains_previous_model_and_selection(qapp, monkeypatch):
-    combo = QComboBox()
+    host = QWidget()
+    combo = QComboBox(host)
     for model in ("rnnoise", "deepfilter-ll", "deepfilter"):
         combo.addItem(model, model)
-    combo.setCurrentIndex(2)
     warning = Mock()
     monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.warning", warning)
-    owner: Any = SimpleNamespace(
-        model_combo=combo,
-        processor=SimpleNamespace(get_noise_model=lambda: "deepfilter-ll",
-                                  set_noise_model=Mock(return_value=False)),
-        _set_noise_suppression_latency_label=Mock(), status_bar=Mock(),
+    processor = SimpleNamespace(
+        list_noise_models=lambda: [(model, model) for model in (
+            "rnnoise", "deepfilter-ll", "deepfilter",
+        )],
+        set_noise_model=Mock(side_effect=lambda model: model != "deepfilter"),
+        set_rnnoise_enabled=Mock(),
+        set_rnnoise_strength=Mock(),
     )
-    owner._apply_noise_model = lambda model: MainWindow._apply_noise_model(owner, model)
-    MainWindow._on_model_changed(owner, 2)
-    assert combo.currentData() == "deepfilter-ll"
-    assert not combo.signalsBlocked()
-    owner.processor.set_noise_model.assert_called_once_with("deepfilter")
-    owner._set_noise_suppression_latency_label.assert_not_called()
-    warning.assert_called_once()
+    state = NoiseSuppressionState(processor, host)
+    state.set_settings({"model": "deepfilter-ll", "strength": 0.123456789})
+    processor.set_noise_model.reset_mock()
+    owner: Any = SimpleNamespace(
+        _model_combo=combo, _rnnoise_checkbox=QCheckBox(host),
+        _strength_slider=QSlider(host), _strength_label=QLabel(host),
+        _rnnoise_latency_label=QLabel(host),
+        noise_suppression_state=state, status_bar=Mock(),
+    )
+    owner._strength_slider.setRange(0, 100)
+    state.changed.connect(lambda: MainWindow._render_noise_suppression(owner))
+    MainWindow._render_noise_suppression(owner)
+    combo.setCurrentIndex(2)
+    try:
+        MainWindow._on_model_changed(owner, 2)
+        assert combo.currentData() == "deepfilter-ll"
+        assert not combo.signalsBlocked()
+        assert state.get_settings()["model"] == "deepfilter-ll"
+        assert state.get_settings()["strength"] == 0.123456789
+        assert owner._rnnoise_latency_label.text() == "Latency: ~10ms (DeepFilterNet LL)"
+        assert [call.args[0] for call in processor.set_noise_model.call_args_list] == [
+            "deepfilter", "deepfilter-ll",
+        ]
+        warning.assert_called_once()
+    finally:
+        host.deleteLater()
+        qapp.processEvents()

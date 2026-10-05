@@ -143,6 +143,7 @@ def test_invalid_last_used_preset_falls_back_with_persistent_warning(
 
 def _save_window(tmp_path: Path) -> MainWindow:
     window = MainWindow.__new__(MainWindow)
+    window._flush_processing_configuration_writes = Mock()
     previous_path = tmp_path / "previous.json"
     window.config = AppConfig(last_preset=str(previous_path))
     window.current_preset_path = previous_path
@@ -740,18 +741,19 @@ def test_manual_history_edit_clears_auto_eq_diagnostics_only_when_recorded():
     edited = Preset()
     edited.gate.threshold_db = -35.0
     window._get_current_preset = lambda: edited
-    window.compressor_panel = SimpleNamespace(
-        get_compressor_settings=lambda include_calibration: {
+    window.compressor_state = SimpleNamespace(
+        flush=Mock(),
+        get_settings=lambda include_calibration: {
             "noise_reference_reliability": 0.0
         }
     )
     window._calibration_context_key = lambda: None
-    window.eq_panel = SimpleNamespace(set_auto_eq_diagnostics=Mock())
+    window.eq_state = SimpleNamespace(flush=Mock(), set_auto_eq_diagnostics=Mock())
     window._update_history_actions = Mock()
     window.status_bar = Mock()
 
     assert MainWindow._commit_pending_configuration_snapshot(window, source="ui")
-    window.eq_panel.set_auto_eq_diagnostics.assert_called_once_with(None)
+    window.eq_state.set_auto_eq_diagnostics.assert_called_once_with(None)
 
 
 def test_save_updates_owned_path_without_name_prompt(monkeypatch, tmp_path):

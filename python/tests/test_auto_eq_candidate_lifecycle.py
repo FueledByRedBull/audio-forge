@@ -64,7 +64,7 @@ class _ProcessorStub:
         return "gentle"
 
 
-class _EqPanelStub:
+class _EqStateStub:
     def __init__(self) -> None:
         self.enabled = False
         self.settings = EQSettings(enabled=False)
@@ -87,15 +87,11 @@ class _EqPanelStub:
         self.diagnostics = diagnostics
 
     def set_settings(self, settings: dict) -> None:
-        self.operations.append("enabled")
-        self.enabled = bool(settings["enabled"])
-
-    def set_eq_settings(self, settings: EQSettings) -> None:
         self.operations.append("typed")
         if self.fail_apply:
             raise RuntimeError("native typed apply failed")
-        self.settings = settings
-        self.enabled = settings.enabled
+        self.settings = EQSettings.from_dict(settings)
+        self.enabled = self.settings.enabled
 
     def set_auto_eq_diagnostics(self, diagnostics: dict | None) -> None:
         self.operations.append("diagnostics")
@@ -106,9 +102,9 @@ class _Owner(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.processor = _ProcessorStub()
-        self.eq_panel = _EqPanelStub()
+        self.eq_state = _EqStateStub()
         self.applied_preset: Preset | None = None
-        self.preset = Preset(eq=EQSettings(enabled=self.eq_panel.enabled))
+        self.preset = Preset(eq=EQSettings(enabled=self.eq_state.enabled))
 
     def _get_current_preset(self) -> Preset:
         return Preset.from_dict(self.preset.to_dict())
@@ -127,7 +123,7 @@ class _Owner(QWidget):
         del noise_reference_reliability, processing_mode, compressor_metadata
         self.applied_preset = Preset.from_dict(preset.to_dict())
         self.preset = self.applied_preset
-        self.eq_panel.set_eq_settings(preset.eq)
+        self.eq_state.set_settings(preset.eq.to_dict())
 
 
 def _candidate(gain: float = 1.0, base_eq: EQSettings | None = None) -> dict:
@@ -250,7 +246,7 @@ def test_retake_and_failed_next_analysis_cannot_apply_old_candidate(qapp, monkey
         assert dialog.eq_settings is None
         assert dialog.start_button.text() == "Record Again"
         dialog._apply_eq_settings()
-        assert owner.eq_panel.applied_bands is None
+        assert owner.eq_state.applied_bands is None
     finally:
         dialog.reject()
         owner.close()
@@ -269,13 +265,13 @@ def test_apply_uses_captured_target_and_enables_eq_after_bands(qapp, monkeypatch
         )
 
         dialog.curve_combo.setCurrentIndex(dialog.curve_combo.findData("podcast"))
-        assert owner.eq_panel.enabled is False
+        assert owner.eq_state.enabled is False
         dialog._on_start_clicked()
 
-        assert owner.eq_panel.operations == ["typed", "diagnostics"]
-        assert owner.eq_panel.enabled is True
+        assert owner.eq_state.operations == ["typed", "diagnostics"]
+        assert owner.eq_state.enabled is True
         assert owner.applied_preset is not None
-        assert owner.eq_panel.get_eq_settings().to_dict() == (
+        assert owner.eq_state.get_eq_settings().to_dict() == (
             owner.applied_preset.eq.to_dict()
         )
         assert applied_targets == ["broadcast"]
@@ -295,7 +291,7 @@ def test_typed_tone_candidate_matches_audition_and_applied_configuration(
 
     owner = _Owner()
     owner.preset = Preset(eq=_tone_eq())
-    owner.eq_panel.settings = owner.preset.eq
+    owner.eq_state.settings = owner.preset.eq
     dialog = CalibrationDialog(owner)
     captured_comparison: dict[str, Any] = {}
 
@@ -372,7 +368,7 @@ def test_typed_tone_candidate_matches_audition_and_applied_configuration(
 
         assert owner.applied_preset is not None
         assert owner.applied_preset.eq.to_dict() == expected
-        assert owner.eq_panel.get_eq_settings().to_dict() == expected
+        assert owner.eq_state.get_eq_settings().to_dict() == expected
     finally:
         if not dialog._close_requested:
             dialog.reject()
@@ -382,7 +378,7 @@ def test_typed_tone_candidate_matches_audition_and_applied_configuration(
 def test_candidate_is_stale_after_incumbent_tone_changes(qapp, monkeypatch):
     owner = _Owner()
     owner.preset = Preset(eq=_tone_eq())
-    owner.eq_panel.settings = owner.preset.eq
+    owner.eq_state.settings = owner.preset.eq
     dialog = CalibrationDialog(owner)
     try:
         _capture(dialog, monkeypatch, "broadcast")
@@ -395,7 +391,7 @@ def test_candidate_is_stale_after_incumbent_tone_changes(qapp, monkeypatch):
         changed_tone = list(owner.preset.eq.bands)
         changed_tone[1] = replace(changed_tone[1], gain_db=2.0)
         owner.preset = Preset(eq=EQSettings(enabled=False, bands=changed_tone))
-        owner.eq_panel.settings = owner.preset.eq
+        owner.eq_state.settings = owner.preset.eq
 
         identity_error = dialog._candidate_identity_error(candidate, owner)
         assert identity_error is not None
@@ -436,7 +432,7 @@ def test_unavailable_headroom_never_enables_apply_or_audition(qapp, monkeypatch)
 
 def test_failed_typed_apply_does_not_enable_eq(qapp, monkeypatch):
     owner = _Owner()
-    owner.eq_panel.fail_apply = True
+    owner.eq_state.fail_apply = True
     dialog = CalibrationDialog(owner)
     try:
         _capture(dialog, monkeypatch, "broadcast")
@@ -446,8 +442,8 @@ def test_failed_typed_apply_does_not_enable_eq(qapp, monkeypatch):
 
         dialog._on_start_clicked()
 
-        assert owner.eq_panel.enabled is False
-        assert owner.eq_panel.operations == ["typed", "typed"]
+        assert owner.eq_state.enabled is False
+        assert owner.eq_state.operations == ["typed", "typed"]
         assert dialog.recording_state == "ready"
     finally:
         if not dialog._close_requested:

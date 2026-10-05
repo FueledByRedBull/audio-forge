@@ -147,8 +147,8 @@ class _Window(QWidget):
         self.input_combo.currentData.return_value = DeviceIdentity(name="Mic")
         self.output_combo = Mock()
         self.output_combo.currentData.return_value = DeviceIdentity(name="Out")
-        self.eq_panel = Mock()
-        self.eq_panel.get_settings.return_value = _settings()
+        self.eq_state = Mock()
+        self.eq_state.get_settings.return_value = _settings()
         self.mutes: list[tuple[bool, str]] = []
 
     def set_temporary_output_mute(self, muted: bool, reason: str) -> None:

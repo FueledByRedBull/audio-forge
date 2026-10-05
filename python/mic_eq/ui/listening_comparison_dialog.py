@@ -1065,7 +1065,7 @@ def open_test_my_sound(window: Any) -> None:
             window,
             audio_data=audio,
             sample_rate=sample_rate,
-            settings=window.eq_panel.get_settings(),
+            settings=window.eq_state.get_settings(),
             chain_settings=chain_settings(
                 window, full_chain=True, input_pre_filtered=False
             ),

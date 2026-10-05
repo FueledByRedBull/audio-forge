@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
-from PySide6.QtWidgets import QLabel
+from PySide6.QtWidgets import QLabel, QWidget
 
 from mic_eq.ui.first_run_setup_dialog import route_health_reason
 from mic_eq.ui.health import RecentStreamHealth
@@ -220,10 +220,9 @@ def test_unchanged_health_chip_does_not_reapply_qt_styles(qapp, monkeypatch):
 
 def test_main_window_invalidates_all_live_meters_on_stop_and_getter_failure(qapp):
     from mic_eq import AudioProcessor
-    from mic_eq.ui.compressor_panel import CompressorPanel
-    from mic_eq.ui.deesser_panel import DeEsserPanel
-    from mic_eq.ui.gate_panel import GatePanel
+    from mic_eq.ui.gate_state import GateState
     from mic_eq.ui.level_meter import LevelMeter
+    from mic_eq.ui.processing_meters import ProcessingMeters
 
     native = AudioProcessor()
 
@@ -261,13 +260,14 @@ def test_main_window_invalidates_all_live_meters_on_stop_and_getter_failure(qapp
             return True
 
     processor = Processor()
+    meter_host = QWidget()
+    gate_state = GateState(processor, meter_host)
     window: Any = SimpleNamespace(
         processor=processor,
         input_meter=LevelMeter(),
         output_meter=LevelMeter(),
-        compressor_panel=CompressorPanel(processor),
-        gate_panel=GatePanel(processor),
-        deesser_panel=DeEsserPanel(processor),
+        gate_state=gate_state,
+        processing_meters=ProcessingMeters(processor, gate_state, meter_host),
         _reset_health_labels=Mock(),
         isHidden=lambda: True,
     )
@@ -275,7 +275,7 @@ def test_main_window_invalidates_all_live_meters_on_stop_and_getter_failure(qapp
     try:
         MainWindow._update_meters(window)
         assert window.input_meter.measurement_available
-        assert window.gate_panel.confidence_meter.measurement_available
+        assert window.processing_meters.confidence.measurement_available
         processor.fail = True
         MainWindow._update_meters(window)
         assert not window.input_meter.measurement_available
@@ -286,20 +286,18 @@ def test_main_window_invalidates_all_live_meters_on_stop_and_getter_failure(qapp
         MainWindow._update_meters(window)
         assert not window.input_meter.measurement_available
         assert not window.output_meter.measurement_available
-        assert not window.compressor_panel.gr_meter.measurement_available
-        assert not window.deesser_panel.gr_meter.measurement_available
-        assert not window.gate_panel.confidence_meter.measurement_available
-        assert window.compressor_panel.current_lufs_label.text() == "--"
-        assert window.compressor_panel.current_makeup_gain_label.text() == "--"
-        assert "--" in window.gate_panel.noise_floor_label.text()
+        assert not window.processing_meters.compressor_gr.measurement_available
+        assert not window.processing_meters.deesser_gr.measurement_available
+        assert not window.processing_meters.confidence.measurement_available
+        assert window.processing_meters.current_lufs.text() == "--"
+        assert window.processing_meters.current_makeup_gain.text() == "--"
+        assert "--" in window.gate_state.presentation()["noise_floor"]
     finally:
         native.stop()
         for item in (
             window.input_meter,
             window.output_meter,
-            window.compressor_panel,
-            window.gate_panel,
-            window.deesser_panel,
+            meter_host,
         ):
             item.deleteLater()
         qapp.processEvents()

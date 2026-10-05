@@ -8,12 +8,14 @@ overloads exercised here.
 from typing import Any, cast
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QSignalBlocker, Qt
 from PySide6.QtTest import QSignalSpy, QTest
+from PySide6.QtWidgets import QDoubleSpinBox, QSlider, QWidget
 
 from mic_eq import AudioProcessor
 from mic_eq.config import BUILTIN_PRESETS, EQSettings, Preset, q_from_bandwidth_octaves
-from mic_eq.ui.eq_panel import EQPanel
+from mic_eq.ui.eq_panel import EQBandSlider, EQPanel, EQPresentation
+from mic_eq.ui.eq_state import EQState
 
 
 def _close_panel(panel: EQPanel, processor: AudioProcessor, qapp) -> None:
@@ -58,7 +60,9 @@ def test_ui_synchronization(qapp):
     # Calibration occupies its own stage; editable tone starts flat.
     correction = panel.get_eq_settings().correction_bands
     assert correction is not None
-    assert [(band.frequency_hz, band.gain_db, band.q) for band in correction] == auto_eq_bands
+    assert [
+        (band.frequency_hz, band.gain_db, band.q) for band in correction
+    ] == auto_eq_bands
     for i, (expected_freq, expected_gain, expected_q) in enumerate(auto_eq_bands):
         slider = panel.band_sliders[i]
         actual_gain = slider.slider.value() / 10.0
@@ -322,9 +326,7 @@ def test_manual_filter_type_slope_and_bypass_sync_to_native_and_curve(qapp):
     qapp.processEvents()
     band = panel.band_sliders[4]
 
-    band.filter_type_combo.setCurrentIndex(
-        band.filter_type_combo.findData("notch")
-    )
+    band.filter_type_combo.setCurrentIndex(band.filter_type_combo.findData("notch"))
     band.frequency_spinbox.setValue(1000.0)
     band._frequency_rate_limiter.flush()
     band.q_spinbox.setValue(8.0)
@@ -338,9 +340,7 @@ def test_manual_filter_type_slope_and_bypass_sync_to_native_and_curve(qapp):
     assert not band.slope_combo.isEnabled()
     assert min(panel.curve_widget.response_db) < -20.0
 
-    band.filter_type_combo.setCurrentIndex(
-        band.filter_type_combo.findData("high_pass")
-    )
+    band.filter_type_combo.setCurrentIndex(band.filter_type_combo.findData("high_pass"))
     band.slope_combo.setCurrentIndex(band.slope_combo.findData(48))
     qapp.processEvents()
 
@@ -632,3 +632,54 @@ def test_bass_cut_description_matches_shelf_contour():
     description = EQPanel._preset_bass_cut.__doc__ or ""
     assert "low-shelf" in description
     assert "high-pass" in description
+
+
+def test_eq_presentation_has_no_numeric_editors_and_fallback_adopts_same_graph(qapp):
+    from unittest.mock import Mock
+
+    native = Mock()
+    owner = QWidget()
+    state = EQState(native, owner)
+    settings = state.get_eq_settings()
+    payload = settings.to_dict()
+    payload["bands"][4].update(filter_type="notch", frequency_hz=2345.678, q=3.4567)
+    state.set_settings(payload)
+    native.reset_mock()
+    presentation = EQPresentation(state, owner)
+    assert not owner.findChildren(EQBandSlider)
+    assert not owner.findChildren(QDoubleSpinBox)
+    assert not owner.findChildren(QSlider)
+    assert not native.mock_calls
+    panel = EQPanel(native, state, presentation=presentation)
+    assert panel.curve_widget is presentation.curve_widget
+    assert panel.tone_preset_button is presentation.tone_preset_button
+    assert not native.mock_calls
+    assert state.get_band(4).filter_type == "notch"
+    assert state.get_band(4).frequency_hz == 2345.678
+    assert state.get_band(4).q == 3.4567
+    with QSignalBlocker(panel.band_sliders[4].frequency_spinbox):
+        panel.band_sliders[4].frequency_spinbox.setValue(7000)
+    assert state.get_band(4).frequency_hz == 2345.678
+    state.changed.emit()
+    assert panel.band_sliders[4].frequency_spinbox.value() == 2346
+    panel.deleteLater()
+    owner.deleteLater()
+    qapp.processEvents()
+
+
+def test_standalone_eq_band_keeps_its_parameter_write_contract(qapp):
+    from unittest.mock import Mock
+
+    native = Mock()
+    band = EQBandSlider(4, 1280.0, native)
+    band.slider.setValue(23)
+    band._rate_limiter.flush()
+    native.set_eq_band_gain.assert_called_once_with(4, 2.3)
+    native.apply_eq_layers.assert_not_called()
+    band.set_q(2.345678)
+    band.set_frequency(2345.678)
+    assert band.settings().q == 2.345678
+    assert band.frequency_hz() == 2345.678
+    native.set_eq_band_q.assert_not_called()
+    band.deleteLater()
+    qapp.processEvents()

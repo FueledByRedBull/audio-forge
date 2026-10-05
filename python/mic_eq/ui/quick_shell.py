@@ -1,13 +1,13 @@
 """Qt Quick view of the main window.
 
-The widget panels stay the controllers: they own every value, range, tooltip
-and handler. This module keeps the widget shell alive off screen and exposes
-its controls to QML through proxies, so both views drive the same code.
+Migrated settings use shared application state; remaining controls use widget
+proxies. The widget shell stays available for rendering failure recovery.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 from collections import deque
 from dataclasses import asdict
 from pathlib import Path
@@ -18,6 +18,7 @@ from PySide6.QtCore import (
     Property,
     QCoreApplication,
     QEvent,
+    QLocale,
     QObject,
     QPoint,
     QPointF,
@@ -48,6 +49,13 @@ from PySide6.QtWidgets import (
 )
 
 from .components import Card, Glyph, ToggleSwitch, icon_font, plain_label
+from ..config_parts.validation import VALIDATION_RANGES
+from .limiter_state import LimiterState
+from .deesser_state import DeEsserState
+from .compressor_state import COMPRESSOR_RANGES, CompressorState
+from .gate_state import GateState
+from .eq_controls import EQControl
+from .noise_controls import NoiseControl
 from .theme import (
     PALETTE,
     RADIUS_CARD,
@@ -81,6 +89,210 @@ _DEFAULTS: dict[str, Any] = {
     "state": "",
     "data": {},
 }
+
+
+class SettingControl(QObject):
+    """Present shared processing state to QML without reading a QWidget."""
+
+    changed = Signal()
+
+    def __init__(
+        self, state: LimiterState | DeEsserState | CompressorState | GateState,
+        section: str, key: str, parent: QObject,
+    ):
+        super().__init__(parent)
+        self._state = state
+        self._key = key
+        self._section = section
+        self._name, self._tip, self._step, self._suffix = {
+            "limiter": {
+            "enabled": (
+                "Enable limiter",
+                "Prevents signal from exceeding ceiling level.\n"
+                "Acts as a safety net to prevent clipping.", 0.0, "",
+            ),
+            "careful_output_enabled": (
+                "Enable careful output mode",
+                "Adds conservative output headroom by limiting the effective ceiling to -1.5 dB.",
+                0.0, "",
+            ),
+            "ceiling_db": (
+                "Limiter ceiling", "Maximum output level (brick-wall ceiling)", 0.1, " dB",
+            ),
+            "release_ms": (
+                "Limiter release time", "How fast the limiter recovers", 5.0, " ms",
+            ),
+            },
+            "deesser": {
+                "enabled": (
+                    "Enable de-esser", "Reduces harsh sibilance (s, sh, t) using dynamic attenuation.", 0.0, "",
+                ),
+                "auto_enabled": (
+                    "Enable automatic de-esser",
+                    "Learns average sibilance and applies dynamic reduction automatically.",
+                    0.0, "",
+                ),
+                "auto_amount": ("Automatic de-esser amount", "", 0.05, ""),
+                "low_cut_hz": ("De-esser low cutoff", "", 100.0, " Hz"),
+                "high_cut_hz": ("De-esser high cutoff", "", 100.0, " Hz"),
+                "threshold_db": ("De-esser threshold", "", 1.0, " dB"),
+                "ratio": ("De-esser ratio", "", 0.5, ":1"),
+                "attack_ms": ("De-esser attack time", "", 0.1, " ms"),
+                "release_ms": ("De-esser release time", "", 5.0, " ms"),
+                "max_reduction_db": ("De-esser maximum reduction", "", 0.5, " dB"),
+            },
+            "compressor": {
+                "enabled": (
+                    "Enable compressor", "Reduces dynamic range by attenuating loud signals.\n"
+                    "Helps maintain consistent volume levels.", 0.0, "",
+                ),
+                "threshold_db": ("Compressor threshold", "Level above which compression begins", 1.0, " dB"),
+                "ratio": ("Compressor ratio", "Compression ratio (higher = more compression)", 0.5, ":1"),
+                "attack_ms": ("Compressor attack time", "How fast the compressor responds to loud signals", 1.0, " ms"),
+                "release_ms": ("Compressor release time", "How fast the compressor recovers after loud signals", 10.0, " ms"),
+                "makeup_gain_db": ("Compressor makeup gain", "Gain added after compression to restore volume", 0.5, " dB"),
+                "adaptive_release": (
+                    "Enable adaptive release", "Release time adapts based on signal dynamics.\n"
+                    "Scales from 50ms to 400ms based on sustained overage.\n"
+                    "Longer release for consistent loud signals, shorter for transients.", 0.0, "",
+                ),
+                "base_release_ms": ("Adaptive compressor base release", "Base release time when adaptive mode is enabled", 5.0, " ms"),
+                "sidechain_highpass_enabled": (
+                    "Enable compressor sidechain high-pass", "Ignores low-frequency plosives and rumble in the compressor detector without filtering the audio.", 0.0, "",
+                ),
+                "auto_makeup_enabled": (
+                    "Enable automatic makeup gain", "Automatically adjust makeup gain from post-compression EBU R128 loudness measurement.\n"
+                    "Maintains post-compressor output level relative to target LUFS.\n"
+                    "Uses the selected Target LUFS value.", 0.0, "",
+                ),
+                "target_lufs": ("Automatic makeup target loudness", "Target loudness level (-24 to -12 LUFS)", 1.0, " LUFS"),
+            },
+            "gate": {
+                "enabled": ("Enable noise gate", "Reduces gain when signal falls below threshold.\nHelps eliminate background noise during silence.", 0.0, ""),
+                "threshold_db": ("Gate manual threshold", "Signal level below which gate closes", 1.0, " dB"),
+                "attack_ms": ("Gate attack time", "Time for gate to open when signal exceeds threshold", 1.0, " ms"),
+                "release_ms": ("Gate release time", "Time for gate to close when signal drops below threshold", 10.0, " ms"),
+                "gate_mode": ("Gate operating mode", "Threshold Only: Traditional gate using level threshold\nVAD Assisted: Gate opens when level exceeded OR speech detected\nVAD Only: Gate opens solely based on speech probability", 0.0, ""),
+                "vad_threshold": ("Voice activity threshold", "Speech probability threshold (0.3-0.7)", 0.01, ""),
+                "vad_hold_time_ms": ("Voice activity hold time", "Gate hold time after speech ends (prevents chatter)", 10.0, " ms"),
+                "vad_pre_gain": ("Voice activity pre-gain", "Pre-gain to boost weak signals for better VAD detection", 0.5, ""),
+                "auto_threshold_enabled": ("Enable automatic gate threshold", "Automatically set the gate level threshold to noise floor + margin.", 0.0, ""),
+                "gate_margin_db": ("Automatic gate margin", "Margin above noise floor for gate threshold (0-20 dB)", 1.0, " dB"),
+            },
+        }[section][key]
+        ranges = COMPRESSOR_RANGES if section == "compressor" else {
+            name: bounds for name, bounds in VALIDATION_RANGES[section].items()
+            if isinstance(bounds[0], (int, float))
+        }
+        self._choices = ["Threshold Only", "VAD Assisted", "VAD Only"] if key == "gate_mode" else []
+        self._numeric = key in ranges and not self._choices
+        self._minimum, self._maximum = ranges.get(key, (0.0, 1.0))
+        self._decimals = 1 if key == "vad_pre_gain" else 2
+        self._locale = QLocale()
+        self._locale.setNumberOptions(
+            self._locale.numberOptions() | QLocale.NumberOption.OmitGroupSeparator,
+        )
+        state.changed.connect(self.changed)
+
+    def _presentation(self, key: str, default: str) -> str:
+        if isinstance(self._state, GateState) and self._key == "auto_threshold_enabled":
+            return self._state.presentation()["auto_threshold_" + key]
+        return default
+
+    name = Property(str, lambda self: self._presentation("name", self._name), notify=changed)
+    toolTip = Property(str, lambda self: self._presentation("tooltip", self._tip), notify=changed)
+    step = Property(float, lambda self: self._step, constant=True)
+    minimum = Property(float, lambda self: self._minimum, constant=True)
+    maximum = Property(float, lambda self: self._maximum, constant=True)
+    enabled = Property(bool, lambda self: self._state.control_enabled(self._key), notify=changed)
+    shown = Property(bool, lambda self: True, constant=True)
+    checked = Property(
+        bool, lambda self: bool(self._state.get_settings()[self._key]), notify=changed,
+    )
+    value = Property(
+        float, lambda self: float(QLocale.c().toString(
+            float(self._state.get_settings()[self._key]), "f", self._decimals,
+        )),
+        notify=changed,
+    )
+    text = Property(
+        str, lambda self: (
+            self._choices[self.index] if self._choices else
+            self._locale.toString(self.value, "f", self._decimals) + self._suffix
+        ),
+        notify=changed,
+    )
+    items = Property(list, lambda self: self._choices, constant=True)
+    index = Property(int, lambda self: int(self._state.get_settings()[self._key]) if self._choices else -1, notify=changed)
+
+    @Slot(int)
+    def setIndex(self, index: int) -> None:
+        try:
+            if self._choices and self.enabled and 0 <= index < len(self._choices):
+                self._state.set_value(self._key, index)
+        except (ValueError, RuntimeError):
+            pass
+        finally:
+            self.changed.emit()
+
+    @Slot(float)
+    def setValue(self, value: float) -> None:
+        try:
+            if self._numeric and self.enabled and math.isfinite(value):
+                self._state.set_value(
+                    self._key, float(QLocale.c().toString(
+                        min(self._maximum, max(self._minimum, value)), "f", self._decimals,
+                    )),
+                )
+        except (ValueError, RuntimeError):
+            # Failed writes are reported by the state; restore the displayed value.
+            pass
+        finally:
+            self.changed.emit()
+
+    @Slot(str)
+    def setText(self, text: str) -> None:
+        try:
+            self.setValue(float(text.replace(self._suffix.strip(), "").replace(",", ".").strip()))
+        except ValueError:
+            self.changed.emit()
+        self.released()
+
+    @Slot()
+    def click(self) -> None:
+        try:
+            if self.enabled and not self._numeric and not self._choices:
+                self._state.set_value(self._key, not self.checked)
+        except (ValueError, RuntimeError):
+            pass
+        finally:
+            self.changed.emit()
+
+    @Slot()
+    def released(self) -> None:
+        try:
+            self._state.flush()
+        except RuntimeError:
+            pass
+        finally:
+            self.changed.emit()
+
+
+class GateText(QObject):
+    """Derived gate status, updated with its settings or telemetry."""
+
+    changed = Signal()
+
+    def __init__(self, state: GateState, key: str, parent: QObject):
+        super().__init__(parent)
+        self._state, self._key = state, key
+        state.changed.connect(self.changed)
+
+    text = Property(str, lambda self: self._state.presentation()[self._key], notify=changed)
+    toolTip = Property(str, lambda self: "", constant=True)
+    name = Property(str, lambda self: "", constant=True)
+    enabled = Property(bool, lambda self: True, constant=True)
+    shown = Property(bool, lambda self: True, constant=True)
 
 
 class WidgetProxy(QObject):
@@ -443,7 +655,7 @@ class QuickBridge(QObject):
 
     @Slot(int)
     def stepBand(self, direction: int) -> None:
-        self._window.eq_panel._step_band(direction)
+        self._window.eq_state.step_band(direction)
 
     @Slot()
     def resetDrops(self) -> None:
@@ -458,146 +670,159 @@ class QuickBridge(QObject):
         self._proxies.append(proxy)
         return proxy
 
-    def _field(self, label: str, target, slider=None, display=None) -> dict:
-        return {
-            "kind": "field" if slider is not None or isinstance(target, QSlider) else "number",
-            "label": label,
-            "proxy": self._proxy(target, companion=slider),
-            "display": self._proxy(display) if display is not None else None,
-        }
-
     def _row(self, kind: str, target, label: str = "") -> dict:
         return {"kind": kind, "label": label, "proxy": self._proxy(target)}
 
-    def _card(self, card: Card, rows: list[dict], advanced: list[dict], **extra) -> dict:
-        help_button, menu_button = card.help_button, card.menu_button
-        return {
-            "trace": False,
-            "alert": None,
-            "title": card.title_label.text(),
-            "help": help_button.toolTip() if help_button is not None else "",
-            "toggle": self._proxy(card.switch) if card.switch is not None else None,
-            "menu": self._proxy(menu_button) if menu_button is not None else None,
-            "rows": rows,
-            "advanced": advanced,
-            **extra,
-        }
-
     def _build_model(self, w) -> dict:
-        field, row, card = self._field, self._row, self._card
+        row = self._row
+
+        def control(section: str, key: str) -> SettingControl:
+            return SettingControl(getattr(w, section + "_state"), section, key, self)
+
+        def state_field(section: str, label: str, key: str, *, slider: bool = False) -> dict:
+            return {
+                "kind": "field" if slider else "number", "label": label,
+                "proxy": control(section, key), "display": None,
+            }
+
+        def state_row(section: str, kind: str, label: str, key: str) -> dict:
+            return {"kind": kind, "label": label, "proxy": control(section, key)}
+
+        def gate_text(key: str) -> dict:
+            return {"kind": "text", "label": "", "proxy": GateText(w.gate_state, key, self)}
 
         def health(title: str, label: QLabel, *, coded: bool = False) -> dict:
             # `coded` rows carry counter tokens rather than a readable value.
             return {"title": title, "coded": coded, "proxy": self._proxy(label)}
-        gate, deesser, comp, eq = (
-            w.gate_panel,
-            w.deesser_panel,
-            w.compressor_panel,
-            w.eq_panel,
-        )
-        (gate_card,) = gate.findChildren(Card)
-        (deesser_card,) = deesser.findChildren(Card)
-        comp_card, limiter_card = comp.findChildren(Card)
-        (eq_card,) = eq.findChildren(Card)
+        meters = w.processing_meters
+        eq = w.eq_presentation
 
+        strength = NoiseControl(w.noise_suppression_state, "strength", self)
         stages = [
-            card(
-                w.noise_suppression_group,
-                [
-                    row("combo", w.model_combo, "Backend"),
-                    field("Strength", w.strength_slider, display=w.strength_label),
-                    row("text", w.rnnoise_latency_label),
+            {
+                "trace": True, "alert": self._proxy(w.backend_diag_label),
+                "title": "NOISE SUPPRESSION", "menu": None,
+                "help": (
+                    "Removes steady background noise such as fans and hum. The "
+                    "backend choice affects cleanup quality, CPU use and latency. "
+                    "Packaged builds use bundled, integrity-checked model files."
+                ),
+                "toggle": NoiseControl(w.noise_suppression_state, "enabled", self),
+                "rows": [
+                    {"kind": "combo", "label": "Backend", "proxy": NoiseControl(w.noise_suppression_state, "model", self)},
+                    {"kind": "field", "label": "Strength", "proxy": strength, "display": strength},
+                    {"kind": "text", "label": "", "proxy": NoiseControl(w.noise_suppression_state, "latency", self)},
                 ],
-                [],
-                # This card also shows the level history, and the backend
-                # state while that is unhealthy.
-                trace=True,
-                alert=self._proxy(w.backend_diag_label),
-            ),
-            card(
-                gate_card,
-                [
-                    field("Threshold", gate.threshold_spinbox, gate.threshold_slider),
-                    row("toggle", gate.auto_threshold_checkbox, "Auto threshold"),
-                    row("text", gate.threshold_status_label),
+                "advanced": [],
+            },
+            {
+                "trace": False, "alert": None, "title": "NOISE GATE", "menu": None,
+                "help": (
+                    "Reduces gain when the signal falls below the threshold, so "
+                    "background noise drops out during silence. The gate uses 3 dB "
+                    "of hysteresis and a smoothed envelope to avoid chattering."
+                ),
+                "toggle": control("gate", "enabled"),
+                "rows": [
+                    state_field("gate", "Threshold", "threshold_db", slider=True),
+                    state_row("gate", "toggle", "Auto threshold", "auto_threshold_enabled"),
+                    gate_text("threshold_status"),
                 ],
-                [
-                    field("Attack", gate.attack_spinbox),
-                    field("Release", gate.release_spinbox),
-                    row("combo", gate.gate_mode_combo, "Gate mode"),
-                    field("VAD threshold", gate.vad_threshold_spinbox, gate.vad_threshold_slider),
-                    field("Hold time", gate.vad_hold_spinbox),
-                    field("VAD pre-gain", gate.vad_pre_gain_spinbox, gate.vad_pre_gain_slider),
-                    field("Margin", gate.margin_spinbox, gate.margin_slider),
-                    row("text", gate.noise_floor_label),
-                    row("meter", gate.confidence_meter, "Confidence"),
-                    row("text", gate.vad_info_label),
+                "advanced": [
+                    state_field("gate", "Attack", "attack_ms"),
+                    state_field("gate", "Release", "release_ms"),
+                    state_row("gate", "combo", "Gate mode", "gate_mode"),
+                    state_field("gate", "VAD threshold", "vad_threshold", slider=True),
+                    state_field("gate", "Hold time", "vad_hold_time_ms"),
+                    state_field("gate", "VAD pre-gain", "vad_pre_gain", slider=True),
+                    state_field("gate", "Margin", "gate_margin_db", slider=True),
+                    gate_text("noise_floor"),
+                    row("meter", meters.confidence, "Confidence"),
+                    gate_text("vad_info"),
                 ],
-            ),
-            card(
-                deesser_card,
-                [
-                    row("toggle", deesser.auto_checkbox, "Auto"),
-                    field("Amount", deesser.auto_amount_spinbox, deesser.auto_amount_slider),
-                    row("meter", deesser.gr_meter, "Reduction"),
+            },
+            {
+                "trace": False, "alert": None, "title": "DE-ESSER", "menu": None,
+                "help": (
+                    "Reduces harsh sibilance (s, sh, t). Auto mode tracks the "
+                    "balance between sibilance and voice and adjusts the reduction "
+                    "as you speak."
+                ),
+                "toggle": control("deesser", "enabled"),
+                "rows": [
+                    state_row("deesser", "toggle", "Auto", "auto_enabled"),
+                    state_field("deesser", "Amount", "auto_amount", slider=True),
+                    row("meter", meters.deesser_gr, "Reduction"),
                 ],
-                [
-                    field("Low cut", deesser.low_cut_spinbox, deesser.low_cut_slider),
-                    field("High cut", deesser.high_cut_spinbox, deesser.high_cut_slider),
-                    field("Threshold", deesser.threshold_spinbox, deesser.threshold_slider),
-                    field("Ratio", deesser.ratio_spinbox, deesser.ratio_slider),
-                    field("Attack", deesser.attack_spinbox),
-                    field("Release", deesser.release_spinbox),
-                    field(
-                        "Max reduction",
-                        deesser.max_reduction_spinbox,
-                        deesser.max_reduction_slider,
-                    ),
+                "advanced": [
+                    state_field("deesser", "Low cut", "low_cut_hz", slider=True),
+                    state_field("deesser", "High cut", "high_cut_hz", slider=True),
+                    state_field("deesser", "Threshold", "threshold_db", slider=True),
+                    state_field("deesser", "Ratio", "ratio", slider=True),
+                    state_field("deesser", "Attack", "attack_ms"),
+                    state_field("deesser", "Release", "release_ms"),
+                    state_field("deesser", "Max reduction", "max_reduction_db", slider=True),
                 ],
-            ),
-            card(
-                comp_card,
-                [
-                    field("Threshold", comp.threshold_spinbox, comp.threshold_slider),
-                    field("Ratio", comp.ratio_spinbox, comp.ratio_slider),
-                    row("meter", comp.gr_meter, "Reduction"),
+            },
+            {
+                "trace": False, "alert": None, "title": "COMPRESSOR", "menu": None,
+                "help": (
+                    "Evens out your level by turning down the loudest moments. "
+                    "Threshold sets where it starts working; ratio sets how hard."
+                ),
+                "toggle": control("compressor", "enabled"),
+                "rows": [
+                    state_field("compressor", "Threshold", "threshold_db", slider=True),
+                    state_field("compressor", "Ratio", "ratio", slider=True),
+                    row("meter", meters.compressor_gr, "Reduction"),
                 ],
-                [
-                    field("Attack", comp.attack_spinbox),
-                    field("Release", comp.release_spinbox),
-                    field("Makeup gain", comp.makeup_spinbox, comp.makeup_slider),
-                    row("toggle", comp.adaptive_release_checkbox, "Adaptive release"),
-                    field("Base release", comp.base_release_spinbox),
-                    row("text", comp.current_release_label, "Current release"),
-                    row("toggle", comp.sidechain_highpass_checkbox, "Sidechain high-pass"),
-                    row("toggle", comp.auto_makeup_checkbox, "Auto makeup gain"),
-                    field("Target LUFS", comp.target_lufs_spinbox),
-                    row("text", comp.current_lufs_label, "Current LUFS"),
-                    row("text", comp.current_makeup_gain_label, "Auto gain"),
+                "advanced": [
+                    state_field("compressor", "Attack", "attack_ms"),
+                    state_field("compressor", "Release", "release_ms"),
+                    state_field("compressor", "Makeup gain", "makeup_gain_db", slider=True),
+                    state_row("compressor", "toggle", "Adaptive release", "adaptive_release"),
+                    state_field("compressor", "Base release", "base_release_ms"),
+                    row("text", meters.current_release, "Current release"),
+                    state_row("compressor", "toggle", "Sidechain high-pass", "sidechain_highpass_enabled"),
+                    state_row("compressor", "toggle", "Auto makeup gain", "auto_makeup_enabled"),
+                    state_field("compressor", "Target LUFS", "target_lufs"),
+                    row("text", meters.current_lufs, "Current LUFS"),
+                    row("text", meters.current_makeup_gain, "Auto gain"),
                 ],
-            ),
-            card(
-                limiter_card,
-                [field("Ceiling", comp.ceiling_spinbox, comp.ceiling_slider)],
-                [
-                    row("toggle", comp.careful_output_checkbox, "Careful output mode"),
-                    field("Release", comp.limiter_release_spinbox),
+            },
+            {
+                "trace": False,
+                "alert": None,
+                "title": "LIMITER",
+                "help": (
+                    "A safety net that stops the output from going above the "
+                    "ceiling. It looks ahead 0.5 ms and ramps its gain down before "
+                    "transients reach the output."
+                ),
+                "toggle": SettingControl(w.limiter_state, "limiter", "enabled", self),
+                "menu": None,
+                "rows": [{
+                    "kind": "field", "label": "Ceiling", "display": None,
+                    "proxy": SettingControl(w.limiter_state, "limiter", "ceiling_db", self),
+                }],
+                "advanced": [
+                    {
+                        "kind": "toggle", "label": "Careful output mode",
+                        "proxy": SettingControl(w.limiter_state, "limiter", "careful_output_enabled", self),
+                    },
+                    {
+                        "kind": "number", "label": "Release", "display": None,
+                        "proxy": SettingControl(w.limiter_state, "limiter", "release_ms", self),
+                    },
                 ],
-            ),
+            },
         ]
 
         bands = [
-            {
-                "frequencyLabel": self._proxy(band.freq_label),
-                "enabled": self._proxy(band.band_enabled_checkbox),
-                "type": self._proxy(band.filter_type_combo),
-                "gain": self._proxy(band.slider),
-                "gainLabel": self._proxy(band.gain_label),
-                "frequency": self._proxy(band.frequency_spinbox),
-                "q": self._proxy(band.q_spinbox),
-                "slope": self._proxy(band.slope_combo),
-            }
-            for band in eq.band_sliders
+            {key: EQControl(w.eq_state, key, index, self) for key in (
+                "frequencyLabel", "enabled", "type", "gain", "gainLabel", "frequency", "q", "slope",
+            )}
+            for index in range(10)
         ]
 
         settings_cards = []
@@ -670,15 +895,19 @@ class QuickBridge(QObject):
                 "voiceSetup": self._proxy(w.auto_voice_setup_button),
             },
             "eq": {
-                **card(eq_card, [], []),
+                "trace": False, "alert": None, "title": "EQUALIZER",
+                "help": (
+                    "The curve shows correction plus tone; handles edit tone only. "
+                    "Drag a handle to edit frequency and gain. Notch and pass filters "
+                    "move horizontally only. Use [ and ] plus arrow keys for keyboard editing."
+                ),
+                "toggle": EQControl(w.eq_state, "enabled", None, self),
+                "menu": self._proxy(eq.options_button), "rows": [], "advanced": [],
                 "tone": self._proxy(eq.tone_preset_button),
                 "curve": self._proxy(eq.curve_widget),
-                "layers": self._proxy(eq.layer_status_label),
-                "diagnostics": self._proxy(
-                    eq.auto_eq_diag_label,
-                    data=lambda: {"calibrated": eq._auto_eq_diagnostics is not None},
-                ),
-                "band": self._proxy(eq.band_stack),
+                "layers": EQControl(w.eq_state, "layers", None, self),
+                "diagnostics": EQControl(w.eq_state, "diagnostics", None, self),
+                "band": EQControl(w.eq_state, "band", None, self),
                 "bands": bands,
             },
             "stages": stages,
@@ -792,6 +1021,7 @@ def restore_widget_shell(window, reason: str) -> None:
     shell.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, False)
     shell.setParent(window)
     window.setCentralWidget(shell)
+    window._ensure_processing_panels()
     shell.show()
     window.statusBar().show()
     _announce_fallback(window)

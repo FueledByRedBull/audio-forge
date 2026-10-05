@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Share processing settings and commands between the Qt Quick and classic views. The Quick view no longer constructs hidden EQ, gate, de-esser, compressor, limiter or noise-suppression controls. The existing graph, meters, dialogs and rendering-failure fallback remain.
+- Preserve exact preset values, coalesced edits, undo and rejected-write readback across both views. Failed native recovery keeps processing blocked until a complete configuration is successfully reapplied; queued EQ graph edits cannot overwrite newer numeric edits.
+- Flush queued changes before saving a preset, and cancel superseded edits before taking a rollback snapshot. A failed replacement restores the last accepted sound, and a rejected slider value is never saved.
+
 ## v1.15.0
 
 ### Sound and dynamics

@@ -17,16 +17,16 @@ from mic_eq.ui import calibration_history
 from mic_eq.ui.main_window import MainWindow
 
 
-class _CalibrationPanel:
+class _CalibrationState:
     def __init__(self, reliability: float) -> None:
         self.reliability = reliability
         self.set_calls: list[dict[str, float]] = []
 
-    def get_compressor_settings(self, *, include_calibration: bool) -> dict[str, float]:
+    def get_settings(self, *, include_calibration: bool) -> dict[str, float]:
         assert include_calibration
         return {"noise_reference_reliability": self.reliability}
 
-    def set_compressor_settings(self, settings: dict[str, float]) -> None:
+    def set_settings(self, settings: dict[str, float]) -> None:
         self.set_calls.append(settings)
         self.reliability = float(settings["noise_reference_reliability"])
 
@@ -38,7 +38,7 @@ def _calibration_owner(result: CalibrationResult, *, context: str = "route"):
         _get_current_preset=Preset,
         _preset_payload=MainWindow._preset_payload,
         calibration_status_label=SimpleNamespace(setText=lambda _text: None),
-        compressor_panel=_CalibrationPanel(result.noise_reference_reliability),
+        compressor_state=_CalibrationState(result.noise_reference_reliability),
     )
     return owner
 
@@ -218,8 +218,8 @@ def test_status_refresh_is_read_only_for_calibration_dsp():
 
     MainWindow._refresh_calibration_status(cast(Any, owner))
 
-    assert owner.compressor_panel.set_calls == []
-    assert owner.compressor_panel.reliability == pytest.approx(0.8)
+    assert owner.compressor_state.set_calls == []
+    assert owner.compressor_state.reliability == pytest.approx(0.8)
 
 
 def test_explicit_calibration_sync_clears_noise_reference_after_route_change():
@@ -240,11 +240,11 @@ def test_explicit_calibration_sync_clears_noise_reference_after_route_change():
     owner._calibration_context_key = lambda: context["value"]
 
     MainWindow._sync_calibration_evidence(cast(Any, owner))
-    assert owner.compressor_panel.set_calls == []
+    assert owner.compressor_state.set_calls == []
 
     context["value"] = "route-b"
     MainWindow._sync_calibration_evidence(cast(Any, owner))
 
-    assert owner.compressor_panel.set_calls == [
+    assert owner.compressor_state.set_calls == [
         {"noise_reference_reliability": 0.0}
     ]

@@ -162,9 +162,9 @@ def find_processor_owner(widget: object) -> Any | None:
     return parent
 
 
-def find_eq_panel_owner(widget: object) -> Any | None:
+def find_eq_state_owner(widget: object) -> Any | None:
     parent: Any = widget
-    while parent and not hasattr(parent, "eq_panel"):
+    while parent and not hasattr(parent, "eq_state"):
         parent = parent.parent()
     return parent
 

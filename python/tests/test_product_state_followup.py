@@ -487,9 +487,9 @@ def test_failed_mute_application_stays_pending() -> None:
 def test_eq_only_scope_preserves_the_rest_of_the_processing_chain() -> None:
     owner = cast(Any, MainWindow.__new__(MainWindow))
     applied_eq: dict[str, object] = {}
-    owner.eq_panel = SimpleNamespace(
-        enabled_checkbox=SimpleNamespace(setChecked=lambda value: applied_eq.update(enabled=value)),
-        _apply_typed_bands=lambda bands, **kwargs: applied_eq.update(bands=bands, **kwargs),
+    owner.eq_state = SimpleNamespace(
+        set_enabled=lambda value: applied_eq.update(enabled=value),
+        apply_typed_bands=lambda bands, **kwargs: applied_eq.update(bands=bands, **kwargs),
     )
     owner.status_bar = SimpleNamespace(showMessage=lambda *args: None)
     owner._history_ready = False
@@ -499,21 +499,20 @@ def test_eq_only_scope_preserves_the_rest_of_the_processing_chain() -> None:
     owner._set_preset_modified = lambda modified=None: setattr(owner, "preset_modified", modified)
 
     before = {"threshold_db": -31.0, "model": "rnnoise"}
-    owner.gate_panel = SimpleNamespace(get_settings=lambda: dict(before))
-    owner.rnnoise_checkbox = SimpleNamespace(isChecked=lambda: True)
-    owner.strength_slider = SimpleNamespace(value=lambda: 100)
-    owner.model_combo = SimpleNamespace(currentData=lambda: "rnnoise")
-    owner.deesser_panel = SimpleNamespace(get_settings=lambda: {})
-    owner.compressor_panel = SimpleNamespace(
-        get_compressor_settings=lambda: {}, get_limiter_settings=lambda: {}
-    )
+    owner.gate_state = SimpleNamespace(get_settings=lambda: dict(before))
+    owner.noise_suppression_state = SimpleNamespace(get_settings=lambda: {
+        "enabled": True, "strength": 1.0, "model": "rnnoise",
+    })
+    owner.deesser_state = SimpleNamespace(get_settings=lambda: {})
+    owner.compressor_state = SimpleNamespace(get_settings=lambda: {})
+    owner.limiter_state = SimpleNamespace(get_settings=lambda: {})
     owner.bypass_checkbox = SimpleNamespace(isChecked=lambda: False)
 
     replacement = Preset()
     replacement.eq.enabled = False
     MainWindow._apply_preset(owner, replacement, scope="eq")
 
-    assert owner.gate_panel.get_settings() == before
+    assert owner.gate_state.get_settings() == before
     assert applied_eq == {"enabled": False, "bands": replacement.eq.bands, "layer": "tone"}
     assert owner.preset_modified is True
 

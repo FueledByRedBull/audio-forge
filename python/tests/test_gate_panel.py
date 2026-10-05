@@ -7,6 +7,8 @@ from unittest.mock import Mock
 import pytest
 
 from mic_eq.ui.gate_panel import GatePanel
+from mic_eq.ui.gate_state import GateState
+from PySide6.QtCore import QSignalBlocker
 
 
 class _GateProcessor:
@@ -107,6 +109,14 @@ def test_gate_panel_preserves_loaded_vad_mode_when_backend_unavailable(qapp):
     assert processor.gate_mode_calls[-1] == 2
 
 
+def test_interactive_unavailable_vad_selection_restores_the_widget(qapp):
+    panel = GatePanel(_GateProcessor(vad_available=False))
+    panel.gate_mode_combo.setCurrentIndex(1)
+    assert panel.gate_mode_combo.currentIndex() == 0
+    assert panel.get_settings()["gate_mode"] == 0
+    assert panel.threshold_spinbox.isEnabled()
+
+
 def test_gate_panel_refreshes_restored_vad_status_when_backend_becomes_available(qapp):
     processor = _GateProcessor(vad_available=False)
     panel = GatePanel(processor)
@@ -154,3 +164,27 @@ def test_vad_only_displays_confidence_threshold_and_moves_marker(qapp):
     assert panel.auto_threshold_checkbox.text() == "Auto Threshold"
     assert panel.margin_spinbox.isEnabled()
     assert "Effective Threshold:" in panel.threshold_status_label.text()
+
+
+def test_gate_widgets_share_state_without_replacing_unedited_exact_values(qapp):
+    native = _GateProcessor(vad_available=True)
+    state = GateState(native)
+    panel = GatePanel(native, state)
+    other = GatePanel(native, state)
+    panel.set_settings({"threshold_db": -31.234567, "vad_pre_gain": 1.234567})
+    assert other.threshold_spinbox.value() == -31.23
+    assert other.vad_pre_gain_spinbox.value() == 1.2
+    other.enabled_checkbox.setChecked(False)
+    state.flush()
+    assert not panel.enabled_checkbox.isChecked()
+    assert panel.get_settings()["threshold_db"] == -31.234567
+    assert panel.get_settings()["vad_pre_gain"] == 1.234567
+    with QSignalBlocker(panel.threshold_spinbox):
+        panel.threshold_spinbox.setValue(-75.0)
+    assert state.get_settings()["threshold_db"] == -31.234567
+    state.changed.emit()
+    assert panel.threshold_spinbox.value() == -31.23
+    other.threshold_slider.setValue(-35)
+    other.threshold_slider.sliderReleased.emit()
+    assert panel.threshold_spinbox.value() == -35.0
+    assert state.get_settings()["vad_pre_gain"] == 1.234567

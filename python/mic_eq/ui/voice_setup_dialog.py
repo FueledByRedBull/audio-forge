@@ -50,7 +50,7 @@ from .capture_session import (
     active_device_identities as _active_device_identities,
     device_label as _device_label,
     device_name as _device_name,
-    find_eq_panel_owner as _find_eq_panel_owner,
+    find_eq_state_owner as _find_eq_state_owner,
     find_processor_owner as _find_processor_owner,
     owner_calibration_context_key as _owner_calibration_context_key,
     processor_sample_rate as _processor_sample_rate,
@@ -172,29 +172,17 @@ def _candidate_preset(
 
 
 def _suppressor_settings(owner: Any) -> dict[str, Any] | None:
-    if not all(hasattr(owner, name) for name in ("rnnoise_checkbox", "strength_slider", "model_combo")):
+    state = getattr(owner, "noise_suppression_state", None)
+    if state is None:
         return None
-    return {"enabled": owner.rnnoise_checkbox.isChecked(),
-            "strength": owner.strength_slider.value() / 100.0,
-            "model": owner.model_combo.currentData() or "rnnoise"}
+    return state.get_settings()
 
 
 def _apply_suppressor_settings(owner: Any, settings: Mapping[str, Any]) -> None:
-    current = _suppressor_settings(owner)
-    if current is None:
+    state = getattr(owner, "noise_suppression_state", None)
+    if state is None:
         raise ValueError("Suppression controls are unavailable")
-    strength = settings.get("strength")
-    if not isinstance(settings.get("enabled"), bool) or isinstance(strength, bool) or not isinstance(strength, (int, float)) or not 0 <= strength <= 1:
-        raise ValueError("Invalid suppression settings")
-    if settings.get("model") != current["model"]:
-        parent_model = settings.get("model")
-        if not isinstance(parent_model, str) or not callable(
-            getattr(owner, "_apply_noise_model", None)
-        ):
-            raise ValueError("Invalid suppression model")
-        owner._apply_noise_model(parent_model)
-    owner.strength_slider.setValue(round(strength * 100))
-    owner.rnnoise_checkbox.setChecked(settings["enabled"])
+    state.set_settings(dict(settings))
 
 
 def _candidate_eq_settings_error(eq_settings: Any) -> str | None:
@@ -523,8 +511,8 @@ class VoiceSetupDialog(QDialog):
         )
 
     def _current_target_lufs(self) -> float:
-        panel = getattr(self.parent(), "compressor_panel", None)
-        getter = getattr(panel, "get_compressor_settings", None)
+        state = getattr(self.parent(), "compressor_state", None)
+        getter = getattr(state, "get_settings", None)
         if callable(getter):
             try:
                 settings = getter()
@@ -1168,8 +1156,8 @@ class VoiceSetupDialog(QDialog):
 
         limiter_settings: Mapping[str, Any] | None = None
         target_lufs = self.target_lufs_spin.value()
-        compressor_panel = getattr(parent, "compressor_panel", None)
-        get_limiter_settings = getattr(compressor_panel, "get_limiter_settings", None)
+        limiter_state = getattr(parent, "limiter_state", None)
+        get_limiter_settings = getattr(limiter_state, "get_settings", None)
         if callable(get_limiter_settings):
             candidate_limiter_settings = get_limiter_settings()
             if isinstance(candidate_limiter_settings, Mapping):
@@ -1184,10 +1172,10 @@ class VoiceSetupDialog(QDialog):
         custom_peak_cap_db = self.custom_peak_spin.value()
         suppression = _suppressor_settings(parent)
         incumbent = _chain_settings(parent)
-        if hasattr(parent, "eq_panel"):
-            incumbent["eq"] = deepcopy(parent.eq_panel.get_settings())
-        if hasattr(parent, "gate_panel"):
-            incumbent["gate"] = deepcopy(parent.gate_panel.get_settings())
+        if hasattr(parent, "eq_state"):
+            incumbent["eq"] = deepcopy(parent.eq_state.get_settings())
+        if hasattr(parent, "gate_state"):
+            incumbent["gate"] = deepcopy(parent.gate_state.get_settings())
         if suppression is not None:
             incumbent["rnnoise"] = suppression
         raw_noise_audio = self.preview_noise_audio
@@ -1354,13 +1342,12 @@ class VoiceSetupDialog(QDialog):
         self,
         text: str,
         recommended: Mapping[str, Any],
-        panel_name: str,
+        state_name: str,
         describe: Callable[[Mapping[str, Any]], str],
-        getter: str = "get_settings",
     ) -> str:
         """Add what the stage was set to before this setup, when the owner knows."""
         try:
-            current = getattr(getattr(self.parent(), panel_name), getter)()
+            current = getattr(self.parent(), state_name).get_settings()
             if not isinstance(current, Mapping):
                 return text
             before = describe(current)
@@ -1422,7 +1409,7 @@ class VoiceSetupDialog(QDialog):
             self.eq_label.setText(
                 "Tone: "
                 + self._review_text(
-                    describe_eq(eq_settings), eq_settings, "eq_panel", describe_eq
+                    describe_eq(eq_settings), eq_settings, "eq_state", describe_eq
                 )
             )
             self.eq_label.setToolTip(
@@ -1444,7 +1431,7 @@ class VoiceSetupDialog(QDialog):
                 f"{diagnostics['gate_mode_label']}, "
                 f"opens above {_format_db(gate['threshold_db'])}",
                 gate,
-                "gate_panel",
+                "gate_state",
                 lambda settings: (
                     f"{GATE_MODE_LABELS[settings['gate_mode']]}, "
                     f"opens above {_format_db(settings['threshold_db'])}"
@@ -1466,7 +1453,7 @@ class VoiceSetupDialog(QDialog):
         self.deesser_label.setText(
             "De-esser: "
             + self._review_text(
-                describe_deesser(deesser), deesser, "deesser_panel", describe_deesser
+                describe_deesser(deesser), deesser, "deesser_state", describe_deesser
             )
         )
         self.deesser_label.setToolTip(
@@ -1502,9 +1489,8 @@ class VoiceSetupDialog(QDialog):
             + self._review_text(
                 describe_compressor(compressor),
                 compressor,
-                "compressor_panel",
+                "compressor_state",
                 describe_compressor,
-                "get_compressor_settings",
             )
         )
         self.compressor_label.setToolTip(
@@ -1583,7 +1569,7 @@ class VoiceSetupDialog(QDialog):
             or self.setup_result is None
         ):
             return
-        owner = _find_eq_panel_owner(self.parent())
+        owner = _find_eq_state_owner(self.parent())
         if owner is None:
             return
         error = self._candidate_identity_error(owner)
@@ -1608,7 +1594,7 @@ class VoiceSetupDialog(QDialog):
                     full_chain=True,
                     input_pre_filtered=self.preview_voice_audio is None,
                 )
-                current_settings = owner.eq_panel.get_settings()
+                current_settings = owner.eq_state.get_settings()
         except Exception as error:
             QMessageBox.warning(self, "Comparison unavailable", str(error))
             return
@@ -1675,7 +1661,7 @@ class VoiceSetupDialog(QDialog):
             self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
 
     def _apply_setup(self) -> None:
-        parent = _find_eq_panel_owner(self.parent())
+        parent = _find_eq_state_owner(self.parent())
         if not parent or self.setup_result is None:
             QMessageBox.critical(self, "Error", "Could not apply voice setup.")
             return
@@ -1737,7 +1723,7 @@ class VoiceSetupDialog(QDialog):
                 current_preset = getter()
                 if not isinstance(current_preset, Preset):
                     raise TypeError("current processing configuration is unavailable")
-                compressor_settings = parent.compressor_panel.get_compressor_settings(
+                compressor_settings = parent.compressor_state.get_settings(
                     include_calibration=True
                 )
                 comparison_chain = _chain_settings(
@@ -1785,8 +1771,8 @@ class VoiceSetupDialog(QDialog):
                     snapshot["noise_reference_reliability"] = reliability_value
             self._pre_setup_snapshot = deepcopy(snapshot)
         try:
-            self._apply_candidate_panels(parent)
-            self._sync_setup_result_with_applied_panels(parent)
+            self._apply_candidate_configuration(parent)
+            self._sync_setup_result_with_applied_states(parent)
         except Exception as exc:
             restored = self._restore_pre_setup_snapshot()
             message = (
@@ -1808,7 +1794,7 @@ class VoiceSetupDialog(QDialog):
         )
         self.warning_label.setStyleSheet(message_text_style("info", strong=True))
 
-    def _apply_candidate_panels(self, parent: Any) -> None:
+    def _apply_candidate_configuration(self, parent: Any) -> None:
         if self.setup_result is None:
             raise ValueError("voice setup result is missing")
         candidate_error = _candidate_settings_error(self.setup_result)
@@ -1845,7 +1831,7 @@ class VoiceSetupDialog(QDialog):
             }
         if metadata and reliability is None:
             try:
-                current_compressor = parent.compressor_panel.get_compressor_settings(
+                current_compressor = parent.compressor_state.get_settings(
                     include_calibration=True
                 )
                 current_reliability = current_compressor.get(
@@ -1872,7 +1858,7 @@ class VoiceSetupDialog(QDialog):
                 "Voice setup candidate applied; verification required", 5000
             )
 
-    def _sync_setup_result_with_applied_panels(self, parent: Any) -> None:
+    def _sync_setup_result_with_applied_states(self, parent: Any) -> None:
         """Use the values the controls accepted for the verification pass."""
         if self.setup_result is None:
             raise ValueError("voice setup result is missing")
@@ -1881,28 +1867,28 @@ class VoiceSetupDialog(QDialog):
             self.setup_result["suppressor_settings"] = _suppressor_settings(parent)
         compressor = dict(self.setup_result.get("compressor_settings") or {})
         compressor.update(
-            parent.compressor_panel.get_compressor_settings(include_calibration=True)
+            parent.compressor_state.get_settings(include_calibration=True)
         )
         self.setup_result["compressor_settings"] = compressor
 
         deesser = dict(self.setup_result.get("deesser_settings") or {})
-        deesser.update(parent.deesser_panel.get_settings())
+        deesser.update(parent.deesser_state.get_settings())
         self.setup_result["deesser_settings"] = deesser
 
         self.setup_result["limiter_settings"] = dict(
-            parent.compressor_panel.get_limiter_settings()
+            parent.limiter_state.get_settings()
         )
 
         eq_settings = self.setup_result.get("eq_settings")
         if eq_settings is not None:
-            applied_eq = parent.eq_panel.get_settings()
+            applied_eq = parent.eq_state.get_settings()
             eq_settings = dict(eq_settings)
             for key in ("schema_version", "bands", "layers"):
                 if key in applied_eq:
                     eq_settings[key] = deepcopy(applied_eq[key])
             for key in ("enabled", "band_freqs", "band_gains", "band_qs"):
                 if key not in applied_eq:
-                    raise ValueError(f"EQ panel did not report {key}")
+                    raise ValueError(f"EQ state did not report {key}")
                 value = applied_eq[key]
                 eq_settings[key] = list(value) if key != "enabled" else bool(value)
             self.setup_result["eq_settings"] = eq_settings
@@ -2014,8 +2000,8 @@ class VoiceSetupDialog(QDialog):
             return False, "verification adjustment made no settings change"
 
         try:
-            self._apply_candidate_panels(parent)
-            self._sync_setup_result_with_applied_panels(parent)
+            self._apply_candidate_configuration(parent)
+            self._sync_setup_result_with_applied_states(parent)
         except Exception:
             for name, value in before_sections.items():
                 self.setup_result[name] = value
@@ -2108,7 +2094,7 @@ class VoiceSetupDialog(QDialog):
         worker.start()
 
     def _restore_pre_setup_snapshot(self) -> bool:
-        parent = _find_eq_panel_owner(self.parent())
+        parent = _find_eq_state_owner(self.parent())
         if self._pre_setup_snapshot is None:
             return True
         if parent is None:
@@ -2182,7 +2168,7 @@ class VoiceSetupDialog(QDialog):
         """Persist and close after the verified candidate is accepted."""
         if self.setup_result is None:
             return
-        parent = _find_eq_panel_owner(self.parent())
+        parent = _find_eq_state_owner(self.parent())
         if parent is None:
             QMessageBox.critical(self, "Voice Setup", "The audio owner disappeared.")
             return
@@ -2295,7 +2281,7 @@ class VoiceSetupDialog(QDialog):
             "SNR change "
             f"{float(result.get('snr_change_db', 0.0)):+.1f} dB."
         )
-        parent = _find_eq_panel_owner(self.parent())
+        parent = _find_eq_state_owner(self.parent())
         if parent is None:
             self._on_verification_failed("Audio owner disappeared during verification.")
             return

@@ -79,6 +79,13 @@ def test_package_smoke_source_packaging_checks_pass():
     assert package_smoke.check_source_packaging() == []
 
 
+def test_bundle_path_baseline_includes_required_runtime_files():
+    baseline_path = TOOLS_DIR.parents[1] / "evaluation" / "release-bundle-path-baseline.json"
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+
+    assert set(package_smoke.REQUIRED_BUNDLE_FILES) <= set(baseline["paths"])
+
+
 def test_qml_hook_keeps_runtime_modules_without_editor_type_descriptions():
     hook = runpy.run_path(
         str(TOOLS_DIR.parents[1] / "pyinstaller-hooks" / "hook-PySide6.QtQml.py")

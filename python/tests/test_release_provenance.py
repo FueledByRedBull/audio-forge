@@ -11,6 +11,8 @@ import pytest
 
 import release_provenance
 
+_EXPECTED_PRODUCER = ("Release package", "123", "1")
+
 
 @pytest.fixture(autouse=True)
 def _clean_source_tree(monkeypatch):
@@ -46,6 +48,44 @@ def _producer() -> dict[str, str]:
         "head_sha": "a" * 40,
         "ref": "refs/tags/v1.2.3",
     }
+
+
+def _promotion_candidate(tmp_path: Path, monkeypatch):
+    bundle = _bundle(tmp_path)
+    archive = tmp_path / "AudioForge-v1.2.3-win64-ultra.7z"
+    archive.write_bytes(b"archive")
+    monkeypatch.setattr(release_provenance, "_project_version", lambda: "1.2.3")
+    monkeypatch.setattr(release_provenance, "_git_commit", lambda: "a" * 40)
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    checksum, manifest, metadata = release_provenance.create_sidecars(
+        bundle, archive, tmp_path
+    )
+    report = tmp_path / "qualification.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "qualification_kind": "exact-artifact-package",
+                "status": "passed",
+                "passed": True,
+                "commit": "a" * 40,
+                "artifact": {"sha256": release_provenance.sha256_file(archive)},
+                "producer": _producer(),
+                "checks": {
+                    "provenance": "passed",
+                    "package_smoke": "passed",
+                    "hidden_exe_startup": "passed",
+                    "installer_provenance": "passed",
+                    "installer_smoke": "passed",
+                    "installer_upgrade": "passed",
+                    "source_distribution": "passed",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return bundle, archive, checksum, manifest, metadata, report
 
 
 def test_git_commit_is_derived_from_head_and_cross_checks_workflow_sha(
@@ -467,37 +507,8 @@ def test_verifier_rejects_changed_archive_and_extracted_bundle(
 def test_verifier_binds_promotion_digest_commit_and_reports(
     tmp_path, monkeypatch
 ):
-    bundle = _bundle(tmp_path)
-    archive = tmp_path / "AudioForge-v1.2.3-win64-ultra.7z"
-    archive.write_bytes(b"archive")
-    monkeypatch.setattr(release_provenance, "_project_version", lambda: "1.2.3")
-    monkeypatch.setattr(release_provenance, "_git_commit", lambda: "a" * 40)
-    checksum, manifest, metadata = release_provenance.create_sidecars(
-        bundle, archive, tmp_path
-    )
-    report = tmp_path / "qualification.json"
-    report.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "qualification_kind": "exact-artifact-package",
-                "status": "passed",
-                "passed": True,
-                "commit": "a" * 40,
-                "artifact": {"sha256": release_provenance.sha256_file(archive)},
-                "producer": _producer(),
-                "checks": {
-                    "provenance": "passed",
-                    "package_smoke": "passed",
-                    "hidden_exe_startup": "passed",
-                    "installer_provenance": "passed",
-                    "installer_smoke": "passed",
-                    "installer_upgrade": "passed",
-                    "source_distribution": "passed",
-                },
-            }
-        ),
-        encoding="utf-8",
+    bundle, archive, checksum, manifest, metadata, report = _promotion_candidate(
+        tmp_path, monkeypatch
     )
 
     assert (
@@ -552,6 +563,99 @@ def test_verifier_binds_promotion_digest_commit_and_reports(
     assert any("release tag commit" in error for error in errors)
     assert any("different release artifact" in error for error in errors)
     assert any("not a passing qualification report" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("expected", "detail"),
+    [
+        (_EXPECTED_PRODUCER[:2], "include workflow, run ID, and attempt"),
+        (("Release package", "0", "1"), "run ID"),
+        (("Release package", "١٢٣", "1"), "run ID"),
+        (("Release package", "123", "1.0"), "attempt"),
+        ((" ", "123", "1"), "workflow"),
+    ],
+)
+def test_verifier_rejects_missing_or_malformed_expected_producer(
+    tmp_path, monkeypatch, expected, detail
+):
+    bundle, archive, checksum, manifest, metadata, _ = _promotion_candidate(
+        tmp_path, monkeypatch
+    )
+    errors = release_provenance.verify_sidecars(
+        archive, checksum, manifest, metadata, bundle=bundle, expected_producer=expected
+    )
+
+    assert any(detail in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "value", "expected_run_id", "matches"),
+    [
+        (None, None, None, "123", True),
+        (None, None, None, "0123", False),
+        ("report", "workflow", "Other workflow", "123", False),
+        ("report", "run_id", "00123", "123", False),
+        ("report", "run_attempt", "2", "123", False),
+        ("report", "run_id", None, "123", False),
+        ("report", "run_attempt", None, "123", False),
+        ("report", "workflow", None, "123", False),
+        ("metadata", "run_id", "0123", "123", False),
+        ("metadata", "run_attempt", None, "123", False),
+        ("metadata", "run_attempt", "2", "123", False),
+        ("metadata", "workflow", None, "123", False),
+    ],
+)
+def test_verifier_matches_expected_producer_exactly(
+    tmp_path, monkeypatch, target, field, value, expected_run_id, matches
+):
+    bundle, archive, checksum, manifest, metadata, report = _promotion_candidate(
+        tmp_path, monkeypatch
+    )
+    if target == "report":
+        report_data = json.loads(report.read_text(encoding="utf-8"))
+        if value is None:
+            del report_data["producer"][field]
+        else:
+            report_data["producer"][field] = value
+        report.write_text(json.dumps(report_data), encoding="utf-8")
+    elif target == "metadata":
+        metadata_data = json.loads(metadata.read_text(encoding="utf-8"))
+        if field == "workflow":
+            del metadata_data["workflow"]
+        elif value is None:
+            del metadata_data["workflow"][field]
+        else:
+            metadata_data["workflow"][field] = value
+        metadata.write_text(json.dumps(metadata_data), encoding="utf-8")
+
+    errors = release_provenance.verify_sidecars(
+        archive,
+        checksum,
+        manifest,
+        metadata,
+        bundle=bundle,
+        expected_producer=(_EXPECTED_PRODUCER[0], expected_run_id, _EXPECTED_PRODUCER[2]),
+        reports=[report],
+    )
+
+    assert bool(errors) is (not matches)
+
+
+def test_verify_cli_forwards_expected_workflow_identity(monkeypatch):
+    def capture(*args, **kwargs):
+        assert kwargs["expected_producer"] == list(_EXPECTED_PRODUCER)
+        return []
+
+    monkeypatch.setattr(release_provenance, "verify_sidecars", capture)
+
+    assert release_provenance.main(
+        [
+            "verify", "--archive", "candidate.7z", "--bundle", "AudioForge",
+            "--checksum", "candidate.sha256", "--manifest", "candidate.manifest.json",
+            "--metadata", "candidate.metadata.json", "--expected-producer",
+            *_EXPECTED_PRODUCER,
+        ]
+    ) == 0
 
 
 def test_verifier_accepts_hardware_report_archive_hash_shape(

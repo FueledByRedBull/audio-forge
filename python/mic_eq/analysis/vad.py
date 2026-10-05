@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-from scipy.signal import resample_poly
+
+from .signal_processing import resample_poly
 
 CALIBRATED_VAD_DEFAULT_THRESHOLD = 0.48
 VAD_SPEECH_EVIDENCE_THRESHOLD = 0.40

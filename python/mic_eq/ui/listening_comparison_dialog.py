@@ -198,7 +198,7 @@ def _pcm_bytes(samples: np.ndarray, audio_format: QAudioFormat, source_rate: int
         audio[-ramp:] *= np.linspace(1.0, 0.0, ramp)
     target_rate = int(audio_format.sampleRate()) or int(source_rate)
     if target_rate != int(source_rate):
-        from scipy.signal import resample_poly
+        from ..analysis.signal_processing import resample_poly
 
         divisor = math.gcd(target_rate, int(source_rate))
         audio = np.asarray(

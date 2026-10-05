@@ -12,7 +12,6 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 import numpy as np
-from scipy.signal import resample_poly
 
 from .auto_eq import analyze_auto_eq, simulate_candidate_chain
 from .auto_eq_parts.headroom import _is_headroom_safe
@@ -32,6 +31,7 @@ from .deesser_fusion import (
     predict_clip_probability,
     predict_frame_probabilities,
 )
+from .signal_processing import resample_poly
 from .noise_reference import (
     MIN_NOISE_DURATION_S,
     CaptureMetadata,

@@ -4,7 +4,6 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import numpy as np
-from scipy.optimize import least_squares, minimize
 
 from .constants import (
     CROSS_TAKE_ABSTENTION_CONFIDENCE_THRESHOLD,
@@ -246,6 +245,8 @@ def _constrained_gain_refinement(
     sample_rate: float = SAMPLE_RATE,
 ) -> tuple[np.ndarray, bool]:
     """Re-optimize gains symmetrically inside the final safety bounds."""
+    from scipy.optimize import minimize
+
     gains_arr = np.asarray(gains, dtype=float)
     adjacent_limits = _adjacent_gain_limits(centers_hz)
     constraint_margin = 1.0e-7
@@ -674,6 +675,8 @@ def calculate_eq_bands(
     Returns:
         eq_settings: Dict with 'band_gains' and 'band_qs' (10-element lists)
     """
+    from scipy.optimize import least_squares
+
     check_analysis_cancelled(cancel_check)
     try:
         sample_rate = float(sample_rate)

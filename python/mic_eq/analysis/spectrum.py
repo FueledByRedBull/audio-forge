@@ -5,9 +5,8 @@ Uses Welch/Hamming spectra for voice measurements and smoothing.
 from dataclasses import dataclass
 
 import numpy as np
-from scipy import signal
-from scipy.signal import find_peaks
 
+from .signal_processing import find_peaks_distance_prominence, welch_hamming_density
 from .vad import VAD_SPEECH_EVIDENCE_THRESHOLD, VAD_STRONG_SPEECH_THRESHOLD
 
 VOICE_FRAME_RMS_GATE_DB = -48.0
@@ -131,13 +130,8 @@ def compute_voice_spectrum(audio, fs=48000, nperseg=4096):
     # Optimal trade-off between frequency resolution and sidelobe suppression
     # Welch's method for stable spectral estimate
     # Averages multiple FFTs with 50% overlap to reduce variance
-    freqs, psd = signal.welch(
-        audio_for_fft,
-        fs=fs,
-        window="hamming",
-        nperseg=nperseg,
-        noverlap=nperseg // 2,  # 50% overlap
-        detrend="constant",
+    freqs, psd = welch_hamming_density(
+        audio_for_fft, fs, nperseg, nperseg // 2
     )
 
     # Convert power spectral density to dB
@@ -953,10 +947,10 @@ def find_octave_spaced_peaks(spectrum_db, freqs, octave_fraction=3):
     min_distance = max(1, int(bins_per_octave / octave_fraction))
 
     # Find peaks in log-frequency domain
-    peaks, properties = find_peaks(
+    peaks = find_peaks_distance_prominence(
         spectrum_resampled,
         distance=min_distance,
-        prominence=3.0  # 3 dB minimum prominence (avoid noise)
+        prominence=3.0,  # 3 dB minimum prominence (avoid noise)
     )
 
     # Map back to linear frequency

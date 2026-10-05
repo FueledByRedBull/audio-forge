@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import runpy
 import shutil
 import json
 import stat
@@ -78,29 +79,44 @@ def test_package_smoke_source_packaging_checks_pass():
     assert package_smoke.check_source_packaging() == []
 
 
-def test_runtime_analysis_without_optional_development_packages():
+def test_qml_hook_keeps_runtime_modules_without_editor_type_descriptions():
+    hook = runpy.run_path(
+        str(TOOLS_DIR.parents[1] / "pyinstaller-hooks" / "hook-PySide6.QtQml.py")
+    )
+
+    assert not any(Path(source).suffix == ".qmltypes" for source, _ in hook["datas"])
+    for module in hook["QML_MODULES"]:
+        module_source = hook["_source"] / module
+        assert (str(module_source / "qmldir"), str(hook["_destination"] / module)) in hook["datas"]
+        assert any(Path(source).parent == module_source for source, _ in hook["binaries"])
+
+
+def test_runtime_imports_defer_scipy_and_work_without_optional_development_packages():
     result = subprocess.run(
         [sys.executable, "-c", """
 import importlib.abc
 import sys
 
 class ExcludeOptional(importlib.abc.MetaPathFinder):
+    block_scipy = True
+
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {
+        package = fullname.split('.')[0]
+        if (self.block_scipy and package == 'scipy') or package in {
             'cffi', 'pycparser', 'charset_normalizer', 'typing_extensions', 'yaml'
         }:
             raise ModuleNotFoundError(fullname, name=fullname)
 
 sys.meta_path.insert(0, ExcludeOptional())
 from mic_eq.ui.main_window import MainWindow
+assert 'scipy' not in sys.modules
+ExcludeOptional.block_scipy = False
 import numpy as np
-from scipy.signal import correlate, lfilter, resample_poly
+from mic_eq.analysis.signal_processing import resample_poly
 from scipy.optimize import least_squares, minimize
 
 x = np.random.default_rng(42).normal(size=480)
-assert np.isfinite(lfilter([0.5, 0.5], [1], x)).all()
 assert resample_poly(x, 1, 3).shape == (160,)
-assert correlate(x, x).argmax() == len(x) - 1
 assert least_squares(lambda p: p - 2, [0.0]).success
 assert minimize(lambda p: float((p[0] - 2) ** 2), [0.0]).success
 assert MainWindow is not None
@@ -428,6 +444,32 @@ def test_promotion_keeps_package_gates_without_hardware_runner():
     assert "self-hosted" not in source
     assert "--require-hashes -r requirements/runtime.txt" in source
     assert "git fetch --no-tags origin $env:GITHUB_SHA --depth=1" in source
+
+
+def test_promotion_binds_portable_and_msi_to_the_candidate_run():
+    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
+    document = check_workflows.yaml.safe_load(path.read_text(encoding="utf-8"))
+    prefix = "python python/tools/release_provenance.py verify"
+    script = "\n".join(
+        step["run"]
+        for step in check_workflows._active_steps(document)
+        if isinstance(step.get("run"), str)
+    )
+    commands = [part.split("if ($LASTEXITCODE", 1)[0] for part in script.split(prefix)[1:]]
+
+    assert len(commands) == 2
+    for command in commands:
+        assert (
+            '--expected-producer "Release package" $env:CANDIDATE_RUN_ID '
+            "$env:CANDIDATE_RUN_ATTEMPT"
+        ) in command
+        assert "--expected-commit" in command
+        assert "--require-source-distribution" in command
+        assert "--native-attestation" in command
+    assert "--expected-archive-sha256" in commands[0]
+    assert "--report validation/release-qualification.json" in commands[0]
+    assert "--expected-archive-sha256" not in commands[1]
+    assert "--report" not in commands[1]
 
 
 @pytest.mark.parametrize(

@@ -20,13 +20,12 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QVBoxLayout,
 )
-from scipy.signal import resample_poly
-
 from ..analysis.latency_calibration import (
     analyze_latency,
     generate_probe_signal,
     result_to_profile,
 )
+from ..analysis.signal_processing import resample_poly
 from .accessibility import set_accessible_group
 from .components import Card, form_layout
 from .level_meter import LevelMeter

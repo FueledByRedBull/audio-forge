@@ -35,6 +35,7 @@ from hardware_qualification import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 GIT_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
+DECIMAL_PATTERN = re.compile(r"[0-9]+")
 DEEPFILTER_RECIPE_FILES = (
     "build_deepfilter.ps1",
     "build-support/deepfilter/Cargo.toml",
@@ -297,6 +298,30 @@ def _require_sha256(value: object, label: str) -> str:
     return value
 
 
+def _positive_decimal_string(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and DECIMAL_PATTERN.fullmatch(value) is not None
+        and any(digit != "0" for digit in value)
+    )
+
+
+def _expected_producer_errors(expected: Sequence[str] | None) -> list[str]:
+    if expected is None:
+        return []
+    if len(expected) != 3:
+        return ["expected producer must include workflow, run ID, and attempt"]
+    workflow, run_id, run_attempt = expected
+    errors: list[str] = []
+    if not _positive_decimal_string(run_id):
+        errors.append("expected producer run ID must be a positive decimal string")
+    if not _positive_decimal_string(run_attempt):
+        errors.append("expected producer attempt must be a positive decimal string")
+    if not isinstance(workflow, str) or not workflow.strip():
+        errors.append("expected producer workflow must be a non-empty string")
+    return errors
+
+
 def _deepfilter_recipe_sha256(path: Path) -> str:
     """Hash recipe text canonically while preserving binary model hashes."""
     if path.suffix.casefold() not in DEEPFILTER_TEXT_RECIPE_SUFFIXES:
@@ -510,6 +535,7 @@ def _qualification_errors(
     *,
     expected_archive_sha256: str | None = None,
     expected_commit: str | None = None,
+    expected_producer: Sequence[str] | None = None,
 ) -> list[str]:
     """Require a typed qualification shape before accepting a passing report."""
     errors: list[str] = []
@@ -538,17 +564,18 @@ def _qualification_errors(
         ):
             if not isinstance(producer.get(field), str) or not producer[field].strip():
                 errors.append(f"{report_path} producer.{field} is missing")
-        if isinstance(producer.get("run_id"), str) and not producer["run_id"].isdigit():
-            errors.append(f"{report_path} producer.run_id is not numeric")
-        elif isinstance(producer.get("run_id"), str) and int(producer["run_id"]) < 1:
-            errors.append(f"{report_path} producer.run_id is not positive")
-        if isinstance(producer.get("run_attempt"), str) and not producer["run_attempt"].isdigit():
-            errors.append(f"{report_path} producer.run_attempt is not numeric")
-        elif (
-            isinstance(producer.get("run_attempt"), str)
-            and int(producer["run_attempt"]) < 1
-        ):
-            errors.append(f"{report_path} producer.run_attempt is not positive")
+        for field in ("run_id", "run_attempt"):
+            value = producer.get(field)
+            if isinstance(value, str) and not _positive_decimal_string(value):
+                errors.append(
+                    f"{report_path} producer.{field} must be a positive decimal string"
+                )
+        if expected_producer is not None and (
+            producer.get("workflow"),
+            producer.get("run_id"),
+            producer.get("run_attempt"),
+        ) != tuple(expected_producer):
+            errors.append(f"{report_path} producer does not match the expected producer")
         if isinstance(producer.get("head_sha"), str) and GIT_COMMIT_PATTERN.fullmatch(
             producer["head_sha"].casefold()
         ) is None:
@@ -959,12 +986,16 @@ def verify_sidecars(
     baseline_path: Path | None = None,
     expected_archive_sha256: str | None = None,
     expected_commit: str | None = None,
+    expected_producer: Sequence[str] | None = None,
     native_attestation: Path | None = None,
     reports: Sequence[Path] = (),
     matrix_report_root: Path | None = None,
     require_source_distribution: bool = False,
 ) -> list[str]:
-    errors: list[str] = []
+    errors = _expected_producer_errors(expected_producer)
+    if errors:
+        return errors
+
     archive = archive.resolve()
     checksum_path = checksum_path.resolve()
     manifest_path = manifest_path.resolve()
@@ -1033,6 +1064,18 @@ def verify_sidecars(
             errors.append("dirty-source release metadata cannot be promoted")
         if expected_commit is not None and metadata.get("commit") != expected_commit:
             errors.append("metadata commit does not match the release tag commit")
+        if expected_producer is not None:
+            _, expected_run_id, expected_run_attempt = expected_producer
+            workflow = metadata.get("workflow")
+            if (
+                not isinstance(workflow, dict)
+                or workflow.get("run_id") != expected_run_id
+                or workflow.get("run_attempt") != expected_run_attempt
+            ):
+                errors.append(
+                    "metadata workflow identity does not match candidate workflow run "
+                    f"{expected_run_id} attempt {expected_run_attempt}"
+                )
 
         if baseline_path is not None:
             additions, removals = compare_path_baseline(
@@ -1104,6 +1147,7 @@ def verify_sidecars(
                     report_path,
                     expected_archive_sha256=actual_archive_hash,
                     expected_commit=expected_commit,
+                    expected_producer=expected_producer,
                 )
             )
             if (
@@ -1188,6 +1232,12 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--expected-archive-sha256")
     verify.add_argument("--expected-commit")
     verify.add_argument(
+        "--expected-producer",
+        nargs=3,
+        metavar=("WORKFLOW", "RUN_ID", "ATTEMPT"),
+        help="require sidecar/report identity to match the producing workflow run",
+    )
+    verify.add_argument(
         "--native-attestation",
         type=Path,
         help="DeepFilter build attestation bound to the bundle's _internal/df.dll",
@@ -1259,6 +1309,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             baseline_path=args.baseline,
             expected_archive_sha256=args.expected_archive_sha256,
             expected_commit=args.expected_commit,
+            expected_producer=args.expected_producer,
             native_attestation=args.native_attestation,
             reports=args.report,
             matrix_report_root=args.matrix_report_root,

@@ -28,7 +28,10 @@
 //! Expected latency: ~10ms with LL variant (no lookahead)
 
 use crate::audio::rt::FixedAudioRing;
-use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressor};
+use crate::dsp::noise_suppressor::{
+    ControlledNoiseSuppressor, ControlledSample, GateCompensation, GateControl, NoiseModel,
+    NoiseSuppressor,
+};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
@@ -642,8 +645,10 @@ fn mix_wet_with_aligned_dry(
 pub struct DeepFilterProcessor {
     df: Option<DeepFilterFFI>, // Option for graceful fallback if FFI fails
     _lib: Option<Arc<DeepFilterLib>>, // Keep library loaded
-    input_buffer: FixedAudioRing<f32, DEEPFILTER_BUFFER_CAPACITY>,
+    input_buffer: FixedAudioRing<ControlledSample, DEEPFILTER_BUFFER_CAPACITY>,
     output_buffer: FixedAudioRing<f32, DEEPFILTER_BUFFER_CAPACITY>,
+    input_frame: [ControlledSample; DEEPFILTER_FRAME_SIZE],
+    gate_compensation: GateCompensation,
     enabled: bool,
     strength: Arc<AtomicU32>,
     smoothed_strength: f32,
@@ -672,12 +677,18 @@ impl DeepFilterProcessor {
         runtime_config: DeepFilterRuntimeConfig,
     ) -> Self {
         let initial_strength = f32::from_bits(strength.load(Ordering::Relaxed)).clamp(0.0, 1.0);
+        let compensation_delay = match model {
+            DeepFilterModel::LowLatency => DEEPFILTER_FRAME_SIZE,
+            DeepFilterModel::Standard => 0,
+        };
         if !crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
             return Self {
                 df: None,
                 _lib: None,
                 input_buffer: FixedAudioRing::new(),
                 output_buffer: FixedAudioRing::new(),
+                input_frame: [ControlledSample::default(); DEEPFILTER_FRAME_SIZE],
+                gate_compensation: GateCompensation::new(compensation_delay),
                 enabled: true,
                 strength,
                 smoothed_strength: initial_strength,
@@ -735,6 +746,8 @@ impl DeepFilterProcessor {
             _lib: lib,
             input_buffer: FixedAudioRing::new(),
             output_buffer: FixedAudioRing::new(),
+            input_frame: [ControlledSample::default(); DEEPFILTER_FRAME_SIZE],
+            gate_compensation: GateCompensation::new(compensation_delay),
             enabled: true,
             strength,
             smoothed_strength: initial_strength,
@@ -756,6 +769,30 @@ impl DeepFilterProcessor {
     fn mark_backend_failed_rt(&mut self, error: DeepFilterProcessError) {
         self.backend_failed = true;
         self.runtime_error = Some(error);
+    }
+
+    fn push_samples_with_controls(
+        &mut self,
+        samples: &[f32],
+        controls: Option<&[GateControl]>,
+    ) -> usize {
+        if let Some(controls) = controls {
+            assert_eq!(samples.len(), controls.len());
+        }
+        let accepted = samples.len().min(self.input_buffer.remaining());
+        for (index, &sample) in samples[..accepted].iter().enumerate() {
+            let gate = controls.map_or(GateControl::BYPASS, |controls| controls[index]);
+            self.input_buffer.push(ControlledSample { sample, gate });
+        }
+        accepted
+    }
+
+    fn read_input_frame(&mut self) -> usize {
+        let read = self.input_buffer.pop_into(&mut self.input_frame);
+        for (dry, input) in self.dry_frame[..read].iter_mut().zip(&self.input_frame) {
+            *dry = input.sample;
+        }
+        read
     }
 
     #[inline]
@@ -782,6 +819,7 @@ impl DeepFilterProcessor {
         self.aligned_dry_frame.fill(0.0);
         self.dry_delay_index = 0;
         self.invalid_wet_samples = self.model.latency_samples();
+        self.gate_compensation.reset();
     }
 
     /// Process frames through FFI or fallback
@@ -799,7 +837,7 @@ impl DeepFilterProcessor {
             && self.output_buffer.remaining() >= DEEPFILTER_FRAME_SIZE
         {
             self.smoothed_strength += alpha * (target_strength - self.smoothed_strength);
-            let read = self.input_buffer.pop_into(&mut self.dry_frame);
+            let read = self.read_input_frame();
             if read != DEEPFILTER_FRAME_SIZE {
                 break;
             }
@@ -821,6 +859,13 @@ impl DeepFilterProcessor {
                             let invalid = self.invalid_wet_samples.min(DEEPFILTER_FRAME_SIZE);
                             self.output_frame[..invalid].fill(0.0);
                             self.invalid_wet_samples -= invalid;
+                            for (wet, input) in self.output_frame.iter_mut().zip(&self.input_frame)
+                            {
+                                let ratio = self.gate_compensation.next_ratio(input.gate);
+                                if ratio != 1.0 {
+                                    *wet *= ratio;
+                                }
+                            }
                             mix_wet_with_aligned_dry(
                                 &mut self.output_frame,
                                 &self.aligned_dry_frame,
@@ -878,9 +923,15 @@ impl DeepFilterProcessor {
 // TRAIT IMPLEMENTATION
 // ============================================================================
 
+impl ControlledNoiseSuppressor for DeepFilterProcessor {
+    fn push_controlled_samples(&mut self, samples: &[f32], controls: &[GateControl]) -> usize {
+        self.push_samples_with_controls(samples, Some(controls))
+    }
+}
+
 impl NoiseSuppressor for DeepFilterProcessor {
     fn push_samples(&mut self, samples: &[f32]) -> usize {
-        self.input_buffer.push_slice(samples)
+        self.push_samples_with_controls(samples, None)
     }
 
     fn process_frames(&mut self) {
@@ -891,7 +942,7 @@ impl NoiseSuppressor for DeepFilterProcessor {
             while self.input_buffer.len() >= DEEPFILTER_FRAME_SIZE
                 && self.output_buffer.remaining() >= DEEPFILTER_FRAME_SIZE
             {
-                let read = self.input_buffer.pop_into(&mut self.dry_frame);
+                let read = self.read_input_frame();
                 if read != DEEPFILTER_FRAME_SIZE {
                     break;
                 }

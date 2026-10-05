@@ -7,6 +7,20 @@ import numpy as np
 MODEL_VERSION = "deesser-soft-fusion-v1"
 CORPUS_VERSION = "audioforge-generated-deesser-corpus-v1"
 
+# A ridge fit on VoiceBank development speakers, never EARS. This signed score
+# distinguishes local resonance from broad tilt; it is not a probability.
+# Reproduce with python/tools/evaluate_deesser_real_speech.py.
+PERSISTENT_SHAPE_VERSION = "deesser-persistent-shape-v1"
+PERSISTENT_SHAPE_INTERCEPT = 0.06988054447490766
+PERSISTENT_SHAPE_COEFFICIENTS = np.asarray([
+    0.20489680653007852,
+    0.24240318996239302,
+    0.023330843928863605,
+    0.27848133795137553,
+    0.2459086681718112,
+    0.08666289034471797,
+])
+
 FRAME_FEATURE_NAMES = (
     "absolute_hf_strength",
     "temporal_hf_excess",
@@ -87,6 +101,70 @@ def predict_clip_probability(features: np.ndarray) -> float:
     return float(_sigmoid(CLIP_INTERCEPT + np.dot(bounded, CLIP_COEFFICIENTS)))
 
 
+def _persistent_shape_features(audio: np.ndarray) -> np.ndarray | None:
+    """Summarize signed curvature on fixed-prefiltered, unsuppressed 48 kHz audio."""
+    signal = np.asarray(audio, dtype=np.float64)
+    if signal.ndim != 1 or signal.size < 2880 or not np.isfinite(signal).all():
+        return None
+    size, hop = 1920, 960
+    frames = np.lib.stride_tricks.sliding_window_view(signal, size)[::hop]
+    centered = frames - frames.mean(axis=1, keepdims=True)
+    power = np.abs(np.fft.rfft(centered * np.hanning(size), axis=1)) ** 2
+    frequencies = np.fft.rfftfreq(size, 1 / 48_000)
+    edges = np.linspace(4000.0, 11000.0, 4)
+    curvatures = []
+    for low, high in zip(edges[:-1], edges[1:], strict=True):
+        ratio = high / low
+        bounds = ((low / ratio, low), (low, high), (high, high * ratio))
+        band_power = np.stack([
+            power[:, (frequencies >= start) & (frequencies < end)].mean(axis=1)
+            for start, end in bounds
+        ], axis=1)
+        if np.any(band_power <= 1e-20):
+            return None
+        levels = 10.0 * np.log10(band_power + 1e-20)
+        # Equal log-frequency guard spacing removes broad tilt while keeping
+        # the sign of local curvature. Do not reduce these values to a maximum.
+        curvatures.append(levels[:, 1] - 0.5 * (levels[:, 0] + levels[:, 2]))
+    values = np.column_stack(curvatures)
+    features = np.concatenate([
+        np.median(half, axis=0) for half in np.array_split(values, 2)
+    ])
+    return features if np.isfinite(features).all() else None
+
+
+def persistent_shape_evidence(
+    audio: np.ndarray, sample_rate: int,
+) -> dict[str, float | bool | str | None]:
+    """Score the first ten seconds of conditioned setup audio, before suppression.
+
+    Short or unsupported captures retain the transient-only recommendation.
+    This analysis runs once during setup, never on the realtime audio path.
+    """
+    result: dict[str, float | bool | str | None] = {
+        "version": PERSISTENT_SHAPE_VERSION,
+        "supported": False,
+        "score": None,
+        "reason": "unsupported_audio",
+    }
+    if sample_rate != 48_000:
+        result["reason"] = "unsupported_sample_rate"
+        return result
+    signal = np.asarray(audio)
+    if signal.ndim != 1:
+        return result
+    if signal.size < 480_000:
+        result["reason"] = "insufficient_duration"
+        return result
+    features = _persistent_shape_features(signal[:480_000])
+    if features is None:
+        result["reason"] = "unsupported_spectrum"
+        return result
+    score = float(PERSISTENT_SHAPE_INTERCEPT + features @ PERSISTENT_SHAPE_COEFFICIENTS)
+    result.update(supported=True, score=score, reason="supported")
+    return result
+
+
 __all__ = [
     "CLIP_COEFFICIENTS",
     "CLIP_FEATURE_NAMES",
@@ -97,6 +175,8 @@ __all__ = [
     "FRAME_FEATURE_NAMES",
     "FRAME_INTERCEPT",
     "MODEL_VERSION",
+    "PERSISTENT_SHAPE_VERSION",
+    "persistent_shape_evidence",
     "predict_clip_probability",
     "predict_frame_probabilities",
 ]

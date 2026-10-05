@@ -273,6 +273,8 @@ pub fn run_seeded_control_dsp_stress(
         let mut output = FixedAudioBuffer::<f32, BLOCK_SIZE>::new();
         let mut input = [0.0_f32; BLOCK_SIZE];
         let mut suppressed = [0.0_f32; BLOCK_SIZE];
+        let mut gate_controls = [GateControl::BYPASS; BLOCK_SIZE];
+        let mut saw_non_bypass_gate_control = false;
         let mut rng = StressRng::new(seed ^ 0xa076_1d64_78bd_642f);
         let mut processed_blocks = 0;
         let mut resets = 0;
@@ -360,15 +362,18 @@ pub fn run_seeded_control_dsp_stress(
                 let noise = (rng.unit_f64() as f32 - 0.5) * 0.02;
                 *sample = phase.sin() * 0.22 + noise;
             }
-            gate.process_block_inplace(&mut input);
+            gate.process_block_with_gate_control(&mut input, &mut gate_controls);
 
-            let accepted = suppressor.push_samples(&input);
+            let accepted = suppressor.push_controlled_samples(&input, &gate_controls);
             if accepted != input.len() {
                 return Err(format!(
                     "suppressor accepted {accepted} of {} samples",
                     input.len()
                 ));
             }
+            saw_non_bypass_gate_control |= gate_controls
+                .iter()
+                .any(|control| *control != GateControl::BYPASS);
             suppressor.process_frames();
             let written = suppressor.pop_samples_into(&mut suppressed);
             let chain_input = if written == BLOCK_SIZE {
@@ -396,6 +401,9 @@ pub fn run_seeded_control_dsp_stress(
 
         if let Some(retired) = deferred_retire {
             let _ = retire_tx.try_push(retired);
+        }
+        if !saw_non_bypass_gate_control {
+            return Err("no non-bypass gate control reached the suppressor".to_string());
         }
         Ok(ControlDspStressReport {
             control_updates: 0,

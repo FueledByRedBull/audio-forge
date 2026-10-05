@@ -14,6 +14,12 @@ voice-body change and ESTOI. Render timing is mean throughput, not live p99.
 Use separate invocations with --build for matched source/native comparisons.
 Sibilant frames are labeled on the uncolored clean speech, where fricatives
 carry most of their energy above 4 kHz.
+
+--fit-persistent-shape reproduces the single fixed VoiceBank development fit
+from all 30 fit speakers' 20-second evaluation captures. It uses the same
+microphones and input prefilter, without rendering the de-esser. The report
+contains coefficients and provenance; it never updates runtime source.
+Example: --fit-persistent-shape --root models/voice_setup_eval --output fit.json
 """
 
 from __future__ import annotations
@@ -41,6 +47,12 @@ CONDITIONS = ("ordinary", "bright", "harsh")
 USERS = 40
 ARMS = ("recommended", "factory", "recommended_enabled")
 METRICS = ("sibilant_db", "voiced_db", "sibilant_residual_db", "body_db", "estoi")
+PERSISTENT_SHAPE_FIT_SPEAKERS = (
+    "p228", "p233", "p239", "p249", "p264", "p267", "p276", "p283", "p299", "p305",
+    "p308", "p314", "p335", "p341", "p226", "p237", "p245", "p251", "p256", "p260",
+    "p271", "p274", "p279", "p285", "p292", "p304", "p326", "p345", "p363", "p376",
+)
+PERSISTENT_SHAPE_MANIFEST_SHA256 = "569f3debce837922e9ea91f4487eb9bdd4cb5eca27c15d18a5e6174d800d7225"
 
 
 def microphone(condition: str, rng: np.random.Generator) -> list[tuple[str, float, float, float]]:
@@ -234,6 +246,7 @@ def _measurement_identity(build: Path, root: Path) -> dict[str, Any]:
             "rust-core/src/audio/processor/block_processor.rs", "python/mic_eq/analysis/voice_setup.py",
             "python/mic_eq/analysis/deesser_fusion.py", "python/mic_eq/analysis/noise_reference.py",
             "python/mic_eq/analysis/spectrum.py", "python/mic_eq/analysis/vad.py",
+            "python/mic_eq/analysis/auto_eq_parts/response.py",
             "python/mic_eq/config_parts/settings.py", "python/mic_eq/ui/calibration_support.py")),
     }
     identity: dict[str, Any] = {
@@ -250,22 +263,144 @@ def _measurement_identity(build: Path, root: Path) -> dict[str, Any]:
     return identity
 
 
+def _persistent_shape_corpus(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Refuse corpus substitutions, including EARS and non-fit partitions."""
+    content = (root / "manifest.json").read_bytes()
+    if hashlib.sha256(content).hexdigest() != PERSISTENT_SHAPE_MANIFEST_SHA256:
+        raise ValueError("persistent-shape fitting requires the frozen VoiceBank manifest; EARS is evaluation-only")
+    manifest = json.loads(content)
+    part = harness.splits(manifest)["fit"]
+    if tuple(part["speakers"]) != PERSISTENT_SHAPE_FIT_SPEAKERS:
+        raise ValueError("persistent-shape fitting requires the fixed 30 VoiceBank fit speakers in order")
+    if manifest["licenses"]["VoiceBank (VCTK subset)"] != "CC BY 4.0":
+        raise ValueError("VoiceBank fitting requires the retained CC BY 4.0 attribution")
+    voicebank_sources = {f"{harness.DATASHARE.format(uuid)}#{name}"
+                         for name, uuid in harness.VOICEBANK.items()}
+    if any(manifest["speakers"][speaker]["source"] not in voicebank_sources
+           for speaker in part["speakers"]):
+        raise ValueError("only the licensed VoiceBank source archives may be used for fitting")
+    entries = [entry for speaker in part["speakers"] for entry in manifest["speakers"][speaker]["files"]]
+    entries += [manifest["noise"][name] for name in part["environments"]]
+    inputs = {}
+    for entry in entries:
+        digest = hashlib.sha256((root / entry["path"]).read_bytes()).hexdigest()
+        if digest != entry["sha256"]:
+            raise ValueError(f"fit input hash mismatch: {entry['path']}")
+        inputs[entry["path"]] = digest
+    return manifest, {
+        "manifest_sha256": PERSISTENT_SHAPE_MANIFEST_SHA256,
+        "description": manifest["description"], "split": "fit", **part,
+        "licenses": manifest["licenses"], "redistribution": manifest["redistribution"],
+        "voicebank_sources": sorted({manifest["speakers"][speaker]["source"] for speaker in part["speakers"]}),
+        "noise_sources": {name: manifest["noise"][name]["source"] for name in part["environments"]},
+        "licensing_note": "DEMAND's official record description states CC BY-SA 3.0, conflicting with the retained "
+                          "API metadata's CC BY 4.0. Retain both claims and attribution; no audio is shipped. "
+                          "EARS is evaluation-only and cannot fit shipped coefficients.",
+        "demand_record": "https://zenodo.org/records/1227121",
+        "input_sha256": inputs,
+    }
+
+
+def _fit_persistent_shape(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """One ridge-1 transform, with no selectable hyperparameters or threshold."""
+    expected = [(index, speaker, condition) for index, speaker in enumerate(PERSISTENT_SHAPE_FIT_SPEAKERS)
+                for condition in CONDITIONS]
+    actual = [(row["index"], row["speaker"], row["condition"]) for row in rows]
+    if actual != expected or any(row["source"] != "evaluation" for row in rows):
+        raise ValueError("fit requires all 90 ordered evaluation captures, with no dropped or substituted cases")
+    x = np.asarray([row["features"] for row in rows], dtype=np.float64)
+    y = np.asarray([row["label"] for row in rows], dtype=np.float64)
+    if (x.shape != (90, 6) or not np.isfinite(x).all()
+            or not np.array_equal(y, [1 if row["condition"] == "harsh" else -1 for row in rows])):
+        raise ValueError("fit requires six finite features and fixed harsh +1 / ordinary and bright -1 labels")
+    mean, scale = x.mean(axis=0), x.std(axis=0, ddof=0)
+    scale[scale == 0] = 1
+    design = np.column_stack([np.ones(len(x)), (x - mean) / scale])
+    penalty = np.eye(7)
+    penalty[0, 0] = 0
+    coefficients = np.linalg.solve(design.T @ design + penalty, design.T @ y)
+    if not np.isfinite(coefficients).all():
+        raise ValueError("nonfinite persistent-shape fit")
+    raw = coefficients[1:] / scale
+    return {"mean": mean.tolist(), "scale": scale.tolist(), "coefficients": coefficients.tolist(),
+            "raw_intercept": float(coefficients[0] - mean @ raw), "raw_coefficients": raw.tolist(),
+            "threshold": 0.0, "positive_rule": "score >= 0", "ridge": 1.0,
+            "standardization_ddof": 0, "penalize_intercept": False}
+
+
+def fit_persistent_shape(root: Path, build: Path) -> dict[str, Any]:
+    """Reconstruct only the frozen fit captures and report, never install, a fit."""
+    manifest, corpus = _persistent_shape_corpus(root)
+    _configure_build(build)
+    from mic_eq.analysis.deesser_fusion import PERSISTENT_SHAPE_VERSION, _persistent_shape_features
+    from mic_eq.ui.calibration_support import filtered_capture_for_analysis
+
+    identity = _measurement_identity(build, root)
+    if harness.SAMPLE_RATE != 48_000 or harness.EVALUATION_S != 20.0:
+        raise ValueError("persistent-shape fitting requires the frozen 20-second, 48 kHz evaluation captures")
+    rows = []
+    for index, speaker in enumerate(PERSISTENT_SHAPE_FIT_SPEAKERS):
+        user = harness.user(root, manifest, "fit", index)
+        if user["speaker"] != speaker or user["evaluation_capture"].shape != (960_000,):
+            raise ValueError(f"unexpected fit capture for speaker {speaker}")
+        for condition in CONDITIONS:
+            sections = microphone(condition, np.random.default_rng(9_000_000 + index))
+            colored = _apply(user["evaluation_capture"], sections) if sections else user["evaluation_capture"]
+            capture = filtered_capture_for_analysis(colored.astype(np.float32), harness.SAMPLE_RATE)
+            features = _persistent_shape_features(capture)
+            if features is None:
+                raise ValueError(f"unsupported persistent-shape evidence: {speaker}/{condition}; no cases may be dropped")
+            rows.append({"index": index, "speaker": speaker, "condition": condition, "source": "evaluation",
+                         "label": 1 if condition == "harsh" else -1, "features": features.tolist(),
+                         "input_float32_le_sha256": hashlib.sha256(np.asarray(capture, dtype="<f4").tobytes()).hexdigest()})
+    model = _fit_persistent_shape(rows)
+    if _persistent_shape_corpus(root)[1] != corpus or _measurement_identity(build, root) != identity:
+        raise RuntimeError("persistent-shape fit inputs changed during the run")
+    return {"schema_version": 1, "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "scope": "Fixed VoiceBank deployment-fit reproduction; not held-out qualification or a runtime update",
+            "version": PERSISTENT_SHAPE_VERSION, "training_cases": len(rows),
+            "training_speakers": list(PERSISTENT_SHAPE_FIT_SPEAKERS), "corpus": corpus,
+            "measurement_identity": identity, "python": sys.version, "numpy": np.__version__,
+            "capture": {"sample_rate": 48_000, "seconds": 20, "microphone_seed": "9000000 + fit user index",
+                        "user_generator": "evaluate_voice_setup.user(root, manifest, 'fit', index)",
+                        "conditioning": "filtered_capture_for_analysis; unsuppressed; no de-esser render",
+                        "features": "six signed curvature medians over both evaluation-capture halves"},
+            "model": model, "rows": rows}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=harness.DEFAULT_ROOT)
     parser.add_argument("--build", type=Path, default=harness.REPO_ROOT)
     parser.add_argument("--split", choices=harness.SPLITS, default="fit")
     parser.add_argument("--first", type=int, default=0)
-    parser.add_argument("--users", type=int, default=USERS)
-    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--users", type=int)
+    parser.add_argument("--workers", type=int)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--rows-output", type=Path)
+    parser.add_argument("--fit-persistent-shape", action="store_true",
+                        help="reproduce the fixed 30-speaker VoiceBank fit; write a new report only")
     args = parser.parse_args(argv)
+    if args.users is None:
+        args.users = 30 if args.fit_persistent_shape else USERS
+    if args.workers is None:
+        args.workers = 1 if args.fit_persistent_shape else 4
     if args.first < 0 or args.users < 1 or not 1 <= args.workers <= 4:
         parser.error("--first must be nonnegative, --users positive, and --workers between 1 and 4")
     if args.rows_output is not None and args.rows_output.resolve() == args.output.resolve():
         parser.error("--output and --rows-output must be different files")
     args.root, args.build = args.root.resolve(), args.build.resolve()
+    if args.fit_persistent_shape:
+        if (args.split != "fit" or args.first != 0 or args.users != 30
+                or args.workers != 1 or args.rows_output is not None):
+            parser.error("--fit-persistent-shape requires --split fit --first 0 --users 30 --workers 1 and no --rows-output")
+        if args.output.exists():
+            parser.error("fit output already exists; preserve prior reports and runtime source")
+        result = fit_persistent_shape(args.root, args.build)
+        with args.output.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(result, indent=1, allow_nan=False) + "\n")
+        sys.stdout.write(json.dumps(result["model"], indent=1) + "\n")
+        return 0
     identity = _measurement_identity(args.build, args.root)
     jobs = [(str(args.root), args.split, index, condition)
             for index in range(args.first, args.first + args.users) for condition in CONDITIONS]

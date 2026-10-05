@@ -586,7 +586,27 @@ impl NoiseGate {
 
     /// Process a block of samples in-place.
     pub fn process_block_inplace(&mut self, buffer: &mut [f32]) {
+        self.process_block_with_controls(buffer, None);
+    }
+
+    pub(crate) fn process_block_with_gate_control(
+        &mut self,
+        buffer: &mut [f32],
+        controls: &mut [super::noise_suppressor::GateControl],
+    ) {
+        assert_eq!(buffer.len(), controls.len());
+        self.process_block_with_controls(buffer, Some(controls));
+    }
+
+    fn process_block_with_controls(
+        &mut self,
+        buffer: &mut [f32],
+        mut controls: Option<&mut [super::noise_suppressor::GateControl]>,
+    ) {
         if !self.enabled {
+            if let Some(controls) = controls {
+                controls.fill(super::noise_suppressor::GateControl::BYPASS);
+            }
             return;
         }
 
@@ -622,7 +642,7 @@ impl NoiseGate {
                             && crest_db <= LEVEL_FAILSAFE_MAX_CREST_DB;
                         let probability_delta = probability - self.previous_vad_probability;
 
-                        for sample in buffer.iter_mut() {
+                        for (index, sample) in buffer.iter_mut().enumerate() {
                             let input_f64 = *sample as f64;
                             self.vad_smoothed_probability = (self.vad_probability_smoothing_coeff
                                 * self.vad_smoothed_probability as f64
@@ -658,6 +678,12 @@ impl NoiseGate {
                             let effective_open = !force_close && probabilistic_open;
                             self.track_gate_transition(effective_open);
                             *sample = self.apply_gain(input_f64, target_gr_db);
+                            if let Some(controls) = controls.as_deref_mut() {
+                                controls[index] = super::noise_suppressor::GateControl {
+                                    gain: self.current_gain(),
+                                    open: effective_open,
+                                };
+                            }
                         }
                         self.previous_vad_probability = probability;
                         return;
@@ -666,8 +692,14 @@ impl NoiseGate {
             }
         }
 
-        for sample in buffer.iter_mut() {
+        for (index, sample) in buffer.iter_mut().enumerate() {
             *sample = self.process_sample(*sample);
+            if let Some(controls) = controls.as_deref_mut() {
+                controls[index] = super::noise_suppressor::GateControl {
+                    gain: self.current_gain(),
+                    open: self.effective_gate_open,
+                };
+            }
         }
     }
 
@@ -872,6 +904,76 @@ impl NoiseGate {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn controlled_threshold_tape_matches_the_sample_api() {
+        let mut block_gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
+        let mut sample_gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
+        let mut block: Vec<_> = (0..2903)
+            .map(|index| (index as f32 * 0.073).sin() * if index < 1700 { 0.2 } else { 0.001 })
+            .collect();
+        let raw = block.clone();
+        let mut controls = vec![super::super::noise_suppressor::GateControl::BYPASS; block.len()];
+        block_gate.process_block_with_gate_control(&mut block, &mut controls);
+        for ((raw, output), control) in raw.into_iter().zip(block).zip(controls) {
+            assert_eq!(output, sample_gate.process_sample(raw));
+            assert_eq!(control.gain, sample_gate.current_gain());
+            assert_eq!(control.open, sample_gate.effective_gate_open);
+        }
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn control_capture_preserves_each_modes_existing_block_cadence() {
+        use super::super::noise_suppressor::GateControl;
+        for mode in [
+            GateMode::ThresholdOnly,
+            GateMode::VadAssisted,
+            GateMode::VadOnly,
+        ] {
+            for partition in [1, 127, 480, 997] {
+                let make_gate = || {
+                    let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
+                    gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(48_000, 0.48)));
+                    gate.set_gate_mode(mode);
+                    gate
+                };
+                let mut ordinary = make_gate();
+                let mut controlled = make_gate();
+                let raw: Vec<_> = (0..6007)
+                    .map(|index| (index as f32 * 0.031).sin() * 0.07)
+                    .collect();
+                for (index, chunk) in raw.chunks(partition).enumerate() {
+                    let probability = if index % 7 < 4 { 0.9 } else { 0.05 };
+                    let enabled = index % 11 != 3;
+                    ordinary.set_enabled(enabled);
+                    controlled.set_enabled(enabled);
+                    ordinary.set_external_vad_probability(probability, index % 5 != 0);
+                    controlled.set_external_vad_probability(probability, index % 5 != 0);
+                    let mut expected = chunk.to_vec();
+                    let mut actual = chunk.to_vec();
+                    let mut controls = vec![GateControl::BYPASS; chunk.len()];
+                    ordinary.process_block_inplace(&mut expected);
+                    controlled.process_block_with_gate_control(&mut actual, &mut controls);
+                    assert_eq!(actual, expected);
+                    assert_eq!(controlled.current_gain(), ordinary.current_gain());
+                    assert_eq!(
+                        controlled.chatter_event_count(),
+                        ordinary.chatter_event_count()
+                    );
+                    if enabled {
+                        let last = controls.last().unwrap();
+                        assert_eq!(last.gain, ordinary.current_gain());
+                        assert_eq!(last.open, ordinary.effective_gate_open);
+                    } else {
+                        assert!(controls
+                            .iter()
+                            .all(|control| *control == GateControl::BYPASS));
+                    }
+                }
+            }
+        }
+    }
 
     #[cfg(feature = "vad")]
     fn render_assisted_noise(

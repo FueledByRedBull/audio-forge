@@ -89,3 +89,13 @@ def test_output_health_ok_includes_true_peak_and_loudness_detail():
     assert state == "ok"
     assert "TP:-3.2" in text
     assert "LU:-20" in text
+
+
+def test_every_warning_chip_has_plain_language_advice() -> None:
+    from mic_eq.ui.health import advice_for
+
+    low_text, _ = input_health_state(rms_db=-72.0)
+    assert "quiet" in advice_for(low_text)
+    # The longer output token must not be mistaken for anything shorter.
+    assert "headroom" in advice_for("Output: LOW TP HEADROOM (0.2dB)")
+    assert advice_for("Input: OK (-20dB)") == ""

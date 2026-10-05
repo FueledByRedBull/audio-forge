@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.15.0
 
 ### Sound and dynamics
 
@@ -17,9 +17,25 @@
 - Auto de-essing now uses notch-complement power concentration and a shared spectral-background reference to respond to persistent harsh resonances. Voice Setup adds a signed spectral-curvature model for persistent evidence. Manual, disabled and zero-cap behavior remains unchanged, and the recorded preservation gates for ordinary and bright speech pass.
 - Register the Windows audio worker with MMCSS Pro Audio after initialization and before streams start. Registration failure aborts startup through the existing cleanup path; shutdown checks same-thread reversion, with best-effort cleanup on unwind.
 
+### Interface
+
+- The main window is rebuilt around cards. A rail on the left switches between Mic, Health and Settings. The top bar holds the input and output pickers, the processing mode, Mute, and one Start or Stop button. The menu bar is gone: preset actions are on the Presets button, the old Options and Help menus are cards on the Settings page, and every keyboard shortcut works as before.
+- Each processing stage (noise suppression, noise gate, de-esser, compressor, limiter) is a card with a switch in its header. The controls used most are visible; the rest are under Advanced. The limiter has its own card. No parameter, range or default changed.
+- The equalizer shows a larger graph with named frequency regions and one color per band. Click or drag a handle to select a band, then edit it in the single row under the graph, which replaces the grid of ten slider columns. Tone presets and the reset actions moved into the card's menus.
+- Auto Voice Setup shows one step at a time (Target, Room noise, Voice, Review) with its buttons fixed at the bottom. The Review step describes the recommendation in plain language and shows what each setting was before; hover a line for the measurements behind it.
+- Auto-EQ Voice Tone follows the same steps (Set up, Record, Review) and explains its result in plain language, with the measurements in tooltips.
+- Guided Setup and the route latency window use the same cards, switches and button placement as the rest of the app.
+- The Health page gives one sentence of advice for the most serious warning, then lists the Signal and Stream checks one per line, each marked OK, Needs attention or Problem. Open Technical details to see the raw counters and to export diagnostics or reset the drop counter.
+- Test my sound, on the Mic page, records five seconds and plays back the raw recording and the result of the current settings. Output is muted while you listen.
+- The noise suppression card shows the last six seconds of input and output level while processing runs, and a warning on the card if the selected backend is unavailable.
+- Input mode and input cleanup moved from the device row to Settings > Audio input.
+- Number fields no longer show step arrows. Type a value, use the arrow keys, or scroll.
+- Undo and Redo are buttons beside Presets.
+- The main window is drawn with Qt Quick, so the portable bundle now includes the Qt QML and Qt Quick libraries. Set `AUDIOFORGE_QML=0` to use the widget view. AudioForge also switches to the widget view, with a notice in the status bar, if the Qt Quick view cannot start.
+
 ### Desktop and setup
 
-- Add a default-off login shortcut for packaged copies under Options > Tray & Background. A login launch stays in the tray, waits up to 60 seconds for the exact saved devices, and preserves output mute. Missing devices never select replacements automatically; Windows can disable a configured shortcut. Installer and Windows-shell lifecycle checks remain outstanding as documented in [RELEASING.md](RELEASING.md#login-startup-lifecycle).
+- Add a default-off login shortcut for packaged copies under Settings > Tray and background. A login launch stays in the tray, waits up to 60 seconds for the exact saved devices, and preserves output mute. Missing devices never select replacements automatically; Windows can disable a configured shortcut. Installer and Windows-shell lifecycle checks remain outstanding as documented in [RELEASING.md](RELEASING.md#login-startup-lifecycle).
 
 ### Auto-EQ
 

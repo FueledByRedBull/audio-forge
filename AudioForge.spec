@@ -22,6 +22,9 @@ if extension_dir.is_dir():
 binaries = []
 datas = []
 
+# The Qt Quick scene is loaded from disk next to the package.
+datas.append((str(python_source / "mic_eq" / "ui" / "qml"), "mic_eq/ui/qml"))
+
 project_license = repo_root / "LICENSE"
 if project_license.exists():
     datas.append((str(project_license), "licenses"))
@@ -83,6 +86,10 @@ a = Analysis(
         "PySide6.QtCore",
         "PySide6.QtGui",
         "PySide6.QtWidgets",
+        "PySide6.QtOpenGL",
+        "PySide6.QtQml",
+        "PySide6.QtQuick",
+        "PySide6.QtQuickWidgets",
         "PySide6.support.deprecated",
         "mic_eq.mic_eq_core",
         "mic_eq",
@@ -100,9 +107,6 @@ a = Analysis(
         "PySide6.QtPdf",
         "PySide6.QtPdfWidgets",
         "PySide6.QtMultimediaWidgets",
-        "PySide6.QtQml",
-        "PySide6.QtQuick",
-        "PySide6.QtOpenGL",
         "PySide6.QtVirtualKeyboard",
         "ssl",
         "_ssl",

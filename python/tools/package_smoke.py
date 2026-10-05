@@ -21,6 +21,10 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/PySide6/Qt6Multimedia.dll",
     # Listening comparison sends raw PCM through QAudioSink on Windows.
     "_internal/PySide6/plugins/multimedia/windowsmediaplugin.dll",
+    # The main window is a Qt Quick scene using the Basic controls style.
+    "_internal/mic_eq/ui/qml/Main.qml",
+    "_internal/PySide6/Qt6Quick.dll",
+    "_internal/PySide6/qml/QtQuick/Controls/Basic/qmldir",
     "_internal/df.dll",
     "_internal/onnxruntime.dll",
     "_internal/onnxruntime_providers_shared.dll",
@@ -339,15 +343,23 @@ def check_dist_bundle(
         if (dist / "_internal/PySide6/plugins/imageformats" / plugin).exists():
             errors.append(f"{dist} contains unused image plugin without its Qt module: {plugin}")
 
-    # These modules are covered by the selected qtbase/qtmultimedia sources and
-    # notices. New transitive modules need an explicit dependency/license review.
+    # These modules are covered by the selected qtbase, qtdeclarative and
+    # qtmultimedia sources and notices. New transitive modules need an explicit
+    # dependency/license review.
     selected_qt_dlls = {
         "qt6core.dll", "qt6gui.dll", "qt6widgets.dll",
-        "qt6network.dll", "qt6multimedia.dll",
+        "qt6network.dll", "qt6multimedia.dll", "qt6opengl.dll",
+        "qt6qml.dll", "qt6qmlmeta.dll", "qt6qmlmodels.dll",
+        "qt6qmlworkerscript.dll", "qt6quick.dll", "qt6quickwidgets.dll",
+        "qt6quickcontrols2.dll", "qt6quickcontrols2impl.dll",
+        "qt6quickcontrols2basic.dll", "qt6quickcontrols2basicstyleimpl.dll",
+        "qt6quicktemplates2.dll", "qt6quicklayouts.dll", "qt6quickeffects.dll",
     }
     for module in (dist / "_internal/PySide6").glob("Qt6*.dll"):
         if module.name.casefold() not in selected_qt_dlls:
             errors.append(f"{dist} contains an unselected Qt module: {module.name}")
+    if (dist / "_internal/PySide6/plugins/qmltooling").exists():
+        errors.append(f"{dist} contains the unused QML debugging plugins")
     virtual_keyboard = dist / "_internal/PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll"
     if virtual_keyboard.exists():
         errors.append(f"{dist} contains an unselected Qt module plugin: {virtual_keyboard.name}")

@@ -427,7 +427,8 @@ def test_unavailable_headroom_never_enables_apply_or_audition(qapp, monkeypatch)
         assert dialog.eq_settings is None
         assert dialog.compare_button.isEnabled() is False
         assert dialog.start_button.text() == "Record Again"
-        assert "native simulator unavailable" in dialog.warning_label.text()
+        assert "could not confirm the correction is safe" in dialog.warning_label.text()
+        assert "native simulator unavailable" in dialog.warning_label.toolTip()
     finally:
         dialog.reject()
         owner.close()

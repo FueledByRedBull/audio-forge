@@ -35,6 +35,13 @@ PIXEL_FONT = re.compile(r"font-size\s*:\s*[0-9.]+px")
 
 
 @pytest.fixture
+def widget_view(monkeypatch):
+    """Layout tests that measure the widget view, which remains the fallback."""
+
+    monkeypatch.setenv("AUDIOFORGE_QML", "0")
+
+
+@pytest.fixture
 def isolated_main_window(qapp, monkeypatch):
     monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
     monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
@@ -182,15 +189,16 @@ def test_main_window_and_workflow_dialogs_have_named_controls(
 
 
 def test_main_keyboard_order_and_small_viewport_are_operable(
+    widget_view,
     isolated_main_window,
     qapp,
 ) -> None:
     window = isolated_main_window
     expected_top_row = (
         window.output_combo,
-        window.input_channel_mode_combo,
-        window.input_cleanup_mode_combo,
         window.refresh_btn,
+        window.processing_mode_combo,
+        window.user_mute_checkbox,
     )
     current = window.input_combo
     for expected in expected_top_row:
@@ -201,7 +209,6 @@ def test_main_keyboard_order_and_small_viewport_are_operable(
 
     assert window.minimumWidth() <= 900
     assert window.minimumHeight() <= 640
-    assert isinstance(window.centralWidget(), QScrollArea)
     assert (
         window.content_scroll_area.horizontalScrollBarPolicy()
         == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
@@ -210,10 +217,6 @@ def test_main_keyboard_order_and_small_viewport_are_operable(
         window.content_scroll_area.verticalScrollBarPolicy()
         == Qt.ScrollBarPolicy.ScrollBarAsNeeded
     )
-    assert (
-        window.eq_scroll_area.horizontalScrollBarPolicy()
-        == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-    )
 
     window.resize(900, 640)
     window.show()
@@ -221,27 +224,22 @@ def test_main_keyboard_order_and_small_viewport_are_operable(
     qapp.processEvents()
     assert window.width() == 900
     assert window.height() == 640
-    assert window.main_splitter.orientation() == Qt.Orientation.Vertical
+    assert window._responsive_layout_compact is True
     assert window.content_scroll_area.horizontalScrollBar().maximum() == 0
-    assert window.eq_scroll_area.horizontalScrollBar().maximum() == 0
     assert (
         window.content_scroll_area.widget().width()
         <= window.content_scroll_area.viewport().width()
     )
-    assert (
-        window.eq_scroll_area.widget().width()
-        <= window.eq_scroll_area.viewport().width()
+    # The transport control sits in the fixed top bar, never behind a scroll.
+    assert window.start_btn.isVisible()
+    assert window.stop_btn.isHidden()
+    assert window.rect().contains(
+        window.start_btn.mapTo(window, window.start_btn.rect().bottomRight())
     )
-    window.content_scroll_area.ensureWidgetVisible(window.start_btn)
-    qapp.processEvents()
-    viewport_rect = window.content_scroll_area.viewport().rect()
-    start_top_left = window.start_btn.mapTo(
-        window.content_scroll_area.viewport(), window.start_btn.rect().topLeft()
-    )
-    assert viewport_rect.contains(start_top_left)
 
 
-def test_default_window_uses_wide_controls_without_outer_scrolling(
+def test_default_window_opens_on_the_mic_page_and_reaches_health(
+    widget_view,
     isolated_main_window,
     qapp,
 ) -> None:
@@ -252,38 +250,41 @@ def test_default_window_uses_wide_controls_without_outer_scrolling(
     qapp.processEvents()
 
     assert window._responsive_layout_compact is False
+    assert window.menuBar().isHidden()
     assert window.content_scroll_area.horizontalScrollBar().maximum() == 0
-    assert window.content_scroll_area.verticalScrollBar().maximum() == 0
-    viewport = window.content_scroll_area.viewport()
+    assert window.page_stack.currentIndex() == 0
     assert window.health_details.isHidden()
-    assert viewport.rect().contains(window.health_details_button.mapTo(
-        viewport, window.health_details_button.rect().bottomRight()
+    assert window.rect().contains(window.health_details_button.mapTo(
+        window, window.health_details_button.rect().bottomRight()
     ))
     window.health_details_button.click()
     qapp.processEvents()
     assert window.health_details.isVisible()
     assert window.dropped_label.isVisible()
+    assert window.nav_group.checkedId() == window.HEALTH_PAGE_INDEX
     window.health_details_button.click()
     assert window.health_details.isHidden()
+    assert window.nav_group.checkedId() == 0
 
 
 @pytest.mark.parametrize(
-    ("width", "height", "orientation"),
+    ("width", "height", "compact"),
     (
-        (900, 640, Qt.Orientation.Vertical),
-        (1024, 700, Qt.Orientation.Vertical),
-        (1159, 760, Qt.Orientation.Vertical),
-        (1280, 800, Qt.Orientation.Horizontal),
-        (1600, 900, Qt.Orientation.Horizontal),
-        (1920, 1040, Qt.Orientation.Horizontal),
+        (900, 640, True),
+        (1024, 700, True),
+        (1199, 760, True),
+        (1280, 800, False),
+        (1600, 900, False),
+        (1920, 1040, False),
     ),
 )
 def test_main_window_has_no_horizontal_overflow_across_breakpoints(
+    widget_view,
     isolated_main_window,
     qapp,
     width: int,
     height: int,
-    orientation: Qt.Orientation,
+    compact: bool,
 ) -> None:
     window = isolated_main_window
     window.resize(width, height)
@@ -291,33 +292,26 @@ def test_main_window_has_no_horizontal_overflow_across_breakpoints(
     qapp.processEvents()
     qapp.processEvents()
 
-    assert window.main_splitter.orientation() == orientation
-    assert window.content_scroll_area.horizontalScrollBar().maximum() == 0
-    assert window.eq_scroll_area.horizontalScrollBar().maximum() == 0
-    assert window.eq_panel._band_layout_columns in window.eq_panel.BAND_COLUMN_OPTIONS
-    for index in range(window.control_tabs.count()):
-        tab_scroll = window.control_tabs.widget(index)
-        assert isinstance(tab_scroll, QScrollArea)
-        tab_body = tab_scroll.widget()
-        tab_viewport = tab_scroll.viewport()
-        horizontal_bar = tab_scroll.horizontalScrollBar()
-        assert tab_body is not None
-        assert tab_viewport is not None
-        assert horizontal_bar is not None
+    assert window.width() == width
+    assert window._responsive_layout_compact is compact
+    for page_index in range(window.page_stack.count()):
+        window.page_stack.setCurrentIndex(page_index)
+        qapp.processEvents()
+        page = window.page_stack.currentWidget()
+        assert isinstance(page, QScrollArea)
+        body = page.widget()
+        assert body is not None
         oversized = [
             (
                 type(widget).__name__,
                 getattr(widget, "title", lambda: widget.objectName())(),
                 widget.minimumSizeHint().width(),
-                widget.sizeHint().width(),
             )
-            for widget in tab_body.findChildren(QWidget)
-            if widget.minimumSizeHint().width() > tab_viewport.width()
+            for widget in body.findChildren(QWidget)
+            if widget.minimumSizeHint().width() > page.viewport().width()
         ]
-        assert horizontal_bar.maximum() == 0, (
-            window.control_tabs.tabText(index),
-            oversized,
-        )
+        assert page.horizontalScrollBar().maximum() == 0, (page_index, oversized)
+        assert body.width() <= page.viewport().width(), (page_index, oversized)
 
 
 @pytest.mark.parametrize(
@@ -378,25 +372,18 @@ def test_first_run_setup_buttons_fit_the_minimum_dialog(
     qapp.processEvents()
     qapp.processEvents()
 
-    scroll_area = dialog.content_scroll_area
-    body = scroll_area.widget()
-    viewport = scroll_area.viewport()
-    scrollbar = scroll_area.horizontalScrollBar()
-    assert body is not None and viewport is not None and scrollbar is not None
-    content_rect = body.contentsRect()
+    scrollbar = dialog.content_scroll_area.horizontalScrollBar()
+    assert scrollbar is not None
     assert scrollbar.maximum() == 0
+    # The action row sits below the scrolling page, so it cannot scroll into view.
+    assert (dialog.width(), dialog.height()) == (440, 340)
     for button in (
         dialog.back_button,
         dialog.skip_button,
         dialog.pause_button,
         dialog.action_button,
     ):
-        assert content_rect.contains(button.geometry())
-        scroll_area.ensureWidgetVisible(button)
-        qapp.processEvents()
-        assert viewport.rect().contains(
-            button.mapTo(viewport, button.rect().center())
-        )
+        assert dialog.rect().contains(button.geometry())
 
     dialog.close()
     dialog.deleteLater()

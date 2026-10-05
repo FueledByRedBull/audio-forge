@@ -840,13 +840,27 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
     assert not dialog.diagnostics_group.isHidden()
     assert (
         dialog.confidence_label.text()
-        == "Confidence: overall 76% | EQ 74% | capture 81%"
+        == "High confidence in this measurement (76%)."
     )
-    assert dialog.error_label.text() == "Target error: 5.0 dB -> 2.5 dB"
-    assert "Validation: 78% | gain scale 90%" in dialog.gain_scale_label.text()
-    assert "correction 6.0 dB->4.0 dB" in dialog.gain_scale_label.text()
-    assert "narrow 2.0 dB" in dialog.gain_scale_label.text()
-    assert dialog.target_profile_label.text() == "Target profile: broadcast:adaptive"
+    assert (
+        dialog.confidence_label.toolTip() == "EQ 74%; capture 81%; validation 78%"
+    )
+    assert (
+        dialog.error_label.text()
+        == "Distance from the tone preset: 5.0 dB before, 2.5 dB after."
+    )
+    assert (
+        dialog.error_label.toolTip()
+        == "Gain scale 90%; correction 6.0 dB -> 4.0 dB; narrow 2.0 dB"
+    )
+    assert dialog.gain_scale_label.text() == "Headroom check: not available."
+    assert (
+        dialog.target_profile_label.text()
+        == f"Tone preset: {dialog.curve_combo.currentText()}"
+    )
+    assert (
+        dialog.target_profile_label.toolTip() == "Target profile: broadcast:adaptive"
+    )
 
     dialog.close()
     owner.close()
@@ -882,8 +896,16 @@ def test_calibration_dialog_does_not_offer_abstained_eq(qapp):
 
     assert dialog.eq_settings is None
     assert dialog.start_button.text() == "Record Again"
-    assert "No EQ applied" in dialog.warning_label.text()
-    assert "noise-referenced SNR is too low" in dialog.warning_label.text()
+    # Plain language up front; the raw reason stays available on hover.
+    text = dialog.warning_label.text()
+    assert text.startswith("No correction applied. ")
+    assert "Speech was too close to the measured room-noise level." in text
+    assert "noise-referenced SNR is too low" not in text
+    assert "noise-referenced SNR is too low" in dialog.warning_label.toolTip()
+    # Review step: the setup and recording widgets are out of the way.
+    assert dialog.curve_group.isHidden()
+    assert dialog.instructions_group.isHidden()
+    assert dialog.level_meter.isHidden()
 
     dialog.close()
     owner.close()

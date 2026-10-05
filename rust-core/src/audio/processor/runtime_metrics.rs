@@ -122,12 +122,15 @@ impl AudioProcessor {
 
     /// Get dropped sample count (samples lost due to buffer overflow)
     pub fn get_dropped_samples(&self) -> u64 {
-        self.input_dropped.load(Ordering::Relaxed)
+        self.input_dropped
+            .load(Ordering::Relaxed)
+            .saturating_sub(self.input_dropped_baseline.load(Ordering::Relaxed))
     }
 
     /// Reset dropped sample counter
     pub fn reset_dropped_samples(&self) {
-        self.input_dropped.store(0, Ordering::Relaxed);
+        self.input_dropped_baseline
+            .store(self.input_dropped.load(Ordering::Relaxed), Ordering::Relaxed);
     }
 
     /// Get total real-time lock contention events.

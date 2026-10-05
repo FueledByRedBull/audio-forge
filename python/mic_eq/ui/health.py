@@ -134,3 +134,37 @@ def output_health_state(
     tp_suffix = f" TP:{true_peak:.1f}" if true_peak is not None else ""
     lufs_suffix = f" LU:{loudness:.0f}" if loudness is not None and loudness > -119.0 else ""
     return f"Output: OK ({rms_db:.0f}dB{tp_suffix}{lufs_suffix})", "ok"
+
+
+# What to do about each warning a health chip can show, keyed by the token in
+# the chip text. Longer tokens come first so "LOW TP HEADROOM" wins over "LOW".
+_ADVICE = (
+    ("Input: CLIPPING", "Your microphone is clipping. Lower the mic gain in Windows or on the interface."),
+    ("Input: PHASE", "The stereo channels are cancelling each other. Pick Left, Right or Phase-safe mono under Settings."),
+    ("Input: CLEANUP RUMBLE", "Low rumble is reaching the mic. Check for desk bumps or a fan, or keep input cleanup on."),
+    ("Input: LOW", "The input is very quiet. Raise the mic gain or move closer."),
+    ("Input: HOT", "The input is close to clipping. Lower the mic gain a little."),
+    ("Input: DENSE", "The input is already heavily compressed. Turn off processing in the mic driver or headset software."),
+    ("Output: CLIP", "The output clipped. Turn the limiter on or lower the makeup gain."),
+    ("Output: LIMITING HARD", "The limiter is working hard. Lower the compressor makeup gain or the input level."),
+    ("Output: TRUE PEAK", "The output peaked above the ceiling. Turn on careful output mode or lower the makeup gain."),
+    ("Output: LOW TP HEADROOM", "The output has almost no headroom. Lower the makeup gain."),
+    ("Output: HOT", "The output is very loud. Lower the makeup gain."),
+    ("Gate: CHATTER", "The gate is opening and closing rapidly. Raise the hold time or lower the threshold."),
+    ("Gate: RELAX", "The gate eased its threshold to stop chattering. Consider lowering the threshold."),
+    ("Backend:", "Noise suppression is not running as selected. Check the backend on the Noise Suppression card."),
+    ("Callbacks:", "The audio device stopped responding in time. Check the device, then stop and start processing."),
+    ("Underruns:", "Audio is dropping out. Close heavy applications or choose a different output device."),
+    ("Buffer:", "Audio is backing up. Close heavy applications or pick a lighter suppression backend."),
+    ("Drops:", "Some audio was dropped. If it keeps happening, restart processing."),
+    ("Recovery:", "The audio stream was restarted. If this repeats, check the device connection."),
+)
+
+
+def advice_for(chip_text: str) -> str:
+    """Return plain-language advice for a warning chip, or an empty string."""
+
+    for token, advice in _ADVICE:
+        if chip_text.startswith(token):
+            return advice
+    return ""

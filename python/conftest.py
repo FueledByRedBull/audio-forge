@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QCoreApplication, QEvent
 
-from mic_eq.ui.theme import application_palette
+from mic_eq.ui.theme import apply_application_theme
 
 
 @pytest.fixture(scope="session")
@@ -20,8 +20,7 @@ def qapp():
     app = QApplication.instance()
     if app is None:
         app = QApplication([])
-    app.setStyle("Fusion")
-    app.setPalette(application_palette())
+    apply_application_theme(app)
     yield app
     app.processEvents()
 

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QProgressBar,
     QVBoxLayout,
@@ -41,6 +42,17 @@ from ..analysis.listening_comparison import (
 )
 from ..config import save_config
 from .accessibility import bind_label, set_accessible_group
+from .calibration_support import chain_settings
+from .capture_session import (
+    CaptureSession,
+    active_device_identities,
+    processor_sample_rate,
+    route_identities_match,
+    selected_device_identities,
+    set_temporary_mute,
+    start_selected_route,
+    sync_owner_processing_controls,
+)
 from .layout_constants import (
     SUBDUED_TEXT_STYLE,
     configure_resizable_dialog,
@@ -280,6 +292,11 @@ class ListeningComparisonDialog(QDialog):
     """Play one capture as original, current, or proposed processing."""
 
     comparison_decided = Signal(bool)
+    _CLIPS: tuple[tuple[str, str], ...] = (
+        ("original", "Original recording"),
+        ("current", "Current settings"),
+        ("proposed", "Proposed settings"),
+    )
 
     def __init__(
         self,
@@ -423,11 +440,7 @@ class ListeningComparisonDialog(QDialog):
         clips_layout = QFormLayout(clips_group)
         self._play_buttons: dict[str, QPushButton] = {}
         self._clip_labels: dict[str, QLabel] = {}
-        for key, label in (
-            ("original", "Original recording"),
-            ("current", "Current settings"),
-            ("proposed", "Proposed settings"),
-        ):
+        for key, label in self._CLIPS:
             button = QPushButton(f"Play {label}")
             button.setEnabled(False)
             button.clicked.connect(lambda _checked=False, clip=key: self._play_clip(clip))
@@ -841,4 +854,237 @@ class ListeningComparisonDialog(QDialog):
         return self._decision
 
 
-__all__ = ["ListeningComparisonDialog", "ListeningComparisonWorker"]
+class RawProcessedDialog(ListeningComparisonDialog):
+    """Play one capture raw or through the current settings; nothing to decide."""
+
+    _CLIPS = (("original", "Raw"), ("current", "Processed"))
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        audio_data: np.ndarray,
+        sample_rate: int,
+        settings: Mapping[str, Any],
+        chain_settings: Mapping[str, Any] | None = None,
+        playback_device: QAudioDevice | None = None,
+        playback_device_key: str | None = None,
+    ) -> None:
+        # ponytail: the shared worker renders the same settings twice (current
+        # and proposed); add a single-render path to render_comparison if a
+        # five-second clip ever takes noticeably long.
+        super().__init__(
+            parent,
+            audio_data=audio_data,
+            sample_rate=sample_rate,
+            current_settings=settings,
+            proposed_settings=settings,
+            current_chain_settings=chain_settings,
+            proposed_chain_settings=chain_settings,
+            playback_device=playback_device,
+            playback_device_key=playback_device_key,
+        )
+        self.setWindowTitle("Test my sound")
+
+    def _setup_ui(self) -> None:
+        super()._setup_ui()
+        self.scope_label.setText(
+            "This is one recording of your microphone. Raw is what the "
+            "microphone picked up. Processed is the same recording with your "
+            "current settings."
+        )
+        self.scope_warning.setText("Preparing the processed clip.")
+        self.keep_button.setVisible(False)
+        self.reject_button.setText("Close")
+        self.reject_button.setAccessibleName("Close test my sound")
+
+    def _play_clip(self, key: str, *, start_sample: int = 0) -> None:
+        # The playing clip's button reads Stop, so pressing it again stops.
+        if key == self._playing_clip_key:
+            self._stop_playback()
+            return
+        super()._play_clip(key, start_sample=start_sample)
+
+    def _update_playback_buttons(self) -> None:
+        super()._update_playback_buttons()
+        self._show_playing_clip()
+
+    def _stop_playback(self) -> None:
+        super()._stop_playback()
+        if hasattr(self, "_play_buttons"):
+            self._show_playing_clip()
+
+    def _show_playing_clip(self) -> None:
+        playing = self._playing_clip_key
+        for key, label in self._CLIPS:
+            text = f"Stop {label}" if key == playing else f"Play {label}"
+            self._play_buttons[key].setText(text)
+            self._play_buttons[key].setAccessibleName(text)
+        names = dict(self._CLIPS)
+        if playing in names:
+            self.status_label.setText(f"Playing: {names[playing]}")
+            self.status_label.setStyleSheet(message_text_style("info"))
+        elif self.status_label.text().startswith("Playing: "):
+            self.status_label.setText("Playback stopped.")
+
+    def _on_render_ready(self, result: ComparisonRenderResult) -> None:
+        super()._on_render_ready(result)
+        if self._result is not result:
+            return
+        self.progress_label.setText("Ready to play")
+        stages = ", ".join(result.current.rendered_stages) or "none"
+        self.scope_warning.setText(f"Stages applied to the processed clip: {stages}.")
+        self.status_label.setText(
+            "Play each clip to hear the difference. You can switch while one is playing."
+        )
+        self.status_label.setStyleSheet(message_text_style("ok"))
+
+    def _on_render_failed(self, error: str) -> None:
+        super()._on_render_failed(error)
+        if self._close_requested:
+            return
+        self.progress_label.setText("Processing failed")
+        self.status_label.setText(f"Could not process the recording: {error}")
+
+
+TEST_CAPTURE_SECONDS = 5.0
+_TEST_MY_SOUND_REASON = "test_my_sound"
+
+
+def _record_test_clip(window: Any) -> np.ndarray | None:
+    """Record one raw clip behind a modal progress dialog; None when canceled."""
+    session = CaptureSession(window, _TEST_MY_SOUND_REASON)
+    session.start(TEST_CAPTURE_SECONDS, before_cleanup=True)
+
+    dialog = QDialog(window)
+    dialog.setWindowTitle("Test my sound")
+    dialog.setModal(True)
+    layout = QVBoxLayout(dialog)
+    layout.addWidget(
+        QLabel(f"Recording. Speak normally for {TEST_CAPTURE_SECONDS:.0f} seconds.")
+    )
+    bar = QProgressBar()
+    bar.setRange(0, 100)
+    bar.setTextVisible(False)
+    bar.setStyleSheet(PROGRESS_BAR_STYLE)
+    bar.setAccessibleName("Recording progress")
+    layout.addWidget(bar)
+    cancel_button = QPushButton("Cancel")
+    cancel_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
+    cancel_button.clicked.connect(dialog.reject)
+    layout.addWidget(cancel_button)
+
+    failures: list[str] = []
+    timer = QTimer(dialog)
+    timer.setInterval(50)
+
+    def poll() -> None:
+        try:
+            progress = float(window.processor.recording_progress())
+            failure = session.failure_reason(progress)
+            if failure is not None:
+                raise RuntimeError(failure)
+            bar.setValue(int(progress * 100))
+            if progress >= 1.0 or window.processor.is_recording_complete():
+                timer.stop()
+                dialog.accept()
+        except Exception as exc:
+            timer.stop()
+            failures.append(str(exc))
+            dialog.reject()
+
+    timer.timeout.connect(poll)
+    timer.start()
+    try:
+        accepted = dialog.exec() == int(QDialog.DialogCode.Accepted)
+        if failures:
+            raise RuntimeError(failures[0])
+        if not accepted:
+            return None
+        audio = session.stop_recording()
+        return np.ascontiguousarray(np.asarray(audio, dtype=np.float32).reshape(-1))
+    finally:
+        timer.stop()
+        session.cleanup()
+        dialog.deleteLater()
+
+
+def open_test_my_sound(window: Any) -> None:
+    """Record a short clip, then let the user play it raw and processed."""
+
+    def fail(message: str) -> None:
+        QMessageBox.warning(window, "Test my sound", message)
+
+    processor = getattr(window, "processor", None)
+    if processor is None:
+        fail("Audio processing is not available.")
+        return
+    selected = selected_device_identities(window)
+    if selected[0] is None:
+        fail("No microphone is selected. Choose an input device, then try again.")
+        return
+
+    started_here = False
+    try:
+        if not processor.is_running():
+            start_selected_route(window)
+            started_here = True
+            sync_owner_processing_controls(window)
+        elif not route_identities_match(selected, active_device_identities(processor)):
+            fail(
+                "Processing is running on different devices than the ones "
+                "selected. Stop and start processing, then try again."
+            )
+            return
+    except Exception as exc:
+        fail(
+            f"Could not start the microphone.\n\n{exc}\n\n"
+            "Check that your devices are connected and not in use by another app."
+        )
+        return
+
+    try:
+        try:
+            audio = _record_test_clip(window)
+            sample_rate = processor_sample_rate(window)
+        finally:
+            if started_here:
+                processor.stop()
+                sync_owner_processing_controls(window)
+    except Exception as exc:
+        fail(f"Recording did not work.\n\n{exc}")
+        return
+    if audio is None:
+        return
+    if audio.size == 0:
+        fail("The recording was empty. Check the microphone and try again.")
+        return
+
+    try:
+        dialog = RawProcessedDialog(
+            window,
+            audio_data=audio,
+            sample_rate=sample_rate,
+            settings=window.eq_panel.get_settings(),
+            chain_settings=chain_settings(
+                window, full_chain=True, input_pre_filtered=False
+            ),
+        )
+    except Exception as exc:
+        fail(f"Could not prepare the processed clip.\n\n{exc}")
+        return
+    # Keep the preview out of the live output while it plays near the microphone.
+    set_temporary_mute(window, _TEST_MY_SOUND_REASON, True)
+    try:
+        dialog.exec()
+    finally:
+        set_temporary_mute(window, _TEST_MY_SOUND_REASON, False)
+        dialog.deleteLater()
+
+
+__all__ = [
+    "ListeningComparisonDialog",
+    "ListeningComparisonWorker",
+    "RawProcessedDialog",
+    "open_test_my_sound",
+]

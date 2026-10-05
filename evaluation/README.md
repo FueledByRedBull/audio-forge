@@ -56,7 +56,10 @@ The current source keeps the gate before noise suppression and sends the same
 gated samples into the neural models. RNNoise and DeepFilter LL use gate controls
 aligned with their delay to compensate only the wet output; the dry mix and
 declared latency are preserved. Standard DeepFilter receives no compensation.
-The separate fresh gate qualification meets its onset and quiet-pause rules.
+Its onset and quiet-pause checks pass, but they are reused from the original
+24-case EARS run through a source/native bridge; the gate was not rendered
+again. That run's overall result failed on an older de-esser recommendation
+check, not on its gate checks.
 
 Auto de-essing measures notch-complement power concentration against a shared
 spectral background, and Voice Setup adds a signed spectral-curvature model for
@@ -69,7 +72,8 @@ cleanup, and checks same-thread reversion on normal shutdown.
 
 Adoption uses an explicit user-approved timing exception. One mandatory
 component-event p99 was **1.2151 ms**, exceeding the unchanged **0.5 ms** limit;
-the component qualification remains failed. All **294,000** complete kernels
+the component qualification remains failed, and 9 of 18 routes failed the
+original frozen timing bounds. All **294,000** complete kernels
 in that study were below **10 ms**, with a candidate maximum of **5.8616 ms**.
 A separate bounded prefix diagnostic did not reproduce the spike and does not
 establish its cause or overturn the failure. Earlier timing failures and the

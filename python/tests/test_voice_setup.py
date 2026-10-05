@@ -1520,6 +1520,57 @@ def test_complete_advisory_candidate_still_offers_apply(qapp, monkeypatch):
         qapp.processEvents()
 
 
+def test_review_shows_settings_before_and_after(qapp, monkeypatch):
+    from mic_eq.config import AppConfig
+    from mic_eq.ui.main_window import MainWindow
+    from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
+
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
+    for name in ("list_presets", "list_input_devices", "list_output_devices"):
+        monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
+    owner = MainWindow()
+    owner.meter_timer.stop()
+    owner.diagnostics_timer.stop()
+    dialog = VoiceSetupDialog(parent=owner)
+    orphan = VoiceSetupDialog()
+    try:
+        gate = owner.gate_panel.get_settings()
+        before_db = gate["threshold_db"]
+        gate["threshold_db"] = before_db - 6.0
+        compressor = owner.compressor_panel.get_compressor_settings()
+        compressor["attack_ms"] += 5.0
+        result = {
+            "diagnostics": {
+                "setup_confidence": 0.9,
+                "capture_confidence": 0.9,
+                "recommendation_uncertainty": 0.1,
+                "gate_mode_label": "VAD Assisted",
+            },
+            "gate_settings": gate,
+            "deesser_settings": owner.deesser_panel.get_settings(),
+            "compressor_settings": compressor,
+            "eq_settings": None,
+        }
+        dialog._show_summary(result)
+        recommended, before = dialog.gate_label.text().split("\nBefore: ")
+        assert recommended.endswith(f"opens above {before_db - 6.0:.1f} dB")
+        assert before.endswith(f"opens above {before_db:.1f} dB")
+        assert dialog.deesser_label.text().endswith("(unchanged)")
+        assert dialog.compressor_label.text().endswith("(only finer settings change)")
+
+        orphan._show_summary(result)
+        assert orphan.gate_label.text() == f"Noise gate: {recommended.split(': ', 1)[1]}"
+        assert "unchanged" not in orphan.deesser_label.text()
+    finally:
+        for widget in (dialog, orphan):
+            widget.reject()
+            widget.deleteLater()
+        owner.close()
+        owner.deleteLater()
+        qapp.processEvents()
+
+
 def test_expanded_compressor_search_handles_no_safe_threshold_only_candidate(
     monkeypatch,
 ):

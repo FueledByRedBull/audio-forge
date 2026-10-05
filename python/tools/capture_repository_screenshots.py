@@ -18,14 +18,14 @@ os.environ.setdefault("QT_SCALE_FACTOR", "1")
 os.environ.setdefault("QT_FONT_DPI", "96")
 os.environ.setdefault("AUDIOFORGE_REDUCED_MOTION", "1")
 
-from PySide6.QtCore import QByteArray
+from PySide6.QtCore import QByteArray, QObject
 from PySide6.QtGui import QFont, QFontDatabase, QImageWriter
-from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 from mic_eq.config import AppConfig
 from mic_eq.ui import main_window as main_window_module
 from mic_eq.ui.main_window import MainWindow
-from mic_eq.ui.theme import application_palette, message_text_style
+from mic_eq.ui.theme import apply_application_theme, message_text_style
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
 
@@ -58,25 +58,26 @@ SCREENSHOTS: tuple[dict[str, str], ...] = (
         "filename": "audioforge-routing-eq.png",
         "view": "routing_eq",
         "alt": (
-            "AudioForge main window routing a studio microphone to the CABLE Input "
-            "virtual cable, with noise gate and RNNoise controls, level meters, "
-            "and the ten-band EQ showing an Auto-EQ correction."
+            "AudioForge Mic page routing a studio microphone to the CABLE Input "
+            "virtual cable, with the equalizer card showing an Auto-EQ correction, "
+            "the editor for the selected band, and level meters."
         ),
     },
     {
         "filename": "audioforge-processing.png",
         "view": "processing",
         "alt": (
-            "AudioForge Dynamics tab with compressor and limiter controls, green "
-            "health indicators, and the ten-band EQ."
+            "AudioForge cards for noise suppression, noise gate, de-esser, "
+            "compressor and limiter, each with a switch and a collapsed Advanced "
+            "section."
         ),
     },
     {
         "filename": "audioforge-auto-voice-setup.png",
         "view": "voice_setup",
         "alt": (
-            "AudioForge Auto Voice Setup dialog with target voice and dynamics "
-            "choices and a verified recommendation summary."
+            "AudioForge Auto Voice Setup on its Review step, listing the "
+            "recommended settings in plain language."
         ),
     },
 )
@@ -87,6 +88,8 @@ def _source_hashes() -> dict[str, str]:
         "python/tools/capture_repository_screenshots.py",
         "python/mic_eq/ui/theme.py",
         "python/mic_eq/ui/main_window.py",
+        "python/mic_eq/ui/quick_shell.py",
+        "python/mic_eq/ui/qml/Main.qml",
         "python/mic_eq/ui/eq_panel.py",
         "python/mic_eq/ui/eq_curve.py",
         "python/mic_eq/ui/voice_setup_dialog.py",
@@ -128,6 +131,9 @@ def _load_capture_font(app: QApplication) -> dict[str, str]:
     if not families:
         raise RuntimeError(f"Could not load capture font: {CAPTURE_FONT_FILENAME}")
     family = families[0]
+    # Icon glyphs come from whichever system icon font this Windows ships.
+    for icon_font_filename in ("SegoeIcons.ttf", "segmdl2.ttf"):
+        QFontDatabase.addApplicationFont(str(windows_root / "Fonts" / icon_font_filename))
     app.setFont(QFont(family, 9))
     return {
         "family": family,
@@ -148,7 +154,6 @@ def _prepare_main_window() -> MainWindow:
     window.meter_timer.stop()
     window.diagnostics_timer.stop()
     window.resize(CAPTURE_WIDTH, CAPTURE_HEIGHT)
-    window.main_splitter.setSizes([470, 1010])
     window.input_combo.setCurrentIndex(0)
     window.output_combo.setCurrentIndex(0)
     _select_data(window.input_channel_mode_combo, "average")
@@ -223,10 +228,11 @@ def _show_running_state(window: MainWindow) -> None:
 def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
     dialog = VoiceSetupDialog(parent)
     dialog.recording_timer.stop()
-    dialog.resize(780, 1280)
+    dialog.resize(780, 760)
     _select_data(dialog.curve_combo, "broadcast")
     _select_data(dialog.dynamics_combo, "balanced")
     dialog.recording_group.setVisible(True)
+    dialog.setup_state = "completed"
     dialog.phase_label.setText("Recommendations ready")
     dialog.progress_bar.setValue(100)
     dialog.time_label.setText("Capture and analysis complete")
@@ -281,8 +287,7 @@ def _write_optimized_png(widget: QWidget, path: Path) -> tuple[int, int]:
 def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
     existing_app = QApplication.instance()
     app = QApplication([]) if existing_app is None else cast(QApplication, existing_app)
-    app.setStyle("Fusion")
-    app.setPalette(application_palette())
+    apply_application_theme(app)
     font = _load_capture_font(app)
 
     window = _prepare_main_window()
@@ -293,20 +298,17 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
     processing_scroll_maximum = 0
     try:
         for specification in SCREENSHOTS[:2]:
-            window.control_tabs.setCurrentIndex(
-                0 if specification["view"] == "routing_eq" else 1
-            )
-            app.processEvents()
             if specification["view"] == "processing":
-                page = cast(QScrollArea, window.control_tabs.currentWidget())
-                scrollbar = page.verticalScrollBar()
-                if scrollbar is None:
-                    raise RuntimeError("Dynamics page has no vertical scrollbar")
-                processing_scroll_maximum = scrollbar.maximum()
-                scrollbar.setValue(processing_scroll_maximum)
-                processing_scroll_position = scrollbar.value()
-                app.processEvents()
+                scene = cast(Any, window.centralWidget()).rootObject()
+                page = scene.findChild(QObject, "micPage")
+                processing_scroll_maximum = max(
+                    0, round(page.property("contentHeight") - page.property("height"))
+                )
+                page.setProperty("contentY", processing_scroll_maximum)
+                processing_scroll_position = round(page.property("contentY"))
             _show_running_state(window)
+            # The scene reads widget state on a timer; read it now instead.
+            vars(window)["quick_bridge"].refresh()
             app.processEvents()
             path = output_dir / specification["filename"]
             width, height = _write_optimized_png(window, path)

@@ -201,7 +201,7 @@ def test_setup_resumes_at_saved_step_and_delegates_route_check(qapp, monkeypatch
     dialog._finish_route_check()
     assert not dialog._route_check_timer.isActive()
     assert config.first_run_setup_steps["route"] == "pending"
-    assert "Confirm Signal" in dialog.action_button.text()
+    assert "Confirm signal" in dialog.action_button.text()
     dialog._run_current_step()
     assert config.first_run_setup_steps["route"] == "completed"
     assert dialog.current_step == "voice"
@@ -533,7 +533,7 @@ def test_setup_failed_finish_offers_retry_without_repeating_voice(qapp, monkeypa
     assert config.first_run_setup_steps["voice"] == "completed"
     assert config.first_run_setup_state == "in_progress"
     assert dialog._finalized is False
-    assert dialog.action_button.text() == "Retry Save"
+    assert dialog.action_button.text() == "Retry save"
     assert owner.voice_setup_calls == 1
     assert "Progress is unsaved" in dialog.status_label.text()
 

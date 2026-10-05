@@ -9,9 +9,8 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QComboBox,
-    QCheckBox,
     QGridLayout,
-    QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
     QProgressBar,
@@ -22,10 +21,11 @@ from PySide6.QtWidgets import (
 from ..config import coerce_device_identity, save_config
 from ..config_parts.app_config import FIRST_RUN_SETUP_STEPS
 from .accessibility import bind_label, set_accessible_group
+from .components import Card, ToggleSwitch, form_layout
 from .health import RecentStreamHealth
 from .layout_constants import (
+    MARGIN_PANEL,
     PRIMARY_ACTION_BUTTON_STYLE,
-    SECONDARY_ACTION_BUTTON_STYLE,
     SPACING_NORMAL,
     SPACING_SECTION,
     configure_resizable_dialog,
@@ -44,21 +44,22 @@ STEP_CONTENT = {
         "1. Choose devices",
         "Select the microphone and destination for your calls, games, or recording. "
         "Choose a virtual cable when another app should receive AudioForge output.",
-        "Use Route",
+        "Use this route",
     ),
     "route": (
         "2. Check speech and clipping",
-        "Start processing, speak at a normal level, and watch the input/output "
+        "Start processing, speak at a normal level, and watch the input and output "
         "levels and clipping indicators. Then check your call, game, or recording "
         "app for the microphone signal and confirm it below. AudioForge cannot "
-        "confirm destination-app reception automatically.",
-        "Check Levels",
+        "check automatically that the other app receives it.",
+        "Check levels",
     ),
     "latency": (
         "Advanced latency calibration",
-        "Measure the selected route when you use a loopback cable or speaker-to-microphone path. "
-        "This is optional and is available from the main Options menu as well.",
-        "Open Latency Calibration",
+        "Measure the selected route when you use a loopback cable or a "
+        "speaker-to-microphone path. This is optional and is also available on the "
+        "Settings page.",
+        "Open latency calibration",
     ),
     "voice": (
         "3. Calibrate the voice chain",
@@ -196,7 +197,7 @@ class FirstRunSetupDialog(QDialog):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         self.content_scroll_area, layout = create_scrollable_dialog_body(self)
         self.content_scroll_area.setAccessibleName("Audio setup content")
-        outer_layout.addWidget(self.content_scroll_area)
+        outer_layout.addWidget(self.content_scroll_area, stretch=1)
         layout.setSpacing(SPACING_SECTION)
         self.progress = QProgressBar()
         self.progress.setRange(0, len(DEFAULT_SETUP_STEPS))
@@ -217,8 +218,9 @@ class FirstRunSetupDialog(QDialog):
         self.status_label.setStyleSheet(message_text_style("info"))
         layout.addWidget(self.status_label)
 
-        self.route_feedback_group = QGroupBox("Speech and clipping")
-        feedback_layout = QGridLayout(self.route_feedback_group)
+        self.route_feedback_group = Card("Speech and clipping")
+        feedback_layout = QGridLayout()
+        self.route_feedback_group.body.addLayout(feedback_layout)
         self.route_input_meter = LevelMeter("IN", show_scale=True)
         self.route_output_meter = LevelMeter("OUT", show_scale=True)
         self.route_input_meter.setFixedWidth(60)
@@ -239,18 +241,19 @@ class FirstRunSetupDialog(QDialog):
         feedback_layout.setColumnStretch(1, 1)
         layout.addWidget(self.route_feedback_group)
 
-        self.mute_checkbox = QCheckBox("Mute Output")
+        self.mute_checkbox = ToggleSwitch("Mute output")
         self.mute_checkbox.setToolTip(
-            "Keep transmission muted until you uncheck this control. "
+            "Keep transmission muted until you turn this off. "
             "Calibration and stream recovery may use a separate temporary mute."
         )
         self.mute_checkbox.setChecked(bool(getattr(self.owner, "user_muted", False)))
         self.mute_checkbox.toggled.connect(self._on_mute_toggled)
         layout.addWidget(self.mute_checkbox)
 
-        self.device_selection_group = QGroupBox("Audio route")
-        device_layout = QGridLayout(self.device_selection_group)
-        input_label = QLabel("Microphone:")
+        self.device_selection_group = Card("Audio route")
+        device_layout = form_layout()
+        self.device_selection_group.body.addLayout(device_layout)
+        input_label = QLabel("Microphone")
         self.input_device_selector = QComboBox()
         configure_responsive_combo(self.input_device_selector)
         bind_label(
@@ -258,10 +261,9 @@ class FirstRunSetupDialog(QDialog):
             self.input_device_selector,
             name="Setup microphone",
         )
-        device_layout.addWidget(input_label, 0, 0)
-        device_layout.addWidget(self.input_device_selector, 0, 1)
+        device_layout.addRow(input_label, self.input_device_selector)
 
-        output_label = QLabel("Destination:")
+        output_label = QLabel("Destination")
         self.output_device_selector = QComboBox()
         configure_responsive_combo(self.output_device_selector)
         bind_label(
@@ -269,9 +271,7 @@ class FirstRunSetupDialog(QDialog):
             self.output_device_selector,
             name="Setup destination",
         )
-        device_layout.addWidget(output_label, 1, 0)
-        device_layout.addWidget(self.output_device_selector, 1, 1)
-        device_layout.setColumnStretch(1, 1)
+        device_layout.addRow(output_label, self.output_device_selector)
         layout.addWidget(self.device_selection_group)
         self.input_device_selector.setModel(self.owner.input_combo.model())
         self.output_device_selector.setModel(self.owner.output_combo.model())
@@ -282,38 +282,39 @@ class FirstRunSetupDialog(QDialog):
             self.owner.output_combo.currentIndex()
         )
 
-        button_row = QGridLayout()
-        button_row.setSpacing(SPACING_NORMAL)
-        self.back_button = QPushButton("Back")
-        self.back_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
-        self.back_button.clicked.connect(self._go_back)
-        button_row.addWidget(self.back_button, 0, 0)
-
-        self.skip_button = QPushButton("Skip This Step")
-        self.skip_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
-        self.skip_button.clicked.connect(self._skip_step)
-        button_row.addWidget(self.skip_button, 0, 1)
-
-        self.pause_button = QPushButton("Pause Setup")
-        self.pause_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
-        self.pause_button.clicked.connect(self.reject)
-        button_row.addWidget(self.pause_button, 1, 0)
-
-        self.action_button = QPushButton()
-        self.action_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
-        self.action_button.clicked.connect(self._run_current_step)
-        button_row.addWidget(self.action_button, 1, 1)
-        button_row.setColumnStretch(0, 1)
-        button_row.setColumnStretch(1, 1)
-        layout.addLayout(button_row)
-
-        self.advanced_latency_button = QPushButton("Advanced Latency Calibration...")
-        self.advanced_latency_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
+        self.advanced_latency_button = QPushButton("Advanced latency calibration...")
         self.advanced_latency_button.clicked.connect(self._run_latency_calibration)
         self.advanced_latency_button.setEnabled(
             callable(getattr(self.owner, "_on_latency_calibration_clicked", None))
         )
-        layout.addWidget(self.advanced_latency_button)
+        layout.addWidget(
+            self.advanced_latency_button, alignment=Qt.AlignmentFlag.AlignLeft
+        )
+        layout.addStretch(1)
+
+        self.back_button = QPushButton("Back")
+        self.back_button.clicked.connect(self._go_back)
+
+        self.skip_button = QPushButton("Skip this step")
+        self.skip_button.clicked.connect(self._skip_step)
+
+        self.pause_button = QPushButton("Pause setup")
+        self.pause_button.clicked.connect(self.reject)
+
+        self.action_button = QPushButton()
+        self.action_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
+        self.action_button.clicked.connect(self._run_current_step)
+
+        # The actions stay in view while the page above them scrolls.
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, MARGIN_PANEL)
+        button_row.setSpacing(SPACING_NORMAL)
+        button_row.addWidget(self.pause_button)
+        button_row.addWidget(self.back_button)
+        button_row.addWidget(self.skip_button)
+        button_row.addStretch(1)
+        button_row.addWidget(self.action_button)
+        outer_layout.addLayout(button_row)
 
         set_accessible_group(
             (
@@ -338,11 +339,11 @@ class FirstRunSetupDialog(QDialog):
         )
         self.setTabOrder(self.mute_checkbox, self.input_device_selector)
         self.setTabOrder(self.input_device_selector, self.output_device_selector)
-        self.setTabOrder(self.output_device_selector, self.back_button)
+        self.setTabOrder(self.output_device_selector, self.advanced_latency_button)
+        self.setTabOrder(self.advanced_latency_button, self.pause_button)
+        self.setTabOrder(self.pause_button, self.back_button)
         self.setTabOrder(self.back_button, self.skip_button)
-        self.setTabOrder(self.skip_button, self.pause_button)
-        self.setTabOrder(self.pause_button, self.action_button)
-        self.setTabOrder(self.action_button, self.advanced_latency_button)
+        self.setTabOrder(self.skip_button, self.action_button)
         owner_mute_checkbox = getattr(self.owner, "user_mute_checkbox", None)
         if owner_mute_checkbox is not None and hasattr(owner_mute_checkbox, "toggled"):
             owner_mute_checkbox.toggled.connect(self._sync_mute_control)
@@ -442,7 +443,7 @@ class FirstRunSetupDialog(QDialog):
         )
         self.progress.setValue(completed_count)
         self.progress.setFormat(
-            f"{completed_count}/{len(DEFAULT_SETUP_STEPS)} completed"
+            f"{completed_count} of {len(DEFAULT_SETUP_STEPS)} steps completed"
         )
         self.title_label.setText(f"<h2>{title}</h2>")
         self.description_label.setText(description)
@@ -468,9 +469,9 @@ class FirstRunSetupDialog(QDialog):
             and self._progress_unsaved
             and self._default_setup_finished()
         ):
-            self.action_button.setText("Retry Save")
+            self.action_button.setText("Retry save")
         elif step == "route" and self._route_check_phase == "destination":
-            self.action_button.setText("Confirm Signal")
+            self.action_button.setText("Confirm signal")
         else:
             self.action_button.setText(action)
         self.back_button.setEnabled(
@@ -550,7 +551,7 @@ class FirstRunSetupDialog(QDialog):
         if step == "devices":
             if not self._selected_devices_ready():
                 self._set_status(
-                    "Both an input and output endpoint must be available and selected.",
+                    "Both a microphone and a destination must be available and selected.",
                     "error",
                 )
                 return
@@ -577,7 +578,7 @@ class FirstRunSetupDialog(QDialog):
                     else "run this check"
                 )
                 self._set_status(
-                    f"Output is muted. Uncheck Mute Output above, then {action}.",
+                    f"Output is muted. Turn off Mute output above, then {action}.",
                     "warn",
                 )
                 return
@@ -588,9 +589,9 @@ class FirstRunSetupDialog(QDialog):
                 if not healthy:
                     self._route_check_phase = "speech"
                     self._set_status(reason, "error")
-                    self.action_button.setText("Check Levels")
+                    self.action_button.setText("Check levels")
                     return
-                self._complete_step("Destination signal confirmed by user.")
+                self._complete_step("You confirmed the destination signal.")
                 return
             if not self.owner.processor.is_running():
                 self.owner._start_processing()
@@ -640,10 +641,10 @@ class FirstRunSetupDialog(QDialog):
                 "your microphone signal.",
                 "success",
             )
-            self.action_button.setText("Confirm Signal")
+            self.action_button.setText("Confirm signal")
         else:
             self._route_check_phase = "speech"
-            self.action_button.setText("Check Levels")
+            self.action_button.setText("Check levels")
             self._set_status(reason, "error")
 
     def _run_latency_calibration(self) -> None:
@@ -716,7 +717,7 @@ class FirstRunSetupDialog(QDialog):
                 return False
             QMessageBox.information(
                 self,
-                "Setup Paused",
+                "Setup paused",
                 "Some steps are still pending. Progress was saved and can be resumed later.",
             )
             return True

@@ -97,15 +97,13 @@ def prune_bundle(bundle_root: Path) -> list[Path]:
         Path("_internal/PySide6/plugins/imageformats/qsvg.dll"),
         Path("_internal/PySide6/plugins/imageformats/qpdf.dll"),
         # QtGui's broad plugin collection pulls in the unused GPL-only virtual
-        # keyboard and its QML dependencies. Windows supplies native input.
+        # keyboard. Windows supplies native input.
         Path("_internal/PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll"),
         Path("_internal/PySide6/Qt6VirtualKeyboard.dll"),
-        Path("_internal/PySide6/Qt6Qml.dll"),
-        Path("_internal/PySide6/Qt6QmlMeta.dll"),
-        Path("_internal/PySide6/Qt6QmlModels.dll"),
-        Path("_internal/PySide6/Qt6QmlWorkerScript.dll"),
-        Path("_internal/PySide6/Qt6Quick.dll"),
-        Path("_internal/PySide6/Qt6OpenGL.dll"),
+        # QML debugger and profiler plugins come with the Qt Quick modules.
+        # The application never enables them, and one needs Qt Quick 3D.
+        Path("_internal/PySide6/plugins/qmltooling"),
+        Path("_internal/PySide6/Qt6Quick3DUtils.dll"),
         Path("_internal/PySide6/Qt6MultimediaWidgets.dll"),
         Path("_internal/PySide6/QtMultimediaWidgets.pyd"),
     ):

@@ -34,7 +34,10 @@ from ..config import (
 )
 from .analysis_worker import AnalysisWorker
 from .accessibility import bind_label, set_accessible_group
+from .auto_eq_explanation import explain_auto_eq
+from .components import StepHeader
 from .layout_constants import (
+    MARGIN_PANEL,
     SUBDUED_TEXT_STYLE,
     configure_resizable_dialog,
     configure_responsive_combo,
@@ -98,6 +101,30 @@ class CalibrationDialog(QDialog):
     # Signal emitted when auto-EQ is applied (emits target curve name)
     auto_eq_applied = Signal(str)
 
+    STEPS = ("Set up", "Record", "Review")
+    # Which step each state of the unchanged state machine belongs to.
+    STEP_FOR_STATE = {"idle": 0, "recording": 1, "analyzing": 1, "ready": 2}
+
+    @property
+    def recording_state(self) -> str:
+        return self._recording_state
+
+    @recording_state.setter
+    def recording_state(self, state: str) -> None:
+        self._recording_state = state
+        if "step_header" in self.__dict__:
+            self._show_step_for_state()
+
+    def _show_step_for_state(self) -> None:
+        step = self.STEP_FOR_STATE.get(self._recording_state, 0)
+        self.step_header.set_current(step)
+        self.curve_group.setVisible(step == 0)
+        # The passage stays up before recording so it can be read ahead.
+        self.instructions_group.setVisible(step < 2)
+        # The meter only matters while something is being recorded.
+        for widget in (self.progress_bar, self.time_label, self.level_meter):
+            widget.setVisible(step == 1)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Auto-EQ Voice Tone")
@@ -144,12 +171,15 @@ class CalibrationDialog(QDialog):
         """Setup dialog UI."""
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
+        self.step_header = StepHeader(self.STEPS)
+        outer_layout.addWidget(self.step_header)
+
         self.content_scroll_area, layout = create_scrollable_dialog_body(self)
         self.content_scroll_area.setAccessibleName("Auto-EQ calibration content")
-        outer_layout.addWidget(self.content_scroll_area)
+        outer_layout.addWidget(self.content_scroll_area, stretch=1)
 
-        # Target curve selector group
-        curve_group = QGroupBox("Step 1: Select Target Curve")
+        # Tone preset selector group
+        self.curve_group = curve_group = QGroupBox("Tone preset")
         curve_layout = QVBoxLayout(curve_group)
 
         # Curve dropdown
@@ -158,7 +188,7 @@ class CalibrationDialog(QDialog):
         curve_input_layout.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
-        curve_label = QLabel("Target Curve:")
+        curve_label = QLabel("Tone preset:")
 
         self.curve_combo = QComboBox()
         for key, curve in TARGET_CURVES.items():
@@ -168,12 +198,13 @@ class CalibrationDialog(QDialog):
         curve_input_layout.addRow(curve_label, self.curve_combo)
         bind_label(curve_label, self.curve_combo)
 
-        target_mode_label = QLabel("Target Mode:")
+        target_mode_label = QLabel("Matching:")
         self.target_mode_combo = QComboBox()
-        self.target_mode_combo.addItem("Adaptive voice-aware", "adaptive")
-        self.target_mode_combo.addItem("Static catalog curve", "static")
+        self.target_mode_combo.addItem("Adapt to my voice", "adaptive")
+        self.target_mode_combo.addItem("Exact tone preset", "static")
         self.target_mode_combo.setToolTip(
-            "Adaptive mode applies bounded voice-aware target offsets. Static mode uses the selected curve exactly."
+            "Adapting shifts the tone preset slightly to suit your voice. "
+            "Exact uses the selected tone preset as it is."
         )
         configure_responsive_combo(self.target_mode_combo)
         curve_input_layout.addRow(target_mode_label, self.target_mode_combo)
@@ -185,7 +216,8 @@ class CalibrationDialog(QDialog):
         self.smoothing_combo.addItem("Balanced", "balanced")
         self.smoothing_combo.addItem("Broad", "broad")
         self.smoothing_combo.setToolTip(
-            "Conservative smoothing resists narrow measurement artifacts. Broad is safest but less detailed."
+            "Conservative smoothing ignores narrow measurement quirks. "
+            "Broad is safest but less detailed."
         )
         configure_responsive_combo(self.smoothing_combo)
         curve_input_layout.addRow(smoothing_label, self.smoothing_combo)
@@ -201,7 +233,9 @@ class CalibrationDialog(QDialog):
         layout.addWidget(curve_group)
 
         # Instructions group with Rainbow Passage
-        instructions_group = QGroupBox("Step 2: Read Passage Aloud")
+        self.instructions_group = instructions_group = QGroupBox(
+            "Read this passage aloud"
+        )
         instructions_layout = QVBoxLayout(instructions_group)
 
         # Scrollable text area for Rainbow Passage
@@ -218,7 +252,7 @@ class CalibrationDialog(QDialog):
         layout.addWidget(instructions_group)
 
         # Recording UI group
-        self.recording_group = QGroupBox("Step 3: Record Your Voice")
+        self.recording_group = QGroupBox("Recording")
         recording_layout = QVBoxLayout(self.recording_group)
         self.recording_group.setVisible(False)  # Hidden until user clicks Start
 
@@ -254,12 +288,12 @@ class CalibrationDialog(QDialog):
         self.warning_label.setWordWrap(True)
         recording_layout.addWidget(self.warning_label)
 
-        self.diagnostics_group = QGroupBox("Analysis Diagnostics")
+        self.diagnostics_group = QGroupBox("Result")
         diagnostics_layout = QVBoxLayout(self.diagnostics_group)
         self.confidence_label = QLabel("Confidence: --")
-        self.error_label = QLabel("Target error: --")
-        self.gain_scale_label = QLabel("Gain scale: --")
-        self.target_profile_label = QLabel("Target profile: --")
+        self.error_label = QLabel("Distance from the tone preset: --")
+        self.gain_scale_label = QLabel("Headroom check: --")
+        self.target_profile_label = QLabel("Tone preset: --")
         for label in (
             self.confidence_label,
             self.error_label,
@@ -270,8 +304,8 @@ class CalibrationDialog(QDialog):
             label.setWordWrap(True)
             diagnostics_layout.addWidget(label)
         hint_label = QLabel(
-            "Diagnostics are computed from recording clarity, repeatability, "
-            "and post-solve validation."
+            "Based on how clear and consistent the recording was. Hover a "
+            "line for the measurements behind it."
         )
         hint_label.setWordWrap(True)
         hint_label.setStyleSheet(SUBDUED_TEXT_STYLE)
@@ -281,6 +315,11 @@ class CalibrationDialog(QDialog):
 
         # Recording controls
         control_layout = QHBoxLayout()
+
+        # Cancel button
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self._on_cancel_clicked)
+        control_layout.addWidget(self.cancel_btn)
 
         # Retake button (hidden initially)
         self.retake_btn = QPushButton("Retake")
@@ -294,19 +333,20 @@ class CalibrationDialog(QDialog):
         self.compare_button.clicked.connect(self._compare_recording)
         control_layout.addWidget(self.compare_button)
 
-        # Cancel button
-        self.cancel_btn = QPushButton("Cancel")
-        self.cancel_btn.clicked.connect(self._on_cancel_clicked)
-        control_layout.addWidget(self.cancel_btn)
-
-        recording_layout.addLayout(control_layout)
         layout.addWidget(self.recording_group)
+        layout.addStretch(1)
 
         # Start button (opens recording section)
         self.start_button = QPushButton("Start Calibration")
         self.start_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
         self.start_button.clicked.connect(self._on_start_clicked)
-        layout.addWidget(self.start_button)
+
+        # The actions stay in view while the page above them scrolls.
+        control_layout.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, MARGIN_PANEL)
+        control_layout.addStretch(1)
+        control_layout.addWidget(self.start_button)
+        outer_layout.addLayout(control_layout)
+        self._show_step_for_state()
 
         set_accessible_group(
             (
@@ -799,7 +839,7 @@ class CalibrationDialog(QDialog):
         if seconds > 0:
             self.time_label.setText(f"Time remaining: {seconds:.0f}s")
         else:
-            self.time_label.setText("✓ Complete!")
+            self.time_label.setText("Complete")
             self.time_label.setStyleSheet(message_text_style("ok", strong=True))
 
     def _on_level_update(self, rms_db: float, peak_db: float):
@@ -808,13 +848,13 @@ class CalibrationDialog(QDialog):
 
         # Show validation warning
         if rms_db < TOO_QUIET_DB:
-            self.warning_label.setText("⚠️ Too quiet! Move closer to mic")
+            self.warning_label.setText("Too quiet. Move closer to the mic.")
             self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
         elif peak_db > TOO_LOUD_DB:
-            self.warning_label.setText("⚠️ Too loud! Risk of clipping")
+            self.warning_label.setText("Too loud. Risk of clipping.")
             self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
         else:
-            self.warning_label.setText("✓ Level is good")
+            self.warning_label.setText("Level is good")
             self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
 
     def _on_recording_complete(self, audio_data: np.ndarray):
@@ -851,9 +891,7 @@ class CalibrationDialog(QDialog):
         self.smoothing_combo.setEnabled(False)
 
         # Show completion message
-        self.warning_label.setText(
-            f"Recording complete! {len(audio_data)} samples captured"
-        )
+        self.warning_label.setText("Recording complete. Analyzing your voice.")
         self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
 
         if DEBUG:
@@ -866,7 +904,7 @@ class CalibrationDialog(QDialog):
     def _on_recording_failed(self, error: str):
         """Handle recording failure."""
         self._reset_recording_ui()
-        self.warning_label.setText(f"❌ Recording failed: {error}")
+        self.warning_label.setText(f"Recording failed: {error}")
         self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
 
     def _start_analysis(self):
@@ -1108,20 +1146,29 @@ class CalibrationDialog(QDialog):
             self._clear_eq_candidate()
         self.recording_state = "ready"
         self.compare_button.setEnabled(apply_recommended)
+        # The analysis treats a missing status as "apply"; so does the wording.
+        explanation = explain_auto_eq(
+            {
+                **eq_settings,
+                "recommendation_status": eq_settings.get("recommendation_status")
+                or ("apply" if apply_recommended else "abstain"),
+            }
+        )
+        text = f"{explanation.summary}. {' '.join(explanation.details)}"
         if apply_recommended:
-            self.warning_label.setText(
-                "Analysis complete! Max correction: "
-                f"{round(max(abs(g) for g in eq_settings['band_gains']), 1)} dB"
+            largest = max(abs(g) for g in eq_settings["band_gains"])
+            text += f" Largest change {largest:.1f} dB."
+        self.warning_label.setText(text)
+        self.warning_label.setToolTip(
+            "; ".join(
+                str(reason)
+                for key in ("abstention_reasons", "recommendation_reasons")
+                for reason in eq_settings.get(key) or ()
             )
-            self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
-        else:
-            reasons = eq_settings.get("abstention_reasons") or [
-                "the recording did not support a safe correction"
-            ]
-            self.warning_label.setText(
-                "No EQ applied: " + "; ".join(str(reason) for reason in reasons)
-            )
-            self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
+        )
+        self.warning_label.setStyleSheet(
+            message_text_style("ok" if apply_recommended else "warn", strong=True)
+        )
         self.progress_bar.setValue(100)
         self._show_analysis_diagnostics(eq_settings)
         self.start_button.setText(
@@ -1162,30 +1209,35 @@ class CalibrationDialog(QDialog):
             headroom.get("gain_scale") if isinstance(headroom, dict) else None
         )
 
+        level = {"ok": "High", "warn": "Medium"}.get(state, "Low")
         self.confidence_label.setText(
-            "Confidence: "
-            f"overall {_format_percent(confidence)} | "
-            f"EQ {_format_percent(eq_confidence)} | "
-            f"capture {_format_percent(capture_confidence)}"
+            f"{level} confidence in this measurement ({_format_percent(confidence)})."
+        )
+        self.confidence_label.setToolTip(
+            f"EQ {_format_percent(eq_confidence)}; "
+            f"capture {_format_percent(capture_confidence)}; "
+            f"validation {_format_percent(validation_confidence)}"
         )
         self.confidence_label.setStyleSheet(status_chip_style(state))
         self.error_label.setText(
-            f"Target error: {_format_db(before)} -> {_format_db(after)}"
+            "Distance from the tone preset: "
+            f"{_format_db(before)} before, {_format_db(after)} after."
         )
-        self.error_label.setStyleSheet(
-            status_chip_style("ok" if after is not None else "idle")
-        )
-        self.gain_scale_label.setText(
-            f"Validation: {_format_percent(validation_confidence)} | gain scale {_format_percent(scale)}"
-        )
-        self.gain_scale_label.setStyleSheet(status_chip_style("info"))
+        error_details = f"Gain scale {_format_percent(scale)}"
         if isinstance(residual, dict) and "max_regularized_correction_db" in residual:
             requested = _format_db(residual.get("max_requested_correction_db"))
             regularized = _format_db(residual.get("max_regularized_correction_db"))
             narrow = _format_db(residual.get("max_narrow_residual_db"))
-            self.gain_scale_label.setText(
-                f"{self.gain_scale_label.text()} | correction {requested}->{regularized} | narrow {narrow}"
+            error_details += (
+                f"; correction {requested} -> {regularized}; narrow {narrow}"
             )
+        self.error_label.setToolTip(error_details)
+        self.error_label.setStyleSheet(
+            status_chip_style("ok" if after is not None else "idle")
+        )
+        headroom_text = "not available"
+        headroom_details = ""
+        self.gain_scale_label.setStyleSheet(status_chip_style("info"))
         if isinstance(headroom_after, dict):
             pre_tp_headroom = _format_db(
                 headroom_after.get("pre_limiter_true_peak_headroom_db")
@@ -1194,30 +1246,37 @@ class CalibrationDialog(QDialog):
             true_peak_gr = _format_db(
                 headroom_after.get("true_peak_limiter_gain_reduction_db")
             )
-            headroom_status = (
-                "advisory only (Rust simulator unavailable)"
-                if headroom_advisory
-                else "full-chain validation unavailable"
-                if isinstance(headroom, dict)
+            if headroom_advisory:
+                headroom_text = "estimate only"
+            elif (
+                isinstance(headroom, dict)
                 and headroom.get("status") == "unavailable"
-                else "safe correction"
-                if headroom_safe
-                else "headroom risk"
-            )
-            self.gain_scale_label.setText(
-                f"{self.gain_scale_label.text()} | {headroom_status}: "
-                f"TP headroom {pre_tp_headroom}, LIM GR {limiter_gr}, TP GR {true_peak_gr}"
+            ):
+                headroom_text = "not available"
+            elif headroom_safe:
+                headroom_text = "passed"
+            else:
+                headroom_text = "the correction may push the limiter"
+            headroom_details = (
+                f"True-peak headroom {pre_tp_headroom}; "
+                f"limiter gain reduction {limiter_gr}; "
+                f"true-peak limiter gain reduction {true_peak_gr}"
             )
             self.gain_scale_label.setStyleSheet(
                 status_chip_style("info" if headroom_safe else "warn")
             )
             if headroom_scale is not None and float(headroom_scale) < 1.0:
-                self.gain_scale_label.setText(
-                    f"{self.gain_scale_label.text()} | headroom scale {_format_percent(headroom_scale)}"
+                headroom_details += (
+                    f"; headroom scale {_format_percent(headroom_scale)}"
                 )
+        self.gain_scale_label.setText(f"Headroom check: {headroom_text}.")
+        self.gain_scale_label.setToolTip(headroom_details)
         self.target_profile_label.setText(
+            f"Tone preset: {self.curve_combo.currentText()}"
+        )
+        self.target_profile_label.setToolTip(
             f"Target profile: {target_profile}"
-            + (" | fallback spectrum" if used_fallback else "")
+            + ("; fallback spectrum" if used_fallback else "")
         )
         self.target_profile_label.setStyleSheet(status_chip_style("info"))
         self.diagnostics_group.setVisible(True)
@@ -1234,7 +1293,7 @@ class CalibrationDialog(QDialog):
             logger.debug("Analysis failed: %s", error)
         self._clear_eq_candidate()
         self.recording_state = "ready"
-        self.warning_label.setText(f"❌ {error}")
+        self.warning_label.setText(error)
         self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
         self.diagnostics_group.setVisible(False)
         self.start_button.setText("Record Again")

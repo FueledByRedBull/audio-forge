@@ -192,3 +192,9 @@ def test_calibrate_rejects_a_build_that_ignores_the_overrides(monkeypatch, tmp_p
 
     with pytest.raises(RuntimeError, match="gate_spp"):
         gate_eval.calibrate(tmp_path, tmp_path, {"fused": [1.0, 1.0, 0.0], "vad_only": [1.0, 0.0]})
+
+
+@pytest.mark.parametrize("command", ["calibrate", "qualify"])
+def test_build_comparisons_refuse_to_run_without_an_incumbent(command):
+    with pytest.raises(SystemExit):
+        gate_eval.main([command])

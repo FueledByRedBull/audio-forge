@@ -12,30 +12,38 @@ import os
 import sys
 
 from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import QApplication
 
 
 @dataclass(frozen=True)
 class SemanticPalette:
     """Colors used by the application chrome and its data canvases."""
 
-    app_surface: str = "#191c20"
-    control_surface: str = "#2b3139"
-    control_surface_alt: str = "#20242a"
-    text_primary: str = "#f1f5f9"
-    text_muted: str = "#b8c0cc"
+    app_surface: str = "#14171c"
+    rail_surface: str = "#0f1115"
+    card_surface: str = "#1b1f26"
+    control_surface: str = "#262b34"
+    control_surface_alt: str = "#20242c"
+    control_hover: str = "#2f3540"
+    border: str = "#2b313b"
+    border_strong: str = "#3d4552"
+    text_primary: str = "#eef1f5"
+    text_muted: str = "#a2abb8"
     text_on_emphasis: str = "#ffffff"
-    accent: str = "#7db7ff"
+    text_on_accent: str = "#14171c"
+    accent: str = "#f2743a"
+    accent_hover: str = "#ff8a55"
+    accent_pressed: str = "#d9612b"
 
-    action_primary: str = "#2563eb"
-    action_primary_border: str = "#60a5fa"
-    action_destructive: str = "#b91c1c"
-    action_destructive_border: str = "#ef4444"
-    action_secondary: str = "#2b3139"
-    action_secondary_border: str = "#566170"
-    action_disabled: str = "#343a43"
-    action_disabled_text: str = "#a4adba"
-    action_disabled_surface: str = "#252a31"
-    action_disabled_border: str = "#4b5563"
+    action_primary: str = "#f2743a"
+    action_destructive: str = "#b3261e"
+    action_destructive_border: str = "#dc4a41"
+    action_secondary: str = "#262b34"
+    action_secondary_border: str = "#3d4552"
+    action_disabled: str = "#232830"
+    action_disabled_text: str = "#8f98a6"
+    action_disabled_surface: str = "#1e2229"
+    action_disabled_border: str = "#2b313b"
 
     status_ok_surface: str = "#16352b"
     status_ok_text: str = "#86efac"
@@ -49,36 +57,51 @@ class SemanticPalette:
     status_info_surface: str = "#172d4d"
     status_info_text: str = "#93c5fd"
     status_info_border: str = "#2563eb"
-    status_idle_surface: str = "#262b33"
+    status_idle_surface: str = "#20242c"
     status_idle_text: str = "#cbd5e1"
-    status_idle_border: str = "#566170"
+    status_idle_border: str = "#3d4552"
 
     warning_banner_surface: str = "#d97706"
     warning_banner_text: str = "#111827"
 
-    data_surface: str = "#15181c"
-    data_surface_raised: str = "#20252b"
-    data_grid: str = "#59636f"
+    data_surface: str = "#111419"
+    data_surface_raised: str = "#1b1f26"
+    data_grid: str = "#333a45"
     data_text: str = "#d6dde7"
     data_text_muted: str = "#aeb8c5"
-    data_curve: str = "#22d3ee"
+    data_curve: str = "#e6ebf2"
     data_marker: str = "#facc15"
     data_warning: str = "#fbbf24"
-    data_handle_disabled: str = "#9ca3af"
-    data_handle_outline: str = "#d7f8ff"
     data_handle_selected: str = "#ffffff"
-    data_handle_selected_outline: str = "#111827"
 
-    meter_safe: str = "#4caf50"
-    meter_caution: str = "#ffeb3b"
-    meter_danger: str = "#f44336"
-    meter_clip: str = "#ff0000"
+    # One color per EQ band, in band order; data color, not accent.
+    eq_band_colors: tuple[str, ...] = (
+        "#a78bfa",
+        "#6d8bff",
+        "#f472b6",
+        "#f87171",
+        "#fb923c",
+        "#fbbf24",
+        "#a3e635",
+        "#34d399",
+        "#22d3ee",
+        "#38bdf8",
+    )
+
+    meter_safe: str = "#3ecf8e"
+    meter_caution: str = "#f5c542"
+    meter_danger: str = "#ef5350"
+    meter_clip: str = "#ff3b30"
     meter_peak: str = "#ffffff"
-    meter_scale: str = "#c8c8c8"
-    meter_reduction: str = "#ff9800"
+    meter_scale: str = "#a2abb8"
+    meter_reduction: str = "#f5c542"
 
 
 PALETTE = SemanticPalette()
+
+RADIUS_CARD = 10
+RADIUS_CONTROL = 6
+UI_FONT_FAMILIES = ("Segoe UI Variable Text", "Segoe UI")
 
 
 def application_palette() -> QPalette:
@@ -97,15 +120,15 @@ def application_palette() -> QPalette:
     palette.setColor(role.ButtonText, qcolor(PALETTE.text_primary))
     palette.setColor(role.BrightText, qcolor(PALETTE.text_on_emphasis))
     palette.setColor(role.Highlight, qcolor(PALETTE.action_primary))
-    palette.setColor(role.HighlightedText, qcolor(PALETTE.text_on_emphasis))
+    palette.setColor(role.HighlightedText, qcolor(PALETTE.text_on_accent))
     palette.setColor(role.Link, qcolor(PALETTE.accent))
-    palette.setColor(role.LinkVisited, qcolor("#c4b5fd"))
+    palette.setColor(role.LinkVisited, qcolor(PALETTE.accent_pressed))
     palette.setColor(role.PlaceholderText, qcolor(PALETTE.text_muted))
-    palette.setColor(role.Light, qcolor("#3b424c"))
-    palette.setColor(role.Midlight, qcolor("#333a44"))
-    palette.setColor(role.Mid, qcolor("#252a31"))
-    palette.setColor(role.Dark, qcolor("#111318"))
-    palette.setColor(role.Shadow, qcolor("#0d0f12"))
+    palette.setColor(role.Light, qcolor(PALETTE.border_strong))
+    palette.setColor(role.Midlight, qcolor(PALETTE.control_hover))
+    palette.setColor(role.Mid, qcolor(PALETTE.control_surface_alt))
+    palette.setColor(role.Dark, qcolor(PALETTE.rail_surface))
+    palette.setColor(role.Shadow, qcolor(PALETTE.rail_surface))
 
     disabled = QPalette.ColorGroup.Disabled
     for disabled_role in (
@@ -117,8 +140,8 @@ def application_palette() -> QPalette:
         palette.setColor(disabled, disabled_role, qcolor(PALETTE.action_disabled_text))
     palette.setColor(disabled, role.Button, qcolor(PALETTE.action_disabled_surface))
     palette.setColor(disabled, role.Base, qcolor(PALETTE.control_surface_alt))
-    palette.setColor(disabled, role.Highlight, qcolor("#38465c"))
-    palette.setColor(disabled, role.HighlightedText, qcolor("#d1d5db"))
+    palette.setColor(disabled, role.Highlight, qcolor(PALETTE.border_strong))
+    palette.setColor(disabled, role.HighlightedText, qcolor(PALETTE.text_muted))
     return palette
 
 
@@ -163,7 +186,11 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
     ("primary text", PALETTE.text_primary, PALETTE.app_surface),
     ("muted text", PALETTE.text_muted, PALETTE.app_surface),
     ("accent text", PALETTE.accent, PALETTE.app_surface),
-    ("primary action", PALETTE.text_on_emphasis, PALETTE.action_primary),
+    ("primary action", PALETTE.text_on_accent, PALETTE.action_primary),
+    ("primary text on card", PALETTE.text_primary, PALETTE.card_surface),
+    ("muted text on card", PALETTE.text_muted, PALETTE.card_surface),
+    ("muted text on rail", PALETTE.text_muted, PALETTE.rail_surface),
+    ("control text", PALETTE.text_primary, PALETTE.control_surface),
     (
         "destructive action",
         PALETTE.text_on_emphasis,
@@ -216,54 +243,70 @@ def prefers_reduced_motion() -> bool:
 
 
 PRIMARY_LABEL_STYLE = "font-size: 11pt;"
-COMPACT_CONTROL_STYLE = "font-size: 9pt;"
 METER_LABEL_STYLE = f"font-size: 10pt; font-weight: bold; color: {PALETTE.accent};"
 INFO_LABEL_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
 SUBDUED_TEXT_STYLE = f"font-size: 9pt; color: {PALETTE.text_muted};"
 DESCRIPTION_LABEL_STYLE = f"color: {PALETTE.text_muted}; font-size: 9pt; padding: 5px;"
 PROGRESS_LABEL_STYLE = f"font-size: 12pt; color: {PALETTE.accent}; font-weight: bold;"
 
-PRIMARY_ACTION_BUTTON_STYLE = (
-    f"QPushButton {{ background-color: {PALETTE.action_primary}; "
-    f"color: {PALETTE.text_on_emphasis}; font-weight: 600; "
-    f"border: 1px solid {PALETTE.action_primary_border}; "
-    "border-radius: 6px; padding: 8px 16px; } "
-    f"QPushButton:disabled {{ background-color: {PALETTE.action_disabled}; "
-    f"color: {PALETTE.action_disabled_text}; "
-    f"border-color: {PALETTE.action_disabled}; }}"
+def _button_style(
+    surface: str, text: str, border: str, hover: str, *, selector: str = "QPushButton"
+) -> str:
+    return (
+        f"{selector} {{ background-color: {surface}; color: {text}; "
+        f"font-weight: 600; border: 1px solid {border}; "
+        f"border-radius: {RADIUS_CONTROL}px; padding: 6px 10px; }} "
+        f"{selector}:hover {{ background-color: {hover}; }} "
+        f"{selector}:focus {{ border-color: {PALETTE.text_primary}; }} "
+        f"{selector}:disabled {{ background-color: {PALETTE.action_disabled_surface}; "
+        f"color: {PALETTE.action_disabled_text}; "
+        f"border-color: {PALETTE.action_disabled_border}; }}"
+    )
+
+
+STEP_STYLE = f"color: {PALETTE.text_muted}; padding: 0 0 6px 0;"
+STEP_CURRENT_STYLE = (
+    f"color: {PALETTE.text_primary}; font-weight: 600; padding: 0 0 4px 0; "
+    f"border-bottom: 2px solid {PALETTE.accent};"
 )
 
-DESTRUCTIVE_ACTION_BUTTON_STYLE = (
-    f"QPushButton {{ background-color: {PALETTE.action_destructive}; "
-    f"color: {PALETTE.text_on_emphasis}; font-weight: 600; "
-    f"border: 1px solid {PALETTE.action_destructive_border}; "
-    "border-radius: 6px; padding: 8px 16px; } "
-    f"QPushButton:disabled {{ background-color: {PALETTE.action_disabled}; "
-    f"color: {PALETTE.action_disabled_text}; "
-    f"border-color: {PALETTE.action_disabled}; }}"
+PRIMARY_ACTION_BUTTON_STYLE = _button_style(
+    PALETTE.action_primary,
+    PALETTE.text_on_accent,
+    PALETTE.action_primary,
+    PALETTE.accent_hover,
 )
 
-SECONDARY_ACTION_BUTTON_STYLE = (
-    f"QPushButton {{ background-color: {PALETTE.action_secondary}; "
-    f"color: {PALETTE.text_primary}; font-weight: 600; "
-    f"border: 1px solid {PALETTE.action_secondary_border}; "
-    "border-radius: 6px; padding: 8px 16px; } "
-    f"QPushButton:disabled {{ background-color: {PALETTE.action_disabled_surface}; "
-    f"color: {PALETTE.action_disabled_text}; "
-    f"border-color: {PALETTE.action_disabled_border}; }}"
+DESTRUCTIVE_ACTION_BUTTON_STYLE = _button_style(
+    PALETTE.action_destructive,
+    PALETTE.text_on_emphasis,
+    PALETTE.action_destructive,
+    PALETTE.action_destructive_border,
+)
+
+SECONDARY_ACTION_BUTTON_STYLE = _button_style(
+    PALETTE.action_secondary,
+    PALETTE.text_primary,
+    PALETTE.action_secondary_border,
+    PALETTE.control_hover,
+)
+
+CARD_STYLE = (
+    f"QFrame#card {{ background-color: {PALETTE.card_surface}; "
+    f"border: 1px solid {PALETTE.border}; border-radius: {RADIUS_CARD}px; }}"
 )
 
 WARNING_BANNER_STYLE = (
     f"QLabel {{ background-color: {PALETTE.warning_banner_surface}; "
     f"color: {PALETTE.warning_banner_text}; padding: 10px 12px; "
-    "font-weight: 600; border-radius: 6px; }"
+    f"font-weight: 600; border-radius: {RADIUS_CONTROL}px; }}"
 )
 
 PROGRESS_BAR_STYLE = (
-    f"QProgressBar {{ border: 2px solid {PALETTE.data_grid}; "
-    f"border-radius: 5px; background-color: {PALETTE.data_surface}; }} "
-    f"QProgressBar::chunk {{ background-color: {PALETTE.meter_safe}; "
-    "border-radius: 3px; }}"
+    f"QProgressBar {{ border: none; border-radius: 4px; "
+    f"background-color: {PALETTE.control_surface}; }} "
+    f"QProgressBar::chunk {{ background-color: {PALETTE.accent}; "
+    "border-radius: 4px; }"
 )
 
 
@@ -306,7 +349,7 @@ def status_chip_style(state: str) -> str:
         f"background-color: {background}; "
         f"color: {foreground}; "
         f"border: 1px solid {border}; "
-        "border-radius: 6px; "
+        f"border-radius: {RADIUS_CONTROL}px; "
         "padding: 6px 10px; "
         "font-size: 9pt; "
         "font-weight: 600; }"
@@ -322,3 +365,122 @@ def message_text_style(state: str, *, strong: bool = False) -> str:
     )
     weight = " font-weight: bold;" if strong else ""
     return f"color: {foreground}; font-size: 11pt;{weight}"
+
+
+def application_stylesheet() -> str:
+    """Return the one stylesheet that gives stock Qt widgets the app's look."""
+
+    p = PALETTE
+    control = f"border-radius: {RADIUS_CONTROL}px;"
+    return f"""
+QToolTip {{ background-color: {p.control_surface}; color: {p.text_primary};
+    border: 1px solid {p.border_strong}; padding: 6px 8px; }}
+
+QGroupBox {{ background-color: {p.card_surface}; border: 1px solid {p.border};
+    border-radius: {RADIUS_CARD}px; margin-top: 0; padding: 34px 0 4px 0;
+    font-weight: 600; }}
+QGroupBox::title {{ subcontrol-origin: border; subcontrol-position: top left;
+    padding: 12px 12px 0 12px; color: {p.text_primary}; }}
+QGroupBox QGroupBox {{ background-color: transparent; border: none;
+    border-top: 1px solid {p.border}; border-radius: 0; padding: 36px 0 0 0; }}
+QGroupBox QGroupBox::title {{ padding: 10px 0 0 0; color: {p.text_muted}; }}
+
+QPushButton {{ background-color: {p.action_secondary}; color: {p.text_primary};
+    border: 1px solid {p.action_secondary_border}; {control}
+    padding: 6px 10px; }}
+QPushButton:hover {{ background-color: {p.control_hover}; }}
+QPushButton:pressed {{ background-color: {p.control_surface_alt}; }}
+QPushButton:checked {{ border-color: {p.accent}; color: {p.accent}; }}
+QPushButton:focus {{ border-color: {p.text_primary}; }}
+QPushButton:disabled {{ background-color: {p.action_disabled_surface};
+    color: {p.action_disabled_text}; border-color: {p.action_disabled_border}; }}
+
+QComboBox, QAbstractSpinBox, QLineEdit {{ background-color: {p.control_surface};
+    color: {p.text_primary}; border: 1px solid {p.border}; {control}
+    padding: 5px 8px; selection-background-color: {p.accent};
+    selection-color: {p.text_on_accent}; }}
+QComboBox:hover, QAbstractSpinBox:hover, QLineEdit:hover {{
+    border-color: {p.border_strong}; }}
+QComboBox:focus, QAbstractSpinBox:focus, QLineEdit:focus {{
+    border-color: {p.accent}; }}
+QComboBox:disabled, QAbstractSpinBox:disabled, QLineEdit:disabled {{
+    background-color: {p.action_disabled_surface};
+    color: {p.action_disabled_text}; }}
+QAbstractSpinBox {{ qproperty-buttonSymbols: NoButtons; }}
+QComboBox QAbstractItemView {{ background-color: {p.control_surface};
+    color: {p.text_primary}; border: 1px solid {p.border_strong};
+    selection-background-color: {p.control_hover};
+    selection-color: {p.text_primary}; outline: 0; }}
+
+QTextEdit, QPlainTextEdit {{ background-color: {p.data_surface};
+    color: {p.text_primary}; border: 1px solid {p.border}; {control}
+    padding: 8px; }}
+
+QSlider::groove:horizontal {{ height: 4px; border-radius: 2px;
+    background-color: {p.border_strong}; }}
+QSlider::sub-page:horizontal {{ border-radius: 2px;
+    background-color: {p.accent}; }}
+QSlider::handle:horizontal {{ width: 14px; height: 14px; margin: -5px 0;
+    border-radius: 7px; background-color: {p.text_primary}; }}
+QSlider::groove:vertical {{ width: 4px; border-radius: 2px;
+    background-color: {p.border_strong}; }}
+QSlider::add-page:vertical {{ border-radius: 2px;
+    background-color: {p.accent}; }}
+QSlider::handle:vertical {{ width: 14px; height: 14px; margin: 0 -5px;
+    border-radius: 7px; background-color: {p.text_primary}; }}
+QSlider::handle:hover, QSlider::handle:focus {{
+    background-color: {p.accent_hover}; }}
+QSlider::sub-page:disabled, QSlider::add-page:disabled {{
+    background-color: {p.border_strong}; }}
+QSlider::handle:disabled {{ background-color: {p.action_disabled_text}; }}
+
+QScrollArea {{ border: none; }}
+QScrollBar:vertical {{ width: 10px; margin: 0; background: transparent; }}
+QScrollBar:horizontal {{ height: 10px; margin: 0; background: transparent; }}
+QScrollBar::handle {{ background-color: {p.border_strong};
+    border-radius: 4px; margin: 1px; }}
+QScrollBar::handle:vertical {{ min-height: 32px; }}
+QScrollBar::handle:horizontal {{ min-width: 32px; }}
+QScrollBar::handle:hover {{ background-color: {p.text_muted}; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+
+QTabWidget::pane {{ border: none; }}
+QTabBar::tab {{ background: transparent; color: {p.text_muted}; border: none;
+    border-bottom: 2px solid transparent; padding: 8px 14px;
+    font-weight: 600; }}
+QTabBar::tab:hover {{ color: {p.text_primary}; }}
+QTabBar::tab:selected {{ color: {p.text_primary};
+    border-bottom-color: {p.accent}; }}
+
+QMenuBar {{ background-color: {p.app_surface}; color: {p.text_primary}; }}
+QMenuBar::item {{ background: transparent; padding: 6px 10px;
+    border-radius: 4px; }}
+QMenuBar::item:selected {{ background-color: {p.control_surface}; }}
+QMenu {{ background-color: {p.control_surface}; color: {p.text_primary};
+    border: 1px solid {p.border_strong}; padding: 4px; }}
+QMenu::item {{ padding: 6px 24px 6px 28px; border-radius: 4px; }}
+QMenu::item:selected {{ background-color: {p.control_hover}; }}
+QMenu::item:disabled {{ color: {p.action_disabled_text}; }}
+QMenu::separator {{ height: 1px; background-color: {p.border};
+    margin: 4px 8px; }}
+
+QProgressBar {{ border: none; border-radius: 4px; text-align: center;
+    background-color: {p.control_surface}; color: {p.text_primary}; }}
+QProgressBar::chunk {{ background-color: {p.accent}; border-radius: 4px; }}
+
+QSplitter::handle {{ background: transparent; }}
+QStatusBar {{ background-color: {p.rail_surface}; color: {p.text_muted}; }}
+QStatusBar::item {{ border: none; }}
+"""
+
+
+def apply_application_theme(app: QApplication) -> None:
+    """Give the live app, the tests and the screenshot tool the same look."""
+
+    app.setStyle("Fusion")
+    app.setPalette(application_palette())
+    font = app.font()
+    font.setFamilies(list(UI_FONT_FAMILIES))
+    app.setFont(font)
+    app.setStyleSheet(application_stylesheet())

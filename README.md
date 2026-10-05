@@ -14,7 +14,7 @@ your audio never leaves your PC.
 
 **[Download for Windows](https://github.com/FueledByRedBull/audio-forge/releases/latest)** · [Set up in five steps](#set-up) · [What it does](#what-it-does) · [No sound?](#no-sound)
 
-![AudioForge main window routing a studio microphone to the CABLE Input virtual cable, with noise gate and RNNoise controls, level meters, and the ten-band EQ showing an Auto-EQ correction.](docs/images/audioforge-routing-eq.png)
+![AudioForge Mic page routing a studio microphone to the CABLE Input virtual cable, with the equalizer card showing an Auto-EQ correction, the editor for the selected band, and level meters.](docs/images/audioforge-routing-eq.png)
 
 > [!IMPORTANT]
 > **To use AudioForge in Discord, OBS, Zoom, or Teams, you also need a virtual
@@ -33,15 +33,15 @@ your audio never leaves your PC.
 | Stay in control | Presets, undo and redo, a global mute shortcut, level meters, and health indicators. |
 
 <details>
-<summary>More screenshots: dynamics and Auto Voice Setup</summary>
+<summary>More screenshots: processing cards and Auto Voice Setup</summary>
 
-### Dynamics
+### Processing cards
 
-![AudioForge Dynamics tab with compressor and limiter controls, green health indicators, and the ten-band EQ.](docs/images/audioforge-processing.png)
+![AudioForge cards for noise suppression, noise gate, de-esser, compressor and limiter, each with a switch and a collapsed Advanced section.](docs/images/audioforge-processing.png)
 
 ### Auto Voice Setup
 
-![AudioForge Auto Voice Setup dialog with target voice and dynamics choices and a verified recommendation summary.](docs/images/audioforge-auto-voice-setup.png)
+![AudioForge Auto Voice Setup on its Review step, listing the recommended settings in plain language.](docs/images/audioforge-auto-voice-setup.png)
 
 </details>
 
@@ -49,7 +49,7 @@ Screenshots use example devices and settings.
 
 ## Download
 
-Current version: `v1.14.0` ([release notes](release-notes/release-notes-v1.14.0.md)).
+Current version: `v1.15.0` ([release notes](release-notes/release-notes-v1.15.0.md)).
 Open the [latest release](https://github.com/FueledByRedBull/audio-forge/releases/latest)
 and download **one** of these files. **Not sure? Choose the installer.**
 
@@ -91,17 +91,17 @@ and compare the result with the matching line in
 
 Opening AudioForge normally leaves processing stopped. **Stop Processing** keeps
 the window open. Closing the window stops audio and quits, unless you turn on
-close-to-tray in **Options > Tray & Background**. Then audio keeps running and
-you quit from **File > Exit** or **Quit AudioForge** in the tray.
+close-to-tray under **Settings > Tray and background**. Then audio keeps running
+and you quit with **Ctrl+Q** or **Quit AudioForge** in the tray.
 
-The unreleased source includes opt-in login startup, off by default. Copies
-built from it offer **Options > Tray & Background > Configure login shortcut
-for this copy**. When launched by that
+Version 1.15.0 adds opt-in login startup, off by default. Packaged copies offer
+**Settings > Tray and background > Configure login shortcut for this copy**.
+When launched by that
 shortcut, AudioForge stays in the tray and waits up to 60 seconds for your exact
 saved input and output devices before starting, preserving output mute. Missing
 devices leave processing stopped. Windows Settings or Task Manager can disable
 the shortcut; AudioForge reports it as configured without overriding that choice.
-Before moving a portable copy, remove its shortcut using the same menu and
+Before moving a portable copy, remove its shortcut with the same switch and
 configure it again from the new location. See the
 [startup lifecycle and testing limits](RELEASING.md#login-startup-lifecycle).
 
@@ -116,7 +116,8 @@ configure it again from the new location. See the
   stays still, check the microphone. If AudioForge's output moves but your
   app's meter doesn't, check the cable selection in your app.
 - Still stuck? [Open an issue](https://github.com/FueledByRedBull/audio-forge/issues/new/choose)
-  and attach **Help > Export Diagnostics...**. The export excludes audio and
+  and attach the file from **Settings > Help > Export Diagnostics**. The export
+  excludes audio and
   real device names; check it before you share it.
 
 ## Everyday Controls
@@ -128,7 +129,7 @@ configure it again from the new location. See the
   current, and proposed processing before you apply anything.
 - **Shortcuts:** **Ctrl+S** saves your preset, **Ctrl+Shift+S** saves a copy,
   and **Ctrl+Z** / **Ctrl+Shift+Z** undo and redo. **Ctrl+Alt+M** mutes from
-  anywhere once you enable it in **Options > Tray & Background**.
+  anywhere once you enable it under **Settings > Tray and background**.
 - **Unsaved changes:** quitting or switching presets offers Save, Discard, or
   Cancel.
 
@@ -195,7 +196,7 @@ Reliability and diagnostics:
 - Automatic stream restart after device errors.
 - Device refresh keeps your selection when the device is still available.
   Streams prefer 48 kHz when the device supports it.
-- **Help > Export Diagnostics...** writes a size-limited support file. It
+- **Settings > Help > Export Diagnostics** writes a size-limited support file. It
   includes configuration and health fields, replaces device names with
   report-specific codes, and excludes audio, environment variables, secrets,
   and arbitrary paths.
@@ -303,7 +304,8 @@ and issues labeled
 
 AudioForge's original source is MIT-licensed; see [LICENSE](LICENSE). This
 source checkout uses PySide6 and LGPLv3 Qt modules. Complete component terms
-and library replacement instructions are available through Help > Licenses,
+and library replacement instructions are available under Settings > Help >
+Licenses,
 in [third-party notices](licenses/THIRD_PARTY_NOTICES.md), and in the
 [corresponding-source instructions](licenses/SOURCE_DISTRIBUTION.md).
 Previously published portable and MSI packages containing PyQt6 retain their

@@ -7,11 +7,10 @@ from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QGridLayout,
-    QGroupBox,
     QLabel,
     QSlider,
-    QCheckBox,
+    QMenu,
+    QStackedWidget,
     QPushButton,
     QDoubleSpinBox,
     QComboBox,
@@ -23,12 +22,15 @@ from .eq_curve import EQCurveWidget
 from .rate_limiter import RateLimiter
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
+    MARGIN_PANEL,
     PRIMARY_LABEL_STYLE,
+    SPACING_NORMAL,
     SPACING_TIGHT,
+    SUBDUED_TEXT_STYLE,
     fit_spinbox_to_contents,
     status_chip_style,
 )
-from .theme import COMPACT_CONTROL_STYLE
+from .components import Card, Glyph, IconButton, ToggleSwitch
 from ..config import (
     BUILTIN_PRESETS,
     EQBandSettings,
@@ -209,131 +211,94 @@ class EQBandSlider(QWidget):
         self._setup_ui(frequency_hz)
 
     def _setup_ui(self, frequency_hz: float):
-        """Setup the band UI."""
+        """Build the editor row for one band."""
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(SPACING_TIGHT)  # Use tight spacing for band sliders
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(SPACING_NORMAL)
 
-        # Set size policy to allow horizontal expansion
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # Leads the row so it is clear which band the controls edit.
+        self.freq_label = QLabel(_format_frequency_label(frequency_hz))
+        self.freq_label.setMinimumWidth(48)
+        self.freq_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        self.freq_label.setToolTip(f"EQ band {self.band_index + 1} center frequency")
 
-        self.band_enabled_checkbox = QCheckBox("On")
+        self.band_enabled_checkbox = ToggleSwitch("On")
         self.band_enabled_checkbox.setChecked(True)
         self.band_enabled_checkbox.setToolTip("Enable this EQ band")
         self.band_enabled_checkbox.toggled.connect(self._on_band_enabled_changed)
-        layout.addWidget(
-            self.band_enabled_checkbox,
-            alignment=Qt.AlignmentFlag.AlignCenter,
-        )
 
         self.filter_type_combo = QComboBox()
         for display_name, filter_type in EQ_FILTER_OPTIONS:
             self.filter_type_combo.addItem(display_name, filter_type)
-        self.filter_type_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
         self.filter_type_combo.setToolTip("Filter type")
         self.filter_type_combo.currentIndexChanged.connect(self._on_filter_type_changed)
-        layout.addWidget(
-            self.filter_type_combo,
-            alignment=Qt.AlignmentFlag.AlignCenter,
-        )
 
-        # Gain value label
-        self.gain_label = QLabel("0")
-        self.gain_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.gain_label.setMinimumWidth(30)
-        self.gain_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        self.gain_label.setStyleSheet(
-            PRIMARY_LABEL_STYLE
-        )  # Use consistent primary label style
-        layout.addWidget(self.gain_label, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Vertical slider (-12 to +12 dB)
-        self.slider = QSlider(Qt.Orientation.Vertical)
-        self.slider.setRange(-120, 120)  # Multiply by 10 for 0.1 dB precision
+        gain_caption = QLabel("Gain")
+        gain_caption.setStyleSheet(SUBDUED_TEXT_STYLE)
+        # -12 to +12 dB in 0.1 dB steps.
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(-120, 120)
         self.slider.setValue(0)
-        self.slider.setTickPosition(QSlider.TickPosition.TicksBothSides)
-        self.slider.setTickInterval(30)  # 3 dB ticks
-        self.slider.setMinimumHeight(120)
-        self.slider.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
+        self.slider.setMinimumWidth(120)
         self.slider.valueChanged.connect(self._on_slider_changed)
         self.slider.sliderReleased.connect(self._on_slider_released)
-        layout.addWidget(self.slider, alignment=Qt.AlignmentFlag.AlignCenter)
+        self.gain_label = QLabel("0")
+        self.gain_label.setMinimumWidth(40)
 
-        # Frequency label
-        self.freq_label = QLabel(_format_frequency_label(frequency_hz))
-        self.freq_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.freq_label.setStyleSheet(COMPACT_CONTROL_STYLE)
-        self.freq_label.setToolTip(f"EQ band {self.band_index + 1} center frequency")
-        layout.addWidget(self.freq_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        top_row = QHBoxLayout()
+        top_row.setSpacing(MARGIN_PANEL)
+        top_row.addWidget(self.freq_label)
+        top_row.addWidget(self.band_enabled_checkbox)
+        top_row.addWidget(self.filter_type_combo)
+        top_row.addSpacing(SPACING_NORMAL)
+        top_row.addWidget(gain_caption)
+        top_row.addWidget(self.slider, stretch=1)
+        top_row.addWidget(self.gain_label)
+        layout.addLayout(top_row)
 
-        # Editable frequency control
-        freq_layout = QHBoxLayout()
-        freq_layout.setContentsMargins(0, 0, 0, 0)
-        freq_layout.setSpacing(2)
-
-        freq_label = QLabel("Hz:")
-        freq_label.setStyleSheet(COMPACT_CONTROL_STYLE)
-        freq_layout.addWidget(freq_label)
-
+        freq_label = QLabel("Frequency")
+        freq_label.setStyleSheet(SUBDUED_TEXT_STYLE)
         self.frequency_spinbox = QDoubleSpinBox()
         self.frequency_spinbox.setRange(20.0, 20000.0)
         self.frequency_spinbox.setSingleStep(10.0)
         self.frequency_spinbox.setDecimals(0)
+        self.frequency_spinbox.setSuffix(" Hz")
         self.frequency_spinbox.setValue(frequency_hz)
-        self.frequency_spinbox.setStyleSheet(COMPACT_CONTROL_STYLE)
         fit_spinbox_to_contents(self.frequency_spinbox)
         self.frequency_spinbox.setToolTip("Center frequency in Hz")
         self.frequency_spinbox.valueChanged.connect(self._on_frequency_changed)
-        freq_layout.addWidget(self.frequency_spinbox)
 
-        layout.addLayout(freq_layout)
-
-        # Q factor spinbox
-        q_layout = QHBoxLayout()
-        q_layout.setContentsMargins(0, 0, 0, 0)
-        q_layout.setSpacing(2)
-
-        self.q_label = QLabel("Q:")
-        self.q_label.setStyleSheet(COMPACT_CONTROL_STYLE)
-        q_layout.addWidget(self.q_label)
-
+        self.q_label = QLabel("Q")
+        self.q_label.setStyleSheet(SUBDUED_TEXT_STYLE)
         self.q_spinbox = QDoubleSpinBox()
         self.q_spinbox.setRange(0.1, 10.0)
         self.q_spinbox.setSingleStep(0.1)
         self.q_spinbox.setDecimals(1)
         self.q_spinbox.setValue(1.41)
-        self.q_spinbox.setStyleSheet(COMPACT_CONTROL_STYLE)
         fit_spinbox_to_contents(self.q_spinbox)
         self.q_spinbox.valueChanged.connect(self._on_q_changed)
-        q_layout.addWidget(self.q_spinbox)
 
-        layout.addLayout(q_layout)
-
-        slope_layout = QHBoxLayout()
-        slope_layout.setContentsMargins(0, 0, 0, 0)
-        slope_layout.setSpacing(2)
-
-        self.slope_label = QLabel("Slope:")
-        self.slope_label.setStyleSheet(COMPACT_CONTROL_STYLE)
-        slope_layout.addWidget(self.slope_label)
-
+        self.slope_label = QLabel("Slope")
+        self.slope_label.setStyleSheet(SUBDUED_TEXT_STYLE)
         self.slope_combo = QComboBox()
         for slope in sorted(EQ_SLOPES_DB_PER_OCTAVE):
-            self.slope_combo.addItem(f"{slope}", slope)
-        self.slope_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
+            self.slope_combo.addItem(f"{slope} dB/oct", slope)
         self.slope_combo.setToolTip("Pass-filter slope in dB per octave")
         self.slope_combo.currentIndexChanged.connect(self._on_slope_changed)
-        slope_layout.addWidget(self.slope_combo)
 
-        layout.addLayout(slope_layout)
+        bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(SPACING_NORMAL)
+        for caption, control in (
+            (freq_label, self.frequency_spinbox),
+            (self.q_label, self.q_spinbox),
+            (self.slope_label, self.slope_combo),
+        ):
+            bottom_row.addWidget(caption)
+            bottom_row.addWidget(control)
+            bottom_row.addSpacing(MARGIN_PANEL)
+        bottom_row.addStretch(1)
+        layout.addLayout(bottom_row)
+
         band_name = f"EQ band {self.band_index + 1}"
         bind_label(
             freq_label,
@@ -613,9 +578,6 @@ class EQBandSlider(QWidget):
 class EQPanel(QWidget):
     """10-Band Parametric EQ control panel."""
 
-    BAND_COLUMN_OPTIONS = (10, 5, 4, 3, 2, 1)
-    WIDE_PRESET_LAYOUT_WIDTH = 520
-
     configurationEditStarted = Signal()
     configurationEditFinished = Signal(str)
     configurationEdited = Signal(str)
@@ -631,80 +593,109 @@ class EQPanel(QWidget):
         )
         self._auto_eq_diagnostics: dict | None = None
         self._curve_rate_limiter = RateLimiter(interval_ms=33)
-        self._band_layout_columns = 0
-        self._preset_layout_columns = 0
         self._setup_ui()
 
     def _setup_ui(self):
-        """Setup the UI components."""
+        """Build the equalizer card: graph first, one band editor below it."""
         layout = QVBoxLayout(self)
-        self._outer_layout = layout
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        # Allow panel to expand
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-
-        # EQ Group
-        eq_group = QGroupBox("10-Band Parametric EQ")
-        self._eq_group = eq_group
-        eq_group.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        eq_layout = QVBoxLayout(eq_group)
-        self._eq_layout = eq_layout
-
-        # Enable checkbox and reset button
-        controls_layout = QHBoxLayout()
-
-        self.enabled_checkbox = QCheckBox("Enable EQ")
+        self.enabled_checkbox = ToggleSwitch()
+        self.enabled_checkbox.setAccessibleName("Enable EQ")
         self.enabled_checkbox.setChecked(True)
         self.enabled_checkbox.toggled.connect(self._on_enabled_toggled)
-        controls_layout.addWidget(self.enabled_checkbox)
-
-        controls_layout.addStretch()
-
-        clear_correction_btn = QPushButton("Clear Auto-EQ")
-        clear_correction_btn.setToolTip(
-            "Remove the calibrated EQ layer while keeping the tone"
+        card = Card(
+            "Equalizer",
+            switch=self.enabled_checkbox,
+            help_text=(
+                "The curve shows correction plus tone; handles edit tone only. "
+                "Drag a handle to edit frequency and gain. Notch and pass filters "
+                "move horizontally only. Use [ and ] plus arrow keys for keyboard editing."
+            ),
         )
-        clear_correction_btn.clicked.connect(self.clear_correction)
-        controls_layout.addWidget(clear_correction_btn)
 
-        reset_btn = QPushButton("Reset Tone")
-        reset_btn.setToolTip("Reset character gains to zero while retaining the Auto-EQ layer")
-        reset_btn.clicked.connect(self._reset_all)
-        controls_layout.addWidget(reset_btn)
+        self.layer_status_label = QLabel()
+        self.layer_status_label.setAccessibleName("Active EQ layers")
+        self.layer_status_label.setStyleSheet(SUBDUED_TEXT_STYLE)
+        self.layer_status_label.setWordWrap(True)
 
-        eq_layout.addLayout(controls_layout)
+        tone_menu = QMenu(self)
+        for name, tooltip, handler in (
+            (
+                "Voice",
+                "Voice clarity tone; preserves the Auto-EQ layer and other processing",
+                self._preset_voice,
+            ),
+            (
+                "Bass Cut",
+                "EQ-only bass trimming; not a rumble high-pass filter",
+                self._preset_bass_cut,
+            ),
+            (
+                "Presence",
+                "Presence tone; preserves the Auto-EQ layer and other processing",
+                self._preset_presence,
+            ),
+            (
+                "Warm & Clear",
+                "Strong EQ-only replacement: trims bass, lifts low mids, and cuts "
+                "harsh upper mids; no rumble high-pass filter",
+                self._preset_warm_clear,
+            ),
+            (
+                "Flat",
+                "Neutral character gains; preserves the Auto-EQ layer and other processing",
+                self._reset_all,
+            ),
+        ):
+            action = tone_menu.addAction(name.replace("&", "&&"))
+            action.setToolTip(tooltip)
+            action.triggered.connect(handler)
+        tone_menu.setToolTipsVisible(True)
+        self.tone_preset_button = QPushButton("Tone preset")
+        self.tone_preset_button.setMenu(tone_menu)
+        card.add_header_widget(self.tone_preset_button)
 
-        # Frequency response curve (above sliders)
+        options_menu = QMenu(self)
+        clear_action = options_menu.addAction("Clear Auto-EQ")
+        clear_action.setToolTip("Remove the calibrated EQ layer while keeping the tone")
+        clear_action.triggered.connect(self.clear_correction)
+        reset_action = options_menu.addAction("Reset tone")
+        reset_action.setToolTip(
+            "Reset character gains to zero while retaining the Auto-EQ layer"
+        )
+        reset_action.triggered.connect(self._reset_all)
+        options_menu.setToolTipsVisible(True)
+        card.set_menu(options_menu)
+
         self.curve_widget = EQCurveWidget()
-        self.curve_widget.setFixedHeight(100)
+        self.curve_widget.setFixedHeight(260)
         self.curve_widget.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        self.curve_widget.setToolTip(
-            "The curve shows correction plus tone; handles edit tone only. "
-            "Drag a handle to edit frequency and gain. Notch and pass filters "
-            "move horizontally only. Use [ and ] plus arrow keys for keyboard editing."
         )
         self.curve_widget.bandDragStarted.connect(self._on_curve_drag_started)
         self.curve_widget.bandDragged.connect(self._on_curve_band_dragged)
         self.curve_widget.bandDragFinished.connect(self._on_curve_drag_finished)
         self.curve_widget.bandDragCancelled.connect(self._on_curve_drag_cancelled)
-        eq_layout.addWidget(self.curve_widget)
+        card.body.addWidget(self.curve_widget)
+        card.body.addWidget(self.layer_status_label)
 
         self.auto_eq_diag_label = QLabel("Auto-EQ: no calibration diagnostics")
         self.auto_eq_diag_label.setStyleSheet(status_chip_style("idle"))
+        self.auto_eq_diag_label.setProperty("health_state", "idle")
         self.auto_eq_diag_label.setToolTip(
             "Auto-EQ diagnostics appear after calibration."
         )
         self.auto_eq_diag_label.setWordWrap(True)
-        eq_layout.addWidget(self.auto_eq_diag_label)
+        card.body.addWidget(self.auto_eq_diag_label)
 
-        # Band sliders
-        self.sliders_layout = QGridLayout()
-        self.sliders_layout.setSpacing(5)
-
+        # One editor per band; the graph selection decides which one shows.
+        self.band_stack = QStackedWidget()
+        # Selecting a band must never resize the window, so the stack takes
+        # the width it is given instead of reporting its pages' hints.
+        self.band_stack.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed
+        )
         for i, frequency_hz in enumerate(BAND_FREQUENCIES_HZ):
             band_slider = EQBandSlider(
                 i,
@@ -715,110 +706,27 @@ class EQPanel(QWidget):
                 parameter_callback=self._on_band_parameter_changed,
             )
             self.band_sliders.append(band_slider)
+            self.band_stack.addWidget(band_slider)
+        self.curve_widget.bandSelected.connect(self.band_stack.setCurrentIndex)
 
-        self._reflow_band_sliders(self.width())
-        eq_layout.addLayout(self.sliders_layout, stretch=1)
+        previous_band = IconButton(Glyph.PREVIOUS, "Previous EQ band")
+        previous_band.clicked.connect(lambda: self._step_band(-1))
+        next_band = IconButton(Glyph.NEXT, "Next EQ band")
+        next_band.clicked.connect(lambda: self._step_band(1))
+        editor_row = QHBoxLayout()
+        editor_row.setSpacing(SPACING_TIGHT)
+        editor_row.addWidget(previous_band, alignment=Qt.AlignmentFlag.AlignTop)
+        editor_row.addWidget(next_band, alignment=Qt.AlignmentFlag.AlignTop)
+        editor_row.addSpacing(SPACING_NORMAL)
+        editor_row.addWidget(self.band_stack, stretch=1)
+        card.body.addLayout(editor_row)
 
-        # Initial curve update
         self._update_curve()
+        layout.addWidget(card)
 
-        # Preset buttons
-        self.presets_layout = QGridLayout()
-        self.presets_layout.setSpacing(SPACING_TIGHT)
-
-        voice_btn = QPushButton("Voice")
-        voice_btn.setToolTip("Voice clarity tone; preserves the Auto-EQ layer and other processing")
-        voice_btn.clicked.connect(self._preset_voice)
-
-        bass_btn = QPushButton("Bass Cut")
-        bass_btn.setToolTip("EQ-only bass trimming; not a rumble high-pass filter")
-        bass_btn.clicked.connect(self._preset_bass_cut)
-
-        presence_btn = QPushButton("Presence")
-        presence_btn.setToolTip("Presence tone; preserves the Auto-EQ layer and other processing")
-        presence_btn.clicked.connect(self._preset_presence)
-
-        warm_clear_btn = QPushButton("Warm & Clear")
-        warm_clear_btn.setToolTip(
-            "Strong EQ-only replacement: trims bass, lifts low mids, and cuts "
-            "harsh upper mids; no rumble high-pass filter"
-        )
-        warm_clear_btn.clicked.connect(self._preset_warm_clear)
-
-        flat_btn = QPushButton("Flat")
-        flat_btn.setToolTip("Neutral character gains; preserves the Auto-EQ layer and other processing")
-        flat_btn.clicked.connect(self._reset_all)
-        self._preset_buttons = (
-            voice_btn,
-            bass_btn,
-            presence_btn,
-            warm_clear_btn,
-            flat_btn,
-        )
-        self._reflow_preset_buttons(self.width())
-
-        eq_layout.addLayout(self.presets_layout)
-
-        layout.addWidget(eq_group)
-
-    def _reflow_band_sliders(self, width: int) -> None:
-        outer_margins = self._outer_layout.contentsMargins()
-        group_margins = self._eq_layout.contentsMargins()
-        available_width = max(
-            1,
-            width
-            - outer_margins.left()
-            - outer_margins.right()
-            - group_margins.left()
-            - group_margins.right()
-            - 8,
-        )
-        band_width = max(
-            band_slider.minimumSizeHint().width() for band_slider in self.band_sliders
-        )
-        spacing = max(0, self.sliders_layout.horizontalSpacing())
-        columns = 1
-        for candidate in self.BAND_COLUMN_OPTIONS:
-            required_width = candidate * band_width + (candidate - 1) * spacing
-            if required_width <= available_width:
-                columns = candidate
-                break
-        if columns == self._band_layout_columns:
-            return
-        self._band_layout_columns = columns
-        for band_slider in self.band_sliders:
-            self.sliders_layout.removeWidget(band_slider)
-        for column in range(10):
-            self.sliders_layout.setColumnStretch(column, 0)
-        for index, band_slider in enumerate(self.band_sliders):
-            row, column = divmod(index, columns)
-            self.sliders_layout.addWidget(band_slider, row, column)
-            self.sliders_layout.setColumnStretch(column, 1)
-        self.sliders_layout.invalidate()
-        self.updateGeometry()
-
-    def _reflow_preset_buttons(self, width: int) -> None:
-        columns = 5 if width >= self.WIDE_PRESET_LAYOUT_WIDTH else 3
-        if columns == self._preset_layout_columns:
-            return
-        self._preset_layout_columns = columns
-        for button in self._preset_buttons:
-            self.presets_layout.removeWidget(button)
-        for column in range(5):
-            self.presets_layout.setColumnStretch(column, 0)
-        for index, button in enumerate(self._preset_buttons):
-            row, column = divmod(index, columns)
-            self.presets_layout.addWidget(button, row, column)
-            self.presets_layout.setColumnStretch(column, 1)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        available_width = event.size().width()
-        parent = self.parentWidget()
-        if parent is not None and parent.width() > 0:
-            available_width = min(available_width, parent.width())
-        self._reflow_band_sliders(available_width)
-        self._reflow_preset_buttons(available_width)
+    def _step_band(self, direction: int) -> None:
+        count = self.band_stack.count()
+        self.curve_widget.select_band((self.band_stack.currentIndex() + direction) % count)
 
     def _editable_bands(self) -> tuple[EQBandSettings, ...]:
         """Return the independently editable tone stage."""
@@ -832,15 +740,15 @@ class EQPanel(QWidget):
     def _update_layer_status(self) -> None:
         enabled = self.enabled_checkbox.isChecked()
         tone_active = self._active_filter_count(self._tone_bands) if enabled else 0
+        def bands(count: int) -> str:
+            return f"{count} active band" if count == 1 else f"{count} active bands"
+
         if self._correction_bands is None:
-            text = f"Auto-EQ: none | Tone: {tone_active} active band(s)"
+            text = f"Auto-EQ: none | Tone: {bands(tone_active)}"
         else:
             active = self._active_filter_count(self._correction_bands) if enabled else 0
-            text = (
-                f"Auto-EQ: {active} active band(s) | "
-                f"Tone: {tone_active} active band(s)"
-            )
-        self._eq_group.setTitle("Tone EQ — " + text)
+            text = f"Auto-EQ: {bands(active)} | Tone: {bands(tone_active)}"
+        self.layer_status_label.setText(text)
 
     @staticmethod
     def _active_filter_count(bands: tuple[EQBandSettings, ...]) -> int:
@@ -1110,6 +1018,7 @@ class EQPanel(QWidget):
         text, state, tooltip = _format_auto_eq_diagnostics(self._auto_eq_diagnostics)
         self.auto_eq_diag_label.setText(text)
         self.auto_eq_diag_label.setStyleSheet(status_chip_style(state))
+        self.auto_eq_diag_label.setProperty("health_state", state)
         self.auto_eq_diag_label.setToolTip(
             tooltip or "Auto-EQ diagnostics appear after calibration."
         )

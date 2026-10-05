@@ -19,7 +19,7 @@ from .. import configure_deepfilter_runtime_paths
 from ..app_logging import configure_app_logging, get_log_file
 from .desktop_integration import SingleInstanceCoordinator, activate_window
 from .login_startup import LOGIN_STARTUP_ARGUMENT
-from .theme import application_palette
+from .theme import apply_application_theme
 
 
 WINDOWS_APP_USER_MODEL_ID = "FueledByRedBull.AudioForge"
@@ -231,8 +231,7 @@ def _run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool) -> int:
 
     login_startup = not smoke_test and LOGIN_STARTUP_ARGUMENT in sys.argv
     app = QApplication([arg for arg in sys.argv if arg != LOGIN_STARTUP_ARGUMENT])
-    app.setStyle("Fusion")
-    app.setPalette(application_palette())
+    apply_application_theme(app)
 
     app_icon = _application_icon()
     if not app_icon.isNull():
@@ -302,6 +301,8 @@ def _run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool) -> int:
                     raise RuntimeError("AudioForge main window has no processor state")
                 if bool(is_running()):
                     raise RuntimeError("startup smoke test unexpectedly started audio")
+                if getattr(window, "quick_view_failed", False):
+                    raise RuntimeError("the Qt Quick view did not load")
             except Exception:
                 logging.getLogger(__name__).exception(
                     "AudioForge packaged startup smoke test failed"

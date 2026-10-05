@@ -408,6 +408,9 @@ pub struct AudioProcessor {
 
     /// Dropped samples counter from input ring buffer
     input_dropped: Arc<AtomicU64>,
+    /// Counter value at the last user reset. The DSP loop detects capture
+    /// gaps from `input_dropped` itself, so a reset must not rewind it.
+    input_dropped_baseline: AtomicU64,
     /// Number of proactive input backlog recoveries.
     input_backlog_recovery_count: Arc<AtomicU64>,
     /// Samples proactively dropped from the input backlog.
@@ -692,6 +695,7 @@ impl AudioProcessor {
 
             // Initialize dropped samples counter
             input_dropped: Arc::new(AtomicU64::new(0)),
+            input_dropped_baseline: AtomicU64::new(0),
             input_backlog_recovery_count: Arc::new(AtomicU64::new(0)),
             input_backlog_dropped_samples: Arc::new(AtomicU64::new(0)),
 

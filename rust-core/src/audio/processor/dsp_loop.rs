@@ -403,6 +403,7 @@ impl AudioProcessor {
 
         // Reset the dropped counter at start
         self.input_dropped.store(0, Ordering::Relaxed);
+        self.input_dropped_baseline.store(0, Ordering::Relaxed);
         self.output_underrun_streak.store(0, Ordering::Relaxed);
         self.output_underrun_total.store(0, Ordering::Relaxed);
         self.jitter_dropped_samples.store(0, Ordering::Relaxed);

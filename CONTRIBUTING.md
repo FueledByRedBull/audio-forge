@@ -76,7 +76,7 @@ bundled applications also follow the distribution policy in
 [licenses/THIRD_PARTY_NOTICES.md](licenses/THIRD_PARTY_NOTICES.md).
 
 Bug reports should include the version, Windows version, reproduction steps, and
-expected/actual behavior. `Help > Export Diagnostics...` produces a bounded,
+expected/actual behavior. `Settings > Help > Export Diagnostics` produces a bounded,
 pseudonymized report; inspect it before sharing. Do not attach microphone audio
 or unredacted logs by default.
 
@@ -99,6 +99,9 @@ bundled asset. `VAD_MODEL_PATH` selects the Silero model for source runs.
 `AUDIOFORGE_FIXED_INPUT_BUFFER_FRAMES` and `AUDIOFORGE_FIXED_OUTPUT_BUFFER_FRAMES`
 are optional callback-size diagnostics. Values must be 16–8192 frames and fit the
 endpoint's advertised range; an unsupported request keeps the driver default.
+
+`AUDIOFORGE_QML=0` keeps the widget view of the main window instead of the Qt
+Quick view.
 
 ## Runtime checks and screenshots
 

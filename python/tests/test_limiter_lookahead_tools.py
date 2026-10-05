@@ -110,3 +110,8 @@ def test_report_uses_real_speech_and_applies_objective_materiality_gate():
         >= limiter_eval.REAL_MAIN_LIMITER_GAIN_REDUCTION_TARGET_DB
         - limiter_eval.REAL_MAIN_LIMITER_GAIN_REDUCTION_TOLERANCE_DB
     )
+
+
+def test_report_path_is_required_so_a_tracked_report_is_never_the_default() -> None:
+    with pytest.raises(SystemExit):
+        limiter_eval.main([])

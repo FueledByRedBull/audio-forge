@@ -11,6 +11,7 @@
 - Limiter lookahead scoring no longer shifts already-aligned audio; the corrected qualification still selects 0.5 ms.
 - Auto Voice Setup's and the offline previews' simulations gate each 10 ms block with the newest speech-detection result finished before it, as the live engine does; they previously used a result that finished inside the block, which made VAD gate modes look slightly better than they are live.
 - Auto Voice Setup evaluates gate and noise-suppression candidates with compression bypassed, then calibrates compression and validates the full chain. It checks noise following speech without resetting the gate or suppressor, and rejects candidates that make settled post-speech noise at least 1 dB louder than the current settings.
+- Remove three Voice Setup score penalties already enforced by its safety gates. Scores and ordering of eligible candidates are unchanged; failed candidates' diagnostic scores can differ. The existing qualified selection policy remains in use.
 - Recovery after a capture gap discards partial input frames and stale suppressor overlap. The recovery fade starts when valid delayed audio arrives, rather than being spent on the suppressor's empty output prefix.
 - Share threshold-only compressor calibration between setup and evaluation, and separate the existing slow automatic makeup controller from compressor detection and gain smoothing. Render/state parity is preserved; the rejected multidimensional search remains in the offline evaluator.
 - Align wet-output gate compensation with RNNoise and DeepFilter LL delay, preserving the gated input sent to each neural model and the existing dry mix. The supported routes improve phrase onsets while retaining the qualified quiet-pause behavior; Standard DeepFilter receives no compensation.
@@ -46,8 +47,12 @@
 - Update Semgrep to 1.179.0, PyJWT to 2.15.1 and urllib3 to 2.8.0 in the development lock, clearing the PyJWT and urllib3 advisories that failed the dependency audit; the development audit no longer needs an ignore.
 - Update github/codeql-action/upload-sarif to 4.38.2.
 - Migrate the interface and package to pinned PySide6 Essentials/Addons and shiboken6 6.11.1, with component notices, a corresponding-source manifest and Qt library replacement instructions. Previously published PyQt6 packages retain their GPLv3 terms.
-- Reuse the native 48 kHz K-weighting filter for setup loudness analysis, and use NumPy correlation for latency calibration. Numerical and decision checks preserve the existing behavior; SciPy remains a runtime dependency.
+- Reuse the native 48 kHz K-weighting filter for setup loudness analysis, and use NumPy for latency correlation, analysis/playback resampling, Welch spectra and spectral peaks. Numerical checks preserve the existing behavior. Load SciPy only when fitting Auto-EQ; its qualified solver remains a runtime dependency.
+- Fix release Rust tests to find the pinned Python packages, pin Qt/PySide corresponding-source downloads to an approved mirror without changing their hashes, and refresh the package allowlist for the PySide/QML migration.
+- Keep packaged startup smoke tests from writing persistent QML or graphics caches into the per-user MSI installation path.
+- Validate candidate workflow and run-attempt identity in the shared provenance verifier for both portable and MSI promotion, replacing duplicate workflow checks while retaining exact-artifact and corresponding-source verification.
 - Add per-component bundle-size reporting and retain both DeepFilterNet models. The measured portable tree is larger; startup and idle-memory comparisons remain unqualified.
+- Omit QML editor type descriptions from the portable payload, retaining all runtime QML modules, controls and plugins.
 - Add `dev.ps1` bootstrap, run, test and offline doctor commands using the existing pinned tools and hash-locked requirements. Bootstrap preserves incomplete environments; system prerequisites are installed separately.
 
 ### Evaluation and repository

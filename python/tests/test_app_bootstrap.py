@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import runpy
 import subprocess
@@ -322,10 +323,22 @@ def test_windows_taskbar_relaunch_command_quotes_executable_path(qapp, monkeypat
     )
 
 
-def test_packaged_startup_smoke_runs_real_event_loop_in_isolated_config():
+def test_packaged_startup_smoke_runs_real_event_loop_in_isolated_config(tmp_path):
+    qml_source = tmp_path / "Smoke.qml"
+    qml_source.write_text("import QtQml\nQtObject { property int value: 42 }\n", encoding="utf-8")
     script = """
+import json
+import os
+from pathlib import Path
+from PySide6.QtCore import QUrl
+from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtQuick import QQuickGraphicsConfiguration
 from PySide6.QtWidgets import QMainWindow
 from mic_eq.ui.app_bootstrap import run_smoke_test
+
+previous_cache = os.environ["QML_DISK_CACHE_PATH"]
+previous_shader_cache = os.environ["QT_DISABLE_SHADER_DISK_CACHE"]
+observed = {}
 
 class Processor:
     def is_running(self):
@@ -335,11 +348,28 @@ class SmokeWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.processor = Processor()
+        observed["config"] = os.environ["APPDATA"]
+        observed["cache"] = os.environ["QML_DISK_CACHE_PATH"]
+        observed["pipeline_cache"] = QQuickGraphicsConfiguration().isAutomaticPipelineCacheEnabled()
+        engine = QQmlEngine()
+        component = QQmlComponent(engine, QUrl.fromLocalFile(os.environ["SMOKE_QML_SOURCE"]))
+        assert component.status() == QQmlComponent.Status.Ready, component.errors()
+        observed["cache_files"] = len(list(Path(observed["cache"]).glob("*.qmlc")))
 
-raise SystemExit(run_smoke_test(SmokeWindow))
+status = run_smoke_test(SmokeWindow)
+assert os.environ["QML_DISK_CACHE_PATH"] == previous_cache
+assert os.environ["QT_DISABLE_SHADER_DISK_CACHE"] == previous_shader_cache
+print(json.dumps(observed))
+raise SystemExit(status)
 """
     environment = dict(app_bootstrap.os.environ)
     environment["QT_QPA_PLATFORM"] = "offscreen"
+    environment["QML_DISK_CACHE_PATH"] = str(tmp_path / "persistent-cache")
+    environment["QT_DISABLE_SHADER_DISK_CACHE"] = "0"
+    environment["SMOKE_QML_SOURCE"] = str(qml_source)
+    environment.pop("QML_DISABLE_DISK_CACHE", None)
+    environment.pop("QML_DISK_CACHE", None)
+    environment.pop("QSG_RHI_DISABLE_SHADER_DISK_CACHE", None)
     result = subprocess.run(
         [sys.executable, "-c", script],
         cwd=Path(__file__).resolve().parents[2],
@@ -351,3 +381,9 @@ raise SystemExit(run_smoke_test(SmokeWindow))
     )
 
     assert result.returncode == 0, result.stderr or result.stdout
+    observed = json.loads(result.stdout)
+    assert observed["cache_files"] > 0
+    assert Path(observed["cache"]).is_relative_to(Path(observed["config"]))
+    assert not Path(observed["cache"]).exists()
+    assert not (tmp_path / "persistent-cache").exists()
+    assert observed["pipeline_cache"] is False

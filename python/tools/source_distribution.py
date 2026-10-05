@@ -65,7 +65,7 @@ PYSIDE_PACKAGES = (
 )
 PYSIDE_SOURCE = {'version': '6.11.1',
  'filename': 'pyside-setup-everywhere-src-6.11.1.tar.xz',
- 'url': 'https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz',
+ 'url': 'https://qt.mirror.constant.com/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz',
  'sha256': '6ffd9835bb0dd2c56f061d62f1616bb1707cfc0202b80e3165d6be087f3965e2',
  'source_of_truth': 'https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz.mirrorlist'}
 
@@ -100,10 +100,10 @@ QT_MODULE_SOURCES = ({'module': 'qtbase',
   'description': 'Qt Multimedia core and Windows audio backend used by QAudioSink',
   'sha256': '390f8e52ddee3aca5c4de7eead900c84c4fa61ff6d1f0ebea9c7543365c09b0a'})
 QT_SOURCE = {
-    "filename_template": "qtbase-everywhere-src-{version}.tar.xz",
+    "filename_template": "{module}-everywhere-src-{version}.tar.xz",
     "url_template": (
-        "https://download.qt.io/official_releases/qt/{minor}/{version}/"
-        "submodules/qtbase-everywhere-src-{version}.tar.xz"
+        "https://qt.mirror.constant.com/official_releases/qt/{minor}/{version}/"
+        "submodules/{module}-everywhere-src-{version}.tar.xz"
     ),
 }
 
@@ -895,11 +895,9 @@ def build_manifest() -> dict[str, Any]:
     for module in QT_MODULE_SOURCES:
         module_name = str(module["module"])
         source: dict[str, Any] = {
-            "filename": f"{module_name}-everywhere-src-{qt_version}.tar.xz",
-            "url": (
-                "https://download.qt.io/official_releases/qt/"
-                f"{'.'.join(qt_version.split('.')[:2])}/{qt_version}/submodules/"
-                f"{module_name}-everywhere-src-{qt_version}.tar.xz"
+            "filename": QT_SOURCE["filename_template"].format(module=module_name, version=qt_version),
+            "url": QT_SOURCE["url_template"].format(
+                module=module_name, minor=".".join(qt_version.split(".")[:2]), version=qt_version
             ),
             "sha256": str(module["sha256"]),
         }
@@ -1174,11 +1172,9 @@ def _expected_static_source_entries(runtime: dict[str, str]) -> dict[str, dict[s
         for module in QT_MODULE_SOURCES:
             module_name = str(module["module"])
             expected[f"qt-{module_name}-{qt_version}"] = {
-                "filename": f"{module_name}-everywhere-src-{qt_version}.tar.xz",
-                "url": (
-                    "https://download.qt.io/official_releases/qt/"
-                    f"{minor}/{qt_version}/submodules/"
-                    f"{module_name}-everywhere-src-{qt_version}.tar.xz"
+                "filename": QT_SOURCE["filename_template"].format(module=module_name, version=qt_version),
+                "url": QT_SOURCE["url_template"].format(
+                    module=module_name, minor=minor, version=qt_version
                 ),
                 "sha256": str(module["sha256"]),
                 "source_of_truth": "https://download.qt.io/official_releases/qt/",

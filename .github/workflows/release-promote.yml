@@ -183,43 +183,6 @@ jobs:
             throw "Corresponding-source extraction failed with exit code $LASTEXITCODE."
           }
 
-          function Assert-WorkflowBinding {
-            param(
-              [object]$Value,
-              [string]$Label,
-              [string]$RunId,
-              [string]$RunAttempt,
-              [string]$ExpectedWorkflow
-            )
-            $producer = $Value.producer
-            if ($null -eq $producer -or
-                [string]$producer.run_id -ne $RunId -or
-                [string]$producer.run_attempt -ne $RunAttempt -or
-                [string]$producer.workflow -ne $ExpectedWorkflow) {
-              throw "$Label producer does not bind to workflow run $RunId attempt $RunAttempt."
-            }
-          }
-          function Assert-MetadataBinding {
-            param(
-              [object]$Value,
-              [string]$Label,
-              [string]$RunId,
-              [string]$RunAttempt
-            )
-            $workflow = $Value.workflow
-            if ($null -eq $workflow -or
-                [string]$workflow.run_id -ne $RunId -or
-                [string]$workflow.run_attempt -ne $RunAttempt) {
-              throw "$Label workflow metadata does not bind to workflow run $RunId attempt $RunAttempt."
-            }
-          }
-          $qualification = Get-Content -LiteralPath "validation/release-qualification.json" -Raw | ConvertFrom-Json
-          $portableMetadataObject = Get-Content -LiteralPath $metadata.FullName -Raw | ConvertFrom-Json
-          $installerMetadataObject = Get-Content -LiteralPath $installerMetadata.FullName -Raw | ConvertFrom-Json
-          Assert-WorkflowBinding $qualification "Automated qualification" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT "Release package"
-          Assert-MetadataBinding $portableMetadataObject "Portable artifact" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT
-          Assert-MetadataBinding $installerMetadataObject "MSI artifact" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT
-
           $tagCommit = git rev-list -n 1 $env:RELEASE_TAG --
           if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($tagCommit)) {
             throw "Unable to resolve release tag '$env:RELEASE_TAG'."
@@ -250,6 +213,7 @@ jobs:
             --baseline evaluation/release-bundle-path-baseline.json `
             --expected-archive-sha256 ($env:EXPECTED_SHA256).ToLowerInvariant() `
             --expected-commit $tagCommit.Trim() `
+            --expected-producer "Release package" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT `
             --require-source-distribution `
             --native-attestation $nativeAttestation.FullName `
             --report validation/release-qualification.json
@@ -264,6 +228,7 @@ jobs:
             --metadata $installerMetadata.FullName `
             --baseline evaluation/release-bundle-path-baseline.json `
             --expected-commit $tagCommit.Trim() `
+            --expected-producer "Release package" $env:CANDIDATE_RUN_ID $env:CANDIDATE_RUN_ATTEMPT `
             --require-source-distribution `
             --native-attestation $nativeAttestation.FullName
           if ($LASTEXITCODE -ne 0) {

@@ -223,6 +223,19 @@ def test_release_manifest_rejects_stale_qt_source_identity():
         source_tool._validate_manifest(manifest, release=True)
 
 
+def test_qt_sources_use_fixed_trusted_mirror():
+    runtime = _read_locked_versions(source_tool.ROOT / "requirements" / "runtime.txt")
+    entries = source_tool._expected_static_source_entries(runtime)
+    qt_entries = [
+        entry for identifier, entry in entries.items()
+        if identifier.startswith(("qt-", "python-pyside6-", "python-shiboken6-"))
+    ]
+    assert len(qt_entries) == 7
+    for entry in qt_entries:
+        assert entry["url"].startswith("https://qt.mirror.constant.com/")
+        assert entry["source_of_truth"].startswith("https://download.qt.io/")
+
+
 @pytest.mark.parametrize("name", source_tool.PYSIDE_PACKAGES)
 def test_pyside_mapping_rejects_missing_or_different_wheel_versions(name):
     runtime = {package.casefold(): "6.11.1" for package in source_tool.PYSIDE_PACKAGES}

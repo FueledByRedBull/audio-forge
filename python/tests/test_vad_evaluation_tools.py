@@ -97,13 +97,15 @@ def test_pitch_up_shortens_waveform_without_non_finite_samples():
     assert np.isfinite(pitched).all()
 
 
-def test_corpus_manifests_never_embed_machine_absolute_paths(tmp_path: Path):
+def test_corpus_manifests_never_embed_machine_absolute_paths(tmp_path: Path, monkeypatch):
+    repo_root = tmp_path / "repo"
     external = tmp_path / "speaker.wav"
     external.write_bytes(b"fixture")
 
-    assert vad_corpus._portable_path(external) == "speaker.wav"
-    assert not Path(vad_corpus._portable_path(external)).is_absolute()
-    assert not Path(vad_eval._portable_path(external)).is_absolute()
+    for module in (vad_corpus, vad_eval):
+        monkeypatch.setattr(module, "REPO_ROOT", repo_root)
+        assert module._portable_path(external) == "speaker.wav"
+        assert module._portable_path(repo_root / "speech" / "speaker.wav") == "speech/speaker.wav"
 
 
 def test_native_calibration_inversion_round_trips_probabilities():

@@ -236,6 +236,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "DeepFilter RustSec audit failed with exit code $LASTEXITCODE." }
 
       - name: Rust tests and lint
+        env:
+          # With DeepFilter hydrated, the simulator tests embed the base
+          # interpreter, which has no packages of its own.
+          PYTHONPATH: ${{ github.workspace }}\.venv\Lib\site-packages;${{ github.workspace }}\python
         run: |
           cargo test -p mic_eq_core
           if ($LASTEXITCODE -ne 0) { throw "Rust tests failed with exit code $LASTEXITCODE." }

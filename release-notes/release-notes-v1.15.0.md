@@ -42,14 +42,18 @@ choose **More info > Run anyway**.
 - The interface now uses PySide6 and Qt under the LGPL, with component notices,
   corresponding source and library replacement instructions. Packages of
   earlier versions that contain PyQt6 keep their GPLv3 terms.
+- Startup defers loading SciPy until Auto-EQ needs its solver. Resampling,
+  spectrum analysis and peak detection use equivalent NumPy operations;
+  the window layout and controls are unchanged by this cleanup.
 
 See the [1.15.0 changelog](https://github.com/FueledByRedBull/audio-forge/blob/master/CHANGELOG.md#v1150)
 for the complete change list.
 
 ## Validation and compatibility
 
-These notes are written before the release candidate is built; the candidate's
-validation record is added here once it exists.
+The evidence archive records the candidate's source revision, artifact hashes
+and automated package checks. Use that record to identify the exact build
+covered by validation.
 
 The audio follow-up behind the onset and de-esser changes was adopted under an
 explicit timing exception: one component's 99th-percentile processing time was

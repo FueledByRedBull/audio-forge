@@ -29,6 +29,7 @@ _source = Path(pyside6_library_info.location["QmlImportsPath"])
 _destination = PurePath(pyside6_library_info.qt_rel_dir) / "qml"
 for _module in QML_MODULES:
     for _path in sorted((_source / _module).iterdir()):
-        if _path.is_file():
+        # Type descriptions serve editor tooling; runtime uses qmldir and plugins.
+        if _path.is_file() and _path.suffix != ".qmltypes":
             _target = binaries if _path.suffix == ".dll" else datas
             _target.append((str(_path), str(_destination / _module)))

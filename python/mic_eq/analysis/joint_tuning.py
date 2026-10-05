@@ -13,10 +13,10 @@ import time
 from typing import Any
 
 import numpy as np
-from scipy.signal import resample_poly
 
 from .auto_eq import simulate_candidate_chain
 from .cancellation import AnalysisCancelled, check_analysis_cancelled
+from .signal_processing import resample_poly
 from .vad import (
     VAD_SPEECH_EVIDENCE_THRESHOLD,
     analyze_offline_vad,
@@ -321,7 +321,9 @@ def _metric_float(result: Mapping[str, Any], key: str, default: float) -> float:
 
 
 def _score(metrics: Mapping[str, float]) -> float:
-    # Runtime is a feasibility gate; CPU load must not rank sound settings.
+    # Speech/tail minima, headroom and runtime are feasibility gates. Their
+    # penalties are zero for every selectable candidate, so rank only the
+    # remaining tradeoffs. Keep this qualified policy until a challenger wins.
     noise_attenuation = float(metrics["noise_attenuation_db"])
     noise_quality = _clamp(
         (noise_attenuation - _MIN_NOISE_ATTENUATION_DB) / 12.0,
@@ -329,11 +331,8 @@ def _score(metrics: Mapping[str, float]) -> float:
         1.0,
     )
     return float(
-        1.9 * max(0.0, _MIN_SPEECH_RETAINED - metrics["speech_retained_ratio"])
-        + 1.4 * metrics["false_closure_rate"]
-        + 1.2 * max(0.0, _MIN_TAIL_RETAINED - metrics["tail_retained_ratio"])
+        1.4 * metrics["false_closure_rate"]
         + 0.85 * (1.0 - noise_quality)
-        + 0.50 * max(0.0, -metrics["pre_limiter_headroom_db"])
         + 0.08 * metrics["chatter_events"]
         + 0.06
         * metrics["suppressor_latency_ms"]

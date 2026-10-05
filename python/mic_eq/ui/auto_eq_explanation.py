@@ -35,7 +35,22 @@ _REASON_MESSAGES = {
         "invalid_noise_reference",
         "The room-noise reference was usable only with conservative limits.",
     ),
+    "headroom validation reduced the fitted correction": (
+        "conservative_success",
+        "The correction was made gentler to keep the output from clipping.",
+    ),
+    "headroom validation removed the usable correction": (
+        "headroom_limited",
+        "Keeping the output from clipping left no useful correction.",
+    ),
 }
+
+# The calibration dialog appends the specific cause after this prefix.
+_HEADROOM_FAILURE_PREFIX = "Full-chain headroom validation failed"
+_HEADROOM_FAILURE_MESSAGE = (
+    "headroom_unverified",
+    "AudioForge could not confirm the correction is safe for the output level.",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +86,8 @@ def explain_auto_eq(diagnostics: dict[str, Any] | None) -> AutoEqExplanation:
     details: list[str] = []
     for reason in raw_reasons:
         mapped = _REASON_MESSAGES.get(reason)
+        if mapped is None and reason.startswith(_HEADROOM_FAILURE_PREFIX):
+            mapped = _HEADROOM_FAILURE_MESSAGE
         if mapped is None:
             continue
         code, message = mapped

@@ -13,7 +13,7 @@ from mic_eq.analysis.eq_quality import (
 )
 from mic_eq import eq_magnitude_response_v2
 from mic_eq.config import EQSettings
-from .theme import PALETTE, qcolor
+from .theme import PALETTE, RADIUS_CONTROL, qcolor
 
 
 class EQCurveWidget(QWidget):
@@ -23,10 +23,21 @@ class EQCurveWidget(QWidget):
     bandDragged = Signal(int, float, float)
     bandDragFinished = Signal(int, float, float)
     bandDragCancelled = Signal(int, float, float)
+    bandSelected = Signal(int)
+
+    REGION_STRIP_HEIGHT = 22
+    REGIONS = (
+        ("SUB BASS", 20.0, 60.0),
+        ("BASS", 60.0, 250.0),
+        ("LOW MIDS", 250.0, 500.0),
+        ("MID RANGE", 500.0, 2000.0),
+        ("UPPER MIDS", 2000.0, 6000.0),
+        ("HIGHS", 6000.0, 20000.0),
+    )
 
     MARGIN_LEFT = 40
     MARGIN_RIGHT = 10
-    MARGIN_TOP = 10
+    MARGIN_TOP = 34
     MARGIN_BOTTOM = 20
     FREQUENCY_MIN_HZ = 20.0
     FREQUENCY_MAX_HZ = 20_000.0
@@ -34,7 +45,7 @@ class EQCurveWidget(QWidget):
     GAIN_MAX_DB = 12.0
     DISPLAY_DB_MIN = -15.0
     DISPLAY_DB_MAX = 15.0
-    HANDLE_RADIUS = 5.0
+    HANDLE_RADIUS = 6.0
     HIT_RADIUS = 11.0
     GAIN_FILTER_TYPES = frozenset({"bell", "low_shelf", "high_shelf"})
 
@@ -91,6 +102,14 @@ class EQCurveWidget(QWidget):
                 self.sample_rate,
             )
         )
+
+    def select_band(self, band_index: int) -> None:
+        """Select a band and tell listeners when the selection changed."""
+        if band_index == self._selected_band_index:
+            return
+        self._selected_band_index = band_index
+        self.update()
+        self.bandSelected.emit(band_index)
 
     def _plot_size(self) -> tuple[float, float]:
         return (
@@ -208,7 +227,7 @@ class EQCurveWidget(QWidget):
             super().mousePressEvent(event)
             return
         self.setFocus(Qt.FocusReason.MouseFocusReason)
-        self._selected_band_index = band_index
+        self.select_band(band_index)
         self._drag_band_index = band_index
         band = self.bands[band_index]
         self._drag_origin = (float(band[1]), float(band[2]))
@@ -250,10 +269,9 @@ class EQCurveWidget(QWidget):
         if key in (Qt.Key.Key_BracketLeft, Qt.Key.Key_BracketRight):
             direction = -1 if key == Qt.Key.Key_BracketLeft else 1
             current = self._selected_band_index
-            self._selected_band_index = (
+            self.select_band(
                 0 if current is None else (current + direction) % len(self.bands)
             )
-            self.update()
             event.accept()
             return
         if self._selected_band_index is None:
@@ -429,7 +447,9 @@ class EQCurveWidget(QWidget):
         height = self.height()
 
         # Background
-        painter.fillRect(0, 0, width, height, qcolor(PALETTE.data_surface))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(qcolor(PALETTE.data_surface))
+        painter.drawRoundedRect(self.rect(), RADIUS_CONTROL, RADIUS_CONTROL)
 
         # Define plot area (margins for labels)
         margin_left = self.MARGIN_LEFT
@@ -451,6 +471,33 @@ class EQCurveWidget(QWidget):
         def freq_to_x(freq):
             """Convert frequency (Hz) to x pixel coordinate (log scale)."""
             return self.frequency_to_x(freq)
+
+        # Named frequency regions above the plot.
+        region_font = painter.font()
+        region_font.setPointSize(7)
+        painter.save()
+        painter.setFont(region_font)
+        for name, low_hz, high_hz in self.REGIONS:
+            left = int(freq_to_x(low_hz)) + 1
+            right = int(freq_to_x(high_hz)) - 1
+            painter.fillRect(
+                left,
+                0,
+                right - left,
+                self.REGION_STRIP_HEIGHT,
+                qcolor(PALETTE.data_surface_raised),
+            )
+            painter.setPen(qcolor(PALETTE.data_text_muted))
+            if painter.fontMetrics().horizontalAdvance(name) < right - left - 4:
+                painter.drawText(
+                    left,
+                    0,
+                    right - left,
+                    self.REGION_STRIP_HEIGHT,
+                    Qt.AlignmentFlag.AlignCenter,
+                    name,
+                )
+        painter.restore()
 
         # Draw horizontal grid lines
         grid_pen = QPen(qcolor(PALETTE.data_grid), 1)
@@ -543,21 +590,17 @@ class EQCurveWidget(QWidget):
             x, y = self.band_handle_position(index)
             selected = index == self._selected_band_index
             enabled = bool(band[5])
-            fill = (
-                qcolor(PALETTE.data_handle_selected)
-                if selected
-                else qcolor(PALETTE.data_curve)
-                if enabled
-                else qcolor(PALETTE.data_handle_disabled)
+            fill = qcolor(
+                PALETTE.eq_band_colors[index % len(PALETTE.eq_band_colors)]
             )
-            outline = (
-                qcolor(PALETTE.data_handle_selected_outline)
+            radius = self.HANDLE_RADIUS + (2.0 if selected else 0.0)
+            painter.setPen(
+                QPen(qcolor(PALETTE.data_handle_selected), 2.0)
                 if selected
-                else qcolor(PALETTE.data_handle_outline)
+                else QPen(fill, 1.5)
             )
-            radius = self.HANDLE_RADIUS + (1.0 if selected else 0.0)
-            painter.setPen(QPen(outline, 1.5))
-            painter.setBrush(fill if enabled or selected else Qt.BrushStyle.NoBrush)
+            # A disabled band stays visible as a hollow ring.
+            painter.setBrush(fill if enabled else Qt.BrushStyle.NoBrush)
             painter.drawEllipse(
                 int(round(x - radius)),
                 int(round(y - radius)),

@@ -4229,6 +4229,18 @@
     },
     {
       "build_role": "corresponding source for the Qt libraries and plugins used by the Windows bundle",
+      "filename": "qtdeclarative-everywhere-src-6.11.1.tar.xz",
+      "id": "qt-qtdeclarative-6.11.1",
+      "kind": "qt-source",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "name": "Qt QML and Qt Quick (Controls, Layouts, Effects, Quick Widgets) used by the main window",
+      "sha256": "52e670f670b0304f534b24f98c47ceb8a41bb710464414ebc9527ec71cc86aa4",
+      "source_of_truth": "https://download.qt.io/official_releases/qt/",
+      "url": "https://download.qt.io/official_releases/qt/6.11/6.11.1/submodules/qtdeclarative-everywhere-src-6.11.1.tar.xz",
+      "version": "6.11.1"
+    },
+    {
+      "build_role": "corresponding source for the Qt libraries and plugins used by the Windows bundle",
       "filename": "qtimageformats-everywhere-src-6.11.1.tar.xz",
       "id": "qt-qtimageformats-6.11.1",
       "kind": "qt-source",

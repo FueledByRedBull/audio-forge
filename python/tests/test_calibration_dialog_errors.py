@@ -37,7 +37,7 @@ def test_recording_failure_remains_visible_after_reset():
 
     CalibrationDialog._on_recording_failed(cast(Any, dialog), "device disconnected")
 
-    assert warning_label.text == "❌ Recording failed: device disconnected"
+    assert warning_label.text == "Recording failed: device disconnected"
     assert warning_label.stylesheet
 
 

@@ -10,9 +10,6 @@ import math
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
-    QGroupBox,
-    QFormLayout,
-    QCheckBox,
     QDoubleSpinBox,
     QSlider,
     QLabel,
@@ -21,10 +18,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from .rate_limiter import RateLimiter
+from .components import Card, ToggleSwitch, form_layout
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
-    SPACING_NORMAL,
-    MARGIN_PANEL,
     PRIMARY_LABEL_STYLE,
     INFO_LABEL_STYLE,
     bind_slider_spinbox,
@@ -58,26 +54,26 @@ class GatePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Noise Gate Group
-        gate_group = QGroupBox("Noise Gate")
-        gate_layout = QFormLayout(gate_group)
-        gate_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        gate_layout.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
-        )
-        gate_layout.setSpacing(SPACING_NORMAL)
-        gate_layout.setContentsMargins(
-            MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL
-        )
-
-        # Enable checkbox
-        self.enabled_checkbox = QCheckBox("Enable Noise Gate")
+        self.enabled_checkbox = ToggleSwitch()
         self.enabled_checkbox.setChecked(True)
         self.enabled_checkbox.setToolTip(
             "Reduces gain when signal falls below threshold.\n"
             "Helps eliminate background noise during silence."
         )
-        gate_layout.addRow(self.enabled_checkbox)
+        card = Card(
+            "Noise Gate",
+            switch=self.enabled_checkbox,
+            help_text=(
+                "Reduces gain when the signal falls below the threshold, so "
+                "background noise drops out during silence. The gate uses 3 dB "
+                "of hysteresis and a smoothed envelope to avoid chattering."
+            ),
+        )
+        gate_layout = form_layout()
+        card.body.addLayout(gate_layout)
+        advanced = QWidget()
+        advanced_layout = form_layout(advanced)
+        card.add_advanced(advanced)
 
         # Threshold slider with spinbox
         threshold_layout = QHBoxLayout()
@@ -114,7 +110,7 @@ class GatePanel(QWidget):
         fit_spinbox_to_contents(self.attack_spinbox)
         attack_label = QLabel("Attack:")
         attack_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        gate_layout.addRow(attack_label, self.attack_spinbox)
+        advanced_layout.addRow(attack_label, self.attack_spinbox)
 
         # Release time
         self.release_spinbox = QDoubleSpinBox()
@@ -128,7 +124,7 @@ class GatePanel(QWidget):
         fit_spinbox_to_contents(self.release_spinbox)
         release_label = QLabel("Release:")
         release_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        gate_layout.addRow(release_label, self.release_spinbox)
+        advanced_layout.addRow(release_label, self.release_spinbox)
 
         # Gate Mode section
         mode_label = QLabel("Gate Mode:")
@@ -143,7 +139,7 @@ class GatePanel(QWidget):
             "VAD Assisted: Gate opens when level exceeded OR speech detected\n"
             "VAD Only: Gate opens solely based on speech probability"
         )
-        gate_layout.addRow(mode_label, self.gate_mode_combo)
+        advanced_layout.addRow(mode_label, self.gate_mode_combo)
 
         # VAD threshold slider
         vad_threshold_layout = QHBoxLayout()
@@ -165,7 +161,7 @@ class GatePanel(QWidget):
 
         vad_threshold_label = QLabel("VAD Threshold:")
         vad_threshold_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        gate_layout.addRow(vad_threshold_label, vad_threshold_layout)
+        advanced_layout.addRow(vad_threshold_label, vad_threshold_layout)
 
         # Hold time
         self.vad_hold_spinbox = QDoubleSpinBox()
@@ -179,7 +175,7 @@ class GatePanel(QWidget):
         fit_spinbox_to_contents(self.vad_hold_spinbox)
         hold_time_label = QLabel("Hold Time:")
         hold_time_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        gate_layout.addRow(hold_time_label, self.vad_hold_spinbox)
+        advanced_layout.addRow(hold_time_label, self.vad_hold_spinbox)
 
         # VAD Pre-Gain slider and spinbox (boosts weak signals for better detection)
         vad_pre_gain_layout = QHBoxLayout()
@@ -203,10 +199,10 @@ class GatePanel(QWidget):
 
         vad_pre_gain_label = QLabel("VAD Pre-Gain:")
         vad_pre_gain_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        gate_layout.addRow(vad_pre_gain_label, vad_pre_gain_layout)
+        advanced_layout.addRow(vad_pre_gain_label, vad_pre_gain_layout)
 
         # Auto Threshold section
-        self.auto_threshold_checkbox = QCheckBox("Auto Threshold")
+        self.auto_threshold_checkbox = ToggleSwitch("Auto threshold")
         self.auto_threshold_checkbox.setChecked(True)
         self.auto_threshold_checkbox.setToolTip(
             "Automatically adjust gate threshold based on estimated noise floor.\n"
@@ -237,13 +233,13 @@ class GatePanel(QWidget):
 
         margin_label = QLabel("Margin:")
         margin_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        gate_layout.addRow(margin_label, margin_layout)
+        advanced_layout.addRow(margin_label, margin_layout)
 
         # Noise floor display (read-only)
         self.noise_floor_label = QLabel("Noise Floor: -60 dB")
         self.noise_floor_label.setStyleSheet(INFO_LABEL_STYLE)
         self.noise_floor_label.setWordWrap(True)
-        gate_layout.addRow(self.noise_floor_label)
+        advanced_layout.addRow(self.noise_floor_label)
 
         self.threshold_status_label = QLabel("Effective Threshold: Manual -40.0 dB")
         self.threshold_status_label.setStyleSheet(INFO_LABEL_STYLE)
@@ -267,18 +263,9 @@ class GatePanel(QWidget):
         vad_meter_layout.addWidget(self.vad_info_label)
         confidence_label = QLabel("Confidence:")
         confidence_label.setStyleSheet(PRIMARY_LABEL_STYLE)
-        gate_layout.addRow(confidence_label, vad_meter_layout)
+        advanced_layout.addRow(confidence_label, vad_meter_layout)
 
-        # Info label
-        info_label = QLabel(
-            "Gate uses 3dB hysteresis to prevent chattering.\n"
-            "IIR envelope follower for smooth transitions."
-        )
-        info_label.setStyleSheet(INFO_LABEL_STYLE)
-        info_label.setWordWrap(True)
-        gate_layout.addRow(info_label)
-
-        layout.addWidget(gate_group)
+        layout.addWidget(card)
 
         bind_label(
             self.threshold_label,

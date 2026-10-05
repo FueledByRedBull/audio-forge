@@ -13,8 +13,7 @@ import numpy as np
 from PySide6.QtCore import QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QDialog,
-    QGridLayout,
-    QGroupBox,
+    QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -29,6 +28,7 @@ from ..analysis.latency_calibration import (
     result_to_profile,
 )
 from .accessibility import set_accessible_group
+from .components import Card, form_layout
 from .level_meter import LevelMeter
 from .capture_session import (
     CaptureSession,
@@ -42,7 +42,14 @@ from .capture_session import (
     selected_device_identities as _selected_device_identities,
     start_selected_route,
 )
-from .layout_constants import configure_resizable_dialog, create_scrollable_dialog_body
+from .layout_constants import (
+    MARGIN_PANEL,
+    PRIMARY_ACTION_BUTTON_STYLE,
+    SPACING_NORMAL,
+    SPACING_SECTION,
+    configure_resizable_dialog,
+    create_scrollable_dialog_body,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -200,7 +207,7 @@ class LatencyCalibrationDialog(QDialog):
         configure_resizable_dialog(
             self,
             preferred_width=620,
-            preferred_height=700,
+            preferred_height=620,
             minimum_width=460,
             minimum_height=360,
         )
@@ -210,50 +217,46 @@ class LatencyCalibrationDialog(QDialog):
         outer_layout.setContentsMargins(0, 0, 0, 0)
         self.content_scroll_area, layout = create_scrollable_dialog_body(self)
         self.content_scroll_area.setAccessibleName("Latency calibration content")
-        outer_layout.addWidget(self.content_scroll_area)
+        outer_layout.addWidget(self.content_scroll_area, stretch=1)
+        layout.setSpacing(SPACING_SECTION)
 
         instructions = QLabel(
-            "Run calibration with your current input/output device pair.\n"
-            "Best results require a loopback cable or speaker-to-mic route in a quiet room. "
-            "The measured delay calibrates latency reporting; it does not reduce audio delay."
+            "Measure the delay of the selected microphone and output. For the best "
+            "result, use a loopback cable or a speaker-to-microphone path in a "
+            "quiet room. The measured delay corrects the latency AudioForge "
+            "reports. It does not reduce audio delay."
         )
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
 
-        status_group = QGroupBox("Measured Latency")
-        status_layout = QGridLayout(status_group)
+        status_group = Card("Measured latency")
+        status_layout = form_layout()
+        status_layout.setHorizontalSpacing(SPACING_SECTION)
+        status_group.body.addLayout(status_layout)
 
-        status_layout.addWidget(QLabel("Measured Route:"), 0, 0)
         self.round_trip_label = QLabel("-- ms")
-        status_layout.addWidget(self.round_trip_label, 0, 1)
+        status_layout.addRow("Measured route", self.round_trip_label)
 
-        status_layout.addWidget(QLabel("Directional Estimate:"), 1, 0)
         self.one_way_label = QLabel("-- ms")
-        status_layout.addWidget(self.one_way_label, 1, 1)
+        status_layout.addRow("Directional estimate", self.one_way_label)
 
-        status_layout.addWidget(QLabel("Route Delay for Reporting:"), 2, 0)
         self.comp_label = QLabel("-- ms")
-        status_layout.addWidget(self.comp_label, 2, 1)
+        status_layout.addRow("Route delay for reporting", self.comp_label)
 
-        status_layout.addWidget(QLabel("Confidence:"), 3, 0)
         self.confidence_label = QLabel("--")
-        status_layout.addWidget(self.confidence_label, 3, 1)
+        status_layout.addRow("Confidence", self.confidence_label)
 
-        status_layout.addWidget(QLabel("Probe Agreement:"), 4, 0)
         self.agreement_label = QLabel("--")
-        status_layout.addWidget(self.agreement_label, 4, 1)
+        status_layout.addRow("Probe agreement", self.agreement_label)
 
-        status_layout.addWidget(QLabel("Echo Ambiguity:"), 5, 0)
         self.ambiguity_label = QLabel("--")
-        status_layout.addWidget(self.ambiguity_label, 5, 1)
+        status_layout.addRow("Echo ambiguity", self.ambiguity_label)
 
-        status_layout.addWidget(QLabel("Engine Latency:"), 6, 0)
         self.engine_label = QLabel("-- ms")
-        status_layout.addWidget(self.engine_label, 6, 1)
+        status_layout.addRow("Engine latency", self.engine_label)
 
-        status_layout.addWidget(QLabel("Total Latency:"), 7, 0)
         self.total_label = QLabel("-- ms")
-        status_layout.addWidget(self.total_label, 7, 1)
+        status_layout.addRow("Total latency", self.total_label)
 
         layout.addWidget(status_group)
 
@@ -268,31 +271,35 @@ class LatencyCalibrationDialog(QDialog):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        self.level_meter = LevelMeter("CAP", show_scale=True)
+        self.level_meter = LevelMeter("Level", show_scale=True)
         self.level_meter.setAccessibleName("Latency calibration capture level")
         self.level_meter.setMinimumHeight(120)
         layout.addWidget(self.level_meter)
+        layout.addStretch(1)
 
-        button_row = QGridLayout()
-
-        self.run_button = QPushButton("Run Calibration")
+        self.run_button = QPushButton("Run calibration")
         self.run_button.clicked.connect(self._on_run_clicked)
-        button_row.addWidget(self.run_button, 0, 0)
 
         self.accept_button = QPushButton("Accept")
+        self.accept_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
         self.accept_button.setEnabled(existing_profile is not None)
         self.accept_button.clicked.connect(self._on_accept_clicked)
-        button_row.addWidget(self.accept_button, 0, 1)
 
         self.reset_button = QPushButton("Reset")
         self.reset_button.clicked.connect(self._on_reset_clicked)
-        button_row.addWidget(self.reset_button, 1, 0)
 
         self.close_button = QPushButton("Close")
         self.close_button.clicked.connect(self._on_close_clicked)
-        button_row.addWidget(self.close_button, 1, 1)
-        button_row.setColumnStretch(0, 1)
-        button_row.setColumnStretch(1, 1)
+
+        # The actions stay in view while the page above them scrolls.
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, MARGIN_PANEL)
+        button_row.setSpacing(SPACING_NORMAL)
+        button_row.addWidget(self.close_button)
+        button_row.addWidget(self.reset_button)
+        button_row.addStretch(1)
+        button_row.addWidget(self.run_button)
+        button_row.addWidget(self.accept_button)
 
         set_accessible_group(
             (
@@ -302,11 +309,11 @@ class LatencyCalibrationDialog(QDialog):
                 (self.close_button, "Close latency calibration", None),
             )
         )
+        self.setTabOrder(self.close_button, self.reset_button)
+        self.setTabOrder(self.reset_button, self.run_button)
         self.setTabOrder(self.run_button, self.accept_button)
-        self.setTabOrder(self.accept_button, self.reset_button)
-        self.setTabOrder(self.reset_button, self.close_button)
 
-        layout.addLayout(button_row)
+        outer_layout.addLayout(button_row)
 
         if existing_profile:
             self._apply_profile_to_labels(existing_profile)
@@ -356,7 +363,7 @@ class LatencyCalibrationDialog(QDialog):
                 self._started_processor = False
         except Exception as e:
             QMessageBox.critical(
-                self, "Audio Error", f"Failed to start processing: {e}"
+                self, "Audio error", f"Failed to start processing: {e}"
             )
             return
 
@@ -369,7 +376,7 @@ class LatencyCalibrationDialog(QDialog):
             or self._measurement_format_context is None
         ):
             self._on_worker_failed(
-                "Latency calibration requires known input/output sample rates and channels."
+                "Latency calibration requires known input and output sample rates and channels."
             )
             return
 
@@ -519,7 +526,7 @@ class LatencyCalibrationDialog(QDialog):
             )
         else:
             self.status_label.setText(
-                "Calibration successful. Review values and Accept."
+                "Calibration succeeded. Review the values, then select Accept."
             )
         self.run_button.setEnabled(True)
         self.accept_button.setEnabled(True)
@@ -584,7 +591,7 @@ class LatencyCalibrationDialog(QDialog):
 
     def _on_accept_clicked(self):
         if not self._latest_profile:
-            QMessageBox.information(self, "No Result", "Run calibration first.")
+            QMessageBox.information(self, "No result", "Run calibration first.")
             return
 
         owner = self._get_processor_owner()

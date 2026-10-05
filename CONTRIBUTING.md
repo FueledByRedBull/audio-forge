@@ -76,7 +76,7 @@ bundled applications also follow the distribution policy in
 [licenses/THIRD_PARTY_NOTICES.md](licenses/THIRD_PARTY_NOTICES.md).
 
 Bug reports should include the version, Windows version, reproduction steps, and
-expected/actual behavior. `Help > Export Diagnostics...` produces a bounded,
+expected/actual behavior. `Settings > Help > Export Diagnostics` produces a bounded,
 pseudonymized report; inspect it before sharing. Do not attach microphone audio
 or unredacted logs by default.
 

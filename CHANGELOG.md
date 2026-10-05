@@ -14,9 +14,24 @@
 - Recovery after a capture gap discards partial input frames and stale suppressor overlap. The recovery fade starts when valid delayed audio arrives, rather than being spent on the suppressor's empty output prefix.
 - Share threshold-only compressor calibration between setup and evaluation, and separate the existing slow automatic makeup controller from compressor detection and gain smoothing. Render/state parity is preserved; the rejected multidimensional search remains in the offline evaluator.
 
+### Interface
+
+- The main window is rebuilt around cards. A rail on the left switches between Mic, Health and Settings. The top bar holds the input and output pickers, the processing mode, Mute, and one Start or Stop button. The menu bar is gone: preset actions are on the Presets button, the old Options and Help menus are cards on the Settings page, and every keyboard shortcut works as before.
+- Each processing stage (noise suppression, noise gate, de-esser, compressor, limiter) is a card with a switch in its header. The controls used most are visible; the rest are under Advanced. The limiter has its own card. No parameter, range or default changed.
+- The equalizer shows a larger graph with named frequency regions and one color per band. Click or drag a handle to select a band, then edit it in the single row under the graph, which replaces the grid of ten slider columns. Tone presets and the reset actions moved into the card's menus.
+- Auto Voice Setup shows one step at a time (Target, Room noise, Voice, Review) with its buttons fixed at the bottom. The Review step describes the recommendation in plain language and shows what each setting was before; hover a line for the measurements behind it.
+- Auto-EQ Voice Tone follows the same steps (Set up, Record, Review) and explains its result in plain language, with the measurements in tooltips.
+- Guided Setup and the route latency window use the same cards, switches and button placement as the rest of the app.
+- The Health page gives one sentence of advice for the most serious warning, then lists the Signal and Stream checks one per line, each marked OK, Needs attention or Problem. Open Technical details to see the raw counters and to export diagnostics or reset the drop counter.
+- Test my sound, on the Mic page, records five seconds and plays back the raw recording and the result of the current settings. Output is muted while you listen.
+- The noise suppression card shows the last six seconds of input and output level while processing runs, and a warning on the card if the selected backend is unavailable.
+- Input mode and input cleanup moved from the device row to Settings > Audio input.
+- Number fields no longer show step arrows. Type a value, use the arrow keys, or scroll.
+- The main window is drawn with Qt Quick, so the portable bundle now includes the Qt QML and Qt Quick libraries. Set `AUDIOFORGE_QML=0` to use the widget view. AudioForge also switches to the widget view, with a notice in the status bar, if the Qt Quick view cannot start.
+
 ### Desktop and setup
 
-- Add a default-off login shortcut for packaged copies under Options > Tray & Background. A login launch stays in the tray, waits up to 60 seconds for the exact saved devices, and preserves output mute. Missing devices never select replacements automatically; Windows can disable a configured shortcut. Installer and Windows-shell lifecycle checks remain outstanding as documented in [RELEASING.md](RELEASING.md#login-startup-lifecycle).
+- Add a default-off login shortcut for packaged copies under Settings > Tray and background. A login launch stays in the tray, waits up to 60 seconds for the exact saved devices, and preserves output mute. Missing devices never select replacements automatically; Windows can disable a configured shortcut. Installer and Windows-shell lifecycle checks remain outstanding as documented in [RELEASING.md](RELEASING.md#login-startup-lifecycle).
 
 ### Auto-EQ
 

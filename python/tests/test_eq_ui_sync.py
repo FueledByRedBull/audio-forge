@@ -617,13 +617,13 @@ def test_eq_activity_summary_matches_effective_filters_and_layer_state(qapp):
 
     try:
         panel.set_settings(payload)
-        assert "Auto-EQ: 2 active band(s)" in panel._eq_group.title()
-        assert "Tone: 0 active band(s)" in panel._eq_group.title()
+        assert "Auto-EQ: 2 active bands" in panel.layer_status_label.text()
+        assert "Tone: 0 active bands" in panel.layer_status_label.text()
 
         payload["enabled"] = False
         panel.set_settings(payload)
-        assert "Auto-EQ: 0 active band(s)" in panel._eq_group.title()
-        assert "Tone: 0 active band(s)" in panel._eq_group.title()
+        assert "Auto-EQ: 0 active bands" in panel.layer_status_label.text()
+        assert "Tone: 0 active bands" in panel.layer_status_label.text()
     finally:
         _close_panel(panel, processor, qapp)
 

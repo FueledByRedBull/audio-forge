@@ -192,14 +192,14 @@ cargo audit
 
 ## Login startup lifecycle
 
-Login startup is off by default. The packaged app's **Options > Tray & Background >
-Configure login shortcut for this copy** explicitly creates one per-user
+Login startup is off by default. The packaged app's **Settings > Tray and
+background > Configure login shortcut for this copy** explicitly creates one per-user
 `AudioForge Login.lnk` in the Windows Startup known folder. Its target is the
 current executable, with a separate `--login-startup` argument and ownership
 description. Configuration is represented by that shortcut, not another setting.
 Source launches do not offer registration.
 
-The menu reports **configured**, not **enabled**: Windows Settings or Task Manager
+The page reports **configured**, not **enabled**: Windows Settings or Task Manager
 can disable a Startup-folder app. AudioForge neither reads undocumented
 `StartupApproved` values nor rewrites a configured shortcut on launch, repair, or
 upgrade. Windows documents these controls in

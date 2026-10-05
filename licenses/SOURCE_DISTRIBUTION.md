@@ -88,7 +88,8 @@ The manifest currently covers:
   source distributions.
 * Qt base 6.11.1, which supplies the Core, Gui, Network, Widgets, and Windows
   platform plugin libraries present in the PySide6 runtime bundle, plus Qt's
-  image-format and multimedia module/plugin sources.
+  declarative (QML and Qt Quick), image-format and multimedia module/plugin
+  sources.
 * CPU ONNX Runtime 1.23.2 source, its pinned repository submodules, and the
   CPU FetchContent sources from `cmake/deps.txt` and
   `onnxruntime_external_deps.cmake`. GPU, WebGPU, training, and benchmark-only

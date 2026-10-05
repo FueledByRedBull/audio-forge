@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import json
 import logging
 import threading
@@ -26,11 +26,13 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTextEdit,
     QVBoxLayout,
+    QWidget,
 )
 
 from ..analysis.noise_reference import CaptureMetadata, analyze_noise_reference
 from ..analysis.cancellation import AnalysisCancelled
 from ..analysis.voice_setup import (
+    GATE_MODE_LABELS,
     _normalise_limiter_settings,
     analyze_voice_setup,
     validate_voice_setup_verification,
@@ -70,7 +72,9 @@ from .calibration_support import (
     format_db as _format_db,
     format_percent as _format_percent,
 )
+from .components import StepHeader
 from .layout_constants import (
+    MARGIN_PANEL,
     SUBDUED_TEXT_STYLE,
     configure_resizable_dialog,
     configure_responsive_combo,
@@ -428,6 +432,43 @@ class VoiceSetupDialog(QDialog):
 
     setup_applied = Signal(str)
 
+    STEPS = ("Target", "Room noise", "Voice", "Review")
+    # Which step each state of the unchanged state machine belongs to.
+    STEP_FOR_STATE = {
+        "idle": 0,
+        "noise_recording": 1,
+        "noise_ready": 2,
+        "voice_recording": 2,
+        "analyzing": 2,
+        "verification_recording": 2,
+        "verification_analyzing": 2,
+        "completed": 3,
+        "verification_ready": 3,
+        "final_comparison_ready": 3,
+    }
+
+    @property
+    def setup_state(self) -> str:
+        return self._setup_state
+
+    @setup_state.setter
+    def setup_state(self, state: str) -> None:
+        self._setup_state = state
+        if "step_header" in self.__dict__:
+            self._show_step_for_state()
+
+    def _show_step_for_state(self) -> None:
+        step = self.STEP_FOR_STATE.get(self._setup_state, 0)
+        self.step_header.set_current(step)
+        self.curve_group.setVisible(step == 0)
+        self.dynamics_group.setVisible(step == 0)
+        self.noise_group.setVisible(step == 1)
+        self.voice_group.setVisible(step == 2)
+        self.review_page.setVisible(step == 3)
+        # The meter only matters while something is being recorded.
+        for widget in (self.progress_bar, self.time_label, self.level_meter):
+            widget.setVisible(step in (1, 2))
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Auto Voice Setup")
@@ -500,15 +541,18 @@ class VoiceSetupDialog(QDialog):
     def _setup_ui(self) -> None:
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
+        self.step_header = StepHeader(self.STEPS)
+        outer_layout.addWidget(self.step_header)
+
         self.content_scroll_area, layout = create_scrollable_dialog_body(self)
         self.content_scroll_area.setAccessibleName("Auto Voice Setup content")
-        outer_layout.addWidget(self.content_scroll_area)
+        outer_layout.addWidget(self.content_scroll_area, stretch=1)
 
-        self.curve_group = QGroupBox("Step 1: Select Target Curve")
+        self.curve_group = QGroupBox("Tone preset")
         curve_layout = QVBoxLayout(self.curve_group)
 
         curve_input = QHBoxLayout()
-        curve_label = QLabel("Target Curve:")
+        curve_label = QLabel("Tone preset:")
         curve_input.addWidget(curve_label)
         self.curve_combo = QComboBox()
         for key, curve in TARGET_CURVES.items():
@@ -525,7 +569,7 @@ class VoiceSetupDialog(QDialog):
         curve_layout.addWidget(self.curve_description)
         layout.addWidget(self.curve_group)
 
-        self.dynamics_group = QGroupBox("Step 2: Select Dynamics Intensity")
+        self.dynamics_group = QGroupBox("Dynamics")
         dynamics_layout = QVBoxLayout(self.dynamics_group)
         dynamics_row = QFormLayout()
         dynamics_row.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
@@ -604,7 +648,7 @@ class VoiceSetupDialog(QDialog):
         self.custom_peak_spin.valueChanged.connect(self._on_dynamics_intensity_changed)
         self._on_dynamics_intensity_changed(self.dynamics_combo.currentIndex())
 
-        noise_group = QGroupBox("Step 3: Capture Room Noise")
+        self.noise_group = noise_group = QGroupBox("Capture room noise")
         noise_layout = QVBoxLayout(noise_group)
         noise_hint = QLabel(
             "Stay quiet for 2 seconds so the wizard can measure room noise "
@@ -614,7 +658,7 @@ class VoiceSetupDialog(QDialog):
         noise_layout.addWidget(noise_hint)
         layout.addWidget(noise_group)
 
-        voice_group = QGroupBox("Step 4: Read Passage Aloud")
+        self.voice_group = voice_group = QGroupBox("Read this passage aloud")
         voice_layout = QVBoxLayout(voice_group)
         passage_text = QTextEdit()
         passage_text.setPlainText(RAINBOW_PASSAGE)
@@ -627,7 +671,7 @@ class VoiceSetupDialog(QDialog):
         voice_layout.addWidget(passage_text)
         layout.addWidget(voice_group)
 
-        self.recording_group = QGroupBox("Step 5: Record, Analyze, And Verify")
+        self.recording_group = QGroupBox("Recording")
         recording_layout = QVBoxLayout(self.recording_group)
         self.recording_group.setVisible(False)
 
@@ -684,13 +728,19 @@ class VoiceSetupDialog(QDialog):
             label.setWordWrap(True)
             summary_layout.addWidget(label)
         hint = QLabel(
-            "This wizard tunes EQ, gate/VAD, de-esser, and compressor. "
-            "Limiter settings are left unchanged."
+            "Voice Setup tunes tone, the noise gate, the de-esser and the "
+            "compressor. The limiter is left as it is. Hover a line for the "
+            "measurements behind it."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(SUBDUED_TEXT_STYLE)
         summary_layout.addWidget(hint)
-        recording_layout.addWidget(self.summary_group)
+        # The summary's own visibility still follows the results; the page
+        # around it follows the step.
+        self.review_page = QWidget()
+        review_layout = QVBoxLayout(self.review_page)
+        review_layout.setContentsMargins(0, 0, 0, 0)
+        review_layout.addWidget(self.summary_group)
 
         controls = QHBoxLayout()
         self.retake_btn = QPushButton("Retake")
@@ -705,14 +755,21 @@ class VoiceSetupDialog(QDialog):
 
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self._on_cancel_clicked)
-        controls.addWidget(self.cancel_btn)
-        recording_layout.addLayout(controls)
         layout.addWidget(self.recording_group)
+        layout.addWidget(self.review_page)
+        layout.addStretch(1)
 
         self.start_button = QPushButton("Start Voice Setup")
         self.start_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
         self.start_button.clicked.connect(self._on_start_clicked)
-        layout.addWidget(self.start_button)
+
+        # The actions stay in view while the page above them scrolls.
+        controls.setContentsMargins(MARGIN_PANEL, 0, MARGIN_PANEL, MARGIN_PANEL)
+        controls.insertWidget(0, self.cancel_btn)
+        controls.insertStretch(2, 1)
+        controls.addWidget(self.start_button)
+        outer_layout.addLayout(controls)
+        self._show_step_for_state()
 
         set_accessible_group(
             (
@@ -1293,55 +1350,127 @@ class VoiceSetupDialog(QDialog):
         self.progress_bar.setValue(100)
         self._show_summary(setup_result)
 
+    def _review_text(
+        self,
+        text: str,
+        recommended: Mapping[str, Any],
+        panel_name: str,
+        describe: Callable[[Mapping[str, Any]], str],
+        getter: str = "get_settings",
+    ) -> str:
+        """Add what the stage was set to before this setup, when the owner knows."""
+        try:
+            current = getattr(getattr(self.parent(), panel_name), getter)()
+            if not isinstance(current, Mapping):
+                return text
+            before = describe(current)
+        except Exception:
+            return text
+        if before != text:
+            return f"{text}\nBefore: {before}"
+        # The line shows only the headline values of a stage.
+        for key in recommended.keys() & current.keys():
+            try:
+                same = bool(np.allclose(recommended[key], current[key], rtol=0.0, atol=1e-3))
+            except (TypeError, ValueError):
+                same = recommended[key] == current[key]
+            if not same:
+                return f"{text} (only finer settings change)"
+        return f"{text} (unchanged)"
+
     def _show_summary(self, setup_result: dict[str, Any]) -> None:
         diagnostics = setup_result["diagnostics"]
         overall_conf = float(diagnostics["setup_confidence"])
         state = _diagnostic_state(overall_conf)
+        confidence = {"ok": "High", "warn": "Medium"}.get(state, "Low")
         self.overall_label.setText(
-            "Overall: "
-            f"{_format_percent(overall_conf)} | "
-            f"capture {_format_percent(diagnostics['capture_confidence'])} | "
-            f"uncertainty {_format_percent(diagnostics['recommendation_uncertainty'])}"
+            f"{confidence} confidence in these settings "
+            f"({_format_percent(overall_conf)})."
         )
+        details = [
+            f"Capture quality {_format_percent(diagnostics['capture_confidence'])}",
+            "Recommendation uncertainty "
+            f"{_format_percent(diagnostics['recommendation_uncertainty'])}",
+        ]
+        self.overall_label.setToolTip("; ".join(details))
         self.overall_label.setStyleSheet(status_chip_style(state))
         joint = diagnostics.get("joint_tuning")
         if isinstance(joint, Mapping):
-            outcome = "candidate passed held-out checks" if joint.get("apply_recommended") else "current settings retained"
-            self.overall_label.setText(self.overall_label.text() + f"\nSuppression + gate: {outcome}.")
-            self.overall_label.setToolTip("; ".join(str(reason) for reason in joint.get("reasons", [])))
+            outcome = (
+                "new settings passed the checks"
+                if joint.get("apply_recommended")
+                else "your current settings are kept"
+            )
+            self.overall_label.setText(
+                self.overall_label.text()
+                + f"\nNoise suppression and gate: {outcome}."
+            )
+            details.extend(str(reason) for reason in joint.get("reasons", []))
+            self.overall_label.setToolTip("; ".join(details))
 
         eq_settings = setup_result.get("eq_settings")
         eq_error = _candidate_eq_settings_error(eq_settings)
         if eq_error is None:
             assert isinstance(eq_settings, Mapping)
+
+            def describe_eq(settings: Mapping[str, Any]) -> str:
+                return (
+                    "max correction "
+                    f"{max(abs(g) for g in settings['band_gains']):.1f} dB"
+                )
+
             self.eq_label.setText(
-                "EQ: "
-                f"{_format_percent(eq_settings.get('analysis_confidence', 0.0))} | "
-                f"max correction {max(abs(g) for g in eq_settings['band_gains']):.1f} dB"
+                "Tone: "
+                + self._review_text(
+                    describe_eq(eq_settings), eq_settings, "eq_panel", describe_eq
+                )
+            )
+            self.eq_label.setToolTip(
+                "Analysis confidence "
+                f"{_format_percent(eq_settings.get('analysis_confidence', 0.0))}"
             )
             self.eq_label.setStyleSheet(status_chip_style("ok"))
         else:
             self.eq_label.setText(
-                f"EQ: skipped | {setup_result.get('eq_error') or eq_error}"
+                f"Tone: left unchanged. {setup_result.get('eq_error') or eq_error}"
             )
+            self.eq_label.setToolTip("")
             self.eq_label.setStyleSheet(status_chip_style("warn"))
 
         gate = setup_result["gate_settings"]
         self.gate_label.setText(
-            "Gate/VAD: "
-            f"{diagnostics['gate_mode_label']} | "
-            f"threshold {_format_db(gate['threshold_db'])} | "
-            f"VAD {gate['vad_threshold']:.2f}"
+            "Noise gate: "
+            + self._review_text(
+                f"{diagnostics['gate_mode_label']}, "
+                f"opens above {_format_db(gate['threshold_db'])}",
+                gate,
+                "gate_panel",
+                lambda settings: (
+                    f"{GATE_MODE_LABELS[settings['gate_mode']]}, "
+                    f"opens above {_format_db(settings['threshold_db'])}"
+                ),
+            )
         )
+        self.gate_label.setToolTip(f"Speech threshold {gate['vad_threshold']:.2f}")
         self.gate_label.setStyleSheet(status_chip_style("info"))
 
         deesser = setup_result["deesser_settings"]
         deesser_state = "ok" if deesser["enabled"] else "info"
-        deesser_text = "enabled" if deesser["enabled"] else "left off"
+
+        def describe_deesser(settings: Mapping[str, Any]) -> str:
+            return (
+                f"{'on' if settings['enabled'] else 'off'}, "
+                f"amount {settings['auto_amount'] * 100.0:.0f}%"
+            )
+
         self.deesser_label.setText(
             "De-esser: "
-            f"{deesser_text} | auto {deesser['auto_amount'] * 100.0:.0f}% | "
-            f"{deesser['low_cut_hz']:.0f}-{deesser['high_cut_hz']:.0f} Hz"
+            + self._review_text(
+                describe_deesser(deesser), deesser, "deesser_panel", describe_deesser
+            )
+        )
+        self.deesser_label.setToolTip(
+            f"Band {deesser['low_cut_hz']:.0f} to {deesser['high_cut_hz']:.0f} Hz"
         )
         self.deesser_label.setStyleSheet(status_chip_style(deesser_state))
 
@@ -1360,11 +1489,27 @@ class VoiceSetupDialog(QDialog):
             if compressor["auto_makeup_enabled"]
             else f"{compressor['makeup_gain_db']:.1f} dB makeup"
         )
+
+        def describe_compressor(settings: Mapping[str, Any]) -> str:
+            return (
+                f"{settings['ratio']:.1f}:1 above "
+                f"{_format_db(settings['threshold_db'])}, aiming for "
+                f"{settings['target_lufs']:.0f} LUFS"
+            )
+
         self.compressor_label.setText(
             "Compressor: "
-            f"{compressor['ratio']:.1f}:1 @ {_format_db(compressor['threshold_db'])} | "
-            f"{makeup_text} | target {compressor['target_lufs']:.0f} LUFS | "
-            f"{intensity} | gain reduction {_format_db(measured_gr)}"
+            + self._review_text(
+                describe_compressor(compressor),
+                compressor,
+                "compressor_panel",
+                describe_compressor,
+                "get_compressor_settings",
+            )
+        )
+        self.compressor_label.setToolTip(
+            f"{intensity.capitalize()} intensity; {makeup_text}; "
+            f"measured gain reduction {_format_db(measured_gr)}"
         )
         self.compressor_label.setStyleSheet(status_chip_style("info"))
         self.summary_group.setVisible(True)

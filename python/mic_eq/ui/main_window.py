@@ -13,25 +13,24 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QGridLayout,
-    QGroupBox,
     QLabel,
     QComboBox,
     QPushButton,
-    QCheckBox,
     QStatusBar,
     QMessageBox,
-    QSplitter,
     QFileDialog,
     QInputDialog,
     QMenu,
     QSlider,
     QScrollArea,
     QFrame,
-    QTabWidget,
+    QStackedWidget,
+    QButtonGroup,
+    QFormLayout,
     QSizePolicy,
     QSystemTrayIcon,
 )
-from PySide6.QtCore import QEvent, Qt, QTimer, QRect, QUrl
+from PySide6.QtCore import QEvent, QSignalBlocker, Qt, QTimer, QRect, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QIcon
 import os
 import sys
@@ -47,7 +46,7 @@ from .eq_panel import EQPanel
 from .compressor_panel import CompressorPanel
 from .deesser_panel import DeEsserPanel
 from .level_meter import LevelMeter
-from .health import RecentStreamHealth
+from .health import RecentStreamHealth, advice_for
 from .health import input_health_state as build_input_health_state
 from .health import output_health_state as build_output_health_state
 from .calibration_dialog import CalibrationDialog
@@ -78,7 +77,8 @@ from .layout_constants import (
     MARGIN_PANEL,
     PRIMARY_ACTION_BUTTON_STYLE,
     DESTRUCTIVE_ACTION_BUTTON_STYLE,
-    SECONDARY_ACTION_BUTTON_STYLE,
+    PRIMARY_LABEL_STYLE,
+    SPACING_TIGHT,
     SUBDUED_TEXT_STYLE,
     WARNING_BANNER_STYLE,
     configure_responsive_combo,
@@ -93,7 +93,8 @@ from .startup_presets import (
     startup_custom_file_id as _startup_custom_file_id,
     startup_preset_display_name as _startup_preset_display_name,
 )
-from .theme import prefers_reduced_motion
+from .components import Card, Glyph, IconButton, NavButton, ToggleSwitch, plain_label
+from .theme import CARD_STYLE, PALETTE, prefers_reduced_motion
 from .desktop_integration import GlobalMuteHotkey, activate_window, build_tray_tooltip
 from . import login_startup
 from .. import AudioProcessor, __version__, list_input_devices, list_output_devices
@@ -260,10 +261,8 @@ def _fit_window_geometry_to_screens(
 class MainWindow(QMainWindow):
     """Main application window for AudioForge."""
 
-    LEFT_PANE_MIN_WIDTH = 290
-    RIGHT_PANE_MIN_WIDTH = 340
     COMPACT_LAYOUT_BREAKPOINT = 1200
-    VERTICAL_SPLITTER_BREAKPOINT = 1160
+    HEALTH_PAGE_INDEX = 1
 
     def __init__(self, *, login_startup: bool = False):
         super().__init__()
@@ -319,7 +318,6 @@ class MainWindow(QMainWindow):
         self._last_input_phase_warning_count = 0
         self._last_gate_chatter_event_count = 0
         self._responsive_layout_compact: bool | None = None
-        self._splitter_is_vertical: bool | None = None
         self._quitting = False
         self._tray_icon: QSystemTrayIcon | None = None
         self._tray_menu: QMenu | None = None
@@ -327,15 +325,13 @@ class MainWindow(QMainWindow):
         self._mute_hotkey: GlobalMuteHotkey | None = None
         self._close_to_tray_action: QAction | None = None
         self._mute_hotkey_action: QAction | None = None
-        self._ui_state_timer = QTimer(self)
-        self._ui_state_timer.setSingleShot(True)
-        self._ui_state_timer.timeout.connect(self._save_ui_state)
 
         # Set up UI
         self._setup_ui()
         self._setup_menubar()
         self._setup_options_menu()
         self._setup_statusbar()
+        self._finish_shell()
         self._setup_desktop_integration()
         self.user_mute_checkbox.blockSignals(True)
         self.user_mute_checkbox.setChecked(self.user_muted)
@@ -417,25 +413,21 @@ class MainWindow(QMainWindow):
             }
 
     def _setup_ui(self):
-        """Set up the user interface."""
-        self.content_scroll_area = QScrollArea()
-        self.content_scroll_area.setWidgetResizable(True)
-        self.content_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.content_scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.content_scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
+        """Build the shell: navigation rail, top bar, pages and level meters."""
         central_widget = QWidget()
-        self.content_scroll_area.setWidget(central_widget)
-        self.setCentralWidget(self.content_scroll_area)
+        self.setCentralWidget(central_widget)
+        root = QHBoxLayout(central_widget)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(
-            MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL, MARGIN_PANEL
+        self.page_stack = QStackedWidget()
+        root.addWidget(self._build_nav_rail())
+        column = QVBoxLayout()
+        column.setContentsMargins(
+            SPACING_SECTION, MARGIN_PANEL, SPACING_SECTION, MARGIN_PANEL
         )
-        main_layout.setSpacing(SPACING_NORMAL)
+        column.setSpacing(MARGIN_PANEL)
+        root.addLayout(column, stretch=1)
 
         # Warning banner for missing audio devices (hidden by default)
         self.device_warning_banner = QLabel(
@@ -445,272 +437,272 @@ class MainWindow(QMainWindow):
         self.device_warning_banner.setAccessibleName("Audio device warning")
         self.device_warning_banner.setWordWrap(True)
         self.device_warning_banner.setVisible(False)
-        main_layout.addWidget(self.device_warning_banner)
+        column.addWidget(self.device_warning_banner)
 
         self.config_warning_banner = QLabel()
         self.config_warning_banner.setStyleSheet(WARNING_BANNER_STYLE)
         self.config_warning_banner.setAccessibleName("Configuration warning")
         self.config_warning_banner.setWordWrap(True)
         self.config_warning_banner.setVisible(False)
-        main_layout.addWidget(self.config_warning_banner)
+        column.addWidget(self.config_warning_banner)
 
-        # Top: Device selection
-        device_group = QGroupBox("Audio Devices")
-        self.device_layout = QGridLayout(device_group)
-        self.device_layout.setSpacing(
-            SPACING_NORMAL
-        )  # Consistent spacing for device controls
+        column.addWidget(self._build_top_bar())
 
-        # Input device
-        input_label = QLabel("Input:")
-        self.input_combo = QComboBox()
-        self.input_combo.setMinimumWidth(150)
-        bind_label(input_label, self.input_combo, name="Input audio device")
-
-        # Output device
-        output_label = QLabel("Output:")
-        self.output_combo = QComboBox()
-        self.output_combo.setMinimumWidth(150)
-        bind_label(output_label, self.output_combo, name="Output audio device")
-
-        input_mode_label = QLabel("Input Mode:")
-        self.input_channel_mode_combo = QComboBox()
-        for label, mode in INPUT_CHANNEL_MODE_OPTIONS:
-            self.input_channel_mode_combo.addItem(label, mode)
-        self.input_channel_mode_combo.setMinimumWidth(130)
-        self.input_channel_mode_combo.setToolTip(
-            "How multichannel input is converted to mono. Use Left/Right or Phase-safe mono if stereo channels cancel."
-        )
-        bind_label(
-            input_mode_label,
-            self.input_channel_mode_combo,
-            name="Input channel mode",
-        )
-
-        cleanup_label = QLabel("Cleanup:")
-        self.input_cleanup_mode_combo = QComboBox()
-        for label, mode in INPUT_CLEANUP_MODE_OPTIONS:
-            self.input_cleanup_mode_combo.addItem(label, mode)
-        self.input_cleanup_mode_combo.setMinimumWidth(96)
-        self.input_cleanup_mode_combo.setToolTip(
-            "Optional adaptive input cleanup after the fixed safe pre-filter. Off preserves the existing DC/80 Hz path."
-        )
-        bind_label(
-            cleanup_label,
-            self.input_cleanup_mode_combo,
-            name="Input cleanup mode",
-        )
-
-        # Refresh button
-        self.refresh_btn = QPushButton("Refresh")
-        self.refresh_btn.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
-        self.refresh_btn.setAccessibleName("Refresh audio devices")
-        self.refresh_btn.clicked.connect(self._refresh_devices)
-        self._device_layout_widgets = (
-            input_label,
-            self.input_combo,
-            output_label,
-            self.output_combo,
-            input_mode_label,
-            self.input_channel_mode_combo,
-            cleanup_label,
-            self.input_cleanup_mode_combo,
-            self.refresh_btn,
-        )
-
-        main_layout.addWidget(device_group)
-
-        # Middle: meters plus tabbed controls/EQ splitter
         middle_layout = QHBoxLayout()
         middle_layout.setSpacing(SPACING_NORMAL)
-
-        input_meter_layout = QVBoxLayout()
+        middle_layout.addWidget(self.page_stack, stretch=1)
         self.input_meter = LevelMeter("IN", show_scale=True)
         self.input_meter.setAccessibleName("Input level meter")
         self.input_meter.setFixedWidth(50)
-        input_meter_layout.addWidget(self.input_meter)
-        middle_layout.addLayout(input_meter_layout)
-
-        self.gate_panel = GatePanel(self.processor)
-        self.deesser_panel = DeEsserPanel(self.processor)
-        self.compressor_panel = CompressorPanel(self.processor)
-        self.noise_suppression_group = self._create_noise_suppression_group()
-
-        self.control_tabs = QTabWidget()
-        self.control_tabs.setAccessibleName("Processing controls")
-        self.control_tabs.setDocumentMode(True)
-        self.control_tabs.setMinimumWidth(self.LEFT_PANE_MIN_WIDTH)
-        self.control_tabs.addTab(
-            self._create_tab_page([self.gate_panel, self.noise_suppression_group]),
-            "Cleanup",
-        )
-        self.control_tabs.addTab(
-            self._create_tab_page([self.deesser_panel, self.compressor_panel]),
-            "Dynamics",
-        )
-        self.control_tabs.currentChanged.connect(self._on_main_control_tab_changed)
-
-        self.eq_panel = EQPanel(self.processor)
-        self.eq_panel.setMinimumWidth(0)
-        self.eq_scroll_area = QScrollArea()
-        self.eq_scroll_area.setWidget(self.eq_panel)
-        self.eq_scroll_area.setWidgetResizable(True)
-        self.eq_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.eq_scroll_area.setMinimumWidth(self.RIGHT_PANE_MIN_WIDTH)
-        self.eq_scroll_area.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        self.eq_scroll_area.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded
-        )
-
-        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.main_splitter.setChildrenCollapsible(False)
-        self.main_splitter.addWidget(self.control_tabs)
-        self.main_splitter.addWidget(self.eq_scroll_area)
-        self.main_splitter.setHandleWidth(8)
-        self.main_splitter.setStretchFactor(0, 0)
-        self.main_splitter.setStretchFactor(1, 1)
-        self.main_splitter.splitterMoved.connect(self._on_splitter_moved)
-        middle_layout.addWidget(self.main_splitter, stretch=1)
-
-        output_meter_layout = QVBoxLayout()
+        middle_layout.addWidget(self.input_meter)
         self.output_meter = LevelMeter("OUT", show_scale=True)
         self.output_meter.setAccessibleName("Output level meter")
         self.output_meter.setFixedWidth(50)
-        output_meter_layout.addWidget(self.output_meter)
-        middle_layout.addLayout(output_meter_layout)
+        middle_layout.addWidget(self.output_meter)
+        column.addLayout(middle_layout, stretch=1)
 
-        main_layout.addLayout(middle_layout, stretch=1)
+        self.page_stack.addWidget(self._build_mic_page())
+        self.health_details = self._build_health_page()
+        self.page_stack.addWidget(self.health_details)
+        self.settings_page = self._build_settings_page()
+        self.page_stack.addWidget(self.settings_page)
+        self.page_stack.currentChanged.connect(self._on_page_changed)
 
-        control_group = QGroupBox("Processing")
-        control_stack = QVBoxLayout(control_group)
-        control_stack.setSpacing(SPACING_NORMAL)
-        control_stack.setContentsMargins(
-            MARGIN_PANEL, SPACING_NORMAL, MARGIN_PANEL, MARGIN_PANEL
+        self.setTabOrder(self.input_combo, self.output_combo)
+        self.setTabOrder(self.output_combo, self.refresh_btn)
+        self.setTabOrder(self.refresh_btn, self.processing_mode_combo)
+        self.setTabOrder(self.processing_mode_combo, self.user_mute_checkbox)
+        self.setTabOrder(self.user_mute_checkbox, self.start_btn)
+        self.setTabOrder(self.start_btn, self.stop_btn)
+
+    def _build_nav_rail(self) -> QFrame:
+        rail = QFrame()
+        rail.setObjectName("rail")
+        rail.setFixedWidth(76)
+        rail.setStyleSheet(f"QFrame#rail {{ background-color: {PALETTE.rail_surface}; }}")
+        layout = QVBoxLayout(rail)
+        layout.setContentsMargins(0, MARGIN_PANEL, 0, MARGIN_PANEL)
+        layout.setSpacing(SPACING_TIGHT)
+        self.nav_group = QButtonGroup(self)
+        for index, (glyph, label) in enumerate(
+            (
+                (Glyph.MICROPHONE, "Mic"),
+                (Glyph.HEALTH, "Health"),
+                (Glyph.SETTINGS, "Settings"),
+            )
+        ):
+            button = NavButton(glyph, label)
+            button.setChecked(index == 0)
+            self.nav_group.addButton(button, index)
+            layout.addWidget(button)
+        self.nav_group.idClicked.connect(self.page_stack.setCurrentIndex)
+        layout.addStretch(1)
+        return rail
+
+    def _on_page_changed(self, index: int) -> None:
+        self.nav_group.button(index).setChecked(True)
+        with QSignalBlocker(self.health_details_button):
+            self.health_details_button.setChecked(index == self.HEALTH_PAGE_INDEX)
+
+    def _build_top_bar(self) -> QFrame:
+        bar = QFrame()
+        bar.setObjectName("card")
+        bar.setStyleSheet(CARD_STYLE)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(MARGIN_PANEL, SPACING_NORMAL, MARGIN_PANEL, SPACING_NORMAL)
+        layout.setSpacing(SPACING_NORMAL)
+
+        input_label = QLabel("Input")
+        self.input_combo = QComboBox()
+        configure_responsive_combo(self.input_combo, minimum_chars=6)
+        bind_label(input_label, self.input_combo, name="Input audio device")
+
+        output_label = QLabel("Output")
+        self.output_combo = QComboBox()
+        configure_responsive_combo(self.output_combo, minimum_chars=6)
+        bind_label(output_label, self.output_combo, name="Output audio device")
+
+        self.refresh_btn = IconButton(Glyph.REFRESH, "Refresh audio devices")
+        self.refresh_btn.clicked.connect(self._refresh_devices)
+
+        self.processing_mode_combo = QComboBox()
+        for label, mode in PROCESSING_MODE_OPTIONS:
+            self.processing_mode_combo.addItem(label, mode)
+        self.processing_mode_combo.setToolTip(
+            "Normal applies the voice chain. Bypass keeps input conditioning and output protection. "
+            "Raw Monitor skips input filtering and the voice chain for diagnostics; it is session-only "
+            "and is not stored in presets."
+        )
+        self.processing_mode_combo.setAccessibleName("Processing mode")
+        self.processing_mode_combo.currentIndexChanged.connect(
+            self._on_processing_mode_changed
         )
 
-        self.route_status_label = QLabel("Route: --")
-        self.preset_status_label = QLabel("Preset: Default (saved)")
-        self.transmission_status_label = QLabel("Transmission: Stopped")
-        self.health_summary_label = QLabel("Health: --")
-        self.calibration_status_label = QLabel("No saved calibration")
-        for label, name in (
-            (self.route_status_label, "Current audio route"),
-            (self.preset_status_label, "Active preset and saved state"),
-            (self.transmission_status_label, "Audio transmission state"),
-            (self.health_summary_label, "Compact audio health summary"),
-            (self.calibration_status_label, "Saved calibration validity"),
-        ):
-            label.setAccessibleName(name)
-            label.setStyleSheet(SUBDUED_TEXT_STYLE)
-            label.setWordWrap(True)
-        session_layout = QGridLayout()
-        session_layout.setSpacing(SPACING_NORMAL)
-        session_layout.addWidget(self.route_status_label, 0, 0)
-        session_layout.addWidget(self.preset_status_label, 0, 1)
-        session_layout.addWidget(self.transmission_status_label, 0, 2)
-        session_layout.addWidget(self.health_summary_label, 0, 3)
-        session_layout.addWidget(self.calibration_status_label, 0, 4)
-        session_layout.setColumnStretch(0, 1)
-        session_layout.setColumnStretch(1, 1)
-        session_layout.setColumnStretch(2, 1)
-        session_layout.setColumnStretch(3, 1)
-        session_layout.setColumnStretch(4, 1)
-        control_stack.addLayout(session_layout)
+        self.user_mute_checkbox = ToggleSwitch("Mute")
+        self.user_mute_checkbox.setAccessibleName("Mute output")
+        self.user_mute_checkbox.setToolTip(
+            "Keep transmission muted until you turn this off. "
+            "Calibration and stream recovery use a separate temporary mute."
+        )
+        self.user_mute_checkbox.toggled.connect(self._on_user_mute_toggled)
 
-        self.action_layout = QGridLayout()
-        self.action_layout.setSpacing(SPACING_NORMAL)
+        # One transport control is shown at a time; _sync_transport_buttons
+        # follows the enabled state the processing code already maintains.
         self.start_btn = QPushButton("Start Processing")
         self.start_btn.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
-        self.start_btn.setMinimumWidth(132)
         self.start_btn.clicked.connect(self._start_processing)
-
         self.stop_btn = QPushButton("Stop Processing")
         self.stop_btn.setStyleSheet(DESTRUCTIVE_ACTION_BUTTON_STYLE)
         self.stop_btn.setEnabled(False)
-        self.stop_btn.setMinimumWidth(132)
         self.stop_btn.clicked.connect(self._stop_processing)
+        self.stop_btn.installEventFilter(self)
+
+        self._route_labels = (input_label, output_label)
+        layout.addWidget(input_label)
+        layout.addWidget(self.input_combo, stretch=1)
+        layout.addWidget(output_label)
+        layout.addWidget(self.output_combo, stretch=1)
+        layout.addWidget(self.refresh_btn)
+        layout.addSpacing(SPACING_SECTION)
+        layout.addWidget(self.processing_mode_combo)
+        layout.addWidget(self.user_mute_checkbox)
+        layout.addWidget(self.start_btn)
+        layout.addWidget(self.stop_btn)
+        self._sync_transport_buttons()
+        return bar
+
+    def _sync_transport_buttons(self) -> None:
+        running = self.stop_btn.isEnabled()
+        self.stop_btn.setVisible(running)
+        self.start_btn.setVisible(not running)
+
+    def eventFilter(self, watched, event):
+        if (
+            watched is self.__dict__.get("stop_btn")
+            and event.type() == QEvent.Type.EnabledChange
+        ):
+            self._sync_transport_buttons()
+        return super().eventFilter(watched, event)
+
+    @staticmethod
+    def _create_page() -> tuple[QScrollArea, QVBoxLayout]:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        page = QWidget()
+        scroll.setWidget(page)
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, SPACING_NORMAL, 0)
+        layout.setSpacing(MARGIN_PANEL)
+        return scroll, layout
+
+    def _build_mic_page(self) -> QScrollArea:
+        self.content_scroll_area, layout = self._create_page()
+
+        self.preset_status_label = QLabel("Preset: Default (saved)")
+        self.preset_status_label.setAccessibleName("Active preset and saved state")
+        self.preset_status_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        self.presets_button = QPushButton("Presets")
+        self.presets_button.setAccessibleName("Preset actions")
+
+        self._undo_auto_eq_button = QPushButton("Undo")
+        self._undo_auto_eq_button.setEnabled(False)
+        self._undo_auto_eq_button.setToolTip(
+            "Undo the most recent processing-configuration edit (Ctrl+Z)"
+        )
+        self._undo_auto_eq_button.clicked.connect(self.undo_configuration)
 
         self.auto_eq_button = QPushButton("Auto-EQ")
-        self.auto_eq_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
-        self.auto_eq_button.setMinimumWidth(108)
         self.auto_eq_button.setToolTip(
             "Automatically calibrate EQ to your voice and microphone\n"
-            "Select target curve, read passage, and get professional tuning"
+            "Choose a tone preset, read a short passage, then review the result"
         )
         self.auto_eq_button.clicked.connect(self._on_auto_eq_clicked)
 
+        self.test_sound_button = QPushButton("Test my sound")
+        self.test_sound_button.setToolTip(
+            "Record five seconds, then play back the raw recording and the "
+            "result of the current settings. Output is muted while you listen."
+        )
+        self.test_sound_button.clicked.connect(self._on_test_my_sound_clicked)
+
         self.auto_voice_setup_button = QPushButton("Auto Voice Setup")
-        self.auto_voice_setup_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
-        self.auto_voice_setup_button.setMinimumWidth(148)
+        self.auto_voice_setup_button.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
         self.auto_voice_setup_button.setToolTip(
             "Record room noise and speech, then calibrate EQ, gate/VAD,\n"
             "de-esser, and compressor in one pass"
         )
         self.auto_voice_setup_button.clicked.connect(self._on_auto_voice_setup_clicked)
 
-        self._undo_auto_eq_button = QPushButton("Undo")
-        self._undo_auto_eq_button.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
-        self._undo_auto_eq_button.setEnabled(False)
-        self._undo_auto_eq_button.setMinimumWidth(108)
-        self._undo_auto_eq_button.setToolTip(
-            "Undo the most recent processing-configuration edit (Ctrl+Z)"
+        actions = QHBoxLayout()
+        actions.setSpacing(SPACING_NORMAL)
+        # The label gives way first when the window is narrow.
+        self.preset_status_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
         )
-        self._undo_auto_eq_button.clicked.connect(self.undo_configuration)
+        actions.addWidget(self.preset_status_label, stretch=1)
+        actions.addWidget(self.presets_button)
+        actions.addWidget(self._undo_auto_eq_button)
+        actions.addWidget(self.test_sound_button)
+        actions.addWidget(self.auto_eq_button)
+        actions.addWidget(self.auto_voice_setup_button)
+        layout.addLayout(actions)
 
-        processing_mode_label = QLabel("Mode:")
-        self.processing_mode_combo = QComboBox()
-        for label, mode in PROCESSING_MODE_OPTIONS:
-            self.processing_mode_combo.addItem(label, mode)
-        self.processing_mode_combo.setMinimumWidth(128)
-        self.processing_mode_combo.setToolTip(
-            "Normal applies the voice chain. Bypass keeps input conditioning and output protection. "
-            "Raw Monitor skips input filtering and the voice chain for diagnostics; it is session-only "
-            "and is not stored in presets."
-        )
-        bind_label(
-            processing_mode_label,
-            self.processing_mode_combo,
-            name="Processing mode",
-        )
-        self.processing_mode_combo.currentIndexChanged.connect(
-            self._on_processing_mode_changed
-        )
-        self.user_mute_checkbox = QCheckBox("Mute Output")
-        self.user_mute_checkbox.setToolTip(
-            "Keep transmission muted until you uncheck this control. "
-            "Calibration and stream recovery use a separate temporary mute."
-        )
-        self.user_mute_checkbox.toggled.connect(self._on_user_mute_toggled)
-        control_stack.addWidget(self.user_mute_checkbox)
-        self._action_layout_widgets = (
-            self.start_btn,
-            self.stop_btn,
-            self.auto_eq_button,
-            self.auto_voice_setup_button,
-            self._undo_auto_eq_button,
-            processing_mode_label,
-            self.processing_mode_combo,
-        )
-        control_stack.addLayout(self.action_layout)
+        self.gate_panel = GatePanel(self.processor)
+        self.deesser_panel = DeEsserPanel(self.processor)
+        self.compressor_panel = CompressorPanel(self.processor)
+        self.noise_suppression_group = self._create_noise_suppression_group()
+        self.eq_panel = EQPanel(self.processor)
+        layout.addWidget(self.eq_panel)
 
-        self.health_details_button = QPushButton("Show Details")
+        self.cards_layout = QGridLayout()
+        self.cards_layout.setSpacing(MARGIN_PANEL)
+        self._card_widgets = (
+            self.noise_suppression_group,
+            self.gate_panel,
+            self.deesser_panel,
+            self.compressor_panel,
+        )
+        layout.addLayout(self.cards_layout)
+        layout.addStretch(1)
+        return self.content_scroll_area
+
+    def _build_health_page(self) -> QScrollArea:
+        scroll, details_layout = self._create_page()
+
+        self.route_status_label = QLabel("Route: --")
+        self.transmission_status_label = QLabel("Transmission: Stopped")
+        self.health_summary_label = QLabel("Health: --")
+        self.calibration_status_label = QLabel("No saved calibration")
+        for label, name in (
+            (self.route_status_label, "Current audio route"),
+            (self.transmission_status_label, "Audio transmission state"),
+            (self.health_summary_label, "Compact audio health summary"),
+            (self.calibration_status_label, "Saved calibration validity"),
+        ):
+            label.setAccessibleName(name)
+            label.setStyleSheet(SUBDUED_TEXT_STYLE)
+        self.route_status_label.setWordWrap(True)
+        self.health_advice_label = QLabel("Start processing to see audio health.")
+        self.health_advice_label.setAccessibleName("Audio health advice")
+        self.health_advice_label.setStyleSheet(PRIMARY_LABEL_STYLE)
+        self.health_advice_label.setWordWrap(True)
+        details_layout.addWidget(self.health_advice_label)
+        details_layout.addWidget(self.route_status_label)
+
+        # Lives in the status bar; checked while this page is shown.
+        self.health_details_button = QPushButton("Details")
         self.health_details_button.setCheckable(True)
         self.health_details_button.setAccessibleName("Show audio health details")
-        control_stack.addWidget(self.health_details_button)
-        self.health_details = QWidget()
-        details_layout = QVBoxLayout(self.health_details)
-        details_layout.setContentsMargins(0, 0, 0, 0)
-        self.health_details_button.toggled.connect(self.health_details.setVisible)
         self.health_details_button.toggled.connect(
-            lambda shown: self.health_details_button.setText("Hide Details" if shown else "Show Details")
+            lambda shown: self.page_stack.setCurrentIndex(
+                self.HEALTH_PAGE_INDEX if shown else 0
+            )
         )
-        self.health_details.hide()
-        control_stack.addWidget(self.health_details)
+
         self.health_decision_layout = QGridLayout()
         self.health_decision_layout.setSpacing(SPACING_NORMAL)
-        self.health_decision_layout.setContentsMargins(0, 2, 0, 0)
 
         self.input_health_label = QLabel("Input: --")
         self.input_health_label.setToolTip(
@@ -753,7 +745,6 @@ class MainWindow(QMainWindow):
 
         self.health_layout = QGridLayout()
         self.health_layout.setSpacing(SPACING_NORMAL)
-        self.health_layout.setContentsMargins(0, 2, 0, 0)
 
         self.latency_label = QLabel("Latency: --")
         self.latency_label.setToolTip(
@@ -784,7 +775,7 @@ class MainWindow(QMainWindow):
             self.recovery_diag_label,
         )
         details_layout.addLayout(self.health_layout)
-        main_layout.addWidget(control_group)
+        details_layout.addStretch(1)
 
         self._reset_health_labels()
         for label, name in (
@@ -804,18 +795,135 @@ class MainWindow(QMainWindow):
                 QSizePolicy.Policy.Expanding,
                 QSizePolicy.Policy.Minimum,
             )
-        self.setTabOrder(self.input_combo, self.output_combo)
-        self.setTabOrder(self.output_combo, self.input_channel_mode_combo)
-        self.setTabOrder(
-            self.input_channel_mode_combo,
-            self.input_cleanup_mode_combo,
+        return scroll
+
+    def _build_settings_page(self) -> QScrollArea:
+        scroll, self.settings_layout = self._create_page()
+
+        input_card = Card("Audio input")
+        form = QFormLayout()
+        form.setSpacing(SPACING_NORMAL)
+        self.input_channel_mode_combo = QComboBox()
+        for label, mode in INPUT_CHANNEL_MODE_OPTIONS:
+            self.input_channel_mode_combo.addItem(label, mode)
+        self.input_channel_mode_combo.setToolTip(
+            "How multichannel input is converted to mono. Use Left/Right or Phase-safe mono if stereo channels cancel."
         )
-        self.setTabOrder(self.input_cleanup_mode_combo, self.refresh_btn)
-        self.setTabOrder(self.start_btn, self.stop_btn)
-        self.setTabOrder(self.stop_btn, self.auto_eq_button)
-        self.setTabOrder(self.auto_eq_button, self.auto_voice_setup_button)
-        self.setTabOrder(self.auto_voice_setup_button, self._undo_auto_eq_button)
-        self.setTabOrder(self._undo_auto_eq_button, self.processing_mode_combo)
+        input_mode_label = QLabel("Input mode")
+        bind_label(
+            input_mode_label,
+            self.input_channel_mode_combo,
+            name="Input channel mode",
+        )
+        form.addRow(input_mode_label, self.input_channel_mode_combo)
+
+        self.input_cleanup_mode_combo = QComboBox()
+        for label, mode in INPUT_CLEANUP_MODE_OPTIONS:
+            self.input_cleanup_mode_combo.addItem(label, mode)
+        self.input_cleanup_mode_combo.setToolTip(
+            "Optional adaptive input cleanup after the fixed safe pre-filter. Off preserves the existing DC/80 Hz path."
+        )
+        cleanup_label = QLabel("Cleanup")
+        bind_label(
+            cleanup_label,
+            self.input_cleanup_mode_combo,
+            name="Input cleanup mode",
+        )
+        form.addRow(cleanup_label, self.input_cleanup_mode_combo)
+        input_card.body.addLayout(form)
+        self.settings_layout.addWidget(input_card)
+        self.settings_layout.addStretch(1)
+        return scroll
+
+    def _menu_card(self, title: str, menu: QMenu, *, skip: QMenu | None = None) -> Card:
+        """Show a menu's entries as rows: switches, buttons and submenu buttons."""
+
+        card = Card(title)
+        # QAction.menu() hands PySide a wrapper that can delete the menu, so
+        # submenus are looked up from the parent instead.
+        submenus = menu.findChildren(
+            QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly
+        )
+        for action in menu.actions():
+            submenu = next((m for m in submenus if m.menuAction() is action), None)
+            if action.isSeparator() or (skip is not None and submenu is skip):
+                continue
+            row: QPushButton | ToggleSwitch
+            if isinstance(submenu, QMenu):
+                row = QPushButton()
+                row.setMenu(submenu)
+            elif action.isCheckable():
+                row = ToggleSwitch()
+                row.clicked.connect(action.trigger)
+            else:
+                row = QPushButton()
+                row.clicked.connect(action.trigger)
+            if isinstance(row, QPushButton):
+                # No wider than its label, but allowed to shrink with the page.
+                row.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
+            def sync(row=row, action=action) -> None:
+                row.setText(plain_label(action.text()))
+                row.setToolTip(action.toolTip())
+                row.setEnabled(action.isEnabled())
+                row.setVisible(action.isVisible())
+                if isinstance(row, ToggleSwitch):
+                    row.setChecked(action.isChecked())
+                else:
+                    row.setMaximumWidth(row.sizeHint().width())
+
+            action.changed.connect(sync)
+            sync()
+            card.body.addWidget(row)
+        return card
+
+    def _finish_shell(self) -> None:
+        """Wire what needs the menus and status bar, which are built after the pages."""
+
+        menubar = self.menuBar()
+        menus: dict[str, QMenu] = {}
+        for menu in menubar.findChildren(
+            QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly
+        ):
+            menus[menu.title().replace("&", "")] = menu
+            # A hidden menu bar disables its shortcuts unless the window owns
+            # the actions too.
+            self.addActions(menu.actions())
+        menubar.hide()
+
+        self.presets_button.setMenu(menus["Presets"])
+        end = self.settings_layout.count() - 1
+        # The tray submenu is mostly switches, so it gets a card of its own.
+        tray_menu = next(
+            menu
+            for menu in menus["Options"].findChildren(
+                QMenu, options=Qt.FindChildOption.FindDirectChildrenOnly
+            )
+            if menu.title().replace("&", "") == "Tray Background"
+        )
+        for offset, card in enumerate(
+            (
+                self._menu_card("Options", menus["Options"], skip=tray_menu),
+                self._menu_card("Tray and background", tray_menu),
+                self._menu_card("Help", menus["Help"]),
+            )
+        ):
+            self.settings_layout.insertWidget(end + offset, card)
+
+        for widget in (
+            self.transmission_status_label,
+            self.calibration_status_label,
+            self.health_summary_label,
+            self.health_details_button,
+        ):
+            self.status_bar.addPermanentWidget(widget)
+
+        # The Qt Quick view of the same controls. AUDIOFORGE_QML=0 keeps the
+        # widget view, which is also what remains if the scene cannot load.
+        if os.environ.get("AUDIOFORGE_QML", "1") != "0":
+            from .quick_shell import install_quick_shell
+
+            install_quick_shell(self)
 
     @staticmethod
     def _remove_grid_widgets(layout: QGridLayout, widgets: tuple[QWidget, ...]) -> None:
@@ -827,106 +935,22 @@ class MainWindow(QMainWindow):
             layout.setRowStretch(row, 0)
 
     def _update_responsive_layouts(self, width: int) -> None:
-        if not hasattr(self, "_health_layout_widgets"):
+        if not hasattr(self, "_card_widgets"):
             return
-        self._layout_main_splitter(width < self.VERTICAL_SPLITTER_BREAKPOINT)
         compact = width < self.COMPACT_LAYOUT_BREAKPOINT
         if compact == self._responsive_layout_compact:
             return
         self._responsive_layout_compact = compact
-        self._layout_device_controls(compact)
-        self._layout_processing_actions(compact)
+        # The pickers keep their accessible names when the captions go.
+        for label in self._route_labels:
+            label.setVisible(not compact)
+        self._remove_grid_widgets(self.cards_layout, self._card_widgets)
+        columns = 1 if compact else 2
+        for index, widget in enumerate(self._card_widgets):
+            row, column = divmod(index, columns)
+            self.cards_layout.addWidget(widget, row, column, Qt.AlignmentFlag.AlignTop)
+            self.cards_layout.setColumnStretch(column, 1)
         self._layout_health_chips(compact)
-
-    def _layout_main_splitter(self, vertical: bool) -> None:
-        if vertical == self._splitter_is_vertical:
-            return
-        self._splitter_is_vertical = vertical
-        if vertical:
-            self.main_splitter.setOrientation(Qt.Orientation.Vertical)
-            available = max(520, self.height() - 260)
-            self.main_splitter.setSizes([available // 2, available - available // 2])
-            return
-        self.main_splitter.setOrientation(Qt.Orientation.Horizontal)
-        self.main_splitter.setSizes(
-            self._clamp_splitter_sizes(self.config.main_splitter_sizes or [])
-        )
-
-    def _layout_device_controls(self, compact: bool) -> None:
-        widgets = self._device_layout_widgets
-        self._remove_grid_widgets(self.device_layout, widgets)
-        (
-            input_label,
-            input_combo,
-            output_label,
-            output_combo,
-            mode_label,
-            mode_combo,
-            cleanup_label,
-            cleanup_combo,
-            refresh_button,
-        ) = widgets
-        if compact:
-            self.device_layout.addWidget(input_label, 0, 0)
-            self.device_layout.addWidget(input_combo, 0, 1, 1, 3)
-            self.device_layout.addWidget(output_label, 0, 4)
-            self.device_layout.addWidget(output_combo, 0, 5, 1, 3)
-            self.device_layout.addWidget(mode_label, 1, 0)
-            self.device_layout.addWidget(mode_combo, 1, 1, 1, 2)
-            self.device_layout.addWidget(cleanup_label, 1, 3)
-            self.device_layout.addWidget(cleanup_combo, 1, 4, 1, 2)
-            self.device_layout.addWidget(refresh_button, 1, 7)
-            self.device_layout.setColumnStretch(1, 1)
-            self.device_layout.setColumnStretch(5, 1)
-            return
-
-        for column, widget in enumerate(widgets):
-            self.device_layout.addWidget(widget, 0, column)
-        self.device_layout.setColumnStretch(1, 1)
-        self.device_layout.setColumnStretch(3, 1)
-
-    def _layout_processing_actions(self, compact: bool) -> None:
-        widgets = self._action_layout_widgets
-        self._remove_grid_widgets(self.action_layout, widgets)
-        action_buttons = widgets[:5]
-        mode_label, mode_combo = widgets[5:]
-        if compact:
-            for index, button in enumerate(action_buttons):
-                row, column = divmod(index, 3)
-                self.action_layout.addWidget(button, row, column)
-            for column in range(3):
-                self.action_layout.setColumnStretch(column, 1)
-            self.action_layout.addWidget(
-                mode_label,
-                1,
-                3,
-                Qt.AlignmentFlag.AlignVCenter,
-            )
-            self.action_layout.addWidget(
-                mode_combo,
-                1,
-                4,
-                1,
-                1,
-                Qt.AlignmentFlag.AlignVCenter,
-            )
-            return
-
-        for column, button in enumerate(action_buttons):
-            self.action_layout.addWidget(button, 0, column)
-        self.action_layout.setColumnStretch(5, 1)
-        self.action_layout.addWidget(
-            mode_label,
-            0,
-            6,
-            Qt.AlignmentFlag.AlignVCenter,
-        )
-        self.action_layout.addWidget(
-            mode_combo,
-            0,
-            7,
-            Qt.AlignmentFlag.AlignVCenter,
-        )
 
     def _layout_health_chips(self, compact: bool) -> None:
         decision_widgets = self._health_decision_widgets
@@ -977,27 +1001,23 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._update_responsive_layouts(event.size().width())
 
-    def _create_tab_page(self, widgets: list[QWidget]) -> QScrollArea:
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(6, 6, 8, 8)
-        layout.setSpacing(SPACING_SECTION)
-        for widget in widgets:
-            layout.addWidget(widget)
-        layout.addStretch()
-
-        scroll = QScrollArea()
-        scroll.setWidget(container)
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        return scroll
-
-    def _create_noise_suppression_group(self) -> QGroupBox:
-        group = QGroupBox("Noise Suppression")
-        layout = QVBoxLayout(group)
-        layout.setSpacing(SPACING_NORMAL)
+    def _create_noise_suppression_group(self) -> Card:
+        self.rnnoise_checkbox = ToggleSwitch()
+        self.rnnoise_checkbox.setChecked(True)
+        self.rnnoise_checkbox.setToolTip(
+            "Enable or disable the selected suppression backend."
+        )
+        self.rnnoise_checkbox.toggled.connect(self._on_rnnoise_toggled)
+        group = Card(
+            "Noise Suppression",
+            switch=self.rnnoise_checkbox,
+            help_text=(
+                "Removes steady background noise such as fans and hum. The "
+                "backend choice affects cleanup quality, CPU use and latency. "
+                "Packaged builds use bundled, integrity-checked model files."
+            ),
+        )
+        layout = group.body
 
         model_layout = QHBoxLayout()
         backend_label = QLabel("Backend:")
@@ -1021,22 +1041,12 @@ class MainWindow(QMainWindow):
         )
         layout.addLayout(model_layout)
 
-        self.rnnoise_checkbox = QCheckBox("Enable Noise Suppression")
-        self.rnnoise_checkbox.setChecked(True)
-        self.rnnoise_checkbox.setToolTip(
-            "Enable or disable the selected suppression backend."
-        )
-        self.rnnoise_checkbox.toggled.connect(self._on_rnnoise_toggled)
-        layout.addWidget(self.rnnoise_checkbox)
-
         strength_layout = QHBoxLayout()
         strength_label = QLabel("Strength:")
         strength_layout.addWidget(strength_label)
         self.strength_slider = QSlider(Qt.Orientation.Horizontal)
         self.strength_slider.setRange(0, 100)
         self.strength_slider.setValue(100)
-        self.strength_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.strength_slider.setTickInterval(25)
         self.strength_slider.setToolTip(
             "Processing strength for the selected backend (0% dry, 100% fully processed)."
         )
@@ -1058,13 +1068,6 @@ class MainWindow(QMainWindow):
         self.rnnoise_latency_label.setWordWrap(True)
         layout.addWidget(self.rnnoise_latency_label)
 
-        info_label = QLabel(
-            "Backend choice affects cleanup quality, CPU use, and latency.\n"
-            "Packaged builds use bundled, integrity-checked neural model assets."
-        )
-        info_label.setStyleSheet(SUBDUED_TEXT_STYLE)
-        info_label.setWordWrap(True)
-        layout.addWidget(info_label)
         set_accessible_group(
             (
                 (
@@ -1413,9 +1416,6 @@ class MainWindow(QMainWindow):
     def current_preset_modified(self) -> bool:
         return bool(self.__dict__.get("preset_modified", False))
 
-    def _schedule_ui_state_save(self) -> None:
-        self._ui_state_timer.start(200)
-
     def _save_config_safely(self) -> bool:
         """Persist config without letting a write failure disrupt the UI."""
         try:
@@ -1425,52 +1425,10 @@ class MainWindow(QMainWindow):
             return False
 
     def _save_ui_state(self) -> bool:
-        if (
-            hasattr(self, "main_splitter")
-            and self.main_splitter.orientation() == Qt.Orientation.Horizontal
-        ):
-            self.config.main_splitter_sizes = self._clamp_splitter_sizes(
-                self.main_splitter.sizes()
-            )
-        if hasattr(self, "control_tabs"):
-            self.config.main_control_tab_index = int(self.control_tabs.currentIndex())
         saved = self._save_config_safely()
         if not saved:
             self.status_bar.showMessage("Could not save window settings", 5000)
         return saved
-
-    def _clamp_splitter_sizes(self, sizes: list[int]) -> list[int]:
-        total = max(sum(int(size) for size in sizes), self.width() - 150, 760)
-        default_left = min(
-            max(self.LEFT_PANE_MIN_WIDTH, total // 3), total - self.RIGHT_PANE_MIN_WIDTH
-        )
-        default_right = max(total - default_left, self.RIGHT_PANE_MIN_WIDTH)
-        if len(sizes) != 2:
-            return [default_left, default_right]
-
-        left = int(sizes[0])
-        min_left = self.LEFT_PANE_MIN_WIDTH
-        max_left = max(min_left, total - self.RIGHT_PANE_MIN_WIDTH)
-        left = max(min_left, min(left, max_left))
-        right = max(total - left, self.RIGHT_PANE_MIN_WIDTH)
-        return [left, right]
-
-    def _restore_ui_state(self) -> None:
-        if hasattr(self, "control_tabs"):
-            index = self.config.main_control_tab_index
-            if 0 <= index < self.control_tabs.count():
-                self.control_tabs.setCurrentIndex(index)
-        if hasattr(self, "main_splitter"):
-            if self.main_splitter.orientation() == Qt.Orientation.Horizontal:
-                self.main_splitter.setSizes(
-                    self._clamp_splitter_sizes(self.config.main_splitter_sizes or [])
-                )
-
-    def _on_main_control_tab_changed(self, _: int) -> None:
-        self._schedule_ui_state_save()
-
-    def _on_splitter_moved(self, _: int, __: int) -> None:
-        self._schedule_ui_state_save()
 
     def _set_noise_suppression_latency_label(self, model_id: str) -> None:
         if model_id == "deepfilter":
@@ -3054,7 +3012,6 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar.showMessage("Restored settings from previous session")
 
-        self._restore_ui_state()
         self._apply_latency_compensation_for_current_devices()
         if (
             "input_channel_mode_combo" in self.__dict__
@@ -3309,6 +3266,11 @@ class MainWindow(QMainWindow):
             logger.debug("Calibration dialog closed, result=%s", dialog.result())
             is_running = self.processor.is_running()
             logger.debug("After calibration - processor running=%s", is_running)
+
+    def _on_test_my_sound_clicked(self) -> None:
+        from .listening_comparison_dialog import open_test_my_sound
+
+        open_test_my_sound(self)
 
     def _on_auto_voice_setup_clicked(self) -> bool:
         """Open the multi-stage voice setup wizard."""
@@ -3652,7 +3614,7 @@ class MainWindow(QMainWindow):
             preset_name=preset_name,
             description=(
                 "Complete processing preset with Auto-EQ using "
-                f"the {target_curve.title()} target curve"
+                f"the {target_curve.title()} tone preset"
             ),
         )
 
@@ -4289,6 +4251,16 @@ class MainWindow(QMainWindow):
             ]
             text = issues[0] if issues else f"Health: {state.upper()}"
             self._set_health_chip(self.health_summary_label, text, state)
+            advice_label = self.__dict__.get("health_advice_label")
+            if advice_label is not None:
+                advice = advice_for(issues[0]) if issues else ""
+                if not advice:
+                    advice = {
+                        "ok": "Everything looks fine.",
+                        "idle": "Start processing to see audio health.",
+                    }.get(state, "Check the items marked below.")
+                advice_label.setText(advice)
+                self.health_summary_label.setToolTip(advice)
             self._update_session_summary()
 
     def _service_stream_recovery(
@@ -4462,7 +4434,7 @@ class MainWindow(QMainWindow):
             f"<h2>AudioForge v{__version__}</h2>"
             "<p>Low-latency microphone audio processor</p>"
             "<p>AudioForge source: MIT. Uses Qt and PySide6 under LGPLv3, "
-            "with separately licensed dependencies. See Help &gt; Licenses "
+            "with separately licensed dependencies. See Settings &gt; Help &gt; Licenses "
             "for the complete notices and library replacement instructions.</p>"
             "<p>Inspired by SteelSeries GG Sonar ClearCast AI</p>"
             "<h3>Processing Chain:</h3>"

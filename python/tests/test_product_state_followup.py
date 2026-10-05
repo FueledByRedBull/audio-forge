@@ -7,7 +7,7 @@ from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
-from PyQt6.QtWidgets import QComboBox, QWidget
+from PySide6.QtWidgets import QComboBox, QWidget
 
 from mic_eq.config import (
     AppConfig,
@@ -635,7 +635,7 @@ def test_complete_catalogues_have_scope_descriptions_and_resolved_sections() -> 
         for preset in BUILTIN_PRESETS.values()
     )
     assert all(
-        curve.description.startswith("Calibration target")
+        curve.description.startswith("Tone preset")
         for curve in TARGET_CURVES.values()
     )
     assert all(

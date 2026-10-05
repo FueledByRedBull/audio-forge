@@ -1,5 +1,48 @@
 # Changelog
 
+## Unreleased
+
+### Sound and dynamics
+
+- Turning the limiter off or on no longer jumps the audio timeline: both limiter stages stay in the signal path at unity gain, so engine latency is the same either way. Turning it back on, or lowering the ceiling, while audio is above the ceiling applies the new ceiling to already-queued audio at once as a gain step, without true-peak overs.
+- Turning the compressor off or on ramps its gain over 10 ms instead of stepping, and re-enabling starts from fresh detector state. Offline previews and verification renders now fade the same way when the compressor is toggled mid-render, and a stream starts with the compressor and EQ already in their configured state.
+- Re-enabling the EQ no longer replays filter ringing frozen when it was bypassed.
+- The fade-in after an output dropout now lands at the dropout instead of about 7 ms later.
+- Limiter lookahead scoring no longer shifts already-aligned audio; the corrected qualification still selects 0.5 ms.
+- Auto Voice Setup's and the offline previews' simulations gate each 10 ms block with the newest speech-detection result finished before it, as the live engine does; they previously used a result that finished inside the block, which made VAD gate modes look slightly better than they are live.
+- Auto Voice Setup evaluates gate and noise-suppression candidates with compression bypassed, then calibrates compression and validates the full chain. It checks noise following speech without resetting the gate or suppressor, and rejects candidates that make settled post-speech noise at least 1 dB louder than the current settings.
+- Recovery after a capture gap discards partial input frames and stale suppressor overlap. The recovery fade starts when valid delayed audio arrives, rather than being spent on the suppressor's empty output prefix.
+- Share threshold-only compressor calibration between setup and evaluation, and separate the existing slow automatic makeup controller from compressor detection and gain smoothing. Render/state parity is preserved; the rejected multidimensional search remains in the offline evaluator.
+- Align wet-output gate compensation with RNNoise and DeepFilter LL delay, preserving the gated input sent to each neural model and the existing dry mix. The supported routes improve phrase onsets while retaining the qualified quiet-pause behavior; Standard DeepFilter receives no compensation.
+- Auto de-essing now uses notch-complement power concentration and a shared spectral-background reference to respond to persistent harsh resonances. Voice Setup adds a signed spectral-curvature model for persistent evidence. Manual, disabled and zero-cap behavior remains unchanged, and the recorded preservation gates for ordinary and bright speech pass.
+- Register the Windows audio worker with MMCSS Pro Audio after initialization and before streams start. Registration failure aborts startup through the existing cleanup path; shutdown checks same-thread reversion, with best-effort cleanup on unwind.
+
+### Desktop and setup
+
+- Add a default-off login shortcut for packaged copies under Options > Tray & Background. A login launch stays in the tray, waits up to 60 seconds for the exact saved devices, and preserves output mute. Missing devices never select replacements automatically; Windows can disable a configured shortcut. Installer and Windows-shell lifecycle checks remain outstanding as documented in [RELEASING.md](RELEASING.md#login-startup-lifecycle).
+
+### Auto-EQ
+
+- Target curves are described as tone presets, and the Auto-EQ window is titled Auto-EQ Voice Tone. Speech alone cannot measure a microphone's response (a new study confirms it), and the Adaptive layer's voice-balance inputs saturate for nearly every real voice, so Adaptive is effectively a gentler fixed version of each preset.
+
+### Dependencies and CI
+
+- Update Semgrep to 1.179.0, PyJWT to 2.15.1 and urllib3 to 2.8.0 in the development lock, clearing the PyJWT and urllib3 advisories that failed the dependency audit; the development audit no longer needs an ignore.
+- Update github/codeql-action/upload-sarif to 4.38.2.
+- Migrate the interface and package to pinned PySide6 Essentials/Addons and shiboken6 6.11.1, with component notices, a corresponding-source manifest and Qt library replacement instructions. Previously published PyQt6 packages retain their GPLv3 terms.
+- Reuse the native 48 kHz K-weighting filter for setup loudness analysis, and use NumPy correlation for latency calibration. Numerical and decision checks preserve the existing behavior; SciPy remains a runtime dependency.
+- Add per-component bundle-size reporting and retain both DeepFilterNet models. The measured portable tree is larger; startup and idle-memory comparisons remain unqualified.
+- Add `dev.ps1` bootstrap, run, test and offline doctor commands using the existing pinned tools and hash-locked requirements. Bootstrap preserves incomplete environments; system prerequisites are installed separately.
+
+### Evaluation and repository
+
+- The earlier fullband EARS/DEMAND study kept the gate before noise suppression and rejected a speech-presence replacement under causal VAD timing. Those results remain unchanged; the separate wet-output compensation follow-up above retains the existing gate rules and neural input.
+- Removed nine superseded evaluation reports, the evaluators of closed decisions, and the published v1.12.0-v1.13.0 release notes (they remain on GitHub Releases and in tagged source).
+- Evaluation hygiene checks a released report at the first release that shipped it unchanged, so later code changes no longer force edits to released evidence.
+- The original October studies on simulated users (VoiceBank speech, DEMAND noise, synthetic rooms) kept the then-current behavior where a predefined rule did not support a change: a simpler fixed-grid Auto-EQ fitter, microphone correction from speech, fixed Adaptive-layer offsets, turning the gate off or to VAD Assisted under a neural suppressor (it costs 4-7 dB at phrase onsets but keeps long pauses 6-10 dB quieter), and refitting the de-esser's setup model (its realtime auto mode barely acts on a persistently harsh voice).
+- Before the check-ordering repair above, Auto Voice Setup's gate and noise-suppression tuner never changed settings for simulated users although a tested candidate was clearly better for about half of them: its absolute checks graded the frontend through an uncalibrated compressor. The relative checks and fitted selector tested in that study failed their predefined rule and remain rejected; the historical report is unchanged.
+- Adopt the audio follow-up under an explicit user-approved timing exception: one mandatory component-event p99 was 1.2151 ms against a 0.5 ms limit. All 294,000 complete kernels in that study were below 10 ms (candidate maximum 5.8616 ms). The component failure, earlier timing failures and unresolved total added-route cost remain recorded in [the follow-up report](evaluation/audio-followups-2026-10-report.json); this is not a passing component-budget result or a live-hardware/package qualification.
+
 ## v1.14.0
 
 ### Sound and dynamics

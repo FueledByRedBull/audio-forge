@@ -110,6 +110,31 @@ def build_bundle_manifest(bundle: Path) -> dict[str, Any]:
     }
 
 
+def _bundle_component(path: str) -> str:
+    relative = path.replace("\\", "/").casefold().removeprefix("_internal/")
+    if relative.startswith("licenses/"):
+        return "Licenses"
+    if relative.startswith(("pyqt6/", "pyside6/", "shiboken6/")):
+        return "Qt and bindings"
+    if relative.startswith(("scipy/", "scipy.libs/")):
+        return "SciPy and bundled BLAS"
+    if relative.startswith(("numpy/", "numpy.libs/")):
+        return "NumPy and bundled BLAS"
+    if relative.startswith("models/deepfilternet3_ll_onnx"):
+        return "DeepFilter LL model"
+    if relative.startswith("models/deepfilternet3_onnx"):
+        return "DeepFilter Standard model"
+    if relative == "models/silero_vad.onnx":
+        return "Silero model"
+    if relative == "df.dll":
+        return "DeepFilter runtime"
+    if relative.startswith("onnxruntime") and relative.endswith(".dll"):
+        return "ONNX Runtime"
+    if relative == "audioforge.exe" or relative.startswith("mic_eq/mic_eq_core"):
+        return "Application executable and native core"
+    return "Python and other runtime files"
+
+
 def compare_bundle_sizes(current: dict[str, Any], previous: dict[str, Any]) -> str:
     """Summarize uncompressed payload changes using existing release manifests."""
     def sizes(manifest: dict[str, Any]) -> dict[str, int]:
@@ -132,6 +157,10 @@ def compare_bundle_sizes(current: dict[str, Any], previous: dict[str, Any]) -> s
 
     before, after = sizes(previous), sizes(current)
     old_total, new_total = sum(before.values()), sum(after.values())
+    components: dict[str, list[int]] = {}
+    for index, entries in enumerate((before, after)):
+        for path, size in entries.items():
+            components.setdefault(_bundle_component(path), [0, 0])[index] += size
     changes = sorted(
         ((path, after.get(path, 0) - before.get(path, 0)) for path in before.keys() | after.keys()),
         key=lambda change: (-abs(change[1]), change[0]),
@@ -141,10 +170,20 @@ def compare_bundle_sizes(current: dict[str, Any], previous: dict[str, Any]) -> s
         "",
         f"Uncompressed payload: {old_total:,} -> {new_total:,} bytes ({new_total - old_total:+,}).",
         "Compressed download sizes are separate from these payload sizes.",
+        "Compressed component sizes are not additive in a solid archive.",
+        "",
+        "| Component | Previous bytes | Current bytes | Change |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for component, (old_size, new_size) in sorted(
+        components.items(), key=lambda item: (-item[1][1], item[0])
+    ):
+        lines.append(f"| {component} | {old_size} | {new_size} | {new_size - old_size:+} |")
+    lines.extend([
         "",
         "| Largest file changes (up to 20) | Previous bytes | Current bytes | Change |",
         "| --- | ---: | ---: | ---: |",
-    ]
+    ])
     for path, delta in [change for change in changes if change[1]][:20]:
         label = path.replace("|", "&#124;").replace("`", "'").replace("\n", " ").replace("\r", " ")
         lines.append(f"| `{label}` | {before.get(path, 0):,} | {after.get(path, 0):,} | {delta:+,} |")

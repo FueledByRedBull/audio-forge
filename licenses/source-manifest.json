@@ -1,6 +1,6 @@
 {
   "blockers": [],
-  "distribution_license": "GPL-3.0-only",
+  "distribution_license": "MIT; bundled components retain their individual licenses",
   "entries": [
     {
       "build_role": "resolved Rust dependency",
@@ -4136,28 +4136,6 @@
       "version": "9bdf051b96e956f848dfcef89c23e1993b0e1b3e"
     },
     {
-      "build_role": "PyQt6 binding build requirement declared by the PyQt6 sdist",
-      "filename": "pyqt_builder-1.19.1.tar.gz",
-      "id": "python-build-pyqt-builder-1.19.1",
-      "kind": "python-build-source",
-      "name": "PyQt-builder",
-      "sha256": "6af6646ba29668751b039bfdced51642cb510e300796b58a4d68b7f956a024d8",
-      "source_of_truth": "https://pypi.org/project/PyQt-builder/1.19.1/#files",
-      "url": "https://files.pythonhosted.org/packages/61/f6/f3b504b4d55a7c4d3393cb90378501f1f5fc7f233bd85c0375674f84d2af/pyqt_builder-1.19.1.tar.gz",
-      "version": "1.19.1"
-    },
-    {
-      "build_role": "PyQt6 binding build requirement declared by the PyQt6 sdist",
-      "filename": "sip-6.16.1.tar.gz",
-      "id": "python-build-sip-6.16.1",
-      "kind": "python-build-source",
-      "name": "sip",
-      "sha256": "0a739c9cd2929de4e0884456d8caf3cfb22c10534757c7797bd8dc6bd9ed69bc",
-      "source_of_truth": "https://pypi.org/project/sip/6.16.1/#files",
-      "url": "https://files.pythonhosted.org/packages/3c/ca/6b4861723d1bd92d0a21afece74fc63d9bd62fabb1dcc209113972505434/sip-6.16.1.tar.gz",
-      "version": "6.16.1"
-    },
-    {
       "build_role": "locked Python runtime or packaging tool",
       "filename": "numpy-2.5.1.tar.gz",
       "id": "python-numpy-2.5.1",
@@ -4180,26 +4158,28 @@
       "version": "6.21.0"
     },
     {
-      "build_role": "locked Python runtime or packaging tool",
-      "filename": "pyqt6-6.11.0.tar.gz",
-      "id": "python-pyqt6-6.11.0",
-      "kind": "python-sdist",
-      "name": "PyQt6",
-      "sha256": "45dd60aa69976de1918b5ced6b4e7b6a25abd2a919ecef5fd5826ecc76718889",
-      "source_of_truth": "https://pypi.org/project/PyQt6/6.11.0/#files",
-      "url": "https://files.pythonhosted.org/packages/8b/47/b25c13eca5bebc6505394d0223e46d7ebf0c57dcac2ed908d7d19b18ab6b/pyqt6-6.11.0.tar.gz",
-      "version": "6.11.0"
+      "build_role": "Qt for Python runtime; PyPI publishes wheels only",
+      "filename": "pyside-setup-everywhere-src-6.11.1.tar.xz",
+      "id": "python-pyside6-addons-6.11.1",
+      "kind": "python-upstream-source",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "name": "PySide6-Addons",
+      "sha256": "6ffd9835bb0dd2c56f061d62f1616bb1707cfc0202b80e3165d6be087f3965e2",
+      "source_of_truth": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz.mirrorlist",
+      "url": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz",
+      "version": "6.11.1"
     },
     {
-      "build_role": "locked Python runtime or packaging tool",
-      "filename": "pyqt6_sip-13.11.1.tar.gz",
-      "id": "python-pyqt6-sip-13.11.1",
-      "kind": "python-sdist",
-      "name": "PyQt6-sip",
-      "sha256": "869c5b48afe38e55b1ee0dd72182b0886e968cc509b98023ff50010b013ce1be",
-      "source_of_truth": "https://pypi.org/project/PyQt6-sip/13.11.1/#files",
-      "url": "https://files.pythonhosted.org/packages/90/24/a753e1af94b9ae5b2da63d4598457308da3cdbf0838c959381db086ccc86/pyqt6_sip-13.11.1.tar.gz",
-      "version": "13.11.1"
+      "build_role": "Qt for Python runtime; PyPI publishes wheels only",
+      "filename": "pyside-setup-everywhere-src-6.11.1.tar.xz",
+      "id": "python-pyside6-essentials-6.11.1",
+      "kind": "python-upstream-source",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "name": "PySide6-Essentials",
+      "sha256": "6ffd9835bb0dd2c56f061d62f1616bb1707cfc0202b80e3165d6be087f3965e2",
+      "source_of_truth": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz.mirrorlist",
+      "url": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz",
+      "version": "6.11.1"
     },
     {
       "build_role": "locked Windows runtime dependency; PyPI publishes wheels only",
@@ -4224,10 +4204,23 @@
       "version": "1.18.0"
     },
     {
+      "build_role": "Qt for Python runtime; PyPI publishes wheels only",
+      "filename": "pyside-setup-everywhere-src-6.11.1.tar.xz",
+      "id": "python-shiboken6-6.11.1",
+      "kind": "python-upstream-source",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+      "name": "shiboken6",
+      "sha256": "6ffd9835bb0dd2c56f061d62f1616bb1707cfc0202b80e3165d6be087f3965e2",
+      "source_of_truth": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz.mirrorlist",
+      "url": "https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz",
+      "version": "6.11.1"
+    },
+    {
       "build_role": "corresponding source for the Qt libraries and plugins used by the Windows bundle",
       "filename": "qtbase-everywhere-src-6.11.1.tar.xz",
       "id": "qt-qtbase-6.11.1",
       "kind": "qt-source",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
       "name": "Qt base (Core, Gui, Network, Widgets, Windows platform plugin)",
       "sha256": "d9594a31228aa23ad6b531719a29b45f0f3989fe6c136d45767ea179f233c1ac",
       "source_of_truth": "https://download.qt.io/official_releases/qt/",
@@ -4239,6 +4232,7 @@
       "filename": "qtimageformats-everywhere-src-6.11.1.tar.xz",
       "id": "qt-qtimageformats-6.11.1",
       "kind": "qt-source",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
       "name": "Qt image format plugins shipped in the Windows bundle",
       "sha256": "b2bf6c6845ac175ed7f819145483ba4676f617aaa6a5012c8efee63c8bbac413",
       "source_of_truth": "https://download.qt.io/official_releases/qt/",
@@ -4250,6 +4244,7 @@
       "filename": "qtmultimedia-everywhere-src-6.11.1.tar.xz",
       "id": "qt-qtmultimedia-6.11.1",
       "kind": "qt-source",
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
       "name": "Qt Multimedia core and Windows audio backend used by QAudioSink",
       "sha256": "390f8e52ddee3aca5c4de7eead900c84c4fa61ff6d1f0ebea9c7543365c09b0a",
       "source_of_truth": "https://download.qt.io/official_releases/qt/",
@@ -4357,7 +4352,7 @@
       "files": [
         {
           "path": "build_deepfilter.ps1",
-          "sha256": "e4c73d9476cc0dae5e606e2483e1a7f8f7f095af18d8ddceb92f2022ffffa2d0"
+          "sha256": "4c558d0989901cabeadd6e9bb3bb373dd7130049e16e9c68bf5bd29d6110ff83"
         },
         {
           "path": "build-support/deepfilter/Cargo.toml",
@@ -4377,6 +4372,6 @@
     }
   ],
   "schema_version": 1,
-  "scope": "Exact sources for the release Python runtime, PyQt/Qt binding stack, PyInstaller bootloader, CPython, CPU ONNX Runtime graph, and resolved Windows Cargo graph. Runtime models and redistributable binaries are recorded separately.",
+  "scope": "Exact sources for the release Python runtime, PySide/Qt binding stack, PyInstaller bootloader, CPython, CPU ONNX Runtime graph, and resolved Windows Cargo graph. Runtime models and redistributable binaries are recorded separately.",
   "status": "complete"
 }

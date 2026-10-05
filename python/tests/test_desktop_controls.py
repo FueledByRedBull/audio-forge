@@ -7,7 +7,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from PyQt6.QtWidgets import QComboBox
+from PySide6.QtWidgets import QComboBox
 
 from mic_eq.ui.desktop_integration import (
     MOD_ALT,

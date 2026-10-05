@@ -53,20 +53,21 @@ TRUSTED_SOURCE_HOSTS = frozenset(
 )
 EXPECTED_CPYTHON_VERSION = "3.13.15"
 PYPI_SDIST_PACKAGES = (
-    ("pyqt6", "PyQt6"),
-    ("pyqt6-sip", "PyQt6-sip"),
     ("numpy", "NumPy"),
     ("scipy", "SciPy"),
     ("pyinstaller", "PyInstaller"),
 )
 
-# PyQt6 6.11.0's sdist declares these build requirements.  They are build
-# tools rather than shipped runtime libraries, but retaining their exact
-# sdists makes the PyQt binding rebuild instructions actionable.
-PYQT_BUILD_SOURCES = (
-    ("sip", "6.16.1"),
-    ("PyQt-builder", "1.19.1"),
+PYSIDE_PACKAGES = (
+    "PySide6-Essentials",
+    "PySide6-Addons",
+    "shiboken6",
 )
+PYSIDE_SOURCE = {'version': '6.11.1',
+ 'filename': 'pyside-setup-everywhere-src-6.11.1.tar.xz',
+ 'url': 'https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz',
+ 'sha256': '6ffd9835bb0dd2c56f061d62f1616bb1707cfc0202b80e3165d6be087f3965e2',
+ 'source_of_truth': 'https://download.qt.io/official_releases/QtForPython/pyside6/PySide6-6.11.1-src/pyside-setup-everywhere-src-6.11.1.tar.xz.mirrorlist'}
 
 PYWIN32_SOURCE = {
     "name": "pywin32",
@@ -86,23 +87,15 @@ PYTHON_SOURCE = {
     },
 }
 
-QT_MODULE_SOURCES = (
-    {
-        "module": "qtbase",
-        "description": "Qt base (Core, Gui, Network, Widgets, Windows platform plugin)",
-        "sha256": "d9594a31228aa23ad6b531719a29b45f0f3989fe6c136d45767ea179f233c1ac",
-    },
-    {
-        "module": "qtimageformats",
-        "description": "Qt image format plugins shipped in the Windows bundle",
-        "sha256": "b2bf6c6845ac175ed7f819145483ba4676f617aaa6a5012c8efee63c8bbac413",
-    },
-    {
-        "module": "qtmultimedia",
-        "description": "Qt Multimedia core and Windows audio backend used by QAudioSink",
-        "sha256": "390f8e52ddee3aca5c4de7eead900c84c4fa61ff6d1f0ebea9c7543365c09b0a",
-    },
-)
+QT_MODULE_SOURCES = ({'module': 'qtbase',
+  'description': 'Qt base (Core, Gui, Network, Widgets, Windows platform plugin)',
+  'sha256': 'd9594a31228aa23ad6b531719a29b45f0f3989fe6c136d45767ea179f233c1ac'},
+ {'module': 'qtimageformats',
+  'description': 'Qt image format plugins shipped in the Windows bundle',
+  'sha256': 'b2bf6c6845ac175ed7f819145483ba4676f617aaa6a5012c8efee63c8bbac413'},
+ {'module': 'qtmultimedia',
+  'description': 'Qt Multimedia core and Windows audio backend used by QAudioSink',
+  'sha256': '390f8e52ddee3aca5c4de7eead900c84c4fa61ff6d1f0ebea9c7543365c09b0a'})
 QT_SOURCE = {
     "filename_template": "qtbase-everywhere-src-{version}.tar.xz",
     "url_template": (
@@ -835,7 +828,7 @@ def _native_asset_entries() -> tuple[list[dict[str, Any]], list[str]]:
             )
         if restricted:
             blockers.append(
-                f"{path}: upstream distribution terms are not cleared for the GPLv3 binary; remove it or record an approved license"
+                f"{path}: upstream distribution terms are not cleared for this binary; remove it or record an approved license"
             )
     return entries, blockers
 
@@ -845,9 +838,7 @@ def build_manifest() -> dict[str, Any]:
     runtime = _read_locked_versions(ROOT / "requirements" / "runtime.txt")
     dev = _read_locked_versions(ROOT / "requirements" / "dev.txt")
     required = {
-        "pyqt6": runtime.get("pyqt6"),
-        "pyqt6-sip": runtime.get("pyqt6-sip"),
-        "pyqt6-qt6": runtime.get("pyqt6-qt6"),
+        **{name.casefold(): runtime.get(name.casefold()) for name in PYSIDE_PACKAGES},
         "numpy": runtime.get("numpy"),
         "scipy": runtime.get("scipy"),
         "pywin32": runtime.get("pywin32"),
@@ -859,7 +850,7 @@ def build_manifest() -> dict[str, Any]:
             "Required pins are missing from the lock files: " + ", ".join(missing)
         )
 
-    entries: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = _pyside_source_entries(runtime)
     for lock_name, display_name in PYPI_SDIST_PACKAGES:
         version = required.get(lock_name)
         if not isinstance(version, str):
@@ -895,9 +886,9 @@ def build_manifest() -> dict[str, Any]:
         )
     )
 
-    qt_version = required["pyqt6-qt6"]
+    qt_version = required["pyside6-essentials"]
     if not isinstance(qt_version, str):
-        raise SourceDistributionError("Required pin is missing for pyqt6-qt6")
+        raise SourceDistributionError("Required pin is missing for pyside6-essentials")
     for module in QT_MODULE_SOURCES:
         module_name = str(module["module"])
         source: dict[str, Any] = {
@@ -918,20 +909,7 @@ def build_manifest() -> dict[str, Any]:
                 source=source,
                 source_of_truth="https://download.qt.io/official_releases/qt/",
                 build_role="corresponding source for the Qt libraries and plugins used by the Windows bundle",
-            )
-        )
-
-    for name, version in PYQT_BUILD_SOURCES:
-        source = _pypi_sdist(name, version)
-        entries.append(
-            _source_entry(
-                identifier=f"python-build-{name.casefold()}-{version}",
-                kind="python-build-source",
-                name=name,
-                version=version,
-                source=source,
-                source_of_truth=f"https://pypi.org/project/{name}/{version}/#files",
-                build_role="PyQt6 binding build requirement declared by the PyQt6 sdist",
+                license="LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
             )
         )
 
@@ -1050,12 +1028,12 @@ def build_manifest() -> dict[str, Any]:
         "schema_version": 1,
         "project": "AudioForge",
         "project_version": project_version,
-        "distribution_license": "GPL-3.0-only",
+        "distribution_license": "MIT; bundled components retain their individual licenses",
         "original_source_license": "MIT",
         "status": "complete" if not blockers else "incomplete",
         "blockers": sorted(set(blockers)),
         "scope": (
-            "Exact sources for the release Python runtime, PyQt/Qt binding stack, "
+            "Exact sources for the release Python runtime, PySide/Qt binding stack, "
             "PyInstaller bootloader, CPython, CPU ONNX Runtime graph, and resolved Windows Cargo graph. "
             "Runtime models and redistributable binaries are recorded separately."
         ),
@@ -1150,9 +1128,35 @@ def _expected_runtime_entries() -> dict[str, dict[str, Any]]:
     return expected
 
 
+def _pyside_source_entries(runtime: dict[str, str]) -> list[dict[str, Any]]:
+    """Map the three wheels to their one verified upstream source archive."""
+    for name in PYSIDE_PACKAGES:
+        if runtime.get(name.casefold()) != PYSIDE_SOURCE["version"]:
+            raise SourceDistributionError(
+                f"{name} lock has no verified source mapping; update PYSIDE_SOURCE"
+            )
+    return [
+        _source_entry(
+            identifier=f"python-{name.casefold()}-{PYSIDE_SOURCE['version']}",
+            kind="python-upstream-source",
+            name=name,
+            version=PYSIDE_SOURCE["version"],
+            source=PYSIDE_SOURCE,
+            source_of_truth=PYSIDE_SOURCE["source_of_truth"],
+            license="LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only",
+            build_role="Qt for Python runtime; PyPI publishes wheels only",
+        )
+        for name in PYSIDE_PACKAGES
+    ]
+
+
 def _expected_static_source_entries(runtime: dict[str, str]) -> dict[str, dict[str, str]]:
     """Return immutable source identities that do not require network metadata."""
     expected: dict[str, dict[str, str]] = {}
+    for entry in _pyside_source_entries(runtime):
+        expected[entry["id"]] = {
+            key: str(entry[key]) for key in ("filename", "url", "sha256", "source_of_truth")
+        }
 
     pywin32_version = runtime.get("pywin32")
     if pywin32_version == PYWIN32_SOURCE["version"]:
@@ -1161,7 +1165,7 @@ def _expected_static_source_entries(runtime: dict[str, str]) -> dict[str, dict[s
             for key in ("filename", "url", "sha256", "source_of_truth")
         }
 
-    qt_version = runtime.get("pyqt6-qt6")
+    qt_version = runtime.get("pyside6-essentials")
     if qt_version:
         minor = ".".join(qt_version.split(".")[:2])
         for module in QT_MODULE_SOURCES:
@@ -1363,8 +1367,7 @@ def _validate_manifest(manifest: dict[str, Any], *, release: bool = False) -> No
         for name, hashes in _read_locked_hashes(lock_path).items():
             locked_hashes.setdefault(name, set()).update(hashes)
     expected = {
-        "PyQt6": runtime.get("pyqt6"),
-        "PyQt6-sip": runtime.get("pyqt6-sip"),
+        **{name: runtime.get(name.casefold()) for name in PYSIDE_PACKAGES},
         "NumPy": runtime.get("numpy"),
         "SciPy": runtime.get("scipy"),
         "pywin32": runtime.get("pywin32"),
@@ -1378,14 +1381,14 @@ def _validate_manifest(manifest: dict[str, Any], *, release: bool = False) -> No
         ]
         if not isinstance(version, str) or not any(matches):
             raise SourceDistributionError(f"Manifest lacks locked source for {name} {version}")
-        if name.casefold() != "pywin32" and not any(
+        if name not in (*PYSIDE_PACKAGES, "pywin32") and not any(
             entry.get("sha256") in locked_hashes.get(name.casefold(), set())
             for entry in entries
             if entry.get("name", "").casefold() == name.casefold()
             and entry.get("version") == version
         ):
             raise SourceDistributionError(f"Manifest source hash for {name} {version} is not pinned in the lock")
-    qt_version = runtime.get("pyqt6-qt6")
+    qt_version = runtime.get("pyside6-essentials")
     if not isinstance(qt_version, str) or not any(
         entry.get("kind") == "qt-source" and entry.get("version") == qt_version
         for entry in entries

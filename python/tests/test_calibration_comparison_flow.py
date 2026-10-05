@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
-from PyQt6.QtWidgets import QDialog, QMessageBox, QWidget
+from PySide6.QtWidgets import QDialog, QMessageBox, QWidget
 
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
@@ -76,7 +76,7 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
 
 
 def test_suppression_settings_cannot_switch_backend_or_accept_nan(qapp):
-    from PyQt6.QtWidgets import QCheckBox, QComboBox, QSlider
+    from PySide6.QtWidgets import QCheckBox, QComboBox, QSlider
     from mic_eq.ui.voice_setup_dialog import _apply_suppressor_settings
 
     owner = SimpleNamespace(rnnoise_checkbox=QCheckBox(), strength_slider=QSlider(), model_combo=QComboBox())

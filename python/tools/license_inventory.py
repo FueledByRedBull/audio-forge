@@ -17,6 +17,7 @@ from typing import Any
 import zipfile
 
 from source_distribution import (
+    PYSIDE_SOURCE,
     SourceDistributionError,
     _archive_target,
     load_manifest,
@@ -36,6 +37,8 @@ def _native_source_components(manifest: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(entry, dict) or entry.get("kind") not in {
             "native-build-source",
             "cargo-source-patch",
+            "qt-source",
+            "python-upstream-source",
         }:
             continue
         components.append(
@@ -394,6 +397,16 @@ def build_inventory(output: Path) -> dict[str, Any]:
             "notices": copy_notices(files, output / component),
         })
 
+    qt_notice = ROOT / "licenses" / f"QtForPython-{PYSIDE_SOURCE['version']}-NOTICES.txt"
+    if not qt_notice.is_file():
+        raise ValueError(f"Required Qt/PySide license collection is missing: {qt_notice.name}")
+    qt_notices = copy_notices([qt_notice], output / "qt-for-python")
+    for component in python_components:
+        if str(component["name"]).replace("_", "-").casefold() in {
+            "pyside6-essentials", "pyside6-addons", "shiboken6",
+        }:
+            component["notices"].extend(qt_notices)
+
     cargo = json.loads(subprocess.run(
         ["cargo", "metadata", "--locked", "--format-version", "1",
          "--filter-platform", "x86_64-pc-windows-msvc", "--features", "extension-module"],
@@ -419,9 +432,12 @@ def build_inventory(output: Path) -> dict[str, Any]:
     rust_components.extend(_deepfilter_rust_components(output, existing_rust))
     runtime = load_asset_manifest(ROOT / "release-assets.json")
     source_status = source_distribution_status(output)
+    for component in source_status.get("native_components", []):
+        if str(component["id"]).startswith(("qt-", "python-pyside6-", "python-shiboken6-")):
+            component["notices"].extend(qt_notices)
     inventory = {
         "schema_version": 1, "version": project["project"]["version"],
-        "distribution_license": "GPL-3.0-only", "original_source_license": "MIT",
+        "distribution_license": "MIT; bundled components retain their individual licenses", "original_source_license": "MIT",
         "scope": "Locked Python runtime, frozen bootloader, Windows extension, and resolved Windows Rust build graph; Rust entries can include build-only dependencies.",
         "python": {"version": sys.version.split()[0], "source": f"https://www.python.org/downloads/release/python-{sys.version_info.major}{sys.version_info.minor}{sys.version_info.micro}/",
                    "notices": copy_notices([Path(sys.base_prefix) / "LICENSE.txt"], output / "cpython")},

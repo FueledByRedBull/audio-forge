@@ -6,8 +6,8 @@ Controls sibilance reduction stage placed between noise suppression and EQ.
 
 import logging
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
     QGridLayout,
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 class DeEsserPanel(QWidget):
     """De-esser parameter control panel."""
 
-    configurationEdited = pyqtSignal(str)
+    configurationEdited = Signal(str)
 
     def __init__(self, processor):
         super().__init__()

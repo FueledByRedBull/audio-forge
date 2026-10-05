@@ -3,7 +3,7 @@ from typing import Any, cast
 from unittest.mock import Mock, call
 
 import pytest
-from PyQt6.QtWidgets import QWidget
+from PySide6.QtWidgets import QWidget
 
 from mic_eq.ui import capture_session
 from mic_eq.ui.calibration_dialog import CalibrationDialog

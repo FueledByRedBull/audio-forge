@@ -235,6 +235,9 @@ def simulate_eq_v2(
 def measure_integrated_loudness(
     audio: npt.NDArray[np.float32], sample_rate: int
 ) -> float: ...
+
+def _k_weighted_48k(audio: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]: ...
+
 def analyze_vad_probabilities(
     audio: npt.NDArray[np.float32], sample_rate: int, threshold: float = 0.48
 ) -> list[float]:

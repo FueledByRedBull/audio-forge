@@ -1,0 +1,429 @@
+{
+  "audible_change": false,
+  "configuration": {
+    "command": "evaluate_gate_corpus.py order",
+    "gate": "committed incumbent gate",
+    "gate_modes": {
+      "m0": "threshold_only (product default)",
+      "m1": "vad_assisted"
+    },
+    "vad_control": "causal: last 32 ms window ended by each block's first sample"
+  },
+  "corpus": {
+    "environments_per_speaker": {
+      "deepfilter": 1,
+      "deepfilter-ll": 1,
+      "rnnoise": 2
+    },
+    "manifest_sha256": "67dac07c2d7dda239a31b485a52abc3cc613b1a35ab1b9812fbfe42e69cd6105",
+    "snr_db": [
+      5.0,
+      15.0,
+      25.0
+    ],
+    "speakers": 24
+  },
+  "decision": "retain_gate_before_suppressor",
+  "generated_at_utc": "2026-10-01T04:42:28.608102+00:00",
+  "limitations": [
+    "Objective metrics on one synthetic-mixture corpus; no listening test.",
+    "Pauses are inserted between EARS phrases because EARS trims silences.",
+    "The de-esser/EQ order decision remains in processing-order-2026-09-report.json."
+  ],
+  "measurement_identity": {
+    "extension": "mic_eq_core.cp313-win_amd64.pyd",
+    "extension_copy": "models/evaluation-details/processing-order-2026-10/order-mic_eq_core.pyd",
+    "extension_sha256": "12528129ec30bd6d45b402db561500418f6fce65dcd4d3753fcfb854ca3fa376",
+    "extension_source": "4f77bb0 plus this branch's limiter, compressor, EQ and output-fade changes; gate unchanged",
+    "models": {
+      "df.dll": "c0d0bdccd31d16e734d2428a2edf69770c0216702305a0759e638601882fb3f7",
+      "models/DeepFilterNet3_ll_onnx.tar.gz": "5998e58e8ba0e09bb76986ef97b84afa065a571ef282d4a1222f341e3251cf3a",
+      "models/DeepFilterNet3_onnx.tar.gz": "c94d91f70911001c946e0fabb4aa9adc37045f45a03b56008cb0c8244cb63616",
+      "models/silero_vad.onnx": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    },
+    "tool_note": "evaluate_gate_corpus.py changed later only in its qualify/rows code, not in order()",
+    "tool_sha256_at_measurement": {
+      "python/tools/_eval_common.py": "f6bccabedc531161d1577b1e807c30391bdfe291faf1fd0eba438729b7e006e0",
+      "python/tools/evaluate_gate_corpus.py": "7de79406492aaa2eb1a06e480a10363d9ef7660699d233660b29980180069b27"
+    }
+  },
+  "reason": "With the default Threshold Only gate, suppressor-first clips phrase onsets and lowers ESTOI on every backend. In VAD Assisted it gains ESTOI but makes RNNoise tails louder and costs DeepFilter LL SI-SDR. The order is global, so the default mode decides.",
+  "results": {
+    "deepfilter": {
+      "arm_means": {
+        "gate_first_m0": {
+          "deep_pause_db": -18.75186787390142,
+          "estoi": 0.8356482002594531,
+          "floor_modulation_db": 5.329237380130859,
+          "onset_db": -3.7388665385486357,
+          "pause_db": -15.567069218157608,
+          "si_sdr": 13.677317226770255,
+          "tail_db": -13.615487867821395
+        },
+        "gate_first_m1": {
+          "deep_pause_db": -20.28039022942516,
+          "estoi": 0.8294186604730969,
+          "floor_modulation_db": 6.897983755657621,
+          "onset_db": -5.314753802885218,
+          "pause_db": -15.837621641489932,
+          "si_sdr": 13.204767906094474,
+          "tail_db": -13.57526384781837
+        },
+        "suppressor_first_m0": {
+          "deep_pause_db": -28.21793195482663,
+          "estoi": 0.8303894035904791,
+          "floor_modulation_db": 12.124711031649278,
+          "onset_db": -7.079101205512962,
+          "pause_db": -19.491709505658633,
+          "si_sdr": 13.224415537800441,
+          "tail_db": -16.286078297228187
+        },
+        "suppressor_first_m1": {
+          "deep_pause_db": -21.138369631788056,
+          "estoi": 0.8347875645534144,
+          "floor_modulation_db": 6.831517260047865,
+          "onset_db": -4.3179609710196605,
+          "pause_db": -16.722958189086786,
+          "si_sdr": 13.37050511887406,
+          "tail_db": -14.499709745791026
+        },
+        "suppressor_only": {
+          "deep_pause_db": -16.971307802725867,
+          "estoi": 0.8360425624912705,
+          "floor_modulation_db": 3.5182883024813405,
+          "onset_db": -3.496858802957227,
+          "pause_db": -14.852100576489939,
+          "si_sdr": 13.39746738073849,
+          "tail_db": -13.645876874295361
+        }
+      },
+      "suppressor_first_minus_gate_first": {
+        "mode_0": {
+          "deep_pause_db": [
+            -9.466064080925209,
+            -11.552265417887838,
+            -7.427103354951344
+          ],
+          "estoi": [
+            -0.005258796668974098,
+            -0.006638687960663328,
+            -0.003944536746002647
+          ],
+          "floor_modulation_db": [
+            6.795473651518417,
+            5.093150211338875,
+            8.560811037419715
+          ],
+          "onset_db": [
+            -3.340234666964327,
+            -4.706818474086181,
+            -2.1612241462426587
+          ],
+          "pause_db": [
+            -3.9246402875010267,
+            -5.135139583899281,
+            -2.911083968224963
+          ],
+          "si_sdr": [
+            -0.4529016889698138,
+            -0.6145888348708529,
+            -0.29235818089778964
+          ],
+          "tail_db": [
+            -2.6705904294067913,
+            -3.6912631835592897,
+            -1.9030931179537185
+          ]
+        },
+        "mode_1": {
+          "deep_pause_db": [
+            -0.8579794023628996,
+            -2.2029033557232136,
+            0.45107214472642737
+          ],
+          "estoi": [
+            0.005368904080317585,
+            0.0038362119012122784,
+            0.0070239045747640325
+          ],
+          "floor_modulation_db": [
+            -0.06646649560975515,
+            -1.1192572141089439,
+            1.0712694187683882
+          ],
+          "onset_db": [
+            0.9967928318655576,
+            0.2051250868427652,
+            1.7787138373248643
+          ],
+          "pause_db": [
+            -0.8853365475968517,
+            -1.9086780614988397,
+            -0.0005741309842872269
+          ],
+          "si_sdr": [
+            0.16573721277958495,
+            -0.06563597473772796,
+            0.40127295931728807
+          ],
+          "tail_db": [
+            -0.9244458979726549,
+            -1.679520670558164,
+            -0.2739001538397876
+          ]
+        }
+      }
+    },
+    "deepfilter-ll": {
+      "arm_means": {
+        "gate_first_m0": {
+          "deep_pause_db": -17.481212884450763,
+          "estoi": 0.8369082026650347,
+          "floor_modulation_db": 4.818335152277225,
+          "onset_db": -3.3143458305343776,
+          "pause_db": -14.458662954376397,
+          "si_sdr": 13.019161946332781,
+          "tail_db": -12.85573510622437
+        },
+        "gate_first_m1": {
+          "deep_pause_db": -19.249052071495086,
+          "estoi": 0.830825575802279,
+          "floor_modulation_db": 6.846850979789307,
+          "onset_db": -4.7196496004745505,
+          "pause_db": -14.745715099250974,
+          "si_sdr": 12.87813443976199,
+          "tail_db": -12.595058465756615
+        },
+        "suppressor_first_m0": {
+          "deep_pause_db": -27.304706497938486,
+          "estoi": 0.831151801444672,
+          "floor_modulation_db": 11.635206641950141,
+          "onset_db": -7.2886339658224415,
+          "pause_db": -18.98081234277391,
+          "si_sdr": 12.125237853578529,
+          "tail_db": -15.862357230039176
+        },
+        "suppressor_first_m1": {
+          "deep_pause_db": -21.537177547153554,
+          "estoi": 0.8354169731456642,
+          "floor_modulation_db": 7.502549865518265,
+          "onset_db": -4.606944423803397,
+          "pause_db": -16.659936246110576,
+          "si_sdr": 12.2549996322036,
+          "tail_db": -14.227485055686124
+        },
+        "suppressor_only": {
+          "deep_pause_db": -16.44640469413325,
+          "estoi": 0.8368140435673862,
+          "floor_modulation_db": 3.3993556074815863,
+          "onset_db": -3.502776593604251,
+          "pause_db": -14.396342520712611,
+          "si_sdr": 12.287221718531034,
+          "tail_db": -13.2399064607025
+        }
+      },
+      "suppressor_first_minus_gate_first": {
+        "mode_0": {
+          "deep_pause_db": [
+            -9.82349361348772,
+            -11.31329407183448,
+            -8.373514404960494
+          ],
+          "estoi": [
+            -0.005756401220362848,
+            -0.0070631189296746204,
+            -0.00441534400273548
+          ],
+          "floor_modulation_db": [
+            6.816871489672916,
+            5.70789352477616,
+            7.893554492278115
+          ],
+          "onset_db": [
+            -3.974288135288065,
+            -5.38593990582689,
+            -2.689316369911938
+          ],
+          "pause_db": [
+            -4.522149388397514,
+            -5.414410429797842,
+            -3.6366137983502225
+          ],
+          "si_sdr": [
+            -0.893924092754253,
+            -1.2118295741087708,
+            -0.5814233300218968
+          ],
+          "tail_db": [
+            -3.006622123814805,
+            -3.749845765230786,
+            -2.301076470116104
+          ]
+        },
+        "mode_1": {
+          "deep_pause_db": [
+            -2.288125475658465,
+            -3.4750404672524753,
+            -1.0884381832418828
+          ],
+          "estoi": [
+            0.004591397343385222,
+            0.0022772884360265848,
+            0.00697434110486809
+          ],
+          "floor_modulation_db": [
+            0.6556988857289578,
+            -0.38383443359504243,
+            1.6885475878977745
+          ],
+          "onset_db": [
+            0.11270517667115415,
+            -0.8252337439812697,
+            1.0673465562614346
+          ],
+          "pause_db": [
+            -1.9142211468595984,
+            -2.754591785870977,
+            -1.088622283614804
+          ],
+          "si_sdr": [
+            -0.6231348075583902,
+            -1.0413335697808142,
+            -0.21124023186949345
+          ],
+          "tail_db": [
+            -1.632426589929507,
+            -2.269647363435359,
+            -1.0615811437405411
+          ]
+        }
+      }
+    },
+    "rnnoise": {
+      "arm_means": {
+        "gate_first_m0": {
+          "deep_pause_db": -31.090394980760088,
+          "estoi": 0.7926312124188484,
+          "floor_modulation_db": 11.147805945350822,
+          "onset_db": -11.31159438621527,
+          "pause_db": -22.11298619250214,
+          "si_sdr": 6.968419008823552,
+          "tail_db": -19.71618909766947
+        },
+        "gate_first_m1": {
+          "deep_pause_db": -33.9664404380526,
+          "estoi": 0.7835910897483416,
+          "floor_modulation_db": 13.391435361798788,
+          "onset_db": -14.072640529800843,
+          "pause_db": -23.09320206506015,
+          "si_sdr": 6.891876522756108,
+          "tail_db": -20.348605138514017
+        },
+        "suppressor_first_m0": {
+          "deep_pause_db": -48.11510374737322,
+          "estoi": 0.7795228809385633,
+          "floor_modulation_db": 26.934911162683203,
+          "onset_db": -19.184967406472953,
+          "pause_db": -24.461669461613024,
+          "si_sdr": 6.916215125461956,
+          "tail_db": -20.95379264695023
+        },
+        "suppressor_first_m1": {
+          "deep_pause_db": -34.68272608448833,
+          "estoi": 0.7914542852007086,
+          "floor_modulation_db": 14.954268799168688,
+          "onset_db": -13.233982905759712,
+          "pause_db": -22.623104694256497,
+          "si_sdr": 6.964638892677737,
+          "tail_db": -19.50205734757985
+        },
+        "suppressor_only": {
+          "deep_pause_db": -28.86010224609723,
+          "estoi": 0.7945686923907445,
+          "floor_modulation_db": 9.441339268159359,
+          "onset_db": -10.278105840889895,
+          "pause_db": -21.32330117306245,
+          "si_sdr": 6.977395546169124,
+          "tail_db": -19.192363040198085
+        }
+      },
+      "suppressor_first_minus_gate_first": {
+        "mode_0": {
+          "deep_pause_db": [
+            -17.02470876661314,
+            -18.93936472225775,
+            -15.108263821553804
+          ],
+          "estoi": [
+            -0.013108331480285177,
+            -0.015268688077499398,
+            -0.011097886648923387
+          ],
+          "floor_modulation_db": [
+            15.787105217332384,
+            13.889501982323564,
+            17.709640219994103
+          ],
+          "onset_db": [
+            -7.873373020257682,
+            -10.56023060030891,
+            -5.3556631691846475
+          ],
+          "pause_db": [
+            -2.348683269110882,
+            -3.0387360531088965,
+            -1.7484483654907907
+          ],
+          "si_sdr": [
+            -0.05220388336159684,
+            -0.07237555181141637,
+            -0.03750043213955698
+          ],
+          "tail_db": [
+            -1.2376035492807596,
+            -1.6941892388424402,
+            -0.8627315592111362
+          ]
+        },
+        "mode_1": {
+          "deep_pause_db": [
+            -0.7162856464357322,
+            -2.093512081207607,
+            0.7257146270877247
+          ],
+          "estoi": [
+            0.007863195452367053,
+            0.0068094915688637,
+            0.008981997218597488
+          ],
+          "floor_modulation_db": [
+            1.562833437369899,
+            0.3029798060495488,
+            2.7988838105079537
+          ],
+          "onset_db": [
+            0.8386576240411311,
+            -0.39428654482382525,
+            2.128758682159361
+          ],
+          "pause_db": [
+            0.4700973708036565,
+            -0.05077746807317954,
+            1.0020455036284783
+          ],
+          "si_sdr": [
+            0.07276236992162984,
+            0.051475826876973274,
+            0.09505042533849935
+          ],
+          "tail_db": [
+            0.8465477909341671,
+            0.4662013350488641,
+            1.249490877045424
+          ]
+        }
+      }
+    }
+  },
+  "schema_version": 1
+}

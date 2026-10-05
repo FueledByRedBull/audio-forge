@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from PyQt6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QMessageBox
 
 from ..config import save_config
 from ..config_parts.calibration import (

@@ -56,6 +56,8 @@ pub mod input;
 pub mod output;
 pub mod processor;
 pub mod rt;
+#[cfg(windows)]
+mod scheduling;
 
 pub use buffer::{AudioConsumer, AudioProducer, AudioRingBuffer};
 pub use device::{list_input_devices, list_output_devices, DeviceInfo};

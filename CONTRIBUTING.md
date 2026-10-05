@@ -5,21 +5,52 @@ The supported source-build contract uses the checked-in dependency locks; newer
 Python or Rust releases are not implicitly qualified. See the [README](README.md)
 for setup and [RELEASING](RELEASING.md) for packaging and publication.
 
-Use the project virtual environment explicitly. After any Rust change, rebuild
-the extension before testing Python behavior:
+Use `dev.ps1` from PowerShell 7+. Its default environment is `.venv`; add
+`-VenvPath .venv313` for a checkout using that existing environment. Bootstrap
+requires the prerequisites listed in the README and an existing pinned Python
+executable when creating an environment. It reuses `requirements/dev.txt` with
+`--require-hashes`; no separate uv lock or automatic tool installation is used.
 
 ```powershell
-.\.venv\Scripts\python.exe -m maturin develop --release --locked
-.\.venv\Scripts\python.exe -m pytest python/tests -q
+.\dev.ps1 bootstrap -PythonPath (py -3.13 -c "import sys; print(sys.executable)")
+.\dev.ps1 doctor
+.\dev.ps1 run
+.\dev.ps1 test -VenvPath .venv313 -TestPath python/tests/test_voice_setup.py
+```
+
+`test` always rebuilds the native extension with
+`maturin develop --release --locked`. With `-TestPath`, it then runs only that
+Python test scope; without it, it runs the Rust tests and full Python suite.
+The script scopes its interpreter, DLL search paths and runtime environment to
+the command and restores them afterward. `run` enables verified bundled
+DeepFilter assets. `-DryRun` prints steps without executing them.
+
+`doctor` makes no changes or network requests. It checks tool availability,
+interpreter/toolchain pins, runtime assets, `pip check` and native import.
+Dependency consistency is not exact lock parity, and doctor does not replace
+compilation, hardware checks or release interpreter/source provenance checks.
+An incomplete environment is preserved; repair it explicitly or choose a new
+`-VenvPath` before retrying bootstrap.
+
+Run the closest regression first. For the remaining checks, use the project
+interpreter explicitly. Prepare the shell for the native checks (substitute
+`.venv313` if needed):
+
+```powershell
+$env:VIRTUAL_ENV = (Resolve-Path .venv).Path
+$env:PYO3_PYTHON = Join-Path $env:VIRTUAL_ENV "Scripts/python.exe"
+$basePython = & $env:PYO3_PYTHON -c "import sys; print(sys.base_prefix)"
+$env:PATH = "$env:VIRTUAL_ENV\Scripts;$basePython;$env:PATH"
+
+.\dev.ps1 test
 .\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
 .\.venv\Scripts\python.exe -m pyright
 cargo fmt --check
-cargo test --locked -p mic_eq_core
 cargo test --release --locked -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
 cargo clippy --locked -p mic_eq_core --all-targets -- -D warnings
 ```
 
-Run the closest regression first. Keep bug fixes, ownership refactors, and
+Keep bug fixes, ownership refactors, and
 release preparation independently reviewable. Include a reproduction and a test
 that fails before a nontrivial fix. Changes to audible DSP behavior need the
 objective, held-out evidence described in [evaluation/README.md](evaluation/README.md).

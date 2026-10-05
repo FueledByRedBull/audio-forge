@@ -265,7 +265,7 @@ $archiveCache = Join-Path $sourceRoot ("tract-linalg-" + $tractVersion + ".crate
 $markerPath = Join-Path $workspace ".audioforge-deepfilter.json"
 $outputFullPath = [System.IO.Path]::GetFullPath($OutputPath)
 $attestationFullPath = if ([string]::IsNullOrWhiteSpace($AttestationPath)) {
-    [System.IO.Path]::GetFullPath((Join-Path $projectRoot "target\deepfilter\df.dll.provenance.json"))
+    "$outputFullPath.provenance.json"
 } else {
     [System.IO.Path]::GetFullPath($AttestationPath)
 }

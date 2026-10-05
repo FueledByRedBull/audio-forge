@@ -23,7 +23,7 @@ def main():
         print(f"Error: {e}")
         print("\nMake sure to:")
         print("1. Build the Rust core: maturin develop --release")
-        print("2. Install PyQt6: pip install PyQt6")
+        print("2. Install the pinned runtime: python -m pip install --require-hashes -r requirements/runtime.txt")
         return 1
 
 

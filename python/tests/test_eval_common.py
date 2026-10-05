@@ -7,6 +7,7 @@ import pytest
 
 from _eval_common import (
     amplitude_ratio_db,
+    estoi,
     percentile_or_none,
     percentile_or_zero,
     resample_audio,
@@ -57,3 +58,17 @@ def test_metric_floors_and_empty_percentiles_remain_distinct():
     assert percentile_or_zero([], 95) == 0.0
     assert percentile_or_none([1.0, 3.0], 25) == 1.5
     assert percentile_or_zero([1, 3], 25) == 1.5
+
+
+def test_estoi_is_one_for_identity_and_falls_with_added_noise():
+    rng = np.random.default_rng(0)
+    time = np.arange(48_000 * 3) / 48_000
+    # Broadband carrier with a syllable-rate envelope, like speech.
+    clean = rng.standard_normal(time.size) * np.maximum(np.sin(2 * np.pi * 4 * time), 0.0) ** 2
+    scores = [
+        estoi(clean, clean + level * rng.standard_normal(clean.size), 48_000)
+        for level in (0.0, 0.1, 0.3, 1.0)
+    ]
+    assert scores[0] == pytest.approx(1.0)
+    assert scores == sorted(scores, reverse=True)
+    assert estoi(clean, 0.5 * clean, 48_000) == pytest.approx(1.0)

@@ -3,7 +3,7 @@
 `licenses/source-manifest.json` records the exact source archives and SHA-256
 digests needed to reconstruct the AudioForge Windows build. It is generated from the
 locked Python requirements, the resolved Windows Cargo graph, the Qt source
-corresponding to the bundled PyQt6 Qt libraries, the CPython interpreter, and
+corresponding to the bundled PySide6 Qt libraries, the CPython interpreter, and
 the pinned Windows-only source package.
 
 The manifest status is authoritative: `complete` means every recorded source,
@@ -79,13 +79,16 @@ The manifest currently covers:
 
 * CPython 3.13.15 and the exact Windows source-deps selected by
   `PCbuild/get_externals.bat`, plus Python package sources for NumPy 2.5.1, SciPy 1.18.0,
-  PyQt6 6.11.0, PyQt6-sip 13.11.1, PyInstaller 6.21.0, and pywin32 311.
+  PySide6-Essentials, PySide6-Addons and shiboken6 6.11.1, PyInstaller 6.21.0,
+  and pywin32 311.
   The CPython source entry retains both its main license and `PC/crtlicense.txt`
   for the Microsoft runtime DLLs bundled by the Windows distribution.
-* PyQt6's declared build sources, sip 6.16.1 and PyQt-builder 1.19.1.
+* Qt for Python's shared `pyside-setup-everywhere-src-6.11.1.tar.xz` source
+  archive for all three binding packages; they publish wheels without PyPI
+  source distributions.
 * Qt base 6.11.1, which supplies the Core, Gui, Network, Widgets, and Windows
-  platform plugin libraries present in the PyQt6 runtime bundle, plus Qt's
-  image-format plugin sources.
+  platform plugin libraries present in the PySide6 runtime bundle, plus Qt's
+  image-format and multimedia module/plugin sources.
 * CPU ONNX Runtime 1.23.2 source, its pinned repository submodules, and the
   CPU FetchContent sources from `cmake/deps.txt` and
   `onnxruntime_external_deps.cmake`. GPU, WebGPU, training, and benchmark-only
@@ -108,19 +111,41 @@ and the locked requirements. Build the native extension with:
 .\.venv\Scripts\python.exe -m maturin develop --release --locked
 ```
 
-Build PyQt6 from its sdist with the pinned sip and PyQt-builder sources and
-the corresponding Qt module sources. Build pywin32 from the `b311` source tag;
+Build PySide6 and shiboken6 from the pinned Qt for Python source archive with
+the corresponding Qt module sources, following its included instructions and
+the [Qt for Python build guide](https://doc.qt.io/qtforpython-6/building_from_source/index.html).
+Build pywin32 from the `b311` source tag;
 PyPI publishes wheels for this package rather than a source distribution.
 Retain the upstream license files and generated dependency inventory alongside
-the source archive. AudioForge's original source remains MIT; the combined
-PyQt6 application is distributed under GPLv3 as documented in
-`licenses/THIRD_PARTY_NOTICES.md`.
+the source archive. AudioForge's original source remains MIT; the bundled
+Qt for Python and selected Qt modules use LGPLv3, with each dependency's
+terms retained as documented in `licenses/THIRD_PARTY_NOTICES.md`.
 
-The official licensing references are [GNU GPLv3 rationale](https://www.gnu.org/licenses/gpl3-final-rationale.pdf),
-[Riverbank's PyQt overview](https://www.riverbankcomputing.com/software/pyqt/),
-[Riverbank's PyQt downloads](https://riverbankcomputing.com/software/pyqt/download),
+The official licensing references are
+[Qt for Python licenses](https://doc.qt.io/qtforpython-6/licenses.html),
+[Qt's LGPL obligations](https://www.qt.io/development/open-source-lgpl-obligations),
 [Qt licensing](https://doc.qt.io/qt-6/licensing.html), and
 [Qt's third-party license list](https://doc.qt.io/qt-6/licenses-used-in-qt.html).
+
+## Replacing the Qt libraries
+
+AudioForge loads Qt dynamically and does not prohibit modification or reverse
+engineering for debugging modifications to those libraries. Close AudioForge
+and make a separate copy of the complete portable directory before testing
+modified libraries. In that copy, replace the applicable `Qt6*.dll` files in
+`_internal/PySide6/` and their matching plugins under
+`_internal/PySide6/plugins/`. Use a compatible Windows x64 Qt build with the
+same module configuration and ABI; keep a matching set of libraries and
+plugins. A different Python binding ABI requires rebuilding PySide6/shiboken6
+and the package, rather than replacing Qt DLLs alone.
+
+Run `AudioForge.exe --smoke-test` in the disposable copy, then test normal
+startup and the features affected by the modified libraries. Keep the original
+copy for recovery. The release's corresponding-source archive records the
+exact Qt and Qt for Python sources and build instructions, and the complete
+license texts and component inventory remain under `_internal/licenses/`.
+An MSI installs the same portable layout; perform replacement testing in a
+separate copy so an installer repair does not overwrite your changes.
 
 ## DeepFilter build provenance
 

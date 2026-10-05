@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 from unittest.mock import Mock
-from PyQt6.QtGui import QCloseEvent
-from PyQt6.QtWidgets import QCheckBox, QComboBox, QLabel, QWidget
+from PySide6.QtGui import QCloseEvent
+from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QWidget
 
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.ui.first_run_setup_dialog import (

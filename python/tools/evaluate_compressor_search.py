@@ -5,18 +5,126 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from collections.abc import Callable, Mapping
 from typing import Any
 from release_provenance import sha256_file as _sha256
 
 import numpy as np
 
-from mic_eq.analysis.voice_setup import (
+from mic_eq.analysis.cancellation import check_analysis_cancelled
+from mic_eq.analysis.compressor_calibration import (
     _COMPRESSOR_OBJECTIVE_NORMALIZERS,
     _COMPRESSOR_OBJECTIVE_WEIGHTS,
     _COMPRESSOR_SEARCH_BUDGET,
-    _calibrate_compressor_threshold,
+    _COMPRESSOR_SEARCH_BOUNDS,
+    _CompressorCalibration,
 )
 from mic_eq.analysis.wav_io import read_mono_wav
+
+
+def _halton(index: int, base: int) -> float:
+    result = 0.0
+    scale = 1.0
+    while index > 0:
+        scale /= base
+        result += scale * (index % base)
+        index //= base
+    return result
+
+
+def _calibrate_compressor_expanded(
+    *,
+    speech_audio: np.ndarray,
+    sample_rate: int,
+    eq_settings: dict[str, Any],
+    deesser_settings: dict[str, Any],
+    compressor_settings: dict[str, Any],
+    target_p95_db: float,
+    target_median_db: float,
+    peak_cap_db: float,
+    limiter_settings: Mapping[str, Any] | None = None,
+    vad_probabilities: np.ndarray | None = None,
+    auto_makeup_activity: list[tuple[float, float, float, float]] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
+    progress_callback: Callable[[str, int], None] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run the unqualified expanded challenger for offline evaluation only."""
+    run = _CompressorCalibration(
+        speech_audio=speech_audio,
+        sample_rate=sample_rate,
+        eq_settings=eq_settings,
+        deesser_settings=deesser_settings,
+        compressor_settings=compressor_settings,
+        target_p95_db=target_p95_db,
+        target_median_db=target_median_db,
+        peak_cap_db=peak_cap_db,
+        limiter_settings=limiter_settings,
+        vad_probabilities=vad_probabilities,
+        auto_makeup_activity=auto_makeup_activity,
+        cancel_check=cancel_check,
+        progress_callback=progress_callback,
+    )
+    run.diagnostics["expanded_search_status"] = "experimental_opt_in"
+    initial_candidates = run.threshold_candidates()
+    for index in range(1, 17):
+        check_analysis_cancelled(cancel_check)
+        candidate = {}
+        for key, base in zip(_COMPRESSOR_SEARCH_BOUNDS, (2, 3, 5, 7)):
+            lower, upper = _COMPRESSOR_SEARCH_BOUNDS[key]
+            candidate[key] = lower + _halton(index, base) * (upper - lower)
+        initial_candidates.append(candidate)
+    run.evaluate_batch(initial_candidates)
+    feasible = run.ranked_results()
+    if not feasible:
+        return run.finish(None)
+
+    local_steps = {
+        "threshold_db": 3.0,
+        "ratio": 0.5,
+        "attack_ms": 3.0,
+        "release_ms": 25.0,
+    }
+    refinement_seeds = [feasible[0]]
+    multivariable_seed = next(
+        (
+            item
+            for item in feasible
+            if any(
+                abs(item[2][key] - run.incumbent[key]) > 1.0e-6
+                for key in ("ratio", "attack_ms", "release_ms")
+            )
+        ),
+        None,
+    )
+    if multivariable_seed is not None and run.key_for(multivariable_seed[2]) != run.key_for(
+        refinement_seeds[0][2]
+    ):
+        refinement_seeds.append(multivariable_seed)
+    else:
+        refinement_seeds.extend(feasible[1:2])
+    refinement_candidates = []
+    for _, _, seed in refinement_seeds:
+        check_analysis_cancelled(cancel_check)
+        for key, step in local_steps.items():
+            for direction in (-1.0, 1.0):
+                candidate = dict(seed)
+                candidate[key] += direction * step
+                refinement_candidates.append(candidate)
+    run.evaluate_batch(refinement_candidates)
+
+    feasible = run.ranked_results()
+    threshold_only = run.threshold_only(feasible)
+    expanded = feasible[0]
+    if threshold_only is None:
+        expanded_selected = True
+        chosen = expanded
+    else:
+        required_tie_break_improvement = max(0.001, 0.01 * threshold_only[0])
+        expanded_selected = bool(
+            threshold_only[0] - expanded[0] > required_tie_break_improvement
+        )
+        chosen = expanded if expanded_selected else threshold_only
+    return run.finish(chosen, expanded=expanded, expanded_selected=expanded_selected)
 
 
 def _portable_path(path: Path) -> str:
@@ -79,7 +187,7 @@ def evaluate(manifest_path: Path, limit: int) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for capture in captures:
         sample_rate, audio = _load_audio(corpus_root / capture["path"])
-        settings, diagnostics = _calibrate_compressor_threshold(
+        settings, diagnostics = _calibrate_compressor_expanded(
             speech_audio=audio,
             sample_rate=sample_rate,
             eq_settings=EQ_SETTINGS,
@@ -88,7 +196,6 @@ def evaluate(manifest_path: Path, limit: int) -> dict[str, Any]:
             target_p95_db=3.5,
             target_median_db=1.4,
             peak_cap_db=8.0,
-            allow_expanded_search=True,
         )
         baseline = _finite_float_or_none(
             diagnostics.get("threshold_only_objective")

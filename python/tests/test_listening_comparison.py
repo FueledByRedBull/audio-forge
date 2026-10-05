@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from mic_eq.analysis import listening_comparison as comparison
-from PyQt6.QtMultimedia import QAudioFormat, QMediaDevices
+from PySide6.QtMultimedia import QAudioFormat, QAudioSink, QMediaDevices
 from mic_eq.ui.listening_comparison_dialog import (
     _pcm_bytes,
     _preview_samples,
@@ -108,6 +108,32 @@ def test_rendered_proposal_can_be_kept_without_playback_device(qapp, monkeypatch
         assert dialog._current_playback_device() is None
         assert dialog.keep_button.isEnabled()
         assert "optional" in dialog.scope_label.text().casefold()
+    finally:
+        dialog.close()
+
+
+def test_native_stopped_audio_state_releases_preview_resources(qapp, monkeypatch):
+    from mic_eq.ui.listening_comparison_dialog import ListeningComparisonDialog
+
+    monkeypatch.setattr(ListeningComparisonDialog, "_start_render", lambda self: None)
+    dialog = ListeningComparisonDialog(
+        audio_data=np.zeros(480, dtype=np.float32), sample_rate=48_000,
+        current_settings=_settings(), proposed_settings=_settings(),
+    )
+    audio_format = QAudioFormat()
+    audio_format.setSampleRate(48_000)
+    audio_format.setChannelCount(1)
+    audio_format.setSampleFormat(QAudioFormat.SampleFormat.Int16)
+    sink = QAudioSink(audio_format, dialog)
+    dialog._audio_sink = sink
+    dialog._playing_clip_key = "original"
+    try:
+        # The state comes from the real binding; aliased Python enums can be
+        # distinct types even when their names and numeric values match.
+        dialog._on_audio_state_changed()
+        assert dialog._audio_sink is None
+        assert dialog._playing_clip_key is None
+        assert not dialog.stop_button.isEnabled()
     finally:
         dialog.close()
 

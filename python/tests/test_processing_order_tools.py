@@ -1,33 +1,14 @@
-"""Tests for processing-order evaluation helpers."""
+"""Tests for the processing-order evaluation report."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-import numpy as np
-from scipy.io import wavfile
 
-
-import evaluate_processing_order as ordering
 REPORT_PATH = (
-    Path(__file__).resolve().parents[2] / "evaluation/processing-order-report.json"
+    Path(__file__).resolve().parents[2] / "evaluation/processing-order-2026-09-report.json"
 )
-
-
-def test_control_probability_mapping_has_one_value_per_rnnoise_frame():
-    result = ordering._control_probabilities(np.asarray([0.0, 1.0]), 1_440)
-
-    assert result.shape == (3,)
-    assert np.all((result >= 0.0) & (result <= 1.0))
-
-
-def test_pumping_focuses_on_two_to_eight_hz():
-    time = np.arange(1_000) * ordering.FRAME_SIZE / ordering.SAMPLE_RATE
-
-    assert ordering._pumping(np.sin(2 * np.pi * 4 * time)) > ordering._pumping(
-        np.sin(2 * np.pi * 0.2 * time)
-    )
 
 
 def test_report_keeps_both_incumbent_product_orders() -> None:
@@ -47,19 +28,3 @@ def test_report_keeps_both_incumbent_product_orders() -> None:
         "models/dpdfnet_eval_subset/manifest.json",
         "models/silero_vad.onnx",
     }
-
-
-def test_pcm_reader_centers_unsigned_stereo(tmp_path: Path) -> None:
-    path = tmp_path / "stereo.wav"
-    raw = np.column_stack(
-        (
-            np.asarray([0, 128, 255], dtype=np.uint8),
-            np.asarray([255, 128, 0], dtype=np.uint8),
-        )
-    )
-    wavfile.write(path, 48_000, raw)
-
-    sample_rate, audio = ordering._read_mono(path)
-
-    assert sample_rate == 48_000
-    assert np.allclose(audio, np.zeros(3), atol=1.0 / 128.0)

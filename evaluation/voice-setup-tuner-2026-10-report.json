@@ -1,0 +1,282 @@
+{
+  "schema_version": 1,
+  "audible_change": false,
+  "generated_at_utc": "2026-10-02T04:51:38.274945+00:00",
+  "decision": "keep_current_tuner",
+  "summary": "On simulated users the gate and noise-suppression tuner never changed settings, although a tested candidate was clearly better for about half of them. Its absolute checks fail for every candidate and for the current settings, because they grade the frontend through an uncalibrated compressor. Neither relative checks nor a fitted selector met the predefined rule on held-out users, and a reference-free onset measure could not be validated, so the tuner stays as it is.",
+  "comparison": "Arm A dominates arm B on a user's separate evaluation capture when no metric is worse beyond tolerance and one is better by it: ESTOI 0.01, onset 1 dB, pause 1 dB, long pause 1 dB, tail 1 dB.",
+  "fit_split": {
+    "deepfilter-ll": {
+      "users": 52,
+      "speakers": 30,
+      "changed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "improved": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "harmed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "missed": [
+        0.5,
+        0.3653409090909091,
+        0.6400377358490568
+      ],
+      "available": [
+        0.5,
+        0.3653409090909091,
+        0.6400377358490568
+      ]
+    },
+    "rnnoise": {
+      "users": 52,
+      "speakers": 30,
+      "changed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "improved": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "harmed": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "missed": [
+        0.4423076923076923,
+        0.3018867924528302,
+        0.5769230769230769
+      ],
+      "available": [
+        0.4423076923076923,
+        0.3018867924528302,
+        0.5769230769230769
+      ]
+    }
+  },
+  "why_nothing_changes": {
+    "dominating_candidates_failing_tuner_checks": "319 of 319 (fit split)",
+    "incumbent_failing_tuner_checks": "104 of 104 runs",
+    "failed_checks": {
+      "dynamics": 319,
+      "gate_tail": 310,
+      "false_closure": 170,
+      "active_speech_retention": 88
+    },
+    "compressor_p95_gain_reduction_db": {
+      "median": 14.2,
+      "target": 3.5
+    },
+    "tail_retention": {
+      "median": 0.12,
+      "required": 0.45
+    }
+  },
+  "onset_proxy": {
+    "rule": "Spearman rho >= 0.6; >= 75% of arms damaged by >= 2 dB flagged; >= 90% of intact arms cleared",
+    "v1_pilot": "rho about -0.1 (onsets found late on noisy input; noise bursts read as damage)",
+    "v2_fit": {
+      "deepfilter-ll": {
+        "arms": 950,
+        "damaged_arms": 288,
+        "damaged_detected": 0.3645833333333333,
+        "intact_arms": 448,
+        "intact_cleared": 0.8102678571428571,
+        "spearman_rho": 0.28161823533510427,
+        "valid": false
+      },
+      "rnnoise": {
+        "arms": 500,
+        "damaged_arms": 311,
+        "damaged_detected": 0.4887459807073955,
+        "intact_arms": 134,
+        "intact_cleared": 0.6194029850746269,
+        "spearman_rho": 0.19411630841798408,
+        "valid": false
+      }
+    }
+  },
+  "selectors": {
+    "deepfilter-ll": {
+      "calibrate_today": {
+        "improved": 0.0,
+        "harmed": 0.0,
+        "changed": 0.0
+      },
+      "candidates": {
+        "A": {
+          "calibrate": {
+            "improved": 0.07692307692307693,
+            "harmed": 0.19230769230769232,
+            "changed": 0.8076923076923077
+          }
+        },
+        "B": {
+          "calibrate": {
+            "improved": 0.09615384615384616,
+            "harmed": 0.019230769230769232,
+            "changed": 0.23076923076923078
+          },
+          "threshold": 0.5499999999999996
+        }
+      },
+      "chosen_on_calibrate": "B",
+      "test": {
+        "selector": {
+          "improved": [
+            0.038461538461538464,
+            0.0,
+            0.09615384615384616
+          ],
+          "harmed": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "changed": [
+            0.15384615384615385,
+            0.06521739130434782,
+            0.24528301886792453
+          ]
+        },
+        "today": {
+          "improved": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "harmed": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "changed": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "improvement_gain": [
+          0.038461538461538464,
+          0.0,
+          0.09615384615384616
+        ],
+        "harm_increase": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "decision": "keep_today"
+    },
+    "rnnoise": {
+      "calibrate_today": {
+        "improved": 0.0,
+        "harmed": 0.0,
+        "changed": 0.0
+      },
+      "candidates": {
+        "A": {
+          "calibrate": {
+            "improved": 0.019230769230769232,
+            "harmed": 0.0,
+            "changed": 0.7115384615384616
+          }
+        },
+        "B": {
+          "calibrate": {
+            "improved": 0.0,
+            "harmed": 0.019230769230769232,
+            "changed": 0.057692307692307696
+          },
+          "threshold": 0.49999999999999956
+        }
+      },
+      "chosen_on_calibrate": "A",
+      "test": {
+        "selector": {
+          "improved": [
+            0.11538461538461539,
+            0.0392156862745098,
+            0.2
+          ],
+          "harmed": [
+            0.019230769230769232,
+            0.0,
+            0.06
+          ],
+          "changed": [
+            0.7307692307692307,
+            0.6111111111111112,
+            0.84
+          ]
+        },
+        "today": {
+          "improved": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "harmed": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "changed": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "improvement_gain": [
+          0.11538461538461539,
+          0.0392156862745098,
+          0.2
+        ],
+        "harm_increase": [
+          0.019230769230769232,
+          0.0,
+          0.06
+        ]
+      },
+      "decision": "keep_today"
+    }
+  },
+  "selector_rule": "Chosen on the calibrate split; adopt on the test split if the improvement-rate gain has a speaker-clustered 95% CI above 0 and the harm-rate increase is at most 2 points at the CI's upper bound.",
+  "corpus": {
+    "voice_setup_eval_manifest_sha256": "569f3debce837922e9ea91f4487eb9bdd4cb5eca27c15d18a5e6174d800d7225",
+    "users_per_model": {
+      "fit": 52,
+      "calibrate": 52,
+      "test": 52
+    }
+  },
+  "source_revision": "cc52e91731644e7dd1e18e4118033e47db010704",
+  "source_sha256": {
+    "python/tools/evaluate_voice_setup.py": "c7ac2ec418a97cb882e45bb1720eb52f0a7b490a7d1767aa6501c0fa64acd05b"
+  },
+  "selector_evaluator": {
+    "path": "models/evaluation-details/voice-setup-tuner-2026-10/evaluate_tuner_selector.py",
+    "sha256": "ad48b3bfb32e8179adcca26aaf343309beb1c981127ed03488914b71c224a642"
+  },
+  "measurement_identity": {
+    "extension": "mic_eq_core.cp313-win_amd64.pyd",
+    "extension_sha256": "d64ad6d10873bbdf15d220c3bb2526d5b8ce670e3f3be6a5ea127b78bc9b9029"
+  },
+  "limitations": [
+    "Simulated users (VoiceBank speech, DEMAND noise, synthetic rooms); no real-device captures.",
+    "The product's held-out re-check was not simulated for the selectors.",
+    "The available improvements are mostly onsets; an onset-safe gate needs its own study."
+  ]
+}

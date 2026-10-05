@@ -1,117 +1,100 @@
 # Releasing AudioForge
 
-## Windows release flow
+A release is built once by the `Release package` workflow, then promoted
+without rebuilding. The public release has exactly five files: the portable
+archive, the per-user MSI, the corresponding-source archive, an evidence
+archive, and one `SHA256SUMS.txt`.
 
-### Automated workflow
+## Automated workflow
 
-The preferred release path is the `Release package` workflow.
+1. **Prepare one release commit.** Update the version, `CHANGELOG.md`, the
+   upcoming `release-notes/release-notes-v<version>.md`, and documentation.
+   Run `python/tools/check_versions.py`. Published notes live on
+   [GitHub Releases](https://github.com/FueledByRedBull/audio-forge/releases)
+   and in their tagged source, so only the upcoming notes stay in
+   `release-notes/`. Don't write archive sizes, hashes, or file counts into
+   docs; the generated checksum and metadata sidecars own them.
+2. **Build a candidate.** Dispatch `Release package` on the branch with
+   `release_tag` blank. It hydrates and verifies the runtime assets and
+   corresponding source, builds the portable app and MSI, and validates the
+   exact archive. Fix failures on the branch without tagging or changing the
+   version. Set `asset_source_tag` only to override where model assets come
+   from (see [Runtime assets](#runtime-assets)). Supply an existing tag in
+   `release_tag` only when rebuilding that tag.
+3. **Record the candidate:** workflow run ID, source commit, and archive
+   SHA-256. The candidate artifact expires after three days; an expired
+   candidate must be rebuilt and revalidated.
+4. **Tag the candidate commit** with an annotated `v<version>` tag. A tag push
+   doesn't rebuild anything. Never move a released tag to fix documentation;
+   reconcile documentation in a later commit.
+5. **Review hardware evidence (optional).** Hardware qualification workflows
+   can add measurements when a suitable runner exists; they don't block
+   publication. Keep each measurement bound to its candidate revision and
+   digest, never attribute an earlier candidate's results to the final
+   binary, and name untested configurations in the release notes.
+6. **Promote.** Run `Promote release candidate` with `release_tag`,
+   `candidate_run_id`, and `expected_archive_sha256`. It downloads the same
+   candidate bytes, verifies sidecars, evidence, and corresponding source
+   against that digest, assembles a draft, and publishes only when all five
+   files are present and verified. Release notes come from the workflow
+   revision; the binary stays bound to the tag. Reruns compare GitHub's
+   SHA-256 digests in preflight, and the final check downloads and hashes
+   every published file.
 
-Prepare source, version, release notes, and documentation in one release commit.
-Keep the upcoming release notes in `release-notes/`; published notes remain on
-[GitHub Releases](https://github.com/FueledByRedBull/audio-forge/releases) and in
-their tagged source. The [changelog](CHANGELOG.md) keeps the repository history.
-Keep artifact sizes, hashes, and file counts in the generated sidecars, so their
-publication does not require a second documentation commit. The
-`fallback_release_tag` is a standing source of dependency assets, independent of
-the application version: leave it unchanged while those assets and hashes are
-unchanged. Advance it only when a new dependency-asset source has been verified.
-Do not move a released tag to reconcile documentation.
+GitHub release immutability is enabled: publication locks the assets and tag
+and creates GitHub's
+[release attestation](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/verify-release-integrity).
+Verify every asset on the draft before publishing. A self-hosted runner isn't
+required.
 
-GitHub release immutability is enabled for future publications. Assemble and
-verify every asset on the draft before publishing; publication locks the assets
-and tag and creates GitHub's cryptographically verifiable release attestation.
-Existing releases retain their original protection status. See
-[GitHub's release verification instructions](https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/secure-your-dependencies/verify-release-integrity).
+## Versioning
 
-Publication requires exact-artifact software/package validation and complete
-corresponding source. Hardware measurements are optional supporting evidence;
-release notes must identify their tested revision and any untested coverage.
-A self-hosted runner is not required to publish.
+Final tags are `vMAJOR.MINOR.PATCH`; release candidates are
+`vMAJOR.MINOR.PATCH-rc.N`. The source version may use PEP 440 (`1.12.0rc1`);
+`python/tools/release_version.py` maps it to Cargo's `1.12.0-rc.1`, the tag,
+and the artifact name. MSI has only three numeric fields, so each 100-value
+patch block reserves its last value for the final release: `1.12.0rc1` is MSI
+`1.12.1` and final `1.12.0` is MSI `1.12.99`. RC numbers run 1–98 and patch
+components up to 654. The MSI number is an installer identity only; the app
+and release metadata keep the public version. RC promotion creates or verifies
+a GitHub prerelease; final promotion rejects one.
 
-Evaluation reports pin historical source commits that the evaluation checker
-requires to remain ancestors of the release source. Use a merge commit for
-branches carrying these reports, including PR #66, and run
-`python/tools/check_evaluation_hygiene.py` on the proposed integration result
-with the required history available. Squash/rebase merging can discard those
-commit identities. If integration policy requires rewritten history, resolve
-the evidence policy first; do not relabel historical measurements with a new SHA.
+## Runtime assets
 
-### Release candidates
+Runtime binaries and models are never committed. `release-assets.json` owns
+their paths, sizes, hashes, origins, and licenses, and
+`python/tools/fetch_release_assets.py` hydrates them:
 
-Release candidates use one canonical tag spelling: `vMAJOR.MINOR.PATCH-rc.N`.
-The source version may use PEP 440 (`1.12.0rc1`); the release tooling maps it to
-Cargo's `1.12.0-rc.1`, the canonical tag, and an artifact name containing that
-tag. MSI has only three numeric version fields, so the release tooling reserves
-the last value in each 100-value patch block for the final release: `1.12.0rc1`
-maps to MSI `1.12.1`; the final `1.12.0` maps to MSI `1.12.99`. RC sequences are bounded
-to 1 through 98 and patch components to 654. MSI's numeric value is an internal
-installer identity; app and release metadata retain the public `1.12.0` version.
-RC promotion creates or verifies a GitHub prerelease; final promotion rejects a
-prerelease state.
+- `df.dll` is built from the pinned DeepFilter recipe
+  (`build-support/deepfilter/`, `build_deepfilter.ps1`). The recipe is not an
+  attestation; keep the per-build `target/deepfilter/df.dll.provenance.json`
+  with its DLL. Matching source and settings don't promise byte-identical
+  output across machines.
+- CPU-only ONNX Runtime and Silero v6.2.1 come from their recorded upstream
+  identities.
+- Both DeepFilter model archives come from the standing asset-source release:
+  the workflow's `asset_source_tag` input, else the repository
+  `AUDIOFORGE_ASSET_SOURCE_TAG` variable, else `fallback_release_tag` in
+  `release-assets.json`. The fallback can supply raw assets or extract the
+  exact models from an existing portable archive.
 
-Runtime binaries and models are intentionally not stored in Git. The asset
-fetcher builds `df.dll` from the pinned DeepFilter recipe, downloads CPU-only
-ONNX Runtime and Silero from their recorded upstream inputs, and obtains both
-DeepFilter model archives from the standing asset-source release. Every input
-is checked against `release-assets.json`. The model fallback can use raw assets
-or extract the exact models from an existing portable archive.
+Every downloaded or extracted asset is verified against `release-assets.json`.
+Leave `fallback_release_tag` unchanged while the dependency assets are
+unchanged; advance it only for a verified new asset source.
 
-For local release prep from a clean clone, you can mirror that behavior with:
+## Local build
 
-```powershell
-.\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
-```
-
-Then run the workflow with:
-
-- `release_tag`: leave blank to validate the selected branch before tagging;
-  supply an existing tag only when rebuilding it.
-- `asset_source_tag`: optional published release override for pinned
-  DeepFilter model assets. Leave blank to use the repository
-  `AUDIOFORGE_ASSET_SOURCE_TAG` override when configured, then the
-  `fallback_release_tag` pinned in `release-assets.json`. Silero v6.2.1 comes
-  from its immutable direct URL.
-
-On manual dispatch, the workflow hydrates and verifies the corresponding-source
-inputs before building, then builds and validates a Windows candidate. It
-retains the portable archive, per-user MSI, corresponding-source archive, and
-their generated checksums/metadata/manifests as one immutable Actions artifact
-for three days. Promote within that window; expired candidates must be rebuilt
-and validated before promotion.
-Hardware qualification workflows can collect additional measurements when a
-suitable runner is available. They are optional and do not block publication.
-Never attribute measurements from an earlier candidate to the final binary.
-Publication downloads the same candidate bytes and automated qualification
-report, verifies sidecars and report against the archive SHA-256, and uploads
-without rebuilding. Promotion prepares a draft, verifies uploaded assets by
-hash, and publishes only after the complete asset set is present. A durable
-evidence archive retains the package report and all checksum, metadata, manifest,
-and native-provenance sidecars. Publish five files: portable app, MSI,
-corresponding source, evidence archive, and one `SHA256SUMS.txt` file.
-For reruns, preflight compares GitHub's SHA-256 digests; the final verification
-still downloads and hashes every published file. Set
-`AUDIOFORGE_ASSET_SOURCE_TAG` when candidate builds should pull raw assets or
-an existing package archive from a standing asset-source release. The workflow
-still verifies all downloaded/extracted assets against `release-assets.json`
-before packaging.
-
-### Local fallback
-
-Build the Rust extension with all configured features:
+From a clean clone with the hashed development environment:
 
 ```powershell
 .\.venv\Scripts\python.exe python/tools/fetch_release_assets.py
 .\.venv\Scripts\python.exe -m maturin develop --release --locked
-```
-
-Verify the source runtime assets. Stale files already under `dist/` are not valid packaging inputs:
-
-```powershell
 .\.venv\Scripts\python.exe python\tools\verify_release_assets.py
 ```
 
-For a release candidate, hydrate the exact corresponding-source set and keep
-the receipt tied to the tag commit before running `build_exe.ps1`:
+Stale files under `dist/` are never valid packaging inputs. For a release
+candidate, hydrate the corresponding source for the exact commit first (see
+[licenses/SOURCE_DISTRIBUTION.md](licenses/SOURCE_DISTRIBUTION.md)):
 
 ```powershell
 $env:AUDIOFORGE_SOURCE_DIR = "build/source-distribution"
@@ -123,28 +106,31 @@ $env:AUDIOFORGE_SOURCE_REVISION = (git rev-parse HEAD).Trim()
   --include-runtime-assets
 ```
 
-Build the portable application from the checked-in PyInstaller spec:
+Then build the portable tree from `AudioForge.spec` and the MSI from it:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_exe.ps1
+powershell -ExecutionPolicy Bypass -File .\build_msi.ps1
 ```
 
-This first rebuilds the native extension with locked Cargo resolution and
-collects dependency notices, then reuses PyInstaller's analysis cache. Add
-`-Clean` only when you need a cold PyInstaller rebuild.
+`build_exe.ps1` verifies runtime assets, rebuilds the native extension with
+locked Cargo resolution, collects dependency notices, and reuses PyInstaller's
+analysis cache (`-Clean` forces a cold PyInstaller build). It fails before
+PyInstaller on a missing or mismatched asset or a failed native rebuild.
+Builds without models aren't a supported edition. The MSI payload must match
+the portable tree; `python/tools/msi_smoke.py` checks extraction and per-user
+install and uninstall. Archive creation and provenance commands belong to the
+workflow; its solid LZMA2 settings come from
+`evaluation/archive-format-benchmark.json`.
 
-Build an MSI from the resulting portable tree with `build_msi.ps1`. The MSI and
-portable archive each receive checksum, metadata, and exact payload manifest
-sidecars; the source archive receives a checksum and receipt metadata sidecar.
-Validate extraction plus per-user installation/uninstallation with
-`python/tools/msi_smoke.py`; the installed payload must match the portable files.
+## Release checks
 
 Run the [development checks](CONTRIBUTING.md), including the release-mode
-realtime benchmarks, then the release-specific checks:
+stress test, then:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
-.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip --ignore-vuln CVE-2026-102274
+.\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
 .\.venv\Scripts\python.exe python\tools\run_semgrep.py --sarif semgrep-results.sarif
 .\.venv\Scripts\python.exe python\tools\check_versions.py
 .\.venv\Scripts\python.exe python\tools\check_workflows.py
@@ -154,97 +140,139 @@ cargo audit
 .\.venv\Scripts\python.exe python\tools\self_test.py
 ```
 
-The `Release package` workflow owns archive creation and provenance commands.
-Its solid LZMA2 settings come from `evaluation/archive-format-benchmark.json`.
+- **Semgrep:** CI fails reviewed ERROR findings; triage every WARNING (FFI and
+  process-boundary findings) by hand in the SARIF.
+- **RustSec:** `cargo audit` must be clean for the application lockfile; never
+  add an ignore just to release. The separate
+  `build-support/deepfilter/Cargo.lock` graph ignores only two reviewed
+  unmaintained-crate notices (`RUSTSEC-2024-0436`, `RUSTSEC-2024-0370`);
+  vulnerabilities there still block.
+- **Python:** install `requirements/dev.txt` with `--require-hashes`; never
+  release from an environment resolved from open `pyproject.toml` ranges.
+  Neither the runtime nor the development audit has ignores; Semgrep 1.179.0
+  allows a patched PyJWT, so the former PyJWT exception is gone.
+- **Dependabot:** routine version PRs are off; security updates stay on.
+  Scope each dependency refresh on its own and pass the build, benchmark,
+  hardware, and package gates.
 
-Candidate and promotion:
+## Packaging invariants
 
-1. Commit and push tracked source/doc/version changes.
-2. Confirm the standing runtime-asset source is still available and matches the
-   manifest. Existing verified assets do not need uploading again for each version.
-3. Dispatch `Release package` on that branch with `release_tag` blank. Both
-   build and exact-archive validation must pass. Fix failed attempts on the
-   branch without creating tags or changing the release version.
-4. Record the successful candidate run ID, source commit, and archive SHA-256.
-5. Create and push annotated tag `v1.14.0` at that exact source commit, after
-   package metadata has been updated and validated for that version. Tag
-   pushes do not rebuild the candidate; subsequent gates use the same bytes.
-6. Review available hardware evidence and describe untested configurations in
-   the release notes. Hardware runs are optional; retain the candidate revision
-   and digest with any measurements rather than implying broader coverage.
-7. Run `Promote release candidate` with the candidate workflow run ID, release
-   tag, and approved archive SHA-256. Promotion verifies the automated evidence,
-   source distribution, and uploaded bytes before publishing. Release notes come
-   from the selected workflow revision; the binary remains bound to the tag.
-
-## Packaging notes
-
+- `AudioForge.spec` is the package definition. `package_smoke.py` checks the
+  exact bundled DLLs, models, native extension, and license notices, rejects
+  duplicate top-level native-extension payloads, and rejects a stale
+  bundle-version manifest.
+- `evaluation/release-bundle-path-baseline.json` gates reviewed bundle path
+  additions and removals. Its binary hashes are provenance, not
+  reproducible-build expectations.
+- `prune_bundle.py` keeps every dependency `.dist-info` directory, removes a
+  duplicate native-extension payload only when the canonical
+  `_internal/mic_eq/mic_eq_core*.pyd` exists, and removes app-local
+  `ucrtbase.dll` and `api-ms-win-*.dll`: Windows 10 and 11 always use the
+  [system UCRT](https://learn.microsoft.com/en-us/cpp/windows/universal-crt-deployment).
+  Package smoke fails if they return.
+- Keep both NumPy/SciPy BLAS DLLs, `opengl32sw.dll`, all models, the CPU-only
+  ONNX Runtime, and `df.dll`. The spec excludes only unused SciPy namespaces
+  and the prune step removes unused Qt SVG payloads. The release profile
+  strips native symbols without changing optimization.
+- Bundled DeepFilter and Silero assets take precedence over the working
+  directory and user paths. External DeepFilter paths require
+  `AUDIOFORGE_ALLOW_EXTERNAL_DF=1`. Runtime-asset and bundle paths stay
+  repository-relative without `..`.
+- Release validation covers fixed-buffer overflow and drop diagnostics and
+  model-discovery smoke checks.
 - `licenses/source-manifest.json` is generated by
-  `python/tools/source_distribution.py manifest` from the pinned dependency and
-  runtime-asset inputs. Regenerate it when those inputs change; review the
-  resulting source closure instead of hand-editing generated entries.
-- `build-support/deepfilter/provenance.json` owns the static build recipe.
-  `build_deepfilter.ps1` writes the actual toolchain and output identity to
-  `target/deepfilter/df.dll.provenance.json`. Retain that per-build attestation
-  with its DLL; the recipe alone does not attest to a particular binary.
-- `AudioForge.spec` is the canonical package definition.
-- Release validation includes fixed-buffer overflow/drop diagnostics and model-discovery smoke checks. Bundled DeepFilter and Silero assets must take precedence over CWD/user-directory assets unless explicitly overridden.
-- Runtime-asset and bundle paths must stay repository-relative without `..` traversal.
-- Packaged builds register canonical bundled DeepFilter paths. Ambient paths stay disabled unless `AUDIOFORGE_ALLOW_EXTERNAL_DF=1` deliberately enables an external override.
-- Install `requirements/dev.txt` with `--require-hashes`; do not release from an environment resolved directly from open-ended `pyproject.toml` constraints.
-- Review every Semgrep warning in the generated SARIF. The CI gate fails reviewed ERROR-severity findings, while warning-level FFI and process-boundary findings require human triage.
-- A clean `cargo audit` is mandatory; do not add RustSec ignores merely to make a release pass.
-- Routine Python and Rust Dependabot version PRs are disabled; Dependabot
-  security updates remain enabled. Dependency refreshes must be scoped
-  independently and pass the applicable build, benchmark, hardware, and
-  package gates instead of arriving as lockfile batches.
-- Keep `release-assets.json` current with the source-built `df.dll`, CPU-only ONNX Runtime DLLs, both DeepFilter model tarballs, and `models/silero_vad.onnx`.
-- `build_exe.ps1` fails before PyInstaller if a required asset is missing or hash
-  mismatched, or the current-source native rebuild fails. File timestamps are not
-  source provenance. Reduced builds without models are not a supported edition.
-- `python/tools/package_smoke.py` verifies exact bundled DLL/model/native-extension and license-notice presence, rejects duplicate top-level native-extension payloads, and rejects a stale bundle-version manifest.
-- `python/tools/prune_bundle.py` must not remove dependency `.dist-info` directories; license/metadata retention is part of the release gate. It may remove duplicate native-extension payloads only when the canonical `_internal/mic_eq/mic_eq_core*.pyd` copy is present.
-- AudioForge targets Windows 10 and Windows 11 for compatibility and relies on
-  the system UCRT.
-  Microsoft documents the UCRT as an operating-system component on Windows 10
-  and later, states that the system copy is always used on Windows 10/11, and
-  does not recommend local deployment for performance and security reasons:
-  <https://learn.microsoft.com/en-us/cpp/windows/universal-crt-deployment>.
-  `prune_bundle.py` removes app-local `ucrtbase.dll` and `api-ms-win-*.dll`;
-  package smoke must fail if they return.
-- `evaluation/release-bundle-path-baseline.json` controls reviewed bundle path
-  additions/removals. Binary hashes are recorded for provenance, but are not
-  treated as reproducible-build expectations.
-- The release profile strips native symbols without changing optimization level. The package spec excludes only unused SciPy namespaces, while the prune step removes unused Qt SVG payloads; keep both NumPy/SciPy BLAS DLLs, `opengl32sw.dll`, all required models, CPU-only ONNX Runtime, and df.dll because they are runtime dependencies.
-- CI audits both Cargo graphs: the application lockfile and the independent
-  `build-support/deepfilter/Cargo.lock` graph used for `df.dll`. The DeepFilter
-  audit ignores only its two reviewed unmaintained-crate notices
-  (`RUSTSEC-2024-0436` and `RUSTSEC-2024-0370`); vulnerability findings remain
-  release blockers.
-- The development-dependency audit ignores only CVE-2026-102274
-  (GHSA-w6j9-cwv2-h6wq, a PyJWT denial of service when parsing a malformed JWK
-  Set). Every current Semgrep release pins `pyjwt~=2.13.0`, so the fixed 2.14.0
-  cannot be locked. PyJWT is not a runtime dependency and the offline Semgrep
-  scan parses no JWK Sets. Remove the ignore as soon as Semgrep permits
-  `pyjwt>=2.14.0`; the runtime audit has no ignores.
-- Obtain CPU-only ONNX Runtime and model files from the exact upstream
-  package/blob identities in `release-assets.json`. Build `df.dll` with the
-  pinned recipe and retain its per-build attestation; matching source and
-  settings do not by themselves promise byte-identical output across machines.
-- Original AudioForge source stays MIT; combined PyQt6 distributions use GPLv3.
-  Before final publication, complete the corresponding-source arrangements and
-  component review in `licenses/THIRD_PARTY_NOTICES.md`. Generated license
-  inventories alone do not fulfill corresponding-source requirements.
+  `source_distribution.py manifest`; regenerate it when its inputs change and
+  review the source closure instead of hand-editing entries.
+- Original AudioForge source stays MIT; new candidate builds use PySide6 and
+  dynamically replaceable LGPLv3 Qt libraries. Earlier PyQt6 packages retain
+  their GPLv3 terms. Complete the corresponding-source and library-replacement
+  arrangements and component review
+  in [licenses/THIRD_PARTY_NOTICES.md](licenses/THIRD_PARTY_NOTICES.md) before
+  publishing; a generated license inventory alone doesn't satisfy them.
+
+## Login startup lifecycle
+
+Login startup is off by default. The packaged app's **Options > Tray & Background >
+Configure login shortcut for this copy** explicitly creates one per-user
+`AudioForge Login.lnk` in the Windows Startup known folder. Its target is the
+current executable, with a separate `--login-startup` argument and ownership
+description. Configuration is represented by that shortcut, not another setting.
+Source launches do not offer registration.
+
+The menu reports **configured**, not **enabled**: Windows Settings or Task Manager
+can disable a Startup-folder app. AudioForge neither reads undocumented
+`StartupApproved` values nor rewrites a configured shortcut on launch, repair, or
+upgrade. Windows documents these controls in
+[Configure startup applications](https://support.microsoft.com/en-gb/windows/experience/startup-boot/configure-startup-applications-in-windows).
+Remove the shortcut explicitly before moving a portable copy, then configure it
+from the new location. An unreadable, unrecognized, or other-copy shortcut is
+preserved; remove that stale entry in the Startup folder before reassignment.
+
+A login launch does not focus an existing session. A new session opens in the
+tray and waits at most 60 seconds for that tray and the exact persisted input and
+output endpoint IDs. It starts only after settings and any bound route preset
+restore successfully, preserving output mute. Stop, route edits, or removing the
+registration cancel pending startup. Missing devices never select replacements
+automatically. Failure leaves audio stopped with tray/status/log evidence; if no
+tray becomes available, the process logs the failure and exits without a dialog.
+
+The MSI invokes the installed executable's `--remove-login-startup` helper before
+`RemoveFiles` on ordinary uninstall, excluding major upgrade removal. It removes
+only a link whose target, arguments, and description all match that executable.
+The helper constructs no Qt application or audio processor. Unrecognized or
+unreadable links remain; helper failure is recorded by MSI and does not prevent
+uninstall. A failed uninstall can therefore leave the app installed with its
+login shortcut already removed. Re-enabling remains an explicit user action.
+
+Source tests cover shortcut ownership with fake COM and temporary folders, quiet
+duplicate acquisition, endpoint retry/cancellation, and mute/preset guards. Before
+shipping, verify the exact portable/MSI payload on Windows: explicit opt-in/out,
+Windows-disabled registration surviving upgrade, delayed endpoint enumeration,
+tray recovery/absence, ordinary uninstall cleanup, and preservation of a shortcut
+reassigned to a portable copy. Source tests do not establish those installer or
+Windows-shell lifecycle results.
+
+## MSIX and AppInstaller readiness
+
+MSIX delivery, AppInstaller updates, and packaged `StartupTask` are not implemented.
+The existing portable and per-user MSI channels remain the release path. The
+following external decisions are required before a package or updater can ship:
+
+| Decision | Required concrete input |
+|---|---|
+| Package identity | Stable package Name and Publisher, ownership, and coexistence policy with MSI/portable copies |
+| Signing | Certificate/provider, renewal and key custody, and supported trust distribution; the certificate subject must match Publisher |
+| Update channel | Stable HTTPS AppInstaller/package URLs, channel owner, retention, update cadence, offline behavior, and rollback policy |
+| Startup migration | Which package owns login startup and how users explicitly migrate a shortcut without undoing Windows disablement |
+
+Do not create a certificate, add a trust-store exception, invent hosting, or ship
+an unsigned update flow to fill these gaps. See Microsoft's
+[package signing requirements](https://learn.microsoft.com/windows/msix/package/create-certificate-package-signing),
+[AppInstaller update controls](https://learn.microsoft.com/windows/msix/app-installer/auto-update-and-repair--overview),
+and [StartupTask contract](https://learn.microsoft.com/uwp/api/windows.applicationmodel.startuptask?view=winrt-26100).
+A future packaged task must remain default off and respect user/policy-disabled
+states; the current shortcut cannot truthfully report those packaged states.
+
+The migration specification must account for `%APPDATA%/AudioForge/config.json`,
+presets, imports, and logs; user-chosen diagnostics exports; trusted native/model
+asset paths; Explorer folder opening; Start Menu and login entries; exact endpoint
+IDs; single-instance ownership; and stopping active audio before replacement.
+Preserve user data and explicit mute/startup choices across transitions, with no
+silent route fallback or automatic login opt-in.
+
+Acceptance requires evidence from the exact signed package for fresh install,
+upgrade, rejected downgrade, MSI coexistence/migration, uninstall/data retention,
+offline and disabled updates, and update attempts during active audio. Verify
+settings/presets/logs and endpoint identities before and after each transition,
+and record signature, package identity, version, source revision, artifact hashes,
+and update policy. Existing MSI sentinel tests and source tests are useful checks,
+not proof of this migration or of packaged `StartupTask` behavior.
 
 ## Local build cleanup
 
-Inspect exact output paths before deleting them. Completed `dist/` packages and
-Rust compilation outputs are disposable only after required candidates and
-unpublished evidence have been retained elsewhere. Prefer the build tool's
-scoped cleanup command for its own outputs.
-
-Do not delete `target/` or `build/` wholesale: they may also contain the active
-Python installation, hydrated runtime DLLs, source receipts, and unpublished
-measurements. Preserve virtual environments, `models/`, corpora, and any inputs
-needed to reproduce retained evidence. Check resolved paths and directory links;
-an ignored path is not proof that its contents are disposable.
+Check exact output paths before deleting. Completed `dist/` packages and Rust
+build outputs are disposable only after required candidates and unpublished
+evidence are kept elsewhere; prefer each tool's own clean command. Don't
+delete `target/` or `build/` wholesale: they can hold the project Python, the
+hydrated runtime DLLs, source receipts, and unpublished measurements. Keep
+virtual environments, `models/`, and corpora.

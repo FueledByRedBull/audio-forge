@@ -3,9 +3,9 @@ Frequency response curve visualization for parametric EQ
 """
 
 import math
-from PyQt6.QtWidgets import QWidget
-from PyQt6.QtGui import QKeyEvent, QMouseEvent, QPainter, QPen
-from PyQt6.QtCore import Qt, pyqtSignal
+from PySide6.QtWidgets import QWidget
+from PySide6.QtGui import QKeyEvent, QMouseEvent, QPainter, QPen
+from PySide6.QtCore import Qt, Signal
 
 from mic_eq.analysis.eq_quality import (
     EqInteractionWarning,
@@ -19,10 +19,10 @@ from .theme import PALETTE, qcolor
 class EQCurveWidget(QWidget):
     """Widget that displays frequency response curve for 10-band EQ."""
 
-    bandDragStarted = pyqtSignal(int)
-    bandDragged = pyqtSignal(int, float, float)
-    bandDragFinished = pyqtSignal(int, float, float)
-    bandDragCancelled = pyqtSignal(int, float, float)
+    bandDragStarted = Signal(int)
+    bandDragged = Signal(int, float, float)
+    bandDragFinished = Signal(int, float, float)
+    bandDragCancelled = Signal(int, float, float)
 
     MARGIN_LEFT = 40
     MARGIN_RIGHT = 10

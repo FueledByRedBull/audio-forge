@@ -1,5 +1,6 @@
 //! RNNoise integration with proper scaling and 480-sample frame buffering
 
+use super::noise_suppressor::{ControlledSample, GateCompensation, GateControl};
 use crate::audio::input::TARGET_SAMPLE_RATE;
 use crate::audio::rt::FixedAudioRing;
 use nnnoiseless::DenoiseState;
@@ -24,10 +25,13 @@ const MODEL_SOFT_CLIP_KNEE: f32 = 1.0 - MODEL_SOFT_CLIP_THRESHOLD;
 /// buffers input samples and processes them in valid frame sizes.
 pub struct RNNoiseProcessor {
     denoiser: Box<DenoiseState<'static>>,
-    input_buffer: FixedAudioRing<f32, RNNOISE_BUFFER_CAPACITY>,
+    input_buffer: FixedAudioRing<ControlledSample, RNNOISE_BUFFER_CAPACITY>,
     output_buffer: FixedAudioRing<f32, RNNOISE_BUFFER_CAPACITY>,
+    input_frame: [ControlledSample; RNNOISE_FRAME_SIZE],
+    gate_compensation: GateCompensation,
     dry_scratch: [f32; RNNOISE_FRAME_SIZE],
     dry_delay_frame: [f32; RNNOISE_FRAME_SIZE],
+    invalid_wet_samples: usize,
     frame_scratch: [f32; RNNOISE_FRAME_SIZE],
     output_frame: [f32; RNNOISE_FRAME_SIZE],
     enabled: bool,
@@ -59,8 +63,11 @@ impl RNNoiseProcessor {
             denoiser: DenoiseState::new(),
             input_buffer: FixedAudioRing::new(),
             output_buffer: FixedAudioRing::new(),
+            input_frame: [ControlledSample::default(); RNNOISE_FRAME_SIZE],
+            gate_compensation: GateCompensation::new(RNNOISE_FRAME_SIZE),
             dry_scratch: [0.0; RNNOISE_FRAME_SIZE],
             dry_delay_frame: [0.0; RNNOISE_FRAME_SIZE],
+            invalid_wet_samples: 0,
             frame_scratch: [0.0; RNNOISE_FRAME_SIZE],
             output_frame: [0.0; RNNOISE_FRAME_SIZE],
             enabled: true,
@@ -120,7 +127,23 @@ impl RNNoiseProcessor {
 
     /// Push samples into the input buffer
     pub fn push_samples(&mut self, samples: &[f32]) -> usize {
-        self.input_buffer.push_slice(samples)
+        self.push_samples_with_controls(samples, None)
+    }
+
+    fn push_samples_with_controls(
+        &mut self,
+        samples: &[f32],
+        controls: Option<&[GateControl]>,
+    ) -> usize {
+        if let Some(controls) = controls {
+            assert_eq!(samples.len(), controls.len());
+        }
+        let accepted = samples.len().min(self.input_buffer.remaining());
+        for (index, &sample) in samples[..accepted].iter().enumerate() {
+            let gate = controls.map_or(GateControl::BYPASS, |controls| controls[index]);
+            self.input_buffer.push(ControlledSample { sample, gate });
+        }
+        accepted
     }
 
     /// Process any complete frames in the input buffer
@@ -129,18 +152,26 @@ impl RNNoiseProcessor {
     /// complete 480-sample frames as possible.
     pub fn process_frames(&mut self) {
         if !self.enabled {
-            self.input_buffer.move_into(&mut self.output_buffer);
+            let count = self.input_buffer.len().min(self.output_buffer.remaining());
+            let mut sample = [ControlledSample::default(); 1];
+            for _ in 0..count {
+                self.input_buffer.pop_into(&mut sample);
+                self.output_buffer.push(sample[0].sample);
+            }
             return;
         }
 
         while self.input_buffer.len() >= RNNOISE_FRAME_SIZE
             && self.output_buffer.remaining() >= RNNOISE_FRAME_SIZE
         {
-            let read = self.input_buffer.pop_into(&mut self.dry_scratch);
+            let read = self.input_buffer.pop_into(&mut self.input_frame);
             if read != RNNOISE_FRAME_SIZE {
                 break;
             }
 
+            for (dry, input) in self.dry_scratch.iter_mut().zip(&self.input_frame) {
+                *dry = input.sample;
+            }
             // Scale to RNNoise PCM-like range.
             for (dst, &src) in self.frame_scratch.iter_mut().zip(self.dry_scratch.iter()) {
                 *dst = Self::scale_sample_for_model(src);
@@ -153,6 +184,19 @@ impl RNNoiseProcessor {
             // 3. Scale DOWN back to [-1.0, 1.0]
             for sample in &mut self.output_frame {
                 *sample /= PCM_SCALE;
+            }
+
+            // A soft reset keeps the model's overlap, which belongs to the old
+            // stream until its already-reported latency has elapsed.
+            let invalid = self.invalid_wet_samples.min(RNNOISE_FRAME_SIZE);
+            self.output_frame[..invalid].fill(0.0);
+            self.invalid_wet_samples -= invalid;
+
+            for (wet, input) in self.output_frame.iter_mut().zip(&self.input_frame) {
+                let ratio = self.gate_compensation.next_ratio(input.gate);
+                if ratio != 1.0 {
+                    *wet *= ratio;
+                }
             }
 
             // 4. Get smoothed strength and apply wet/dry mix
@@ -188,6 +232,9 @@ impl RNNoiseProcessor {
     /// Note: Disabling does not reset state - audio passes through
     /// but the model state is preserved for quick re-enabling.
     pub fn set_enabled(&mut self, enabled: bool) {
+        if self.enabled != enabled {
+            self.gate_compensation.reset();
+        }
         self.enabled = enabled;
     }
 
@@ -206,6 +253,8 @@ impl RNNoiseProcessor {
         self.input_buffer.clear();
         self.output_buffer.clear();
         self.dry_delay_frame.fill(0.0);
+        self.invalid_wet_samples = 0;
+        self.gate_compensation.reset();
     }
 
     /// Flush internal buffers without resetting DenoiseState
@@ -217,6 +266,8 @@ impl RNNoiseProcessor {
         self.input_buffer.clear();
         self.output_buffer.clear();
         self.dry_delay_frame.fill(0.0);
+        self.invalid_wet_samples = RNNOISE_FRAME_SIZE;
+        self.gate_compensation.reset();
     }
 
     /// Soft reset: clear buffers without resetting model state
@@ -237,6 +288,12 @@ impl RNNoiseProcessor {
 impl Default for RNNoiseProcessor {
     fn default() -> Self {
         Self::new(Arc::new(AtomicU32::new(1.0_f32.to_bits())))
+    }
+}
+
+impl super::noise_suppressor::ControlledNoiseSuppressor for RNNoiseProcessor {
+    fn push_controlled_samples(&mut self, samples: &[f32], controls: &[GateControl]) -> usize {
+        self.push_samples_with_controls(samples, Some(controls))
     }
 }
 
@@ -308,6 +365,159 @@ impl super::noise_suppressor::NoiseSuppressor for RNNoiseProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn controlled_short_writes_keep_audio_and_gate_records_together() {
+        use super::super::noise_suppressor::ControlledNoiseSuppressor;
+        let mut processor = RNNoiseProcessor::default();
+        let length = RNNOISE_BUFFER_CAPACITY + 317;
+        let samples: Vec<_> = (0..length).map(|index| index as f32 * 0.00001).collect();
+        let controls: Vec<_> = (0..length)
+            .map(|index| GateControl {
+                gain: (index % 701) as f32 / 701.0,
+                open: index % 13 < 7,
+            })
+            .collect();
+        assert_eq!(
+            processor.push_controlled_samples(&samples, &controls),
+            RNNOISE_BUFFER_CAPACITY
+        );
+        assert_eq!(
+            processor.push_controlled_samples(&samples[..1], &controls[..1]),
+            0
+        );
+        let mut prefix = [ControlledSample::default(); 317];
+        assert_eq!(processor.input_buffer.pop_into(&mut prefix), 317);
+        assert_eq!(
+            processor.push_controlled_samples(
+                &samples[RNNOISE_BUFFER_CAPACITY..],
+                &controls[RNNOISE_BUFFER_CAPACITY..]
+            ),
+            317
+        );
+        let mut remaining = vec![ControlledSample::default(); RNNOISE_BUFFER_CAPACITY];
+        assert_eq!(
+            processor.input_buffer.pop_into(&mut remaining),
+            RNNOISE_BUFFER_CAPACITY
+        );
+        for (index, record) in prefix.iter().chain(&remaining).enumerate() {
+            assert_eq!(record.sample, samples[index]);
+            assert_eq!(record.gate, controls[index]);
+        }
+    }
+
+    #[test]
+    fn gated_input_mix_keeps_frame_strength_and_partition_contract() {
+        for partition in [1, 127, RNNOISE_FRAME_SIZE] {
+            let mut mixed = RNNoiseProcessor::new(Arc::new(AtomicU32::new(0.0_f32.to_bits())));
+            let mut wet = RNNoiseProcessor::new(Arc::new(AtomicU32::new(1.0_f32.to_bits())));
+            let mut previous_dry = [0.0; RNNOISE_FRAME_SIZE];
+            let mut expected_strength = 0.0_f32;
+            let alpha = 1.0 - (-10.0_f32 / 15.0).exp();
+            for (frame, target) in [0.0_f32, 1.0, 1.0, 0.37, 0.0, 0.0].into_iter().enumerate() {
+                let raw = std::array::from_fn::<_, RNNOISE_FRAME_SIZE, _>(|index| {
+                    ((index + frame * RNNOISE_FRAME_SIZE) as f32 * 0.031).sin() * 0.15
+                });
+                let gains = std::array::from_fn::<_, RNNOISE_FRAME_SIZE, _>(|index| {
+                    if (index / 73 + frame) % 2 == 0 {
+                        0.08_f32
+                    } else {
+                        0.9
+                    }
+                });
+                let dry = std::array::from_fn::<_, RNNOISE_FRAME_SIZE, _>(|index| {
+                    raw[index] * gains[index]
+                });
+                mixed.set_strength(target);
+                for start in (0..RNNOISE_FRAME_SIZE).step_by(partition) {
+                    let end = (start + partition).min(RNNOISE_FRAME_SIZE);
+                    assert_eq!(mixed.push_samples(&dry[start..end]), end - start);
+                    mixed.process_frames();
+                }
+                wet.push_samples(&dry);
+                wet.process_frames();
+                let mut actual = [0.0; RNNOISE_FRAME_SIZE];
+                let mut full_wet = [0.0; RNNOISE_FRAME_SIZE];
+                assert_eq!(mixed.read_samples(&mut actual), RNNOISE_FRAME_SIZE);
+                assert_eq!(wet.read_samples(&mut full_wet), RNNOISE_FRAME_SIZE);
+                expected_strength = target * alpha + expected_strength * (1.0 - alpha);
+                assert_eq!(mixed.smoothed_strength, expected_strength);
+                for index in 0..RNNOISE_FRAME_SIZE {
+                    let expected = expected_strength * full_wet[index]
+                        + (1.0 - expected_strength) * previous_dry[index];
+                    assert!((actual[index] - expected).abs() <= 1.0e-7);
+                }
+                previous_dry = dry;
+            }
+        }
+    }
+
+    #[test]
+    fn soft_reset_clears_partial_and_output_without_allocating() {
+        let mut processor = RNNoiseProcessor::new(Arc::new(AtomicU32::new(0.37_f32.to_bits())));
+        processor.push_samples(&[0.1; 600]);
+        processor.process_frames();
+        assert_eq!(processor.pending_input(), 120);
+        assert_eq!(processor.available_samples(), 480);
+        let strength = processor.smoothed_strength;
+        crate::test_alloc::assert_no_allocations("RNNoise soft reset and processing", || {
+            processor.soft_reset();
+            assert_eq!(processor.pending_input(), 0);
+            assert_eq!(processor.available_samples(), 0);
+            assert_eq!(processor.smoothed_strength, strength);
+            processor.push_samples(&[0.0; 480]);
+            processor.process_frames();
+            let mut output = [1.0; 480];
+            assert_eq!(processor.read_samples(&mut output), 480);
+            assert!(output.iter().all(|sample| *sample == 0.0));
+        });
+        processor.soft_reset();
+        processor.set_enabled(false);
+        processor.push_samples(&[0.1, 0.4]);
+        processor.process_frames();
+        let mut output = [0.0; 2];
+        assert_eq!(processor.read_samples(&mut output), 2);
+        assert_eq!(output, [0.1, 0.4]);
+    }
+
+    #[test]
+    fn soft_reset_does_not_emit_model_overlap_from_before_gap() {
+        let before = std::array::from_fn::<_, RNNOISE_FRAME_SIZE, _>(|index| {
+            (index as f32 * 0.047).sin() * 0.25
+        });
+        let after = std::array::from_fn::<_, RNNOISE_FRAME_SIZE, _>(|index| {
+            (index as f32 * 0.091).sin() * -0.17
+        });
+        for gain in [0.3, 1.0] {
+            for strength in [0.0_f32, 0.37, 1.0] {
+                let mut processor =
+                    RNNoiseProcessor::new(Arc::new(AtomicU32::new(strength.to_bits())));
+                let mut output = [0.0; RNNOISE_FRAME_SIZE];
+                for _ in 0..20 {
+                    processor.push_samples(&before);
+                    processor.process_frames();
+                    processor.read_samples(&mut output);
+                }
+                assert!(output.iter().any(|sample| *sample != 0.0));
+                processor.push_samples(&before[..123]);
+                processor.soft_reset();
+                assert_eq!(processor.pending_input(), 0);
+                let dry = after.map(|sample| sample * gain);
+                for frame in 0..2 {
+                    processor.push_samples(&dry);
+                    processor.process_frames();
+                    assert_eq!(processor.read_samples(&mut output), 480);
+                    if frame == 0 {
+                        assert!(output.iter().all(|sample| *sample == 0.0));
+                    } else if strength == 0.0 {
+                        assert_eq!(output, dry);
+                    } else {
+                        assert!(output.iter().any(|sample| *sample != 0.0));
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_rnnoise_model_input_soft_clip_transfer() {

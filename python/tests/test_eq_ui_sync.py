@@ -1,15 +1,15 @@
 # pyright: reportCallIssue=false, reportArgumentType=false
 """Test EQ panel UI synchronization with auto-EQ results.
 
-PyQt6's QTest stubs expose QWindow overloads but omit the runtime QWidget
+PySide6's QTest stubs expose QWindow overloads but omit the runtime QWidget
 overloads exercised here.
 """
 
 from typing import Any, cast
 
 import pytest
-from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtTest import QSignalSpy, QTest
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtTest import QSignalSpy, QTest
 
 from mic_eq import AudioProcessor
 from mic_eq.config import BUILTIN_PRESETS, EQSettings, Preset, q_from_bandwidth_octaves
@@ -155,9 +155,9 @@ def test_eq_graph_drag_updates_numeric_controls_native_dsp_and_signals(qapp):
     assert native is not None
     assert native[1] == pytest.approx(expected_frequency, abs=1.0)
     assert native[2] == pytest.approx(expected_gain, abs=0.1)
-    assert len(started) == 1
-    assert len(finished) == 1
-    assert finished[0][0] == "EQ graph edit"
+    assert started.count() == 1
+    assert finished.count() == 1
+    assert finished.at(0)[0] == "EQ graph edit"
 
     _close_panel(panel, processor, qapp)
 

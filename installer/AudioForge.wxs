@@ -21,6 +21,22 @@
       Message="AudioForge requires 64-bit Windows 10 version 1809 (build 17763) or newer." />
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
+    <!-- The app checks target, arguments and marker before removing its link.
+         Never remove a portable copy's registration or rewrite one on upgrade. -->
+    <CustomAction
+      Id="RemoveLoginStartup"
+      Directory="INSTALLFOLDER"
+      ExeCommand="&quot;[INSTALLFOLDER]AudioForge.exe&quot; --remove-login-startup"
+      Execute="deferred"
+      Impersonate="yes"
+      Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom
+        Action="RemoveLoginStartup"
+        Before="RemoveFiles"
+        Condition="REMOVE=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+    </InstallExecuteSequence>
+
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="INSTALLFOLDER" Name="AudioForge" />
     </StandardDirectory>

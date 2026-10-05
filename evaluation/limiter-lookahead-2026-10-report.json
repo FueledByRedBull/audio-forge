@@ -5,14 +5,14 @@
         "all_finite": true,
         "cases": 15,
         "max_true_peak_limiter_gain_reduction_db": 1.5275949239730835,
-        "median_gain_envelope_variation_db": 8.015850760174562,
-        "median_runtime_ms": 338.25899999999996,
-        "median_transient_shape_error_db": -0.1193455430271273,
+        "median_gain_envelope_variation_db": 6.410938655283871,
+        "median_runtime_ms": 344.6635,
+        "median_transient_shape_error_db": -43.02149304216941,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
-        "p90_transient_shape_error_db": -0.02909230511243481,
-        "p95_runtime_ms": 711.2614449999998,
-        "p95_runtime_realtime_factor": 0.1551771699459618,
+        "p90_transient_shape_error_db": -38.14108820124499,
+        "p95_runtime_ms": 409.49972399999996,
+        "p95_runtime_realtime_factor": 0.10319500897718493,
         "total_true_peak_limited_events": 22,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 4.696058750152588
@@ -21,14 +21,14 @@
         "all_finite": true,
         "cases": 3,
         "max_true_peak_limiter_gain_reduction_db": 0.008690123446285725,
-        "median_gain_envelope_variation_db": 6.700498667875311,
-        "median_runtime_ms": 341.24100000000004,
-        "median_transient_shape_error_db": -1.6061136471441577,
+        "median_gain_envelope_variation_db": 0.884969567054812,
+        "median_runtime_ms": 357.2299,
+        "median_transient_shape_error_db": -49.23908685614168,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
-        "p90_transient_shape_error_db": -0.32122272942883145,
-        "p95_runtime_ms": 544.6912409999999,
-        "p95_runtime_realtime_factor": 0.10831855753815402,
+        "p90_transient_shape_error_db": -23.511309829787255,
+        "p95_runtime_ms": 401.645922,
+        "p95_runtime_realtime_factor": 0.093688315,
         "total_true_peak_limited_events": 1,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 4.696058750152588
@@ -37,14 +37,14 @@
         "all_finite": true,
         "cases": 12,
         "max_true_peak_limiter_gain_reduction_db": 1.5275949239730835,
-        "median_gain_envelope_variation_db": 8.241148093299017,
-        "median_runtime_ms": 325.61935,
-        "median_transient_shape_error_db": -0.1049833187066408,
+        "median_gain_envelope_variation_db": 7.119591217670287,
+        "median_runtime_ms": 342.58625,
+        "median_transient_shape_error_db": -41.98661715956692,
         "minimum_main_peak_gain_reduction_db": 2.9995598793029785,
         "minimum_pre_true_peak_overshoot_db": 3.000195026397705,
-        "p90_transient_shape_error_db": -0.033893898798191935,
-        "p95_runtime_ms": 750.8860974999999,
-        "p95_runtime_realtime_factor": 0.1591890083101527,
+        "p90_transient_shape_error_db": -39.13863264668061,
+        "p95_runtime_ms": 411.63114599999994,
+        "p95_runtime_realtime_factor": 0.1036261478623412,
         "total_true_peak_limited_events": 21,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 3.804258346557617
@@ -55,14 +55,14 @@
         "all_finite": true,
         "cases": 15,
         "max_true_peak_limiter_gain_reduction_db": 1.5278456211090088,
-        "median_gain_envelope_variation_db": 8.74578652031888,
-        "median_runtime_ms": 346.88980000000004,
-        "median_transient_shape_error_db": -0.043419618231232346,
+        "median_gain_envelope_variation_db": 6.4109418533709,
+        "median_runtime_ms": 341.69100000000003,
+        "median_transient_shape_error_db": -43.020895200601004,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
-        "p90_transient_shape_error_db": -0.006326890402255297,
-        "p95_runtime_ms": 705.6840219999997,
-        "p95_runtime_realtime_factor": 0.1361243014842503,
+        "p90_transient_shape_error_db": -38.14415082242557,
+        "p95_runtime_ms": 447.76098899999994,
+        "p95_runtime_realtime_factor": 0.10472390685645029,
         "total_true_peak_limited_events": 22,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 4.696058750152588
@@ -71,14 +71,14 @@
         "all_finite": true,
         "cases": 3,
         "max_true_peak_limiter_gain_reduction_db": 0.008690123446285725,
-        "median_gain_envelope_variation_db": 9.482454263673144,
-        "median_runtime_ms": 346.88980000000004,
-        "median_transient_shape_error_db": -0.005420573900824949,
+        "median_gain_envelope_variation_db": 0.884969567054812,
+        "median_runtime_ms": 327.5345,
+        "median_transient_shape_error_db": -49.23908685614168,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
-        "p90_transient_shape_error_db": -0.0010841147801649896,
-        "p95_runtime_ms": 529.1759069999999,
-        "p95_runtime_realtime_factor": 0.1086909200691249,
+        "p90_transient_shape_error_db": -23.511309829787255,
+        "p95_runtime_ms": 416.71738799999997,
+        "p95_runtime_realtime_factor": 0.09600125,
         "total_true_peak_limited_events": 1,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 4.696058750152588
@@ -87,14 +87,14 @@
         "all_finite": true,
         "cases": 12,
         "max_true_peak_limiter_gain_reduction_db": 1.5278456211090088,
-        "median_gain_envelope_variation_db": 8.550269588143824,
-        "median_runtime_ms": 336.3603,
-        "median_transient_shape_error_db": -0.048948684259099325,
+        "median_gain_envelope_variation_db": 7.119271031947774,
+        "median_runtime_ms": 346.05555000000004,
+        "median_transient_shape_error_db": -41.98619443556849,
         "minimum_main_peak_gain_reduction_db": 2.9995598793029785,
         "minimum_pre_true_peak_overshoot_db": 3.000195026397705,
-        "p90_transient_shape_error_db": -0.024597197466072047,
-        "p95_runtime_ms": 737.1265179999998,
-        "p95_runtime_realtime_factor": 0.1394771988214172,
+        "p90_transient_shape_error_db": -39.13863749494293,
+        "p95_runtime_ms": 453.6731235,
+        "p95_runtime_realtime_factor": 0.104905682398618,
         "total_true_peak_limited_events": 21,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 3.804258346557617
@@ -105,14 +105,14 @@
         "all_finite": true,
         "cases": 15,
         "max_true_peak_limiter_gain_reduction_db": 1.5279715061187744,
-        "median_gain_envelope_variation_db": 9.022258422963304,
-        "median_runtime_ms": 331.6797,
-        "median_transient_shape_error_db": -0.04330353974112422,
+        "median_gain_envelope_variation_db": 6.410610339161971,
+        "median_runtime_ms": 352.7748,
+        "median_transient_shape_error_db": -43.01968563972119,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
-        "p90_transient_shape_error_db": -0.008767544561361447,
-        "p95_runtime_ms": 542.1416429999999,
-        "p95_runtime_realtime_factor": 0.11826968556755778,
+        "p90_transient_shape_error_db": -38.15030502526269,
+        "p95_runtime_ms": 551.4552359999998,
+        "p95_runtime_realtime_factor": 0.104245385027759,
         "total_true_peak_limited_events": 24,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 4.696058750152588
@@ -121,14 +121,14 @@
         "all_finite": true,
         "cases": 3,
         "max_true_peak_limiter_gain_reduction_db": 0.008690123446285725,
-        "median_gain_envelope_variation_db": 41.15701791720011,
-        "median_runtime_ms": 336.9706,
-        "median_transient_shape_error_db": -0.281021222955702,
+        "median_gain_envelope_variation_db": 0.884969567054812,
+        "median_runtime_ms": 369.8397,
+        "median_transient_shape_error_db": -49.23908685614168,
         "minimum_main_peak_gain_reduction_db": 0.0,
         "minimum_pre_true_peak_overshoot_db": 0.0,
-        "p90_transient_shape_error_db": -0.05620424459114038,
-        "p95_runtime_ms": 381.806647,
-        "p95_runtime_realtime_factor": 0.08490851610485331,
+        "p90_transient_shape_error_db": -23.511309829787255,
+        "p95_runtime_ms": 686.859519,
+        "p95_runtime_realtime_factor": 0.10263014999999999,
         "total_true_peak_limited_events": 1,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 4.696058750152588
@@ -137,14 +137,14 @@
         "all_finite": true,
         "cases": 12,
         "max_true_peak_limiter_gain_reduction_db": 1.5279715061187744,
-        "median_gain_envelope_variation_db": 8.956804080957259,
-        "median_runtime_ms": 327.3466,
-        "median_transient_shape_error_db": -0.04060670528116153,
+        "median_gain_envelope_variation_db": 7.11822985178372,
+        "median_runtime_ms": 343.12645,
+        "median_transient_shape_error_db": -41.98534695119088,
         "minimum_main_peak_gain_reduction_db": 2.9995598793029785,
         "minimum_pre_true_peak_overshoot_db": 3.000195026397705,
-        "p90_transient_shape_error_db": -0.010896769303614811,
-        "p95_runtime_ms": 548.5942695,
-        "p95_runtime_realtime_factor": 0.1206314800605065,
+        "p90_transient_shape_error_db": -39.13864743272799,
+        "p95_runtime_ms": 437.92925699999995,
+        "p95_runtime_realtime_factor": 0.10433279228775769,
         "total_true_peak_limited_events": 23,
         "worst_output_true_peak_overshoot_db": 0.0,
         "worst_pre_true_peak_overshoot_db": 3.804258346557617
@@ -197,7 +197,7 @@
     }
   },
   "configuration": {
-    "alignment": "lookahead samples plus 20-sample true-peak stage delay",
+    "alignment": "native render is latency-compensated; no evaluator shift",
     "baseline_lookahead_ms": 2.0,
     "chain": {
       "compressor_adaptive_release": false,
@@ -233,7 +233,7 @@
         "controlled-impulses",
         "controlled-sine-bursts"
       ],
-      "generator_sha256": "08fdba9a64d62298fb925d43e6b09b4f1ef2e085caba2b31298d54b60609e32d"
+      "generator_sha256": "0342c2b6a9c54157ad370bc936f73a0dcc53f6b6a13528f96f214d1f78f83b2e"
     },
     "real_speech": {
       "case_count": 12,
@@ -254,7 +254,7 @@
     "asset_hashes": {
       "native_extension": {
         "path": "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd",
-        "sha256": "a4cb583960c8ca643686ec6e993eb056cc2db9e4399febbbc786041548dab931"
+        "sha256": "8a374bd72ca439c748a8c16c38707e1b2dd9cc2f2d2502ba4e61e87521de0ad3"
       },
       "real_case_source_sha256": [
         "099f330317e03d0d97c9a9e572863d9db3f514d7c28bd2b4f050c5bddabaae04",
@@ -273,10 +273,10 @@
       "real_manifest": "316d7014b392a648b91fa2731a793b59a5577165ac6d8f35e604f24eed51b5dc",
       "source": {
         "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-        "python/tools/evaluate_limiter_lookahead.py": "08fdba9a64d62298fb925d43e6b09b4f1ef2e085caba2b31298d54b60609e32d",
-        "rust-core/src/audio/processor/python_api.rs": "07ec0a6fa7d78173ebb2814dd5197e7ac3726ff998de5362bc6e87804fd4c839",
-        "rust-core/src/dsp/limiter.rs": "5b5cae3a45b10d7cb58ba690ac67c382452837893c6f16c7bb436d85f145ce45",
-        "rust-core/src/dsp/true_peak.rs": "538713a3cc6a8a8b04f3488f843b3e388b9a7b5b61edc3965be7f00f258700f5"
+        "python/tools/evaluate_limiter_lookahead.py": "0342c2b6a9c54157ad370bc936f73a0dcc53f6b6a13528f96f214d1f78f83b2e",
+        "rust-core/src/audio/processor/python_api.rs": "1d1b77dbf40a148b93ad1776883068dc7f96d6ef6272dba35c00a72e765d4536",
+        "rust-core/src/dsp/limiter.rs": "e4840532d09c2b22040c79759af942e61e5e78b2135e748deb49cd7fbcdeae67",
+        "rust-core/src/dsp/true_peak.rs": "01fc7d3e82f6c80f4b4762a6a4f24b21cba1bcd11674392c3f83e0a75bb161aa"
       }
     },
     "clean_preservation": {
@@ -325,7 +325,7 @@
           }
         }
       },
-      "incumbent_real_transient_shape_p90_db": -0.010896769303614811
+      "incumbent_real_transient_shape_p90_db": -39.13864743272799
     },
     "configuration": {
       "baseline_lookahead_ms": 2.0,
@@ -356,8 +356,7 @@
       "sample_rate": 48000
     },
     "latency": {
-      "downstream_true_peak_delay_samples": 20,
-      "flush_samples": 116,
+      "alignment": "native render removes chain latency and flushes its tail",
       "lookahead_samples": {
         "0.5": 24,
         "1.0": 48,
@@ -365,13 +364,13 @@
       }
     },
     "runtime": {
-      "candidate_p95_realtime_factor": 0.1551771699459618,
+      "candidate_p95_realtime_factor": 0.10472390685645029,
       "max_p99_frame_seconds": null,
       "max_p99_frame_seconds_reason": "The native simulator reports whole-render timing; seven timed renders plus warmup are recorded instead of callback P99.",
       "platform": "Windows-11-10.0.26200-SP0"
     }
   },
-  "generated_at_utc": "2026-09-29T18:58:48.890594+00:00",
+  "generated_at_utc": "2026-10-01T18:11:38.182340+00:00",
   "limitations": [
     "Real speech receives one recorded static gain, calibrated through the protected chain to 3 dB of main-limiter gain reduction; the source waveform is otherwise unchanged.",
     "Transient shape error removes one local static gain and is not a perceptual score.",
@@ -393,13 +392,14 @@
     "real_main_limiter_gain_reduction_tolerance_db": 0.1,
     "real_transient_shape_p90_regression_db_max": 1.0
   },
-  "schema_version": 5,
+  "schema_version": 6,
   "selected_lookahead_ms": 0.5,
+  "source_revision": "dacb9f6eac0c92a3575eb12096539bb3885467d9",
   "source_sha256": {
     "python/mic_eq/analysis/wav_io.py": "e77461e0a01cad6b56df01ec9f88721e80f1df8252b41dd47ec208ee1b3174f0",
-    "python/tools/evaluate_limiter_lookahead.py": "08fdba9a64d62298fb925d43e6b09b4f1ef2e085caba2b31298d54b60609e32d",
-    "rust-core/src/audio/processor/python_api.rs": "07ec0a6fa7d78173ebb2814dd5197e7ac3726ff998de5362bc6e87804fd4c839",
-    "rust-core/src/dsp/limiter.rs": "5b5cae3a45b10d7cb58ba690ac67c382452837893c6f16c7bb436d85f145ce45",
-    "rust-core/src/dsp/true_peak.rs": "538713a3cc6a8a8b04f3488f843b3e388b9a7b5b61edc3965be7f00f258700f5"
+    "python/tools/evaluate_limiter_lookahead.py": "0342c2b6a9c54157ad370bc936f73a0dcc53f6b6a13528f96f214d1f78f83b2e",
+    "rust-core/src/audio/processor/python_api.rs": "1d1b77dbf40a148b93ad1776883068dc7f96d6ef6272dba35c00a72e765d4536",
+    "rust-core/src/dsp/limiter.rs": "e4840532d09c2b22040c79759af942e61e5e78b2135e748deb49cd7fbcdeae67",
+    "rust-core/src/dsp/true_peak.rs": "01fc7d3e82f6c80f4b4762a6a4f24b21cba1bcd11674392c3f83e0a75bb161aa"
   }
 }

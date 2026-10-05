@@ -1,9 +1,9 @@
-"""Bounded joint tuning for noise suppression, gating, and dynamics.
+"""Bounded joint tuning for noise suppression and gating.
 
-The live gate and suppressor are evaluated on the two captures separately.
+The live gate and suppressor process speech followed by the noise capture.
 The resulting speech/noise renders are then sent through the existing native
-downstream simulator so the recommendation cannot claim that an EQ-only
-render verified the input stages.
+downstream simulator with the compressor bypassed. Voice Setup calibrates
+compression after selecting the input stages, then validates the full chain.
 """
 
 from __future__ import annotations
@@ -41,6 +41,8 @@ _DEEPFILTER_SELECTION_POLICY = "retain_deepfilter_family_v1"
 # frame-boundary measurement while rejecting a future high-latency backend.
 _DEFAULT_MAX_SUPPRESSOR_LATENCY_MS = 35.0
 _MAX_CONFIGURED_SUPPRESSOR_LATENCY_MS = 100.0
+_POST_SPEECH_NOISE_SETTLE_SAMPLES = 28_800  # 600 ms at the simulation rate.
+_MAX_POST_SPEECH_NOISE_INCREASE_DB = 1.0
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -97,10 +99,9 @@ def _align_probabilities(
     values = np.asarray(probabilities, dtype=float).reshape(-1)
     if values.size == 0 or not np.isfinite(values).all():
         return np.zeros(target_count, dtype=np.float32)
-    frame_ends = (np.arange(target_count, dtype=np.int64) + 1) * _FRAME_SAMPLES
     mapped = map_causal_vad_probabilities(
         values,
-        frame_ends,
+        np.arange(target_count, dtype=np.int64) * _FRAME_SAMPLES,
         _SIMULATION_RATE,
     )
     return np.zeros(target_count, dtype=np.float32) if mapped is None else mapped
@@ -291,6 +292,25 @@ def _mix_cached_suppressor_render(
     return result
 
 
+def _join_captures(
+    speech: np.ndarray,
+    noise: np.ndarray,
+    speech_probabilities: np.ndarray,
+    noise_probabilities: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    speech_frames = (speech.size + _FRAME_SAMPLES - 1) // _FRAME_SAMPLES
+    noise_start = speech_frames * _FRAME_SAMPLES
+    # Native processing already zero-pads its last partial 10 ms frame. Keep
+    # that boundary so the two causal control/activity tapes stay aligned.
+    audio = np.concatenate((
+        speech,
+        np.zeros(noise_start - speech.size, dtype=np.float32),
+        noise,
+    ))
+    probabilities = np.concatenate((speech_probabilities, noise_probabilities))
+    return audio, probabilities, noise_start
+
+
 def _metric_float(result: Mapping[str, Any], key: str, default: float) -> float:
     value = result.get(key, default)
     try:
@@ -300,29 +320,19 @@ def _metric_float(result: Mapping[str, Any], key: str, default: float) -> float:
     return parsed if np.isfinite(parsed) else float(default)
 
 
-def _score(metrics: Mapping[str, float], compressor: Mapping[str, Any]) -> float:
+def _score(metrics: Mapping[str, float]) -> float:
     # Runtime is a feasibility gate; CPU load must not rank sound settings.
-    target_p95 = float(compressor.get("target_p95_reduction_db", 3.5))
-    target_median = float(
-        compressor.get("target_median_reduction_db", target_p95 * 0.42)
-    )
     noise_attenuation = float(metrics["noise_attenuation_db"])
     noise_quality = _clamp(
         (noise_attenuation - _MIN_NOISE_ATTENUATION_DB) / 12.0,
         0.0,
         1.0,
     )
-    dynamics_error = (
-        abs(float(metrics["compressor_p95_db"]) - target_p95) / 2.0
-        + 0.45 * abs(float(metrics["compressor_median_db"]) - target_median)
-    )
     return float(
         1.9 * max(0.0, _MIN_SPEECH_RETAINED - metrics["speech_retained_ratio"])
         + 1.4 * metrics["false_closure_rate"]
         + 1.2 * max(0.0, _MIN_TAIL_RETAINED - metrics["tail_retained_ratio"])
         + 0.85 * (1.0 - noise_quality)
-        + 0.35 * dynamics_error
-        + 0.20 * max(0.0, metrics["compressor_pumping_db"]) / 5.0
         + 0.50 * max(0.0, -metrics["pre_limiter_headroom_db"])
         + 0.08 * metrics["chatter_events"]
         + 0.06
@@ -331,19 +341,17 @@ def _score(metrics: Mapping[str, float], compressor: Mapping[str, Any]) -> float
     )
 
 
-def _gates(metrics: Mapping[str, float]) -> dict[str, bool]:
-    return {
+def _gates(
+    metrics: Mapping[str, float],
+    incumbent_metrics: Mapping[str, float] | None = None,
+) -> dict[str, bool]:
+    gates = {
         "active_speech_retention": metrics["speech_retained_ratio"] >= _MIN_SPEECH_RETAINED,
         "false_closure": metrics["false_closure_rate"] <= _MAX_FALSE_CLOSURE,
         "gate_tail": metrics["tail_retained_ratio"] >= _MIN_TAIL_RETAINED,
         "noise_reduction": metrics["noise_attenuation_db"] >= _MIN_NOISE_ATTENUATION_DB,
+        "post_speech_noise_evidence": metrics["post_speech_noise_frame_count"] > 0,
         "chatter": metrics["chatter_events"] <= _MAX_CHATTER_EVENTS,
-        "dynamics": bool(
-            metrics["compressor_p95_db"]
-            <= metrics["compressor_target_p95_db"] + 1.25
-            and metrics["compressor_peak_db"]
-            <= metrics["compressor_peak_cap_db"] + 0.25
-        ),
         "headroom": bool(
             metrics["output_true_peak_db"]
             <= metrics["limiter_ceiling_db"] + 0.15
@@ -354,6 +362,14 @@ def _gates(metrics: Mapping[str, float]) -> dict[str, bool]:
         "suppressor_latency": metrics["suppressor_latency_ms"]
         <= metrics["max_suppressor_latency_ms"],
     }
+    if incumbent_metrics is not None:
+        gates["post_speech_noise"] = bool(
+            metrics["post_speech_noise_frame_count"] > 0
+            and incumbent_metrics["post_speech_noise_frame_count"] > 0
+            and metrics["post_speech_noise_db"] - incumbent_metrics["post_speech_noise_db"]
+            < _MAX_POST_SPEECH_NOISE_INCREASE_DB
+        )
+    return gates
 
 
 def _canonical_noise_model(value: Any) -> str:
@@ -480,11 +496,11 @@ def _unavailable_result(
         "status": "unavailable",
         "decision": "retain_incumbent",
         "apply_recommended": False,
-        "evidence_scope": "joint_noise_speech_gate_suppressor_downstream",
+        "evidence_scope": "joint_noise_speech_gate_suppressor_downstream_compressor_bypassed",
         "selection_split": (
             "no candidate evaluation; evidence unavailable or disabled"
         ),
-        "objective": "speech_retention_noise_reduction_dynamics_safety_v1",
+        "objective": "speech_retention_noise_reduction_safety_v2",
         "reason": str(reason)[:256],
         "reasons": [str(reason)[:256]],
         "candidate_count": 0,
@@ -525,7 +541,7 @@ def tune_gate_suppression_dynamics(
     max_suppressor_latency_ms: float = _DEFAULT_MAX_SUPPRESSOR_LATENCY_MS,
     progress_callback: Callable[[str, int], None] | None = None,
 ) -> dict[str, Any]:
-    """Select a safe joint gate/suppressor candidate with downstream evidence.
+    """Select a gate/suppressor candidate with compression left for calibration.
 
     The search is deliberately small and deterministic. It never returns a
     candidate for application unless every predefined gate passes; this keeps
@@ -605,6 +621,20 @@ def tune_gate_suppression_dynamics(
                 )
                 for model in model_order
             ],
+        )
+
+    if (vad_probabilities is None) != (noise_vad_probabilities is None):
+        # One native stream cannot switch VAD availability between captures.
+        # Partial evidence does not establish the candidate's live behavior.
+        return _unavailable_result(
+            incumbent_gate,
+            noise_model=incumbent_model,
+            suppressor_strength=incumbent_strength,
+            suppressor_enabled=incumbent_enabled,
+            incumbent_suppressor=incumbent_suppressor_payload,
+            reason="speech/noise VAD availability differs; continuous evidence is unavailable",
+            runtime_ms=(time.perf_counter() - started) * 1000.0,
+            max_suppressor_latency_ms=latency_limit_ms,
         )
 
     simulator = _load_native_simulator()
@@ -783,6 +813,7 @@ def tune_gate_suppression_dynamics(
             progress_callback(detail, progress)
 
     render_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
+    joined_capture_cache: dict[tuple[Any, ...], tuple[np.ndarray, np.ndarray, int]] = {}
 
     def run_cached_suppressor(
         audio: np.ndarray,
@@ -855,60 +886,68 @@ def tune_gate_suppression_dynamics(
             dtype=bool,
         )
         tails = _tail_mask(active)
+        continuous_vad_available = (
+            evaluation_speech_vad_available and evaluation_noise_vad_available
+        )
         try:
-            rendered_noise = run_cached_suppressor(
-                evaluation_noise,
-                evaluation_noise_probabilities,
-                simulator_gate,
-                candidate_strength=candidate_strength,
-                candidate_model=candidate_model,
-                capture_name=f"{render_namespace}:noise",
-                vad_available=evaluation_noise_vad_available,
+            joined_key = (
+                render_namespace,
+                _array_identity(evaluation_speech),
+                _array_identity(evaluation_noise),
+                _array_identity(evaluation_speech_probabilities),
+                _array_identity(evaluation_noise_probabilities),
             )
-            rendered_speech = run_cached_suppressor(
-                evaluation_speech,
-                evaluation_speech_probabilities,
-                simulator_gate,
-                candidate_strength=candidate_strength,
-                candidate_model=candidate_model,
-                capture_name=f"{render_namespace}:speech",
-                vad_available=evaluation_speech_vad_available,
-            )
-            noise_latency_samples = _latency_samples(rendered_noise)
-            speech_latency_samples = _latency_samples(rendered_speech)
-            if noise_latency_samples != speech_latency_samples:
-                raise RuntimeError(
-                    "native simulator reported inconsistent suppressor latency"
+            if joined_key not in joined_capture_cache:
+                joined_capture_cache[joined_key] = _join_captures(
+                    evaluation_speech, evaluation_noise,
+                    evaluation_speech_probabilities, evaluation_noise_probabilities,
                 )
+            joined_audio, joined_probabilities, noise_start = joined_capture_cache[joined_key]
+            rendered = run_cached_suppressor(
+                joined_audio,
+                joined_probabilities,
+                simulator_gate,
+                candidate_strength=candidate_strength,
+                candidate_model=candidate_model,
+                capture_name=render_namespace,
+                vad_available=continuous_vad_available,
+            )
+            # Native output and dry audio already have suppressor latency
+            # removed. Activity is indexed by the corresponding input frames.
+            speech_output = rendered["output_audio"][:evaluation_speech.size]
+            noise_output = rendered["output_audio"][noise_start:]
+            speech_frames = noise_start // _FRAME_SAMPLES
+            speech_activity = rendered["auto_makeup_activity"][:speech_frames]
+            noise_activity = rendered["auto_makeup_activity"][speech_frames:]
+            speech_latency_samples = _latency_samples(rendered)
             suppressor_latency_ms = (
                 speech_latency_samples * 1000.0 / _SIMULATION_RATE
             )
             check_analysis_cancelled(cancel_check)
             downstream_chain: dict[str, Any] = {
                 "deesser": dict(deesser_settings),
-                "compressor": dict(compressor_settings),
+                # Its threshold is calibrated only after frontend selection.
+                "compressor": {**compressor_settings, "enabled": False},
                 "limiter": dict(limiter_settings),
             }
             # Reuse the frontend tape so auto-makeup sees the same causal
             # evidence, including conservative confidence when VAD is absent.
             speech_downstream = simulate_candidate_chain(
-                rendered_speech["output_audio"],
+                speech_output,
                 _SIMULATION_RATE,
                 dict(eq_settings),
                 {
                     **downstream_chain,
-                    "auto_makeup_activity": rendered_speech[
-                        "auto_makeup_activity"
-                    ],
+                    "auto_makeup_activity": speech_activity,
                 },
             )
             noise_downstream = simulate_candidate_chain(
-                rendered_noise["output_audio"],
+                noise_output,
                 _SIMULATION_RATE,
                 dict(eq_settings),
                 {
                     **downstream_chain,
-                    "auto_makeup_activity": rendered_noise["auto_makeup_activity"],
+                    "auto_makeup_activity": noise_activity,
                 },
             )
             check_analysis_cancelled(cancel_check)
@@ -917,14 +956,15 @@ def tune_gate_suppression_dynamics(
                 or noise_downstream.get("simulation_backend") != "rust"
             ):
                 raise RuntimeError("native downstream simulator is unavailable")
-            noise_in_rms = _rms(evaluation_noise)
-            noise_out_rms = _rms(
-                np.asarray(rendered_noise["output_audio"], dtype=float)
-            )
+            # Known noise follows speech without resetting the gate or model.
+            # Exclude the existing 600 ms pause boundary allowance before
+            # measuring attenuation or comparing with the incumbent.
+            settled_noise = evaluation_noise[_POST_SPEECH_NOISE_SETTLE_SAMPLES:]
+            settled_output = noise_output[_POST_SPEECH_NOISE_SETTLE_SAMPLES:]
+            noise_in_rms = _rms(settled_noise)
+            noise_out_rms = _rms(settled_output)
             speech_in_rms = _frame_rms(evaluation_speech)
-            speech_out_rms = _frame_rms(
-                np.asarray(rendered_speech["output_audio"], dtype=float)
-            )
+            speech_out_rms = _frame_rms(speech_output)
             active_count = min(active.size, speech_in_rms.size, speech_out_rms.size)
             active_slice = active[:active_count]
             speech_ratios = speech_out_rms[:active_count] / np.maximum(
@@ -944,10 +984,10 @@ def tune_gate_suppression_dynamics(
                     speech_out_rms, speech_in_rms, tails
                 ),
                 "noise_attenuation_db": _db(noise_in_rms) - _db(noise_out_rms),
-                "chatter_events": float(
-                    int(rendered_speech.get("gate_chatter_event_count", 0))
-                    + int(rendered_noise.get("gate_chatter_event_count", 0))
-                ),
+                "post_speech_noise_db": _db(noise_out_rms),
+                "post_speech_noise_frame_count": float(settled_output.size // _FRAME_SAMPLES),
+                "continuous_vad_available": float(continuous_vad_available),
+                "chatter_events": float(rendered.get("gate_chatter_event_count", 0)),
                 "compressor_p95_db": _metric_float(
                     speech_downstream, "compressor_gain_reduction_p95_db", 120.0
                 ),
@@ -981,8 +1021,7 @@ def tune_gate_suppression_dynamics(
                     bool(speech_downstream.get("non_finite_output", True))
                 ),
                 "runtime_factor": (
-                    _metric_float(rendered_noise, "runtime_ms", 0.0)
-                    + _metric_float(rendered_speech, "runtime_ms", 0.0)
+                    _metric_float(rendered, "runtime_ms", 0.0)
                     + _metric_float(speech_downstream, "candidate_runtime_ms", 0.0)
                     + _metric_float(noise_downstream, "candidate_runtime_ms", 0.0)
                 )
@@ -1005,7 +1044,7 @@ def tune_gate_suppression_dynamics(
                 "gates": _gates(metrics),
                 "is_incumbent": is_incumbent,
             }
-            candidate["score"] = _score(metrics, compressor_settings)
+            candidate["score"] = _score(metrics)
             candidate["passes"] = bool(all(candidate["gates"].values()))
             return candidate
         except AnalysisCancelled:
@@ -1197,6 +1236,14 @@ def tune_gate_suppression_dynamics(
             model_evaluations=model_evaluations,
         )
 
+    for candidate in candidates:
+        candidate["gates"] = _gates(candidate["metrics"], incumbent["metrics"])
+        candidate["passes"] = bool(all(candidate["gates"].values()))
+    for model_evaluation in model_evaluations:
+        model_evaluation["passing_candidate_count"] = sum(
+            candidate["passes"] for candidate in candidates
+            if candidate["model"] == model_evaluation["model"]
+        )
     passing = [candidate for candidate in candidates if candidate["passes"]]
     best = (
         min(
@@ -1282,6 +1329,9 @@ def tune_gate_suppression_dynamics(
             report_search_progress(
                 f"Checking suppression holdout ({progress_attempts + 1} checked)..."
             )
+            if holdout is not None and holdout_incumbent is not None:
+                holdout["gates"] = _gates(holdout["metrics"], holdout_incumbent["metrics"])
+                holdout["passes"] = bool(all(holdout["gates"].values()))
             holdout_improved = bool(
                 holdout is not None
                 and holdout["passes"]
@@ -1313,9 +1363,11 @@ def tune_gate_suppression_dynamics(
     if decision == "retain_incumbent":
         reasons.append("incumbent retained unless a bounded candidate clearly improves all gates")
     else:
-        reasons.append("bounded candidate passed speech, noise, dynamics, safety, and runtime gates")
+        reasons.append("bounded candidate passed speech, noise, safety, and runtime gates with compression bypassed")
     if not passing:
         reasons.append("no candidate passed every predefined gate")
+    if incumbent["metrics"]["post_speech_noise_frame_count"] == 0:
+        reasons.append("noise capture has no complete frame after the 600 ms settling interval")
     if failure_reasons:
         reasons.append(f"{len(failure_reasons)} candidate evaluations were unavailable")
     return {
@@ -1325,7 +1377,7 @@ def tune_gate_suppression_dynamics(
         "holdout_passed": holdout_improved,
         "holdout_evaluated": holdout is not None,
         "holdout_gates": dict(holdout["gates"]) if holdout is not None else {},
-        "evidence_scope": "joint_noise_speech_gate_suppressor_downstream",
+        "evidence_scope": "joint_noise_speech_gate_suppressor_downstream_compressor_bypassed",
         "selection_split": (
             "first complete capture half selects candidates; second complete half "
             "is the narrow holdout, with the training noise floor retained"
@@ -1340,7 +1392,7 @@ def tune_gate_suppression_dynamics(
             )
             // _FRAME_SAMPLES
         ),
-        "objective": "speech_retention_noise_reduction_dynamics_safety_v1",
+        "objective": "speech_retention_noise_reduction_safety_v2",
         "reasons": reasons,
         "candidate_count": len(candidates),
         "selected_candidate": {

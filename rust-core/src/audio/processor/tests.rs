@@ -13,6 +13,348 @@ mod tests {
     }
 
     #[test]
+    fn test_suppressor_recovery_fade_starts_after_model_delay() {
+        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+        for latency in [RNNOISE_FRAME_SIZE, 3 * RNNOISE_FRAME_SIZE] {
+            for partition in [1, 127, RNNOISE_FRAME_SIZE, 1024] {
+                let mut samples = vec![0.0; latency + fade_samples + 1];
+                samples[latency..].fill(0.25);
+                let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+                recovery.restart(latency);
+                crate::test_alloc::assert_no_allocations("suppressor recovery fade", || {
+                    for block in samples.chunks_mut(partition) {
+                        recovery.apply(block);
+                    }
+                });
+                assert!(samples[..latency].iter().all(|sample| *sample == 0.0));
+                for index in 0..fade_samples {
+                    assert_eq!(
+                        samples[latency + index],
+                        0.25 * (index + 1) as f32 / fade_samples as f32
+                    );
+                }
+                assert_eq!(samples[latency + fade_samples], 0.25);
+            }
+        }
+    }
+
+    #[cfg(feature = "deepfilter")]
+    #[test]
+    fn test_unavailable_suppressor_recovery_fades_first_valid_dry_sample() {
+        if crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
+            eprintln!("requires AUDIOFORGE_ENABLE_DEEPFILTER=0; enabled-backend recovery is tested separately");
+            return;
+        }
+        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+        for model in [NoiseModel::RNNoise, NoiseModel::DeepFilterNetLL, NoiseModel::DeepFilterNet] {
+            for strength in [0.0_f32, 0.37, 1.0] {
+                for pending in [0, 123] {
+                    let mut processor = new_noise_suppression_engine(
+                        model, Arc::new(AtomicU32::new(strength.to_bits())),
+                    );
+                    if model == NoiseModel::RNNoise {
+                        processor.set_enabled(false);
+                    } else {
+                        assert!(!processor.backend_available());
+                    }
+                    assert!(!processor.backend_failed());
+                    assert_eq!(processor.latency_samples(), RNNOISE_FRAME_SIZE);
+                    processor.push_samples(&[0.1; RNNOISE_FRAME_SIZE]);
+                    processor.process_frames();
+                    processor.push_samples(&[0.1; 123][..pending]);
+                    processor.soft_reset();
+                    let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+                    let writer_fade = Cell::new(0);
+                    recovery.restart_for_suppressor(&processor, &writer_fade, fade_samples);
+                    for frame in 0..2 {
+                        processor.push_samples(&[0.25; RNNOISE_FRAME_SIZE]);
+                        processor.process_frames();
+                        let mut output = [0.0; RNNOISE_FRAME_SIZE];
+                        assert_eq!(processor.pop_samples_into(&mut output), output.len());
+                        assert_eq!(output, [0.25; RNNOISE_FRAME_SIZE]);
+                        crate::test_alloc::assert_no_allocations("unavailable recovery fade", || {
+                            recovery.apply(&mut output);
+                            let mut remaining = writer_fade.get();
+                            fade_in(&mut output, &mut remaining, fade_samples);
+                            writer_fade.set(remaining);
+                        });
+                        for (index, sample) in output.iter().enumerate() {
+                            let elapsed = frame * RNNOISE_FRAME_SIZE + index;
+                            let factor = ((elapsed + 1) as f32 / fade_samples as f32).min(1.0);
+                            assert_eq!(*sample, 0.25 * factor);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_suppressor_recovery_fade_restarts_for_overlapping_resets_and_handoff() {
+        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+        let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+        let mut direct = [0.3; 31];
+        recovery.apply(&mut direct);
+        assert_eq!(direct, [0.3; 31]);
+        for (latency, consumed) in [(480, 123), (1440, 1489), (480, 503)] {
+            recovery.restart(latency);
+            let mut samples = vec![0.0; consumed];
+            if consumed > latency {
+                samples[latency..].fill(0.2);
+            }
+            recovery.apply(&mut samples);
+            if consumed > latency {
+                assert_eq!(samples[latency], 0.2 * (1.0 / fade_samples as f32));
+            }
+            assert_eq!(recovery.invalid_samples, latency.saturating_sub(consumed));
+            assert_eq!(
+                recovery.remaining,
+                fade_samples - consumed.saturating_sub(latency)
+            );
+        }
+        recovery.restart(0);
+        recovery.apply(&mut direct);
+        assert_eq!(direct, [0.3; 31]);
+    }
+
+    #[test]
+    fn test_suppressor_recovery_fade_preserves_aligned_wet_dry_mix() {
+        let models = [
+            NoiseModel::RNNoise,
+            #[cfg(feature = "deepfilter")]
+            NoiseModel::DeepFilterNetLL,
+            #[cfg(feature = "deepfilter")]
+            NoiseModel::DeepFilterNet,
+        ];
+        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+        for model in models {
+            for strength in [0.0_f32, 0.37, 1.0] {
+                for gain in [0.3_f32, 1.0] {
+                    let mut processor = new_noise_suppression_engine(
+                        model,
+                        Arc::new(AtomicU32::new(strength.to_bits())),
+                    );
+                    if !processor.backend_available() {
+                        eprintln!("skipping {} recovery mix: backend unavailable", model.id());
+                        continue;
+                    }
+                    let latency = processor.latency_samples();
+                    let mut output = [0.0; RNNOISE_FRAME_SIZE];
+                    for _ in 0..4 {
+                        processor.push_samples(&[0.1; RNNOISE_FRAME_SIZE]);
+                        processor.process_frames();
+                        assert_eq!(processor.pop_samples_into(&mut output), output.len());
+                    }
+                    processor.push_samples(&[0.2; 123]);
+                    processor.soft_reset();
+                    let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+                    let writer_fade = Cell::new(fade_samples);
+                    recovery.restart_for_suppressor(&processor, &writer_fade, fade_samples);
+                    assert_eq!(writer_fade.get(), 0, "loaded backend must not fade twice");
+                    for frame in 0..(latency / RNNOISE_FRAME_SIZE + 2) {
+                        let dry = [0.04 * gain; RNNOISE_FRAME_SIZE];
+                        assert_eq!(processor.push_samples(&dry), dry.len());
+                        processor.process_frames();
+                        assert_eq!(processor.pop_samples_into(&mut output), output.len());
+                        let unfaded = output;
+                        recovery.apply(&mut output);
+                        for index in 0..output.len() {
+                            let elapsed = frame * RNNOISE_FRAME_SIZE + index;
+                            if elapsed < latency {
+                                assert_eq!(output[index], 0.0);
+                            } else {
+                                let factor =
+                                    ((elapsed - latency + 1) as f32 / fade_samples as f32).min(1.0);
+                                assert_eq!(output[index], unfaded[index] * factor);
+                                if strength == 0.0 {
+                                    assert_eq!(unfaded[index], dry[index]);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "deepfilter")]
+    #[test]
+    fn test_failed_suppressor_recovery_preserves_delayed_dry_and_single_fade() {
+        use crate::dsp::deepfilter_ffi::TEST_FAIL_PROCESS_AFTER;
+
+        if !crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
+            eprintln!("requires enabled DeepFilter assets for failure recovery");
+            return;
+        }
+        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+        for model in [NoiseModel::DeepFilterNetLL, NoiseModel::DeepFilterNet] {
+            let mut processor = new_noise_suppression_engine(
+                model, Arc::new(AtomicU32::new(0.37_f32.to_bits())),
+            );
+            assert!(processor.backend_available());
+            TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(Some(0)));
+            processor.push_samples(&[0.1; RNNOISE_FRAME_SIZE]);
+            processor.process_frames();
+            assert!(processor.backend_failed());
+            assert!(!processor.backend_available());
+            processor.soft_reset();
+            let latency = processor.latency_samples();
+            let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+            let writer_fade = Cell::new(fade_samples);
+            recovery.restart_for_suppressor(&processor, &writer_fade, fade_samples);
+            assert_eq!(writer_fade.get(), 0);
+            for frame in 0..(latency / RNNOISE_FRAME_SIZE + 2) {
+                processor.push_samples(&[0.25; RNNOISE_FRAME_SIZE]);
+                processor.process_frames();
+                let mut output = [0.0; RNNOISE_FRAME_SIZE];
+                assert_eq!(processor.pop_samples_into(&mut output), output.len());
+                recovery.apply(&mut output);
+                for (index, sample) in output.iter().enumerate() {
+                    let elapsed = frame * RNNOISE_FRAME_SIZE + index;
+                    let valid = (elapsed + 1).saturating_sub(latency);
+                    assert_eq!(*sample, 0.25 * (valid as f32 / fade_samples as f32).min(1.0));
+                }
+                assert!(processor.backend_failed());
+            }
+        }
+    }
+
+    #[test]
+    fn test_suppressor_recovery_fade_follows_audio_through_downstream_delay_and_resampling() {
+        fn downstream(mut input: Vec<f32>, output_rate: u32) -> Vec<f32> {
+            let mut limiter = Limiter::default_settings(TARGET_SAMPLE_RATE as f64);
+            limiter.set_enabled(false);
+            for block in input.chunks_mut(127) {
+                limiter.process_block_inplace(block);
+            }
+            let mut output = if output_rate == TARGET_SAMPLE_RATE {
+                input
+            } else {
+                let mut resampler =
+                    build_sinc_resampler(TARGET_SAMPLE_RATE, output_rate, 1024).unwrap();
+                let mut outbuf = resampler.output_buffer_allocate(true);
+                let mut output = Vec::new();
+                for block in input.chunks_exact(1024) {
+                    let frame: Vec<f64> = block.iter().map(|sample| *sample as f64).collect();
+                    let (_, count) = resampler
+                        .process_into_buffer(&[frame.as_slice()], &mut outbuf, None)
+                        .unwrap();
+                    output.extend(outbuf[0][..count].iter().map(|sample| *sample as f32));
+                }
+                output
+            };
+            let mut true_peak = TruePeakLimiter::default_settings(output_rate as f32);
+            true_peak.set_enabled(false);
+            for block in output.chunks_mut(113) {
+                true_peak.process_block_inplace(block);
+            }
+            output
+        }
+        let fade_samples = duration_samples(TARGET_SAMPLE_RATE, 6);
+        for latency in [480, 1440] {
+            let reset_sample = 137; // Leaves residue in both downstream block sizes.
+            let first_valid = reset_sample + latency;
+            let mut original = vec![0.0; 4096];
+            original[37] = -0.125; // Downstream state from the earlier stream is retained.
+            original[first_valid] = 0.25;
+            let mut expected = original.clone();
+            expected[first_valid] *= 1.0 / fade_samples as f32;
+            let mut actual = original.clone();
+            let mut recovery = SuppressorRecoveryFade::new(fade_samples);
+            recovery.restart(latency);
+            for block in actual[reset_sample..].chunks_mut(127) {
+                recovery.apply(block);
+            }
+            assert_eq!(actual, expected);
+            for output_rate in [16_000, 32_000, 44_100, 48_000, 96_000] {
+                let faded = downstream(actual.clone(), output_rate);
+                let reference = downstream(expected.clone(), output_rate);
+                let unfaded = downstream(original.clone(), output_rate);
+                let mut earlier_stream = original.clone();
+                earlier_stream[first_valid] = 0.0;
+                let earlier_output = downstream(earlier_stream, output_rate);
+                assert_eq!(faded, reference);
+                assert_eq!(faded.len(), unfaded.len());
+                let search_start = first_valid * output_rate as usize / TARGET_SAMPLE_RATE as usize;
+                let peak_index = |samples: &[f32]| {
+                    samples[search_start..]
+                        .iter()
+                        .zip(&earlier_output[search_start..])
+                        .map(|(sample, earlier)| (sample - earlier).abs())
+                        .enumerate()
+                        .max_by(|(_, left), (_, right)| left.total_cmp(right))
+                        .unwrap()
+                        .0
+                };
+                assert_eq!(peak_index(&faded), peak_index(&unfaded));
+            }
+        }
+    }
+
+    #[cfg(all(feature = "deepfilter", feature = "vad"))]
+    #[test]
+    fn test_offline_simulators_reject_runtime_backend_failure() {
+        use crate::dsp::deepfilter_ffi::TEST_FAIL_PROCESS_AFTER;
+        use numpy::PyArrayMethods;
+
+        if !crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
+            eprintln!("skipping runtime backend failure: DeepFilter is not enabled");
+            return;
+        }
+        struct ClearInjectedFailure;
+        impl Drop for ClearInjectedFailure {
+            fn drop(&mut self) {
+                TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(None));
+            }
+        }
+        let _clear_failure = ClearInjectedFailure;
+        Python::initialize();
+        Python::attach(|py| {
+            for model in [NoiseModel::DeepFilterNetLL, NoiseModel::DeepFilterNet] {
+                let processor = new_noise_suppression_engine(
+                    model,
+                    Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+                );
+                assert!(
+                    processor.backend_available(),
+                    "{} assets are required",
+                    model.id()
+                );
+                let settings = PyDict::new(py);
+                settings.set_item("noise_model", model.id()).unwrap();
+                settings.set_item("gate_enabled", false).unwrap();
+                settings.set_item("vad_available", false).unwrap();
+                let audio = vec![0.02; RNNOISE_FRAME_SIZE * 4];
+                TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(Some(1)));
+                let input = numpy::PyArray1::from_vec(py, audio.clone());
+                let error = simulate_gate_suppressor_order(
+                    py,
+                    input.readonly(),
+                    vec![0.0; 4],
+                    false,
+                    1.0,
+                    Some(&settings),
+                )
+                .expect_err("the gate simulator must reject runtime dry fallback");
+                assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+                assert!(error.to_string().contains("non-finite SNR"));
+                TEST_FAIL_PROCESS_AFTER.with(|remaining| remaining.set(Some(1)));
+                let error = match simulate_input_frontend_with_activity(
+                    py,
+                    audio,
+                    48_000.0,
+                    Some(&settings),
+                ) {
+                    Err(error) => error,
+                    Ok(_) => panic!("the frontend simulator must reject runtime dry fallback"),
+                };
+                assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+                assert!(error.to_string().contains("non-finite SNR"));
+            }
+        });
+    }
+
+    #[test]
     fn test_output_queue_target_preserves_qualified_callback_headroom() {
         const QUALIFIED_MAX_CALLBACK_MS: u32 = 20;
         const MIN_STARTUP_RESERVE_MS: u32 = 10;
@@ -24,17 +366,11 @@ mod tests {
             let center = (prime + high).div_ceil(2);
             let callback = duration_samples(sample_rate, QUALIFIED_MAX_CALLBACK_MS);
 
+            assert!(prime >= callback + duration_samples(sample_rate, MIN_STARTUP_RESERVE_MS));
             assert!(
-                prime >= callback + duration_samples(sample_rate, MIN_STARTUP_RESERVE_MS)
+                center >= callback + duration_samples(sample_rate, MIN_STEADY_STATE_RESERVE_MS)
             );
-            assert!(
-                center
-                    >= callback
-                        + duration_samples(sample_rate, MIN_STEADY_STATE_RESERVE_MS)
-            );
-            assert!(
-                duration_samples(sample_rate, OUTPUT_HARD_BACKLOG_MS) > high
-            );
+            assert!(duration_samples(sample_rate, OUTPUT_HARD_BACKLOG_MS) > high);
         }
     }
 
@@ -60,7 +396,6 @@ mod tests {
                     suppressor_latency_samples: 0,
                     limiter_lookahead_samples: lookahead_samples,
                     true_peak_lookahead_samples: 20,
-                    limiter_enabled: true,
                     processing_sample_rate: sample_rate,
                 },
                 0,
@@ -218,6 +553,227 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "vad")]
+    #[test]
+    fn controlled_simulators_match_original_neural_input_and_independent_wet_compensation() {
+        use numpy::PyArrayMethods;
+        let audio: Vec<_> = (0..13_157)
+            .map(|index| {
+                (index as f32 * 0.033).sin()
+                    * if (2400..9600).contains(&index) {
+                        0.08
+                    } else {
+                        0.001
+                    }
+            })
+            .collect();
+        let probabilities: Vec<_> = (0..audio.len().div_ceil(480))
+            .map(|index| if (5..20).contains(&index) { 0.9 } else { 0.1 })
+            .collect();
+        let models = [
+            NoiseModel::RNNoise,
+            #[cfg(feature = "deepfilter")]
+            NoiseModel::DeepFilterNetLL,
+            #[cfg(feature = "deepfilter")]
+            NoiseModel::DeepFilterNet,
+        ];
+        Python::initialize();
+        Python::attach(|py| {
+            for model in models {
+                for mode in [
+                    GateMode::ThresholdOnly,
+                    GateMode::VadAssisted,
+                    GateMode::VadOnly,
+                ] {
+                    for available in [false, true] {
+                        for frontend in [false, true] {
+                            let make_gate = || {
+                                let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
+                                gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(
+                                    48_000, 0.48,
+                                )));
+                                gate.set_gate_mode(mode);
+                                gate.set_hold_time(200.0);
+                                gate.set_vad_pre_gain(1.0);
+                                gate.set_auto_threshold(true);
+                                gate.set_margin(10.0);
+                                gate
+                            };
+                            let mut original_gate = make_gate();
+                            let mut observing_gate = make_gate();
+                            let mut original_engine =
+                                crate::dsp::noise_suppressor::new_noise_suppression_engine(
+                                    model,
+                                    Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+                                );
+                            if !original_engine.backend_available() {
+                                #[cfg(feature = "deepfilter")]
+                                assert!(
+                                    !crate::dsp::noise_suppressor::deepfilter_experimental_enabled(
+                                    )
+                                );
+                                continue;
+                            }
+                            let latency = original_engine.latency_samples();
+                            let mut controls = Vec::new();
+                            let mut original_dry = Vec::new();
+                            let mut original_wet = Vec::new();
+                            for (block, chunk) in audio.chunks(480).enumerate() {
+                                let mut original = [0.0; 480];
+                                original[..chunk.len()].copy_from_slice(chunk);
+                                let mut observed = original;
+                                let mut control = [GateControl::BYPASS; 480];
+                                original_gate
+                                    .set_external_vad_probability(probabilities[block], available);
+                                observing_gate
+                                    .set_external_vad_probability(probabilities[block], available);
+                                let count = if frontend { chunk.len() } else { 480 };
+                                original_gate.process_block_inplace(&mut original[..count]);
+                                observing_gate.process_block_with_gate_control(
+                                    &mut observed[..count],
+                                    &mut control[..count],
+                                );
+                                assert_eq!(original, observed, "original neural input changed");
+                                if count < 480 {
+                                    observing_gate.process_block_with_gate_control(
+                                        &mut observed[count..],
+                                        &mut control[count..],
+                                    );
+                                }
+                                controls.extend_from_slice(&control);
+                                original_dry.extend_from_slice(&original);
+                                assert_eq!(original_engine.push_samples(&original), 480);
+                                original_engine.process_frames();
+                                let mut wet = [0.0; 480];
+                                assert_eq!(original_engine.pop_samples_into(&mut wet), 480);
+                                original_wet.extend_from_slice(&wet);
+                            }
+                            for _ in 0..latency / 480 {
+                                let mut silence = [0.0; 480];
+                                let mut control = [GateControl::BYPASS; 480];
+                                observing_gate
+                                    .process_block_with_gate_control(&mut silence, &mut control);
+                                controls.extend_from_slice(&control);
+                                assert_eq!(original_engine.push_samples(&[0.0; 480]), 480);
+                                original_engine.process_frames();
+                                let mut wet = [0.0; 480];
+                                assert_eq!(original_engine.pop_samples_into(&mut wet), 480);
+                                original_wet.extend_from_slice(&wet);
+                            }
+                            assert!(!original_engine.backend_failed());
+                            let mut counter = 0usize;
+                            let expected: Vec<_> = (latency..latency + audio.len())
+                                .map(|index| {
+                                    let mut ratio = 1.0_f32;
+                                    if model.id() != "deepfilter" {
+                                        let current = controls[index - latency];
+                                        let future = controls[index];
+                                        let raw_ratio = (current.gain.max(future.gain)
+                                            / current.gain.max(0.015_848_933))
+                                        .max(1.0);
+                                        ratio +=
+                                            (counter as f32 / latency as f32) * (raw_ratio - 1.0);
+                                        counter = if future.open {
+                                            (counter + 1).min(latency)
+                                        } else {
+                                            counter.saturating_sub(1)
+                                        };
+                                    }
+                                    original_wet[index] * ratio
+                                })
+                                .collect();
+                            let settings = PyDict::new(py);
+                            settings.set_item("noise_model", model.id()).unwrap();
+                            settings.set_item("input_pre_filtered", true).unwrap();
+                            settings.set_item("gate_enabled", true).unwrap();
+                            settings.set_item("gate_mode", mode as u8).unwrap();
+                            settings.set_item("gate_vad_threshold", 0.48).unwrap();
+                            settings.set_item("gate_vad_hold_time_ms", 200.0).unwrap();
+                            settings.set_item("gate_vad_pre_gain", 1.0).unwrap();
+                            settings
+                                .set_item("gate_auto_threshold_enabled", true)
+                                .unwrap();
+                            settings.set_item("gate_margin_db", 10.0).unwrap();
+                            settings.set_item("vad_available", available).unwrap();
+                            settings
+                                .set_item("vad_probabilities", &probabilities)
+                                .unwrap();
+                            settings.set_item("return_dry_audio", true).unwrap();
+                            let actual = if frontend {
+                                let result = simulate_input_frontend_with_activity(
+                                    py,
+                                    audio.clone(),
+                                    48_000.0,
+                                    Some(&settings),
+                                )
+                                .unwrap();
+                                assert_eq!(result.suppressor_latency, latency);
+                                result.rendered
+                            } else {
+                                let numpy_audio = numpy::PyArray1::from_vec(py, audio.clone());
+                                let result = simulate_gate_suppressor_order(
+                                    py,
+                                    numpy_audio.readonly(),
+                                    probabilities.clone(),
+                                    false,
+                                    1.0,
+                                    Some(&settings),
+                                )
+                                .unwrap();
+                                let result = result.bind(py);
+                                let dry: Vec<f32> =
+                                    result.get_item("dry_audio").unwrap().extract().unwrap();
+                                assert_eq!(
+                                    dry,
+                                    original_dry[..audio.len()],
+                                    "original gated dry changed"
+                                );
+                                assert_eq!(
+                                    result
+                                        .get_item("suppressor_latency_samples")
+                                        .unwrap()
+                                        .extract::<usize>()
+                                        .unwrap(),
+                                    latency
+                                );
+                                result
+                                    .get_item("output_audio")
+                                    .unwrap()
+                                    .extract::<Vec<f32>>()
+                                    .unwrap()
+                            };
+                            for (index, (actual, expected)) in
+                                actual.iter().zip(&expected).enumerate()
+                            {
+                                assert_eq!(actual, expected, "{model:?}, {mode:?}, available={available}, frontend={frontend}, sample={index}");
+                            }
+                            assert_eq!(actual.len(), expected.len());
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
+    fn test_full_chain_gates_each_block_with_a_vad_result_finished_before_it() {
+        // The first 32 ms window ends at sample 1536, inside block 3
+        // [1440, 1920). Live, block 3 cannot use it; block 4 can.
+        let audio = vec![0.01_f32; RNNOISE_FRAME_SIZE * 8];
+        Python::initialize();
+        Python::attach(|py| {
+            let settings = PyDict::new(py);
+            settings.set_item("gate_mode", 2_u8).unwrap();
+            let evidence =
+                simulate_input_frontend_with_activity(py, audio, 48_000.0, Some(&settings))
+                    .expect("native VAD should process the fixture")
+                    .activity_evidence;
+            assert!(evidence[..4].iter().all(|block| block.vad_reliability == 0.0));
+            assert_eq!(evidence[4].vad_reliability, 1.0);
+        });
+    }
+
     #[test]
     fn test_total_reported_latency_respects_output_vs_processing_rates() {
         let total = total_reported_latency_us(
@@ -229,7 +785,6 @@ mod tests {
                 suppressor_latency_samples: 480,
                 limiter_lookahead_samples: 96,
                 true_peak_lookahead_samples: 20,
-                limiter_enabled: true,
                 processing_sample_rate: 48_000,
             },
             500,
@@ -244,25 +799,6 @@ mod tests {
                 + samples_to_micros(20, 44_100)
                 + 500
         );
-    }
-
-    #[test]
-    fn test_total_reported_latency_omits_both_limiter_delays_when_disabled() {
-        let total = total_reported_latency_us(
-            LatencyComponents {
-                input_resampler_delay_samples: 0,
-                output_buffer_samples: 0,
-                output_sample_rate: 48_000,
-                output_resampler_delay_samples: 0,
-                suppressor_latency_samples: 0,
-                limiter_lookahead_samples: 96,
-                true_peak_lookahead_samples: 20,
-                limiter_enabled: false,
-                processing_sample_rate: 48_000,
-            },
-            0,
-        );
-        assert_eq!(total, 0);
     }
 
     #[test]
@@ -1576,7 +2112,13 @@ mod tests {
         const PREFILL: usize = 140;
         let input_len = input_rate as usize / 4;
         let source: Vec<f32> = (0..input_len)
-            .map(|index| if index < input_rate as usize / 100 { 1.0 } else { 0.2 })
+            .map(|index| {
+                if index < input_rate as usize / 100 {
+                    1.0
+                } else {
+                    0.2
+                }
+            })
             .collect();
         let product_output = if input_rate == TARGET_SAMPLE_RATE {
             source
@@ -1628,6 +2170,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1715,6 +2258,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1771,6 +2315,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1796,7 +2341,8 @@ mod tests {
         );
         assert_eq!(output_retime_adjustment_count.load(Ordering::Relaxed), 0);
         assert_eq!(output_recovery_event_count.load(Ordering::Relaxed), 1);
-        assert_eq!(fade_remaining.get(), 4);
+        assert_eq!(writer.output_fade_remaining, 4);
+        assert_eq!(fade_remaining.get(), 0);
         assert_eq!(output_buffer_len.load(Ordering::Relaxed), 4);
 
         let mut drained = [0.0_f32; 4];
@@ -1837,6 +2383,7 @@ mod tests {
             drift_error_ema: &mut expand_drift_error_ema,
             drift_retimer: &mut expand_drift_retimer,
             discontinuity_fade_remaining: &expand_fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1896,6 +2443,7 @@ mod tests {
             drift_error_ema: &mut compress_drift_error_ema,
             drift_retimer: &mut compress_drift_retimer,
             discontinuity_fade_remaining: &compress_fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1962,6 +2510,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -1979,12 +2528,25 @@ mod tests {
             limits: test_output_writer_limits(4, 8, 4),
         };
 
-        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], false));
+        // Fill the true-peak delay so the output stream carries the signal.
+        let mut drain = [0.0_f32; 8];
+        consumer.read(&mut drain);
+        for _ in 0..(TruePeakLimiter::default().lookahead_samples() / 4 + 4) {
+            assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
+            consumer.read(&mut drain);
+        }
+        assert_eq!(writer.output_fade_remaining, 0);
+        assert_eq!(writer.output_producer.write(&[0.0; 6]), 6);
+
+        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
         let mut first_drain = [0.0_f32; 8];
         assert_eq!(consumer.read(&mut first_drain), 8);
-        assert_eq!(fade_remaining.get(), 4);
+        // The dropout is in the output stream, after the true-peak delay, so
+        // its fade-in is owed there rather than to the upstream timeline.
+        assert_eq!(writer.output_fade_remaining, 4);
+        assert_eq!(fade_remaining.get(), 0);
 
-        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], false));
+        assert!(writer.write_chunk(&[1.0, 1.0, 1.0, 1.0], true));
         let mut faded = [0.0_f32; 4];
         assert_eq!(consumer.read(&mut faded), 4);
         assert!(faded[0] > 0.0);
@@ -2026,6 +2588,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: output_writer_counters(
@@ -2091,6 +2654,7 @@ mod tests {
             drift_error_ema: &mut drift_error_ema,
             drift_retimer: &mut drift_retimer,
             discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
             limiter_enabled: &limiter_enabled,
             output_ceiling_linear: &output_ceiling_linear,
             counters: OutputWriteCounters {
@@ -2309,9 +2873,18 @@ mod tests {
         let mut output = FixedAudioBuffer::<f32, 4>::new();
 
         processor.process_block(&mut input, &mut output);
-
         assert_eq!(output.len(), 4);
-        assert_eq!(output.as_slice(), &input[..4]);
+
+        // Disabled limiting keeps both limiter delays, so the probe returns
+        // unchanged after the constant chain latency.
+        let latency = processor.latency_samples();
+        let mut emitted = output.as_slice().to_vec();
+        while emitted.len() < latency + 4 {
+            let mut silence = [0.0_f32; 4];
+            processor.process_block(&mut silence, &mut output);
+            emitted.extend_from_slice(output.as_slice());
+        }
+        assert_eq!(&emitted[latency..latency + 4], &input[..4]);
     }
 
     #[test]
@@ -2589,16 +3162,16 @@ mod tests {
         // Deterministic multi-block integration fingerprint; component tests
         // independently check envelope timing, spectral response, and ceilings.
         assert!(
-            (rms - 0.141_322_069_092).abs() <= 1.0e-6,
+            (rms - 0.141_311_179_443).abs() <= 1.0e-6,
             "rms={rms:.12} peak={peak:.9} weighted={weighted_sum:.12} compressor={max_compressor_gr:.9} deesser={max_deesser_gr:.9} limiter={max_limiter_gr:.9} events={limited_events} checkpoints={checkpoints:?}"
         );
-        assert!((peak - 0.498_408_62).abs() <= 2.0e-6);
-        assert!((weighted_sum - 1_701.332_711_963).abs() <= 0.05);
-        assert!((max_compressor_gr - 11.566_024).abs() <= 0.001);
-        assert!((max_deesser_gr - 4.712_847).abs() <= 0.001);
-        assert!((max_limiter_gr - 0.826_814_9).abs() <= 0.001);
-        assert!((5..=9).contains(&limited_events));
-        let expected = [-0.012_534_169, 0.209_899_89, 0.251_204_85, 0.091_641_47];
+        assert!((peak - 0.493_321_36).abs() <= 2.0e-6);
+        assert!((weighted_sum - 1_565.372_487_073).abs() <= 0.05);
+        assert!((max_compressor_gr - 9.894_508).abs() <= 0.001);
+        assert!((max_deesser_gr - 9.932_909).abs() <= 0.001);
+        assert!((max_limiter_gr - 1.139_794_8).abs() <= 0.001);
+        assert!((2..=6).contains(&limited_events));
+        let expected = [-0.012_534_169, 0.209_899_89, 0.296_986_37, 0.021_112_22];
         assert_eq!(checkpoints.len(), expected.len());
         for (actual, expected) in checkpoints.into_iter().zip(expected) {
             assert!((actual - expected).abs() <= 2.0e-5);
@@ -3358,7 +3931,8 @@ mod tests {
         let source = include_str!("dsp_loop.rs");
         let region = marked_region(source, "dsp_processing_loop");
 
-        assert!(region.contains("let accepted = suppressor_rt.push_samples(buffer);"));
+        let compact: String = region.split_whitespace().collect();
+        assert!(compact.contains("suppressor_rt.push_controlled_samples(buffer,gate_controls)"));
         assert!(region.contains("if accepted < buffer.len()"));
         assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
     }

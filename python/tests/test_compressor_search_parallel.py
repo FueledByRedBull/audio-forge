@@ -4,7 +4,8 @@ from dataclasses import asdict
 import numpy as np
 import pytest
 
-from mic_eq.analysis import voice_setup
+from mic_eq.analysis import compressor_calibration, voice_setup
+from tools.evaluate_compressor_search import _calibrate_compressor_expanded
 from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.config import Preset
 
@@ -17,7 +18,12 @@ def _run(
 ):
     preset = Preset()
     t = np.arange(4800, dtype=np.float32) / 48000
-    return voice_setup._calibrate_compressor_threshold(
+    calibrate = (
+        _calibrate_compressor_expanded
+        if allow_expanded_search
+        else voice_setup._calibrate_compressor_threshold
+    )
+    return calibrate(
         speech_audio=(0.12 * np.sin(2 * np.pi * 180 * t)).astype(np.float32),
         sample_rate=48000,
         eq_settings=preset.eq.to_dict(),
@@ -29,7 +35,6 @@ def _run(
         vad_probabilities=vad_probabilities,
         progress_callback=progress_callback,
         cancel_check=cancel_check,
-        allow_expanded_search=allow_expanded_search,
     )
 
 
@@ -41,8 +46,8 @@ def test_parallel_compressor_search_matches_serial_native_results(monkeypatch):
         vad_probabilities=model_probabilities,
         allow_expanded_search=True,
     )
-    pool = voice_setup.ThreadPoolExecutor
-    monkeypatch.setattr(voice_setup, "ThreadPoolExecutor", lambda **_: pool(max_workers=1))
+    pool = compressor_calibration.ThreadPoolExecutor
+    monkeypatch.setattr(compressor_calibration, "ThreadPoolExecutor", lambda **_: pool(max_workers=1))
     serial, serial_diag = _run(
         vad_probabilities=model_probabilities,
         allow_expanded_search=True,
@@ -52,12 +57,12 @@ def test_parallel_compressor_search_matches_serial_native_results(monkeypatch):
         if key != "search_runtime_ms":
             assert parallel_diag[key] == serial_diag[key], key
     assert progress == sorted(progress)
-    assert len(progress) <= voice_setup._COMPRESSOR_SEARCH_BUDGET
+    assert len(progress) <= compressor_calibration._COMPRESSOR_SEARCH_BUDGET
 
 
 def test_compressor_search_reuses_one_causal_vad_array(monkeypatch):
     observed: list[np.ndarray | None] = []
-    simulate = voice_setup.simulate_candidate_chain
+    simulate = compressor_calibration.simulate_candidate_chain
 
     def capture_vad(*args, **kwargs):
         chain = args[3]
@@ -65,16 +70,13 @@ def test_compressor_search_reuses_one_causal_vad_array(monkeypatch):
         observed.append(None if values is None else np.asarray(values).copy())
         return simulate(*args, **kwargs)
 
-    monkeypatch.setattr(voice_setup, "simulate_candidate_chain", capture_vad)
+    monkeypatch.setattr(compressor_calibration, "simulate_candidate_chain", capture_vad)
     model_probabilities = np.linspace(0.1, 0.9, 6, dtype=np.float32)
     _run(vad_probabilities=model_probabilities)
 
     expected = voice_setup.map_causal_vad_probabilities(
         model_probabilities,
-        np.minimum(
-            np.arange(1, 11, dtype=np.int64) * 480,
-            4_800,
-        ),
+        np.arange(10, dtype=np.int64) * 480,
         48_000,
     )
     assert expected is not None
@@ -115,7 +117,7 @@ def test_compressor_search_reuses_frontend_audio_and_activity(monkeypatch):
             "non_finite_output": False,
         }
 
-    monkeypatch.setattr(voice_setup, "simulate_candidate_chain", fake_simulation)
+    monkeypatch.setattr(compressor_calibration, "simulate_candidate_chain", fake_simulation)
     voice_setup._calibrate_compressor_threshold(
         speech_audio=audio,
         sample_rate=48_000,

@@ -11,8 +11,8 @@ import time
 from typing import Any
 
 import numpy as np
-from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
@@ -266,9 +266,9 @@ def _voice_setup_context_matches(
 class VoiceSetupWorker(QThread):
     """Background worker for multi-stage voice setup analysis."""
 
-    step_progress = pyqtSignal(str, int)
-    result_ready = pyqtSignal(dict)
-    failed = pyqtSignal(str)
+    step_progress = Signal(str, int)
+    result_ready = Signal(dict)
+    failed = Signal(str)
 
     def __init__(
         self,
@@ -363,9 +363,9 @@ class VoiceSetupWorker(QThread):
 class VoiceSetupVerificationWorker(QThread):
     """Run second-passage chain verification off the UI thread."""
 
-    step_progress = pyqtSignal(str, int)
-    result_ready = pyqtSignal(dict)
-    failed = pyqtSignal(str)
+    step_progress = Signal(str, int)
+    result_ready = Signal(dict)
+    failed = Signal(str)
 
     def __init__(
         self,
@@ -426,7 +426,7 @@ class VoiceSetupVerificationWorker(QThread):
 class VoiceSetupDialog(QDialog):
     """Record room tone and speech, then recommend a voice chain."""
 
-    setup_applied = pyqtSignal(str)
+    setup_applied = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)

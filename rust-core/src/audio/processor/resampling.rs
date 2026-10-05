@@ -72,7 +72,6 @@ struct LatencyComponents {
     suppressor_latency_samples: u64,
     limiter_lookahead_samples: u64,
     true_peak_lookahead_samples: u64,
-    limiter_enabled: bool,
     processing_sample_rate: u32,
 }
 
@@ -93,18 +92,15 @@ fn total_reported_latency_us(components: LatencyComponents, compensation_us: u64
         components.suppressor_latency_samples,
         components.processing_sample_rate,
     );
-    let limiter_latency_us = if components.limiter_enabled {
-        samples_to_micros(
-            components.limiter_lookahead_samples,
-            components.processing_sample_rate,
-        )
-        .saturating_add(samples_to_micros(
-            components.true_peak_lookahead_samples,
-            components.output_sample_rate,
-        ))
-    } else {
-        0
-    };
+    // Both limiter delays stay in the path while limiting is disabled.
+    let limiter_latency_us = samples_to_micros(
+        components.limiter_lookahead_samples,
+        components.processing_sample_rate,
+    )
+    .saturating_add(samples_to_micros(
+        components.true_peak_lookahead_samples,
+        components.output_sample_rate,
+    ));
 
     output_latency_us
         .saturating_add(input_resampler_latency_us)

@@ -40,6 +40,29 @@ fn validate_sample_rate(sample_rate: u32) -> Result<(), LoudnessError> {
     Ok(())
 }
 
+/// Apply the fixed 48 kHz analysis K-weighting filters to an offline mono capture.
+pub(crate) fn k_weighted_48k_inplace(samples: &mut [f64]) {
+    // These normalized coefficients are shared by every analysis caller. Keep
+    // the zero-state, DF-II-transposed arithmetic order of the SciPy reference.
+    const STAGES: [([f64; 3], [f64; 3]); 2] = [
+        (
+            [1.53512485958697, -2.69169618940638, 1.19839281085285],
+            [1.0, -1.69065929318241, 0.73248077421585],
+        ),
+        ([1.0, -2.0, 1.0], [1.0, -1.99004745483398, 0.99007225036621]),
+    ];
+    for (b, a) in STAGES {
+        let mut delay = [0.0_f64; 2];
+        for sample in samples.iter_mut() {
+            let input = *sample;
+            let output = delay[0] + b[0] * input;
+            delay[0] = delay[1] + input * b[1] - output * a[1];
+            delay[1] = input * b[2] - output * a[2];
+            *sample = output;
+        }
+    }
+}
+
 /// Measure gated mono integrated loudness according to ITU-R BS.1770/EBU R128.
 ///
 /// This is an offline helper. The library's absolute and relative gates omit

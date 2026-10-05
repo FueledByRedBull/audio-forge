@@ -939,9 +939,9 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 with tempfile.TemporaryDirectory(prefix="audioforge-ssl-regression-") as root:
     os.environ["APPDATA"] = root
-    import PyQt6.QtCore
-    import PyQt6.QtGui
-    import PyQt6.QtWidgets
+    import PySide6.QtCore
+    import PySide6.QtGui
+    import PySide6.QtWidgets
     import logging.handlers
     import hashlib
     import hmac
@@ -1098,8 +1098,8 @@ def test_package_smoke_rejects_unused_qt_ffmpeg_payload(tmp_path):
     for relative_path in package_smoke.REQUIRED_BUNDLE_FILES[1:]:
         _write_bundle_file(bundle, relative_path)
     _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
-    _write_bundle_file(bundle, "_internal/PyQt6/Qt6/bin/avcodec-61.dll")
-    _write_bundle_file(bundle, "_internal/PyQt6/Qt6/plugins/multimedia/ffmpegmediaplugin.dll")
+    _write_bundle_file(bundle, "_internal/PySide6/avcodec-61.dll")
+    _write_bundle_file(bundle, "_internal/PySide6/plugins/multimedia/ffmpegmediaplugin.dll")
 
     errors = package_smoke.check_dist_bundle(bundle)
 
@@ -1163,16 +1163,16 @@ def test_prune_bundle_removes_excluded_openssl_payload(tmp_path):
 def test_prune_bundle_removes_unused_qt_ffmpeg_payload_and_keeps_windows_backend(tmp_path):
     bundle = tmp_path / "AudioForge"
     relative_paths = (
-        "_internal/PyQt6/Qt6/bin/avcodec-61.dll",
-        "_internal/PyQt6/Qt6/bin/avformat-61.dll",
-        "_internal/PyQt6/Qt6/bin/avutil-59.dll",
-        "_internal/PyQt6/Qt6/bin/swresample-5.dll",
-        "_internal/PyQt6/Qt6/bin/swscale-8.dll",
-        "_internal/PyQt6/Qt6/plugins/multimedia/ffmpegmediaplugin.dll",
+        "_internal/PySide6/avcodec-61.dll",
+        "_internal/PySide6/avformat-61.dll",
+        "_internal/PySide6/avutil-59.dll",
+        "_internal/PySide6/swresample-5.dll",
+        "_internal/PySide6/swscale-8.dll",
+        "_internal/PySide6/plugins/multimedia/ffmpegmediaplugin.dll",
     )
     for relative_path in relative_paths:
         _write_bundle_file(bundle, relative_path)
-    windows_backend = bundle / "_internal/PyQt6/Qt6/plugins/multimedia/windowsmediaplugin.dll"
+    windows_backend = bundle / "_internal/PySide6/plugins/multimedia/windowsmediaplugin.dll"
     windows_backend.parent.mkdir(parents=True, exist_ok=True)
     windows_backend.write_bytes(b"x")
 
@@ -1203,11 +1203,31 @@ def test_package_smoke_rejects_external_windows_icu(tmp_path):
 def test_prune_removes_image_plugins_with_excluded_qt_modules(tmp_path):
     bundle = tmp_path / "AudioForge"
     for plugin in ("qpdf.dll", "qsvg.dll", "qico.dll"):
-        _write_bundle_file(bundle, f"_internal/PyQt6/Qt6/plugins/imageformats/{plugin}")
+        _write_bundle_file(bundle, f"_internal/PySide6/plugins/imageformats/{plugin}")
     assert any("without its Qt module" in error for error in package_smoke.check_dist_bundle(bundle))
     prune_bundle.prune_bundle(bundle)
     assert not any("without its Qt module" in error for error in package_smoke.check_dist_bundle(bundle))
-    assert (bundle / "_internal/PyQt6/Qt6/plugins/imageformats/qico.dll").is_file()
+    assert (bundle / "_internal/PySide6/plugins/imageformats/qico.dll").is_file()
+
+
+def test_qt_inventory_rejects_unselected_modules_and_prunes_virtual_keyboard(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    unused = (
+        "Qt6VirtualKeyboard.dll", "Qt6Qml.dll", "Qt6QmlMeta.dll",
+        "Qt6QmlModels.dll", "Qt6QmlWorkerScript.dll", "Qt6Quick.dll",
+        "Qt6OpenGL.dll", "Qt6MultimediaWidgets.dll", "QtMultimediaWidgets.pyd",
+        "plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll",
+    )
+    for relative in (*unused, "Qt6Gui.dll", "plugins/platforms/qwindows.dll"):
+        _write_bundle_file(bundle, f"_internal/PySide6/{relative}")
+    assert any("unselected Qt module" in error for error in package_smoke.check_dist_bundle(bundle))
+    prune_bundle.prune_bundle(bundle)
+    assert all(not (bundle / "_internal/PySide6" / relative).exists() for relative in unused)
+    assert (bundle / "_internal/PySide6/Qt6Gui.dll").is_file()
+    assert (bundle / "_internal/PySide6/plugins/platforms/qwindows.dll").is_file()
+    assert not any("unselected Qt module" in error for error in package_smoke.check_dist_bundle(bundle))
+    _write_bundle_file(bundle, "_internal/PySide6/Qt6Unexpected.dll")
+    assert any("unselected Qt module" in error for error in package_smoke.check_dist_bundle(bundle))
 
 
 def test_prune_bundle_removes_system_ucrt_and_package_smoke_rejects_it(tmp_path):

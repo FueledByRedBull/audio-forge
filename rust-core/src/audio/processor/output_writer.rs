@@ -41,6 +41,9 @@ struct OutputWriteContext<
     drift_error_ema: &'a mut f32,
     drift_retimer: &'a mut DriftRetimer,
     discontinuity_fade_remaining: &'a Cell<usize>,
+    /// Fade-in owed to the output stream after a short write dropped samples.
+    /// It applies after the true-peak delay, where the dropout happened.
+    output_fade_remaining: usize,
     limiter_enabled: &'a AtomicBool,
     output_ceiling_linear: &'a Cell<f32>,
     counters: OutputWriteCounters<'a>,
@@ -91,7 +94,7 @@ impl<
             self.drift_retimer.reset();
         }
 
-        let pending_slice = Self::sanitize_and_limit(
+        Self::sanitize_and_limit(
             write_slice,
             self.output_safety_scratch,
             self.true_peak_detector,
@@ -100,11 +103,16 @@ impl<
             self.output_ceiling_linear,
             &self.counters,
         );
+        fade_in(
+            self.output_safety_scratch.as_mut_slice(),
+            &mut self.output_fade_remaining,
+            self.limits.discontinuity_fade_samples,
+        );
         Self::write_to_output_queue(
-            pending_slice,
+            self.output_safety_scratch.as_slice(),
             free,
             self.output_producer,
-            self.discontinuity_fade_remaining,
+            &mut self.output_fade_remaining,
             self.limits.discontinuity_fade_samples,
             &self.counters,
         );
@@ -180,19 +188,13 @@ impl<
         if written < write_slice.len() {
             Self::record_fixed_buffer_overflow(counters);
         }
-        let fade_count = fade_remaining.min(discontinuity_fade_scratch.len());
-        let elapsed = discontinuity_fade_samples.saturating_sub(fade_remaining);
-        let fade_total = discontinuity_fade_samples as f32;
-        for (i, sample) in discontinuity_fade_scratch
-            .as_mut_slice()
-            .iter_mut()
-            .enumerate()
-            .take(fade_count)
-        {
-            let progress = ((elapsed + i + 1) as f32 / fade_total).clamp(0.0, 1.0);
-            *sample *= progress;
-        }
-        discontinuity_fade_remaining.set(fade_remaining.saturating_sub(fade_count));
+        let mut remaining = fade_remaining;
+        fade_in(
+            discontinuity_fade_scratch.as_mut_slice(),
+            &mut remaining,
+            discontinuity_fade_samples,
+        );
+        discontinuity_fade_remaining.set(remaining);
         discontinuity_fade_scratch.as_slice()
     }
 
@@ -210,18 +212,23 @@ impl<
         if safety_written < write_slice.len() {
             Self::record_fixed_buffer_overflow(counters);
         }
-        let output_ceiling = if limiter_enabled.load(Ordering::Acquire) {
+        let limiting = limiter_enabled.load(Ordering::Acquire);
+        let output_ceiling = if limiting {
             output_ceiling_linear.get()
         } else {
             1.0
         };
         sanitize_non_finite_inplace(output_safety_scratch.as_mut_slice());
-        if limiter_enabled.load(Ordering::Acquire) {
+        // The stage always runs so its delay never leaves or re-enters the
+        // output timeline when the limiter is toggled.
+        if limiting {
             true_peak_limiter.set_ceiling_linear(output_ceiling);
-            let stats = true_peak_limiter.process_block_inplace(output_safety_scratch.as_mut_slice());
+        }
+        true_peak_limiter.set_enabled(limiting);
+        let stats = true_peak_limiter.process_block_inplace(output_safety_scratch.as_mut_slice());
+        if limiting {
             Self::record_true_peak_limiter_stats(stats, output_ceiling, counters);
         } else {
-            true_peak_limiter.reset();
             counters
                 .output_true_peak_gain_reduction_db
                 .store(0.0_f32.to_bits(), Ordering::Relaxed);
@@ -296,7 +303,7 @@ impl<
         pending_slice: &[f32],
         free: usize,
         output_producer: &mut AudioProducer,
-        discontinuity_fade_remaining: &Cell<usize>,
+        output_fade_remaining: &mut usize,
         discontinuity_fade_samples: usize,
         counters: &OutputWriteCounters<'_>,
     ) {
@@ -309,7 +316,7 @@ impl<
             counters
                 .output_recovery_event_count
                 .fetch_add(1, Ordering::Relaxed);
-            discontinuity_fade_remaining.set(discontinuity_fade_samples);
+            *output_fade_remaining = discontinuity_fade_samples;
             pending_slice = &pending_slice[..free];
         }
 
@@ -331,7 +338,7 @@ impl<
             counters
                 .output_recovery_event_count
                 .fetch_add(1, Ordering::Relaxed);
-            discontinuity_fade_remaining.set(discontinuity_fade_samples);
+            *output_fade_remaining = discontinuity_fade_samples;
         }
     }
 
@@ -353,4 +360,63 @@ impl<
             .fetch_add(1, Ordering::Relaxed);
         store_rt_error(counters.rt_error_code, RtErrorCode::FixedBufferOverflow);
     }
+}
+
+/// Recovery is tied to aligned model output, before downstream delay/resampling.
+/// Counting the already-invalid prefix does not hold or buffer any audio.
+struct SuppressorRecoveryFade {
+    invalid_samples: usize,
+    remaining: usize,
+    total: usize,
+}
+
+impl SuppressorRecoveryFade {
+    fn new(total: usize) -> Self {
+        Self {
+            invalid_samples: 0,
+            remaining: 0,
+            total: total.max(1),
+        }
+    }
+
+    fn restart(&mut self, latency: usize) {
+        self.invalid_samples = latency;
+        // Direct/unavailable backends retain the output writer's existing fade.
+        self.remaining = if latency > 0 { self.total } else { 0 };
+    }
+
+    fn restart_for_suppressor(
+        &mut self,
+        suppressor: &NoiseSuppressionEngine,
+        writer_remaining: &Cell<usize>,
+        writer_total: usize,
+    ) {
+        // Frame buffering alone does not make an invalid output prefix. An
+        // unavailable/disabled backend emits valid dry audio immediately.
+        let model_delay = if suppressor.is_enabled()
+            && (suppressor.backend_available() || suppressor.backend_failed())
+        {
+            suppressor.latency_samples()
+        } else {
+            0
+        };
+        self.restart(model_delay);
+        writer_remaining.set(if model_delay > 0 { 0 } else { writer_total });
+    }
+
+    fn apply(&mut self, samples: &mut [f32]) {
+        let skip = self.invalid_samples.min(samples.len());
+        self.invalid_samples -= skip;
+        fade_in(&mut samples[skip..], &mut self.remaining, self.total);
+    }
+}
+
+/// Multiply the start of `samples` by the remaining part of a linear fade-in.
+fn fade_in(samples: &mut [f32], remaining: &mut usize, total: usize) {
+    let count = (*remaining).min(samples.len());
+    let elapsed = total.saturating_sub(*remaining);
+    for (i, sample) in samples.iter_mut().take(count).enumerate() {
+        *sample *= ((elapsed + i + 1) as f32 / total as f32).clamp(0.0, 1.0);
+    }
+    *remaining -= count;
 }

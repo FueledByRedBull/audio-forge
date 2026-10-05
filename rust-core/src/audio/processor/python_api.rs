@@ -399,6 +399,7 @@ fn simulate_input_frontend_with_activity(
         let mut activity_evidence = Vec::with_capacity(block_count);
         for (block_index, chunk) in audio.chunks(RNNOISE_FRAME_SIZE).enumerate() {
             let mut processed = chunk.to_vec();
+            let mut gate_controls = [GateControl::BYPASS; RNNOISE_FRAME_SIZE];
             for sample in &mut processed {
                 if !sample.is_finite() {
                     *sample = 0.0;
@@ -426,6 +427,9 @@ fn simulate_input_frontend_with_activity(
                 vad_reliability = if vad_available { 1.0 } else { 0.0 };
             }
             if vad_probabilities.is_empty() {
+                // As in the live loop, a block is gated with the newest result
+                // finished before it; its own samples reach the model after.
+                let control_probability = latest_vad_probability;
                 if let Some(vad) = native_vad.as_mut() {
                     if let Some(probability) = vad
                         .process_latest(&processed)
@@ -434,7 +438,7 @@ fn simulate_input_frontend_with_activity(
                         latest_vad_probability = Some(probability.clamp(0.0, 1.0));
                     }
                 }
-                if let Some(probability) = latest_vad_probability {
+                if let Some(probability) = control_probability {
                     vad_probability = f64::from(probability);
                     // Offline inference has no worker scheduling age to
                     // measure; each completed model result is treated as
@@ -451,7 +455,10 @@ fn simulate_input_frontend_with_activity(
                 } else {
                     gate.set_external_vad_probability(0.0, false);
                 }
-                gate.process_block_inplace(&mut processed);
+                gate.process_block_with_gate_control(
+                    &mut processed,
+                    &mut gate_controls[..chunk.len()],
+                );
             }
 
             activity_evidence.push(gate_auto_makeup_activity(
@@ -464,7 +471,13 @@ fn simulate_input_frontend_with_activity(
             if let Some(engine) = suppressor.as_mut() {
                 let mut frame = [0.0_f32; RNNOISE_FRAME_SIZE];
                 frame[..processed.len()].copy_from_slice(&processed);
-                if engine.push_samples(&frame) != RNNOISE_FRAME_SIZE {
+                if gate_enabled && processed.len() < RNNOISE_FRAME_SIZE {
+                    gate.process_block_with_gate_control(
+                        &mut frame[processed.len()..],
+                        &mut gate_controls[processed.len()..],
+                    );
+                }
+                if engine.push_controlled_samples(&frame, &gate_controls) != RNNOISE_FRAME_SIZE {
                     return Err("suppressor rejected a complete input frame".to_string());
                 }
                 engine.process_frames();
@@ -485,8 +498,10 @@ fn simulate_input_frontend_with_activity(
         if let Some(engine) = suppressor.as_mut() {
             let flush_frames = suppressor_latency.div_ceil(RNNOISE_FRAME_SIZE).max(1);
             for _ in 0..flush_frames {
-                let frame = [0.0_f32; RNNOISE_FRAME_SIZE];
-                if engine.push_samples(&frame) != RNNOISE_FRAME_SIZE {
+                let mut frame = [0.0_f32; RNNOISE_FRAME_SIZE];
+                let mut gate_controls = [GateControl::BYPASS; RNNOISE_FRAME_SIZE];
+                gate.process_block_with_gate_control(&mut frame, &mut gate_controls);
+                if engine.push_controlled_samples(&frame, &gate_controls) != RNNOISE_FRAME_SIZE {
                     return Err("suppressor rejected a flush frame".to_string());
                 }
                 engine.process_frames();
@@ -499,6 +514,15 @@ fn simulate_input_frontend_with_activity(
                     }
                     delayed_output.extend_from_slice(&output);
                 }
+            }
+        }
+
+        if let Some(engine) = suppressor.as_ref() {
+            if engine.backend_failed() {
+                return Err(engine
+                    .backend_error()
+                    .unwrap_or("noise suppressor failed during offline rendering")
+                    .to_string());
             }
         }
 
@@ -845,11 +869,12 @@ pub fn simulate_gate_suppressor_order(
                         output.extend_from_slice(&frame);
                     }
                 } else {
+                    let mut gate_controls = [GateControl::BYPASS; RNNOISE_FRAME_SIZE];
                     gate.set_external_vad_probability(
                         vad_probabilities[block_index],
                         vad_available,
                     );
-                    gate.process_block_inplace(&mut frame);
+                    gate.process_block_with_gate_control(&mut frame, &mut gate_controls);
                     gate_gain.push(gate.current_gain());
                     activity_evidence.push(gate_auto_makeup_activity(
                         &gate,
@@ -860,7 +885,7 @@ pub fn simulate_gate_suppressor_order(
                     if let Some(dry_audio) = dry_audio.as_mut() {
                         dry_audio.extend_from_slice(&frame);
                     }
-                    if suppressor.push_samples(&frame) != RNNOISE_FRAME_SIZE {
+                    if suppressor.push_controlled_samples(&frame, &gate_controls) != RNNOISE_FRAME_SIZE {
                         return Err("suppressor rejected a complete input frame".to_string());
                     }
                     suppressor.process_frames();
@@ -873,9 +898,21 @@ pub fn simulate_gate_suppressor_order(
                 }
             }
 
+            let gate_diagnostics_before_flush = (
+                gate.chatter_event_count(),
+                gate.noise_floor(),
+                gate.noise_floor_reliability(),
+            );
             for flush_index in 0..latency_frames {
                 let mut frame = [0.0_f32; RNNOISE_FRAME_SIZE];
-                if suppressor.push_samples(&frame) != RNNOISE_FRAME_SIZE {
+                let accepted = if suppressor_before_gate {
+                    suppressor.push_samples(&frame)
+                } else {
+                    let mut gate_controls = [GateControl::BYPASS; RNNOISE_FRAME_SIZE];
+                    gate.process_block_with_gate_control(&mut frame, &mut gate_controls);
+                    suppressor.push_controlled_samples(&frame, &gate_controls)
+                };
+                if accepted != RNNOISE_FRAME_SIZE {
                     return Err("suppressor rejected the flush frame".to_string());
                 }
                 suppressor.process_frames();
@@ -902,6 +939,12 @@ pub fn simulate_gate_suppressor_order(
                     output.extend_from_slice(&frame);
                 }
             }
+            if suppressor.backend_failed() {
+                return Err(suppressor
+                    .backend_error()
+                    .unwrap_or("noise suppressor failed during offline rendering")
+                    .to_string());
+            }
             output.truncate(audio.len());
             if let Some(dry_audio) = dry_audio.as_mut() {
                 dry_audio.truncate(audio.len());
@@ -910,9 +953,21 @@ pub fn simulate_gate_suppressor_order(
             Ok((
                 output,
                 gate_gain,
-                gate.chatter_event_count(),
-                gate.noise_floor(),
-                gate.noise_floor_reliability(),
+                if suppressor_before_gate {
+                    gate.chatter_event_count()
+                } else {
+                    gate_diagnostics_before_flush.0
+                },
+                if suppressor_before_gate {
+                    gate.noise_floor()
+                } else {
+                    gate_diagnostics_before_flush.1
+                },
+                if suppressor_before_gate {
+                    gate.noise_floor_reliability()
+                } else {
+                    gate_diagnostics_before_flush.2
+                },
                 started.elapsed().as_secs_f64() * 1000.0,
                 latency_samples,
                 dry_audio,
@@ -1706,14 +1761,10 @@ mod compressor_metric_tests {
     #[test]
     fn pumping_score_focuses_on_fast_gain_modulation() {
         let fast = (0..500)
-            .map(|index| {
-                3.0 + (2.0 * std::f32::consts::PI * 4.0 * index as f32 / 50.0).sin()
-            })
+            .map(|index| 3.0 + (2.0 * std::f32::consts::PI * 4.0 * index as f32 / 50.0).sin())
             .collect::<Vec<_>>();
         let slow = (0..500)
-            .map(|index| {
-                3.0 + (2.0 * std::f32::consts::PI * 0.2 * index as f32 / 50.0).sin()
-            })
+            .map(|index| 3.0 + (2.0 * std::f32::consts::PI * 0.2 * index as f32 / 50.0).sin())
             .collect::<Vec<_>>();
 
         assert!(
@@ -1727,7 +1778,9 @@ mod compressor_metric_tests {
         for frequency in [0.2, 4.0, 18.0] {
             let score = |cadence: f32| {
                 let trace = (0..(10.0 * cadence) as usize)
-                    .map(|n| 3.0 + (2.0 * std::f32::consts::PI * frequency * n as f32 / cadence).sin())
+                    .map(|n| {
+                        3.0 + (2.0 * std::f32::consts::PI * frequency * n as f32 / cadence).sin()
+                    })
                     .collect::<Vec<_>>();
                 compressor_pumping_score(&trace, cadence)
             };

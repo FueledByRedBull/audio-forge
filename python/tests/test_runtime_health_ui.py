@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
-from PyQt6.QtWidgets import QLabel
+from PySide6.QtWidgets import QLabel
 
 from mic_eq.ui.first_run_setup_dialog import route_health_reason
 from mic_eq.ui.health import RecentStreamHealth
@@ -12,7 +12,7 @@ from mic_eq.ui.main_window import MainWindow
 
 
 def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
-    from PyQt6.QtCore import QEventLoop, QTimer
+    from PySide6.QtCore import QEventLoop, QTimer
 
     state = {"running": False, "visible": True, "minimized": False}
     ticks = []
@@ -52,8 +52,8 @@ def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
 
 
 def test_window_state_change_pauses_and_restarts_fast_meter_timer(qapp):
-    from PyQt6.QtCore import QEvent, QTimer
-    from PyQt6.QtWidgets import QMainWindow
+    from PySide6.QtCore import QEvent, QTimer
+    from PySide6.QtWidgets import QMainWindow
 
     window = MainWindow.__new__(MainWindow)
     QMainWindow.__init__(window)

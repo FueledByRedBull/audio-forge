@@ -7,9 +7,9 @@ Color gradient: green → yellow → red
 
 import math
 
-from PyQt6.QtWidgets import QWidget
-from PyQt6.QtCore import Qt, QTimer, QRectF
-from PyQt6.QtGui import QPainter, QLinearGradient, QPen, QFont
+from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Qt, QTimer, QRectF
+from PySide6.QtGui import QPainter, QLinearGradient, QPen, QFont
 
 from .theme import PALETTE, qcolor
 

@@ -2,8 +2,8 @@
 //!
 //! Detection path:
 //! - Three detector bands partition the configured cutoff interval.
-//! - High-pass at low cutoff (default 4 kHz)
-//! - Low-pass at high cutoff (default 11 kHz)
+//! - Automatic mode uses unit-peak band-pass detectors with the configured edges.
+//! - Manual mode retains the high-pass/low-pass detector bank.
 //! - Absolute linear envelope smoothing followed by dB gain calculations.
 //!
 //! Gain computer:
@@ -15,6 +15,7 @@
 //! - Detector drives a dynamic peaking EQ in the sibilance region.
 
 use super::biquad::{Biquad, BiquadType};
+use super::eq::EQ_NYQUIST_MARGIN_HZ;
 use crate::dsp::util;
 
 const DETECTOR_RATIO_GATE_DB: f64 = 1.5;
@@ -25,13 +26,13 @@ const DETECTOR_VOICE_GATE_DB: f64 = -58.0;
 const DETECTOR_VOICE_FULL_DB: f64 = -34.0;
 const NARROW_SIBILANCE_SUPPORT_START_DB: f64 = 6.0;
 const NARROW_SIBILANCE_SUPPORT_START_LEVEL_DB: f64 = -45.0;
+const DEESSER_BAND_COUNT: usize = 3;
+const DEESSER_DEFAULT_HIGH_CUT_HZ: f64 = 11_000.0;
 // Heuristic control-envelope time constants, chosen as simple response times
 // rather than claimed psychoacoustic measurements.
 const AUTO_BASELINE_FALL_MS: f64 = 14.0;
 const AUTO_BASELINE_RISE_MS: f64 = 35.0;
 const AUTO_BASELINE_INACTIVE_DECAY_MS: f64 = 21.0;
-const DEESSER_BAND_COUNT: usize = 3;
-const DEESSER_DEFAULT_HIGH_CUT_HZ: f64 = 11_000.0;
 const VOICE_REFERENCE_LOW_HZ: f64 = 250.0;
 const VOICE_REFERENCE_HIGH_HZ: f64 = 2_000.0;
 // These section Qs form the fourth-order Butterworth body-reference low-pass.
@@ -43,51 +44,163 @@ const BROADBAND_NARROWNESS_FULL: f64 = 0.68;
 struct DeEsserBand {
     low_hz: f64,
     high_hz: f64,
+    manual_bounds: Option<(f64, f64)>,
     env: f64,
+    auto_env: f64,
     confidence: f64,
-    baseline_excess_db: f64,
     reduction_db: f64,
     detector_hp: Biquad,
     detector_lp: Biquad,
+    auto_detector_notch: Option<Biquad>,
     dynamic_eq: Biquad,
 }
 
 impl DeEsserBand {
-    fn new(low_hz: f64, high_hz: f64, sample_rate: f64) -> Self {
-        let detector_q = 0.707;
-        let center_hz = DeEsser::dynamic_eq_center_hz(low_hz, high_hz);
-        let dynamic_q = DeEsser::dynamic_eq_q(low_hz, high_hz);
+    fn new(low_hz: f64, high_hz: f64, manual_bounds: Option<(f64, f64)>, sample_rate: f64) -> Self {
+        let parameters = Self::auto_detector_parameters(low_hz, high_hz, sample_rate);
+        let (detector_hp, detector_lp) = Self::manual_detectors(manual_bounds, sample_rate);
+        let (auto_detector_notch, dynamic_eq) = match parameters {
+            Some((frequency, q)) => (
+                Some(Biquad::new(
+                    BiquadType::Notch,
+                    frequency,
+                    0.0,
+                    q,
+                    sample_rate,
+                )),
+                Biquad::new(BiquadType::Peaking, frequency, 0.0, q, sample_rate),
+            ),
+            None => (
+                None,
+                Biquad::new(BiquadType::Bypass, 0.0, 0.0, 1.0, sample_rate),
+            ),
+        };
         Self {
             low_hz,
             high_hz,
+            manual_bounds,
             env: 0.0,
+            auto_env: 0.0,
             confidence: 0.0,
-            baseline_excess_db: 0.0,
             reduction_db: 0.0,
-            detector_hp: Biquad::new(BiquadType::HighPass, low_hz, 0.0, detector_q, sample_rate),
-            detector_lp: Biquad::new(BiquadType::LowPass, high_hz, 0.0, detector_q, sample_rate),
-            dynamic_eq: Biquad::new(BiquadType::Peaking, center_hz, 0.0, dynamic_q, sample_rate),
+            detector_hp,
+            detector_lp,
+            auto_detector_notch,
+            dynamic_eq,
         }
     }
 
-    fn set_bounds(&mut self, low_hz: f64, high_hz: f64) {
+    fn manual_detectors(bounds: Option<(f64, f64)>, sample_rate: f64) -> (Biquad, Biquad) {
+        match bounds {
+            Some((low, high)) => (
+                Biquad::new(BiquadType::HighPass, low, 0.0, 0.707, sample_rate),
+                Biquad::new(BiquadType::LowPass, high, 0.0, 0.707, sample_rate),
+            ),
+            None => (
+                Biquad::new(BiquadType::Bypass, 0.0, 0.0, 1.0, sample_rate),
+                Biquad::new(BiquadType::Bypass, 0.0, 0.0, 1.0, sample_rate),
+            ),
+        }
+    }
+
+    fn is_active(&self, automatic: bool) -> bool {
+        if automatic {
+            self.auto_detector_notch.is_some()
+        } else {
+            self.manual_bounds.is_some()
+        }
+    }
+
+    fn auto_detector_parameters(low_hz: f64, high_hz: f64, sample_rate: f64) -> Option<(f64, f64)> {
+        if !(0.0 < low_hz
+            && low_hz < high_hz
+            && high_hz <= sample_rate * 0.5 - EQ_NYQUIST_MARGIN_HZ)
+        {
+            return None;
+        }
+        // 1 - H_notch is a unit-peak band-pass. Prewarping both edges gives
+        // exactly -3 dB there; equal Hz widths also have equal noise bandwidth.
+        let low = (std::f64::consts::PI * low_hz / sample_rate).tan();
+        let high = (std::f64::consts::PI * high_hz / sample_rate).tan();
+        let center = (low * high).sqrt();
+        let frequency = sample_rate / std::f64::consts::PI * center.atan();
+        let q = center / (high - low);
+        (frequency.is_finite() && q.is_finite() && q > 0.0).then_some((frequency, q))
+    }
+
+    fn set_eq_geometry(
+        &mut self,
+        automatic: bool,
+        auto_parameters: Option<(f64, f64)>,
+        sample_rate: f64,
+    ) {
+        let parameters = if automatic {
+            auto_parameters
+        } else {
+            self.manual_bounds.map(|(low, high)| {
+                (
+                    DeEsser::dynamic_eq_center_hz(low, high),
+                    DeEsser::dynamic_eq_q(low, high),
+                )
+            })
+        };
+        if let Some((frequency, q)) = parameters {
+            self.dynamic_eq.set_parameters(
+                BiquadType::Peaking,
+                frequency,
+                self.dynamic_eq.gain_db(),
+                q,
+            );
+        } else {
+            self.dynamic_eq = Biquad::new(BiquadType::Bypass, 0.0, 0.0, 1.0, sample_rate);
+            self.confidence = 0.0;
+            self.reduction_db = 0.0;
+        }
+    }
+
+    fn set_bounds(
+        &mut self,
+        low_hz: f64,
+        high_hz: f64,
+        manual_bounds: Option<(f64, f64)>,
+        sample_rate: f64,
+        automatic: bool,
+    ) {
+        if let (Some(_), Some((low, high))) = (self.manual_bounds, manual_bounds) {
+            self.detector_hp.set_frequency(low);
+            self.detector_lp.set_frequency(high);
+        } else {
+            (self.detector_hp, self.detector_lp) =
+                Self::manual_detectors(manual_bounds, sample_rate);
+            self.env = 0.0;
+        }
+        self.manual_bounds = manual_bounds;
         self.low_hz = low_hz;
         self.high_hz = high_hz;
-        self.detector_hp.set_frequency(low_hz);
-        self.detector_lp.set_frequency(high_hz);
-        self.dynamic_eq
-            .set_frequency(DeEsser::dynamic_eq_center_hz(low_hz, high_hz));
-        self.dynamic_eq
-            .set_q(DeEsser::dynamic_eq_q(low_hz, high_hz));
+        let parameters = Self::auto_detector_parameters(low_hz, high_hz, sample_rate);
+        if let (Some(detector), Some((frequency, q))) =
+            (self.auto_detector_notch.as_mut(), parameters)
+        {
+            detector.set_parameters(BiquadType::Notch, frequency, 0.0, q);
+        } else {
+            self.auto_detector_notch = parameters.map(|(frequency, q)| {
+                Biquad::new(BiquadType::Notch, frequency, 0.0, q, sample_rate)
+            });
+            self.auto_env = 0.0;
+        }
+        self.set_eq_geometry(automatic, parameters, sample_rate);
     }
 
     fn reset(&mut self) {
         self.env = 0.0;
+        self.auto_env = 0.0;
         self.confidence = 0.0;
-        self.baseline_excess_db = 0.0;
         self.reduction_db = 0.0;
         self.detector_hp.reset();
         self.detector_lp.reset();
+        if let Some(detector) = &mut self.auto_detector_notch {
+            detector.reset();
+        }
         self.dynamic_eq.reset();
         self.dynamic_eq.set_gain_db_immediate(0.0);
     }
@@ -107,6 +220,7 @@ pub struct DeEsser {
     auto_baseline_fall_coeff: f64,
     auto_baseline_rise_coeff: f64,
     auto_baseline_inactive_decay_coeff: f64,
+    auto_background_db: f64,
     max_reduction_db: f64,
     current_reduction_db: f64,
     voice_reference_env: f64,
@@ -130,6 +244,7 @@ impl DeEsser {
         Self {
             enabled: false,
             auto_enabled: true,
+            auto_background_db: 0.0,
             auto_amount: 0.5,
             threshold_db: -28.0,
             ratio: 4.0,
@@ -280,18 +395,55 @@ impl DeEsser {
     }
 
     fn rebuild_detector_filters(&mut self) {
-        let span = self.high_cut_hz - self.low_cut_hz;
-        let split_a = self.low_cut_hz + span / 3.0;
-        let split_b = self.low_cut_hz + span * 2.0 / 3.0;
-        let bounds = [
-            (self.low_cut_hz, split_a),
-            (split_a, split_b),
-            (split_b, self.high_cut_hz),
-        ];
-
-        for (band, (low_hz, high_hz)) in self.bands.iter_mut().zip(bounds) {
-            band.set_bounds(low_hz, high_hz);
+        let bounds = Self::band_bounds(self.low_cut_hz, self.high_cut_hz, self.sample_rate);
+        let manual = Self::manual_band_bounds(self.low_cut_hz, self.high_cut_hz, self.sample_rate);
+        for ((band, (low_hz, high_hz)), manual_bounds) in
+            self.bands.iter_mut().zip(bounds).zip(manual)
+        {
+            band.set_bounds(
+                low_hz,
+                high_hz,
+                manual_bounds,
+                self.sample_rate,
+                self.auto_enabled,
+            );
         }
+    }
+
+    fn band_bounds(
+        low_cut_hz: f64,
+        high_cut_hz: f64,
+        sample_rate: f64,
+    ) -> [(f64, f64); DEESSER_BAND_COUNT] {
+        let high_cut_hz = high_cut_hz.min(sample_rate * 0.5 - EQ_NYQUIST_MARGIN_HZ);
+        if high_cut_hz <= low_cut_hz {
+            return [(0.0, 0.0); DEESSER_BAND_COUNT];
+        }
+        Self::partition_bounds(low_cut_hz, high_cut_hz)
+    }
+
+    fn partition_bounds(low_cut_hz: f64, high_cut_hz: f64) -> [(f64, f64); DEESSER_BAND_COUNT] {
+        let span = high_cut_hz - low_cut_hz;
+        let split_a = low_cut_hz + span / 3.0;
+        let split_b = low_cut_hz + span * 2.0 / 3.0;
+        [
+            (low_cut_hz, split_a),
+            (split_a, split_b),
+            (split_b, high_cut_hz),
+        ]
+    }
+
+    fn manual_band_bounds(
+        low_cut_hz: f64,
+        high_cut_hz: f64,
+        sample_rate: f64,
+    ) -> [Option<(f64, f64)>; DEESSER_BAND_COUNT] {
+        // Preserve each valid original manual band; clipping an invalid upper
+        // neighbor must not redistribute the lower band's detector or EQ.
+        Self::partition_bounds(low_cut_hz, high_cut_hz).map(|(low, high)| {
+            let high = high.min(sample_rate * 0.5 - EQ_NYQUIST_MARGIN_HZ);
+            (low < high).then_some((low, high))
+        })
     }
 
     fn make_bands(
@@ -299,14 +451,16 @@ impl DeEsser {
         high_cut_hz: f64,
         sample_rate: f64,
     ) -> [DeEsserBand; DEESSER_BAND_COUNT] {
-        let span = high_cut_hz - low_cut_hz;
-        let split_a = low_cut_hz + span / 3.0;
-        let split_b = low_cut_hz + span * 2.0 / 3.0;
-        [
-            DeEsserBand::new(low_cut_hz, split_a, sample_rate),
-            DeEsserBand::new(split_a, split_b, sample_rate),
-            DeEsserBand::new(split_b, high_cut_hz, sample_rate),
-        ]
+        let automatic = Self::band_bounds(low_cut_hz, high_cut_hz, sample_rate);
+        let manual = Self::manual_band_bounds(low_cut_hz, high_cut_hz, sample_rate);
+        std::array::from_fn(|index| {
+            DeEsserBand::new(
+                automatic[index].0,
+                automatic[index].1,
+                manual[index],
+                sample_rate,
+            )
+        })
     }
 
     #[inline]
@@ -332,7 +486,15 @@ impl DeEsser {
 
     /// Enable/disable smart auto de-essing.
     pub fn set_auto_enabled(&mut self, enabled: bool) {
+        if self.auto_enabled == enabled {
+            return;
+        }
         self.auto_enabled = enabled;
+        for band in &mut self.bands {
+            let parameters =
+                DeEsserBand::auto_detector_parameters(band.low_hz, band.high_hz, self.sample_rate);
+            band.set_eq_geometry(enabled, parameters, self.sample_rate);
+        }
     }
 
     pub fn is_auto_enabled(&self) -> bool {
@@ -453,11 +615,64 @@ impl DeEsser {
         ]
     }
 
+    fn project_auto_reductions(
+        requested: [f64; DEESSER_BAND_COUNT],
+        cap_db: f64,
+        budget_db: f64,
+    ) -> [f64; DEESSER_BAND_COUNT] {
+        let reductions = requested.map(|value| value.clamp(0.0, cap_db));
+        let mut sum: f64 = reductions.iter().sum();
+        if sum <= budget_db {
+            return reductions;
+        }
+        // Project the original requested dB depths onto the capped budget:
+        // g_i = clamp(request_i - lambda, 0, cap). Clipping the requests first
+        // would discard how strongly a saturated band still needs reduction.
+        let mut breakpoints = [0.0; DEESSER_BAND_COUNT * 2];
+        for (index, request) in requested.iter().enumerate() {
+            breakpoints[index * 2] = (request - cap_db).max(0.0);
+            breakpoints[index * 2 + 1] = request.max(0.0);
+        }
+        breakpoints.sort_unstable_by(f64::total_cmp);
+        let mut lambda = 0.0;
+        for upper in breakpoints {
+            let upper_sum: f64 = requested
+                .iter()
+                .map(|request| (request - upper).clamp(0.0, cap_db))
+                .sum();
+            // The sum is linear between successive changes of active bounds.
+            // The final breakpoint zeros every request, so it always brackets
+            // a feasible solution for nonnegative caps and budget.
+            if upper_sum <= budget_db {
+                lambda += (upper - lambda) * (sum - budget_db) / (sum - upper_sum);
+                break;
+            }
+            lambda = upper;
+            sum = upper_sum;
+        }
+        requested.map(|request| (request - lambda).clamp(0.0, cap_db))
+    }
+
     #[inline]
     pub fn process_sample(&mut self, input: f32) -> f32 {
         if !self.enabled {
             self.current_reduction_db = 0.0;
             self.detector_confidence = 0.0;
+            return input;
+        }
+        // An empty intersection with the usable frequency range has no band
+        // to detect or attenuate. Partial intersections retain their coverage.
+        if self
+            .bands
+            .iter()
+            .all(|band| !band.is_active(self.auto_enabled))
+        {
+            self.current_reduction_db = 0.0;
+            self.detector_confidence = 0.0;
+            for band in &mut self.bands {
+                band.confidence = 0.0;
+                band.reduction_db = 0.0;
+            }
             return input;
         }
 
@@ -473,28 +688,73 @@ impl DeEsser {
         let detector_attack = self.detector_attack_coeff;
         let detector_release = self.detector_release_coeff;
         let mut band_level_db = [0.0_f64; DEESSER_BAND_COUNT];
+        let mut band_envelopes = [0.0_f64; DEESSER_BAND_COUNT];
         let mut total_sibilance_env = 0.0_f64;
+        let mut total_sibilance_power = 0.0_f64;
         let mut max_sibilance_env = 0.0_f64;
 
         for (index, band) in self.bands.iter_mut().enumerate() {
-            let sidechain_hp = band.detector_hp.process_sample(input);
-            let sidechain = band.detector_lp.process_sample(sidechain_hp);
-            band.env = Self::smooth_value(
-                band.env,
-                sidechain.abs() as f64,
-                detector_attack,
-                detector_release,
-            );
-            total_sibilance_env += band.env;
-            max_sibilance_env = max_sibilance_env.max(band.env);
-            band_level_db[index] = util::linear_to_db(band.env, 1e-10);
+            if band.manual_bounds.is_some() {
+                let sidechain_hp = band.detector_hp.process_sample(input);
+                let sidechain = band.detector_lp.process_sample(sidechain_hp);
+                band.env = Self::smooth_value(
+                    band.env,
+                    sidechain.abs() as f64,
+                    detector_attack,
+                    detector_release,
+                );
+            }
+            // Keep both detector banks warm when the selected mode changes.
+            if let Some(detector) = &mut band.auto_detector_notch {
+                let auto_sidechain = input - detector.process_sample(input);
+                band.auto_env = Self::smooth_value(
+                    band.auto_env,
+                    auto_sidechain.abs() as f64,
+                    detector_attack,
+                    detector_release,
+                );
+            }
+            let envelope = if self.auto_enabled {
+                band.auto_env
+            } else {
+                band.env
+            };
+            band_envelopes[index] = envelope;
+            total_sibilance_env += envelope;
+            total_sibilance_power += envelope * envelope;
+            max_sibilance_env = max_sibilance_env.max(envelope);
+            band_level_db[index] = util::linear_to_db(envelope, 1e-10);
         }
 
         // Measure low voice-body energy on its own low-pass path; detector bands
         // are non-orthogonal, so subtracting their envelopes from broadband level
         // can erase this reference when sibilance is strong.
         let voice_reference_db = util::linear_to_db(self.voice_reference_env, 1e-10);
-        let narrowness = if total_sibilance_env > 1e-10 {
+        let spectral_ratios =
+            band_level_db.map(|level| Self::detector_spectral_ratio_db(level, voice_reference_db));
+        if self.auto_enabled {
+            // Estimate common brightness once per sample, so an isolated band
+            // excess is not also learned as that same band's background.
+            let mut ordered = spectral_ratios;
+            ordered.sort_unstable_by(f64::total_cmp);
+            let target = (0.45 * ordered[1]).clamp(0.0, 24.0);
+            let active =
+                voice_reference_db > -55.0 || band_level_db.iter().any(|&level| level > -55.0);
+            if active {
+                let coefficient = if target < self.auto_background_db {
+                    self.auto_baseline_fall_coeff
+                } else {
+                    self.auto_baseline_rise_coeff
+                };
+                self.auto_background_db =
+                    coefficient * self.auto_background_db + (1.0 - coefficient) * target;
+            } else {
+                self.auto_background_db *= self.auto_baseline_inactive_decay_coeff;
+            }
+        }
+        let narrowness = if self.auto_enabled && total_sibilance_power > 1e-20 {
+            max_sibilance_env * max_sibilance_env / total_sibilance_power
+        } else if !self.auto_enabled && total_sibilance_env > 1e-10 {
             max_sibilance_env / total_sibilance_env
         } else {
             0.0
@@ -505,19 +765,15 @@ impl DeEsser {
         let slope = Self::lerp(0.08, 1.9, amount);
         let auto_cap = Self::lerp(0.8, 14.0, amount);
         let confidence_floor = Self::lerp(0.28, 0.06, amount);
-        let baseline_fall = self.auto_baseline_fall_coeff;
-        let baseline_rise = self.auto_baseline_rise_coeff;
-        let baseline_inactive = self.auto_baseline_inactive_decay_coeff;
         let mut target_reductions = [0.0_f64; DEESSER_BAND_COUNT];
         let mut target_sum = 0.0_f64;
         let mut aggregate_confidence = 0.0_f64;
 
         for index in 0..DEESSER_BAND_COUNT {
             let sidechain_level_db = band_level_db[index];
-            let spectral_ratio_db =
-                Self::detector_spectral_ratio_db(sidechain_level_db, voice_reference_db);
+            let spectral_ratio_db = spectral_ratios[index];
             let band_dominance = if max_sibilance_env > 1e-10 {
-                (self.bands[index].env / max_sibilance_env).sqrt()
+                (band_envelopes[index] / max_sibilance_env).sqrt()
             } else {
                 0.0
             };
@@ -536,26 +792,11 @@ impl DeEsser {
             aggregate_confidence = aggregate_confidence.max(band.confidence);
 
             let target_reduction = if self.auto_enabled {
-                let voice_active = voice_reference_db > -55.0 || sidechain_level_db > -55.0;
-                if voice_active {
-                    let baseline_target = (spectral_ratio_db * 0.45).clamp(0.0, 24.0);
-                    let baseline_coeff = if baseline_target < band.baseline_excess_db {
-                        baseline_fall
-                    } else {
-                        baseline_rise
-                    };
-                    band.baseline_excess_db = baseline_coeff * band.baseline_excess_db
-                        + (1.0 - baseline_coeff) * baseline_target;
-                } else {
-                    band.baseline_excess_db *= baseline_inactive;
-                }
-
-                let cap_db = auto_cap.min(self.max_reduction_db * 0.75);
                 let confidence_gain =
                     Self::confidence_reduction_gain(band.confidence, confidence_floor);
                 let over_db =
-                    (spectral_ratio_db - band.baseline_excess_db - trigger_offset_db).max(0.0);
-                (over_db * slope * confidence_gain).clamp(0.0, cap_db)
+                    (spectral_ratio_db - self.auto_background_db - trigger_offset_db).max(0.0);
+                over_db * slope * confidence_gain
             } else if sidechain_level_db > self.threshold_db {
                 let ratio_threshold_db = ((self.threshold_db + 60.0) * 0.10).clamp(0.0, 6.0);
                 let level_over_db = sidechain_level_db - self.threshold_db;
@@ -575,7 +816,13 @@ impl DeEsser {
             target_sum += target_reduction;
         }
 
-        if target_sum > self.max_reduction_db && target_sum > 0.0 {
+        if self.auto_enabled {
+            target_reductions = Self::project_auto_reductions(
+                target_reductions,
+                auto_cap.min(self.max_reduction_db * 0.75),
+                self.max_reduction_db,
+            );
+        } else if target_sum > self.max_reduction_db && target_sum > 0.0 {
             let scale = self.max_reduction_db / target_sum;
             for target in &mut target_reductions {
                 *target *= scale;
@@ -628,6 +875,7 @@ impl DeEsser {
 
     /// Reset internal state.
     pub fn reset(&mut self) {
+        self.auto_background_db = 0.0;
         self.current_reduction_db = 0.0;
         self.voice_reference_env = 0.0;
         self.detector_confidence = 0.0;
@@ -643,6 +891,303 @@ impl DeEsser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_auto_requests_follow_one_shared_background_across_rates() {
+        for rate in [16_000.0, 44_100.0, 48_000.0, 96_000.0] {
+            let mut deesser = DeEsser::new(rate);
+            deesser.set_enabled(true);
+            let mut background = 0.0;
+            for n in 0..9_600 {
+                let phase = 2.0 * std::f64::consts::PI * n as f64 / rate;
+                let x = if !(317..=8_000).contains(&n) {
+                    0.0
+                } else {
+                    (0.04 * (500.0 * phase).sin()
+                        + 0.18 * ((rate * 0.37).min(6333.333333333334) * phase).sin()
+                        + 0.07 * ((rate * 0.41).min(8666.666666666668) * phase).sin())
+                        as f32
+                };
+                let before = deesser.bands.each_ref().map(|band| band.reduction_db);
+                deesser.process_sample(x);
+                let voice = util::linear_to_db(deesser.voice_reference_env, 1e-10);
+                let levels = deesser
+                    .bands
+                    .each_ref()
+                    .map(|band| util::linear_to_db(band.auto_env, 1e-10));
+                let ratios = levels.map(|level| (level - voice).max(0.0));
+                // Independent median expression and once-per-sample recurrence.
+                let median = ratios[0]
+                    .max(ratios[1].min(ratios[2]))
+                    .min(ratios[1].max(ratios[2]));
+                let target = (0.45 * median).clamp(0.0, 24.0);
+                if voice > -55.0 || levels.iter().any(|&level| level > -55.0) {
+                    let coefficient = if target < background {
+                        deesser.auto_baseline_fall_coeff
+                    } else {
+                        deesser.auto_baseline_rise_coeff
+                    };
+                    background = coefficient * background + (1.0 - coefficient) * target;
+                } else {
+                    background *= deesser.auto_baseline_inactive_decay_coeff;
+                }
+                let requests = std::array::from_fn(|i| {
+                    (ratios[i] - background - DeEsser::lerp(8.0, 0.8, 0.5)).max(0.0)
+                        * DeEsser::lerp(0.08, 1.9, 0.5)
+                        * DeEsser::confidence_reduction_gain(
+                            deesser.bands[i].confidence,
+                            DeEsser::lerp(0.28, 0.06, 0.5),
+                        )
+                });
+                let projected = DeEsser::project_auto_reductions(requests, 4.5, 6.0);
+                let mut expected = std::array::from_fn::<_, 3, _>(|i| {
+                    DeEsser::smooth_value(
+                        before[i],
+                        projected[i],
+                        deesser.attack_coeff,
+                        deesser.release_coeff,
+                    )
+                });
+                let total: f64 = expected.iter().sum();
+                if total > 6.0 {
+                    for value in &mut expected {
+                        *value *= 6.0 / total;
+                    }
+                }
+                for (i, expected) in expected.iter().enumerate() {
+                    assert_eq!(
+                        deesser.bands[i].reduction_db.to_bits(),
+                        expected.to_bits(),
+                        "shared background mismatch at rate={rate}, sample={n}, band={i}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_shared_background_lifecycle_and_inactive_decay() {
+        let mut deesser = DeEsser::new(16_000.0);
+        deesser.auto_background_db = 4.0;
+        for automatic in [false, true] {
+            deesser.set_auto_enabled(automatic);
+            deesser.set_enabled(false);
+            for _ in 0..480 {
+                assert_eq!(deesser.process_sample(0.25), 0.25);
+            }
+            assert_eq!(deesser.auto_background_db, 4.0);
+        }
+        deesser.set_enabled(true);
+        deesser.set_auto_enabled(false);
+        for _ in 0..480 {
+            deesser.process_sample(0.25);
+        }
+        assert_eq!(deesser.auto_background_db, 4.0);
+        deesser.set_auto_enabled(true);
+        deesser.set_low_cut_hz(12_000.0);
+        deesser.set_high_cut_hz(16_000.0);
+        for _ in 0..480 {
+            assert_eq!(deesser.process_sample(0.25), 0.25);
+        }
+        assert_eq!(deesser.auto_background_db, 4.0);
+        deesser.reset();
+        assert_eq!(deesser.auto_background_db, 0.0);
+
+        let mut silent = DeEsser::new(48_000.0);
+        silent.set_enabled(true);
+        silent.auto_background_db = 4.0;
+        silent.process_sample(0.0);
+        assert_eq!(
+            silent.auto_background_db,
+            4.0 * silent.auto_baseline_inactive_decay_coeff
+        );
+        let before = silent.auto_background_db;
+        silent.set_auto_amount(1.0);
+        silent.set_max_reduction_db(0.0);
+        silent.set_low_cut_hz(2_000.0);
+        assert_eq!(
+            silent.auto_background_db, before,
+            "parameter changes do not reset the observer state"
+        );
+        silent.process_sample(0.0);
+        assert_eq!(
+            silent.auto_background_db,
+            before * silent.auto_baseline_inactive_decay_coeff
+        );
+    }
+
+    #[test]
+    fn test_auto_budget_projection_matches_independent_reference_and_kkt() {
+        fn reference(requested: [f64; 3], cap: f64, budget: f64) -> ([f64; 3], f64) {
+            let clipped = requested.map(|value| value.clamp(0.0, cap));
+            if clipped.iter().sum::<f64>() <= budget {
+                return (clipped, 0.0);
+            }
+            // Independent numerical root solve, not the production active set.
+            let mut left = 0.0;
+            let mut right = requested.into_iter().fold(0.0_f64, f64::max);
+            for _ in 0..100 {
+                let middle = (left + right) * 0.5;
+                let sum: f64 = requested
+                    .iter()
+                    .map(|value| (value - middle).clamp(0.0, cap))
+                    .sum();
+                if sum > budget {
+                    left = middle;
+                } else {
+                    right = middle;
+                }
+            }
+            (
+                requested.map(|value| (value - right).clamp(0.0, cap)),
+                right,
+            )
+        }
+
+        let mut cases = Vec::new();
+        for budget in [0.0, 1e-6, 1.0, 6.0, 24.0] {
+            for amount in [0.0, 0.5, 1.0] {
+                let cap = DeEsser::lerp(0.8, 14.0, amount).min(0.75 * budget);
+                for value in [0.0, cap, budget / 3.0, budget, 100.0] {
+                    for offset in [-1e-10, 0.0, 1e-10] {
+                        cases.push(([value, (value + offset).max(0.0), 0.0], cap, budget));
+                        cases.push(([value, value, (value + offset).max(0.0)], cap, budget));
+                    }
+                }
+            }
+        }
+        cases.push(([1.342282, 10.890507, 0.0], 4.5, 6.0));
+        cases.push(([2.419224, 14.757074, 0.0064], 4.5, 6.0));
+        let mut seed = 0x1a04_2026_u64;
+        let mut random = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (seed >> 11) as f64 / ((1_u64 << 53) as f64)
+        };
+        for _ in 0..1024 {
+            let budget = random() * 24.0;
+            let cap = DeEsser::lerp(0.8, 14.0, random()).min(0.75 * budget);
+            cases.push((
+                [random() * 100.0, random() * 100.0, random() * 100.0],
+                cap,
+                budget,
+            ));
+        }
+        for (requested, cap, budget) in cases {
+            let (expected, lambda) = reference(requested, cap, budget);
+            let actual = DeEsser::project_auto_reductions(requested, cap, budget);
+            assert_eq!(
+                actual,
+                DeEsser::project_auto_reductions(requested, cap, budget)
+            );
+            let tolerance = 1e-9;
+            assert!(actual
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0 && *value <= cap));
+            let sum: f64 = actual.iter().sum();
+            assert!(sum <= budget + tolerance, "projection exceeded budget");
+            let clipped = requested.map(|value| value.clamp(0.0, cap));
+            if clipped.iter().sum::<f64>() <= budget {
+                assert_eq!(actual, clipped, "feasible vector changed");
+            }
+            assert!(lambda * (budget - sum).abs() <= tolerance * (1.0 + lambda));
+            for index in 0..3 {
+                assert!(
+                    (actual[index] - expected[index]).abs() < tolerance,
+                    "request={requested:?}, cap={cap}, budget={budget}: {actual:?} != {expected:?}"
+                );
+                let gradient = actual[index] - requested[index] + lambda;
+                if cap == 0.0 {
+                    continue;
+                } else if actual[index] <= tolerance {
+                    assert!(gradient >= -tolerance, "lower-bound KKT violation");
+                } else if actual[index] >= cap - tolerance {
+                    assert!(gradient <= tolerance, "upper-bound KKT violation");
+                } else {
+                    assert!(gradient.abs() <= tolerance, "interior KKT violation");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_auto_budget_projection_does_not_allocate() {
+        crate::test_alloc::assert_no_allocations("automatic gain budget", || {
+            std::hint::black_box(DeEsser::project_auto_reductions(
+                [2.419224, 14.757074, 0.0064],
+                4.5,
+                6.0,
+            ));
+        });
+    }
+
+    fn auto_tone_gains_db(sample_rate: f64, amount: f64, amplitudes: [f64; 4]) -> [f64; 4] {
+        let mut deesser = DeEsser::new(sample_rate);
+        deesser.set_enabled(true);
+        deesser.set_auto_amount(amount);
+        let frequencies = [500.0, 4_800.0, 7_000.0, 9_500.0];
+        let mut projections = [[0.0_f64; 2]; 4];
+        let sample_count = sample_rate as usize;
+        for n in 0..sample_count {
+            let phases = frequencies
+                .map(|frequency| 2.0 * std::f64::consts::PI * frequency * n as f64 / sample_rate);
+            let input = phases
+                .iter()
+                .zip(amplitudes)
+                .map(|(phase, amplitude)| phase.sin() * amplitude)
+                .sum::<f64>() as f32;
+            let output = deesser.process_sample(input) as f64;
+            assert!(output.is_finite());
+            // A settled half-second contains integer periods of every tone.
+            if n >= sample_count / 2 {
+                for (projection, phase) in projections.iter_mut().zip(phases) {
+                    projection[0] += output * phase.sin();
+                    projection[1] += output * phase.cos();
+                }
+            }
+        }
+        std::array::from_fn(|index| {
+            if amplitudes[index] == 0.0 {
+                return 0.0;
+            }
+            let amplitude = 2.0 * projections[index][0].hypot(projections[index][1])
+                / (sample_count - sample_count / 2) as f64;
+            20.0 * (amplitude / amplitudes[index]).log10()
+        })
+    }
+
+    #[test]
+    fn test_auto_keeps_attenuating_sustained_moderate_sibilance() {
+        for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
+            let gains = auto_tone_gains_db(sample_rate, 0.5, [0.06, 0.0, 0.20, 0.0]);
+            assert!(
+                gains[2] < -0.15,
+                "sustained 7 kHz excess was absorbed at {sample_rate} Hz: {gains:?} dB"
+            );
+            assert!(
+                gains[0].abs() < 0.15,
+                "de-essing changed the voice body at {sample_rate} Hz: {gains:?} dB"
+            );
+        }
+    }
+
+    #[test]
+    fn test_auto_preserves_body_and_broad_brightness_across_rates_and_amounts() {
+        for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
+            for amount in [0.0, 0.5, 1.0] {
+                for amplitudes in [
+                    [0.12, 0.0, 0.0, 0.0],
+                    [0.12, 0.0, 0.06, 0.0],
+                    [0.14, 0.05, 0.05, 0.05],
+                ] {
+                    let gains = auto_tone_gains_db(sample_rate, amount, amplitudes);
+                    assert!(
+                        gains.iter().all(|gain| gain.abs() < 0.15),
+                        "body/balanced/bright tones changed at {sample_rate} Hz, amount {amount}, input {amplitudes:?}: {gains:?} dB"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_disabled_passthrough() {
@@ -818,7 +1363,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sibilance_strength_response_is_smooth_and_gain_reduction_bounded() {
+    fn test_sibilance_confidence_is_monotonic_and_gain_reduction_bounded() {
         fn render(sibilance_amplitude: f32) -> (f32, f32) {
             let mut deesser = DeEsser::new(48_000.0);
             deesser.set_enabled(true);
@@ -838,6 +1383,9 @@ mod tests {
             )
         }
 
+        // These separately settled amplitudes test confidence ordering, not
+        // temporal continuity. Rendered epsilon/ramp tests cover continuity
+        // down to the existing actuator resolution without a meter slope.
         let mut previous_confidence = None;
         for step in 4..=10 {
             let amplitude = step as f32 * 0.02;
@@ -851,10 +1399,6 @@ mod tests {
                 assert!(
                     confidence + 0.005 >= previous,
                     "confidence fell from {previous:.4} to {confidence:.4} at amplitude {amplitude:.2}"
-                );
-                assert!(
-                    confidence - previous <= 0.10,
-                    "confidence jumped from {previous:.4} to {confidence:.4} at amplitude {amplitude:.2}"
                 );
             }
             previous_confidence = Some(confidence);
@@ -895,6 +1439,94 @@ mod tests {
         }
     }
 
+    fn render_sibilance_envelope(amplitudes: &[f64]) -> (Vec<f32>, Vec<f32>) {
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        deesser.set_auto_amount(1.0);
+        let mut input = Vec::with_capacity(amplitudes.len());
+        let mut output = Vec::with_capacity(amplitudes.len());
+        for (n, amplitude) in amplitudes.iter().enumerate() {
+            let phase = 2.0 * std::f64::consts::PI * n as f64 / 48_000.0;
+            let sample =
+                (0.08 * (250.0 * phase).sin() + amplitude * (7_000.0 * phase).sin()) as f32;
+            let processed = deesser.process_sample(sample);
+            assert!(processed.is_finite());
+            assert!(deesser.current_gain_reduction_db() <= 6.001);
+            input.push(sample);
+            output.push(processed);
+        }
+        (input, output)
+    }
+
+    #[test]
+    fn test_realized_sibilant_attenuation_is_monotonic_with_input_strength() {
+        let mut previous_gain = f64::INFINITY;
+        // Each of three bells updates only after a 0.001 dB control change.
+        let gain_quantum_db = DEESSER_BAND_COUNT as f64 * 0.001;
+        for step in 4..=10 {
+            let amplitude = step as f64 * 0.02;
+            let (_, output) = render_sibilance_envelope(&vec![amplitude; 24_000]);
+            let mut sine = 0.0;
+            let mut cosine = 0.0;
+            for (n, sample) in output.iter().enumerate().skip(14_400) {
+                let phase = 2.0 * std::f64::consts::PI * 7_000.0 * n as f64 / 48_000.0;
+                sine += *sample as f64 * phase.sin();
+                cosine += *sample as f64 * phase.cos();
+            }
+            let gain_db = 20.0 * (2.0 * sine.hypot(cosine) / 9_600.0 / amplitude).log10();
+            assert!(gain_db <= previous_gain + gain_quantum_db,
+                "attenuation decreased as sibilance rose to {amplitude}: {previous_gain} -> {gain_db} dB");
+            previous_gain = gain_db;
+        }
+    }
+
+    #[test]
+    fn test_audio_epsilon_and_ramp_response_converges_to_actuator_resolution() {
+        let mut envelopes: Vec<Vec<f64>> = (4..=10)
+            .map(|step| vec![step as f64 * 0.02; 24_000])
+            .collect();
+        envelopes.push(
+            (0..96_000)
+                .map(|n| 0.20 * (1.0 - (n as f64 / 48_000.0 - 1.0).abs()))
+                .collect(),
+        );
+        for (case, envelope) in envelopes.iter().enumerate() {
+            let mut previous_rms = f64::INFINITY;
+            for epsilon in [1e-4, 1e-5, 1e-6] {
+                let lower: Vec<f64> = envelope.iter().map(|value| value - epsilon).collect();
+                let upper: Vec<f64> = envelope.iter().map(|value| value + epsilon).collect();
+                let (input, output_lower) = render_sibilance_envelope(&lower);
+                let (_, output_upper) = render_sibilance_envelope(&upper);
+                let input_rms = (input.iter().map(|x| (*x as f64).powi(2)).sum::<f64>()
+                    / input.len() as f64)
+                    .sqrt();
+                let difference_rms = (output_lower
+                    .iter()
+                    .zip(output_upper)
+                    .map(|(a, b)| (*a as f64 - b as f64).powi(2))
+                    .sum::<f64>()
+                    / input.len() as f64)
+                    .sqrt();
+                // Resolve audio changes down to the existing three-bell update
+                // quantum; a discrete confidence jump would exceed this floor.
+                let quantization_resolution =
+                    input_rms * (10.0_f64.powf(DEESSER_BAND_COUNT as f64 * 0.001 / 20.0) - 1.0);
+                assert!(
+                    difference_rms <= previous_rms + quantization_resolution,
+                    "epsilon audio diverged for case {case}: {previous_rms} -> {difference_rms}"
+                );
+                if epsilon == 1e-6 {
+                    assert!(
+                        difference_rms <= quantization_resolution + 2.0 * epsilon,
+                        "audio jump exceeds actuator resolution for case {case}: {difference_rms}"
+                    );
+                    println!("audio continuity case {case}: rms={difference_rms:.9}, resolution={quantization_resolution:.9}");
+                }
+                previous_rms = difference_rms;
+            }
+        }
+    }
+
     #[test]
     fn test_low_frequency_voice_body_alone_does_not_trigger_deessing() {
         let mut deesser = DeEsser::new(48_000.0);
@@ -909,35 +1541,6 @@ mod tests {
         assert!(
             max_reduction <= 0.01,
             "250 Hz voice body alone should not trigger de-essing: {max_reduction} dB"
-        );
-    }
-
-    #[test]
-    fn test_auto_baseline_coefficients_are_cached_and_sample_rate_aware() {
-        let deesser_44 = DeEsser::new(44_100.0);
-        let deesser_96 = DeEsser::new(96_000.0);
-
-        let one_second_44 = deesser_44
-            .auto_baseline_rise_coeff
-            .powf(deesser_44.sample_rate);
-        let one_second_96 = deesser_96
-            .auto_baseline_rise_coeff
-            .powf(deesser_96.sample_rate);
-        let expected = (-1000.0 / AUTO_BASELINE_RISE_MS).exp();
-
-        assert!((one_second_44 - one_second_96).abs() < 1e-6);
-        assert!((one_second_44 - expected).abs() < 1e-12);
-        assert!(
-            (deesser_44.auto_baseline_fall_coeff.powf(44_100.0)
-                - (-1000.0 / AUTO_BASELINE_FALL_MS).exp())
-            .abs()
-                < 1e-12
-        );
-        assert!(
-            (deesser_44.auto_baseline_inactive_decay_coeff.powf(44_100.0)
-                - (-1000.0 / AUTO_BASELINE_INACTIVE_DECAY_MS).exp())
-            .abs()
-                < 1e-12
         );
     }
 
@@ -1009,6 +1612,10 @@ mod tests {
                 && deesser.bands.iter().all(|band| {
                     !band.detector_hp.is_crossfading()
                         && !band.detector_lp.is_crossfading()
+                        && band
+                            .auto_detector_notch
+                            .as_ref()
+                            .is_none_or(|detector| !detector.is_crossfading())
                         && !band.dynamic_eq.is_crossfading()
                 })
         }
@@ -1280,6 +1887,272 @@ mod tests {
     }
 
     #[test]
+    fn test_auto_bandpass_separates_center_tones_across_permitted_widths() {
+        for sample_rate in [
+            8_000.0, 16_000.0, 22_050.0, 32_000.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0,
+            768_000.0,
+        ] {
+            for (low_hz, high_hz) in [
+                (4_000.0, 11_000.0),
+                (5_625.0, 9_425.0),
+                (6_300.0, 10_100.0),
+                (7_000.0, 7_200.0),
+                (2_000.0, 2_200.0),
+                (12_000.0, 16_000.0),
+            ] {
+                if high_hz > sample_rate * 0.5 - EQ_NYQUIST_MARGIN_HZ {
+                    continue;
+                }
+                let width = (high_hz - low_hz) / 3.0;
+                for index in 0..3 {
+                    let lo = low_hz + width * index as f64;
+                    let hi = lo + width;
+                    let prewarp =
+                        |frequency: f64| (std::f64::consts::PI * frequency / sample_rate).tan();
+                    let center = sample_rate / std::f64::consts::PI
+                        * (prewarp(lo) * prewarp(hi)).sqrt().atan();
+                    let mut deesser = DeEsser::new(sample_rate);
+                    deesser.set_enabled(true);
+                    deesser.set_auto_enabled(true);
+                    deesser.set_low_cut_hz(low_hz);
+                    deesser.set_high_cut_hz(high_hz);
+                    deesser.set_max_reduction_db(0.0);
+                    for n in 0..(sample_rate as usize / 4) {
+                        let t = n as f64 / sample_rate;
+                        let sample = (2.0 * std::f64::consts::PI * center * t).sin() * 0.25
+                            + (2.0 * std::f64::consts::PI * 500.0 * t).sin() * 0.01;
+                        assert!(deesser.process_sample(sample as f32).is_finite());
+                    }
+                    // Near 2 kHz the tone is also part of the unchanged body
+                    // reference; concentration alone must not imply sibilance.
+                    if low_hz >= 4_000.0 && sample_rate >= 44_100.0 {
+                        let confidence = deesser.band_detector_confidences()[index];
+                        assert!(
+                            confidence > 0.65,
+                            "center tone under-detected at {sample_rate} Hz, {low_hz}-{high_hz} Hz, band {index}: {confidence}"
+                        );
+                    }
+                    let own_power = deesser.bands[index].auto_env.powi(2);
+                    let total_power: f64 =
+                        deesser.bands.iter().map(|band| band.auto_env.powi(2)).sum();
+                    assert!(
+                        own_power / total_power > BROADBAND_NARROWNESS_FULL,
+                        "center tone did not dominate its physical band: {} at {sample_rate} Hz, {low_hz}-{high_hz} Hz, band {index}",
+                        own_power / total_power
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_auto_bandpass_keeps_partial_nyquist_coverage_and_bypasses_empty_coverage() {
+        for sample_rate in [8_000.0, 16_000.0, 22_050.0, 32_000.0] {
+            let mut deesser = DeEsser::new(sample_rate);
+            deesser.set_enabled(true);
+            deesser.set_auto_enabled(true);
+            deesser.set_auto_amount(1.0);
+            deesser.set_high_cut_hz(16_000.0);
+            let empty = 4_000.0 >= sample_rate * 0.5 - EQ_NYQUIST_MARGIN_HZ;
+            for n in 0..(sample_rate as usize / 10) {
+                let sample = (2.0 * std::f64::consts::PI * 0.36 * n as f64).sin() as f32 * 0.25;
+                let output = deesser.process_sample(sample);
+                assert!(output.is_finite());
+                if empty {
+                    assert_eq!(output, sample);
+                    assert_eq!(deesser.current_gain_reduction_db(), 0.0);
+                    assert_eq!(deesser.detector_confidence(), 0.0);
+                    assert_eq!(deesser.band_gain_reductions_db(), [0.0; 3]);
+                    assert_eq!(deesser.band_detector_confidences(), [0.0; 3]);
+                }
+            }
+            if !empty {
+                assert!(
+                    deesser.current_gain_reduction_db() > 0.0,
+                    "valid partial coverage was lost at {sample_rate} Hz"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_auto_detector_and_bell_achieve_the_same_physical_band_edges() {
+        for sample_rate in [
+            8_000.0, 16_000.0, 22_050.0, 32_000.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0,
+            768_000.0,
+        ] {
+            for (low, requested_high) in [
+                (2_000.0_f64, 2_200.0_f64),
+                (4_000.0, 11_000.0),
+                (7_000.0, 7_200.0),
+                (12_000.0, 16_000.0),
+            ] {
+                let high = requested_high.min(sample_rate * 0.5 - EQ_NYQUIST_MARGIN_HZ);
+                if high <= low {
+                    continue;
+                }
+                let mut deesser = DeEsser::new(sample_rate);
+                deesser.set_low_cut_hz(low);
+                deesser.set_high_cut_hz(requested_high);
+                for (index, band) in deesser.bands.iter_mut().enumerate() {
+                    let left = low + (high - low) * index as f64 / 3.0;
+                    let right = if index == 2 {
+                        high
+                    } else {
+                        low + (high - low) * (index + 1) as f64 / 3.0
+                    };
+                    let prewarp =
+                        |frequency: f64| (std::f64::consts::PI * frequency / sample_rate).tan();
+                    let center = sample_rate / std::f64::consts::PI
+                        * (prewarp(left) * prewarp(right)).sqrt().atan();
+                    let detector = band
+                        .auto_detector_notch
+                        .as_mut()
+                        .expect("nonempty physical band");
+                    detector.reset();
+                    band.dynamic_eq.set_gain_db_immediate(-6.0);
+                    assert!(
+                        (band.dynamic_eq.magnitude_response_db(center) + 6.0).abs() < 1e-5,
+                        "bell peak missed detector center at {sample_rate} Hz, {left}-{right} Hz"
+                    );
+                    for edge in [left, right] {
+                        assert!(
+                            (detector.magnitude_response_db(edge) + 10.0 * 2.0_f64.log10()).abs()
+                                < 1e-5,
+                            "notch complement missed its half-power edge"
+                        );
+                        assert!(
+                            (band.dynamic_eq.magnitude_response_db(edge) + 3.0).abs() < 1e-5,
+                            "bell missed its half-gain edge at {sample_rate} Hz, {left}-{right} Hz"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_manual_preserves_valid_original_partitions_and_clips_each_invalid_band() {
+        for sample_rate in [8_000.0, 16_000.0, 22_050.0, 32_000.0, 48_000.0, 96_000.0] {
+            for (low, high) in [
+                (2_000.0, 2_200.0),
+                (4_000.0, 11_000.0),
+                (7_000.0, 7_200.0),
+                (12_000.0, 16_000.0),
+            ] {
+                let mut deesser = DeEsser::new(sample_rate);
+                deesser.set_enabled(true);
+                deesser.set_auto_enabled(false);
+                deesser.set_low_cut_hz(low);
+                deesser.set_high_cut_hz(high);
+                let width = (high - low) / 3.0;
+                for (index, band) in deesser.bands.iter_mut().enumerate() {
+                    let left = low + width * index as f64;
+                    let right = (low + width * (index + 1) as f64)
+                        .min(sample_rate * 0.5 - EQ_NYQUIST_MARGIN_HZ);
+                    band.dynamic_eq.set_gain_db_immediate(-6.0);
+                    if left >= right {
+                        for frequency in [sample_rate * 0.1, sample_rate * 0.3] {
+                            assert_eq!(
+                                band.detector_hp.target_magnitude_response_db(frequency),
+                                0.0
+                            );
+                            assert_eq!(
+                                band.detector_lp.target_magnitude_response_db(frequency),
+                                0.0
+                            );
+                            assert_eq!(
+                                band.dynamic_eq.target_magnitude_response_db(frequency),
+                                0.0
+                            );
+                        }
+                    } else {
+                        let hp = Biquad::new(BiquadType::HighPass, left, 0.0, 0.707, sample_rate);
+                        let lp = Biquad::new(BiquadType::LowPass, right, 0.0, 0.707, sample_rate);
+                        let center = (left * right).sqrt();
+                        let q = (center / (right - left).max(200.0)).clamp(0.5, 6.0);
+                        let bell = Biquad::new(BiquadType::Peaking, center, -6.0, q, sample_rate);
+                        for frequency in [left, center, right] {
+                            assert!((band.detector_hp.target_magnitude_response_db(frequency)
+                                - hp.target_magnitude_response_db(frequency)).abs() < 1e-8,
+                                "manual high-pass repartitioned: rate={sample_rate} interval={low}-{high} band={index}");
+                            assert!((band.detector_lp.target_magnitude_response_db(frequency)
+                                - lp.target_magnitude_response_db(frequency)).abs() < 1e-8,
+                                "manual low-pass repartitioned: rate={sample_rate} interval={low}-{high} band={index}");
+                            assert!((band.dynamic_eq.target_magnitude_response_db(frequency)
+                                - bell.target_magnitude_response_db(frequency)).abs() < 1e-8,
+                                "manual bell center/Q changed: rate={sample_rate} interval={low}-{high} band={index}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_manual_out_of_range_bands_are_finite_and_never_warmed_invalid() {
+        for sample_rate in [8_000.0, 16_000.0, 22_050.0, 32_000.0] {
+            for low in [2_000.0, 4_000.0, 12_000.0] {
+                let mut deesser = DeEsser::new(sample_rate);
+                deesser.set_enabled(true);
+                deesser.set_auto_enabled(false);
+                deesser.set_low_cut_hz(low);
+                deesser.set_high_cut_hz(16_000.0);
+                let empty = low >= sample_rate * 0.5 - EQ_NYQUIST_MARGIN_HZ;
+                for n in 0..(sample_rate as usize / 4) {
+                    let sample = (2.0 * std::f64::consts::PI * 0.36 * n as f64).sin() as f32 * 0.25;
+                    let output = deesser.process_sample(sample);
+                    assert!(
+                        output.is_finite(),
+                        "invalid manual filter at {sample_rate} Hz"
+                    );
+                    assert!(deesser.current_gain_reduction_db() <= 6.001);
+                    if empty {
+                        assert_eq!(output, sample);
+                    }
+                }
+                for band in &deesser.bands {
+                    assert!(band.env.is_finite() && band.auto_env.is_finite());
+                    if let Some((low, high)) = band.manual_bounds {
+                        assert!(low > 0.0 && low < high);
+                        assert!(high <= sample_rate * 0.5 - EQ_NYQUIST_MARGIN_HZ);
+                    } else {
+                        assert_eq!(band.env, 0.0, "invalid manual detector was warmed");
+                        assert_eq!(band.detector_hp.target_magnitude_response_db(500.0), 0.0);
+                        assert_eq!(band.detector_lp.target_magnitude_response_db(500.0), 0.0);
+                    }
+                    if !empty {
+                        assert!(
+                            band.low_hz > 0.0
+                                && band.high_hz <= sample_rate * 0.5 - EQ_NYQUIST_MARGIN_HZ
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_auto_bandpass_updates_and_both_detector_banks_do_not_allocate() {
+        let mut deesser = DeEsser::new(48_000.0);
+        deesser.set_enabled(true);
+        let mut audio = [0.1_f32; 480];
+        crate::test_alloc::assert_no_allocations("band-pass detector updates and render", || {
+            for index in 0..8 {
+                deesser.set_low_cut_hz(4_000.0 + index as f64 * 100.0);
+                deesser.set_high_cut_hz(11_000.0 - index as f64 * 100.0);
+                deesser.set_auto_enabled(index % 2 == 0);
+                deesser.process_block_inplace(&mut audio);
+            }
+        });
+        assert!(audio.iter().all(|sample| sample.is_finite()));
+        assert!(deesser
+            .bands
+            .iter()
+            .all(|band| band.auto_env.is_finite() && band.env.is_finite()));
+    }
+
+    #[test]
     fn test_detector_confidence_and_reduction_stay_finite_at_extreme_settings() {
         let mut deesser = DeEsser::new(48_000.0);
         deesser.set_enabled(true);
@@ -1314,6 +2187,92 @@ mod tests {
                 deesser.current_gain_reduction_db() <= 24.1,
                 "gain reduction should honor the configured cap"
             );
+        }
+    }
+
+    #[test]
+    fn test_auto_baseline_coefficients_are_cached_and_sample_rate_aware() {
+        let deesser_44 = DeEsser::new(44_100.0);
+        let deesser_96 = DeEsser::new(96_000.0);
+
+        let one_second_44 = deesser_44
+            .auto_baseline_rise_coeff
+            .powf(deesser_44.sample_rate);
+        let one_second_96 = deesser_96
+            .auto_baseline_rise_coeff
+            .powf(deesser_96.sample_rate);
+        let expected = (-1000.0 / AUTO_BASELINE_RISE_MS).exp();
+
+        assert!((one_second_44 - one_second_96).abs() < 1e-6);
+        assert!((one_second_44 - expected).abs() < 1e-12);
+        assert!(
+            (deesser_44.auto_baseline_fall_coeff.powf(44_100.0)
+                - (-1000.0 / AUTO_BASELINE_FALL_MS).exp())
+            .abs()
+                < 1e-12
+        );
+        assert!(
+            (deesser_44.auto_baseline_inactive_decay_coeff.powf(44_100.0)
+                - (-1000.0 / AUTO_BASELINE_INACTIVE_DECAY_MS).exp())
+            .abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn test_auto_baseline_preserves_transient_response_and_reset() {
+        let configure = || {
+            let mut deesser = DeEsser::new(48_000.0);
+            deesser.set_enabled(true);
+            deesser.set_auto_amount(0.5);
+            deesser
+        };
+        let input = |n: usize| {
+            let phase = 2.0 * std::f64::consts::PI * n as f64 / 48_000.0;
+            (0.04 * (300.0 * phase).sin() + 0.12 * (6800.0 * phase).sin()) as f32
+        };
+        let mut used = configure();
+        let mut peak = 0.0_f32;
+        for n in 0..9_600 {
+            used.process_sample(input(n));
+            peak = peak.max(used.current_gain_reduction_db());
+        }
+        assert!(
+            peak > 0.01,
+            "the warmed baseline erased the transient response"
+        );
+        assert!(used.auto_background_db > 0.0);
+        used.reset();
+        assert_eq!(used.auto_background_db, 0.0);
+        let mut fresh = configure();
+        for n in 0..48_000 {
+            assert_eq!(
+                used.process_sample(input(n)),
+                fresh.process_sample(input(n))
+            );
+            assert_eq!(
+                used.band_gain_reductions_db(),
+                fresh.band_gain_reductions_db()
+            );
+        }
+    }
+
+    #[test]
+    fn test_baseline_auto_amount_and_caps_remain_finite_and_bounded() {
+        for amount in [0.0, 0.5, 1.0] {
+            for cap in [0.0, 6.0, 12.0] {
+                let mut deesser = DeEsser::new(48_000.0);
+                deesser.set_enabled(true);
+                deesser.set_auto_amount(amount);
+                deesser.set_max_reduction_db(cap);
+                for n in 0..48_000 {
+                    let phase = 2.0 * std::f64::consts::PI * n as f64 / 48_000.0;
+                    let input =
+                        (0.04 * (300.0 * phase).sin() + 0.12 * (6800.0 * phase).sin()) as f32;
+                    assert!(deesser.process_sample(input).is_finite());
+                    assert!((0.0..=cap as f32).contains(&deesser.current_gain_reduction_db()));
+                }
+            }
         }
     }
 }

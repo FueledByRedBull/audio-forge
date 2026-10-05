@@ -14,7 +14,7 @@ from mic_eq.config import Preset
 def _args() -> tuple[Any, ...]:
     preset = Preset()
     return (
-        np.full(9_600, 0.001, dtype=np.float32),
+        np.full(96_000, 0.001, dtype=np.float32),
         np.full(19_200, 0.1, dtype=np.float32),
         48_000,
         asdict(preset.gate),
@@ -61,9 +61,8 @@ class _FakeSuppressor:
         request_dry = bool(settings.get("return_dry_audio", False))
         request_activity = bool(settings.get("return_auto_makeup_activity", False))
         self.calls.append((strength, request_dry))
-        is_noise = float(np.mean(np.abs(audio))) < 0.01
-        wet_scale = 0.4 if is_noise else 0.98
         dry = np.asarray(audio, dtype=np.float32)
+        wet_scale = np.where(np.abs(dry) < 0.01, 0.4, 0.98)
         wet = dry * np.float32(wet_scale)
         result = {
             "output_audio": (
@@ -121,6 +120,8 @@ def test_joint_tuning_reuses_full_wet_render_without_changing_selection_or_score
     assert len(cached_simulator.calls) < len(baseline_simulator.calls)
     assert cached["suppressor_settings"] == baseline["suppressor_settings"]
     assert cached["candidate_count"] == baseline["candidate_count"]
+    assert cached["apply_recommended"]
+    assert cached["suppressor_settings"]["strength"] != incumbent["suppressor"]["strength"]
     np.testing.assert_allclose(
         [candidate["score"] for candidate in cached["candidates"]],
         [candidate["score"] for candidate in baseline["candidates"]],

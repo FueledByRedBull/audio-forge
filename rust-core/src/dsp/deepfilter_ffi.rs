@@ -28,7 +28,10 @@
 //! Expected latency: ~10ms with LL variant (no lookahead)
 
 use crate::audio::rt::FixedAudioRing;
-use crate::dsp::noise_suppressor::{NoiseModel, NoiseSuppressor};
+use crate::dsp::noise_suppressor::{
+    ControlledNoiseSuppressor, ControlledSample, GateCompensation, GateControl, NoiseModel,
+    NoiseSuppressor,
+};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
@@ -43,6 +46,11 @@ const DEEPFILTER_BUFFER_CAPACITY: usize = 8192 + DEEPFILTER_FRAME_SIZE;
 const DEEPFILTER_MAX_LATENCY_SAMPLES: usize = DEEPFILTER_FRAME_SIZE * 3;
 pub const DEFAULT_DEEPFILTER_ATTENUATION_LIMIT_DB: f32 = 30.0;
 pub const DEFAULT_DEEPFILTER_POST_FILTER_BETA: f32 = 0.0;
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_FAIL_PROCESS_AFTER: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DeepFilterRuntimeConfig {
@@ -559,6 +567,18 @@ impl DeepFilterFFI {
 
             let df_process_frame = self._lib.df_process_frame;
             let lsnr = df_process_frame(state_ptr, input_ptr, output_ptr);
+            #[cfg(test)]
+            let lsnr = TEST_FAIL_PROCESS_AFTER.with(|remaining| match remaining.get() {
+                Some(0) => {
+                    remaining.set(None);
+                    f32::NAN
+                }
+                Some(count) => {
+                    remaining.set(Some(count - 1));
+                    lsnr
+                }
+                None => lsnr,
+            });
 
             if !lsnr.is_finite() {
                 return Err(DeepFilterProcessError::NonFiniteSnr);
@@ -625,8 +645,10 @@ fn mix_wet_with_aligned_dry(
 pub struct DeepFilterProcessor {
     df: Option<DeepFilterFFI>, // Option for graceful fallback if FFI fails
     _lib: Option<Arc<DeepFilterLib>>, // Keep library loaded
-    input_buffer: FixedAudioRing<f32, DEEPFILTER_BUFFER_CAPACITY>,
+    input_buffer: FixedAudioRing<ControlledSample, DEEPFILTER_BUFFER_CAPACITY>,
     output_buffer: FixedAudioRing<f32, DEEPFILTER_BUFFER_CAPACITY>,
+    input_frame: [ControlledSample; DEEPFILTER_FRAME_SIZE],
+    gate_compensation: GateCompensation,
     enabled: bool,
     strength: Arc<AtomicU32>,
     smoothed_strength: f32,
@@ -636,6 +658,7 @@ pub struct DeepFilterProcessor {
     aligned_dry_frame: [f32; DEEPFILTER_FRAME_SIZE],
     dry_delay: [f32; DEEPFILTER_MAX_LATENCY_SAMPLES],
     dry_delay_index: usize,
+    invalid_wet_samples: usize,
     load_error: Option<String>, // Store load error for reporting
     model: DeepFilterModel,     // Track which model variant we're using
     backend_failed: bool,
@@ -654,12 +677,18 @@ impl DeepFilterProcessor {
         runtime_config: DeepFilterRuntimeConfig,
     ) -> Self {
         let initial_strength = f32::from_bits(strength.load(Ordering::Relaxed)).clamp(0.0, 1.0);
+        let compensation_delay = match model {
+            DeepFilterModel::LowLatency => DEEPFILTER_FRAME_SIZE,
+            DeepFilterModel::Standard => 0,
+        };
         if !crate::dsp::noise_suppressor::deepfilter_experimental_enabled() {
             return Self {
                 df: None,
                 _lib: None,
                 input_buffer: FixedAudioRing::new(),
                 output_buffer: FixedAudioRing::new(),
+                input_frame: [ControlledSample::default(); DEEPFILTER_FRAME_SIZE],
+                gate_compensation: GateCompensation::new(compensation_delay),
                 enabled: true,
                 strength,
                 smoothed_strength: initial_strength,
@@ -669,6 +698,7 @@ impl DeepFilterProcessor {
                 aligned_dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
                 dry_delay: [0.0; DEEPFILTER_MAX_LATENCY_SAMPLES],
                 dry_delay_index: 0,
+                invalid_wet_samples: 0,
                 load_error: Some(
                     "DeepFilterNet disabled; set AUDIOFORGE_ENABLE_DEEPFILTER=1 to enable"
                         .to_string(),
@@ -716,6 +746,8 @@ impl DeepFilterProcessor {
             _lib: lib,
             input_buffer: FixedAudioRing::new(),
             output_buffer: FixedAudioRing::new(),
+            input_frame: [ControlledSample::default(); DEEPFILTER_FRAME_SIZE],
+            gate_compensation: GateCompensation::new(compensation_delay),
             enabled: true,
             strength,
             smoothed_strength: initial_strength,
@@ -725,6 +757,7 @@ impl DeepFilterProcessor {
             aligned_dry_frame: [0.0; DEEPFILTER_FRAME_SIZE],
             dry_delay: [0.0; DEEPFILTER_MAX_LATENCY_SAMPLES],
             dry_delay_index: 0,
+            invalid_wet_samples: 0,
             load_error,
             model,
             backend_failed: false,
@@ -736,6 +769,30 @@ impl DeepFilterProcessor {
     fn mark_backend_failed_rt(&mut self, error: DeepFilterProcessError) {
         self.backend_failed = true;
         self.runtime_error = Some(error);
+    }
+
+    fn push_samples_with_controls(
+        &mut self,
+        samples: &[f32],
+        controls: Option<&[GateControl]>,
+    ) -> usize {
+        if let Some(controls) = controls {
+            assert_eq!(samples.len(), controls.len());
+        }
+        let accepted = samples.len().min(self.input_buffer.remaining());
+        for (index, &sample) in samples[..accepted].iter().enumerate() {
+            let gate = controls.map_or(GateControl::BYPASS, |controls| controls[index]);
+            self.input_buffer.push(ControlledSample { sample, gate });
+        }
+        accepted
+    }
+
+    fn read_input_frame(&mut self) -> usize {
+        let read = self.input_buffer.pop_into(&mut self.input_frame);
+        for (dry, input) in self.dry_frame[..read].iter_mut().zip(&self.input_frame) {
+            *dry = input.sample;
+        }
+        read
     }
 
     #[inline]
@@ -761,6 +818,8 @@ impl DeepFilterProcessor {
         self.dry_delay.fill(0.0);
         self.aligned_dry_frame.fill(0.0);
         self.dry_delay_index = 0;
+        self.invalid_wet_samples = self.model.latency_samples();
+        self.gate_compensation.reset();
     }
 
     /// Process frames through FFI or fallback
@@ -778,7 +837,7 @@ impl DeepFilterProcessor {
             && self.output_buffer.remaining() >= DEEPFILTER_FRAME_SIZE
         {
             self.smoothed_strength += alpha * (target_strength - self.smoothed_strength);
-            let read = self.input_buffer.pop_into(&mut self.dry_frame);
+            let read = self.read_input_frame();
             if read != DEEPFILTER_FRAME_SIZE {
                 break;
             }
@@ -795,6 +854,18 @@ impl DeepFilterProcessor {
                         Ok(_lsnr) => {
                             self.successful_inference_frames =
                                 self.successful_inference_frames.saturating_add(1);
+                            // Preserved model overlap predates a soft reset. Only
+                            // the wet prefix is invalid; aligned dry stays intact.
+                            let invalid = self.invalid_wet_samples.min(DEEPFILTER_FRAME_SIZE);
+                            self.output_frame[..invalid].fill(0.0);
+                            self.invalid_wet_samples -= invalid;
+                            for (wet, input) in self.output_frame.iter_mut().zip(&self.input_frame)
+                            {
+                                let ratio = self.gate_compensation.next_ratio(input.gate);
+                                if ratio != 1.0 {
+                                    *wet *= ratio;
+                                }
+                            }
                             mix_wet_with_aligned_dry(
                                 &mut self.output_frame,
                                 &self.aligned_dry_frame,
@@ -852,9 +923,15 @@ impl DeepFilterProcessor {
 // TRAIT IMPLEMENTATION
 // ============================================================================
 
+impl ControlledNoiseSuppressor for DeepFilterProcessor {
+    fn push_controlled_samples(&mut self, samples: &[f32], controls: &[GateControl]) -> usize {
+        self.push_samples_with_controls(samples, Some(controls))
+    }
+}
+
 impl NoiseSuppressor for DeepFilterProcessor {
     fn push_samples(&mut self, samples: &[f32]) -> usize {
-        self.input_buffer.push_slice(samples)
+        self.push_samples_with_controls(samples, None)
     }
 
     fn process_frames(&mut self) {
@@ -865,7 +942,7 @@ impl NoiseSuppressor for DeepFilterProcessor {
             while self.input_buffer.len() >= DEEPFILTER_FRAME_SIZE
                 && self.output_buffer.remaining() >= DEEPFILTER_FRAME_SIZE
             {
-                let read = self.input_buffer.pop_into(&mut self.dry_frame);
+                let read = self.read_input_frame();
                 if read != DEEPFILTER_FRAME_SIZE {
                     break;
                 }

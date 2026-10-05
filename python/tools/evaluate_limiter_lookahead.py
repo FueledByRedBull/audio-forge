@@ -20,7 +20,6 @@ from mic_eq.mic_eq_core import simulate_auto_eq_chain
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_REPORT = REPO_ROOT / "evaluation" / "limiter-lookahead-2026-10-report.json"
 DEFAULT_REAL_MANIFEST = REPO_ROOT / "models/cross_take_eval/manifest.json"
 SAMPLE_RATE = 48_000
 LOOKAHEAD_MS = (0.5, 1.0, 2.0)
@@ -633,7 +632,7 @@ def evaluate(real_manifest: Path) -> dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--real-manifest", type=Path, default=DEFAULT_REAL_MANIFEST)
     parser.add_argument(
         "--details-output",

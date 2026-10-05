@@ -4327,3 +4327,16 @@ fn test_auto_makeup_control_block_is_ten_ms_at_supported_rates() {
     assert_eq!(ten_ms_control_block_size(48_000.0), 480);
     assert_eq!(ten_ms_control_block_size(96_000.0), 960);
 }
+
+#[test]
+fn test_dropped_sample_reset_keeps_the_capture_gap_counter() {
+    let processor = AudioProcessor::new();
+    processor.input_dropped.store(5, Ordering::Relaxed);
+    processor.reset_dropped_samples();
+    assert_eq!(processor.get_dropped_samples(), 0);
+    // The DSP loop compares this counter with the last value it saw; a
+    // rewind would read as a capture gap and discard the input queue.
+    assert_eq!(processor.input_dropped.load(Ordering::Relaxed), 5);
+    processor.input_dropped.fetch_add(2, Ordering::Relaxed);
+    assert_eq!(processor.get_dropped_samples(), 2);
+}

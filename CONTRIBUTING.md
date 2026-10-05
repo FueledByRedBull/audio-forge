@@ -100,6 +100,9 @@ bundled asset. `VAD_MODEL_PATH` selects the Silero model for source runs.
 are optional callback-size diagnostics. Values must be 16–8192 frames and fit the
 endpoint's advertised range; an unsupported request keeps the driver default.
 
+`AUDIOFORGE_QML=0` keeps the widget view of the main window instead of the Qt
+Quick view.
+
 ## Runtime checks and screenshots
 
 For route changes, use `python/tools/health_check.py --duration 1800` and

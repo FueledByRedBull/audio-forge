@@ -692,6 +692,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--conditions", default="1:True,2:True", help="rows: mode:vad_available,...")
     parser.add_argument("--output", type=Path, help="write the JSON result here")
     args = parser.parse_args(argv)
+    if args.command in ("calibrate", "qualify") and args.incumbent is None:
+        # Without it the subprocess imports whichever build is installed.
+        parser.error(f"{args.command} needs --incumbent")
     if args.build is not None:
         sys.path.insert(0, str(args.build / "python"))
     if args.command == "fetch":

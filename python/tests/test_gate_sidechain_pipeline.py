@@ -47,7 +47,26 @@ def test_gated_neural_input_preserves_incumbent_order(mode, available, strength,
     original_order = _render(gated_input, enabled=False, strength=strength, model=model)
     expected_latency = 1440 if model == "deepfilter" else 480
     assert result["suppressor_latency_samples"] == original_order["suppressor_latency_samples"] == expected_latency
-    np.testing.assert_array_equal(result["output_audio"], original_order["output_audio"])
+    if model == "deepfilter" or strength == 0.0:
+        np.testing.assert_array_equal(result["output_audio"], original_order["output_audio"])
+    else:
+        # The Rust simulator regression independently renders the original
+        # public gate/suppressor path and checks the exact compensation in all
+        # modes, including partial EOF. This boundary also retains the exact
+        # gated dry input and checks the wet-only amplification bound.
+        dry = _render(_capture(), enabled=True, strength=0.0, mode=mode,
+                      available=available, model=model)
+        np.testing.assert_array_equal(gated_input, dry["output_audio"])
+        wet = _render(gated_input, enabled=False, strength=1.0, model=model)
+        original_wet = np.asarray(wet["output_audio"], dtype=np.float32)
+        maximum_wet = original_wet / np.float32(10.0 ** (-36.0 / 20.0))
+        dry_mix = np.float32(1.0 - strength) * gated_input
+        low = np.float32(strength) * np.minimum(original_wet, maximum_wet) + dry_mix
+        high = np.float32(strength) * np.maximum(original_wet, maximum_wet) + dry_mix
+        actual = np.asarray(result["output_audio"], dtype=np.float32)
+        tolerance = 8.0 * np.finfo(np.float32).eps * np.maximum(np.abs(low), np.abs(high))
+        assert np.all(actual >= low - tolerance)
+        assert np.all(actual <= high + tolerance)
 
 
 @pytest.mark.parametrize("mode", [0, 1, 2])

@@ -13,6 +13,9 @@
 - Auto Voice Setup evaluates gate and noise-suppression candidates with compression bypassed, then calibrates compression and validates the full chain. It checks noise following speech without resetting the gate or suppressor, and rejects candidates that make settled post-speech noise at least 1 dB louder than the current settings.
 - Recovery after a capture gap discards partial input frames and stale suppressor overlap. The recovery fade starts when valid delayed audio arrives, rather than being spent on the suppressor's empty output prefix.
 - Share threshold-only compressor calibration between setup and evaluation, and separate the existing slow automatic makeup controller from compressor detection and gain smoothing. Render/state parity is preserved; the rejected multidimensional search remains in the offline evaluator.
+- Align wet-output gate compensation with RNNoise and DeepFilter LL delay, preserving the gated input sent to each neural model and the existing dry mix. The supported routes improve phrase onsets while retaining the qualified quiet-pause behavior; Standard DeepFilter receives no compensation.
+- Auto de-essing now uses notch-complement power concentration and a shared spectral-background reference to respond to persistent harsh resonances. Voice Setup adds a signed spectral-curvature model for persistent evidence. Manual, disabled and zero-cap behavior remains unchanged, and the recorded preservation gates for ordinary and bright speech pass.
+- Register the Windows audio worker with MMCSS Pro Audio after initialization and before streams start. Registration failure aborts startup through the existing cleanup path; shutdown checks same-thread reversion, with best-effort cleanup on unwind.
 
 ### Desktop and setup
 
@@ -33,11 +36,12 @@
 
 ### Evaluation and repository
 
-- Re-evaluated the noise gate on a fullband EARS/DEMAND corpus with causal VAD timing: the gate stays before noise suppression, and a speech-presence gate replacement failed its predefined rule, so the current gate is kept.
+- The earlier fullband EARS/DEMAND study kept the gate before noise suppression and rejected a speech-presence replacement under causal VAD timing. Those results remain unchanged; the separate wet-output compensation follow-up above retains the existing gate rules and neural input.
 - Removed nine superseded evaluation reports, the evaluators of closed decisions, and the published v1.12.0-v1.13.0 release notes (they remain on GitHub Releases and in tagged source).
 - Evaluation hygiene checks a released report at the first release that shipped it unchanged, so later code changes no longer force edits to released evidence.
 - The original October studies on simulated users (VoiceBank speech, DEMAND noise, synthetic rooms) kept the then-current behavior where a predefined rule did not support a change: a simpler fixed-grid Auto-EQ fitter, microphone correction from speech, fixed Adaptive-layer offsets, turning the gate off or to VAD Assisted under a neural suppressor (it costs 4-7 dB at phrase onsets but keeps long pauses 6-10 dB quieter), and refitting the de-esser's setup model (its realtime auto mode barely acts on a persistently harsh voice).
 - Before the check-ordering repair above, Auto Voice Setup's gate and noise-suppression tuner never changed settings for simulated users although a tested candidate was clearly better for about half of them: its absolute checks graded the frontend through an uncalibrated compressor. The relative checks and fitted selector tested in that study failed their predefined rule and remain rejected; the historical report is unchanged.
+- Adopt the audio follow-up under an explicit user-approved timing exception: one mandatory component-event p99 was 1.2151 ms against a 0.5 ms limit. All 294,000 complete kernels in that study were below 10 ms (candidate maximum 5.8616 ms). The component failure, earlier timing failures and unresolved total added-route cost remain recorded in [the follow-up report](evaluation/audio-followups-2026-10-report.json); this is not a passing component-budget result or a live-hardware/package qualification.
 
 ## v1.14.0
 

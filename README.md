@@ -29,7 +29,7 @@ your audio never leaves your PC.
 | Remove background noise | RNNoise or DeepFilterNet noise suppression, a speech-aware noise gate, and hum cleanup. |
 | Sound consistent | A compressor with speech-aware automatic makeup gain, plus peak protection that stops clipping. |
 | Shape your voice | A ten-band EQ you can drag or type into, Auto-EQ, and guided Auto Voice Setup. |
-| Tame harshness | A de-esser that turns down sharp "s" and "sh" sounds only when they occur. |
+| Tame harshness | A de-esser for sharp "s" and "sh" sounds and persistent harshness. |
 | Stay in control | Presets, undo and redo, a global mute shortcut, level meters, and health indicators. |
 
 <details>

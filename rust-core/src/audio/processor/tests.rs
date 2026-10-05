@@ -555,6 +555,208 @@ mod tests {
 
     #[cfg(feature = "vad")]
     #[test]
+    fn controlled_simulators_match_original_neural_input_and_independent_wet_compensation() {
+        use numpy::PyArrayMethods;
+        let audio: Vec<_> = (0..13_157)
+            .map(|index| {
+                (index as f32 * 0.033).sin()
+                    * if (2400..9600).contains(&index) {
+                        0.08
+                    } else {
+                        0.001
+                    }
+            })
+            .collect();
+        let probabilities: Vec<_> = (0..audio.len().div_ceil(480))
+            .map(|index| if (5..20).contains(&index) { 0.9 } else { 0.1 })
+            .collect();
+        let models = [
+            NoiseModel::RNNoise,
+            #[cfg(feature = "deepfilter")]
+            NoiseModel::DeepFilterNetLL,
+            #[cfg(feature = "deepfilter")]
+            NoiseModel::DeepFilterNet,
+        ];
+        Python::initialize();
+        Python::attach(|py| {
+            for model in models {
+                for mode in [
+                    GateMode::ThresholdOnly,
+                    GateMode::VadAssisted,
+                    GateMode::VadOnly,
+                ] {
+                    for available in [false, true] {
+                        for frontend in [false, true] {
+                            let make_gate = || {
+                                let mut gate = NoiseGate::new(-40.0, 10.0, 100.0, 48_000.0);
+                                gate.set_vad_auto_gate(Some(VadAutoGate::without_backend(
+                                    48_000, 0.48,
+                                )));
+                                gate.set_gate_mode(mode);
+                                gate.set_hold_time(200.0);
+                                gate.set_vad_pre_gain(1.0);
+                                gate.set_auto_threshold(true);
+                                gate.set_margin(10.0);
+                                gate
+                            };
+                            let mut original_gate = make_gate();
+                            let mut observing_gate = make_gate();
+                            let mut original_engine =
+                                crate::dsp::noise_suppressor::new_noise_suppression_engine(
+                                    model,
+                                    Arc::new(AtomicU32::new(1.0_f32.to_bits())),
+                                );
+                            if !original_engine.backend_available() {
+                                #[cfg(feature = "deepfilter")]
+                                assert!(
+                                    !crate::dsp::noise_suppressor::deepfilter_experimental_enabled(
+                                    )
+                                );
+                                continue;
+                            }
+                            let latency = original_engine.latency_samples();
+                            let mut controls = Vec::new();
+                            let mut original_dry = Vec::new();
+                            let mut original_wet = Vec::new();
+                            for (block, chunk) in audio.chunks(480).enumerate() {
+                                let mut original = [0.0; 480];
+                                original[..chunk.len()].copy_from_slice(chunk);
+                                let mut observed = original;
+                                let mut control = [GateControl::BYPASS; 480];
+                                original_gate
+                                    .set_external_vad_probability(probabilities[block], available);
+                                observing_gate
+                                    .set_external_vad_probability(probabilities[block], available);
+                                let count = if frontend { chunk.len() } else { 480 };
+                                original_gate.process_block_inplace(&mut original[..count]);
+                                observing_gate.process_block_with_gate_control(
+                                    &mut observed[..count],
+                                    &mut control[..count],
+                                );
+                                assert_eq!(original, observed, "original neural input changed");
+                                if count < 480 {
+                                    observing_gate.process_block_with_gate_control(
+                                        &mut observed[count..],
+                                        &mut control[count..],
+                                    );
+                                }
+                                controls.extend_from_slice(&control);
+                                original_dry.extend_from_slice(&original);
+                                assert_eq!(original_engine.push_samples(&original), 480);
+                                original_engine.process_frames();
+                                let mut wet = [0.0; 480];
+                                assert_eq!(original_engine.pop_samples_into(&mut wet), 480);
+                                original_wet.extend_from_slice(&wet);
+                            }
+                            for _ in 0..latency / 480 {
+                                let mut silence = [0.0; 480];
+                                let mut control = [GateControl::BYPASS; 480];
+                                observing_gate
+                                    .process_block_with_gate_control(&mut silence, &mut control);
+                                controls.extend_from_slice(&control);
+                                assert_eq!(original_engine.push_samples(&[0.0; 480]), 480);
+                                original_engine.process_frames();
+                                let mut wet = [0.0; 480];
+                                assert_eq!(original_engine.pop_samples_into(&mut wet), 480);
+                                original_wet.extend_from_slice(&wet);
+                            }
+                            assert!(!original_engine.backend_failed());
+                            let mut counter = 0usize;
+                            let expected: Vec<_> = (latency..latency + audio.len())
+                                .map(|index| {
+                                    let mut ratio = 1.0_f32;
+                                    if model.id() != "deepfilter" {
+                                        let current = controls[index - latency];
+                                        let future = controls[index];
+                                        let raw_ratio = (current.gain.max(future.gain)
+                                            / current.gain.max(0.015_848_933))
+                                        .max(1.0);
+                                        ratio +=
+                                            (counter as f32 / latency as f32) * (raw_ratio - 1.0);
+                                        counter = if future.open {
+                                            (counter + 1).min(latency)
+                                        } else {
+                                            counter.saturating_sub(1)
+                                        };
+                                    }
+                                    original_wet[index] * ratio
+                                })
+                                .collect();
+                            let settings = PyDict::new(py);
+                            settings.set_item("noise_model", model.id()).unwrap();
+                            settings.set_item("input_pre_filtered", true).unwrap();
+                            settings.set_item("gate_enabled", true).unwrap();
+                            settings.set_item("gate_mode", mode as u8).unwrap();
+                            settings.set_item("gate_vad_threshold", 0.48).unwrap();
+                            settings.set_item("gate_vad_hold_time_ms", 200.0).unwrap();
+                            settings.set_item("gate_vad_pre_gain", 1.0).unwrap();
+                            settings
+                                .set_item("gate_auto_threshold_enabled", true)
+                                .unwrap();
+                            settings.set_item("gate_margin_db", 10.0).unwrap();
+                            settings.set_item("vad_available", available).unwrap();
+                            settings
+                                .set_item("vad_probabilities", &probabilities)
+                                .unwrap();
+                            settings.set_item("return_dry_audio", true).unwrap();
+                            let actual = if frontend {
+                                let result = simulate_input_frontend_with_activity(
+                                    py,
+                                    audio.clone(),
+                                    48_000.0,
+                                    Some(&settings),
+                                )
+                                .unwrap();
+                                assert_eq!(result.suppressor_latency, latency);
+                                result.rendered
+                            } else {
+                                let numpy_audio = numpy::PyArray1::from_vec(py, audio.clone());
+                                let result = simulate_gate_suppressor_order(
+                                    py,
+                                    numpy_audio.readonly(),
+                                    probabilities.clone(),
+                                    false,
+                                    1.0,
+                                    Some(&settings),
+                                )
+                                .unwrap();
+                                let result = result.bind(py);
+                                let dry: Vec<f32> =
+                                    result.get_item("dry_audio").unwrap().extract().unwrap();
+                                assert_eq!(
+                                    dry,
+                                    original_dry[..audio.len()],
+                                    "original gated dry changed"
+                                );
+                                assert_eq!(
+                                    result
+                                        .get_item("suppressor_latency_samples")
+                                        .unwrap()
+                                        .extract::<usize>()
+                                        .unwrap(),
+                                    latency
+                                );
+                                result
+                                    .get_item("output_audio")
+                                    .unwrap()
+                                    .extract::<Vec<f32>>()
+                                    .unwrap()
+                            };
+                            for (index, (actual, expected)) in
+                                actual.iter().zip(&expected).enumerate()
+                            {
+                                assert_eq!(actual, expected, "{model:?}, {mode:?}, available={available}, frontend={frontend}, sample={index}");
+                            }
+                            assert_eq!(actual.len(), expected.len());
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    #[cfg(feature = "vad")]
+    #[test]
     fn test_full_chain_gates_each_block_with_a_vad_result_finished_before_it() {
         // The first 32 ms window ends at sample 1536, inside block 3
         // [1440, 1920). Live, block 3 cannot use it; block 4 can.
@@ -2960,16 +3162,16 @@ mod tests {
         // Deterministic multi-block integration fingerprint; component tests
         // independently check envelope timing, spectral response, and ceilings.
         assert!(
-            (rms - 0.141_322_069_092).abs() <= 1.0e-6,
+            (rms - 0.141_311_179_443).abs() <= 1.0e-6,
             "rms={rms:.12} peak={peak:.9} weighted={weighted_sum:.12} compressor={max_compressor_gr:.9} deesser={max_deesser_gr:.9} limiter={max_limiter_gr:.9} events={limited_events} checkpoints={checkpoints:?}"
         );
-        assert!((peak - 0.498_408_62).abs() <= 2.0e-6);
-        assert!((weighted_sum - 1_701.332_711_963).abs() <= 0.05);
-        assert!((max_compressor_gr - 11.566_024).abs() <= 0.001);
-        assert!((max_deesser_gr - 4.712_847).abs() <= 0.001);
-        assert!((max_limiter_gr - 0.826_814_9).abs() <= 0.001);
-        assert!((5..=9).contains(&limited_events));
-        let expected = [-0.012_534_169, 0.209_899_89, 0.251_204_85, 0.091_641_47];
+        assert!((peak - 0.493_321_36).abs() <= 2.0e-6);
+        assert!((weighted_sum - 1_565.372_487_073).abs() <= 0.05);
+        assert!((max_compressor_gr - 9.894_508).abs() <= 0.001);
+        assert!((max_deesser_gr - 9.932_909).abs() <= 0.001);
+        assert!((max_limiter_gr - 1.139_794_8).abs() <= 0.001);
+        assert!((2..=6).contains(&limited_events));
+        let expected = [-0.012_534_169, 0.209_899_89, 0.296_986_37, 0.021_112_22];
         assert_eq!(checkpoints.len(), expected.len());
         for (actual, expected) in checkpoints.into_iter().zip(expected) {
             assert!((actual - expected).abs() <= 2.0e-5);
@@ -3729,7 +3931,8 @@ mod tests {
         let source = include_str!("dsp_loop.rs");
         let region = marked_region(source, "dsp_processing_loop");
 
-        assert!(region.contains("let accepted = suppressor_rt.push_samples(buffer);"));
+        let compact: String = region.split_whitespace().collect();
+        assert!(compact.contains("suppressor_rt.push_controlled_samples(buffer,gate_controls)"));
         assert!(region.contains("if accepted < buffer.len()"));
         assert!(region.contains("RtErrorCode::FixedBufferOverflow"));
     }

@@ -28,6 +28,7 @@ from .deesser_fusion import (
     CLIP_FEATURE_NAMES,
     ENABLE_PROBABILITY_THRESHOLD,
     MODEL_VERSION as DEESSER_MODEL_VERSION,
+    persistent_shape_evidence,
     predict_clip_probability,
     predict_frame_probabilities,
 )
@@ -48,7 +49,7 @@ from .vad import (
     analyze_offline_vad,
     map_causal_vad_probabilities,
 )
-from ..config import EQ_FREQUENCIES, EQSettings, build_eq_candidate_settings
+from ..config import DeEsserSettings, EQ_FREQUENCIES, EQSettings, build_eq_candidate_settings
 
 NOISE_MIN_DURATION_S = MIN_NOISE_DURATION_S
 SPEECH_MIN_DURATION_S = 3.0
@@ -439,6 +440,7 @@ def _vad_masked_speech_features(
                 "peak_hz": peak_hz,
             }
 
+    deesser_evidence["persistent_shape"] = persistent_shape_evidence(speech, sample_rate)
     return {
         "frame_db": frame_db,
         "active_frame_mask": active_frames,
@@ -576,9 +578,19 @@ def _recommend_deesser_settings(
         or str(noise_reference_status).strip().lower() == "invalid"
         or not np.isfinite(clip_feature_values).all()
     )
+    shape_data = dict(frame_data.get("persistent_shape", {}))
+    shape_score = shape_data.get("score")
+    persistent_resonance = bool(
+        not invalid_evidence
+        and shape_data.get("supported")
+        and isinstance(shape_score, (int, float))
+        and np.isfinite(shape_score)
+        and shape_score >= 0.0
+    )
+    shape_data["applied"] = persistent_resonance
     enabled = bool(
         not invalid_evidence
-        and detection_probability >= ENABLE_PROBABILITY_THRESHOLD
+        and (detection_probability >= ENABLE_PROBABILITY_THRESHOLD or persistent_resonance)
     )
     auto_amount = _clamp(
         0.18
@@ -591,6 +603,13 @@ def _recommend_deesser_settings(
     high_cut_hz = _clamp(peak_hz + 2100.0, low_cut_hz + 1500.0, 11000.0)
     ratio = _clamp(2.5 + max(0.0, sibilance_excess_db) * 0.45, 2.0, 5.5)
     max_reduction_db = _clamp(3.5 + max(0.0, sibilance_excess_db) * 0.65, 3.0, 8.0)
+    if persistent_resonance:
+        # Independent persistent evidence warrants the factory Auto profile
+        # even when transient evidence is weak. Keep stronger transient action.
+        factory = DeEsserSettings()
+        low_cut_hz, high_cut_hz = factory.low_cut_hz, factory.high_cut_hz
+        auto_amount = max(auto_amount, factory.auto_amount)
+        max_reduction_db = max(max_reduction_db, factory.max_reduction_db)
 
     settings = {
         "enabled": enabled,
@@ -622,6 +641,7 @@ def _recommend_deesser_settings(
             )
         },
         "invalid_evidence": invalid_evidence,
+        "persistent_shape": shape_data,
         "temporal_contrast_db": float(
             frame_data.get("temporal_contrast_db", 0.0)
         ),
@@ -1300,6 +1320,7 @@ def analyze_voice_setup(
             ],
             "deesser_model_version": deesser_diag["model_version"],
             "deesser_clip_features": deesser_diag["clip_features"],
+            "deesser_persistent_shape": deesser_diag["persistent_shape"],
             "deesser_frame_evidence_confidence": deesser_diag[
                 "frame_evidence_confidence"
             ],

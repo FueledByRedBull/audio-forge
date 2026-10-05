@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+#[cfg(not(windows))]
 use thread_priority::{set_current_thread_priority, ThreadPriority};
 
 use std::sync::atomic::AtomicU8;
@@ -27,13 +28,16 @@ use super::clock::now_micros;
 use super::input::{AudioInput, InputChannelMode, InputStreamOptions, TARGET_SAMPLE_RATE};
 use super::output::{AudioOutput, OutputProbeControl};
 use super::rt::{store_rt_error, FixedAudioBuffer, RtCommandQueue, RtErrorCode};
+#[cfg(windows)]
+use super::scheduling::ProAudioThread;
 use crate::dsp::biquad::{Biquad, BiquadType};
 use crate::dsp::eq::{
     validate_eq_frequency_hz, validate_eq_gain_db, validate_eq_q, validate_eq_slope, EqBandConfig,
     EqFilterType, NUM_BANDS,
 };
 use crate::dsp::noise_suppressor::{
-    new_noise_suppression_engine, NoiseModel, NoiseSuppressionEngine,
+    new_controlled_noise_suppression_engine as new_noise_suppression_engine,
+    ControlledNoiseSuppressionEngine as NoiseSuppressionEngine, GateControl, NoiseModel,
 };
 use crate::dsp::rnnoise::RNNOISE_FRAME_SIZE;
 use crate::dsp::{
@@ -139,14 +143,14 @@ const LIMITER_CEILING_MAX_DB: f64 = 0.0;
 const LIMITER_RELEASE_MIN_MS: f64 = 10.0;
 const LIMITER_RELEASE_MAX_MS: f64 = 500.0;
 
-#[cfg(debug_assertions)]
+#[cfg(all(debug_assertions, not(windows)))]
 macro_rules! processor_debug_log {
     ($($arg:tt)*) => {
         eprintln!($($arg)*);
     };
 }
 
-#[cfg(not(debug_assertions))]
+#[cfg(all(not(debug_assertions), not(windows)))]
 macro_rules! processor_debug_log {
     ($($arg:tt)*) => {};
 }

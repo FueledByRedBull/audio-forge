@@ -235,6 +235,61 @@ mod tests {
     }
 
     #[test]
+    fn controlled_unavailable_and_failed_backends_never_compensate_dry_output() {
+        for model in [DeepFilterModel::LowLatency, DeepFilterModel::Standard] {
+            for unavailable in [true, false] {
+                let mut ordinary =
+                    DeepFilterProcessor::new(Arc::new(AtomicU32::new(1.0_f32.to_bits())), model);
+                let mut controlled =
+                    DeepFilterProcessor::new(Arc::new(AtomicU32::new(1.0_f32.to_bits())), model);
+                if !unavailable && !controlled.is_ffi_available() {
+                    assert!(
+                        !crate::dsp::noise_suppressor::deepfilter_experimental_enabled(),
+                        "enabled DeepFilter recovery test needs its runtime assets"
+                    );
+                    continue;
+                }
+                if unavailable {
+                    ordinary.df = None;
+                    controlled.df = None;
+                }
+                for frame in 0..12 {
+                    if frame == 4 && !unavailable {
+                        ordinary.mark_backend_failed_rt(DeepFilterProcessError::NonFiniteOutput);
+                        controlled.mark_backend_failed_rt(DeepFilterProcessError::NonFiniteOutput);
+                    }
+                    if frame == 6 {
+                        ordinary.soft_reset();
+                        controlled.soft_reset();
+                    }
+                    ordinary.set_enabled(frame != 9);
+                    controlled.set_enabled(frame != 9);
+                    let raw = std::array::from_fn::<_, 480, _>(|index| {
+                        ((index + frame * 480) as f32 * 0.05).sin() * 0.2
+                    });
+                    let controls = [GateControl {
+                        gain: if frame % 2 == 0 { 0.02 } else { 1.0 },
+                        open: true,
+                    }; 480];
+                    ordinary.push_samples(&raw);
+                    controlled.push_controlled_samples(&raw, &controls);
+                    ordinary.process_frames();
+                    controlled.process_frames();
+                    let mut expected = [0.0; 480];
+                    let mut actual = [0.0; 480];
+                    assert_eq!(ordinary.pop_samples_into(&mut expected), 480);
+                    assert_eq!(controlled.pop_samples_into(&mut actual), 480);
+                    if unavailable || frame >= 4 {
+                        assert_eq!(actual, expected);
+                    }
+                    assert_eq!(ordinary.backend_failed(), controlled.backend_failed());
+                    assert_eq!(ordinary.latency_samples(), controlled.latency_samples());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn native_soft_reset_mutes_only_the_reported_model_overlap() {
         let before = std::array::from_fn::<_, 480, _>(|index| {
             (index as f32 * 0.047).sin() * 0.25

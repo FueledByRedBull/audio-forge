@@ -201,6 +201,74 @@ mod input_continuity_tests {
     }
 }
 
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[test]
+    fn failed_dsp_readiness_stops_joins_and_clears_capture_state() {
+        for failure in ["registration", "disconnected", "timeout"] {
+            let mut processor = AudioProcessor::new();
+            processor.running.store(true, Ordering::SeqCst);
+            processor.recording_active.store(true, Ordering::Release);
+            processor.output_probe_active.store(true, Ordering::Release);
+            processor
+                .input_fixed_buffer_frames
+                .store(480, Ordering::Relaxed);
+            processor.restart_requested.store(true, Ordering::Release);
+            let running = Arc::clone(&processor.running);
+            let exited = Arc::new(AtomicBool::new(false));
+            let worker_exited = Arc::clone(&exited);
+            processor.process_thread = Some(std::thread::spawn(move || {
+                while running.load(Ordering::SeqCst) {
+                    std::thread::yield_now();
+                }
+                worker_exited.store(true, Ordering::Release);
+            }));
+            let (ready_tx, ready_rx) = mpsc::channel();
+            match failure {
+                "registration" => ready_tx
+                    .send(Err("MMCSS test startup failure".into()))
+                    .unwrap(),
+                "disconnected" => drop(ready_tx),
+                _ => {}
+            }
+            let error = processor
+                .check_dsp_startup(ready_rx.recv_timeout(Duration::ZERO))
+                .unwrap_err();
+            if failure == "registration" {
+                assert_eq!(error, "MMCSS test startup failure");
+            } else {
+                assert!(error.starts_with("DSP thread failed to become ready:"));
+            }
+            assert!(!processor.running.load(Ordering::SeqCst));
+            assert!(exited.load(Ordering::Acquire));
+            assert!(processor.process_thread.is_none());
+            assert!(!processor.recording_active.load(Ordering::Acquire));
+            assert!(!processor.output_probe_active.load(Ordering::Acquire));
+            assert_eq!(
+                processor.input_fixed_buffer_frames.load(Ordering::Relaxed),
+                0
+            );
+            assert!(!processor.restart_requested.load(Ordering::Acquire));
+            assert!(processor.audio_input.is_none());
+            assert!(processor.audio_output.is_none());
+        }
+    }
+
+    #[test]
+    fn startup_failure_check_precedes_both_stream_starts() {
+        let source = include_str!("dsp_loop.rs");
+        let worker_published = source.rfind("self.process_thread = Some(handle);").unwrap();
+        let startup = &source[worker_published..];
+        assert!(
+            startup.find("self.check_dsp_startup(").unwrap()
+                < startup.find("output.start()").unwrap()
+        );
+        assert!(startup.find("output.start()").unwrap() < startup.find("input.start()").unwrap());
+    }
+}
+
 impl AudioProcessor {
     #[cfg(feature = "vad")]
     #[inline]
@@ -235,6 +303,18 @@ impl AudioProcessor {
                 while let Some(_engine) = rx.try_pop() {}
             }
         }
+    }
+
+    fn check_dsp_startup(
+        &mut self,
+        readiness: Result<Result<(), String>, mpsc::RecvTimeoutError>,
+    ) -> Result<(), String> {
+        let result = readiness
+            .unwrap_or_else(|error| Err(format!("DSP thread failed to become ready: {error}")));
+        if result.is_err() {
+            self.stop();
+        }
+        result
     }
 
     /// Start audio processing
@@ -748,6 +828,8 @@ impl AudioProcessor {
             };
             let mut input_buffer = FixedAudioBuffer::<f32, RT_INPUT_CHUNK_CAPACITY>::new();
             let mut temp_buffer = FixedAudioBuffer::<f32, RT_PROCESS_BUFFER_CAPACITY>::new();
+            let mut gate_control_scratch =
+                FixedAudioBuffer::<GateControl, RT_PROCESS_BUFFER_CAPACITY>::new();
             let mut rnnoise_output = FixedAudioBuffer::<f32, RT_SUPPRESSOR_OUTPUT_CAPACITY>::new();
             let mut resample_input =
                 crate::audio::rt::FixedAudioRing::<f64, RT_RESAMPLE_QUEUE_CAPACITY>::new();
@@ -833,8 +915,8 @@ impl AudioProcessor {
             apply_limiter_control(&mut limiter_rt, &limiter_snapshot);
             output_ceiling_linear.set(10.0_f32.powf(limiter_rt.ceiling_db() as f32 / 20.0));
 
-            // Set high thread priority only after all AudioForge-owned buffers and
-            // DSP state have been allocated and initialized.
+            // Keep the existing priority policy outside Windows.
+            #[cfg(not(windows))]
             if let Err(_e) = set_current_thread_priority(ThreadPriority::Max) {
                 processor_debug_log!("Warning: Could not set audio thread priority: {:?}", _e);
             }
@@ -1291,7 +1373,18 @@ impl AudioProcessor {
                 };
             }
             let mut consecutive_idle_wakeups = 0u32;
-            let _ = dsp_ready_tx.send(());
+            // Register only after every worker buffer and DSP state is initialized.
+            #[cfg(windows)]
+            let scheduling = match ProAudioThread::enter() {
+                Ok(guard) => guard,
+                Err(error) => {
+                    let _ = dsp_ready_tx.send(Err(format!(
+                        "Failed to register DSP thread with Pro Audio: {error}"
+                    )));
+                    return;
+                }
+            };
+            let _ = dsp_ready_tx.send(Ok(()));
 
             // Run entire processing loop with denormals flushed to zero
             // This prevents tiny floating point values from causing CPU stalls and audio artifacts
@@ -1772,6 +1865,9 @@ impl AudioProcessor {
                                     .unwrap_or(false);
                                 #[cfg(feature = "vad")]
                                 vad_available.store(vad_worker_available, Ordering::Relaxed);
+                                let gate_controls = &mut gate_control_scratch
+                                    .as_mut_capacity_slice()[..buffer.len()];
+                                gate_controls.fill(GateControl::BYPASS);
                                 if gate_enabled.load(Ordering::Acquire) {
                                     if gate_dirty.swap(false, Ordering::AcqRel) {
                                         if let Some(control) = gate_rt_control.snapshot() {
@@ -1791,7 +1887,7 @@ impl AudioProcessor {
                                             vad_worker_available,
                                         );
                                     }
-                                    gate_rt.process_block_inplace(buffer);
+                                    gate_rt.process_block_with_gate_control(buffer, gate_controls);
                                     gate_gain_meter.store(
                                         gate_rt.current_gain().clamp(0.0, 1.0).to_bits(),
                                         Ordering::Relaxed,
@@ -1918,7 +2014,8 @@ impl AudioProcessor {
                                     }
                                     {
                                         // Always feed suppressor first so frame accumulation is correct.
-                                        let accepted = suppressor_rt.push_samples(buffer);
+                                        let accepted = suppressor_rt
+                                            .push_controlled_samples(buffer, gate_controls);
                                         if accepted < buffer.len() {
                                             rt_buffer_overflow_count
                                                 .fetch_add(1, Ordering::Relaxed);
@@ -2154,15 +2251,16 @@ impl AudioProcessor {
                     // RT_REGION_END: dsp_processing_loop
                 }); // End no_denormals block
             } // End unsafe block
+            #[cfg(windows)]
+            if let Err(error) = scheduling.finish() {
+                eprintln!("Failed to revert DSP thread Pro Audio scheduling: {error}");
+            }
         });
 
         self.process_thread = Some(handle);
-        if let Err(e) =
-            dsp_ready_rx.recv_timeout(Duration::from_millis(DSP_THREAD_READY_TIMEOUT_MS))
-        {
-            self.stop();
-            return Err(format!("DSP thread failed to become ready: {}", e));
-        }
+        self.check_dsp_startup(
+            dsp_ready_rx.recv_timeout(Duration::from_millis(DSP_THREAD_READY_TIMEOUT_MS)),
+        )?;
 
         if let Some(output) = self.audio_output.as_ref() {
             if let Err(e) = output.start() {

@@ -1,20 +1,22 @@
 # Evaluation evidence
 
 This directory records why AudioForge's sound-processing defaults are what
-they are. Each decision is a predefined pass/fail rule applied to held-out
-data: a candidate replaces the incumbent only when it passes, and an
-inconclusive result keeps the incumbent. The JSON reports hold configuration,
-source and asset hashes, aggregate metrics, the rule, the decision, and its
-limitations. Per-case detail stays out of Git (`--details-output` under
-ignored `models/evaluation-details/`, or a CI artifact).
+they are. Decisions use predefined pass/fail rules applied to held-out
+data. A candidate normally replaces the incumbent only when it passes, and an
+inconclusive result keeps the incumbent. The audio follow-up below has an
+explicit user-approved timing exception; its failed gate remains a failure.
+The JSON reports hold configuration, source and asset hashes, aggregate
+metrics, the rule, the decision, and its limitations. Per-case detail stays
+out of Git (`--details-output` under ignored `models/evaluation-details/`,
+or a CI artifact).
 
 ## Decisions
 
 | Area | Decision | Evidence |
 | --- | --- | --- |
-| Noise gate, VAD modes | Keep the current gate; a speech-presence replacement failed its rule in both modes (October 2026). | [Gate study](#gate-study-october-2026); `gate-speech-presence-2026-10-report.json` |
+| Noise gate, VAD modes | Keep the existing gate and VAD rules. The historical speech-presence replacement failed in both modes; the current follow-up compensates supported suppressors' wet output separately. | [Historical gate study](#gate-study-october-2026); `gate-speech-presence-2026-10-report.json`; [audio follow-up](audio-followups-2026-10-report.json) |
 | Voice Setup gate/suppression tuner | Corrected check ordering: select the frontend with compression bypassed, then calibrate compression and verify the full chain. Continuous speech-then-noise processing checks post-speech noise against the incumbent. The original October study graded an uncalibrated compressor and never changed settings; its rejected relative checks, fitted selector and reference-free onset measures remain rejected. | Current [implementation](../python/mic_eq/analysis/joint_tuning.py) and [regressions](../python/tests/test_joint_tuning.py); historical study: `voice-setup-tuner-2026-10-report.json` |
-| Gate with a neural suppressor | Keep the factory gate. On top of RNNoise or DeepFilter it costs 4–7 dB at phrase onsets but keeps long pauses 6–10 dB quieter; gate off and VAD Assisted were not better once long pauses were counted (October 2026). An onset-safe gate needs its own study. | `gate-policy-2026-10-report.json` |
+| Gate with a neural suppressor | Add aligned wet-output compensation for RNNoise and DeepFilter LL while preserving the gated neural input and dry mix. The historical study kept the factory gate: it cost 4–7 dB at phrase onsets but kept long pauses 6–10 dB quieter, and gate off/VAD Assisted failed its rule. The new follow-up has separate onset and quiet-pause evidence. | Current [audio follow-up](audio-followups-2026-10-report.json); historical `gate-policy-2026-10-report.json` |
 | Processing order | Gate before noise suppression; de-esser before EQ. | `processing-order-2026-10-report.json` (gate); `processing-order-2026-09-report.json` (de-esser/EQ) |
 | Limiter | 0.5 ms lookahead, zero output true-peak overshoot. | `limiter-lookahead-2026-10-report.json`. Its removed predecessors shifted already-aligned audio, so their gain-envelope and transient-shape metrics were invalid; correctly aligned, the three lookaheads score within 0.01 dB. |
 | DeepFilter | 30 dB attenuation, beta 0.0. | `deepfilter-hardening-report.json`, `deepfilter-fullband-report.json` |
@@ -23,8 +25,8 @@ ignored `models/evaluation-details/`, or a CI artifact).
 | Warm target | All 60 dialog and 60 held-out EQ cases pass; Warm adds bounded low-mid body. | `warm-auto-eq-report.json` |
 | Auto-EQ confidence | Historical calibration of the former absolute-spectrum objective, not of today's bounded tonal adjustment. | `auto-eq-confidence-calibration.json` |
 | Compressor | VAD/reliability-driven automatic makeup; all six real-speech gates and the −30 dB aliasing gate (worst −48.2 dB) pass. Calibration searches threshold only; the expanded search failed held-out qualification and stays disabled. | `auto-makeup-real-speech-2026-09-report.json`, `dynamics-aliasing-2026-09-report.json`, `compressor-expanded-search-2026-09-report.json`, `compressor-control-report.json`, `compressor-search-report.json` |
-| De-esser detector | All 96 generated corpus clips classified correctly, no false positives. Scores the setup-time detector, not the audio change. | `deesser-corpus-v1-report.json` (fit of the shipped coefficients); `deesser-corpus-v1-2026-09-report.json` (re-run) |
-| De-esser on real speech | No change. The setup model enabled it for 65% of harsh, 62% of bright and 42% of ordinary simulated voices, and the realtime auto mode cut the sibilance band by only ~0.3–0.7 dB because it adapts to the speaker's own sibilance and absorbs a persistent harsh resonance. A different trigger needs its own study (October 2026). | `deesser-real-speech-2026-10-report.json` |
+| De-esser detector | Historical transient setup detector: all 96 generated corpus clips classified correctly, with no false positives. This scores detection, not the audio change or the new persistent-shape model. | `deesser-corpus-v1-report.json` (coefficient fit); `deesser-corpus-v1-2026-09-report.json` (re-run); current [audio follow-up](audio-followups-2026-10-report.json) |
+| De-esser on real speech | Add persistent notch-complement power concentration with a shared spectral-background reference, plus a signed-curvature setup model. The earlier study's no-change decision remains historical: its setup model enabled 65% of harsh, 62% of bright and 42% of ordinary simulated voices, while Auto reduced the sibilance band by only ~0.3–0.7 dB. The current change has separate benefit and preservation evidence. | Current [audio follow-up](audio-followups-2026-10-report.json); historical `deesser-real-speech-2026-10-report.json` |
 | Resampling | 128-tap Blackman product resampler. | `resampler-quality-report.json` |
 | Manual EQ types | Bell, notch, shelf and pass filters with selectable slopes. | `eq-filter-types-report.json` |
 | Auto-EQ candidate pool | Nested wider pools and sparse type selection rejected. | `eq-candidate-pool-report.json`, `sparse-auto-eq-filter-report.json` |
@@ -47,6 +49,36 @@ passed numerical and decision checks; no speed improvement is claimed. Package
 size reporting found a larger portable tree, and startup/idle-memory comparison
 did not qualify. These implementation checks do not establish a new held-out
 audio-quality result.
+
+## Audio follow-up (October 2026)
+
+The current source keeps the gate before noise suppression and sends the same
+gated samples into the neural models. RNNoise and DeepFilter LL use gate controls
+aligned with their delay to compensate only the wet output; the dry mix and
+declared latency are preserved. Standard DeepFilter receives no compensation.
+The separate fresh gate qualification meets its onset and quiet-pause rules.
+
+Auto de-essing measures notch-complement power concentration against a shared
+spectral background, and Voice Setup adds a signed spectral-curvature model for
+persistent evidence. The recorded fresh benefit and preservation gates for
+ordinary and bright speech pass. Manual, disabled and zero-cap paths remain
+unchanged.
+The Windows audio worker now registers with MMCSS Pro Audio after initialization
+and before streams start, propagates registration failure through startup
+cleanup, and checks same-thread reversion on normal shutdown.
+
+Adoption uses an explicit user-approved timing exception. One mandatory
+component-event p99 was **1.2151 ms**, exceeding the unchanged **0.5 ms** limit;
+the component qualification remains failed. All **294,000** complete kernels
+in that study were below **10 ms**, with a candidate maximum of **5.8616 ms**.
+A separate bounded prefix diagnostic did not reproduce the spike and does not
+establish its cause or overturn the failure. Earlier timing failures and the
+unresolved total added-route cost remain part of the evidence. The
+[follow-up report](audio-followups-2026-10-report.json) is the current adoption
+record; historical reports retain their original sources, decisions and limits.
+Final main-source/native binding and package validation remain separate
+requirements. These corpus and synthetic-route results establish neither
+universal/perceptual quality nor a live-hardware or package pass.
 
 ## Gate study (October 2026)
 

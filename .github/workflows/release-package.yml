@@ -225,13 +225,14 @@ jobs:
           cargo audit --deny warnings
           if ($LASTEXITCODE -ne 0) { throw "RustSec audit failed with exit code $LASTEXITCODE." }
           # DeepFilter is an independent locked Cargo graph shipped as df.dll.
-          # These are the two reviewed unmaintained-crate notices in that graph;
+          # These are the three reviewed unmaintained-crate notices in that graph;
           # vulnerability findings remain fatal.
           cargo audit `
             --file build-support/deepfilter/Cargo.lock `
             --deny warnings `
             --ignore RUSTSEC-2024-0436 `
-            --ignore RUSTSEC-2024-0370
+            --ignore RUSTSEC-2024-0370 `
+            --ignore RUSTSEC-2026-0319
           if ($LASTEXITCODE -ne 0) { throw "DeepFilter RustSec audit failed with exit code $LASTEXITCODE." }
 
       - name: Rust tests and lint

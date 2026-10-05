@@ -1,6 +1,5 @@
-AudioForge 1.14.0 corrects compressor, limiter, and de-esser detection, keeps
-device recovery on the devices you chose, and makes calibration and settings
-handling more predictable.
+AudioForge 1.15.0 rebuilds the main window, moves the app from PyQt6 to
+PySide6, and makes turning processing stages on and off click-free.
 
 ## Which file do I need?
 
@@ -8,8 +7,8 @@ Download **one** of these. Not sure? Choose the installer.
 
 | File | Choose it if |
 | --- | --- |
-| [AudioForge-v1.14.0-win64.msi](https://github.com/FueledByRedBull/audio-forge/releases/download/v1.14.0/AudioForge-v1.14.0-win64.msi) | You want a normal install for your Windows user. **Recommended.** |
-| [AudioForge-v1.14.0-win64-ultra.7z](https://github.com/FueledByRedBull/audio-forge/releases/download/v1.14.0/AudioForge-v1.14.0-win64-ultra.7z) | You want a portable folder. Extract everything, then run `AudioForge.exe`. "Ultra" is the compression level. |
+| [AudioForge-v1.15.0-win64.msi](https://github.com/FueledByRedBull/audio-forge/releases/download/v1.15.0/AudioForge-v1.15.0-win64.msi) | You want a normal install for your Windows user. **Recommended.** |
+| [AudioForge-v1.15.0-win64-ultra.7z](https://github.com/FueledByRedBull/audio-forge/releases/download/v1.15.0/AudioForge-v1.15.0-win64-ultra.7z) | You want a portable folder. Extract everything, then run `AudioForge.exe`. "Ultra" is the compression level. |
 
 You don't need the other files to run AudioForge: the SHA256SUMS file checks
 your download, the evidence archive holds validation records, and the source
@@ -19,41 +18,49 @@ To use AudioForge in Discord, OBS, Zoom, or Teams you also need a virtual audio
 cable such as [VB-CABLE](https://vb-audio.com/Cable/); see the
 [setup steps](https://github.com/FueledByRedBull/audio-forge#set-up).
 AudioForge isn't code-signed, so Windows SmartScreen may warn before it runs.
-Compare `Get-FileHash <file>` with `AudioForge-v1.14.0-SHA256SUMS.txt`, then
+Compare `Get-FileHash <file>` with `AudioForge-v1.15.0-SHA256SUMS.txt`, then
 choose **More info > Run anyway**.
 
 ## Changes
 
-- Measure compressor presence from a real 2 kHz band, catch short peaks at any
-  sample rate, and make Adaptive Release's Base Release and manual makeup
-  changes take effect smoothly.
-- Ramp limiter gain across its 0.5 ms lookahead instead of stepping it, and base
-  de-esser detection on a separate voice-body band.
-- Recover only the devices you selected, apply configuration while muted with
-  reliable rollback, and show unavailable meters instead of stale values.
-- Audition and apply one verified EQ candidate, with warnings that follow each
-  band's real filter type. Auto Voice Setup now changes gate and noise
-  suppression settings less often; every safety check still passes.
-- Validate presets strictly while keeping exact values, record every edit in
-  undo history, and verify downloaded runtime assets before replacing them.
+- The main window is rebuilt around cards: a rail for Mic, Health and
+  Settings, one card per processing stage with a switch and an Advanced
+  section, and a larger equalizer graph with a single band editor. The menu
+  bar is gone; its actions are on the Presets button and the Settings page,
+  and every keyboard shortcut works as before. No parameter, range, default or
+  preset format changed.
+- Auto Voice Setup and Auto-EQ Voice Tone show one step at a time and describe
+  their results in plain language. Test my sound records five seconds and
+  plays back the raw and processed versions.
+- Turning the limiter, compressor or EQ off and on no longer clicks or shifts
+  the audio timeline.
+- Phrase onsets pass through noise suppression more cleanly on the RNNoise and
+  DeepFilter LL routes, and the automatic de-esser responds to persistent
+  harsh resonances.
+- The app can start with Windows from a login shortcut you configure under
+  Settings > Tray and background. It is off by default.
+- The interface now uses PySide6 and Qt under the LGPL, with component notices,
+  corresponding source and library replacement instructions. Packages of
+  earlier versions that contain PyQt6 keep their GPLv3 terms.
 
-See the [1.14.0 changelog](https://github.com/FueledByRedBull/audio-forge/blob/master/CHANGELOG.md#v1140)
+See the [1.15.0 changelog](https://github.com/FueledByRedBull/audio-forge/blob/master/CHANGELOG.md#v1150)
 for the complete change list.
 
 ## Validation and compatibility
 
-The release candidate at `804f728cd0591d9e30178e308661f72452a80739` passed CI
-and exact-artifact qualification, including portable startup, installer smoke
-and upgrade, payload and installer provenance, package smoke, and
-corresponding-source checks. Publication promotes those same validated bytes
-without rebuilding them.
+These notes are written before the release candidate is built; the candidate's
+validation record is added here once it exists.
 
-Before tagging, the existing objective evaluators were re-run on this source:
-automatic makeup, dynamics aliasing, limiter lookahead, processing order, voice
-preservation against 1.13.0, and joint gate/suppression tuning all pass their
-predefined gates. The expanded compressor search again failed qualification
-and stays disabled. See [evaluation/README.md](https://github.com/FueledByRedBull/audio-forge/blob/master/evaluation/README.md)
+The audio follow-up behind the onset and de-esser changes was adopted under an
+explicit timing exception: one component's 99th-percentile processing time was
+1.2151 ms against a 0.5 ms limit, while every complete processing kernel in
+that study stayed below 10 ms. See [evaluation/README.md](https://github.com/FueledByRedBull/audio-forge/blob/master/evaluation/README.md)
 for the reports and their limits.
+
+The new window has automated coverage, including a check that every keyboard
+focus stop has a screen-reader name and layout renders at the window sizes of
+125% to 200% display scaling. It has not yet been through a hands-on pass with
+a real microphone, Narrator, or a physical high-DPI display.
 
 AudioForge is built for Windows 10 (1809 or later) and Windows 11, 64-bit.
 Automated checks and recorded-audio evaluations do not establish physical

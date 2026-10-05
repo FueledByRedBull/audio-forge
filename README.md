@@ -49,7 +49,7 @@ Screenshots use example devices and settings.
 
 ## Download
 
-Current version: `v1.14.0` ([release notes](release-notes/release-notes-v1.14.0.md)).
+Current version: `v1.15.0` ([release notes](release-notes/release-notes-v1.15.0.md)).
 Open the [latest release](https://github.com/FueledByRedBull/audio-forge/releases/latest)
 and download **one** of these files. **Not sure? Choose the installer.**
 
@@ -94,9 +94,9 @@ the window open. Closing the window stops audio and quits, unless you turn on
 close-to-tray under **Settings > Tray and background**. Then audio keeps running
 and you quit with **Ctrl+Q** or **Quit AudioForge** in the tray.
 
-The unreleased source includes opt-in login startup, off by default. Copies
-built from it offer **Settings > Tray and background > Configure login shortcut
-for this copy**. When launched by that
+Version 1.15.0 adds opt-in login startup, off by default. Packaged copies offer
+**Settings > Tray and background > Configure login shortcut for this copy**.
+When launched by that
 shortcut, AudioForge stays in the tray and waits up to 60 seconds for your exact
 saved input and output devices before starting, preserving output mute. Missing
 devices leave processing stopped. Windows Settings or Task Manager can disable

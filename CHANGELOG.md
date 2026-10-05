@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v1.15.0
 
 ### Sound and dynamics
 
@@ -30,6 +30,7 @@
 - The noise suppression card shows the last six seconds of input and output level while processing runs, and a warning on the card if the selected backend is unavailable.
 - Input mode and input cleanup moved from the device row to Settings > Audio input.
 - Number fields no longer show step arrows. Type a value, use the arrow keys, or scroll.
+- Undo and Redo are buttons beside Presets.
 - The main window is drawn with Qt Quick, so the portable bundle now includes the Qt QML and Qt Quick libraries. Set `AUDIOFORGE_QML=0` to use the widget view. AudioForge also switches to the widget view, with a notice in the status bar, if the Qt Quick view cannot start.
 
 ### Desktop and setup

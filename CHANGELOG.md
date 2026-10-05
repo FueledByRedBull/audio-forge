@@ -49,6 +49,7 @@
 - Migrate the interface and package to pinned PySide6 Essentials/Addons and shiboken6 6.11.1, with component notices, a corresponding-source manifest and Qt library replacement instructions. Previously published PyQt6 packages retain their GPLv3 terms.
 - Reuse the native 48 kHz K-weighting filter for setup loudness analysis, and use NumPy for latency correlation, analysis/playback resampling, Welch spectra and spectral peaks. Numerical checks preserve the existing behavior. Load SciPy only when fitting Auto-EQ; its qualified solver remains a runtime dependency.
 - Fix release Rust tests to find the pinned Python packages, pin Qt/PySide corresponding-source downloads to an approved mirror without changing their hashes, and refresh the package allowlist for the PySide/QML migration.
+- Keep packaged startup smoke tests from writing persistent QML or graphics caches into the per-user MSI installation path.
 - Validate candidate workflow and run-attempt identity in the shared provenance verifier for both portable and MSI promotion, replacing duplicate workflow checks while retaining exact-artifact and corresponding-source verification.
 - Add per-component bundle-size reporting and retain both DeepFilterNet models. The measured portable tree is larger; startup and idle-memory comparisons remain unqualified.
 - Omit QML editor type descriptions from the portable payload, retaining all runtime QML modules, controls and plugins.

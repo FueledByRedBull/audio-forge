@@ -196,12 +196,18 @@ def run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool = False) -> in
     isolated_config = tempfile.TemporaryDirectory(prefix="audioforge-smoke-") if smoke_test else None
     previous_config_env = {
         name: os.environ.get(name)
-        for name in ("APPDATA", "XDG_CONFIG_HOME", "AUDIOFORGE_SMOKE_TEST")
+        for name in (
+            "APPDATA", "XDG_CONFIG_HOME", "AUDIOFORGE_SMOKE_TEST",
+            "QML_DISK_CACHE_PATH", "QT_DISABLE_SHADER_DISK_CACHE",
+        )
     }
     if isolated_config is not None:
         os.environ["APPDATA"] = isolated_config.name
         os.environ["XDG_CONFIG_HOME"] = isolated_config.name
         os.environ["AUDIOFORGE_SMOKE_TEST"] = "1"
+        # Qt's persistent caches can overlap the Windows MSI installation path.
+        os.environ["QML_DISK_CACHE_PATH"] = str(Path(isolated_config.name) / "qmlcache")
+        os.environ["QT_DISABLE_SHADER_DISK_CACHE"] = "1"
 
     try:
         return _run_qt_app(window_cls, smoke_test=smoke_test)

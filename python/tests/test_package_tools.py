@@ -319,6 +319,29 @@ def test_release_workflow_binds_existing_tag_to_checked_out_commit():
     assert errors == []
 
 
+@pytest.mark.parametrize("location", ["comment", "other-step", "disabled-step"])
+def test_release_rust_tests_require_pythonpath_on_the_test_step(location):
+    source = (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow = check_workflows.yaml.safe_load(source)
+    steps = workflow["jobs"]["package-windows"]["steps"]
+    rust_tests = next(step for step in steps if step.get("name") == "Rust tests and lint")
+    pythonpath = rust_tests["env"].pop("PYTHONPATH")
+    if location != "comment":
+        steps.append({
+            "run": "cargo test -p mic_eq_core" if location == "disabled-step" else "echo ready",
+            "env": {"PYTHONPATH": pythonpath},
+            "if": location != "disabled-step",
+        })
+    source = check_workflows.yaml.safe_dump(workflow) + f"\n# PYTHONPATH: {pythonpath}\n"
+    errors: list[str] = []
+
+    check_workflows._check_required_gates("release-package.yml", source, errors)
+
+    assert any("PYTHONPATH" in error for error in errors)
+
+
 def test_release_candidate_can_be_validated_before_tagging():
     workflow = check_workflows.yaml.safe_load(
         (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(encoding="utf-8")

@@ -342,9 +342,25 @@ def _check_required_gates(
     )
     required = shared
     if name == "release-package.yml":
+        rust_test_steps = [
+            step for step in _active_steps(document)
+            if _active_run_has_marker(
+                str(step.get("run", "")).splitlines(), "cargo test -p mic_eq_core"
+            )
+        ]
+        pythonpath = (
+            r"${{ github.workspace }}\.venv\Lib\site-packages;${{ github.workspace }}\python"
+        )
+        if not rust_test_steps or any(
+            not isinstance(step.get("env"), dict)
+            or step["env"].get("PYTHONPATH") != pythonpath
+            for step in rust_test_steps
+        ):
+            errors.append(
+                f"{name}: Rust test steps must set PYTHONPATH to the project venv and Python source"
+            )
         required += (
             "python/tools/check_versions.py",
-            "PYTHONPATH: ${{ github.workspace }}\\.venv\\Lib\\site-packages;${{ github.workspace }}\\python",
             "python/tools/package_smoke.py --source-only",
             "python/tools/verify_release_assets.py",
             "powershell -ExecutionPolicy Bypass -File .\\build_exe.ps1",

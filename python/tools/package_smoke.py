@@ -312,6 +312,17 @@ def check_dist_bundle(
             + ", ".join(ffmpeg_payloads)
         )
 
+    pythonwin_payloads = sorted(
+        path.relative_to(dist).as_posix()
+        for path in dist.rglob("*")
+        if path.is_file() and path.name.casefold() in {"win32ui.pyd", "mfc140u.dll"}
+    )
+    if pythonwin_payloads:
+        errors.append(
+            f"{dist} contains unused Pythonwin/MFC payload(s): "
+            + ", ".join(pythonwin_payloads)
+        )
+
     forbidden_ucrt = sorted(
         path.relative_to(dist).as_posix()
         for path in dist.rglob("*")

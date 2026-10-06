@@ -102,6 +102,15 @@ def test_application_palette_uses_the_same_semantic_surface() -> None:
     assert palette.color(QPalette.ColorRole.Highlight).name() == PALETTE.action_primary
 
 
+def test_larger_default_geometry_fits_screen_and_preserves_saved_size() -> None:
+    screen = QRect(0, 0, 1920, 1040)
+    assert _fit_window_geometry_to_screens(None, [screen]) == QRect(240, 40, 1440, 960)
+    small_screen = QRect(0, 0, 1280, 720)
+    assert _fit_window_geometry_to_screens(None, [small_screen]) == small_screen
+    saved = {"x": 50, "y": 60, "width": 1100, "height": 740}
+    assert _fit_window_geometry_to_screens(saved, [screen]) == QRect(50, 60, 1100, 740)
+
+
 def test_saved_geometry_is_fitted_to_exactly_one_available_screen() -> None:
     screens = [QRect(0, 0, 1920, 1040), QRect(1920, 0, 1920, 1040)]
     fitted = _fit_window_geometry_to_screens(

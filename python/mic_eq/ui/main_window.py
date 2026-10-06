@@ -207,8 +207,8 @@ PROCESSING_MODE_OPTIONS = (
     ("Raw Monitor", "raw"),
 )
 DEFAULT_MUTE_HOTKEY = "Ctrl+Alt+M"
-DEFAULT_WINDOW_WIDTH = 1280
-DEFAULT_WINDOW_HEIGHT = 850
+DEFAULT_WINDOW_WIDTH = 1440
+DEFAULT_WINDOW_HEIGHT = 960
 MINIMUM_WINDOW_WIDTH = 900
 MINIMUM_WINDOW_HEIGHT = 640
 DROPPED_DIAGNOSTICS_TOOLTIP = (
@@ -685,10 +685,16 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.presets_button)
         actions.addWidget(self._undo_auto_eq_button)
         actions.addWidget(self.redo_button)
-        actions.addWidget(self.test_sound_button)
-        actions.addWidget(self.auto_eq_button)
-        actions.addWidget(self.auto_voice_setup_button)
-        layout.addLayout(actions)
+        workflows = QHBoxLayout()
+        workflows.setSpacing(SPACING_NORMAL)
+        workflows.addWidget(self.test_sound_button)
+        workflows.addWidget(self.auto_eq_button)
+        workflows.addWidget(self.auto_voice_setup_button)
+        self._preset_actions_layout = QHBoxLayout()
+        self._preset_actions_layout.setSpacing(SPACING_NORMAL)
+        self._preset_actions_layout.addLayout(actions, stretch=1)
+        self._preset_actions_layout.addLayout(workflows)
+        layout.addLayout(self._preset_actions_layout)
 
         self._mic_layout = layout
         self.eq_presentation = EQPresentation(self.eq_state, self.processing_surface)
@@ -888,6 +894,8 @@ class MainWindow(QMainWindow):
             (self.dropped_label, "Dropped audio samples"),
             (self.recovery_diag_label, "Stream recovery health"),
         ):
+            # State binding can show these before the responsive grids are laid out.
+            label.setParent(details_layout.parentWidget())
             label.setAccessibleName(name)
             label.setSizePolicy(
                 QSizePolicy.Policy.Expanding,
@@ -972,8 +980,8 @@ class MainWindow(QMainWindow):
                     row.setMaximumWidth(row.sizeHint().width())
 
             action.changed.connect(sync)
-            sync()
             card.body.addWidget(row)
+            sync()
             rows.append({"kind": "menu" if submenu is not None else "toggle" if action.isCheckable() else "action",
                          "label": "", "proxy": ActionControl(action, self, menu=submenu)})
         self.shell_settings_cards.append({"title": title.upper(), "rows": rows})
@@ -1114,6 +1122,9 @@ class MainWindow(QMainWindow):
         if compact == self._responsive_layout_compact:
             return
         self._responsive_layout_compact = compact
+        self._preset_actions_layout.setDirection(
+            QHBoxLayout.Direction.TopToBottom if compact else QHBoxLayout.Direction.LeftToRight
+        )
         # The pickers keep their accessible names when the captions go.
         for label in self._route_labels:
             label.setVisible(not compact)

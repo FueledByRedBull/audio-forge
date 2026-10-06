@@ -670,8 +670,6 @@
     "_internal/PySide6/VCRUNTIME140_1.dll",
     "_internal/python3.dll",
     "_internal/python313.dll",
-    "_internal/Pythonwin/mfc140u.dll",
-    "_internal/Pythonwin/win32ui.pyd",
     "_internal/pywin32_system32/pythoncom313.dll",
     "_internal/pywin32_system32/pywintypes313.dll",
     "_internal/scipy.libs/libscipy_openblas-197ee2fc9b4d071f7e048078cac74115.dll",

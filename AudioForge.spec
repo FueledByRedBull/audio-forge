@@ -96,6 +96,8 @@ a = Analysis(
         "mic_eq.ui",
         "pythoncom",
         "pywintypes",
+        # ShellLink.GetPath creates timestamps through this dynamic import.
+        "win32timezone",
         "win32com.propsys.propsys",
         "win32com.propsys.pscon",
     ],
@@ -103,6 +105,8 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        # The COM shell/property APIs do not use Pythonwin's MFC UI bindings.
+        "win32ui",
         "PyQt6",
         "PySide6.QtPdf",
         "PySide6.QtPdfWidgets",

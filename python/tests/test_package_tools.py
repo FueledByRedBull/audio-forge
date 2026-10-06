@@ -1178,6 +1178,16 @@ def test_package_smoke_rejects_unused_qt_ffmpeg_payload(tmp_path):
     assert any("unused Qt FFmpeg payload" in error for error in errors)
 
 
+def test_package_smoke_rejects_pythonwin_mfc(tmp_path):
+    payload = tmp_path / "_internal" / "Pythonwin"
+    payload.mkdir(parents=True)
+    for name in ("win32ui.pyd", "mfc140u.dll"):
+        (payload / name).write_bytes(b"unused")
+    errors = package_smoke.check_dist_bundle(tmp_path)
+    error = next(error for error in errors if "Pythonwin/MFC" in error)
+    assert "win32ui.pyd" in error and "mfc140u.dll" in error
+
+
 def test_prune_bundle_removes_duplicate_native_extension_only_when_packaged_copy_exists(
     tmp_path,
 ):

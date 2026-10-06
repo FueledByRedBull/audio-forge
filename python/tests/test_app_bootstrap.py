@@ -8,6 +8,8 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+import pytest
+
 from mic_eq.app_logging import configure_app_logging, get_log_file
 from mic_eq.ui import app_bootstrap
 
@@ -323,7 +325,8 @@ def test_windows_taskbar_relaunch_command_quotes_executable_path(qapp, monkeypat
     )
 
 
-def test_packaged_startup_smoke_runs_real_event_loop_in_isolated_config(tmp_path):
+@pytest.mark.parametrize("missing_timezone", [False, True] if sys.platform == "win32" else [False])
+def test_packaged_startup_smoke_runs_real_event_loop_in_isolated_config(tmp_path, missing_timezone):
     qml_source = tmp_path / "Smoke.qml"
     qml_source.write_text("import QtQml\nQtObject { property int value: 42 }\n", encoding="utf-8")
     script = """
@@ -339,6 +342,16 @@ from mic_eq.ui.app_bootstrap import run_smoke_test
 previous_cache = os.environ["QML_DISK_CACHE_PATH"]
 previous_shader_cache = os.environ["QT_DISABLE_SHADER_DISK_CACHE"]
 observed = {}
+
+if os.environ["SMOKE_MISSING_TIMEZONE"] == "1":
+    import sys
+    sys.modules.pop("win32timezone", None)
+    class MissingTimezone:
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname == "win32timezone":
+                observed["timezone_import_blocked"] = True
+                raise ModuleNotFoundError("simulated missing win32timezone")
+    sys.meta_path.insert(0, MissingTimezone())
 
 class Processor:
     def is_running(self):
@@ -367,6 +380,7 @@ raise SystemExit(status)
     environment["QML_DISK_CACHE_PATH"] = str(tmp_path / "persistent-cache")
     environment["QT_DISABLE_SHADER_DISK_CACHE"] = "0"
     environment["SMOKE_QML_SOURCE"] = str(qml_source)
+    environment["SMOKE_MISSING_TIMEZONE"] = str(int(missing_timezone))
     environment.pop("QML_DISABLE_DISK_CACHE", None)
     environment.pop("QML_DISK_CACHE", None)
     environment.pop("QSG_RHI_DISABLE_SHADER_DISK_CACHE", None)
@@ -380,8 +394,10 @@ raise SystemExit(status)
         timeout=30,
     )
 
-    assert result.returncode == 0, result.stderr or result.stdout
+    assert result.returncode == int(missing_timezone), result.stderr or result.stdout
     observed = json.loads(result.stdout)
+    if missing_timezone:
+        assert observed["timezone_import_blocked"] is True
     assert observed["cache_files"] > 0
     assert Path(observed["cache"]).is_relative_to(Path(observed["config"]))
     assert not Path(observed["cache"]).exists()

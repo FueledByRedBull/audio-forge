@@ -191,6 +191,31 @@ def apply_windows_taskbar_properties(window: QMainWindow) -> None:
         pass
 
 
+def _check_windows_shortcut_roundtrip() -> None:
+    """Exercise native COM imports without registering anything at login."""
+    if sys.platform != "win32":
+        return
+    import pythoncom
+    from win32com.shell import shell  # pyright: ignore[reportMissingModuleSource]
+
+    from .login_startup import _shell_link
+
+    with tempfile.TemporaryDirectory(prefix="audioforge-shortcut-smoke-") as directory:
+        path = Path(directory) / "probe.lnk"
+        link = _shell_link()
+        link.SetPath(sys.executable)
+        link.SetArguments(LOGIN_STARTUP_ARGUMENT)
+        link.QueryInterface(pythoncom.IID_IPersistFile).Save(str(path), True)
+        loaded = _shell_link()
+        loaded.QueryInterface(pythoncom.IID_IPersistFile).Load(str(path))
+        target, _ = loaded.GetPath(shell.SLGP_RAWPATH)
+        if (
+            os.path.normcase(target) != os.path.normcase(sys.executable)
+            or loaded.GetArguments() != LOGIN_STARTUP_ARGUMENT
+        ):
+            raise RuntimeError("Windows shortcut roundtrip failed")
+
+
 def run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool = False) -> int:
     """Run the Qt application for the provided main window class."""
     isolated_config = tempfile.TemporaryDirectory(prefix="audioforge-smoke-") if smoke_test else None
@@ -309,6 +334,7 @@ def _run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool) -> int:
                     raise RuntimeError("startup smoke test unexpectedly started audio")
                 if getattr(window, "quick_view_failed", False):
                     raise RuntimeError("the Qt Quick view did not load")
+                _check_windows_shortcut_roundtrip()
             except Exception:
                 logging.getLogger(__name__).exception(
                     "AudioForge packaged startup smoke test failed"

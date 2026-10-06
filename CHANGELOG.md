@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.15.2
+
+- Open new windows at 1440 x 960 where the screen allows it; preserve saved window sizes.
+- Attach health labels and menu controls before showing them, preventing tiny standalone windows from flashing during startup.
+- Keep the classic interface's preset and setup actions inside compact windows by arranging them in two rows.
+- Include the Windows timezone helper required to inspect login shortcuts in the packaged app. Startup smoke tests now exercise a real temporary shortcut without changing login registration.
+- Exclude unused Pythonwin/MFC UI bindings from the portable bundle.
+
 ## v1.15.1
 
 - Route choices, transport actions, settings and health/status presentation now notify both views directly, without polling hidden widgets. The Quick EQ graph uses the shared graph model and painter directly.

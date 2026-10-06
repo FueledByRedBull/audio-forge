@@ -117,8 +117,8 @@ def chain_settings(
         if not isinstance(current, Preset):
             raise TypeError("current processing configuration is unavailable")
         preset_payload = current.to_dict()
-        if hasattr(owner, "compressor_panel"):
-            calibration = owner.compressor_panel.get_compressor_settings(
+        if hasattr(owner, "compressor_state"):
+            calibration = owner.compressor_state.get_settings(
                 include_calibration=True
             )
             preset_payload["compressor"]["noise_reference_reliability"] = calibration.get(
@@ -137,21 +137,15 @@ def chain_settings(
     settings: dict[str, Any] = {}
     if owner is None:
         return settings
-    if hasattr(owner, "deesser_panel"):
+    for stage in ("deesser", "compressor", "limiter"):
+        state = getattr(owner, f"{stage}_state", None)
+        if state is None:
+            continue
         try:
-            settings["deesser"] = owner.deesser_panel.get_settings()
+            settings[stage] = state.get_settings()
         except Exception:
             logger.debug(
-                "Failed to collect de-esser settings for Auto-EQ simulation",
-                exc_info=True,
-            )
-    if hasattr(owner, "compressor_panel"):
-        try:
-            settings["compressor"] = owner.compressor_panel.get_compressor_settings()
-            settings["limiter"] = owner.compressor_panel.get_limiter_settings()
-        except Exception:
-            logger.debug(
-                "Failed to collect dynamics settings for Auto-EQ simulation",
+                "Failed to collect %s settings for Auto-EQ simulation", stage,
                 exc_info=True,
             )
     return settings

@@ -98,7 +98,7 @@ def test_start_applies_persisted_mute_before_and_after_native_start(
 
     processor = Processor()
     cast(Any, window).processor = processor
-    window.output_combo.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
+    window.output_choice.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
     window.user_muted = True
     window._temporary_mute_reasons = set()
     window._apply_input_preferences_for_current_route = lambda: None
@@ -122,14 +122,14 @@ def test_start_refuses_retained_configuration_mute() -> None:
     owner = cast(Any, MainWindow.__new__(MainWindow))
     owner.processor = SimpleNamespace(is_running=lambda: False, start=Mock())
     owner._temporary_mute_reasons = {"configuration"}
-    owner.status_bar = Mock()
+    owner.status_message = Mock()
     owner._sync_processing_controls = Mock()
 
     MainWindow._start_processing(owner)
 
     owner.processor.start.assert_not_called()
     owner._sync_processing_controls.assert_called_once_with()
-    assert "reload the preset" in owner.status_bar.showMessage.call_args.args[0]
+    assert "reload the preset" in owner.status_message.showMessage.call_args.args[0]
 
 
 def test_legacy_input_modes_migrate_only_to_the_known_stable_device() -> None:
@@ -259,8 +259,8 @@ def test_route_input_preference_action_saves_visible_controls_for_current_route(
 
 def test_calibration_context_tracks_endpoint_format_without_changing_route_key(qapp) -> None:
     owner = cast(Any, MainWindow.__new__(MainWindow))
-    owner.input_combo = QComboBox()
-    owner.output_combo = QComboBox()
+    owner.input_choice = QComboBox()
+    owner.output_choice = QComboBox()
     owner.config = SimpleNamespace(
         input_channel_mode="phase_safe_mono", input_cleanup_mode="off"
     )
@@ -280,12 +280,12 @@ def test_calibration_context_tracks_endpoint_format_without_changing_route_key(q
         sample_rate=48_000,
         channels=2,
     )
-    owner.input_combo.addItem("Mic", input_identity)
-    owner.output_combo.addItem("Cable", output_identity)
+    owner.input_choice.addItem("Mic", input_identity)
+    owner.output_choice.addItem("Cable", output_identity)
     try:
         route_key = MainWindow._current_device_route_key(owner)
         context_before = MainWindow._calibration_context_key(owner)
-        owner.input_combo.setItemData(
+        owner.input_choice.setItemData(
             0,
             DeviceIdentity(
                 name="Mic",
@@ -300,8 +300,8 @@ def test_calibration_context_tracks_endpoint_format_without_changing_route_key(q
         assert MainWindow._current_device_route_key(owner) == route_key
         assert MainWindow._calibration_context_key(owner) != context_before
     finally:
-        owner.input_combo.deleteLater()
-        owner.output_combo.deleteLater()
+        owner.input_choice.deleteLater()
+        owner.output_choice.deleteLater()
         qapp.processEvents()
 
 
@@ -399,7 +399,7 @@ def test_device_and_mute_controls_do_not_create_processing_history_entries(
         qapp.processEvents()
         assert window.preset_modified is False
 
-        window.user_mute_checkbox.setChecked(True)
+        window.user_mute_checkbox_action.setChecked(True)
         qapp.processEvents()
         assert window.preset_modified is False
     finally:
@@ -433,7 +433,7 @@ def test_user_mute_applies_before_failed_persistence(
     owner.config = SimpleNamespace(user_muted=not checked)
     owner._temporary_mute_reasons = {"calibration"} if temporary else set()
     owner._update_session_summary = lambda: None
-    owner.status_bar = Mock()
+    owner.status_message = Mock()
 
     def save(_config) -> bool:
         assert calls == [checked or temporary]
@@ -447,7 +447,7 @@ def test_user_mute_applies_before_failed_persistence(
     assert owner.user_muted is checked
     assert owner.config.user_muted is checked
     assert calls == [checked or temporary]
-    message = owner.status_bar.showMessage.call_args.args[0]
+    message = owner.status_message.showMessage.call_args.args[0]
     assert "preference could not be saved" in message
     assert ("Output muted" if checked or temporary else "Output unmuted") in message
 
@@ -458,12 +458,12 @@ def test_user_mute_does_not_claim_native_failure_is_muted(monkeypatch) -> None:
     owner.config = SimpleNamespace(user_muted=False)
     owner._temporary_mute_reasons = set()
     owner._update_session_summary = lambda: None
-    owner.status_bar = Mock()
+    owner.status_message = Mock()
     monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
 
     MainWindow._on_user_mute_toggled(owner, True)
 
-    message = owner.status_bar.showMessage.call_args.args[0]
+    message = owner.status_message.showMessage.call_args.args[0]
     assert "could not be applied" in message
     assert "preference saved" in message
 
@@ -487,11 +487,11 @@ def test_failed_mute_application_stays_pending() -> None:
 def test_eq_only_scope_preserves_the_rest_of_the_processing_chain() -> None:
     owner = cast(Any, MainWindow.__new__(MainWindow))
     applied_eq: dict[str, object] = {}
-    owner.eq_panel = SimpleNamespace(
-        enabled_checkbox=SimpleNamespace(setChecked=lambda value: applied_eq.update(enabled=value)),
-        _apply_typed_bands=lambda bands, **kwargs: applied_eq.update(bands=bands, **kwargs),
+    owner.eq_state = SimpleNamespace(
+        set_enabled=lambda value: applied_eq.update(enabled=value),
+        apply_typed_bands=lambda bands, **kwargs: applied_eq.update(bands=bands, **kwargs),
     )
-    owner.status_bar = SimpleNamespace(showMessage=lambda *args: None)
+    owner.status_message = SimpleNamespace(showMessage=lambda *args: None)
     owner._history_ready = False
     owner._history_replaying = False
     owner.preset_modified = False
@@ -499,21 +499,20 @@ def test_eq_only_scope_preserves_the_rest_of_the_processing_chain() -> None:
     owner._set_preset_modified = lambda modified=None: setattr(owner, "preset_modified", modified)
 
     before = {"threshold_db": -31.0, "model": "rnnoise"}
-    owner.gate_panel = SimpleNamespace(get_settings=lambda: dict(before))
-    owner.rnnoise_checkbox = SimpleNamespace(isChecked=lambda: True)
-    owner.strength_slider = SimpleNamespace(value=lambda: 100)
-    owner.model_combo = SimpleNamespace(currentData=lambda: "rnnoise")
-    owner.deesser_panel = SimpleNamespace(get_settings=lambda: {})
-    owner.compressor_panel = SimpleNamespace(
-        get_compressor_settings=lambda: {}, get_limiter_settings=lambda: {}
-    )
+    owner.gate_state = SimpleNamespace(get_settings=lambda: dict(before))
+    owner.noise_suppression_state = SimpleNamespace(get_settings=lambda: {
+        "enabled": True, "strength": 1.0, "model": "rnnoise",
+    })
+    owner.deesser_state = SimpleNamespace(get_settings=lambda: {})
+    owner.compressor_state = SimpleNamespace(get_settings=lambda: {})
+    owner.limiter_state = SimpleNamespace(get_settings=lambda: {})
     owner.bypass_checkbox = SimpleNamespace(isChecked=lambda: False)
 
     replacement = Preset()
     replacement.eq.enabled = False
     MainWindow._apply_preset(owner, replacement, scope="eq")
 
-    assert owner.gate_panel.get_settings() == before
+    assert owner.gate_state.get_settings() == before
     assert applied_eq == {"enabled": False, "bands": replacement.eq.bands, "layer": "tone"}
     assert owner.preset_modified is True
 
@@ -565,12 +564,12 @@ def test_onboarding_route_check_stops_for_user_mute(qapp, monkeypatch) -> None:
             )
             self.user_muted = True
             self.start_calls = 0
-            self.input_combo = QComboBox()
-            self.input_combo.addItem(
+            self.input_choice = QComboBox()
+            self.input_choice.addItem(
                 "Mic", DeviceIdentity(name="Mic", endpoint_id="in", direction="input")
             )
-            self.output_combo = QComboBox()
-            self.output_combo.addItem(
+            self.output_choice = QComboBox()
+            self.output_choice.addItem(
                 "Cable",
                 DeviceIdentity(name="Cable", endpoint_id="out", direction="output"),
             )

@@ -8,7 +8,7 @@ Color gradient: green → yellow → red
 import math
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QTimer, QRectF
+from PySide6.QtCore import QEvent, Qt, QTimer, QRectF, Signal
 from PySide6.QtGui import QPainter, QLinearGradient, QPen, QFont
 
 from .theme import PALETTE, qcolor
@@ -33,6 +33,8 @@ def _scale_mark_geometry(
 
 class LevelMeter(QWidget):
     """OBS-style vertical level meter with peak hold and dB scale."""
+
+    changed = Signal()
 
     # Color constants
     COLOR_GREEN = qcolor(PALETTE.meter_safe)
@@ -90,6 +92,11 @@ class LevelMeter(QWidget):
         self.decay_timer.stop()
         super().hideEvent(event)
 
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.EnabledChange:
+            self.changed.emit()
+
     def set_levels(self, rms_db: float | None, peak_db: float | None):
         """Update measured levels; unavailable peaks are never estimated."""
         if rms_db is None or not math.isfinite(rms_db):
@@ -109,6 +116,7 @@ class LevelMeter(QWidget):
             self.clip_flash_counter = 10
         self._sync_decay_timer()
         if previous != (self.rms_db, self.peak_db, True, True):
+            self.changed.emit()
             self.update()
 
     def set_rms_level(self, rms_db: float) -> None:
@@ -125,6 +133,7 @@ class LevelMeter(QWidget):
         self.clip_flash_counter = 0
         self._sync_decay_timer()
         if previous != (self.rms_db, True, False):
+            self.changed.emit()
             self.update()
 
     def set_unavailable(self) -> None:
@@ -135,6 +144,7 @@ class LevelMeter(QWidget):
         self.clip_flash_counter = 0
         self.decay_timer.stop()
         if changed:
+            self.changed.emit()
             self.update()
 
     def _decay_peak_hold(self):
@@ -147,6 +157,7 @@ class LevelMeter(QWidget):
                 self.is_clipping = False
         self._sync_decay_timer()
         if previous != (self.peak_hold_db, self.clip_flash_counter):
+            self.changed.emit()
             self.update()
 
     def _db_to_y(self, db: float, height: float) -> float:
@@ -160,11 +171,14 @@ class LevelMeter(QWidget):
     def paintEvent(self, event):
         """Paint the level meter."""
         painter = QPainter(self)
+        self.paint_meter(painter, self.width(), self.height())
+
+    def paint_meter(self, painter: QPainter, width: float, height: float) -> None:
+        """Paint this meter into any Qt painter without changing its size."""
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Calculate dimensions
-        width = self.width()
-        height = self.height()
+        width = int(round(width))
+        height = int(round(height))
 
         # Reserve space for label at bottom
         label_height = 18 if self.label_text else 0
@@ -254,11 +268,11 @@ class LevelMeter(QWidget):
                 self.label_text,
             )
 
-        painter.end()
-
 
 class GainReductionMeter(QWidget):
     """Horizontal gain reduction meter (shows compression amount)."""
+
+    changed = Signal()
 
     COLOR_BACKGROUND = qcolor(PALETTE.data_surface)
     COLOR_REDUCTION = qcolor(PALETTE.meter_reduction)
@@ -277,15 +291,25 @@ class GainReductionMeter(QWidget):
         if (value, available) != (self.gain_reduction_db, self.measurement_available):
             self.gain_reduction_db = value
             self.measurement_available = available
+            self.changed.emit()
             self.update()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.EnabledChange:
+            self.changed.emit()
 
     def paintEvent(self, event):
         """Paint the gain reduction meter."""
         painter = QPainter(self)
+        self.paint_meter(painter, self.width(), self.height())
+
+    def paint_meter(self, painter: QPainter, width: float, height: float) -> None:
+        """Paint this meter into any Qt painter without changing its size."""
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        width = self.width()
-        height = self.height()
+        width = int(round(width))
+        height = int(round(height))
 
         # Draw background
         painter.fillRect(0, 0, width, height, self.COLOR_BACKGROUND)
@@ -305,11 +329,11 @@ class GainReductionMeter(QWidget):
         text = f"GR: {self.gain_reduction_db:.1f} dB" if self.measurement_available else "GR: --"
         painter.drawText(0, 0, width, height, Qt.AlignmentFlag.AlignCenter, text)
 
-        painter.end()
-
 
 class ConfidenceMeter(QWidget):
     """VAD confidence meter showing speech probability (0.0 to 1.0)."""
+
+    changed = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -326,19 +350,30 @@ class ConfidenceMeter(QWidget):
         if (confidence, available) != (self.confidence, self.measurement_available):
             self.confidence = confidence
             self.measurement_available = available
+            self.changed.emit()
             self.update()
 
     def set_threshold(self, value: float):
         self.threshold = max(0.0, min(1.0, value))
+        self.changed.emit()
         self.update()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.EnabledChange:
+            self.changed.emit()
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        self.paint_meter(painter, self.width(), self.height())
+
+    def paint_meter(self, painter: QPainter, width: float, height: float) -> None:
+        """Paint this meter into any Qt painter without changing its size."""
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        rect = self.rect()
-        width = rect.width()
-        height = rect.height()
+        width = int(round(width))
+        height = int(round(height))
+        rect = QRectF(0, 0, width, height)
 
         # Background (dark gray)
         painter.fillRect(rect, qcolor(PALETTE.data_surface_raised))
@@ -362,5 +397,3 @@ class ConfidenceMeter(QWidget):
         threshold_x = int(width * self.threshold)
         painter.setPen(QPen(qcolor(PALETTE.meter_peak), 2))
         painter.drawLine(threshold_x, 0, threshold_x, height)
-
-        painter.end()

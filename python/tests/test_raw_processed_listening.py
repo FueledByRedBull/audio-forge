@@ -143,12 +143,12 @@ class _Window(QWidget):
         super().__init__()
         if processor is not None:
             self.processor = processor
-        self.input_combo = Mock()
-        self.input_combo.currentData.return_value = DeviceIdentity(name="Mic")
-        self.output_combo = Mock()
-        self.output_combo.currentData.return_value = DeviceIdentity(name="Out")
-        self.eq_panel = Mock()
-        self.eq_panel.get_settings.return_value = _settings()
+        self.input_choice = Mock()
+        self.input_choice.currentData.return_value = DeviceIdentity(name="Mic")
+        self.output_choice = Mock()
+        self.output_choice.currentData.return_value = DeviceIdentity(name="Out")
+        self.eq_state = Mock()
+        self.eq_state.get_settings.return_value = _settings()
         self.mutes: list[tuple[bool, str]] = []
 
     def set_temporary_output_mute(self, muted: bool, reason: str) -> None:
@@ -193,7 +193,7 @@ def test_entry_reports_missing_processor(harness):
 def test_entry_reports_missing_input_device(harness):
     warnings, opened = harness
     window = _Window(_Processor())
-    window.input_combo.currentData.return_value = None
+    window.input_choice.currentData.return_value = None
     open_test_my_sound(window)
     assert len(warnings) == 1 and "No microphone is selected" in warnings[0]
     assert opened == [] and window.processor.calls == []
@@ -202,7 +202,7 @@ def test_entry_reports_missing_input_device(harness):
 def test_entry_reports_processing_on_another_route(harness):
     warnings, opened = harness
     window = _Window(_Processor())
-    window.input_combo.currentData.return_value = DeviceIdentity(name="Other mic")
+    window.input_choice.currentData.return_value = DeviceIdentity(name="Other mic")
     open_test_my_sound(window)
     assert len(warnings) == 1 and "different devices" in warnings[0]
     assert opened == [] and window.processor.calls == []

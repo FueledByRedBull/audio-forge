@@ -1,5 +1,5 @@
-// Main window scene. Every control is bound to a proxy from quick_shell.py;
-// values, ranges, tooltips and handlers live in the Python panels.
+// Main window scene. Controls consume shared state from quick_shell.py;
+// values, control metadata and commands live in the Python presentation models.
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Effects
@@ -481,7 +481,7 @@ Rectangle {
                 Accessible.name: line.p.name !== "" ? line.p.name + ": " + text : text
             }
         }
-        Component { id: meterRow; WidgetItem { proxy: line.p; implicitHeight: 18 } }
+        Component { id: meterRow; QuickMeterItem { source: line.p; implicitHeight: 18 } }
     }
 
     component CardHeader: RowLayout {
@@ -821,9 +821,9 @@ Rectangle {
             spacing: 6
             Repeater {
                 model: root.m.meters
-                delegate: WidgetItem {
+                delegate: QuickMeterItem {
                     required property var modelData
-                    proxy: modelData
+                    source: modelData
                     width: 50
                     height: meterRow.height
                     Accessible.name: modelData.name
@@ -987,8 +987,8 @@ Rectangle {
                         Btn { proxy: eqCard.eq.tone }
                         IconBtn { proxy: eqCard.eq.menu; glyph: root.m.glyphs.more }
                     }
-                    WidgetItem {
-                        proxy: eqCard.eq.curve
+                    EQGraphItem {
+                        graph: eqCard.eq.curve
                         Layout.fillWidth: true
                         implicitHeight: 300
                         activeFocusOnTab: true

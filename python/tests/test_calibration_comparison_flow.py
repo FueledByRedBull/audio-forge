@@ -23,7 +23,7 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
     owner.processor = SimpleNamespace(sample_rate=lambda: 48000, get_input_cleanup_mode=lambda: "off")
     owner._get_current_preset = Preset
     owner._processing_mode = lambda: "raw"
-    owner.eq_panel = SimpleNamespace(get_settings=lambda: {"band_gains": [0.0] * 10})
+    owner.eq_state = SimpleNamespace(get_settings=lambda: {"band_gains": [0.0] * 10})
     owner.set_temporary_output_mute = Mock()
     dialog = dialog_type(owner)
     def unexpected_warning(_parent, title, message):
@@ -75,20 +75,21 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
         owner.deleteLater()
 
 
-def test_suppression_settings_cannot_switch_backend_or_accept_nan(qapp):
-    from PySide6.QtWidgets import QCheckBox, QComboBox, QSlider
-    from mic_eq.ui.voice_setup_dialog import _apply_suppressor_settings
+def test_suppression_settings_validate_backend_and_preserve_exact_strength(qapp):
+    from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
+    from mic_eq.ui.voice_setup_dialog import _apply_suppressor_settings, _suppressor_settings
 
-    owner = SimpleNamespace(rnnoise_checkbox=QCheckBox(), strength_slider=QSlider(), model_combo=QComboBox())
-    owner.model_combo.addItem("RNNoise", "rnnoise")
-    owner.strength_slider.setRange(0, 100)
-    with pytest.raises(ValueError):
+    processor = Mock()
+    processor.list_noise_models.return_value = [("rnnoise", "RNNoise")]
+    processor.set_noise_model.return_value = True
+    owner = SimpleNamespace(noise_suppression_state=NoiseSuppressionState(processor))
+    with pytest.raises(RuntimeError, match="unavailable"):
         _apply_suppressor_settings(owner, {"model": "deepfilter", "strength": 0.5, "enabled": True})
     with pytest.raises(ValueError):
         _apply_suppressor_settings(owner, {"model": "rnnoise", "strength": float("nan"), "enabled": True})
-    _apply_suppressor_settings(owner, {"model": "rnnoise", "strength": 0.53, "enabled": True})
-    assert owner.strength_slider.value() == 53
-    assert owner.rnnoise_checkbox.isChecked()
+    _apply_suppressor_settings(owner, {"model": "rnnoise", "strength": 0.531234, "enabled": True})
+    assert _suppressor_settings(owner) == {"model": "rnnoise", "strength": 0.531234, "enabled": True}
+    processor.set_rnnoise_strength.assert_called_with(0.531234)
 
 
 def test_calibration_copy_filters_dc_and_does_not_hide_native_failure(monkeypatch):

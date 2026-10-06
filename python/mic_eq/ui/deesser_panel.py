@@ -4,9 +4,7 @@ De-esser control panel.
 Controls sibilance reduction stage placed between noise suppression and EQ.
 """
 
-import logging
-
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QGridLayout,
@@ -17,19 +15,23 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .deesser_state import DeEsserState
 from .level_meter import GainReductionMeter
+from .processing_meters import ProcessingMeters
+from .control_specs import (
+    apply_control_presentation,
+    configure_numeric_control,
+    control_label,
+    control_spec,
+    widget_control_label,
+)
 from .components import Card, ToggleSwitch
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
     PRIMARY_LABEL_STYLE,
     SPACING_NORMAL,
-    bind_slider_spinbox,
     fit_spinbox_to_contents,
 )
-from .rate_limiter import RateLimiter
-
-
-logger = logging.getLogger(__name__)
 
 
 class DeEsserPanel(QWidget):
@@ -37,16 +39,15 @@ class DeEsserPanel(QWidget):
 
     configurationEdited = Signal(str)
 
-    def __init__(self, processor):
+    def __init__(self, processor, deesser_state: DeEsserState | None = None, meters: ProcessingMeters | None = None):
         super().__init__()
         self.processor = processor
-        self._rate_limiter = RateLimiter(interval_ms=33)
-        self._applying_settings = False
-        self._synchronous_updates = False
-        self._exact_values: dict[str, float] = {}
-        self._exact_display_values: dict[str, float] = {}
+        self._meters = meters
+        self.deesser_state = deesser_state or DeEsserState(processor, self)
         self._setup_ui()
         self._connect_signals()
+        if deesser_state is None:
+            self.deesser_state.set_settings({})
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -54,9 +55,7 @@ class DeEsserPanel(QWidget):
 
         self.enabled_checkbox = ToggleSwitch()
         self.enabled_checkbox.setChecked(False)
-        self.enabled_checkbox.setToolTip(
-            "Reduces harsh sibilance (s, sh, t) using dynamic attenuation."
-        )
+        apply_control_presentation(self.enabled_checkbox, "deesser", "enabled")
         card = Card(
             "De-esser",
             switch=self.enabled_checkbox,
@@ -77,162 +76,154 @@ class DeEsserPanel(QWidget):
             section.setColumnStretch(1, 1)
             section.setColumnMinimumWidth(0, 95)
 
-        self.auto_checkbox = ToggleSwitch("Auto")
+        self.auto_checkbox = ToggleSwitch(control_label("deesser", "auto_enabled"))
         self.auto_checkbox.setChecked(True)
-        self.auto_checkbox.setToolTip(
-            "Learns average sibilance and applies dynamic reduction automatically."
-        )
+        apply_control_presentation(self.auto_checkbox, "deesser", "auto_enabled")
         grid.addWidget(self.auto_checkbox, 1, 0, 1, 2)
 
         amount_layout = QHBoxLayout()
         self.auto_amount_slider = QSlider(Qt.Orientation.Horizontal)
-        self.auto_amount_slider.setRange(0, 100)
-        self.auto_amount_slider.setValue(50)
         self.auto_amount_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.auto_amount_slider.setTickInterval(10)
         amount_layout.addWidget(self.auto_amount_slider)
 
         self.auto_amount_spinbox = QDoubleSpinBox()
-        self.auto_amount_spinbox.setRange(0.0, 1.0)
-        self.auto_amount_spinbox.setSingleStep(0.05)
+        configure_numeric_control(
+            self.auto_amount_spinbox, "deesser", "auto_amount",
+            slider=self.auto_amount_slider, slider_scale=100,
+        )
+        self.auto_amount_slider.setValue(50)
         self.auto_amount_spinbox.setValue(0.5)
-        self.auto_amount_spinbox.setDecimals(2)
         fit_spinbox_to_contents(self.auto_amount_spinbox)
         amount_layout.addWidget(self.auto_amount_spinbox)
 
-        amount_label = QLabel("Amount:")
+        amount_label = QLabel(f"{widget_control_label('deesser', 'auto_amount')}:")
         amount_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         grid.addWidget(amount_label, 2, 0)
         grid.addLayout(amount_layout, 2, 1)
 
         low_layout = QHBoxLayout()
         self.low_cut_slider = QSlider(Qt.Orientation.Horizontal)
-        self.low_cut_slider.setRange(2000, 12000)
-        self.low_cut_slider.setValue(4000)
         self.low_cut_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.low_cut_slider.setTickInterval(1000)
         low_layout.addWidget(self.low_cut_slider)
 
         self.low_cut_spinbox = QDoubleSpinBox()
-        self.low_cut_spinbox.setRange(2000.0, 12000.0)
-        self.low_cut_spinbox.setSingleStep(100.0)
+        configure_numeric_control(
+            self.low_cut_spinbox, "deesser", "low_cut_hz", slider=self.low_cut_slider,
+        )
+        self.low_cut_slider.setValue(4000)
         self.low_cut_spinbox.setValue(4000.0)
-        self.low_cut_spinbox.setSuffix(" Hz")
         fit_spinbox_to_contents(self.low_cut_spinbox)
         low_layout.addWidget(self.low_cut_spinbox)
 
-        low_label = QLabel("Low Cut:")
+        low_label = QLabel(f"{widget_control_label('deesser', 'low_cut_hz')}:")
         low_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(low_label, 3, 0)
         advanced_grid.addLayout(low_layout, 3, 1)
 
         high_layout = QHBoxLayout()
         self.high_cut_slider = QSlider(Qt.Orientation.Horizontal)
-        self.high_cut_slider.setRange(2200, 16000)
-        self.high_cut_slider.setValue(11000)
         self.high_cut_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.high_cut_slider.setTickInterval(1000)
         high_layout.addWidget(self.high_cut_slider)
 
         self.high_cut_spinbox = QDoubleSpinBox()
-        self.high_cut_spinbox.setRange(2200.0, 16000.0)
-        self.high_cut_spinbox.setSingleStep(100.0)
+        configure_numeric_control(
+            self.high_cut_spinbox, "deesser", "high_cut_hz", slider=self.high_cut_slider,
+        )
+        self.high_cut_slider.setValue(11000)
         self.high_cut_spinbox.setValue(11000.0)
-        self.high_cut_spinbox.setSuffix(" Hz")
         fit_spinbox_to_contents(self.high_cut_spinbox)
         high_layout.addWidget(self.high_cut_spinbox)
 
-        high_label = QLabel("High Cut:")
+        high_label = QLabel(f"{widget_control_label('deesser', 'high_cut_hz')}:")
         high_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(high_label, 4, 0)
         advanced_grid.addLayout(high_layout, 4, 1)
 
         threshold_layout = QHBoxLayout()
         self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self.threshold_slider.setRange(-60, -6)
-        self.threshold_slider.setValue(-28)
         self.threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.threshold_slider.setTickInterval(6)
         threshold_layout.addWidget(self.threshold_slider)
 
         self.threshold_spinbox = QDoubleSpinBox()
-        self.threshold_spinbox.setRange(-60.0, -6.0)
-        self.threshold_spinbox.setSingleStep(1.0)
+        configure_numeric_control(
+            self.threshold_spinbox, "deesser", "threshold_db",
+            slider=self.threshold_slider,
+        )
+        self.threshold_slider.setValue(-28)
         self.threshold_spinbox.setValue(-28.0)
-        self.threshold_spinbox.setSuffix(" dB")
         fit_spinbox_to_contents(self.threshold_spinbox)
         threshold_layout.addWidget(self.threshold_spinbox)
 
-        threshold_label = QLabel("Threshold:")
+        threshold_label = QLabel(f"{widget_control_label('deesser', 'threshold_db')}:")
         threshold_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(threshold_label, 5, 0)
         advanced_grid.addLayout(threshold_layout, 5, 1)
 
         ratio_layout = QHBoxLayout()
         self.ratio_slider = QSlider(Qt.Orientation.Horizontal)
-        self.ratio_slider.setRange(10, 200)
-        self.ratio_slider.setValue(40)
         self.ratio_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.ratio_slider.setTickInterval(20)
         ratio_layout.addWidget(self.ratio_slider)
 
         self.ratio_spinbox = QDoubleSpinBox()
-        self.ratio_spinbox.setRange(1.0, 20.0)
-        self.ratio_spinbox.setSingleStep(0.5)
+        configure_numeric_control(
+            self.ratio_spinbox, "deesser", "ratio",
+            slider=self.ratio_slider, slider_scale=10,
+        )
+        self.ratio_slider.setValue(40)
         self.ratio_spinbox.setValue(4.0)
-        self.ratio_spinbox.setSuffix(":1")
         fit_spinbox_to_contents(self.ratio_spinbox)
         ratio_layout.addWidget(self.ratio_spinbox)
 
-        ratio_label = QLabel("Ratio:")
+        ratio_label = QLabel(f"{widget_control_label('deesser', 'ratio')}:")
         ratio_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(ratio_label, 6, 0)
         advanced_grid.addLayout(ratio_layout, 6, 1)
 
         self.attack_spinbox = QDoubleSpinBox()
-        self.attack_spinbox.setRange(0.1, 50.0)
-        self.attack_spinbox.setSingleStep(0.1)
+        configure_numeric_control(self.attack_spinbox, "deesser", "attack_ms")
         self.attack_spinbox.setValue(2.0)
-        self.attack_spinbox.setSuffix(" ms")
         fit_spinbox_to_contents(self.attack_spinbox)
-        attack_label = QLabel("Attack:")
+        attack_label = QLabel(f"{widget_control_label('deesser', 'attack_ms')}:")
         attack_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(attack_label, 7, 0)
         advanced_grid.addWidget(self.attack_spinbox, 7, 1)
 
         self.release_spinbox = QDoubleSpinBox()
-        self.release_spinbox.setRange(5.0, 500.0)
-        self.release_spinbox.setSingleStep(5.0)
+        configure_numeric_control(self.release_spinbox, "deesser", "release_ms")
         self.release_spinbox.setValue(80.0)
-        self.release_spinbox.setSuffix(" ms")
         fit_spinbox_to_contents(self.release_spinbox)
-        release_label = QLabel("Release:")
+        release_label = QLabel(f"{widget_control_label('deesser', 'release_ms')}:")
         release_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(release_label, 8, 0)
         advanced_grid.addWidget(self.release_spinbox, 8, 1)
 
         max_red_layout = QHBoxLayout()
         self.max_reduction_slider = QSlider(Qt.Orientation.Horizontal)
-        self.max_reduction_slider.setRange(0, 240)
-        self.max_reduction_slider.setValue(60)
         self.max_reduction_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.max_reduction_slider.setTickInterval(20)
         max_red_layout.addWidget(self.max_reduction_slider)
 
         self.max_reduction_spinbox = QDoubleSpinBox()
-        self.max_reduction_spinbox.setRange(0.0, 24.0)
-        self.max_reduction_spinbox.setSingleStep(0.5)
+        configure_numeric_control(
+            self.max_reduction_spinbox, "deesser", "max_reduction_db",
+            slider=self.max_reduction_slider, slider_scale=10,
+        )
+        self.max_reduction_slider.setValue(60)
         self.max_reduction_spinbox.setValue(6.0)
-        self.max_reduction_spinbox.setSuffix(" dB")
         fit_spinbox_to_contents(self.max_reduction_spinbox)
         max_red_layout.addWidget(self.max_reduction_spinbox)
 
-        max_red_label = QLabel("Max Red:")
+        max_red_label = QLabel(f"{widget_control_label('deesser', 'max_reduction_db')}:")
         max_red_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(max_red_label, 9, 0)
         advanced_grid.addLayout(max_red_layout, 9, 1)
 
-        self.gr_meter = GainReductionMeter()
+        self.gr_meter = self._meters.deesser_gr if self._meters else GainReductionMeter()
         grid.addWidget(self.gr_meter, 10, 0, 1, 2)
 
         layout.addWidget(card)
@@ -240,326 +231,103 @@ class DeEsserPanel(QWidget):
         bind_label(
             amount_label,
             self.auto_amount_spinbox,
-            name="Automatic de-esser amount",
+            name=control_spec("deesser", "auto_amount").accessible_name,
         )
-        bind_label(low_label, self.low_cut_spinbox, name="De-esser low cutoff")
-        bind_label(high_label, self.high_cut_spinbox, name="De-esser high cutoff")
+        bind_label(low_label, self.low_cut_spinbox, name=control_spec("deesser", "low_cut_hz").accessible_name)
+        bind_label(high_label, self.high_cut_spinbox, name=control_spec("deesser", "high_cut_hz").accessible_name)
         bind_label(
             threshold_label,
             self.threshold_spinbox,
-            name="De-esser threshold",
+            name=control_spec("deesser", "threshold_db").accessible_name,
         )
-        bind_label(ratio_label, self.ratio_spinbox, name="De-esser ratio")
-        bind_label(attack_label, self.attack_spinbox, name="De-esser attack time")
+        bind_label(ratio_label, self.ratio_spinbox, name=control_spec("deesser", "ratio").accessible_name)
+        bind_label(attack_label, self.attack_spinbox, name=control_spec("deesser", "attack_ms").accessible_name)
         bind_label(
             release_label,
             self.release_spinbox,
-            name="De-esser release time",
+            name=control_spec("deesser", "release_ms").accessible_name,
         )
         bind_label(
             max_red_label,
             self.max_reduction_spinbox,
-            name="De-esser maximum reduction",
+            name=control_spec("deesser", "max_reduction_db").accessible_name,
         )
         set_accessible_group(
             (
-                (self.enabled_checkbox, "Enable de-esser", None),
-                (self.auto_checkbox, "Enable automatic de-esser", None),
-                (self.auto_amount_slider, "Automatic de-esser amount", None),
-                (self.low_cut_slider, "De-esser low cutoff", None),
-                (self.high_cut_slider, "De-esser high cutoff", None),
-                (self.threshold_slider, "De-esser threshold", None),
-                (self.ratio_slider, "De-esser ratio", None),
-                (self.max_reduction_slider, "De-esser maximum reduction", None),
+                (self.enabled_checkbox, control_spec("deesser", "enabled").accessible_name, None),
+                (self.auto_checkbox, control_spec("deesser", "auto_enabled").accessible_name, None),
+                (self.auto_amount_slider, control_spec("deesser", "auto_amount").accessible_name, None),
+                (self.low_cut_slider, control_spec("deesser", "low_cut_hz").accessible_name, None),
+                (self.high_cut_slider, control_spec("deesser", "high_cut_hz").accessible_name, None),
+                (self.threshold_slider, control_spec("deesser", "threshold_db").accessible_name, None),
+                (self.ratio_slider, control_spec("deesser", "ratio").accessible_name, None),
+                (self.max_reduction_slider, control_spec("deesser", "max_reduction_db").accessible_name, None),
                 (self.gr_meter, "De-esser gain reduction", None),
             )
         )
 
     def _connect_signals(self):
-        self.enabled_checkbox.toggled.connect(self._update_deesser)
-        self.auto_checkbox.toggled.connect(self._on_auto_toggled)
-        bind_slider_spinbox(
-            self.auto_amount_slider,
-            self.auto_amount_spinbox,
-            slider_to_value=lambda value: value / 100.0,
-            value_to_slider=lambda value: int(value * 100),
-            on_change=self._update_deesser,
+        self.enabled_checkbox.toggled.connect(
+            lambda value: self.deesser_state.set_value("enabled", value)
         )
-
-        self.low_cut_slider.valueChanged.connect(self._on_low_cut_slider)
-        self.low_cut_spinbox.valueChanged.connect(self._on_low_cut_spinbox)
-        self.high_cut_slider.valueChanged.connect(self._on_high_cut_slider)
-        self.high_cut_spinbox.valueChanged.connect(self._on_high_cut_spinbox)
-
-        bind_slider_spinbox(
-            self.threshold_slider,
-            self.threshold_spinbox,
-            on_change=self._update_deesser,
+        self.auto_checkbox.toggled.connect(
+            lambda value: self.deesser_state.set_value("auto_enabled", value)
         )
+        self._numeric_controls: dict[
+            str, tuple[QDoubleSpinBox, QSlider | None, float]
+        ] = {
+            "auto_amount": (self.auto_amount_spinbox, self.auto_amount_slider, 100),
+            "low_cut_hz": (self.low_cut_spinbox, self.low_cut_slider, 1),
+            "high_cut_hz": (self.high_cut_spinbox, self.high_cut_slider, 1),
+            "threshold_db": (self.threshold_spinbox, self.threshold_slider, 1),
+            "ratio": (self.ratio_spinbox, self.ratio_slider, 10),
+            "attack_ms": (self.attack_spinbox, None, 1),
+            "release_ms": (self.release_spinbox, None, 1),
+            "max_reduction_db": (
+                self.max_reduction_spinbox, self.max_reduction_slider, 10,
+            ),
+        }
+        for key, (spinbox, slider, scale) in self._numeric_controls.items():
+            spinbox.valueChanged.connect(
+                lambda value, key=key: self.deesser_state.set_value(key, value)
+            )
+            if slider is not None:
+                slider.valueChanged.connect(
+                    lambda value, key=key, scale=scale: self.deesser_state.set_value(
+                        key, value / scale
+                    )
+                )
+                slider.sliderReleased.connect(self.deesser_state.flush)
+        self.deesser_state.changed.connect(self._render_settings)
+        self.deesser_state.configurationEdited.connect(self.configurationEdited.emit)
+        self._render_settings()
 
-        bind_slider_spinbox(
-            self.ratio_slider,
-            self.ratio_spinbox,
-            slider_to_value=lambda value: value / 10.0,
-            value_to_slider=lambda value: int(value * 10),
-            on_change=self._update_deesser,
-        )
-
-        self.attack_spinbox.valueChanged.connect(self._update_deesser)
-        self.release_spinbox.valueChanged.connect(self._update_deesser)
-
-        bind_slider_spinbox(
-            self.max_reduction_slider,
-            self.max_reduction_spinbox,
-            slider_to_value=lambda value: value / 10.0,
-            value_to_slider=lambda value: int(value * 10),
-            on_change=self._update_deesser,
-        )
-
-        self.auto_amount_slider.sliderReleased.connect(self._rate_limiter.flush)
-        self.threshold_slider.sliderReleased.connect(self._rate_limiter.flush)
-        self.ratio_slider.sliderReleased.connect(self._rate_limiter.flush)
-        self.max_reduction_slider.sliderReleased.connect(self._rate_limiter.flush)
-
-        self._update_auto_controls_enabled()
-        self._update_deesser()
-
-    def _precise_value(self, key: str, control: QDoubleSpinBox) -> float:
-        value = float(control.value())
-        if key not in self._exact_values or self._exact_display_values.get(key) != value:
-            self._exact_values[key] = value
-            self._exact_display_values[key] = value
-        return self._exact_values[key]
+    def _render_settings(self) -> None:
+        settings = self.deesser_state.get_settings()
+        for control, key in (
+            (self.enabled_checkbox, "enabled"),
+            (self.auto_checkbox, "auto_enabled"),
+        ):
+            with QSignalBlocker(control):
+                control.setChecked(bool(settings[key]))
+        for key, (spinbox, slider, scale) in self._numeric_controls.items():
+            with QSignalBlocker(spinbox):
+                spinbox.setValue(float(settings[key]))
+            spinbox.setEnabled(self.deesser_state.control_enabled(key))
+            if slider is not None:
+                with QSignalBlocker(slider):
+                    slider.setValue(int(settings[key] * scale))
+                slider.setEnabled(self.deesser_state.control_enabled(key))
 
     def apply_settings_synchronously(self, settings: dict) -> None:
         """Apply a bulk config inline and cancel any superseded slider edit."""
-        self._rate_limiter.cancel()
-        self._synchronous_updates = True
-        try:
-            self.set_settings(settings)
-        finally:
-            self._synchronous_updates = False
-
-    def _update_auto_controls_enabled(self):
-        auto_enabled = self.auto_checkbox.isChecked()
-        self.threshold_slider.setEnabled(not auto_enabled)
-        self.threshold_spinbox.setEnabled(not auto_enabled)
-        self.ratio_slider.setEnabled(not auto_enabled)
-        self.ratio_spinbox.setEnabled(not auto_enabled)
-
-    def _on_auto_toggled(self, _checked):
-        self._update_auto_controls_enabled()
-        self._update_deesser()
-
-    def _enforce_band_gap(self, source: str):
-        """Maintain minimum 200Hz gap between low/high detector cutoffs."""
-        low = self.low_cut_spinbox.value()
-        high = self.high_cut_spinbox.value()
-
-        if high <= low + 200.0:
-            if source == "low":
-                high = min(16000.0, low + 200.0)
-            else:
-                low = max(2000.0, high - 200.0)
-
-            self.low_cut_slider.blockSignals(True)
-            self.low_cut_spinbox.blockSignals(True)
-            self.high_cut_slider.blockSignals(True)
-            self.high_cut_spinbox.blockSignals(True)
-
-            self.low_cut_spinbox.setValue(low)
-            self.low_cut_slider.setValue(int(low))
-            self.high_cut_spinbox.setValue(high)
-            self.high_cut_slider.setValue(int(high))
-
-            self.low_cut_slider.blockSignals(False)
-            self.low_cut_spinbox.blockSignals(False)
-            self.high_cut_slider.blockSignals(False)
-            self.high_cut_spinbox.blockSignals(False)
-
-    def _on_low_cut_slider(self, value):
-        self.low_cut_spinbox.blockSignals(True)
-        self.low_cut_spinbox.setValue(float(value))
-        self.low_cut_spinbox.blockSignals(False)
-        self._enforce_band_gap("low")
-        self._update_deesser()
-
-    def _on_low_cut_spinbox(self, value):
-        self.low_cut_slider.blockSignals(True)
-        self.low_cut_slider.setValue(int(value))
-        self.low_cut_slider.blockSignals(False)
-        self._enforce_band_gap("low")
-        self._update_deesser()
-
-    def _on_high_cut_slider(self, value):
-        self.high_cut_spinbox.blockSignals(True)
-        self.high_cut_spinbox.setValue(float(value))
-        self.high_cut_spinbox.blockSignals(False)
-        self._enforce_band_gap("high")
-        self._update_deesser()
-
-    def _on_high_cut_spinbox(self, value):
-        self.high_cut_slider.blockSignals(True)
-        self.high_cut_slider.setValue(int(value))
-        self.high_cut_slider.blockSignals(False)
-        self._enforce_band_gap("high")
-        self._update_deesser()
-
-    def _update_deesser(self, *, propagate_errors: bool = False):
-        enabled = self.enabled_checkbox.isChecked()
-        auto_enabled = self.auto_checkbox.isChecked()
-        auto_amount = self._precise_value("auto_amount", self.auto_amount_spinbox)
-        low_cut_hz = self._precise_value("low_cut_hz", self.low_cut_spinbox)
-        high_cut_hz = self._precise_value("high_cut_hz", self.high_cut_spinbox)
-        threshold_db = self._precise_value("threshold_db", self.threshold_spinbox)
-        ratio = self._precise_value("ratio", self.ratio_spinbox)
-        attack_ms = self._precise_value("attack_ms", self.attack_spinbox)
-        release_ms = self._precise_value("release_ms", self.release_spinbox)
-        max_reduction_db = self._precise_value("max_reduction_db", self.max_reduction_spinbox)
-
-        def apply():
-            try:
-                self.processor.set_deesser_enabled(enabled)
-                self.processor.set_deesser_auto_enabled(auto_enabled)
-                self.processor.set_deesser_auto_amount(auto_amount)
-                # Expand first so the native setters do not clamp a valid new
-                # interval against the previous narrow range.
-                if high_cut_hz > self.processor.get_deesser_high_cut_hz():
-                    self.processor.set_deesser_high_cut_hz(high_cut_hz)
-                    self.processor.set_deesser_low_cut_hz(low_cut_hz)
-                else:
-                    self.processor.set_deesser_low_cut_hz(low_cut_hz)
-                    self.processor.set_deesser_high_cut_hz(high_cut_hz)
-                self.processor.set_deesser_threshold_db(threshold_db)
-                self.processor.set_deesser_ratio(ratio)
-                self.processor.set_deesser_attack_ms(attack_ms)
-                self.processor.set_deesser_release_ms(release_ms)
-                self.processor.set_deesser_max_reduction_db(max_reduction_db)
-            except Exception:
-                if propagate_errors:
-                    raise
-                logger.debug("De-esser update failed", exc_info=True)
-
-        if self._synchronous_updates:
-            self._rate_limiter.call_now(apply)
-        else:
-            self._rate_limiter.call(apply)
-        if not self._applying_settings:
-            self.configurationEdited.emit("De-esser edit")
+        self.deesser_state.set_settings(settings)
 
     def update_gain_reduction(self, gr_db: float | None):
         self.gr_meter.set_gain_reduction(gr_db)
 
     def get_settings(self) -> dict:
-        return {
-            "enabled": self.enabled_checkbox.isChecked(),
-            "auto_enabled": self.auto_checkbox.isChecked(),
-            "auto_amount": self._precise_value("auto_amount", self.auto_amount_spinbox),
-            "low_cut_hz": self._precise_value("low_cut_hz", self.low_cut_spinbox),
-            "high_cut_hz": self._precise_value("high_cut_hz", self.high_cut_spinbox),
-            "threshold_db": self._precise_value("threshold_db", self.threshold_spinbox),
-            "ratio": self._precise_value("ratio", self.ratio_spinbox),
-            "attack_ms": self._precise_value("attack_ms", self.attack_spinbox),
-            "release_ms": self._precise_value("release_ms", self.release_spinbox),
-            "max_reduction_db": self._precise_value("max_reduction_db", self.max_reduction_spinbox),
-        }
+        return self.deesser_state.get_settings()
 
     def set_settings(self, settings: dict):
-        was_applying = self._applying_settings
-        was_synchronous = self._synchronous_updates
-        self._rate_limiter.cancel()
-        self._applying_settings = True
-        self._synchronous_updates = True
-        try:
-            self._set_settings(settings)
-        finally:
-            self._applying_settings = was_applying
-            self._synchronous_updates = was_synchronous
-
-    def _set_settings(self, settings: dict):
-        enabled_blocked = self.enabled_checkbox.blockSignals(True)
-        try:
-            self.enabled_checkbox.setChecked(settings.get("enabled", False))
-        finally:
-            self.enabled_checkbox.blockSignals(enabled_blocked)
-        auto_enabled = bool(settings.get("auto_enabled", True))
-
-        low = float(settings.get("low_cut_hz", 4000.0))
-        high = float(settings.get("high_cut_hz", 11000.0))
-        auto_amount = float(settings.get("auto_amount", 0.5))
-        threshold = float(settings.get("threshold_db", -28.0))
-        ratio = float(settings.get("ratio", 4.0))
-        attack = float(settings.get("attack_ms", 2.0))
-        release = float(settings.get("release_ms", 80.0))
-        max_red = float(settings.get("max_reduction_db", 6.0))
-
-        self.low_cut_slider.blockSignals(True)
-        self.low_cut_spinbox.blockSignals(True)
-        self.high_cut_slider.blockSignals(True)
-        self.high_cut_spinbox.blockSignals(True)
-        self.auto_checkbox.blockSignals(True)
-        self.auto_amount_slider.blockSignals(True)
-        self.auto_amount_spinbox.blockSignals(True)
-        self.threshold_slider.blockSignals(True)
-        self.threshold_spinbox.blockSignals(True)
-        self.ratio_slider.blockSignals(True)
-        self.ratio_spinbox.blockSignals(True)
-        self.max_reduction_slider.blockSignals(True)
-        self.max_reduction_spinbox.blockSignals(True)
-
-        self.auto_checkbox.setChecked(auto_enabled)
-        self.auto_amount_spinbox.setValue(auto_amount)
-        self.auto_amount_slider.setValue(int(auto_amount * 100))
-        self.low_cut_spinbox.setValue(low)
-        self.low_cut_slider.setValue(int(low))
-        self.high_cut_spinbox.setValue(high)
-        self.high_cut_slider.setValue(int(high))
-        self.threshold_spinbox.setValue(threshold)
-        self.threshold_slider.setValue(int(threshold))
-        self.ratio_spinbox.setValue(ratio)
-        self.ratio_slider.setValue(int(ratio * 10))
-        self.attack_spinbox.setValue(attack)
-        self.release_spinbox.setValue(release)
-        self.max_reduction_spinbox.setValue(max_red)
-        self.max_reduction_slider.setValue(int(max_red * 10))
-
-        self.low_cut_slider.blockSignals(False)
-        self.low_cut_spinbox.blockSignals(False)
-        self.high_cut_slider.blockSignals(False)
-        self.high_cut_spinbox.blockSignals(False)
-        self.auto_checkbox.blockSignals(False)
-        self.auto_amount_slider.blockSignals(False)
-        self.auto_amount_spinbox.blockSignals(False)
-        self.threshold_slider.blockSignals(False)
-        self.threshold_spinbox.blockSignals(False)
-        self.ratio_slider.blockSignals(False)
-        self.ratio_spinbox.blockSignals(False)
-        self.max_reduction_slider.blockSignals(False)
-        self.max_reduction_spinbox.blockSignals(False)
-
-        self._enforce_band_gap("low")
-        self._update_auto_controls_enabled()
-        exact_values = {
-            "auto_amount": auto_amount,
-            "low_cut_hz": low,
-            "high_cut_hz": high,
-            "threshold_db": threshold,
-            "ratio": ratio,
-            "attack_ms": attack,
-            "release_ms": release,
-            "max_reduction_db": max_red,
-        }
-        controls = {
-            "auto_amount": self.auto_amount_spinbox,
-            "low_cut_hz": self.low_cut_spinbox,
-            "high_cut_hz": self.high_cut_spinbox,
-            "threshold_db": self.threshold_spinbox,
-            "ratio": self.ratio_spinbox,
-            "attack_ms": self.attack_spinbox,
-            "release_ms": self.release_spinbox,
-            "max_reduction_db": self.max_reduction_spinbox,
-        }
-        for key, exact in exact_values.items():
-            self._exact_values[key] = float(exact)
-            self._exact_display_values[key] = float(controls[key].value())
-        self._update_deesser(propagate_errors=True)
+        self.deesser_state.set_settings(settings)

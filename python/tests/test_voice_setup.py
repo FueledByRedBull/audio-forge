@@ -1277,19 +1277,19 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
     monkeypatch.setattr(owner, "_calibration_context_key", lambda: "test-route")
     owner.meter_timer.stop()
     owner.diagnostics_timer.stop()
-    owner.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.7})
-    owner.eq_panel.set_settings({"enabled": False})
-    old_compressor = owner.compressor_panel.get_compressor_settings(include_calibration=True)
-    old_limiter = owner.compressor_panel.get_limiter_settings()
-    old_eq = owner.eq_panel.get_settings()
+    owner.compressor_state.set_settings({"noise_reference_reliability": 0.7})
+    owner.eq_state.set_settings({"enabled": False})
+    old_compressor = owner.compressor_state.get_settings(include_calibration=True)
+    old_limiter = owner.limiter_state.get_settings()
+    old_eq = owner.eq_state.get_settings()
     dialog = VoiceSetupDialog(parent=owner)
     limiter = {"enabled": False, "ceiling_db": -2.5, "release_ms": 175.0,
                "careful_output_enabled": False}
     dialog.setup_result = {
         "_candidate": _full_voice_candidate_metadata("test-route"),
         "diagnostics": {"apply_recommended": True},
-        "gate_settings": owner.gate_panel.get_settings(),
-        "deesser_settings": {**owner.deesser_panel.get_settings(), "auto_amount": 0.3476},
+        "gate_settings": owner.gate_state.get_settings(),
+        "deesser_settings": {**owner.deesser_state.get_settings(), "auto_amount": 0.3476},
         "compressor_settings": {**old_compressor, "threshold_db": -21.123,
             "ratio": 2.3476, "noise_reference_reliability": 0.4,
             "target_p95_reduction_db": 3.5, "peak_reduction_cap_db": 8.0},
@@ -1327,22 +1327,22 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
     assert dialog.setup_result["compressor_settings"]["target_p95_reduction_db"] == 3.5
     assert dialog.setup_result["deesser_settings"]["auto_amount"] == 0.3476
     assert dialog.setup_result["limiter_settings"] == limiter
-    assert owner.eq_panel.get_settings()["enabled"] is True
+    assert owner.eq_state.get_settings()["enabled"] is True
     dialog._on_verification_failed("sentinel failure")
-    assert owner.compressor_panel.get_compressor_settings(include_calibration=True) == old_compressor
-    assert owner.compressor_panel.get_limiter_settings() == old_limiter
-    assert owner.eq_panel.get_settings() == old_eq
+    assert owner.compressor_state.get_settings(include_calibration=True) == old_compressor
+    assert owner.limiter_state.get_settings() == old_limiter
+    assert owner.eq_state.get_settings() == old_eq
 
     with monkeypatch.context() as patch:
         show_error = Mock()
         patch.setattr("mic_eq.ui.voice_setup_dialog.QMessageBox.critical", show_error)
-        patch.setattr(owner.eq_panel, "set_settings",
+        patch.setattr(owner.eq_state, "set_settings",
                       Mock(side_effect=RuntimeError("sentinel apply failure")))
         dialog._apply_setup()
         assert show_error.call_count == 1
-    assert owner.compressor_panel.get_compressor_settings(include_calibration=True) == old_compressor
-    assert owner.compressor_panel.get_limiter_settings() == old_limiter
-    assert owner.eq_panel.get_settings() == old_eq
+    assert owner.compressor_state.get_settings(include_calibration=True) == old_compressor
+    assert owner.limiter_state.get_settings() == old_limiter
+    assert owner.eq_state.get_settings() == old_eq
 
     entered = threading.Event()
     def blocked_verification(*_args, cancel_check, **_kwargs):
@@ -1370,9 +1370,9 @@ def test_candidate_uses_live_controls_and_restores_on_failure_and_close(qapp, mo
         assert worker.wait(2_000)
         dialog._on_verification_complete({"decision": "accept"}, generation=stale_generation)
         assert "verification" not in dialog.setup_result
-        assert owner.compressor_panel.get_compressor_settings(include_calibration=True) == old_compressor
-        assert owner.compressor_panel.get_limiter_settings() == old_limiter
-        assert owner.eq_panel.get_settings() == old_eq
+        assert owner.compressor_state.get_settings(include_calibration=True) == old_compressor
+        assert owner.limiter_state.get_settings() == old_limiter
+        assert owner.eq_state.get_settings() == old_eq
     finally:
         worker.stop()
         worker.wait(2_000)
@@ -1424,9 +1424,9 @@ def test_incomplete_candidate_offers_retake_instead_of_apply(
             "recommendation_uncertainty": 0.4,
             "gate_mode_label": "VAD Assisted",
         },
-        "gate_settings": owner.gate_panel.get_settings(),
-        "deesser_settings": owner.deesser_panel.get_settings(),
-        "compressor_settings": owner.compressor_panel.get_compressor_settings(
+        "gate_settings": owner.gate_state.get_settings(),
+        "deesser_settings": owner.deesser_state.get_settings(),
+        "compressor_settings": owner.compressor_state.get_settings(
             include_calibration=True
         ),
         "limiter_settings": limiter,
@@ -1486,9 +1486,9 @@ def test_complete_advisory_candidate_still_offers_apply(qapp, monkeypatch):
                 "recommendation_uncertainty": 0.4,
                 "gate_mode_label": "VAD Assisted",
             },
-            "gate_settings": owner.gate_panel.get_settings(),
-            "deesser_settings": owner.deesser_panel.get_settings(),
-            "compressor_settings": owner.compressor_panel.get_compressor_settings(
+            "gate_settings": owner.gate_state.get_settings(),
+            "deesser_settings": owner.deesser_state.get_settings(),
+            "compressor_settings": owner.compressor_state.get_settings(
                 include_calibration=True
             ),
             "limiter_settings": {
@@ -1535,10 +1535,10 @@ def test_review_shows_settings_before_and_after(qapp, monkeypatch):
     dialog = VoiceSetupDialog(parent=owner)
     orphan = VoiceSetupDialog()
     try:
-        gate = owner.gate_panel.get_settings()
+        gate = owner.gate_state.get_settings()
         before_db = gate["threshold_db"]
         gate["threshold_db"] = before_db - 6.0
-        compressor = owner.compressor_panel.get_compressor_settings()
+        compressor = owner.compressor_state.get_settings()
         compressor["attack_ms"] += 5.0
         result = {
             "diagnostics": {
@@ -1548,7 +1548,7 @@ def test_review_shows_settings_before_and_after(qapp, monkeypatch):
                 "gate_mode_label": "VAD Assisted",
             },
             "gate_settings": gate,
-            "deesser_settings": owner.deesser_panel.get_settings(),
+            "deesser_settings": owner.deesser_state.get_settings(),
             "compressor_settings": compressor,
             "eq_settings": None,
         }

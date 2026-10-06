@@ -66,20 +66,20 @@ class _Owner(QWidget):
             direction="input",
             name_ordinal=0,
         )
-        self.input_combo = QComboBox()
-        self.input_combo.addItem(input_identity.name, input_identity)
+        self.input_choice = QComboBox()
+        self.input_choice.addItem(input_identity.name, input_identity)
         output_identity = DeviceIdentity(
             name="Cable",
             endpoint_id="output-id",
             direction="output",
             name_ordinal=0,
         )
-        self.output_combo = QComboBox()
-        self.output_combo.addItem(output_identity.name, output_identity)
+        self.output_choice = QComboBox()
+        self.output_choice.addItem(output_identity.name, output_identity)
         self.latency_saved = False
         self.voice_applied = False
         self.voice_setup_calls = 0
-        self.status_bar = Mock()
+        self.status_message = Mock()
         self.user_muted = False
         self.input_meter = _MeterState(processor.input_rms, processor.input_peak)
         self.output_meter = _MeterState(processor.output_rms, processor.output_peak)
@@ -88,6 +88,7 @@ class _Owner(QWidget):
         self._temporary_mute_reasons = {"calibration"}
         self.mute_toggles = []
         self.user_mute_checkbox = QCheckBox(self)
+        self.user_mute_checkbox_action = self.user_mute_checkbox
         self.user_mute_checkbox.toggled.connect(self._on_user_mute_toggled)
         self.start_calls = 0
         self.stop_calls = 0
@@ -105,7 +106,7 @@ class _Owner(QWidget):
     def _on_device_changed(self):
         self.device_change_calls += 1
         self.device_change_routes.append(
-            (self.input_combo.currentData(), self.output_combo.currentData())
+            (self.input_choice.currentData(), self.output_choice.currentData())
         )
 
     def _on_latency_calibration_clicked(self):
@@ -263,20 +264,60 @@ def test_setup_applies_selected_route_from_wizard(qapp, monkeypatch):
         direction="output",
         name_ordinal=0,
     )
-    owner.input_combo.addItem(input_desired.name, input_desired)
-    owner.output_combo.addItem(output_desired.name, output_desired)
+    owner.input_choice.addItem(input_desired.name, input_desired)
+    owner.output_choice.addItem(output_desired.name, output_desired)
 
     dialog = FirstRunSetupDialog(owner)
     dialog.input_device_selector.setCurrentIndex(1)
     dialog.output_device_selector.setCurrentIndex(1)
     dialog._run_current_step()
 
-    assert owner.input_combo.currentData() == input_desired
-    assert owner.output_combo.currentData() == output_desired
+    assert owner.input_choice.currentData() == input_desired
+    assert owner.output_choice.currentData() == output_desired
     assert owner.device_change_calls == 1
     assert owner.device_change_routes == [(input_desired, output_desired)]
     assert config.first_run_setup_steps["devices"] == "completed"
     assert dialog.current_step == "route"
+
+
+def test_setup_applies_snapshot_identities_after_owner_choices_reorder(qapp):
+    owner = _Owner(AppConfig(), _Processor())
+    selected_input = DeviceIdentity(name="Selected Mic", endpoint_id="mic-2", direction="input")
+    selected_output = DeviceIdentity(name="Selected Cable", endpoint_id="cable-2", direction="output")
+    owner.input_choice.addItem("Selected Mic", selected_input)
+    owner.output_choice.addItem("Selected Cable", selected_output)
+    dialog = FirstRunSetupDialog(owner)
+    dialog.input_device_selector.setCurrentIndex(1)
+    dialog.output_device_selector.setCurrentIndex(1)
+
+    owner.input_choice.clear()
+    owner.input_choice.addItem("Replacement", DeviceIdentity(name="Replacement", endpoint_id="mic-1", direction="input"))
+    owner.input_choice.addItem("Selected Mic", selected_input)
+    owner.output_choice.clear()
+    owner.output_choice.addItem("Replacement", DeviceIdentity(name="Replacement", endpoint_id="cable-1", direction="output"))
+    owner.output_choice.addItem("Selected Cable", selected_output)
+
+    assert dialog._apply_selected_devices()
+    assert owner.input_choice.currentData() == selected_input
+    assert owner.output_choice.currentData() == selected_output
+    assert owner.device_change_routes == [(selected_input, selected_output)]
+
+
+def test_setup_rejects_snapshot_identity_removed_from_owner_choices(qapp):
+    owner = _Owner(AppConfig(), _Processor())
+    selected_input = DeviceIdentity(name="Selected Mic", endpoint_id="mic-2", direction="input")
+    owner.input_choice.addItem("Selected Mic", selected_input)
+    dialog = FirstRunSetupDialog(owner)
+    dialog.input_device_selector.setCurrentIndex(1)
+    dialog.output_device_selector.setCurrentIndex(1)
+
+    owner.input_choice.clear()
+    replacement = DeviceIdentity(name="Replacement", endpoint_id="mic-1", direction="input")
+    owner.input_choice.addItem("Replacement", replacement)
+
+    assert not dialog._apply_selected_devices()
+    assert owner.input_choice.currentData() == replacement
+    assert owner.device_change_calls == 0
 
 
 def test_setup_restarts_processing_for_new_route(qapp, monkeypatch):
@@ -286,7 +327,7 @@ def test_setup_restarts_processing_for_new_route(qapp, monkeypatch):
     config = AppConfig()
     processor = _Processor(running=True)
     owner = _Owner(config, processor)
-    owner.input_combo.addItem(
+    owner.input_choice.addItem(
         "USB Mic",
         DeviceIdentity(
             name="USB Mic",
@@ -295,7 +336,7 @@ def test_setup_restarts_processing_for_new_route(qapp, monkeypatch):
             name_ordinal=0,
         ),
     )
-    owner.output_combo.addItem(
+    owner.output_choice.addItem(
         "Virtual Cable",
         DeviceIdentity(
             name="Virtual Cable",
@@ -396,7 +437,7 @@ def test_setup_missing_devices_stays_on_route_selection(qapp, monkeypatch):
         "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: True
     )
     owner = _Owner(AppConfig(), _Processor())
-    owner.output_combo.clear()
+    owner.output_choice.clear()
     dialog = FirstRunSetupDialog(owner)
 
     dialog._run_current_step()
@@ -505,7 +546,7 @@ def test_setup_save_exceptions_keep_dialog_usable(qapp, monkeypatch, failure):
     dialog.closeEvent(event)
     assert event.isAccepted() is True
     assert dialog._progress_unsaved is True
-    assert "could not be saved" in dialog.owner.status_bar.showMessage.call_args.args[0]
+    assert "could not be saved" in dialog.owner.status_message.showMessage.call_args.args[0]
 
 
 def test_setup_failed_finish_offers_retry_without_repeating_voice(qapp, monkeypatch):

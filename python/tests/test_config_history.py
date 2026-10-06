@@ -310,9 +310,9 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
 
     history_size = window._configuration_history.size
     previous_frequency = window.eq_panel.band_sliders[4].frequency_hz()
-    window.eq_panel.configurationEditStarted.emit()
-    window.eq_panel._apply_curve_band_edit(4, 3000.0, 2.2)
-    window.eq_panel.configurationEditFinished.emit("EQ graph edit")
+    window.eq_state.begin_curve_edit(4)
+    window.eq_state.edit_curve_band(4, 3000.0, 2.2)
+    window.eq_state.finish_curve_edit(4, 3000.0, 2.2)
     assert window._configuration_history.size == history_size + 1
     assert window.eq_panel.band_sliders[4].frequency_hz() == 3000.0
     window.undo_configuration()
@@ -526,7 +526,7 @@ def test_failed_configuration_restores_sound_or_stops_muted(qapp, monkeypatch, r
     for name in ("list_presets", "list_input_devices", "list_output_devices"):
         monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
     window = MainWindow()
-    window.user_mute_checkbox.setChecked(True)
+    window.user_mute_checkbox_action.setChecked(True)
     window.apply_processing_configuration(
         window._get_current_preset(),
         noise_reference_reliability=0.7,
@@ -541,7 +541,7 @@ def test_failed_configuration_restores_sound_or_stops_muted(qapp, monkeypatch, r
     cursor = window._configuration_history.cursor
     target = window._get_current_preset()
     target.gate.threshold_db = -25.0
-    original_set = window.eq_panel.set_settings
+    original_set = window.eq_state.set_settings
     calls = 0
 
     def fail_after_eq(settings):
@@ -551,7 +551,7 @@ def test_failed_configuration_restores_sound_or_stops_muted(qapp, monkeypatch, r
         if calls == 1 or rollback_fails:
             raise RuntimeError("injected failure after EQ")
 
-    monkeypatch.setattr(window.eq_panel, "set_settings", fail_after_eq)
+    monkeypatch.setattr(window.eq_state, "set_settings", fail_after_eq)
     try:
         with pytest.raises(RuntimeError, match="injected failure after EQ"):
             window.apply_processing_configuration(target)

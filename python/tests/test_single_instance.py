@@ -237,7 +237,7 @@ def test_login_lifecycle_keeps_hidden_session_alive_and_releases_lock_on_quit(
             self._save_ui_state = lambda: True
             self.processor = SimpleNamespace(is_running=lambda: False)
             self.config = SimpleNamespace(window_geometry={})
-            self.status_bar = SimpleNamespace(showMessage=lambda *_: None)
+            self.status_message = SimpleNamespace(showMessage=lambda *_: None)
 
         def begin_login_startup(self):
             QTimer.singleShot(10, self.open_and_close)

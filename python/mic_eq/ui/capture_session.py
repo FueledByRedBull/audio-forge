@@ -162,9 +162,9 @@ def find_processor_owner(widget: object) -> Any | None:
     return parent
 
 
-def find_eq_panel_owner(widget: object) -> Any | None:
+def find_eq_state_owner(widget: object) -> Any | None:
     parent: Any = widget
-    while parent and not hasattr(parent, "eq_panel"):
+    while parent and not hasattr(parent, "eq_state"):
         parent = parent.parent()
     return parent
 
@@ -192,8 +192,8 @@ def selected_device_identities(
 ) -> tuple[DeviceIdentity | None, DeviceIdentity | None]:
     if owner is None:
         return None, None
-    input_device = owner.input_combo.currentData() if hasattr(owner, "input_combo") else None
-    output_device = owner.output_combo.currentData() if hasattr(owner, "output_combo") else None
+    input_device = owner.input_choice.currentData() if hasattr(owner, "input_choice") else None
+    output_device = owner.output_choice.currentData() if hasattr(owner, "output_choice") else None
     return coerce_device_identity(input_device), coerce_device_identity(output_device)
 
 
@@ -260,8 +260,8 @@ def device_label(device: str | None, default_label: str) -> str:
 
 
 def start_selected_route(owner: Any) -> object:
-    input_device = owner.input_combo.currentData() if hasattr(owner, "input_combo") else None
-    output_device = owner.output_combo.currentData() if hasattr(owner, "output_combo") else None
+    input_device = owner.input_choice.currentData() if hasattr(owner, "input_choice") else None
+    output_device = owner.output_choice.currentData() if hasattr(owner, "output_choice") else None
     return start_processor_for_route(owner.processor, input_device, output_device)
 
 

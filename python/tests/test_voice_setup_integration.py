@@ -56,7 +56,7 @@ def _voice_setup_result(
     dialog.curve_combo.setCurrentIndex(dialog.curve_combo.findData(target_curve))
     dialog.target_lufs_spin.setValue(target_lufs)
     eq_settings = deepcopy(
-        (analysis or {}).get("eq_settings") or window.eq_panel.get_settings()
+        (analysis or {}).get("eq_settings") or window.eq_state.get_settings()
     )
     if analysis is None:
         eq_settings["band_gains"] = [
@@ -73,7 +73,7 @@ def _voice_setup_result(
         ]
     compressor_settings = deepcopy(
         (analysis or {}).get("compressor_settings")
-        or window.compressor_panel.get_compressor_settings(include_calibration=True)
+        or window.compressor_state.get_settings(include_calibration=True)
     )
     compressor_settings["target_lufs"] = target_lufs
     noise_audio = dialog.noise_audio
@@ -116,16 +116,16 @@ def _voice_setup_result(
             "compressor_calibration": {},
         },
         "gate_settings": deepcopy(
-            (analysis or {}).get("gate_settings") or window.gate_panel.get_settings()
+            (analysis or {}).get("gate_settings") or window.gate_state.get_settings()
         ),
         "deesser_settings": deepcopy(
             (analysis or {}).get("deesser_settings")
-            or window.deesser_panel.get_settings()
+            or window.deesser_state.get_settings()
         ),
         "compressor_settings": compressor_settings,
         "limiter_settings": deepcopy(
             (analysis or {}).get("limiter_settings")
-            or window.compressor_panel.get_limiter_settings()
+            or window.limiter_state.get_settings()
         ),
         "eq_settings": eq_settings,
     }
@@ -313,7 +313,7 @@ def test_raw_monitor_verification_capture_allows_intended_mode_transition(
         ),
     )
     window._set_processing_mode("raw")
-    window.compressor_panel.set_compressor_settings({"noise_reference_reliability": 0.73})
+    window.compressor_state.set_settings({"noise_reference_reliability": 0.73})
     dialog = VoiceSetupDialog(parent=window)
     noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
     _bind_capture_context(dialog, noise, speech)
@@ -337,7 +337,7 @@ def test_raw_monitor_verification_capture_allows_intended_mode_transition(
         dialog._cleanup_recording_tap()
         assert dialog._restore_pre_setup_snapshot()
         assert window._processing_mode() == "raw"
-        assert window.compressor_panel.get_compressor_settings(include_calibration=True)[
+        assert window.compressor_state.get_settings(include_calibration=True)[
             "noise_reference_reliability"
         ] == pytest.approx(0.73)
         dialog.reject()
@@ -470,7 +470,7 @@ def test_voice_setup_tone_and_lufs_survive_apply_save_and_restart(real_main_wind
         "broadcast",
         vad_available=False,
         target_lufs=-19.0,
-        limiter_settings=window.compressor_panel.get_limiter_settings(),
+        limiter_settings=window.limiter_state.get_settings(),
     )
     assert analysis["eq_settings"] is not None
     result = _voice_setup_result(window, dialog, analysis=analysis)
@@ -480,7 +480,7 @@ def test_voice_setup_tone_and_lufs_survive_apply_save_and_restart(real_main_wind
     candidate_target = result["_candidate"]["target"]
     assert candidate_target["curve"] == "broadcast"
     assert candidate_target["target_lufs"] == -19.0
-    assert window.compressor_panel.get_compressor_settings()["target_lufs"] == -19.0
+    assert window.compressor_state.get_settings()["target_lufs"] == -19.0
 
     preset = window._get_current_preset()
     preset.name = "Broadcast Voice"

@@ -54,7 +54,7 @@ def save_calibration_result(
         raise ValueError("Audio device and capture format are unavailable")
     reliability = (
         (
-            owner.compressor_panel.get_compressor_settings(
+            owner.compressor_state.get_settings(
                 include_calibration=True
             ).get("noise_reference_reliability", 0.0)
         )

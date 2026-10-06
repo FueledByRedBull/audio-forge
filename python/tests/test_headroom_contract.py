@@ -32,8 +32,8 @@ def test_live_calibration_reliability_reaches_native_preview():
         _get_current_preset=lambda: preset,
         _processing_mode=lambda: "normal",
         processor=SimpleNamespace(get_input_cleanup_mode=lambda: "gentle"),
-        compressor_panel=SimpleNamespace(
-            get_compressor_settings=lambda *, include_calibration: {
+        compressor_state=SimpleNamespace(
+            get_settings=lambda *, include_calibration: {
                 "noise_reference_reliability": 0.73 if include_calibration else 0.0,
             }
         ),

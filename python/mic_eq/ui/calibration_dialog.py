@@ -50,7 +50,7 @@ from .capture_session import (
     active_device_identities as _active_device_identities,
     device_label as _device_label,
     device_name as _device_name,
-    find_eq_panel_owner as _find_eq_panel_owner,
+    find_eq_state_owner as _find_eq_state_owner,
     find_processor_owner as _find_processor_owner,
     owner_calibration_context_key as _owner_calibration_context_key,
     processor_sample_rate as _processor_sample_rate,
@@ -405,11 +405,11 @@ class CalibrationDialog(QDialog):
         if DEBUG:
             logger.debug("Applying EQ settings")
 
-        # Get parent's EQ panel (MainWindow has it)
-        parent = _find_eq_panel_owner(self.parent())
+        # Find the application state owner through the dialog parent chain.
+        parent = _find_eq_state_owner(self.parent())
 
         if not parent:
-            QMessageBox.critical(self, "Error", "Could not find EQ panel")
+            QMessageBox.critical(self, "Error", "Could not find EQ settings")
             return
 
         identity_error = self._candidate_identity_error(eq_settings, parent)
@@ -421,7 +421,7 @@ class CalibrationDialog(QDialog):
             )
             return
 
-        get_typed_eq_settings = getattr(parent.eq_panel, "get_eq_settings", None)
+        get_typed_eq_settings = getattr(parent.eq_state, "get_eq_settings", None)
         if not callable(get_typed_eq_settings):
             QMessageBox.critical(
                 self,
@@ -475,13 +475,13 @@ class CalibrationDialog(QDialog):
                 raise ValueError("validated EQ proposal is unavailable")
             candidate_preset = proposal.proposed_preset
             apply_configuration(candidate_preset, processing_mode=snapshot_mode)
-            parent.eq_panel.set_auto_eq_diagnostics(eq_settings)
+            parent.eq_state.set_auto_eq_diagnostics(eq_settings)
             accepted_eq = get_typed_eq_settings()
             if not isinstance(accepted_eq, EQSettings):
-                raise TypeError("EQ panel returned invalid typed settings")
+                raise TypeError("EQ state returned invalid typed settings")
             expected_eq = candidate_preset.eq
             if accepted_eq.to_dict() != expected_eq.to_dict():
-                raise ValueError("EQ panel did not install the validated candidate")
+                raise ValueError("EQ state did not install the validated candidate")
             eq_settings.update(expected_eq.to_dict())
         except Exception as error:
             restore_error = None
@@ -535,7 +535,7 @@ class CalibrationDialog(QDialog):
             or self.eq_settings is None
         ):
             return
-        owner = _find_eq_panel_owner(self.parent())
+        owner = _find_eq_state_owner(self.parent())
         if owner is None:
             return
         error = self._candidate_identity_error(self.eq_settings, owner)

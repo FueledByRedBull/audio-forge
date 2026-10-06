@@ -28,6 +28,27 @@ from mic_eq.ui.compressor_panel import CompressorPanel
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
 
 
+def test_calibration_owner_discovery_and_chain_snapshot_require_no_processing_panels(qapp):
+    from types import SimpleNamespace
+
+    from mic_eq.ui.calibration_support import chain_settings
+    from mic_eq.ui.capture_session import find_eq_state_owner
+
+    owner = QWidget()
+    vars(owner)["eq_state"] = SimpleNamespace(get_settings=lambda: {})
+    vars(owner)["deesser_state"] = SimpleNamespace(get_settings=lambda: {"enabled": True})
+    vars(owner)["compressor_state"] = SimpleNamespace(get_settings=lambda: {"ratio": 3.5})
+    vars(owner)["limiter_state"] = SimpleNamespace(get_settings=lambda: {"ceiling_db": -2.0})
+    nested = QWidget(owner)
+    assert find_eq_state_owner(nested) is owner
+    assert chain_settings(owner) == {
+        "deesser": {"enabled": True},
+        "compressor": {"ratio": 3.5},
+        "limiter": {"ceiling_db": -2.0},
+    }
+    assert not any(hasattr(owner, f"{stage}_panel") for stage in ("eq", "deesser", "compressor"))
+
+
 class _MuteOwner:
     user_muted = True
 
@@ -65,7 +86,7 @@ class _RouteProcessor:
         return "started"
 
 
-class _EqPanel:
+class _EqState:
     def __init__(self) -> None:
         self.restore_error = False
         self.apply_calls = 0
@@ -118,10 +139,10 @@ class _CalibrationOwner(QWidget):
         self.processor = Mock()
         self.processor.sample_rate.return_value = 48_000
         self.processor.get_input_cleanup_mode.return_value = "off"
-        self.eq_panel = _EqPanel()
+        self.eq_state = _EqState()
 
     def _get_current_preset(self) -> Preset:
-        return Preset(eq=self.eq_panel.get_eq_settings())
+        return Preset(eq=self.eq_state.get_eq_settings())
 
     def _processing_mode(self) -> str:
         return "normal"
@@ -137,16 +158,16 @@ class _CalibrationOwner(QWidget):
         del noise_reference_reliability, processing_mode, compressor_metadata
         correction = preset.eq.correction_bands
         if correction is not None:
-            self.eq_panel.apply_auto_eq_results(
+            self.eq_state.apply_auto_eq_results(
                 [
                     (band.frequency_hz, band.gain_db, band.q)
                     for band in correction
                 ]
             )
-            self.eq_panel.set_settings({"enabled": preset.eq.enabled})
-            self.eq_panel.set_eq_settings(preset.eq)
+            self.eq_state.set_settings({"enabled": preset.eq.enabled})
+            self.eq_state.set_eq_settings(preset.eq)
             return
-        self.eq_panel.set_settings(
+        self.eq_state.set_settings(
             {
                 "enabled": preset.eq.enabled,
                 "band_freqs": [band.frequency_hz for band in preset.eq.bands],
@@ -154,7 +175,7 @@ class _CalibrationOwner(QWidget):
                 "band_qs": [band.q for band in preset.eq.bands],
             }
         )
-        self.eq_panel.set_eq_settings(preset.eq)
+        self.eq_state.set_eq_settings(preset.eq)
 
 
 class _ContextCalibrationOwner(_CalibrationOwner):
@@ -166,7 +187,7 @@ class _ContextCalibrationOwner(_CalibrationOwner):
         return self.context_key
 
 
-class _ReadbackEqPanel(_EqPanel):
+class _ReadbackEqState(_EqState):
     def apply_auto_eq_results(self, _bands, diagnostics=None) -> None:
         self.apply_calls += 1
         self.state = {
@@ -191,19 +212,13 @@ class _RestoreStage:
         if self.fail:
             raise RuntimeError("stage restore failed")
 
-    def set_compressor_settings(self, _settings) -> None:
-        self.set_settings(_settings)
-
-    def set_limiter_settings(self, _settings) -> None:
-        self.set_settings(_settings)
-
 
 class _RestoreOwner:
     def __init__(self) -> None:
-        self.gate_panel = _RestoreStage()
-        self.deesser_panel = _RestoreStage()
-        self.compressor_panel = _RestoreStage()
-        self.eq_panel = _RestoreStage()
+        self.gate_state = _RestoreStage()
+        self.deesser_state = _RestoreStage()
+        self.compressor_state = _RestoreStage()
+        self.eq_state = _RestoreStage()
         self.preset = Preset()
         self.apply_calls: list[tuple[Preset, float | None, str | None]] = []
         self.fail_apply = False
@@ -226,7 +241,7 @@ class _RestoreOwner:
             raise RuntimeError("transaction failed")
         self.preset = preset
         if compressor_metadata:
-            self.compressor_panel.set_compressor_settings(compressor_metadata)
+            self.compressor_state.set_settings(compressor_metadata)
 
 
 class _ContextRestoreStage(_RestoreStage):
@@ -234,16 +249,16 @@ class _ContextRestoreStage(_RestoreStage):
         super().__init__()
         self.last_settings: dict | None = None
 
-    def set_compressor_settings(self, settings) -> None:
+    def set_settings(self, settings) -> None:
         self.last_settings = deepcopy(settings)
-        super().set_compressor_settings(settings)
+        super().set_settings(settings)
 
 
 class _ContextRestoreOwner(_RestoreOwner):
     def __init__(self) -> None:
         super().__init__()
         self.context_key: str | None = "route-a"
-        self.compressor_panel = _ContextRestoreStage()
+        self.compressor_state = _ContextRestoreStage()
 
     def _calibration_context_key(self) -> str | None:
         return self.context_key
@@ -489,14 +504,14 @@ def test_route_handoff_keeps_stream_when_previous_identity_is_unknown() -> None:
 def test_eq_apply_failure_restores_partial_native_mutation(qapp, monkeypatch) -> None:
     owner = _CalibrationOwner()
     dialog = CalibrationDialog(owner)
-    before = owner.eq_panel.get_settings()
+    before = owner.eq_state.get_settings()
     try:
         _install_eq_candidate(dialog, owner)
         monkeypatch.setattr(QMessageBox, "critical", lambda *_args, **_kwargs: None)
 
         dialog._apply_eq_settings()
 
-        assert owner.eq_panel.get_settings() == before
+        assert owner.eq_state.get_settings() == before
         assert dialog.recording_state == "ready"
     finally:
         dialog.reject()
@@ -527,11 +542,11 @@ def test_eq_apply_requires_snapshot_and_reports_restore_failure(qapp, monkeypatc
 
         monkeypatch.setattr(owner, "_get_current_preset", fail_apply_snapshot)
         dialog._apply_eq_settings()
-        assert owner.eq_panel.apply_calls == 0
+        assert owner.eq_state.apply_calls == 0
         assert "no changes were applied" in messages[-1]
 
         monkeypatch.setattr(owner, "_get_current_preset", get_current_preset)
-        owner.eq_panel.restore_error = True
+        owner.eq_state.restore_error = True
         dialog._apply_eq_settings()
         assert "EQ restoration failed" in messages[-1]
     finally:
@@ -551,7 +566,7 @@ def test_voice_rollback_uses_shared_transaction_and_keeps_failed_snapshot(
     dialog._pre_setup_snapshot = snapshot
     owner.fail_apply = True
     monkeypatch.setattr(
-        "mic_eq.ui.voice_setup_dialog._find_eq_panel_owner",
+        "mic_eq.ui.voice_setup_dialog._find_eq_state_owner",
         lambda _widget: owner,
     )
     try:
@@ -595,7 +610,6 @@ def test_manual_compressor_change_is_marked_customized_after_calibration(qapp) -
             {"ratio": 3.0, "dynamics_profile": "gentle", "dynamics_customized": False}
         )
         panel.ratio_spinbox.setValue(3.5)
-        panel._mark_dynamics_customized()
 
         settings = panel.get_compressor_settings(include_calibration=True)
         assert settings["dynamics_profile"] == "gentle"
@@ -614,7 +628,6 @@ def test_lufs_target_change_keeps_compression_intensity_marker(qapp) -> None:
             {"dynamics_profile": "gentle", "dynamics_customized": False}
         )
         panel.target_lufs_spinbox.setValue(-17.0)
-        panel._mark_dynamics_customized()
         settings = panel.get_compressor_settings(include_calibration=True)
         assert settings["target_lufs"] == -17.0
         assert settings["dynamics_profile"] == "gentle"
@@ -627,7 +640,7 @@ def test_lufs_target_change_keeps_compression_intensity_marker(qapp) -> None:
 
 def test_eq_apply_reads_back_accepted_values(qapp, monkeypatch) -> None:
     owner = _CalibrationOwner()
-    owner.eq_panel = _ReadbackEqPanel()
+    owner.eq_state = _ReadbackEqState()
     dialog = CalibrationDialog(owner)
     monkeypatch.setattr(QMessageBox, "critical", lambda *_args, **_kwargs: None)
     try:
@@ -642,9 +655,9 @@ def test_eq_apply_reads_back_accepted_values(qapp, monkeypatch) -> None:
         assert proposal is not None
         expected_eq = proposal.proposed_preset.eq.to_dict()
         dialog._apply_eq_settings()
-        assert owner.eq_panel.get_settings()["band_gains"] == [6.0] * 10
-        assert owner.eq_panel.get_settings()["enabled"] is True
-        assert owner.eq_panel.get_eq_settings().to_dict() == expected_eq
+        assert owner.eq_state.get_settings()["band_gains"] == [6.0] * 10
+        assert owner.eq_state.get_settings()["enabled"] is True
+        assert owner.eq_state.get_eq_settings().to_dict() == expected_eq
     finally:
         dialog.reject()
         owner.close()
@@ -663,7 +676,7 @@ def test_eq_candidate_rejects_changed_route_context(qapp, monkeypatch) -> None:
         _install_eq_candidate(dialog, owner)
         owner.context_key = "route-b"
         dialog._apply_eq_settings()
-        assert owner.eq_panel.apply_calls == 0
+        assert owner.eq_state.apply_calls == 0
         assert "context changed" in messages[-1]
     finally:
         dialog.reject()
@@ -687,11 +700,11 @@ def test_rollback_drops_stale_noise_reliability_but_restores_numeric_settings(
     dialog._pre_setup_snapshot = snapshot
     owner.context_key = "route-b"
     monkeypatch.setattr(
-        "mic_eq.ui.voice_setup_dialog._find_eq_panel_owner", lambda _widget: owner
+        "mic_eq.ui.voice_setup_dialog._find_eq_state_owner", lambda _widget: owner
     )
     try:
         assert dialog._restore_pre_setup_snapshot() is True
-        assert owner.compressor_panel.last_settings == {
+        assert owner.compressor_state.last_settings == {
             "dynamics_profile": "balanced",
             "dynamics_customized": False,
         }
@@ -713,11 +726,11 @@ def test_rollback_drops_noise_reliability_when_context_is_unknown(qapp, monkeypa
         "calibration_context_key": None,
     }
     monkeypatch.setattr(
-        "mic_eq.ui.voice_setup_dialog._find_eq_panel_owner", lambda _widget: owner
+        "mic_eq.ui.voice_setup_dialog._find_eq_state_owner", lambda _widget: owner
     )
     try:
         assert dialog._restore_pre_setup_snapshot() is True
-        assert owner.compressor_panel.last_settings == {
+        assert owner.compressor_state.last_settings == {
             "dynamics_profile": "balanced",
             "dynamics_customized": False,
         }
@@ -734,7 +747,7 @@ def test_voice_close_and_reset_block_when_restore_owner_is_missing(qapp, monkeyp
     generation = dialog._analysis_generation
     dialog._pre_setup_snapshot = {"gate": {}}
     monkeypatch.setattr(
-        "mic_eq.ui.voice_setup_dialog._find_eq_panel_owner", lambda _widget: None
+        "mic_eq.ui.voice_setup_dialog._find_eq_state_owner", lambda _widget: None
     )
     dialog.reject()
     worker.stop.assert_called_once()

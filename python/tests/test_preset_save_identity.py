@@ -143,6 +143,7 @@ def test_invalid_last_used_preset_falls_back_with_persistent_warning(
 
 def _save_window(tmp_path: Path) -> MainWindow:
     window = MainWindow.__new__(MainWindow)
+    window._flush_processing_configuration_writes = Mock()
     previous_path = tmp_path / "previous.json"
     window.config = AppConfig(last_preset=str(previous_path))
     window.current_preset_path = previous_path
@@ -161,7 +162,7 @@ def test_save_preset_updates_last_used_identity(monkeypatch, tmp_path):
         Mock(side_effect=[("Fresh", True), ("Description", True)]),
     )
     monkeypatch.setattr(main_window.QMessageBox, "information", Mock())
-    window.status_bar = Mock()
+    window.status_message = Mock()
     window._get_current_preset = lambda: Preset()
 
     MainWindow._save_preset(window)
@@ -401,7 +402,7 @@ def test_saved_file_without_identity_persistence_is_reported(
         "getText",
         Mock(side_effect=[("Fresh", True), ("", True)]),
     )
-    window.status_bar = Mock()
+    window.status_message = Mock()
     window._get_current_preset = lambda: Preset()
 
     MainWindow._save_preset(window)
@@ -409,7 +410,7 @@ def test_saved_file_without_identity_persistence_is_reported(
     assert window.current_preset_path == saved_path
     assert window.config.last_preset == str(tmp_path / "previous.json")
     assert window._last_preset_identity_persisted is False
-    assert "could not remember" in window.status_bar.showMessage.call_args.args[0]
+    assert "could not remember" in window.status_message.showMessage.call_args.args[0]
 
 
 @pytest.mark.parametrize("save_config_result", [False, TypeError("invalid config")])
@@ -426,7 +427,7 @@ def test_loaded_preset_keeps_live_identity_when_remembering_fails(
     window.preset_modified = False
     window._history_ready = False
     window._history_replaying = False
-    window.status_bar = Mock()
+    window.status_message = Mock()
     window.apply_processing_configuration = Mock()
     window._set_preset_modified = Mock()
     window._update_session_summary = Mock()
@@ -442,7 +443,7 @@ def test_loaded_preset_keeps_live_identity_when_remembering_fails(
     assert window.current_preset_name == "Loaded"
     assert window.current_preset_path == loaded_path
     assert window.config.last_preset == "previous.json"
-    assert "could not be remembered" in window.status_bar.showMessage.call_args.args[0]
+    assert "could not be remembered" in window.status_message.showMessage.call_args.args[0]
 
 
 def _submenu(window: QMainWindow, title: str) -> QMenu:
@@ -570,9 +571,9 @@ def test_restore_startup_preset_resolves_file_id_and_migrates_legacy_name(
 
     window = cast(Any, MainWindow.__new__(MainWindow))
     window.config = AppConfig(startup_preset=startup_id)
-    window.input_combo = SimpleNamespace(blockSignals=Mock())
-    window.output_combo = SimpleNamespace(blockSignals=Mock())
-    window.status_bar = Mock()
+    window.input_choice = SimpleNamespace(blockSignals=Mock())
+    window.output_choice = SimpleNamespace(blockSignals=Mock())
+    window.status_message = Mock()
     window._apply_preset = Mock(return_value=True)
     window._restore_ui_state = Mock()
     window._apply_latency_compensation_for_current_devices = Mock()
@@ -670,7 +671,7 @@ def test_automatic_route_apply_resolves_legacy_filename_and_shows_display_name(
     )
     window._current_device_route_key = lambda: "route"
     window._apply_preset = apply_preset
-    window.status_bar = Mock()
+    window.status_message = Mock()
     window._save_config_safely = Mock(return_value=True)
 
     assert MainWindow._apply_bound_preset_for_current_route(window)
@@ -680,7 +681,7 @@ def test_automatic_route_apply_resolves_legacy_filename_and_shows_display_name(
         == "custom-file:custom-voice.json"
     )
     window._save_config_safely.assert_called_once()
-    window.status_bar.showMessage.assert_called_once_with("Route preset: Warm Voice", 5000)
+    window.status_message.showMessage.assert_called_once_with("Route preset: Warm Voice", 5000)
 
 
 def test_missing_custom_file_id_does_not_match_display_name(monkeypatch, tmp_path):
@@ -696,9 +697,9 @@ def test_missing_custom_file_id_does_not_match_display_name(monkeypatch, tmp_pat
 
     window = cast(Any, MainWindow.__new__(MainWindow))
     window.config = AppConfig(startup_preset="custom-file:missing.json")
-    window.input_combo = SimpleNamespace(blockSignals=Mock())
-    window.output_combo = SimpleNamespace(blockSignals=Mock())
-    window.status_bar = Mock()
+    window.input_choice = SimpleNamespace(blockSignals=Mock())
+    window.output_choice = SimpleNamespace(blockSignals=Mock())
+    window.status_message = Mock()
     window._apply_preset = Mock(return_value=True)
     window._restore_ui_state = Mock()
     window._apply_latency_compensation_for_current_devices = Mock()
@@ -740,18 +741,19 @@ def test_manual_history_edit_clears_auto_eq_diagnostics_only_when_recorded():
     edited = Preset()
     edited.gate.threshold_db = -35.0
     window._get_current_preset = lambda: edited
-    window.compressor_panel = SimpleNamespace(
-        get_compressor_settings=lambda include_calibration: {
+    window.compressor_state = SimpleNamespace(
+        flush=Mock(),
+        get_settings=lambda include_calibration: {
             "noise_reference_reliability": 0.0
         }
     )
     window._calibration_context_key = lambda: None
-    window.eq_panel = SimpleNamespace(set_auto_eq_diagnostics=Mock())
+    window.eq_state = SimpleNamespace(flush=Mock(), set_auto_eq_diagnostics=Mock())
     window._update_history_actions = Mock()
-    window.status_bar = Mock()
+    window.status_message = Mock()
 
     assert MainWindow._commit_pending_configuration_snapshot(window, source="ui")
-    window.eq_panel.set_auto_eq_diagnostics.assert_called_once_with(None)
+    window.eq_state.set_auto_eq_diagnostics.assert_called_once_with(None)
 
 
 def test_save_updates_owned_path_without_name_prompt(monkeypatch, tmp_path):

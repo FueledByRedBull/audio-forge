@@ -39,10 +39,10 @@ def _owner(
     config: Any | None = None,
 ) -> Any:
     owner = cast(Any, MainWindow.__new__(MainWindow))
-    owner.input_combo = QComboBox()
-    owner.output_combo = QComboBox()
-    owner.input_combo.addItem(input_identity.name, input_identity)
-    owner.output_combo.addItem(output_identity.name, output_identity)
+    owner.input_choice = QComboBox()
+    owner.output_choice = QComboBox()
+    owner.input_choice.addItem(input_identity.name, input_identity)
+    owner.output_choice.addItem(output_identity.name, output_identity)
     route_key = build_device_route_key(input_identity, output_identity)
     owner.config = config or SimpleNamespace(
         use_measured_latency=True,
@@ -54,8 +54,8 @@ def _owner(
 
 
 def _close_owner(owner: Any, qapp) -> None:
-    owner.input_combo.deleteLater()
-    owner.output_combo.deleteLater()
+    owner.input_choice.deleteLater()
+    owner.output_choice.deleteLater()
     qapp.processEvents()
 
 
@@ -68,7 +68,7 @@ def test_latency_profile_write_failure_preserves_previous_profile_and_allows_ret
     output_identity = DeviceIdentity(name="Cable", endpoint_id="out", direction="output", sample_rate=48_000, channels=2)
     previous = _profile((48_000, 1, 48_000, 2))
     owner = _owner(input_identity, output_identity, previous)
-    owner.status_bar = Mock()
+    owner.status_message = Mock()
     owner._apply_latency_compensation_for_current_devices = Mock()
     replacement = _profile((48_000, 1, 48_000, 2))
     replacement.route_latency_ms = 65.0
@@ -81,7 +81,7 @@ def test_latency_profile_write_failure_preserves_previous_profile_and_allows_ret
         assert action() is False
         assert list(owner.config.latency_calibration_profiles.values()) == [previous]
         owner._apply_latency_compensation_for_current_devices.assert_not_called()
-        assert "could not be saved" in owner.status_bar.showMessage.call_args.args[0]
+        assert "could not be saved" in owner.status_message.showMessage.call_args.args[0]
 
         monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
         assert action() is True
@@ -164,7 +164,7 @@ def test_same_route_with_changed_sample_rate_or_channels_drops_old_compensation(
             sample_rate=44_100,
             channels=2,
         )
-        owner.input_combo.setItemData(0, changed_input)
+        owner.input_choice.setItemData(0, changed_input)
 
         assert MainWindow._current_device_route_key(owner) == build_device_route_key(
             input_identity, output_identity
@@ -401,9 +401,9 @@ def test_running_stream_on_different_route_is_rejected(qapp, monkeypatch):
             self.processor.get_active_output_device.return_value = "Cable A"
             self.processor.get_active_output_device_endpoint_id.return_value = "out-a"
             self.processor.get_active_output_device_name_ordinal.return_value = 0
-            self.input_combo = QComboBox()
-            self.output_combo = QComboBox()
-            self.input_combo.addItem(
+            self.input_choice = QComboBox()
+            self.output_choice = QComboBox()
+            self.input_choice.addItem(
                 "Mic B",
                 DeviceIdentity(
                     name="Mic B",
@@ -413,7 +413,7 @@ def test_running_stream_on_different_route_is_rejected(qapp, monkeypatch):
                     channels=1,
                 ),
             )
-            self.output_combo.addItem(
+            self.output_choice.addItem(
                 "Cable B",
                 DeviceIdentity(
                     name="Cable B",

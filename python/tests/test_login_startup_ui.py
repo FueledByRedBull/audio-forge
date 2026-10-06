@@ -29,16 +29,17 @@ def startup_owner(qapp, monkeypatch):
         _tray_icon=SimpleNamespace(isVisible=lambda: True), _output_mute_error=None,
         _temporary_mute_reasons=set(), _quitting=False,
         processor=SimpleNamespace(is_running=lambda: False),
-        input_combo=QComboBox(), output_combo=QComboBox(), stop_btn=Mock(),
-        status_bar=Mock(), _update_session_summary=Mock(), _sync_processing_controls=Mock(),
+        input_choice=QComboBox(), output_choice=QComboBox(),
+        start_btn_action=Mock(), stop_btn_action=Mock(), refresh_btn_action=Mock(),
+        status_message=Mock(), _update_session_summary=Mock(), _sync_processing_controls=Mock(),
         _refresh_devices=Mock(), _apply_input_preferences_for_current_route=Mock(),
         _apply_latency_compensation_for_current_devices=Mock(),
         _apply_bound_preset_for_current_route=Mock(return_value=True),
         _current_device_route_key=Mock(return_value="saved-route"),
         _start_processing=Mock(return_value=True), _setup_desktop_integration=Mock(),
     )
-    owner.input_combo.addItem("Mic", input_id)
-    owner.output_combo.addItem("Cable", output_id)
+    owner.input_choice.addItem("Mic", input_id)
+    owner.output_choice.addItem("Cable", output_id)
     owner._combo_identities = MainWindow._combo_identities
     for name in ("begin_login_startup", "_service_login_startup", "_cancel_login_startup"):
         setattr(owner, name, MethodType(getattr(MainWindow, name), owner))
@@ -58,14 +59,14 @@ def test_login_starts_once_on_exact_saved_route(startup_owner):
 def test_missing_endpoint_waits_without_selecting_same_name_replacement(startup_owner):
     owner, clock = startup_owner
     replacement = DeviceIdentity(name="Mic", endpoint_id="capture-B", direction="input")
-    owner.input_combo.setItemData(0, replacement)
+    owner.input_choice.setItemData(0, replacement)
     owner.begin_login_startup()
     owner._start_processing.assert_not_called()
     assert owner.config.last_input_device_identity.endpoint_id == "capture-A"
     assert owner._login_startup_deadline is not None
     # A reconnect can change the friendly name and ordinal while retaining the endpoint.
     returned = DeviceIdentity(name="Renamed Mic", endpoint_id="capture-A", direction="input")
-    owner.input_combo.setItemData(0, returned)
+    owner.input_choice.setItemData(0, returned)
     clock[0] += 2
     owner._service_login_startup()
     owner._start_processing.assert_called_once_with(interactive=False)
@@ -88,7 +89,7 @@ def test_unsupported_restoration_stays_stopped(startup_owner, unsupported):
 
 def test_wait_is_bounded_and_does_not_retry_after_deadline(startup_owner):
     owner, clock = startup_owner
-    owner.output_combo.clear()
+    owner.output_choice.clear()
     owner.begin_login_startup()
     clock[0] += 61
     owner._service_login_startup()
@@ -102,10 +103,10 @@ def test_wait_is_bounded_and_does_not_retry_after_deadline(startup_owner):
 
 def test_stop_cancels_pending_start_even_when_audio_was_never_running(startup_owner):
     owner, clock = startup_owner
-    owner.output_combo.clear()
+    owner.output_choice.clear()
     owner.begin_login_startup()
     MainWindow._stop_processing(owner)
-    owner.output_combo.addItem("Cable", owner._login_startup_route[1])
+    owner.output_choice.addItem("Cable", owner._login_startup_route[1])
     clock[0] += 2
     owner._service_login_startup()
     owner._start_processing.assert_not_called()
@@ -114,10 +115,10 @@ def test_stop_cancels_pending_start_even_when_audio_was_never_running(startup_ow
 
 def test_external_opt_out_cancels_pending_start(startup_owner, monkeypatch):
     owner, clock = startup_owner
-    owner.output_combo.clear()
+    owner.output_choice.clear()
     owner.begin_login_startup()
     monkeypatch.setattr(main_window.login_startup, "registration_state", lambda _: "absent")
-    owner.output_combo.addItem("Cable", owner._login_startup_route[1])
+    owner.output_choice.addItem("Cable", owner._login_startup_route[1])
     clock[0] += 2
     owner._service_login_startup()
     owner._start_processing.assert_not_called()
@@ -140,14 +141,14 @@ def test_no_tray_exits_without_starting_audio_or_showing_window(startup_owner, m
 
 def test_route_edit_cancels_retry_before_persisting_the_explicit_new_route(startup_owner):
     owner, clock = startup_owner
-    owner.output_combo.clear()
+    owner.output_choice.clear()
     owner.begin_login_startup()
     owner._combo_device_identity = MainWindow._combo_device_identity
     owner._device_name_from_identity = MainWindow._device_name_from_identity
     owner._save_config_safely = Mock(return_value=True)
     owner._sync_calibration_evidence = Mock()
     replacement = DeviceIdentity(name="Chosen Cable", endpoint_id="render-B", direction="output")
-    owner.output_combo.addItem("Chosen Cable", replacement)
+    owner.output_choice.addItem("Chosen Cable", replacement)
     MainWindow._on_device_changed(owner)
     clock[0] += 2
     owner._service_login_startup()
@@ -176,8 +177,8 @@ def test_quiet_start_restores_mute_before_exact_route_and_stops_on_post_start_fa
     events = []
     owner._combo_device_identity = MainWindow._combo_device_identity
     owner._device_selection_to_name = lambda combo: combo.currentData().name
-    owner.start_btn = Mock()
-    owner.refresh_btn = Mock()
+    owner.start_btn_action = Mock()
+    owner.refresh_btn_action = Mock()
     owner._stream_recovery = Mock()
     owner._sync_meter_timer = Mock()
 
@@ -220,7 +221,7 @@ def test_missing_requested_startup_preset_is_not_authorized_by_last_used_fallbac
     previous_key = next(iter(main_window.BUILTIN_PRESETS))
     owner: Any = SimpleNamespace(
         config=AppConfig(startup_preset="builtin:missing", last_preset=f"builtin:{previous_key}"),
-        input_combo=Mock(), output_combo=Mock(), status_bar=Mock(),
+        input_choice=Mock(), output_choice=Mock(), status_message=Mock(),
         _apply_preset=Mock(return_value=True), _restore_ui_state=Mock(),
         _apply_latency_compensation_for_current_devices=Mock(),
         _apply_bound_preset_for_current_route=Mock(), _save_config_safely=Mock(return_value=True),
@@ -253,7 +254,7 @@ def test_manual_refresh_resumes_route_preset_behavior_after_login_finishes(start
     owner._current_capture_format_context = Mock(return_value=None)
     owner._sync_calibration_evidence = Mock()
     owner._save_config_safely = Mock(return_value=True)
-    owner.device_warning_banner = Mock()
+    owner.shell_texts = {"device_warning_banner": SimpleNamespace(update=Mock())}
     for name in ("_combo_device_identity", "_identity_from_device_info",
                  "_find_combo_index_by_identity", "_default_combo_index",
                  "_preferred_output_combo_index"):
@@ -271,5 +272,5 @@ def test_opt_out_does_not_report_running_audio_as_stopped(startup_owner, monkeyp
     owner._refresh_login_startup_action = Mock()
     monkeypatch.setattr(main_window.login_startup, "set_login_startup", Mock(return_value=True))
     MainWindow._on_login_startup_toggled(owner, False)
-    messages = [str(call.args[0]).lower() for call in owner.status_bar.showMessage.call_args_list]
+    messages = [str(call.args[0]).lower() for call in owner.status_message.showMessage.call_args_list]
     assert not any("audio remains stopped" in message for message in messages)

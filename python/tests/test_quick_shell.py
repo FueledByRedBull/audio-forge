@@ -10,10 +10,11 @@ from PySide6.QtWidgets import QLabel, QMessageBox
 
 from mic_eq.config import AppConfig
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.eq_quick_graph import EQGraphItem
+from mic_eq.ui.eq_graph import EQGraphGeometry
 from mic_eq.ui.quick_shell import (
     SettingControl,
     QUICK_VIEW_UNAVAILABLE,
-    WidgetItem,
     restore_widget_shell,
 )
 
@@ -80,6 +81,9 @@ def test_classic_fallback_only_attaches_views_without_native_writes(quick_window
     assert window.eq_panel.curve_widget is window.eq_presentation.curve_widget
     assert window.gate_panel.confidence_meter is window.processing_meters.confidence
     assert window._get_current_preset() == expected
+    for name in ("transmission_status_label", "calibration_status_label", "health_summary_label"):
+        assert window.shell_texts[name].shown
+        assert not getattr(window, name).isHidden()
 
 
 def test_failed_gate_initialization_retains_configuration_recovery_barrier(qapp, monkeypatch) -> None:
@@ -99,7 +103,6 @@ def test_failed_gate_initialization_retains_configuration_recovery_barrier(qapp,
 
 def test_deesser_controls_share_exact_settings_and_derived_availability(quick_window) -> None:
     bridge = quick_window.quick_bridge
-    bridge._timer.stop()
     rows = _rows(bridge.model["stages"][2])
     state = quick_window.deesser_state
     state.set_settings({"auto_enabled": False, "attack_ms": 2.125})
@@ -159,11 +162,10 @@ def test_state_controls_preserve_widget_presentation_contract(quick_window) -> N
 
 def test_limiter_reads_shared_state_without_polling_widgets(quick_window) -> None:
     bridge = quick_window.quick_bridge
-    bridge._timer.stop()
     control = _rows(bridge.model["stages"][-1])["Ceiling"]["proxy"]
     assert isinstance(control, SettingControl)
     widget = quick_window.compressor_panel.ceiling_spinbox
-    assert all(proxy.target is not widget for proxy in bridge._proxies)
+    assert not hasattr(bridge, "_timer")
     seen = []
     control.changed.connect(lambda: seen.append(control.value))
 
@@ -337,13 +339,12 @@ def test_toggle_combo_and_page_proxies(quick_window) -> None:
     assert quick_window.page_stack.currentIndex() == MainWindow.HEALTH_PAGE_INDEX
 
 
-def test_proxy_follows_widget_changes_made_elsewhere(quick_window) -> None:
+def test_health_notifies_without_widget_polling(quick_window) -> None:
     bridge = quick_window.quick_bridge
     status = bridge.model["health"]["signal"][0]["proxy"]
     seen: list[str] = []
     status.changed.connect(lambda: seen.append(status.text))
     quick_window._set_health_chip(quick_window.input_health_label, "Input: hot", "warn")
-    bridge.refresh()
     assert seen == ["Input: hot"]
     assert status.state == "warn"
 
@@ -368,23 +369,22 @@ def test_every_stage_is_in_the_model(quick_window) -> None:
     ]
 
 
-def test_widget_item_paints_and_forwards_pointer_input(quick_window) -> None:
+def test_native_quick_graph_paints_and_selects_shared_state(quick_window) -> None:
     eq = quick_window.quick_bridge.model["eq"]
-    curve = quick_window.eq_panel.curve_widget
-    item = WidgetItem()
+    curve = quick_window.eq_presentation.graph_model
+    item = EQGraphItem()
     item.setWidth(900)
     item.setHeight(300)
-    item.proxy = eq["curve"]
+    item.graph = eq["curve"]
 
     image = QImage(900, 300, QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
     item.paint(painter)
     painter.end()
-    assert curve.width() == 900
     assert image.pixelColor(450, 150).alpha() > 0
 
-    x, y = curve.band_handle_position(3)
+    x, y = EQGraphGeometry.band_handle_position(curve.bands, 3, 900, 300)
     press = QMouseEvent(
         QEvent.Type.MouseButtonPress,
         QPointF(x, y),
@@ -393,8 +393,7 @@ def test_widget_item_paints_and_forwards_pointer_input(quick_window) -> None:
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
     )
-    item._send_mouse(press, press.type(), press.button(), press.buttons())
-    quick_window.quick_bridge.refresh()
+    item.mousePressEvent(press)
     assert eq["band"].index == 3
 
 
@@ -542,22 +541,28 @@ def test_settings_switch_follows_an_action_the_window_corrects_silently(
     with QSignalBlocker(action):
         action.setChecked(True)
     action.changed.emit()
-    quick_window.quick_bridge.refresh()
     assert row.checked
 
     assert not quick_window._register_mute_hotkey("Ctrl+Alt+M")
-    quick_window.quick_bridge.refresh()
     assert not action.isChecked()
     assert not row.checked
 
 
-def test_scene_control_is_told_to_read_back_a_choice_the_widget_refused(quick_window) -> None:
+def test_scene_control_reads_back_a_mode_the_processor_refused(quick_window) -> None:
     mode = quick_window.quick_bridge.model["top"]["mode"]
     combo = quick_window.processing_mode_combo
-    # The handler puts the old entry back, as a failed backend switch does.
-    combo.currentIndexChanged.connect(
-        lambda _index: (combo.blockSignals(True), combo.setCurrentIndex(0), combo.blockSignals(False))
-    )
+    native = quick_window.processor
+
+    class RejectBypass:
+        def __getattr__(self, name):
+            return getattr(native, name)
+
+        def set_bypass(self, enabled):
+            if enabled:
+                raise RuntimeError("bypass unavailable")
+            native.set_bypass(enabled)
+
+    quick_window.processor = RejectBypass()
     notified: list[bool] = []
     mode.changed.connect(lambda: notified.append(True))
     mode.setIndex(1)
@@ -572,7 +577,6 @@ def test_redo_button_follows_the_history(quick_window) -> None:
     quick_window.undo_configuration()
     assert quick_window.redo_button.isEnabled() == quick_window._redo_action.isEnabled()
     assert quick_window.redo_button.isEnabled()
-    quick_window.quick_bridge.refresh()
     assert redo.enabled
 
 
@@ -594,19 +598,19 @@ def test_keyboard_focus_scrolls_its_control_into_view(quick_window, qapp) -> Non
     assert page.property("contentY") > 0
 
 
-def test_fallback_gives_painted_widgets_their_size_limits_back(quick_window) -> None:
-    curve = quick_window.eq_panel.curve_widget
-    item = WidgetItem()
+def test_quick_graph_does_not_construct_or_resize_classic_graph(quick_window) -> None:
+    presentation = quick_window.eq_presentation
+    item = EQGraphItem()
     item.setWidth(640)
     item.setHeight(200)
-    item.proxy = quick_window.quick_bridge.model["eq"]["curve"]
+    item.graph = presentation.graph_model
     image = QImage(640, 200, QImage.Format.Format_ARGB32_Premultiplied)
     painter = QPainter(image)
     item.paint(painter)
     painter.end()
-    assert curve.minimumWidth() == curve.maximumWidth() == 640
+    assert presentation._curve_widget is None
     restore_widget_shell(quick_window, "no graphics adapter")
-    # Free to follow the window width again, as in the widget view.
+    curve = presentation.curve_widget
     assert curve.minimumWidth() < 640 < curve.maximumWidth()
 
 
@@ -696,3 +700,16 @@ def test_save_entrypoints_capture_only_accepted_pending_settings(
     assert saved == ([] if reject else [-3.0])
     assert written == ([-1.0] if reject else [-3.0])
     assert window.limiter_state.get_settings()["ceiling_db"] == (-1.0 if reject else -3.0)
+
+
+def test_shared_mute_action_updates_classic_switch_painting(quick_window, monkeypatch):
+    monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "1")
+    window = quick_window
+    window.user_mute_checkbox_action.setChecked(True)
+    assert window.user_muted
+    assert window.user_mute_checkbox.isChecked()
+    assert window.user_mute_checkbox._position == 1.0
+    window.user_mute_checkbox.click()
+    assert not window.user_muted
+    assert not window.user_mute_checkbox_action.isChecked()
+    assert window.user_mute_checkbox._position == 0.0

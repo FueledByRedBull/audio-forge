@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QLabel, QWidget
 from .gate_state import GateState
 from .level_meter import ConfidenceMeter, GainReductionMeter
 from .layout_constants import METER_LABEL_STYLE
+from .shell_state import TextState
 
 
 class ProcessingMeters(QObject):
@@ -37,6 +38,12 @@ class ProcessingMeters(QObject):
         self.current_makeup_gain.setToolTip("Current auto makeup gain applied")
         for label in (self.current_release, self.current_lufs, self.current_makeup_gain):
             label.setStyleSheet(METER_LABEL_STYLE)
+        self.text_states = {}
+        for name in ("current_release", "current_lufs", "current_makeup_gain"):
+            label = getattr(self, name)
+            state = TextState(self, text="--", name=label.accessibleName(), tip=label.toolTip())
+            state.bind_label(label)
+            self.text_states[name] = state
         for widget in (self.compressor_gr, self.deesser_gr, self.confidence,
                        self.current_release, self.current_lufs, self.current_makeup_gain):
             widget.show()
@@ -57,11 +64,11 @@ class ProcessingMeters(QObject):
             text = f"{value:.0f} ms" if value is not None and math.isfinite(value) else "--"
         except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
             text = "--"
-        self.current_release.setText(text)
+        self.text_states["current_release"].update(text=text)
 
     def update_auto_makeup(self, loudness: float | None, gain: float | None) -> None:
         for label, value, unit in (
-            (self.current_lufs, loudness, "LUFS"),
-            (self.current_makeup_gain, gain, "dB"),
+            (self.text_states["current_lufs"], loudness, "LUFS"),
+            (self.text_states["current_makeup_gain"], gain, "dB"),
         ):
-            label.setText(f"{value:.1f} {unit}" if value is not None and math.isfinite(value) else "--")
+            label.update(text=f"{value:.1f} {unit}" if value is not None and math.isfinite(value) else "--")

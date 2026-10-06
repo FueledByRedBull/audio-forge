@@ -4,11 +4,13 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
+from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QLabel, QWidget
 
 from mic_eq.ui.first_run_setup_dialog import route_health_reason
 from mic_eq.ui.health import RecentStreamHealth
 from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.shell_state import TextState
 
 
 def test_presentation_timer_pauses_without_stopping_diagnostics(qapp):
@@ -130,11 +132,15 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         get_input_callback_age_ms=lambda: 0,
         get_output_callback_age_ms=lambda: 0,
     )
+    state_owner = QObject()
     window: Any = SimpleNamespace(
         _stream_health=RecentStreamHealth(),
         _last_backend_warning=None,
         processor=processor,
         _update_session_summary=Mock(),
+        _shell_state_owner=state_owner,
+        shell_texts={},
+        _health_text_for_view={},
     )
     names = (
         "latency_label",
@@ -150,7 +156,18 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         "health_summary_label",
     )
     for name in names:
-        setattr(window, name, QLabel())
+        label = QLabel()
+        state = TextState(state_owner, text=label.text(), name=name)
+        state.bind_label(label)
+        setattr(window, name, label)
+        window.shell_texts[name] = state
+        window._health_text_for_view[label] = state
+    advice_label = QLabel()
+    advice_state = TextState(state_owner, text="", name="health_advice_label")
+    advice_state.bind_label(advice_label)
+    window.health_advice_label = advice_label
+    window.shell_texts["health_advice_label"] = advice_state
+    window._health_text_for_view[advice_label] = advice_state
     window._health_decision_widgets = [getattr(window, name) for name in names[:-1]]
     window._health_layout_widgets = []
     window._set_health_chip = lambda label, text, state: MainWindow._set_health_chip(
@@ -188,6 +205,9 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
 
 def test_unchanged_health_chip_does_not_reapply_qt_styles(qapp, monkeypatch):
     label = QLabel()
+    state_owner = QObject()
+    state = TextState(state_owner, text=label.text(), name="health_summary_label")
+    state.bind_label(label)
     calls = dict(text=0, style=0, property=0)
     original_text, original_style, original_property = (
         label.setText,
@@ -210,7 +230,8 @@ def test_unchanged_health_chip_does_not_reapply_qt_styles(qapp, monkeypatch):
     monkeypatch.setattr(label, "setText", text)
     monkeypatch.setattr(label, "setStyleSheet", style)
     monkeypatch.setattr(label, "setProperty", prop)
-    window: Any = None
+    window: Any = SimpleNamespace(_health_text_for_view={label: state})
+    calls.update(text=0, style=0, property=0)
     for _ in range(30):
         MainWindow._set_health_chip(window, label, "Health: --", "idle")
     assert calls == dict(text=1, style=1, property=1)

@@ -187,9 +187,11 @@ class EQState(QObject):
         self._diagnostics: dict | None = None
 
     def get_eq_settings(self) -> EQSettings:
+        """Return desired settings, including edits queued for the DSP."""
         return copy(self._settings)
 
     def get_settings(self) -> dict:
+        """Return desired settings; flush pending writes before persisting them."""
         settings = self._settings
         return settings.to_dict() | {
             "band_freqs": settings.band_freqs,

@@ -18,6 +18,13 @@ from PySide6.QtWidgets import (
 from .deesser_state import DeEsserState
 from .level_meter import GainReductionMeter
 from .processing_meters import ProcessingMeters
+from .control_specs import (
+    apply_control_presentation,
+    configure_numeric_control,
+    control_label,
+    control_spec,
+    widget_control_label,
+)
 from .components import Card, ToggleSwitch
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
@@ -48,9 +55,7 @@ class DeEsserPanel(QWidget):
 
         self.enabled_checkbox = ToggleSwitch()
         self.enabled_checkbox.setChecked(False)
-        self.enabled_checkbox.setToolTip(
-            "Reduces harsh sibilance (s, sh, t) using dynamic attenuation."
-        )
+        apply_control_presentation(self.enabled_checkbox, "deesser", "enabled")
         card = Card(
             "De-esser",
             switch=self.enabled_checkbox,
@@ -71,157 +76,149 @@ class DeEsserPanel(QWidget):
             section.setColumnStretch(1, 1)
             section.setColumnMinimumWidth(0, 95)
 
-        self.auto_checkbox = ToggleSwitch("Auto")
+        self.auto_checkbox = ToggleSwitch(control_label("deesser", "auto_enabled"))
         self.auto_checkbox.setChecked(True)
-        self.auto_checkbox.setToolTip(
-            "Learns average sibilance and applies dynamic reduction automatically."
-        )
+        apply_control_presentation(self.auto_checkbox, "deesser", "auto_enabled")
         grid.addWidget(self.auto_checkbox, 1, 0, 1, 2)
 
         amount_layout = QHBoxLayout()
         self.auto_amount_slider = QSlider(Qt.Orientation.Horizontal)
-        self.auto_amount_slider.setRange(0, 100)
-        self.auto_amount_slider.setValue(50)
         self.auto_amount_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.auto_amount_slider.setTickInterval(10)
         amount_layout.addWidget(self.auto_amount_slider)
 
         self.auto_amount_spinbox = QDoubleSpinBox()
-        self.auto_amount_spinbox.setRange(0.0, 1.0)
-        self.auto_amount_spinbox.setSingleStep(0.05)
+        configure_numeric_control(
+            self.auto_amount_spinbox, "deesser", "auto_amount",
+            slider=self.auto_amount_slider, slider_scale=100,
+        )
+        self.auto_amount_slider.setValue(50)
         self.auto_amount_spinbox.setValue(0.5)
-        self.auto_amount_spinbox.setDecimals(2)
         fit_spinbox_to_contents(self.auto_amount_spinbox)
         amount_layout.addWidget(self.auto_amount_spinbox)
 
-        amount_label = QLabel("Amount:")
+        amount_label = QLabel(f"{widget_control_label('deesser', 'auto_amount')}:")
         amount_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         grid.addWidget(amount_label, 2, 0)
         grid.addLayout(amount_layout, 2, 1)
 
         low_layout = QHBoxLayout()
         self.low_cut_slider = QSlider(Qt.Orientation.Horizontal)
-        self.low_cut_slider.setRange(2000, 12000)
-        self.low_cut_slider.setValue(4000)
         self.low_cut_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.low_cut_slider.setTickInterval(1000)
         low_layout.addWidget(self.low_cut_slider)
 
         self.low_cut_spinbox = QDoubleSpinBox()
-        self.low_cut_spinbox.setRange(2000.0, 12000.0)
-        self.low_cut_spinbox.setSingleStep(100.0)
+        configure_numeric_control(
+            self.low_cut_spinbox, "deesser", "low_cut_hz", slider=self.low_cut_slider,
+        )
+        self.low_cut_slider.setValue(4000)
         self.low_cut_spinbox.setValue(4000.0)
-        self.low_cut_spinbox.setSuffix(" Hz")
         fit_spinbox_to_contents(self.low_cut_spinbox)
         low_layout.addWidget(self.low_cut_spinbox)
 
-        low_label = QLabel("Low Cut:")
+        low_label = QLabel(f"{widget_control_label('deesser', 'low_cut_hz')}:")
         low_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(low_label, 3, 0)
         advanced_grid.addLayout(low_layout, 3, 1)
 
         high_layout = QHBoxLayout()
         self.high_cut_slider = QSlider(Qt.Orientation.Horizontal)
-        self.high_cut_slider.setRange(2200, 16000)
-        self.high_cut_slider.setValue(11000)
         self.high_cut_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.high_cut_slider.setTickInterval(1000)
         high_layout.addWidget(self.high_cut_slider)
 
         self.high_cut_spinbox = QDoubleSpinBox()
-        self.high_cut_spinbox.setRange(2200.0, 16000.0)
-        self.high_cut_spinbox.setSingleStep(100.0)
+        configure_numeric_control(
+            self.high_cut_spinbox, "deesser", "high_cut_hz", slider=self.high_cut_slider,
+        )
+        self.high_cut_slider.setValue(11000)
         self.high_cut_spinbox.setValue(11000.0)
-        self.high_cut_spinbox.setSuffix(" Hz")
         fit_spinbox_to_contents(self.high_cut_spinbox)
         high_layout.addWidget(self.high_cut_spinbox)
 
-        high_label = QLabel("High Cut:")
+        high_label = QLabel(f"{widget_control_label('deesser', 'high_cut_hz')}:")
         high_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(high_label, 4, 0)
         advanced_grid.addLayout(high_layout, 4, 1)
 
         threshold_layout = QHBoxLayout()
         self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self.threshold_slider.setRange(-60, -6)
-        self.threshold_slider.setValue(-28)
         self.threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.threshold_slider.setTickInterval(6)
         threshold_layout.addWidget(self.threshold_slider)
 
         self.threshold_spinbox = QDoubleSpinBox()
-        self.threshold_spinbox.setRange(-60.0, -6.0)
-        self.threshold_spinbox.setSingleStep(1.0)
+        configure_numeric_control(
+            self.threshold_spinbox, "deesser", "threshold_db",
+            slider=self.threshold_slider,
+        )
+        self.threshold_slider.setValue(-28)
         self.threshold_spinbox.setValue(-28.0)
-        self.threshold_spinbox.setSuffix(" dB")
         fit_spinbox_to_contents(self.threshold_spinbox)
         threshold_layout.addWidget(self.threshold_spinbox)
 
-        threshold_label = QLabel("Threshold:")
+        threshold_label = QLabel(f"{widget_control_label('deesser', 'threshold_db')}:")
         threshold_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(threshold_label, 5, 0)
         advanced_grid.addLayout(threshold_layout, 5, 1)
 
         ratio_layout = QHBoxLayout()
         self.ratio_slider = QSlider(Qt.Orientation.Horizontal)
-        self.ratio_slider.setRange(10, 200)
-        self.ratio_slider.setValue(40)
         self.ratio_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.ratio_slider.setTickInterval(20)
         ratio_layout.addWidget(self.ratio_slider)
 
         self.ratio_spinbox = QDoubleSpinBox()
-        self.ratio_spinbox.setRange(1.0, 20.0)
-        self.ratio_spinbox.setSingleStep(0.5)
+        configure_numeric_control(
+            self.ratio_spinbox, "deesser", "ratio",
+            slider=self.ratio_slider, slider_scale=10,
+        )
+        self.ratio_slider.setValue(40)
         self.ratio_spinbox.setValue(4.0)
-        self.ratio_spinbox.setSuffix(":1")
         fit_spinbox_to_contents(self.ratio_spinbox)
         ratio_layout.addWidget(self.ratio_spinbox)
 
-        ratio_label = QLabel("Ratio:")
+        ratio_label = QLabel(f"{widget_control_label('deesser', 'ratio')}:")
         ratio_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(ratio_label, 6, 0)
         advanced_grid.addLayout(ratio_layout, 6, 1)
 
         self.attack_spinbox = QDoubleSpinBox()
-        self.attack_spinbox.setRange(0.1, 50.0)
-        self.attack_spinbox.setSingleStep(0.1)
+        configure_numeric_control(self.attack_spinbox, "deesser", "attack_ms")
         self.attack_spinbox.setValue(2.0)
-        self.attack_spinbox.setSuffix(" ms")
         fit_spinbox_to_contents(self.attack_spinbox)
-        attack_label = QLabel("Attack:")
+        attack_label = QLabel(f"{widget_control_label('deesser', 'attack_ms')}:")
         attack_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(attack_label, 7, 0)
         advanced_grid.addWidget(self.attack_spinbox, 7, 1)
 
         self.release_spinbox = QDoubleSpinBox()
-        self.release_spinbox.setRange(5.0, 500.0)
-        self.release_spinbox.setSingleStep(5.0)
+        configure_numeric_control(self.release_spinbox, "deesser", "release_ms")
         self.release_spinbox.setValue(80.0)
-        self.release_spinbox.setSuffix(" ms")
         fit_spinbox_to_contents(self.release_spinbox)
-        release_label = QLabel("Release:")
+        release_label = QLabel(f"{widget_control_label('deesser', 'release_ms')}:")
         release_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(release_label, 8, 0)
         advanced_grid.addWidget(self.release_spinbox, 8, 1)
 
         max_red_layout = QHBoxLayout()
         self.max_reduction_slider = QSlider(Qt.Orientation.Horizontal)
-        self.max_reduction_slider.setRange(0, 240)
-        self.max_reduction_slider.setValue(60)
         self.max_reduction_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.max_reduction_slider.setTickInterval(20)
         max_red_layout.addWidget(self.max_reduction_slider)
 
         self.max_reduction_spinbox = QDoubleSpinBox()
-        self.max_reduction_spinbox.setRange(0.0, 24.0)
-        self.max_reduction_spinbox.setSingleStep(0.5)
+        configure_numeric_control(
+            self.max_reduction_spinbox, "deesser", "max_reduction_db",
+            slider=self.max_reduction_slider, slider_scale=10,
+        )
+        self.max_reduction_slider.setValue(60)
         self.max_reduction_spinbox.setValue(6.0)
-        self.max_reduction_spinbox.setSuffix(" dB")
         fit_spinbox_to_contents(self.max_reduction_spinbox)
         max_red_layout.addWidget(self.max_reduction_spinbox)
 
-        max_red_label = QLabel("Max Red:")
+        max_red_label = QLabel(f"{widget_control_label('deesser', 'max_reduction_db')}:")
         max_red_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_grid.addWidget(max_red_label, 9, 0)
         advanced_grid.addLayout(max_red_layout, 9, 1)
@@ -234,37 +231,37 @@ class DeEsserPanel(QWidget):
         bind_label(
             amount_label,
             self.auto_amount_spinbox,
-            name="Automatic de-esser amount",
+            name=control_spec("deesser", "auto_amount").accessible_name,
         )
-        bind_label(low_label, self.low_cut_spinbox, name="De-esser low cutoff")
-        bind_label(high_label, self.high_cut_spinbox, name="De-esser high cutoff")
+        bind_label(low_label, self.low_cut_spinbox, name=control_spec("deesser", "low_cut_hz").accessible_name)
+        bind_label(high_label, self.high_cut_spinbox, name=control_spec("deesser", "high_cut_hz").accessible_name)
         bind_label(
             threshold_label,
             self.threshold_spinbox,
-            name="De-esser threshold",
+            name=control_spec("deesser", "threshold_db").accessible_name,
         )
-        bind_label(ratio_label, self.ratio_spinbox, name="De-esser ratio")
-        bind_label(attack_label, self.attack_spinbox, name="De-esser attack time")
+        bind_label(ratio_label, self.ratio_spinbox, name=control_spec("deesser", "ratio").accessible_name)
+        bind_label(attack_label, self.attack_spinbox, name=control_spec("deesser", "attack_ms").accessible_name)
         bind_label(
             release_label,
             self.release_spinbox,
-            name="De-esser release time",
+            name=control_spec("deesser", "release_ms").accessible_name,
         )
         bind_label(
             max_red_label,
             self.max_reduction_spinbox,
-            name="De-esser maximum reduction",
+            name=control_spec("deesser", "max_reduction_db").accessible_name,
         )
         set_accessible_group(
             (
-                (self.enabled_checkbox, "Enable de-esser", None),
-                (self.auto_checkbox, "Enable automatic de-esser", None),
-                (self.auto_amount_slider, "Automatic de-esser amount", None),
-                (self.low_cut_slider, "De-esser low cutoff", None),
-                (self.high_cut_slider, "De-esser high cutoff", None),
-                (self.threshold_slider, "De-esser threshold", None),
-                (self.ratio_slider, "De-esser ratio", None),
-                (self.max_reduction_slider, "De-esser maximum reduction", None),
+                (self.enabled_checkbox, control_spec("deesser", "enabled").accessible_name, None),
+                (self.auto_checkbox, control_spec("deesser", "auto_enabled").accessible_name, None),
+                (self.auto_amount_slider, control_spec("deesser", "auto_amount").accessible_name, None),
+                (self.low_cut_slider, control_spec("deesser", "low_cut_hz").accessible_name, None),
+                (self.high_cut_slider, control_spec("deesser", "high_cut_hz").accessible_name, None),
+                (self.threshold_slider, control_spec("deesser", "threshold_db").accessible_name, None),
+                (self.ratio_slider, control_spec("deesser", "ratio").accessible_name, None),
+                (self.max_reduction_slider, control_spec("deesser", "max_reduction_db").accessible_name, None),
                 (self.gr_meter, "De-esser gain reduction", None),
             )
         )

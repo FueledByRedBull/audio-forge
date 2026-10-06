@@ -37,7 +37,7 @@ def _calibration_owner(result: CalibrationResult, *, context: str = "route"):
         _calibration_context_key=lambda: context,
         _get_current_preset=Preset,
         _preset_payload=MainWindow._preset_payload,
-        calibration_status_label=SimpleNamespace(setText=lambda _text: None),
+        shell_texts={"calibration_status_label": SimpleNamespace(update=lambda **_kwargs: None)},
         compressor_state=_CalibrationState(result.noise_reference_reliability),
     )
     return owner

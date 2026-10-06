@@ -9,20 +9,17 @@ from PySide6.QtCore import QObject, Signal
 
 from ..config import CompressorSettings, PresetValidationError
 from ..config_parts.validation import (
-    VALIDATION_RANGES,
     _validate_bool,
     _validate_range,
 )
+from .control_specs import CONTROL_RANGES
 from .rate_limiter import RateLimiter
 
 
 _BOOLEAN_SETTINGS = {
     "enabled", "adaptive_release", "auto_makeup_enabled", "sidechain_highpass_enabled",
 }
-COMPRESSOR_RANGES = {
-    name: bounds for name, bounds in VALIDATION_RANGES["compressor"].items()
-    if name not in _BOOLEAN_SETTINGS
-} | {"base_release_ms": (20.0, 200.0)}
+COMPRESSOR_RANGES = CONTROL_RANGES["compressor"]
 _PARAMETER_KEYS = frozenset(asdict(CompressorSettings()))
 _INTENSITY_KEYS = _PARAMETER_KEYS - {"target_lufs"}
 
@@ -49,12 +46,25 @@ class CompressorState(QObject):
         self._rate_limiter._timer.setParent(self)
 
     def get_settings(self, *, include_calibration: bool = False) -> dict:
+        """Return desired settings; interactive values may still be queued."""
         if not include_calibration:
             return {key: value for key, value in self._settings.items() if key in _PARAMETER_KEYS}
         return self._settings | {
             "dynamics_intensity": (
                 "customized" if self._settings["dynamics_customized"]
                 else self._settings["dynamics_profile"]
+            ),
+        }
+
+    def get_applied_settings(self, *, include_calibration: bool = False) -> dict:
+        """Return processor-accepted settings with the same optional metadata."""
+        settings = self._applied_settings
+        if not include_calibration:
+            return {key: value for key, value in settings.items() if key in _PARAMETER_KEYS}
+        return settings | {
+            "dynamics_intensity": (
+                "customized" if settings["dynamics_customized"]
+                else settings["dynamics_profile"]
             ),
         }
 

@@ -267,12 +267,12 @@ class _FakeWindow:
     def __init__(self) -> None:
         self.processor = _FakeProcessor()
         self.config = _config()
-        self.input_combo = object()
-        self.output_combo = object()
-        self.status_bar = _FakeStatusBar()
+        self.input_choice = object()
+        self.output_choice = object()
+        self.status_message = _FakeStatusBar()
 
     def _combo_device_identity(self, combo: object) -> DeviceIdentity:
-        if combo is self.input_combo:
+        if combo is self.input_choice:
             return DeviceIdentity(name="Private USB Microphone", is_default=True)
         return DeviceIdentity(name="Private Virtual Cable")
 
@@ -310,4 +310,4 @@ def test_main_window_export_uses_privacy_safe_builder(
     assert "Private Virtual Cable" not in payload
     assert json.loads(payload)["privacy"]["raw_audio_included"] is False
     assert messages[0][0] == "Diagnostics Exported"
-    assert window.status_bar.messages[-1][0] == "Privacy-safe diagnostics exported"
+    assert window.status_message.messages[-1][0] == "Privacy-safe diagnostics exported"

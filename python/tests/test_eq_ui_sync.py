@@ -520,14 +520,16 @@ def test_single_band_edits_make_one_layer_update_and_one_curve_refresh(
     panel = EQPanel(counted)
     band = panel.band_sliders[4]
     curve_calls = 0
-    original_set_all_params = panel.curve_widget.set_all_params
+    original_set_all_params = panel.presentation.graph_model.set_all_params
 
     def count_curve_refresh(*args, **kwargs):
         nonlocal curve_calls
         curve_calls += 1
         return original_set_all_params(*args, **kwargs)
 
-    monkeypatch.setattr(panel.curve_widget, "set_all_params", count_curve_refresh)
+    monkeypatch.setattr(
+        panel.presentation.graph_model, "set_all_params", count_curve_refresh
+    )
 
     def reset_counts():
         counted.calls = {"layers": 0, "gain": 0, "q": 0, "frequency": 0}
@@ -576,14 +578,16 @@ def test_eq_drag_coalesces_native_updates_and_curve_refreshes(qapp, monkeypatch)
     counted = CountingProcessor(processor)
     panel = EQPanel(counted)
     curve_calls = 0
-    original_set_all_params = panel.curve_widget.set_all_params
+    original_set_all_params = panel.presentation.graph_model.set_all_params
 
     def count_curve_refresh(*args, **kwargs):
         nonlocal curve_calls
         curve_calls += 1
         return original_set_all_params(*args, **kwargs)
 
-    monkeypatch.setattr(panel.curve_widget, "set_all_params", count_curve_refresh)
+    monkeypatch.setattr(
+        panel.presentation.graph_model, "set_all_params", count_curve_refresh
+    )
     panel._curve_rate_limiter._last_call_time = 0.0
     try:
         panel._on_curve_band_dragged(4, 3200.0, 2.0)

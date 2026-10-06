@@ -8,15 +8,13 @@ import math
 from PySide6.QtCore import QLocale, QObject, Signal
 
 from ..config import GateSettings, PresetValidationError
-from ..config_parts.validation import VALIDATION_RANGES, _validate_bool, _validate_range
+from ..config_parts.validation import _validate_bool, _validate_range
+from .control_specs import CONTROL_RANGES, control_spec, widget_control_label
 from .rate_limiter import RateLimiter
 
 
-GATE_RANGES = {
-    name: bounds for name, bounds in VALIDATION_RANGES["gate"].items()
-    if name != "auto_threshold_enabled"
-}
-GATE_MODES = ("Threshold Only", "VAD Assisted", "VAD Only")
+GATE_RANGES = CONTROL_RANGES["gate"]
+GATE_MODES = control_spec("gate", "gate_mode").choices
 
 
 class GateState(QObject):
@@ -39,7 +37,12 @@ class GateState(QObject):
         self.noise_floor_db: float | None = None
 
     def get_settings(self) -> dict:
+        """Return the latest desired values, including any queued edit."""
         return self._settings.copy()
+
+    def get_applied_settings(self) -> dict:
+        """Return the last complete settings accepted by the processor."""
+        return self._applied_settings.copy()
 
     def _validated(self, settings: dict) -> dict:
         candidate = self._settings.copy()
@@ -182,6 +185,7 @@ class GateState(QObject):
     def presentation(self) -> dict[str, str]:
         """Derived labels are shared too; telemetry never changes stored settings."""
         settings = self._settings
+        auto_threshold_spec = control_spec("gate", "auto_threshold_enabled")
         mode = settings["gate_mode"]
         # Match QDoubleSpinBox's two-decimal display before composing summaries.
         threshold = float(QLocale.c().toString(settings["threshold_db"], "f", 2))
@@ -225,13 +229,16 @@ class GateState(QObject):
                 if self.noise_floor_db is not None else "Noise Floor: --"
             ),
             "vad_info": vad_info,
-            "auto_threshold_text": "Track Noise Floor" if mode == 2 else "Auto Threshold",
+            "auto_threshold_text": (
+                "Track Noise Floor" if mode == 2
+                else widget_control_label("gate", "auto_threshold_enabled")
+            ),
             "auto_threshold_name": (
-                "Track noise floor" if mode == 2 else "Enable automatic gate threshold"
+                "Track noise floor" if mode == 2 else auto_threshold_spec.accessible_name
             ),
             "auto_threshold_tooltip": (
                 "Track the noise floor without changing the VAD speech threshold."
                 if mode == 2
-                else "Automatically set the gate level threshold to noise floor + margin."
+                else auto_threshold_spec.tooltip
             ),
         }

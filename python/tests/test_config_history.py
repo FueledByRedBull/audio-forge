@@ -526,7 +526,7 @@ def test_failed_configuration_restores_sound_or_stops_muted(qapp, monkeypatch, r
     for name in ("list_presets", "list_input_devices", "list_output_devices"):
         monkeypatch.setattr(f"mic_eq.ui.main_window.{name}", lambda: [])
     window = MainWindow()
-    window.user_mute_checkbox.setChecked(True)
+    window.user_mute_checkbox_action.setChecked(True)
     window.apply_processing_configuration(
         window._get_current_preset(),
         noise_reference_reliability=0.7,

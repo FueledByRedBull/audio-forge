@@ -1853,8 +1853,8 @@ class VoiceSetupDialog(QDialog):
             noise_reference_reliability=reliability,
             compressor_metadata=metadata or None,
         )
-        if hasattr(parent, "status_bar"):
-            parent.status_bar.showMessage(
+        if hasattr(parent, "status_message"):
+            parent.status_message.showMessage(
                 "Voice setup candidate applied; verification required", 5000
             )
 
@@ -2203,8 +2203,8 @@ class VoiceSetupDialog(QDialog):
                 "compressor",
                 "limiter",
             ]
-        if hasattr(parent, "status_bar"):
-            parent.status_bar.showMessage("Verified voice setup applied", 5000)
+        if hasattr(parent, "status_message"):
+            parent.status_message.showMessage("Verified voice setup applied", 5000)
         metrics_text = (
             "Target error "
             f"{float(result.get('spectral_target_error_before_db', 0.0)):.1f}"

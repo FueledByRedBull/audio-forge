@@ -22,6 +22,8 @@ def test_saved_custom_preset_uses_package_version(monkeypatch, tmp_path: Path) -
     window = MainWindow.__new__(MainWindow)
     preset = config.Preset(version="0.0.0")
     window._get_current_preset = lambda: preset
+    window._flush_processing_configuration_writes = Mock()
+    window._temporary_mute_reasons = set()
     window._save_preset_file = Mock(return_value=tmp_path / "saved.json")
     window._last_preset_identity_persisted = True
     monkeypatch.setattr(

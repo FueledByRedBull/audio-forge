@@ -74,9 +74,9 @@ def test_parse_global_hotkey_rejects_ambiguous_shortcut() -> None:
 
 def test_processing_mode_updates_both_native_flags() -> None:
     owner: Any = MainWindow.__new__(MainWindow)
-    owner.processing_mode_combo = _ModeCombo()
+    owner.processing_mode_choice = _ModeCombo()
     owner.processor = _Processor()
-    owner.status_bar = SimpleNamespace(showMessage=lambda *_args: None)
+    owner.status_message = SimpleNamespace(showMessage=lambda *_args: None)
     owner._update_session_summary = lambda: None
 
     MainWindow._set_processing_mode(owner, "bypass")
@@ -99,7 +99,7 @@ def test_tray_close_keeps_audio_running_until_explicit_quit() -> None:
     owner: Any = SimpleNamespace(
         _quitting=False, _tray_icon=SimpleNamespace(isVisible=lambda: True, hide=Mock(), showMessage=Mock()),
         _close_to_tray_action=SimpleNamespace(isChecked=lambda: True), hide=Mock(),
-        status_bar=Mock(), _unregister_mute_hotkey=Mock(), config=SimpleNamespace(),
+        status_message=Mock(), _unregister_mute_hotkey=Mock(), config=SimpleNamespace(),
         x=lambda: 0, y=lambda: 0, width=lambda: 1280, height=lambda: 850,
         _save_ui_state=lambda: True, processor=Mock(),
         _confirm_discard_changes=lambda: True,
@@ -142,7 +142,7 @@ def test_failed_hotkey_registration_is_not_shown_or_saved_as_enabled(monkeypatch
         config=SimpleNamespace(mute_hotkey="Ctrl+Alt+M"),
         _unregister_mute_hotkey=lambda: None,
         _toggle_mute_from_hotkey=lambda: None,
-        _mute_hotkey_action=Mock(), status_bar=Mock(),
+        _mute_hotkey_action=Mock(), status_message=Mock(),
     )
     assert not MainWindow._register_mute_hotkey(owner, "Ctrl+Alt+M")
     assert owner.config.mute_hotkey == ""
@@ -171,7 +171,7 @@ def test_failed_model_switch_retains_previous_model_and_selection(qapp, monkeypa
         _model_combo=combo, _rnnoise_checkbox=QCheckBox(host),
         _strength_slider=QSlider(host), _strength_label=QLabel(host),
         _rnnoise_latency_label=QLabel(host),
-        noise_suppression_state=state, status_bar=Mock(),
+        noise_suppression_state=state, status_message=Mock(),
     )
     owner._strength_slider.setRange(0, 100)
     state.changed.connect(lambda: MainWindow._render_noise_suppression(owner))

@@ -154,14 +154,12 @@ def _prepare_main_window() -> MainWindow:
     window.meter_timer.stop()
     window.diagnostics_timer.stop()
     window.resize(CAPTURE_WIDTH, CAPTURE_HEIGHT)
-    window.input_combo.setCurrentIndex(0)
-    window.output_combo.setCurrentIndex(0)
-    _select_data(window.input_channel_mode_combo, "average")
-    _select_data(window.input_cleanup_mode_combo, "gentle")
-    _select_data(window.model_combo, "rnnoise")
-    window.rnnoise_checkbox.setChecked(True)
-    window.strength_slider.setValue(72)
-    window.eq_panel.apply_auto_eq_results(
+    window.input_choice.setCurrentIndex(0)
+    window.output_choice.setCurrentIndex(0)
+    _select_data(window.input_channel_mode_choice, "average")
+    _select_data(window.input_cleanup_mode_choice, "gentle")
+    window.noise_suppression_state.set_settings({"model": "rnnoise", "enabled": True, "strength": 0.72})
+    window.eq_state.apply_auto_eq_results(
         [
             (72.0, -2.0, 0.75),
             (145.0, -1.0, 1.0),
@@ -175,7 +173,7 @@ def _prepare_main_window() -> MainWindow:
             (15100.0, -0.6, 0.8),
         ]
     )
-    window.eq_panel.set_auto_eq_diagnostics(
+    window.eq_state.set_auto_eq_diagnostics(
         {
             "analysis_confidence": 0.88,
             "eq_confidence": 0.86,
@@ -209,7 +207,7 @@ def _prepare_main_window() -> MainWindow:
     window._set_health_chip(window.buffer_label, "Buffer: OK", "ok")
     window._set_health_chip(window.dropped_label, "Drops: 0", "ok")
     window._set_health_chip(window.recovery_diag_label, "Recovery: idle", "idle")
-    window.status_bar.clearMessage()
+    window.status_message.clearMessage()
     return window
 
 
@@ -219,9 +217,9 @@ def _show_running_state(window: MainWindow) -> None:
     Tab changes refresh the session summary from the stopped processor, so this
     runs immediately before each main-window grab.
     """
-    window.start_btn.setEnabled(False)
-    window.stop_btn.setEnabled(True)
-    window.transmission_status_label.setText("Transmission: Running / Normal")
+    window.start_btn_action.setEnabled(False)
+    window.stop_btn_action.setEnabled(True)
+    window.shell_texts["transmission_status_label"].update(text="Transmission: Running / Normal")
     window._set_health_chip(window.health_summary_label, "Health: OK", "ok")
 
 
@@ -249,7 +247,7 @@ def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
                 "gate_mode_label": "VAD assisted",
             },
             "eq_settings": {
-                **parent.eq_panel.get_settings(),
+                **parent.eq_state.get_settings(),
                 "analysis_confidence": 0.89,
             },
             "gate_settings": {"threshold_db": -43.0, "vad_threshold": 0.46},
@@ -307,8 +305,6 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
                 page.setProperty("contentY", processing_scroll_maximum)
                 processing_scroll_position = round(page.property("contentY"))
             _show_running_state(window)
-            # The scene reads widget state on a timer; read it now instead.
-            vars(window)["quick_bridge"].refresh()
             app.processEvents()
             path = output_dir / specification["filename"]
             width, height = _write_optimized_png(window, path)

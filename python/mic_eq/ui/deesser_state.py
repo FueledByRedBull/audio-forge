@@ -8,14 +8,14 @@ from PySide6.QtCore import QObject, Signal
 
 from ..config import DeEsserSettings, PresetValidationError
 from ..config_parts.validation import (
-    VALIDATION_RANGES,
     _validate_bool,
     _validate_range,
 )
+from .control_specs import CONTROL_RANGES
 from .rate_limiter import RateLimiter
 
 
-DEESSER_RANGES = VALIDATION_RANGES["deesser"]
+DEESSER_RANGES = CONTROL_RANGES["deesser"]
 
 
 class DeEsserState(QObject):
@@ -35,7 +35,12 @@ class DeEsserState(QObject):
         self._rate_limiter._timer.setParent(self)
 
     def get_settings(self) -> dict:
+        """Return the latest desired values, including any queued edit."""
         return self._settings.copy()
+
+    def get_applied_settings(self) -> dict:
+        """Return the last complete settings accepted by the processor."""
+        return self._applied_settings.copy()
 
     def control_enabled(self, name: str) -> bool:
         return name not in {"threshold_db", "ratio"} or not self._settings["auto_enabled"]

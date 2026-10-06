@@ -1,61 +1,44 @@
 """Qt Quick view of the main window.
 
-Migrated settings use shared application state; remaining controls use widget
-proxies. The widget shell stays available for rendering failure recovery.
+Processing and shell controls consume shared state and Qt action notifications.
+The classic view stays available for rendering failure recovery.
 """
 
 from __future__ import annotations
 
 import logging
-import math
 from collections import deque
 from dataclasses import asdict
 from pathlib import Path
-from collections.abc import Callable
-from typing import Any
 
 from PySide6.QtCore import (
     Property,
     QCoreApplication,
-    QEvent,
-    QLocale,
     QObject,
-    QPoint,
     QPointF,
-    QSize,
     Qt,
     QTimer,
     QUrl,
     Signal,
     Slot,
 )
-from PySide6.QtGui import QAction, QCursor, QMouseEvent, QPainter, QPen, QRegion
+from PySide6.QtGui import QPainter, QPen
 from PySide6.QtQml import qmlRegisterType
 from PySide6.QtQuick import QQuickPaintedItem
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
-    QAbstractButton,
-    QAbstractSpinBox,
-    QComboBox,
-    QDoubleSpinBox,
     QLabel,
-    QPushButton,
-    QSlider,
-    QSpinBox,
-    QStackedWidget,
-    QStatusBar,
-    QToolButton,
-    QWidget,
 )
 
-from .components import Card, Glyph, ToggleSwitch, icon_font, plain_label
-from ..config_parts.validation import VALIDATION_RANGES
-from .limiter_state import LimiterState
-from .deesser_state import DeEsserState
-from .compressor_state import COMPRESSOR_RANGES, CompressorState
-from .gate_state import GateState
+from .components import Glyph, icon_font
+from .control_specs import control_label
 from .eq_controls import EQControl
+from .eq_quick_graph import EQGraphItem
+from .quick_meter import QuickMeterItem
+from .shell_state import ActionControl
+from .level_meter import LevelMeter, GainReductionMeter, ConfidenceMeter
 from .noise_controls import NoiseControl
+from .processing_controls import SettingControl, GateText
 from .theme import (
     PALETTE,
     RADIUS_CARD,
@@ -65,7 +48,6 @@ from .theme import (
 )
 
 QML_DIR = Path(__file__).parent / "qml"
-POLL_INTERVAL_MS = 100
 # Level history behind the noise suppression trace: 6 seconds at 20 Hz.
 TRACE_INTERVAL_MS = 50
 TRACE_POINTS = 120
@@ -73,490 +55,20 @@ MINIMUM_SCENE_SIZE = (900, 600)
 QUICK_VIEW_UNAVAILABLE = "The Qt Quick view could not start; using the classic view."
 _LOG = logging.getLogger(__name__)
 
-_DEFAULTS: dict[str, Any] = {
-    "text": "",
-    "toolTip": "",
-    "name": "",
-    "enabled": True,
-    "shown": True,
-    "value": 0.0,
-    "minimum": 0.0,
-    "maximum": 1.0,
-    "step": 0.0,
-    "checked": False,
-    "items": [],
-    "index": 0,
-    "state": "",
-    "data": {},
-}
+class MeterSource(QObject):
+    """Repaint notification for an existing classic meter renderer."""
 
-
-class SettingControl(QObject):
-    """Present shared processing state to QML without reading a QWidget."""
-
-    changed = Signal()
-
-    def __init__(
-        self, state: LimiterState | DeEsserState | CompressorState | GateState,
-        section: str, key: str, parent: QObject,
-    ):
-        super().__init__(parent)
-        self._state = state
-        self._key = key
-        self._section = section
-        self._name, self._tip, self._step, self._suffix = {
-            "limiter": {
-            "enabled": (
-                "Enable limiter",
-                "Prevents signal from exceeding ceiling level.\n"
-                "Acts as a safety net to prevent clipping.", 0.0, "",
-            ),
-            "careful_output_enabled": (
-                "Enable careful output mode",
-                "Adds conservative output headroom by limiting the effective ceiling to -1.5 dB.",
-                0.0, "",
-            ),
-            "ceiling_db": (
-                "Limiter ceiling", "Maximum output level (brick-wall ceiling)", 0.1, " dB",
-            ),
-            "release_ms": (
-                "Limiter release time", "How fast the limiter recovers", 5.0, " ms",
-            ),
-            },
-            "deesser": {
-                "enabled": (
-                    "Enable de-esser", "Reduces harsh sibilance (s, sh, t) using dynamic attenuation.", 0.0, "",
-                ),
-                "auto_enabled": (
-                    "Enable automatic de-esser",
-                    "Learns average sibilance and applies dynamic reduction automatically.",
-                    0.0, "",
-                ),
-                "auto_amount": ("Automatic de-esser amount", "", 0.05, ""),
-                "low_cut_hz": ("De-esser low cutoff", "", 100.0, " Hz"),
-                "high_cut_hz": ("De-esser high cutoff", "", 100.0, " Hz"),
-                "threshold_db": ("De-esser threshold", "", 1.0, " dB"),
-                "ratio": ("De-esser ratio", "", 0.5, ":1"),
-                "attack_ms": ("De-esser attack time", "", 0.1, " ms"),
-                "release_ms": ("De-esser release time", "", 5.0, " ms"),
-                "max_reduction_db": ("De-esser maximum reduction", "", 0.5, " dB"),
-            },
-            "compressor": {
-                "enabled": (
-                    "Enable compressor", "Reduces dynamic range by attenuating loud signals.\n"
-                    "Helps maintain consistent volume levels.", 0.0, "",
-                ),
-                "threshold_db": ("Compressor threshold", "Level above which compression begins", 1.0, " dB"),
-                "ratio": ("Compressor ratio", "Compression ratio (higher = more compression)", 0.5, ":1"),
-                "attack_ms": ("Compressor attack time", "How fast the compressor responds to loud signals", 1.0, " ms"),
-                "release_ms": ("Compressor release time", "How fast the compressor recovers after loud signals", 10.0, " ms"),
-                "makeup_gain_db": ("Compressor makeup gain", "Gain added after compression to restore volume", 0.5, " dB"),
-                "adaptive_release": (
-                    "Enable adaptive release", "Release time adapts based on signal dynamics.\n"
-                    "Scales from 50ms to 400ms based on sustained overage.\n"
-                    "Longer release for consistent loud signals, shorter for transients.", 0.0, "",
-                ),
-                "base_release_ms": ("Adaptive compressor base release", "Base release time when adaptive mode is enabled", 5.0, " ms"),
-                "sidechain_highpass_enabled": (
-                    "Enable compressor sidechain high-pass", "Ignores low-frequency plosives and rumble in the compressor detector without filtering the audio.", 0.0, "",
-                ),
-                "auto_makeup_enabled": (
-                    "Enable automatic makeup gain", "Automatically adjust makeup gain from post-compression EBU R128 loudness measurement.\n"
-                    "Maintains post-compressor output level relative to target LUFS.\n"
-                    "Uses the selected Target LUFS value.", 0.0, "",
-                ),
-                "target_lufs": ("Automatic makeup target loudness", "Target loudness level (-24 to -12 LUFS)", 1.0, " LUFS"),
-            },
-            "gate": {
-                "enabled": ("Enable noise gate", "Reduces gain when signal falls below threshold.\nHelps eliminate background noise during silence.", 0.0, ""),
-                "threshold_db": ("Gate manual threshold", "Signal level below which gate closes", 1.0, " dB"),
-                "attack_ms": ("Gate attack time", "Time for gate to open when signal exceeds threshold", 1.0, " ms"),
-                "release_ms": ("Gate release time", "Time for gate to close when signal drops below threshold", 10.0, " ms"),
-                "gate_mode": ("Gate operating mode", "Threshold Only: Traditional gate using level threshold\nVAD Assisted: Gate opens when level exceeded OR speech detected\nVAD Only: Gate opens solely based on speech probability", 0.0, ""),
-                "vad_threshold": ("Voice activity threshold", "Speech probability threshold (0.3-0.7)", 0.01, ""),
-                "vad_hold_time_ms": ("Voice activity hold time", "Gate hold time after speech ends (prevents chatter)", 10.0, " ms"),
-                "vad_pre_gain": ("Voice activity pre-gain", "Pre-gain to boost weak signals for better VAD detection", 0.5, ""),
-                "auto_threshold_enabled": ("Enable automatic gate threshold", "Automatically set the gate level threshold to noise floor + margin.", 0.0, ""),
-                "gate_margin_db": ("Automatic gate margin", "Margin above noise floor for gate threshold (0-20 dB)", 1.0, " dB"),
-            },
-        }[section][key]
-        ranges = COMPRESSOR_RANGES if section == "compressor" else {
-            name: bounds for name, bounds in VALIDATION_RANGES[section].items()
-            if isinstance(bounds[0], (int, float))
-        }
-        self._choices = ["Threshold Only", "VAD Assisted", "VAD Only"] if key == "gate_mode" else []
-        self._numeric = key in ranges and not self._choices
-        self._minimum, self._maximum = ranges.get(key, (0.0, 1.0))
-        self._decimals = 1 if key == "vad_pre_gain" else 2
-        self._locale = QLocale()
-        self._locale.setNumberOptions(
-            self._locale.numberOptions() | QLocale.NumberOption.OmitGroupSeparator,
-        )
-        state.changed.connect(self.changed)
-
-    def _presentation(self, key: str, default: str) -> str:
-        if isinstance(self._state, GateState) and self._key == "auto_threshold_enabled":
-            return self._state.presentation()["auto_threshold_" + key]
-        return default
-
-    name = Property(str, lambda self: self._presentation("name", self._name), notify=changed)
-    toolTip = Property(str, lambda self: self._presentation("tooltip", self._tip), notify=changed)
-    step = Property(float, lambda self: self._step, constant=True)
-    minimum = Property(float, lambda self: self._minimum, constant=True)
-    maximum = Property(float, lambda self: self._maximum, constant=True)
-    enabled = Property(bool, lambda self: self._state.control_enabled(self._key), notify=changed)
-    shown = Property(bool, lambda self: True, constant=True)
-    checked = Property(
-        bool, lambda self: bool(self._state.get_settings()[self._key]), notify=changed,
-    )
-    value = Property(
-        float, lambda self: float(QLocale.c().toString(
-            float(self._state.get_settings()[self._key]), "f", self._decimals,
-        )),
-        notify=changed,
-    )
-    text = Property(
-        str, lambda self: (
-            self._choices[self.index] if self._choices else
-            self._locale.toString(self.value, "f", self._decimals) + self._suffix
-        ),
-        notify=changed,
-    )
-    items = Property(list, lambda self: self._choices, constant=True)
-    index = Property(int, lambda self: int(self._state.get_settings()[self._key]) if self._choices else -1, notify=changed)
-
-    @Slot(int)
-    def setIndex(self, index: int) -> None:
-        try:
-            if self._choices and self.enabled and 0 <= index < len(self._choices):
-                self._state.set_value(self._key, index)
-        except (ValueError, RuntimeError):
-            pass
-        finally:
-            self.changed.emit()
-
-    @Slot(float)
-    def setValue(self, value: float) -> None:
-        try:
-            if self._numeric and self.enabled and math.isfinite(value):
-                self._state.set_value(
-                    self._key, float(QLocale.c().toString(
-                        min(self._maximum, max(self._minimum, value)), "f", self._decimals,
-                    )),
-                )
-        except (ValueError, RuntimeError):
-            # Failed writes are reported by the state; restore the displayed value.
-            pass
-        finally:
-            self.changed.emit()
-
-    @Slot(str)
-    def setText(self, text: str) -> None:
-        try:
-            self.setValue(float(text.replace(self._suffix.strip(), "").replace(",", ".").strip()))
-        except ValueError:
-            self.changed.emit()
-        self.released()
-
-    @Slot()
-    def click(self) -> None:
-        try:
-            if self.enabled and not self._numeric and not self._choices:
-                self._state.set_value(self._key, not self.checked)
-        except (ValueError, RuntimeError):
-            pass
-        finally:
-            self.changed.emit()
-
-    @Slot()
-    def released(self) -> None:
-        try:
-            self._state.flush()
-        except RuntimeError:
-            pass
-        finally:
-            self.changed.emit()
-
-
-class GateText(QObject):
-    """Derived gate status, updated with its settings or telemetry."""
-
-    changed = Signal()
-
-    def __init__(self, state: GateState, key: str, parent: QObject):
-        super().__init__(parent)
-        self._state, self._key = state, key
-        state.changed.connect(self.changed)
-
-    text = Property(str, lambda self: self._state.presentation()[self._key], notify=changed)
-    toolTip = Property(str, lambda self: "", constant=True)
-    name = Property(str, lambda self: "", constant=True)
-    enabled = Property(bool, lambda self: True, constant=True)
-    shown = Property(bool, lambda self: True, constant=True)
-
-
-class WidgetProxy(QObject):
-    """What QML sees of one widget or action: its state and its user gestures."""
-
-    changed = Signal()
-    itemsChanged = Signal()
     repaintRequested = Signal()
 
-    def __init__(
-        self,
-        target: QWidget | QAction,
-        parent: QObject,
-        *,
-        companion: QSlider | None = None,
-        data: Callable[[], dict] | None = None,
-    ):
+    def __init__(self, target: LevelMeter | GainReductionMeter | ConfidenceMeter, parent: QObject):
         super().__init__(parent)
         self.target = target
-        self._companion = companion
-        # Structured values the scene needs but the widget only shows as text.
-        self._data = data
-        self._state = self._read()
+        target.changed.connect(self.repaintRequested)
 
-    def _read(self) -> dict[str, Any]:
-        target = self.target
-        state = dict(_DEFAULTS)
-        if self._data is not None:
-            state["data"] = self._data()
-        if isinstance(target, QAction):
-            state.update(
-                text=plain_label(target.text()),
-                toolTip=target.toolTip(),
-                enabled=target.isEnabled(),
-                shown=target.isVisible(),
-                checked=target.isChecked(),
-            )
-            return state
-        state.update(
-            toolTip=target.toolTip(),
-            name=target.accessibleName(),
-            enabled=target.isEnabled(),
-            shown=not target.isHidden(),
-        )
-        if isinstance(target, (QSlider, QSpinBox, QDoubleSpinBox)):
-            state.update(
-                value=float(target.value()),
-                minimum=float(target.minimum()),
-                maximum=float(target.maximum()),
-                step=float(target.singleStep()),
-            )
-            if isinstance(target, QAbstractSpinBox):
-                state["text"] = target.text()
-        elif isinstance(target, QComboBox):
-            state.update(
-                items=[target.itemText(i) for i in range(target.count())],
-                index=target.currentIndex(),
-                text=target.currentText(),
-            )
-        elif isinstance(target, QStackedWidget):
-            state["index"] = target.currentIndex()
-        elif isinstance(target, QAbstractButton):
-            state.update(text=plain_label(target.text()), checked=target.isChecked())
-        elif isinstance(target, QLabel):
-            state.update(
-                text=target.text(), state=str(target.property("health_state") or "")
-            )
-        elif isinstance(target, QStatusBar):
-            state["text"] = target.currentMessage()
-        return state
-
-    def watch_repaints(self) -> None:
-        """Emit ``repaintRequested`` whenever the widget asks to be redrawn.
-
-        An off-screen widget gets no paint events, so the request itself
-        is the only signal that its picture changed.
-        """
-
-        target = self.target
-        if isinstance(target, QWidget) and "update" not in target.__dict__:
-            original = target.update
-            # WidgetItem pins the widget to the item's size; kept for unwatch.
-            self._size_limits = (target.minimumSize(), target.maximumSize())
-
-            def update(*args) -> None:
-                original(*args)
-                self.repaintRequested.emit()
-
-            target.update = update  # type: ignore[method-assign]
-
-    def unwatch_repaints(self) -> None:
-        target = self.target
-        if target.__dict__.pop("update", None) is not None and isinstance(target, QWidget):
-            target.setMinimumSize(self._size_limits[0])
-            target.setMaximumSize(self._size_limits[1])
-
-    def refresh(self) -> None:
-        state = self._read()
-        if state != self._state:
-            items_changed = state["items"] != self._state["items"]
-            self._state = state
-            if items_changed:
-                self.itemsChanged.emit()
-            self.changed.emit()
-
-    text = Property(str, lambda self: self._state["text"], notify=changed)
-    toolTip = Property(str, lambda self: self._state["toolTip"], notify=changed)
-    name = Property(str, lambda self: self._state["name"], notify=changed)
-    enabled = Property(bool, lambda self: self._state["enabled"], notify=changed)
-    shown = Property(bool, lambda self: self._state["shown"], notify=changed)
-    value = Property(float, lambda self: self._state["value"], notify=changed)
-    minimum = Property(float, lambda self: self._state["minimum"], notify=changed)
-    maximum = Property(float, lambda self: self._state["maximum"], notify=changed)
-    step = Property(float, lambda self: self._state["step"], notify=changed)
-    checked = Property(bool, lambda self: self._state["checked"], notify=changed)
-    items = Property(list, lambda self: self._state["items"], notify=itemsChanged)
-    index = Property(int, lambda self: self._state["index"], notify=changed)
-    state = Property(str, lambda self: self._state["state"], notify=changed)
-    data = Property(dict, lambda self: self._state["data"], notify=changed)
-
-    @Slot(float)
-    def setValue(self, value: float) -> None:
-        target = self.target
-        if isinstance(target, QDoubleSpinBox):
-            target.setValue(value)
-        elif isinstance(target, (QSlider, QSpinBox)):
-            target.setValue(round(value))
-        self.refresh()
-        # The scene control already moved; make it read back even when the
-        # widget clamped or refused the value and nothing changed here.
-        self.changed.emit()
-
-    @Slot(str)
-    def setText(self, text: str) -> None:
-        """Accept a typed number, with or without the unit the field shows."""
-
-        target = self.target
-        if not isinstance(target, (QSpinBox, QDoubleSpinBox)):
-            return
-        number = text.replace(target.suffix().strip(), "").replace(",", ".").strip()
-        try:
-            self.setValue(float(number))
-        except ValueError:
-            pass
-        # The field shows what was typed until it is told to read again.
-        self.changed.emit()
-        self.released()
-
-    @Slot()
-    def released(self) -> None:
-        """End of a slider drag; the panels flush their rate limiters on it."""
-
-        slider = self._companion if self._companion is not None else self.target
-        if isinstance(slider, QSlider):
-            slider.sliderReleased.emit()
-
-    @Slot(int)
-    def setIndex(self, index: int) -> None:
-        target = self.target
-        if isinstance(target, (QComboBox, QStackedWidget)):
-            target.setCurrentIndex(index)
-        self.refresh()
-        self.changed.emit()
-
-    @Slot()
-    def click(self) -> None:
-        self._activate(QCursor.pos())
-
-    @Slot(float, float)
-    def clickAt(self, x: float, y: float) -> None:
-        """Click from the scene; a menu opens at this global position."""
-
-        self._activate(QPoint(round(x), round(y)))
-
-    def _activate(self, menu_position: QPoint) -> None:
-        target = self.target
-        menu = target.menu() if isinstance(target, (QPushButton, QToolButton)) else None
-        if menu is not None:
-            if self._state["enabled"]:
-                menu.popup(menu_position)
-        elif isinstance(target, QAction):
-            target.trigger()
-        elif isinstance(target, QAbstractButton):
-            target.click()
-        self.refresh()
-
-
-class WidgetItem(QQuickPaintedItem):
-    """Paints an off-screen widget in the scene and passes input on to it.
-
-    Used for the widgets that draw themselves (EQ graph, meters), so their
-    paint and pointer code is shared with the widget view.
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._proxy: WidgetProxy | None = None
-        self._widget: QWidget | None = None
-        self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
-        self.setAcceptHoverEvents(True)
-        self.setFillColor(qcolor(PALETTE.app_surface, alpha=0))
-        self.visibleChanged.connect(self.update)
-
-    def _set_proxy(self, proxy: WidgetProxy | None) -> None:
-        self._proxy = proxy
-        self._widget = None
-        if proxy is not None and isinstance(proxy.target, QWidget):
-            self._widget = proxy.target
-            proxy.watch_repaints()
-            proxy.repaintRequested.connect(self._request_paint)
-            proxy.changed.connect(self._request_paint)
-        self.update()
-
-    proxy = Property(QObject, lambda self: self._proxy, _set_proxy)
-
-    def _request_paint(self) -> None:
-        # Items on another page are brought up to date when they reappear.
-        if self.isVisible():
-            self.update()
-
-    def paint(self, painter: QPainter) -> None:
-        widget = self._widget
-        if widget is None:
-            return
-        size = QSize(max(1, round(self.width())), max(1, round(self.height())))
-        if widget.size() != size:
-            widget.setFixedSize(size)
-        widget.render(painter, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
-
-    def _send_mouse(self, event, kind: QEvent.Type, button, buttons) -> None:
-        if self._widget is not None:
-            QCoreApplication.sendEvent(
-                self._widget,
-                QMouseEvent(
-                    kind,
-                    event.position(),
-                    event.globalPosition(),
-                    button,
-                    buttons,
-                    event.modifiers(),
-                ),
-            )
-
-    def mousePressEvent(self, event) -> None:
-        self.forceActiveFocus()
-        self._send_mouse(event, event.type(), event.button(), event.buttons())
-
-    def mouseMoveEvent(self, event) -> None:
-        self._send_mouse(event, event.type(), event.button(), event.buttons())
-
-    def mouseReleaseEvent(self, event) -> None:
-        self._send_mouse(event, event.type(), event.button(), event.buttons())
-
-    def hoverMoveEvent(self, event) -> None:
-        self._send_mouse(
-            event,
-            QEvent.Type.MouseMove,
-            Qt.MouseButton.NoButton,
-            Qt.MouseButton.NoButton,
-        )
-
-    def keyPressEvent(self, event) -> None:
-        if self._widget is not None:
-            QCoreApplication.sendEvent(self._widget, event)
+    name = Property(str, lambda self: self.target.accessibleName(), constant=True)
+    toolTip = Property(str, lambda self: self.target.toolTip(), constant=True)
+    enabled = Property(bool, lambda self: self.target.isEnabled(), notify=repaintRequested)
+    shown = Property(bool, lambda self: True, constant=True)
 
 
 class LevelTrace(QQuickPaintedItem):
@@ -597,20 +109,12 @@ class LevelTrace(QQuickPaintedItem):
 
 
 class QuickBridge(QObject):
-    """The ``ui`` object in QML: a tree of proxies plus a few window actions."""
+    """Shared state and commands exposed to the QML scene."""
 
     def __init__(self, window):
         super().__init__(window)
         self._window = window
-        self._proxies: list[WidgetProxy] = []
         self._model = self._build_model(window)
-        # ponytail: one timer compares every proxy with its widget. Widgets
-        # have no change signal for text, enabled or tooltip; connect per
-        # property signals if this ever shows up in a profile.
-        self._timer = QTimer(self)
-        self._timer.setInterval(POLL_INTERVAL_MS)
-        self._timer.timeout.connect(self.refresh)
-        self._timer.start()
         self._levels: deque[list[float]] = deque(maxlen=TRACE_POINTS)
         self._trace_timer = QTimer(self)
         self._trace_timer.setInterval(TRACE_INTERVAL_MS)
@@ -621,16 +125,9 @@ class QuickBridge(QObject):
     model = Property(dict, lambda self: self._model, constant=True)
 
     def release(self) -> None:
-        """Give the widgets back to the widget view and go away."""
+        """Release scene adapters when the classic view takes over."""
 
-        for proxy in self._proxies:
-            proxy.unwatch_repaints()
         self.deleteLater()
-
-    def refresh(self) -> None:
-        if self._window.isVisible() and not self._window.isMinimized():
-            for proxy in self._proxies:
-                proxy.refresh()
 
     levelsChanged = Signal()
     levels = Property(list, lambda self: list(self._levels), notify=levelsChanged)
@@ -665,42 +162,47 @@ class QuickBridge(QObject):
     def exportDiagnostics(self) -> None:
         self._window._export_diagnostics()
 
-    def _proxy(self, target, **kwargs) -> WidgetProxy:
-        proxy = WidgetProxy(target, self, **kwargs)
-        self._proxies.append(proxy)
-        return proxy
-
     def _row(self, kind: str, target, label: str = "") -> dict:
-        return {"kind": kind, "label": label, "proxy": self._proxy(target)}
+        return {"kind": kind, "label": label, "proxy": MeterSource(target, self) if kind == "meter" else target}
 
     def _build_model(self, w) -> dict:
         row = self._row
+        def text(name: str):
+            return w.shell_texts[name]
+
+        def action(name: str):
+            return ActionControl(getattr(w, name + "_action"), self,
+                                 name=getattr(w, name).accessibleName())
+
+        def menu(target, label: str):
+            # QMenu/QAction are the shared native command owners.
+            return ActionControl(target.menuAction(), self, name=label, text=label, menu=target)
 
         def control(section: str, key: str) -> SettingControl:
             return SettingControl(getattr(w, section + "_state"), section, key, self)
 
-        def state_field(section: str, label: str, key: str, *, slider: bool = False) -> dict:
+        def state_field(section: str, key: str, *, slider: bool = False) -> dict:
             return {
-                "kind": "field" if slider else "number", "label": label,
+                "kind": "field" if slider else "number", "label": control_label(section, key),
                 "proxy": control(section, key), "display": None,
             }
 
-        def state_row(section: str, kind: str, label: str, key: str) -> dict:
-            return {"kind": kind, "label": label, "proxy": control(section, key)}
+        def state_row(section: str, kind: str, key: str) -> dict:
+            return {"kind": kind, "label": control_label(section, key), "proxy": control(section, key)}
 
         def gate_text(key: str) -> dict:
             return {"kind": "text", "label": "", "proxy": GateText(w.gate_state, key, self)}
 
-        def health(title: str, label: QLabel, *, coded: bool = False) -> dict:
+        def health(title: str, name: str, *, coded: bool = False) -> dict:
             # `coded` rows carry counter tokens rather than a readable value.
-            return {"title": title, "coded": coded, "proxy": self._proxy(label)}
+            return {"title": title, "coded": coded, "proxy": text(name)}
         meters = w.processing_meters
         eq = w.eq_presentation
 
         strength = NoiseControl(w.noise_suppression_state, "strength", self)
         stages = [
             {
-                "trace": True, "alert": self._proxy(w.backend_diag_label),
+                "trace": True, "alert": text("backend_diag_label"),
                 "title": "NOISE SUPPRESSION", "menu": None,
                 "help": (
                     "Removes steady background noise such as fans and hum. The "
@@ -724,18 +226,18 @@ class QuickBridge(QObject):
                 ),
                 "toggle": control("gate", "enabled"),
                 "rows": [
-                    state_field("gate", "Threshold", "threshold_db", slider=True),
-                    state_row("gate", "toggle", "Auto threshold", "auto_threshold_enabled"),
+                    state_field("gate", "threshold_db", slider=True),
+                    state_row("gate", "toggle", "auto_threshold_enabled"),
                     gate_text("threshold_status"),
                 ],
                 "advanced": [
-                    state_field("gate", "Attack", "attack_ms"),
-                    state_field("gate", "Release", "release_ms"),
-                    state_row("gate", "combo", "Gate mode", "gate_mode"),
-                    state_field("gate", "VAD threshold", "vad_threshold", slider=True),
-                    state_field("gate", "Hold time", "vad_hold_time_ms"),
-                    state_field("gate", "VAD pre-gain", "vad_pre_gain", slider=True),
-                    state_field("gate", "Margin", "gate_margin_db", slider=True),
+                    state_field("gate", "attack_ms"),
+                    state_field("gate", "release_ms"),
+                    state_row("gate", "combo", "gate_mode"),
+                    state_field("gate", "vad_threshold", slider=True),
+                    state_field("gate", "vad_hold_time_ms"),
+                    state_field("gate", "vad_pre_gain", slider=True),
+                    state_field("gate", "gate_margin_db", slider=True),
                     gate_text("noise_floor"),
                     row("meter", meters.confidence, "Confidence"),
                     gate_text("vad_info"),
@@ -750,18 +252,18 @@ class QuickBridge(QObject):
                 ),
                 "toggle": control("deesser", "enabled"),
                 "rows": [
-                    state_row("deesser", "toggle", "Auto", "auto_enabled"),
-                    state_field("deesser", "Amount", "auto_amount", slider=True),
+                    state_row("deesser", "toggle", "auto_enabled"),
+                    state_field("deesser", "auto_amount", slider=True),
                     row("meter", meters.deesser_gr, "Reduction"),
                 ],
                 "advanced": [
-                    state_field("deesser", "Low cut", "low_cut_hz", slider=True),
-                    state_field("deesser", "High cut", "high_cut_hz", slider=True),
-                    state_field("deesser", "Threshold", "threshold_db", slider=True),
-                    state_field("deesser", "Ratio", "ratio", slider=True),
-                    state_field("deesser", "Attack", "attack_ms"),
-                    state_field("deesser", "Release", "release_ms"),
-                    state_field("deesser", "Max reduction", "max_reduction_db", slider=True),
+                    state_field("deesser", "low_cut_hz", slider=True),
+                    state_field("deesser", "high_cut_hz", slider=True),
+                    state_field("deesser", "threshold_db", slider=True),
+                    state_field("deesser", "ratio", slider=True),
+                    state_field("deesser", "attack_ms"),
+                    state_field("deesser", "release_ms"),
+                    state_field("deesser", "max_reduction_db", slider=True),
                 ],
             },
             {
@@ -772,22 +274,22 @@ class QuickBridge(QObject):
                 ),
                 "toggle": control("compressor", "enabled"),
                 "rows": [
-                    state_field("compressor", "Threshold", "threshold_db", slider=True),
-                    state_field("compressor", "Ratio", "ratio", slider=True),
+                    state_field("compressor", "threshold_db", slider=True),
+                    state_field("compressor", "ratio", slider=True),
                     row("meter", meters.compressor_gr, "Reduction"),
                 ],
                 "advanced": [
-                    state_field("compressor", "Attack", "attack_ms"),
-                    state_field("compressor", "Release", "release_ms"),
-                    state_field("compressor", "Makeup gain", "makeup_gain_db", slider=True),
-                    state_row("compressor", "toggle", "Adaptive release", "adaptive_release"),
-                    state_field("compressor", "Base release", "base_release_ms"),
-                    row("text", meters.current_release, "Current release"),
-                    state_row("compressor", "toggle", "Sidechain high-pass", "sidechain_highpass_enabled"),
-                    state_row("compressor", "toggle", "Auto makeup gain", "auto_makeup_enabled"),
-                    state_field("compressor", "Target LUFS", "target_lufs"),
-                    row("text", meters.current_lufs, "Current LUFS"),
-                    row("text", meters.current_makeup_gain, "Auto gain"),
+                    state_field("compressor", "attack_ms"),
+                    state_field("compressor", "release_ms"),
+                    state_field("compressor", "makeup_gain_db", slider=True),
+                    state_row("compressor", "toggle", "adaptive_release"),
+                    state_field("compressor", "base_release_ms"),
+                    row("text", meters.text_states["current_release"], "Current release"),
+                    state_row("compressor", "toggle", "sidechain_highpass_enabled"),
+                    state_row("compressor", "toggle", "auto_makeup_enabled"),
+                    state_field("compressor", "target_lufs"),
+                    row("text", meters.text_states["current_lufs"], "Current LUFS"),
+                    row("text", meters.text_states["current_makeup_gain"], "Auto gain"),
                 ],
             },
             {
@@ -801,19 +303,10 @@ class QuickBridge(QObject):
                 ),
                 "toggle": SettingControl(w.limiter_state, "limiter", "enabled", self),
                 "menu": None,
-                "rows": [{
-                    "kind": "field", "label": "Ceiling", "display": None,
-                    "proxy": SettingControl(w.limiter_state, "limiter", "ceiling_db", self),
-                }],
+                "rows": [state_field("limiter", "ceiling_db", slider=True)],
                 "advanced": [
-                    {
-                        "kind": "toggle", "label": "Careful output mode",
-                        "proxy": SettingControl(w.limiter_state, "limiter", "careful_output_enabled", self),
-                    },
-                    {
-                        "kind": "number", "label": "Release", "display": None,
-                        "proxy": SettingControl(w.limiter_state, "limiter", "release_ms", self),
-                    },
+                    state_row("limiter", "toggle", "careful_output_enabled"),
+                    state_field("limiter", "release_ms"),
                 ],
             },
         ]
@@ -825,21 +318,7 @@ class QuickBridge(QObject):
             for index in range(10)
         ]
 
-        settings_cards = []
-        for settings_card in w.settings_page.findChildren(Card)[1:]:
-            rows = [
-                row(
-                    "toggle"
-                    if isinstance(control, ToggleSwitch)
-                    else "menu"
-                    if control.menu() is not None
-                    else "action",
-                    control,
-                )
-                for control in settings_card.findChildren(QAbstractButton)
-                if isinstance(control, (ToggleSwitch, QPushButton))
-            ]
-            settings_cards.append({"title": settings_card.title_label.text(), "rows": rows})
+        settings_cards = w.shell_settings_cards
 
         font = icon_font()
         return {
@@ -864,35 +343,29 @@ class QuickBridge(QObject):
                 "undo": Glyph.UNDO,
                 "redo": Glyph.REDO,
             },
-            "page": self._proxy(w.page_stack),
+            "page": w.shell_page,
             "healthPage": w.HEALTH_PAGE_INDEX,
             "banners": [
-                self._proxy(w.device_warning_banner),
-                self._proxy(w.config_warning_banner),
+                text("device_warning_banner"),
+                text("config_warning_banner"),
             ],
             "top": {
-                "input": self._proxy(w.input_combo),
-                "output": self._proxy(w.output_combo),
-                "refresh": self._proxy(w.refresh_btn),
-                "mode": self._proxy(w.processing_mode_combo),
-                "mute": self._proxy(w.user_mute_checkbox),
-                "start": self._proxy(w.start_btn),
-                "stop": self._proxy(w.stop_btn),
+                "input": w.input_choice,
+                "output": w.output_choice,
+                "refresh": action("refresh_btn"),
+                "mode": w.processing_mode_choice,
+                "mute": action("user_mute_checkbox"),
+                "start": action("start_btn"),
+                "stop": action("stop_btn"),
             },
             "presets": {
-                "status": self._proxy(
-                    w.preset_status_label,
-                    data=lambda: {
-                        "name": w.current_preset_name,
-                        "modified": bool(w.current_preset_modified),
-                    },
-                ),
-                "menu": self._proxy(w.presets_button),
-                "undo": self._proxy(w._undo_auto_eq_button),
-                "redo": self._proxy(w.redo_button),
-                "testSound": self._proxy(w.test_sound_button),
-                "autoEq": self._proxy(w.auto_eq_button),
-                "voiceSetup": self._proxy(w.auto_voice_setup_button),
+                "status": text("preset_status_label"),
+                "menu": menu(w.presets_button.menu(), "Presets"),
+                "undo": action("_undo_auto_eq_button"),
+                "redo": action("redo_button"),
+                "testSound": action("test_sound_button"),
+                "autoEq": action("auto_eq_button"),
+                "voiceSetup": action("auto_voice_setup_button"),
             },
             "eq": {
                 "trace": False, "alert": None, "title": "EQUALIZER",
@@ -902,44 +375,44 @@ class QuickBridge(QObject):
                     "move horizontally only. Use [ and ] plus arrow keys for keyboard editing."
                 ),
                 "toggle": EQControl(w.eq_state, "enabled", None, self),
-                "menu": self._proxy(eq.options_button), "rows": [], "advanced": [],
-                "tone": self._proxy(eq.tone_preset_button),
-                "curve": self._proxy(eq.curve_widget),
+                "menu": menu(eq.options_menu, "Equalizer options"), "rows": [], "advanced": [],
+                "tone": menu(eq.tone_menu, "Tone preset"),
+                "curve": eq.graph_model,
                 "layers": EQControl(w.eq_state, "layers", None, self),
                 "diagnostics": EQControl(w.eq_state, "diagnostics", None, self),
                 "band": EQControl(w.eq_state, "band", None, self),
                 "bands": bands,
             },
             "stages": stages,
-            "meters": [self._proxy(w.input_meter), self._proxy(w.output_meter)],
+            "meters": [MeterSource(w.input_meter, self), MeterSource(w.output_meter, self)],
             "status": {
-                "message": self._proxy(w.status_bar),
-                "transmission": self._proxy(w.transmission_status_label),
-                "calibration": self._proxy(w.calibration_status_label),
-                "health": self._proxy(w.health_summary_label),
+                "message": w.status_message,
+                "transmission": text("transmission_status_label"),
+                "calibration": text("calibration_status_label"),
+                "health": text("health_summary_label"),
             },
             "health": {
-                "advice": self._proxy(w.health_advice_label),
-                "route": self._proxy(w.route_status_label),
+                "advice": text("health_advice_label"),
+                "route": text("route_status_label"),
                 "signal": [
-                    health("Input", w.input_health_label),
-                    health("Output", w.output_health_label),
-                    health("Gate", w.gate_health_label),
+                    health("Input", "input_health_label"),
+                    health("Output", "output_health_label"),
+                    health("Gate", "gate_health_label"),
                 ],
                 "stream": [
-                    health("Backend", w.backend_diag_label, coded=True),
-                    health("Callbacks", w.callback_health_label),
-                    health("Underruns", w.underrun_health_label),
-                    health("Latency", w.latency_label),
-                    health("Buffer", w.buffer_label),
-                    health("Drops", w.dropped_label, coded=True),
-                    health("Recovery", w.recovery_diag_label, coded=True),
+                    health("Backend", "backend_diag_label", coded=True),
+                    health("Callbacks", "callback_health_label"),
+                    health("Underruns", "underrun_health_label"),
+                    health("Latency", "latency_label"),
+                    health("Buffer", "buffer_label"),
+                    health("Drops", "dropped_label", coded=True),
+                    health("Recovery", "recovery_diag_label", coded=True),
                 ],
             },
             "settings": {
                 "input": [
-                    row("combo", w.input_channel_mode_combo, "Input mode"),
-                    row("combo", w.input_cleanup_mode_combo, "Cleanup"),
+                    row("combo", w.input_channel_mode_choice, "Input mode"),
+                    row("combo", w.input_cleanup_mode_choice, "Cleanup"),
                 ],
                 "cards": settings_cards,
             },
@@ -955,7 +428,8 @@ def install_quick_shell(window) -> bool:
     scene does not load.
     """
 
-    qmlRegisterType(WidgetItem, "AudioForge", 1, 0, "WidgetItem")  # type: ignore[call-overload]
+    qmlRegisterType(EQGraphItem, "AudioForge", 1, 0, "EQGraphItem")  # type: ignore[call-overload]
+    qmlRegisterType(QuickMeterItem, "AudioForge", 1, 0, "QuickMeterItem")  # type: ignore[call-overload]
     qmlRegisterType(LevelTrace, "AudioForge", 1, 0, "LevelTrace")  # type: ignore[call-overload]
     try:
         bridge = QuickBridge(window)

@@ -49,7 +49,7 @@ Screenshots use example devices and settings.
 
 ## Download
 
-Current version: `v1.15.0` ([release notes](release-notes/release-notes-v1.15.0.md)).
+Current version: `v1.15.1` ([release notes](release-notes/release-notes-v1.15.1.md)).
 This is the source-checkout version; the latest published package may be older.
 Open the [latest release](https://github.com/FueledByRedBull/audio-forge/releases/latest)
 and download **one** of these files. **Not sure? Choose the installer.**

@@ -28,6 +28,7 @@ from .eq_state import (
     _format_auto_eq_diagnostics as _format_auto_eq_diagnostics,
 )
 from .eq_curve import EQCurveWidget
+from .eq_graph import EQGraphModel
 from .rate_limiter import RateLimiter
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
@@ -401,11 +402,13 @@ class EQBandSlider(QWidget):
 
 
 class EQPresentation(QObject):
-    """The shared graph and menus; numeric band editors belong only to widgets."""
+    """Shared graph data and menus; the QWidget graph is created on demand."""
 
     def __init__(self, state: EQState, parent: QObject | None = None):
         super().__init__(parent)
         self.eq_state = state
+        self.graph_model = EQGraphModel(self)
+        self._curve_widget: EQCurveWidget | None = None
         widget_parent = parent if isinstance(parent, QWidget) else None
         tone_menu = QMenu(widget_parent)
         for name, tooltip, handler in (
@@ -440,10 +443,8 @@ class EQPresentation(QObject):
             action.setToolTip(tooltip)
             action.triggered.connect(handler)
         tone_menu.setToolTipsVisible(True)
-        self.tone_preset_button = QPushButton("Tone preset", widget_parent)
-        self.tone_preset_button.setMenu(tone_menu)
         self.tone_menu = tone_menu
-        self.tone_preset_button.hide()
+        self._tone_preset_button: QPushButton | None = None
 
         options_menu = QMenu(widget_parent)
         clear_action = options_menu.addAction("Clear Auto-EQ")
@@ -456,22 +457,15 @@ class EQPresentation(QObject):
         reset_action.triggered.connect(state.reset_tone)
         options_menu.setToolTipsVisible(True)
         self.options_menu = options_menu
-        self.options_button = IconButton(Glyph.MORE, "Equalizer options", widget_parent)
-        self.options_button.setMenu(options_menu)
-        self.options_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.options_button.hide()
+        self._options_button: IconButton | None = None
+        self.tone_actions = tuple(self.tone_menu.actions())
+        self.options_actions = tuple(self.options_menu.actions())
 
-        self.curve_widget = EQCurveWidget(widget_parent)
-        self.curve_widget.setFixedHeight(260)
-        self.curve_widget.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        self.curve_widget.hide()
-        self.curve_widget.bandSelected.connect(state.select_band)
-        self.curve_widget.bandDragStarted.connect(state.begin_curve_edit)
-        self.curve_widget.bandDragged.connect(state.edit_curve_band)
-        self.curve_widget.bandDragFinished.connect(state.finish_curve_edit)
-        self.curve_widget.bandDragCancelled.connect(
+        self.graph_model.bandSelected.connect(state.select_band)
+        self.graph_model.bandDragStarted.connect(state.begin_curve_edit)
+        self.graph_model.bandDragged.connect(state.edit_curve_band)
+        self.graph_model.bandDragFinished.connect(state.finish_curve_edit)
+        self.graph_model.bandDragCancelled.connect(
             lambda index, frequency, gain: state.finish_curve_edit(
                 index, frequency, gain, cancelled=True
             )
@@ -479,18 +473,62 @@ class EQPresentation(QObject):
         state.changed.connect(self._render_curve)
         state.presentationChanged.connect(self._render_presentation)
         for owned in (
-            self.curve_widget,
-            self.tone_preset_button,
             self.tone_menu,
             self.options_menu,
-            self.options_button,
         ):
             self.destroyed.connect(owned.deleteLater)
         self._render_curve()
 
+    @property
+    def tone_preset_button(self) -> QPushButton:
+        """Create the classic tone menu button only when its panel needs it."""
+        if self._tone_preset_button is None:
+            parent = self.parent()
+            widget_parent = parent if isinstance(parent, QWidget) else None
+            self._tone_preset_button = QPushButton("Tone preset", widget_parent)
+            self._tone_preset_button.setMenu(self.tone_menu)
+            self._tone_preset_button.hide()
+            self.destroyed.connect(self._tone_preset_button.deleteLater)
+        return self._tone_preset_button
+
+    @property
+    def options_button(self) -> IconButton:
+        """Create the classic options button only when its panel needs it."""
+        if self._options_button is None:
+            parent = self.parent()
+            widget_parent = parent if isinstance(parent, QWidget) else None
+            self._options_button = IconButton(
+                Glyph.MORE, "Equalizer options", widget_parent
+            )
+            self._options_button.setMenu(self.options_menu)
+            self._options_button.setPopupMode(
+                QToolButton.ToolButtonPopupMode.InstantPopup
+            )
+            self._options_button.hide()
+            self.destroyed.connect(self._options_button.deleteLater)
+        return self._options_button
+
+    @property
+    def curve_widget(self) -> EQCurveWidget:
+        """Create the classic graph only when the QWidget view asks for it."""
+        if self._curve_widget is None:
+            parent = self.parent()
+            widget_parent = parent if isinstance(parent, QWidget) else None
+            self._curve_widget = EQCurveWidget(
+                widget_parent,
+                graph_model=self.graph_model,
+            )
+            self._curve_widget.setFixedHeight(260)
+            self._curve_widget.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+            )
+            self._curve_widget.hide()
+            self.destroyed.connect(self._curve_widget.deleteLater)
+        return self._curve_widget
+
     def _render_curve(self) -> None:
         settings = self.eq_state.get_eq_settings()
-        self.curve_widget.set_all_params(
+        self.graph_model.set_all_params(
             [band.to_native() for band in settings.bands],
             correction=[band.to_native() for band in settings.correction_bands or ()],
         )
@@ -498,13 +536,13 @@ class EQPresentation(QObject):
 
     def _render_presentation(self) -> None:
         if self.eq_state.show_markers:
-            self.curve_widget.set_band_markers(
+            self.graph_model.set_band_markers(
                 self.eq_state.get_eq_settings().band_freqs
             )
         else:
-            self.curve_widget.clear_band_markers()
+            self.graph_model.clear_band_markers()
         if self.eq_state.selected_band is not None:
-            self.curve_widget.select_band(self.eq_state.selected_band)
+            self.graph_model.select_band(self.eq_state.selected_band)
 
 
 class EQPanel(QWidget):

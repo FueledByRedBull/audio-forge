@@ -273,13 +273,16 @@ class FirstRunSetupDialog(QDialog):
         )
         device_layout.addRow(output_label, self.output_device_selector)
         layout.addWidget(self.device_selection_group)
-        self.input_device_selector.setModel(self.owner.input_combo.model())
-        self.output_device_selector.setModel(self.owner.output_combo.model())
+        for selector, choices in ((self.input_device_selector, self.owner.input_choice),
+                                  (self.output_device_selector, self.owner.output_choice)):
+            selector.clear()
+            for index in range(choices.count()):
+                selector.addItem(choices.itemText(index), choices.itemData(index))
         self.input_device_selector.setCurrentIndex(
-            self.owner.input_combo.currentIndex()
+            self.owner.input_choice.currentIndex()
         )
         self.output_device_selector.setCurrentIndex(
-            self.owner.output_combo.currentIndex()
+            self.owner.output_choice.currentIndex()
         )
 
         self.advanced_latency_button = QPushButton("Advanced latency calibration...")
@@ -344,7 +347,7 @@ class FirstRunSetupDialog(QDialog):
         self.setTabOrder(self.pause_button, self.back_button)
         self.setTabOrder(self.back_button, self.skip_button)
         self.setTabOrder(self.skip_button, self.action_button)
-        owner_mute_checkbox = getattr(self.owner, "user_mute_checkbox", None)
+        owner_mute_checkbox = getattr(self.owner, "user_mute_checkbox_action", None)
         if owner_mute_checkbox is not None and hasattr(owner_mute_checkbox, "toggled"):
             owner_mute_checkbox.toggled.connect(self._sync_mute_control)
         self._render_step()
@@ -486,7 +489,7 @@ class FirstRunSetupDialog(QDialog):
 
     def _on_mute_toggled(self, checked: bool) -> None:
         """Route the onboarding control through the main window's mute owner."""
-        self.owner.user_mute_checkbox.setChecked(checked)
+        self.owner.user_mute_checkbox_action.setChecked(checked)
 
     def _sync_mute_control(self, _checked: bool | None = None) -> None:
         """Mirror the live mute owner when a hotkey or tray action changes it."""
@@ -499,8 +502,8 @@ class FirstRunSetupDialog(QDialog):
         input_combo = self.input_device_selector
         output_combo = self.output_device_selector
         if self.current_step != "devices":
-            input_combo = self.owner.input_combo
-            output_combo = self.owner.output_combo
+            input_combo = self.owner.input_choice
+            output_combo = self.owner.output_choice
         input_identity = coerce_device_identity(
             input_combo.currentData()
         )
@@ -510,14 +513,16 @@ class FirstRunSetupDialog(QDialog):
         return input_identity is not None and output_identity is not None
 
     def _apply_selected_devices(self) -> bool:
-        input_index = self.input_device_selector.currentIndex()
-        output_index = self.output_device_selector.currentIndex()
-        if input_index < 0 or output_index < 0:
+        input_combo = self.owner.input_choice
+        output_combo = self.owner.output_choice
+        # The dialog holds a snapshot; a device refresh can reorder the owner.
+        input_identity = self.input_device_selector.currentData()
+        output_identity = self.output_device_selector.currentData()
+        if input_identity is None or output_identity is None:
             return False
-
-        input_combo = self.owner.input_combo
-        output_combo = self.owner.output_combo
-        if input_index >= input_combo.count() or output_index >= output_combo.count():
+        input_index = input_combo.findData(input_identity)
+        output_index = output_combo.findData(output_identity)
+        if input_index < 0 or output_index < 0:
             return False
         route_changed = (
             input_combo.currentIndex() != input_index
@@ -756,7 +761,7 @@ class FirstRunSetupDialog(QDialog):
         if not self._finalized:
             self.config.first_run_setup_state = "in_progress"
             if not self._save_progress():
-                self.owner.status_bar.showMessage(
+                self.owner.status_message.showMessage(
                     "Setup progress could not be saved; it may need to be repeated next launch",
                     6000,
                 )

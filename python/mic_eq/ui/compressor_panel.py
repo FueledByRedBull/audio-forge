@@ -22,6 +22,13 @@ from .compressor_state import CompressorState
 from .level_meter import GainReductionMeter
 from .limiter_state import LimiterState
 from .processing_meters import ProcessingMeters
+from .control_specs import (
+    apply_control_presentation,
+    configure_numeric_control,
+    control_label,
+    control_spec,
+    widget_control_label,
+)
 from .accessibility import bind_label, set_accessible_group
 from .layout_constants import (
     SPACING_NORMAL,
@@ -64,10 +71,7 @@ class CompressorPanel(QWidget):
         # === Compressor Group ===
         self.comp_enabled_checkbox = ToggleSwitch()
         self.comp_enabled_checkbox.setChecked(True)
-        self.comp_enabled_checkbox.setToolTip(
-            "Reduces dynamic range by attenuating loud signals.\n"
-            "Helps maintain consistent volume levels."
-        )
+        apply_control_presentation(self.comp_enabled_checkbox, "compressor", "enabled")
         card = Card(
             "Compressor",
             switch=self.comp_enabled_checkbox,
@@ -92,22 +96,21 @@ class CompressorPanel(QWidget):
         # Threshold slider with spinbox
         threshold_layout = QHBoxLayout()
         self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self.threshold_slider.setRange(-60, 0)
         self.threshold_slider.setValue(-20)
         self.threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.threshold_slider.setTickInterval(10)
         threshold_layout.addWidget(self.threshold_slider)
 
         self.threshold_spinbox = QDoubleSpinBox()
-        self.threshold_spinbox.setRange(-60.0, 0.0)
-        self.threshold_spinbox.setSingleStep(1.0)
+        configure_numeric_control(
+            self.threshold_spinbox, "compressor", "threshold_db",
+            slider=self.threshold_slider,
+        )
         self.threshold_spinbox.setValue(-20.0)
-        self.threshold_spinbox.setSuffix(" dB")
-        self.threshold_spinbox.setToolTip("Level above which compression begins")
         fit_spinbox_to_contents(self.threshold_spinbox)
         threshold_layout.addWidget(self.threshold_spinbox)
 
-        threshold_label = QLabel("Threshold:")
+        threshold_label = QLabel(f"{widget_control_label('compressor', 'threshold_db')}:")
         threshold_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         comp_layout.addWidget(threshold_label, 1, 0)
         comp_layout.addLayout(threshold_layout, 1, 1)
@@ -115,53 +118,42 @@ class CompressorPanel(QWidget):
         # Ratio slider with spinbox
         ratio_layout = QHBoxLayout()
         self.ratio_slider = QSlider(Qt.Orientation.Horizontal)
-        self.ratio_slider.setRange(10, 200)  # 1.0:1 to 20.0:1
         self.ratio_slider.setValue(40)  # 4:1
         self.ratio_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.ratio_slider.setTickInterval(20)
         ratio_layout.addWidget(self.ratio_slider)
 
         self.ratio_spinbox = QDoubleSpinBox()
-        self.ratio_spinbox.setRange(1.0, 20.0)
-        self.ratio_spinbox.setSingleStep(0.5)
+        configure_numeric_control(
+            self.ratio_spinbox, "compressor", "ratio",
+            slider=self.ratio_slider, slider_scale=10,
+        )
         self.ratio_spinbox.setValue(4.0)
-        self.ratio_spinbox.setSuffix(":1")
-        self.ratio_spinbox.setToolTip("Compression ratio (higher = more compression)")
         fit_spinbox_to_contents(self.ratio_spinbox)
         ratio_layout.addWidget(self.ratio_spinbox)
 
-        ratio_label = QLabel("Ratio:")
+        ratio_label = QLabel(f"{widget_control_label('compressor', 'ratio')}:")
         ratio_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         comp_layout.addWidget(ratio_label, 2, 0)
         comp_layout.addLayout(ratio_layout, 2, 1)
 
         # Row 2: Attack (left) and Release (right) with PRIMARY_LABEL_STYLE
         self.attack_spinbox = QDoubleSpinBox()
-        self.attack_spinbox.setRange(0.1, 100.0)
-        self.attack_spinbox.setSingleStep(1.0)
+        configure_numeric_control(self.attack_spinbox, "compressor", "attack_ms")
         self.attack_spinbox.setValue(10.0)
-        self.attack_spinbox.setSuffix(" ms")
-        self.attack_spinbox.setToolTip(
-            "How fast the compressor responds to loud signals"
-        )
         fit_spinbox_to_contents(self.attack_spinbox)
 
-        attack_label = QLabel("Attack:")
+        attack_label = QLabel(f"{widget_control_label('compressor', 'attack_ms')}:")
         attack_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_layout.addWidget(attack_label, 0, 0)
         advanced_layout.addWidget(self.attack_spinbox, 0, 1)
 
         self.release_spinbox = QDoubleSpinBox()
-        self.release_spinbox.setRange(10.0, 1000.0)
-        self.release_spinbox.setSingleStep(10.0)
+        configure_numeric_control(self.release_spinbox, "compressor", "release_ms")
         self.release_spinbox.setValue(200.0)
-        self.release_spinbox.setSuffix(" ms")
-        self.release_spinbox.setToolTip(
-            "How fast the compressor recovers after loud signals"
-        )
         fit_spinbox_to_contents(self.release_spinbox)
 
-        release_label = QLabel("Release:")
+        release_label = QLabel(f"{widget_control_label('compressor', 'release_ms')}:")
         release_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_layout.addWidget(release_label, 1, 0)
         advanced_layout.addWidget(self.release_spinbox, 1, 1)
@@ -169,49 +161,43 @@ class CompressorPanel(QWidget):
         # Row 3: Makeup Gain (span full width) with PRIMARY_LABEL_STYLE
         makeup_layout = QHBoxLayout()
         self.makeup_slider = QSlider(Qt.Orientation.Horizontal)
-        self.makeup_slider.setRange(0, 24)
         self.makeup_slider.setValue(0)
         self.makeup_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.makeup_slider.setTickInterval(6)
         makeup_layout.addWidget(self.makeup_slider)
 
         self.makeup_spinbox = QDoubleSpinBox()
-        self.makeup_spinbox.setRange(0.0, 24.0)
-        self.makeup_spinbox.setSingleStep(0.5)
+        configure_numeric_control(
+            self.makeup_spinbox, "compressor", "makeup_gain_db",
+            slider=self.makeup_slider,
+        )
         self.makeup_spinbox.setValue(0.0)
-        self.makeup_spinbox.setSuffix(" dB")
-        self.makeup_spinbox.setToolTip("Gain added after compression to restore volume")
         fit_spinbox_to_contents(self.makeup_spinbox)
         makeup_layout.addWidget(self.makeup_spinbox)
 
-        makeup_label = QLabel("Makeup Gain:")
+        makeup_label = QLabel(f"{widget_control_label('compressor', 'makeup_gain_db')}:")
         makeup_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_layout.addWidget(makeup_label, 2, 0)
         advanced_layout.addLayout(makeup_layout, 2, 1)
 
 
         # Adaptive Release checkbox
-        self.adaptive_release_checkbox = ToggleSwitch("Adaptive release")
+        self.adaptive_release_checkbox = ToggleSwitch(control_label("compressor", "adaptive_release"))
         self.adaptive_release_checkbox.setChecked(False)
-        self.adaptive_release_checkbox.setToolTip(
-            "Release time adapts based on signal dynamics.\n"
-            "Scales from 50ms to 400ms based on sustained overage.\n"
-            "Longer release for consistent loud signals, shorter for transients."
+        apply_control_presentation(
+            self.adaptive_release_checkbox, "compressor", "adaptive_release",
         )
         advanced_layout.addWidget(self.adaptive_release_checkbox, 3, 0, 1, 2)
 
         # Base release time (when adaptive is enabled)
         self.base_release_spinbox = QDoubleSpinBox()
-        self.base_release_spinbox.setRange(20.0, 200.0)
-        self.base_release_spinbox.setSingleStep(5.0)
-        self.base_release_spinbox.setValue(50.0)
-        self.base_release_spinbox.setSuffix(" ms")
-        self.base_release_spinbox.setToolTip(
-            "Base release time when adaptive mode is enabled"
+        configure_numeric_control(
+            self.base_release_spinbox, "compressor", "base_release_ms",
         )
+        self.base_release_spinbox.setValue(50.0)
         self.base_release_spinbox.setEnabled(False)
         fit_spinbox_to_contents(self.base_release_spinbox)
-        base_release_label = QLabel("Base Release:")
+        base_release_label = QLabel(f"{widget_control_label('compressor', 'base_release_ms')}:")
         advanced_layout.addWidget(base_release_label, 4, 0)
         advanced_layout.addWidget(self.base_release_spinbox, 4, 1)
 
@@ -224,33 +210,30 @@ class CompressorPanel(QWidget):
         advanced_layout.addWidget(QLabel("Current Release:"), 5, 0)
         advanced_layout.addWidget(self.current_release_label, 5, 1)
 
-        self.sidechain_highpass_checkbox = ToggleSwitch("Sidechain high-pass")
+        self.sidechain_highpass_checkbox = ToggleSwitch(control_label("compressor", "sidechain_highpass_enabled"))
         self.sidechain_highpass_checkbox.setChecked(True)
-        self.sidechain_highpass_checkbox.setToolTip(
-            "Ignores low-frequency plosives and rumble in the compressor detector without filtering the audio."
+        apply_control_presentation(
+            self.sidechain_highpass_checkbox, "compressor", "sidechain_highpass_enabled",
         )
         advanced_layout.addWidget(self.sidechain_highpass_checkbox, 6, 0, 1, 2)
 
         # Auto Makeup Gain checkbox
-        self.auto_makeup_checkbox = ToggleSwitch("Auto makeup gain")
+        self.auto_makeup_checkbox = ToggleSwitch(control_label("compressor", "auto_makeup_enabled"))
         self.auto_makeup_checkbox.setChecked(False)
-        self.auto_makeup_checkbox.setToolTip(
-            "Automatically adjust makeup gain from post-compression EBU R128 loudness measurement.\n"
-            "Maintains post-compressor output level relative to target LUFS.\n"
-            "Uses the selected Target LUFS value."
+        apply_control_presentation(
+            self.auto_makeup_checkbox, "compressor", "auto_makeup_enabled",
         )
         advanced_layout.addWidget(self.auto_makeup_checkbox, 7, 0, 1, 2)
 
         # Target LUFS spinbox
         self.target_lufs_spinbox = QDoubleSpinBox()
-        self.target_lufs_spinbox.setRange(-24.0, -12.0)
-        self.target_lufs_spinbox.setSingleStep(1.0)
+        configure_numeric_control(
+            self.target_lufs_spinbox, "compressor", "target_lufs",
+        )
         self.target_lufs_spinbox.setValue(-18.0)
-        self.target_lufs_spinbox.setSuffix(" LUFS")
-        self.target_lufs_spinbox.setToolTip("Target loudness level (-24 to -12 LUFS)")
         self.target_lufs_spinbox.setEnabled(False)  # Disabled when auto makeup off
         fit_spinbox_to_contents(self.target_lufs_spinbox)
-        target_lufs_label = QLabel("Target LUFS:")
+        target_lufs_label = QLabel(f"{widget_control_label('compressor', 'target_lufs')}:")
         advanced_layout.addWidget(target_lufs_label, 8, 0)
         advanced_layout.addWidget(self.target_lufs_spinbox, 8, 1)
 
@@ -279,10 +262,7 @@ class CompressorPanel(QWidget):
         # === Limiter Group ===
         self.limiter_enabled_checkbox = ToggleSwitch()
         self.limiter_enabled_checkbox.setChecked(True)
-        self.limiter_enabled_checkbox.setToolTip(
-            "Prevents signal from exceeding ceiling level.\n"
-            "Acts as a safety net to prevent clipping."
-        )
+        apply_control_presentation(self.limiter_enabled_checkbox, "limiter", "enabled")
         limiter_card = Card(
             "Limiter",
             switch=self.limiter_enabled_checkbox,
@@ -303,44 +283,42 @@ class CompressorPanel(QWidget):
             section.setColumnStretch(1, 1)
             section.setColumnMinimumWidth(0, 75)
 
-        self.careful_output_checkbox = ToggleSwitch("Careful output mode")
+        self.careful_output_checkbox = ToggleSwitch(control_label("limiter", "careful_output_enabled"))
         self.careful_output_checkbox.setChecked(True)
-        self.careful_output_checkbox.setToolTip(
-            "Adds conservative output headroom by limiting the effective ceiling to -1.5 dB."
+        apply_control_presentation(
+            self.careful_output_checkbox, "limiter", "careful_output_enabled",
         )
         limiter_advanced_layout.addWidget(self.careful_output_checkbox, 1, 0, 1, 3)
 
         # Ceiling slider with spinbox
         ceiling_layout = QHBoxLayout()
         self.ceiling_slider = QSlider(Qt.Orientation.Horizontal)
-        self.ceiling_slider.setRange(-120, 0)  # -12.0 to 0.0 dB (x10)
         self.ceiling_slider.setValue(-5)  # -0.5 dB
         self.ceiling_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.ceiling_slider.setTickInterval(20)
         ceiling_layout.addWidget(self.ceiling_slider)
 
         self.ceiling_spinbox = QDoubleSpinBox()
-        self.ceiling_spinbox.setRange(-12.0, 0.0)
-        self.ceiling_spinbox.setSingleStep(0.1)
+        configure_numeric_control(
+            self.ceiling_spinbox, "limiter", "ceiling_db",
+            slider=self.ceiling_slider, slider_scale=10,
+        )
         self.ceiling_spinbox.setValue(-0.5)
-        self.ceiling_spinbox.setSuffix(" dB")
-        self.ceiling_spinbox.setToolTip("Maximum output level (brick-wall ceiling)")
         fit_spinbox_to_contents(self.ceiling_spinbox)
         ceiling_layout.addWidget(self.ceiling_spinbox)
 
-        ceiling_label = QLabel("Ceiling:")
+        ceiling_label = QLabel(f"{widget_control_label('limiter', 'ceiling_db')}:")
         limiter_layout.addWidget(ceiling_label, 2, 0)
         limiter_layout.addLayout(ceiling_layout, 2, 1, 1, 2)
 
         # Release time
         self.limiter_release_spinbox = QDoubleSpinBox()
-        self.limiter_release_spinbox.setRange(10.0, 500.0)
-        self.limiter_release_spinbox.setSingleStep(5.0)
+        configure_numeric_control(
+            self.limiter_release_spinbox, "limiter", "release_ms",
+        )
         self.limiter_release_spinbox.setValue(50.0)
-        self.limiter_release_spinbox.setSuffix(" ms")
-        self.limiter_release_spinbox.setToolTip("How fast the limiter recovers")
         fit_spinbox_to_contents(self.limiter_release_spinbox)
-        limiter_release_label = QLabel("Release:")
+        limiter_release_label = QLabel(f"{widget_control_label('limiter', 'release_ms')}:")
         limiter_advanced_layout.addWidget(limiter_release_label, 3, 0)
         limiter_advanced_layout.addWidget(self.limiter_release_spinbox, 3, 1, 1, 2)
 
@@ -349,49 +327,49 @@ class CompressorPanel(QWidget):
         bind_label(
             threshold_label,
             self.threshold_spinbox,
-            name="Compressor threshold",
+            name=control_spec("compressor", "threshold_db").accessible_name,
         )
-        bind_label(ratio_label, self.ratio_spinbox, name="Compressor ratio")
-        bind_label(attack_label, self.attack_spinbox, name="Compressor attack time")
+        bind_label(ratio_label, self.ratio_spinbox, name=control_spec("compressor", "ratio").accessible_name)
+        bind_label(attack_label, self.attack_spinbox, name=control_spec("compressor", "attack_ms").accessible_name)
         bind_label(
             release_label,
             self.release_spinbox,
-            name="Compressor release time",
+            name=control_spec("compressor", "release_ms").accessible_name,
         )
-        bind_label(makeup_label, self.makeup_spinbox, name="Compressor makeup gain")
+        bind_label(makeup_label, self.makeup_spinbox, name=control_spec("compressor", "makeup_gain_db").accessible_name)
         bind_label(
             base_release_label,
             self.base_release_spinbox,
-            name="Adaptive compressor base release",
+            name=control_spec("compressor", "base_release_ms").accessible_name,
         )
         bind_label(
             target_lufs_label,
             self.target_lufs_spinbox,
-            name="Automatic makeup target loudness",
+            name=control_spec("compressor", "target_lufs").accessible_name,
         )
-        bind_label(ceiling_label, self.ceiling_spinbox, name="Limiter ceiling")
+        bind_label(ceiling_label, self.ceiling_spinbox, name=control_spec("limiter", "ceiling_db").accessible_name)
         bind_label(
             limiter_release_label,
             self.limiter_release_spinbox,
-            name="Limiter release time",
+            name=control_spec("limiter", "release_ms").accessible_name,
         )
         set_accessible_group(
             (
-                (self.comp_enabled_checkbox, "Enable compressor", None),
-                (self.threshold_slider, "Compressor threshold", None),
-                (self.ratio_slider, "Compressor ratio", None),
-                (self.makeup_slider, "Compressor makeup gain", None),
-                (self.adaptive_release_checkbox, "Enable adaptive release", None),
+                (self.comp_enabled_checkbox, control_spec("compressor", "enabled").accessible_name, None),
+                (self.threshold_slider, control_spec("compressor", "threshold_db").accessible_name, None),
+                (self.ratio_slider, control_spec("compressor", "ratio").accessible_name, None),
+                (self.makeup_slider, control_spec("compressor", "makeup_gain_db").accessible_name, None),
+                (self.adaptive_release_checkbox, control_spec("compressor", "adaptive_release").accessible_name, None),
                 (
                     self.sidechain_highpass_checkbox,
-                    "Enable compressor sidechain high-pass",
+                    control_spec("compressor", "sidechain_highpass_enabled").accessible_name,
                     None,
                 ),
-                (self.auto_makeup_checkbox, "Enable automatic makeup gain", None),
+                (self.auto_makeup_checkbox, control_spec("compressor", "auto_makeup_enabled").accessible_name, None),
                 (self.gr_meter, "Compressor gain reduction", None),
-                (self.limiter_enabled_checkbox, "Enable limiter", None),
-                (self.careful_output_checkbox, "Enable careful output mode", None),
-                (self.ceiling_slider, "Limiter ceiling", None),
+                (self.limiter_enabled_checkbox, control_spec("limiter", "enabled").accessible_name, None),
+                (self.careful_output_checkbox, control_spec("limiter", "careful_output_enabled").accessible_name, None),
+                (self.ceiling_slider, control_spec("limiter", "ceiling_db").accessible_name, None),
             )
         )
 

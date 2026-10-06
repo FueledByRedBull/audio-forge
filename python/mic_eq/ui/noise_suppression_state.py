@@ -29,6 +29,7 @@ class NoiseSuppressionState(QObject):
         self.models = tuple(processor.list_noise_models())
 
     def get_settings(self) -> dict:
+        """Return accepted settings; backend changes apply synchronously."""
         return self._settings.copy()
 
     @property

@@ -17,6 +17,14 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from .gate_state import GateState
+from .control_specs import (
+    GATE_MODES,
+    apply_control_presentation,
+    configure_numeric_control,
+    control_label,
+    control_spec,
+    widget_control_label,
+)
 from .processing_meters import ProcessingMeters
 from .components import Card, ToggleSwitch, form_layout
 from .accessibility import bind_label, set_accessible_group
@@ -52,10 +60,7 @@ class GatePanel(QWidget):
 
         self.enabled_checkbox = ToggleSwitch()
         self.enabled_checkbox.setChecked(True)
-        self.enabled_checkbox.setToolTip(
-            "Reduces gain when signal falls below threshold.\n"
-            "Helps eliminate background noise during silence."
-        )
+        apply_control_presentation(self.enabled_checkbox, "gate", "enabled")
         card = Card(
             "Noise Gate",
             switch=self.enabled_checkbox,
@@ -75,18 +80,17 @@ class GatePanel(QWidget):
         threshold_layout = QHBoxLayout()
 
         self.threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self.threshold_slider.setRange(-80, -10)
-        self.threshold_slider.setValue(-40)
         self.threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.threshold_slider.setTickInterval(10)
         threshold_layout.addWidget(self.threshold_slider)
 
         self.threshold_spinbox = QDoubleSpinBox()
-        self.threshold_spinbox.setRange(-80.0, -10.0)
-        self.threshold_spinbox.setSingleStep(1.0)
+        configure_numeric_control(
+            self.threshold_spinbox, "gate", "threshold_db",
+            slider=self.threshold_slider,
+        )
+        self.threshold_slider.setValue(-40)
         self.threshold_spinbox.setValue(-40.0)
-        self.threshold_spinbox.setSuffix(" dB")
-        self.threshold_spinbox.setToolTip("Signal level below which gate closes")
         fit_spinbox_to_contents(self.threshold_spinbox)
         threshold_layout.addWidget(self.threshold_spinbox)
 
@@ -96,138 +100,109 @@ class GatePanel(QWidget):
 
         # Attack time
         self.attack_spinbox = QDoubleSpinBox()
-        self.attack_spinbox.setRange(0.1, 100.0)
-        self.attack_spinbox.setSingleStep(1.0)
+        configure_numeric_control(self.attack_spinbox, "gate", "attack_ms")
         self.attack_spinbox.setValue(10.0)
-        self.attack_spinbox.setSuffix(" ms")
-        self.attack_spinbox.setToolTip(
-            "Time for gate to open when signal exceeds threshold"
-        )
         fit_spinbox_to_contents(self.attack_spinbox)
-        attack_label = QLabel("Attack:")
+        attack_label = QLabel(f"{widget_control_label('gate', 'attack_ms')}:")
         attack_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_layout.addRow(attack_label, self.attack_spinbox)
 
         # Release time
         self.release_spinbox = QDoubleSpinBox()
-        self.release_spinbox.setRange(10.0, 1000.0)
-        self.release_spinbox.setSingleStep(10.0)
+        configure_numeric_control(self.release_spinbox, "gate", "release_ms")
         self.release_spinbox.setValue(100.0)
-        self.release_spinbox.setSuffix(" ms")
-        self.release_spinbox.setToolTip(
-            "Time for gate to close when signal drops below threshold"
-        )
         fit_spinbox_to_contents(self.release_spinbox)
-        release_label = QLabel("Release:")
+        release_label = QLabel(f"{widget_control_label('gate', 'release_ms')}:")
         release_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_layout.addRow(release_label, self.release_spinbox)
 
         # Gate Mode section
-        mode_label = QLabel("Gate Mode:")
+        mode_label = QLabel(f"{widget_control_label('gate', 'gate_mode')}:")
         mode_label.setStyleSheet(PRIMARY_LABEL_STYLE)
 
         # Mode dropdown
         self.gate_mode_combo = QComboBox()
-        self.gate_mode_combo.addItems(["Threshold Only", "VAD Assisted", "VAD Only"])
+        self.gate_mode_combo.addItems(GATE_MODES)
         self.gate_mode_combo.setCurrentIndex(0)
-        self.gate_mode_combo.setToolTip(
-            "Threshold Only: Traditional gate using level threshold\n"
-            "VAD Assisted: Gate opens when level exceeded OR speech detected\n"
-            "VAD Only: Gate opens solely based on speech probability"
-        )
+        apply_control_presentation(self.gate_mode_combo, "gate", "gate_mode")
         advanced_layout.addRow(mode_label, self.gate_mode_combo)
 
         # VAD threshold slider
         vad_threshold_layout = QHBoxLayout()
         self.vad_threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self.vad_threshold_slider.setRange(30, 70)  # Native range: 0.3 to 0.7
-        self.vad_threshold_slider.setValue(48)
         self.vad_threshold_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.vad_threshold_slider.setTickInterval(10)
         vad_threshold_layout.addWidget(self.vad_threshold_slider)
 
         self.vad_threshold_spinbox = QDoubleSpinBox()
-        self.vad_threshold_spinbox.setRange(0.3, 0.7)
-        self.vad_threshold_spinbox.setSingleStep(0.01)
+        configure_numeric_control(
+            self.vad_threshold_spinbox, "gate", "vad_threshold",
+            slider=self.vad_threshold_slider, slider_scale=100,
+        )
+        self.vad_threshold_slider.setValue(48)
         self.vad_threshold_spinbox.setValue(0.48)
-        self.vad_threshold_spinbox.setDecimals(2)
-        self.vad_threshold_spinbox.setToolTip("Speech probability threshold (0.3-0.7)")
         fit_spinbox_to_contents(self.vad_threshold_spinbox)
         vad_threshold_layout.addWidget(self.vad_threshold_spinbox)
 
-        vad_threshold_label = QLabel("VAD Threshold:")
+        vad_threshold_label = QLabel(f"{widget_control_label('gate', 'vad_threshold')}:")
         vad_threshold_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_layout.addRow(vad_threshold_label, vad_threshold_layout)
 
         # Hold time
         self.vad_hold_spinbox = QDoubleSpinBox()
-        self.vad_hold_spinbox.setRange(0.0, 500.0)
-        self.vad_hold_spinbox.setSingleStep(10.0)
+        configure_numeric_control(self.vad_hold_spinbox, "gate", "vad_hold_time_ms")
         self.vad_hold_spinbox.setValue(200.0)
-        self.vad_hold_spinbox.setSuffix(" ms")
-        self.vad_hold_spinbox.setToolTip(
-            "Gate hold time after speech ends (prevents chatter)"
-        )
         fit_spinbox_to_contents(self.vad_hold_spinbox)
-        hold_time_label = QLabel("Hold Time:")
+        hold_time_label = QLabel(f"{widget_control_label('gate', 'vad_hold_time_ms')}:")
         hold_time_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_layout.addRow(hold_time_label, self.vad_hold_spinbox)
 
         # VAD Pre-Gain slider and spinbox (boosts weak signals for better detection)
         vad_pre_gain_layout = QHBoxLayout()
         self.vad_pre_gain_slider = QSlider(Qt.Orientation.Horizontal)
-        self.vad_pre_gain_slider.setRange(10, 100)  # 1.0 to 10.0
-        self.vad_pre_gain_slider.setValue(10)  # Default 1.0
         self.vad_pre_gain_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.vad_pre_gain_slider.setTickInterval(10)
         vad_pre_gain_layout.addWidget(self.vad_pre_gain_slider)
 
         self.vad_pre_gain_spinbox = QDoubleSpinBox()
-        self.vad_pre_gain_spinbox.setRange(1.0, 10.0)
-        self.vad_pre_gain_spinbox.setSingleStep(0.5)
-        self.vad_pre_gain_spinbox.setValue(1.0)
-        self.vad_pre_gain_spinbox.setDecimals(1)
-        self.vad_pre_gain_spinbox.setToolTip(
-            "Pre-gain to boost weak signals for better VAD detection"
+        configure_numeric_control(
+            self.vad_pre_gain_spinbox, "gate", "vad_pre_gain",
+            slider=self.vad_pre_gain_slider, slider_scale=10,
         )
+        self.vad_pre_gain_slider.setValue(10)  # Default 1.0
+        self.vad_pre_gain_spinbox.setValue(1.0)
         fit_spinbox_to_contents(self.vad_pre_gain_spinbox)
         vad_pre_gain_layout.addWidget(self.vad_pre_gain_spinbox)
 
-        vad_pre_gain_label = QLabel("VAD Pre-Gain:")
+        vad_pre_gain_label = QLabel(f"{widget_control_label('gate', 'vad_pre_gain')}:")
         vad_pre_gain_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_layout.addRow(vad_pre_gain_label, vad_pre_gain_layout)
 
         # Auto Threshold section
-        self.auto_threshold_checkbox = ToggleSwitch("Auto threshold")
+        self.auto_threshold_checkbox = ToggleSwitch(control_label("gate", "auto_threshold_enabled"))
         self.auto_threshold_checkbox.setChecked(True)
-        self.auto_threshold_checkbox.setToolTip(
-            "Automatically adjust gate threshold based on estimated noise floor.\n"
-            "Recommended for VAD modes.\n"
-            "Gate threshold = noise_floor + margin"
+        apply_control_presentation(
+            self.auto_threshold_checkbox, "gate", "auto_threshold_enabled",
         )
         gate_layout.addRow(self.auto_threshold_checkbox)
 
         # Margin slider and spinbox
         margin_layout = QHBoxLayout()
         self.margin_slider = QSlider(Qt.Orientation.Horizontal)
-        self.margin_slider.setRange(0, 20)  # 0 to 20 dB
-        self.margin_slider.setValue(10)  # Default 10 dB
         self.margin_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.margin_slider.setTickInterval(5)
         margin_layout.addWidget(self.margin_slider)
 
         self.margin_spinbox = QDoubleSpinBox()
-        self.margin_spinbox.setRange(0.0, 20.0)
-        self.margin_spinbox.setSingleStep(1.0)
-        self.margin_spinbox.setValue(10.0)
-        self.margin_spinbox.setSuffix(" dB")
-        self.margin_spinbox.setToolTip(
-            "Margin above noise floor for gate threshold (0-20 dB)"
+        configure_numeric_control(
+            self.margin_spinbox, "gate", "gate_margin_db", slider=self.margin_slider,
         )
+        self.margin_slider.setValue(10)  # Default 10 dB
+        self.margin_spinbox.setValue(10.0)
         fit_spinbox_to_contents(self.margin_spinbox)
         margin_layout.addWidget(self.margin_spinbox)
 
-        margin_label = QLabel("Margin:")
+        margin_label = QLabel(f"{widget_control_label('gate', 'gate_margin_db')}:")
         margin_label.setStyleSheet(PRIMARY_LABEL_STYLE)
         advanced_layout.addRow(margin_label, margin_layout)
 
@@ -266,35 +241,35 @@ class GatePanel(QWidget):
         bind_label(
             self.threshold_label,
             self.threshold_spinbox,
-            name="Gate manual threshold",
+            name=control_spec("gate", "threshold_db").accessible_name,
         )
-        bind_label(attack_label, self.attack_spinbox, name="Gate attack time")
-        bind_label(release_label, self.release_spinbox, name="Gate release time")
-        bind_label(mode_label, self.gate_mode_combo, name="Gate operating mode")
+        bind_label(attack_label, self.attack_spinbox, name=control_spec("gate", "attack_ms").accessible_name)
+        bind_label(release_label, self.release_spinbox, name=control_spec("gate", "release_ms").accessible_name)
+        bind_label(mode_label, self.gate_mode_combo, name=control_spec("gate", "gate_mode").accessible_name)
         bind_label(
             vad_threshold_label,
             self.vad_threshold_spinbox,
-            name="Voice activity threshold",
+            name=control_spec("gate", "vad_threshold").accessible_name,
         )
         bind_label(
             hold_time_label,
             self.vad_hold_spinbox,
-            name="Voice activity hold time",
+            name=control_spec("gate", "vad_hold_time_ms").accessible_name,
         )
         bind_label(
             vad_pre_gain_label,
             self.vad_pre_gain_spinbox,
-            name="Voice activity pre-gain",
+            name=control_spec("gate", "vad_pre_gain").accessible_name,
         )
-        bind_label(margin_label, self.margin_spinbox, name="Automatic gate margin")
+        bind_label(margin_label, self.margin_spinbox, name=control_spec("gate", "gate_margin_db").accessible_name)
         set_accessible_group(
             (
-                (self.enabled_checkbox, "Enable noise gate", None),
-                (self.threshold_slider, "Gate manual threshold", None),
-                (self.vad_threshold_slider, "Voice activity threshold", None),
-                (self.vad_pre_gain_slider, "Voice activity pre-gain", None),
-                (self.auto_threshold_checkbox, "Enable automatic gate threshold", None),
-                (self.margin_slider, "Automatic gate margin", None),
+                (self.enabled_checkbox, control_spec("gate", "enabled").accessible_name, None),
+                (self.threshold_slider, control_spec("gate", "threshold_db").accessible_name, None),
+                (self.vad_threshold_slider, control_spec("gate", "vad_threshold").accessible_name, None),
+                (self.vad_pre_gain_slider, control_spec("gate", "vad_pre_gain").accessible_name, None),
+                (self.auto_threshold_checkbox, control_spec("gate", "auto_threshold_enabled").accessible_name, None),
+                (self.margin_slider, control_spec("gate", "gate_margin_db").accessible_name, None),
                 (self.confidence_meter, "Voice activity confidence", None),
             )
         )

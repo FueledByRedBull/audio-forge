@@ -186,7 +186,7 @@ ACTION_SPECS = {
     ),
     "auto_eq_button": _ActionSpec(
         "Auto-EQ",
-        "Automatically calibrate EQ to your voice and microphone\n"
+        "Record a short passage and set the EQ toward a tone preset\n"
         "Choose a tone preset, read a short passage, then review the result",
     ),
     "auto_voice_setup_button": _ActionSpec(

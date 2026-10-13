@@ -35,13 +35,13 @@ def _outcome(after, *, decision="accept", codes=("accepted",), advisory=None) ->
         "reason_codes": list(codes), "reduction_targets": [], "full_chain": True, "full_chain_voice_dropout": False,
         "spectral_target_error_before_db": 0.75, "spectral_target_error_after_db": after,
         "snr_change_db": 2.0, "limiter_pressure_db": 0.3, "compressor_gain_reduction_p95_db": 3.0,
-        "suppressor_dulling_db": None, "suppressor_dulling_abstained": True,
+        "suppressor_dulling_db": None, "suppressor_dulling_abstained": True, "suppressor_dulling_advice": None,
     }
     if advisory is not None:
         outcome["suppressor_dulling_db"], outcome["suppressor_dulling_abstained"] = advisory, False
         if advisory > 6.0:
             outcome["reason_codes"].append("suppressor_dulling")
-            outcome["reasons"].append(SENTENCE)
+            outcome["suppressor_dulling_advice"] = SENTENCE
     return outcome
 
 
@@ -89,8 +89,7 @@ def _set_target_error(arm, rolled_back=True) -> None:
         fired = (outcome.get("suppressor_dulling_db") or 0.0) > 6.0
         outcome["decision"] = "rollback" if rolled_back else "accept"
         outcome["reason_codes"] = ["target_error" if rolled_back else "accepted"] + (["suppressor_dulling"] if fired else [])
-        outcome["reasons"] = ["target error worsened" if rolled_back else "repeatability and full-chain DSP constraints passed"] \
-            + ([SENTENCE] if fired else [])
+        outcome["reasons"] = ["target error worsened" if rolled_back else "repeatability and full-chain DSP constraints passed"]
     arm["decision"] = arm["first_pass"]["decision"] = "rollback" if rolled_back else "accept"
     arm["first_pass"]["reason_codes"] = list(arm["first_pass"]["outcome"]["reason_codes"])
 
@@ -328,7 +327,7 @@ def _advisory_abstained(rows):
 
 def _advisory_sentence(rows):
     outcome = _advised(rows)["verification"]["candidate"]["outcome"]
-    outcome["reasons"] = [t.replace("9 dB", "8 dB") if t.startswith(evaluator.ADVISORY_PREFIX) else t for t in outcome["reasons"]]
+    outcome["suppressor_dulling_advice"] = outcome["suppressor_dulling_advice"].replace("9 dB", "8 dB")
 
 
 def _decision_differs(rows):

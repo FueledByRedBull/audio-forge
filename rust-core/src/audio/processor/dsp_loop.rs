@@ -907,13 +907,7 @@ impl AudioProcessor {
             let mut pre_filter_state = InputPreFilterState::default();
 
             // Pre-filter at 80Hz to remove rumble before gate/suppressor stages.
-            let mut pre_filter = Biquad::new(
-                BiquadType::HighPass,
-                INPUT_PREFILTER_HZ,
-                0.0,
-                INPUT_PREFILTER_Q,
-                sample_rate_for_latency as f64,
-            );
+            let mut pre_filter = new_input_pre_filter(sample_rate_for_latency as f64);
             let mut adaptive_cleanup_state =
                 AdaptiveInputCleanupState::new(sample_rate_for_latency as f32);
 

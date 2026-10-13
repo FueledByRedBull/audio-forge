@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 
-from PySide6.QtCore import QObject, QRect, Qt, Signal
-from PySide6.QtGui import QPainter, QPen
+from PySide6.QtCore import QLineF, QObject, QPointF, QRect, QRectF, Qt, Signal
+from PySide6.QtGui import QPainter, QPen, QPolygonF
 
-from mic_eq import eq_magnitude_response_v2
+from mic_eq import eq_magnitude_response_v2, input_prefilter_response_db
 from mic_eq.analysis.eq_quality import EqInteractionWarning, evaluate_eq_quality
 from mic_eq.config import EQSettings
 from .theme import PALETTE, RADIUS_CONTROL, qcolor
+
+
+# A band that is off: the native response gives it exactly 0 dB.
+OFF_BAND: tuple[str, float, float, float, int, bool] = ("bell", 1000.0, 0.0, 1.0, 12, False)
 
 
 class EQGraphGeometry:
@@ -160,13 +165,28 @@ class EQGraphModel(QObject):
         ]
         self.band_markers: list[float] = []
         self.correction_bands: list[tuple] = []
+        # response_db is what the EQ stage is set to do: the tone bands that
+        # are on plus the Auto-EQ layer, whether or not the EQ switch is on.
+        # The curves below are its parts; a band that is off has none, so it
+        # cannot reach the total.
+        self.band_curves_db: list[list[float]] = [[] for _ in self.bands]
+        self.correction_response_db: list[float] = []
+        # total_response_db is what the signal really gets: the fixed input
+        # conditioning that comes before the EQ, plus the EQ unless its switch
+        # is off. Only the part of the conditioning that does not follow the
+        # signal can be drawn; see input_prefilter_response_db.
+        self.eq_enabled = True
+        self.cleanup_mode = "off"
+        self.input_filter_db: list[float] = []
+        self.total_response_db: list[float] = []
         self.interaction_warnings: list[EqInteractionWarning] = []
         self._selected_band_index: int | None = None
         self._drag_band_index: int | None = None
         self._drag_origin: tuple[float, float] | None = None
         self._drag_press = (0.0, 0.0)
         self._drag_handle = (0.0, 0.0)
-        self.freq_points = self.generate_log_frequencies(20, 20_000, 100)
+        self._base_freq_points = self.generate_log_frequencies(20, 20_000, 100)
+        self.freq_points = list(self._base_freq_points)
         self.response_db = [0.0] * len(self.freq_points)
         self._update_response()
 
@@ -198,9 +218,10 @@ class EQGraphModel(QObject):
         self.changed.emit()
         self.bandSelected.emit(band_index)
 
-    def set_all_params(self, bands, *, correction=()) -> None:
+    def set_all_params(self, bands, *, correction=(), enabled=True) -> None:
         """Accept native typed tuples or legacy (frequency, gain, Q) tuples."""
         self.correction_bands = list(correction)
+        self.eq_enabled = bool(enabled)
         for index, band in enumerate(bands):
             if index >= len(self.bands):
                 break
@@ -233,6 +254,15 @@ class EQGraphModel(QObject):
                 )
             else:
                 raise ValueError("EQ bands must contain either 3 or 6 typed fields")
+        self._update_response()
+        self.changed.emit()
+
+    def set_input_conditioning(self, cleanup_mode: str, sample_rate: float) -> None:
+        """Follow what the processor runs: its cleanup mode and sample rate."""
+        if (cleanup_mode, float(sample_rate)) == (self.cleanup_mode, self.sample_rate):
+            return
+        self.cleanup_mode = cleanup_mode
+        self.sample_rate = float(sample_rate)
         self._update_response()
         self.changed.emit()
 
@@ -404,21 +434,43 @@ class EQGraphModel(QObject):
         return frequency, gain
 
     def _update_response(self) -> None:
-        self.response_db = list(
-            eq_magnitude_response_v2(
-                self.freq_points,
-                self.bands,
-                self.sample_rate,
-            )
+        # Each band's own frequency is sampled, so a narrow peak or notch is
+        # drawn at its true height and not at the nearest of 100 points.
+        self.freq_points = sorted(
+            {
+                *self._base_freq_points,
+                *(
+                    band[1]
+                    for stage in (self.bands, self.correction_bands)
+                    for band in stage
+                    if band[5]
+                ),
+            }
         )
-        if self.correction_bands:
-            correction = self._response(self.correction_bands)
+        self.response_db = self._response(self.bands)
+        self.correction_response_db = (
+            self._response(self.correction_bands) if self.correction_bands else []
+        )
+        if self.correction_response_db:
             self.response_db = [
                 tone + measured
                 for tone, measured in zip(
-                    self.response_db, correction, strict=True
+                    self.response_db, self.correction_response_db, strict=True
                 )
             ]
+        self.band_curves_db = [
+            self._response(self._band_alone(index)) if band[5] else []
+            for index, band in enumerate(self.bands)
+        ]
+        self.input_filter_db = list(
+            input_prefilter_response_db(
+                self.freq_points, self.cleanup_mode, self.sample_rate
+            )
+        )
+        self.total_response_db = [
+            conditioning + (tone if self.eq_enabled else 0.0)
+            for conditioning, tone in zip(self.input_filter_db, self.response_db)
+        ]
         warnings = []
         for stage in (self.bands, self.correction_bands):
             if not stage:
@@ -455,11 +507,24 @@ class EQGraphModel(QObject):
             eq_magnitude_response_v2(self.freq_points, bands, self.sample_rate)
         )
 
+    def _band_alone(self, index: int) -> list[tuple]:
+        """The tone stage with every other band off: one band's own response."""
+        bands = [OFF_BAND] * len(self.bands)
+        bands[index] = self.bands[index]
+        return bands
+
 
 class EQGraphRenderer:
     """Paint one shared graph model into either Qt view's QPainter."""
 
     GEOMETRY = EQGraphGeometry
+    TOTAL_WIDTH = 2.0
+    SELECTED_BAND_WIDTH = 1.5
+    BAND_WIDTH = 1.0
+    FILL_ALPHA = 44
+    AXIS_TOLERANCE_DB = 0.3
+    CASING_WIDTH = 3.0
+    MUTED_OPACITY = 0.4
 
     @classmethod
     def paint(
@@ -522,9 +587,11 @@ class EQGraphRenderer:
         painter.restore()
 
         grid_pen = QPen(qcolor(PALETTE.data_grid), 1)
+        zero_pen = QPen(qcolor(PALETTE.border_strong), 1)
         painter.setPen(grid_pen)
         for db in (-12, -6, 0, 6, 12):
             y = db_to_y(db)
+            painter.setPen(zero_pen if db == 0 else grid_pen)
             painter.drawLine(margin_left, int(y), width - margin_right, int(y))
             if db == 0:
                 painter.setPen(qcolor(PALETTE.data_text))
@@ -534,7 +601,7 @@ class EQGraphRenderer:
                 painter.drawText(5, int(y) + 4, f"{db:+d}")
             painter.setPen(grid_pen)
 
-        for freq in (100, 200, 500, 1000, 2000, 5000, 10000, 20000):
+        for freq in (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000):
             x = freq_to_x(freq)
             painter.drawLine(int(x), margin_top, int(x), height - margin_bottom)
             painter.setPen(qcolor(PALETTE.data_text_muted))
@@ -542,16 +609,7 @@ class EQGraphRenderer:
             painter.drawText(int(x) - 10, height - 5, label)
             painter.setPen(grid_pen)
 
-        painter.setPen(QPen(qcolor(PALETTE.data_curve), 2))
-        points = [
-            (
-                int(freq_to_x(freq)),
-                int(db_to_y(model.response_db[index])),
-            )
-            for index, freq in enumerate(model.freq_points)
-        ]
-        for first, second in zip(points, points[1:]):
-            painter.drawLine(first[0], first[1], second[0], second[1])
+        cls._paint_curves(painter, model, width, height)
 
         if model.band_markers:
             marker_pen = QPen(
@@ -564,11 +622,12 @@ class EQGraphRenderer:
                 if not geometry.FREQUENCY_MIN_HZ <= frequency <= geometry.FREQUENCY_MAX_HZ:
                     continue
                 x = int(freq_to_x(frequency))
+                above = bisect_left(model.freq_points, frequency)
                 nearest_index = min(
-                    range(len(model.freq_points)),
+                    range(max(above - 1, 0), min(above + 1, len(model.freq_points))),
                     key=lambda index: abs(model.freq_points[index] - frequency),
                 )
-                y = int(db_to_y(model.response_db[nearest_index]))
+                y = int(db_to_y(model.total_response_db[nearest_index]))
                 painter.setPen(marker_pen)
                 painter.drawLine(x, margin_top, x, height - margin_bottom)
                 painter.setBrush(marker_fill)
@@ -588,6 +647,9 @@ class EQGraphRenderer:
                 painter.drawRect(x - 2, margin_top, 4, marker_height)
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
+        number_font = painter.font()
+        number_font.setPointSize(7)
+        number_font.setBold(True)
         for index, band in enumerate(model.bands):
             x, y = geometry.band_handle_position(model.bands, index, width, height)
             selected = index == model.selected_band_index
@@ -599,12 +661,140 @@ class EQGraphRenderer:
                 if selected
                 else QPen(fill, 1.5)
             )
-            painter.setBrush(fill if enabled else Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(
+            # An off band is a hollow ring, but a selected one carries a number
+            # that must not land on the curve behind it.
+            painter.setBrush(
+                fill
+                if enabled
+                else qcolor(PALETTE.data_surface)
+                if selected
+                else Qt.BrushStyle.NoBrush
+            )
+            box = QRect(
                 int(round(x - radius)),
                 int(round(y - radius)),
                 int(round(radius * 2.0)),
                 int(round(radius * 2.0)),
             )
+            painter.drawEllipse(box)
+            if selected:
+                # The number the band editor shows beside the same color.
+                painter.setFont(number_font)
+                painter.setPen(
+                    qcolor(PALETTE.text_on_accent if enabled else PALETTE.data_text)
+                )
+                painter.drawText(box, Qt.AlignmentFlag.AlignCenter, str(index + 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.restore()
+
+    @staticmethod
+    def _active_runs(values: list[float]) -> list[range]:
+        """Segments of one band's curve where it leaves the 0 dB axis.
+
+        A bell is flat far from its centre; drawing that part would only lay a
+        colored stripe over the axis. Each run keeps one point of the axis on
+        either side so it still meets it. Segment ``i`` joins points ``i`` and
+        ``i + 1``.
+        """
+        runs: list[range] = []
+        first: int | None = None
+        for index, db in enumerate(values):
+            if abs(db) >= EQGraphRenderer.AXIS_TOLERANCE_DB:
+                if first is None:
+                    first = max(index - 1, 0)
+            elif first is not None:
+                runs.append(range(first, index))
+                first = None
+        if first is not None:
+            runs.append(range(first, len(values) - 1))
+        return runs
+
+    @classmethod
+    def _paint_curves(
+        cls,
+        painter: QPainter,
+        model: EQGraphModel,
+        width: int,
+        height: int,
+    ) -> None:
+        """Draw, back to front: the fill, each band, the input filter, the total, the Auto-EQ layer.
+
+        With the EQ switch off the bands and the Auto-EQ layer are muted: they
+        are what the EQ would do, and the total no longer includes them.
+        """
+        geometry = cls.GEOMETRY
+        plot_width, plot_height = geometry.plot_size(width, height)
+        top = geometry.MARGIN_TOP
+        pixels_per_db = plot_height / (geometry.DISPLAY_DB_MAX - geometry.DISPLAY_DB_MIN)
+        xs = [geometry.frequency_to_x(f, width, height) for f in model.freq_points]
+
+        def ys(values: list[float]) -> list[float]:
+            return [top + (geometry.DISPLAY_DB_MAX - db) * pixels_per_db for db in values]
+
+        def segments(y: list[float], which=None) -> list[QLineF]:
+            # Qt strokes a polyline with a slow general path, but draws plain
+            # square-capped lines fast; the caps overlap, so the joins show no seam.
+            return [
+                QLineF(xs[i], y[i], xs[i + 1], y[i + 1])
+                for i in (range(len(y) - 1) if which is None else which)
+            ]
+
+        def pen(color: str, line_width: float, cap=Qt.PenCapStyle.SquareCap) -> QPen:
+            return QPen(
+                qcolor(color),
+                line_width,
+                Qt.PenStyle.SolidLine,
+                cap,
+                Qt.PenJoinStyle.RoundJoin,
+            )
+
+        painter.save()
+        painter.setClipRect(QRectF(geometry.MARGIN_LEFT, top, plot_width, plot_height))
+        zero_y = top + geometry.DISPLAY_DB_MAX * pixels_per_db
+        total = [QPointF(x, y) for x, y in zip(xs, ys(model.total_response_db))]
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(qcolor(PALETTE.data_curve, alpha=cls.FILL_ALPHA))
+        painter.drawPolygon(
+            QPolygonF([QPointF(xs[0], zero_y), *total, QPointF(xs[-1], zero_y)])
+        )
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        if not model.eq_enabled:
+            painter.setOpacity(cls.MUTED_OPACITY)
+        selected = model.selected_band_index
+        # The selected band last, so it is on top of its neighbours.
+        for index in sorted(range(len(model.band_curves_db)), key=lambda i: i == selected):
+            curve = model.band_curves_db[index]
+            painter.setPen(
+                pen(
+                    PALETTE.eq_band_colors[index % len(PALETTE.eq_band_colors)],
+                    cls.SELECTED_BAND_WIDTH if index == selected else cls.BAND_WIDTH,
+                )
+            )
+            for run in cls._active_runs(curve):
+                painter.drawLines(segments(ys(curve), run))
+        painter.setOpacity(1.0)
+
+        # Dotted: the input conditioning is not a band and not the Auto-EQ layer.
+        conditioning = ys(model.input_filter_db)
+        painter.setPen(pen(PALETTE.data_text_muted, cls.BAND_WIDTH))
+        for run in cls._active_runs(model.input_filter_db):
+            painter.drawLines(segments(conditioning, run[::2]))
+
+        painter.setPen(pen(PALETTE.data_curve, cls.TOTAL_WIDTH, Qt.PenCapStyle.RoundCap))
+        painter.drawPolyline(QPolygonF(total))
+
+        if model.correction_response_db:
+            # Dashed by leaving out every third segment, which costs a fraction
+            # of stroking a dashed polyline. The dark casing keeps the dashes
+            # visible on top of the total when the tone layer is flat and the
+            # two coincide.
+            if not model.eq_enabled:
+                painter.setOpacity(cls.MUTED_OPACITY)
+            correction = ys(model.correction_response_db)
+            dashes = segments(correction, [i for i in range(len(xs) - 1) if i % 3 != 2])
+            painter.setPen(pen(PALETTE.data_surface, cls.CASING_WIDTH))
+            painter.drawLines(dashes)
+            painter.setPen(pen(PALETTE.data_text, cls.BAND_WIDTH))
+            painter.drawLines(dashes)
         painter.restore()

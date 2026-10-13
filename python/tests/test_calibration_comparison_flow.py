@@ -47,8 +47,10 @@ def test_comparison_uses_one_capture_and_existing_apply_path(qapp, monkeypatch, 
     else:
         dialog.voice_audio = audio
         dialog.preview_voice_audio = audio
-        dialog.setup_result = {"eq_settings": {"band_gains": [1.0] * 10},
-                               "deesser_settings": {}, "compressor_settings": {}, "limiter_settings": {}}
+        eq = EQSettings(band_gains=[1.0] * 10)
+        dialog.setup_result = {
+            "eq_settings": {"band_freqs": eq.band_freqs, "band_gains": eq.band_gains, "band_qs": eq.band_qs},
+            "gate_settings": {}, "deesser_settings": {}, "compressor_settings": {}, "limiter_settings": {}}
         dialog.setup_state = "completed"
         monkeypatch.setattr(dialog, "_apply_setup", apply)
     comparison = Mock()

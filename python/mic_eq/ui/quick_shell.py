@@ -353,7 +353,8 @@ class QuickBridge(QObject):
             "eq": {
                 "trace": False, "alert": None, "title": "EQUALIZER",
                 "help": (
-                    "The curve shows correction plus tone; handles edit tone only. "
+                    "The curve shows correction (dashed) plus tone and the fixed input filter (dotted); "
+                    "adaptive input cleanup follows the signal and is not drawn. Handles edit tone only. "
                     "Drag a handle to edit frequency and gain. Notch and pass filters "
                     "move horizontally only. Use [ and ] plus arrow keys for keyboard editing."
                 ),

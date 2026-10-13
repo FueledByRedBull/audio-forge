@@ -385,13 +385,7 @@ fn simulate_input_frontend_with_activity(
         };
         let mut latest_vad_probability = None;
         let mut pre_filter_state = InputPreFilterState::default();
-        let mut pre_filter = Biquad::new(
-            BiquadType::HighPass,
-            INPUT_PREFILTER_HZ,
-            0.0,
-            INPUT_PREFILTER_Q,
-            sample_rate,
-        );
+        let mut pre_filter = new_input_pre_filter(sample_rate);
         let adaptive_cleanup_enabled = cleanup_mode.is_enabled();
         let mut cleanup = AdaptiveInputCleanupState::new(sample_rate as f32);
         cleanup.set_mode(cleanup_mode);
@@ -1030,6 +1024,41 @@ struct AutoEqSimulationResult {
     rendered_audio: Vec<f32>,
 }
 
+/// Static part of the input conditioning's magnitude response, in dB.
+///
+/// Offline and allocating: it never touches the processor or its audio threads.
+#[pyfunction]
+pub fn input_prefilter_response_db(
+    frequencies_hz: Vec<f64>,
+    cleanup_mode: &str,
+    sample_rate: f64,
+) -> PyResult<Vec<f64>> {
+    if !sample_rate.is_finite() || sample_rate <= 0.0 {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "sample_rate must be finite and positive",
+        ));
+    }
+    let mode = InputCleanupMode::from_id(cleanup_mode).ok_or_else(|| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Invalid input cleanup mode: {cleanup_mode}"
+        ))
+    })?;
+    let nyquist = sample_rate / 2.0;
+    if frequencies_hz
+        .iter()
+        .any(|frequency_hz| !frequency_hz.is_finite() || *frequency_hz < 0.0 || *frequency_hz > nyquist)
+    {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "response frequencies must be finite and between 0 Hz and Nyquist",
+        ));
+    }
+    Ok(static_input_pre_filter_response_db(
+        &frequencies_hz,
+        mode,
+        sample_rate,
+    ))
+}
+
 #[pyfunction]
 #[pyo3(signature = (audio, sample_rate, bands, settings=None))]
 pub fn simulate_auto_eq_chain(
@@ -1143,13 +1172,7 @@ pub fn simulate_auto_eq_chain(
         }
         if !py_dict_bool(settings, "input_pre_filtered", false)? {
             let mut pre_filter_state = InputPreFilterState::default();
-            let mut pre_filter = Biquad::new(
-                BiquadType::HighPass,
-                INPUT_PREFILTER_HZ,
-                0.0,
-                INPUT_PREFILTER_Q,
-                sample_rate,
-            );
+            let mut pre_filter = new_input_pre_filter(sample_rate);
             apply_input_pre_filter(&mut audio, &mut pre_filter_state, &mut pre_filter, true);
         }
     }

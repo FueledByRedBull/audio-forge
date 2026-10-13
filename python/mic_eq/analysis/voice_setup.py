@@ -20,6 +20,7 @@ from .auto_eq_parts.headroom import (
     LIMITER_GAIN_REDUCTION_WARN_DB,
     TRUE_PEAK_GAIN_REDUCTION_WARN_DB,
     _is_headroom_safe,
+    _typed_eq_payload,
 )
 from .cancellation import AnalysisCancelled, check_analysis_cancelled
 from .compressor_calibration import (
@@ -1193,13 +1194,14 @@ def analyze_voice_setup(
     # layers during apply. Recreate that same payload for the pre-apply safety
     # simulation whenever the incumbent typed EQ is available.
     full_chain_eq_settings: dict[str, Any] | None = simulation_eq_settings
+    full_chain_eq_error: str | None = None
     incumbent_eq = incumbent_payload.get("eq")
     if eq_settings is not None and "bands" not in eq_settings:
         try:
             current_eq = (
                 EQSettings()
                 if incumbent_eq is None
-                else EQSettings.from_dict(dict(incumbent_eq))
+                else EQSettings.from_dict(_typed_eq_payload(incumbent_eq))
             )
             full_chain_eq_settings = build_eq_candidate_settings(
                 current_eq,
@@ -1209,8 +1211,9 @@ def analyze_voice_setup(
                 layer="correction",
                 enabled=bool(eq_settings.get("enabled", True)),
             ).to_dict()
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError) as exc:
             full_chain_eq_settings = None
+            full_chain_eq_error = f"{type(exc).__name__}: {exc}"
 
     full_chain_raw_available = raw_noise_arr is not None and raw_speech_arr is not None
     full_chain_speech = raw_speech_arr if full_chain_raw_available else speech_arr
@@ -1313,7 +1316,10 @@ def analyze_voice_setup(
     full_chain_voice_dropout = False
     try:
         if full_chain_eq_settings is None:
-            raise ValueError("typed candidate EQ settings are unavailable")
+            raise ValueError(
+                "typed candidate EQ settings are unavailable"
+                + (f" ({full_chain_eq_error})" if full_chain_eq_error else "")
+            )
         offline_validation = simulate_candidate_chain(
             np.asarray(full_chain_speech, dtype=np.float32),
             sample_rate,
@@ -1421,7 +1427,7 @@ def analyze_voice_setup(
         else:
             uncertainty_reasons.append("offline DSP validation did not pass")
     if offline_validation and offline_validation.get("simulation_backend") != "rust":
-        uncertainty_reasons.append("offline DSP validation is advisory without the Rust extension")
+        uncertainty_reasons.append("offline DSP validation could not run, so these settings are advisory")
         setup_confidence *= 0.90
     weak_capture = bool(
         not capture_reliable
@@ -1702,13 +1708,7 @@ def validate_voice_setup_verification(
         try:
             from ..config import EQSettings
 
-            EQSettings.from_dict(
-                {
-                    key: eq_settings[key]
-                    for key in ("schema_version", "enabled", "bands", "layers")
-                    if key in eq_settings
-                }
-            )
+            EQSettings.from_dict(_typed_eq_payload(eq_settings))
         except (TypeError, ValueError):
             return _verification_outcome(
                 "rollback",
@@ -1806,8 +1806,10 @@ def validate_voice_setup_verification(
 
     rendered = np.asarray(processed.pop("output_audio"), dtype=np.float32)
     rendered_noise = np.asarray(processed_noise.pop("output_audio"), dtype=np.float32)
+    suppressor = chain.get("suppressor") or {}
+    suppressor_on = full_chain and suppressor.get("enabled", True) is not False
     frontend_voice = None
-    if full_chain:
+    if suppressor_on:
         # The frontend alone (pre-filter, gate, suppressor), as analyze_voice_setup renders it.
         frontend_chain = {
             **chain,
@@ -1823,12 +1825,7 @@ def validate_voice_setup_verification(
         )
         check_analysis_cancelled(cancel_check)
     tone_audio = None
-    suppressor = chain.get("suppressor") or {}
-    if (
-        TONAL_CHECK_BYPASSES_SUPPRESSOR
-        and full_chain
-        and suppressor.get("enabled", True) is not False
-    ):
+    if TONAL_CHECK_BYPASSES_SUPPRESSOR and suppressor_on:
         bypass_chain = {**chain, "suppressor": {**suppressor, "enabled": False}}
         tone_audio = tuple(
             np.asarray(
@@ -2062,23 +2059,23 @@ def validate_voice_setup_verification(
         scope = "full-chain" if full_chain else "downstream"
         reasons.append(f"repeatability and {scope} DSP constraints passed")
 
-    # Advice only: the decision above is already made and stays.
+    # Advice only: the decision above is already made and stays. It is measured, and
+    # offered in its own field, only when the proposal has a suppressor to blame.
     dulling_details: dict[str, Any] = {}
     if frontend_voice is not None:
         sibilant_change, _ = _sibilant_change_db(verification, frontend_voice, noise, sample_rate)
         dulling_db = None if sibilant_change is None else -sibilant_change
+        advice = None
+        if dulling_db is not None and dulling_db > SUPPRESSOR_DULLING_THRESHOLD_DB:
+            reason_codes.append("suppressor_dulling")
+            advice = f"noise suppression is dulling consonants by about {dulling_db:.0f} dB; lower its strength"
+            if suppressor.get("model", "rnnoise") == "rnnoise":
+                advice += " or use DeepFilterNet LL"
         dulling_details = {
             "suppressor_dulling_db": dulling_db,
             "suppressor_dulling_abstained": dulling_db is None,
+            "suppressor_dulling_advice": advice,
         }
-        if dulling_db is not None and dulling_db > SUPPRESSOR_DULLING_THRESHOLD_DB:
-            reason_codes.append("suppressor_dulling")
-            remedy = "lower its strength"
-            if suppressor.get("model") != "deepfilter-ll":
-                remedy += " or use DeepFilterNet LL"
-            reasons.append(
-                f"noise suppression is dulling consonants by about {dulling_db:.0f} dB; {remedy}"
-            )
 
     spectral_snr = after_spectrum.spectral_snr_db
     snr_bands: dict[str, float] = {}

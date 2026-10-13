@@ -652,7 +652,7 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(window):
         == f"Tone preset: {dialog.curve_combo.currentText()}"
     )
     assert (
-        dialog.target_profile_label.toolTip() == "Target profile: broadcast:adaptive"
+        dialog.target_profile_label.toolTip() == "Target profile: broadcast, Subtle"
     )
 
     dialog.close()

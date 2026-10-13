@@ -456,6 +456,10 @@ fn mic_eq_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(eq_magnitude_response, m)?)?;
     m.add_function(wrap_pyfunction!(eq_magnitude_response_v2, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        audio::processor::input_prefilter_response_db,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(simulate_eq_v2, m)?)?;
     m.add_function(wrap_pyfunction!(measure_integrated_loudness, m)?)?;
     m.add_function(wrap_pyfunction!(_k_weighted_48k, m)?)?;

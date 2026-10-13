@@ -6,7 +6,6 @@ from pathlib import Path
 
 import pytest
 
-import evaluate_onnxruntime_probe as probe
 import fetch_release_assets
 import source_distribution
 from verify_release_assets import load_asset_manifest, verify_assets
@@ -64,15 +63,9 @@ def test_loader_rejects_duplicate_paths_and_invalid_digests(tmp_path: Path) -> N
     assert "manifest sha256 must be a 64-character hex string" in message
 
 
-def test_probe_and_fetch_use_live_cpu_manifest_values(tmp_path: Path) -> None:
-    manifest_path = _cpu_manifest(tmp_path)
-    manifest = load_asset_manifest(manifest_path)
+def test_fetch_uses_live_cpu_manifest_values(tmp_path: Path) -> None:
+    manifest = load_asset_manifest(_cpu_manifest(tmp_path))
 
-    runtime_files, archive_sha256 = probe._load_cpu_ort_expectations(manifest_path)
-
-    assert archive_sha256 == "a" * 64
-    assert runtime_files["onnxruntime.dll"]["size"] == 1
-    assert runtime_files["onnxruntime.dll"]["sha256"] == "1".zfill(64)
     assets = fetch_release_assets._manifest_assets(manifest, only_cpu_runtime=True)
     assert [asset["name"] for asset in assets] == [
         "onnxruntime.dll",

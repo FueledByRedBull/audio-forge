@@ -1072,29 +1072,6 @@ impl AudioInput {
         )
     }
 
-    /// Create audio input from an exact occurrence of a duplicate friendly name.
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_device_name_ordinal_with_options(
-        name: &str,
-        name_ordinal: u32,
-        producer: AudioProducer,
-        last_callback_time_us: Arc<AtomicU64>,
-        error_count: Arc<AtomicU64>,
-        rt_error_code: Arc<AtomicU32>,
-        options: InputStreamOptions,
-    ) -> Result<Self, AudioError> {
-        Self::from_device_identity_with_options(
-            name,
-            name_ordinal,
-            None,
-            producer,
-            last_callback_time_us,
-            error_count,
-            rt_error_code,
-            options,
-        )
-    }
-
     /// Create an input stream using a stable platform endpoint ID when one is
     /// available, falling back to the legacy friendly-name occurrence only
     /// when no ID was persisted.

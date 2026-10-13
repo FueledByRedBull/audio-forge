@@ -222,20 +222,6 @@ impl<T: Copy + Default, const N: usize> FixedAudioRing<T, N> {
         }
         count
     }
-
-    pub fn move_into<const M: usize>(&mut self, output: &mut FixedAudioRing<T, M>) -> usize {
-        let mut moved = 0usize;
-        let mut scratch = [T::default(); 64];
-        while self.len > 0 && output.remaining() > 0 {
-            let count = self.len.min(output.remaining()).min(scratch.len());
-            let popped = self.pop_into(&mut scratch[..count]);
-            if popped == 0 {
-                break;
-            }
-            moved += output.push_slice(&scratch[..popped]);
-        }
-        moved
-    }
 }
 
 impl<T: Copy + Default, const N: usize> Default for FixedAudioRing<T, N> {

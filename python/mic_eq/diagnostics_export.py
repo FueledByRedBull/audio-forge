@@ -137,6 +137,8 @@ _RUNTIME_NUMBERS = frozenset(
         "input_backlog_recovery_count",
         "input_callback_error_count",
         "input_fixed_buffer_frames",
+        "input_peak_db",
+        "input_rms_db",
         "input_phase_estimated_delay_samples",
         "input_phase_warning_count",
         "input_stereo_correlation",

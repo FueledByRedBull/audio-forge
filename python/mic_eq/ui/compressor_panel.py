@@ -4,8 +4,6 @@ Compressor and Limiter control panel
 Controls for dynamics processing: threshold, ratio, attack, release, makeup gain.
 """
 
-import math
-
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -19,7 +17,7 @@ from PySide6.QtCore import QSignalBlocker, Qt, Signal
 
 from .components import Card, ToggleSwitch
 from .compressor_state import CompressorState
-from .level_meter import GainReductionMeter
+from .level_meter import MeterWidget
 from .limiter_state import LimiterState
 from .processing_meters import ProcessingMeters
 from .control_specs import (
@@ -52,7 +50,9 @@ class CompressorPanel(QWidget):
     ):
         super().__init__()
         self.processor = processor
-        self._meters = meters
+        # Without a main window, the panel drives its own readouts.
+        self._owns_meters = meters is None
+        self._meters = meters or ProcessingMeters(processor, None, self)
         self.compressor_state = compressor_state or CompressorState(processor, self)
         self.limiter_state = limiter_state or LimiterState(processor, self)
         self._setup_ui()
@@ -61,6 +61,14 @@ class CompressorPanel(QWidget):
             self.limiter_state.set_settings({})
         if compressor_state is None:
             self.compressor_state.set_settings({})
+
+    def _readout_label(self, key: str, parent: QWidget) -> QLabel:
+        """A label showing one of the meters' shared compressor readouts."""
+        state = self._meters.text_states[key]
+        label = QLabel(parent)
+        label.setStyleSheet(METER_LABEL_STYLE)
+        state.bind_label(label)
+        return label
 
     def _setup_ui(self):
         """Setup the UI components."""
@@ -202,11 +210,7 @@ class CompressorPanel(QWidget):
         advanced_layout.addWidget(self.base_release_spinbox, 4, 1)
 
         # Current release time display (with METER_LABEL_STYLE)
-        self.current_release_label = self._meters.current_release if self._meters else QLabel("--")
-        self.current_release_label.setStyleSheet(METER_LABEL_STYLE)
-        self.current_release_label.setToolTip(
-            "Current release time (adaptive or manual)"
-        )
+        self.current_release_label = self._readout_label("current_release", advanced_group)
         advanced_layout.addWidget(QLabel("Current Release:"), 5, 0)
         advanced_layout.addWidget(self.current_release_label, 5, 1)
 
@@ -238,23 +242,17 @@ class CompressorPanel(QWidget):
         advanced_layout.addWidget(self.target_lufs_spinbox, 8, 1)
 
         # Current LUFS display (with METER_LABEL_STYLE)
-        self.current_lufs_label = self._meters.current_lufs if self._meters else QLabel("--")
-        self.current_lufs_label.setStyleSheet(METER_LABEL_STYLE)
-        self.current_lufs_label.setToolTip(
-            "Current measured loudness (EBU R128 momentary)"
-        )
+        self.current_lufs_label = self._readout_label("current_lufs", advanced_group)
         advanced_layout.addWidget(QLabel("Current LUFS:"), 9, 0)
         advanced_layout.addWidget(self.current_lufs_label, 9, 1)
 
         # Current makeup gain display (with METER_LABEL_STYLE)
-        self.current_makeup_gain_label = self._meters.current_makeup_gain if self._meters else QLabel("--")
-        self.current_makeup_gain_label.setStyleSheet(METER_LABEL_STYLE)
-        self.current_makeup_gain_label.setToolTip("Current auto makeup gain applied")
+        self.current_makeup_gain_label = self._readout_label("current_makeup_gain", advanced_group)
         advanced_layout.addWidget(QLabel("Auto Gain:"), 10, 0)
         advanced_layout.addWidget(self.current_makeup_gain_label, 10, 1)
 
-        self.gr_meter = self._meters.compressor_gr if self._meters else GainReductionMeter()
-        comp_layout.addWidget(self.gr_meter, 8, 0, 1, 2)
+        self.gr_meter = self._meters.compressor_gr
+        comp_layout.addWidget(MeterWidget(self.gr_meter), 8, 0, 1, 2)
         card.add_advanced(advanced_group)
 
         layout.addWidget(card)
@@ -366,7 +364,6 @@ class CompressorPanel(QWidget):
                     None,
                 ),
                 (self.auto_makeup_checkbox, control_spec("compressor", "auto_makeup_enabled").accessible_name, None),
-                (self.gr_meter, "Compressor gain reduction", None),
                 (self.limiter_enabled_checkbox, control_spec("limiter", "enabled").accessible_name, None),
                 (self.careful_output_checkbox, control_spec("limiter", "careful_output_enabled").accessible_name, None),
                 (self.ceiling_slider, control_spec("limiter", "ceiling_db").accessible_name, None),
@@ -479,36 +476,9 @@ class CompressorPanel(QWidget):
             self.ceiling_slider.setValue(int(settings["ceiling_db"] * 10))
 
     def _update_current_release(self):
-        """Update current release time display from processor."""
-        try:
-            processor = self.processor
-            processing_compressor = (
-                processor.is_running()
-                and processor.is_compressor_enabled()
-                and not processor.is_bypass()
-                and not processor.is_raw_monitor_enabled()
-            )
-            current_release = (
-                processor.get_compressor_current_release()
-                if processing_compressor
-                else None
-            )
-            text = (f"{current_release:.0f} ms"
-                    if current_release is not None and math.isfinite(current_release) else "--")
-        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
-            text = "--"
-        if self.current_release_label.text() != text:
-            self.current_release_label.setText(text)
-
-    def update_auto_makeup_meters(self, current_lufs: float | None, makeup_gain: float | None):
-        """Update auto makeup readings without substituting plausible defaults."""
-        for label, value, unit in (
-            (self.current_lufs_label, current_lufs, "LUFS"),
-            (self.current_makeup_gain_label, makeup_gain, "dB"),
-        ):
-            text = f"{value:.1f} {unit}" if value is not None and math.isfinite(value) else "--"
-            if label.text() != text:
-                label.setText(text)
+        """Refresh the release readout; a main window does this for shared meters."""
+        if self._owns_meters:
+            self._meters.update_current_release()
 
     def update_gain_reduction(self, gr_db: float | None):
         """Update the gain reduction meter (call from timer)."""

@@ -44,7 +44,7 @@ from .layout_constants import (
     create_scrollable_dialog_body,
     status_chip_style,
 )
-from .level_meter import LevelMeter
+from .level_meter import LevelMeter, MeterWidget
 from .capture_session import (
     CaptureSession,
     active_device_identities as _active_device_identities,
@@ -122,7 +122,7 @@ class CalibrationDialog(QDialog):
         # The passage stays up before recording so it can be read ahead.
         self.instructions_group.setVisible(step < 2)
         # The meter only matters while something is being recorded.
-        for widget in (self.progress_bar, self.time_label, self.level_meter):
+        for widget in (self.progress_bar, self.time_label, self.level_meter_widget):
             widget.setVisible(step == 1)
 
     def __init__(self, parent=None):
@@ -276,8 +276,8 @@ class CalibrationDialog(QDialog):
         # Level meter (vertical) for real-time validation
         info_layout = QHBoxLayout()
         self.level_meter = LevelMeter(label="Level", show_scale=True)
-        self.level_meter.setMinimumHeight(120)
-        info_layout.addWidget(self.level_meter)
+        self.level_meter_widget = MeterWidget(self.level_meter)
+        info_layout.addWidget(self.level_meter_widget)
         recording_layout.addLayout(info_layout)
 
         # Validation warning label
@@ -353,7 +353,7 @@ class CalibrationDialog(QDialog):
                 (self.start_button, "Start Auto-EQ calibration", None),
                 (self.retake_btn, "Retake calibration recording", None),
                 (self.cancel_btn, "Cancel Auto-EQ calibration", None),
-                (self.level_meter, "Calibration input level", None),
+                (self.level_meter_widget, "Calibration input level", None),
             )
         )
         self.setTabOrder(self.curve_combo, self.target_mode_combo)

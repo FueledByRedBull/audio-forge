@@ -26,6 +26,34 @@ def qapp():
 
 
 @pytest.fixture(autouse=True)
+def isolated_settings_directory(monkeypatch, tmp_path_factory):
+    """Keep every test away from the developer's real settings and logs."""
+    monkeypatch.setenv("APPDATA", str(tmp_path_factory.mktemp("appdata")))
+
+
+@pytest.fixture
+def isolated_main_window(qapp, monkeypatch):
+    """A real main window with default settings, no presets and no devices."""
+    from mic_eq.config import AppConfig
+    from mic_eq.ui.main_window import MainWindow
+
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
+    monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
+    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
+    monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
+    window = MainWindow()
+    yield window
+    try:
+        window.processor.stop()
+    except Exception:
+        pass
+    window.close()
+    window.deleteLater()
+    qapp.processEvents()
+
+
+@pytest.fixture(autouse=True)
 def discard_unsaved_test_windows(monkeypatch):
     """Discard test edits during window cleanup; tests can override the decision."""
     from PySide6.QtWidgets import QMessageBox

@@ -301,12 +301,12 @@ def test_main_window_wires_manual_preset_auto_eq_undo_and_redo(
     assert window.gate_panel.threshold_spinbox.value() == pytest.approx(
         baseline + 5.0
     )
-    assert window.status_bar.currentMessage() == "Undid: Auto-EQ (Broadcast)"
+    assert window.status_message.text == "Undid: Auto-EQ (Broadcast)"
     window.redo_configuration()
     assert window.eq_panel.get_eq_settings().correction_bands == correction
     assert window.eq_panel.band_sliders[4].slider.value() == 0
     assert window.processor.is_eq_enabled()
-    assert window.status_bar.currentMessage() == "Redid: Auto-EQ (Broadcast)"
+    assert window.status_message.text == "Redid: Auto-EQ (Broadcast)"
 
     history_size = window._configuration_history.size
     previous_frequency = window.eq_panel.band_sliders[4].frequency_hz()
@@ -354,8 +354,8 @@ def test_domain_edits_update_history_and_ignore_presentation_controls(
         window.undo_configuration()
         assert window._preset_payload(window._get_current_preset()) == baseline
 
-        window.processing_mode_combo.setCurrentIndex(
-            window.processing_mode_combo.findData("raw")
+        window.processing_mode_choice.setCurrentIndex(
+            window.processing_mode_choice.findData("raw")
         )
         assert window.current_preset_modified is True
         window._commit_pending_configuration_snapshot()
@@ -366,7 +366,7 @@ def test_domain_edits_update_history_and_ignore_presentation_controls(
         assert window.current_preset_modified is False
 
         history_size = window._configuration_history.size
-        window.health_details_button.click()
+        window.shell_page.setIndex(window.HEALTH_PAGE_INDEX)
         qapp.processEvents()
         assert not window._commit_pending_configuration_snapshot()
         assert window._configuration_history.size == history_size
@@ -561,7 +561,7 @@ def test_failed_configuration_restores_sound_or_stops_muted(qapp, monkeypatch, r
         if rollback_fails:
             assert not window.processor.is_running()
             assert "configuration" in window._temporary_mute_reasons
-            assert "restoration failed" in window.status_bar.currentMessage()
+            assert "restoration failed" in str(window.status_message.text)
         else:
             assert window._preset_payload(window._get_current_preset()) == before
             assert "configuration" not in window._temporary_mute_reasons
@@ -603,7 +603,7 @@ def test_configuration_rollback_stop_failure_keeps_mute_and_reports_stop_failure
         with pytest.raises(RuntimeError, match="processor stop failed"):
             window.apply_processing_configuration(window._get_current_preset())
         assert "configuration" in window._temporary_mute_reasons
-        assert "processor stop both failed" in window.status_bar.currentMessage()
+        assert "processor stop both failed" in str(window.status_message.text)
     finally:
         window.processor = original_processor
         window.meter_timer.stop()

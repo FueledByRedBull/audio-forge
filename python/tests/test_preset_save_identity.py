@@ -68,11 +68,11 @@ def test_raw_mode_save_is_session_only_and_close_save_reloads_normal(
         assert window._save_preset_file(preset, filepath=filepath) == filepath
         assert not window.preset_modified
 
-        raw_index = window.processing_mode_combo.findData("raw")
-        window.processing_mode_combo.setCurrentIndex(raw_index)
+        raw_index = window.processing_mode_choice.findData("raw")
+        window.processing_mode_choice.setCurrentIndex(raw_index)
         assert window._processing_mode() == "raw"
         assert window.preset_modified
-        assert "not stored in presets" in window.processing_mode_combo.toolTip().lower()
+        assert "not stored in presets" in str(window.processing_mode_choice.toolTip).lower()
 
         saved = load_preset(filepath)
         assert saved.bypass is False
@@ -81,15 +81,15 @@ def test_raw_mode_save_is_session_only_and_close_save_reloads_normal(
         window._save_preset()
         assert window._processing_mode() == "raw"
         assert window.preset_modified
-        assert "session-only" in window.status_bar.currentMessage().lower()
+        assert "session-only" in str(window.status_message.text).lower()
 
-        normal_index = window.processing_mode_combo.findData("normal")
-        window.processing_mode_combo.setCurrentIndex(normal_index)
+        normal_index = window.processing_mode_choice.findData("normal")
+        window.processing_mode_choice.setCurrentIndex(normal_index)
         window._commit_pending_configuration_snapshot()
         assert window._processing_mode() == "normal"
         assert not window.preset_modified
 
-        window.processing_mode_combo.setCurrentIndex(raw_index)
+        window.processing_mode_choice.setCurrentIndex(raw_index)
         assert window.preset_modified
         close_prompt = Mock(return_value=QMessageBox.StandardButton.Save)
         monkeypatch.setattr(
@@ -132,9 +132,9 @@ def test_invalid_last_used_preset_falls_back_with_persistent_warning(
     try:
         assert window.current_preset_path is None
         assert window.config.last_preset == ""
-        assert not window.config_warning_banner.isHidden()
-        assert "could not restore" in window.config_warning_banner.text().lower()
-        assert "could not restore" in window.status_bar.currentMessage().lower()
+        assert window.shell_texts["config_warning_banner"].shown
+        assert "could not restore" in window.shell_texts["config_warning_banner"].text.lower()
+        assert "could not restore" in str(window.status_message.text).lower()
     finally:
         window.close()
         window.deleteLater()

@@ -216,6 +216,32 @@ def _check_windows_shortcut_roundtrip() -> None:
             raise RuntimeError("Windows shortcut roundtrip failed")
 
 
+def _check_auto_eq_solvers() -> None:
+    """Fit a synthetic bassy mic so the bundled SciPy solvers must load and converge."""
+    import numpy as np
+
+    from ..analysis.auto_eq import NUM_EQ_BANDS, calculate_eq_bands
+
+    freqs = np.geomspace(20.0, 20_000.0, 64)
+    measured_db = -70.0 + 10.0 / (1.0 + (freqs / 200.0) ** 2)
+    fit = calculate_eq_bands(freqs, measured_db, np.zeros_like(freqs))
+    gains = fit["band_gains"]
+    # least_squares (nonlinear) and SLSQP (constraint) both converged, and the
+    # low bands were cut as a bassy mic requires.
+    if not (
+        fit["nonlinear_solver_success"]
+        and fit["constraint_solver_success"]
+        and len(gains) == NUM_EQ_BANDS
+        and np.all(np.isfinite(gains))
+        and min(gains[:2]) < -1.0
+    ):
+        raise RuntimeError(
+            "Auto-EQ solver check failed: "
+            f"least_squares={fit['nonlinear_solver_success']}, "
+            f"SLSQP={fit['constraint_solver_success']}, gains={gains}"
+        )
+
+
 def run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool = False) -> int:
     """Run the Qt application for the provided main window class."""
     isolated_config = tempfile.TemporaryDirectory(prefix="audioforge-smoke-") if smoke_test else None
@@ -335,6 +361,7 @@ def _run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool) -> int:
                 if getattr(window, "quick_view_failed", False):
                     raise RuntimeError("the Qt Quick view did not load")
                 _check_windows_shortcut_roundtrip()
+                _check_auto_eq_solvers()
             except Exception:
                 logging.getLogger(__name__).exception(
                     "AudioForge packaged startup smoke test failed"

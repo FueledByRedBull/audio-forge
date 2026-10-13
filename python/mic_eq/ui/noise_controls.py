@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
@@ -14,9 +15,12 @@ class NoiseControl(QObject):
 
     changed = Signal()
 
-    def __init__(self, state: NoiseSuppressionState, key: str, parent: QObject):
+    def __init__(
+        self, state: NoiseSuppressionState, key: str, parent: QObject,
+        pick_model: Callable[[int], None] | None = None,
+    ):
         super().__init__(parent)
-        self._state, self._key = state, key
+        self._state, self._key, self._pick_model = state, key, pick_model
         self._name, self._tip = {
             "enabled": (
                 "Enable noise suppression",
@@ -91,10 +95,10 @@ class NoiseControl(QObject):
     @Slot(int)
     def setIndex(self, index: int) -> None:
         try:
-            if self._key == "model" and 0 <= index < len(self._state.models):
-                self._state.set_value("model", self._state.models[index][0])
+            if self._key == "model" and self._pick_model is not None:
+                self._pick_model(index)  # the window reports the switch
         except (ValueError, RuntimeError):
-            # The state reports native failure; the picker must read back its value.
+            # The window reports a refused switch; the picker must read back its value.
             pass
         finally:
             self.changed.emit()

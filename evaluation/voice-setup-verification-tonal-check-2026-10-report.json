@@ -1,0 +1,912 @@
+{
+  "audible_change": true,
+  "corpus": {
+    "description": "Fresh held-out EARS speakers and retained DEMAND noise",
+    "licenses": {
+      "DEMAND": "CC BY 4.0",
+      "EARS": "CC BY-NC 4.0"
+    },
+    "redistribution": "Evaluation only, not shipped; no fitted product values"
+  },
+  "evaluation_contract": {
+    "asset_hashes": {
+      "corpus_manifest": "80e65090144226737d95396905486f7cffbb1c163eb31c4d344779999946a34b",
+      "vad_model": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    },
+    "clean_preservation": {
+      "method": "None: verification only decides whether a proposal is applied and no audio the app processes changes. Gate nothing_else_moves holds every other finding identical."
+    },
+    "configuration": {
+      "arms": [
+        "released",
+        "candidate"
+      ],
+      "max_verification_adjustments": 3,
+      "sample_rate": 48000,
+      "switch": "TONAL_CHECK_BYPASSES_SUPPRESSOR",
+      "target_preset": "broadcast",
+      "wrong_eqs_hz_db": {
+        "minus6_200": [
+          200.0,
+          -6.0
+        ],
+        "plus12_3k": [
+          3000.0,
+          12.0
+        ],
+        "plus6_3k": [
+          3000.0,
+          6.0
+        ],
+        "plus9_3k": [
+          3000.0,
+          9.0
+        ]
+      }
+    },
+    "latency": {
+      "measurement": null,
+      "scope": "The change is to a setup check, not the signal path."
+    },
+    "runtime": {
+      "max_p99_frame_seconds": null,
+      "reason": "Offline setup verification; no realtime code changed."
+    }
+  },
+  "experiment": "Voice Setup verification: measure the tonal check with the noise suppressor bypassed",
+  "gates": {
+    "catches_wrong_eq": true,
+    "false_alarms_low": true,
+    "never_stricter": true,
+    "nothing_else_moves": true
+  },
+  "generated_at_utc": "2026-10-13T05:02:18.084351+00:00",
+  "implementation_sha256": {
+    "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "7d610b33d5c191bf374bdfe5cad4af1764aa1d5946c65adf4a47c7a30ac960f7"
+  },
+  "limitations": [
+    "Simulated users (the corpus above): speech in synthetic rooms with DEMAND noise, not microphone captures.",
+    "Verification hears the first 10 s of the 20 s evaluation capture.",
+    "36 of 48 users are verified, from 21 of 24 speakers; the other 12 get no Auto-EQ settings from the Auto-EQ stage, which this change does not touch, or a rejected second take, and are left out.",
+    "EARS speech is licensed for non-commercial use and used for evaluation only; no shipped value was fitted on it. The gate thresholds were set knowing the first EARS cohort and VoiceBank, whose speakers are not in this cohort; this candidate is the second design, after the first was rejected on the first cohort.",
+    "The tonal check is nearly blind to errors below 1 kHz: a 6 dB cut at 200 Hz adds a target error report beyond the proposal's own for 0 of 108 pairs with the released check and 0 with the candidate. This is unchanged.",
+    "The candidate renders the take and the room noise twice more, without the suppressor; the extra time was measured with four workers in parallel and other load on the machine was not controlled.",
+    "Not covered: a chain with a top-level suppressor_enabled, which the native adapter would let override suppressor.enabled (neither the app nor this evaluator sets it)."
+  ],
+  "metrics": {
+    "accounting": {
+      "deepfilter-1.00": {
+        "no_settings": 12,
+        "no_settings_reasons": {
+          "Recording too unclear. Please try again.": 5,
+          "The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynami": 7
+        },
+        "pairs": 48,
+        "second_take_rejected": 0,
+        "suppressor_changed_by_analysis": 0,
+        "verified": 36
+      },
+      "deepfilter-ll-1.00": {
+        "no_settings": 12,
+        "no_settings_reasons": {
+          "Recording too unclear. Please try again.": 5,
+          "The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynami": 7
+        },
+        "pairs": 48,
+        "second_take_rejected": 0,
+        "suppressor_changed_by_analysis": 0,
+        "verified": 36
+      },
+      "rnnoise-1.00": {
+        "no_settings": 12,
+        "no_settings_reasons": {
+          "Recording too unclear. Please try again.": 5,
+          "The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynami": 7
+        },
+        "pairs": 48,
+        "second_take_rejected": 0,
+        "suppressor_changed_by_analysis": 1,
+        "verified": 36
+      }
+    },
+    "catches_wrong_eq": {
+      "passed": true,
+      "wrong_eqs": {
+        "plus12_3k": {
+          "applied_change_db": {
+            "max": 12.0,
+            "mean": 11.416639188905915,
+            "median": 11.397452152027489,
+            "min": 11.00189372610187,
+            "n": 108,
+            "p10": 11.205631013389356,
+            "p90": 12.0
+          },
+          "candidate_reports": 108,
+          "clauses": {
+            "each_setting": true,
+            "overall": true
+          },
+          "limits_percent": {
+            "overall": 97,
+            "per_setting": 94
+          },
+          "n": 108,
+          "passed": true,
+          "per_setting": {
+            "deepfilter-1.00": {
+              "candidate_reports": 36,
+              "n": 36,
+              "passed": true,
+              "rate": 1.0
+            },
+            "deepfilter-ll-1.00": {
+              "candidate_reports": 36,
+              "n": 36,
+              "passed": true,
+              "rate": 1.0
+            },
+            "rnnoise-1.00": {
+              "candidate_reports": 36,
+              "n": 36,
+              "passed": true,
+              "rate": 1.0
+            }
+          },
+          "rate": 1.0,
+          "released_reports": 108
+        },
+        "plus9_3k": {
+          "applied_change_db": {
+            "max": 9.0,
+            "mean": 9.0,
+            "median": 9.0,
+            "min": 9.0,
+            "n": 108,
+            "p10": 9.0,
+            "p90": 9.0
+          },
+          "candidate_reports": 105,
+          "clauses": {
+            "each_setting": true,
+            "overall": true
+          },
+          "limits_percent": {
+            "overall": 90,
+            "per_setting": 85
+          },
+          "n": 108,
+          "passed": true,
+          "per_setting": {
+            "deepfilter-1.00": {
+              "candidate_reports": 35,
+              "n": 36,
+              "passed": true,
+              "rate": 0.9722222222222222
+            },
+            "deepfilter-ll-1.00": {
+              "candidate_reports": 35,
+              "n": 36,
+              "passed": true,
+              "rate": 0.9722222222222222
+            },
+            "rnnoise-1.00": {
+              "candidate_reports": 35,
+              "n": 36,
+              "passed": true,
+              "rate": 0.9722222222222222
+            }
+          },
+          "rate": 0.9722222222222222,
+          "released_reports": 103
+        }
+      }
+    },
+    "false_alarms_low": {
+      "candidate_target_error": 0,
+      "clauses": {
+        "at_most_a_third_of_released": true,
+        "each_setting_at_most_15_percent": true,
+        "overall_at_most_10_percent": true
+      },
+      "n": 108,
+      "passed": true,
+      "per_setting": {
+        "deepfilter-1.00": {
+          "candidate": 0,
+          "n": 36,
+          "passed": true,
+          "rate": 0.0,
+          "released": 12
+        },
+        "deepfilter-ll-1.00": {
+          "candidate": 0,
+          "n": 36,
+          "passed": true,
+          "rate": 0.0,
+          "released": 11
+        },
+        "rnnoise-1.00": {
+          "candidate": 0,
+          "n": 36,
+          "passed": true,
+          "rate": 0.0,
+          "released": 13
+        }
+      },
+      "rate": 0.0,
+      "released_target_error": 36
+    },
+    "left_out": [
+      {
+        "pair": [
+          "fit",
+          0,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p003",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "fit",
+          0,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p003",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "fit",
+          0,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p003",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "fit",
+          3,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p075",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "fit",
+          3,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p075",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "fit",
+          3,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p075",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "fit",
+          11,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p075",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "fit",
+          11,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p075",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "fit",
+          11,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p075",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "calibrate",
+          5,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p038",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "calibrate",
+          5,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p038",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "calibrate",
+          5,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p038",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "calibrate",
+          10,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p061",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "calibrate",
+          10,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p061",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "calibrate",
+          10,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p061",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "calibrate",
+          12,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p008",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "calibrate",
+          12,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p008",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "calibrate",
+          12,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p008",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "calibrate",
+          13,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p038",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "calibrate",
+          13,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p038",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "calibrate",
+          13,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p038",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "calibrate",
+          14,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p074",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "calibrate",
+          14,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p074",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "calibrate",
+          14,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p074",
+        "why": "no Auto-EQ settings: Recording too unclear. Please try again."
+      },
+      {
+        "pair": [
+          "test",
+          1,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p047",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "test",
+          1,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p047",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "test",
+          1,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p047",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "test",
+          3,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p099",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "test",
+          3,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p099",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "test",
+          3,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p099",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "test",
+          11,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p099",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "test",
+          11,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p099",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "test",
+          11,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p099",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "test",
+          12,
+          "rnnoise-1.00"
+        ],
+        "speaker": "p017",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "test",
+          12,
+          "deepfilter-1.00"
+        ],
+        "speaker": "p017",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      },
+      {
+        "pair": [
+          "test",
+          12,
+          "deepfilter-ll-1.00"
+        ],
+        "speaker": "p017",
+        "why": "no Auto-EQ settings: The proposed processing exceeds safe headroom. Try a lower input level or a gentler dynamics profile."
+      }
+    ],
+    "never_stricter": {
+      "n": 108,
+      "passed": true,
+      "released_accepts": 53,
+      "rolled_back_by_candidate": []
+    },
+    "nothing_else_moves": {
+      "advisory_fires": {
+        "candidate": {
+          "count": 5,
+          "pairs": [
+            [
+              "fit",
+              6,
+              "rnnoise-1.00"
+            ],
+            [
+              "fit",
+              14,
+              "rnnoise-1.00"
+            ],
+            [
+              "calibrate",
+              3,
+              "rnnoise-1.00"
+            ],
+            [
+              "test",
+              4,
+              "rnnoise-1.00"
+            ],
+            [
+              "test",
+              10,
+              "rnnoise-1.00"
+            ]
+          ]
+        },
+        "released": {
+          "count": 5,
+          "pairs": [
+            [
+              "fit",
+              6,
+              "rnnoise-1.00"
+            ],
+            [
+              "fit",
+              14,
+              "rnnoise-1.00"
+            ],
+            [
+              "calibrate",
+              3,
+              "rnnoise-1.00"
+            ],
+            [
+              "test",
+              4,
+              "rnnoise-1.00"
+            ],
+            [
+              "test",
+              10,
+              "rnnoise-1.00"
+            ]
+          ]
+        }
+      },
+      "examples": [],
+      "n": 108,
+      "pairs_with_differences": 0,
+      "passed": true
+    },
+    "pairs": 144,
+    "reported": {
+      "decisions_by_setting": {
+        "deepfilter-1.00": {
+          "candidate": {
+            "accept": 29,
+            "gave_up": 2,
+            "retry": 0,
+            "rollback": 5,
+            "target_error": 0
+          },
+          "released": {
+            "accept": 19,
+            "gave_up": 1,
+            "retry": 0,
+            "rollback": 16,
+            "target_error": 12
+          },
+          "verified": 36
+        },
+        "deepfilter-ll-1.00": {
+          "candidate": {
+            "accept": 28,
+            "gave_up": 3,
+            "retry": 0,
+            "rollback": 5,
+            "target_error": 0
+          },
+          "released": {
+            "accept": 19,
+            "gave_up": 2,
+            "retry": 0,
+            "rollback": 15,
+            "target_error": 11
+          },
+          "verified": 36
+        },
+        "rnnoise-1.00": {
+          "candidate": {
+            "accept": 26,
+            "gave_up": 3,
+            "retry": 0,
+            "rollback": 7,
+            "target_error": 0
+          },
+          "released": {
+            "accept": 15,
+            "gave_up": 1,
+            "retry": 0,
+            "rollback": 20,
+            "target_error": 13
+          },
+          "verified": 36
+        }
+      },
+      "extra_time": {
+        "first_call_extra_by_setting_s": {
+          "deepfilter-1.00": {
+            "max": 3.1143109000040567,
+            "mean": 2.188111402777698,
+            "median": 2.1617256000026828,
+            "min": 0.29090350000478793,
+            "n": 36,
+            "p10": 1.838654150000366,
+            "p90": 2.6120861999988847
+          },
+          "deepfilter-ll-1.00": {
+            "max": 4.293180300002859,
+            "mean": 2.1594107249994625,
+            "median": 2.0761239500025113,
+            "min": 0.7738912999921013,
+            "n": 36,
+            "p10": 1.4627086999971652,
+            "p90": 2.9980093500016665
+          },
+          "rnnoise-1.00": {
+            "max": 3.7765103000056115,
+            "mean": 2.219844149999618,
+            "median": 2.1531246999984432,
+            "min": 1.6446558000025107,
+            "n": 36,
+            "p10": 1.9115392999956384,
+            "p90": 2.5331381499963754
+          }
+        },
+        "first_call_extra_percent_of_released": 31.266404893967774,
+        "first_call_extra_s": {
+          "max": 4.293180300002859,
+          "mean": 2.1891220925922594,
+          "median": 2.1448268000021926,
+          "min": 0.29090350000478793,
+          "n": 108,
+          "p10": 1.7206625100057864,
+          "p90": 2.7357159199993473
+        },
+        "first_call_s": {
+          "candidate": {
+            "max": 13.54962930000329,
+            "mean": 9.190637297222027,
+            "median": 9.142980500000704,
+            "min": 6.0877502000003005,
+            "n": 108,
+            "p10": 6.72422841999869,
+            "p90": 11.809373659999254
+          },
+          "released": {
+            "max": 10.693411499996728,
+            "mean": 7.001515204629767,
+            "median": 6.933554150004056,
+            "min": 4.100039099997957,
+            "n": 108,
+            "p10": 4.518738520001352,
+            "p90": 9.632770700001128
+          }
+        },
+        "first_pass_renders_as_described": 108,
+        "pairs": 108
+      },
+      "wrong_eq_6db": {
+        "minus6_200": {
+          "beyond_the_proposal": {
+            "candidate": 0,
+            "released": 0
+          },
+          "both": 0,
+          "candidate": 0,
+          "n": 108,
+          "per_setting": {
+            "deepfilter-1.00": {
+              "candidate": 0,
+              "n": 36,
+              "released": 12
+            },
+            "deepfilter-ll-1.00": {
+              "candidate": 0,
+              "n": 36,
+              "released": 11
+            },
+            "rnnoise-1.00": {
+              "candidate": 0,
+              "n": 36,
+              "released": 13
+            }
+          },
+          "released": 36
+        },
+        "plus6_3k": {
+          "beyond_the_proposal": {
+            "candidate": 12,
+            "released": 27
+          },
+          "both": 11,
+          "candidate": 12,
+          "n": 108,
+          "per_setting": {
+            "deepfilter-1.00": {
+              "candidate": 4,
+              "n": 36,
+              "released": 21
+            },
+            "deepfilter-ll-1.00": {
+              "candidate": 4,
+              "n": 36,
+              "released": 16
+            },
+            "rnnoise-1.00": {
+              "candidate": 4,
+              "n": 36,
+              "released": 25
+            }
+          },
+          "released": 62
+        }
+      }
+    },
+    "speakers": 24,
+    "users": 48,
+    "verified_pairs": 108,
+    "verified_speakers": 21,
+    "verified_users": 36
+  },
+  "passed": true,
+  "predefined_rule": "The rule in the docstring of python/tools/evaluate_voice_setup_verification.py.",
+  "retained": true,
+  "retained_evidence": {
+    "directory": "models/evaluation-details/voice-setup-tonal-check-followup-2026-10",
+    "rows": "models/evaluation-details/voice-setup-tonal-check-followup-2026-10/tree-rows.json",
+    "rows_sha256": "f56787b7d934621efe1abba133709fecbddfe317db68f1cf0d02cd52c70f7ecc"
+  },
+  "schema_version": 2,
+  "settings": [
+    "rnnoise-1.00",
+    "deepfilter-1.00",
+    "deepfilter-ll-1.00"
+  ],
+  "source_sha256": {
+    "python/mic_eq/analysis/auto_eq.py": "edccec8f7a204d2a021a69d79c6b9443781f6b3d9de569fdd2bdffcfab553de7",
+    "python/mic_eq/analysis/auto_eq_parts/headroom.py": "4cf6d57bbdb5b7527dc89005f9b9d9236c0c8018174de9094e58632b8df9e0f2",
+    "python/mic_eq/analysis/auto_eq_parts/target.py": "30503139d67d2184a3a02a832f1478514b2ef63da1553a76f426cad6e1d7d7ff",
+    "python/mic_eq/analysis/compressor_calibration.py": "59ebaa1270d9aa1bda94918864d2d532af59980d23f42202eec27dfa10af8c7b",
+    "python/mic_eq/analysis/joint_tuning.py": "dcc01e052f5831e772b56000735edca7284d543dff5c6286dcf46318b3b66ea5",
+    "python/mic_eq/analysis/listening_comparison.py": "94a8f6740bed788a0a65a2c1c24a277ac1df27058cc9b974e7e4166a7c23b800",
+    "python/mic_eq/analysis/noise_reference.py": "e40b553371baac7e7ab3336cfd1f7b73446e903d8255be7d09e8a2de5697a849",
+    "python/mic_eq/analysis/voice_setup.py": "cfa6ae88d76adfd4f8cb3d10e86482d9a4df723e33ade0a3c5c44a3d17125b5f",
+    "python/mic_eq/ui/calibration_support.py": "2bf6d62dcfa6b0d07f5d3b867b4ec101483334a271b5175d2466bbd303b8b1c9",
+    "python/tools/_eval_common.py": "f6bccabedc531161d1577b1e807c30391bdfe291faf1fd0eba438729b7e006e0",
+    "python/tools/evaluate_gate_corpus.py": "3a2fca2a7a0502f7d77478881c1616fe763d94931c125b569f3959606e34ef41",
+    "python/tools/evaluate_voice_setup.py": "6cbe6fd752179577a37c3d597424c30a0927099d52abdd1d7d68b4350a66a769",
+    "python/tools/evaluate_voice_setup_loudness.py": "7cd5fe887a2c627bbf500f8d5a298497d4d7399f60ba7e686f05ac257990edbc",
+    "python/tools/evaluate_voice_setup_verification.py": "e1c06eafb9ab1c411cf1305ba2488e086bca3fb4454f6e097fc7590f95b586b3"
+  },
+  "splits": [
+    "fit",
+    "calibrate",
+    "test"
+  ],
+  "user_indices": {
+    "calibrate": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "fit": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "test": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ]
+  }
+}

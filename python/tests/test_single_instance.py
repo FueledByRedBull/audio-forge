@@ -26,18 +26,25 @@ def test_tray_tooltip_reflects_processing_mute_health_and_route():
     assert tooltip == "AudioForge: Running / Muted | Health: Healthy | Mic -> Cable"
 
 
-def test_activate_window_restores_and_focuses_in_order():
-    calls: list[str] = []
-    window = SimpleNamespace(
-        showNormal=lambda: calls.append("showNormal"),
-        show=lambda: calls.append("show"),
-        raise_=lambda: calls.append("raise"),
-        activateWindow=lambda: calls.append("activate"),
-    )
+def test_activate_window_shows_a_hidden_or_minimized_window_at_its_last_size(qapp):
+    window = QMainWindow()
+    try:
+        window.showMaximized()
+        window.hide()
+        desktop_integration.activate_window(window)
+        assert window.isVisible() and window.isMaximized()
 
-    desktop_integration.activate_window(cast(QMainWindow, window))
+        window.showMinimized()
+        desktop_integration.activate_window(window)
+        assert window.isVisible() and window.isMaximized() and not window.isMinimized()
 
-    assert calls == ["showNormal", "show", "raise", "activate"]
+        window.showNormal()
+        window.showMinimized()
+        desktop_integration.activate_window(window)
+        assert window.isVisible() and not window.isMinimized() and not window.isMaximized()
+    finally:
+        window.close()
+        window.deleteLater()
 
 
 def test_second_instance_forwards_activation_without_removing_primary_server(

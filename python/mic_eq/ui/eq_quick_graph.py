@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Property, Qt, Signal
+from PySide6.QtCore import QObject, Property, Qt, Signal, Slot
 from PySide6.QtGui import QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtQuick import QQuickPaintedItem
 
@@ -41,6 +41,7 @@ class EQGraphItem(QQuickPaintedItem):
 
     graph = Property(QObject, _get_graph, _set_graph, notify=graphChanged)
 
+    @Slot()  # Register before QML adds properties to the metaobject.
     def _update_graph(self) -> None:
         self.update()
 

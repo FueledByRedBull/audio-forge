@@ -6,9 +6,9 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Property, QPoint, QSignalBlocker, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QCursor
-from PySide6.QtWidgets import QComboBox, QLabel, QMenu
+from PySide6.QtWidgets import QAbstractButton, QComboBox, QLabel, QMenu, QStatusBar
 
-from .components import plain_label
+from .components import IconButton, plain_label
 from .theme import status_chip_style
 
 
@@ -52,6 +52,7 @@ class TextState(QObject):
             if self._status and label.property("health_state") != self._status:
                 label.setStyleSheet(status_chip_style(self._status))
                 label.setProperty("health_state", self._status)
+        label.setAccessibleName(self._name)
         self.changed.connect(render)
         render()
 
@@ -74,6 +75,10 @@ class StatusState(TextState):
     def clearMessage(self) -> None:
         self._expiry.stop()
         self.update(text="")
+
+    def bind_status_bar(self, bar: QStatusBar) -> None:
+        self.changed.connect(lambda: bar.showMessage(self._text))
+        bar.showMessage(self._text)
 
 
 class ChoiceState(QObject):
@@ -168,6 +173,8 @@ class ChoiceState(QObject):
                 combo.setCurrentIndex(self._index)
                 combo.setEnabled(self._enabled)
                 combo.setPlaceholderText(self._placeholder)
+        combo.setAccessibleName(self._name)
+        combo.setToolTip(self._tip)
         self.changed.connect(render)
         combo.currentIndexChanged.connect(self.setIndex)
         render()
@@ -181,7 +188,7 @@ class ActionControl(QObject):
     def __init__(self, action: QAction, parent: QObject, *, name: str = "", text: str | None = None,
                  menu: QMenu | None = None):
         super().__init__(parent)
-        self.action, self._name, self._menu = action, name, menu
+        self.action, self._name, self.menu = action, name, menu
         self._text = text
         action.changed.connect(self.changed)
 
@@ -202,26 +209,45 @@ class ActionControl(QObject):
 
     def _activate(self, position: QPoint) -> None:
         if self.action.isEnabled():
-            if self._menu is not None:
-                self._menu.popup(position)
+            if self.menu is not None:
+                self.menu.popup(position)
             else:
                 self.action.trigger()
         self.changed.emit()
+
+
+def bind_button(button: QAbstractButton, action: QAction) -> None:
+    """Render an action on a button; clicking the button triggers the action."""
+
+    def render() -> None:
+        # Commands use clicked; toggled still drives the switch painting.
+        button.setEnabled(action.isEnabled())
+        button.setChecked(action.isChecked())
+        button.setToolTip(action.toolTip())
+        # An icon button keeps its glyph (or its stand-in word) as its text.
+        if not isinstance(button, IconButton):
+            button.setText(action.text())
+    button.clicked.connect(action.trigger)
+    action.changed.connect(render)
+    render()
 
 
 class PageState(QObject):
     changed = Signal()
     selected = Signal(int)
 
-    def __init__(self, parent: QObject):
+    def __init__(self, parent: QObject, count: int):
         super().__init__(parent)
-        self._index = 0
+        self._index, self._count = 0, count
 
     index = Property(int, lambda self: self._index, notify=changed)
 
+    def currentIndex(self) -> int:
+        return self._index
+
     @Slot(int)
     def setIndex(self, index: int) -> None:
-        if 0 <= index < 3 and index != self._index:
+        if 0 <= index < self._count and index != self._index:
             self._index = index
             self.changed.emit()
             self.selected.emit(index)

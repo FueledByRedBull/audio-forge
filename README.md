@@ -49,7 +49,7 @@ Screenshots use example devices and settings.
 
 ## Download
 
-Current version: `v1.15.2` ([release notes](release-notes/release-notes-v1.15.2.md)).
+Current version: `v1.15.3` ([release notes](release-notes/release-notes-v1.15.3.md)).
 This is the source-checkout version; the latest published package may be older.
 Open the [latest release](https://github.com/FueledByRedBull/audio-forge/releases/latest)
 and download **one** of these files. **Not sure? Choose the installer.**
@@ -155,9 +155,13 @@ configure it again from the new location. See the
   back to RNNoise failed clean-speech checks. CPU timing is only a pass/fail
   limit; it never ranks sound quality.
 - **Compression and loudness.** EQ is fitted first. Compression calibration
-  then tunes the compressor with your requested automatic makeup gain. If your
-  target loudness can't leave safe headroom, the result stays advisory: choose
-  a lower (more negative) LUFS target and run it again.
+  then tunes the compressor with your requested automatic makeup gain. If peaks
+  at that loudness leave too little headroom, Voice Setup lowers the target by
+  whole decibels until the final check passes and says so in the review. With
+  the limiter on, automatic makeup and a voice that is not too hot, the check
+  lets the limiter take up to 3 dB off the loudest peaks. If no allowed loudness
+  keeps headroom, the result stays advisory; for a microphone that is too hot,
+  lower its input gain by the amount shown and run it again.
 - **Verified before it sticks.** A suggestion stays temporary until a second
   passage checks it through the full chain. Adjustments reuse a valid take, and
   your previous sound comes back if verification can't succeed. Recorded

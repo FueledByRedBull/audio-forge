@@ -86,6 +86,7 @@ a = Analysis(
         "PySide6.QtCore",
         "PySide6.QtGui",
         "PySide6.QtWidgets",
+        # libshiboken imports it when the Qt Quick bindings load; the frozen app fails to start without it.
         "PySide6.QtOpenGL",
         "PySide6.QtQml",
         "PySide6.QtQuick",
@@ -112,6 +113,11 @@ a = Analysis(
         "PySide6.QtPdfWidgets",
         "PySide6.QtMultimediaWidgets",
         "PySide6.QtVirtualKeyboard",
+        # The app calls only scipy.optimize, which imports these lazily.
+        "scipy.integrate",
+        "scipy.interpolate",
+        "scipy.ndimage",
+        "scipy.stats",
         "ssl",
         "_ssl",
         "_hashlib",

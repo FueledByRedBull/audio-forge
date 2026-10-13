@@ -25,6 +25,7 @@ from .control_specs import (
     control_spec,
     widget_control_label,
 )
+from .level_meter import MeterWidget
 from .processing_meters import ProcessingMeters
 from .components import Card, ToggleSwitch, form_layout
 from .accessibility import bind_label, set_accessible_group
@@ -46,8 +47,8 @@ class GatePanel(QWidget):
     def __init__(self, processor, gate_state: GateState | None = None, meters: ProcessingMeters | None = None):
         super().__init__()
         self.processor = processor
-        self._meters = meters
         self.gate_state = gate_state or GateState(processor, self)
+        self._meters = meters or ProcessingMeters(processor, self.gate_state, self)
         self._setup_ui()
         self._connect_signals()
         if gate_state is None:
@@ -218,19 +219,14 @@ class GatePanel(QWidget):
         gate_layout.addRow(self.threshold_status_label)
 
         # VAD confidence meter
-        from .level_meter import ConfidenceMeter
-
-        self.confidence_meter = self._meters.confidence if self._meters else ConfidenceMeter()
-        self.confidence_meter.setToolTip(
-            "Real-time VAD confidence (red=low, green=high)"
-        )
+        self.confidence_meter = self._meters.confidence
         self.vad_info_label = QLabel("VAD: N/A")
         self.vad_info_label.setStyleSheet(INFO_LABEL_STYLE)
         self.vad_info_label.setWordWrap(True)
         vad_meter_layout = QVBoxLayout()
         vad_meter_layout.setContentsMargins(0, 0, 0, 0)
         vad_meter_layout.setSpacing(2)
-        vad_meter_layout.addWidget(self.confidence_meter)
+        vad_meter_layout.addWidget(MeterWidget(self.confidence_meter))
         vad_meter_layout.addWidget(self.vad_info_label)
         confidence_label = QLabel("Confidence:")
         confidence_label.setStyleSheet(PRIMARY_LABEL_STYLE)
@@ -270,7 +266,6 @@ class GatePanel(QWidget):
                 (self.vad_pre_gain_slider, control_spec("gate", "vad_pre_gain").accessible_name, None),
                 (self.auto_threshold_checkbox, control_spec("gate", "auto_threshold_enabled").accessible_name, None),
                 (self.margin_slider, control_spec("gate", "gate_margin_db").accessible_name, None),
-                (self.confidence_meter, "Voice activity confidence", None),
             )
         )
 
@@ -329,9 +324,6 @@ class GatePanel(QWidget):
                 with QSignalBlocker(slider):
                     slider.setValue(int(settings[key] * scale))
                 slider.setEnabled(self.gate_state.control_enabled(key))
-        self.confidence_meter.set_threshold(self.vad_threshold_spinbox.value())
-        self.confidence_meter.set_confidence(self.gate_state.confidence)
-        self.confidence_meter.setEnabled(self.gate_state.control_enabled("confidence"))
         text = self.gate_state.presentation()
         self.threshold_label.setText(text["threshold_label"])
         self.threshold_status_label.setText(text["threshold_status"])

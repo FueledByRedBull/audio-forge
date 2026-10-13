@@ -1,20 +1,12 @@
-"""The Quick meter adapter uses the existing meter painter and notifications."""
+"""The Quick meter adapter and the widget view paint the same meter model."""
 
-from PySide6.QtCore import QObject, QSizeF, Qt, Signal
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtCore import QPoint, QSizeF, Qt
+from PySide6.QtGui import QImage, QPainter, QRegion
 from PySide6.QtTest import QSignalSpy
+from PySide6.QtWidgets import QWidget
 
-from mic_eq.ui.level_meter import ConfidenceMeter, GainReductionMeter, LevelMeter
+from mic_eq.ui.level_meter import ConfidenceMeter, GainReductionMeter, LevelMeter, MeterWidget
 from mic_eq.ui.quick_meter import QuickMeterItem
-
-
-class _MeterSource(QObject):
-    repaintRequested = Signal()
-
-    def __init__(self, target):
-        super().__init__()
-        self.target = target
-        target.changed.connect(self.repaintRequested)
 
 
 class _ObservedMeterItem(QuickMeterItem):
@@ -33,7 +25,7 @@ def _image(size: tuple[int, int]) -> QImage:
     return image
 
 
-def test_quick_meter_paints_the_same_snapshot_as_the_classic_adapter(qapp):
+def test_quick_meter_and_widget_paint_the_same_snapshot_as_the_model(qapp):
     level = LevelMeter("IN", show_scale=True)
     level.set_levels(-18.0, -4.0)
     reduction = GainReductionMeter()
@@ -48,8 +40,10 @@ def test_quick_meter_paints_the_same_snapshot_as_the_classic_adapter(qapp):
         (confidence, (190, 20)),
     ):
         item = QuickMeterItem()
-        item.setProperty("source", _MeterSource(meter))
+        item.setProperty("source", meter)
         item.setSize(QSizeF(*size))
+        view = MeterWidget(meter)
+        view.resize(*size)
 
         expected = _image(size)
         painter = QPainter(expected)
@@ -61,33 +55,53 @@ def test_quick_meter_paints_the_same_snapshot_as_the_classic_adapter(qapp):
         item.paint(painter)
         painter.end()
 
+        rendered = _image(size)
+        # Without DrawWindowBackground, only the meter's own painting lands on the image.
+        view.render(rendered, QPoint(), QRegion(), QWidget.RenderFlag.DrawChildren)
+
         assert actual == expected
+        assert rendered == expected
         item.deleteLater()
-        meter.close()
+        view.deleteLater()
 
     qapp.processEvents()
 
 
 def test_meter_changes_and_enabled_state_reach_quick_repaint_source(qapp):
     meter = LevelMeter("OUT", show_scale=False)
-    source = _MeterSource(meter)
     item = _ObservedMeterItem()
-    repaint_notifications = QSignalSpy(source.repaintRequested)
-    item.setProperty("source", source)
+    repaint_notifications = QSignalSpy(meter.changed)
+    item.setProperty("source", meter)
 
     meter.set_levels(-24.0, -12.0)
     assert repaint_notifications.count() == 1
     assert item.repaint_requests == 1
 
-    # The same 50 ms decay path used by the visible classic meter notifies Quick.
+    # The same 50 ms decay path notifies Quick, whether or not any widget exists.
     meter._decay_peak_hold()
     assert repaint_notifications.count() == 2
     assert item.repaint_requests == 2
 
-    meter.setEnabled(False)
+    meter.set_enabled(False)
     assert repaint_notifications.count() == 3
     assert item.repaint_requests == 3
+    meter.set_enabled(False)
+    assert repaint_notifications.count() == 3
 
     item.deleteLater()
-    meter.close()
+    qapp.processEvents()
+
+
+def test_widget_mirrors_the_meter_models_presentation(qapp):
+    meter = ConfidenceMeter("Voice activity confidence", "Real-time VAD confidence")
+    view = MeterWidget(meter)
+    assert view.accessibleName() == "Voice activity confidence"
+    assert view.toolTip() == "Real-time VAD confidence"
+    assert view.isEnabled()
+
+    meter.set_enabled(False)
+    assert not view.isEnabled()
+    meter.set_enabled(True)
+    assert view.isEnabled()
+    view.deleteLater()
     qapp.processEvents()

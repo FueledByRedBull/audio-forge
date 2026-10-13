@@ -16,8 +16,8 @@ from PySide6.QtWidgets import (
 )
 
 from .deesser_state import DeEsserState
-from .level_meter import GainReductionMeter
-from .processing_meters import ProcessingMeters
+from .level_meter import GainReductionMeter, MeterWidget
+from .processing_meters import DEESSER_GR_NAME, ProcessingMeters
 from .control_specs import (
     apply_control_presentation,
     configure_numeric_control,
@@ -223,8 +223,10 @@ class DeEsserPanel(QWidget):
         advanced_grid.addWidget(max_red_label, 9, 0)
         advanced_grid.addLayout(max_red_layout, 9, 1)
 
-        self.gr_meter = self._meters.deesser_gr if self._meters else GainReductionMeter()
-        grid.addWidget(self.gr_meter, 10, 0, 1, 2)
+        self.gr_meter = (
+            self._meters.deesser_gr if self._meters else GainReductionMeter(DEESSER_GR_NAME, parent=self)
+        )
+        grid.addWidget(MeterWidget(self.gr_meter), 10, 0, 1, 2)
 
         layout.addWidget(card)
 
@@ -262,7 +264,6 @@ class DeEsserPanel(QWidget):
                 (self.threshold_slider, control_spec("deesser", "threshold_db").accessible_name, None),
                 (self.ratio_slider, control_spec("deesser", "ratio").accessible_name, None),
                 (self.max_reduction_slider, control_spec("deesser", "max_reduction_db").accessible_name, None),
-                (self.gr_meter, "De-esser gain reduction", None),
             )
         )
 

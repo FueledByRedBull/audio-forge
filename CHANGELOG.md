@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.15.3
+
+### Window and interface
+
+- The window reopens where and how it was closed, including maximized. The saved position was restored as a different rectangle from the one that was saved; it now uses the same one and keeps the title bar on screen. The saved position also records whether the window was maximized, and settings from earlier versions load as before. Restoring AudioForge from the tray, or starting it a second time, no longer shrinks a maximized window.
+- The Stop button could stay disabled while audio was running. Start and Stop now follow the same processing state.
+- The IN and OUT level meters in the main (Qt Quick) view stopped repainting after their first frame in 1.15.2. They repaint on every reading again.
+- In the main view, a refused noise-suppression backend switch shows the "Model Switch Failed" box and a successful switch confirms in the status line, as the classic view does.
+- With the Qt Quick view active, the classic widget view is no longer built unless it is needed: with `AUDIOFORGE_QML=0`, or when the Qt Quick view cannot load or stops rendering. This is an internal change; controls and layout are unchanged.
+
+### Voice Setup
+
+- Setup no longer stops at the room-noise step on a microphone or headset that delivers digital silence when nobody speaks (GitHub issue 82). It continues with a note, takes the noise estimate from the pauses in the voice recording, and gives a silent voice recording a clear message to check that the microphone is not muted and the right input is selected.
+- A room-noise recording that is unsteady, for example from a gate that opens now and then, continues with a note that setup will be more cautious, instead of asking for a retake that cannot help. A recording that is too short, clipped or unreadable is still retaken.
+- Clipped or unreadable recordings are refused as soon as they finish, with a plain instruction to record again, instead of failing after the voice step.
+- When peaks at the requested loudness leave less headroom than the final check requires, Voice Setup lowers the loudness target by whole decibels until the check passes, and the review says so. If no allowed loudness passes, the proposal is left as requested.
+- Where the limiter is on, makeup is automatic and the voice is not too hot for makeup, the final check and verification let the limiter take up to 3 dB off the loudest peaks. Anywhere else the earlier rule holds, and the final true-peak stage keeps its limit. Evidence: `evaluation/voice-setup-loudness-fit-2026-10-report.json` and `evaluation/voice-setup-limiter-allowance-narrow-2026-10-report.json`, summarized in `evaluation/README.md`.
+- For a microphone that is too hot for any makeup, the review now advises lowering the input gain and says by about how much is still missing at the lowest loudness. Earlier versions said only that final full-chain headroom validation did not pass.
+- Verification's tonal check no longer counts what the noise suppressor removes as a tonal error. It had rejected setups whose EQ was as intended, most often with RNNoise at full strength and with DeepFilterNet. When noise suppression is on, the check now reads the same recordings rendered through the same chain with only the suppressor switched off, at the cost of two more renders per verification (about 2 s); every other verification finding is unchanged, and a wrong EQ is still caught. Its first design, measuring against the suppressor's own output, was rejected on held-out simulated users; this second design passed on new speakers. Evidence: `evaluation/voice-setup-verification-tonal-check-2026-10-report.json`.
+- Verification now says when noise suppression is dulling consonants, by about how much, and suggests lowering its strength or, unless it is already in use, using DeepFilterNet LL. It is advice shown with the result and does not change the verification decision. It was checked on held-out simulated users; a lower default RNNoise strength was tested on the same users and not adopted. Evidence: summarized in `evaluation/README.md`.
+- Capture reliability is decided by explicit conditions (noise-referenced SNR, active speech duration, spectrum fallback, noise-reference status) rather than by caps applied to the capture-quality score. This change alone does not alter which proposals are recommended or when automatic makeup is offered; the loudness fit and the limiter allowance above do. The capture quality shown for a weak capture is no longer capped, and the review now separates "too few voiced frames for a stable spectrum" from "overall capture quality is low".
+
+### Diagnostics and packaging
+
+- The diagnostics export includes the input RMS and peak levels, so a microphone that is silent at rest shows up in a support report.
+- The portable bundle no longer ships the unused `scipy.integrate`, `scipy.interpolate`, `scipy.ndimage` and `scipy.stats` subpackages (the app calls only `scipy.optimize`) or unused Qt plugins: the Direct2D platform plugin, seven image-format plugins (ICO stays), the TLS backends, the touch plugin and the network-information plugin. Package smoke fails if any return, and its source check rejects imports of those SciPy modules, or of `scipy.signal`, from `python/mic_eq`.
+- The packaged startup smoke test now runs a real Auto-EQ fit, so both SciPy solvers must load and converge.
+
 ## v1.15.2
 
 - Open new windows at 1440 x 960 where the screen allows it; preserve saved window sizes.

@@ -1,7 +1,7 @@
 """Constructing either frontend must not flash unparented desktop controls."""
 
 import pytest
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEvent, QObject
 from PySide6.QtWidgets import QWidget
 
 from mic_eq.config import AppConfig
@@ -21,9 +21,7 @@ def test_startup_shows_only_the_completed_main_window(qapp, monkeypatch, quick):
 
     class WindowShows(QObject):
         def eventFilter(self, obj, event):
-            if (event.type() == QEvent.Type.Show and isinstance(obj, QWidget)
-                    and obj.isWindow()
-                    and not obj.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)):
+            if event.type() == QEvent.Type.Show and isinstance(obj, QWidget) and obj.isWindow():
                 shown.append((type(obj).__name__, obj.accessibleName()))
             return False
 

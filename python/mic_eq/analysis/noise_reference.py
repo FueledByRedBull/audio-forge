@@ -17,6 +17,11 @@ OCTAVE_CENTERS_HZ = np.asarray(
     dtype=float,
 )
 REFERENCE_SPECTRUM_FRAME_SIZE = 4096
+SILENT_REFERENCE_REASON = "room-noise capture is silent"
+SILENT_REFERENCE_GUIDANCE = (
+    "No background noise came through. That is normal when a headset or its "
+    "software mutes the microphone between words; otherwise check the microphone."
+)
 
 
 @dataclass(frozen=True)
@@ -73,6 +78,9 @@ class NoiseReferenceAnalysis:
     conservative_spectrum_db: np.ndarray
     in_capture_spectrum_db: np.ndarray | None = None
     conservative_noise_rms_db: float = -120.0
+    # The capture cannot be analysed at all. An unsteady one still can, and a
+    # microphone that gates or suppresses its own noise never gives a steady one.
+    must_recapture: bool = False
 
     def diagnostics(self) -> dict[str, Any]:
         """Return a serialization-friendly quality report."""
@@ -114,6 +122,15 @@ def _db_rms(audio: np.ndarray) -> float:
 def _db_peak(audio: np.ndarray) -> float:
     peak = float(np.max(np.abs(audio))) if audio.size else 0.0
     return float(20.0 * np.log10(max(peak, 1e-9)))
+
+
+def capture_is_silent(audio: np.ndarray) -> bool:
+    """Whether a capture holds no measurable signal, as a muted or self-gating input gives."""
+    samples = np.asarray(audio, dtype=float).reshape(-1)
+    samples = np.where(np.isfinite(samples), samples, 0.0)
+    return _db_rms(samples) <= -95.0 or (
+        float(np.mean(np.abs(samples) <= 1e-12)) >= 0.995 and _db_peak(samples) <= -90.0
+    )
 
 
 def _frame_analysis(
@@ -334,21 +351,28 @@ def analyze_noise_reference(
     guidance: list[str] = []
     invalid = False
     questionable = False
+    must_recapture = False
 
     if duration_s < MIN_NOISE_DURATION_S:
-        invalid = True
+        invalid = must_recapture = True
         reasons.append("room-noise capture is too short")
         guidance.append(f"Record at least {MIN_NOISE_DURATION_S:.1f} seconds of room tone.")
     if finite_fraction < 1.0:
-        invalid = True
+        invalid = must_recapture = True
         reasons.append("room-noise capture contains non-finite samples")
         guidance.append("Restart the audio stream and record the room tone again.")
-    if noise_rms_db <= -95.0 or (zero_fraction >= 0.995 and noise_peak_db <= -90.0):
-        invalid = True
-        reasons.append("room-noise capture is suspiciously silent")
-        guidance.append("Check the selected microphone and record normal room tone again.")
+    # A microphone path that mutes itself between words (a headset or driver
+    # noise gate) records true silence. That cannot rank noise, so the
+    # reference stays weak, but it must not block setup: the voice capture is
+    # what shows whether the microphone works. An empty, too short or non-finite
+    # capture reads as silent too, but it is retaken, not used as a weak reference.
+    silent = capture_is_silent(noise)
+    if silent and not must_recapture:
+        questionable = True
+        reasons.append(SILENT_REFERENCE_REASON)
+        guidance.append(SILENT_REFERENCE_GUIDANCE)
     if clipped_fraction > 0.001:
-        invalid = True
+        invalid = must_recapture = True
         reasons.append("room-noise capture is clipped")
         guidance.append("Lower input gain or remove the transient source, then recapture.")
     elif clipped_fraction > 0.0:
@@ -357,7 +381,7 @@ def analyze_noise_reference(
         guidance.append("Recapture without taps or handling noise for a cleaner reference.")
 
     if noise_frames is None:
-        invalid = True
+        invalid = must_recapture = True
         reasons.append("room-noise capture has too few analysis windows")
         rms_spread_db = 120.0
         octave_stability_db = 120.0
@@ -482,7 +506,11 @@ def analyze_noise_reference(
 
         conservative_spectrum = np.maximum(explicit_spectrum, aligned_in_capture)
         conservative_rms_db = max(noise_rms_db, in_capture_rms_db)
-        if level_delta_db > 12.0 or spectral_shape_distance_db > 10.0:
+        if silent:
+            # Silence has no level or shape to disagree with: the pauses in
+            # the voice capture are the only noise estimate.
+            level_delta_db = spectral_shape_distance_db = None
+        elif level_delta_db > 12.0 or spectral_shape_distance_db > 10.0:
             invalid = True
             reasons.append("room noise does not match conditions during the voice capture")
             guidance.append("Recapture room noise and voice without changing the environment.")
@@ -573,4 +601,5 @@ def analyze_noise_reference(
         conservative_spectrum_db=conservative_spectrum,
         in_capture_spectrum_db=in_capture_spectrum,
         conservative_noise_rms_db=conservative_rms_db,
+        must_recapture=must_recapture,
     )

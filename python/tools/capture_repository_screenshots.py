@@ -89,6 +89,7 @@ def _source_hashes() -> dict[str, str]:
         "python/mic_eq/ui/theme.py",
         "python/mic_eq/ui/main_window.py",
         "python/mic_eq/ui/quick_shell.py",
+        "python/mic_eq/ui/shell_specs.py",
         "python/mic_eq/ui/qml/Main.qml",
         "python/mic_eq/ui/eq_panel.py",
         "python/mic_eq/ui/eq_curve.py",
@@ -197,16 +198,16 @@ def _prepare_main_window() -> MainWindow:
     )
     window.input_meter.set_levels(-22.0, -10.5)
     window.output_meter.set_levels(-19.0, -7.5)
-    window._set_health_chip(window.input_health_label, "Input: OK", "ok")
-    window._set_health_chip(window.output_health_label, "Output: OK", "ok")
-    window._set_health_chip(window.gate_health_label, "Gate: stable", "ok")
-    window._set_health_chip(window.backend_diag_label, "Backend: ready", "ok")
-    window._set_health_chip(window.callback_health_label, "Callbacks: live", "ok")
-    window._set_health_chip(window.underrun_health_label, "Underruns: 0", "ok")
-    window._set_health_chip(window.latency_label, "Latency: 17.3 ms", "info")
-    window._set_health_chip(window.buffer_label, "Buffer: OK", "ok")
-    window._set_health_chip(window.dropped_label, "Drops: 0", "ok")
-    window._set_health_chip(window.recovery_diag_label, "Recovery: idle", "idle")
+    window._set_health_chip("input_health_label", "Input: OK", "ok")
+    window._set_health_chip("output_health_label", "Output: OK", "ok")
+    window._set_health_chip("gate_health_label", "Gate: stable", "ok")
+    window._set_health_chip("backend_diag_label", "Backend: ready", "ok")
+    window._set_health_chip("callback_health_label", "Callbacks: live", "ok")
+    window._set_health_chip("underrun_health_label", "Underruns: 0", "ok")
+    window._set_health_chip("latency_label", "Latency: 17.3 ms", "info")
+    window._set_health_chip("buffer_label", "Buffer: OK", "ok")
+    window._set_health_chip("dropped_label", "Drops: 0", "ok")
+    window._set_health_chip("recovery_diag_label", "Recovery: idle", "idle")
     window.status_message.clearMessage()
     return window
 
@@ -220,7 +221,7 @@ def _show_running_state(window: MainWindow) -> None:
     window.start_btn_action.setEnabled(False)
     window.stop_btn_action.setEnabled(True)
     window.shell_texts["transmission_status_label"].update(text="Transmission: Running / Normal")
-    window._set_health_chip(window.health_summary_label, "Health: OK", "ok")
+    window._set_health_chip("health_summary_label", "Health: OK", "ok")
 
 
 def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:

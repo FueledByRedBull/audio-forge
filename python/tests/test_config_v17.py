@@ -802,6 +802,15 @@ def test_app_config_accepts_and_clamps_valid_window_geometry():
     assert restored.window_geometry == {"x": 10, "y": 21, "width": 640, "height": 480}
 
 
+def test_app_config_keeps_only_a_true_maximized_window_flag():
+    geometry = {"x": 10, "y": 20, "width": 800, "height": 600}
+    restored = AppConfig.from_dict({"window_geometry": {**geometry, "maximized": True}})
+    assert restored.window_geometry == {**geometry, "maximized": True}
+    for value in (False, 1, "yes", None):
+        restored = AppConfig.from_dict({"window_geometry": {**geometry, "maximized": value}})
+        assert restored.window_geometry == geometry
+
+
 def test_app_config_migrates_legacy_device_names_and_profile_keys():
     profile = LatencyCalibrationProfile(
         measured_round_trip_ms=28.0,

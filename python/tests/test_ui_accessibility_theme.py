@@ -9,14 +9,19 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QLabel, QScrollArea, QWidget
+from PySide6.QtWidgets import QScrollArea, QWidget
 
 from mic_eq.config import AppConfig
 from mic_eq.ui.accessibility import audit_widget_tree, set_accessible
 from mic_eq.ui.calibration_dialog import CalibrationDialog
 from mic_eq.ui.first_run_setup_dialog import FirstRunSetupDialog
 from mic_eq.ui.latency_calibration_dialog import LatencyCalibrationDialog
-from mic_eq.ui.main_window import MainWindow, _fit_window_geometry_to_screens
+from mic_eq.ui.main_window import (
+    HEALTH_DECISION_KEYS,
+    HEALTH_LAYOUT_KEYS,
+    MainWindow,
+    _fit_window_geometry_to_screens,
+)
 from mic_eq.ui.level_meter import SCALE_TEXT_GAP, _scale_mark_geometry
 from mic_eq.ui.theme import (
     PALETTE,
@@ -41,24 +46,6 @@ def widget_view(monkeypatch):
     monkeypatch.setenv("AUDIOFORGE_QML", "0")
 
 
-@pytest.fixture
-def isolated_main_window(qapp, monkeypatch):
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
-    window = MainWindow()
-    yield window
-    try:
-        window.processor.stop()
-    except Exception:
-        pass
-    window.close()
-    window.deleteLater()
-    qapp.processEvents()
-
-
 @pytest.mark.parametrize("states, mute_error, expected", [
     (("idle", "idle"), False, "idle"),
     (("idle", "ok"), False, "ok"),
@@ -68,21 +55,18 @@ def isolated_main_window(qapp, monkeypatch):
 ])
 def test_compact_health_aggregation_and_stop(isolated_main_window, states, mute_error, expected):
     window = isolated_main_window
-    labels = tuple(QLabel(window) for _ in states)
-    for label, state in zip(labels, states):
-        label.setProperty("health_state", state)
-    window._health_decision_widgets = labels
-    window._health_layout_widgets = ()
+    keys = HEALTH_DECISION_KEYS + HEALTH_LAYOUT_KEYS
+    for key in keys:
+        window._set_health_chip(key, key, "idle")
+    for key, state in zip(keys, states):
+        window._set_health_chip(key, key, state)
     window._output_mute_error = mute_error
-    window._update_diagnostic_labels(
-        diagnostics={}, latency_ms=0, dsp_time_ms=0,
-        input_buf=0, output_buf=0, rnnoise_buf=0,
-    )
-    assert window.health_summary_label.property("health_state") == expected
+    window._update_health_summary()
+    assert window.shell_texts["health_summary_label"].state == expected
     window._stop_processing()
     window._update_meters()
-    assert window.health_summary_label.text() == "Health: --"
-    assert window.health_summary_label.property("health_state") == "idle"
+    assert window.shell_texts["health_summary_label"].text == "Health: --"
+    assert window.shell_texts["health_summary_label"].state == "idle"
 
 
 def test_all_semantic_text_pairs_meet_wcag_aa_contrast() -> None:
@@ -130,6 +114,39 @@ def test_saved_geometry_is_fitted_to_exactly_one_available_screen() -> None:
     assert screens[0].contains(offscreen)
 
 
+def test_maximized_window_saves_its_restored_geometry_and_reopens_maximized(
+    isolated_main_window,
+    qapp,
+    monkeypatch,
+) -> None:
+    window = isolated_main_window
+    window.show()
+    window.setGeometry(40, 50, 900, 640)
+    qapp.processEvents()
+    normal = window.geometry()
+    window.showMaximized()
+    qapp.processEvents()
+    assert window.isMaximized()
+    window._quitting = True  # a real quit, not close-to-tray
+    window.close()
+    assert window.config.window_geometry == {
+        "x": normal.x(),
+        "y": normal.y(),
+        "width": normal.width(),
+        "height": normal.height(),
+        "maximized": True,
+    }
+
+    saved = AppConfig.from_dict(window.config.to_dict())
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", lambda: saved)
+    reopened = MainWindow()
+    try:
+        assert reopened.isMaximized()
+    finally:
+        reopened.close()
+        reopened.deleteLater()
+
+
 def test_level_meter_scale_text_is_separated_from_its_tick() -> None:
     tick_end, text_rect = _scale_mark_geometry(20, 12.0, 28)
 
@@ -173,10 +190,15 @@ def test_accessible_name_rejects_empty_text(qapp) -> None:
 
 
 def test_main_window_and_workflow_dialogs_have_named_controls(
+    widget_view,
     isolated_main_window,
     qapp,
 ) -> None:
     window = isolated_main_window
+    # The Qt Quick view builds no widgets, so the audit needs the widget view
+    # to have something to walk.
+    audited = set(window.findChildren(QWidget))
+    assert {window.input_combo, window.start_btn, window.page_stack, window.status_bar} <= audited
     dialogs = (
         CalibrationDialog(window),
         VoiceSetupDialog(window),

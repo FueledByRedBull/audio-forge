@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import os
@@ -314,14 +315,14 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     assert triggers["push"] == {
         "branches": ["master"],
     }
-    python_job = workflow["jobs"]["python"]
-    assert python_job["permissions"] == {
+    static_job = workflow["jobs"]["static"]
+    assert static_job["permissions"] == {
         "contents": "read",
         "security-events": "write",
     }
     upload = next(
         step
-        for step in python_job["steps"]
+        for step in static_job["steps"]
         if step.get("name") == "Upload Semgrep results to GitHub Code Scanning"
     )
     assert upload["uses"].startswith("github/codeql-action/upload-sarif@")
@@ -335,7 +336,7 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     )
     artifact = next(
         step
-        for step in python_job["steps"]
+        for step in static_job["steps"]
         if step.get("name") == "Upload Semgrep SARIF"
     )
     assert artifact["uses"].startswith("actions/upload-artifact@")
@@ -353,10 +354,11 @@ def test_ci_uploads_semgrep_results_with_scoped_code_scanning_permission():
     [
         ("top", {"contents": "write"}),
         ("top", "write-all"),
-        ("python", {"contents": "read", "security-events": "write", "actions": "write"}),
-        ("python", "write-all"),
-        ("rust", {"contents": "write"}),
-        ("rust", "write-all"),
+        ("static", {"contents": "read", "security-events": "write", "actions": "write"}),
+        ("static", "write-all"),
+        ("pytest", {"security-events": "write"}),
+        ("python", {"contents": "write"}),
+        ("rust-stress", "write-all"),
     ],
 )
 def test_workflow_permission_checker_rejects_unapproved_writes(scope, permissions):
@@ -428,14 +430,93 @@ def test_release_metadata_checks_each_native_version_command_immediately():
     )
 
 
-def test_ci_workflow_hydrates_cpu_ort_before_both_build_jobs():
+def test_ci_workflow_hydrates_cpu_ort_in_every_native_job():
     source = (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
     errors: list[str] = []
 
     check_workflows._check_required_gates("ci.yml", source, errors)
 
     assert errors == []
-    assert source.count("fetch_release_assets.py --only-cpu-runtime --force") == 2
+    assert source.count("fetch_release_assets.py --only-cpu-runtime --force") == 3
+
+
+def _ci_errors(mutate):
+    workflow = check_workflows.yaml.safe_load(
+        (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    )
+    mutate(workflow["jobs"])
+    errors: list[str] = []
+    check_workflows._check_required_gates(
+        "ci.yml", check_workflows.yaml.safe_dump(workflow), errors
+    )
+    return "; ".join(errors)
+
+
+def _drop_step(job, name):
+    job["steps"] = [step for step in job["steps"] if step.get("name") != name]
+
+
+def _set_step_run(job, name, run):
+    next(step for step in job["steps"] if step.get("name") == name)["run"] = run
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda jobs: jobs.pop("python"), "required gate job python is missing"),
+        (lambda jobs: jobs["rust"].update(needs=["rust-tests"]), "rust must need exactly"),
+        (lambda jobs: jobs["python"].pop("if"), "python must use if: always()"),
+        (lambda jobs: jobs["python"].update(env={}), "does not check the result of static"),
+        (lambda jobs: jobs["static"].update({"continue-on-error": True}), "must not set continue-on-error"),
+        (lambda jobs: jobs.update(extra=copy.deepcopy(jobs["static"])), "extra is not part of a required gate"),
+        (
+            lambda jobs: _drop_step(jobs["pytest"], "Hydrate pinned CPU ONNX Runtime"),
+            "pytest must hydrate",
+        ),
+        (
+            lambda jobs: _set_step_run(
+                jobs["rust-tests"], "Rust tests", "cargo test -p mic_eq_core -- --skip other_test --exact"
+            ),
+            "may skip only seeded_control_and_dsp_loops_remain_finite_under_contention",
+        ),
+        (
+            lambda jobs: _set_step_run(
+                jobs["rust-tests"],
+                "Rust tests",
+                "cargo test -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention",
+            ),
+            "(with --exact)",
+        ),
+    ],
+)
+def test_ci_gate_jobs_and_job_split_are_enforced(mutate, message):
+    assert message in _ci_errors(mutate)
+
+
+def test_ci_pytest_shard_lists_reject_renamed_duplicate_and_unmatched_files(
+    tmp_path, monkeypatch
+):
+    workflow = check_workflows.yaml.safe_load(
+        (check_workflows.WORKFLOW_DIR / "ci.yml").read_text(encoding="utf-8")
+    )
+    real = json.loads(check_workflows.PYTEST_SHARDS_PATH.read_text(encoding="utf-8"))
+    last_listed = [path for files in real.values() for path in files][-1]
+    first = next(iter(real))
+    path = tmp_path / "pytest-shards.json"
+    monkeypatch.setattr(check_workflows, "PYTEST_SHARDS_PATH", path)
+
+    def errors_for(shards):
+        path.write_text(json.dumps(shards), encoding="utf-8")
+        errors: list[str] = []
+        check_workflows._check_pytest_shards(workflow, errors)
+        return "; ".join(errors)
+
+    assert errors_for(real) == ""
+    renamed = {**real, first: ["python/tests/test_renamed_away.py"]}
+    assert "does not exist" in errors_for(renamed)
+    assert "listed more than once" in errors_for({**real, first: [*real[first], last_listed]})
+    assert "matrix shard must be" in errors_for({**real, "extra": ["python/tests/test_spectrum.py"]})
+    assert "other than 'rest'" in errors_for({**real, "rest": ["python/tests/test_spectrum.py"]})
 
 
 def test_release_workflow_binds_existing_tag_to_checked_out_commit():

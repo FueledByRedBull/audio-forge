@@ -1,0 +1,16 @@
+{
+  "voice-setup": [
+    "python/tests/test_voice_setup.py"
+  ],
+  "slow": [
+    "python/tests/test_quick_shell.py",
+    "python/tests/test_voice_setup_integration.py",
+    "python/tests/test_ui_sample_rate_and_diagnostics.py",
+    "python/tests/test_auto_eq.py",
+    "python/tests/test_ui_accessibility_theme.py",
+    "python/tests/test_voice_setup_full_chain.py",
+    "python/tests/test_preset_save_identity.py",
+    "python/tests/test_joint_tuning.py",
+    "python/tests/test_source_distribution.py"
+  ]
+}

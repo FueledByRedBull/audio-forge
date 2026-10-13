@@ -927,6 +927,39 @@ def test_a_click_on_an_octave_bandwidth_band_keeps_its_bandwidth(
     assert (dragged.bandwidth_mode, dragged.bandwidth_octaves) == ("q", None)
 
 
+def test_escape_puts_an_octave_bandwidth_band_back_whole(
+    quick_window, mic_page, qapp
+) -> None:
+    item, _page = mic_page
+    view = quick_window.centralWidget()
+    state = quick_window.eq_state
+    band = 4
+    octave = replace(
+        state.get_band(band),
+        frequency_hz=1280.0,
+        gain_db=0.0,
+        q=q_from_bandwidth_octaves(1280.0, 1.0),
+        bandwidth_mode="octaves",
+        bandwidth_octaves=1.0,
+    )
+    state.set_band(band, octave, edited=False)
+    state.flush()
+    qapp.processEvents()
+    _rebaseline(quick_window)
+
+    start = _handle_point(quick_window, item, band)
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(view, start + QPoint(30, -20), delay=5)
+    assert state.get_band(band).bandwidth_mode == "q"
+    QTest.keyClick(view, Qt.Key.Key_Escape)
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=start + QPoint(30, -20))
+    qapp.processEvents()
+
+    assert state.get_band(band) == octave
+    assert not quick_window.quick_bridge.model["presets"]["status"].data["modified"]
+    assert not quick_window._undo_action.isEnabled()
+
+
 def test_a_drag_moves_the_band_by_the_pointers_travel(quick_window, mic_page) -> None:
     item, page = mic_page
     view = quick_window.centralWidget()

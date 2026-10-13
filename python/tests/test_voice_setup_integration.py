@@ -382,6 +382,39 @@ def test_repeated_bad_verification_takes_stop_and_restore(real_main_window, monk
         dialog.deleteLater()
 
 
+@pytest.mark.parametrize("sample", [np.nan, np.inf], ids=["nan", "infinite"])
+def test_an_unreadable_verification_take_restores_and_offers_another_try(
+    real_main_window, sample
+) -> None:
+    window = real_main_window
+    before = window._get_current_preset().to_dict()
+    dialog = VoiceSetupDialog(parent=window)
+    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
+    _bind_capture_context(dialog, noise, speech)
+    _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
+    assert window._get_current_preset().to_dict() != before
+    take = speech.copy()
+    take[100] = sample
+    dialog.setup_state = "verification_recording"
+    try:
+        dialog._on_recording_complete(take)
+
+        assert dialog.setup_state == "completed"
+        assert window._get_current_preset().to_dict() == before
+        assert dialog.warning_label.text() == (
+            "The recording could not be read. Record it again."
+        )
+        assert dialog.start_button.text() == "Apply & Verify Again"
+        assert dialog.start_button.isEnabled()
+        assert dialog.preview_verification_audio is None
+
+        dialog._on_start_clicked()
+        assert dialog.setup_state == "verification_ready"
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
 DULLING_SENTENCE = (
     "noise suppression is dulling consonants by about 8 dB; "
     "lower its strength or use DeepFilterNet LL"

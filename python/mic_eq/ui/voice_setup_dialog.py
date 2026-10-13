@@ -1096,24 +1096,23 @@ class VoiceSetupDialog(QDialog):
             else 48_000
         )
 
+        # The pre-filter cannot take non-finite samples, in any step.
+        if not np.isfinite(raw_audio).all():
+            self._reject_capture("The recording could not be read. Record it again.")
+            return
         # The analysis refuses a clipped capture; say so now, while the fix is obvious,
         # instead of failing after the voice step with the bad capture still in place.
-        # This comes before the pre-filter, which cannot take non-finite samples.
-        if self.setup_state != "verification_recording":
-            if not np.isfinite(raw_audio).all():
-                self._reject_capture("The recording could not be read. Record it again.")
-                return
-            if raw_capture_is_clipped(raw_audio):
-                remedy = (
-                    "keep loud sounds out of the room"
-                    if self.setup_state == "noise_recording"
-                    else "move back a little"
-                )
-                self._reject_capture(
-                    f"The recording clipped. Lower the microphone gain or {remedy}, "
-                    "then record again."
-                )
-                return
+        if self.setup_state != "verification_recording" and raw_capture_is_clipped(raw_audio):
+            remedy = (
+                "keep loud sounds out of the room"
+                if self.setup_state == "noise_recording"
+                else "move back a little"
+            )
+            self._reject_capture(
+                f"The recording clipped. Lower the microphone gain or {remedy}, "
+                "then record again."
+            )
+            return
 
         analysis_audio = _filtered_capture_for_analysis(raw_audio, sample_rate)
 

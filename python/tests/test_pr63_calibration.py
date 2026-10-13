@@ -678,7 +678,9 @@ def test_eq_candidate_rejects_changed_route_context(qapp, monkeypatch) -> None:
         owner.context_key = "route-b"
         dialog._apply_eq_settings()
         assert owner.eq_state.apply_calls == 0
-        assert "context changed" in messages[-1]
+        assert messages[-1] == (
+            "The audio route or input settings changed after capture; no changes were applied."
+        )
     finally:
         dialog.reject()
         owner.close()

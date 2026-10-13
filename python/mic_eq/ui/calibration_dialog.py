@@ -5,6 +5,7 @@ DEBUG: Added terminal logging for calibration workflow
 """
 
 import logging
+from collections import deque
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
@@ -32,9 +33,16 @@ from ..config import (
     TARGET_CURVES,
     build_eq_candidate_settings,
 )
+from ..analysis.noise_reference import capture_is_silent
+from ..analysis.voice_setup import raw_capture_is_clipped
 from .analysis_worker import AnalysisWorker
 from .accessibility import bind_label, set_accessible_group
-from .auto_eq_explanation import explain_auto_eq
+from .auto_eq_explanation import (
+    TARGET_MODE_LABELS,
+    explain_auto_eq,
+    headroom_advice,
+    target_profile_text,
+)
 from .components import StepHeader
 from .layout_constants import (
     MARGIN_PANEL,
@@ -89,10 +97,35 @@ logger = logging.getLogger(__name__)
 _TEMPORARY_MUTE_REASON = "auto_eq_calibration"
 
 RECORDING_DURATION = 10.0  # Seconds
+# A quiet verdict needs this many 100 ms level updates (1.5 s) without any block above the
+# threshold, so the pauses between words do not trigger it.
+LEVEL_HOLD_UPDATES = 15
 
 def _selected_device_pair(owner: Any) -> tuple[str | None, str | None]:
     selected_input, selected_output = _selected_device_identities(owner)
     return _device_name(selected_input), _device_name(selected_output)
+
+
+def _eq_chain_settings(owner: Any, incumbent: Preset) -> dict[str, Any]:
+    """The chain as the EQ will act in it.
+
+    Raw monitoring and bypass skip the EQ, so the normal path is the one to check.
+    """
+    chain = _chain_settings(
+        owner, full_chain=True, input_pre_filtered=False, preset=incumbent
+    )
+    chain["processing_mode"] = "normal"
+    return chain
+
+
+def _headroom_not_worsened(headroom: Mapping[str, Any]) -> bool:
+    """Whether the current EQ is over the headroom rule and the offered EQ leaves no more excess."""
+    return headroom.get("status") == "risk_not_worsened"
+
+
+def _headroom_declined(headroom: Mapping[str, Any]) -> bool:
+    """Whether the correction was left out because it would leave less room than the current EQ."""
+    return headroom.get("status") == "risk_worse"
 
 
 class CalibrationDialog(QDialog):
@@ -141,6 +174,7 @@ class CalibrationDialog(QDialog):
         self._analysis_incumbent_preset: Preset | None = None
         self._analysis_headroom_chain: dict[str, Any] | None = None
         self._capture_context_key: str | None = None
+        self._recent_rms_db: deque[float] = deque(maxlen=LEVEL_HOLD_UPDATES)
         self.analysis_worker: AnalysisWorker | None = None
         self._analysis_workers: list[AnalysisWorker] = []
         self._analysis_generation = 0
@@ -200,11 +234,13 @@ class CalibrationDialog(QDialog):
 
         target_mode_label = QLabel("Matching:")
         self.target_mode_combo = QComboBox()
-        self.target_mode_combo.addItem("Adapt to my voice", "adaptive")
-        self.target_mode_combo.addItem("Exact tone preset", "static")
+        for mode, label in TARGET_MODE_LABELS.items():
+            self.target_mode_combo.addItem(label, mode)
         self.target_mode_combo.setToolTip(
-            "Adapting shifts the tone preset slightly to suit your voice. "
-            "Exact uses the selected tone preset as it is."
+            "Subtle aims for small tone changes, never more than 2 dB from flat. "
+            "Full strength aims for the tone preset's whole curve, up to 5 dB. "
+            "Your recording decides whether a correction is applied and how far "
+            "headroom lets it go."
         )
         configure_responsive_combo(self.target_mode_combo)
         curve_input_layout.addRow(target_mode_label, self.target_mode_combo)
@@ -580,7 +616,7 @@ class CalibrationDialog(QDialog):
         if (
             not isinstance(headroom, Mapping)
             or headroom.get("authoritative") is not True
-            or headroom.get("safe") is not True
+            or (headroom.get("safe") is not True and not _headroom_not_worsened(headroom))
         ):
             return "Auto-EQ candidate lacks safe native full-chain validation"
         try:
@@ -626,17 +662,12 @@ class CalibrationDialog(QDialog):
         except RuntimeError:
             return "Auto-EQ capture sample rate is unavailable"
         if capture.get("context_key") != _owner_calibration_context_key(parent):
-            return "Audio route or input cleanup context changed after capture"
+            return "The audio route or input settings changed after capture"
         try:
             incumbent = parent._get_current_preset()
             if not isinstance(incumbent, Preset):
                 return "Current processing configuration is unavailable"
-            current_chain = _chain_settings(
-                parent,
-                full_chain=True,
-                input_pre_filtered=False,
-                preset=incumbent,
-            )
+            current_chain = _eq_chain_settings(parent, incumbent)
             if not proposal.matches(incumbent, current_chain):
                 return "Processing configuration changed after analysis"
         except Exception:
@@ -769,6 +800,7 @@ class CalibrationDialog(QDialog):
             self._on_recording_failed("Could not find audio processor")
             return
 
+        self._recent_rms_db.clear()
         self._capture_session = CaptureSession(parent, _TEMPORARY_MUTE_REASON)
         try:
             self._capture_session.start(RECORDING_DURATION, before_cleanup=True)
@@ -846,14 +878,17 @@ class CalibrationDialog(QDialog):
         """Update level meter with validation warnings."""
         self.level_meter.set_levels(rms_db, peak_db)
 
-        # Show validation warning
-        if rms_db < TOO_QUIET_DB:
+        # The latest block dips on every pause between words; judge the loudest of a full
+        # window of recent ones, and say nothing about the level until there is one.
+        self._recent_rms_db.append(rms_db)
+        window_full = len(self._recent_rms_db) == LEVEL_HOLD_UPDATES
+        if window_full and max(self._recent_rms_db) < TOO_QUIET_DB:
             self.warning_label.setText("Too quiet. Move closer to the mic.")
             self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
         elif peak_db > TOO_LOUD_DB:
             self.warning_label.setText("Too loud. Risk of clipping.")
             self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
-        else:
+        elif window_full:
             self.warning_label.setText("Level is good")
             self.warning_label.setStyleSheet(message_text_style("ok", strong=True))
 
@@ -867,19 +902,35 @@ class CalibrationDialog(QDialog):
             rms_db = 20 * np.log10(max(rms, 1e-6))
             logger.debug("Audio stats - Peak: %.1f dB, RMS: %.1f dB", peak_db, rms_db)
 
-        self.preview_audio_data = np.ascontiguousarray(
+        raw_audio = np.ascontiguousarray(
             np.asarray(audio_data, dtype=np.float32).reshape(-1).copy()
         )
+        # Say so now, while the fix is obvious, as Voice Setup does for the same takes.
+        if not np.isfinite(raw_audio).all():
+            self._reject_capture("The recording could not be read. Record it again.")
+            return
+        if raw_capture_is_clipped(raw_audio):
+            self._reject_capture(
+                "The recording clipped. Lower the microphone gain or move back a little, "
+                "then record again."
+            )
+            return
         try:
             sample_rate = _processor_sample_rate(_find_processor_owner(self.parent()))
         except Exception:
             sample_rate = 48_000
-        self.audio_data = _filtered_capture_for_analysis(
-            self.preview_audio_data,
-            sample_rate,
-        )
+        analysis_audio = _filtered_capture_for_analysis(raw_audio, sample_rate)
+        if capture_is_silent(analysis_audio):
+            self._reject_capture(
+                "No sound came from the microphone. Check that it is not muted and "
+                "that the right input is selected, then record again."
+            )
+            return
+        self.preview_audio_data = raw_audio
+        self.audio_data = analysis_audio
         self._clear_eq_candidate()
         self.recording_state = "analyzing"
+        self.progress_bar.setRange(0, 0)  # the analysis reports no steady progress
 
         # Update UI
         self.start_button.setText("Analyzing...")
@@ -905,6 +956,12 @@ class CalibrationDialog(QDialog):
         """Handle recording failure."""
         self._reset_recording_ui()
         self.warning_label.setText(f"Recording failed: {error}")
+        self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
+
+    def _reject_capture(self, message: str) -> None:
+        """Refuse a finished take and leave the dialog ready to record it again."""
+        self._reset_recording_ui()
+        self.warning_label.setText(message)
         self.warning_label.setStyleSheet(message_text_style("bad", strong=True))
 
     def _start_analysis(self):
@@ -967,12 +1024,7 @@ class CalibrationDialog(QDialog):
             if not isinstance(incumbent, Preset):
                 raise TypeError("current processing configuration is unavailable")
             incumbent = Preset.from_dict(incumbent.to_dict())
-            chain_settings = _chain_settings(
-                parent,
-                full_chain=True,
-                input_pre_filtered=False,
-                preset=incumbent,
-            )
+            chain_settings = _eq_chain_settings(parent, incumbent)
         except Exception as error:
             self._on_analysis_failed(
                 f"Full-chain headroom setup failed: {error}"
@@ -1051,7 +1103,6 @@ class CalibrationDialog(QDialog):
         if DEBUG:
             logger.debug("Analysis step %s%%: %s", percentage, step_name)
         self.warning_label.setText(f"Analyzing: {step_name}")
-        self.progress_bar.setValue(percentage)
 
     def _on_analysis_complete(
         self, eq_settings: dict, generation: int | None = None
@@ -1083,7 +1134,9 @@ class CalibrationDialog(QDialog):
         elif headroom.get("authoritative") is not True:
             detail = headroom.get("reason")
             headroom_error = str(detail or "native full-chain headroom validation is unavailable")
-        elif headroom.get("safe") is not True:
+        elif _headroom_declined(headroom):
+            pass  # the analysis left the correction out and says why; there is nothing to apply
+        elif headroom.get("safe") is not True and not _headroom_not_worsened(headroom):
             headroom_error = "the merged candidate did not pass full-chain headroom validation"
         elif not isinstance(validated_eq_payload, Mapping):
             headroom_error = "validated merged EQ candidate is unavailable"
@@ -1139,6 +1192,11 @@ class CalibrationDialog(QDialog):
             eq_settings["recommendation_status"] = "abstain"
             eq_settings["apply_recommended"] = False
             apply_recommended = False
+        elif isinstance(headroom, Mapping) and _headroom_declined(headroom):
+            # Left out on purpose: the current EQ stays whatever else the result says.
+            eq_settings["recommendation_status"] = "abstain"
+            eq_settings["apply_recommended"] = False
+            apply_recommended = False
         if apply_recommended:
             self._candidate_proposal = proposal
             self.eq_settings = eq_settings
@@ -1158,6 +1216,9 @@ class CalibrationDialog(QDialog):
         if apply_recommended:
             largest = max(abs(g) for g in eq_settings["band_gains"])
             text += f" Largest change {largest:.1f} dB."
+        advice = headroom_advice(headroom, self._analysis_headroom_chain, apply_recommended)
+        if advice:
+            text += f" {advice}"
         self.warning_label.setText(text)
         self.warning_label.setToolTip(
             "; ".join(
@@ -1169,6 +1230,7 @@ class CalibrationDialog(QDialog):
         self.warning_label.setStyleSheet(
             message_text_style("ok" if apply_recommended else "warn", strong=True)
         )
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
         self._show_analysis_diagnostics(eq_settings)
         self.start_button.setText(
@@ -1192,11 +1254,16 @@ class CalibrationDialog(QDialog):
         before = eq_settings.get("validation_before_error_db")
         after = eq_settings.get("validation_after_error_db")
         scale = eq_settings.get("validation_gain_scale")
-        target_profile = eq_settings.get("target_profile", "--")
+        target_profile = target_profile_text(eq_settings.get("target_profile"))
         residual = eq_settings.get("residual_regularization") or {}
         used_fallback = bool(eq_settings.get("used_spectrum_fallback", False))
         headroom = eq_settings.get("headroom_validation") or {}
-        headroom_after = headroom.get("after") if isinstance(headroom, dict) else None
+        # A correction left out is shown with the figures that ruled it out.
+        headroom_after = (
+            headroom.get("before" if _headroom_declined(headroom) else "after")
+            if isinstance(headroom, dict)
+            else None
+        )
         headroom_safe = (
             bool(headroom.get("safe", False)) if isinstance(headroom, dict) else False
         )
@@ -1255,6 +1322,10 @@ class CalibrationDialog(QDialog):
                 headroom_text = "not available"
             elif headroom_safe:
                 headroom_text = "passed"
+            elif _headroom_not_worsened(headroom):
+                headroom_text = "not met even without the EQ"
+            elif _headroom_declined(headroom):
+                headroom_text = "the correction would leave less room than your current EQ"
             else:
                 headroom_text = "the correction may push the limiter"
             headroom_details = (
@@ -1293,7 +1364,9 @@ class CalibrationDialog(QDialog):
             logger.debug("Analysis failed: %s", error)
         self._clear_eq_candidate()
         self.recording_state = "ready"
+        self.progress_bar.setRange(0, 100)
         self.warning_label.setText(error)
+        self.warning_label.setToolTip("")
         self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
         self.diagnostics_group.setVisible(False)
         self.start_button.setText("Record Again")
@@ -1349,10 +1422,12 @@ class CalibrationDialog(QDialog):
         self.audio_data = None
         self.preview_audio_data = None
         self._capture_context_key = None
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.time_label.setText(f"Time remaining: {RECORDING_DURATION:.0f}s")
         self.time_label.setStyleSheet(PROGRESS_LABEL_STYLE)
         self.level_meter.set_levels(-120.0, -120.0)
+        self.warning_label.setToolTip("")
         self.warning_label.setText("Ready to record")
         self.warning_label.setStyleSheet(message_text_style("idle"))
         self.diagnostics_group.setVisible(False)

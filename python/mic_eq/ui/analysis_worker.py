@@ -92,7 +92,7 @@ class AnalysisWorker(QThread):
             if self._should_stop():
                 return
 
-            self.step_progress.emit("Analyzing voice spectrum...", 10)
+            self.step_progress.emit("fitting the correction and checking headroom...", 0)
             eq_settings, validation = analyze_auto_eq(
                 self.audio_data,
                 self.sample_rate,
@@ -114,11 +114,7 @@ class AnalysisWorker(QThread):
                 self.failed.emit(validation.reason)
                 return
 
-            self.step_progress.emit("Validating correction...", 95)
-
-            # Complete
             elapsed = time.time() - self._start_time
-            self.step_progress.emit("Complete!", 100)
 
             # Log duration for debugging (optional)
             if elapsed > 0.5:

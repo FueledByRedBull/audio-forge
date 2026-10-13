@@ -15,6 +15,7 @@ from mic_eq.config import (
     ANALYSIS_MIN_SNR,
     ANALYSIS_MAX_SPECTRAL_FLATNESS
 )
+from .auto_eq_parts.headroom import headroom_shortfall_db
 from .spectrum import find_octave_spaced_peaks
 
 DEBUG = os.environ.get("AUDIOFORGE_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -109,6 +110,15 @@ def calculate_spectral_contrast(freqs, spectrum_db):
     return signal_level_db - lower_percentile_db
 
 
+def _headroom_refusal(headroom):
+    """Say what to change: no correction fits, so the microphone level is the cause."""
+    shortfall = headroom_shortfall_db(headroom) if isinstance(headroom, dict) else None
+    reason = "The microphone level is too high for a safe result. "
+    if shortfall is not None:
+        return reason + f"Lower the gain by about {shortfall} dB, then record again."
+    return reason + "Lower the gain, then record again."
+
+
 def validate_analysis(eq_settings, spectrum_db, freqs):
     """
     Multi-criteria validation of analysis results.
@@ -187,9 +197,13 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
     headroom = eq_settings.get("headroom_validation") or {}
     headroom_safe = True
     headroom_unavailable = False
+    headroom_explained = False
     if isinstance(headroom, dict):
         headroom_safe = bool(headroom.get("safe", False))
         headroom_unavailable = headroom.get("status") == "unavailable"
+        # The EQ-only dialog explains these itself: a correction kept because it is no
+        # worse than the current EQ, or one left out because it would leave less room.
+        headroom_explained = headroom.get("status") in ("risk_not_worsened", "risk_worse")
 
     # Evaluate all criteria. Use tiered gating to reduce false rejections.
     hard_fail_reasons = []
@@ -205,7 +219,7 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
         hard_fail_reasons.append(f"clipped_gains ({clipped_gains} >= 6)")
     if gain_rms > 10.0:
         hard_fail_reasons.append(f"gain_rms ({gain_rms:.1f} > 10.0 dB)")
-    if not headroom_safe and not headroom_unavailable:
+    if not headroom_safe and not headroom_unavailable and not headroom_explained:
         hard_fail_reasons.append("headroom risk after downstream simulation")
 
     if peak_count < ANALYSIS_MIN_PEAK_COUNT:
@@ -248,8 +262,7 @@ def validate_analysis(eq_settings, spectrum_db, freqs):
     # Build result
     if failures:
         reason = (
-            "The proposed processing exceeds safe headroom. "
-            "Try a lower input level or a gentler dynamics profile."
+            _headroom_refusal(headroom)
             if failures == ["headroom risk after downstream simulation"]
             else "Recording too unclear. Please try again."
         )

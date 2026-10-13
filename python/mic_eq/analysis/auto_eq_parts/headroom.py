@@ -244,6 +244,17 @@ def _native_simulate(
         )
 
 
+def _typed_eq_payload(eq_settings: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep the typed EQ fields; a payload from ``EQState.get_settings()`` also carries legacy arrays."""
+    if "bands" not in eq_settings:  # a legacy-only payload is read as such
+        return dict(eq_settings)
+    return {
+        key: eq_settings[key]
+        for key in ("schema_version", "enabled", "bands", "layers")
+        if key in eq_settings
+    }
+
+
 def simulate_candidate_chain(
     audio_data: np.ndarray,
     sample_rate: int,
@@ -256,8 +267,7 @@ def simulate_candidate_chain(
     if "bands" in eq_settings:
         from ...config import EQSettings
 
-        typed = EQSettings.from_dict({key: eq_settings[key] for key in
-                                     ("schema_version", "enabled", "bands", "layers") if key in eq_settings})
+        typed = EQSettings.from_dict(_typed_eq_payload(eq_settings))
         bands = [(band.frequency_hz, band.gain_db, band.q) for band in typed.bands]
         flat_settings.update(
             eq_enabled=typed.enabled,
@@ -284,22 +294,37 @@ def simulate_candidate_chain(
     raise RuntimeError(f"This configuration requires native DSP simulation: {reason}")
 
 
-def _is_headroom_safe(simulation: dict[str, Any]) -> bool:
+def _headroom_excess_db(simulation: Mapping[str, Any]) -> float:
+    """Return how far a render passes the headroom rule, whichever term fails most.
+
+    It fits at <= 0; a reading that is missing or not finite is infinite.
+    """
     metrics: list[float] = []
     for key in _NATIVE_SAFETY_METRICS:
         value = simulation.get(key)
         if isinstance(value, bool) or not isinstance(value, (int, float, np.number)):
-            return False
+            return float("inf")
         parsed = float(value)
         if not np.isfinite(parsed):
-            return False
+            return float("inf")
         metrics.append(parsed)
     pre_true_peak_headroom, limiter_gr, true_peak_gr = metrics
-    return (
-        pre_true_peak_headroom >= HEADROOM_TARGET_DB
-        and limiter_gr <= LIMITER_GAIN_REDUCTION_WARN_DB
-        and true_peak_gr <= TRUE_PEAK_GAIN_REDUCTION_WARN_DB
+    return max(
+        HEADROOM_TARGET_DB - pre_true_peak_headroom,
+        limiter_gr - LIMITER_GAIN_REDUCTION_WARN_DB,
+        true_peak_gr - TRUE_PEAK_GAIN_REDUCTION_WARN_DB,
     )
+
+
+def _is_headroom_safe(simulation: Mapping[str, Any]) -> bool:
+    return _headroom_excess_db(simulation) <= 0.0
+
+
+def headroom_shortfall_db(validation: Mapping[str, Any]) -> int | None:
+    """Whole decibels of level that let the full correction meet the rule, or None."""
+    before = validation.get("before")
+    excess = _headroom_excess_db(before) if isinstance(before, Mapping) else float("inf")
+    return int(np.ceil(excess)) if 0.0 < excess < float("inf") else None
 
 
 def _add_abstention(result: dict[str, Any], reason: str) -> None:
@@ -448,7 +473,7 @@ def apply_headroom_validation(
         from ...config import EQSettings
 
         try:
-            typed_base_eq = EQSettings.from_dict(dict(candidate_base_eq_settings))
+            typed_base_eq = EQSettings.from_dict(_typed_eq_payload(candidate_base_eq_settings))
         except (TypeError, ValueError) as exc:
             result["validated_candidate_eq"] = None
             result["headroom_validation"] = {
@@ -513,13 +538,11 @@ def apply_headroom_validation(
             candidate_eq,
         )
 
-    check_analysis_cancelled(cancel_check)
-    try:
-        before, before_candidate = simulate_scale(1.0)
-    except Exception as exc:
-        if typed_base_eq is None:
-            raise
-        reason = f"native full-chain headroom validation failed: {type(exc).__name__}: {exc}"[:256]
+    def unavailable(exc: Exception) -> dict[str, Any]:
+        reason = (
+            "native full-chain headroom validation failed: "
+            f"{type(exc).__name__}: {exc}"
+        )[:256]
         result["validated_candidate_eq"] = None
         result["headroom_validation"] = {
             "safe": False,
@@ -532,10 +555,19 @@ def apply_headroom_validation(
         result["headroom_advisory"] = False
         _add_abstention(result, reason)
         return result
+
+    check_analysis_cancelled(cancel_check)
+    try:
+        before, before_candidate = simulate_scale(1.0)
+    except Exception as exc:
+        if typed_base_eq is None:
+            raise
+        return unavailable(exc)
     selected = before
     selected_candidate = before_candidate
     selected_scale = 1.0
     selected_gains = original_gains.copy()
+    rendered = [(1.0, before, before_candidate)]
     if not _is_headroom_safe(before):
         for scale in HEADROOM_SCALES[1:]:
             check_analysis_cancelled(cancel_check)
@@ -544,28 +576,55 @@ def apply_headroom_validation(
             except Exception as exc:
                 if typed_base_eq is None:
                     raise
-                reason = (
-                    "native full-chain headroom validation failed: "
-                    f"{type(exc).__name__}: {exc}"
-                )[:256]
-                result["validated_candidate_eq"] = None
-                result["headroom_validation"] = {
-                    "safe": False,
-                    "authoritative": False,
-                    "advisory": False,
-                    "status": "unavailable",
-                    "reason": reason,
-                }
-                result["headroom_safe"] = False
-                result["headroom_advisory"] = False
-                _add_abstention(result, reason)
-                return result
+                return unavailable(exc)
+            rendered.append((scale, simulation, candidate_eq))
             selected = simulation
             selected_candidate = candidate_eq
             selected_scale = scale
             selected_gains = original_gains * scale
             if _is_headroom_safe(simulation):
                 break
+
+    # No scale meets the rule, so ``selected`` is the render with no correction. A full-chain
+    # candidate then gets in only if the user's current EQ, rendered as it is, is over the
+    # rule too and the candidate leaves no more excess than that EQ does: the largest such
+    # scale, or nothing, and the current EQ stays. (No correction at all is not the user's
+    # current EQ: it drops the correction layer that EQ carries, and may be hotter.)
+    reference_excess = None
+    over_rule: dict[str, float] = {}
+    accepted_over_rule = False
+    declined = False
+    excess = _headroom_excess_db(selected)
+    if excess > 0.0 and np.isfinite(excess):
+        reference_excess = excess
+        if typed_base_eq is not None and all(
+            sim.get("simulation_backend") == "rust" for _, sim, _ in rendered
+        ):
+            check_analysis_cancelled(cancel_check)
+            try:
+                incumbent = simulate_candidate_chain(
+                    audio, sample_rate, typed_base_eq.to_dict(), chain_settings
+                )
+            except Exception as exc:
+                return unavailable(exc)
+            incumbent_excess = _headroom_excess_db(incumbent)
+            if np.isfinite(incumbent_excess) and incumbent.get("simulation_backend") == "rust":
+                reference_excess = incumbent_excess
+                declined = True
+                over_rule = {"flat_excess_db": excess, "incumbent_excess_db": incumbent_excess}
+                peak = incumbent.get("output_true_peak_db")
+                if isinstance(peak, (int, float, np.number)) and np.isfinite(peak):
+                    over_rule["incumbent_output_true_peak_db"] = float(peak)
+                # Every rendered scale is over the rule, so none is at or below an
+                # incumbent that meets it.
+                for scale, simulation, candidate_eq in rendered:
+                    if _headroom_excess_db(simulation) <= incumbent_excess:
+                        selected = simulation
+                        selected_candidate = candidate_eq
+                        selected_scale = scale
+                        selected_gains = original_gains * scale
+                        accepted_over_rule, declined = True, False
+                        break
 
     result["band_gains"] = selected_gains.tolist()
     existing_scale = _as_float(result.get("validation_gain_scale"), 1.0)
@@ -583,7 +642,7 @@ def apply_headroom_validation(
     meets_thresholds = _is_headroom_safe(selected)
     authoritative = selected.get("simulation_backend") == "rust"
     safe = bool(meets_thresholds and authoritative)
-    if not safe:
+    if not safe and not accepted_over_rule:
         result["validation_confidence"] = float(
             min(_as_float(result.get("validation_confidence"), 1.0), 0.42)
         )
@@ -603,8 +662,21 @@ def apply_headroom_validation(
         "gain_scale": selected_scale,
         "before": before,
         "after": selected,
-        "status": "safe" if safe else "risk" if authoritative else "advisory",
+        "status": (
+            "safe"
+            if safe
+            else "risk_not_worsened"
+            if accepted_over_rule
+            else "risk_worse"
+            if declined
+            else "risk"
+            if authoritative
+            else "advisory"
+        ),
     }
+    if reference_excess is not None:
+        result["headroom_validation"]["reference_excess_db"] = reference_excess
+        result["headroom_validation"].update(over_rule)
     native_failure = selected.get("native_simulation_failure")
     if native_failure is not None:
         result["headroom_validation"]["native_simulation_failure"] = native_failure
@@ -612,7 +684,7 @@ def apply_headroom_validation(
     result["headroom_advisory"] = not authoritative
     result["headroom_gain_scale"] = selected_scale
     if typed_base_eq is not None:
-        if safe and selected_candidate is not None:
+        if (safe or accepted_over_rule) and selected_candidate is not None:
             result["validated_candidate_eq"] = selected_candidate.to_dict()
         else:
             result["validated_candidate_eq"] = None

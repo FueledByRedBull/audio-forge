@@ -17,7 +17,7 @@ from ..config import (
     EQ_SCHEMA_VERSION,
 )
 from ..config_parts.settings import _default_filter_type
-from .auto_eq_explanation import explain_auto_eq
+from .auto_eq_explanation import explain_auto_eq, target_profile_text
 from .rate_limiter import RateLimiter
 
 
@@ -156,7 +156,7 @@ def _format_auto_eq_diagnostics(diagnostics: dict | None) -> tuple[str, str, str
         f"Weighted target error before: {_db_value(before)}\n"
         f"Weighted target error after: {_db_value(after)}\n"
         f"Validation gain scale: {_percent(scale)}\n"
-        f"Target profile: {diagnostics.get('target_profile', '--')}\n"
+        f"Target profile: {target_profile_text(diagnostics.get('target_profile'))}\n"
         f"Fallback analysis: {'yes' if used_fallback else 'no'}"
         f"{tooltip_extra}"
     )

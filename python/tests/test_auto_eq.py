@@ -17,8 +17,10 @@ from mic_eq.analysis.auto_eq_parts.dynamic_bands import (
 )
 from mic_eq.analysis.auto_eq_parts.optimizer import _log_frequency_gain_curvature
 from mic_eq.analysis.auto_eq_parts.response import _predict_eq_response
+from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.analysis.failure_detection import validate_analysis
 from mic_eq.analysis.spectrum import analyze_voice_spectrum, smooth_spectrum_perceptual
+from mic_eq.ui.auto_eq_explanation import headroom_advice
 
 calculate_eq_bands = auto_eq.calculate_eq_bands
 analyze_auto_eq = auto_eq.analyze_auto_eq
@@ -1387,7 +1389,89 @@ def test_27_validation_rejects_remaining_headroom_risk():
     validation = validate_analysis(eq_settings, spectrum_db, freqs)
 
     assert not validation.passed
-    assert "headroom" in validation.reason.lower()
+    assert validation.reason == (
+        "The microphone level is too high for a safe result. "
+        "Lower the gain, then record again."
+    )
+    assert validation.details["headroom_safe"] is False
+
+
+def _harmonic_spectrum():
+    sample_rate = 48_000
+    time = np.arange(sample_rate * 3) / sample_rate
+    freqs = np.fft.rfftfreq(time.size, 1.0 / sample_rate)
+    audio = sum(
+        0.1 / harmonic * np.sin(2 * np.pi * 150 * harmonic * time)
+        for harmonic in range(1, 26)
+    )
+    spectrum_db = 10.0 * np.log10(
+        np.maximum(np.square(np.abs(np.fft.rfft(audio))), 1.0e-12)
+    )
+    return spectrum_db, freqs
+
+
+def _render(headroom, limiter=0.0, true_peak=0.0):
+    return {
+        "pre_limiter_true_peak_headroom_db": headroom,
+        "limiter_gain_reduction_db": limiter,
+        "true_peak_limiter_gain_reduction_db": true_peak,
+    }
+
+
+@pytest.mark.parametrize(
+    ("full_correction", "advice"),
+    [
+        # What lets the full correction through: the excess at scale 1.0, rounded up.
+        (_render(0.96), "Lower the gain by about 1 dB, then record again."),
+        (_render(-1.3), "Lower the gain by about 3 dB, then record again."),
+        (_render(-2.0), "Lower the gain by about 3 dB, then record again."),
+        (_render(0.5, limiter=3.4), "Lower the gain by about 3 dB, then record again."),
+    ],
+)
+def test_headroom_refusal_names_the_level_and_the_number(full_correction, advice):
+    spectrum_db, freqs = _harmonic_spectrum()
+
+    validation = validate_analysis(
+        {
+            "band_gains": [0.0] * 10,
+            "headroom_validation": {
+                "safe": False,
+                "authoritative": True,
+                "status": "risk",
+                "before": full_correction,
+                "reference_excess_db": 0.2,  # the reference alone would have said 1 dB
+            },
+        },
+        spectrum_db,
+        freqs,
+    )
+
+    assert not validation.passed
+    assert validation.reason == (
+        "The microphone level is too high for a safe result. " + advice
+    )
+
+
+@pytest.mark.parametrize("status", ["risk_not_worsened", "risk_worse"])
+def test_headroom_that_the_dialog_explains_is_not_a_refusal(status):
+    spectrum_db, freqs = _harmonic_spectrum()
+
+    validation = validate_analysis(
+        {
+            "band_gains": [0.0] * 10,
+            "headroom_validation": {
+                "safe": False,
+                "authoritative": True,
+                "status": status,
+                "before": _render(-0.2),
+                "reference_excess_db": 1.2,
+            },
+        },
+        spectrum_db,
+        freqs,
+    )
+
+    assert all("headroom" not in reason for reason in validation.details["failures"])
     assert validation.details["headroom_safe"] is False
 
 
@@ -1584,3 +1668,570 @@ def test_normalization_is_level_and_input_grid_stable():
 def test_auto_eq_pipeline_rejects_non_live_sample_rate():
     with pytest.raises(ValueError, match="48000"):
         analyze_auto_eq(np.zeros(480, dtype=np.float32), 44_100, "flat")
+
+
+_FULL_CHAIN = {"full_chain": True, "input_pre_filtered": False}
+_OLD_HEADROOM_KEYS = {
+    "safe", "authoritative", "advisory", "meets_advisory_thresholds",
+    "gain_scale", "before", "after", "status",
+}
+BOOST_HEAVY = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 9.0, 0.0, 0.0, 0.0]
+CUT_HEAVY = [-6.0, -5.0, -4.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+
+def _fake_chain(
+    monkeypatch, *, headroom, limiter=0.0, true_peak=0.0, free_db=0.0, backend: str | None = "rust"
+):
+    """Fake the native render: the peak follows the correction's largest boost or deepest cut.
+
+    ``free_db`` is how much boost leaves the peak alone (the peak sits elsewhere in the
+    spectrum). The limiter works, by ``limiter`` dB at the reference, only when that is given.
+    """
+    calls = []
+
+    def simulate(_audio, _rate, eq, _chain=None):
+        gains = [b["gain_db"] for b in (eq.get("layers") or {}).get("correction") or ()]
+        boost, cut = max(gains, default=0.0), min(gains, default=0.0)
+        change = 0.6 * max(0.0, boost - free_db) if boost > 0.0 else 0.6 * cut
+        render = {
+            "pre_limiter_true_peak_headroom_db": headroom - change,
+            "limiter_gain_reduction_db": max(0.0, limiter + change) if limiter else 0.0,
+            "true_peak_limiter_gain_reduction_db": true_peak,
+            "output_true_peak_db": change - headroom,
+        }
+        if backend:
+            render["simulation_backend"] = backend
+        calls.append(render)
+        return render
+
+    monkeypatch.setattr(headroom_module, "simulate_candidate_chain", simulate)
+    return calls
+
+
+def _excess(render):
+    # The released rule, spelled out: 1 dB of headroom, 1 dB of limiter, 0.5 dB of true-peak limiter.
+    return max(
+        1.0 - render["pre_limiter_true_peak_headroom_db"],
+        render["limiter_gain_reduction_db"] - 1.0,
+        render["true_peak_limiter_gain_reduction_db"] - 0.5,
+    )
+
+
+def _candidate_fit(gains):
+    return {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": list(gains),
+        "band_qs": [1.41] * 10,
+        "band_confidences": [0.9] * 10,
+        "validation_gain_scale": 1.0,
+        "validation_confidence": 0.9,
+        "analysis_confidence": 0.9,
+        "recommendation_status": "apply",
+        "apply_recommended": True,
+    }
+
+
+def _validate_typed(gains):
+    return apply_headroom_validation(
+        np.zeros(480, dtype=np.float32),
+        48_000,
+        _candidate_fit(gains),
+        _FULL_CHAIN,
+        candidate_base_eq_settings=config.EQSettings().to_dict(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("gains", "scale", "renders"), [(BOOST_HEAVY, 0.55, 4), (CUT_HEAVY, 1.0, 1)]
+)
+def test_headroom_with_a_safe_reference_keeps_the_released_decision(
+    monkeypatch, gains, scale, renders
+):
+    calls = _fake_chain(monkeypatch, headroom=4.0)
+
+    result = _validate_typed(gains)
+    assert len(calls) == renders  # the current EQ is rendered only when no scale meets the rule
+
+    validation = result["headroom_validation"]
+    assert validation["status"] == "safe"
+    assert validation["safe"] is True
+    assert set(validation) == _OLD_HEADROOM_KEYS
+    assert validation["gain_scale"] == scale
+    assert result["headroom_safe"] is True
+    assert result["validated_candidate_eq"] is not None
+
+
+def test_headroom_over_the_rule_keeps_a_candidate_that_adds_no_excess(monkeypatch):
+    calls = _fake_chain(monkeypatch, headroom=0.4, free_db=3.0)
+
+    result = _validate_typed(BOOST_HEAVY)
+
+    validation = result["headroom_validation"]
+    assert len(calls) == 8  # every scale once, then the current EQ as it is
+    reference = calls[6]
+    assert validation["reference_excess_db"] == pytest.approx(0.6)
+    assert validation["flat_excess_db"] == pytest.approx(0.6)
+    assert validation["incumbent_excess_db"] == pytest.approx(0.6)
+    assert validation["status"] == "risk_not_worsened"
+    assert validation["safe"] is False
+    assert validation["meets_advisory_thresholds"] is False
+    assert validation["authoritative"] is True
+    assert validation["advisory"] is False
+    assert result["headroom_safe"] is False
+    # The 9 dB boost still lifts the peak at 0.40; at 0.25 it sits under the free 3 dB.
+    assert validation["gain_scale"] == 0.25
+    assert result["band_gains"][6] == pytest.approx(2.25)
+    after = validation["after"]
+    assert after is calls[5]
+    assert _excess(after) <= _excess(reference)
+    assert after["pre_limiter_true_peak_headroom_db"] >= reference["pre_limiter_true_peak_headroom_db"]
+    assert after["limiter_gain_reduction_db"] <= reference["limiter_gain_reduction_db"]
+    assert result["validated_candidate_eq"] is not None
+    assert result["apply_recommended"] is True
+    # Kept below full strength: the usual cap for a reduced correction, not the unsafe one.
+    assert result["validation_confidence"] == pytest.approx(0.72)
+    assert result["analysis_confidence"] == pytest.approx(0.9)
+
+
+def test_headroom_over_the_rule_accepts_a_cut_only_candidate_whole(monkeypatch):
+    calls = _fake_chain(monkeypatch, headroom=-0.5)
+    gains = [-1.0, -0.8, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+    result = _validate_typed(gains)
+
+    validation = result["headroom_validation"]
+    assert validation["gain_scale"] == 1.0
+    assert validation["status"] == "risk_not_worsened"
+    assert validation["safe"] is False
+    assert _excess(validation["after"]) < _excess(calls[6])
+    assert result["band_gains"] == gains
+    assert result["validated_candidate_eq"] is not None
+    assert result["recommendation_status"] == "apply"
+    assert (result["validation_confidence"], result["analysis_confidence"]) == (0.9, 0.9)
+
+
+@pytest.mark.parametrize(
+    ("gains", "scale"),
+    [(BOOST_HEAVY, 0.25), ([0.0, -1.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 1.0)],
+)
+def test_headroom_with_the_limiter_working_two_decibels_at_the_reference(
+    monkeypatch, gains, scale
+):
+    calls = _fake_chain(monkeypatch, headroom=-2.0, limiter=2.0, true_peak=0.2, free_db=3.0)
+
+    result = _validate_typed(gains)
+
+    validation = result["headroom_validation"]
+    reference = calls[6]
+    assert validation["reference_excess_db"] == pytest.approx(3.0)
+    assert validation["gain_scale"] == scale
+    assert validation["status"] == "risk_not_worsened"
+    after = validation["after"]
+    assert _excess(after) <= _excess(reference)
+    assert after["limiter_gain_reduction_db"] <= reference["limiter_gain_reduction_db"]
+    assert after["pre_limiter_true_peak_headroom_db"] >= reference["pre_limiter_true_peak_headroom_db"]
+
+
+def test_headroom_over_the_rule_falls_back_to_no_correction_when_every_scale_adds_excess(
+    monkeypatch,
+):
+    _fake_chain(monkeypatch, headroom=0.4)
+
+    result = _validate_typed(BOOST_HEAVY)
+
+    assert result["headroom_validation"]["gain_scale"] == 0.0
+    assert result["headroom_validation"]["status"] == "risk_not_worsened"
+    assert result["band_gains"] == [0.0] * 10
+    assert result["recommendation_status"] == "abstain"
+    assert result["apply_recommended"] is False
+    assert result["validated_candidate_eq"] is not None
+
+
+def _base_with_correction(gains):
+    return config.build_eq_candidate_settings(
+        config.EQSettings(), EQ_FREQUENCIES, gains, [1.41] * 10, layer="correction", enabled=True
+    ).to_dict()
+
+
+def test_headroom_accepts_what_leaves_no_more_excess_than_a_current_eq_that_is_over_the_rule(monkeypatch):
+    calls = _fake_chain(monkeypatch, headroom=0.4)
+    base = _base_with_correction(BOOST_HEAVY)  # the user's EQ today lifts the peak 5.4 dB
+    gains = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0]  # this one lifts it 2.4 dB
+
+    result = apply_headroom_validation(
+        np.zeros(480, dtype=np.float32), 48_000, _candidate_fit(gains), _FULL_CHAIN,
+        candidate_base_eq_settings=base,
+    )
+
+    validation = result["headroom_validation"]
+    assert len(calls) == 8
+    assert validation["flat_excess_db"] == pytest.approx(0.6)
+    assert validation["incumbent_excess_db"] == pytest.approx(6.0)
+    assert validation["reference_excess_db"] == pytest.approx(6.0)
+    assert validation["incumbent_output_true_peak_db"] == pytest.approx(5.0)
+    assert validation["status"] == "risk_not_worsened"
+    # Worse than no correction (3.0 against 0.6), better than what the user runs (6.0).
+    assert validation["reference_excess_db"] == pytest.approx(6.0)
+    assert validation["gain_scale"] == 1.0
+    assert _excess(validation["after"]) == pytest.approx(3.0)
+    assert headroom_module.headroom_shortfall_db(validation) == 3
+    assert result["validated_candidate_eq"] is not None
+
+
+@pytest.mark.parametrize(
+    ("headroom", "free_db", "incumbent_excess", "flat_excess"),
+    [
+        # The current EQ meets the rule and no correction does not: nothing may get in.
+        (0.4, 3.0, -0.5, 0.6),
+        # The current EQ is over the rule, by less than no correction is.
+        (-3.0, 0.0, 0.4, 4.0),
+    ],
+)
+def test_headroom_leaves_a_current_eq_that_no_scale_matches_alone(
+    monkeypatch, headroom, free_db, incumbent_excess, flat_excess
+):
+    calls = _fake_chain(monkeypatch, headroom=headroom, free_db=free_db)
+    base = _base_with_correction(CUT_HEAVY)  # the user's EQ today drops the peak 3.6 dB
+
+    result = apply_headroom_validation(
+        np.zeros(480, dtype=np.float32), 48_000, _candidate_fit(BOOST_HEAVY), _FULL_CHAIN,
+        candidate_base_eq_settings=base,
+    )
+
+    validation = result["headroom_validation"]
+    assert len(calls) == 8
+    assert validation["incumbent_excess_db"] == pytest.approx(incumbent_excess)
+    assert validation["flat_excess_db"] == pytest.approx(flat_excess)
+    assert validation["reference_excess_db"] == pytest.approx(incumbent_excess)
+    assert validation["status"] == "risk_worse"
+    assert validation["safe"] is False and validation["authoritative"] is True
+    assert result["validated_candidate_eq"] is None
+    assert result["apply_recommended"] is False
+    assert result["band_gains"] == [0.0] * 10
+    assert (result["validation_confidence"], result["analysis_confidence"]) == (0.42, 0.58)
+
+
+def test_headroom_checks_for_cancellation_before_rendering_the_current_eq(monkeypatch):
+    calls = _fake_chain(monkeypatch, headroom=0.4)
+    asked = []
+
+    def cancel():
+        asked.append(1)
+        return len(asked) == 8  # the question that comes after the seven scales
+
+    with pytest.raises(AnalysisCancelled):
+        apply_headroom_validation(
+            np.zeros(480, dtype=np.float32), 48_000, _candidate_fit(BOOST_HEAVY), _FULL_CHAIN,
+            candidate_base_eq_settings=config.EQSettings().to_dict(), cancel_check=cancel,
+        )
+
+    assert len(calls) == 7
+
+
+def test_a_current_eq_render_with_unreadable_metrics_offers_nothing(monkeypatch):
+    calls = _fake_chain(monkeypatch, headroom=0.4)
+    render = headroom_module.simulate_candidate_chain
+
+    def simulate(audio, rate, eq, chain=None):
+        result = render(audio, rate, eq, chain)
+        if len(calls) == 8:  # the current EQ is the eighth render
+            result["pre_limiter_true_peak_headroom_db"] = float("nan")
+        return result
+
+    monkeypatch.setattr(headroom_module, "simulate_candidate_chain", simulate)
+
+    result = _validate_typed(BOOST_HEAVY)
+
+    assert result["headroom_validation"]["status"] == "risk"
+    assert result["validated_candidate_eq"] is None
+    assert result["apply_recommended"] is False
+
+
+def test_a_failed_render_of_the_current_eq_is_unavailable_not_an_error(monkeypatch):
+    calls = _fake_chain(monkeypatch, headroom=0.4)
+    render = headroom_module.simulate_candidate_chain
+
+    def simulate(audio, rate, eq, chain=None):
+        if len(calls) == 7:  # the current EQ is the eighth render
+            raise RuntimeError("native simulator failed: test")
+        return render(audio, rate, eq, chain)
+
+    monkeypatch.setattr(headroom_module, "simulate_candidate_chain", simulate)
+
+    result = _validate_typed(BOOST_HEAVY)
+
+    validation = result["headroom_validation"]
+    assert validation["status"] == "unavailable"
+    assert "native simulator failed: test" in validation["reason"]
+    assert result["validated_candidate_eq"] is None
+    assert result["apply_recommended"] is False
+
+
+def test_headroom_takes_the_typed_fields_of_a_payload_shaped_like_the_eq_state():
+    # EQState.get_settings(): the typed payload plus the legacy arrays.
+    state_payload = config.EQSettings().to_dict() | {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.0] * 10,
+        "band_qs": [1.41] * 10,
+    }
+
+    typed = headroom_module._typed_eq_payload(state_payload)
+
+    assert set(typed) == {"schema_version", "enabled", "bands", "layers"} & set(state_payload)
+    assert config.EQSettings.from_dict(typed).to_dict() == config.EQSettings().to_dict()
+
+
+def test_headroom_accepts_the_eq_state_payload_as_the_incumbent(monkeypatch):
+    _fake_chain(monkeypatch, headroom=4.0)
+    state_payload = config.EQSettings().to_dict() | {
+        "band_freqs": list(EQ_FREQUENCIES),
+        "band_gains": [0.0] * 10,
+        "band_qs": [1.41] * 10,
+    }
+
+    result = apply_headroom_validation(
+        np.zeros(480, dtype=np.float32), 48_000, _candidate_fit(CUT_HEAVY), _FULL_CHAIN,
+        candidate_base_eq_settings=state_payload,
+    )
+
+    assert result["headroom_validation"]["status"] == "safe"
+    assert result["validated_candidate_eq"] is not None
+
+
+def test_headroom_still_takes_a_legacy_only_incumbent(monkeypatch):
+    _fake_chain(monkeypatch, headroom=4.0)
+
+    result = apply_headroom_validation(
+        np.zeros(480, dtype=np.float32), 48_000, _candidate_fit(CUT_HEAVY), _FULL_CHAIN,
+        candidate_base_eq_settings={
+            "band_freqs": list(EQ_FREQUENCIES), "band_gains": [0.0] * 10, "band_qs": [1.41] * 10,
+        },
+    )
+
+    assert result["headroom_validation"]["status"] == "safe"
+    assert result["validated_candidate_eq"] is not None
+
+
+def test_headroom_advisory_render_is_not_accepted_over_the_rule(monkeypatch):
+    _fake_chain(monkeypatch, headroom=0.4, free_db=3.0, backend=None)
+
+    result = _validate_typed(BOOST_HEAVY)
+
+    validation = result["headroom_validation"]
+    assert validation["status"] == "advisory"
+    assert validation["authoritative"] is False
+    assert validation["advisory"] is True
+    assert validation["safe"] is False
+    assert result["headroom_safe"] is False
+    assert result["validated_candidate_eq"] is None
+    assert "no safe candidate remained after full-chain headroom validation" in (
+        result["abstention_reasons"]
+    )
+
+
+def test_headroom_without_a_candidate_base_still_refuses_and_records_the_excess(monkeypatch):
+    _fake_chain(monkeypatch, headroom=0.4, free_db=3.0)
+
+    result = apply_headroom_validation(
+        np.zeros(480, dtype=np.float32),
+        48_000,
+        _candidate_fit(BOOST_HEAVY),
+        {"compressor": {"enabled": False}, "limiter": {"enabled": True}},
+    )
+
+    validation = result["headroom_validation"]
+    assert validation["status"] == "risk"
+    assert validation["safe"] is False
+    assert validation["gain_scale"] == 0.0
+    assert validation["reference_excess_db"] == pytest.approx(0.6)
+    assert "validated_candidate_eq" not in result
+
+
+def _speech_like(seconds=10):
+    rng = np.random.default_rng(4201)
+    t = np.arange(48_000 * seconds, dtype=float) / 48_000
+    phase = np.cumsum(2.0 * np.pi * (135.0 + 14.0 * np.sin(2.0 * np.pi * 0.55 * t)) / 48_000)
+    voice = sum(np.sin(h * phase) / h for h in range(1, 20))
+    syllables = 0.55 + 0.30 * np.maximum(0.0, np.sin(2.0 * np.pi * 2.1 * t))
+    return (0.045 * voice * syllables + rng.normal(0.0, 0.001, t.size)).astype(np.float32)
+
+
+def test_full_voice_setup_call_is_still_refused_with_the_level_to_lower(monkeypatch):
+    _fake_chain(monkeypatch, headroom=0.4)
+
+    with pytest.raises(ValueError) as refused:
+        analyze_auto_eq(
+            _speech_like(),
+            48_000,
+            "broadcast",
+            chain_settings={
+                "deesser": {"enabled": True},
+                "compressor": {"enabled": False},
+                "limiter": {"enabled": True},
+            },
+        )
+
+    assert str(refused.value) == (
+        "The microphone level is too high for a safe result. "
+        "Lower the gain by about 1 dB, then record again."
+    )
+
+
+def test_eq_only_call_keeps_a_proposal_when_the_current_settings_are_over_the_rule(monkeypatch):
+    _fake_chain(monkeypatch, headroom=-1.4, limiter=1.9)
+    audio = _speech_like()
+
+    eq, validation = analyze_auto_eq(
+        audio,
+        48_000,
+        "broadcast",
+        chain_settings=_FULL_CHAIN,
+        headroom_candidate_base_eq_settings=config.EQSettings().to_dict(),
+        headroom_audio_data=audio,
+        headroom_chain_settings=_FULL_CHAIN,
+    )
+
+    assert validation.passed
+    assert validation.details["headroom_safe"] is False
+    assert eq["headroom_validation"]["status"] == "risk_not_worsened"
+    assert eq["headroom_validation"]["reference_excess_db"] == pytest.approx(2.4)
+    assert eq["validated_candidate_eq"] is not None
+
+
+def test_eq_only_call_returns_a_correction_left_out_instead_of_refusing(monkeypatch):
+    _fake_chain(monkeypatch, headroom=0.4, free_db=3.0)  # no correction is under the rule
+    audio = _speech_like()
+
+    eq, validation = analyze_auto_eq(
+        audio, 48_000, "broadcast",
+        chain_settings=_FULL_CHAIN,
+        headroom_candidate_base_eq_settings=_base_with_correction(CUT_HEAVY),  # the current EQ is
+        headroom_audio_data=audio,
+        headroom_chain_settings=_FULL_CHAIN,
+    )
+
+    assert validation.passed
+    assert eq["headroom_validation"]["status"] == "risk_worse"
+    assert eq["apply_recommended"] is False
+    assert eq["validated_candidate_eq"] is None
+
+
+# Real renders: the native simulator on a synthetic signal, no audio device. Its peak is set by
+# a 320 Hz tone, so a cut there lowers it, and a fade-in keeps the start-up transient out of it.
+needs_native = pytest.mark.skipif(not mic_eq.CORE_AVAILABLE, reason="native extension is not built")
+
+
+def _tones(level_db=0.0):
+    t = np.arange(48_000) / 48_000
+    x = np.minimum(1.0, t / 0.2) * (
+        0.7 * np.sin(2 * np.pi * 320 * t)
+        + 0.12 * np.sin(2 * np.pi * 80 * t + 1.0)
+        + 0.1 * np.sin(2 * np.pi * 1280 * t + 2.0)
+    )
+    return np.ascontiguousarray(x * 10 ** (level_db / 20.0), dtype=np.float32)
+
+
+def _native_chain(**stages):
+    return {
+        "full_chain": True, "input_pre_filtered": True, "processing_mode": "normal",
+        "vad_available": False, "gate": {"enabled": False}, "suppressor": {"enabled": False},
+        "deesser": {"enabled": False}, "compressor": {"enabled": False},
+        "limiter": {"enabled": False}, **stages,
+    }
+
+
+def _native_render(audio, eq, chain):
+    return headroom_module.simulate_candidate_chain(audio, 48_000, eq, chain)
+
+
+@needs_native
+def test_real_render_a_current_eq_that_meets_the_rule_is_not_replaced_by_a_hotter_candidate():
+    audio, chain = _tones(), _native_chain()
+    incumbent = _base_with_correction([0.0, 0.0, -4.0] + [0.0] * 7)  # cuts 320 Hz, where the peak is
+    candidate = [1.5] + [0.0] * 9  # +1.5 dB at 80 Hz
+    # As the engine renders them: the current EQ meets the rule, no correction does not, and
+    # neither does the candidate (it is better than no correction, which is the old bar).
+    assert _excess(_native_render(audio, incumbent, chain)) < 0
+    assert _excess(_native_render(audio, _base_with_correction([0.0] * 10), chain)) > 0
+    assert _excess(_native_render(audio, _base_with_correction(candidate), chain)) > 0
+
+    result = apply_headroom_validation(
+        audio, 48_000, _candidate_fit(candidate), chain, candidate_base_eq_settings=incumbent
+    )
+
+    validation = result["headroom_validation"]
+    assert validation["status"] == "risk_worse"
+    assert validation["incumbent_excess_db"] < 0 < validation["flat_excess_db"]
+    assert result["validated_candidate_eq"] is None
+    assert result["apply_recommended"] is False
+
+
+@needs_native
+@pytest.mark.parametrize(
+    ("gains", "whole"),
+    [
+        ([0.0, 0.0, -1.0] + [0.0] * 7, True),  # a cut where the peak is
+        ([1.5] + [0.0] * 9, True),
+        ([0.0, 0.0, 0.0, 2.0] + [0.0] * 6, False),  # a boost that lifts the peak: only a part gets in
+    ],
+)
+def test_real_render_an_accepted_candidate_is_no_worse_than_the_current_eq(gains, whole):
+    audio, chain = _tones(1.0), _native_chain()  # hot enough that the current EQ is over the rule
+    incumbent = config.EQSettings().to_dict()
+    incumbent_excess = _excess(_native_render(audio, incumbent, chain))
+    assert incumbent_excess > 0
+
+    result = apply_headroom_validation(
+        audio, 48_000, _candidate_fit(gains), chain, candidate_base_eq_settings=incumbent
+    )
+
+    validation = result["headroom_validation"]
+    assert validation["status"] == "risk_not_worsened"
+    assert validation["incumbent_excess_db"] == pytest.approx(incumbent_excess)
+    offered = _native_render(audio, result["validated_candidate_eq"], chain)
+    assert _excess(offered) <= incumbent_excess
+    assert (validation["gain_scale"] == 1.0) is whole
+
+
+@needs_native
+def test_real_render_the_stated_decibels_let_the_full_correction_through_with_the_compressor_off():
+    audio, chain = _tones(1.0), _native_chain()
+    gains = [0.0, 0.0, -1.0] + [0.0] * 7
+    result = apply_headroom_validation(
+        audio, 48_000, _candidate_fit(gains), chain,
+        candidate_base_eq_settings=config.EQSettings().to_dict(),
+    )
+    validation = result["headroom_validation"]
+    advice = headroom_advice(validation, chain, bool(result["apply_recommended"]))
+
+    assert validation["gain_scale"] == 1.0 and not _excess(validation["after"]) <= 0
+    assert (
+        "Lower the microphone gain by about 1 dB (in Windows or on the microphone) "
+        "to leave enough room."
+    ) in advice
+    assert _excess(_native_render(_tones(0.0), result["validated_candidate_eq"], chain)) <= 0
+
+
+@needs_native
+def test_real_render_the_advice_gives_no_figure_when_a_compressor_is_working():
+    audio = _tones()
+    chain = _native_chain(
+        compressor={"enabled": True, "threshold_db": -20.0, "ratio": 4.0, "makeup_gain_db": 12.0},
+        limiter={"enabled": True, "ceiling_db": -1.0, "careful_output_enabled": False},
+    )
+    result = apply_headroom_validation(
+        audio, 48_000, _candidate_fit([0.0, 0.0, -1.0, 2.0] + [0.0] * 6), chain,
+        candidate_base_eq_settings=config.EQSettings().to_dict(),
+    )
+    validation = result["headroom_validation"]
+    figure = headroom_module.headroom_shortfall_db(validation)
+
+    assert validation["status"] == "risk_not_worsened" and figure is not None
+    # With level in equal to level out that figure would do; with this compressor it does not.
+    lowered = _native_render(_tones(-figure), result["validated_candidate_eq"], chain)
+    assert _excess(lowered) > 0
+    assert headroom_advice(validation, chain, bool(result["apply_recommended"])) == (
+        "Your current settings already leave too little room for loud peaks. "
+        "This EQ is no worse than your current one. "
+        "Lower the microphone gain (in Windows or on the microphone) to leave enough room."
+    )

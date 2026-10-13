@@ -62,9 +62,9 @@ and download **one** of these files. **Not sure? Choose the installer.**
   [7-Zip](https://www.7-zip.org/). "Ultra" is the compression level, not a
   different edition.
 
-Both are about 100 MB and include everything the app needs; you don't need
-Python or Rust. The other files on the release page (source code, validation
-evidence, and checksums) are for verification and redistribution.
+Both include everything the app needs; you don't need Python or Rust. The
+other files on the release page (source code, validation evidence, and
+checksums) are for verification and redistribution.
 
 **Windows SmartScreen:** AudioForge isn't code-signed, so Windows may show
 "Windows protected your PC". Download only from this repository's Releases
@@ -95,15 +95,15 @@ the window open. Closing the window stops audio and quits, unless you turn on
 close-to-tray under **Settings > Tray and background**. Then audio keeps running
 and you quit with **Ctrl+Q** or **Quit AudioForge** in the tray.
 
-Version 1.15.0 adds opt-in login startup, off by default. Packaged copies offer
+Login startup is opt-in and off by default. Packaged copies offer
 **Settings > Tray and background > Configure login shortcut for this copy**.
-When launched by that
-shortcut, AudioForge stays in the tray and waits up to 60 seconds for your exact
-saved input and output devices before starting, preserving output mute. Missing
-devices leave processing stopped. Windows Settings or Task Manager can disable
-the shortcut; AudioForge reports it as configured without overriding that choice.
-Before moving a portable copy, remove its shortcut with the same switch and
-configure it again from the new location. See the
+When launched by that shortcut, AudioForge stays in the tray and waits up to 60
+seconds for your exact saved input and output devices before starting,
+preserving output mute. Missing devices leave processing stopped. Windows
+Settings or Task Manager can disable the shortcut; AudioForge reports it as
+configured without overriding that choice. Before moving a portable copy,
+remove its shortcut with the same switch and configure it again from the new
+location. See the
 [startup lifecycle and testing limits](RELEASING.md#login-startup-lifecycle).
 
 ### No sound?
@@ -118,8 +118,7 @@ configure it again from the new location. See the
   app's meter doesn't, check the cable selection in your app.
 - Still stuck? [Open an issue](https://github.com/FueledByRedBull/audio-forge/issues/new/choose)
   and attach the file from **Settings > Help > Export Diagnostics**. The export
-  excludes audio and
-  real device names; check it before you share it.
+  excludes audio and real device names; check it before you share it.
 
 ## Everyday Controls
 
@@ -144,8 +143,8 @@ configure it again from the new location. See the
 - **Your voice stays yours.** Speech alone can't reveal a microphone's exact
   frequency response, so automatic targets keep the recorded voice and apply
   bounded tonal preferences. Natural / No Added Tone stays neutral. Warm / Full
-  Voice adds low-mid body with restrained upper presence; Adaptive keeps it
-  subtle and Static uses the stronger catalog curve.
+  Voice adds low-mid body with restrained upper presence; **Adapt to my voice**
+  keeps it subtle and **Exact tone preset** uses the stronger catalog curve.
 - **Suggestions have to earn a change.** Auto Voice Setup tries gate and noise
   suppression options before calibrating compression. It tests speech followed
   by noise without resetting the processing, so pause noise is checked too.
@@ -247,6 +246,7 @@ buffer sizes, and routing.
   with your app version, what you expected, and steps to reproduce.
 - **Report a security issue:** follow [SECURITY.md](SECURITY.md).
 - **Contribute:** follow [CONTRIBUTING.md](CONTRIBUTING.md).
+- **See what changed:** read the [changelog](CHANGELOG.md).
 
 ## Quick Start From Source
 
@@ -269,18 +269,9 @@ cd audio-forge
 ```
 
 Without the Python Launcher (`py`), pass your existing Python executable's
-path to `-PythonPath`. Bootstrap checks the exact Python pin from
-`licenses/source-manifest.json`, creates or reuses `.venv`, installs
-`requirements/dev.txt` with hash verification, hydrates assets, and runs
-`maturin develop --release --locked`. It preserves an incomplete environment
-and asks you to repair it or choose another path. For an existing `.venv313`
-checkout, add `-VenvPath .venv313` to each command.
-
-Doctor is offline and checks prerequisites, interpreter/toolchain pins,
-asset hashes, installed dependency consistency, and the native import. It does
-not prove exact dependency-lock parity or replace build/release validation.
-Use `-DryRun` to inspect any command's steps without executing them; see
-[contributor commands](CONTRIBUTING.md) for focused tests.
+path to `-PythonPath`. For an existing `.venv313` checkout, add
+`-VenvPath .venv313` to each command, and add `-DryRun` to print a command's
+steps without running them.
 
 The fallback release is pinned once in `release-assets.json`; it supplies
 runtime assets independently of the application version. Hydration verifies
@@ -293,9 +284,10 @@ after hydrating assets. Packaged builds enable verified bundled DeepFilter asset
 automatically. External DLL/model paths require an explicit opt-in; see
 [runtime configuration](CONTRIBUTING.md#runtime-assets-and-configuration).
 
-[CONTRIBUTING.md](CONTRIBUTING.md) covers development checks and runtime
-configuration, [RELEASING.md](RELEASING.md) covers packaging and publication,
-and [evaluation/README.md](evaluation/README.md) records the measured DSP
+[CONTRIBUTING.md](CONTRIBUTING.md) explains what bootstrap and doctor do and
+covers development checks and runtime configuration,
+[RELEASING.md](RELEASING.md) covers packaging and publication, and
+[evaluation/README.md](evaluation/README.md) records the measured DSP
 decisions.
 
 ## Roadmap

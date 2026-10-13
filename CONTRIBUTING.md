@@ -8,8 +8,10 @@ for setup and [RELEASING](RELEASING.md) for packaging and publication.
 Use `dev.ps1` from PowerShell 7+. Its default environment is `.venv`; add
 `-VenvPath .venv313` for a checkout using that existing environment. Bootstrap
 requires the prerequisites listed in the README and an existing pinned Python
-executable when creating an environment. It reuses `requirements/dev.txt` with
-`--require-hashes`; no separate uv lock or automatic tool installation is used.
+executable when creating an environment. It installs `requirements/dev.txt` with
+`--require-hashes`, hydrates and verifies the runtime assets, and runs
+`maturin develop --release --locked`; no separate uv lock or automatic tool
+installation is used.
 
 ```powershell
 .\dev.ps1 bootstrap -PythonPath (py -3.13 -c "import sys; print(sys.executable)")

@@ -17,9 +17,27 @@ archive, and one `SHA256SUMS.txt`.
 2. **Build a candidate.** Dispatch `Release package` on the branch with
    `release_tag` blank. It hydrates and verifies the runtime assets and
    corresponding source, builds the portable app and MSI, and validates the
-   exact archive. Fix failures on the branch without tagging or changing the
-   version. Set `asset_source_tag` only to override where model assets come
-   from (see [Runtime assets](#runtime-assets)). Supply an existing tag in
+   exact archive. The jobs split the work:
+   - `static` (version and evaluation hygiene checks, Ruff, Pyright, workflow
+     check, source smoke, Semgrep, dependency and RustSec audits,
+     `cargo fmt`) needs no built file and runs beside the packaging job.
+   - `package-windows` builds DeepFilter from the pinned source in every run,
+     builds the app, and uploads the candidate.
+   - When it finishes, the three pytest shards (`.github/pytest-shards.json`),
+     the Rust tests with Clippy, and the release-mode stress test run on the
+     files it produced: the packaged native module, `df.dll`, the models, and
+     the CPU ONNX Runtime pass between jobs as a same-run artifact, never the
+     Actions cache. Each job verifies them before testing, and checks the
+     module's SHA-256.
+   - `validate-candidate` runs beside those jobs, extracts the archive, and
+     checks that its native module has the same SHA-256 the tests ran on.
+
+   Every job must pass: promotion refuses a run that is not successful. Fix
+   failures on the branch without tagging or changing the version, and
+   dispatch again. Promotion also binds the run attempt, so re-running only
+   failed jobs doesn't produce a promotable candidate. Set `asset_source_tag`
+   only to override where model assets come from (see
+   [Runtime assets](#runtime-assets)). Supply an existing tag in
    `release_tag` only when rebuilding that tag.
 3. **Record the candidate:** workflow run ID, source commit, and archive
    SHA-256. The candidate artifact expires after three days; an expired
@@ -69,7 +87,8 @@ their paths, sizes, hashes, origins, and licenses, and
   (`build-support/deepfilter/`, `build_deepfilter.ps1`). The recipe is not an
   attestation; keep the per-build `target/deepfilter/df.dll.provenance.json`
   with its DLL. Matching source and settings don't promise byte-identical
-  output across machines.
+  output across machines. The release workflow builds it in every run; no
+  cache supplies the DLL or its attestation.
 - CPU-only ONNX Runtime and Silero v6.2.1 come from their recorded upstream
   identities.
 - Both DeepFilter model archives come from the standing asset-source release:

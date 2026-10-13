@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+import time
 from typing import Any
 
 import pytest
 from PySide6.QtCore import (
     QCoreApplication,
     QEvent,
+    QPoint,
     QPointF,
     QRectF,
     QSignalBlocker,
@@ -15,8 +18,8 @@ from PySide6.QtCore import (
     QTimer,
     qInstallMessageHandler,
 )
-from PySide6.QtGui import QImage, QMouseEvent, QPainter
-from PySide6.QtTest import QTest
+from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtQuickWidgets import QQuickWidget
 from PySide6.QtWidgets import (
     QLabel,
@@ -26,6 +29,7 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from mic_eq.config import AppConfig, DeviceIdentity
+from mic_eq.config_parts.settings import q_from_bandwidth_octaves
 from mic_eq.ui.main_window import CLASSIC_ATTRIBUTES, MainWindow
 from mic_eq.ui.eq_quick_graph import EQGraphItem
 from mic_eq.ui.eq_graph import EQGraphGeometry
@@ -651,6 +655,404 @@ def test_scene_controls_drive_the_shared_state(quick_window, qapp) -> None:
     QTest.mouseMove(view, end)
     QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=end)
     assert band_gain() > 3
+
+
+def _graph_item(item):
+    for child in item.childItems():
+        if isinstance(child, EQGraphItem):
+            return child
+        found = _graph_item(child)
+        if found is not None:
+            return found
+    return None
+
+
+@pytest.fixture
+def mic_page(quick_window, qapp):
+    """The EQ graph and the page holding it, in a window the page overflows."""
+    quick_window.resize(900, 600)
+    qapp.processEvents()
+    graph = _graph_item(quick_window.centralWidget().rootObject())
+    assert graph is not None
+    page = graph
+    while page.property("contentY") is None:
+        page = page.parentItem()
+    assert page.property("contentHeight") > page.height()
+    return graph, page
+
+
+def _handle_point(window, item, band: int) -> QPoint:
+    x, y = EQGraphGeometry.band_handle_position(
+        window.eq_presentation.graph_model.bands, band, item.width(), item.height()
+    )
+    return item.mapToScene(QPointF(x, y)).toPoint()
+
+
+def _drag_up(view, start: QPoint, steps: int = 8, step: int = 8):
+    """Press at ``start``, yield after each move up, release when exhausted."""
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    pos = start
+    for _ in range(steps):
+        pos = pos - QPoint(0, step)
+        QTest.mouseMove(view, pos, delay=5)
+        yield pos
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=pos)
+
+
+def _wait_until(condition, timeout_ms: int = 3000) -> bool:
+    """Run the event loop in short slices until ``condition()`` holds or time runs out."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while not condition() and time.monotonic() < deadline:
+        QTest.qWait(5)
+    return condition()
+
+
+def _touch_drag_up(view, start: QPoint, steps: int, step: int):
+    """Like :func:`_drag_up` with a finger.
+
+    Qt Quick delivers a touch move with the next frame and merges moves that
+    arrive within one frame, so each move waits for two frames to be rendered:
+    the second begins after the move was queued.
+    """
+    frames = QSignalSpy(view.quickWindow().afterRendering)
+    touch = QTest.touchEvent(view, QTest.createTouchDevice())
+    touch.press(0, start, view)
+    touch.commit()
+    pos = start
+    for _ in range(steps):
+        pos = pos - QPoint(0, step)
+        touch.move(0, pos, view)
+        touch.commit()
+        rendered = frames.count() + 2
+        _wait_until(lambda: frames.count() >= rendered)
+        yield pos
+    touch.release(0, pos, view)
+    touch.commit()
+
+
+def test_a_band_drag_is_not_taken_over_by_the_page(quick_window, mic_page) -> None:
+    item, page = mic_page
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    finished = QSignalSpy(graph.bandDragFinished)
+
+    gains = []
+    for pos in _drag_up(
+        quick_window.centralWidget(), _handle_point(quick_window, item, band)
+    ):
+        assert graph.dragging_band_index == band
+        assert page.property("contentY") == 0
+        gains.append(graph.bands[band][2])
+
+    assert all(before < after for before, after in zip(gains, gains[1:]))
+    assert gains[-1] == EQGraphGeometry.y_to_gain(
+        item.mapFromScene(QPointF(pos)).y(), item.width(), item.height()
+    )
+    # An ordinary release finishes the drag once, and Qt's later ungrab adds nothing.
+    assert graph.dragging_band_index is None
+    assert finished.count() == 1
+    assert finished.at(0)[0] == band and finished.at(0)[2] == gains[-1]
+    assert not item.keepMouseGrab()
+    committed = quick_window.eq_state.get_eq_settings().bands[band].gain_db
+    assert committed == pytest.approx(gains[-1])
+
+
+def test_a_mouse_drag_does_not_scroll_the_page_but_the_wheel_does(
+    quick_window, mic_page
+) -> None:
+    item, page = mic_page
+    view = quick_window.centralWidget()
+    margin = QPointF(3, 200)
+    for owner, spot in ((page, margin), (item, QPointF(10, 10))):
+        for _ in _drag_up(view, owner.mapToScene(spot).toPoint()):
+            assert page.property("contentY") == 0
+
+    QTest.wheelEvent(view.quickWindow(), page.mapToScene(margin), QPoint(0, -120))
+    assert _wait_until(lambda: page.property("contentY") > 0)
+
+
+def test_a_lost_mouse_grab_finishes_the_band_drag(quick_window, mic_page) -> None:
+    item, _page = mic_page
+    view = quick_window.centralWidget()
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    start = _handle_point(quick_window, item, band)
+    finished = QSignalSpy(graph.bandDragFinished)
+
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(view, start - QPoint(0, 24), delay=5)
+    assert graph.dragging_band_index == band
+    gain = graph.bands[band][2]
+    assert gain > 0
+
+    item.ungrabMouse()
+
+    assert graph.dragging_band_index is None
+    assert not item.keepMouseGrab()
+    assert finished.count() == 1
+    assert finished.at(0)[0] == band and finished.at(0)[2] == gain
+    committed = quick_window.eq_state.get_eq_settings().bands[band].gain_db
+    assert committed == pytest.approx(gain)
+    # No stale origin is left for Escape to jump back to.
+    QTest.keyClick(view, Qt.Key.Key_Escape)
+    assert graph.bands[band][2] == gain
+    # The button coming up afterwards finishes nothing twice.
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=start - QPoint(0, 24))
+    assert finished.count() == 1 and graph.bands[band][2] == gain
+
+
+def test_touch_still_flicks_the_page(quick_window, mic_page) -> None:
+    _item, page = mic_page
+    start = page.mapToScene(QPointF(200, page.height() - 30)).toPoint()
+    for _ in _touch_drag_up(quick_window.centralWidget(), start, steps=12, step=10):
+        pass
+    assert page.property("contentY") > 0
+
+
+def test_a_touch_band_drag_is_not_taken_over_by_the_page(
+    quick_window, mic_page
+) -> None:
+    item, page = mic_page
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    start = _handle_point(quick_window, item, band)
+
+    gains = []
+    for _ in _touch_drag_up(quick_window.centralWidget(), start, steps=8, step=8):
+        assert graph.dragging_band_index == band
+        assert page.property("contentY") == 0
+        gains.append(graph.bands[band][2])
+
+    assert all(before < after for before, after in zip(gains, gains[1:]))
+    assert graph.dragging_band_index is None
+    committed = quick_window.eq_state.get_eq_settings().bands[band].gain_db
+    assert committed == pytest.approx(gains[-1])
+
+
+def test_a_click_does_not_scroll_its_control_away(quick_window, mic_page, qapp) -> None:
+    item, page = mic_page
+    view = quick_window.centralWidget()
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    quick_window.activateWindow()
+    view.setFocus()
+    page.setProperty("contentY", 150)
+    qapp.processEvents()
+    assert not item.hasActiveFocus()
+    start = _handle_point(quick_window, item, band)
+    assert page.contains(page.mapFromScene(QPointF(start)))
+    gain = graph.bands[band][2]
+
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    assert item.hasActiveFocus()
+    assert page.property("contentY") == 150
+    QTest.mouseMove(view, start + QPoint(1, 0), delay=5)
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=start + QPoint(1, 0))
+
+    assert page.property("contentY") == 150
+    assert graph.bands[band][2] == gain
+
+
+def _rebaseline(window) -> None:
+    """Make the current state the saved preset and the start of the history."""
+    window._set_preset_identity(window._get_current_preset())
+    window._initialize_configuration_history()
+
+
+@pytest.mark.parametrize("offset", [(0, 0), (5, 5)])
+def test_a_click_on_a_knob_leaves_the_band_alone(
+    quick_window, mic_page, qapp, offset
+) -> None:
+    item, _page = mic_page
+    state = quick_window.eq_state
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    # Off the graph's whole-Hz, 0.1 dB grid, so snapping to it would show.
+    state.set_band(
+        band, replace(state.get_band(band), frequency_hz=437.5, gain_db=2.35), edited=False
+    )
+    state.flush()
+    qapp.processEvents()
+    _rebaseline(quick_window)
+    before = state.get_band(band)
+    assert graph.bands[band][1:3] == (437.5, 2.35)
+
+    QTest.mouseClick(
+        quick_window.centralWidget(),
+        Qt.MouseButton.LeftButton,
+        pos=_handle_point(quick_window, item, band) + QPoint(*offset),
+    )
+    qapp.processEvents()
+
+    assert graph.bands[band][1:3] == (437.5, 2.35)
+    assert state.get_band(band) == before
+    assert not quick_window.quick_bridge.model["presets"]["status"].data["modified"]
+    assert not quick_window._undo_action.isEnabled()
+
+
+def test_a_click_on_an_octave_bandwidth_band_keeps_its_bandwidth(
+    quick_window, mic_page, qapp
+) -> None:
+    item, _page = mic_page
+    view = quick_window.centralWidget()
+    state = quick_window.eq_state
+    band = 4
+    octave = replace(
+        state.get_band(band),
+        frequency_hz=437.5,
+        gain_db=2.35,
+        q=q_from_bandwidth_octaves(437.5, 1.0),
+        bandwidth_mode="octaves",
+        bandwidth_octaves=1.0,
+    )
+    state.set_band(band, octave, edited=False)
+    state.flush()
+    qapp.processEvents()
+    _rebaseline(quick_window)
+
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_handle_point(quick_window, item, band))
+    qapp.processEvents()
+
+    assert state.get_band(band) == octave
+    assert not quick_window.quick_bridge.model["presets"]["status"].data["modified"]
+    assert not quick_window._undo_action.isEnabled()
+
+    start = _handle_point(quick_window, item, band)
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(view, start + QPoint(30, 0), delay=5)
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=start + QPoint(30, 0))
+
+    dragged = state.get_band(band)
+    assert dragged.frequency_hz != octave.frequency_hz
+    assert (dragged.bandwidth_mode, dragged.bandwidth_octaves) == ("q", None)
+
+
+def test_a_drag_moves_the_band_by_the_pointers_travel(quick_window, mic_page) -> None:
+    item, page = mic_page
+    view = quick_window.centralWidget()
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    width, height = item.width(), item.height()
+    x, y = EQGraphGeometry.band_handle_position(graph.bands, band, width, height)
+    # Pressed 10 px from the handle's centre, still inside its hit radius.
+    start = _handle_point(quick_window, item, band) + QPoint(7, 7)
+
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    for dx, dy in ((1, 0), (30, -16)):
+        QTest.mouseMove(view, start + QPoint(dx, dy), delay=5)
+        assert page.property("contentY") == 0
+        assert graph.bands[band][1] == pytest.approx(
+            EQGraphGeometry.x_to_frequency(x + dx, width, height), abs=1.0
+        )
+        assert graph.bands[band][2] == pytest.approx(
+            EQGraphGeometry.y_to_gain(y + dy, width, height), abs=0.11
+        )
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=start + QPoint(30, -16))
+
+    committed = quick_window.eq_state.get_band(band)
+    assert committed.frequency_hz == pytest.approx(graph.bands[band][1])
+    assert committed.gain_db == pytest.approx(graph.bands[band][2])
+
+
+@pytest.fixture
+def wide_page(quick_window, mic_page, qapp):
+    """The mic page in a window wide enough for the whole EQ card to show."""
+    page = mic_page[1]
+    quick_window.resize(1300, 700)
+    qapp.processEvents()
+    assert page.property("contentHeight") > page.height()
+    return page
+
+
+def _reveal(page, item) -> QPoint:
+    """Scroll ``item`` to the middle of the page and return its centre in the scene."""
+    top = item.mapToItem(page.property("contentItem"), QPointF(0, 0)).y()
+    limit = page.property("contentHeight") - page.height()
+    page.setProperty("contentY", min(max(0, top - page.height() / 2), limit))
+    centre = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
+    assert page.contains(page.mapFromScene(centre))
+    return centre.toPoint()
+
+
+def _band_box(window, name: str):
+    """The selected band's control ``name``, and its value box in the scene."""
+    eq = window.quick_bridge.model["eq"]
+    proxy = eq["bands"][eq["band"].index][name]
+    return proxy, _find(window.centralWidget().rootObject(), "ValueBox", proxy)
+
+
+def _escape_event() -> QKeyEvent:
+    return QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+
+
+def test_escape_puts_the_shown_value_back_in_a_value_box(quick_window, wide_page) -> None:
+    page = wide_page
+    view = quick_window.centralWidget()
+    index = quick_window.quick_bridge.model["eq"]["band"].index
+    frequency, box = _band_box(quick_window, "frequency")
+    gain, readout = _band_box(quick_window, "gain")
+    shown = frequency.text
+    stored = quick_window.eq_state.get_band(index).frequency_hz
+
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, box))
+    field = view.quickWindow().activeFocusItem()
+    QTest.keyClick(view, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    QTest.keyClicks(view, "777")
+    assert field.property("text") == "777"
+    QTest.keyClick(view, Qt.Key.Key_Escape)
+    assert field.property("text") == shown
+
+    # Focus leaving the box applies nothing.
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, readout))
+    assert frequency.text == shown
+    assert quick_window.eq_state.get_band(index).frequency_hz == stored
+
+
+def test_escape_is_swallowed_only_when_a_value_box_has_an_edit_to_cancel(
+    quick_window, wide_page
+) -> None:
+    page = wide_page
+    view = quick_window.centralWidget()
+    _frequency, box = _band_box(quick_window, "frequency")
+
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, box))
+    untouched = _escape_event()
+    QCoreApplication.sendEvent(view, untouched)
+    assert not untouched.isAccepted()
+
+    QTest.keyClicks(view, "7")
+    edited = _escape_event()
+    QCoreApplication.sendEvent(view, edited)
+    assert edited.isAccepted()
+
+
+def test_a_clicked_readout_lets_the_wheel_scroll_the_page(quick_window, wide_page) -> None:
+    page = wide_page
+    view = quick_window.centralWidget()
+    _gain, readout = _band_box(quick_window, "gain")
+
+    centre = _reveal(page, readout)
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=centre)
+    field = view.quickWindow().activeFocusItem()
+    assert field.property("readOnly") and field.hasActiveFocus()
+    before = page.property("contentY")
+    QTest.wheelEvent(view.quickWindow(), QPointF(centre), QPoint(0, -120))
+
+    assert _wait_until(lambda: page.property("contentY") > before)
+
+
+def test_a_focused_editable_box_still_steps_with_the_wheel(quick_window, wide_page) -> None:
+    page = wide_page
+    view = quick_window.centralWidget()
+    frequency, box = _band_box(quick_window, "frequency")
+
+    centre = _reveal(page, box)
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=centre)
+    before, scrolled = frequency.value, page.property("contentY")
+    QTest.wheelEvent(view.quickWindow(), QPointF(centre), QPoint(0, 120))
+
+    assert _wait_until(lambda: frequency.value > before)
+    assert page.property("contentY") == scrolled
 
 
 def _fallback_notice(window) -> bool:

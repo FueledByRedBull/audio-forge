@@ -164,6 +164,8 @@ class EQGraphModel(QObject):
         self._selected_band_index: int | None = None
         self._drag_band_index: int | None = None
         self._drag_origin: tuple[float, float] | None = None
+        self._drag_press = (0.0, 0.0)
+        self._drag_handle = (0.0, 0.0)
         self.freq_points = self.generate_log_frequencies(20, 20_000, 100)
         self.response_db = [0.0] * len(self.freq_points)
         self._update_response()
@@ -252,6 +254,10 @@ class EQGraphModel(QObject):
         self._drag_band_index = band_index
         band = self.bands[band_index]
         self._drag_origin = (float(band[1]), float(band[2]))
+        self._drag_press = (x, y)
+        self._drag_handle = self.GEOMETRY.band_handle_position(
+            self.bands, band_index, width, height
+        )
         self.bandDragStarted.emit(band_index)
         return True
 
@@ -267,8 +273,15 @@ class EQGraphModel(QObject):
     ) -> bool:
         if self._drag_band_index is None:
             return False
+        self._update_dragged_band(x, y, width, height)
+        return self.finish_drag()
+
+    def finish_drag(self) -> bool:
+        """End the active drag where the band stands."""
         band_index = self._drag_band_index
-        frequency, gain = self._update_dragged_band(x, y, width, height)
+        if band_index is None:
+            return False
+        _filter_type, frequency, gain, *_ = self.bands[band_index]
         self._drag_band_index = None
         self._drag_origin = None
         self.bandDragFinished.emit(band_index, frequency, gain)
@@ -352,12 +365,21 @@ class EQGraphModel(QObject):
     ) -> tuple[float, float]:
         if self._drag_band_index is None:
             raise RuntimeError("no EQ band drag is active")
+        # The handle moves by the pointer's travel, so a press that was not
+        # dead centre does not jump, and a click leaves the band as it was.
+        origin = self._drag_origin
+        if origin is not None and (x, y) == self._drag_press:
+            return origin
         filter_type, _frequency, gain, _q, _slope, _enabled = self.bands[
             self._drag_band_index
         ]
-        frequency = self.GEOMETRY.x_to_frequency(x, width, height)
+        press_x, press_y = self._drag_press
+        handle_x, handle_y = self._drag_handle
+        frequency = self.GEOMETRY.x_to_frequency(
+            handle_x + (x - press_x), width, height
+        )
         if filter_type in self.GAIN_FILTER_TYPES:
-            gain = self.GEOMETRY.y_to_gain(y, width, height)
+            gain = self.GEOMETRY.y_to_gain(handle_y + (y - press_y), width, height)
         return frequency, float(gain)
 
     def _update_dragged_band(

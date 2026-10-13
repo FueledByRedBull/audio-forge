@@ -8,6 +8,10 @@
 - The Stop button could stay disabled while audio was running. Start and Stop now follow the same processing state.
 - The IN and OUT level meters in the main (Qt Quick) view stopped repainting after their first frame in 1.15.2. They repaint on every reading again.
 - In the main view, a refused noise-suppression backend switch shows the "Model Switch Failed" box and a successful switch confirms in the status line, as the classic view does.
+- In the main view, dragging an EQ band handle no longer turns into scrolling the page after a short distance. Pages no longer scroll under a mouse drag (the wheel, the scroll bar, keyboard focus and touch still scroll them), so a click that moves a little on a button or switch is no longer lost. A drag whose pointer is taken away is finished where the band stands instead of being left open.
+- In the main view, clicking a control that is partly scrolled out of view no longer moves the page under the pointer; on the EQ graph that jump also moved the band.
+- Clicking an EQ band handle selects it without changing the band, and a drag moves the handle by the pointer's travel instead of first jumping to the pointer. This applies to both views.
+- In the main view, Escape cancels an edit in a value box instead of leaving the typed text to be applied later, and the read-only gain readout no longer blocks the mouse wheel after it has been clicked.
 - With the Qt Quick view active, the classic widget view is no longer built unless it is needed: with `AUDIOFORGE_QML=0`, or when the Qt Quick view cannot load or stops rendering. This is an internal change; controls and layout are unchanged.
 
 ### Voice Setup

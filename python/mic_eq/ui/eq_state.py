@@ -465,13 +465,13 @@ class EQState(QObject):
         ):
             raise ValueError("EQ graph coordinates must be finite numbers")
         band = self.get_band(index)
-        changes = {
-            "frequency_hz": min(20000.0, max(20.0, frequency_hz)),
-            "bandwidth_mode": "q",
-            "bandwidth_octaves": None,
-        }
+        changes: dict[str, Any] = {"frequency_hz": min(20000.0, max(20.0, frequency_hz))}
         if band.filter_type in GAIN_FILTER_TYPES:
             changes["gain_db"] = min(12.0, max(-12.0, gain_db))
+        # A click that moved nothing must not turn the bandwidth into Q.
+        if all(getattr(band, name) == value for name, value in changes.items()):
+            return
+        changes.update(bandwidth_mode="q", bandwidth_octaves=None)
         bands = list(self._settings.bands)
         bands[index] = replace(band, **changes)
         # One queue composes graph and numeric edits in arrival order. The graph

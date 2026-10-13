@@ -1,6 +1,6 @@
-AudioForge 1.15.3 fixes window restore, the Stop button and the main window's
-level meters, lets Auto Voice Setup work with microphones that deliver silence,
-and fits its loudness target to the final headroom check.
+AudioForge 1.15.3 fixes window restore, the Stop button, EQ band dragging and
+the main window's level meters, lets Auto Voice Setup work with microphones
+that deliver silence, and fits its loudness target to the final headroom check.
 
 ## Downloads
 
@@ -37,6 +37,15 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
 - In the main window, a refused noise-suppression backend switch shows the
   "Model Switch Failed" box and a successful switch confirms in the status
   line, as the classic view does.
+- Dragging an EQ band handle in the main window no longer turns into scrolling
+  the page. Pages scroll with the wheel, the scroll bar, the keyboard and
+  touch, not by dragging with the mouse, so a click that moves a little on a
+  button or switch is no longer lost.
+- Clicking an EQ band handle selects it without changing the band, and a drag
+  no longer starts with a jump. Clicking a control that is partly scrolled out
+  of view no longer moves the page under the pointer.
+- Escape cancels an edit in a value box, and the read-only gain readout no
+  longer blocks the mouse wheel after it has been clicked.
 
 ## Changes
 
@@ -101,8 +110,8 @@ speakers (108 user-setting pairs;
 failed on the first set. The tonal check is still nearly blind to errors below
 1 kHz.
 
-The window, meter, Stop button and Voice Setup fixes have automated source
-tests that use offscreen rendering and simulated recordings. They do not
+The window, meter, Stop button, EQ graph and Voice Setup fixes have automated
+source tests that use offscreen rendering and simulated recordings. They do not
 establish results with every headset, display arrangement or Windows setup, and
 no new physical-audio or graphics-hardware claim is made.
 

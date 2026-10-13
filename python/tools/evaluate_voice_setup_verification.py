@@ -129,7 +129,6 @@ MOVED = ("spectral_target_error_after_db", "decision", "reasons", "reason_codes"
 SAFETY_CODES = ("verification_delivery_mismatch", "voice_gate_silencing", "noise_safety_limit", "snr_safety_limit",
                 "compressor_peak_cap", "true_peak_ceiling")
 ADVISORY_CODE = "suppressor_dulling"
-ADVISORY_PREFIX = "noise suppression is dulling consonants"
 # The renders a first verification pass makes: the take and the room noise, the frontend alone for
 # the advice, and for the candidate the take and the room noise again with the suppressor off.
 RENDERS = {"released": [True, True, True], "candidate": [True, True, True, False, False]}
@@ -334,8 +333,7 @@ def _pair_id(row: dict[str, Any]) -> list[Any]:
 
 def _advisory(outcome: dict[str, Any]) -> tuple[Any, ...]:
     return (ADVISORY_CODE in (outcome.get("reason_codes") or ()), outcome.get("suppressor_dulling_db"),
-            outcome.get("suppressor_dulling_abstained"),
-            tuple(t for t in outcome.get("reasons") or () if t.startswith(ADVISORY_PREFIX)))
+            outcome.get("suppressor_dulling_abstained"), outcome.get("suppressor_dulling_advice"))
 
 
 def _findings(outcome: dict[str, Any]) -> dict[str, Any]:

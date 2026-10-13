@@ -16,7 +16,8 @@ def _setup_result(*, model: str = "rnnoise", suppressor_enabled: bool = True) ->
     preset = Preset()
     suppressor = {**asdict(preset.rnnoise), "model": model, "enabled": suppressor_enabled}
     return {
-        "eq_settings": preset.eq.to_dict(),
+        # The dialog passes EQState.get_settings(): typed fields plus the legacy band arrays.
+        "eq_settings": _eq_state_payload(preset.eq.to_dict()),
         "gate_settings": asdict(preset.gate),
         "suppressor_settings": suppressor,
         "deesser_settings": asdict(preset.deesser),
@@ -37,12 +38,14 @@ def _setup_result(*, model: str = "rnnoise", suppressor_enabled: bool = True) ->
     }
 
 
-def _patch_measurements(monkeypatch, *, drop_voice: bool, frontend=None, metrics=None) -> list[dict]:
+def _patch_measurements(
+    monkeypatch, *, drop_voice: bool, frontend=None, metrics=None, calls: list[dict] | None = None
+) -> list[dict]:
     """Stub the renderer; ``frontend`` maps the take to what the frontend-only render returns.
 
-    ``metrics`` overrides what every render reports about the dynamics stages.
+    ``metrics`` overrides what every render reports about the dynamics stages. Renders are logged in ``calls``.
     """
-    calls: list[dict] = []
+    calls = [] if calls is None else calls
 
     class Spectrum:
         freqs = np.geomspace(80.0, 12_000.0, 16)
@@ -188,7 +191,8 @@ def test_sibilant_change_abstains_without_enough_sibilant_frames() -> None:
 
 
 def _verify_full_chain(
-    monkeypatch, voice_in, voice_out, *, drop_voice=False, model="rnnoise", metrics=None, original_gain_db=0.0
+    monkeypatch, voice_in, voice_out, *, drop_voice=False, model="rnnoise", metrics=None, original_gain_db=0.0,
+    suppressor_enabled=True, calls=None,
 ) -> dict:
     """Verify ``voice_in`` through a renderer whose frontend-only render returns ``voice_out``.
 
@@ -197,11 +201,12 @@ def _verify_full_chain(
     scale = np.float32(0.05 / np.sqrt(np.mean(np.square(voice_in, dtype=np.float64))))
     take = voice_in * scale
     _patch_measurements(
-        monkeypatch, drop_voice=drop_voice, frontend=lambda _audio: voice_out * scale, metrics=metrics
+        monkeypatch, drop_voice=drop_voice, frontend=lambda _audio: voice_out * scale, metrics=metrics, calls=calls
     )
     noise = _room()
     return voice_setup.validate_voice_setup_verification(
-        noise, take * np.float32(10 ** (original_gain_db / 20)), take, SAMPLE_RATE, _setup_result(model=model),
+        noise, take * np.float32(10 ** (original_gain_db / 20)), take, SAMPLE_RATE,
+        _setup_result(model=model, suppressor_enabled=suppressor_enabled),
         "flat", raw_noise_audio=noise, raw_verification_speech_audio=take,
     )
 
@@ -215,7 +220,7 @@ def _verify_full_chain(
         ("retry", {"original_gain_db": -12.0}),
     ],
 )
-def test_dulling_advice_is_appended_to_the_decision_and_changes_nothing_else(
+def test_dulling_advice_is_offered_beside_the_decision_and_changes_nothing_else(
     monkeypatch, decision, conditions
 ) -> None:
     voice_in, voice_out = _take(SIBILANTS), _take(SIBILANTS, sibilant_gain_db=-9.0)
@@ -229,10 +234,12 @@ def test_dulling_advice_is_appended_to_the_decision_and_changes_nothing_else(
     assert advised["suppressor_dulling_db"] == pytest.approx(9.0, abs=0.3)
     assert advised["suppressor_dulling_abstained"] is False
     assert advised["reason_codes"] == [*plain["reason_codes"], "suppressor_dulling"]
-    assert advised["reasons"] == [*plain["reasons"], DULLING_SENTENCE]
+    assert advised["suppressor_dulling_advice"] == DULLING_SENTENCE
+    assert plain["suppressor_dulling_advice"] is None
+    assert advised["reasons"] == plain["reasons"]
     assert "suppressor_dulling" not in plain["reason_codes"]
-    assert {key: value for key, value in advised.items() if key not in ("reason_codes", "reasons")} == {
-        key: value for key, value in plain.items() if key not in ("reason_codes", "reasons")
+    assert {key: value for key, value in advised.items() if key not in ("reason_codes", "suppressor_dulling_advice")} == {
+        key: value for key, value in plain.items() if key not in ("reason_codes", "suppressor_dulling_advice")
     }
 
 
@@ -252,25 +259,39 @@ def test_dulling_advice_stays_quiet_when_the_take_is_intact_or_unmeasurable(
     assert result["reason_codes"] == ["accepted"]
     assert result["suppressor_dulling_abstained"] is (dulling_db is None)
     assert result["suppressor_dulling_db"] == (None if dulling_db is None else pytest.approx(dulling_db, abs=0.3))
+    assert result["suppressor_dulling_advice"] is None
 
 
 @pytest.mark.parametrize(
     ("model", "remedy"),
     [
         ("rnnoise", "lower its strength or use DeepFilterNet LL"),
-        ("deepfilter", "lower its strength or use DeepFilterNet LL"),
+        ("deepfilter", "lower its strength"),
         ("deepfilter-ll", "lower its strength"),
     ],
 )
-def test_dulling_advice_suggests_deepfilternet_ll_only_when_it_is_not_in_use(
-    monkeypatch, model, remedy
-) -> None:
+def test_dulling_advice_suggests_deepfilternet_ll_only_to_rnnoise(monkeypatch, model, remedy) -> None:
     result = _verify_full_chain(
         monkeypatch, _take(SIBILANTS), _take(SIBILANTS, sibilant_gain_db=-9.0), model=model
     )
 
     assert result["reason_codes"][-1] == "suppressor_dulling"
-    assert result["reasons"][-1] == f"noise suppression is dulling consonants by about 9 dB; {remedy}"
+    assert result["suppressor_dulling_advice"] == f"noise suppression is dulling consonants by about 9 dB; {remedy}"
+    assert result["reasons"] == ["repeatability and full-chain DSP constraints passed"]
+
+
+def test_a_proposal_without_a_suppressor_is_not_measured_for_dulling(monkeypatch) -> None:
+    calls: list[dict] = []
+    # Were the frontend rendered, the dulled voice below would earn the advice.
+    result = _verify_full_chain(
+        monkeypatch, _take(SIBILANTS), _take(SIBILANTS, sibilant_gain_db=-9.0), suppressor_enabled=False, calls=calls
+    )
+
+    assert result["decision"] == "accept"
+    assert result["reason_codes"] == ["accepted"]
+    assert not [key for key in result if key.startswith("suppressor_dulling")]
+    # Only the take and the room noise are rendered: no frontend alone, no bypass.
+    assert len(calls) == 2
 
 
 def test_downstream_only_verification_gives_no_dulling_advice(monkeypatch) -> None:
@@ -453,7 +474,7 @@ def test_without_the_suppressor_in_the_proposal_the_tonal_check_is_as_released(m
     for bypass in (True, False):
         monkeypatch.setattr(voice_setup, "TONAL_CHECK_BYPASSES_SUPPRESSOR", bypass)
         outcomes[bypass], calls = _verify_tonal(monkeypatch, suppressor_enabled=False)
-        assert len(calls) == 3
+        assert len(calls) == 2
 
     assert outcomes[True] == outcomes[False]
     assert outcomes[True]["decision"] == "accept"
@@ -475,7 +496,13 @@ def test_downstream_only_verification_is_as_released(monkeypatch) -> None:
     assert outcomes[True] == outcomes[False]
 
 
-def _run_initial_analysis(monkeypatch, *, processing_mode: str):
+def _eq_state_payload(eq: dict) -> dict:
+    """What EQState.get_settings() hands the dialog: the typed payload plus the legacy band arrays."""
+    settings = EQSettings.from_dict(eq)
+    return eq | {"band_freqs": settings.band_freqs, "band_gains": settings.band_gains, "band_qs": settings.band_qs}
+
+
+def _run_initial_analysis(monkeypatch, *, processing_mode: str, eq_payload=lambda eq: eq):
     sample_rate = 48_000
     noise = np.random.default_rng(42).normal(0, 0.001, sample_rate * 2).astype(np.float32)
     t = np.arange(sample_rate * 4) / sample_rate
@@ -531,7 +558,7 @@ def _run_initial_analysis(monkeypatch, *, processing_mode: str):
     monkeypatch.setattr(voice_setup, "simulate_candidate_chain", simulate)
     result = voice_setup.analyze_voice_setup(
         noise * 0.9, speech * 0.9, sample_rate, vad_available=False,
-        incumbent_settings={"eq": incumbent_eq, "gate": asdict(preset.gate),
+        incumbent_settings={"eq": eq_payload(incumbent_eq), "gate": asdict(preset.gate),
                             "rnnoise": asdict(preset.rnnoise)},
         raw_noise_audio=noise, raw_speech_audio=speech,
         input_cleanup_mode="gentle", processing_mode=processing_mode,
@@ -582,6 +609,32 @@ def test_initial_analysis_renders_raw_full_chain_with_the_applied_eq_layers(monk
     assert result["diagnostics"]["offline_validation_passed"] is True
     assert result["diagnostics"]["offline_validation_full_chain"] is True
     assert result["diagnostics"]["full_chain_raw_capture_used"] is True
+
+
+def test_initial_analysis_accepts_the_eq_payload_the_eq_state_returns(monkeypatch):
+    # Every other test here feeds the analysis a clean typed EQ; the app sends the legacy arrays beside it.
+    observed = _run_initial_analysis(monkeypatch, processing_mode="normal", eq_payload=_eq_state_payload)
+
+    assert observed["calibration"]["eq_settings"] == observed["expected_eq"]
+    diagnostics = observed["result"]["diagnostics"]
+    assert diagnostics["offline_validation_passed"] is True
+    assert diagnostics["offline_validation"]["simulation_backend"] == "rust"
+    assert not [reason for reason in diagnostics["uncertainty_reasons"] if "validation" in reason]
+
+
+def test_a_malformed_incumbent_eq_is_named_in_the_failed_final_check(monkeypatch):
+    observed = _run_initial_analysis(
+        monkeypatch, processing_mode="normal", eq_payload=lambda eq: eq | {"bands": eq["bands"][:3]}
+    )
+
+    diagnostics = observed["result"]["diagnostics"]
+    assert diagnostics["offline_validation"]["error"].startswith("typed candidate EQ settings are unavailable (ValueError: ")
+    assert diagnostics["offline_validation_passed"] is False
+    assert (
+        "full-chain validation failed: " + diagnostics["offline_validation"]["error"]
+    ) in diagnostics["uncertainty_reasons"]
+    assert "offline DSP validation could not run, so these settings are advisory" in diagnostics["uncertainty_reasons"]
+    assert not [reason for reason in diagnostics["uncertainty_reasons"] if "Rust" in reason]
 
 
 def test_initial_analysis_renders_selected_frontend_before_compressor_for_normal_mode(

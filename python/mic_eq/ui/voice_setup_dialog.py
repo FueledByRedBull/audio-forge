@@ -112,6 +112,8 @@ _MAX_VERIFICATION_BAD_CAPTURES = 3
 _LIMITER_PRESSURE_STEP_DB = 1.0
 _TARGET_LUFS_MIN = -24.0
 _TARGET_LUFS_MAX = -12.0
+# Modes in which nothing is processed; setup analyses, applies and verifies as Normal.
+_UNPROCESSED_MODES = ("raw", "bypass")
 
 
 def _candidate_preset(
@@ -126,6 +128,8 @@ def _candidate_preset(
     if not isinstance(base, Preset):
         return None
     payload = deepcopy(base.to_dict())
+    # Raw monitoring already reads as Normal here; Bypass is left behind too.
+    payload["bypass"] = False
 
     sections = {
         "gate": setup_result.get("gate_settings"),
@@ -221,6 +225,36 @@ def _candidate_eq_settings_error(eq_settings: Any) -> str | None:
     return None
 
 
+def _correction_depth_db(eq_settings: Mapping[str, Any]) -> float:
+    """Largest gain among the enabled bands of the correction layer."""
+    if "bands" not in eq_settings:
+        # The analysis hands over the correction layer as plain arrays.
+        return max(abs(gain) for gain in eq_settings["band_gains"])
+    correction = (eq_settings.get("layers") or {}).get("correction", ())
+    return max(
+        (abs(band["gain_db"]) for band in correction if band["enabled"]), default=0.0
+    )
+
+
+def _correction_layer(eq_settings: Mapping[str, Any]) -> dict[str, Any]:
+    """The correction layer's frequencies, gains and Qs, as the analysis arrays do."""
+    if "bands" not in eq_settings:
+        return {
+            key: eq_settings[key]
+            for key in ("enabled", "band_freqs", "band_gains", "band_qs")
+            if key in eq_settings
+        }
+    layer = (eq_settings.get("layers") or {}).get("correction")
+    view: dict[str, Any] = {"enabled": eq_settings.get("enabled", True)}
+    if layer:
+        view["band_freqs"] = [band["frequency_hz"] for band in layer]
+        view["band_gains"] = [band["gain_db"] if band["enabled"] else 0.0 for band in layer]
+        view["band_qs"] = [band["q"] for band in layer]
+    else:
+        view["band_gains"] = [0.0] * len(EQ_FREQUENCIES)
+    return view
+
+
 def _candidate_settings_error(
     setup_result: Mapping[str, Any] | None,
 ) -> str | None:
@@ -245,11 +279,15 @@ def _voice_setup_context_matches(
     captured: object,
     current: object,
     *,
-    allow_raw_to_normal: bool = False,
+    allow_unprocessed_to_normal: bool = False,
 ) -> bool:
     if captured == current:
         return True
-    if not allow_raw_to_normal or not isinstance(captured, str) or not isinstance(current, str):
+    if (
+        not allow_unprocessed_to_normal
+        or not isinstance(captured, str)
+        or not isinstance(current, str)
+    ):
         return False
     try:
         captured_parts = json.loads(captured)
@@ -261,7 +299,7 @@ def _voice_setup_context_matches(
         and isinstance(current_parts, list)
         and len(captured_parts) == len(current_parts) == 5
         and captured_parts[:4] == current_parts[:4]
-        and captured_parts[4] == "raw"
+        and captured_parts[4] in _UNPROCESSED_MODES
         and current_parts[4] == "normal"
     )
 
@@ -485,7 +523,10 @@ class VoiceSetupDialog(QDialog):
         self._pre_setup_snapshot: dict[str, Any] | None = None
         self._final_comparison_pending = False
         self.setup_result: dict[str, Any] | None = None
+        self._summary_result: dict[str, Any] | None = None
         self._candidate_metadata: dict[str, Any] | None = None
+        # What each stage was set to before this setup, for the "Before:" lines.
+        self._review_current: dict[str, Mapping[str, Any]] = {}
         self._capture_context_key: str | None = None
         self.analysis_worker: VoiceSetupWorker | VoiceSetupVerificationWorker | None = None
         self._analysis_workers: list[
@@ -836,7 +877,9 @@ class VoiceSetupDialog(QDialog):
         self.target_lufs_spin.setEnabled(False)
         self.start_button.setEnabled(False)
         self.retake_btn.setVisible(False)
-        self.summary_group.setVisible(False)
+        if phase != "verification_recording":
+            # The proposal stays on the review page while its verification take is recorded.
+            self.summary_group.setVisible(False)
 
         if phase == "noise_recording":
             self.preview_noise_audio = None
@@ -902,19 +945,11 @@ class VoiceSetupDialog(QDialog):
                 )
                 if reply != QMessageBox.StandardButton.Yes:
                     self.warning_label.setText(
-                        "Setup canceled: using current stream devices."
+                        "Recording canceled; audio stays on the current devices."
                     )
                     self.warning_label.setStyleSheet(message_text_style("warn"))
+                    # The state, button text and selector stay as the dialog had them.
                     self.start_button.setEnabled(True)
-                    self.curve_combo.setEnabled(True)
-                    self.setup_state = (
-                        "idle" if self.noise_audio is None else "noise_ready"
-                    )
-                    self.start_button.setText(
-                        "Start Voice Setup"
-                        if self.noise_audio is None
-                        else "Record Voice"
-                    )
                     return False
 
                 try:
@@ -965,14 +1000,14 @@ class VoiceSetupDialog(QDialog):
         elif not _voice_setup_context_matches(
             self._capture_context_key,
             context_key,
-            allow_raw_to_normal=(
+            allow_unprocessed_to_normal=(
                 self.setup_state == "verification_recording"
                 and isinstance(self._pre_setup_snapshot, Mapping)
-                and self._pre_setup_snapshot.get("processing_mode") == "raw"
+                and self._pre_setup_snapshot.get("processing_mode") in _UNPROCESSED_MODES
             ),
         ):
             self._on_recording_failed(
-                "Audio route or input cleanup context changed during setup."
+                "The audio route, input settings or processing mode changed during setup."
             )
             return
 
@@ -1229,9 +1264,9 @@ class VoiceSetupDialog(QDialog):
             )
             input_cleanup_mode = str(current_chain["input_cleanup_mode"])
             processing_mode = str(current_chain["processing_mode"])
-            # Raw monitoring is left behind when the candidate is applied;
-            # preserve bypass while matching the candidate's normal path.
-            if processing_mode == "raw":
+            # Raw monitoring and Bypass are both left behind when the candidate
+            # is applied, so the analysis matches the Normal path it will run.
+            if processing_mode in _UNPROCESSED_MODES:
                 processing_mode = "normal"
         except Exception as error:
             self._on_analysis_failed(
@@ -1332,6 +1367,7 @@ class VoiceSetupDialog(QDialog):
         setup_result["_candidate"] = candidate
         self._reset_verification_state()
         self.setup_result = setup_result
+        self._review_current.clear()
         self._final_comparison_pending = False
         candidate_error = _candidate_settings_error(setup_result)
         candidate_complete = candidate_error is None
@@ -1385,36 +1421,62 @@ class VoiceSetupDialog(QDialog):
         recommended: Mapping[str, Any],
         state_name: str,
         describe: Callable[[Mapping[str, Any]], str],
+        comparable: Callable[[Mapping[str, Any]], Mapping[str, Any]] = lambda settings: settings,
     ) -> str:
         """Add what the stage was set to before this setup, when the owner knows."""
         try:
-            current = getattr(self.parent(), state_name).get_settings()
-            if not isinstance(current, Mapping):
-                return text
+            # Read once: later renders happen with the candidate already applied.
+            if state_name not in self._review_current:
+                current = getattr(self.parent(), state_name).get_settings()
+                if not isinstance(current, Mapping):
+                    return text
+                self._review_current[state_name] = deepcopy(current)
+            current = self._review_current[state_name]
             before = describe(current)
         except Exception:
             return text
         if before != text:
             return f"{text}\nBefore: {before}"
         # The line shows only the headline values of a stage.
-        for key in recommended.keys() & current.keys():
+        proposed, previous = comparable(recommended), comparable(current)
+        for key in proposed.keys() & previous.keys():
             try:
-                same = bool(np.allclose(recommended[key], current[key], rtol=0.0, atol=1e-3))
+                same = bool(np.allclose(proposed[key], previous[key], rtol=0.0, atol=1e-3))
             except (TypeError, ValueError):
-                same = recommended[key] == current[key]
+                same = proposed[key] == previous[key]
             if not same:
                 return f"{text} (only finer settings change)"
         return f"{text} (unchanged)"
+
+    def _refresh_review(self) -> None:
+        """Redraw the review lines after the applied settings or their status changed."""
+        # Only a result that was drawn once is complete enough to draw again.
+        if self.setup_result is not None and self._summary_result is self.setup_result:
+            self._show_summary(self.setup_result)
 
     def _show_summary(self, setup_result: dict[str, Any]) -> None:
         diagnostics = setup_result["diagnostics"]
         overall_conf = float(diagnostics["setup_confidence"])
         state = _diagnostic_state(overall_conf)
-        confidence = {"ok": "High", "warn": "Medium"}.get(state, "Low")
-        self.overall_label.setText(
-            f"{confidence} confidence in these settings "
-            f"({_format_percent(overall_conf)})."
-        )
+        if self._final_comparison_pending:
+            state = "ok"
+            self.overall_label.setText(
+                "These settings passed verification "
+                f"(analysis confidence {_format_percent(overall_conf)})."
+            )
+        elif diagnostics.get("apply_recommended", False):
+            confidence = {"ok": "High", "warn": "Medium"}.get(state, "Low")
+            self.overall_label.setText(
+                f"{confidence} confidence in these settings "
+                f"({_format_percent(overall_conf)})."
+            )
+        else:
+            # Settings that did not pass validation are never "High", however good the capture.
+            state = "bad" if state == "bad" else "warn"
+            self.overall_label.setText(
+                "These settings are advisory only "
+                f"(analysis confidence {_format_percent(overall_conf)})."
+            )
         details = [
             f"Capture quality {_format_percent(diagnostics['capture_confidence'])}",
             "Recommendation uncertainty "
@@ -1442,17 +1504,39 @@ class VoiceSetupDialog(QDialog):
             assert isinstance(eq_settings, Mapping)
 
             def describe_eq(settings: Mapping[str, Any]) -> str:
-                return (
-                    "max correction "
-                    f"{max(abs(g) for g in settings['band_gains']):.1f} dB"
-                )
+                return f"max correction {_correction_depth_db(settings):.1f} dB"
 
-            self.eq_label.setText(
-                "Tone: "
-                + self._review_text(
-                    describe_eq(eq_settings), eq_settings, "eq_state", describe_eq
-                )
+            tone_text = "Tone: " + self._review_text(
+                describe_eq(eq_settings),
+                eq_settings,
+                "eq_state",
+                describe_eq,
+                _correction_layer,
             )
+            before_eq = self._review_current.get("eq_state", {})
+            if (
+                self._pre_setup_snapshot is None
+                and eq_settings.get("enabled", True)
+                and before_eq.get("enabled", True) is False
+            ):
+                tone_active = any(
+                    band["enabled"]
+                    and (
+                        band["gain_db"] != 0.0
+                        # These shapes change the sound at 0 dB gain.
+                        or band["filter_type"] not in ("bell", "low_shelf", "high_shelf")
+                    )
+                    for band in before_eq.get("bands", ())
+                )
+                tone_text += (
+                    "\nThe EQ is off now; Apply will switch it on"
+                    + (
+                        ", and your current tone settings will take effect too."
+                        if tone_active
+                        else "."
+                    )
+                )
+            self.eq_label.setText(tone_text)
             self.eq_label.setToolTip(
                 "Analysis confidence "
                 f"{_format_percent(eq_settings.get('analysis_confidence', 0.0))}"
@@ -1519,10 +1603,15 @@ class VoiceSetupDialog(QDialog):
         )
 
         def describe_compressor(settings: Mapping[str, Any]) -> str:
+            loudness = (
+                f"aiming for {settings['target_lufs']:.0f} LUFS"
+                if settings["auto_makeup_enabled"]
+                else f"{settings['makeup_gain_db']:.1f} dB makeup"
+            )
             return (
+                f"{'on' if settings.get('enabled', True) else 'off'}, "
                 f"{settings['ratio']:.1f}:1 above "
-                f"{_format_db(settings['threshold_db'])}, aiming for "
-                f"{settings['target_lufs']:.0f} LUFS"
+                f"{_format_db(settings['threshold_db'])}, {loudness}"
             )
 
         lowered = float(diagnostics.get("loudness_lowered_db") or 0.0)
@@ -1553,6 +1642,7 @@ class VoiceSetupDialog(QDialog):
         )
         self.compressor_label.setStyleSheet(status_chip_style("info"))
         self.summary_group.setVisible(True)
+        self._summary_result = setup_result
 
     def _candidate_identity_error(self, parent: Any) -> str | None:
         if self.setup_result is None:
@@ -1608,12 +1698,14 @@ class VoiceSetupDialog(QDialog):
         if not _voice_setup_context_matches(
             capture.get("context_key"),
             _owner_calibration_context_key(parent),
-            allow_raw_to_normal=(
+            allow_unprocessed_to_normal=(
                 isinstance(self._pre_setup_snapshot, Mapping)
-                and self._pre_setup_snapshot.get("processing_mode") == "raw"
+                and self._pre_setup_snapshot.get("processing_mode") in _UNPROCESSED_MODES
             ),
         ):
-            return "audio route or input cleanup context changed after capture"
+            return (
+                "The audio route, input settings or processing mode changed after capture"
+            )
         return None
 
     def _compare_recording(self) -> None:
@@ -1649,6 +1741,11 @@ class VoiceSetupDialog(QDialog):
                     input_pre_filtered=self.preview_voice_audio is None,
                 )
                 current_settings = owner.eq_state.get_settings()
+            # The EQ Apply writes: the correction layer over the retained tone layer.
+            candidate_info = _candidate_preset(owner, self.setup_result)
+            if candidate_info is None:
+                raise ValueError("current preset is unavailable")
+            proposed_eq = candidate_info[0].eq.to_dict()
         except Exception as error:
             QMessageBox.warning(self, "Comparison unavailable", str(error))
             return
@@ -1659,11 +1756,8 @@ class VoiceSetupDialog(QDialog):
                 for name in ("deesser", "compressor", "limiter")
             }
         )
-        # The complete candidate API represents normal/bypass in ``Preset``;
-        # raw monitoring is deliberately left behind while applying setup.
-        proposed_chain["processing_mode"] = (
-            "bypass" if current_chain.get("processing_mode") == "bypass" else "normal"
-        )
+        # Raw monitoring and Bypass are both left behind while applying setup.
+        proposed_chain["processing_mode"] = "normal"
         gate_settings = self.setup_result.get("gate_settings")
         if isinstance(gate_settings, Mapping):
             proposed_chain["gate"] = deepcopy(gate_settings)
@@ -1676,7 +1770,7 @@ class VoiceSetupDialog(QDialog):
             else self.voice_audio,
             sample_rate=_processor_sample_rate(owner),
             current_settings=current_settings,
-            proposed_settings=self.setup_result["eq_settings"],
+            proposed_settings=proposed_eq,
             current_chain_settings=current_chain,
             proposed_chain_settings=proposed_chain,
             parent=self,
@@ -1695,6 +1789,7 @@ class VoiceSetupDialog(QDialog):
         elif self._final_comparison_pending:
             restored = self._restore_pre_setup_snapshot()
             self._final_comparison_pending = False
+            self._refresh_review()
             self.setup_state = "completed"
             self.compare_button.setEnabled(True)
             self.start_button.setEnabled(True)
@@ -1836,6 +1931,7 @@ class VoiceSetupDialog(QDialog):
             )
             QMessageBox.critical(self, "Error", message)
             return
+        mode_note = self._mode_switch_note()
         self.setup_state = "verification_ready"
         self.compare_button.setEnabled(False)
         self.start_button.setText("Record Verification Passage")
@@ -1845,8 +1941,16 @@ class VoiceSetupDialog(QDialog):
             "using the exact combined input, gate, suppression, EQ, and dynamics "
             "candidate. Live device timing and worker scheduling remain outside "
             "this offline check."
+            + (f" {mode_note}" if mode_note else "")
         )
         self.warning_label.setStyleSheet(message_text_style("info", strong=True))
+        self._refresh_review()
+
+    def _mode_switch_note(self) -> str:
+        """Say when setup took the user out of Bypass or Raw monitor."""
+        mode = (self._pre_setup_snapshot or {}).get("processing_mode")
+        name = {"bypass": "Bypass", "raw": "Raw monitor"}.get(str(mode))
+        return f"{name} was switched to Normal so the settings take effect." if name else ""
 
     def _apply_candidate_configuration(self, parent: Any) -> None:
         if self.setup_result is None:
@@ -2172,7 +2276,9 @@ class VoiceSetupDialog(QDialog):
                 or not _voice_setup_context_matches(
                     snapshot_context,
                     current_context,
-                    allow_raw_to_normal=snapshot.get("processing_mode") == "raw",
+                    allow_unprocessed_to_normal=(
+                        snapshot.get("processing_mode") in _UNPROCESSED_MODES
+                    ),
                 )
             ):
                 reliability = 0.0
@@ -2199,6 +2305,7 @@ class VoiceSetupDialog(QDialog):
             logger.warning("Voice setup transactional rollback failed: %s", exc)
             return False
         self._pre_setup_snapshot = None
+        self._refresh_review()
         return True
 
     def _complete_verification(self, audio_data: np.ndarray) -> None:
@@ -2218,17 +2325,6 @@ class VoiceSetupDialog(QDialog):
         )
         self._start_verification_worker(self._verification_audio)
 
-    def _split_dulling_advice(self, result: Mapping[str, Any]) -> tuple[str, str]:
-        """Join the reasons without the suppressor advisory; return it only if it is actionable."""
-        reasons = list(result.get("reasons") or ())
-        if "suppressor_dulling" not in (result.get("reason_codes") or ()):
-            return "; ".join(reasons), ""
-        # The analysis appends the advisory last, whether or not the chain had a suppressor.
-        advice = reasons.pop()
-        chain = (self.setup_result or {}).get("verification_chain_settings") or {}
-        enabled = bool((chain.get("rnnoise") or {}).get("enabled"))
-        return "; ".join(reasons), advice if enabled else ""
-
     def _finalize_verified_setup(self) -> None:
         """Persist and close after the verified candidate is accepted."""
         if self.setup_result is None:
@@ -2242,12 +2338,13 @@ class VoiceSetupDialog(QDialog):
             QMessageBox.warning(self, "Stale Voice Setup Candidate", identity_error)
             restored = self._restore_pre_setup_snapshot()
             self._final_comparison_pending = False
+            self._refresh_review()
             self.setup_state = "completed"
             self.compare_button.setEnabled(True)
             self.start_button.setEnabled(True)
             self.start_button.setText("Apply & Verify Again")
             self.warning_label.setText(
-                f"{identity_error} "
+                f"{identity_error}. "
                 + (
                     "Previous processing was restored."
                     if restored
@@ -2257,7 +2354,7 @@ class VoiceSetupDialog(QDialog):
             self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
             return
         result = self.setup_result.get("verification") or {}
-        advice = self._split_dulling_advice(result)[1]
+        advice = result.get("suppressor_dulling_advice")
         candidate = self.setup_result.get("_candidate")
         if isinstance(candidate, dict):
             candidate["verified_stages"] = [
@@ -2283,6 +2380,7 @@ class VoiceSetupDialog(QDialog):
             "SNR change "
             f"{float(result.get('snr_change_db', 0.0)):+.1f} dB."
         )
+        mode_note = self._mode_switch_note()
         QMessageBox.information(
             self,
             "Voice Setup Verified",
@@ -2292,7 +2390,8 @@ class VoiceSetupDialog(QDialog):
             + metrics_text
             + (f"\n\nAdvice: {advice}." if advice else "")
             + "\n\nLive device timing and worker scheduling remain outside this offline check; "
-            "it validates the engineering constraints.",
+            "it validates the engineering constraints."
+            + (f"\n\n{mode_note}" if mode_note else ""),
         )
         self._pre_setup_snapshot = None
         self._final_comparison_pending = False
@@ -2335,7 +2434,8 @@ class VoiceSetupDialog(QDialog):
             return
         self.setup_result["verification"] = result
         decision = str(result.get("decision", "retry"))
-        reason, advice = self._split_dulling_advice(result)
+        reason = "; ".join(result.get("reasons") or ())
+        advice = result.get("suppressor_dulling_advice")
         advice_suffix = f" Advice: {advice}." if advice else ""
         metrics_text = (
             "Target error "
@@ -2362,6 +2462,7 @@ class VoiceSetupDialog(QDialog):
                     candidate["verified_stages"] = []
                 self._final_comparison_pending = False
                 self.setup_state = "completed"
+                self.compare_button.setEnabled(True)
                 self.start_button.setEnabled(True)
                 self.start_button.setText("Apply & Verify Again")
                 self.phase_label.setText(
@@ -2380,6 +2481,7 @@ class VoiceSetupDialog(QDialog):
                 self.warning_label.setStyleSheet(message_text_style("warn", strong=True))
                 return
             self._final_comparison_pending = True
+            self._refresh_review()
             self.setup_state = "final_comparison_ready"
             self.compare_button.setEnabled(True)
             self.start_button.setEnabled(False)
@@ -2471,6 +2573,7 @@ class VoiceSetupDialog(QDialog):
                 )
                 return
             self._verification_adjustment_count += 1
+            self._refresh_review()
             self.setup_state = "verification_ready"
             self._final_comparison_pending = False
             self.start_button.setText("Verify Reduced Processing")
@@ -2487,6 +2590,7 @@ class VoiceSetupDialog(QDialog):
             restored = self._restore_pre_setup_snapshot()
             self._final_comparison_pending = False
             self.setup_state = "completed"
+            self.compare_button.setEnabled(True)
             self.start_button.setText("Apply & Verify Again")
             if not restored:
                 reason = f"{reason} Candidate rollback is incomplete."
@@ -2522,6 +2626,7 @@ class VoiceSetupDialog(QDialog):
         restored = self._restore_pre_setup_snapshot()
         self._final_comparison_pending = False
         self.setup_state = "completed" if self.setup_result is not None else "noise_ready"
+        self.compare_button.setEnabled(self.setup_result is not None)
         self.start_button.setEnabled(True)
         self.start_button.setText(
             "Apply & Verify Again"
@@ -2570,6 +2675,8 @@ class VoiceSetupDialog(QDialog):
     def _reject_capture(self, message: str) -> None:
         """Refuse a finished take and leave the dialog ready to record it again."""
         noise_step = self.setup_state == "noise_recording"
+        # A verification take keeps the status its failure already set.
+        verification_step = self.setup_state == "verification_recording"
         duration = NOISE_RECORDING_DURATION if noise_step else VOICE_RECORDING_DURATION
         self._on_recording_failed(message)
         self.progress_bar.setValue(0)
@@ -2577,7 +2684,7 @@ class VoiceSetupDialog(QDialog):
         if noise_step:
             self.phase_label.setText("Room-noise capture rejected")
             self.start_button.setText("Retake Room Noise")
-        else:
+        elif not verification_step:
             self.phase_label.setText("Voice capture rejected")
 
     def _on_recording_failed(self, error: str) -> None:
@@ -2594,6 +2701,13 @@ class VoiceSetupDialog(QDialog):
             self._final_comparison_pending = False
             self.start_button.setText("Apply & Verify Again")
             self.setup_state = "completed"
+            self.compare_button.setEnabled(True)
+            self.retake_btn.setVisible(True)
+            self.phase_label.setText(
+                "Verification recording failed; settings restored"
+                if restored
+                else "Verification recording failed; restore is incomplete"
+            )
             if not restored:
                 self.warning_label.setText(
                     f"{error} Previous settings could not be fully restored; retry rollback."
@@ -2610,6 +2724,8 @@ class VoiceSetupDialog(QDialog):
                 "Start Voice Setup" if self.noise_audio is None else "Record Voice"
             )
             self.setup_state = "idle" if self.noise_audio is None else "noise_ready"
+            self.dynamics_group.setEnabled(True)
+            self.target_lufs_spin.setEnabled(True)
         self._cleanup_recording_tap()
 
     def _on_retake_clicked(self) -> None:
@@ -2708,6 +2824,7 @@ class VoiceSetupDialog(QDialog):
             restored = self._restore_pre_setup_snapshot()
             self._final_comparison_pending = False
             self.setup_state = "completed" if self.setup_result is not None else "noise_ready"
+            self.compare_button.setEnabled(self.setup_result is not None)
             self.start_button.setEnabled(True)
             self.start_button.setText(
                 "Apply & Verify Again"

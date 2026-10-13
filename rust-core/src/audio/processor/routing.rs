@@ -282,13 +282,7 @@ impl AdaptiveInputCleanupState {
             hum_phase_valid: false,
             hum_strength: 0.0,
             harmonic_strength: 0.0,
-            adaptive_highpass: Biquad::new(
-                BiquadType::HighPass,
-                INPUT_PREFILTER_HZ,
-                0.0,
-                INPUT_PREFILTER_Q,
-                sample_rate as f64,
-            ),
+            adaptive_highpass: new_input_pre_filter(sample_rate as f64),
             adaptive_highpass_hz: INPUT_PREFILTER_HZ as f32,
             hum_notch: SmoothNotch::new(55.0, notch_q, sample_rate),
             harmonic_notch: SmoothNotch::new(110.0, notch_q, sample_rate),
@@ -956,6 +950,18 @@ fn sanitize_and_clamp_input_inplace(
     }
 }
 
+/// The fixed 80 Hz high-pass of the input pre-filter. Every place that runs it,
+/// and the response reported to the UI, builds it here.
+fn new_input_pre_filter(sample_rate: f64) -> Biquad {
+    Biquad::new(
+        BiquadType::HighPass,
+        INPUT_PREFILTER_HZ,
+        0.0,
+        INPUT_PREFILTER_Q,
+        sample_rate,
+    )
+}
+
 #[inline]
 fn apply_input_pre_filter(
     buffer: &mut [f32],
@@ -974,4 +980,38 @@ fn apply_input_pre_filter(
             output
         };
     }
+}
+
+/// Magnitude response, in dB, of the difference equation `apply_input_pre_filter`
+/// runs: `y[n] = x[n] - x[n-1] + a * y[n-1]`, with the same `a` it uses.
+fn dc_block_response_db(frequency_hz: f64, sample_rate: f64) -> f64 {
+    let omega = 2.0 * std::f64::consts::PI * frequency_hz / sample_rate;
+    let a = INPUT_DC_BLOCK_COEFF as f64;
+    let numerator = 2.0 - 2.0 * omega.cos();
+    let denominator = 1.0 - 2.0 * a * omega.cos() + a * a;
+    20.0 * (numerator / denominator).sqrt().max(1.0e-10).log10()
+}
+
+/// The part of the input conditioning that does not depend on the signal, in dB.
+///
+/// Raw monitor skips the conditioning. Every other path applies the DC blocker
+/// and, with cleanup off, the fixed high-pass. With cleanup on, the high-pass
+/// and the hum notches belong to `AdaptiveInputCleanupState`, which follows the
+/// signal, so only the DC blocker is static there.
+fn static_input_pre_filter_response_db(
+    frequencies_hz: &[f64],
+    mode: InputCleanupMode,
+    sample_rate: f64,
+) -> Vec<f64> {
+    let pre_filter = new_input_pre_filter(sample_rate);
+    frequencies_hz
+        .iter()
+        .map(|&frequency_hz| {
+            let dc_block = dc_block_response_db(frequency_hz, sample_rate);
+            match mode {
+                InputCleanupMode::Off => dc_block + pre_filter.magnitude_response_db(frequency_hz),
+                InputCleanupMode::Gentle | InputCleanupMode::Strong => dc_block,
+            }
+        })
+        .collect()
 }

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QSizePolicy,
 )
-from PySide6.QtCore import QObject, QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QObject, QSignalBlocker, Qt, QTimer, Signal
 from .eq_state import (
     EQState,
     EQ_FILTER_OPTIONS,
@@ -46,6 +46,7 @@ from ..config import (
     EQ_FREQUENCIES,
     EQ_SLOPES_DB_PER_OCTAVE,
 )
+from ..config_parts.app_config import INPUT_CLEANUP_MODES
 
 
 # Numeric frequencies in Hz for curve calculation (single source of truth from config)
@@ -464,6 +465,14 @@ class EQPresentation(QObject):
         )
         state.changed.connect(self._render_curve)
         state.presentationChanged.connect(self._render_presentation)
+        # The input conditioning in the curve is whatever the processor runs.
+        # The window applies the cleanup mode from several places, some with
+        # signals blocked, so the processor is asked on a timer, never at
+        # construction, instead of listened to.
+        self._conditioning_timer = QTimer(self)
+        self._conditioning_timer.setInterval(300)
+        self._conditioning_timer.timeout.connect(self.sync_input_conditioning)
+        self._conditioning_timer.start()
         for owned in (
             self.tone_menu,
             self.options_menu,
@@ -506,8 +515,17 @@ class EQPresentation(QObject):
         self.graph_model.set_all_params(
             [band.to_native() for band in settings.bands],
             correction=[band.to_native() for band in settings.correction_bands or ()],
+            enabled=settings.enabled,
         )
         self._render_presentation()
+
+    def sync_input_conditioning(self) -> None:
+        """Draw the input filter for the cleanup mode and rate the processor runs."""
+        processor = self.eq_state.processor
+        mode = getattr(processor, "get_input_cleanup_mode", lambda: None)()
+        rate = getattr(processor, "sample_rate", lambda: None)()
+        if mode in INPUT_CLEANUP_MODES and isinstance(rate, int) and rate > 0:
+            self.graph_model.set_input_conditioning(mode, float(rate))
 
     def _render_presentation(self) -> None:
         if self.eq_state.show_markers:
@@ -569,7 +587,8 @@ class EQPanel(QWidget):
             "Equalizer",
             switch=self.enabled_checkbox,
             help_text=(
-                "The curve shows correction plus tone; handles edit tone only. "
+                "The curve shows correction (dashed) plus tone and the fixed input filter (dotted); "
+                "adaptive input cleanup follows the signal and is not drawn. Handles edit tone only. "
                 "Drag a handle to edit frequency and gain. Notch and pass filters "
                 "move horizontally only. Use [ and ] plus arrow keys for keyboard editing."
             ),

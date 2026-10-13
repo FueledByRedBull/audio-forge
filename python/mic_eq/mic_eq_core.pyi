@@ -224,6 +224,18 @@ def eq_magnitude_response_v2(
     bands: Sequence[tuple[str, float, float, float, int, bool]],
     sample_rate: float,
 ) -> list[float]: ...
+def input_prefilter_response_db(
+    frequencies_hz: Sequence[float],
+    cleanup_mode: str,
+    sample_rate: float,
+) -> list[float]:
+    """Static part of the fixed input conditioning, in dB, built from the DSP's own filter.
+
+    "off": the DC blocker and the 80 Hz high-pass. "gentle" and "strong": the DC
+    blocker only, since adaptive cleanup replaces the high-pass with one that
+    follows the signal. Raw monitor skips the conditioning altogether.
+    """
+    ...
 def simulate_eq_v2(
     audio: npt.NDArray[np.float32],
     sample_rate: float,

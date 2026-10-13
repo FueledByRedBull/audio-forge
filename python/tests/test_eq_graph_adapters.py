@@ -2,10 +2,11 @@
 
 from dataclasses import replace
 
+import pytest
 from PySide6.QtCore import QPoint, QSizeF, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtTest import QSignalSpy, QTest
-from mic_eq import AudioProcessor
+from mic_eq import AudioProcessor, input_prefilter_response_db
 from mic_eq.ui.eq_curve import EQCurveWidget
 from mic_eq.ui.eq_panel import EQPresentation
 from mic_eq.ui.eq_quick_graph import EQGraphItem
@@ -144,6 +145,76 @@ def test_classic_graph_click_off_centre_leaves_the_band_alone(qapp):
     assert state.get_band(band_index).frequency_hz == 437.5
     assert state.get_band(band_index).gain_db == 2.35
     assert edited.count() == 0
+
+    presentation.deleteLater()
+    qapp.processEvents()
+    processor.stop()
+
+
+def test_graph_total_follows_the_state_layers_and_skips_bands_that_are_off(qapp):
+    processor = AudioProcessor()
+    state = EQState(processor)
+    presentation = EQPresentation(state)
+    model = presentation.graph_model
+
+    state.apply_auto_eq_results(
+        [
+            (72.0, -2.0, 0.75),
+            (145.0, -1.0, 1.0),
+            (290.0, 0.4, 1.1),
+            (580.0, 1.1, 1.2),
+            (1160.0, 1.8, 1.4),
+            (2320.0, 2.2, 1.6),
+            (4640.0, 1.2, 1.5),
+            (7600.0, -0.8, 1.4),
+            (11100.0, -1.1, 1.1),
+            (15100.0, -0.6, 0.8),
+        ]
+    )
+    state.set_band_value(4, "gain_db", 5.0, edited=False)
+    state.set_band_value(4, "enabled", False, edited=False)
+
+    # The tone layer is flat but for one band that is off, so only the
+    # Auto-EQ layer may reach the total.
+    assert model.correction_response_db
+    assert model.band_curves_db[4] == []
+    assert model.response_db == pytest.approx(model.correction_response_db, abs=1e-9)
+
+    state.set_band_value(4, "enabled", True, edited=False)
+    assert model.band_curves_db[4]
+    assert model.response_db != pytest.approx(model.correction_response_db, abs=0.5)
+
+    presentation.deleteLater()
+    qapp.processEvents()
+    processor.stop()
+
+
+def test_graph_follows_the_processors_cleanup_mode_and_the_eq_switch(qapp):
+    processor = AudioProcessor()
+    state = EQState(processor)
+    presentation = EQPresentation(state)
+    model = presentation.graph_model
+    state.set_band_value(4, "gain_db", 5.0, edited=False)
+
+    assert model.cleanup_mode == "off"
+    assert model.sample_rate == float(processor.sample_rate())
+    assert model.total_response_db != pytest.approx(model.input_filter_db, abs=0.5)
+
+    # Changed behind the graph's back, as the window does it: found on the next tick.
+    processor.set_input_cleanup_mode("strong")
+    QTest.qWait(450)
+    assert model.cleanup_mode == "strong"
+    assert model.input_filter_db == pytest.approx(
+        input_prefilter_response_db(model.freq_points, "strong", model.sample_rate)
+    )
+
+    # With the EQ switch off the signal gets the input filter and nothing else.
+    state.set_enabled(False)
+    assert not model.eq_enabled
+    assert model.total_response_db == pytest.approx(model.input_filter_db, abs=1e-12)
+    state.set_enabled(True)
+    assert model.eq_enabled
+    assert model.total_response_db != pytest.approx(model.input_filter_db, abs=0.5)
 
     presentation.deleteLater()
     qapp.processEvents()

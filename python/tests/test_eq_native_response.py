@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from mic_eq import eq_magnitude_response
+from mic_eq import eq_magnitude_response, input_prefilter_response_db
 from mic_eq.analysis.auto_eq_parts.response import _predict_eq_response
 from mic_eq.analysis.eq_quality import evaluate_eq_quality
 from mic_eq.mic_eq_core import simulate_auto_eq_chain
@@ -138,3 +138,24 @@ def test_eq_curve_widget_uses_native_target_response(qapp):
     np.testing.assert_allclose(widget.response_db, direct, rtol=0.0, atol=1.0e-12)
     assert not hasattr(widget, "_calc_biquad_coefficients")
     widget.close()
+
+
+def test_input_prefilter_response_follows_the_cleanup_mode_and_validates():
+    frequencies = [0.0, 20.0, 80.0, 1000.0, 20_000.0]
+    off = input_prefilter_response_db(frequencies, "off", 48_000.0)
+    gentle = input_prefilter_response_db(frequencies, "gentle", 48_000.0)
+
+    assert len(off) == len(frequencies)
+    assert gentle == input_prefilter_response_db(frequencies, "strong", 48_000.0)
+    # Only the fixed 80 Hz high-pass differs, and it is -3 dB at its corner.
+    assert off[2] - gentle[2] == pytest.approx(-3.01, abs=0.01)
+    assert off[1] < gentle[1] - 20.0
+    assert off[3] == pytest.approx(gentle[3], abs=0.01)
+    for arguments in (
+        ([100.0], "bypass", 48_000.0),
+        ([100.0], "off", 0.0),
+        ([24_001.0], "off", 48_000.0),
+        ([float("nan")], "off", 48_000.0),
+    ):
+        with pytest.raises(ValueError):
+            input_prefilter_response_db(*arguments)

@@ -1002,8 +1002,8 @@ Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: 300
                         activeFocusOnTab: true
-                        opacity: eqCard.on ? 1 : 0.5
                         Accessible.name: "Equalizer graph"
+                        Accessible.description: "The thick curve is what the signal really gets: the input filter plus every EQ filter that is on, or the input filter alone when the EQ switch is off. Thin colored curves are the bands, the dashed curve is the Auto-EQ layer and the dotted curve is the input filter. Adaptive input cleanup follows the signal and is not drawn."
                     }
                     Caption {
                         text: eqCard.eq.layers.text
@@ -1035,11 +1035,19 @@ Rectangle {
                                 hint: "Next EQ band"
                                 onClicked: ui.stepBand(1)
                             }
+                            // The band the editor shows; the graph prints this number on its handle once selected.
                             Rectangle {
-                                width: 12
-                                height: 12
-                                radius: 6
+                                width: 18
+                                height: 18
+                                radius: 9
                                 color: root.t.bandColors[eqCard.eq.band.index]
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: eqCard.eq.band.index + 1
+                                    color: root.t.text_on_accent
+                                    font.pixelSize: 10
+                                    font.weight: Font.DemiBold
+                                }
                             }
                             Text {
                                 text: eqCard.band.frequencyLabel.text

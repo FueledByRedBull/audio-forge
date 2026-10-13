@@ -49,7 +49,13 @@ class EQCurveWidget(QWidget):
         self.setAccessibleDescription(
             "Click and drag a band handle. Left and right change frequency; "
             "up and down change gain for bell and shelf filters. Use left "
-            "bracket and right bracket to select a band from the keyboard."
+            "bracket and right bracket to select a band from the keyboard. "
+            "The thick curve is what the signal really gets: the input filter "
+            "plus every EQ filter that is on, or the input filter alone when "
+            "the EQ switch is off. Thin colored curves are the bands, the "
+            "dashed curve is the Auto-EQ layer and the dotted curve is the "
+            "input filter. Adaptive input cleanup follows the signal and is not "
+            "drawn."
         )
         self.graph_model.changed.connect(self._model_changed)
         self.graph_model.bandDragStarted.connect(self.bandDragStarted.emit)

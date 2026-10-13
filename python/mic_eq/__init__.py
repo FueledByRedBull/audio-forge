@@ -60,6 +60,7 @@ try:
         configure_deepfilter_runtime_paths,
         eq_magnitude_response,
         eq_magnitude_response_v2,
+        input_prefilter_response_db,
         list_input_devices,
         list_output_devices,
     )
@@ -87,6 +88,7 @@ except ImportError as error:
     analyze_vad_probabilities = _missing_core
     eq_magnitude_response = _missing_core
     eq_magnitude_response_v2 = _missing_core
+    input_prefilter_response_db = _missing_core
 
 from .config import (  # noqa: E402
     BUILTIN_PRESETS,
@@ -103,6 +105,7 @@ __all__ = [
     "list_output_devices",
     "eq_magnitude_response",
     "eq_magnitude_response_v2",
+    "input_prefilter_response_db",
     "analyze_vad_probabilities",
     "configure_deepfilter_runtime_paths",
     "CORE_AVAILABLE",

@@ -210,6 +210,11 @@ TEXT_CONTRAST_PAIRS: tuple[tuple[str, str, str], ...] = (
     ("idle status", PALETTE.status_idle_text, PALETTE.status_idle_surface),
     ("data text", PALETTE.data_text, PALETTE.data_surface),
     ("muted data text", PALETTE.data_text_muted, PALETTE.data_surface),
+    # The number on the selected EQ handle, dark on the band's color.
+    *(
+        (f"EQ band {number} number on handle", PALETTE.text_on_accent, color)
+        for number, color in enumerate(PALETTE.eq_band_colors, start=1)
+    ),
 )
 
 

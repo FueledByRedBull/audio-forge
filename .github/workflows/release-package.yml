@@ -241,7 +241,9 @@ jobs:
           # interpreter, which has no packages of its own.
           PYTHONPATH: ${{ github.workspace }}\.venv\Lib\site-packages;${{ github.workspace }}\python
         run: |
-          cargo test -p mic_eq_core
+          # The seeded contention stress test runs once, in release mode, on the
+          # next line; this debug run skips only that one test.
+          cargo test -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention --exact
           if ($LASTEXITCODE -ne 0) { throw "Rust tests failed with exit code $LASTEXITCODE." }
           cargo test --release -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
           if ($LASTEXITCODE -ne 0) { throw "Release stress test failed with exit code $LASTEXITCODE." }

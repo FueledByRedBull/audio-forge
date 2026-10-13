@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -13,6 +14,17 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_DIR = REPO_ROOT / ".github" / "workflows"
 DEPENDABOT_PATH = REPO_ROOT / ".github" / "dependabot.yml"
+PYTEST_SHARDS_PATH = REPO_ROOT / ".github" / "pytest-shards.json"
+# Required status checks are the gate jobs; each must wait for all of its parts.
+CI_GATES = {
+    "python": ("static", "pytest"),
+    "rust": ("rust-tests", "rust-stress"),
+}
+CI_CPU_RUNTIME_JOBS = ("pytest", "rust-tests", "rust-stress")
+CI_CPU_RUNTIME_HYDRATION = "fetch_release_assets.py --only-cpu-runtime --force"
+# The debug-mode Rust run skips only this test; rust-stress runs it in release.
+CI_DEBUG_SKIPPED_TEST = "seeded_control_and_dsp_loops_remain_finite_under_contention"
+CI_LAST_PYTEST_SHARD = "rest"
 ACTION_REF = re.compile(
     r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE
 )
@@ -67,13 +79,13 @@ def _check_permissions(
     for job_name, raw_job in jobs.items():
         job = _mapping(raw_job, f"{name}: job {job_name}", errors)
         permissions = job.get("permissions")
-        if name == "ci.yml" and job_name == "python":
+        if name == "ci.yml" and job_name == "static":
             if permissions != {
                 "contents": "read",
                 "security-events": "write",
             }:
                 errors.append(
-                    "ci.yml: python must have only contents: read and "
+                    "ci.yml: static must have only contents: read and "
                     "security-events: write"
                 )
             continue
@@ -406,11 +418,110 @@ def _check_required_gates(
                 f"{name}: verified runtime assets must be fetched before extension build"
             )
     if name == "ci.yml":
-        cpu_hydration = "fetch_release_assets.py --only-cpu-runtime --force"
-        if source.count(cpu_hydration) < 2:
+        _check_ci_jobs(document, errors)
+        _check_pytest_shards(document, errors)
+
+
+def _is_always(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(
+        r"(?:\$\{\{\s*)?always\(\)(?:\s*\}\})?", value.strip()
+    ) is not None
+
+
+def _check_ci_jobs(document: dict[str, Any], errors: list[str]) -> None:
+    """Require gate jobs that fail unless every part succeeded."""
+    jobs = _mapping(document.get("jobs"), "ci.yml: jobs", errors)
+    parts = {part for group in CI_GATES.values() for part in group}
+    for job_name, job in jobs.items():
+        if job_name not in CI_GATES and job_name not in parts:
+            errors.append(f"ci.yml: job {job_name} is not part of a required gate")
+        if isinstance(job, dict) and "continue-on-error" in job:
+            errors.append(f"ci.yml: job {job_name} must not set continue-on-error")
+    for gate, expected in CI_GATES.items():
+        job = jobs.get(gate)
+        if not isinstance(job, dict):
+            errors.append(f"ci.yml: required gate job {gate} is missing")
+            continue
+        needs = job.get("needs")
+        if isinstance(needs, str):
+            needs = [needs]
+        if not isinstance(needs, list) or sorted(needs) != sorted(expected):
+            errors.append(f"ci.yml: {gate} must need exactly {', '.join(expected)}")
+        if not _is_always(job.get("if")):
             errors.append(
-                f"{name}: both Python and Rust jobs must hydrate the pinned CPU ONNX Runtime"
+                f"ci.yml: {gate} must use if: always() so a skipped or cancelled part fails it"
             )
+        gate_text = yaml.safe_dump(job)
+        for part in expected:
+            if f"needs.{part}.result" not in gate_text:
+                errors.append(f"ci.yml: {gate} does not check the result of {part}")
+    for job_name in CI_CPU_RUNTIME_JOBS:
+        job = jobs.get(job_name)
+        steps = job.get("steps") if isinstance(job, dict) else None
+        if not isinstance(steps, list) or not any(
+            isinstance(step, dict) and CI_CPU_RUNTIME_HYDRATION in str(step.get("run", ""))
+            for step in steps
+        ):
+            errors.append(f"ci.yml: {job_name} must hydrate the pinned CPU ONNX Runtime")
+    for line in _active_run_lines(document):
+        if _active_run_has_marker([line], "cargo test") and "--release" not in line:
+            skipped = re.findall(r"--skip\s+(\S+)", line)
+            if skipped and (
+                skipped != [CI_DEBUG_SKIPPED_TEST] or "--exact" not in line.split()
+            ):
+                errors.append(
+                    "ci.yml: the debug-mode Rust run may skip only "
+                    f"{CI_DEBUG_SKIPPED_TEST} (with --exact)"
+                )
+
+
+def _check_pytest_shards(document: dict[str, Any], errors: list[str]) -> None:
+    """Keep the shard lists real files; the last shard runs everything else."""
+    label = PYTEST_SHARDS_PATH.name
+    try:
+        shards = json.loads(PYTEST_SHARDS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        errors.append(f"{label}: cannot load pytest shard lists: {error}")
+        return
+    if not isinstance(shards, dict) or not shards or CI_LAST_PYTEST_SHARD in shards:
+        errors.append(
+            f"{label}: must map named shards other than {CI_LAST_PYTEST_SHARD!r} "
+            "to test file lists"
+        )
+        return
+    listed: set[str] = set()
+    for shard, files in shards.items():
+        if not isinstance(files, list) or not files:
+            errors.append(f"{label}: shard {shard} must list at least one test file")
+            continue
+        for path in files:
+            if not isinstance(path, str) or not re.fullmatch(
+                r"python/tests/[^/\\]+\.py", path
+            ):
+                errors.append(f"{label}: shard {shard} entry {path!r} is not a python/tests/*.py path")
+            elif not (REPO_ROOT / path).is_file():
+                errors.append(f"{label}: shard {shard} lists {path}, which does not exist")
+            elif path in listed:
+                errors.append(f"{label}: {path} is listed more than once")
+            else:
+                listed.add(path)
+    jobs = _mapping(document.get("jobs"), "ci.yml: jobs", errors)
+    job = jobs.get("pytest")
+    if not isinstance(job, dict):
+        return
+    strategy = job.get("strategy")
+    matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+    expected = [*shards, CI_LAST_PYTEST_SHARD]
+    if not isinstance(matrix, dict) or matrix.get("shard") != expected:
+        errors.append(f"ci.yml: pytest matrix shard must be {expected}, as listed in {label}")
+    steps = job.get("steps")
+    run = "\n".join(
+        str(step.get("run", "")) for step in steps if isinstance(step, dict)
+    ) if isinstance(steps, list) else ""
+    if label not in run or "--ignore" not in run:
+        errors.append(
+            f"ci.yml: pytest must run the files in {label} and ignore them in the last shard"
+        )
 
 
 def _check_dependabot(errors: list[str]) -> None:

@@ -15,7 +15,7 @@ from collections.abc import Callable
 from ctypes import wintypes
 from pathlib import Path
 
-from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QLockFile, QTimer
+from PySide6.QtCore import QAbstractNativeEventFilter, QCoreApplication, QLockFile, Qt, QTimer
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QMainWindow
 
@@ -202,7 +202,8 @@ def build_tray_tooltip(
 def activate_window(window: QMainWindow) -> None:
     """Show and focus a hidden/minimized Qt window after a second launch."""
 
-    window.showNormal()
+    # Only un-minimize; showNormal() would also shrink a maximized window.
+    window.setWindowState(window.windowState() & ~Qt.WindowState.WindowMinimized)
     window.show()
     window.raise_()
     window.activateWindow()

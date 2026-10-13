@@ -8,12 +8,12 @@ import threading
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QObject, QEventLoop, QThread, QTimer, Signal
-from PySide6.QtWidgets import QMessageBox, QWidget
+from PySide6.QtCore import QEventLoop, QThread, QTimer, Signal
+from PySide6.QtWidgets import QMessageBox
 
 from mic_eq.analysis.cancellation import AnalysisCancelled
 from mic_eq.ui.calibration_dialog import CalibrationDialog, _selected_device_pair
@@ -32,16 +32,14 @@ from mic_eq.ui.device_selection import (
     preferred_output_index,
     start_processor_for_route,
 )
+from mic_eq.ui import main_window, rate_limiter
 from mic_eq.ui.main_window import (
-    INPUT_CHANNEL_MODE_OPTIONS,
     MainWindow,
     _normalize_startup_preset_id,
     _startup_builtin_id,
 )
 from mic_eq.ui.health import RecentStreamHealth
-from mic_eq.ui.shell_state import TextState
 from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
-from mic_eq.ui.rate_limiter import RateLimiter
 from mic_eq.ui.startup_presets import startup_custom_id as _startup_custom_id
 from mic_eq.ui.stream_recovery import StreamRecoveryManager
 from mic_eq.ui.voice_setup_dialog import VoiceSetupDialog
@@ -58,18 +56,67 @@ from mic_eq.config import (
 )
 
 
-def test_setup_level_warnings_use_actual_peak_not_rms_estimate():
-    calibration = SimpleNamespace(level_meter=Mock(), warning_label=Mock())
-    CalibrationDialog._on_level_update(calibration, -20.0, -1.0)
-    calibration.level_meter.set_levels.assert_called_once_with(-20.0, -1.0)
-    assert "Too loud" in calibration.warning_label.setText.call_args.args[0]
+def _freeze_throttle_clock(monkeypatch) -> None:
+    """Make "applied at once, then throttled" independent of pauses such as garbage collection."""
+    frozen = time.monotonic() + 1.0
+    monkeypatch.setattr(rate_limiter.time, "monotonic", lambda: frozen)
 
-    voice_setup = SimpleNamespace(
-        level_meter=Mock(), warning_label=Mock(), setup_state="voice_recording"
+
+def _use_processor(window, processor) -> None:
+    """Swap the audio engine under a real window and the states that write to it."""
+    window.processor = processor
+    for state in (
+        window.gate_state, window.eq_state, window.deesser_state,
+        window.compressor_state, window.limiter_state, window.noise_suppression_state,
+    ):
+        state.processor = processor
+
+
+def _status_log(window) -> list[str]:
+    """Collect every status message the window shows from now on."""
+    shown: list[str] = []
+    window.status_message.changed.connect(
+        lambda: shown.append(window.status_message.text)
     )
-    VoiceSetupDialog._update_level(voice_setup, -20.0, -1.0)
-    voice_setup.level_meter.set_levels.assert_called_once_with(-20.0, -1.0)
-    assert "Too loud" in voice_setup.warning_label.setText.call_args.args[0]
+    return shown
+
+
+@pytest.fixture
+def window(qapp, monkeypatch):
+    """A real MainWindow; tests stand in for the audio processor, never for Qt."""
+    monkeypatch.setattr(main_window, "load_config", AppConfig)
+    monkeypatch.setattr(main_window, "save_config", lambda _config: True)
+    monkeypatch.setattr(main_window, "list_presets", lambda: [])
+    monkeypatch.setattr(main_window, "list_input_devices", lambda: [])
+    monkeypatch.setattr(main_window, "list_output_devices", lambda: [])
+    window = MainWindow()
+    native = window.processor
+    # Tests drive updates directly instead of through the event loop.
+    window.meter_timer.stop()
+    window.diagnostics_timer.stop()
+    yield window
+    _use_processor(window, native)
+    window.meter_timer.stop()
+    window.diagnostics_timer.stop()
+    # Closing saves settings; a failing save would open a modal warning.
+    monkeypatch.setattr(main_window, "save_config", lambda _config: True)
+    window.close()
+    window.deleteLater()
+    qapp.processEvents()
+
+
+def test_setup_level_warnings_use_actual_peak_not_rms_estimate(window):
+    _use_processor(window, _FakeProcessor())
+    calibration = CalibrationDialog(parent=window)
+    calibration._on_level_update(-20.0, -1.0)
+    assert (calibration.level_meter.rms_db, calibration.level_meter.peak_db) == (-20.0, -1.0)
+    assert "Too loud" in calibration.warning_label.text()
+
+    voice_setup = VoiceSetupDialog(parent=window)
+    voice_setup.setup_state = "voice_recording"
+    voice_setup._update_level(-20.0, -1.0)
+    assert (voice_setup.level_meter.rms_db, voice_setup.level_meter.peak_db) == (-20.0, -1.0)
+    assert "Too loud" in voice_setup.warning_label.text()
 
 
 class _SignalStub:
@@ -166,177 +213,6 @@ class _FakeProcessor:
         return "gentle"
 
 
-class _FakeOwner(QWidget):
-    def __init__(self, processor: _FakeProcessor):
-        super().__init__()
-        self.processor = processor
-        self.preset = Preset()
-
-    def _get_current_preset(self) -> Preset:
-        return Preset.from_dict(self.preset.to_dict())
-
-    def _processing_mode(self) -> str:
-        return "normal"
-
-
-class _FakeCombo:
-    def __init__(self, items: list[tuple[str, object]] | None = None):
-        self._items = list(items or [])
-        self._index = 0 if self._items else -1
-        self._signals_blocked = False
-        self.enabled = True
-
-    def blockSignals(self, blocked: bool):
-        previous = self._signals_blocked
-        self._signals_blocked = blocked
-        return previous
-
-    def setEnabled(self, enabled: bool):
-        self.enabled = bool(enabled)
-
-    def clear(self):
-        self._items.clear()
-        self._index = -1
-
-    def addItem(self, label, data=None):
-        self._items.append((label, data))
-
-    def setPlaceholderText(self, text: str):
-        self.placeholder = text
-
-    def setCurrentIndex(self, index: int):
-        self._index = index
-
-    def currentData(self):
-        if 0 <= self._index < len(self._items):
-            return self._items[self._index][1]
-        return None
-
-    def currentText(self):
-        if 0 <= self._index < len(self._items):
-            return self._items[self._index][0]
-        return ""
-
-    def count(self):
-        return len(self._items)
-
-    def itemData(self, index: int):
-        return self._items[index][1]
-
-    def findData(self, target):
-        return next(
-            (index for index, (_label, data) in enumerate(self._items) if data == target),
-            -1,
-        )
-
-
-class _FakeControl:
-    def __init__(self, value=None):
-        self.value = value
-        self.enabled = True
-
-    def setChecked(self, value):
-        self.value = bool(value)
-
-    def isChecked(self):
-        return bool(self.value)
-
-    def setValue(self, value):
-        self.value = value
-
-    def setEnabled(self, value):
-        self.enabled = bool(value)
-
-
-class _FakeLabel:
-    def __init__(self):
-        self.text = ""
-        self.stylesheet = ""
-        self.visible = True
-        self.state = ""
-        self.tooltip = ""
-        self.accessible_description = ""
-        self.properties = {}
-
-    def setText(self, text: str):
-        self.text = text
-
-    def setStyleSheet(self, stylesheet: str):
-        self.stylesheet = stylesheet
-
-    def setVisible(self, visible: bool):
-        self.visible = visible
-
-    def setToolTip(self, tooltip: str):
-        self.tooltip = tooltip
-
-    def setAccessibleDescription(self, description: str):
-        self.accessible_description = description
-
-    def setProperty(self, name: str, value):
-        self.properties[name] = value
-        if name == "health_state":
-            self.state = value
-
-    def property(self, name: str):
-        return self.properties.get(name)
-
-
-class _FakeStatusBar:
-    def __init__(self):
-        self.messages: list[tuple[str, int | None]] = []
-
-    def showMessage(self, message: str, timeout: int | None = None):
-        self.messages.append((message, timeout))
-
-
-def _device_warning_shell_texts():
-    return {"device_warning_banner": SimpleNamespace(update=Mock())}
-
-
-class _PresetProcessor:
-    def __init__(self):
-        self.calls: list[tuple[str, object]] = []
-
-    def list_noise_models(self):
-        return [("rnnoise", "RNNoise"), ("deepfilter", "DeepFilter")]
-
-    def set_rnnoise_enabled(self, value):
-        self.calls.append(("rnnoise_enabled", value))
-
-    def set_rnnoise_strength(self, value):
-        self.calls.append(("rnnoise_strength", value))
-
-    def set_noise_model(self, value):
-        self.calls.append(("noise_model", value))
-        return True
-
-    def set_bypass(self, value):
-        self.calls.append(("bypass", value))
-
-
-class _PresetProcessorRaisesForDeepFilter(_PresetProcessor):
-    def set_noise_model(self, value):
-        self.calls.append(("noise_model", value))
-        if value == "deepfilter":
-            raise RuntimeError("test model load failure")
-        return True
-
-
-class _PresetState:
-    def __init__(self):
-        self.settings = None
-
-    def set_settings(self, settings):
-        self.settings = settings
-
-    def cancel(self):
-        pass
-
-    def flush(self):
-        pass
-
-
 @pytest.mark.parametrize(
     ("save_results", "overwrite_reply"),
     [
@@ -353,24 +229,18 @@ class _PresetState:
     ],
     ids=("success", "collision-declined", "collision-accepted", "overwrite-failure"),
 )
-def test_save_preset_file_handles_collision_and_errors(monkeypatch, save_results, overwrite_reply):
+def test_save_preset_file_handles_collision_and_errors(
+    window, monkeypatch, save_results, overwrite_reply
+):
     save_mock = Mock(side_effect=save_results)
     question = Mock(return_value=overwrite_reply)
     critical = Mock()
-    monkeypatch.setattr("mic_eq.ui.main_window.save_preset", save_mock)
-    monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.question", question)
-    monkeypatch.setattr("mic_eq.ui.main_window.QMessageBox.critical", critical)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", Mock())
-
-    window = MainWindow.__new__(MainWindow)
-    window.config = AppConfig()
-    window.current_preset_path = None
-    window.status_message = _FakeStatusBar()
+    monkeypatch.setattr(main_window, "save_preset", save_mock)
+    monkeypatch.setattr(main_window.QMessageBox, "question", question)
+    monkeypatch.setattr(main_window.QMessageBox, "critical", critical)
+    window.preset_modified = True
     preset = Preset(name="My Preset")
-    window._get_current_preset = lambda: preset
-    window._processing_mode = lambda: "normal"
-    window._update_session_summary = lambda: None
-    result = MainWindow._save_preset_file(window, preset)
+    result = window._save_preset_file(preset)
 
     expected_path = save_results[-1] if isinstance(save_results[-1], Path) else None
     overwrite_flags = [False] + (
@@ -382,44 +252,13 @@ def test_save_preset_file_handles_collision_and_errors(monkeypatch, save_results
     assert result == expected_path
     if expected_path is not None:
         assert window.preset_modified is False
-    assert [call.kwargs["overwrite"] for call in save_mock.call_args_list] == [
+    assert [kwargs["overwrite"] for _args, kwargs in save_mock.call_args_list] == [
         *overwrite_flags
     ]
     assert question.call_count == int(isinstance(save_results[0], FileExistsError))
     assert critical.call_count == int(error)
     if error:
         assert "cannot write" in critical.call_args.args[2]
-
-
-class _FakeMeter:
-    def __init__(self):
-        self.levels: tuple[float, float] | None = None
-
-    def set_levels(self, rms: float, peak: float):
-        self.levels = (rms, peak)
-
-
-class _FakePanel:
-    def __init__(self):
-        self.gain_reduction: float | None = None
-        self.current_release_updates = 0
-        self.auto_makeup_updates: list[tuple[float, float]] = []
-        self.vad_updates: list[float] = []
-
-    def get_settings(self):
-        return {"gate_mode": 0}
-
-    def update_gain_reduction(self, value: float):
-        self.gain_reduction = value
-
-    def _update_current_release(self):
-        self.current_release_updates += 1
-
-    def update_auto_makeup_meters(self, current_lufs: float, makeup_gain: float):
-        self.auto_makeup_updates.append((current_lufs, makeup_gain))
-
-    def update_vad_confidence(self, value: float):
-        self.vad_updates.append(value)
 
 
 class _MeterProcessor:
@@ -543,80 +382,10 @@ class _StoppedRecoveryProcessor(_MeterProcessor):
         return False
 
 
-class _RecoveryWindow:
-    def __init__(self, processor=None):
-        self.processor = processor or _MeterProcessor()
-        self.input_meter = _FakeMeter()
-        self.output_meter = _FakeMeter()
-        self.compressor_state = _FakePanel()
-        self.deesser_state = _FakePanel()
-        self.gate_state = _FakePanel()
-        self.input_health_label = _FakeLabel()
-        self.output_health_label = _FakeLabel()
-        self.gate_health_label = _FakeLabel()
-        self.callback_health_label = _FakeLabel()
-        self.underrun_health_label = _FakeLabel()
-        self.latency_label = _FakeLabel()
-        self.buffer_label = _FakeLabel()
-        self.dropped_label = _FakeLabel()
-        self.backend_diag_label = _FakeLabel()
-        self.recovery_diag_label = _FakeLabel()
-        self._shell_state_owner = QObject()
-        self.shell_texts = {}
-        self._health_text_for_view = {}
-        for name in (
-            "input_health_label", "output_health_label", "gate_health_label",
-            "callback_health_label", "underrun_health_label", "latency_label",
-            "buffer_label", "dropped_label", "backend_diag_label", "recovery_diag_label",
-        ):
-            label = getattr(self, name)
-            state = TextState(self._shell_state_owner, text=label.text, name=name)
-            state.bind_label(label)
-            self.shell_texts[name] = state
-            self._health_text_for_view[label] = state
-        self.status_message = _FakeStatusBar()
-        self.start_btn_action = _FakeControl()
-        self.stop_btn_action = _FakeControl()
-        self.refresh_btn_action = _FakeControl()
-        self.input_choice = _FakeControl()
-        self.output_choice = _FakeControl()
-        self._last_backend_warning = None
-        self._last_output_underrun_total = 0
-        self._last_input_clip_event_count = 0
-        self._last_output_clip_event_count = 0
-        self._last_output_true_peak_event_count = 0
-        self._last_input_phase_warning_count = 0
-        self._last_gate_chatter_event_count = 0
-        self._calibration_dialog_open = False
-        self._stream_recovery = StreamRecoveryManager(processing_started_at=0.0)
-
-    def _recover_output_path(self):
-        self.status_message.showMessage("Recovered output path automatically: test")
-
-    def _reset_health_labels(self):
-        return None
-
-    @staticmethod
-    def _diag_token(label: str, value) -> str | None:
-        return MainWindow._diag_token(label, value)
-
-    @classmethod
-    def _extend_diag_tokens(
-        cls, tokens: list[str], diagnostics: dict, keys: list[tuple[str, str]]
-    ) -> None:
-        MainWindow._extend_diag_tokens(tokens, diagnostics, keys)
-
-    def _set_health_chip(self, label: _FakeLabel, text: str, state: str) -> None:
-        MainWindow._set_health_chip(self, label, text, state)
-
-    def _update_diagnostic_labels(self, **kwargs) -> None:
-        MainWindow._update_diagnostic_labels(self, **kwargs)
-
-    def _service_stream_recovery(self, **kwargs) -> None:
-        MainWindow._service_stream_recovery(self, **kwargs)
-
-    def _sync_processing_controls(self) -> None:
-        MainWindow._sync_processing_controls(self)
+def _recovery_setup(window, processor=None):
+    """Run recovery and diagnostics against a processor that reports healthy telemetry."""
+    _use_processor(window, processor or _MeterProcessor())
+    window._stream_recovery = StreamRecoveryManager(processing_started_at=0.0)
 
 
 def _healthy_runtime_diagnostics(**overrides):
@@ -654,9 +423,9 @@ def _healthy_runtime_diagnostics(**overrides):
     return diagnostics
 
 
-def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
-    owner = _FakeOwner(_FakeProcessor(sample_rate=44_100))
-    dialog = CalibrationDialog(parent=owner)
+def test_calibration_analysis_uses_processor_sample_rate(window, monkeypatch):
+    _use_processor(window, _FakeProcessor(sample_rate=44_100))
+    dialog = CalibrationDialog(parent=window)
     dialog.audio_data = np.ones(256, dtype=np.float32)
     dialog.preview_audio_data = dialog.audio_data.copy()
     monkeypatch.setattr(
@@ -672,7 +441,7 @@ def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
     assert _CaptureWorkerStub.last_init["chain_settings"]["full_chain"] is True
     assert _CaptureWorkerStub.last_init["headroom_chain_settings"]["full_chain"] is True
     assert _CaptureWorkerStub.last_init["headroom_candidate_base_eq_settings"] == (
-        owner.preset.eq.to_dict()
+        window._get_current_preset().eq.to_dict()
     )
     np.testing.assert_array_equal(
         _CaptureWorkerStub.last_init["headroom_audio_data"], dialog.audio_data
@@ -681,7 +450,6 @@ def test_calibration_analysis_uses_processor_sample_rate(qapp, monkeypatch):
     assert dialog.analysis_worker.sample_rate == 44_100
 
     dialog.close()
-    owner.close()
 
 
 def _process_events_for(qapp, duration_ms: int) -> None:
@@ -690,11 +458,11 @@ def _process_events_for(qapp, duration_ms: int) -> None:
     loop.exec()
 
 
-def test_calibration_cancel_invalidates_delayed_capture_start(qapp):
+def test_calibration_cancel_invalidates_delayed_capture_start(qapp, window):
     processor = Mock()
     processor.sample_rate.return_value = 48_000
-    owner = _FakeOwner(processor)
-    dialog = CalibrationDialog(parent=owner)
+    _use_processor(window, processor)
+    dialog = CalibrationDialog(parent=window)
     dialog.recording_state = "recording"
     dialog._capture_start_timer.start(1)
 
@@ -703,14 +471,13 @@ def test_calibration_cancel_invalidates_delayed_capture_start(qapp):
 
     processor.start_raw_recording.assert_not_called()
     assert not dialog._capture_start_timer.isActive()
-    owner.close()
 
 
-def test_voice_setup_cancel_invalidates_delayed_capture_start(qapp):
+def test_voice_setup_cancel_invalidates_delayed_capture_start(qapp, window):
     processor = Mock()
     processor.sample_rate.return_value = 48_000
-    owner = _FakeOwner(processor)
-    dialog = VoiceSetupDialog(parent=owner)
+    _use_processor(window, processor)
+    dialog = VoiceSetupDialog(parent=window)
     dialog.setup_state = "voice_recording"
     dialog._capture_start_timer.start(1)
 
@@ -719,12 +486,11 @@ def test_voice_setup_cancel_invalidates_delayed_capture_start(qapp):
 
     processor.start_raw_recording.assert_not_called()
     assert not dialog._capture_start_timer.isActive()
-    owner.close()
 
 
-def test_calibration_ignores_stale_analysis_generation(qapp):
-    owner = _FakeOwner(_FakeProcessor())
-    dialog = CalibrationDialog(parent=owner)
+def test_calibration_ignores_stale_analysis_generation(window):
+    _use_processor(window, _FakeProcessor())
+    dialog = CalibrationDialog(parent=window)
     dialog._analysis_generation = 2
     dialog.recording_state = "analyzing"
     previous_step = dialog.warning_label.text()
@@ -741,18 +507,17 @@ def test_calibration_ignores_stale_analysis_generation(qapp):
     assert dialog.eq_settings is None
     assert dialog.recording_state == "analyzing"
     dialog.close()
-    owner.close()
 
 
 def test_analysis_close_waits_for_a_slow_worker_and_ignores_its_result(
-    qapp, monkeypatch
+    qapp, window, monkeypatch
 ):
     _SlowAnalysisWorker.instances.clear()
     monkeypatch.setattr(
         "mic_eq.ui.calibration_dialog.AnalysisWorker", _SlowAnalysisWorker
     )
-    owner = _FakeOwner(_FakeProcessor())
-    dialog = CalibrationDialog(parent=owner)
+    _use_processor(window, _FakeProcessor())
+    dialog = CalibrationDialog(parent=window)
     dialog.audio_data = np.ones(256, dtype=np.float32)
     dialog.preview_audio_data = dialog.audio_data.copy()
     dialog._start_analysis()
@@ -767,7 +532,6 @@ def test_analysis_close_waits_for_a_slow_worker_and_ignores_its_result(
     assert dialog._analysis_workers == []
     assert dialog._close_requested is False
     assert dialog.eq_settings is None
-    owner.close()
 
 
 def test_analysis_worker_passes_cooperative_cancellation_into_pipeline(
@@ -828,9 +592,9 @@ def test_analysis_worker_passes_exact_candidate_headroom_inputs(monkeypatch):
     assert received["headroom_chain_settings"] == headroom_chain
 
 
-def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
-    owner = _FakeOwner(_FakeProcessor(sample_rate=44_100))
-    dialog = CalibrationDialog(parent=owner)
+def test_calibration_dialog_shows_auto_eq_diagnostics(window):
+    _use_processor(window, _FakeProcessor(sample_rate=44_100))
+    dialog = CalibrationDialog(parent=window)
     eq_settings = {
         "band_freqs": [
             80.0,
@@ -892,12 +656,11 @@ def test_calibration_dialog_shows_auto_eq_diagnostics(qapp):
     )
 
     dialog.close()
-    owner.close()
 
 
-def test_calibration_dialog_does_not_offer_abstained_eq(qapp):
-    owner = _FakeOwner(_FakeProcessor(sample_rate=48_000))
-    dialog = CalibrationDialog(parent=owner)
+def test_calibration_dialog_does_not_offer_abstained_eq(window):
+    _use_processor(window, _FakeProcessor(sample_rate=48_000))
+    dialog = CalibrationDialog(parent=window)
     eq_settings = {
         "band_freqs": [
             80.0,
@@ -934,17 +697,15 @@ def test_calibration_dialog_does_not_offer_abstained_eq(qapp):
     # Review step: the setup and recording widgets are out of the way.
     assert dialog.curve_group.isHidden()
     assert dialog.instructions_group.isHidden()
-    assert dialog.level_meter.isHidden()
+    assert dialog.level_meter_widget.isHidden()
 
     dialog.close()
-    owner.close()
 
 
-def test_latency_calibration_keeps_capture_and_output_rates_distinct(qapp):
-    owner = _FakeOwner(_FakeProcessor(sample_rate=48_000, output_sample_rate=44_100))
-    assert _capture_sample_rate(owner) == 48_000
-    assert _output_sample_rate(owner) == 44_100
-    owner.close()
+def test_latency_calibration_keeps_capture_and_output_rates_distinct(window):
+    _use_processor(window, _FakeProcessor(sample_rate=48_000, output_sample_rate=44_100))
+    assert _capture_sample_rate(window) == 48_000
+    assert _output_sample_rate(window) == 44_100
 
 
 def test_latency_calibration_resamples_selected_route_probe():
@@ -1042,8 +803,8 @@ def test_main_window_diagnostics_include_new_metrics():
     assert "OR:N" in backend_bits
 
 
-def test_health_panel_reports_input_output_and_callback_states():
-    window = _RecoveryWindow()
+def test_health_panel_reports_input_output_and_callback_states(window):
+    _recovery_setup(window)
 
     window._update_diagnostic_labels(
         diagnostics=_healthy_runtime_diagnostics(),
@@ -1058,12 +819,12 @@ def test_health_panel_reports_input_output_and_callback_states():
         output_callback_age_ms=14,
     )
 
-    assert "Input: LOW" in window.input_health_label.text
-    assert window.input_health_label.state == "warn"
-    assert "Output: OK" in window.output_health_label.text
-    assert window.output_health_label.state == "ok"
-    assert "Callbacks: I:12ms O:14ms" == window.callback_health_label.text
-    assert window.callback_health_label.state == "ok"
+    assert "Input: LOW" in window.shell_texts["input_health_label"].text
+    assert window.shell_texts["input_health_label"].state == "warn"
+    assert "Output: OK" in window.shell_texts["output_health_label"].text
+    assert window.shell_texts["output_health_label"].state == "ok"
+    assert "Callbacks: I:12ms O:14ms" == window.shell_texts["callback_health_label"].text
+    assert window.shell_texts["callback_health_label"].state == "ok"
 
     window._update_diagnostic_labels(
         diagnostics=_healthy_runtime_diagnostics(
@@ -1081,15 +842,15 @@ def test_health_panel_reports_input_output_and_callback_states():
         output_callback_age_ms=20,
     )
 
-    assert "Input: CLIPPING" in window.input_health_label.text
-    assert window.input_health_label.state == "bad"
-    assert "Output: CLIP" in window.output_health_label.text
-    assert window.output_health_label.state == "bad"
-    assert window.callback_health_label.state == "warn"
+    assert "Input: CLIPPING" in window.shell_texts["input_health_label"].text
+    assert window.shell_texts["input_health_label"].state == "bad"
+    assert "Output: CLIP" in window.shell_texts["output_health_label"].text
+    assert window.shell_texts["output_health_label"].state == "bad"
+    assert window.shell_texts["callback_health_label"].state == "warn"
 
 
-def test_health_panel_reports_gate_chatter_and_underruns():
-    window = _RecoveryWindow()
+def test_health_panel_reports_gate_chatter_and_underruns(window):
+    _recovery_setup(window)
 
     window._update_diagnostic_labels(
         diagnostics=_healthy_runtime_diagnostics(
@@ -1107,13 +868,13 @@ def test_health_panel_reports_gate_chatter_and_underruns():
         output_callback_age_ms=10,
     )
 
-    assert "Gate: CHATTER" in window.gate_health_label.text
-    assert window.gate_health_label.state == "warn"
-    assert window.underrun_health_label.text == "Underruns: 2"
-    assert window.underrun_health_label.state == "warn"
+    assert "Gate: CHATTER" in window.shell_texts["gate_health_label"].text
+    assert window.shell_texts["gate_health_label"].state == "warn"
+    assert window.shell_texts["underrun_health_label"].text == "Underruns: 2"
+    assert window.shell_texts["underrun_health_label"].state == "warn"
 
 
-def test_input_channel_mode_change_persists_and_applies(monkeypatch):
+def test_input_channel_mode_change_persists_and_applies(window, monkeypatch):
     class _Processor:
         def __init__(self):
             self.modes: list[str] = []
@@ -1122,111 +883,98 @@ def test_input_channel_mode_change_persists_and_applies(monkeypatch):
             self.modes.append(mode)
 
     saved = []
-    window = MainWindow.__new__(MainWindow)
     window.processor = _Processor()
-    window.config = type("Cfg", (), {"input_channel_mode": "average"})()
-    window.compressor_state = Mock()
-    window.compressor_state.get_settings.return_value = {
-        "noise_reference_reliability": 0.8
-    }
-    window.input_channel_mode_choice = _FakeCombo(list(INPUT_CHANNEL_MODE_OPTIONS))
-    window.input_channel_mode_choice.setCurrentIndex(4)
+    window.config.input_channel_mode = "average"
+    window.compressor_state.set_settings({"noise_reference_reliability": 0.8})
+    window.input_channel_mode_choice.setCurrentIndex(
+        window.input_channel_mode_choice.findData("phase_safe_mono")
+    )
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.save_config", lambda cfg: saved.append(cfg) or True
+        main_window, "save_config", lambda cfg: saved.append(cfg) or True
     )
 
     window._on_input_channel_mode_changed()
 
     assert window.config.input_channel_mode == "phase_safe_mono"
     assert window.processor.modes == ["phase_safe_mono"]
-    window.compressor_state.set_settings.assert_called_once_with(
-        {"noise_reference_reliability": 0.0}
-    )
+    reliability = window.compressor_state.get_settings(include_calibration=True)
+    assert reliability["noise_reference_reliability"] == 0.0
     assert saved == [window.config]
 
 
 @pytest.mark.parametrize("save_failure", [False, OSError("config locked")])
-def test_route_input_preference_reports_unsaved_failure(monkeypatch, save_failure):
-    window = MainWindow.__new__(MainWindow)
+def test_route_input_preference_reports_unsaved_failure(window, monkeypatch, save_failure):
     window.processor = Mock()
-    window.config = AppConfig()
-    window.input_choice = _FakeCombo(
-        [("Mic", DeviceIdentity(name="Mic", endpoint_id="input", direction="input"))]
+    window.input_choice.addItem(
+        "Mic", DeviceIdentity(name="Mic", endpoint_id="input", direction="input")
     )
-    window.output_choice = _FakeCombo(
-        [("Cable", DeviceIdentity(name="Cable", endpoint_id="output", direction="output"))]
+    window.output_choice.addItem(
+        "Cable", DeviceIdentity(name="Cable", endpoint_id="output", direction="output")
     )
-    window.input_channel_mode_choice = _FakeCombo(
-        [("Left", "left"), ("Average", "average")]
+    window.input_channel_mode_choice.setCurrentIndex(
+        window.input_channel_mode_choice.findData("left")
     )
-    window.input_cleanup_mode_choice = _FakeCombo(
-        [("Off", "off"), ("Gentle", "gentle")]
+    window.input_cleanup_mode_choice.setCurrentIndex(
+        window.input_cleanup_mode_choice.findData("gentle")
     )
-    window.status_message = _FakeStatusBar()
-    window.input_channel_mode_choice.setCurrentIndex(0)
-    window.input_cleanup_mode_choice.setCurrentIndex(1)
-    route_key = MainWindow._current_device_route_key(window)
+    route_key = window._current_device_route_key()
     assert route_key is not None
     previous = InputDevicePreference(channel_mode="average", cleanup_mode="off")
     window.config.route_input_preferences[route_key] = previous
     if isinstance(save_failure, Exception):
         monkeypatch.setattr(
-            "mic_eq.ui.main_window.save_config",
+            main_window,
+            "save_config",
             Mock(side_effect=save_failure),
         )
     else:
         monkeypatch.setattr(
-            "mic_eq.ui.main_window.save_config",
+            main_window,
+            "save_config",
             Mock(return_value=save_failure),
         )
 
     assert not window._save_current_route_input_preference()
 
     assert window.config.route_input_preferences[route_key] == previous
-    assert "could not be saved" in window.status_message.messages[-1][0].lower()
+    assert "could not be saved" in window.status_message.text.lower()
 
-    window.compressor_state = Mock()
-    window.compressor_state.get_settings.return_value = {
-        "noise_reference_reliability": 0.0
-    }
     window._on_input_channel_mode_changed()
     window.processor.set_input_channel_mode.assert_called_with("left")
-    assert "applied for this session" in window.status_message.messages[-1][0]
+    assert "applied for this session" in window.status_message.text
     window._on_input_cleanup_mode_changed()
     window.processor.set_input_cleanup_mode.assert_called_with("gentle")
-    assert "could not be saved" in window.status_message.messages[-1][0]
+    assert "could not be saved" in window.status_message.text
 
 
-def test_refresh_devices_defers_while_processing(qapp, monkeypatch):
-    window = MainWindow.__new__(MainWindow)
+def test_refresh_devices_defers_while_processing(window, monkeypatch):
     window.processor = Mock()
     window.processor.is_running.return_value = True
-    window.config = AppConfig()
-    window.refresh_btn_action = _FakeControl()
-    window.status_message = _FakeStatusBar()
-    window.input_choice = _FakeCombo(
-        [("Mic", DeviceIdentity(name="Mic", endpoint_id="input", direction="input"))]
+    window.input_choice.addItem(
+        "Mic", DeviceIdentity(name="Mic", endpoint_id="input", direction="input")
     )
-    window.output_choice = _FakeCombo(
-        [("Cable", DeviceIdentity(name="Cable", endpoint_id="output", direction="output"))]
+    window.output_choice.addItem(
+        "Cable", DeviceIdentity(name="Cable", endpoint_id="output", direction="output")
     )
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_input_devices",
+        main_window,
+        "list_input_devices",
         Mock(side_effect=AssertionError("refresh enumerated while running")),
     )
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_output_devices",
+        main_window,
+        "list_output_devices",
         Mock(side_effect=AssertionError("refresh enumerated while running")),
     )
 
     window._refresh_devices()
 
-    assert not window.refresh_btn_action.enabled
-    assert "stop processing" in window.status_message.messages[-1][0].lower()
+    assert not window.refresh_btn_action.isEnabled()
+    assert "stop processing" in window.status_message.text.lower()
 
 
-def test_input_phase_warning_marks_diagnostics_warn():
-    window = _RecoveryWindow()
+def test_input_phase_warning_marks_diagnostics_warn(window):
+    _recovery_setup(window)
     diagnostics = {
         "input_dropped_samples": 0,
         "lock_contention_count": 0,
@@ -1260,10 +1008,10 @@ def test_input_phase_warning_marks_diagnostics_warn():
         rnnoise_buf=0,
     )
 
-    assert "WARN" in window.dropped_label.text
-    assert "PH:1" in window.dropped_label.tooltip
-    assert "COR:-0.91" in window.dropped_label.tooltip
-    assert window.dropped_label.state == "warn"
+    assert "WARN" in window.shell_texts["dropped_label"].text
+    assert "PH:1" in window.shell_texts["dropped_label"].toolTip
+    assert "COR:-0.91" in window.shell_texts["dropped_label"].toolTip
+    assert window.shell_texts["dropped_label"].state == "warn"
 
 
 def test_device_selection_policy_matches_exact_then_unique_name():
@@ -1420,7 +1168,7 @@ def test_start_processor_for_route_rejects_missing_output_device():
         )
 
 
-def test_route_preset_binding_applies_only_to_exact_stable_route(qapp):
+def test_route_preset_binding_applies_only_to_exact_stable_route(window):
     input_identity = DeviceIdentity(
         name="Mic",
         endpoint_id="input-id",
@@ -1435,10 +1183,8 @@ def test_route_preset_binding_applies_only_to_exact_stable_route(qapp):
         direction="output",
         name_ordinal=0,
     )
-    window = MainWindow.__new__(MainWindow)
-    window.input_choice = _FakeCombo([("Mic", input_identity)])
-    window.output_choice = _FakeCombo([("Cable", output_identity)])
-    window.status_message = _FakeStatusBar()
+    window.input_choice.addItem("Mic", input_identity)
+    window.output_choice.addItem("Cable", output_identity)
     route_key = build_latency_profile_key(input_identity, output_identity)
     window.config = AppConfig(
         device_preset_bindings={route_key: DevicePresetBinding("builtin:broadcast")}
@@ -1449,19 +1195,16 @@ def test_route_preset_binding_applies_only_to_exact_stable_route(qapp):
     assert window._apply_bound_preset_for_current_route() is True
     assert loaded == ["builtin:broadcast"]
 
-    window.output_choice = _FakeCombo(
-        [
-            (
-                "Other",
-                DeviceIdentity(
-                    name="Other",
-                    endpoint_id="other-output",
-                    host_api="WASAPI",
-                    direction="output",
-                    name_ordinal=0,
-                ),
-            )
-        ]
+    window.output_choice.clear()
+    window.output_choice.addItem(
+        "Other",
+        DeviceIdentity(
+            name="Other",
+            endpoint_id="other-output",
+            host_api="WASAPI",
+            direction="output",
+            name_ordinal=0,
+        ),
     )
     assert window._apply_bound_preset_for_current_route() is False
     assert loaded == ["builtin:broadcast"]
@@ -1477,55 +1220,35 @@ def test_device_selection_policy_prefers_default_and_virtual_output():
     assert preferred_output_index(identities) == 1
 
 
-def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
-    window = MainWindow.__new__(MainWindow)
-    window.compressor_state = Mock()
-    window.compressor_state.get_settings.return_value = {
-        "noise_reference_reliability": 0.0
-    }
-    window.processor = Mock()
-    window.processor.is_running.return_value = False
-    window.input_channel_mode_choice = _FakeCombo([("Mono", "phase_safe_mono")])
-    window.input_cleanup_mode_choice = _FakeCombo([("Off", "off")])
-    window.input_choice = _FakeCombo(
-        [
-            ("Mic A", DeviceIdentity(name="Mic A", is_default=False)),
-            ("Mic B", DeviceIdentity(name="Mic B", is_default=True)),
-        ]
-    )
-    window.output_choice = _FakeCombo(
-        [
-            ("Out A", DeviceIdentity(name="Out A", is_default=False)),
-            ("Out B", DeviceIdentity(name="Out B", is_default=True)),
-        ]
-    )
-    window.input_choice.setCurrentIndex(0)
-    window.output_choice.setCurrentIndex(0)
-    window.device_warning_banner = _FakeLabel()
-    window.status_message = _FakeStatusBar()
-    window.shell_texts = _device_warning_shell_texts()
+def test_refresh_devices_preserves_existing_selection(window, monkeypatch):
+    window.input_choice.addItem("Mic A", DeviceIdentity(name="Mic A", is_default=False))
+    window.input_choice.addItem("Mic B", DeviceIdentity(name="Mic B", is_default=True))
+    window.output_choice.addItem("Out A", DeviceIdentity(name="Out A", is_default=False))
+    window.output_choice.addItem("Out B", DeviceIdentity(name="Out B", is_default=True))
     window.config = AppConfig(
         last_input_device="Mic A",
         last_output_device="Out A",
         last_input_device_identity=DeviceIdentity(name="Mic A", is_default=False),
         last_output_device_identity=DeviceIdentity(name="Out A", is_default=False),
     )
+    shown = _status_log(window)
 
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_input_devices",
+        main_window,
+        "list_input_devices",
         lambda: [
             type("Dev", (), {"name": "Mic A", "is_default": False})(),
             type("Dev", (), {"name": "Mic B", "is_default": True})(),
         ],
     )
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_output_devices",
+        main_window,
+        "list_output_devices",
         lambda: [
             type("Dev", (), {"name": "Out A", "is_default": False})(),
             type("Dev", (), {"name": "Out B", "is_default": True})(),
         ],
     )
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _cfg: True)
 
     window._refresh_devices()
 
@@ -1535,33 +1258,18 @@ def test_refresh_devices_preserves_existing_selection(qapp, monkeypatch):
     assert window.input_choice.currentData() == DeviceIdentity(
         name="Mic A", is_default=False, direction="input"
     )
-    assert window.status_message.messages == []
-    window.compressor_state.reset_mock()
+    assert shown == []
+    window.compressor_state.set_settings({"noise_reference_reliability": 0.8})
     window._refresh_devices()
-    window.compressor_state.set_settings.assert_not_called()
+    reliability = window.compressor_state.get_settings(include_calibration=True)
+    assert reliability["noise_reference_reliability"] == 0.8
 
 
-def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
-    window = MainWindow.__new__(MainWindow)
-    window.compressor_state = Mock()
-    window.compressor_state.get_settings.return_value = {
-        "noise_reference_reliability": 0.0
-    }
-    window.processor = Mock()
-    window.processor.is_running.return_value = False
-    window.input_choice = _FakeCombo(
-        [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
-    )
-    window.output_choice = _FakeCombo(
-        [("Out A", DeviceIdentity(name="Out A", is_default=True))]
-    )
-    window.input_channel_mode_choice = _FakeCombo([("Average", "average")])
-    window.input_cleanup_mode_choice = _FakeCombo([("Off", "off")])
-    window.input_choice._signals_blocked = True
-    window.input_channel_mode_choice._signals_blocked = True
-    window.device_warning_banner = _FakeLabel()
-    window.status_message = _FakeStatusBar()
-    window.shell_texts = _device_warning_shell_texts()
+def test_refresh_devices_restores_all_control_signal_states(window, monkeypatch):
+    window.input_choice.addItem("Mic A", DeviceIdentity(name="Mic A", is_default=True))
+    window.output_choice.addItem("Out A", DeviceIdentity(name="Out A", is_default=True))
+    window.input_choice.blockSignals(True)
+    window.input_channel_mode_choice.blockSignals(True)
     window.config = AppConfig(
         last_input_device_identity=DeviceIdentity(name="Mic A"),
         last_output_device_identity=DeviceIdentity(name="Out A"),
@@ -1569,121 +1277,95 @@ def test_refresh_devices_restores_all_control_signal_states(qapp, monkeypatch):
         last_output_device="Out A",
     )
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_input_devices",
+        main_window,
+        "list_input_devices",
         lambda: [type("Dev", (), {"name": "Mic A", "is_default": True})()],
     )
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_output_devices",
+        main_window,
+        "list_output_devices",
         lambda: [type("Dev", (), {"name": "Out A", "is_default": True})()],
     )
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _cfg: True)
 
     window._refresh_devices()
 
-    assert window.input_choice._signals_blocked
-    assert not window.output_choice._signals_blocked
-    assert window.input_channel_mode_choice._signals_blocked
-    assert not window.input_cleanup_mode_choice._signals_blocked
+    assert window.input_choice.signalsBlocked()
+    assert not window.output_choice.signalsBlocked()
+    assert window.input_channel_mode_choice.signalsBlocked()
+    assert not window.input_cleanup_mode_choice.signalsBlocked()
 
 
-def test_refresh_devices_preserves_missing_output_for_reconnect(qapp, monkeypatch):
-    window = MainWindow.__new__(MainWindow)
-    window.compressor_state = Mock()
-    window.compressor_state.get_settings.return_value = {
-        "noise_reference_reliability": 0.8
-    }
-    window.processor = Mock()
-    window.processor.is_running.return_value = False
-    window.input_channel_mode_choice = _FakeCombo([("Mono", "phase_safe_mono")])
-    window.input_cleanup_mode_choice = _FakeCombo([("Off", "off")])
-    window.input_choice = _FakeCombo(
-        [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
+def test_refresh_devices_preserves_missing_output_for_reconnect(window, monkeypatch):
+    window.compressor_state.set_settings({"noise_reference_reliability": 0.8})
+    window.input_choice.addItem("Mic A", DeviceIdentity(name="Mic A", is_default=True))
+    window.output_choice.addItem(
+        "Out Old", DeviceIdentity(name="Out Old", is_default=False)
     )
-    window.output_choice = _FakeCombo(
-        [("Out Old", DeviceIdentity(name="Out Old", is_default=False))]
-    )
-    window.input_choice.setCurrentIndex(0)
-    window.output_choice.setCurrentIndex(0)
-    window.device_warning_banner = _FakeLabel()
-    window.status_message = _FakeStatusBar()
-    window.shell_texts = _device_warning_shell_texts()
     window.config = AppConfig(
         last_input_device="Mic A",
         last_output_device="Out Old",
         last_input_device_identity=DeviceIdentity(name="Mic A", is_default=True),
         last_output_device_identity=DeviceIdentity(name="Out Old", is_default=False),
     )
+    shown = _status_log(window)
 
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_input_devices",
+        main_window,
+        "list_input_devices",
         lambda: [type("Dev", (), {"name": "Mic A", "is_default": True})()],
     )
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_output_devices",
+        main_window,
+        "list_output_devices",
         lambda: [type("Dev", (), {"name": "Out New", "is_default": True})()],
     )
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _cfg: True)
 
     window._refresh_devices()
 
-    window.compressor_state.set_settings.assert_called_once_with(
-        {"noise_reference_reliability": 0.0}
-    )
+    reliability = window.compressor_state.get_settings(include_calibration=True)
+    assert reliability["noise_reference_reliability"] == 0.0
     assert window.config.last_output_device == "Out Old"
     assert window.config.last_output_device_identity == DeviceIdentity(
         name="Out Old", is_default=False
     )
     assert window.output_choice.currentData() is None
-    assert any(
-        "Destination 'Out Old' is disconnected" in message
-        for message, _ in window.status_message.messages
-    )
+    assert any("Destination 'Out Old' is disconnected" in message for message in shown)
 
 
 @pytest.mark.parametrize("write_failure", [False, OSError("config locked")])
-def test_startup_preset_write_failure_keeps_previous_selection(monkeypatch, write_failure):
-    window = MainWindow.__new__(MainWindow)
+def test_startup_preset_write_failure_keeps_previous_selection(window, monkeypatch, write_failure):
     previous = _startup_builtin_id("flat")
-    window.config = AppConfig(startup_preset=previous)
-    window.status_message = _FakeStatusBar()
-    window._update_startup_preset_menu = Mock()
+    window.config.startup_preset = previous
+    window._update_startup_preset_menu()
     save = Mock(
         side_effect=write_failure if isinstance(write_failure, Exception) else None,
         return_value=write_failure,
     )
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", save)
+    monkeypatch.setattr(main_window, "save_config", save)
+    actions = {
+        action.data(): action
+        for action in window._startup_preset_menu.actions()
+        if action.isCheckable()
+    }
 
-    MainWindow._set_startup_preset(window, _startup_builtin_id("voice"))
+    actions[_startup_builtin_id("voice")].trigger()
 
     assert window.config.startup_preset == previous
-    assert "previous selection kept" in window.status_message.messages[-1][0]
-    window._update_startup_preset_menu.assert_called_once_with(previous)
+    assert "previous selection kept" in window.status_message.text
+    assert [data for data, action in actions.items() if action.isChecked()] == [previous]
 
 
 @pytest.mark.parametrize("write_failure", [False, OSError("config locked")])
 def test_refresh_device_write_failure_keeps_live_route_and_reports_session_state(
-    monkeypatch, write_failure
+    window, monkeypatch, write_failure
 ):
-    window = MainWindow.__new__(MainWindow)
-    window.processor = Mock()
-    window.processor.is_running.return_value = False
-    window.refresh_btn_action = _FakeControl()
-    window.device_warning_banner = _FakeLabel()
-    window.status_message = _FakeStatusBar()
-    window.shell_texts = _device_warning_shell_texts()
-    window.input_choice = _FakeCombo()
-    window.output_choice = _FakeCombo()
     window.config = AppConfig(
         last_input_device_identity=DeviceIdentity(name="Mic", direction="input"),
         last_output_device_identity=DeviceIdentity(name="Cable", direction="output"),
     )
-    window._apply_input_preferences_for_current_route = Mock()
-    window._apply_latency_compensation_for_current_devices = Mock()
-    window._apply_bound_preset_for_current_route = Mock()
-    window._sync_calibration_evidence = Mock()
-    window._update_session_summary = Mock()
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_input_devices",
+        main_window,
+        "list_input_devices",
         lambda: [
             SimpleNamespace(
                 name="Mic",
@@ -1697,7 +1379,8 @@ def test_refresh_device_write_failure_keeps_live_route_and_reports_session_state
         ],
     )
     monkeypatch.setattr(
-        "mic_eq.ui.main_window.list_output_devices",
+        main_window,
+        "list_output_devices",
         lambda: [
             SimpleNamespace(
                 name="Cable",
@@ -1714,93 +1397,74 @@ def test_refresh_device_write_failure_keeps_live_route_and_reports_session_state
         side_effect=write_failure if isinstance(write_failure, Exception) else None,
         return_value=write_failure,
     )
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", save)
+    monkeypatch.setattr(main_window, "save_config", save)
 
     window._refresh_devices()
 
     assert window.input_choice.currentData().endpoint_id == "input-id"
     assert window.output_choice.currentData().endpoint_id == "output-id"
-    assert "applied for this session" in window.status_message.messages[-1][0]
-    assert "could not be saved" in window.status_message.messages[-1][0]
+    assert "applied for this session" in window.status_message.text
+    assert "could not be saved" in window.status_message.text
 
 
 @pytest.mark.parametrize("write_failure", [False, OSError("config locked")])
 def test_restore_write_failure_keeps_canonicalized_route_in_session(
-    monkeypatch, write_failure
+    window, monkeypatch, write_failure
 ):
-    window = MainWindow.__new__(MainWindow)
     input_identity = DeviceIdentity(
         name="Mic", endpoint_id="input-id", direction="input"
     )
     output_identity = DeviceIdentity(
         name="Cable", endpoint_id="output-id", direction="output"
     )
-    window.input_choice = _FakeCombo([("Mic", input_identity)])
-    window.output_choice = _FakeCombo([("Cable", output_identity)])
-    window.status_message = _FakeStatusBar()
-    window.processor = Mock()
+    window.input_choice.addItem("Mic", input_identity)
+    window.output_choice.addItem("Cable", output_identity)
     window.config = AppConfig(
         last_input_device_identity=DeviceIdentity(name="Mic", direction="input"),
         last_output_device_identity=DeviceIdentity(name="Cable", direction="output"),
     )
-    window._restore_ui_state = Mock()
-    window._apply_latency_compensation_for_current_devices = Mock()
-    window._apply_bound_preset_for_current_route = Mock(return_value=False)
     save = Mock(
         side_effect=write_failure if isinstance(write_failure, Exception) else None,
         return_value=write_failure,
     )
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", save)
+    monkeypatch.setattr(main_window, "save_config", save)
 
     window._restore_from_config()
 
     assert window.config.last_input_device_identity == input_identity
     assert window.config.last_output_device_identity == output_identity
-    assert "applied for this session" in window.status_message.messages[-1][0]
-    assert "could not be saved" in window.status_message.messages[-1][0]
+    assert "applied for this session" in window.status_message.text
+    assert "could not be saved" in window.status_message.text
 
 
 @pytest.mark.parametrize("write_failure", [False, OSError("config locked")])
-def test_device_change_write_failure_keeps_active_route(monkeypatch, write_failure):
-    window = MainWindow.__new__(MainWindow)
+def test_device_change_write_failure_keeps_active_route(window, monkeypatch, write_failure):
     input_identity = DeviceIdentity(
         name="Mic", endpoint_id="input-id", direction="input"
     )
     output_identity = DeviceIdentity(
         name="Cable", endpoint_id="output-id", direction="output"
     )
-    window.input_choice = _FakeCombo([("Mic", input_identity)])
-    window.output_choice = _FakeCombo([("Cable", output_identity)])
-    window.status_message = _FakeStatusBar()
-    window.config = AppConfig()
-    window._apply_input_preferences_for_current_route = Mock()
-    window._apply_latency_compensation_for_current_devices = Mock()
-    window._apply_bound_preset_for_current_route = Mock(return_value=False)
-    window._sync_calibration_evidence = Mock()
-    window._update_session_summary = Mock()
+    window.input_choice.addItem("Mic", input_identity)
+    window.output_choice.addItem("Cable", output_identity)
     save = Mock(
         side_effect=write_failure if isinstance(write_failure, Exception) else None,
         return_value=write_failure,
     )
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", save)
+    monkeypatch.setattr(main_window, "save_config", save)
 
     window._on_device_changed()
 
     assert window.config.last_input_device_identity == input_identity
     assert window.config.last_output_device_identity == output_identity
-    assert "applied for this session" in window.status_message.messages[-1][0]
-    assert "could not be saved" in window.status_message.messages[-1][0]
+    assert "applied for this session" in window.status_message.text
+    assert "could not be saved" in window.status_message.text
 
 
-def test_latency_profile_key_uses_structured_device_identity():
-    window = MainWindow.__new__(MainWindow)
-    window.input_choice = _FakeCombo(
-        [("Mic A", DeviceIdentity(name="Mic A", is_default=True))]
-    )
-    window.output_choice = _FakeCombo(
-        [("Out B", DeviceIdentity(name="Out B", is_default=False))]
-    )
-    key = MainWindow._latency_profile_key(window)
+def test_latency_profile_key_uses_structured_device_identity(window):
+    window.input_choice.addItem("Mic A", DeviceIdentity(name="Mic A", is_default=True))
+    window.output_choice.addItem("Out B", DeviceIdentity(name="Out B", is_default=False))
+    key = window._latency_profile_key()
 
     assert key == build_latency_profile_key(
         DeviceIdentity(name="Mic A", is_default=True),
@@ -1809,16 +1473,11 @@ def test_latency_profile_key_uses_structured_device_identity():
     assert key != legacy_latency_profile_key("Mic A", "Out B")
 
 
-def test_calibration_dialog_selected_device_pair_returns_names():
-    owner = type("Owner", (), {})()
-    owner.input_choice = _FakeCombo(
-        [("Mic A", DeviceIdentity(name="Mic A", is_default=False))]
-    )
-    owner.output_choice = _FakeCombo(
-        [("Out B", DeviceIdentity(name="Out B", is_default=True))]
-    )
+def test_calibration_dialog_selected_device_pair_returns_names(window):
+    window.input_choice.addItem("Mic A", DeviceIdentity(name="Mic A", is_default=False))
+    window.output_choice.addItem("Out B", DeviceIdentity(name="Out B", is_default=True))
 
-    assert _selected_device_pair(owner) == ("Mic A", "Out B")
+    assert _selected_device_pair(window) == ("Mic A", "Out B")
 
 
 def test_latency_dialog_device_name_coerces_identity_to_name():
@@ -1829,44 +1488,45 @@ def test_latency_dialog_device_name_coerces_identity_to_name():
     assert latency_device_name(None) is None
 
 
-def test_update_diagnostics_surfaces_output_recovery_and_reuses_diagnostics(qapp):
-    window = _RecoveryWindow()
+def test_update_diagnostics_surfaces_output_recovery_and_reuses_diagnostics(window):
+    _recovery_setup(window)
+    shown = _status_log(window)
 
-    MainWindow._update_diagnostics(window)
+    window._update_diagnostics()
 
     assert window.processor.diagnostics_calls == 1
-    assert "ORE:4" in window.recovery_diag_label.text
-    assert "R:2" in window.recovery_diag_label.text
-    assert "R:4" not in window.dropped_label.text
-    assert "RTO:8" in window.dropped_label.tooltip
-    assert "ICE:9" in window.dropped_label.tooltip
-    assert "OCE:10" in window.dropped_label.tooltip
-    assert "RT:fixed real-time buffer overflow" in window.dropped_label.tooltip
-    assert not window.status_message.messages
+    assert "ORE:4" in window.shell_texts["recovery_diag_label"].text
+    assert "R:2" in window.shell_texts["recovery_diag_label"].text
+    assert "R:4" not in window.shell_texts["dropped_label"].text
+    assert "RTO:8" in window.shell_texts["dropped_label"].toolTip
+    assert "ICE:9" in window.shell_texts["dropped_label"].toolTip
+    assert "OCE:10" in window.shell_texts["dropped_label"].toolTip
+    assert "RT:fixed real-time buffer overflow" in window.shell_texts["dropped_label"].toolTip
+    assert not shown
 
 
-def test_stopped_diagnostics_continue_native_recovery_and_reconcile_controls(qapp):
+def test_stopped_diagnostics_continue_native_recovery_and_reconcile_controls(window):
     processor = _StoppedRecoveryProcessor()
-    window = _RecoveryWindow(processor)
+    _recovery_setup(window, processor)
 
-    MainWindow._update_diagnostics(window)
+    window._update_diagnostics()
 
     assert processor.diagnostics_calls == 0
     assert processor.recovery_calls == 1
-    assert window.start_btn_action.enabled is True
-    assert window.stop_btn_action.enabled is False
+    assert window.start_btn_action.isEnabled()
+    assert not window.stop_btn_action.isEnabled()
 
-    MainWindow._update_diagnostics(window)
+    window._update_diagnostics()
 
     assert processor.recovery_calls == 2
     assert processor.is_running() is True
-    assert window.start_btn_action.enabled is False
-    assert window.stop_btn_action.enabled is True
+    assert not window.start_btn_action.isEnabled()
+    assert window.stop_btn_action.isEnabled()
 
 
-def test_stale_output_underrun_and_recovery_totals_do_not_warn(monkeypatch):
+def test_stale_output_underrun_and_recovery_totals_do_not_warn(window, monkeypatch):
     monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: 10.0)
-    window = _RecoveryWindow()
+    _recovery_setup(window)
     diagnostics = {
         "input_dropped_samples": 0,
         "lock_contention_count": 0,
@@ -1908,16 +1568,16 @@ def test_stale_output_underrun_and_recovery_totals_do_not_warn(monkeypatch):
         rnnoise_buf=0,
     )
 
-    assert "U:4" in window.dropped_label.text
-    assert "R:606" not in window.dropped_label.text
-    assert window.dropped_label.state == "ok"
-    assert window.recovery_diag_label.state == "ok"
+    assert "U:4" in window.shell_texts["dropped_label"].text
+    assert "R:606" not in window.shell_texts["dropped_label"].text
+    assert window.shell_texts["dropped_label"].state == "ok"
+    assert window.shell_texts["recovery_diag_label"].state == "ok"
 
 
-def test_new_output_underrun_total_warns_for_stability_window(monkeypatch):
+def test_new_output_underrun_total_warns_for_stability_window(window, monkeypatch):
     clock = [10.0]
     monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
-    window = _RecoveryWindow()
+    _recovery_setup(window)
     diagnostics = {
         "input_dropped_samples": 0,
         "lock_contention_count": 0,
@@ -1951,7 +1611,7 @@ def test_new_output_underrun_total_warns_for_stability_window(monkeypatch):
         rnnoise_buf=0,
     )
 
-    assert window.dropped_label.state == "warn"
+    assert window.shell_texts["dropped_label"].state == "warn"
     clock[0] += 5.1
 
     window._update_diagnostic_labels(
@@ -1963,11 +1623,11 @@ def test_new_output_underrun_total_warns_for_stability_window(monkeypatch):
         rnnoise_buf=0,
     )
 
-    assert window.dropped_label.state == "ok"
+    assert window.shell_texts["dropped_label"].state == "ok"
 
 
-def test_new_output_clip_event_warns_once():
-    window = _RecoveryWindow()
+def test_new_output_clip_event_warns_once(window):
+    _recovery_setup(window)
     diagnostics = {
         "input_dropped_samples": 0,
         "lock_contention_count": 0,
@@ -2005,10 +1665,10 @@ def test_new_output_clip_event_warns_once():
         rnnoise_buf=0,
     )
 
-    assert "OCL:1" in window.dropped_label.tooltip
-    assert "OPK:-0.2" in window.dropped_label.tooltip
-    assert "LIM:-1.5" in window.dropped_label.tooltip
-    assert window.dropped_label.state == "warn"
+    assert "OCL:1" in window.shell_texts["dropped_label"].toolTip
+    assert "OPK:-0.2" in window.shell_texts["dropped_label"].toolTip
+    assert "LIM:-1.5" in window.shell_texts["dropped_label"].toolTip
+    assert window.shell_texts["dropped_label"].state == "warn"
 
     window._update_diagnostic_labels(
         diagnostics=diagnostics,
@@ -2019,11 +1679,11 @@ def test_new_output_clip_event_warns_once():
         rnnoise_buf=0,
     )
 
-    assert window.dropped_label.state == "ok"
+    assert window.shell_texts["dropped_label"].state == "ok"
 
 
-def test_new_output_true_peak_event_warns_once():
-    window = _RecoveryWindow()
+def test_new_output_true_peak_event_warns_once(window):
+    _recovery_setup(window)
     diagnostics = {
         "input_dropped_samples": 0,
         "lock_contention_count": 0,
@@ -2063,11 +1723,11 @@ def test_new_output_true_peak_event_warns_once():
         rnnoise_buf=0,
     )
 
-    assert "Output: TRUE PEAK" in window.output_health_label.text
-    assert window.output_health_label.state == "warn"
-    assert "OTP:1" in window.dropped_label.tooltip
-    assert "TPK:0.4" in window.dropped_label.tooltip
-    assert window.dropped_label.state == "warn"
+    assert "Output: TRUE PEAK" in window.shell_texts["output_health_label"].text
+    assert window.shell_texts["output_health_label"].state == "warn"
+    assert "OTP:1" in window.shell_texts["dropped_label"].toolTip
+    assert "TPK:0.4" in window.shell_texts["dropped_label"].toolTip
+    assert window.shell_texts["dropped_label"].state == "warn"
 
     window._update_diagnostic_labels(
         diagnostics=diagnostics,
@@ -2079,14 +1739,14 @@ def test_new_output_true_peak_event_warns_once():
         output_rms_db=-18.0,
     )
 
-    assert "Output: OK" in window.output_health_label.text
-    assert window.dropped_label.state == "ok"
+    assert "Output: OK" in window.shell_texts["output_health_label"].text
+    assert window.shell_texts["dropped_label"].state == "ok"
 
 
-def test_new_gate_chatter_event_warns_for_stability_window(monkeypatch):
+def test_new_gate_chatter_event_warns_for_stability_window(window, monkeypatch):
     clock = [10.0]
     monkeypatch.setattr("mic_eq.ui.health.time.monotonic", lambda: clock[0])
-    window = _RecoveryWindow()
+    _recovery_setup(window)
     diagnostics = {
         "input_dropped_samples": 0,
         "lock_contention_count": 0,
@@ -2124,8 +1784,8 @@ def test_new_gate_chatter_event_warns_for_stability_window(monkeypatch):
         rnnoise_buf=0,
     )
 
-    assert "GCH:1" in window.dropped_label.tooltip
-    assert window.dropped_label.state == "warn"
+    assert "GCH:1" in window.shell_texts["dropped_label"].toolTip
+    assert window.shell_texts["dropped_label"].state == "warn"
     clock[0] += 5.1
 
     window._update_diagnostic_labels(
@@ -2137,7 +1797,7 @@ def test_new_gate_chatter_event_warns_for_stability_window(monkeypatch):
         rnnoise_buf=0,
     )
 
-    assert window.dropped_label.state == "ok"
+    assert window.shell_texts["dropped_label"].state == "ok"
 
 
 def test_startup_preset_ids_normalize_builtin_and_custom_legacy_names():
@@ -2151,17 +1811,7 @@ def test_startup_preset_ids_normalize_builtin_and_custom_legacy_names():
     ) == _startup_builtin_id("flat")
 
 
-def test_apply_preset_passes_advanced_compressor_fields(qapp):
-    window = MainWindow.__new__(MainWindow)
-    window.gate_state = _PresetState()
-    window.eq_state = _PresetState()
-    window.deesser_state = _PresetState()
-    window.compressor_state = _PresetState()
-    window.limiter_state = _PresetState()
-    window.processor = _PresetProcessor()
-    window.noise_suppression_state = NoiseSuppressionState(window.processor)
-    window.status_message = _FakeStatusBar()
-
+def test_apply_preset_passes_advanced_compressor_fields(window):
     preset = Preset(
         name="Compressor Advanced",
         compressor=CompressorSettings(
@@ -2180,190 +1830,142 @@ def test_apply_preset_passes_advanced_compressor_fields(qapp):
         limiter=LimiterSettings(careful_output_enabled=False),
     )
 
-    MainWindow._write_processing_configuration(window, preset)
+    window._write_processing_configuration(preset)
 
-    assert window.gate_state.settings == asdict(preset.gate)
-    assert window.eq_state.settings == preset.eq.to_dict()
-    assert window.deesser_state.settings == asdict(preset.deesser)
-    assert window.compressor_state.settings["adaptive_release"] is True
-    assert window.compressor_state.settings["base_release_ms"] == 75.0
-    assert window.compressor_state.settings["auto_makeup_enabled"] is True
-    assert window.compressor_state.settings["target_lufs"] == -16.0
+    assert window.gate_state.get_settings() == asdict(preset.gate)
+    assert window.eq_state.get_eq_settings().to_dict() == preset.eq.to_dict()
+    assert window.deesser_state.get_settings() == asdict(preset.deesser)
+    assert window.compressor_state.get_settings() == asdict(preset.compressor)
+    assert window.compressor_state.get_settings()["adaptive_release"] is True
+    assert window.compressor_state.get_settings()["base_release_ms"] == 75.0
+    assert window.compressor_state.get_settings()["auto_makeup_enabled"] is True
+    assert window.compressor_state.get_settings()["target_lufs"] == -16.0
     assert (
-        window.compressor_state.settings["sidechain_highpass_enabled"]
+        window.compressor_state.get_settings()["sidechain_highpass_enabled"]
         is False
     )
-    assert window.limiter_state.settings["careful_output_enabled"] is False
-    assert "noise_reference_reliability" not in window.compressor_state.settings
+    assert window.limiter_state.get_settings()["careful_output_enabled"] is False
 
 
-def test_configuration_writer_rejects_model_load_failure_before_other_state_edits(qapp):
-    window = MainWindow.__new__(MainWindow)
-    window.gate_state = _PresetState()
-    window.eq_state = _PresetState()
-    window.deesser_state = _PresetState()
-    window.compressor_state = _PresetState()
-    window.limiter_state = _PresetState()
-    window.processor = _PresetProcessorRaisesForDeepFilter()
-    window.noise_suppression_state = NoiseSuppressionState(window.processor)
-    window.status_message = _FakeStatusBar()
+def test_configuration_writer_rejects_model_load_failure_before_other_state_edits(window):
+    def set_noise_model(model):
+        if model == "deepfilter":
+            raise RuntimeError("test model load failure")
+        return True
+
+    processor = Mock()
+    processor.list_noise_models.return_value = [
+        ("rnnoise", "RNNoise"),
+        ("deepfilter", "DeepFilter"),
+    ]
+    processor.set_noise_model.side_effect = set_noise_model
+    window.noise_suppression_state = NoiseSuppressionState(processor, window)
+    _use_processor(window, processor)
 
     preset = Preset()
     preset.rnnoise.model = "deepfilter"
 
     with pytest.raises(RuntimeError):
-        MainWindow._write_processing_configuration(window, preset)
+        window._write_processing_configuration(preset)
     assert window.noise_suppression_state.get_settings()["model"] == "rnnoise"
-    assert all(state.settings is None for state in (
-        window.gate_state, window.eq_state, window.deesser_state,
-        window.compressor_state, window.limiter_state,
-    ))
-
-
-class _DeferredPresetState:
-    def __init__(self, events, name, *, fail_value=None):
-        self.events = events
-        self.name = name
-        self.fail_value = fail_value
-        self.failed = False
-        self.settings = None
-        self._rate_limiter = RateLimiter(interval_ms=5000)
-        self._rate_limiter._last_call_time = time.monotonic() * 1000
-
-    def set_settings(self, settings):
-        self.settings = dict(settings)
-        snapshot = dict(settings)
-
-        def apply():
-            if (
-                not self.failed
-                and self.fail_value is not None
-                and snapshot.get("threshold_db") == self.fail_value
-            ):
-                self.failed = True
-                raise RuntimeError("deferred de-esser setter failed")
-            self.events.append(("native", self.name, snapshot))
-
-        self._rate_limiter.call(apply)
-
-    def get_settings(self, *, include_calibration=False):
-        settings = asdict(Preset().compressor)
-        if include_calibration:
-            settings["noise_reference_reliability"] = 0.0
-        return settings
-
-    def cancel(self):
-        self._rate_limiter.cancel()
-
-    def flush(self):
-        self._rate_limiter.flush()
-
-
-class _DeferredEQState:
-    def __init__(self, events):
-        self.events = events
-        self._rate_limiter = RateLimiter(interval_ms=5000)
-        self._rate_limiter._last_call_time = time.monotonic() * 1000
-
-    def queue_preexisting_edits(self):
-        self._rate_limiter.call(
-            lambda: self.events.extend(("native", f"old-eq-{field}") for field in (
-                "gain", "frequency", "curve",
-            ))
-        )
-
-    def set_settings(self, _settings):
-        self.events.append(("native", "eq-snapshot"))
-
-    def cancel(self):
-        self._rate_limiter.cancel()
-
-    def flush(self):
-        self._rate_limiter.flush()
-
-
-def _deferred_configuration_window(events, *, fail_deesser_value=None):
-    window = MainWindow.__new__(MainWindow)
-    window.gate_state = _DeferredPresetState(events, "gate")
-    window.eq_state = _PresetState()
-    window.deesser_state = _DeferredPresetState(
-        events, "de-esser", fail_value=fail_deesser_value
-    )
-    window.compressor_state = _DeferredPresetState(events, "compressor")
-    window.limiter_state = _DeferredPresetState(events, "limiter")
-    window.processor = _PresetProcessor()
-    window.noise_suppression_state = NoiseSuppressionState(window.processor)
-    window._current_value_provenance = {}
-    window._history_replaying = False
-    window._get_current_preset = Preset
-    window._processing_mode = lambda: "normal"
-    window._set_processing_mode = lambda _mode: None
-    window._sync_calibration_evidence = lambda **_kwargs: None
-    window.set_temporary_output_mute = lambda muted, _reason: events.append(
-        ("mute", muted)
-    )
-    return window
-
-
-def test_configuration_finishes_rate_limited_native_writes_before_unmute(qapp):
-    events = []
-    window = _deferred_configuration_window(events)
-
-    MainWindow.apply_processing_configuration(window, Preset())
-
-    unmute_index = events.index(("mute", False))
-    native_events = [event for event in events if event[0] == "native"]
-    assert {event[1] for event in native_events} == {
-        "gate", "de-esser", "compressor", "limiter"
+    # Only the noise model's own writes (and its rollback) reached the processor.
+    assert {name for name, _args, _kwargs in processor.mock_calls} <= {
+        "list_noise_models", "set_noise_model", "set_rnnoise_enabled", "set_rnnoise_strength",
     }
-    assert all(event[0] == "native" for event in events[1:unmute_index])
-    assert not window.gate_state._rate_limiter._timer.isActive()
-    assert not window.deesser_state._rate_limiter._timer.isActive()
-    assert not window.compressor_state._rate_limiter._timer.isActive()
-    assert not window.limiter_state._rate_limiter._timer.isActive()
 
 
-def test_deferred_setter_failure_rolls_back_before_unmute(qapp):
-    events = []
-    window = _deferred_configuration_window(events, fail_deesser_value=-11.0)
+def _configuration_processor():
+    """A processor that accepts every native write; tests read its call order."""
+    processor = Mock()
+    processor.is_running.return_value = False
+    processor.get_deesser_high_cut_hz.return_value = 0.0
+    return processor
+
+
+_WRITES = ("set_", "apply_")
+
+
+def _writes_between_mutes(calls):
+    """The native writes made after the configuration mute and before its release."""
+    mute, unmute = call.set_output_mute(True), call.set_output_mute(False)
+    assert mute in calls and unmute in calls
+    start = calls.index(mute)
+    end = len(calls) - 1 - calls[::-1].index(unmute)
+    writes = [c for c in calls[start + 1:end] if c[0].startswith(_WRITES)]
+    assert not [c for c in calls[end + 1:] if c[0].startswith(_WRITES)]
+    return writes
+
+
+def test_configuration_finishes_rate_limited_native_writes_before_unmute(window, monkeypatch):
+    _freeze_throttle_clock(monkeypatch)
+    processor = _configuration_processor()
+    _use_processor(window, processor)
+    defaults = Preset()
+    states = (
+        (window.gate_state, "threshold_db", processor.set_gate_threshold,
+         defaults.gate.threshold_db),
+        (window.deesser_state, "threshold_db", processor.set_deesser_threshold_db,
+         defaults.deesser.threshold_db),
+        (window.compressor_state, "threshold_db", processor.set_compressor_threshold,
+         defaults.compressor.threshold_db),
+        (window.limiter_state, "ceiling_db", processor.set_limiter_ceiling,
+         defaults.limiter.ceiling_db),
+    )
+    for state, name, _write, _default in states:
+        state.set_value(name, -11.0)  # applied at once
+        state.set_value(name, -12.0)  # waits behind the throttle
+        assert state._rate_limiter._timer.isActive()
+    queued = len(processor.mock_calls)
+
+    window.apply_processing_configuration(defaults)
+
+    writes = _writes_between_mutes(processor.mock_calls[queued:])
+    assert {name for name, _args, _kwargs in writes} >= {
+        "set_gate_threshold", "set_deesser_threshold_db",
+        "set_compressor_threshold", "set_limiter_ceiling",
+    }
+    for state, _name, write, default in states:
+        assert write.call_args.args == (default,)
+        assert not state._rate_limiter._timer.isActive()
+
+
+def test_setter_failure_rolls_back_before_unmute(window):
+    processor = _configuration_processor()
+    failed = []
+
+    def set_threshold(value):
+        if value == -11.0 and not failed:
+            failed.append(value)
+            raise RuntimeError("de-esser setter failed")
+
+    processor.set_deesser_threshold_db.side_effect = set_threshold
+    _use_processor(window, processor)
     candidate = Preset()
     candidate.deesser.threshold_db = -11.0
 
-    with pytest.raises(RuntimeError, match="deferred de-esser setter failed"):
-        MainWindow.apply_processing_configuration(window, candidate)
+    with pytest.raises(RuntimeError, match="de-esser setter failed"):
+        window.apply_processing_configuration(candidate)
 
-    rollback_index = next(
-        index
-        for index, event in enumerate(events)
-        if event[0] == "native"
-        and event[1] == "de-esser"
-        and event[2]["threshold_db"] == -28.0
-    )
-    unmute_index = events.index(("mute", False))
-    assert rollback_index < unmute_index
-    assert events[-1] == ("mute", False)
+    writes = _writes_between_mutes(processor.mock_calls)
+    assert call.set_deesser_threshold_db(-28.0) in writes
+    assert call.set_deesser_threshold_db(-11.0) in writes
 
 
-def test_configuration_cancels_superseded_eq_edits_before_snapshot_and_unmute(qapp):
-    events = []
-    window = _deferred_configuration_window(events)
-    eq_state = _DeferredEQState(events)
-    eq_state.queue_preexisting_edits()
-    window.eq_state = eq_state
+def test_configuration_cancels_superseded_eq_edits_before_snapshot_and_unmute(window, monkeypatch):
+    _freeze_throttle_clock(monkeypatch)
+    processor = _configuration_processor()
+    _use_processor(window, processor)
+    window.eq_state.set_band_value(0, "gain_db", 3.0)  # applied at once
+    window.eq_state.set_band_value(0, "gain_db", 4.0)  # waits behind the throttle
+    assert window.eq_state._rate_limiter._timer.isActive()
+    queued = len(processor.mock_calls)
 
-    MainWindow.apply_processing_configuration(window, Preset())
+    window.apply_processing_configuration(Preset())
 
-    eq_native_labels = [
-        event[1]
-        for event in events
-        if event[:1] == ("native",)
-        and (event[1].startswith("old-eq-") or event[1] == "eq-snapshot")
-    ]
-    snapshot_index = eq_native_labels.index("eq-snapshot")
-    assert eq_native_labels[:snapshot_index] == []
-    assert eq_native_labels[snapshot_index + 1 :] == []
-    assert not eq_state._rate_limiter._timer.isActive()
-    assert events.index(("native", "eq-snapshot")) < events.index(("mute", False))
+    writes = _writes_between_mutes(processor.mock_calls[queued:])
+    assert [name for name, _args, _kwargs in writes].count("apply_eq_layers") == 1
+    assert window.eq_state.get_eq_settings().bands[0].gain_db == 0.0
+    assert not window.eq_state._rate_limiter._timer.isActive()
 
 
 class _LatencyProcessor:
@@ -2410,21 +2012,16 @@ class _LatencyProcessor:
         return None
 
 
-class _LatencyOwner(QWidget):
-    def __init__(self, processor):
-        super().__init__()
-        self.processor = processor
-        self.input_choice = _FakeCombo(
-            [("Mic", DeviceIdentity(name="Mic", is_default=False))]
-        )
-        self.output_choice = _FakeCombo(
-            [("Out", DeviceIdentity(name="Out", is_default=False))]
-        )
+def _latency_window(window, processor):
+    _use_processor(window, processor)
+    window.input_choice.addItem("Mic", DeviceIdentity(name="Mic", is_default=False))
+    window.output_choice.addItem("Out", DeviceIdentity(name="Out", is_default=False))
+    return window
 
 
-def test_latency_calibration_failure_stops_owned_processor(qapp):
+def test_latency_calibration_failure_stops_owned_processor(window):
     processor = _LatencyProcessor(running=False)
-    owner = _LatencyOwner(processor)
+    owner = _latency_window(window, processor)
     dialog = LatencyCalibrationDialog(owner)
 
     dialog._on_run_clicked()
@@ -2434,10 +2031,10 @@ def test_latency_calibration_failure_stops_owned_processor(qapp):
     assert not processor.running
 
 
-def test_latency_calibration_respects_user_mute(qapp, monkeypatch):
+def test_latency_calibration_respects_user_mute(window, monkeypatch):
     processor = _LatencyProcessor(running=False)
     processor.set_output_mute = Mock()
-    owner = _LatencyOwner(processor)
+    owner = _latency_window(window, processor)
     owner.user_muted = True
     notice = Mock()
     monkeypatch.setattr(QMessageBox, "information", notice)
@@ -2450,9 +2047,9 @@ def test_latency_calibration_respects_user_mute(qapp, monkeypatch):
     processor.set_output_mute.assert_not_called()
 
 
-def test_latency_calibration_failure_does_not_stop_preexisting_processor(qapp):
+def test_latency_calibration_failure_does_not_stop_preexisting_processor(window):
     processor = _LatencyProcessor(running=True)
-    owner = _LatencyOwner(processor)
+    owner = _latency_window(window, processor)
     dialog = LatencyCalibrationDialog(owner)
 
     dialog._on_run_clicked()

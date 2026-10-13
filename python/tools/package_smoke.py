@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
-import re
 import sys
 import sysconfig
 import tomllib
 from pathlib import Path
 
-from prune_bundle import is_app_local_system_ucrt, is_unused_ffmpeg_payload
+from prune_bundle import (
+    UNUSED_QT_PLUGIN_PATHS,
+    is_app_local_system_ucrt,
+    is_unused_ffmpeg_payload,
+)
 from verify_release_assets import load_asset_manifest
 
 
@@ -24,6 +28,12 @@ REQUIRED_BUNDLE_FILES = (
     # The main window is a Qt Quick scene using the Basic controls style.
     "_internal/mic_eq/ui/qml/Main.qml",
     "_internal/PySide6/Qt6Quick.dll",
+    # Qt6Quick.dll links Qt6OpenGL.dll at load time, and libshiboken imports the
+    # QtOpenGL binding when the Qt Quick bindings load: the frozen app fails without both.
+    "_internal/PySide6/Qt6OpenGL.dll",
+    "_internal/PySide6/QtOpenGL.pyd",
+    # Qt loads AudioForge.ico through it; a missing plugin silently drops the icon.
+    "_internal/PySide6/plugins/imageformats/qico.dll",
     "_internal/PySide6/qml/QtQuick/Controls/Basic/qmldir",
     "_internal/df.dll",
     "_internal/onnxruntime.dll",
@@ -41,6 +51,14 @@ REQUIRED_BUNDLE_FILES = (
     "_internal/licenses/Silero-VAD-LICENSE.txt",
     "_internal/licenses/THIRD_PARTY_NOTICES.md",
     "_internal/licenses/QtForPython-6.11.1-NOTICES.txt",
+)
+# Reverses the old "never exclude" guard: the app no longer imports
+# scipy.signal, which pulled these in, so none of python/mic_eq may bring them back.
+EXCLUDED_SCIPY_MODULES = (
+    "scipy.integrate",
+    "scipy.interpolate",
+    "scipy.ndimage",
+    "scipy.stats",
 )
 REQUIRED_MANIFEST_ASSETS = (
     "df.dll",
@@ -79,15 +97,59 @@ def _load_asset_manifest() -> tuple[list[dict[str, object]], list[str]]:
     return list(manifest.assets), errors
 
 
+def _spec_list(spec_text: str, keyword: str) -> list[str]:
+    for node in ast.walk(ast.parse(spec_text)):
+        if isinstance(node, ast.keyword) and node.arg == keyword:
+            return ast.literal_eval(node.value)
+    return []
+
+
+def _spec_module_errors(spec_text: str) -> list[str]:
+    excludes = _spec_list(spec_text, "excludes")
+    errors = [
+        f"AudioForge.spec must exclude {module}"
+        for module in EXCLUDED_SCIPY_MODULES
+        if module not in excludes
+    ]
+    if "PySide6.QtOpenGL" in excludes or "PySide6.QtOpenGL" not in _spec_list(
+        spec_text, "hiddenimports"
+    ):
+        errors.append(
+            "AudioForge.spec must list PySide6.QtOpenGL in hiddenimports and not "
+            "exclude it: libshiboken needs it to load the Qt Quick bindings"
+        )
+    return errors
+
+
+def _unpackaged_scipy_imports(repo_root: Path) -> list[str]:
+    banned = ("scipy.signal", *EXCLUDED_SCIPY_MODULES)
+    found: list[str] = []
+    for source in sorted((repo_root / "python" / "mic_eq").rglob("*.py")):
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module, *(f"{node.module}.{a.name}" for a in node.names)]
+            else:
+                continue
+            bad = next(
+                (n for n in names if any(n == m or n.startswith(f"{m}.") for m in banned)),
+                None,
+            )
+            if bad:
+                found.append(
+                    f"{source.relative_to(repo_root).as_posix()} imports {bad}, "
+                    "which is not packaged"
+                )
+    return found
+
+
 def check_source_packaging() -> list[str]:
     errors: list[str] = []
 
     spec_text = (REPO_ROOT / "AudioForge.spec").read_text(encoding="utf-8")
-    for scipy_module in ("scipy.integrate", "scipy.interpolate", "scipy.stats"):
-        if re.search(rf'^\s*"{re.escape(scipy_module)}",\s*$', spec_text, re.MULTILINE):
-            errors.append(
-                f"AudioForge.spec must not exclude runtime SciPy dependency {scipy_module}"
-            )
+    errors.extend(_spec_module_errors(spec_text))
+    errors.extend(_unpackaged_scipy_imports(REPO_ROOT))
 
     spec_expectations = [
         ("AudioForge.spec", "onnxruntime.dll"),
@@ -374,6 +436,20 @@ def check_dist_bundle(
     virtual_keyboard = dist / "_internal/PySide6/plugins/platforminputcontexts/qtvirtualkeyboardplugin.dll"
     if virtual_keyboard.exists():
         errors.append(f"{dist} contains an unselected Qt module plugin: {virtual_keyboard.name}")
+
+    removed_payloads = sorted(
+        relative_path
+        for relative_path in (
+            *(path.as_posix() for path in UNUSED_QT_PLUGIN_PATHS),
+            *(f"_internal/{module.replace('.', '/')}" for module in EXCLUDED_SCIPY_MODULES),
+        )
+        if (dist / relative_path).exists()
+    )
+    if removed_payloads:
+        errors.append(
+            f"{dist} contains payload removed from the bundle: "
+            + ", ".join(removed_payloads)
+        )
 
     errors.extend(_check_bundle_identity(dist))
 

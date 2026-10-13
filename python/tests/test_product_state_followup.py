@@ -238,11 +238,11 @@ def test_route_input_preference_action_saves_visible_controls_for_current_route(
 
     window = MainWindow()
     try:
-        window.input_channel_mode_combo.setCurrentIndex(
-            window.input_channel_mode_combo.findData("left")
+        window.input_channel_mode_choice.setCurrentIndex(
+            window.input_channel_mode_choice.findData("left")
         )
-        window.input_cleanup_mode_combo.setCurrentIndex(
-            window.input_cleanup_mode_combo.findData("gentle")
+        window.input_cleanup_mode_choice.setCurrentIndex(
+            window.input_cleanup_mode_choice.findData("gentle")
         )
         window.save_route_input_preference_action.trigger()
 
@@ -394,8 +394,8 @@ def test_device_and_mute_controls_do_not_create_processing_history_entries(
     window = MainWindow()
     try:
         window.preset_modified = False
-        mode_index = window.input_channel_mode_combo.findData("left")
-        window.input_channel_mode_combo.setCurrentIndex(mode_index)
+        mode_index = window.input_channel_mode_choice.findData("left")
+        window.input_channel_mode_choice.setCurrentIndex(mode_index)
         qapp.processEvents()
         assert window.preset_modified is False
 

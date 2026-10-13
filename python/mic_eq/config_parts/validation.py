@@ -86,6 +86,8 @@ def _coerce_window_geometry(value: object) -> dict[str, int] | None:
 
     coerced["width"] = max(640, coerced["width"])
     coerced["height"] = max(480, coerced["height"])
+    if value.get("maximized") is True:
+        coerced["maximized"] = True
     return coerced
 
 

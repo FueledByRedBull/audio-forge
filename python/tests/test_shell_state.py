@@ -2,9 +2,16 @@
 
 from PySide6.QtCore import QSignalBlocker
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QComboBox, QLabel
+from PySide6.QtWidgets import QComboBox, QLabel, QPushButton, QStatusBar
 
-from mic_eq.ui.shell_state import ActionControl, ChoiceState, StatusState, TextState
+from mic_eq.ui.components import Glyph, IconButton
+from mic_eq.ui.shell_state import (
+    ActionControl,
+    ChoiceState,
+    StatusState,
+    TextState,
+    bind_button,
+)
 
 
 def test_route_choices_keep_identities_and_ignore_signal_blocked_view_edits(qapp):
@@ -79,3 +86,42 @@ def test_action_rejection_and_status_updates_are_immediate(qapp):
     assert status.text == "Rejected"
     status.showMessage("Persistent")
     assert not status._expiry.isActive()
+
+
+def test_views_take_names_and_tips_from_their_state_and_follow_it(qapp):
+    choice = ChoiceState(qapp, name="Mode", tip="Pick one")
+    choice.addItem("A", "a")
+    combo = QComboBox()
+    choice.bind_combo(combo)
+    text = TextState(qapp, text="Ready", name="Status line")
+    label = QLabel()
+    text.bind_label(label)
+    status = StatusState(qapp, "Sample rate")
+    bar = QStatusBar()
+    status.bind_status_bar(bar)
+    assert (combo.accessibleName(), combo.toolTip()) == ("Mode", "Pick one")
+    assert label.accessibleName() == "Status line"
+    assert bar.currentMessage() == "Sample rate"
+    status.showMessage("Saved")
+    assert bar.currentMessage() == "Saved"
+
+
+def test_button_renders_its_action_but_an_icon_button_keeps_its_glyph(qapp):
+    action = QAction("Refresh", qapp)
+    action.setToolTip("Refresh devices")
+    icon = IconButton(Glyph.REFRESH, "Refresh devices")
+    plain = QPushButton()
+    glyph = icon.text()
+    triggered = []
+    action.triggered.connect(lambda: triggered.append(True))
+    bind_button(icon, action)
+    bind_button(plain, action)
+    assert plain.text() == "Refresh"
+    assert icon.text() == glyph
+    action.setText("Rescan")
+    action.setEnabled(False)
+    assert (plain.text(), plain.isEnabled()) == ("Rescan", False)
+    assert (icon.text(), icon.isEnabled()) == (glyph, False)
+    action.setEnabled(True)
+    plain.click()
+    assert triggered == [True]

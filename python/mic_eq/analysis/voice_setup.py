@@ -14,7 +14,13 @@ from typing import Any
 import numpy as np
 
 from .auto_eq import analyze_auto_eq, simulate_candidate_chain
-from .auto_eq_parts.headroom import _is_headroom_safe
+from .auto_eq_parts.headroom import (
+    _NATIVE_SAFETY_METRICS,
+    HEADROOM_TARGET_DB,
+    LIMITER_GAIN_REDUCTION_WARN_DB,
+    TRUE_PEAK_GAIN_REDUCTION_WARN_DB,
+    _is_headroom_safe,
+)
 from .cancellation import AnalysisCancelled, check_analysis_cancelled
 from .compressor_calibration import (
     _COMPRESSOR_P95_TARGET_TOLERANCE_DB,
@@ -55,6 +61,19 @@ NOISE_MIN_DURATION_S = MIN_NOISE_DURATION_S
 SPEECH_MIN_DURATION_S = 3.0
 FRAME_MS = 40.0
 HOP_MS = 20.0
+# Full-chain verification advises when noise suppression takes more than this many
+# decibels off the voice's sibilants. Advice only. Qualified on held-out simulated
+# users (ignored models/evaluation-details/voice-setup-verification-fix-2026-10/).
+SUPPRESSOR_DULLING_THRESHOLD_DB = 6.0
+SUPPRESSOR_DULLING_MIN_FRAMES = 8
+_DULLING_FRAME, _DULLING_HOP = 1024, 512
+# In full-chain verification with the noise suppressor enabled, the tonal check
+# ("target error") measures a second render of the same takes through the same chain
+# with only the suppressor switched off; every other finding comes from the real
+# render. False is the released check, which the evaluator renders as its baseline.
+# Qualified on held-out simulated users in
+# evaluation/voice-setup-verification-tonal-check-2026-10-report.json.
+TONAL_CHECK_BYPASSES_SUPPRESSOR = True
 
 GATE_MODE_LABELS = {
     0: "Threshold Only",
@@ -105,6 +124,11 @@ def _rms_db(audio: np.ndarray) -> float:
     if audio.size == 0:
         return -120.0
     return float(20.0 * np.log10(np.sqrt(np.mean(audio * audio)) + 1e-9))
+
+
+def raw_capture_is_clipped(audio: np.ndarray) -> bool:
+    """Whether a raw setup capture is non-finite or touches full scale."""
+    return not np.isfinite(audio).all() or float(np.max(np.abs(audio), initial=0.0)) >= 0.999
 
 
 def _peak_db(audio: np.ndarray) -> float:
@@ -667,6 +691,7 @@ def _recommend_compressor_settings(
     custom_target_p95_db: float,
     custom_peak_cap_db: float,
     target_lufs: float | None = None,
+    capture_reliable: bool = True,
 ) -> tuple[dict[str, Any], dict[str, float | bool]]:
     profile_name = dynamics_intensity.lower()
     if profile_name == "custom":
@@ -696,7 +721,9 @@ def _recommend_compressor_settings(
     attack_ms = _clamp(11.0 - loudness_range_db / 2.5, 4.0, 12.0)
     release_ms = _clamp(135.0 + loudness_range_db * 11.0, 120.0, 260.0)
     base_release_ms = _clamp(50.0 + loudness_range_db * 6.0, 50.0, 140.0)
-    auto_makeup_enabled = bool(capture_confidence >= 0.55 and speech_snr_db >= 10.0)
+    auto_makeup_enabled = bool(
+        capture_reliable and capture_confidence >= 0.55 and speech_snr_db >= 10.0
+    )
     makeup_gain_db = 0.0
     if not auto_makeup_enabled:
         makeup_gain_db = _clamp(requested_target_lufs - speech_loudness_lufs, 0.0, 6.0)
@@ -728,6 +755,122 @@ def _recommend_compressor_settings(
         "peak_reduction_cap_db": profile["peak_cap_db"],
     }
     return settings, diagnostics
+
+
+def _loudness_floor(compressor: Mapping[str, Any]) -> tuple[str, float]:
+    """Return the setting that carries the loudness and the lowest value it takes."""
+    if bool(compressor.get("auto_makeup_enabled", False)):
+        return "target_lufs", -24.0
+    return "makeup_gain_db", 0.0
+
+
+# The most the limiter may take off the loudest peaks of a voice that automatic
+# makeup raises, in the final check and in verification. Zero is the released
+# rule: peaks keep a decibel unused below the limiter. Qualified, with the
+# narrowing that decides where it applies, on held-out simulated users in
+# evaluation/voice-setup-limiter-allowance-narrow-2026-10-report.json.
+LIMITER_ALLOWANCE_DB = 3.0
+
+
+def _limiter_excess_db(simulation: Mapping[str, Any], allowance_db: float) -> float:
+    """Return how far a render's peaks pass what the allowance accepts; it fits at <= 0.
+
+    The final true-peak stage keeps its own limit.
+    """
+    try:
+        headroom, limiter_gr, true_peak_gr = (
+            float(simulation[name]) for name in _NATIVE_SAFETY_METRICS
+        )
+    except (KeyError, TypeError, ValueError):
+        return float("inf")
+    if not np.isfinite([headroom, limiter_gr, true_peak_gr]).all():
+        return float("inf")
+    return max(
+        -headroom - allowance_db,
+        limiter_gr - allowance_db,
+        true_peak_gr - TRUE_PEAK_GAIN_REDUCTION_WARN_DB,
+    )
+
+
+def _released_excess_db(simulation: Mapping[str, Any]) -> float:
+    """Return how far a render passes the released headroom check, whichever term fails most.
+
+    It fits at <= 0; a reading that is not finite is infinite.
+    """
+    headroom, limiter_gr, true_peak_gr = (
+        float(simulation[name]) for name in _NATIVE_SAFETY_METRICS
+    )
+    if not np.isfinite([headroom, limiter_gr, true_peak_gr]).all():
+        return float("inf")
+    return max(
+        HEADROOM_TARGET_DB - headroom,
+        limiter_gr - LIMITER_GAIN_REDUCTION_WARN_DB,
+        true_peak_gr - TRUE_PEAK_GAIN_REDUCTION_WARN_DB,
+    )
+
+
+def _headroom_safe(simulation: dict[str, Any], allowance_db: float) -> bool:
+    """Apply the released headroom check, or the limiter allowance when one applies."""
+    if allowance_db <= 0.0:
+        return _is_headroom_safe(simulation)
+    return _limiter_excess_db(simulation, allowance_db) <= 0.0
+
+
+def _fit_loudness_to_headroom(
+    compressor: Mapping[str, Any],
+    simulation: dict[str, Any],
+    render: Callable[[dict[str, Any]], dict[str, Any]],
+    allowance_db: float = 0.0,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the loudest makeup at or below the request that keeps headroom.
+
+    A natural voice peaks about 20 dB above its loudness, so a loud target
+    with light compression leaves the limiter catching peaks and fails the
+    headroom check. Verification answers limiter pressure by lowering the
+    loudness target one decibel at a time and gives up after three steps;
+    finding the whole step here lets the proposal pass instead. When no step
+    keeps headroom the request is returned unchanged: quieter and still
+    failing would cost loudness and gain nothing.
+    """
+    key, floor = _loudness_floor(compressor)
+    requested = float(compressor.get(key, floor))
+    # Whole decibels, as the dialog and verification step the target.
+    steps = int(np.ceil(requested - floor))
+    if allowance_db > 0.0:
+        shortfall = _limiter_excess_db(simulation, allowance_db)
+    else:
+        try:
+            shortfall = max(
+                HEADROOM_TARGET_DB - float(simulation[_NATIVE_SAFETY_METRICS[0]]),
+                *(float(simulation[name]) for name in _NATIVE_SAFETY_METRICS[1:]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return dict(compressor), simulation
+    if _headroom_safe(simulation, allowance_db) or steps < 1 or not np.isfinite(shortfall):
+        return dict(compressor), simulation
+
+    tried: dict[int, tuple[dict[str, Any], dict[str, Any]]] = {}
+
+    def at(step: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        if step not in tried:
+            quieter = {**compressor, key: max(floor, requested - step)}
+            tried[step] = (quieter, render(quieter))
+        return tried[step]
+
+    # The smallest step that keeps headroom lies in [low, high], if any does.
+    # The shortfall itself is that step unless makeup is pinned by its cap,
+    # where lowering the target changes nothing until it passes the cap.
+    low, high = 1, steps
+    probe = min(max(1, int(np.ceil(shortfall))), max(low, high - 1))
+    while low < high:
+        if _headroom_safe(at(probe)[1], allowance_db):
+            high = probe
+            probe = max(low, high - 1)
+        else:
+            low = probe + 1
+            probe = (low + high) // 2
+    fitted = at(low)
+    return fitted if _headroom_safe(fitted[1], allowance_db) else (dict(compressor), simulation)
 
 
 def analyze_voice_setup(
@@ -783,12 +926,7 @@ def analyze_voice_setup(
             raise ValueError("raw and filtered setup captures must have matching lengths")
         if raw_noise_arr.size == 0 or raw_speech_arr.size == 0:
             raise ValueError("raw setup captures are empty")
-        if (
-            not np.isfinite(raw_noise_arr).all()
-            or not np.isfinite(raw_speech_arr).all()
-            or float(np.max(np.abs(raw_noise_arr))) >= 0.999
-            or float(np.max(np.abs(raw_speech_arr))) >= 0.999
-        ):
+        if raw_capture_is_clipped(raw_noise_arr) or raw_capture_is_clipped(raw_speech_arr):
             raise ValueError("raw setup captures are non-finite or clipped")
 
     if noise_arr.size < int(sample_rate * NOISE_MIN_DURATION_S):
@@ -881,16 +1019,14 @@ def analyze_voice_setup(
             (loudness_confidence, 0.08),
         ]
     )
-    if noise_referenced_snr_db < 6.0:
-        capture_confidence = min(capture_confidence, 0.40)
-    if float(features["active_duration_s"]) < 2.0:
-        capture_confidence = min(capture_confidence, 0.45)
-    if spectrum_result.used_single_spectrum_fallback:
-        capture_confidence = min(capture_confidence, 0.40)
-    if noise_reference.status == "questionable":
-        capture_confidence = min(capture_confidence, 0.49)
-    elif noise_reference.status == "invalid":
-        capture_confidence = min(capture_confidence, 0.20)
+    # Automatic makeup rides the measured loudness, so it is offered only
+    # for a capture that can be relied on, whatever its score.
+    capture_reliable = bool(
+        noise_referenced_snr_db >= 6.0
+        and float(features["active_duration_s"]) >= 2.0
+        and not spectrum_result.used_single_spectrum_fallback
+        and noise_reference.status == "usable"
+    )
 
     gate_settings = _recommend_gate_settings(
         vad_available=vad_available,
@@ -942,6 +1078,7 @@ def analyze_voice_setup(
         custom_target_p95_db=custom_target_p95_db,
         custom_peak_cap_db=custom_peak_cap_db,
         target_lufs=target_lufs,
+        capture_reliable=capture_reliable,
     )
     compressor_settings["noise_reference_reliability"] = float(
         np.clip(noise_reference.quality_score, 0.0, 1.0)
@@ -1153,6 +1290,25 @@ def analyze_voice_setup(
         progress_callback("Checking final headroom and dynamics...", 95)
     offline_validation: dict[str, Any] | None = None
     offline_validation_passed = False
+    requested_loudness_headroom_safe = False
+    loudness_key, loudness_floor = _loudness_floor(compressor_settings)
+    requested_loudness = float(compressor_settings[loudness_key])
+    # A voice already louder than the lowest target gets no makeup at all, so
+    # only less input gain can help.
+    input_too_hot = float(features["short_term_lufs"]) >= -24.0 or not bool(
+        compressor_settings.get("auto_makeup_enabled")
+    )
+    # The limiter may catch the loudest peaks of a voice that automatic makeup
+    # raises. Where makeup does not back off against it (a voice too hot for
+    # makeup, manual makeup) or nothing catches the peaks, the released rule holds.
+    allowance_db = (
+        LIMITER_ALLOWANCE_DB
+        if bool(effective_limiter_settings.get("enabled", True))
+        and bool(compressor_settings.get("auto_makeup_enabled"))
+        and not input_too_hot
+        else 0.0
+    )
+    input_gain_shortfall_db = 0.0
     full_chain_active_gain_db = 0.0
     full_chain_voice_dropout = False
     try:
@@ -1164,6 +1320,26 @@ def analyze_voice_setup(
             full_chain_eq_settings,
             full_chain_settings,
         )
+        requested_loudness_headroom_safe = _headroom_safe(offline_validation, allowance_db)
+
+        def render_with(compressor: dict[str, Any]) -> dict[str, Any]:
+            check_analysis_cancelled(cancel_check)
+            return simulate_candidate_chain(
+                np.asarray(full_chain_speech, dtype=np.float32),
+                sample_rate,
+                full_chain_eq_settings,
+                {**full_chain_settings, "compressor": compressor},
+            )
+
+        compressor_settings, offline_validation = _fit_loudness_to_headroom(
+            full_chain_settings["compressor"], offline_validation, render_with, allowance_db
+        )
+        if input_too_hot and not _headroom_safe(offline_validation, allowance_db):
+            # Nothing fits, so this is still the request's reading. Makeup can
+            # go down to the floor; only what is short there needs less gain.
+            floor_reading = render_with({**compressor_settings, loudness_key: loudness_floor})
+            input_gain_shortfall_db = _released_excess_db(floor_reading)
+        full_chain_settings["compressor"] = dict(compressor_settings)
         rendered_full_chain = np.asarray(
             offline_validation.pop("output_audio"), dtype=np.float32
         )
@@ -1183,7 +1359,7 @@ def analyze_voice_setup(
             offline_validation.get("compressor_gain_reduction_p95_db", compressor_gr)
         )
         deesser_gr = float(offline_validation.get("deesser_gain_reduction_db", 120.0))
-        full_chain_headroom_safe = _is_headroom_safe(offline_validation)
+        full_chain_headroom_safe = _headroom_safe(offline_validation, allowance_db)
         offline_validation_passed = bool(
             np.isfinite([output_true_peak, compressor_gr, deesser_gr]).all()
             and output_true_peak <= ceiling + 0.15
@@ -1196,6 +1372,8 @@ def analyze_voice_setup(
             and not full_chain_voice_dropout
             and full_chain_raw_available
         )
+    except AnalysisCancelled:
+        raise
     except Exception as exc:  # pragma: no cover - defensive diagnostics
         offline_validation = {"error": str(exc), "simulation_backend": "unavailable"}
 
@@ -1215,8 +1393,10 @@ def analyze_voice_setup(
         uncertainty_reasons.append("too little VAD-active speech")
     if noise_referenced_snr_db < 8.0:
         uncertainty_reasons.append("speech-to-noise ratio is weak")
-    if capture_confidence < 0.50:
-        uncertainty_reasons.append("spectral feature stability is weak")
+    if spectrum_result.used_single_spectrum_fallback:
+        uncertainty_reasons.append("too few voiced frames for a stable spectrum")
+    elif capture_confidence < 0.50:
+        uncertainty_reasons.append("overall capture quality is low")
     if not offline_validation_passed:
         if offline_validation is not None and "error" in offline_validation:
             uncertainty_reasons.append(
@@ -1230,9 +1410,13 @@ def analyze_voice_setup(
             uncertainty_reasons.append(
                 "raw full-chain capture is unavailable for input validation"
             )
-        elif offline_validation is not None and not _is_headroom_safe(offline_validation):
+        elif offline_validation is not None and not _headroom_safe(offline_validation, allowance_db):
+            # No makeup keeps headroom.
             uncertainty_reasons.append(
-                "final full-chain headroom validation did not pass"
+                "the microphone level leaves too little headroom; lower the input gain by about "
+                f"{np.ceil(input_gain_shortfall_db):.0f} dB"
+                if np.isfinite(input_gain_shortfall_db) and input_gain_shortfall_db > 0.0
+                else "final full-chain headroom validation did not pass"
             )
         else:
             uncertainty_reasons.append("offline DSP validation did not pass")
@@ -1240,10 +1424,9 @@ def analyze_voice_setup(
         uncertainty_reasons.append("offline DSP validation is advisory without the Rust extension")
         setup_confidence *= 0.90
     weak_capture = bool(
-        float(features["active_duration_s"]) < 2.0
+        not capture_reliable
         or noise_referenced_snr_db < 8.0
         or capture_confidence < 0.50
-        or noise_reference.status != "usable"
     )
     eq_apply_recommended = bool(
         eq_settings is not None
@@ -1335,6 +1518,8 @@ def analyze_voice_setup(
             "compressor_target_lufs": compressor_diag["target_lufs"],
             "dynamics_intensity": compressor_diag["dynamics_intensity"],
             "compressor_calibration": compressor_calibration,
+            "requested_loudness_headroom_safe": requested_loudness_headroom_safe,
+            "loudness_lowered_db": requested_loudness - float(compressor_settings[loudness_key]),
             "vad_available": bool(vad_available),
             "vad_analysis_backend": vad_analysis_backend,
             "noise_vad_analysis_backend": noise_vad_backend,
@@ -1349,8 +1534,9 @@ def analyze_voice_setup(
             "full_chain_raw_capture_used": full_chain_raw_available,
             "full_chain_active_gain_db": full_chain_active_gain_db,
             "full_chain_voice_dropout": full_chain_voice_dropout,
+            "limiter_allowance_db": allowance_db,
             "offline_headroom_safe": bool(
-                _is_headroom_safe(offline_validation)
+                _headroom_safe(offline_validation, allowance_db)
                 if offline_validation is not None
                 else False
             ),
@@ -1415,6 +1601,43 @@ def _verification_outcome(
     }
     result.update(details)
     return result
+
+
+def _band_levels_db(audio: np.ndarray, sample_rate: int, low_hz: float, high_hz: float) -> np.ndarray:
+    frames = np.lib.stride_tricks.sliding_window_view(
+        np.asarray(audio, dtype=float), _DULLING_FRAME
+    )[::_DULLING_HOP] * np.hanning(_DULLING_FRAME)
+    power = np.abs(np.fft.rfft(frames, axis=1)) ** 2
+    freqs = np.fft.rfftfreq(_DULLING_FRAME, 1.0 / sample_rate)
+    return 10.0 * np.log10(power[:, (freqs >= low_hz) & (freqs < high_hz)].sum(axis=1) + 1e-20)
+
+
+def _sibilant_change_db(
+    voice_in: np.ndarray,
+    voice_out: np.ndarray,
+    noise_in: np.ndarray,
+    sample_rate: int,
+) -> tuple[float | None, int]:
+    """How much the frontend took off the voice's own sibilants, from the take alone.
+
+    Mean level change of 5-9 kHz in the sibilant frames (top tenth of the input by
+    that band, and 10 dB above the room-noise capture's median there) minus the
+    mean change of 250-2000 Hz in the voiced frames (top third of the input by
+    that band). Negative is a loss. ``None`` when fewer than
+    ``SUPPRESSOR_DULLING_MIN_FRAMES`` frames qualify. The two takes must be aligned
+    sample for sample, which the native simulator's output is.
+    """
+    if voice_in.size != voice_out.size or voice_in.size < _DULLING_FRAME or noise_in.size < _DULLING_FRAME:
+        return None, 0
+    high_in, high_out = (_band_levels_db(audio, sample_rate, 5_000.0, 9_000.0) for audio in (voice_in, voice_out))
+    body_in, body_out = (_band_levels_db(audio, sample_rate, 250.0, 2_000.0) for audio in (voice_in, voice_out))
+    room_high = float(np.median(_band_levels_db(noise_in, sample_rate, 5_000.0, 9_000.0)))
+    sibilant = (high_in >= np.percentile(high_in, 90)) & (high_in >= room_high + 10.0)
+    count = int(np.count_nonzero(sibilant))
+    if count < SUPPRESSOR_DULLING_MIN_FRAMES:
+        return None, count
+    voiced = body_in >= np.percentile(body_in, 67)
+    return float(np.mean((high_out - high_in)[sibilant]) - np.mean((body_out - body_in)[voiced])), count
 
 
 def validate_voice_setup_verification(
@@ -1583,6 +1806,38 @@ def validate_voice_setup_verification(
 
     rendered = np.asarray(processed.pop("output_audio"), dtype=np.float32)
     rendered_noise = np.asarray(processed_noise.pop("output_audio"), dtype=np.float32)
+    frontend_voice = None
+    if full_chain:
+        # The frontend alone (pre-filter, gate, suppressor), as analyze_voice_setup renders it.
+        frontend_chain = {
+            **chain,
+            "deesser": {"enabled": False},
+            "compressor": {**dict(chain.get("compressor") or {}), "enabled": False},
+            "limiter": {"enabled": False},
+        }
+        frontend_voice = np.asarray(
+            simulate_candidate_chain(
+                render_verification, sample_rate, {**eq_settings, "enabled": False}, frontend_chain
+            )["output_audio"],
+            dtype=np.float32,
+        )
+        check_analysis_cancelled(cancel_check)
+    tone_audio = None
+    suppressor = chain.get("suppressor") or {}
+    if (
+        TONAL_CHECK_BYPASSES_SUPPRESSOR
+        and full_chain
+        and suppressor.get("enabled", True) is not False
+    ):
+        bypass_chain = {**chain, "suppressor": {**suppressor, "enabled": False}}
+        tone_audio = tuple(
+            np.asarray(
+                simulate_candidate_chain(audio, sample_rate, eq_settings, bypass_chain)["output_audio"],
+                dtype=np.float32,
+            )
+            for audio in (render_verification, render_noise)
+        )
+        check_analysis_cancelled(cancel_check)
     original_spectrum = analyze_voice_spectrum(original, sample_rate)
     check_analysis_cancelled(cancel_check)
     before_spectrum = analyze_voice_spectrum(
@@ -1597,6 +1852,13 @@ def validate_voice_setup_verification(
         noise_audio=rendered_noise,
     )
     check_analysis_cancelled(cancel_check)
+    # Only the tonal check reads this; the SNR findings keep the real render's spectrum.
+    tone_spectrum = (
+        after_spectrum
+        if tone_audio is None
+        else analyze_voice_spectrum(tone_audio[0], sample_rate, noise_audio=tone_audio[1])
+    )
+    check_analysis_cancelled(cancel_check)
     before_error = _shape_error_db(
         before_spectrum.freqs,
         before_spectrum.median_spectrum_db,
@@ -1604,8 +1866,8 @@ def validate_voice_setup_verification(
         reference_db=before_spectrum.median_spectrum_db,
     )
     after_error = _shape_error_db(
-        after_spectrum.freqs,
-        after_spectrum.median_spectrum_db,
+        tone_spectrum.freqs,
+        tone_spectrum.median_spectrum_db,
         target_preset,
         reference_db=before_spectrum.median_spectrum_db,
     )
@@ -1661,20 +1923,33 @@ def validate_voice_setup_verification(
         )
     )
     limiter_events = int(processed.get("true_peak_limited_events", 0))
-    limiter_gain_reduction = max(
-        float(processed.get("limiter_gain_reduction_db", 0.0)),
-        float(processed.get("true_peak_limiter_gain_reduction_db", 0.0)),
-    )
+    main_limiter_gain_reduction = float(processed.get("limiter_gain_reduction_db", 0.0))
     true_peak_limiter_gain_reduction = float(
         processed.get("true_peak_limiter_gain_reduction_db", 0.0)
     )
+    limiter_gain_reduction = max(main_limiter_gain_reduction, true_peak_limiter_gain_reduction)
     compressor_p95_excess = measured_p95 > target_p95 + 0.75
     deesser_p95 = float(processed.get("deesser_gain_reduction_p95_db", 0.0))
     deesser_limit = float(
         (setup_result.get("deesser_settings") or {}).get("max_reduction_db", 6.0)
     )
     deesser_excess = deesser_p95 > deesser_limit * 0.9
-    limiter_pressure = limiter_gain_reduction > 1.0
+    # Only a setup that recorded the limiter allowance may lean on it; its final
+    # true-peak stage keeps its limit. Anything else keeps the released rule.
+    setup_diagnostics = setup_result.get("diagnostics")
+    allowance_db = (
+        float(setup_diagnostics.get("limiter_allowance_db", 0.0))
+        if isinstance(setup_diagnostics, Mapping)
+        else 0.0
+    )
+    main_limiter_limit = allowance_db if allowance_db > 0.0 else 1.0
+    if allowance_db > 0.0:
+        limiter_pressure = (
+            main_limiter_gain_reduction > allowance_db
+            or true_peak_limiter_gain_reduction > 1.0
+        )
+    else:
+        limiter_pressure = limiter_gain_reduction > 1.0
     reduction_targets: list[str] = []
     if compressor_p95_excess:
         reduction_targets.append("compressor")
@@ -1767,8 +2042,13 @@ def validate_voice_setup_verification(
                     f"compressor p95 reduction exceeded target by "
                     f"{measured_p95 - target_p95:.1f} dB"
                 ),
-                "limiter": (
-                    f"limiter pressure reached {limiter_gain_reduction:.1f} dB"
+                "limiter": " and ".join(
+                    f"{stage} pressure reached {gain_reduction:.1f} dB"
+                    for stage, gain_reduction, limit in (
+                        ("limiter", main_limiter_gain_reduction, main_limiter_limit),
+                        ("true-peak limiter", true_peak_limiter_gain_reduction, 1.0),
+                    )
+                    if gain_reduction > limit
                 ),
                 "deesser": (
                     f"de-esser p95 reduction reached {deesser_p95:.1f} dB"
@@ -1781,6 +2061,24 @@ def validate_voice_setup_verification(
         reason_codes.append("accepted")
         scope = "full-chain" if full_chain else "downstream"
         reasons.append(f"repeatability and {scope} DSP constraints passed")
+
+    # Advice only: the decision above is already made and stays.
+    dulling_details: dict[str, Any] = {}
+    if frontend_voice is not None:
+        sibilant_change, _ = _sibilant_change_db(verification, frontend_voice, noise, sample_rate)
+        dulling_db = None if sibilant_change is None else -sibilant_change
+        dulling_details = {
+            "suppressor_dulling_db": dulling_db,
+            "suppressor_dulling_abstained": dulling_db is None,
+        }
+        if dulling_db is not None and dulling_db > SUPPRESSOR_DULLING_THRESHOLD_DB:
+            reason_codes.append("suppressor_dulling")
+            remedy = "lower its strength"
+            if suppressor.get("model") != "deepfilter-ll":
+                remedy += " or use DeepFilterNet LL"
+            reasons.append(
+                f"noise suppression is dulling consonants by about {dulling_db:.0f} dB; {remedy}"
+            )
 
     spectral_snr = after_spectrum.spectral_snr_db
     snr_bands: dict[str, float] = {}
@@ -1842,6 +2140,7 @@ def validate_voice_setup_verification(
         "limiter_pressure_db": limiter_gain_reduction,
         "clipped": bool(np.max(np.abs(rendered)) >= 1.0),
         "simulation_backend": processed.get("simulation_backend"),
+        **dulling_details,
     }
 
 

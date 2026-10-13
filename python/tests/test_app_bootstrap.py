@@ -403,3 +403,99 @@ raise SystemExit(status)
     assert not Path(observed["cache"]).exists()
     assert not (tmp_path / "persistent-cache").exists()
     assert observed["pipeline_cache"] is False
+
+
+def test_auto_eq_solver_check_runs_both_scipy_solvers(monkeypatch):
+    import scipy.optimize as optimize
+
+    calls = []
+
+    def recording(solver, name):
+        def wrapper(*args, **kwargs):
+            calls.append((name, kwargs.get("method")))
+            return solver(*args, **kwargs)
+
+        return wrapper
+
+    for name in ("least_squares", "minimize"):
+        monkeypatch.setattr(optimize, name, recording(getattr(optimize, name), name))
+
+    app_bootstrap._check_auto_eq_solvers()
+
+    assert ("least_squares", "trf") in calls
+    assert ("minimize", "SLSQP") in calls
+
+
+def test_auto_eq_solver_check_rejects_a_fit_that_did_not_converge_or_correct(monkeypatch):
+    from mic_eq.analysis import auto_eq
+
+    real_fit = auto_eq.calculate_eq_bands
+    fits = []
+
+    def recording_fit(*args, **kwargs):
+        fits.append(real_fit(*args, **kwargs))
+        return fits[-1]
+
+    monkeypatch.setattr(auto_eq, "calculate_eq_bands", recording_fit)
+    app_bootstrap._check_auto_eq_solvers()
+    converged = fits[0]
+
+    for broken in (
+        {"nonlinear_solver_success": False},
+        {"constraint_solver_success": False},
+        {"band_gains": [0.0] * 10},
+        {"band_gains": [float("nan")] + converged["band_gains"][1:]},
+        {"band_gains": converged["band_gains"][:-1]},
+    ):
+        monkeypatch.setattr(
+            auto_eq, "calculate_eq_bands", lambda *args, _broken=broken, **kwargs: {**converged, **_broken}
+        )
+        with pytest.raises(RuntimeError, match="Auto-EQ solver check failed"):
+            app_bootstrap._check_auto_eq_solvers()
+
+
+def test_packaged_startup_smoke_fails_when_the_scipy_optimizer_cannot_load():
+    script = """
+import json
+import logging
+import sys
+from PySide6.QtWidgets import QMainWindow
+from mic_eq.ui.app_bootstrap import run_smoke_test
+
+class Processor:
+    def is_running(self):
+        return False
+
+class SmokeWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.processor = Processor()
+
+messages = []
+
+class Capture(logging.Handler):
+    def emit(self, record):
+        messages.append(self.format(record))
+
+logging.getLogger().addHandler(Capture())
+sys.modules["scipy.optimize"] = None
+status = run_smoke_test(SmokeWindow)
+print(json.dumps({"status": status, "log": " ".join(messages)}))
+raise SystemExit(status)
+"""
+    environment = dict(app_bootstrap.os.environ)
+    environment["QT_QPA_PLATFORM"] = "offscreen"
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 1, result.stderr or result.stdout
+    log = json.loads(result.stdout)["log"]
+    assert "startup smoke test failed" in log
+    assert "scipy.optimize" in log

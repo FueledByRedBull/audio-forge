@@ -5,13 +5,15 @@ from __future__ import annotations
 import pytest
 from unittest.mock import Mock
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QCheckBox, QComboBox, QLabel, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QWidget
 
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.ui.first_run_setup_dialog import (
     FirstRunSetupDialog,
     route_health_reason,
 )
+from mic_eq.ui.shell_state import TextState
+from mic_eq.ui.theme import status_chip_style
 
 
 class _Processor:
@@ -83,8 +85,12 @@ class _Owner(QWidget):
         self.user_muted = False
         self.input_meter = _MeterState(processor.input_rms, processor.input_peak)
         self.output_meter = _MeterState(processor.output_rms, processor.output_peak)
-        self.input_health_label = QLabel("Input: OK", self)
-        self.output_health_label = QLabel("Output: OK", self)
+        self.shell_texts = {
+            "input_health_label": TextState(self, text="Input: OK"),
+            "output_health_label": TextState(self, text="Output: OK"),
+        }
+        for state in self.shell_texts.values():
+            state.update(status="ok")
         self._temporary_mute_reasons = {"calibration"}
         self.mute_toggles = []
         self.user_mute_checkbox = QCheckBox(self)
@@ -613,9 +619,10 @@ def test_route_feedback_mirrors_main_window_and_stops_timers_when_leaving(
     processor.input_peak = 0.0
     processor.diagnostics["clip_event_count"] = 1
     owner.input_meter.peak_db = processor.input_peak
-    owner.input_health_label.setText("Input: CLIPPING")
+    owner.shell_texts["input_health_label"].update(text="Input: CLIPPING", status="bad")
     dialog._update_route_feedback()
     assert "Input: CLIPPING" in dialog.route_input_health_label.text()
+    assert dialog.route_input_health_label.styleSheet() == status_chip_style("bad")
 
     dialog.show()
     dialog.resize(440, 340)

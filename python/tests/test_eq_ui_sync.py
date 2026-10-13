@@ -133,18 +133,16 @@ def test_eq_graph_drag_updates_numeric_controls_native_dsp_and_signals(qapp):
     finished = QSignalSpy(panel.configurationEditFinished)
     band_index = 4
     start_x, start_y = curve.band_handle_position(band_index)
+    press = QPoint(int(round(start_x)), int(round(start_y)))
     target = QPoint(
         int(round(curve.frequency_to_x(2100.0))),
         int(round(curve.gain_to_y(3.2))),
     )
-    expected_frequency = curve.x_to_frequency(target.x())
-    expected_gain = curve.y_to_gain(target.y())
+    # The handle moves by the pointer's travel from where it was pressed.
+    expected_frequency = curve.x_to_frequency(start_x + target.x() - press.x())
+    expected_gain = curve.y_to_gain(start_y + target.y() - press.y())
 
-    QTest.mousePress(
-        qt_target,
-        Qt.MouseButton.LeftButton,
-        pos=QPoint(int(round(start_x)), int(round(start_y))),
-    )
+    QTest.mousePress(qt_target, Qt.MouseButton.LeftButton, pos=press)
     QTest.mouseMove(qt_target, target, delay=5)
     QTest.mouseRelease(qt_target, Qt.MouseButton.LeftButton, pos=target)
     qapp.processEvents()

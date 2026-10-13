@@ -10,14 +10,13 @@ from mic_eq.ui.noise_suppression_state import NoiseSuppressionState
 class Processor:
     def __init__(self):
         self.writes = []
-        self.reject_model = False
 
     def list_noise_models(self):
         return [("rnnoise", "RNNoise"), ("deepfilter-ll", "DeepFilterNet LL")]
 
     def set_noise_model(self, model):
         self.writes.append(("model", model))
-        return not self.reject_model or model == "rnnoise"
+        return True
 
     def set_rnnoise_enabled(self, value):
         self.writes.append(("enabled", value))
@@ -30,7 +29,11 @@ def test_controls_preserve_metadata_precision_and_immediate_edits(qapp):
     processor = Processor()
     state = NoiseSuppressionState(processor)
     parent = QObject()
-    controls = {key: NoiseControl(state, key, parent) for key in ("enabled", "model", "strength", "latency")}
+
+    def pick(index):  # the window's part: report and apply the chosen backend
+        state.set_value("model", state.models[index][0])
+
+    controls = {key: NoiseControl(state, key, parent, pick) for key in ("enabled", "model", "strength", "latency")}
     enabled, model, strength, latency = (controls[key] for key in controls)
     assert not processor.writes
     assert enabled.name == "Enable noise suppression"
@@ -68,23 +71,6 @@ def test_controls_preserve_metadata_precision_and_immediate_edits(qapp):
     assert state.get_settings()["strength"] == 0.46
 
 
-def test_rejected_picker_reads_back_and_reports_error_without_history(qapp):
-    processor = Processor()
-    state = NoiseSuppressionState(processor)
-    parent = QObject()
-    model = NoiseControl(state, "model", parent)
-    observed, errors, edits = [], [], []
-    model.changed.connect(lambda: observed.append(model.index))
-    state.writeFailed.connect(errors.append)
-    state.configurationEdited.connect(edits.append)
-    processor.reject_model = True
-    model.setIndex(1)
-    assert model.index == 0 and model.text == "RNNoise"
-    assert observed and all(index == 0 for index in observed)
-    assert errors == ["Noise model 'deepfilter-ll' is unavailable; previous model retained"]
-    assert not edits
-
-
 @pytest.mark.parametrize("value,expected", [(-1, 0), (200, 100), (0.5, 0), (1.5, 2), (49.5, 50)])
 def test_strength_clamps_and_rounds_like_the_previous_widget_proxy(qapp, value, expected):
     state = NoiseSuppressionState(Processor())
@@ -100,7 +86,8 @@ def test_invalid_or_unrelated_gestures_refresh_without_native_writes(qapp):
     state = NoiseSuppressionState(processor)
     parent = QObject()
     strength = NoiseControl(state, "strength", parent)
-    model = NoiseControl(state, "model", parent)
+    picked = []
+    model = NoiseControl(state, "model", parent, picked.append)
     enabled = NoiseControl(state, "enabled", parent)
     latency = NoiseControl(state, "latency", parent)
     notified = []
@@ -111,9 +98,8 @@ def test_invalid_or_unrelated_gestures_refresh_without_native_writes(qapp):
     strength.setIndex(0)
     strength.click()
     model.setValue(20)
-    model.setIndex(-1)
-    model.setIndex(2)
     enabled.setText("20")
     latency.click()
     assert notified
     assert not processor.writes
+    assert not picked

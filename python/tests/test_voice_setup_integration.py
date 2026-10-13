@@ -52,6 +52,7 @@ def _voice_setup_result(
     target_curve: str = "broadcast",
     target_lufs: float = -19.0,
     analysis: dict[str, Any] | None = None,
+    suppressor: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     dialog.curve_combo.setCurrentIndex(dialog.curve_combo.findData(target_curve))
     dialog.target_lufs_spin.setValue(target_lufs)
@@ -82,7 +83,10 @@ def _voice_setup_result(
     assert dialog._analysis_generation > 0
     candidate = {
         "scope": "full_voice_setup",
-        "allowed_scope": ["eq", "gate", "deesser", "compressor", "limiter"],
+        "allowed_scope": [
+            "eq", "gate", "deesser", "compressor", "limiter",
+            *(["suppression"] if suppressor is not None else []),
+        ],
         "target": {
             "curve": target_curve,
             "target_lufs": target_lufs,
@@ -128,6 +132,7 @@ def _voice_setup_result(
             or window.limiter_state.get_settings()
         ),
         "eq_settings": eq_settings,
+        **({"suppressor_settings": deepcopy(suppressor)} if suppressor is not None else {}),
     }
 
 
@@ -375,6 +380,200 @@ def test_repeated_bad_verification_takes_stop_and_restore(real_main_window, monk
     finally:
         dialog.reject()
         dialog.deleteLater()
+
+
+@pytest.mark.parametrize("sample", [np.nan, np.inf], ids=["nan", "infinite"])
+def test_an_unreadable_verification_take_restores_and_offers_another_try(
+    real_main_window, sample
+) -> None:
+    window = real_main_window
+    before = window._get_current_preset().to_dict()
+    dialog = VoiceSetupDialog(parent=window)
+    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
+    _bind_capture_context(dialog, noise, speech)
+    _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
+    assert window._get_current_preset().to_dict() != before
+    take = speech.copy()
+    take[100] = sample
+    dialog.setup_state = "verification_recording"
+    try:
+        dialog._on_recording_complete(take)
+
+        assert dialog.setup_state == "completed"
+        assert window._get_current_preset().to_dict() == before
+        assert dialog.warning_label.text() == (
+            "The recording could not be read. Record it again."
+        )
+        assert dialog.start_button.text() == "Apply & Verify Again"
+        assert dialog.start_button.isEnabled()
+        assert dialog.preview_verification_audio is None
+
+        dialog._on_start_clicked()
+        assert dialog.setup_state == "verification_ready"
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+DULLING_SENTENCE = (
+    "noise suppression is dulling consonants by about 8 dB; "
+    "lower its strength or use DeepFilterNet LL"
+)
+ADVICE = f"Advice: {DULLING_SENTENCE}."
+METRICS = (
+    "Target error 0.8→0.9 dB; compressor p95 6.0 dB; "
+    "true peak -120.0 dBTP; SNR change -5.0 dB."
+)
+FIRST_REASON = {
+    "accept": "repeatability and full-chain DSP constraints passed",
+    "rollback": "SNR fell by 5.0 dB",
+    "reduce": "compressor p95 reduction exceeded target by 2.5 dB",
+    "retry": (
+        "verification delivery differs too much from the setup passage "
+        "(delivery level delta was 9.0 dB). Repeat the same passage at the same "
+        "microphone distance and natural speaking level."
+    ),
+}
+
+
+def _verdict_with_dulling_advisory(decision: str) -> dict[str, Any]:
+    return {
+        "decision": decision,
+        "reason_codes": [f"{decision}_reason", "suppressor_dulling"],
+        "reduction_targets": ["compressor"] if decision == "reduce" else [],
+        "reasons": [FIRST_REASON[decision], DULLING_SENTENCE],
+        "spectral_target_error_before_db": 0.8,
+        "spectral_target_error_after_db": 0.9,
+        "compressor_gain_reduction_p95_db": 6.0,
+        "snr_change_db": -5.0,
+    }
+
+
+def _verifying_dialog(
+    window: MainWindow, *, suppressor_enabled: bool
+) -> tuple[VoiceSetupDialog, np.ndarray]:
+    """A dialog whose applied proposal, with the suppressor on or off, awaits a verdict."""
+    dialog = VoiceSetupDialog(parent=window)
+    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
+    _bind_capture_context(dialog, noise, speech)
+    suppressor = {**window.noise_suppression_state.get_settings(), "enabled": suppressor_enabled}
+    _apply_complete_candidate(
+        window, dialog, _voice_setup_result(window, dialog, suppressor=suppressor)
+    )
+    return dialog, speech
+
+
+def _reduce_out_of_adjustments(dialog, speech, _monkeypatch) -> None:
+    dialog._verification_audio = speech
+    dialog._verification_adjustment_count = 3
+
+
+def _reduce_without_progress(dialog, speech, _monkeypatch) -> None:
+    dialog._verification_audio = speech
+    dialog._verification_last_reduction_metrics = {"compressor": 6.0}
+
+
+def _reduce_that_changes_nothing(dialog, speech, monkeypatch) -> None:
+    dialog._verification_audio = speech
+    monkeypatch.setattr(dialog, "_apply_verification_reduction", lambda *_args: (False, None))
+
+
+def _last_take(dialog, _speech, _monkeypatch) -> None:
+    dialog._verification_bad_capture_count = 2
+
+
+# decision, setup of the dialog's state, the text just before any advice, whether it is advised
+DULLING_MESSAGES = [
+    pytest.param(
+        "accept", None, "closing the comparison restores the original settings.", True,
+        id="accept",
+    ),
+    pytest.param("rollback", None, METRICS, True, id="rollback"),
+    pytest.param(
+        "reduce", _reduce_out_of_adjustments,
+        "Verification made no safe progress after three automatic adjustments.", True,
+        id="reduce-out-of-adjustments",
+    ),
+    pytest.param(
+        "reduce", _reduce_without_progress,
+        "Verification made no measurable progress after the previous adjustment.", True,
+        id="reduce-without-progress",
+    ),
+    pytest.param(
+        "reduce", _reduce_that_changes_nothing, "Verification stopped: no progress.", True,
+        id="reduce-that-changes-nothing",
+    ),
+    pytest.param("retry", None, METRICS, False, id="retry"),
+    pytest.param(
+        "retry", _last_take, "Maximum verification attempts reached.", False, id="last-retry"
+    ),
+]
+
+
+@pytest.mark.parametrize("suppressor_enabled", [True, False], ids=["suppressor-on", "suppressor-off"])
+@pytest.mark.parametrize(("decision", "setup", "tail", "advised"), DULLING_MESSAGES)
+def test_the_dulling_advice_ends_the_message_as_its_own_sentence_or_is_left_out(
+    real_main_window, monkeypatch, decision, setup, tail, advised, suppressor_enabled
+) -> None:
+    dialog, speech = _verifying_dialog(real_main_window, suppressor_enabled=suppressor_enabled)
+    try:
+        if setup is not None:
+            setup(dialog, speech, monkeypatch)
+        dialog._on_verification_complete(_verdict_with_dulling_advisory(decision))
+        text = dialog.warning_label.text()
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+    assert ".;" not in text
+    if advised and suppressor_enabled:
+        assert text.endswith(f"{tail} {ADVICE}")
+        assert text.count(DULLING_SENTENCE) == 1
+    else:
+        assert text.endswith(tail)
+        assert DULLING_SENTENCE not in text
+        assert "Advice" not in text
+
+
+@pytest.mark.parametrize("suppressor_enabled", [True, False], ids=["suppressor-on", "suppressor-off"])
+def test_the_verified_box_carries_the_dulling_advice_past_the_comparison(
+    real_main_window, monkeypatch, suppressor_enabled
+) -> None:
+    dialog, _speech = _verifying_dialog(real_main_window, suppressor_enabled=suppressor_enabled)
+    boxes: list[str] = []
+    monkeypatch.setattr(
+        "mic_eq.ui.voice_setup_dialog.QMessageBox.information",
+        lambda *args, **_kwargs: boxes.append(str(args[-1])),
+    )
+    monkeypatch.setattr(real_main_window, "_prompt_save_current_preset", lambda **_kwargs: None)
+
+    class _AcceptedComparison:
+        def __init__(self, **_kwargs):
+            pass
+
+        def exec(self):
+            return int(QDialog.DialogCode.Accepted)
+
+        def deleteLater(self):
+            pass
+
+    monkeypatch.setattr(
+        "mic_eq.ui.listening_comparison_dialog.ListeningComparisonDialog", _AcceptedComparison
+    )
+    try:
+        dialog._on_verification_complete(_verdict_with_dulling_advisory("accept"))
+        assert dialog.setup_state == "final_comparison_ready"
+        dialog._on_start_clicked()
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+    assert len(boxes) == 1
+    if suppressor_enabled:
+        assert f"\n\n{ADVICE}\n\n" in boxes[0]
+    else:
+        assert "Advice" not in boxes[0]
+        assert DULLING_SENTENCE not in boxes[0]
 
 
 @pytest.mark.parametrize("target,auto_makeup", [("limiter", True), ("limiter", False), ("deesser", False)])

@@ -254,6 +254,12 @@ class _FakeProcessor:
     def is_running(self) -> bool:
         return True
 
+    def get_input_rms_db(self) -> float:
+        return -120.0
+
+    def get_input_peak_db(self) -> float:
+        return -96.5
+
 
 class _FakeStatusBar:
     def __init__(self) -> None:
@@ -306,8 +312,44 @@ def test_main_window_export_uses_privacy_safe_builder(
     main_window.MainWindow._export_diagnostics(cast(Any, window))
 
     payload = destination.read_text(encoding="utf-8")
+    # A microphone that is silent at rest has to be visible in a support report.
+    runtime = json.loads(payload)["runtime"]
+    assert (runtime["input_rms_db"], runtime["input_peak_db"]) == (-120.0, -96.5)
     assert "Private USB Microphone" not in payload
     assert "Private Virtual Cable" not in payload
     assert json.loads(payload)["privacy"]["raw_audio_included"] is False
     assert messages[0][0] == "Diagnostics Exported"
     assert window.status_message.messages[-1][0] == "Privacy-safe diagnostics exported"
+
+
+class _FailingLevelProcessor(_FakeProcessor):
+    def get_input_rms_db(self) -> float:
+        raise RuntimeError("level meter unavailable")
+
+
+def test_main_window_export_survives_a_failed_level_read(tmp_path, monkeypatch) -> None:
+    destination = tmp_path / "ui-support.json"
+    messages: list[str] = []
+    monkeypatch.setattr(
+        main_window.QFileDialog,
+        "getSaveFileName",
+        lambda *_args, **_kwargs: (str(destination), "JSON Files (*.json)"),
+    )
+    monkeypatch.setattr(
+        main_window.QMessageBox,
+        "information",
+        lambda _parent, title, _text: messages.append(title),
+    )
+    monkeypatch.setattr(
+        main_window.QMessageBox,
+        "critical",
+        lambda *_args, **_kwargs: pytest.fail("one failed read lost the whole report"),
+    )
+    window = _FakeWindow()
+    window.processor = _FailingLevelProcessor()
+
+    main_window.MainWindow._export_diagnostics(cast(Any, window))
+
+    runtime = json.loads(destination.read_text(encoding="utf-8"))["runtime"]
+    assert (runtime["input_rms_db"], runtime["input_peak_db"]) == (None, -96.5)
+    assert messages == ["Diagnostics Exported"]

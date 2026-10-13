@@ -28,6 +28,39 @@ import check_workflows
 
 
 TOOLS_DIR = Path(__file__).parent.parent / "tools"
+QT_PLUGINS = "_internal/PySide6/plugins"
+UNUSED_QT_PLUGIN_FILES = (
+    f"{QT_PLUGINS}/platforms/qdirect2d.dll",
+    *(
+        f"{QT_PLUGINS}/imageformats/{name}.dll"
+        for name in ("qgif", "qicns", "qjpeg", "qtga", "qtiff", "qwbmp", "qwebp")
+    ),
+    *(
+        f"{QT_PLUGINS}/tls/{name}.dll"
+        for name in ("qcertonlybackend", "qopensslbackend", "qschannelbackend")
+    ),
+    f"{QT_PLUGINS}/generic/qtuiotouchplugin.dll",
+    f"{QT_PLUGINS}/networkinformation/qnetworklistmanager.dll",
+)
+# The Qt files and SciPy that the trimmed bundle must keep.
+KEPT_PAYLOAD_FILES = (
+    "_internal/PySide6/Qt6OpenGL.dll",
+    "_internal/PySide6/QtOpenGL.pyd",
+    f"{QT_PLUGINS}/platforms/qwindows.dll",
+    f"{QT_PLUGINS}/platforms/qoffscreen.dll",
+    f"{QT_PLUGINS}/platforms/qminimal.dll",
+    f"{QT_PLUGINS}/imageformats/qico.dll",
+    f"{QT_PLUGINS}/styles/qmodernwindowsstyle.dll",
+    f"{QT_PLUGINS}/multimedia/windowsmediaplugin.dll",
+    "_internal/scipy/optimize/_slsqplib.cp313-win_amd64.pyd",
+)
+REMOVED_BUNDLE_FILES = (
+    *UNUSED_QT_PLUGIN_FILES,
+    *(
+        f"_internal/scipy/{name}/_native.cp313-win_amd64.pyd"
+        for name in ("integrate", "interpolate", "ndimage", "stats")
+    ),
+)
 
 
 def test_release_outputs_are_ignored_without_hiding_source(tmp_path):
@@ -84,6 +117,80 @@ def test_bundle_path_baseline_includes_required_runtime_files():
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
 
     assert set(package_smoke.REQUIRED_BUNDLE_FILES) <= set(baseline["paths"])
+
+
+def test_bundle_path_baseline_omits_payload_removed_from_the_bundle():
+    baseline_path = TOOLS_DIR.parents[1] / "evaluation" / "release-bundle-path-baseline.json"
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    removed = (
+        *(path.as_posix() for path in prune_bundle.UNUSED_QT_PLUGIN_PATHS),
+        *(f"_internal/{name.replace('.', '/')}" for name in package_smoke.EXCLUDED_SCIPY_MODULES),
+    )
+
+    assert not [
+        path
+        for path in baseline["paths"]
+        if any(path == root or path.startswith(f"{root}/") for root in removed)
+    ]
+    assert set(KEPT_PAYLOAD_FILES) <= set(baseline["paths"])
+
+
+def test_package_smoke_requires_spec_to_exclude_unpackaged_scipy():
+    spec = (TOOLS_DIR.parents[1] / "AudioForge.spec").read_text(encoding="utf-8")
+    assert package_smoke._spec_module_errors(spec) == []
+
+    for module in package_smoke.EXCLUDED_SCIPY_MODULES:
+        without = spec.replace(f'        "{module}",\n', "", 1)
+        assert without != spec
+        expected = [f"AudioForge.spec must exclude {module}"]
+        assert package_smoke._spec_module_errors(without) == expected
+        # Listing it as a hidden import instead does not count as excluding it.
+        hidden = without.replace('"json",', f'"json", "{module}",', 1)
+        assert package_smoke._spec_module_errors(hidden) == expected
+
+
+def test_package_smoke_rejects_spec_that_excludes_or_drops_the_qtopengl_binding():
+    spec = (TOOLS_DIR.parents[1] / "AudioForge.spec").read_text(encoding="utf-8")
+    hidden_import = '        "PySide6.QtOpenGL",\n'
+    assert spec.count(hidden_import) == 1
+
+    excluded = spec.replace('        "ssl",\n', f'{hidden_import}        "ssl",\n', 1)
+    dropped = spec.replace(hidden_import, "", 1)
+    moved = excluded.replace(hidden_import, "", 1)
+
+    for broken in (excluded, dropped, moved):
+        (error,) = package_smoke._spec_module_errors(broken)
+        assert "PySide6.QtOpenGL in hiddenimports and not exclude it" in error
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "import scipy.signal",
+        "from scipy.signal import resample_poly",
+        "from scipy import signal",
+        "from scipy import stats",
+        "import scipy.ndimage as ndi",
+        "from scipy.interpolate import interp1d",
+        "import scipy.integrate",
+        "from scipy.stats import qmc",
+    ],
+)
+def test_package_smoke_rejects_app_imports_of_unpackaged_scipy(tmp_path, statement):
+    package = tmp_path / "python" / "mic_eq" / "analysis"
+    package.mkdir(parents=True)
+    (package / "fine.py").write_text(
+        "from scipy.optimize import minimize\nfrom scipy.io import wavfile\n",
+        encoding="utf-8",
+    )
+    assert package_smoke._unpackaged_scipy_imports(tmp_path) == []
+
+    (package / "bad.py").write_text(f"def fit():\n    {statement}\n", encoding="utf-8")
+
+    errors = package_smoke._unpackaged_scipy_imports(tmp_path)
+    assert len(errors) == 1
+    assert errors[0].startswith("python/mic_eq/analysis/bad.py imports scipy.")
+    assert errors[0].endswith("which is not packaged")
 
 
 def test_qml_hook_keeps_runtime_modules_without_editor_type_descriptions():
@@ -1313,6 +1420,66 @@ def test_qt_inventory_rejects_unselected_modules_and_prunes_virtual_keyboard(tmp
     assert not any("unselected Qt module" in error for error in package_smoke.check_dist_bundle(bundle))
     _write_bundle_file(bundle, "_internal/PySide6/Qt6Unexpected.dll")
     assert any("unselected Qt module" in error for error in package_smoke.check_dist_bundle(bundle))
+
+
+def _write_valid_bundle(bundle: Path) -> None:
+    for relative_path in package_smoke.REQUIRED_BUNDLE_FILES:
+        _write_bundle_file(bundle, relative_path)
+    _write_valid_build_info(bundle)
+    _write_bundle_file(bundle, f"_internal/mic_eq/{_native_extension_name()}")
+
+
+@pytest.mark.parametrize("returned", REMOVED_BUNDLE_FILES)
+def test_package_smoke_rejects_payload_removed_from_the_bundle(tmp_path, returned):
+    bundle = tmp_path / "AudioForge"
+    _write_valid_bundle(bundle)
+    for kept in KEPT_PAYLOAD_FILES:
+        _write_bundle_file(bundle, kept)
+    assert package_smoke.check_dist_bundle(bundle) == []
+
+    _write_bundle_file(bundle, returned)
+
+    (error,) = package_smoke.check_dist_bundle(bundle)
+    assert "payload removed from the bundle" in error
+    listed = error.split("payload removed from the bundle: ", 1)[1].split(", ")
+    assert any(returned == item or returned.startswith(f"{item}/") for item in listed)
+
+
+@pytest.mark.parametrize(
+    "required",
+    [
+        # Loads the window icon; a missing plugin drops it silently.
+        f"{QT_PLUGINS}/imageformats/qico.dll",
+        # libshiboken imports it when the Qt Quick bindings load.
+        "_internal/PySide6/QtOpenGL.pyd",
+    ],
+)
+def test_package_smoke_requires_the_qt_files_the_trim_must_keep(tmp_path, required):
+    bundle = tmp_path / "AudioForge"
+    _write_valid_bundle(bundle)
+    (bundle / required).unlink()
+
+    errors = package_smoke.check_dist_bundle(bundle)
+
+    assert errors == [f"{bundle} does not contain {required}"]
+
+
+def test_prune_bundle_removes_unused_qt_plugins_and_keeps_the_used_ones(tmp_path):
+    bundle = tmp_path / "AudioForge"
+    _write_valid_bundle(bundle)
+    for relative_path in (*UNUSED_QT_PLUGIN_FILES, *KEPT_PAYLOAD_FILES):
+        _write_bundle_file(bundle, relative_path)
+    assert any(
+        "payload removed from the bundle" in error
+        for error in package_smoke.check_dist_bundle(bundle)
+    )
+
+    prune_bundle.prune_bundle(bundle)
+
+    assert not any((bundle / relative_path).exists() for relative_path in UNUSED_QT_PLUGIN_FILES)
+    assert not (bundle / QT_PLUGINS / "tls").exists()
+    assert all((bundle / relative_path).is_file() for relative_path in KEPT_PAYLOAD_FILES)
+    assert package_smoke.check_dist_bundle(bundle) == []
 
 
 def test_prune_bundle_removes_system_ucrt_and_package_smoke_rejects_it(tmp_path):

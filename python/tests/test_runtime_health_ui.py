@@ -4,11 +4,12 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock
 
+import pytest
 from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QLabel, QWidget
 
 from mic_eq.ui.first_run_setup_dialog import route_health_reason
-from mic_eq.ui.health import RecentStreamHealth
+from mic_eq.ui.health import RecentStreamHealth, advice_for
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.shell_state import TextState
 
@@ -140,7 +141,6 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         _update_session_summary=Mock(),
         _shell_state_owner=state_owner,
         shell_texts={},
-        _health_text_for_view={},
     )
     names = (
         "latency_label",
@@ -161,18 +161,15 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         state.bind_label(label)
         setattr(window, name, label)
         window.shell_texts[name] = state
-        window._health_text_for_view[label] = state
     advice_label = QLabel()
     advice_state = TextState(state_owner, text="", name="health_advice_label")
     advice_state.bind_label(advice_label)
     window.health_advice_label = advice_label
     window.shell_texts["health_advice_label"] = advice_state
-    window._health_text_for_view[advice_label] = advice_state
-    window._health_decision_widgets = [getattr(window, name) for name in names[:-1]]
-    window._health_layout_widgets = []
-    window._set_health_chip = lambda label, text, state: MainWindow._set_health_chip(
-        window, label, text, state
+    window._set_health_chip = lambda key, text, state: MainWindow._set_health_chip(
+        window, key, text, state
     )
+    window._update_health_summary = lambda: MainWindow._update_health_summary(window)
     window._extend_diag_tokens = MainWindow._extend_diag_tokens
     args: dict[str, Any] = dict(
         diagnostics=diagnostics,
@@ -203,6 +200,64 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
     assert window.health_summary_label.property("health_state") == "warn"
 
 
+@pytest.mark.parametrize(
+    ("chips", "mute_error", "state", "summary", "advice"),
+    [
+        ({}, False, "idle", "Health: IDLE", "Start processing to see audio health."),
+        (
+            {"gate_health_label": ("Gate: OK", "ok")},
+            False, "ok", "Health: OK", "Everything looks fine.",
+        ),
+        # Informational chips do not count towards the summary.
+        (
+            {"latency_label": ("Latency: ~10ms", "info")},
+            False, "idle", "Health: IDLE", "Start processing to see audio health.",
+        ),
+        (
+            {"gate_health_label": ("Gate: OK", "ok")},
+            True, "warn", "Health: WARN", "Check the items marked below.",
+        ),
+        # The worst level wins, and the first chip in the reporting order
+        # (decision chips, then the stream chips) names the issue.
+        (
+            {
+                "recovery_diag_label": ("Recovery: R:2 RECENT", "warn"),
+                "buffer_label": ("Buffer: WARN (1200)", "warn"),
+                "input_health_label": ("Input: CLIPPING", "bad"),
+            },
+            False, "bad", "Input: CLIPPING", advice_for("Input: CLIPPING"),
+        ),
+        (
+            {
+                "recovery_diag_label": ("Recovery: R:2 RECENT", "warn"),
+                "buffer_label": ("Buffer: WARN (1200)", "warn"),
+            },
+            False, "warn", "Buffer: WARN (1200)", advice_for("Buffer:"),
+        ),
+        (
+            {"input_health_label": ("Input: STRANGE", "warn")},
+            False, "warn", "Input: STRANGE", "Check the items marked below.",
+        ),
+    ],
+)
+def test_health_summary_and_advice_come_from_chip_states_alone(
+    isolated_main_window, chips, mute_error, state, summary, advice
+):
+    window = isolated_main_window
+    for key, (text, status) in chips.items():
+        window._set_health_chip(key, text, status)
+    window._output_mute_error = "unavailable" if mute_error else None
+
+    window._update_health_summary()
+
+    summary_state = window.shell_texts["health_summary_label"]
+    assert (summary_state.text, summary_state.state) == (summary, state)
+    assert window.shell_texts["health_advice_label"].text == advice
+    assert summary_state.toolTip == advice
+    # The session summary was refreshed from the same call.
+    assert ("Mute pending" in window.shell_texts["transmission_status_label"].text) is mute_error
+
+
 def test_unchanged_health_chip_does_not_reapply_qt_styles(qapp, monkeypatch):
     label = QLabel()
     state_owner = QObject()
@@ -230,12 +285,12 @@ def test_unchanged_health_chip_does_not_reapply_qt_styles(qapp, monkeypatch):
     monkeypatch.setattr(label, "setText", text)
     monkeypatch.setattr(label, "setStyleSheet", style)
     monkeypatch.setattr(label, "setProperty", prop)
-    window: Any = SimpleNamespace(_health_text_for_view={label: state})
+    window: Any = SimpleNamespace(shell_texts={"health_summary_label": state})
     calls.update(text=0, style=0, property=0)
     for _ in range(30):
-        MainWindow._set_health_chip(window, label, "Health: --", "idle")
+        MainWindow._set_health_chip(window, "health_summary_label", "Health: --", "idle")
     assert calls == dict(text=1, style=1, property=1)
-    MainWindow._set_health_chip(window, label, "Input: -20dB", "idle")
+    MainWindow._set_health_chip(window, "health_summary_label", "Input: -20dB", "idle")
     assert calls == dict(text=2, style=1, property=1)
 
 
@@ -310,8 +365,8 @@ def test_main_window_invalidates_all_live_meters_on_stop_and_getter_failure(qapp
         assert not window.processing_meters.compressor_gr.measurement_available
         assert not window.processing_meters.deesser_gr.measurement_available
         assert not window.processing_meters.confidence.measurement_available
-        assert window.processing_meters.current_lufs.text() == "--"
-        assert window.processing_meters.current_makeup_gain.text() == "--"
+        assert window.processing_meters.text_states["current_lufs"].text == "--"
+        assert window.processing_meters.text_states["current_makeup_gain"].text == "--"
         assert "--" in window.gate_state.presentation()["noise_floor"]
     finally:
         native.stop()
@@ -333,7 +388,6 @@ def test_failed_diagnostics_still_service_recovery_when_presentation_is_hidden(q
         _hidden_to_tray=True,
         _reset_health_labels=Mock(),
         _set_health_chip=Mock(),
-        health_summary_label=QLabel(),
         _service_stream_recovery=Mock(),
     )
     MainWindow._update_diagnostics(window)

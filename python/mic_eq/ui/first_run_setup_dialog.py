@@ -32,8 +32,8 @@ from .layout_constants import (
     configure_responsive_combo,
     create_scrollable_dialog_body,
 )
-from .level_meter import LevelMeter
-from .theme import DESCRIPTION_LABEL_STYLE, message_text_style
+from .level_meter import LevelMeter, MeterWidget
+from .theme import DESCRIPTION_LABEL_STYLE, message_text_style, status_chip_style
 
 
 DEFAULT_SETUP_STEPS = ("devices", "route", "voice")
@@ -223,8 +223,10 @@ class FirstRunSetupDialog(QDialog):
         self.route_feedback_group.body.addLayout(feedback_layout)
         self.route_input_meter = LevelMeter("IN", show_scale=True)
         self.route_output_meter = LevelMeter("OUT", show_scale=True)
-        self.route_input_meter.setFixedWidth(60)
-        self.route_output_meter.setFixedWidth(60)
+        route_input_widget = MeterWidget(self.route_input_meter)
+        route_output_widget = MeterWidget(self.route_output_meter)
+        route_input_widget.setFixedWidth(60)
+        route_output_widget.setFixedWidth(60)
         self.route_input_health_label = QLabel("Input: --")
         self.route_output_health_label = QLabel("Output: --")
         for label, name in (
@@ -233,8 +235,8 @@ class FirstRunSetupDialog(QDialog):
         ):
             label.setWordWrap(True)
             label.setAccessibleName(name)
-        feedback_layout.addWidget(self.route_input_meter, 0, 0, Qt.AlignmentFlag.AlignHCenter)
-        feedback_layout.addWidget(self.route_output_meter, 0, 1, Qt.AlignmentFlag.AlignHCenter)
+        feedback_layout.addWidget(route_input_widget, 0, 0, Qt.AlignmentFlag.AlignHCenter)
+        feedback_layout.addWidget(route_output_widget, 0, 1, Qt.AlignmentFlag.AlignHCenter)
         feedback_layout.addWidget(self.route_input_health_label, 1, 0)
         feedback_layout.addWidget(self.route_output_health_label, 1, 1)
         feedback_layout.setColumnStretch(0, 1)
@@ -322,8 +324,8 @@ class FirstRunSetupDialog(QDialog):
         set_accessible_group(
             (
                 (self.progress, "Setup progress", None),
-                (self.route_input_meter, "Live microphone level", None),
-                (self.route_output_meter, "Live destination level", None),
+                (route_input_widget, "Live microphone level", None),
+                (route_output_widget, "Live destination level", None),
                 (self.route_input_health_label, "Live microphone health", None),
                 (self.route_output_health_label, "Live destination health", None),
                 (self.mute_checkbox, "Mute output during setup", None),
@@ -397,14 +399,14 @@ class FirstRunSetupDialog(QDialog):
         ):
             if running:
                 source_meter = getattr(self.owner, f"{direction}_meter")
-                source_label = getattr(self.owner, f"{direction}_health_label")
+                source = self.owner.shell_texts[f"{direction}_health_label"]
                 if not getattr(source_meter, "measurement_available", True):
                     meter.set_unavailable()
                 elif not getattr(source_meter, "peak_available", True):
                     meter.set_rms_level(source_meter.rms_db)
                 else:
                     meter.set_levels(source_meter.rms_db, source_meter.peak_db)
-                text, style = source_label.text(), source_label.styleSheet()
+                text, style = source.text, status_chip_style(source.state)
             else:
                 meter.set_unavailable()
                 text, style = f"{direction.title()}: --", message_text_style("idle")

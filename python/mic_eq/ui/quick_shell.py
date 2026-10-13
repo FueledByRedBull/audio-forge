@@ -26,17 +26,14 @@ from PySide6.QtGui import QPainter, QPen
 from PySide6.QtQml import qmlRegisterType
 from PySide6.QtQuick import QQuickPaintedItem
 from PySide6.QtQuickWidgets import QQuickWidget
-from PySide6.QtWidgets import (
-    QLabel,
-)
 
 from .components import Glyph, icon_font
 from .control_specs import control_label
 from .eq_controls import EQControl
 from .eq_quick_graph import EQGraphItem
 from .quick_meter import QuickMeterItem
+from .shell_specs import ACTION_SPECS
 from .shell_state import ActionControl
-from .level_meter import LevelMeter, GainReductionMeter, ConfidenceMeter
 from .noise_controls import NoiseControl
 from .processing_controls import SettingControl, GateText
 from .theme import (
@@ -54,22 +51,6 @@ TRACE_POINTS = 120
 MINIMUM_SCENE_SIZE = (900, 600)
 QUICK_VIEW_UNAVAILABLE = "The Qt Quick view could not start; using the classic view."
 _LOG = logging.getLogger(__name__)
-
-class MeterSource(QObject):
-    """Repaint notification for an existing classic meter renderer."""
-
-    repaintRequested = Signal()
-
-    def __init__(self, target: LevelMeter | GainReductionMeter | ConfidenceMeter, parent: QObject):
-        super().__init__(parent)
-        self.target = target
-        target.changed.connect(self.repaintRequested)
-
-    name = Property(str, lambda self: self.target.accessibleName(), constant=True)
-    toolTip = Property(str, lambda self: self.target.toolTip(), constant=True)
-    enabled = Property(bool, lambda self: self.target.isEnabled(), notify=repaintRequested)
-    shown = Property(bool, lambda self: True, constant=True)
-
 
 class LevelTrace(QQuickPaintedItem):
     """Input (muted) and output (accent) level over the last few seconds."""
@@ -162,8 +143,8 @@ class QuickBridge(QObject):
     def exportDiagnostics(self) -> None:
         self._window._export_diagnostics()
 
-    def _row(self, kind: str, target, label: str = "") -> dict:
-        return {"kind": kind, "label": label, "proxy": MeterSource(target, self) if kind == "meter" else target}
+    def _row(self, kind: str, proxy, label: str = "") -> dict:
+        return {"kind": kind, "label": label, "proxy": proxy}
 
     def _build_model(self, w) -> dict:
         row = self._row
@@ -171,8 +152,7 @@ class QuickBridge(QObject):
             return w.shell_texts[name]
 
         def action(name: str):
-            return ActionControl(getattr(w, name + "_action"), self,
-                                 name=getattr(w, name).accessibleName())
+            return ActionControl(getattr(w, name + "_action"), self, name=ACTION_SPECS[name].name)
 
         def menu(target, label: str):
             # QMenu/QAction are the shared native command owners.
@@ -211,7 +191,10 @@ class QuickBridge(QObject):
                 ),
                 "toggle": NoiseControl(w.noise_suppression_state, "enabled", self),
                 "rows": [
-                    {"kind": "combo", "label": "Backend", "proxy": NoiseControl(w.noise_suppression_state, "model", self)},
+                    {
+                        "kind": "combo", "label": "Backend",
+                        "proxy": NoiseControl(w.noise_suppression_state, "model", self, w._on_model_changed),
+                    },
                     {"kind": "field", "label": "Strength", "proxy": strength, "display": strength},
                     {"kind": "text", "label": "", "proxy": NoiseControl(w.noise_suppression_state, "latency", self)},
                 ],
@@ -360,7 +343,7 @@ class QuickBridge(QObject):
             },
             "presets": {
                 "status": text("preset_status_label"),
-                "menu": menu(w.presets_button.menu(), "Presets"),
+                "menu": menu(w.presets_menu, "Presets"),
                 "undo": action("_undo_auto_eq_button"),
                 "redo": action("redo_button"),
                 "testSound": action("test_sound_button"),
@@ -384,7 +367,7 @@ class QuickBridge(QObject):
                 "bands": bands,
             },
             "stages": stages,
-            "meters": [MeterSource(w.input_meter, self), MeterSource(w.output_meter, self)],
+            "meters": [w.input_meter, w.output_meter],
             "status": {
                 "message": w.status_message,
                 "transmission": text("transmission_status_label"),
@@ -420,12 +403,10 @@ class QuickBridge(QObject):
 
 
 def install_quick_shell(window) -> bool:
-    """Replace the window's widget shell with the QML scene.
+    """Make the QML scene the window's content.
 
-    The widget shell moves to an off-screen window. It is shown there (never
-    on the desktop) so visibility-driven code such as meter timers keeps
-    running. Returns ``False`` and leaves the widget shell in place when the
-    scene does not load.
+    No widget view exists yet, and none is built. Returns ``False`` when the
+    scene does not load; the caller then builds the widget view.
     """
 
     qmlRegisterType(EQGraphItem, "AudioForge", 1, 0, "EQGraphItem")  # type: ignore[call-overload]
@@ -453,18 +434,12 @@ def install_quick_shell(window) -> bool:
         _announce_fallback(window)
         return False
 
-    shell = window.takeCentralWidget()
-    shell.setParent(window, Qt.WindowType.Window)
-    shell.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-    shell.show()
-    window.statusBar().hide()
     window.setCentralWidget(view)
     window.quick_bridge = bridge
-    window.widget_shell = shell
     # A scene that loads can still fail to render, for example without a
     # usable graphics adapter.
     view.sceneGraphError.connect(
-        lambda _error, message: restore_widget_shell(window, message)
+        lambda _error, message: restore_classic_view(window, message)
     )
     # Left to interpreter shutdown, the scene is torn down in no fixed order
     # and the process can crash on exit; delete it as the event loop ends.
@@ -475,29 +450,20 @@ def install_quick_shell(window) -> bool:
 
 
 def _announce_fallback(window) -> None:
-    # A permanent label: transient status messages would replace the notice.
-    notice = QLabel(QUICK_VIEW_UNAVAILABLE)
-    notice.setAccessibleName("Interface notice")
+    # Shared state the widget view renders: a transient status message would
+    # replace the notice, and the view may not exist yet.
     window.quick_view_failed = True
-    window.statusBar().addPermanentWidget(notice)
+    window.shell_texts["interface_notice"].update(text=QUICK_VIEW_UNAVAILABLE, shown=True)
 
 
-def restore_widget_shell(window, reason: str) -> None:
-    """Go back to the widget view and say why."""
+def restore_classic_view(window, reason: str) -> None:
+    """Drop the Qt Quick view for the widget view, and say why."""
 
     bridge = window.__dict__.pop("quick_bridge", None)
     if bridge is None:
         return
     _LOG.error("Qt Quick view stopped rendering: %s", reason)
-    shell = window.__dict__.pop("widget_shell")
-    view = window.takeCentralWidget()
-    shell.hide()
-    shell.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, False)
-    shell.setParent(window)
-    window.setCentralWidget(shell)
-    window._ensure_processing_panels()
-    shell.show()
-    window.statusBar().show()
     _announce_fallback(window)
-    view.deleteLater()
+    # Qt hides and deletes the replaced central widget once the event loop runs.
+    window._show_classic_view()
     bridge.release()

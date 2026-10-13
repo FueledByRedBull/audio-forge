@@ -182,6 +182,7 @@ class EQState(QObject):
         self._rate_limiter = RateLimiter(interval_ms=33)
         self._rate_limiter._timer.setParent(self)
         self._curve_rate_limiter = self._rate_limiter
+        self._curve_edit_origin: tuple[int, EQBandSettings] | None = None
         self.selected_band: int | None = None
         self.show_markers = False
         self._diagnostics: dict | None = None
@@ -452,7 +453,8 @@ class EQState(QObject):
     def step_band(self, direction: int) -> None:
         self.select_band(((self.selected_band or 0) + direction) % 10)
 
-    def begin_curve_edit(self, _index: int) -> None:
+    def begin_curve_edit(self, index: int) -> None:
+        self._curve_edit_origin = (index, self.get_band(index))
         self.configurationEditStarted.emit()
 
     def edit_curve_band(self, index: int, frequency_hz: float, gain_db: float) -> None:
@@ -465,13 +467,13 @@ class EQState(QObject):
         ):
             raise ValueError("EQ graph coordinates must be finite numbers")
         band = self.get_band(index)
-        changes = {
-            "frequency_hz": min(20000.0, max(20.0, frequency_hz)),
-            "bandwidth_mode": "q",
-            "bandwidth_octaves": None,
-        }
+        changes: dict[str, Any] = {"frequency_hz": min(20000.0, max(20.0, frequency_hz))}
         if band.filter_type in GAIN_FILTER_TYPES:
             changes["gain_db"] = min(12.0, max(-12.0, gain_db))
+        # A click that moved nothing must not turn the bandwidth into Q.
+        if all(getattr(band, name) == value for name, value in changes.items()):
+            return
+        changes.update(bandwidth_mode="q", bandwidth_octaves=None)
         bands = list(self._settings.bands)
         bands[index] = replace(band, **changes)
         # One queue composes graph and numeric edits in arrival order. The graph
@@ -486,8 +488,13 @@ class EQState(QObject):
         *,
         cancelled: bool = False,
     ) -> None:
+        origin, self._curve_edit_origin = self._curve_edit_origin, None
         try:
-            self.edit_curve_band(index, frequency_hz, gain_db)
+            if cancelled and origin is not None and origin[0] == index:
+                # The whole band, since the first moved value turned it into Q mode.
+                self.set_band(index, origin[1], edited=False)
+            else:
+                self.edit_curve_band(index, frequency_hz, gain_db)
             self._curve_rate_limiter.flush()
         finally:
             self.configurationEditFinished.emit(

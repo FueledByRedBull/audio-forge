@@ -1,21 +1,44 @@
-"""Both frontends share settings; Quick does not need hidden control panels."""
+"""Both frontends share settings; Quick builds no widget view."""
 
 from __future__ import annotations
 
-import pytest
-from PySide6.QtCore import QEvent, QPointF, QSignalBlocker, Qt, qInstallMessageHandler
-from PySide6.QtGui import QImage, QMouseEvent, QPainter
-from PySide6.QtQuickWidgets import QQuickWidget
-from PySide6.QtWidgets import QLabel, QMessageBox
+from dataclasses import replace
+import time
+from typing import Any
 
-from mic_eq.config import AppConfig
-from mic_eq.ui.main_window import MainWindow
+import pytest
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QPoint,
+    QPointF,
+    QRectF,
+    QSignalBlocker,
+    Qt,
+    QTimer,
+    qInstallMessageHandler,
+)
+from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent, QPainter
+from PySide6.QtTest import QSignalSpy, QTest
+from PySide6.QtQuickWidgets import QQuickWidget
+from PySide6.QtWidgets import (
+    QLabel,
+    QMessageBox,
+    QStatusBar,
+)
+from shiboken6 import isValid
+
+from mic_eq.config import AppConfig, DeviceIdentity
+from mic_eq.config_parts.settings import q_from_bandwidth_octaves
+from mic_eq.ui.main_window import CLASSIC_ATTRIBUTES, MainWindow
 from mic_eq.ui.eq_quick_graph import EQGraphItem
 from mic_eq.ui.eq_graph import EQGraphGeometry
+from mic_eq.ui.quick_meter import QuickMeterItem
+from mic_eq.ui.shell_specs import ACTION_SPECS, CHOICE_SPECS
 from mic_eq.ui.quick_shell import (
     SettingControl,
     QUICK_VIEW_UNAVAILABLE,
-    restore_widget_shell,
+    restore_classic_view,
 )
 
 
@@ -44,19 +67,195 @@ def _rows(card: dict) -> dict:
     return {row["label"]: row for row in card["rows"] + card["advanced"]}
 
 
-def test_quick_processing_runs_without_constructing_classic_panels(quick_window) -> None:
+@pytest.mark.parametrize("name", ["input", "output", "compressor", "deesser", "eq"])
+def test_live_data_changes_repaint_existing_qml_items(quick_window, name) -> None:
     window = quick_window
-    assert "_gate_panel" not in vars(window)
-    assert "_model_combo" not in vars(window)
+    window.resize(1500, 1000)
+    # Supply telemetry without opening audio devices or running stopped-stream refreshes.
+    for timer in window.findChildren(QTimer):
+        timer.stop()
+    target = {
+        "input": window.input_meter,
+        "output": window.output_meter,
+        "compressor": window.processing_meters.compressor_gr,
+        "deesser": window.processing_meters.deesser_gr,
+        "eq": window.eq_presentation.graph_model,
+    }[name]
+    view = window.centralWidget()
+    pending = [view.rootObject()]
+    item = None
+    while pending:
+        child = pending.pop()
+        if isinstance(child, QuickMeterItem) and child.property("source") is target:
+            item = child
+            break
+        if isinstance(child, EQGraphItem) and child.graph is target:
+            item = child
+            break
+        pending.extend(child.childItems())
+    assert item is not None
+    item.ensurePolished()
+    item.forceActiveFocus()
+
+    def snapshot():
+        QTest.qWait(75)
+        frame = view.grabFramebuffer()
+        assert not frame.isNull()
+        rect = item.mapRectToScene(QRectF(0, 0, item.width(), item.height()))
+        assert view.rect().contains(rect.toAlignedRect())
+        scale = frame.width() / view.width()
+        return frame.copy(QRectF(rect.x() * scale, rect.y() * scale,
+                                rect.width() * scale, rect.height() * scale).toAlignedRect())
+
+    previous = snapshot()
+    for level in (-30.0, -6.0, -45.0):
+        if name in {"input", "output"}:
+            target.set_levels(level, level + 3.0)
+        elif name == "eq":
+            target.set_all_params([("bell", 1000.0, level / 5.0, 1.41, 12, True)])
+        else:
+            target.set_gain_reduction(-level / 3.0)
+        current = snapshot()
+        assert current != previous, f"{name} did not repaint after its data changed"
+        previous = current
+
+
+@pytest.mark.parametrize(
+    ("item", "slot"),
+    [(QuickMeterItem, "_source_changed()"), (EQGraphItem, "_update_graph()")],
+)
+def test_qml_item_callbacks_are_registered_slots(item, slot) -> None:
+    # A callback PySide registers at connect time is never called once the
+    # scene declares a property on the element.
+    assert item.staticMetaObject.indexOfSlot(slot) >= 0
+
+
+def test_transport_follows_the_stop_action(quick_window) -> None:
+    window = quick_window
+    root = window.centralWidget().rootObject()
+    assert root.property("running") is False
+    # The action states _start_processing and _stop_processing set.
+    window.start_btn_action.setEnabled(False)
+    window.stop_btn_action.setEnabled(True)
+    assert root.property("running") is True
+    window.start_btn_action.setEnabled(True)
+    window.stop_btn_action.setEnabled(False)
+    assert root.property("running") is False
+
+
+def test_a_quick_session_never_builds_the_widget_view(quick_window, monkeypatch) -> None:
+    """Start, run, change pages and close without one classic widget or status bar."""
+
+    window = quick_window
+    refreshes: list[int] = []
+    monkeypatch.setattr(
+        window, "_refresh_login_startup_action", lambda: refreshes.append(window.shell_page.currentIndex())
+    )
+
+    def assert_no_widget_view() -> None:
+        assert window._classic_root is None
+        assert not vars(window).keys() & set(CLASSIC_ATTRIBUTES)
+        assert window.findChildren(QStatusBar) == []
+        assert isinstance(window.centralWidget(), QQuickWidget)
+        assert not window.quick_view_failed
+
+    def text(key: str) -> str:
+        return window.shell_texts[key].text
+
+    assert_no_widget_view()
     before = window._get_current_preset()
     window.apply_processing_configuration(before)
     window._commit_pending_configuration_snapshot()
+    window.input_meter.set_levels(-30.0, -20.0)
+    window.output_meter.set_levels(-24.0, -12.0)
     window._update_meters()
     window._update_diagnostics()
+    window._update_diagnostic_labels(
+        diagnostics={}, latency_ms=10.0, dsp_time_ms=0.2, input_buf=0, output_buf=0, rnnoise_buf=0,
+    )
+    window._set_health_chip("input_health_label", "Input: hot", "warn")
     window.quick_bridge.stepBand(1)
-    assert "_gate_panel" not in vars(window)
-    assert "_model_combo" not in vars(window)
+    window.quick_bridge._sample_levels()
+    window.status_message.showMessage("Probe")
+    window.shell_page.setIndex(window.SETTINGS_PAGE_INDEX)
+    window.shell_page.setIndex(0)
+    window.processing_mode_choice.setIndex(1)
+    assert text("transmission_status_label") == "Transmission: Stopped / Bypass"
+    window.processing_mode_choice.setIndex(0)
+    assert text("transmission_status_label") == "Transmission: Stopped / Normal"
+    window.shell_texts["config_warning_banner"].update(text="Warning", shown=True)
+
+    # A transport cycle with the audio engine faked: no device is opened.
+    native = window.processor
+
+    class Engine:
+        running = False
+
+        def __getattr__(self, name):
+            return getattr(native, name)
+
+        def is_running(self) -> bool:
+            return self.running
+
+        def stop(self) -> None:
+            self.running = False
+
+        def set_noise_model(self, _model: str) -> bool:
+            return True
+
+    engine: Any = Engine()
+
+    def start(processor: Engine, *_devices: object) -> str:
+        processor.running = True
+        return "started"
+
+    monkeypatch.setattr("mic_eq.ui.main_window.start_processor_for_route", start)
+    window.processor = engine
+    noise = window.noise_suppression_state
+    monkeypatch.setattr(noise, "processor", engine)
+    monkeypatch.setattr(noise, "models", (*noise.models, ("deepfilter-ll", "DeepFilterNet LL")))
+
+    # A device change updates the route text.
+    window.input_choice.addItem("Microphone", DeviceIdentity(name="Microphone", direction="input"))
+    window.output_choice.addItem("Destination", DeviceIdentity(name="Destination", direction="output"))
+    window.output_choice.setCurrentIndex(window.output_choice.count() - 1)
+    assert text("route_status_label") == "Route: Microphone -> Destination"
+    window.input_choice.addItem("Headset", DeviceIdentity(name="Headset", direction="input"))
+    window.input_choice.setCurrentIndex(window.input_choice.count() - 1)
+    assert text("route_status_label") == "Route: Headset -> Destination"
+    monkeypatch.setattr(window, "_apply_input_preferences_for_current_route", lambda: None)
+
+    window.user_mute_checkbox_action.setChecked(True)
+    assert text("transmission_status_label") == "Transmission: Stopped / Normal / Muted"
+    window.user_mute_checkbox_action.setChecked(False)
+    assert text("transmission_status_label") == "Transmission: Stopped / Normal"
+
+    # Applying a preset makes it the saved one; a noise-model edit then modifies it.
+    preset = window._get_current_preset()
+    preset.name = "Probe"
+    assert window._apply_preset(preset)
+    assert text("preset_status_label") == "Preset: Probe (saved)"
+    noise.set_value("model", "deepfilter-ll")
+    assert text("preset_status_label") == "Preset: Probe (unsaved changes)"
+
+    window.start_btn_action.trigger()
+    assert engine.running
+    assert text("transmission_status_label") == "Transmission: Running / Normal"
+    assert window.stop_btn_action.isEnabled() and not window.start_btn_action.isEnabled()
+    window._update_meters()
+    window._update_diagnostics()
+    window.stop_btn_action.trigger()
+    assert not engine.running
+    assert text("transmission_status_label") == "Transmission: Stopped / Normal"
+    assert window.start_btn_action.isEnabled() and not window.stop_btn_action.isEnabled()
+    window._update_meters()
+
+    assert refreshes == [window.SETTINGS_PAGE_INDEX]
     assert window._get_current_preset().eq.to_dict() == before.eq.to_dict()
+    assert_no_widget_view()
+    window._quitting = True
+    window.close()
+    assert_no_widget_view()
 
 
 def test_classic_fallback_only_attaches_views_without_native_writes(quick_window, monkeypatch) -> None:
@@ -76,7 +275,7 @@ def test_classic_fallback_only_attaches_views_without_native_writes(quick_window
         monkeypatch.setattr(state, "set_settings", unexpected)
         if hasattr(state, "set_value"):
             monkeypatch.setattr(state, "set_value", unexpected)
-    restore_widget_shell(window, "test fallback")
+    restore_classic_view(window, "test fallback")
     assert window.compressor_panel.compressor_state is window.compressor_state
     assert window.eq_panel.curve_widget is window.eq_presentation.curve_widget
     assert window.gate_panel.confidence_meter is window.processing_meters.confidence
@@ -195,7 +394,7 @@ def test_limiter_quick_edits_preserve_exact_preset_undo_and_fallback(quick_windo
     assert control.value == -3.26
     quick_window.redo_configuration()
     assert control.value == -2.25
-    restore_widget_shell(quick_window, "test rendering recovery")
+    restore_classic_view(quick_window, "test rendering recovery")
     assert quick_window.compressor_panel.ceiling_spinbox.value() == -2.25
     assert quick_window._get_current_preset().limiter.ceiling_db == -2.25
 
@@ -234,7 +433,7 @@ def test_limiter_quick_rejected_write_restores_state_and_reports_failure(quick_w
     control.setText("-2 dB")
     assert state.get_settings() == before
     assert control.value == round(float(before["ceiling_db"]), 2)
-    assert "test limiter write refused" in quick_window.status_bar.currentMessage()
+    assert "test limiter write refused" in quick_window.status_message.text
     control.setText("not a number")
     assert state.get_settings() == before
 
@@ -280,25 +479,26 @@ def test_failed_limiter_recovery_blocks_restart_until_configuration_reapplied(qu
     control.setText("-2 dB")
     assert "configuration" in quick_window._temporary_mute_reasons
     assert not quick_window._start_processing(interactive=False)
-    assert "recovery failed" in quick_window.status_bar.currentMessage()
+    assert "recovery failed" in quick_window.status_message.text
     assert not quick_window._commit_pending_configuration_snapshot()
     state.processor = native
     quick_window.apply_processing_configuration(preset)
     assert "configuration" not in quick_window._temporary_mute_reasons
 
 
-def test_scene_loads_and_replaces_the_widget_shell(quick_window) -> None:
+def test_scene_loads_without_a_widget_view(quick_window) -> None:
     view = quick_window.centralWidget()
     assert isinstance(view, QQuickWidget)
     assert view.status() == QQuickWidget.Status.Ready
     assert view.errors() == []
     # Binding errors are only warnings to Qt; here they fail the test.
     assert vars(quick_window)["scene_messages"] == []
-    # The widget shell keeps running off screen so its timers and layouts work.
-    assert quick_window.widget_shell.isVisible()
-    assert quick_window.widget_shell.testAttribute(
-        Qt.WidgetAttribute.WA_DontShowOnScreen
-    )
+    assert quick_window._classic_root is None
+    assert quick_window.findChildren(QStatusBar) == []
+    # Meters age their own peak holds, so nothing needs a visible widget to run.
+    meter = quick_window.input_meter
+    meter.set_levels(-30.0, -0.2)
+    assert meter.clip_flash_counter == 10 and meter.decay_timer.isActive()
 
 
 def test_field_proxy_writes_through_to_the_panel(quick_window) -> None:
@@ -330,13 +530,13 @@ def test_toggle_combo_and_page_proxies(quick_window) -> None:
     assert gate_card["toggle"].checked is switch.isChecked()
 
     mode = model["top"]["mode"]
-    combo = quick_window.processing_mode_combo
-    assert mode.items == [combo.itemText(i) for i in range(combo.count())]
+    choice = quick_window.processing_mode_choice
+    assert mode.items == [choice.itemText(i) for i in range(choice.count())]
     mode.setIndex(1)
-    assert combo.currentIndex() == 1
+    assert choice.currentData() == "bypass" and quick_window.processor.is_bypass()
 
     model["page"].setIndex(MainWindow.HEALTH_PAGE_INDEX)
-    assert quick_window.page_stack.currentIndex() == MainWindow.HEALTH_PAGE_INDEX
+    assert quick_window.shell_page.currentIndex() == MainWindow.HEALTH_PAGE_INDEX
 
 
 def test_health_notifies_without_widget_polling(quick_window) -> None:
@@ -344,9 +544,24 @@ def test_health_notifies_without_widget_polling(quick_window) -> None:
     status = bridge.model["health"]["signal"][0]["proxy"]
     seen: list[str] = []
     status.changed.connect(lambda: seen.append(status.text))
-    quick_window._set_health_chip(quick_window.input_health_label, "Input: hot", "warn")
+    quick_window._set_health_chip("input_health_label", "Input: hot", "warn")
     assert seen == ["Input: hot"]
     assert status.state == "warn"
+
+
+def test_opening_settings_refreshes_the_login_shortcut(quick_window, monkeypatch) -> None:
+    window = quick_window
+    opened: list[int] = []
+    monkeypatch.setattr(
+        window, "_refresh_login_startup_action", lambda: opened.append(window.shell_page.currentIndex())
+    )
+    page = window.quick_bridge.model["page"]
+    page.setIndex(window.HEALTH_PAGE_INDEX)
+    assert opened == []
+    page.setIndex(window.SETTINGS_PAGE_INDEX)
+    page.setIndex(0)
+    page.setIndex(window.SETTINGS_PAGE_INDEX)
+    assert opened == [window.SETTINGS_PAGE_INDEX] * 2
 
 
 def test_every_stage_is_in_the_model(quick_window) -> None:
@@ -407,7 +622,7 @@ def _find(item, kind: str, proxy):
     return None
 
 
-def test_scene_controls_drive_the_widgets(quick_window, qapp) -> None:
+def test_scene_controls_drive_the_shared_state(quick_window, qapp) -> None:
     """Click and drag in the scene itself, not on the proxies."""
 
     from PySide6.QtTest import QTest
@@ -419,67 +634,620 @@ def test_scene_controls_drive_the_widgets(quick_window, qapp) -> None:
 
     mute = _find(view.rootObject(), "Toggle", model["top"]["mute"])
     assert mute is not None
-    assert not quick_window.user_mute_checkbox.isChecked()
+    assert not quick_window.user_mute_checkbox_action.isChecked()
     QTest.mouseClick(
         view,
         Qt.MouseButton.LeftButton,
         pos=mute.mapToScene(QPointF(12, mute.height() / 2)).toPoint(),
     )
-    assert quick_window.user_mute_checkbox.isChecked()
+    assert quick_window.user_mute_checkbox_action.isChecked()
+    assert quick_window.user_muted
 
-    slider = quick_window.eq_panel.band_sliders[0].slider
+    def band_gain() -> float:
+        return quick_window.eq_state.get_eq_settings().bands[0].gain_db
+
     fader = _find(view.rootObject(), "Fader", model["eq"]["bands"][0]["gain"])
     assert fader is not None
     start = fader.mapToScene(QPointF(fader.width() / 2, fader.height() / 2)).toPoint()
     end = fader.mapToScene(QPointF(fader.width() * 0.8, fader.height() / 2)).toPoint()
-    assert slider.value() == 0
+    assert band_gain() == 0
     QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
     QTest.mouseMove(view, end)
     QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=end)
-    assert slider.value() > 30
+    assert band_gain() > 3
+
+
+def _graph_item(item):
+    for child in item.childItems():
+        if isinstance(child, EQGraphItem):
+            return child
+        found = _graph_item(child)
+        if found is not None:
+            return found
+    return None
+
+
+@pytest.fixture
+def mic_page(quick_window, qapp):
+    """The EQ graph and the page holding it, in a window the page overflows."""
+    quick_window.resize(900, 600)
+    qapp.processEvents()
+    graph = _graph_item(quick_window.centralWidget().rootObject())
+    assert graph is not None
+    page = graph
+    while page.property("contentY") is None:
+        page = page.parentItem()
+    assert page.property("contentHeight") > page.height()
+    return graph, page
+
+
+def _handle_point(window, item, band: int) -> QPoint:
+    x, y = EQGraphGeometry.band_handle_position(
+        window.eq_presentation.graph_model.bands, band, item.width(), item.height()
+    )
+    return item.mapToScene(QPointF(x, y)).toPoint()
+
+
+def _drag_up(view, start: QPoint, steps: int = 8, step: int = 8):
+    """Press at ``start``, yield after each move up, release when exhausted."""
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    pos = start
+    for _ in range(steps):
+        pos = pos - QPoint(0, step)
+        QTest.mouseMove(view, pos, delay=5)
+        yield pos
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=pos)
+
+
+def _wait_until(condition, timeout_ms: int = 3000) -> bool:
+    """Run the event loop in short slices until ``condition()`` holds or time runs out."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    while not condition() and time.monotonic() < deadline:
+        QTest.qWait(5)
+    return condition()
+
+
+def _touch_drag_up(view, start: QPoint, steps: int, step: int):
+    """Like :func:`_drag_up` with a finger.
+
+    Qt Quick delivers a touch move with the next frame and merges moves that
+    arrive within one frame, so each move waits for two frames to be rendered:
+    the second begins after the move was queued.
+    """
+    frames = QSignalSpy(view.quickWindow().afterRendering)
+    touch = QTest.touchEvent(view, QTest.createTouchDevice())
+    touch.press(0, start, view)
+    touch.commit()
+    pos = start
+    for _ in range(steps):
+        pos = pos - QPoint(0, step)
+        touch.move(0, pos, view)
+        touch.commit()
+        rendered = frames.count() + 2
+        _wait_until(lambda: frames.count() >= rendered)
+        yield pos
+    touch.release(0, pos, view)
+    touch.commit()
+
+
+def test_a_band_drag_is_not_taken_over_by_the_page(quick_window, mic_page) -> None:
+    item, page = mic_page
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    finished = QSignalSpy(graph.bandDragFinished)
+
+    gains = []
+    for pos in _drag_up(
+        quick_window.centralWidget(), _handle_point(quick_window, item, band)
+    ):
+        assert graph.dragging_band_index == band
+        assert page.property("contentY") == 0
+        gains.append(graph.bands[band][2])
+
+    assert all(before < after for before, after in zip(gains, gains[1:]))
+    assert gains[-1] == EQGraphGeometry.y_to_gain(
+        item.mapFromScene(QPointF(pos)).y(), item.width(), item.height()
+    )
+    # An ordinary release finishes the drag once, and Qt's later ungrab adds nothing.
+    assert graph.dragging_band_index is None
+    assert finished.count() == 1
+    assert finished.at(0)[0] == band and finished.at(0)[2] == gains[-1]
+    assert not item.keepMouseGrab()
+    committed = quick_window.eq_state.get_eq_settings().bands[band].gain_db
+    assert committed == pytest.approx(gains[-1])
+
+
+def test_a_mouse_drag_does_not_scroll_the_page_but_the_wheel_does(
+    quick_window, mic_page
+) -> None:
+    item, page = mic_page
+    view = quick_window.centralWidget()
+    margin = QPointF(3, 200)
+    for owner, spot in ((page, margin), (item, QPointF(10, 10))):
+        for _ in _drag_up(view, owner.mapToScene(spot).toPoint()):
+            assert page.property("contentY") == 0
+
+    QTest.wheelEvent(view.quickWindow(), page.mapToScene(margin), QPoint(0, -120))
+    assert _wait_until(lambda: page.property("contentY") > 0)
+
+
+def test_a_lost_mouse_grab_finishes_the_band_drag(quick_window, mic_page) -> None:
+    item, _page = mic_page
+    view = quick_window.centralWidget()
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    start = _handle_point(quick_window, item, band)
+    finished = QSignalSpy(graph.bandDragFinished)
+
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(view, start - QPoint(0, 24), delay=5)
+    assert graph.dragging_band_index == band
+    gain = graph.bands[band][2]
+    assert gain > 0
+
+    item.ungrabMouse()
+
+    assert graph.dragging_band_index is None
+    assert not item.keepMouseGrab()
+    assert finished.count() == 1
+    assert finished.at(0)[0] == band and finished.at(0)[2] == gain
+    committed = quick_window.eq_state.get_eq_settings().bands[band].gain_db
+    assert committed == pytest.approx(gain)
+    # No stale origin is left for Escape to jump back to.
+    QTest.keyClick(view, Qt.Key.Key_Escape)
+    assert graph.bands[band][2] == gain
+    # The button coming up afterwards finishes nothing twice.
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=start - QPoint(0, 24))
+    assert finished.count() == 1 and graph.bands[band][2] == gain
+
+
+def test_touch_still_flicks_the_page(quick_window, mic_page) -> None:
+    _item, page = mic_page
+    start = page.mapToScene(QPointF(200, page.height() - 30)).toPoint()
+    for _ in _touch_drag_up(quick_window.centralWidget(), start, steps=12, step=10):
+        pass
+    assert page.property("contentY") > 0
+
+
+def test_a_touch_band_drag_is_not_taken_over_by_the_page(
+    quick_window, mic_page
+) -> None:
+    item, page = mic_page
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    start = _handle_point(quick_window, item, band)
+
+    gains = []
+    for _ in _touch_drag_up(quick_window.centralWidget(), start, steps=8, step=8):
+        assert graph.dragging_band_index == band
+        assert page.property("contentY") == 0
+        gains.append(graph.bands[band][2])
+
+    assert all(before < after for before, after in zip(gains, gains[1:]))
+    assert graph.dragging_band_index is None
+    committed = quick_window.eq_state.get_eq_settings().bands[band].gain_db
+    assert committed == pytest.approx(gains[-1])
+
+
+def test_a_click_does_not_scroll_its_control_away(quick_window, mic_page, qapp) -> None:
+    item, page = mic_page
+    view = quick_window.centralWidget()
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    quick_window.activateWindow()
+    view.setFocus()
+    page.setProperty("contentY", 150)
+    qapp.processEvents()
+    assert not item.hasActiveFocus()
+    start = _handle_point(quick_window, item, band)
+    assert page.contains(page.mapFromScene(QPointF(start)))
+    gain = graph.bands[band][2]
+
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    assert item.hasActiveFocus()
+    assert page.property("contentY") == 150
+    QTest.mouseMove(view, start + QPoint(1, 0), delay=5)
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=start + QPoint(1, 0))
+
+    assert page.property("contentY") == 150
+    assert graph.bands[band][2] == gain
+
+
+def _rebaseline(window) -> None:
+    """Make the current state the saved preset and the start of the history."""
+    window._set_preset_identity(window._get_current_preset())
+    window._initialize_configuration_history()
+
+
+@pytest.mark.parametrize("offset", [(0, 0), (5, 5)])
+def test_a_click_on_a_knob_leaves_the_band_alone(
+    quick_window, mic_page, qapp, offset
+) -> None:
+    item, _page = mic_page
+    state = quick_window.eq_state
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    # Off the graph's whole-Hz, 0.1 dB grid, so snapping to it would show.
+    state.set_band(
+        band, replace(state.get_band(band), frequency_hz=437.5, gain_db=2.35), edited=False
+    )
+    state.flush()
+    qapp.processEvents()
+    _rebaseline(quick_window)
+    before = state.get_band(band)
+    assert graph.bands[band][1:3] == (437.5, 2.35)
+
+    QTest.mouseClick(
+        quick_window.centralWidget(),
+        Qt.MouseButton.LeftButton,
+        pos=_handle_point(quick_window, item, band) + QPoint(*offset),
+    )
+    qapp.processEvents()
+
+    assert graph.bands[band][1:3] == (437.5, 2.35)
+    assert state.get_band(band) == before
+    assert not quick_window.quick_bridge.model["presets"]["status"].data["modified"]
+    assert not quick_window._undo_action.isEnabled()
+
+
+def test_a_click_on_an_octave_bandwidth_band_keeps_its_bandwidth(
+    quick_window, mic_page, qapp
+) -> None:
+    item, _page = mic_page
+    view = quick_window.centralWidget()
+    state = quick_window.eq_state
+    band = 4
+    octave = replace(
+        state.get_band(band),
+        frequency_hz=437.5,
+        gain_db=2.35,
+        q=q_from_bandwidth_octaves(437.5, 1.0),
+        bandwidth_mode="octaves",
+        bandwidth_octaves=1.0,
+    )
+    state.set_band(band, octave, edited=False)
+    state.flush()
+    qapp.processEvents()
+    _rebaseline(quick_window)
+
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_handle_point(quick_window, item, band))
+    qapp.processEvents()
+
+    assert state.get_band(band) == octave
+    assert not quick_window.quick_bridge.model["presets"]["status"].data["modified"]
+    assert not quick_window._undo_action.isEnabled()
+
+    start = _handle_point(quick_window, item, band)
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(view, start + QPoint(30, 0), delay=5)
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=start + QPoint(30, 0))
+
+    dragged = state.get_band(band)
+    assert dragged.frequency_hz != octave.frequency_hz
+    assert (dragged.bandwidth_mode, dragged.bandwidth_octaves) == ("q", None)
+
+
+def test_escape_puts_an_octave_bandwidth_band_back_whole(
+    quick_window, mic_page, qapp
+) -> None:
+    item, _page = mic_page
+    view = quick_window.centralWidget()
+    state = quick_window.eq_state
+    band = 4
+    octave = replace(
+        state.get_band(band),
+        frequency_hz=1280.0,
+        gain_db=0.0,
+        q=q_from_bandwidth_octaves(1280.0, 1.0),
+        bandwidth_mode="octaves",
+        bandwidth_octaves=1.0,
+    )
+    state.set_band(band, octave, edited=False)
+    state.flush()
+    qapp.processEvents()
+    _rebaseline(quick_window)
+
+    start = _handle_point(quick_window, item, band)
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(view, start + QPoint(30, -20), delay=5)
+    assert state.get_band(band).bandwidth_mode == "q"
+    QTest.keyClick(view, Qt.Key.Key_Escape)
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=start + QPoint(30, -20))
+    qapp.processEvents()
+
+    assert state.get_band(band) == octave
+    assert not quick_window.quick_bridge.model["presets"]["status"].data["modified"]
+    assert not quick_window._undo_action.isEnabled()
+
+
+def test_a_drag_moves_the_band_by_the_pointers_travel(quick_window, mic_page) -> None:
+    item, page = mic_page
+    view = quick_window.centralWidget()
+    graph = quick_window.eq_presentation.graph_model
+    band = 4
+    width, height = item.width(), item.height()
+    x, y = EQGraphGeometry.band_handle_position(graph.bands, band, width, height)
+    # Pressed 10 px from the handle's centre, still inside its hit radius.
+    start = _handle_point(quick_window, item, band) + QPoint(7, 7)
+
+    QTest.mousePress(view, Qt.MouseButton.LeftButton, pos=start)
+    for dx, dy in ((1, 0), (30, -16)):
+        QTest.mouseMove(view, start + QPoint(dx, dy), delay=5)
+        assert page.property("contentY") == 0
+        assert graph.bands[band][1] == pytest.approx(
+            EQGraphGeometry.x_to_frequency(x + dx, width, height), abs=1.0
+        )
+        assert graph.bands[band][2] == pytest.approx(
+            EQGraphGeometry.y_to_gain(y + dy, width, height), abs=0.11
+        )
+    QTest.mouseRelease(view, Qt.MouseButton.LeftButton, pos=start + QPoint(30, -16))
+
+    committed = quick_window.eq_state.get_band(band)
+    assert committed.frequency_hz == pytest.approx(graph.bands[band][1])
+    assert committed.gain_db == pytest.approx(graph.bands[band][2])
+
+
+@pytest.fixture
+def wide_page(quick_window, mic_page, qapp):
+    """The mic page in a window wide enough for the whole EQ card to show."""
+    page = mic_page[1]
+    quick_window.resize(1300, 700)
+    qapp.processEvents()
+    assert page.property("contentHeight") > page.height()
+    return page
+
+
+def _reveal(page, item) -> QPoint:
+    """Scroll ``item`` to the middle of the page and return its centre in the scene."""
+    top = item.mapToItem(page.property("contentItem"), QPointF(0, 0)).y()
+    limit = page.property("contentHeight") - page.height()
+    page.setProperty("contentY", min(max(0, top - page.height() / 2), limit))
+    centre = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
+    assert page.contains(page.mapFromScene(centre))
+    return centre.toPoint()
+
+
+def _band_box(window, name: str):
+    """The selected band's control ``name``, and its value box in the scene."""
+    eq = window.quick_bridge.model["eq"]
+    proxy = eq["bands"][eq["band"].index][name]
+    return proxy, _find(window.centralWidget().rootObject(), "ValueBox", proxy)
+
+
+def _escape_event() -> QKeyEvent:
+    return QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+
+
+def test_escape_puts_the_shown_value_back_in_a_value_box(quick_window, wide_page) -> None:
+    page = wide_page
+    view = quick_window.centralWidget()
+    index = quick_window.quick_bridge.model["eq"]["band"].index
+    frequency, box = _band_box(quick_window, "frequency")
+    gain, readout = _band_box(quick_window, "gain")
+    shown = frequency.text
+    stored = quick_window.eq_state.get_band(index).frequency_hz
+
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, box))
+    field = view.quickWindow().activeFocusItem()
+    QTest.keyClick(view, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+    QTest.keyClicks(view, "777")
+    assert field.property("text") == "777"
+    QTest.keyClick(view, Qt.Key.Key_Escape)
+    assert field.property("text") == shown
+
+    # Focus leaving the box applies nothing.
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, readout))
+    assert frequency.text == shown
+    assert quick_window.eq_state.get_band(index).frequency_hz == stored
+
+
+def test_escape_is_swallowed_only_when_a_value_box_has_an_edit_to_cancel(
+    quick_window, wide_page
+) -> None:
+    page = wide_page
+    view = quick_window.centralWidget()
+    _frequency, box = _band_box(quick_window, "frequency")
+
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=_reveal(page, box))
+    untouched = _escape_event()
+    QCoreApplication.sendEvent(view, untouched)
+    assert not untouched.isAccepted()
+
+    QTest.keyClicks(view, "7")
+    edited = _escape_event()
+    QCoreApplication.sendEvent(view, edited)
+    assert edited.isAccepted()
+
+
+def test_a_clicked_readout_lets_the_wheel_scroll_the_page(quick_window, wide_page) -> None:
+    page = wide_page
+    view = quick_window.centralWidget()
+    _gain, readout = _band_box(quick_window, "gain")
+
+    centre = _reveal(page, readout)
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=centre)
+    field = view.quickWindow().activeFocusItem()
+    assert field.property("readOnly") and field.hasActiveFocus()
+    before = page.property("contentY")
+    QTest.wheelEvent(view.quickWindow(), QPointF(centre), QPoint(0, -120))
+
+    assert _wait_until(lambda: page.property("contentY") > before)
+
+
+def test_a_focused_editable_box_still_steps_with_the_wheel(quick_window, wide_page) -> None:
+    page = wide_page
+    view = quick_window.centralWidget()
+    frequency, box = _band_box(quick_window, "frequency")
+
+    centre = _reveal(page, box)
+    QTest.mouseClick(view, Qt.MouseButton.LeftButton, pos=centre)
+    before, scrolled = frequency.value, page.property("contentY")
+    QTest.wheelEvent(view.quickWindow(), QPointF(centre), QPoint(0, 120))
+
+    assert _wait_until(lambda: frequency.value > before)
+    assert page.property("contentY") == scrolled
 
 
 def _fallback_notice(window) -> bool:
     return any(
-        label.text() == QUICK_VIEW_UNAVAILABLE
+        label.text() == QUICK_VIEW_UNAVAILABLE and not label.isHidden()
         for label in window.status_bar.findChildren(QLabel)
     )
 
 
-def test_render_failure_falls_back_to_the_widget_view_and_says_so(quick_window) -> None:
-    shell = quick_window.widget_shell
-    restore_widget_shell(quick_window, "no graphics adapter")
-    assert quick_window.centralWidget() is shell
-    assert not shell.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-    assert quick_window.status_bar.isVisible()
-    assert _fallback_notice(quick_window)
+def _change_shared_state(window) -> None:
+    """Move every kind of shared state away from its startup value."""
+
+    window.status_message.showMessage("Changed while the scene was active")
+    window._set_health_chip("input_health_label", "Input: hot", "warn")
+    window._set_health_chip("dropped_label", "Drops: 3", "bad")
+    window.shell_texts["config_warning_banner"].update(text="Settings were reset", shown=True)
+    window.shell_page.setIndex(window.HEALTH_PAGE_INDEX)
+    window.processing_mode_choice.setIndex(1)
+    window.input_cleanup_mode_choice.setIndex(2)
+    window.user_mute_checkbox_action.setChecked(True)
+    window.start_btn_action.setEnabled(False)
+    window.stop_btn_action.setEnabled(True)
+    window.input_meter.set_levels(-20.0, -10.0)
+
+
+def _assert_widgets_show_the_state(window) -> None:
+    """The widget view is the window's content and every widget renders its state."""
+
+    root = window._classic_root
+    assert root is not None
+    assert window.centralWidget() is root
+    assert not root.isHidden() and not window.status_bar.isHidden()
+    assert window.status_bar.currentMessage() == window.status_message.text
+    for key, state in window.shell_texts.items():
+        label = getattr(window, key)
+        assert (label.text(), label.toolTip(), label.isHidden()) == (
+            state.text, state.toolTip, not state.shown
+        ), key
+    for key in CHOICE_SPECS:
+        combo, choice = getattr(window, f"{key}_combo"), getattr(window, f"{key}_choice")
+        assert combo.currentIndex() == choice.currentIndex(), key
+        assert [combo.itemText(i) for i in range(combo.count())] == choice.items, key
+    for key in ACTION_SPECS:
+        button, action = getattr(window, key), getattr(window, f"{key}_action")
+        assert (button.isEnabled(), button.isChecked()) == (action.isEnabled(), action.isChecked()), key
+        if key != "refresh_btn":  # An icon button keeps its glyph as its text.
+            assert button.text() == action.text(), key
+    assert window.page_stack.currentIndex() == window.shell_page.currentIndex()
+    assert window.nav_group.checkedId() == window.shell_page.currentIndex()
+    assert window.health_details_button.isChecked() == (
+        window.shell_page.currentIndex() == window.HEALTH_PAGE_INDEX
+    )
+    running = window.stop_btn_action.isEnabled()
+    assert window.stop_btn.isHidden() is not running
+    assert window.start_btn.isHidden() is running
+    assert window.gate_panel.confidence_meter is window.processing_meters.confidence
+    assert window._responsive_layout_compact is (window.width() < window.COMPACT_LAYOUT_BREAKPOINT)
+    # Later changes keep rendering into the same widgets.
+    window.status_message.showMessage("After the switch")
+    window._set_health_chip("input_health_label", "Input: ok", "ok")
+    assert window.status_bar.currentMessage() == "After the switch"
+    assert window.input_health_label.text() == "Input: ok"
+    assert window.input_health_label.property("health_state") == "ok"
+
+
+def test_render_failure_falls_back_to_the_widget_view_and_says_so(quick_window, qapp) -> None:
+    window = quick_window
+    scene = window.centralWidget()
+    assert isinstance(scene, QQuickWidget)
+    _change_shared_state(window)
+    assert not window.quick_view_failed
+
+    restore_classic_view(window, "no graphics adapter")
+
+    assert window.quick_view_failed is True
+    assert "quick_bridge" not in vars(window)
+    assert _fallback_notice(window)
+    _assert_widgets_show_the_state(window)
+    # The window is on screen, so the new content is too.
+    qapp.processEvents()
+    assert window.status_bar.isVisible() and window.page_stack.isVisible()
     # The repaint hook is gone with the scene, so the widgets draw as before.
-    assert "update" not in quick_window.eq_panel.curve_widget.__dict__
-    quick_window.input_meter.set_levels(-20.0, -10.0)
+    assert "update" not in window.eq_panel.curve_widget.__dict__
+    # The scene is deleted, not left behind a second central widget.
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not isValid(scene)
+    # A second report from the dead scene changes nothing.
+    root = window._classic_root
+    restore_classic_view(window, "reported twice")
+    assert window._classic_root is root and window.centralWidget() is root
+
+
+def test_a_widget_view_built_while_the_scene_runs_is_the_one_a_failure_shows(quick_window) -> None:
+    window = quick_window
+    _change_shared_state(window)
+    # Reading a widget builds the view now, behind the scene.
+    label = window.dropped_label
+    root = window._classic_root
+    assert root is not None and root.isHidden() and window.status_bar.isHidden()
+    assert isinstance(window.centralWidget(), QQuickWidget)
+    assert label.text() == "Drops: 3"
+    states = [window.shell_texts[key] for key in ("dropped_label", "input_health_label")]
+    receivers = [state.receivers("2changed()") for state in states]
+    window._ensure_classic_view()
+    assert window._classic_root is root
+    assert [state.receivers("2changed()") for state in states] == receivers
+
+    restore_classic_view(window, "no graphics adapter")
+
+    assert window.dropped_label is label and window.centralWidget() is root
+    assert [state.receivers("2changed()") for state in states] == receivers
+    assert _fallback_notice(window)
+    _assert_widgets_show_the_state(window)
+
+
+def _load_config_without_devices(monkeypatch) -> None:
+    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
+    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
+    monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
+    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
+    monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
 
 
 def test_scene_that_does_not_load_keeps_the_widget_view(qapp, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("mic_eq.ui.quick_shell.QML_DIR", tmp_path)
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
+    _load_config_without_devices(monkeypatch)
     window = MainWindow()
+    assert window.quick_view_failed is True
+    assert "quick_bridge" not in vars(window)
     assert not isinstance(window.centralWidget(), QQuickWidget)
     assert _fallback_notice(window)
+    _assert_widgets_show_the_state(window)
+    window.show()
+    qapp.processEvents()
+    assert window.status_bar.isVisible() and window.page_stack.isVisible()
+
+
+def test_scene_that_cannot_be_prepared_keeps_the_widget_view(qapp, monkeypatch) -> None:
+    def refuse(_window):
+        raise RuntimeError("model could not be built")
+
+    monkeypatch.setattr("mic_eq.ui.quick_shell.QuickBridge._build_model", refuse)
+    _load_config_without_devices(monkeypatch)
+    window = MainWindow()
+    assert window.quick_view_failed is True
+    assert _fallback_notice(window)
+    _assert_widgets_show_the_state(window)
 
 
 def test_opt_out_keeps_the_widget_view(qapp, monkeypatch) -> None:
     monkeypatch.setenv("AUDIOFORGE_QML", "0")
-    monkeypatch.setattr("mic_eq.ui.main_window.load_config", AppConfig)
-    monkeypatch.setattr("mic_eq.ui.main_window.save_config", lambda _config: True)
-    monkeypatch.setattr("mic_eq.ui.main_window.list_presets", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_input_devices", lambda: [])
-    monkeypatch.setattr("mic_eq.ui.main_window.list_output_devices", lambda: [])
+    _load_config_without_devices(monkeypatch)
     window = MainWindow()
     assert not isinstance(window.centralWidget(), QQuickWidget)
-    assert "quick_bridge" not in window.__dict__
+    assert "quick_bridge" not in vars(window)
+    # Opting out is a choice, not a failure: no notice, and a smoke test passes.
+    assert not window.quick_view_failed
+    assert not _fallback_notice(window)
+    _assert_widgets_show_the_state(window)
+    window.show()
+    qapp.processEvents()
+    assert window.status_bar.isVisible() and window.page_stack.isVisible()
 
 
 def test_level_history_follows_the_meters_and_clears_when_they_stop(quick_window) -> None:
@@ -550,7 +1318,7 @@ def test_settings_switch_follows_an_action_the_window_corrects_silently(
 
 def test_scene_control_reads_back_a_mode_the_processor_refused(quick_window) -> None:
     mode = quick_window.quick_bridge.model["top"]["mode"]
-    combo = quick_window.processing_mode_combo
+    choice = quick_window.processing_mode_choice
     native = quick_window.processor
 
     class RejectBypass:
@@ -566,17 +1334,17 @@ def test_scene_control_reads_back_a_mode_the_processor_refused(quick_window) -> 
     notified: list[bool] = []
     mode.changed.connect(lambda: notified.append(True))
     mode.setIndex(1)
-    assert combo.currentIndex() == 0 and mode.index == 0
+    assert choice.currentIndex() == 0 and mode.index == 0
     assert notified
 
 
 def test_redo_button_follows_the_history(quick_window) -> None:
     redo = quick_window.quick_bridge.model["presets"]["redo"]
-    assert not quick_window.redo_button.isEnabled()
-    quick_window.gate_panel.enabled_checkbox.click()
+    assert not quick_window.redo_button_action.isEnabled()
+    quick_window.gate_state.set_value("enabled", not quick_window.gate_state.get_settings()["enabled"])
     quick_window.undo_configuration()
-    assert quick_window.redo_button.isEnabled() == quick_window._redo_action.isEnabled()
-    assert quick_window.redo_button.isEnabled()
+    assert quick_window.redo_button_action.isEnabled() == quick_window._redo_action.isEnabled()
+    assert quick_window.redo_button_action.isEnabled()
     assert redo.enabled
 
 
@@ -609,7 +1377,7 @@ def test_quick_graph_does_not_construct_or_resize_classic_graph(quick_window) ->
     item.paint(painter)
     painter.end()
     assert presentation._curve_widget is None
-    restore_widget_shell(quick_window, "no graphics adapter")
+    restore_classic_view(quick_window, "no graphics adapter")
     curve = presentation.curve_widget
     assert curve.minimumWidth() < 640 < curve.maximumWidth()
 
@@ -700,16 +1468,3 @@ def test_save_entrypoints_capture_only_accepted_pending_settings(
     assert saved == ([] if reject else [-3.0])
     assert written == ([-1.0] if reject else [-3.0])
     assert window.limiter_state.get_settings()["ceiling_db"] == (-1.0 if reject else -3.0)
-
-
-def test_shared_mute_action_updates_classic_switch_painting(quick_window, monkeypatch):
-    monkeypatch.setenv("AUDIOFORGE_REDUCED_MOTION", "1")
-    window = quick_window
-    window.user_mute_checkbox_action.setChecked(True)
-    assert window.user_muted
-    assert window.user_mute_checkbox.isChecked()
-    assert window.user_mute_checkbox._position == 1.0
-    window.user_mute_checkbox.click()
-    assert not window.user_muted
-    assert not window.user_mute_checkbox_action.isChecked()
-    assert window.user_mute_checkbox._position == 0.0

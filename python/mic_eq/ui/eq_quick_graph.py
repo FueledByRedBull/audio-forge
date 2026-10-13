@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Property, Qt, Signal
+from PySide6.QtCore import QObject, Property, Qt, Signal, Slot
 from PySide6.QtGui import QKeyEvent, QMouseEvent, QPainter
 from PySide6.QtQuick import QQuickPaintedItem
 
@@ -41,6 +41,7 @@ class EQGraphItem(QQuickPaintedItem):
 
     graph = Property(QObject, _get_graph, _set_graph, notify=graphChanged)
 
+    @Slot()  # Register before QML adds properties to the metaobject.
     def _update_graph(self) -> None:
         self.update()
 
@@ -76,6 +77,8 @@ class EQGraphItem(QQuickPaintedItem):
             self.width(),
             self.height(),
         )
+        # Keeps the page's flick from taking the drag over, touch included.
+        self.setKeepMouseGrab(True)
         event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -105,6 +108,12 @@ class EQGraphItem(QQuickPaintedItem):
             event.ignore()
             return
         event.accept()
+
+    def mouseUngrabEvent(self) -> None:
+        # Also runs after an ordinary release, when no drag is left to finish.
+        self.setKeepMouseGrab(False)
+        if self._graph is not None:
+            self._graph.finish_drag()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self._graph is None or not self._graph.key_press(

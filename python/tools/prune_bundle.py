@@ -42,6 +42,24 @@ def is_unused_ffmpeg_payload(path: Path) -> bool:
     return path.name.casefold() in _UNUSED_FFMPEG_PAYLOAD_NAMES
 
 
+# Kept on purpose: platforms qwindows/qoffscreen/qminimal, imageformats/qico,
+# styles/qmodernwindowsstyle and multimedia/windowsmediaplugin.
+UNUSED_QT_PLUGIN_PATHS = (
+    Path("_internal/PySide6/plugins/platforms/qdirect2d.dll"),
+    Path("_internal/PySide6/plugins/imageformats/qgif.dll"),
+    Path("_internal/PySide6/plugins/imageformats/qicns.dll"),
+    Path("_internal/PySide6/plugins/imageformats/qjpeg.dll"),
+    Path("_internal/PySide6/plugins/imageformats/qtga.dll"),
+    Path("_internal/PySide6/plugins/imageformats/qtiff.dll"),
+    Path("_internal/PySide6/plugins/imageformats/qwbmp.dll"),
+    Path("_internal/PySide6/plugins/imageformats/qwebp.dll"),
+    # The app has no TLS use; QLocalServer is the only QtNetwork feature.
+    Path("_internal/PySide6/plugins/tls"),
+    Path("_internal/PySide6/plugins/generic/qtuiotouchplugin.dll"),
+    Path("_internal/PySide6/plugins/networkinformation/qnetworklistmanager.dll"),
+)
+
+
 def prune_bundle(bundle_root: Path) -> list[Path]:
     removed: list[Path] = []
     translations_dir = bundle_root / "_internal" / "PySide6" / "translations"
@@ -106,6 +124,7 @@ def prune_bundle(bundle_root: Path) -> list[Path]:
         Path("_internal/PySide6/Qt6Quick3DUtils.dll"),
         Path("_internal/PySide6/Qt6MultimediaWidgets.dll"),
         Path("_internal/PySide6/QtMultimediaWidgets.pyd"),
+        *UNUSED_QT_PLUGIN_PATHS,
     ):
         candidate = bundle_root / relative_path
         if candidate.exists():

@@ -28,7 +28,7 @@ from ..analysis.latency_calibration import (
 from ..analysis.signal_processing import resample_poly
 from .accessibility import set_accessible_group
 from .components import Card, form_layout
-from .level_meter import LevelMeter
+from .level_meter import LevelMeter, MeterWidget
 from .capture_session import (
     CaptureSession,
     active_device_identities as _active_device_identities,
@@ -271,9 +271,9 @@ class LatencyCalibrationDialog(QDialog):
         layout.addWidget(self.status_label)
 
         self.level_meter = LevelMeter("Level", show_scale=True)
-        self.level_meter.setAccessibleName("Latency calibration capture level")
-        self.level_meter.setMinimumHeight(120)
-        layout.addWidget(self.level_meter)
+        self.level_meter_widget = MeterWidget(self.level_meter)
+        self.level_meter_widget.setAccessibleName("Latency calibration capture level")
+        layout.addWidget(self.level_meter_widget)
         layout.addStretch(1)
 
         self.run_button = QPushButton("Run calibration")

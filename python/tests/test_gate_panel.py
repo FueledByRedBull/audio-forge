@@ -8,6 +8,7 @@ import pytest
 
 from mic_eq.ui.gate_panel import GatePanel
 from mic_eq.ui.gate_state import GateState
+from mic_eq.ui.level_meter import MeterWidget
 from PySide6.QtCore import QSignalBlocker
 
 
@@ -145,9 +146,11 @@ def test_gate_panel_refreshes_restored_vad_status_when_backend_becomes_available
 def test_vad_only_displays_confidence_threshold_and_moves_marker(qapp):
     panel = GatePanel(_GateProcessor(vad_available=True))
     panel.set_settings({"gate_mode": 2, "vad_threshold": 0.35})
-    panel.confidence_meter.setFixedSize(200, 20)
+    view = panel.findChild(MeterWidget)
+    assert view is not None and view.model is panel.confidence_meter
+    view.setFixedSize(200, 20)
     panel.confidence_meter.set_confidence(0.4)
-    before = panel.confidence_meter.grab().toImage()
+    before = view.grab().toImage()
 
     assert "VAD Threshold: 0.35" in panel.threshold_status_label.text()
     assert "Level fallback" in panel.threshold_status_label.text()
@@ -155,7 +158,7 @@ def test_vad_only_displays_confidence_threshold_and_moves_marker(qapp):
     assert not panel.margin_spinbox.isEnabled()
 
     panel.vad_threshold_spinbox.setValue(0.7)
-    after = panel.confidence_meter.grab().toImage()
+    after = view.grab().toImage()
     assert before != after
     assert panel.confidence_meter.threshold == 0.7
     assert "VAD Threshold: 0.70" in panel.threshold_status_label.text()

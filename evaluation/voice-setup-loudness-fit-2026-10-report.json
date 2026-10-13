@@ -1,0 +1,157 @@
+{
+  "audible_change": true,
+  "corpus": {
+    "description": "VoiceBank clean speech and DEMAND channel-1 noise, 48 kHz",
+    "licenses": {
+      "DEMAND": "cc-by-4.0",
+      "VoiceBank (VCTK subset)": "CC BY 4.0"
+    },
+    "redistribution": "local evaluation only; not a release asset"
+  },
+  "evaluation_contract": {
+    "asset_hashes": {
+      "corpus_manifest": "38bf9686a6e51f8d1a86ce1244bc229254aaab675fe10fcaa5fe5cdde38a244d",
+      "vad_model": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    },
+    "clean_preservation": {
+      "method": "The fit only lowers makeup; limiter gain reduction is gated not to rise."
+    },
+    "configuration": {
+      "arms": [
+        "released",
+        "fitted"
+      ],
+      "dynamics_intensity": "balanced",
+      "max_verification_adjustments": 3,
+      "requested_target_lufs": -18.0,
+      "sample_rate": 48000,
+      "slack_db": 1.5,
+      "target_preset": "broadcast"
+    },
+    "latency": {
+      "measurement": null,
+      "scope": "The change is to a recommended setting, not the signal path."
+    },
+    "runtime": {
+      "max_p99_frame_seconds": null,
+      "reason": "Offline setup analysis; no realtime code changed."
+    }
+  },
+  "experiment": "Auto Voice Setup: fit the loudness target to the capture's headroom",
+  "gates": {
+    "benefit": true,
+    "fits_headroom": true,
+    "leaves_safe_alone": true,
+    "never_less_safe": true,
+    "not_needlessly_quiet": true,
+    "verification_no_harm": true
+  },
+  "generated_at_utc": "2026-10-13T05:36:19.105037+00:00",
+  "implementation_sha256": {
+    "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "7d610b33d5c191bf374bdfe5cad4af1764aa1d5946c65adf4a47c7a30ac960f7"
+  },
+  "limitations": [
+    "Simulated users (the corpus above): speech in synthetic rooms with DEMAND noise, not microphone captures.",
+    "Verification hears the first 10 s of the evaluation capture; the listening render the whole 20 s.",
+    "Both arms are judged by the released final check; the limiter allowance of rule 'narrow' is qualified on top of the fit, separately.",
+    "The fit leaves a proposal as released when no allowed loudness passes the headroom check, which happens when automatic makeup's gain at the loudest peaks does not follow the loudness target.",
+    "The rule's verification clause was revised on the development split before any test row existed.",
+    "The VoiceBank test split was first scored on 2026-10-12 with the earlier evaluator, which verified downstream of the frontend; the final-check figures were identical in that run and this one."
+  ],
+  "metrics": {
+    "apply_recommended": {
+      "fitted": 6,
+      "released": 5
+    },
+    "fitted_limiter_gain_reduction_db_max": 4.073789119720459,
+    "fitted_still_unsafe": 8,
+    "fitted_still_unsafe_input_too_hot": 1,
+    "headroom_safe": {
+      "fitted": 16,
+      "released": 13
+    },
+    "lowered_db_max": 4.0,
+    "lowered_db_median": 0.0,
+    "lowered_db_p90": 0.6999999999999993,
+    "lowered_users": 3,
+    "no_eq_settings": {
+      "fitted": 6,
+      "released": 6
+    },
+    "released_limiter_gain_reduction_db_median": 0.0,
+    "scored_users": 24,
+    "users": 30,
+    "verification_accepted": {
+      "fitted": 20,
+      "released": 20
+    },
+    "verification_gave_up_on_limiter_pressure": {
+      "fitted": 2,
+      "released": 2
+    },
+    "verification_reductions": {
+      "fitted": 8,
+      "released": 8
+    }
+  },
+  "passed": true,
+  "predefined_rule": "Rule 'fit' in the docstring of python/tools/evaluate_voice_setup_loudness.py.",
+  "retained": true,
+  "retained_evidence": {
+    "directory": "models/evaluation-details/voice-setup-loudness-fit-2026-10",
+    "rows": "models/evaluation-details/voice-setup-loudness-fit-2026-10/test-fullchain-rows-tonal.json",
+    "rows_sha256": "0f7b1751bfde22931c878c8ecdb2f070f98f1bfa2bddc5d7006f91c8427a7ccf"
+  },
+  "rule": "fit",
+  "schema_version": 2,
+  "source_sha256": {
+    "python/mic_eq/analysis/auto_eq.py": "edccec8f7a204d2a021a69d79c6b9443781f6b3d9de569fdd2bdffcfab553de7",
+    "python/mic_eq/analysis/auto_eq_parts/headroom.py": "4cf6d57bbdb5b7527dc89005f9b9d9236c0c8018174de9094e58632b8df9e0f2",
+    "python/mic_eq/analysis/compressor_calibration.py": "59ebaa1270d9aa1bda94918864d2d532af59980d23f42202eec27dfa10af8c7b",
+    "python/mic_eq/analysis/joint_tuning.py": "dcc01e052f5831e772b56000735edca7284d543dff5c6286dcf46318b3b66ea5",
+    "python/mic_eq/analysis/noise_reference.py": "e40b553371baac7e7ab3336cfd1f7b73446e903d8255be7d09e8a2de5697a849",
+    "python/mic_eq/analysis/voice_setup.py": "cfa6ae88d76adfd4f8cb3d10e86482d9a4df723e33ade0a3c5c44a3d17125b5f",
+    "python/mic_eq/ui/calibration_support.py": "2bf6d62dcfa6b0d07f5d3b867b4ec101483334a271b5175d2466bbd303b8b1c9",
+    "python/tools/_eval_common.py": "f6bccabedc531161d1577b1e807c30391bdfe291faf1fd0eba438729b7e006e0",
+    "python/tools/evaluate_gate_corpus.py": "3a2fca2a7a0502f7d77478881c1616fe763d94931c125b569f3959606e34ef41",
+    "python/tools/evaluate_voice_setup.py": "6cbe6fd752179577a37c3d597424c30a0927099d52abdd1d7d68b4350a66a769",
+    "python/tools/evaluate_voice_setup_loudness.py": "7cd5fe887a2c627bbf500f8d5a298497d4d7399f60ba7e686f05ac257990edbc"
+  },
+  "splits": [
+    "test"
+  ],
+  "user_indices": {
+    "test": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29
+    ]
+  }
+}

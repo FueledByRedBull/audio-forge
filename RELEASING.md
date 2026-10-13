@@ -171,9 +171,12 @@ cargo audit
   `ucrtbase.dll` and `api-ms-win-*.dll`: Windows 10 and 11 always use the
   [system UCRT](https://learn.microsoft.com/en-us/cpp/windows/universal-crt-deployment).
   Package smoke fails if they return.
-- Keep both NumPy/SciPy BLAS DLLs, `opengl32sw.dll`, all models, the CPU-only
-  ONNX Runtime, and `df.dll`. The spec excludes only unused SciPy namespaces
-  and the prune step removes unused Qt SVG payloads. The release profile
+- Keep both NumPy/SciPy BLAS DLLs, `opengl32sw.dll`, `Qt6OpenGL.dll` and
+  `QtOpenGL.pyd` (Qt Quick links the first; libshiboken imports the second, and
+  the frozen app does not start without it), all models, the CPU-only ONNX
+  Runtime, and `df.dll`. The spec excludes the unused `scipy.integrate`,
+  `interpolate`, `ndimage`, and `stats`; the prune step removes unused Qt SVG
+  payloads and plugins. Package smoke fails if any return. The release profile
   strips native symbols without changing optimization.
 - Bundled DeepFilter and Silero assets take precedence over the working
   directory and user paths. External DeepFilter paths require

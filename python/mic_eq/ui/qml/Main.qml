@@ -14,6 +14,7 @@ Rectangle {
     readonly property bool effects: GraphicsInfo.api !== GraphicsInfo.Software
     readonly property bool wide: width >= 1200
     readonly property bool running: m.top.stop.enabled
+    readonly property bool pressing: pointer.active
 
     color: t.app_surface
 
@@ -246,9 +247,16 @@ Rectangle {
             onEditingFinished: if (!readOnly && text !== box.source.text) box.proxy.setText(text)
             Keys.onUpPressed: step(1)
             Keys.onDownPressed: step(-1)
-            // Only a focused field scrolls, so the page can scroll past it.
+            // Put the shown value back; the abandoned text is never applied.
+            Keys.onEscapePressed: event => {
+                if (readOnly || text === box.source.text)
+                    event.accepted = false
+                else
+                    text = Qt.binding(() => box.source ? box.source.text : "")
+            }
+            // Only a focused editable field steps, so the page can scroll past the rest.
             WheelHandler {
-                enabled: input.activeFocus
+                enabled: input.activeFocus && !input.readOnly
                 onWheel: event => input.step(event.angleDelta.y > 0 ? 1 : -1)
             }
             function step(direction) {
@@ -707,13 +715,15 @@ Rectangle {
         default property alias content: column.data
         contentHeight: column.implicitHeight + 24
         boundsBehavior: Flickable.StopAtBounds
+        // A mouse drag belongs to the controls; wheel, scroll bar and touch still scroll.
+        acceptedButtons: Qt.NoButton
         clip: true
         // Keep the control that has keyboard focus on screen.
         readonly property Item focusItem: Window.activeFocusItem
         onFocusItemChanged: {
             var item = focusItem
             for (var p = item; p && p !== column; p = p.parent) {}
-            if (!visible || !p)
+            if (!visible || !p || root.pressing)
                 return
             var top = item.mapToItem(contentItem, 0, 0).y
             if (top < contentY + 12)
@@ -1227,5 +1237,13 @@ Rectangle {
                 }
             }
         }
+    }
+
+    // On top, so a press is seen before the control under it takes focus:
+    // a clicked control is already under the pointer and must not be scrolled away.
+    Item {
+        anchors.fill: parent
+        z: 1
+        PointHandler { id: pointer }
     }
 }

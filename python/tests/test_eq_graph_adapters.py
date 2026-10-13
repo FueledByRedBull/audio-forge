@@ -1,5 +1,7 @@
 """Shared EQ graph model behavior across QWidget and Qt Quick adapters."""
 
+from dataclasses import replace
+
 from PySide6.QtCore import QPoint, QSizeF, Qt
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtTest import QSignalSpy, QTest
@@ -102,6 +104,46 @@ def test_classic_graph_escape_cancels_the_shared_model_edit(qapp):
     assert cancelled.count() == 1
     assert finished.count() == 1
     assert finished.at(0)[0] == "Cancelled EQ graph edit"
+
+    presentation.deleteLater()
+    qapp.processEvents()
+    processor.stop()
+
+
+def test_classic_graph_click_off_centre_leaves_the_band_alone(qapp):
+    processor = AudioProcessor()
+    state = EQState(processor)
+    presentation = EQPresentation(state)
+    curve_widget = presentation.curve_widget
+    curve_widget.resize(640, 260)
+    curve_widget.show()
+    qapp.processEvents()
+
+    band_index = 4
+    # Off the graph's whole-Hz, 0.1 dB grid, so snapping to it would show.
+    state.set_band(
+        band_index,
+        replace(state.get_band(band_index), frequency_hz=437.5, gain_db=2.35),
+        edited=False,
+    )
+    state.flush()
+    model = presentation.graph_model
+    original = model.bands[band_index]
+    assert original[1:3] == (437.5, 2.35)
+    edited = QSignalSpy(state.configurationEdited)
+    x, y = curve_widget.band_handle_position(band_index)
+
+    QTest.mouseClick(
+        curve_widget,
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(round(x) + 5, round(y) + 5),
+    )
+    qapp.processEvents()
+
+    assert model.bands[band_index] == original
+    assert state.get_band(band_index).frequency_hz == 437.5
+    assert state.get_band(band_index).gain_db == 2.35
+    assert edited.count() == 0
 
     presentation.deleteLater()
     qapp.processEvents()

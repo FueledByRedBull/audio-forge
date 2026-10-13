@@ -1,0 +1,899 @@
+{
+  "audible_change": true,
+  "corpus": {
+    "description": "EARS freeform speech, three utterance files per speaker cut from a 30 s excerpt at the quietest 20 ms frame within 1.5 s of the 10 s and 20 s marks, and DEMAND channel-1 noise, 48 kHz; the speakers and cuts of the narrow-limiter-allowance study of 2026-10-12",
+    "licenses": {
+      "DEMAND": "CC BY 4.0",
+      "EARS": "CC BY-NC 4.0"
+    },
+    "redistribution": "Evaluation only, not shipped; no fitted product values"
+  },
+  "evaluation_contract": {
+    "asset_hashes": {
+      "corpus_manifest": "0776e41960f4532307f3806f27c23b715a5cf5ab7e10837421a5c7a431704a30",
+      "vad_model": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    },
+    "clean_preservation": {
+      "method": "ESTOI of each user's raw evaluation capture rendered through the proposal's full chain, against its reverberant clean speech, with the narrow allowance against without it."
+    },
+    "configuration": {
+      "app_limiting_hard_db": [
+        6.0,
+        3.0
+      ],
+      "arms": [
+        "released",
+        "fitted",
+        "allowed_narrow"
+      ],
+      "dynamics_intensity": "balanced",
+      "estoi_tolerance": 0.01,
+      "max_verification_adjustments": 3,
+      "requested_target_lufs": -18.0,
+      "sample_rate": 48000,
+      "target_preset": "broadcast",
+      "too_hot_lufs": -24.0
+    },
+    "latency": {
+      "measurement": null,
+      "scope": "The change is to a recommended setting, not the signal path."
+    },
+    "runtime": {
+      "max_p99_frame_seconds": null,
+      "reason": "Offline setup analysis; no realtime code changed."
+    }
+  },
+  "experiment": "Auto Voice Setup: let the limiter catch peaks, only where automatic makeup backs off",
+  "gates": {
+    "below_app_warning": true,
+    "benefit": true,
+    "intelligibility_kept": true,
+    "lowers_only_to_pass": true,
+    "never_quieter": true,
+    "strict_where_not_raised": true,
+    "verification_no_harm": true
+  },
+  "generated_at_utc": "2026-10-13T05:25:31.183723+00:00",
+  "implementation_sha256": {
+    "python/mic_eq/mic_eq_core.cp313-win_amd64.pyd": "7d610b33d5c191bf374bdfe5cad4af1764aa1d5946c65adf4a47c7a30ac960f7"
+  },
+  "limitations": [
+    "Simulated users (the corpus above): speech in synthetic rooms with DEMAND noise, not microphone captures.",
+    "Verification hears the first 10 s of the evaluation capture; the listening render the whole 20 s.",
+    "34 of 48 users are scored, from 21 of 24 speakers; the other 14 get no Auto-EQ settings from the Auto-EQ stage, which this change does not touch, and are left out.",
+    "The largest limiter gain reduction among passing proposals on the evaluation capture is 5.62 dB, against the app's 6 dB warning.",
+    "ESTOI scores intelligibility, not the timbre of limiting; limiter gain reduction is the largest value over a capture, not how often the limiter moves.",
+    "The 3 dB constant was chosen earlier on the VoiceBank fit split; no shipped value was fitted on EARS speech.",
+    "The compressor calibration search still judges candidates by the released headroom check."
+  ],
+  "metrics": {
+    "allowance_applied_users": 19,
+    "allowance_not_applied": {
+      "input_too_hot_with_auto_makeup": 3,
+      "limiter_disabled": 0,
+      "manual_makeup": 12
+    },
+    "apply_recommended": {
+      "allowed_narrow": 16,
+      "fitted": 9,
+      "released": 8
+    },
+    "below_app_warning_readings": {
+      "attributed_passed": true,
+      "baseline_exceedances": [],
+      "counted_against_the_candidate": [],
+      "proposals_reaching_warning": 0,
+      "strict_passed": true
+    },
+    "estoi_change_max": 0.006380344586862652,
+    "estoi_change_mean": 0.00018765719373125446,
+    "estoi_change_min": 0.0,
+    "evaluation_limiter_gain_reduction_db_among_passing": {
+      "allowed_narrow": {
+        "count": 31,
+        "max": 5.615744590759277,
+        "median": 0.0,
+        "min": 0.0,
+        "p90": 3.284571409225464
+      },
+      "fitted": {
+        "count": 24,
+        "max": 1.9386063814163208,
+        "median": 0.0,
+        "min": 0.0,
+        "p90": 0.7967019200325012
+      },
+      "released": {
+        "count": 21,
+        "max": 1.45900559425354,
+        "median": 0.0,
+        "min": 0.0,
+        "p90": 0.7364789247512817
+      }
+    },
+    "evaluation_limiter_gain_reduction_db_max": 5.615744590759277,
+    "evaluation_true_peak_limiter_gain_reduction_db_among_passing": {
+      "allowed_narrow": {
+        "count": 31,
+        "max": 0.1071426272392273,
+        "median": 0.0,
+        "min": 0.0,
+        "p90": 0.05489135533571243
+      },
+      "fitted": {
+        "count": 24,
+        "max": 0.05485957860946655,
+        "median": 0.0,
+        "min": 0.0,
+        "p90": 0.029391273856163018
+      },
+      "released": {
+        "count": 21,
+        "max": 0.049981266260147095,
+        "median": 0.0,
+        "min": 0.0,
+        "p90": 0.020328722894191742
+      }
+    },
+    "evaluation_true_peak_limiter_gain_reduction_db_max": 0.1071426272392273,
+    "final_check_render_gap_max": 0.0,
+    "headroom_safe": {
+      "allowed_narrow": 31,
+      "fitted": 24,
+      "released": 21
+    },
+    "left_out": [
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 0,
+        "split": "fit"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 3,
+        "split": "fit"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 9,
+        "split": "fit"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 11,
+        "split": "fit"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 5,
+        "split": "calibrate"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 7,
+        "split": "calibrate"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 9,
+        "split": "calibrate"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 10,
+        "split": "calibrate"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 12,
+        "split": "calibrate"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 13,
+        "split": "calibrate"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 3,
+        "split": "test"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 11,
+        "split": "test"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 12,
+        "split": "test"
+      },
+      {
+        "arms_without_settings": [
+          "released",
+          "fitted",
+          "allowed_narrow"
+        ],
+        "index": 15,
+        "split": "test"
+      }
+    ],
+    "louder_users": 1,
+    "newly_passing_evaluation_limiter_gain_reduction_db": [
+      0.9068190455436707,
+      1.5515904426574707,
+      1.8343509435653687,
+      1.8826276063919067,
+      3.284571409225464,
+      4.025131702423096,
+      5.615744590759277
+    ],
+    "newly_passing_evaluation_true_peak_limiter_gain_reduction_db": [
+      0.03946258872747421,
+      0.044124241918325424,
+      0.04881131649017334,
+      0.05489135533571243,
+      0.07359720766544342,
+      0.0776226744055748,
+      0.1071426272392273
+    ],
+    "newly_passing_users": 7,
+    "no_eq_settings": {
+      "allowed_narrow": 14,
+      "fitted": 14,
+      "released": 14
+    },
+    "quieter_users": 0,
+    "scored_speakers": 21,
+    "scored_users": 34,
+    "setup_limiter_gain_reduction_db_max": 2.9918692111968994,
+    "speakers": 24,
+    "strict_users": 15,
+    "users": 48,
+    "verification_accepted": {
+      "allowed_narrow": 24,
+      "fitted": 23,
+      "released": 22
+    },
+    "verification_gave_up_on_limiter_pressure": {
+      "allowed_narrow": 2,
+      "fitted": 3,
+      "released": 4
+    }
+  },
+  "partitions": {
+    "calibrate": {
+      "gates": {
+        "below_app_warning": true,
+        "benefit": true,
+        "intelligibility_kept": true,
+        "lowers_only_to_pass": true,
+        "never_quieter": true,
+        "strict_where_not_raised": true,
+        "verification_no_harm": true
+      },
+      "metrics": {
+        "allowance_applied_users": 5,
+        "allowance_not_applied": {
+          "input_too_hot_with_auto_makeup": 0,
+          "limiter_disabled": 0,
+          "manual_makeup": 5
+        },
+        "apply_recommended": {
+          "allowed_narrow": 4,
+          "fitted": 3,
+          "released": 3
+        },
+        "below_app_warning_readings": {
+          "attributed_passed": true,
+          "baseline_exceedances": [],
+          "counted_against_the_candidate": [],
+          "proposals_reaching_warning": 0,
+          "strict_passed": true
+        },
+        "estoi_change_max": 0.0,
+        "estoi_change_mean": 0.0,
+        "estoi_change_min": 0.0,
+        "evaluation_limiter_gain_reduction_db_among_passing": {
+          "allowed_narrow": {
+            "count": 10,
+            "max": 1.5515904426574707,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 1.468264079093933
+          },
+          "fitted": {
+            "count": 9,
+            "max": 1.45900559425354,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.29180111885070825
+          },
+          "released": {
+            "count": 9,
+            "max": 1.45900559425354,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.29180111885070825
+          }
+        },
+        "evaluation_limiter_gain_reduction_db_max": 1.5515904426574707,
+        "evaluation_true_peak_limiter_gain_reduction_db_among_passing": {
+          "allowed_narrow": {
+            "count": 10,
+            "max": 0.0776226744055748,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.025534586049616316
+          },
+          "fitted": {
+            "count": 9,
+            "max": 0.019747020676732063,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.0039494041353464165
+          },
+          "released": {
+            "count": 9,
+            "max": 0.019747020676732063,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.0039494041353464165
+          }
+        },
+        "evaluation_true_peak_limiter_gain_reduction_db_max": 0.0776226744055748,
+        "final_check_render_gap_max": 0.0,
+        "headroom_safe": {
+          "allowed_narrow": 10,
+          "fitted": 9,
+          "released": 9
+        },
+        "left_out": [
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 5,
+            "split": "calibrate"
+          },
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 7,
+            "split": "calibrate"
+          },
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 9,
+            "split": "calibrate"
+          },
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 10,
+            "split": "calibrate"
+          },
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 12,
+            "split": "calibrate"
+          },
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 13,
+            "split": "calibrate"
+          }
+        ],
+        "louder_users": 0,
+        "newly_passing_evaluation_limiter_gain_reduction_db": [
+          1.5515904426574707
+        ],
+        "newly_passing_evaluation_true_peak_limiter_gain_reduction_db": [
+          0.0776226744055748
+        ],
+        "newly_passing_users": 1,
+        "no_eq_settings": {
+          "allowed_narrow": 6,
+          "fitted": 6,
+          "released": 6
+        },
+        "quieter_users": 0,
+        "scored_speakers": 7,
+        "scored_users": 10,
+        "setup_limiter_gain_reduction_db_max": 0.8613376021385193,
+        "speakers": 8,
+        "strict_users": 5,
+        "users": 16,
+        "verification_accepted": {
+          "allowed_narrow": 7,
+          "fitted": 7,
+          "released": 7
+        },
+        "verification_gave_up_on_limiter_pressure": {
+          "allowed_narrow": 0,
+          "fitted": 0,
+          "released": 0
+        }
+      },
+      "passed": true
+    },
+    "fit": {
+      "gates": {
+        "below_app_warning": true,
+        "benefit": true,
+        "intelligibility_kept": true,
+        "lowers_only_to_pass": true,
+        "never_quieter": true,
+        "strict_where_not_raised": true,
+        "verification_no_harm": true
+      },
+      "metrics": {
+        "allowance_applied_users": 6,
+        "allowance_not_applied": {
+          "input_too_hot_with_auto_makeup": 1,
+          "limiter_disabled": 0,
+          "manual_makeup": 5
+        },
+        "apply_recommended": {
+          "allowed_narrow": 5,
+          "fitted": 2,
+          "released": 2
+        },
+        "below_app_warning_readings": {
+          "attributed_passed": true,
+          "baseline_exceedances": [],
+          "counted_against_the_candidate": [],
+          "proposals_reaching_warning": 0,
+          "strict_passed": true
+        },
+        "estoi_change_max": 0.0,
+        "estoi_change_mean": 0.0,
+        "estoi_change_min": 0.0,
+        "evaluation_limiter_gain_reduction_db_among_passing": {
+          "allowed_narrow": {
+            "count": 12,
+            "max": 5.615744590759277,
+            "median": 0.4369342476129532,
+            "min": 0.0,
+            "p90": 3.14997490644455
+          },
+          "fitted": {
+            "count": 9,
+            "max": 1.9386063814163208,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.9995987176895144
+          },
+          "released": {
+            "count": 7,
+            "max": 0.7648468017578125,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.6430366396903993
+          }
+        },
+        "evaluation_limiter_gain_reduction_db_max": 5.615744590759277,
+        "evaluation_true_peak_limiter_gain_reduction_db_among_passing": {
+          "allowed_narrow": {
+            "count": 12,
+            "max": 0.07359720766544342,
+            "median": 0.015089628752321005,
+            "min": 0.0,
+            "p90": 0.04834260903298855
+          },
+          "fitted": {
+            "count": 9,
+            "max": 0.03269694000482559,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.02388183027505875
+          },
+          "released": {
+            "count": 7,
+            "max": 0.021678052842617035,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.02086845487356186
+          }
+        },
+        "evaluation_true_peak_limiter_gain_reduction_db_max": 0.07359720766544342,
+        "final_check_render_gap_max": 0.0,
+        "headroom_safe": {
+          "allowed_narrow": 12,
+          "fitted": 9,
+          "released": 7
+        },
+        "left_out": [
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 0,
+            "split": "fit"
+          },
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 3,
+            "split": "fit"
+          },
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 9,
+            "split": "fit"
+          },
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 11,
+            "split": "fit"
+          }
+        ],
+        "louder_users": 0,
+        "newly_passing_evaluation_limiter_gain_reduction_db": [
+          0.9068190455436707,
+          3.284571409225464,
+          5.615744590759277
+        ],
+        "newly_passing_evaluation_true_peak_limiter_gain_reduction_db": [
+          0.044124241918325424,
+          0.04881131649017334,
+          0.07359720766544342
+        ],
+        "newly_passing_users": 3,
+        "no_eq_settings": {
+          "allowed_narrow": 4,
+          "fitted": 4,
+          "released": 4
+        },
+        "quieter_users": 0,
+        "scored_speakers": 7,
+        "scored_users": 12,
+        "setup_limiter_gain_reduction_db_max": 1.8620637655258179,
+        "speakers": 8,
+        "strict_users": 6,
+        "users": 16,
+        "verification_accepted": {
+          "allowed_narrow": 8,
+          "fitted": 8,
+          "released": 8
+        },
+        "verification_gave_up_on_limiter_pressure": {
+          "allowed_narrow": 1,
+          "fitted": 1,
+          "released": 1
+        }
+      },
+      "passed": true
+    },
+    "test": {
+      "gates": {
+        "below_app_warning": true,
+        "benefit": true,
+        "intelligibility_kept": true,
+        "lowers_only_to_pass": true,
+        "never_quieter": true,
+        "strict_where_not_raised": true,
+        "verification_no_harm": true
+      },
+      "metrics": {
+        "allowance_applied_users": 8,
+        "allowance_not_applied": {
+          "input_too_hot_with_auto_makeup": 2,
+          "limiter_disabled": 0,
+          "manual_makeup": 2
+        },
+        "apply_recommended": {
+          "allowed_narrow": 7,
+          "fitted": 4,
+          "released": 3
+        },
+        "below_app_warning_readings": {
+          "attributed_passed": true,
+          "baseline_exceedances": [],
+          "counted_against_the_candidate": [],
+          "proposals_reaching_warning": 0,
+          "strict_passed": true
+        },
+        "estoi_change_max": 0.006380344586862652,
+        "estoi_change_mean": 0.0005316953822385543,
+        "estoi_change_min": 0.0,
+        "evaluation_limiter_gain_reduction_db_among_passing": {
+          "allowed_narrow": {
+            "count": 9,
+            "max": 4.025131702423096,
+            "median": 0.7364789247512817,
+            "min": 0.0,
+            "p90": 3.851331424713135
+          },
+          "fitted": {
+            "count": 6,
+            "max": 0.8103541135787964,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.7734165191650391
+          },
+          "released": {
+            "count": 5,
+            "max": 0.7364789247512817,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.44188735485076913
+          }
+        },
+        "evaluation_limiter_gain_reduction_db_max": 4.025131702423096,
+        "evaluation_true_peak_limiter_gain_reduction_db_among_passing": {
+          "allowed_narrow": {
+            "count": 9,
+            "max": 0.1071426272392273,
+            "median": 0.03946258872747421,
+            "min": 0.0,
+            "p90": 0.06534160971641542
+          },
+          "fitted": {
+            "count": 6,
+            "max": 0.05485957860946655,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.052420422434806824
+          },
+          "released": {
+            "count": 5,
+            "max": 0.049981266260147095,
+            "median": 0.0,
+            "min": 0.0,
+            "p90": 0.02998875975608826
+          }
+        },
+        "evaluation_true_peak_limiter_gain_reduction_db_max": 0.1071426272392273,
+        "final_check_render_gap_max": 0.0,
+        "headroom_safe": {
+          "allowed_narrow": 9,
+          "fitted": 6,
+          "released": 5
+        },
+        "left_out": [
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 3,
+            "split": "test"
+          },
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 11,
+            "split": "test"
+          },
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 12,
+            "split": "test"
+          },
+          {
+            "arms_without_settings": [
+              "released",
+              "fitted",
+              "allowed_narrow"
+            ],
+            "index": 15,
+            "split": "test"
+          }
+        ],
+        "louder_users": 1,
+        "newly_passing_evaluation_limiter_gain_reduction_db": [
+          1.8343509435653687,
+          1.8826276063919067,
+          4.025131702423096
+        ],
+        "newly_passing_evaluation_true_peak_limiter_gain_reduction_db": [
+          0.03946258872747421,
+          0.05489135533571243,
+          0.1071426272392273
+        ],
+        "newly_passing_users": 3,
+        "no_eq_settings": {
+          "allowed_narrow": 4,
+          "fitted": 4,
+          "released": 4
+        },
+        "quieter_users": 0,
+        "scored_speakers": 7,
+        "scored_users": 12,
+        "setup_limiter_gain_reduction_db_max": 2.9918692111968994,
+        "speakers": 8,
+        "strict_users": 4,
+        "users": 16,
+        "verification_accepted": {
+          "allowed_narrow": 9,
+          "fitted": 8,
+          "released": 7
+        },
+        "verification_gave_up_on_limiter_pressure": {
+          "allowed_narrow": 1,
+          "fitted": 2,
+          "released": 3
+        }
+      },
+      "passed": true
+    }
+  },
+  "passed": true,
+  "predefined_rule": "Rule 'narrow' in the docstring of python/tools/evaluate_voice_setup_loudness.py.",
+  "retained": true,
+  "retained_evidence": {
+    "directory": "models/evaluation-details/voice-setup-limiter-allowance-narrow-2026-10",
+    "rows": "models/evaluation-details/voice-setup-limiter-allowance-narrow-2026-10/tree-rows-tonal.json",
+    "rows_sha256": "128012486321f1031710357621a15740da606cfbc9d1fc7e2abfeb4338892304"
+  },
+  "rule": "narrow",
+  "schema_version": 2,
+  "source_sha256": {
+    "python/mic_eq/analysis/auto_eq.py": "edccec8f7a204d2a021a69d79c6b9443781f6b3d9de569fdd2bdffcfab553de7",
+    "python/mic_eq/analysis/auto_eq_parts/headroom.py": "4cf6d57bbdb5b7527dc89005f9b9d9236c0c8018174de9094e58632b8df9e0f2",
+    "python/mic_eq/analysis/compressor_calibration.py": "59ebaa1270d9aa1bda94918864d2d532af59980d23f42202eec27dfa10af8c7b",
+    "python/mic_eq/analysis/joint_tuning.py": "dcc01e052f5831e772b56000735edca7284d543dff5c6286dcf46318b3b66ea5",
+    "python/mic_eq/analysis/noise_reference.py": "e40b553371baac7e7ab3336cfd1f7b73446e903d8255be7d09e8a2de5697a849",
+    "python/mic_eq/analysis/voice_setup.py": "cfa6ae88d76adfd4f8cb3d10e86482d9a4df723e33ade0a3c5c44a3d17125b5f",
+    "python/mic_eq/ui/calibration_support.py": "2bf6d62dcfa6b0d07f5d3b867b4ec101483334a271b5175d2466bbd303b8b1c9",
+    "python/tools/_eval_common.py": "f6bccabedc531161d1577b1e807c30391bdfe291faf1fd0eba438729b7e006e0",
+    "python/tools/evaluate_gate_corpus.py": "3a2fca2a7a0502f7d77478881c1616fe763d94931c125b569f3959606e34ef41",
+    "python/tools/evaluate_voice_setup.py": "6cbe6fd752179577a37c3d597424c30a0927099d52abdd1d7d68b4350a66a769",
+    "python/tools/evaluate_voice_setup_loudness.py": "7cd5fe887a2c627bbf500f8d5a298497d4d7399f60ba7e686f05ac257990edbc"
+  },
+  "splits": [
+    "fit",
+    "calibrate",
+    "test"
+  ],
+  "user_indices": {
+    "calibrate": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "fit": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "test": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ]
+  }
+}

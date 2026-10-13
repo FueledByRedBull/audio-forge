@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from typing import Any
 from unittest.mock import Mock
 
 import numpy as np
@@ -818,7 +819,7 @@ def test_verification_callback_uses_capture_generation_after_launch(qapp, monkey
 
 
 def test_numeric_compressor_preset_marks_intensity_custom_without_marker(qapp) -> None:
-    common = {
+    common: dict[str, Any] = {
         "speech_body_db": -22.0,
         "speech_loudness_lufs": -20.0,
         "loudness_range_db": 5.0,

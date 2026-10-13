@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QComboBox,
     QSizePolicy,
-    QToolButton,
 )
 from PySide6.QtCore import QObject, QSignalBlocker, Qt, Signal
 from .eq_state import (
@@ -360,14 +359,8 @@ class EQBandSlider(QWidget):
     def set_filter_type(self, filter_type: str) -> None:
         self._set_parameter("filter_type", filter_type)
 
-    def set_slope(self, slope_db_per_octave: int) -> None:
-        self._set_parameter("slope_db_per_octave", slope_db_per_octave)
-
     def set_band_enabled(self, enabled: bool) -> None:
         self._set_parameter("enabled", enabled)
-
-    def native_config(self) -> tuple[str, float, float, float, int, bool]:
-        return self.settings().to_native()
 
     def settings(self) -> EQBandSettings:
         if self.eq_state is not None:
@@ -457,7 +450,6 @@ class EQPresentation(QObject):
         reset_action.triggered.connect(state.reset_tone)
         options_menu.setToolTipsVisible(True)
         self.options_menu = options_menu
-        self._options_button: IconButton | None = None
         self.tone_actions = tuple(self.tone_menu.actions())
         self.options_actions = tuple(self.options_menu.actions())
 
@@ -490,23 +482,6 @@ class EQPresentation(QObject):
             self._tone_preset_button.hide()
             self.destroyed.connect(self._tone_preset_button.deleteLater)
         return self._tone_preset_button
-
-    @property
-    def options_button(self) -> IconButton:
-        """Create the classic options button only when its panel needs it."""
-        if self._options_button is None:
-            parent = self.parent()
-            widget_parent = parent if isinstance(parent, QWidget) else None
-            self._options_button = IconButton(
-                Glyph.MORE, "Equalizer options", widget_parent
-            )
-            self._options_button.setMenu(self.options_menu)
-            self._options_button.setPopupMode(
-                QToolButton.ToolButtonPopupMode.InstantPopup
-            )
-            self._options_button.hide()
-            self.destroyed.connect(self._options_button.deleteLater)
-        return self._options_button
 
     @property
     def curve_widget(self) -> EQCurveWidget:
@@ -694,12 +669,6 @@ class EQPanel(QWidget):
     def _on_enabled_toggled(self, checked):
         self.eq_state.set_enabled(checked)
 
-    def _reset_all(self):
-        self.eq_state.reset_tone()
-
-    def _on_curve_drag_started(self, band_index: int) -> None:
-        self.eq_state.begin_curve_edit(band_index)
-
     def _on_curve_band_dragged(
         self, band_index: int, frequency_hz: float, gain_db: float
     ) -> None:
@@ -710,13 +679,6 @@ class EQPanel(QWidget):
     ) -> None:
         self.eq_state.finish_curve_edit(band_index, frequency_hz, gain_db)
 
-    def _on_curve_drag_cancelled(
-        self, band_index: int, frequency_hz: float, gain_db: float
-    ) -> None:
-        self.eq_state.finish_curve_edit(
-            band_index, frequency_hz, gain_db, cancelled=True
-        )
-
     def _preset_voice(self):
         """Apply voice clarity preset."""
         self._apply_catalog_preset("voice")
@@ -724,14 +686,6 @@ class EQPanel(QWidget):
     def _preset_bass_cut(self):
         """Apply the low-shelf bass-cut contour; no high-pass filter."""
         self._apply_catalog_preset("bass_cut")
-
-    def _preset_presence(self):
-        """Apply presence boost preset."""
-        self._apply_catalog_preset("presence")
-
-    def _preset_warm_clear(self):
-        """Apply the strong warm/clear EQ contour without a rumble filter."""
-        self.eq_state.apply_warm_clear_preset()
 
     def _apply_catalog_preset(self, key: str) -> None:
         self.eq_state.apply_catalog_preset(key)

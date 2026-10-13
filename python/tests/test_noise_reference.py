@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from mic_eq.analysis.noise_reference import CaptureMetadata, analyze_noise_reference
+from mic_eq.analysis.noise_reference import (
+    SILENT_REFERENCE_GUIDANCE,
+    SILENT_REFERENCE_REASON,
+    CaptureMetadata,
+    analyze_noise_reference,
+    capture_is_silent,
+)
 
 
 def _stationary_noise(
@@ -42,17 +49,97 @@ def test_stationary_matching_reference_is_usable():
     assert result.metrics["in_capture_noise_frame_count"] >= 3
 
 
-def test_digital_silence_is_invalid_even_when_long_enough():
+def test_silent_reference_is_weak_but_does_not_block_setup():
+    # A headset or driver that mutes itself between words records true silence.
     sample_rate = 48_000
-    result = analyze_noise_reference(
+    for silence in (
         np.zeros(sample_rate * 3, dtype=np.float32),
-        _speech_with_quiet_gaps(sample_rate),
-        sample_rate,
-    )
+        _stationary_noise(sample_rate, amplitude=10.0 ** (-100.0 / 20.0)),
+    ):
+        result = analyze_noise_reference(silence, None, sample_rate)
+
+        assert result.status == "questionable"
+        assert result.usable is True
+        assert result.reasons == [SILENT_REFERENCE_REASON]
+        assert result.guidance == [SILENT_REFERENCE_GUIDANCE]
+
+
+def test_capture_is_silent_below_minus_95_dbfs_whatever_the_shape_of_the_data():
+    def constant(dbfs: float) -> np.ndarray:
+        return np.full(1_000, 10.0 ** (dbfs / 20.0))
+
+    assert capture_is_silent(constant(-95.5))
+    assert not capture_is_silent(constant(-94.5))
+    assert capture_is_silent(np.zeros(1_000))
+    # Samples that are not numbers carry no signal; a number among them still does.
+    assert capture_is_silent(np.full(1_000, np.nan))
+    assert capture_is_silent(np.full(1_000, np.inf))
+    assert capture_is_silent(np.empty(0))
+    signal = _stationary_noise(48_000, seconds=1.0)
+    signal[5] = np.nan
+    assert not capture_is_silent(signal)
+    # Channels are read as one run of samples.
+    assert capture_is_silent(np.zeros((1_000, 2)))
+    assert not capture_is_silent(np.column_stack([np.zeros(48_000), _stationary_noise(48_000, seconds=1.0)]))
+
+
+@pytest.mark.parametrize(
+    "capture",
+    [np.empty(0), np.zeros(1), np.zeros(24_000), np.full(144_000, np.nan)],
+    ids=["empty", "one-sample", "too-short", "all-nan"],
+)
+def test_a_capture_that_must_be_retaken_is_not_told_that_silence_is_normal(capture):
+    capture = capture.astype(np.float32)
+    # These read as silent too, but a retake is the only way on.
+    assert capture_is_silent(capture)
+
+    result = analyze_noise_reference(capture, None, 48_000)
 
     assert result.status == "invalid"
-    assert result.usable is False
-    assert "suspiciously silent" in " ".join(result.reasons)
+    assert result.must_recapture is True
+    assert SILENT_REFERENCE_REASON not in result.reasons
+    assert SILENT_REFERENCE_GUIDANCE not in result.guidance
+    assert result.guidance
+
+
+def test_silent_reference_takes_its_noise_from_pauses_in_the_voice_capture():
+    sample_rate = 48_000
+    speech = _speech_with_quiet_gaps(sample_rate)
+    measured = analyze_noise_reference(_stationary_noise(sample_rate), speech, sample_rate)
+    result = analyze_noise_reference(
+        np.zeros(sample_rate * 3, dtype=np.float32), speech, sample_rate
+    )
+
+    assert result.status == "questionable"
+    assert result.reasons == [SILENT_REFERENCE_REASON]
+    assert result.metrics["in_capture_noise_frame_count"] >= 3
+    # Nothing to disagree with, so the pauses are the whole estimate.
+    assert result.metrics["in_capture_level_delta_db"] is None
+    assert result.metrics["spectral_shape_distance_db"] is None
+    assert result.in_capture_spectrum_db is not None
+    np.testing.assert_array_equal(result.conservative_spectrum_db, result.in_capture_spectrum_db)
+    np.testing.assert_array_equal(result.in_capture_spectrum_db, measured.in_capture_spectrum_db)
+    assert result.conservative_noise_rms_db > -95.0
+
+
+def test_only_captures_the_analysis_cannot_use_must_be_recaptured():
+    sample_rate = 48_000
+    # A gate that opens now and then is unsteady on every take; retaking cannot fix it.
+    leaky_gate = _stationary_noise(sample_rate, seconds=2.0)
+    for start in range(0, leaky_gate.size, sample_rate * 2 // 5):
+        leaky_gate[start : start + sample_rate // 5] = 0.0
+    unsteady = analyze_noise_reference(leaky_gate, None, sample_rate)
+    assert unsteady.status == "invalid"
+    assert unsteady.must_recapture is False
+
+    clipped = _stationary_noise(sample_rate)
+    clipped[::200] = 1.0
+    too_short = _stationary_noise(sample_rate, seconds=0.5)
+    for capture in (clipped, too_short):
+        result = analyze_noise_reference(capture, None, sample_rate)
+        assert result.status == "invalid"
+        assert result.must_recapture is True
+    assert analyze_noise_reference(_stationary_noise(sample_rate), None, sample_rate).must_recapture is False
 
 
 def test_nonfinite_or_clipped_reference_is_invalid():

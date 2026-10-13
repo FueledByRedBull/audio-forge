@@ -1,14 +1,16 @@
 """
-OBS-style visual level meter widget
+OBS-style level meters
 
-Shows RMS level as a filled bar with peak hold indicator.
+Meters are QObject models that hold the readings and know how to paint them;
+MeterWidget and the Qt Quick item are thin views over a model.
+LevelMeter shows RMS level as a filled bar with peak hold indicator.
 Color gradient: green → yellow → red
 """
 
 import math
 
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import QEvent, Qt, QTimer, QRectF, Signal
+from PySide6.QtCore import Property, QObject, Qt, QTimer, QRectF, Signal
 from PySide6.QtGui import QPainter, QLinearGradient, QPen, QFont
 
 from .theme import PALETTE, qcolor
@@ -31,10 +33,32 @@ def _scale_mark_geometry(
     return tick_end, QRectF(text_left, y - 6, text_width, 12)
 
 
-class LevelMeter(QWidget):
-    """OBS-style vertical level meter with peak hold and dB scale."""
+class MeterModel(QObject):
+    """What every meter view reads: presentation properties and a change signal."""
 
     changed = Signal()
+
+    def __init__(self, name: str = "", tip: str = "", parent: QObject | None = None):
+        super().__init__(parent)
+        self._name, self._tip, self._enabled = name, tip, True
+
+    def set_enabled(self, enabled: bool) -> None:
+        if enabled != self._enabled:
+            self._enabled = enabled
+            self.changed.emit()
+
+    name = Property(str, lambda self: self._name, constant=True)
+    toolTip = Property(str, lambda self: self._tip, constant=True)
+    enabled = Property(bool, lambda self: self._enabled, set_enabled, notify=changed)
+    shown = Property(bool, lambda self: True, constant=True)
+
+    def paint_meter(self, painter: QPainter, width: float, height: float) -> None:
+        """Paint this meter into any Qt painter without changing its size."""
+        raise NotImplementedError
+
+
+class LevelMeter(MeterModel):
+    """OBS-style vertical level meter with peak hold and dB scale."""
 
     # Color constants
     COLOR_GREEN = qcolor(PALETTE.meter_safe)
@@ -55,8 +79,11 @@ class LevelMeter(QWidget):
     # Scale marks to display
     SCALE_MARKS = [0, -6, -12, -18, -24, -30, -40, -50, -60]
 
-    def __init__(self, label: str = "", show_scale: bool = True, parent=None):
-        super().__init__(parent)
+    def __init__(
+        self, label: str = "", show_scale: bool = True, name: str = "",
+        parent: QObject | None = None,
+    ):
+        super().__init__(name, parent=parent)
         self.label_text = label
         self.show_scale = show_scale
         self.measurement_available = False
@@ -67,35 +94,18 @@ class LevelMeter(QWidget):
         self.is_clipping = False
         self.clip_flash_counter = 0
 
-        # Minimum size - wider to accommodate scale
-        self.setMinimumWidth(50 if show_scale else 25)
-        self.setMinimumHeight(120)
-
         # Peak hold decay timer
         self.decay_timer = QTimer(self)
         self.decay_timer.timeout.connect(self._decay_peak_hold)
-        self.decay_timer.setInterval(50)  # Animate only visible, measured peaks.
+        self.decay_timer.setInterval(50)  # Runs only while a measured peak has something to decay.
 
     def _sync_decay_timer(self) -> None:
-        active = (self.isVisible() and self.measurement_available and self.peak_available
+        active = (self.measurement_available and self.peak_available
                   and (self.peak_hold_db > self.DB_MIN or self.clip_flash_counter > 0))
         if active and not self.decay_timer.isActive():
             self.decay_timer.start()
         elif not active:
             self.decay_timer.stop()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self._sync_decay_timer()
-
-    def hideEvent(self, event):
-        self.decay_timer.stop()
-        super().hideEvent(event)
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.EnabledChange:
-            self.changed.emit()
 
     def set_levels(self, rms_db: float | None, peak_db: float | None):
         """Update measured levels; unavailable peaks are never estimated."""
@@ -117,7 +127,6 @@ class LevelMeter(QWidget):
         self._sync_decay_timer()
         if previous != (self.rms_db, self.peak_db, True, True):
             self.changed.emit()
-            self.update()
 
     def set_rms_level(self, rms_db: float) -> None:
         """Show RMS when no peak measurement is available."""
@@ -134,7 +143,6 @@ class LevelMeter(QWidget):
         self._sync_decay_timer()
         if previous != (self.rms_db, True, False):
             self.changed.emit()
-            self.update()
 
     def set_unavailable(self) -> None:
         changed = self.measurement_available
@@ -145,7 +153,6 @@ class LevelMeter(QWidget):
         self.decay_timer.stop()
         if changed:
             self.changed.emit()
-            self.update()
 
     def _decay_peak_hold(self):
         """Decay measured peak hold; stop repainting once it reaches the floor."""
@@ -158,7 +165,6 @@ class LevelMeter(QWidget):
         self._sync_decay_timer()
         if previous != (self.peak_hold_db, self.clip_flash_counter):
             self.changed.emit()
-            self.update()
 
     def _db_to_y(self, db: float, height: float) -> float:
         """Convert dB value to Y coordinate (0 = top, height = bottom)."""
@@ -167,11 +173,6 @@ class LevelMeter(QWidget):
         normalized = max(0.0, min(1.0, normalized))
         # Invert because Y=0 is top
         return height * (1.0 - normalized)
-
-    def paintEvent(self, event):
-        """Paint the level meter."""
-        painter = QPainter(self)
-        self.paint_meter(painter, self.width(), self.height())
 
     def paint_meter(self, painter: QPainter, width: float, height: float) -> None:
         """Paint this meter into any Qt painter without changing its size."""
@@ -269,20 +270,16 @@ class LevelMeter(QWidget):
             )
 
 
-class GainReductionMeter(QWidget):
+class GainReductionMeter(MeterModel):
     """Horizontal gain reduction meter (shows compression amount)."""
-
-    changed = Signal()
 
     COLOR_BACKGROUND = qcolor(PALETTE.data_surface)
     COLOR_REDUCTION = qcolor(PALETTE.meter_reduction)
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self, name: str = "", parent: QObject | None = None):
+        super().__init__(name, parent=parent)
         self.measurement_available = False
         self.gain_reduction_db = 0.0
-        self.setMinimumHeight(16)
-        self.setMaximumHeight(20)
 
     def set_gain_reduction(self, db: float | None):
         """Update reduction, keeping unavailable distinct from measured zero."""
@@ -292,17 +289,6 @@ class GainReductionMeter(QWidget):
             self.gain_reduction_db = value
             self.measurement_available = available
             self.changed.emit()
-            self.update()
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.EnabledChange:
-            self.changed.emit()
-
-    def paintEvent(self, event):
-        """Paint the gain reduction meter."""
-        painter = QPainter(self)
-        self.paint_meter(painter, self.width(), self.height())
 
     def paint_meter(self, painter: QPainter, width: float, height: float) -> None:
         """Paint this meter into any Qt painter without changing its size."""
@@ -330,18 +316,14 @@ class GainReductionMeter(QWidget):
         painter.drawText(0, 0, width, height, Qt.AlignmentFlag.AlignCenter, text)
 
 
-class ConfidenceMeter(QWidget):
+class ConfidenceMeter(MeterModel):
     """VAD confidence meter showing speech probability (0.0 to 1.0)."""
 
-    changed = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumHeight(20)
+    def __init__(self, name: str = "", tip: str = "", parent: QObject | None = None):
+        super().__init__(name, tip, parent)
         self.measurement_available = False
         self.confidence = 0.0
         self.threshold = 0.5
-        self.setAutoFillBackground(False)
 
     def set_confidence(self, value: float | None):
         """Update confidence, or explicitly clear an unavailable measurement."""
@@ -351,21 +333,10 @@ class ConfidenceMeter(QWidget):
             self.confidence = confidence
             self.measurement_available = available
             self.changed.emit()
-            self.update()
 
     def set_threshold(self, value: float):
         self.threshold = max(0.0, min(1.0, value))
         self.changed.emit()
-        self.update()
-
-    def changeEvent(self, event):
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.EnabledChange:
-            self.changed.emit()
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        self.paint_meter(painter, self.width(), self.height())
 
     def paint_meter(self, painter: QPainter, width: float, height: float) -> None:
         """Paint this meter into any Qt painter without changing its size."""
@@ -397,3 +368,31 @@ class ConfidenceMeter(QWidget):
         threshold_x = int(width * self.threshold)
         painter.setPen(QPen(qcolor(PALETTE.meter_peak), 2))
         painter.drawLine(threshold_x, 0, threshold_x, height)
+
+
+class MeterWidget(QWidget):
+    """Paint a meter model and mirror its accessible name, tooltip and enabled state."""
+
+    def __init__(self, model: MeterModel, parent=None):
+        super().__init__(parent)
+        self.model = model
+        self.setAccessibleName(model.property("name"))
+        self.setToolTip(model.property("toolTip"))
+        if isinstance(model, LevelMeter):
+            # Wider minimum to accommodate the scale.
+            self.setMinimumSize(50 if model.show_scale else 25, 120)
+        elif isinstance(model, GainReductionMeter):
+            self.setMinimumHeight(16)
+            self.setMaximumHeight(20)
+        else:
+            self.setMinimumHeight(20)
+        model.changed.connect(self._model_changed)
+        self.setEnabled(model.property("enabled"))
+
+    def _model_changed(self) -> None:
+        self.setEnabled(self.model.property("enabled"))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        self.model.paint_meter(painter, self.width(), self.height())

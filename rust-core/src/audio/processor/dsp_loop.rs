@@ -330,24 +330,6 @@ impl AudioProcessor {
         self.start_with_device_ordinals_and_ids(input_device, 0, None, output_device, 0, None)
     }
 
-    /// Start audio processing with deterministic duplicate-name selection.
-    pub fn start_with_device_ordinals(
-        &mut self,
-        input_device: Option<&str>,
-        input_device_name_ordinal: u32,
-        output_device: Option<&str>,
-        output_device_name_ordinal: u32,
-    ) -> Result<String, String> {
-        self.start_with_device_ordinals_and_ids(
-            input_device,
-            input_device_name_ordinal,
-            None,
-            output_device,
-            output_device_name_ordinal,
-            None,
-        )
-    }
-
     /// Start audio processing using stable platform endpoint IDs when present.
     ///
     /// The friendly name and ordinal remain a compatibility fallback for

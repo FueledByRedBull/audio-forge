@@ -161,8 +161,32 @@ Each fetcher pins sources and hashes: `evaluate_gate_corpus.py fetch`
 EARS is non-commercial, so nothing shipped is fitted on it),
 `fetch_dpdfnet_evaluation_assets.py` (DPDFNet EvalSet, also the speech corpus
 for the Auto-EQ, makeup, DeepFilter and RNNoise evaluations),
-`fetch_cross_take_corpus.py`, `fetch_deepfilter_fullband_corpus.py`,
-`fetch_vad_child_validation_corpus.py`, and `build_vad_evaluation_corpus.py`.
+`fetch_cross_take_corpus.py`, `fetch_deepfilter_fullband_corpus.py`, and
+`build_vad_evaluation_corpus.py`. The last two stay because evaluators that
+remain read their corpora: `evaluate_product_tuning.py` the full-band set,
+`evaluate_compressor_search.py` and `evaluate_voice_regressions.py` the VAD set.
+
+## Retired evaluators
+
+The evaluators and fetcher below served decisions the Decisions table records as
+closed. They were removed after v1.15.3 with their tests; their reports stay,
+with their stated limitations, and the tools remain in the v1.15.3 source
+(`git show v1.15.3:python/tools/<name>`). Their measurements can no longer be
+reproduced from this checkout. Released reports are still checked at the tag
+that shipped them.
+
+| Removed tool | Report it produced |
+| --- | --- |
+| `evaluate_resampler_quality.py` | `resampler-quality-report.json` |
+| `evaluate_eq_filter_types.py` | `eq-filter-types-report.json` |
+| `evaluate_vad_models.py`, `evaluate_vad_model_selection.py`, `fetch_vad_child_validation_corpus.py` | `vad-model-selection-report.json`; `vad-v6.2.1-report.json` (records no command) |
+| `evaluate_onnxruntime_probe.py` | `onnxruntime-cpu-probe.json` |
+| `evaluate_deepfilter_hardening.py` | `deepfilter-hardening-report.json` |
+| `evaluate_deepfilter_fullband.py` | `deepfilter-fullband-report.json` |
+| `evaluate_limiter_lookahead.py` | `limiter-lookahead-2026-10-report.json` |
+| `evaluate_dynamics_aliasing.py` | `dynamics-aliasing-2026-09-report.json` |
+| `evaluate_processing_order.py` | `processing-order-2026-09-report.json` (de-esser/EQ order; gate order is `evaluate_gate_corpus.py order`) |
+| `evaluate_correction_tone_stages.py` | `correction-tone-product-report.json` |
 
 ## Provenance and hygiene
 

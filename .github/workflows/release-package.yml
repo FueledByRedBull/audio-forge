@@ -19,7 +19,123 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  RUSTFLAGS: -C debuginfo=0
+
+defaults:
+  run:
+    shell: pwsh
+
+# Gates that need no built file run in `static`, beside `package-windows`. The
+# Python and Rust tests start once `package-windows` has finished and run on the
+# runtime files it produced (the audioforge-release-runtime artifact of this
+# run, never the Actions cache), so they test what the candidate contains.
+# `validate-candidate` needs only `package-windows`. Promotion requires the
+# whole run to succeed: keep every job unconditional and blocking.
 jobs:
+  static:
+    name: Static checks and audits
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_tag || github.sha }}
+          fetch-depth: 0
+          filter: blob:none
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13.15"
+          cache: pip
+          cache-dependency-path: requirements/dev.txt
+
+      - name: Version check
+        run: python python/tools/check_versions.py
+
+      - name: Evaluation evidence hygiene
+        run: python python/tools/check_evaluation_hygiene.py
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.txt --no-compile
+          if ($LASTEXITCODE -ne 0) { throw "Dependency install failed with exit code $LASTEXITCODE." }
+
+      - name: Audit locked Python dependencies
+        run: |
+          python -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
+          if ($LASTEXITCODE -ne 0) { throw "Runtime dependency audit failed with exit code $LASTEXITCODE." }
+          python -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
+          if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
+
+      - name: Ruff
+        run: python -m ruff check python/mic_eq python/tests python/tools
+
+      # Reads mic_eq_core.pyi; the built extension is not needed.
+      - name: Pyright
+        run: python -m pyright
+
+      - name: Workflow definition check
+        run: python python/tools/check_workflows.py
+
+      - name: Package source smoke
+        run: python python/tools/package_smoke.py --source-only
+
+      - name: Semgrep
+        run: python python/tools/run_semgrep.py --sarif release-semgrep-results.sarif
+
+      - name: Upload release Semgrep SARIF
+        if: always() && hashFiles('release-semgrep-results.sarif') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-semgrep-sarif-${{ github.run_id }}
+          path: release-semgrep-results.sarif
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+        with:
+          toolchain: 1.94.0
+
+      - name: Rust format
+        run: cargo fmt --check
+
+      - name: Cache pinned cargo-audit and advisory database
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/cargo-audit.exe
+            ~/.cargo/advisory-db
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2
+      - name: Install pinned cargo-audit
+        run: |
+          $audit = Join-Path $env:USERPROFILE ".cargo/bin/cargo-audit.exe"
+          $version = ""
+          if (Test-Path -LiteralPath $audit) { $version = & $audit --version | Out-String }
+          if ($version -notmatch "0\.22\.2") {
+            cargo install cargo-audit --version 0.22.2 --locked --force
+            if ($LASTEXITCODE -ne 0) { throw "cargo-audit installation failed with exit code $LASTEXITCODE." }
+          }
+          $version = & $audit --version | Out-String
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch "0\.22\.2") { throw "cargo-audit 0.22.2 is not available." }
+      - name: RustSec audit
+        run: |
+          cargo audit --deny warnings
+          if ($LASTEXITCODE -ne 0) { throw "RustSec audit failed with exit code $LASTEXITCODE." }
+          # DeepFilter is an independent locked Cargo graph shipped as df.dll.
+          # These are the three reviewed unmaintained-crate notices in that graph;
+          # vulnerability findings remain fatal.
+          cargo audit `
+            --file build-support/deepfilter/Cargo.lock `
+            --deny warnings `
+            --ignore RUSTSEC-2024-0436 `
+            --ignore RUSTSEC-2024-0370 `
+            --ignore RUSTSEC-2026-0319
+          if ($LASTEXITCODE -ne 0) { throw "DeepFilter RustSec audit failed with exit code $LASTEXITCODE." }
+
   package-windows:
     name: Build Windows release package
     runs-on: windows-latest
@@ -37,24 +153,20 @@ jobs:
       source_checksum: ${{ steps.source.outputs.checksum }}
       source_metadata: ${{ steps.source.outputs.metadata }}
       native_attestation: ${{ steps.native.outputs.attestation }}
+      native_sha256: ${{ steps.runtime.outputs.native_sha256 }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
       source_revision: ${{ steps.meta.outputs.source_revision }}
       version: ${{ steps.meta.outputs.version }}
       msi_version: ${{ steps.meta.outputs.msi_version }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
     env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_TERM_COLOR: always
-      PIP_DISABLE_PIP_VERSION_CHECK: "1"
-      RUSTFLAGS: -C debuginfo=0
       AUDIOFORGE_SOURCE_DIR: build/source-distribution
-    defaults:
-      run:
-        shell: pwsh
     steps:
+      # The dispatch commit, not the moving branch tip, so every job of this
+      # run works on the same source.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag || github.ref }}
+          ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
           filter: blob:none
 
@@ -72,25 +184,19 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/dev.txt
 
-      - name: Version check
-        run: python python/tools/check_versions.py
-
-      - name: Evaluation evidence hygiene
-        run: python python/tools/check_evaluation_hygiene.py
-
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
         with:
           toolchain: 1.94.0
 
+      # Downloaded crate sources only: cargo checks them against the lockfiles.
+      # Nothing that is compiled here (target/, df.dll) is restored from a cache,
+      # because this job builds the binaries the candidate ships.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target/debug
-            target/release
-            target/deepfilter
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-release-v3-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'rust-core/Cargo.toml', 'pyproject.toml', 'build-support/deepfilter/**', 'build_deepfilter.ps1') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-registry-v1-${{ hashFiles('Cargo.lock', 'build-support/deepfilter/Cargo.lock') }}
 
       - name: Create Python 3.13 virtual environment
         run: |
@@ -199,100 +305,29 @@ jobs:
           "ORT_LIB_LOCATION=$ortLib" >> $env:GITHUB_ENV
           "ORT_PREFER_DYNAMIC_LINK=1" >> $env:GITHUB_ENV
 
-      - name: Rust format
-        run: cargo fmt --check
-
-      - name: Cache pinned cargo-audit and advisory database
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/bin/cargo-audit.exe
-            ~/.cargo/advisory-db
-          key: ${{ runner.os }}-${{ runner.arch }}-cargo-audit-0.22.2
-      - name: Install pinned cargo-audit
-        run: |
-          $audit = Join-Path $env:USERPROFILE ".cargo/bin/cargo-audit.exe"
-          $version = ""
-          if (Test-Path -LiteralPath $audit) { $version = & $audit --version | Out-String }
-          if ($version -notmatch "0\.22\.2") {
-            cargo install cargo-audit --version 0.22.2 --locked --force
-            if ($LASTEXITCODE -ne 0) { throw "cargo-audit installation failed with exit code $LASTEXITCODE." }
-          }
-          $version = & $audit --version | Out-String
-          if ($LASTEXITCODE -ne 0 -or $version -notmatch "0\.22\.2") { throw "cargo-audit 0.22.2 is not available." }
-      - name: RustSec audit
-        run: |
-          cargo audit --deny warnings
-          if ($LASTEXITCODE -ne 0) { throw "RustSec audit failed with exit code $LASTEXITCODE." }
-          # DeepFilter is an independent locked Cargo graph shipped as df.dll.
-          # These are the three reviewed unmaintained-crate notices in that graph;
-          # vulnerability findings remain fatal.
-          cargo audit `
-            --file build-support/deepfilter/Cargo.lock `
-            --deny warnings `
-            --ignore RUSTSEC-2024-0436 `
-            --ignore RUSTSEC-2024-0370 `
-            --ignore RUSTSEC-2026-0319
-          if ($LASTEXITCODE -ne 0) { throw "DeepFilter RustSec audit failed with exit code $LASTEXITCODE." }
-
-      - name: Rust tests and lint
-        env:
-          # With DeepFilter hydrated, the simulator tests embed the base
-          # interpreter, which has no packages of its own.
-          PYTHONPATH: ${{ github.workspace }}\.venv\Lib\site-packages;${{ github.workspace }}\python
-        run: |
-          # The seeded contention stress test runs once, in release mode, on the
-          # next line; this debug run skips only that one test.
-          cargo test -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention --exact
-          if ($LASTEXITCODE -ne 0) { throw "Rust tests failed with exit code $LASTEXITCODE." }
-          cargo test --release -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
-          if ($LASTEXITCODE -ne 0) { throw "Release stress test failed with exit code $LASTEXITCODE." }
-          cargo clippy -p mic_eq_core --all-targets -- -D warnings
-          if ($LASTEXITCODE -ne 0) { throw "Clippy failed with exit code $LASTEXITCODE." }
-
       - name: Build Rust extension
         run: .\.venv\Scripts\python.exe -m maturin develop --release --locked
 
-      - name: Audit locked Python dependencies
-        run: |
-          .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/runtime.txt --disable-pip
-          if ($LASTEXITCODE -ne 0) { throw "Runtime dependency audit failed with exit code $LASTEXITCODE." }
-          .\.venv\Scripts\python.exe -m pip_audit --require-hashes -r requirements/dev.txt --disable-pip
-          if ($LASTEXITCODE -ne 0) { throw "Development dependency audit failed with exit code $LASTEXITCODE." }
-
-      - name: Python release gates
-        run: |
-          .\.venv\Scripts\python.exe -m ruff check python/mic_eq python/tests python/tools
-          if ($LASTEXITCODE -ne 0) { throw "Ruff failed with exit code $LASTEXITCODE." }
-          .\.venv\Scripts\python.exe -m pyright --pythonpath .\.venv\Scripts\python.exe
-          if ($LASTEXITCODE -ne 0) { throw "Pyright failed with exit code $LASTEXITCODE." }
-          .\.venv\Scripts\python.exe -m pytest python/tests -q
-          if ($LASTEXITCODE -ne 0) { throw "Pytest failed with exit code $LASTEXITCODE." }
-          .\.venv\Scripts\python.exe python/tools/check_workflows.py
-          if ($LASTEXITCODE -ne 0) { throw "Workflow check failed with exit code $LASTEXITCODE." }
-          .\.venv\Scripts\python.exe python/tools/package_smoke.py --source-only
-          if ($LASTEXITCODE -ne 0) { throw "Package source smoke failed with exit code $LASTEXITCODE." }
-
-      - name: Semgrep
-        run: .\.venv\Scripts\python.exe python/tools/run_semgrep.py --sarif release-semgrep-results.sarif
-
-      - name: Upload release Semgrep SARIF
-        if: always() && hashFiles('release-semgrep-results.sarif') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-semgrep-sarif-${{ github.run_id }}
-          path: release-semgrep-results.sarif
-          if-no-files-found: error
-          retention-days: 14
-
       - name: Verify release assets
         run: .\.venv\Scripts\python.exe python/tools/verify_release_assets.py
+
+      # The archives depend only on the manifest entries; the manifest file also
+      # carries project_version, which changes every release. source_distribution.py
+      # re-hashes each restored archive against the manifest and rejects extras.
+      - name: Digest the pinned dependency source entries
+        id: source_entries
+        run: |
+          $digest = (.\.venv\Scripts\python.exe -c "import hashlib, json; m = json.load(open('licenses/source-manifest.json', encoding='utf-8')); print(hashlib.sha256(json.dumps(m['entries'], sort_keys=True, separators=(',', ':')).encode()).hexdigest())").Trim()
+          if ($LASTEXITCODE -ne 0 -or $digest -notmatch '^[0-9a-f]{64}$') {
+            throw "Unable to digest the source manifest entries."
+          }
+          "digest=$digest" >> $env:GITHUB_OUTPUT
 
       - name: Cache pinned dependency source archives
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/source-distribution/archives
-          key: corresponding-source-content-v1-${{ hashFiles('licenses/source-manifest.json') }}
+          key: corresponding-source-content-v2-${{ steps.source_entries.outputs.digest }}
 
       - name: Hydrate and verify corresponding source
         id: source
@@ -530,6 +565,219 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      # The Python and Rust test jobs run on these files, not on a second build.
+      # The module is copied from the bundle over the build output, so the
+      # tested bytes are the packaged bytes; validate-candidate compares them
+      # with the module inside the archive it extracts.
+      - name: Stage the packaged native module for the test jobs
+        id: runtime
+        run: |
+          $packaged = @(Get-ChildItem -LiteralPath "dist/AudioForge/_internal/mic_eq" -Filter "mic_eq_core*.pyd" -File)
+          if ($packaged.Count -ne 1) {
+            throw "Expected exactly one packaged native module, found $($packaged.Count)."
+          }
+          Copy-Item -LiteralPath $packaged[0].FullName -Destination (Join-Path "python/mic_eq" $packaged[0].Name) -Force
+          $hash = (Get-FileHash -LiteralPath $packaged[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "native_sha256=$hash" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: audioforge-release-runtime
+          compression-level: 0
+          path: |
+            df.dll
+            target/deepfilter/df.dll.provenance.json
+            target/onnxruntime-cpu/lib/onnxruntime.dll
+            target/onnxruntime-cpu/lib/onnxruntime.lib
+            target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll
+            models/DeepFilterNet3_ll_onnx.tar.gz
+            models/DeepFilterNet3_onnx.tar.gz
+            models/silero_vad.onnx
+            python/mic_eq/mic_eq_core*.pyd
+          if-no-files-found: error
+          retention-days: 3
+
+  # Every test file runs exactly once: the shards in .github/pytest-shards.json
+  # run their listed files and the last shard runs all other files.
+  pytest:
+    name: pytest (${{ matrix.shard }})
+    needs: package-windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [voice-setup, slow, rest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.package-windows.outputs.source_revision }}
+          fetch-depth: 0
+          filter: blob:none
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13.15"
+          cache: pip
+          cache-dependency-path: requirements/dev.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.txt --no-compile
+          if ($LASTEXITCODE -ne 0) { throw "Dependency install failed with exit code $LASTEXITCODE." }
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: audioforge-release-runtime
+
+      - name: Verify the packaged runtime files
+        env:
+          EXPECTED_NATIVE_SHA256: ${{ needs.package-windows.outputs.native_sha256 }}
+        run: |
+          $modules = @(Get-ChildItem -LiteralPath "python/mic_eq" -Filter "mic_eq_core*.pyd" -File)
+          if ($modules.Count -ne 1 -or
+              (Get-FileHash -LiteralPath $modules[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:EXPECTED_NATIVE_SHA256) {
+            throw "python/mic_eq does not hold the native module that package-windows packaged."
+          }
+          python python/tools/verify_release_assets.py
+          if ($LASTEXITCODE -ne 0) { throw "Runtime asset verification failed with exit code $LASTEXITCODE." }
+
+      # What an editable install provides to tests and their subprocesses.
+      - name: Make the source tree importable
+        run: |
+          $site = python -c "import sysconfig; print(sysconfig.get_path('purelib'))"
+          if ($LASTEXITCODE -ne 0) { throw "Could not locate site-packages." }
+          Set-Content -LiteralPath (Join-Path $site "mic_eq.pth") -Value "$env:GITHUB_WORKSPACE\python" -Encoding ascii
+
+      # Without the module the native tests skip instead of failing.
+      - name: Verify native module
+        run: python -c "import mic_eq; assert mic_eq.CORE_AVAILABLE, mic_eq._CORE_IMPORT_ERROR"
+
+      - name: Pytest
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          $shards = Get-Content -Raw .github/pytest-shards.json | ConvertFrom-Json
+          $listed = @($shards.PSObject.Properties | ForEach-Object { $_.Value })
+          if ($env:SHARD -eq "rest") {
+            $targets = @("python/tests") + @($listed | ForEach-Object { "--ignore=$_" })
+          } else {
+            $targets = @($shards.PSObject.Properties | Where-Object { $_.Name -eq $env:SHARD } | ForEach-Object { $_.Value })
+            if ($targets.Count -eq 0) { throw "Unknown pytest shard $env:SHARD." }
+          }
+          python -m pytest @targets -q -rs --durations=15
+
+  rust-tests:
+    name: Rust tests and lint
+    needs: package-windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.package-windows.outputs.source_revision }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13.15"
+          cache: pip
+          cache-dependency-path: requirements/runtime.txt
+
+      # With DeepFilter hydrated, the simulator tests embed the base interpreter,
+      # which has no packages of its own; PYTHONPATH points it at this environment.
+      - name: Install the locked runtime for the native Python bridge tests
+        run: |
+          python -m venv .venv
+          if ($LASTEXITCODE -ne 0) { throw "Python 3.13 virtual environment creation failed." }
+          .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements/runtime.txt --no-compile
+          if ($LASTEXITCODE -ne 0) { throw "Runtime dependency install failed with exit code $LASTEXITCODE." }
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+        with:
+          toolchain: 1.94.0
+
+      # Test binaries are not shipped, so this cache may share ci.yml's key.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-rust-test-v1-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'rust-core/Cargo.toml') }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: audioforge-release-runtime
+
+      - name: Verify the packaged runtime files
+        env:
+          EXPECTED_NATIVE_SHA256: ${{ needs.package-windows.outputs.native_sha256 }}
+        run: |
+          $modules = @(Get-ChildItem -LiteralPath "python/mic_eq" -Filter "mic_eq_core*.pyd" -File)
+          if ($modules.Count -ne 1 -or
+              (Get-FileHash -LiteralPath $modules[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:EXPECTED_NATIVE_SHA256) {
+            throw "python/mic_eq does not hold the native module that package-windows packaged."
+          }
+          python python/tools/verify_release_assets.py
+          if ($LASTEXITCODE -ne 0) { throw "Runtime asset verification failed with exit code $LASTEXITCODE." }
+
+      # The seeded contention stress test runs in the rust-stress job, in
+      # release mode; this debug run skips only that one test.
+      - name: Rust tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}\.venv\Lib\site-packages;${{ github.workspace }}\python
+        run: cargo test -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention --exact
+
+      - name: Clippy
+        run: cargo clippy -p mic_eq_core --all-targets -- -D warnings
+
+  # The only run of the seeded control/DSP contention stress test.
+  rust-stress:
+    name: Rust contention stress (release mode)
+    needs: package-windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.package-windows.outputs.source_revision }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13.15"
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # pinned 1.94.0
+        with:
+          toolchain: 1.94.0
+
+      # Test binaries are not shipped, so this cache may share ci.yml's key.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/release
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-rust-stress-v1-py313-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', 'Cargo.toml', 'rust-core/Cargo.toml') }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: audioforge-release-runtime
+
+      - name: Verify the packaged runtime files
+        env:
+          EXPECTED_NATIVE_SHA256: ${{ needs.package-windows.outputs.native_sha256 }}
+        run: |
+          $modules = @(Get-ChildItem -LiteralPath "python/mic_eq" -Filter "mic_eq_core*.pyd" -File)
+          if ($modules.Count -ne 1 -or
+              (Get-FileHash -LiteralPath $modules[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:EXPECTED_NATIVE_SHA256) {
+            throw "python/mic_eq does not hold the native module that package-windows packaged."
+          }
+          python python/tools/verify_release_assets.py
+          if ($LASTEXITCODE -ne 0) { throw "Runtime asset verification failed with exit code $LASTEXITCODE." }
+
+      - name: Release-mode control/DSP contention stress
+        run: cargo test --release -p mic_eq_core --test stress_tests seeded_control_and_dsp_loops_remain_finite_under_contention
+
   validate-candidate:
     name: Validate the exact archived candidate
     needs: package-windows
@@ -558,6 +806,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Validation runtime installation failed." }
 
       - name: Verify, extract, and smoke-test exact candidate
+        env:
+          EXPECTED_NATIVE_SHA256: ${{ needs.package-windows.outputs.native_sha256 }}
         run: |
           $archive = Resolve-Path "candidate/${{ needs.package-windows.outputs.archive }}"
           $checksum = Resolve-Path "candidate/${{ needs.package-windows.outputs.checksum }}"
@@ -577,6 +827,12 @@ jobs:
           & $sevenZip x -y "-o$extract" $archive
           if ($LASTEXITCODE -ne 0) {
             throw "Candidate extraction failed with exit code $LASTEXITCODE."
+          }
+          # The Python tests ran on the module package-windows packaged.
+          $nativeModules = @(Get-ChildItem -LiteralPath (Join-Path $extract "_internal/mic_eq") -Filter "mic_eq_core*.pyd" -File)
+          if ($nativeModules.Count -ne 1 -or
+              (Get-FileHash -LiteralPath $nativeModules[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:EXPECTED_NATIVE_SHA256) {
+            throw "The native module in the candidate archive is not the one the Python tests ran on."
           }
           $sourceExtract = Join-Path $env:RUNNER_TEMP "audioforge-source-candidate"
           New-Item -ItemType Directory -Force -Path $sourceExtract | Out-Null

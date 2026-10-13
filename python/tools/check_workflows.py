@@ -25,6 +25,50 @@ CI_CPU_RUNTIME_HYDRATION = "fetch_release_assets.py --only-cpu-runtime --force"
 # The debug-mode Rust run skips only this test; rust-stress runs it in release.
 CI_DEBUG_SKIPPED_TEST = "seeded_control_and_dsp_loops_remain_finite_under_contention"
 CI_LAST_PYTEST_SHARD = "rest"
+# release-package.yml: `static` needs no built file and runs beside
+# `package-windows`; the test jobs run on the runtime files it produced and
+# `validate-candidate` compares the archive's native module with the tested one.
+RELEASE_RUNTIME_ARTIFACT = "audioforge-release-runtime"
+RELEASE_SOURCE_REF = "${{ inputs.release_tag || github.sha }}"
+RELEASE_PACKAGED_REF = "${{ needs.package-windows.outputs.source_revision }}"
+RELEASE_NATIVE_SHA256 = "${{ needs.package-windows.outputs.native_sha256 }}"
+RELEASE_RUNTIME_FILES = (
+    "df.dll",
+    "target/deepfilter/df.dll.provenance.json",
+    "target/onnxruntime-cpu/lib/onnxruntime.dll",
+    "target/onnxruntime-cpu/lib/onnxruntime.lib",
+    "target/onnxruntime-cpu/lib/onnxruntime_providers_shared.dll",
+    "models/DeepFilterNet3_ll_onnx.tar.gz",
+    "models/DeepFilterNet3_onnx.tar.gz",
+    "models/silero_vad.onnx",
+    "python/mic_eq/mic_eq_core*.pyd",
+)
+# Built or hydrated files never come from the Actions cache.
+RELEASE_UNCACHEABLE = (
+    "df.dll", "target/deepfilter", "target/onnxruntime", "models", "python/mic_eq", "dist",
+)
+RELEASE_TEST_JOBS = ("pytest", "rust-tests", "rust-stress")
+RELEASE_JOB_GATES = {
+    "static": (
+        "python/tools/check_versions.py",
+        "python/tools/check_evaluation_hygiene.py",
+        "pip_audit --require-hashes -r requirements/runtime.txt",
+        "pip_audit --require-hashes -r requirements/dev.txt",
+        "-m ruff check",
+        "-m pyright",
+        "python/tools/check_workflows.py",
+        "python/tools/package_smoke.py --source-only",
+        "python/tools/run_semgrep.py",
+        "cargo fmt --check",
+        "cargo audit --deny warnings",
+    ),
+    "pytest": ("-m pytest",),
+    "rust-tests": (
+        "cargo test -p mic_eq_core",
+        "cargo clippy -p mic_eq_core --all-targets -- -D warnings",
+    ),
+    "rust-stress": ("cargo test --release -p mic_eq_core --test stress_tests",),
+}
 ACTION_REF = re.compile(
     r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE
 )
@@ -221,7 +265,7 @@ def _active_run_has_marker(lines: list[str], marker: str) -> bool:
             and marker in line
             for line in lines
         )
-    if ".py" in marker:
+    if ".py" in marker or marker.startswith("-m "):
         return any(
             re.search(
                 r"(?i)(?:^\s*|[;&|]\s*)(?:&\s*)?(?:[^\s]+[/\\])?(?:python|python\.exe|py)(?:\s|$)",
@@ -395,27 +439,19 @@ def _check_required_gates(
             errors.append(
                 f"{name}: release candidates must fail closed on dirty source trees"
             )
+        _check_release_jobs(document, errors)
     for needle in required:
         if not has_gate(needle):
             errors.append(f"{name}: missing required release gate {needle!r}")
 
-    if "cargo test -p mic_eq_core" in source:
-        model_step = source.find(
-            "fetch_release_assets.py"
-            if name == "release-package.yml"
-            else "silero_vad.onnx"
-        )
+    # The release workflow's test jobs verify the runtime assets they download
+    # instead (see _check_release_jobs).
+    if name != "release-package.yml" and "cargo test -p mic_eq_core" in source:
+        model_step = source.find("silero_vad.onnx")
         rust_tests = source.find("cargo test -p mic_eq_core")
         if model_step < 0 or model_step > rust_tests:
             errors.append(
                 f"{name}: pinned Silero model must be available before Rust tests"
-            )
-    if name == "release-package.yml":
-        asset_fetch = source.find("fetch_release_assets.py")
-        extension_build = source.find("maturin develop --release")
-        if asset_fetch < 0 or asset_fetch > extension_build:
-            errors.append(
-                f"{name}: verified runtime assets must be fetched before extension build"
             )
     if name == "ci.yml":
         _check_ci_jobs(document, errors)
@@ -475,6 +511,149 @@ def _check_ci_jobs(document: dict[str, Any], errors: list[str]) -> None:
                 )
 
 
+def _step_lines(step: dict[str, Any]) -> list[str]:
+    return [
+        line
+        for line in str(step.get("run", "")).splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+
+
+def _check_release_jobs(document: dict[str, Any], errors: list[str]) -> None:
+    """Require the gate layout of release-package.yml.
+
+    Promotion accepts only a successful run, so every job must be unconditional
+    and blocking. The test jobs must run on the runtime files package-windows
+    produced and verify them, including the packaged native module's SHA-256,
+    before testing; validate-candidate compares the archive with that module.
+    """
+    name = "release-package.yml"
+    jobs = _mapping(document.get("jobs"), f"{name}: jobs", errors)
+
+    def fail(message: str) -> None:
+        errors.append(f"{name}: {message}")
+
+    def job_steps(job_name: str) -> list[dict[str, Any]]:
+        job = jobs.get(job_name)
+        return _active_steps({"jobs": {job_name: job}}) if isinstance(job, dict) else []
+
+    def index(steps: list[dict[str, Any]], predicate: Any) -> int:
+        return next((i for i, step in enumerate(steps) if predicate(step)), -1)
+
+    def runs(marker: str) -> Any:
+        return lambda step: _active_run_has_marker(_step_lines(step), marker)
+
+    def uses(action: str, **expected: str) -> Any:
+        return lambda step: str(step.get("uses", "")).startswith(f"{action}@") and all(
+            (step.get("with") or {}).get(key) == value for key, value in expected.items()
+        )
+
+    def hashes_native_module(location: str) -> Any:
+        def check(step: dict[str, Any]) -> bool:
+            env = step.get("env")
+            run = str(step.get("run", ""))
+            return (
+                isinstance(env, dict)
+                and RELEASE_NATIVE_SHA256 in env.values()
+                and all(part in run for part in ("Get-FileHash", "mic_eq_core*.pyd", location))
+            )
+
+        return check
+
+    def needs_only_package(job_name: str) -> None:
+        needs = (jobs.get(job_name) or {}).get("needs")
+        if (needs if isinstance(needs, list) else [needs]) != ["package-windows"]:
+            fail(f"{job_name} must need exactly package-windows")
+
+    def checks_out(job_name: str, ref: str) -> None:
+        checkouts = [s for s in job_steps(job_name) if uses("actions/checkout")(s)]
+        if not checkouts or any((s.get("with") or {}).get("ref") != ref for s in checkouts):
+            fail(f"{job_name} must check out ref {ref}")
+
+    for job_name in ("static", "package-windows", *RELEASE_TEST_JOBS, "validate-candidate"):
+        if not isinstance(jobs.get(job_name), dict):
+            fail(f"required release job {job_name} is missing")
+    for job_name, job in jobs.items():
+        if isinstance(job, dict) and ("if" in job or "continue-on-error" in job):
+            fail(
+                f"job {job_name} must be unconditional and blocking; promotion "
+                "requires every job of the run to succeed"
+            )
+
+    for job_name, markers in RELEASE_JOB_GATES.items():
+        lines = [line for step in job_steps(job_name) for line in _step_lines(step)]
+        for marker in markers:
+            if not _active_run_has_marker(lines, marker):
+                fail(f"{job_name} must run {marker!r}")
+    shards = _read_pytest_shards()
+    if shards is not None:
+        _check_pytest_job(document, shards, name, errors)
+
+    for job_name in ("static", "package-windows"):
+        checks_out(job_name, RELEASE_SOURCE_REF)
+    for job_name in (*RELEASE_TEST_JOBS, "validate-candidate"):
+        needs_only_package(job_name)
+        checks_out(job_name, RELEASE_PACKAGED_REF)
+    for job_name in RELEASE_TEST_JOBS:
+        steps = job_steps(job_name)
+        download = index(steps, uses("actions/download-artifact", name=RELEASE_RUNTIME_ARTIFACT))
+        verify = index(
+            steps,
+            lambda step: hashes_native_module("python/mic_eq")(step)
+            and runs("python/tools/verify_release_assets.py")(step),
+        )
+        if download < 0:
+            fail(f"{job_name} must download the {RELEASE_RUNTIME_ARTIFACT} artifact")
+        if verify < download or verify < 0:
+            fail(
+                f"{job_name} must verify the downloaded runtime assets and the native "
+                "module's SHA-256 after downloading them"
+            )
+        for marker in RELEASE_JOB_GATES[job_name]:
+            if 0 <= index(steps, runs(marker)) <= max(verify, download):
+                fail(f"{job_name} must run {marker!r} after verifying the runtime files")
+    if index(job_steps("validate-candidate"), hashes_native_module("_internal/mic_eq")) < 0:
+        fail("validate-candidate must compare the archive's native module with the tested SHA-256")
+
+    package = job_steps("package-windows")
+    outputs = (jobs.get("package-windows") or {}).get("outputs")
+    if not isinstance(outputs, dict) or outputs.get("native_sha256") != (
+        "${{ steps.runtime.outputs.native_sha256 }}"
+    ):
+        fail("package-windows must output the packaged native module's SHA-256")
+    fetch = index(package, runs("python/tools/fetch_release_assets.py"))
+    extension = index(package, runs("maturin develop --release"))
+    build = index(package, runs("build_exe.ps1"))
+    stage = index(package, lambda step: step.get("id") == "runtime")
+    upload = index(package, uses("actions/upload-artifact", name=RELEASE_RUNTIME_ARTIFACT))
+    if not 0 <= fetch < extension < build < stage < upload:
+        fail(
+            "package-windows must fetch the runtime assets, build the extension and the "
+            "bundle, then stage and upload the runtime artifact, in that order"
+        )
+    if stage >= 0 and not all(
+        part in str(package[stage].get("run", ""))
+        for part in ("dist/AudioForge/_internal/mic_eq", "Get-FileHash", "native_sha256=")
+    ):
+        fail("package-windows must hash the native module packaged in dist/AudioForge")
+    if upload >= 0:
+        listed = str((package[upload].get("with") or {}).get("path", "")).split()
+        for path in RELEASE_RUNTIME_FILES:
+            if path not in listed:
+                fail(f"the {RELEASE_RUNTIME_ARTIFACT} artifact must contain {path}")
+
+    for job_name, job in jobs.items():
+        for step in job.get("steps", []) if isinstance(job, dict) else []:
+            if not str(step.get("uses", "")).startswith("actions/cache"):
+                continue
+            for path in str((step.get("with") or {}).get("path", "")).split():
+                cached = path.replace("\\", "/").lstrip("./")
+                if cached.startswith(RELEASE_UNCACHEABLE) or (
+                    job_name == "package-windows" and cached.startswith("target")
+                ):
+                    fail(f"job {job_name} must not restore {path} from the Actions cache")
+
+
 def _check_pytest_shards(document: dict[str, Any], errors: list[str]) -> None:
     """Keep the shard lists real files; the last shard runs everything else."""
     label = PYTEST_SHARDS_PATH.name
@@ -505,7 +684,15 @@ def _check_pytest_shards(document: dict[str, Any], errors: list[str]) -> None:
                 errors.append(f"{label}: {path} is listed more than once")
             else:
                 listed.add(path)
-    jobs = _mapping(document.get("jobs"), "ci.yml: jobs", errors)
+    _check_pytest_job(document, shards, "ci.yml", errors)
+
+
+def _check_pytest_job(
+    document: dict[str, Any], shards: dict[str, Any], name: str, errors: list[str]
+) -> None:
+    """Require the pytest matrix of `name` to run the shards of pytest-shards.json."""
+    label = PYTEST_SHARDS_PATH.name
+    jobs = _mapping(document.get("jobs"), f"{name}: jobs", errors)
     job = jobs.get("pytest")
     if not isinstance(job, dict):
         return
@@ -513,15 +700,23 @@ def _check_pytest_shards(document: dict[str, Any], errors: list[str]) -> None:
     matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
     expected = [*shards, CI_LAST_PYTEST_SHARD]
     if not isinstance(matrix, dict) or matrix.get("shard") != expected:
-        errors.append(f"ci.yml: pytest matrix shard must be {expected}, as listed in {label}")
+        errors.append(f"{name}: pytest matrix shard must be {expected}, as listed in {label}")
     steps = job.get("steps")
     run = "\n".join(
         str(step.get("run", "")) for step in steps if isinstance(step, dict)
     ) if isinstance(steps, list) else ""
     if label not in run or "--ignore" not in run:
         errors.append(
-            f"ci.yml: pytest must run the files in {label} and ignore them in the last shard"
+            f"{name}: pytest must run the files in {label} and ignore them in the last shard"
         )
+
+
+def _read_pytest_shards() -> dict[str, Any] | None:
+    try:
+        shards = json.loads(PYTEST_SHARDS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None  # _check_pytest_shards reports an unreadable shard file
+    return shards if isinstance(shards, dict) else None
 
 
 def _check_dependabot(errors: list[str]) -> None:

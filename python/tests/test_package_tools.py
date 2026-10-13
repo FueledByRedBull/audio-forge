@@ -536,8 +536,8 @@ def test_release_rust_tests_require_pythonpath_on_the_test_step(location):
         encoding="utf-8"
     )
     workflow = check_workflows.yaml.safe_load(source)
-    steps = workflow["jobs"]["package-windows"]["steps"]
-    rust_tests = next(step for step in steps if step.get("name") == "Rust tests and lint")
+    steps = workflow["jobs"]["rust-tests"]["steps"]
+    rust_tests = next(step for step in steps if step.get("name") == "Rust tests")
     pythonpath = rust_tests["env"].pop("PYTHONPATH")
     if location != "comment":
         steps.append({
@@ -570,6 +570,227 @@ def test_release_candidate_can_be_validated_before_tagging():
     smoke_index = next(i for i, step in enumerate(validation) if step.get("name") == "Verify, extract, and smoke-test exact candidate")
     assert install_index < smoke_index
     assert "--require-hashes -r requirements/runtime.txt" in validation[install_index]["run"]
+
+
+def _release_job_errors(mutate):
+    workflow = check_workflows.yaml.safe_load(
+        (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(encoding="utf-8")
+    )
+    mutate(workflow["jobs"])
+    errors: list[str] = []
+    check_workflows._check_release_jobs(workflow, errors)
+    return "; ".join(errors)
+
+
+def _drop_steps(job, predicate):
+    job["steps"] = [step for step in job["steps"] if not predicate(step)]
+
+
+def _runs(marker):
+    return lambda step: marker in str(step.get("run", ""))
+
+
+def _uses(action):
+    return lambda step: str(step.get("uses", "")).startswith(action)
+
+
+def _artifact(name):
+    return lambda step: (step.get("with") or {}).get("name") == name
+
+
+def _step_named(job, name):
+    return next(step for step in job["steps"] if step.get("name") == name)
+
+
+def _set_checkout_ref(job, ref):
+    for step in job["steps"]:
+        if _uses("actions/checkout@")(step):
+            step["with"]["ref"] = ref
+
+
+def _move_to_end(job, name):
+    step = _step_named(job, name)
+    job["steps"].remove(step)
+    job["steps"].append(step)
+
+
+def test_release_job_layout_is_current():
+    assert _release_job_errors(lambda jobs: None) == ""
+
+
+@pytest.mark.parametrize(
+    ("job", "marker"),
+    [
+        (job, marker)
+        for job, markers in check_workflows.RELEASE_JOB_GATES.items()
+        for marker in markers
+    ],
+)
+def test_release_gate_must_run_in_its_job(job, marker):
+    errors = _release_job_errors(lambda jobs: _drop_steps(jobs[job], _runs(marker)))
+
+    assert f"{job} must run {marker!r}" in errors
+
+
+def test_release_gate_must_be_enabled_and_blocking():
+    def disable(jobs):
+        _step_named(jobs["static"], "Ruff")["if"] = False
+        _step_named(jobs["pytest"], "Pytest")["continue-on-error"] = True
+
+    errors = _release_job_errors(disable)
+
+    assert "static must run '-m ruff check'" in errors
+    assert "pytest must run '-m pytest'" in errors
+
+
+def test_release_shell_text_is_not_a_gate():
+    lines = ["echo python -m ruff check", "Write-Host cargo fmt --check"]
+
+    assert not check_workflows._active_run_has_marker(lines, "-m ruff check")
+    assert not check_workflows._active_run_has_marker(lines, "cargo fmt --check")
+    assert check_workflows._active_run_has_marker(
+        [r".\.venv\Scripts\python.exe -m ruff check python"], "-m ruff check"
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda jobs: jobs.pop("pytest"), "required release job pytest is missing"),
+        (lambda jobs: jobs.pop("static"), "required release job static is missing"),
+        (lambda jobs: jobs["pytest"].update(needs=["static"]), "pytest must need exactly package-windows"),
+        (lambda jobs: jobs["rust-stress"].pop("needs"), "rust-stress must need exactly package-windows"),
+        (
+            lambda jobs: jobs["validate-candidate"].update(needs=["package-windows", "static"]),
+            "validate-candidate must need exactly package-windows",
+        ),
+        (
+            lambda jobs: jobs["pytest"].update({"if": "github.event_name == 'push'"}),
+            "job pytest must be unconditional and blocking",
+        ),
+        (
+            lambda jobs: jobs["rust-tests"].update({"continue-on-error": True}),
+            "job rust-tests must be unconditional and blocking",
+        ),
+        (
+            lambda jobs: _set_checkout_ref(jobs["pytest"], "${{ github.ref }}"),
+            "pytest must check out ref ${{ needs.package-windows.outputs.source_revision }}",
+        ),
+        (
+            lambda jobs: _set_checkout_ref(jobs["validate-candidate"], "${{ github.sha }}"),
+            "validate-candidate must check out ref",
+        ),
+        (
+            lambda jobs: _set_checkout_ref(jobs["static"], "${{ github.ref }}"),
+            "static must check out ref ${{ inputs.release_tag || github.sha }}",
+        ),
+        (
+            lambda jobs: _set_checkout_ref(jobs["package-windows"], "${{ github.ref }}"),
+            "package-windows must check out ref ${{ inputs.release_tag || github.sha }}",
+        ),
+        (
+            lambda jobs: _drop_steps(jobs["rust-tests"], _uses("actions/download-artifact@")),
+            "rust-tests must download the audioforge-release-runtime artifact",
+        ),
+        (
+            lambda jobs: _drop_steps(jobs["rust-stress"], _runs("verify_release_assets.py")),
+            "rust-stress must verify the downloaded runtime assets",
+        ),
+        (
+            lambda jobs: _step_named(jobs["pytest"], "Verify the packaged runtime files")["env"].clear(),
+            "pytest must verify the downloaded runtime assets and the native module's SHA-256",
+        ),
+        (
+            lambda jobs: _move_to_end(jobs["rust-tests"], "Verify the packaged runtime files"),
+            "rust-tests must run 'cargo test -p mic_eq_core' after verifying the runtime files",
+        ),
+        (
+            lambda jobs: _move_to_end(jobs["pytest"], "Verify the packaged runtime files"),
+            "pytest must run '-m pytest' after verifying the runtime files",
+        ),
+        (
+            lambda jobs: _step_named(
+                jobs["validate-candidate"], "Verify, extract, and smoke-test exact candidate"
+            )["env"].clear(),
+            "validate-candidate must compare the archive's native module",
+        ),
+        (
+            lambda jobs: jobs["package-windows"]["outputs"].pop("native_sha256"),
+            "package-windows must output the packaged native module's SHA-256",
+        ),
+        (
+            lambda jobs: _drop_steps(jobs["package-windows"], _artifact("audioforge-release-runtime")),
+            "package-windows must fetch the runtime assets, build the extension and the bundle",
+        ),
+        (
+            lambda jobs: _move_to_end(
+                jobs["package-windows"], "Download and verify pinned release runtime assets"
+            ),
+            "package-windows must fetch the runtime assets, build the extension and the bundle",
+        ),
+        (
+            lambda jobs: _step_named(jobs["package-windows"], "Stage the packaged native module for the test jobs").update(
+                run="exit 0"
+            ),
+            "package-windows must hash the native module packaged in dist/AudioForge",
+        ),
+        (
+            lambda jobs: next(
+                step for step in jobs["package-windows"]["steps"]
+                if _artifact("audioforge-release-runtime")(step)
+            )["with"].update(path="df.dll\npython/mic_eq/mic_eq_core*.pyd"),
+            "artifact must contain models/silero_vad.onnx",
+        ),
+        (
+            lambda jobs: jobs["package-windows"]["steps"].append(
+                {"uses": "actions/cache@" + "a" * 40, "with": {"path": "target/deepfilter", "key": "k"}}
+            ),
+            "package-windows must not restore target/deepfilter from the Actions cache",
+        ),
+        (
+            lambda jobs: jobs["package-windows"]["steps"].append(
+                {"uses": "actions/cache@" + "a" * 40, "with": {"path": "target/release", "key": "k"}}
+            ),
+            "package-windows must not restore target/release from the Actions cache",
+        ),
+        (
+            lambda jobs: jobs["package-windows"]["steps"].append(
+                {"uses": "actions/cache/restore@" + "a" * 40, "with": {"path": "df.dll", "key": "k"}}
+            ),
+            "must not restore df.dll from the Actions cache",
+        ),
+        (
+            lambda jobs: jobs["pytest"]["steps"].append(
+                {"uses": "actions/cache/restore@" + "a" * 40, "with": {"path": "python/mic_eq/mic_eq_core*.pyd", "key": "k"}}
+            ),
+            "pytest must not restore python/mic_eq/mic_eq_core*.pyd from the Actions cache",
+        ),
+        (
+            lambda jobs: jobs["pytest"]["strategy"]["matrix"].update(shard=["rest"]),
+            "release-package.yml: pytest matrix shard must be",
+        ),
+        (
+            lambda jobs: _step_named(jobs["pytest"], "Pytest").update(run="python -m pytest python/tests -q"),
+            "pytest must run the files in pytest-shards.json",
+        ),
+    ],
+)
+def test_release_job_layout_is_enforced(mutate, message):
+    assert message in _release_job_errors(mutate)
+
+
+def test_release_job_layout_is_part_of_the_release_gate_check():
+    workflow = check_workflows.yaml.safe_load(
+        (check_workflows.WORKFLOW_DIR / "release-package.yml").read_text(encoding="utf-8")
+    )
+    _drop_steps(workflow["jobs"]["static"], _runs("-m ruff check"))
+    errors: list[str] = []
+
+    check_workflows._check_required_gates(
+        "release-package.yml", check_workflows.yaml.safe_dump(workflow), errors
+    )
+
+    assert "release-package.yml: static must run '-m ruff check'" in errors
 
 
 def test_workflow_checker_rejects_legacy_python_pin():

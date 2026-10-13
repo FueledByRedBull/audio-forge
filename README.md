@@ -14,7 +14,7 @@ your audio never leaves your PC.
 
 **[Download for Windows](https://github.com/FueledByRedBull/audio-forge/releases/latest)** · [Set up in five steps](#set-up) · [What it does](#what-it-does) · [No sound?](#no-sound)
 
-![AudioForge Mic page routing a studio microphone to the CABLE Input virtual cable, with the equalizer card showing an Auto-EQ correction, the editor for the selected band, and level meters.](docs/images/audioforge-routing-eq.png)
+![AudioForge Mic page routing a studio microphone to the CABLE Input virtual cable, with the equalizer card drawing each band's curve, the Auto-EQ correction, the input filter and their total, the editor for the selected band, and level meters.](docs/images/audioforge-routing-eq.png)
 
 > [!IMPORTANT]
 > **To use AudioForge in Discord, OBS, Zoom, or Teams, you also need a virtual
@@ -139,12 +139,18 @@ location. See the
 - **Two EQ stages.** Calibration writes a correction stage. Your own edits go
   in a separate tone stage, so changing gains, templates, filter types, or
   slopes keeps the calibration. Older presets keep their combined EQ as the
-  tone stage.
+  tone stage. The graph draws each band as a thin curve, the correction stage
+  as a dashed line and the fixed input filter (the DC blocker and an 80 Hz
+  high-pass, or only the DC blocker when Gentle or Strong cleanup is on) as a
+  dotted line. The thick curve is what the signal really gets: the input
+  filter plus the EQ, or the input filter alone while the EQ is off. Adaptive
+  cleanup follows the signal, so it is not drawn.
 - **Your voice stays yours.** Speech alone can't reveal a microphone's exact
   frequency response, so automatic targets keep the recorded voice and apply
   bounded tonal preferences. Natural / No Added Tone stays neutral. Warm / Full
-  Voice adds low-mid body with restrained upper presence; **Adapt to my voice**
-  keeps it subtle and **Exact tone preset** uses the stronger catalog curve.
+  Voice adds low-mid body with restrained upper presence. **Subtle** aims for
+  small tone changes, never more than 2 dB from flat; **Full strength** aims for
+  the tone preset's whole curve, up to 5 dB.
 - **Suggestions have to earn a change.** Auto Voice Setup tries gate and noise
   suppression options before calibrating compression. It tests speech followed
   by noise without resetting the processing, so pause noise is checked too.

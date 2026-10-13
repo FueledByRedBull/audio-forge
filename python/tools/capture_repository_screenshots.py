@@ -22,7 +22,7 @@ from PySide6.QtCore import QByteArray, QObject
 from PySide6.QtGui import QFont, QFontDatabase, QImageWriter
 from PySide6.QtWidgets import QApplication, QWidget
 
-from mic_eq.config import AppConfig
+from mic_eq.config import BUILTIN_PRESETS, AppConfig
 from mic_eq.ui import main_window as main_window_module
 from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.theme import apply_application_theme, message_text_style
@@ -59,8 +59,9 @@ SCREENSHOTS: tuple[dict[str, str], ...] = (
         "view": "routing_eq",
         "alt": (
             "AudioForge Mic page routing a studio microphone to the CABLE Input "
-            "virtual cable, with the equalizer card showing an Auto-EQ correction, "
-            "the editor for the selected band, and level meters."
+            "virtual cable, with the equalizer card drawing each band's curve, the "
+            "Auto-EQ correction, the input filter and their total, the editor for "
+            "the selected band, and level meters."
         ),
     },
     {
@@ -92,6 +93,7 @@ def _source_hashes() -> dict[str, str]:
         "python/mic_eq/ui/shell_specs.py",
         "python/mic_eq/ui/qml/Main.qml",
         "python/mic_eq/ui/eq_panel.py",
+        "python/mic_eq/ui/eq_graph.py",
         "python/mic_eq/ui/eq_curve.py",
         "python/mic_eq/ui/voice_setup_dialog.py",
     )
@@ -159,6 +161,8 @@ def _prepare_main_window() -> MainWindow:
     window.output_choice.setCurrentIndex(0)
     _select_data(window.input_channel_mode_choice, "average")
     _select_data(window.input_cleanup_mode_choice, "gentle")
+    # The graph reads the cleanup mode from the processor on a timer.
+    window.eq_presentation.sync_input_conditioning()
     window.noise_suppression_state.set_settings({"model": "rnnoise", "enabled": True, "strength": 0.72})
     window.eq_state.apply_auto_eq_results(
         [
@@ -174,6 +178,9 @@ def _prepare_main_window() -> MainWindow:
             (15100.0, -0.6, 0.8),
         ]
     )
+    # A tone on top, so the graph shows both layers: the Auto-EQ correction and
+    # the bands the user edits. Typed bands keep the preset marked as saved.
+    window.eq_state.apply_typed_bands(BUILTIN_PRESETS["voice"].eq.bands)
     window.eq_state.set_auto_eq_diagnostics(
         {
             "analysis_confidence": 0.88,
@@ -246,6 +253,7 @@ def _prepare_voice_setup(parent: MainWindow) -> VoiceSetupDialog:
                 "capture_confidence": 0.94,
                 "recommendation_uncertainty": 0.08,
                 "gate_mode_label": "VAD assisted",
+                "apply_recommended": True,
             },
             "eq_settings": {
                 **parent.eq_state.get_settings(),
@@ -322,6 +330,9 @@ def capture_screenshots(output_dir: Path, report_path: Path) -> dict[str, Any]:
                 }
             )
 
+        # The review lists the EQ change the voice setup would make; it is
+        # shown against the Auto-EQ layer alone.
+        window.eq_state.reset_tone()
         dialog = _prepare_voice_setup(window)
         dialog.show()
         app.processEvents()

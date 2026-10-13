@@ -448,15 +448,6 @@ class CompressorPanel(QWidget):
                 slider.setEnabled(self.compressor_state.control_enabled(key))
         self._update_current_release()
 
-    def apply_processing_settings_synchronously(
-        self, compressor: dict, limiter: dict
-    ) -> None:
-        """Apply both dynamics stages inline and discard superseded UI writes."""
-        self.compressor_state.cancel()
-        self.limiter_state.cancel()
-        self.compressor_state.set_settings(compressor)
-        self.limiter_state.set_settings(limiter)
-
     def _render_limiter_settings(self) -> None:
         """Render authoritative values without turning display rounding into edits."""
         settings = self.limiter_state.get_settings()
@@ -479,10 +470,6 @@ class CompressorPanel(QWidget):
         """Refresh the release readout; a main window does this for shared meters."""
         if self._owns_meters:
             self._meters.update_current_release()
-
-    def update_gain_reduction(self, gr_db: float | None):
-        """Update the gain reduction meter (call from timer)."""
-        self.gr_meter.set_gain_reduction(gr_db)
 
     def get_compressor_settings(self, *, include_calibration: bool = False) -> dict:
         return self.compressor_state.get_settings(include_calibration=include_calibration)

@@ -320,13 +320,6 @@ class DeEsserPanel(QWidget):
                     slider.setValue(int(settings[key] * scale))
                 slider.setEnabled(self.deesser_state.control_enabled(key))
 
-    def apply_settings_synchronously(self, settings: dict) -> None:
-        """Apply a bulk config inline and cancel any superseded slider edit."""
-        self.deesser_state.set_settings(settings)
-
-    def update_gain_reduction(self, gr_db: float | None):
-        self.gr_meter.set_gain_reduction(gr_db)
-
     def get_settings(self) -> dict:
         return self.deesser_state.get_settings()
 

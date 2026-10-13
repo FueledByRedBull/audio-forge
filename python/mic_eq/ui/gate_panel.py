@@ -342,9 +342,6 @@ class GatePanel(QWidget):
     def get_settings(self) -> dict:
         return self.gate_state.get_settings()
 
-    def apply_settings_synchronously(self, settings: dict) -> None:
-        self.gate_state.set_settings(settings)
-
     def set_settings(self, settings: dict, *, propagate_errors: bool = True) -> None:
         try:
             self.gate_state.set_settings(settings)

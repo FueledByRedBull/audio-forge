@@ -207,6 +207,9 @@ class CalibrationDialog(QDialog):
         self._had_result = False
         # Whether this result was already reported to the main window.
         self._reported = False
+        # Whether this dialog has reported the outcome of an analysis, which a refused retake
+        # does not replace.
+        self._result_reported = False
         # The level check before the take: its verdict and, if the user went on past it, which.
         self._level_verdict: LevelVerdict | None = None
         self._level_override: str | None = None
@@ -1601,6 +1604,11 @@ class CalibrationDialog(QDialog):
         result: Mapping[str, Any] | None = None,
     ) -> None:
         """Tell the main window how this run ended, for the diagnostics export."""
+        refused_take = "recording_rejected" in reason_codes
+        if refused_take and self._result_reported:
+            return
+        if not refused_take and outcome != "failed":
+            self._result_reported = True
         measured: dict[str, Any] = numbers_from(
             result or self.eq_settings or {},
             (

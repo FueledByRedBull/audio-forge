@@ -604,6 +604,9 @@ class VoiceSetupDialog(QDialog):
         self._failed_step: int | None = None
         # Whether this run has already told the main window how it ended.
         self._reported = False
+        # Whether this dialog has reported the outcome of an analysis, which a refused retake
+        # does not replace.
+        self._result_reported = False
 
         self._capture_start_timer = QTimer(self)
         self._capture_start_timer.setSingleShot(True)
@@ -1634,6 +1637,16 @@ class VoiceSetupDialog(QDialog):
         numbers: Mapping[str, Any] | None = None,
     ) -> None:
         """Tell the main window how this run ended, for the diagnostics export."""
+        # A refused verification take puts the previous settings back, which the earlier
+        # result no longer describes, so it is always reported.
+        refused_take = (
+            "recording_rejected" in reason_codes
+            and self.setup_state != "verification_recording"
+        )
+        if refused_take and self._result_reported:
+            return
+        if not refused_take and outcome != "failed":
+            self._result_reported = True
         diagnostics = (self.setup_result or {}).get("diagnostics") or {}
         measured: dict[str, Any] = numbers_from(
             diagnostics,

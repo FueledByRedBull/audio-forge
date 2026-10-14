@@ -861,3 +861,171 @@ def test_a_comparison_that_cannot_be_drawn_is_logged_and_left_out(
         )
     finally:
         _ended(dialog)
+
+
+# --- A refused retake does not replace the run's outcome ---------------------------------
+
+
+def _say_yes(monkeypatch) -> None:
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: QMessageBox.StandardButton.Yes)
+
+
+def _refuse_voice_take(dialog: VoiceSetupDialog) -> None:
+    dialog.setup_state = "noise_recording"
+    dialog._on_recording_complete(np.full(48_000, np.nan, dtype=np.float32))
+
+
+def _advisory_voice_result(window, dialog) -> dict[str, Any]:
+    result = _voice_setup_result(window, dialog)
+    result["diagnostics"]["apply_recommended"] = False
+    return result
+
+
+def test_voice_setup_keeps_its_result_when_a_retake_is_refused(real_main_window, monkeypatch) -> None:
+    records = _voice(real_main_window)
+    _say_yes(monkeypatch)
+    dialog, _speech = _review_dialog(real_main_window)
+    dialog._on_analysis_complete(_advisory_voice_result(real_main_window, dialog))
+    try:
+        dialog._on_retake_clicked()
+        _refuse_voice_take(dialog)
+        dialog.reject()
+
+        assert [r["outcome"] for r in records] == ["advisory"]
+    finally:
+        dialog.deleteLater()
+
+
+def test_voice_setup_reports_a_refused_verification_take_after_an_advisory_result(
+    real_main_window,
+) -> None:
+    records = _voice(real_main_window)
+    dialog, _speech = _review_dialog(real_main_window)
+    dialog._on_analysis_complete(_advisory_voice_result(real_main_window, dialog))
+    try:
+        dialog.setup_state = "verification_recording"
+        dialog._reject_capture("The second take was not usable.")
+
+        assert [(r["outcome"], r["reason_codes"]) for r in records] == [
+            ("advisory", records[0]["reason_codes"]),
+            ("refused", ["recording_rejected"]),
+        ]
+        assert dialog.setup_state == "completed"
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_voice_setup_reports_a_refused_take_when_nothing_better_exists(
+    real_main_window, monkeypatch
+) -> None:
+    records = _voice(real_main_window)
+    _say_yes(monkeypatch)
+    dialog, _speech = _review_dialog(real_main_window)
+    # A result still waiting to be applied is dropped by a retake without being reported.
+    dialog._on_analysis_complete(_voice_setup_result(real_main_window, dialog))
+    try:
+        dialog._on_retake_clicked()
+        _refuse_voice_take(dialog)
+        dialog.reject()
+
+        assert [(r["outcome"], r["reason_codes"]) for r in records] == [
+            ("refused", ["recording_rejected"])
+        ]
+    finally:
+        dialog.deleteLater()
+
+
+def test_voice_setup_reports_the_new_result_after_a_retake(real_main_window, monkeypatch) -> None:
+    records = _voice(real_main_window)
+    _say_yes(monkeypatch)
+    dialog, _speech = _review_dialog(real_main_window)
+    dialog._on_analysis_complete(_advisory_voice_result(real_main_window, dialog))
+    try:
+        dialog._on_retake_clicked()
+        _bind_capture_context(dialog, *_short_voice_captures(48_000))
+        second = _voice_setup_result(real_main_window, dialog)
+        second["eq_settings"] = {"band_freqs": [1000.0]}
+        dialog._on_analysis_complete(second)
+
+        assert [r["outcome"] for r in records] == ["advisory", "refused"]
+        assert records[-1]["reason_codes"] == ["incomplete_result"]
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_a_new_result_after_a_refused_retake_is_reported_and_a_later_refusal_is_not(
+    real_main_window, monkeypatch
+) -> None:
+    records = _voice(real_main_window)
+    _say_yes(monkeypatch)
+    dialog, _speech = _review_dialog(real_main_window)
+    dialog._on_analysis_complete(_advisory_voice_result(real_main_window, dialog))
+    try:
+        dialog._on_retake_clicked()
+        _refuse_voice_take(dialog)
+        _bind_capture_context(dialog, *_short_voice_captures(48_000))
+        second = _voice_setup_result(real_main_window, dialog)
+        second["eq_settings"] = {"band_freqs": [1000.0]}
+        dialog._on_analysis_complete(second)
+        dialog._on_retake_clicked()
+        _refuse_voice_take(dialog)
+
+        assert [r["outcome"] for r in records] == ["advisory", "refused"]
+        assert records[-1]["reason_codes"] == ["incomplete_result"]
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def _refuse_auto_eq_take(dialog: CalibrationDialog) -> None:
+    dialog.recording_state = "recording"
+    dialog._on_recording_complete(_clipped())
+
+
+def test_auto_eq_keeps_its_result_when_a_retake_is_refused(qapp, monkeypatch) -> None:
+    owner, dialog, records = _auto_eq(owner=_owner_with())
+    _say_yes(monkeypatch)
+    try:
+        _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
+        dialog._on_retake_clicked()
+        _refuse_auto_eq_take(dialog)
+        dialog.reject()
+
+        assert [r["outcome"] for r in records] == ["refused"]
+        assert records[0]["reason_codes"][0] == "headroom_limited"
+    finally:
+        owner.close()
+
+
+def test_auto_eq_reports_a_refused_take_when_nothing_better_exists(qapp, monkeypatch) -> None:
+    owner, dialog, records = _auto_eq()
+    _say_yes(monkeypatch)
+    try:
+        _complete(dialog, monkeypatch, _candidate(1.0, owner.preset.eq))  # waiting to be applied
+        dialog._on_retake_clicked()
+        _refuse_auto_eq_take(dialog)
+        dialog.reject()
+
+        assert [(r["outcome"], r["reason_codes"]) for r in records] == [
+            ("refused", ["recording_rejected"])
+        ]
+    finally:
+        owner.close()
+
+
+def test_auto_eq_reports_the_new_result_after_a_retake(qapp, monkeypatch) -> None:
+    owner, dialog, records = _auto_eq(owner=_owner_with())
+    _say_yes(monkeypatch)
+    try:
+        _complete(dialog, monkeypatch, _no_correction(_over_the_rule(owner.preset.eq)))
+        dialog._on_retake_clicked()
+        _complete(dialog, monkeypatch, _candidate(2.0, owner.preset.eq))
+        dialog._on_start_clicked()
+
+        assert [r["outcome"] for r in records] == ["refused", "applied"]
+    finally:
+        if not dialog._close_requested:
+            dialog.reject()
+        owner.close()

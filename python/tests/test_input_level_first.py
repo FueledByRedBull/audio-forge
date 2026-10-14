@@ -157,6 +157,7 @@ def test_the_out_bar_keeps_the_pre_limiter_level_and_the_marker_follows_the_fina
     window._update_meters()
     assert window.output_meter.peak_hold_db == window.output_meter.DB_MAX
     assert not window.output_meter.clip_marker
+    window.limiter_state.set_value("enabled", False)  # a limiter at its ceiling is not a clip
     engine.output_count = CLIP_FLAT_TOP_SAMPLES
     window._update_meters()
     assert window.output_meter.clip_marker
@@ -173,6 +174,7 @@ def test_the_marker_clears_by_itself(running_window):
 
 def test_stopping_clears_both_markers(running_window):
     window, engine = running_window, running_window.engine
+    window.limiter_state.set_value("enabled", False)
     _clip_input(engine)
     engine.output_peak, engine.output_count = 1.0, CLIP_FLAT_TOP_SAMPLES
     window._update_meters()
@@ -263,7 +265,12 @@ def test_full_scale_output_with_the_limiter_off_warns_and_with_it_on_does_not(ru
     assert window.shell_texts["output_health_label"].state == "ok"
 
     window.limiter_state.set_value("enabled", False)
-    window._update_meters()  # the clip is still inside the window
+    window._update_meters()  # the limiter was on when those samples arrived: not a clip
+    _tick_diagnostics(window)
+    assert window.shell_texts["output_health_label"].state == "ok"
+
+    engine.output_count += CLIP_FLAT_TOP_SAMPLES
+    window._update_meters()
     _tick_diagnostics(window)
     chip = window.shell_texts["output_health_label"]
     assert (chip.text, chip.state) == ("Output: AT FULL SCALE (peak 3.0 dB)", "bad")
@@ -271,6 +278,50 @@ def test_full_scale_output_with_the_limiter_off_warns_and_with_it_on_does_not(ru
     assert "limiter is off" in advice
     assert "Turn the limiter on or lower the makeup gain" in advice
     assert "about 4 dB" in advice
+
+
+@pytest.mark.parametrize("mode", ["bypass", "raw"])
+def test_full_scale_output_lights_the_marker_where_the_limiter_does_not_run(running_window, mode):
+    window, engine = running_window, running_window.engine
+    assert window.limiter_state.get_applied_settings()["enabled"]
+    window._set_processing_mode(mode)
+    engine.output_peak, engine.output_count = 1.0, CLIP_FLAT_TOP_SAMPLES
+    window._update_meters()
+    assert window.output_meter.clip_marker
+
+    window._set_processing_mode("normal")
+    window._update_meters()  # the limiter is back: the marker goes
+    assert not window.output_meter.clip_marker
+
+
+def test_a_limiter_holding_the_output_at_a_ceiling_of_zero_is_neither_a_marker_nor_a_warning(running_window):
+    window, engine = running_window, running_window.engine
+    window.limiter_state.set_value("ceiling_db", 0.0)
+    engine.pre_limiter_peak, engine.output_peak = 1.41, 1.0
+    engine.output_count += 400  # the limiter keeps landing on the ceiling
+    window._update_meters()
+    _tick_diagnostics(window)
+    assert not window.output_meter.clip_marker
+    assert window.shell_texts["output_health_label"].state == "ok"
+    assert window.shell_texts["health_summary_label"].text == "Health: OK"
+
+
+def test_the_out_marker_and_health_agree_when_the_limiter_is_switched(running_window):
+    window, engine = running_window, running_window.engine
+    window.limiter_state.set_value("enabled", False)
+    engine.pre_limiter_peak, engine.output_peak = 1.41, 1.0
+    engine.output_count += CLIP_FLAT_TOP_SAMPLES
+    window._update_meters()
+    _tick_diagnostics(window)
+    assert window.output_meter.clip_marker
+    assert window.shell_texts["output_health_label"].state == "bad"
+
+    window.limiter_state.set_value("enabled", True)  # Health stops warning, so the marker goes
+    window.limiter_state.flush()
+    window._update_meters()
+    _tick_diagnostics(window)
+    assert not window.output_meter.clip_marker
+    assert window.shell_texts["output_health_label"].state == "ok"
 
 
 def test_one_full_scale_sample_is_a_peak_warning_and_a_flat_top_is_a_clip(running_window):

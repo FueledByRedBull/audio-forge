@@ -1038,23 +1038,28 @@ fn dc_block_response_db(frequency_hz: f64, sample_rate: f64) -> f64 {
 /// The part of the input conditioning that does not depend on the signal, in dB.
 ///
 /// Raw monitor skips the conditioning. Every other path applies the DC blocker
-/// and, with cleanup off, the fixed high-pass. With cleanup on, the high-pass
-/// and the hum notches belong to `AdaptiveInputCleanupState`, which follows the
-/// signal, so only the DC blocker is static there.
+/// and a high-pass. With cleanup off the high-pass is the fixed 80 Hz one. With
+/// cleanup on it is `AdaptiveInputCleanupState`'s, which starts at the same
+/// 80 Hz and rises to 100 Hz (Gentle) or 120 Hz (Strong) while rumble is
+/// detected; the response is that default. The hum notches, which appear only
+/// while hum is detected, are not included.
 fn static_input_pre_filter_response_db(
     frequencies_hz: &[f64],
     mode: InputCleanupMode,
     sample_rate: f64,
 ) -> Vec<f64> {
-    let pre_filter = new_input_pre_filter(sample_rate);
+    let fixed_high_pass = new_input_pre_filter(sample_rate);
+    let cleanup = AdaptiveInputCleanupState::new(sample_rate as f32);
+    let high_pass = if mode.is_enabled() {
+        &cleanup.adaptive_highpass
+    } else {
+        &fixed_high_pass
+    };
     frequencies_hz
         .iter()
         .map(|&frequency_hz| {
-            let dc_block = dc_block_response_db(frequency_hz, sample_rate);
-            match mode {
-                InputCleanupMode::Off => dc_block + pre_filter.magnitude_response_db(frequency_hz),
-                InputCleanupMode::Gentle | InputCleanupMode::Strong => dc_block,
-            }
+            dc_block_response_db(frequency_hz, sample_rate)
+                + high_pass.magnitude_response_db(frequency_hz)
         })
         .collect()
 }

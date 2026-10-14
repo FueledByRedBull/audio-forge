@@ -217,13 +217,14 @@ def test_the_input_filter_follows_the_cleanup_mode_and_the_sample_rate(qapp):
         assert model.input_filter_db == pytest.approx(
             input_prefilter_response_db(model.freq_points, model.cleanup_mode, 48_000.0)
         )
-    low = off.freq_points.index(min(off.freq_points, key=lambda f: abs(f - 20.0)))
-    # The 80 Hz high-pass is only in the static filter when cleanup is off.
-    assert off.input_filter_db[low] < gentle.input_filter_db[low] - 15.0
+    low = off.freq_points.index(min(off.freq_points, key=lambda f: abs(f - 40.0)))
+    # Cleanup keeps the 80 Hz high-pass, so the static filter cuts the bass in every mode.
+    assert off.input_filter_db == pytest.approx(gentle.input_filter_db)
+    assert gentle.input_filter_db[low] < -10.0
     # Neither the EQ-only response nor the bands change with the mode.
     assert off.response_db == pytest.approx(gentle.response_db, abs=1e-12)
     assert off.band_curves_db == gentle.band_curves_db
-    assert off.total_response_db[low] < gentle.total_response_db[low] - 15.0
+    assert off.total_response_db == pytest.approx(gentle.total_response_db, abs=1e-12)
 
     changed = []
     off.changed.connect(lambda: changed.append(True))
@@ -846,12 +847,13 @@ def test_bypass_draws_the_fixed_high_pass_whatever_the_cleanup_mode(qapp, cleanu
         assert model.input_filter_db == pytest.approx(fixed, abs=1e-12)
         assert model.total_response_db == pytest.approx(fixed, abs=1e-12)
         assert model.total_response_db[low] < -10.0
-    # Normal mode and Raw monitor keep what they drew.
+    # Normal mode draws the cleanup's own high-pass, which starts at the same 80 Hz.
     cleaned.set_engine_mode("normal")
     assert cleaned.input_filter_db == pytest.approx(
         input_prefilter_response_db(cleaned.freq_points, cleanup, 48_000.0), abs=1e-12
     )
-    assert cleaned.input_filter_db[low] > -6.0
+    assert cleaned.input_filter_db[low] < -10.0
+    # Raw monitor skips the conditioning.
     cleaned.set_engine_mode("raw")
     assert cleaned.input_filter_db == [0.0] * len(cleaned.freq_points)
     assert cleaned.total_response_db == [0.0] * len(cleaned.freq_points)

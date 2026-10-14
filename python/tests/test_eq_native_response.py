@@ -140,17 +140,17 @@ def test_eq_curve_widget_uses_native_target_response(qapp):
     widget.close()
 
 
-def test_input_prefilter_response_follows_the_cleanup_mode_and_validates():
+def test_input_prefilter_response_has_the_80_hz_high_pass_in_every_mode_and_validates():
     frequencies = [0.0, 20.0, 80.0, 1000.0, 20_000.0]
     off = input_prefilter_response_db(frequencies, "off", 48_000.0)
-    gentle = input_prefilter_response_db(frequencies, "gentle", 48_000.0)
 
     assert len(off) == len(frequencies)
-    assert gentle == input_prefilter_response_db(frequencies, "strong", 48_000.0)
-    # Only the fixed 80 Hz high-pass differs, and it is -3 dB at its corner.
-    assert off[2] - gentle[2] == pytest.approx(-3.01, abs=0.01)
-    assert off[1] < gentle[1] - 20.0
-    assert off[3] == pytest.approx(gentle[3], abs=0.01)
+    # Cleanup starts from the same 80 Hz high-pass as the fixed path.
+    for mode in ("gentle", "strong"):
+        assert input_prefilter_response_db(frequencies, mode, 48_000.0) == off
+    assert off[1] < -20.0
+    assert off[2] < -3.0
+    assert off[3] == pytest.approx(0.0, abs=0.05)
     for arguments in (
         ([100.0], "bypass", 48_000.0),
         ([100.0], "off", 0.0),

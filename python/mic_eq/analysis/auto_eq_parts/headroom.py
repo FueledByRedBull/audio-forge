@@ -327,6 +327,24 @@ def headroom_shortfall_db(validation: Mapping[str, Any]) -> int | None:
     return int(np.ceil(excess)) if 0.0 < excess < float("inf") else None
 
 
+def headroom_excess_split_db(validation: Mapping[str, Any]) -> tuple[float, float] | None:
+    """Split the full correction's excess into (the recording's part, the part the correction adds).
+
+    The recording's part is the excess with no correction at all (``flat_excess_db``, at
+    most 0 when the recording alone fits). None when that was not rendered or the
+    correction adds nothing.
+    """
+    before = validation.get("before")
+    full = _headroom_excess_db(before) if isinstance(before, Mapping) else float("inf")
+    flat = validation.get("flat_excess_db")
+    if isinstance(flat, bool) or not isinstance(flat, (int, float)) or not np.isfinite(flat):
+        return None
+    if not 0.0 < full < float("inf") or flat >= full:
+        return None
+    recording = max(float(flat), 0.0)
+    return recording, full - recording
+
+
 def _add_abstention(result: dict[str, Any], reason: str) -> None:
     reasons = list(result.get("abstention_reasons") or [])
     if reason not in reasons:
@@ -568,6 +586,7 @@ def apply_headroom_validation(
     selected_scale = 1.0
     selected_gains = original_gains.copy()
     rendered = [(1.0, before, before_candidate)]
+    flat_excess = None
     if not _is_headroom_safe(before):
         for scale in HEADROOM_SCALES[1:]:
             check_analysis_cancelled(cancel_check)
@@ -582,6 +601,8 @@ def apply_headroom_validation(
             selected_candidate = candidate_eq
             selected_scale = scale
             selected_gains = original_gains * scale
+            if scale == 0.0:
+                flat_excess = _headroom_excess_db(simulation)
             if _is_headroom_safe(simulation):
                 break
 
@@ -625,6 +646,15 @@ def apply_headroom_validation(
                         selected_gains = original_gains * scale
                         accepted_over_rule, declined = True, False
                         break
+
+    if flat_excess is None and selected_scale < 0.70:
+        # The advice tells the recording's excess from what the correction adds. A failed
+        # render only costs that split; the validated decision stands.
+        check_analysis_cancelled(cancel_check)
+        try:
+            flat_excess = _headroom_excess_db(simulate_scale(0.0)[0])
+        except Exception:
+            flat_excess = None
 
     result["band_gains"] = selected_gains.tolist()
     existing_scale = _as_float(result.get("validation_gain_scale"), 1.0)
@@ -677,6 +707,8 @@ def apply_headroom_validation(
     if reference_excess is not None:
         result["headroom_validation"]["reference_excess_db"] = reference_excess
         result["headroom_validation"].update(over_rule)
+    if flat_excess is not None and np.isfinite(flat_excess):
+        result["headroom_validation"]["flat_excess_db"] = flat_excess
     native_failure = selected.get("native_simulation_failure")
     if native_failure is not None:
         result["headroom_validation"]["native_simulation_failure"] = native_failure

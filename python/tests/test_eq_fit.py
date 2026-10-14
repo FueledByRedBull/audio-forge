@@ -452,3 +452,153 @@ def test_cancellation_surfaces_from_every_stage_of_the_fit():
         with pytest.raises(AnalysisCancelled):
             calculate_eq_bands(*inputs, cancel_check=cancel)
         assert len(checks) == trigger
+
+
+# ------------------------------------------------------------------ side by side with SLSQP
+
+ADJACENCY_TOLERANCE = 1e-9  # what optimizer.py accepts above the unmargined limit
+SLSQP_MARGIN = 1e-7
+
+
+def _fit_problem(rng, bands, saturate):
+    """Gain-refinement inputs shaped like the app's: a measured curve, a target that asks for a
+    large per-band correction (`saturate` dB scale), loose or tight gain bounds."""
+    from mic_eq.analysis.auto_eq_parts.constants import GAIN_MAX_DB, GAIN_MIN_DB
+
+    centers = np.sort(np.geomspace(60, 14000, bands) * np.exp(rng.normal(0, 0.08, bands)))
+    dense = np.geomspace(20, 20000, 256)
+    measured = rng.normal(0, 1, dense.size).cumsum() * rng.choice([0.1, 0.5, 2.0]) - 60
+    target = (
+        measured
+        + np.interp(np.log(dense), np.log(centers), rng.normal(0, saturate, bands))
+        + rng.normal(0, 1, dense.size)
+    )
+    qs = rng.uniform(0.5, 4.0, bands)
+    weights = rng.uniform(0.2, 1.5, dense.size)
+    lower = np.full(bands, GAIN_MIN_DB)
+    upper = np.full(bands, GAIN_MAX_DB)
+    if rng.random() < 0.15:  # tight, partly fixed bounds
+        upper = rng.uniform(0, GAIN_MAX_DB, bands)
+        lower = -rng.uniform(0, -GAIN_MIN_DB, bands)
+        fixed = rng.random(bands) < 0.2
+        lower[fixed] = upper[fixed] = 0.0
+    start = rng.uniform(lower - 2, upper + 2) if rng.random() < 0.5 else rng.normal(0, 4, bands)
+    return start, dense, measured, target, qs, centers, weights, lower, upper
+
+
+def _feasible(gains, lower, upper, limits):
+    return bool(
+        np.all(np.isfinite(gains))
+        and np.all(gains >= lower - 1e-9)
+        and np.all(gains <= upper + 1e-9)
+        and np.all(np.abs(np.diff(gains)) <= limits + ADJACENCY_TOLERANCE)
+    )
+
+
+def _slsqp_refinement(problem):
+    """The previous SciPy implementation of optimizer._constrained_gain_refinement, verbatim in
+    objective, constraint, bounds and options; returns (result, objective, start, limits)."""
+    from scipy.optimize import minimize
+
+    from mic_eq.analysis.auto_eq_parts.constants import LAMBDA_G, LAMBDA_TILT
+    from mic_eq.analysis.auto_eq_parts.optimizer import (
+        _adjacent_gain_limits,
+        _log_frequency_gain_curvature,
+    )
+    from mic_eq.analysis.auto_eq_parts.response import _predict_eq_response
+
+    gains, dense, measured, target, qs, centers, weights, lower, upper = problem
+    limits = _adjacent_gain_limits(centers)
+    log_centers = np.log10(np.clip(centers, 1e-6, None))
+    centered = log_centers - float(np.mean(log_centers))
+    denominator = float(np.sum(centered**2))
+
+    def objective(candidate):
+        response = _predict_eq_response(dense, candidate, qs, centers, sample_rate=48000.0)
+        error = target - (measured + response)
+        curvature = _log_frequency_gain_curvature(candidate, centers)
+        tilt = float(np.dot(centered, candidate) / denominator)
+        return float(
+            np.sum(weights * error * error)
+            + LAMBDA_G * np.sum(curvature * curvature)
+            + LAMBDA_TILT * tilt * tilt
+        )
+
+    bounds = list(zip(lower.tolist(), upper.tolist(), strict=True))
+    constraints = ({"type": "ineq", "fun": lambda g: limits - SLSQP_MARGIN - np.abs(np.diff(g))},)
+    projection = project_gains(np.clip(gains, lower, upper), lower, upper, limits - SLSQP_MARGIN)
+    start = projection.x if projection.success else np.zeros_like(gains)
+    result = minimize(objective, start, method="SLSQP", bounds=bounds, constraints=constraints,
+                      options={"ftol": 1e-7, "maxiter": 120, "disp": False})
+    return result, objective, limits
+
+
+def test_gain_refinement_matches_or_beats_slsqp_and_survives_its_failures():
+    """The NumPy solve against the SLSQP solve it replaced, on one seeded set of problems.
+
+    SLSQP is only run from the exact projection the app starts from.  Roughly half of this set
+    makes it stop with 'positive directional derivative' or report success on a point that
+    breaks the adjacency limit; the app discards those solves, the NumPy solve must not.
+    """
+    pytest.importorskip("scipy.optimize")
+    import warnings
+
+    from mic_eq.analysis.auto_eq_parts.optimizer import _constrained_gain_refinement
+
+    rng = np.random.default_rng(20261014)
+    slsqp_failures = both_solved = 0
+    worst_excess = 0.0
+    for case in range(24):
+        problem = _fit_problem(rng, bands=8, saturate=12.0 if case % 6 == 0 else 30.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            reference, objective, limits = _slsqp_refinement(problem)
+        lower, upper = problem[7], problem[8]
+        reference_ok = bool(reference.success) and _feasible(reference.x, lower, upper, limits)
+        gains, success = _constrained_gain_refinement(*problem, None, 48000.0)
+
+        assert _feasible(gains, lower, upper, limits), case
+        if success:
+            assert np.isfinite(objective(gains)), case
+        if reference_ok:
+            both_solved += 1
+            assert success, case
+            excess = (objective(gains) - objective(reference.x)) / max(abs(objective(reference.x)), 1.0)
+            worst_excess = max(worst_excess, excess)
+            assert excess <= 1e-5, (case, excess)
+        else:
+            slsqp_failures += 1
+            assert success, case  # the NumPy solve converged where SLSQP did not
+
+    assert slsqp_failures >= 5, "the problem set no longer provokes SLSQP failures"
+    assert both_solved >= 3, "the problem set no longer exercises the SLSQP-succeeds path"
+
+
+def test_gain_projection_is_feasible_and_no_further_than_slsqp():
+    """Alternating +/-12 dB starts force many adjacency constraints active at once.
+
+    SLSQP's projection converges on every start here (its iteration-cap failures only showed up
+    on the app's own fits), so this checks feasibility and distance, not failure handling.
+    """
+    scipy_optimize = pytest.importorskip("scipy.optimize")
+    import warnings
+
+    rng = np.random.default_rng(20261015)
+    for case in range(40):
+        bands = 10
+        centers = np.sort(np.geomspace(60, 14000, bands))
+        limits = np.minimum(6.0, 12.0 * np.maximum(np.diff(np.log2(centers)), 1e-6)) - SLSQP_MARGIN
+        lower = np.full(bands, -12.0)
+        upper = np.full(bands, 12.0)
+        start = rng.choice([-12.0, 12.0], bands)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            reference = scipy_optimize.minimize(
+                lambda g: float(np.sum(np.square(g - start))), start, method="SLSQP",
+                bounds=list(zip(lower, upper, strict=True)),
+                constraints=({"type": "ineq", "fun": lambda g: limits - np.abs(np.diff(g))},),
+                options={"ftol": 1e-9, "maxiter": 120, "disp": False})
+        projection = project_gains(start, lower, upper, limits)
+        assert projection.success and _feasible(projection.x, lower, upper, limits), case
+        if reference.success:
+            assert float(np.sum(np.square(projection.x - start))) <= float(reference.fun) + 1e-6, case

@@ -32,8 +32,10 @@ GRAPH_HELP = (
     "plus every EQ filter that is on, or the input filter alone when "
     "the EQ switch is off. Thin colored curves are the bands, the "
     "dashed curve is the Auto-EQ layer and the dotted curve is the "
-    "input filter. Adaptive input cleanup follows the signal and is not "
-    "drawn."
+    "input filter: the DC blocker and an 80 Hz high-pass. Adaptive input "
+    "cleanup keeps that high-pass, but follows the signal beyond it: it "
+    "raises the high-pass to 100 or 120 Hz when it detects rumble and notches "
+    "hum, and neither is drawn."
 )
 
 
@@ -233,7 +235,8 @@ class EQGraphModel(QObject):
         # total_response_db is what the signal really gets: the fixed input
         # conditioning that comes before the EQ, plus the EQ unless its switch
         # is off. Only the part of the conditioning that does not follow the
-        # signal can be drawn; see input_prefilter_response_db.
+        # signal can be drawn (the DC blocker and the 80 Hz high-pass that
+        # cleanup starts from); see input_prefilter_response_db.
         self.eq_enabled = True
         # What the processor runs: "bypass" skips the EQ, "raw" skips the input
         # filter as well. The bands stay editable and drawn either way.
@@ -730,7 +733,8 @@ class EQGraphModel(QObject):
         """The input conditioning as the engine applies it in the current mode."""
         if self.engine_mode == "raw":
             return [0.0] * len(frequencies)
-        # Adaptive cleanup runs on the full path only; bypass keeps the fixed high-pass.
+        # Adaptive cleanup runs on the full path only; bypass keeps the fixed
+        # high-pass, which is where cleanup starts too.
         cleanup = "off" if self.engine_mode == "bypass" else self.cleanup_mode
         return list(input_prefilter_response_db(frequencies, cleanup, self.sample_rate))
 

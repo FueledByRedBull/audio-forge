@@ -159,13 +159,30 @@ class FirstRunSetupDialog(QDialog):
         self._progress_unsaved = False
         self.setWindowTitle("AudioForge Setup")
         self.setModal(True)
+        # A re-run never writes "in_progress", so quitting mid-run cannot re-prompt at launch.
+        self._exit_state = (
+            self.config.first_run_setup_state
+            if self.config.first_run_setup_state in {"completed", "completed_with_skips"}
+            else "in_progress"
+        )
 
-        if restart_completed and self.config.first_run_setup_state == "completed":
+        # A paused re-run resumes; only a fully finished setup restarts from scratch.
+        paused = any(
+            self.config.first_run_setup_steps.get(step) == "pending"
+            for step in DEFAULT_SETUP_STEPS
+        )
+        if (
+            restart_completed
+            and self.config.first_run_setup_state == "completed"
+            and not paused
+        ):
             self.config.first_run_setup_steps = {
                 step: "pending" for step in FIRST_RUN_SETUP_STEPS
             }
             self.config.first_run_setup_step = "devices"
-        elif self.config.first_run_setup_state == "completed_with_skips":
+        elif self._exit_state != "in_progress" and (
+            paused or self._exit_state == "completed_with_skips"
+        ):
             for step in DEFAULT_SETUP_STEPS:
                 if self.config.first_run_setup_steps.get(step) == "skipped":
                     self.config.first_run_setup_steps[step] = "pending"
@@ -177,7 +194,7 @@ class FirstRunSetupDialog(QDialog):
                 ),
                 "devices",
             )
-        self.config.first_run_setup_state = "in_progress"
+        self.config.first_run_setup_state = self._exit_state
         self._advanced_latency_mode = (
             self.config.first_run_setup_step == "latency"
             and self.config.first_run_setup_steps.get("latency") != "completed"
@@ -458,8 +475,8 @@ class FirstRunSetupDialog(QDialog):
         self._sync_mute_control()
         if self._progress_unsaved:
             self.status_label.setText(
-                "Progress is unsaved. You can continue, but setup may need to be "
-                "repeated next launch if settings cannot be saved."
+                "Progress is unsaved. You can continue, but some steps may need to be "
+                "repeated if settings cannot be saved."
             )
             self.status_label.setStyleSheet(message_text_style("warn"))
         else:
@@ -761,10 +778,10 @@ class FirstRunSetupDialog(QDialog):
         self._route_check_pending = False
         self._set_route_feedback_active(False)
         if not self._finalized:
-            self.config.first_run_setup_state = "in_progress"
+            self.config.first_run_setup_state = self._exit_state
             if not self._save_progress():
                 self.owner.status_message.showMessage(
-                    "Setup progress could not be saved; it may need to be repeated next launch",
+                    "Setup progress could not be saved; some steps may need to be repeated",
                     6000,
                 )
         super().reject()

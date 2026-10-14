@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtCore import QElapsedTimer, QEventLoop, QThread, QTimer
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QDialog, QMessageBox
 
 from mic_eq.analysis.voice_setup import analyze_voice_setup
@@ -411,13 +412,30 @@ def test_an_unreadable_verification_take_restores_and_offers_another_try(
             "The recording held invalid audio data, which usually means the audio "
             "driver glitched. Restart processing and record again."
         )
-        assert dialog.start_button.text() == "Apply & Verify Again"
+        assert dialog.start_button.text() == "Apply && Verify Again"
         assert dialog.start_button.isEnabled()
         assert dialog.preview_verification_audio is None
         assert dialog.phase_label.text() == "Second recording failed; previous settings put back"
 
         dialog._on_start_clicked()
         assert dialog.setup_state == "verification_ready"
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_apply_and_verify_again_button_shows_a_literal_ampersand(real_main_window) -> None:
+    window = real_main_window
+    dialog = VoiceSetupDialog(parent=window)
+    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
+    _bind_capture_context(dialog, noise, speech)
+    _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
+    dialog.setup_state = "verification_recording"
+    try:
+        dialog._on_recording_complete(np.full_like(speech, np.nan))
+
+        assert dialog.start_button.text().startswith("Apply")
+        assert QKeySequence.mnemonic(dialog.start_button.text()).isEmpty()
     finally:
         dialog.reject()
         dialog.deleteLater()

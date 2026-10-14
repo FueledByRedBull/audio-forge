@@ -233,7 +233,9 @@ Rectangle {
             verticalAlignment: TextInput.AlignVCenter
             text: box.source ? box.source.text : ""
             readOnly: box.display !== null
+            // A display is read, not edited: no Tab stop, and a click does not focus it.
             activeFocusOnTab: !readOnly
+            activeFocusOnPress: !readOnly
             enabled: box.proxy ? box.proxy.enabled : false
             color: root.t.text_primary
             selectionColor: root.t.accent
@@ -1264,9 +1266,19 @@ Rectangle {
             Chip {
                 proxy: root.m.status.health
                 implicitHeight: 28
-                TapHandler {
-                    onTapped: root.m.page.setIndex(
+                AbstractButton {
+                    id: healthToggle
+                    objectName: "healthToggle"
+                    anchors.fill: parent
+                    onClicked: root.m.page.setIndex(
                         root.m.page.index === root.m.healthPage ? 0 : root.m.healthPage)
+                    Keys.onReturnPressed: click()
+                    Keys.onEnterPressed: click()
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "Show audio health details"
+                    Accessible.checkable: true
+                    Accessible.checked: root.m.page.index === root.m.healthPage
+                    background: Item { FocusRing { control: healthToggle } }
                 }
             }
         }

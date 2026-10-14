@@ -354,3 +354,37 @@ fn has_resampler_output_capacity<const N: usize>(
         .map(|channel| scratch.remaining() >= channel.len())
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod product_window_tests {
+    use super::*;
+
+    /// The rejected `blackman_harris_squared` window was 10.3 dB off at 20 kHz
+    /// when resampling 44.1 to 48 kHz (`evaluation/resampler-quality-report.json`);
+    /// the product window holds the report's 0.25 dB passband gate.
+    #[test]
+    fn product_resampler_passband_is_flat_at_20_khz() {
+        let (input_rate, output_rate, tone_hz) = (44_100_u32, 48_000_u32, 20_000.0_f64);
+        let input: Vec<f64> = (0..input_rate as usize)
+            .map(|n| {
+                0.5 * (2.0 * std::f64::consts::PI * tone_hz * n as f64 / input_rate as f64).sin()
+            })
+            .collect();
+        let (output, _delay, expected, _timings) = simulate_product_resampler(
+            input,
+            input_rate,
+            output_rate,
+            RESAMPLER_CHUNK_SIZE,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let margin = output_rate as usize / 4;
+        let steady = &output[margin..expected - margin];
+        let rms = (steady.iter().map(|s| s * s).sum::<f64>() / steady.len() as f64).sqrt();
+        let gain_db = 20.0 * (rms / (0.5 / 2.0_f64.sqrt())).log10();
+
+        assert!(gain_db.abs() < 0.25, "20 kHz gain {gain_db:.3} dB");
+    }
+}

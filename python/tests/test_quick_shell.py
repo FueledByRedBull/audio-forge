@@ -1772,3 +1772,46 @@ def test_the_drops_tooltip_does_not_promise_a_right_click_quick_lacks(quick_wind
     )
     assert "Technical counters" in drops.toolTip
     assert "right-click" not in drops.toolTip.lower()
+
+
+def test_the_health_text_is_exposed_once_as_the_buttons_name(quick_window, qapp) -> None:
+    from PySide6.QtGui import QAccessible
+
+    def texts(interface) -> list[str]:
+        found = [interface.text(QAccessible.Text.Name), interface.text(QAccessible.Text.Value)]
+        for index in range(interface.childCount()):
+            child = interface.child(index)
+            found += texts(child) if child is not None else []
+        return found
+
+    with _AccessibleScene():
+        view = quick_window.centralWidget()
+        qapp.processEvents()
+        health = quick_window.shell_texts["health_summary_label"].text
+        tree = texts(QAccessible.queryAccessibleInterface(view))
+        assert sum(health in text for text in tree) == 1
+
+
+def test_a_held_return_toggles_the_health_page_once(quick_window, qapp) -> None:
+    window = quick_window
+    view = window.centralWidget()
+    window.activateWindow()
+    view.setFocus()
+    toggle = view.rootObject().findChild(QObject, "healthToggle")
+    toggle.forceActiveFocus(Qt.FocusReason.TabFocusReason)
+    qapp.processEvents()
+
+    def press(repeat: bool) -> None:
+        QCoreApplication.sendEvent(
+            view,
+            QKeyEvent(
+                QEvent.Type.KeyPress, Qt.Key.Key_Return, Qt.KeyboardModifier.NoModifier,
+                "\r", repeat, 1,
+            ),
+        )
+
+    press(False)
+    assert window.shell_page.currentIndex() == window.HEALTH_PAGE_INDEX
+    for _ in range(3):
+        press(True)
+    assert window.shell_page.currentIndex() == window.HEALTH_PAGE_INDEX

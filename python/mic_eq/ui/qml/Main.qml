@@ -421,6 +421,8 @@ Rectangle {
     component Chip: Rectangle {
         id: chip
         property var proxy
+        // False when a button over the chip carries the text for assistive technology.
+        property bool announced: true
         readonly property string state_: proxy && proxy.state !== "" ? proxy.state : "idle"
         implicitHeight: chipText.implicitHeight + 12
         implicitWidth: chipText.implicitWidth + 24
@@ -436,6 +438,7 @@ Rectangle {
             color: root.t["status_" + chip.state_ + "_text"] ?? root.t.status_idle_text
             font.pixelSize: 13
             wrapMode: Text.Wrap
+            Accessible.ignored: !chip.announced
             Accessible.name: chip.proxy ? chip.proxy.name + ": " + text : text
         }
     }
@@ -1264,6 +1267,7 @@ Rectangle {
             }
             Chip {
                 proxy: root.m.status.health
+                announced: false
                 implicitHeight: 28
                 AbstractButton {
                     id: healthToggle
@@ -1271,8 +1275,9 @@ Rectangle {
                     anchors.fill: parent
                     onClicked: root.m.page.setIndex(
                         root.m.page.index === root.m.healthPage ? 0 : root.m.healthPage)
-                    Keys.onReturnPressed: click()
-                    Keys.onEnterPressed: click()
+                    // A held key must not keep toggling the page, as a held Space does not.
+                    Keys.onReturnPressed: event => { if (!event.isAutoRepeat) click() }
+                    Keys.onEnterPressed: event => { if (!event.isAutoRepeat) click() }
                     Accessible.role: Accessible.Button
                     // Named by what it shows; the action goes in the description.
                     Accessible.name: root.m.status.health.text

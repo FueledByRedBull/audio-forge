@@ -2052,14 +2052,15 @@ mod tests {
     /// Feeds `input` to the production output writer in 480-sample blocks the
     /// way the DSP loop's Bypass (`clean_path` false) and Raw monitor (true)
     /// branches do, draining the queue after every write. Returns everything
-    /// queued and the output full-scale count. The ceiling is set before the
+    /// queued, the output full-scale count and the final clamp's clip-event
+    /// count (the clamp counts only samples still above the ceiling). The ceiling is set before the
     /// first block, as the loop does at startup.
     fn run_live_path_writer(
         limiter_on: bool,
         ceiling_db: f32,
         clean_path: bool,
         input: &[f32],
-    ) -> (Vec<f32>, u64) {
+    ) -> (Vec<f32>, u64, u64) {
         let rb = AudioRingBuffer::new(4096);
         let (mut producer, mut consumer) = rb.split();
         let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
@@ -2082,6 +2083,7 @@ mod tests {
         let last_output_write_time = AtomicU64::new(0);
         let final_peak = AtomicU32::new(0);
         let full_scale_count = AtomicU64::new(0);
+        let clip_event_count = AtomicU64::new(0);
         let mut writer = OutputWriteContext {
             output_producer: &mut producer,
             output_queue_control_scratch: &mut control_scratch,
@@ -2098,6 +2100,7 @@ mod tests {
             counters: OutputWriteCounters {
                 output_final_peak_hold: &final_peak,
                 output_full_scale_count: &full_scale_count,
+                output_clip_event_count: &clip_event_count,
                 ..output_writer_counters(
                     (
                         &jitter_dropped_samples,
@@ -2122,7 +2125,11 @@ mod tests {
         }
         assert_eq!(output_short_write_dropped_samples.load(Ordering::Relaxed), 0);
         assert_eq!(rt_buffer_overflow_count.load(Ordering::Relaxed), 0);
-        (queued, full_scale_count.load(Ordering::Relaxed))
+        (
+            queued,
+            full_scale_count.load(Ordering::Relaxed),
+            clip_event_count.load(Ordering::Relaxed),
+        )
     }
 
     /// Hot 1 kHz-ish signals that reach the writer well above any ceiling:
@@ -2141,6 +2148,17 @@ mod tests {
         [("sine +6 dB", sine), ("square 0 dBFS", square)]
     }
 
+    /// Longest run of consecutive samples sitting at the ceiling (within the
+    /// limiter's 0.999 target margin), the flat top of a hard clamp.
+    fn longest_run_at_ceiling(samples: &[f32], ceiling: f32) -> usize {
+        let (mut longest, mut run) = (0, 0);
+        for s in samples {
+            run = if s.abs() >= ceiling * 0.9995 { run + 1 } else { 0 };
+            longest = longest.max(run);
+        }
+        longest
+    }
+
     #[test]
     fn test_bypass_and_raw_monitor_hold_the_output_ceiling_with_the_limiter_on() {
         for (signal_name, signal) in hot_live_path_signals() {
@@ -2149,7 +2167,7 @@ mod tests {
                     let label = format!("{signal_name}, {mode}, ceiling {ceiling_db} dB");
                     let ceiling = 10.0_f32.powf(ceiling_db / 20.0);
 
-                    let (queued, full_scale) =
+                    let (queued, full_scale, clip_events) =
                         run_live_path_writer(true, ceiling_db, clean_path, &signal);
 
                     assert!(queued.len() >= signal.len(), "{label}: output too short");
@@ -2164,6 +2182,14 @@ mod tests {
                     if ceiling < FULL_SCALE_LINEAR {
                         assert_eq!(full_scale, 0, "{label}: full-scale above the ceiling");
                     }
+                    // Only a working true-peak limiter passes these: its gain
+                    // plan keeps the peaks at 0.999 of the ceiling, so the
+                    // final clamp never has work and nothing sits flat at the
+                    // ceiling. Without the limiter (or with only its sample
+                    // backstop) the top is clamped flat at the ceiling.
+                    assert_eq!(clip_events, 0, "{label}: the final clamp had to clip");
+                    let run = longest_run_at_ceiling(&queued, ceiling);
+                    assert!(run < 6, "{label}: {run} samples flat at the ceiling");
                 }
             }
         }
@@ -2178,7 +2204,14 @@ mod tests {
             for (mode, clean_path) in [("bypass", false), ("raw monitor", true)] {
                 let label = format!("{signal_name}, {mode}");
 
-                let (queued, full_scale) = run_live_path_writer(false, -1.0, clean_path, &signal);
+                let (queued, full_scale, clip_events) =
+                    run_live_path_writer(false, -1.0, clean_path, &signal);
+                // The checks of the limiter-on test see the clamp at work.
+                let run = longest_run_at_ceiling(&queued, 1.0);
+                assert!(run >= 6, "{label}: no flat top, run {run}");
+                if signal_name.starts_with("sine") {
+                    assert!(clip_events > 0, "{label}: the clamp never clipped");
+                }
 
                 assert!(queued.iter().all(|s| s.is_finite() && s.abs() <= 1.0), "{label}");
                 let peak = queued.iter().fold(0.0_f32, |p, s| p.max(s.abs()));

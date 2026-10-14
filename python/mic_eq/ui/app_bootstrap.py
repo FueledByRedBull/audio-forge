@@ -328,6 +328,7 @@ def _run_qt_app(window_cls: Type[QMainWindow], *, smoke_test: bool) -> int:
             cast(Callable[..., QMainWindow], window_cls)(login_startup=True)
             if login_startup else window_cls()
         )
+        setattr(window, "single_instance", instance)
         if not app_icon.isNull():
             window.setWindowIcon(app_icon)
         apply_windows_window_icon(window)

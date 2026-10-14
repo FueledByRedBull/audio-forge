@@ -149,6 +149,11 @@ def test_interface_is_exported_as_fixed_words_only() -> None:
     assert _build(interface=classic)["interface"] == classic
     error = {"view": "error", "classic_reason": "scene_graph_error", "graphics_api": "not_applicable"}
     assert _build(interface=error)["interface"] == error
+    # No renderer started: the error screen, or the copy relaunched in software after that failure.
+    no_renderer = {"view": "error", "classic_reason": "no_renderer", "graphics_api": "direct3d11"}
+    assert _build(interface=no_renderer)["interface"] == no_renderer
+    relaunched = {"view": "quick", "classic_reason": "none", "graphics_api": "software_after_failure"}
+    assert _build(interface=relaunched)["interface"] == relaunched
 
     # Anything outside the vocabulary, such as an error text or a path, never leaves the app.
     leaky = {

@@ -416,6 +416,7 @@ class MainWindow(QMainWindow):
         # packaged smoke test and the diagnostics export read it.
         self.quick_view_failure: str | None = None
         self.quick_view_graphics_api = "not_applicable"
+        self.single_instance = None  # set by the app bootstrap; the relaunch releases it
         self._classic_root: QWidget | None = None
         self._responsive_layout_compact: bool | None = None
         self._quitting = False

@@ -7,6 +7,7 @@ When the scene cannot start or stops rendering, the window shows an error screen
 from __future__ import annotations
 
 import logging
+import os
 from collections import deque
 from dataclasses import asdict
 from pathlib import Path
@@ -28,6 +29,7 @@ from PySide6.QtQuick import QQuickPaintedItem, QSGRendererInterface
 from PySide6.QtQuickWidgets import QQuickWidget
 
 from .components import Glyph, icon_font
+from .desktop_integration import RENDERER_RELAUNCH_ENV, relaunch_with_software_rendering
 from .control_specs import control_label
 from .eq_controls import EQControl
 from .eq_quick_graph import EQGraphItem
@@ -50,6 +52,9 @@ QML_DIR = Path(__file__).parent / "qml"
 TRACE_INTERVAL_MS = 50
 TRACE_POINTS = 120
 MINIMUM_SCENE_SIZE = (900, 600)
+# A shown window with no scene graph after this many checks has no renderer.
+RENDERER_CHECK_MS = 1000
+RENDERER_CHECKS = 3
 _LOG = logging.getLogger(__name__)
 
 class LevelTrace(QQuickPaintedItem):
@@ -422,7 +427,8 @@ def graphics_api(window) -> str:
 
     scene = window.centralWidget()
     interface = scene.quickWindow().rendererInterface() if isinstance(scene, QQuickWidget) else None
-    return "unknown" if interface is None else _GRAPHICS_APIS.get(interface.graphicsApi(), "unknown")
+    api = "unknown" if interface is None else _GRAPHICS_APIS.get(interface.graphicsApi(), "unknown")
+    return "software_after_failure" if api == "software" and os.environ.get(RENDERER_RELAUNCH_ENV) else api
 
 
 def install_quick_shell(window) -> None:
@@ -456,6 +462,7 @@ def install_quick_shell(window) -> None:
     # A scene that loads can still fail to render, for example without a
     # usable graphics adapter.
     view.sceneGraphError.connect(lambda _error, message: _scene_stopped(window, message))
+    _watch_for_renderer(window, view)
     # Left to interpreter shutdown, the scene is torn down in no fixed order
     # and the process can crash on exit; delete it as the event loop ends.
     app = QCoreApplication.instance()
@@ -472,4 +479,54 @@ def _scene_stopped(window, reason: str) -> None:
     _LOG.error("Qt Quick view stopped rendering: %s", reason)
     # Read before the scene is replaced; the export names the backend that failed.
     show_quick_error(window, "scene_graph_error", reason, graphics_api(window))
+    bridge.release()
+
+
+def _watch_for_renderer(window, view: QQuickWidget) -> None:
+    """Catch a graphics start that failed silently.
+
+    Qt logs "Failed to get a QRhi", leaves the view Ready, emits no error and
+    tries no other backend. The scene graph never initialises; the window may
+    start hidden, so only a shown window counts.
+    """
+
+    if os.environ.get("AUDIOFORGE_SMOKE_TEST"):
+        return
+    timer = QTimer(view)
+    timer.setInterval(RENDERER_CHECK_MS)
+    shown = 0
+
+    def check() -> None:
+        nonlocal shown
+        if view.quickWindow().isSceneGraphInitialized():
+            timer.stop()
+        elif not window.isVisible():
+            shown = 0
+        else:
+            shown += 1
+            if shown >= RENDERER_CHECKS:
+                timer.stop()
+                _renderer_missing(window)
+
+    timer.timeout.connect(check)
+    timer.start()
+
+
+def _renderer_missing(window) -> None:
+    """Relaunch once in software rendering, or show the error screen."""
+
+    bridge = window.__dict__.pop("quick_bridge", None)
+    if bridge is None:
+        return
+    # Read before the scene is replaced; the export names the backend that failed.
+    api = graphics_api(window)
+    _LOG.error("Qt Quick view has no renderer (%s)", api)
+    relaunched = os.environ.get(RENDERER_RELAUNCH_ENV)
+    if api != "software" and not relaunched and relaunch_with_software_rendering(
+        getattr(window, "single_instance", None)
+    ):
+        window._quit_from_tray()
+    else:
+        reason = "The graphics renderer did not start" + (", even with software rendering" if relaunched else "")
+        show_quick_error(window, "no_renderer", reason, api)
     bridge.release()

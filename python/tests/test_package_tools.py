@@ -862,6 +862,7 @@ def test_cargo_commands_must_pass_locked(command):
 
     assert len(errors_for(f"cargo {command} -p mic_eq_core")) == 1
     assert errors_for(f"cargo {command} --locked -p mic_eq_core") == []
+    assert len(errors_for(f"cargo {command} -p mic_eq_core -- --locked")) == 1
 
 
 @pytest.mark.parametrize(

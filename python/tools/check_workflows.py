@@ -467,8 +467,9 @@ def _check_cargo_locked(
     """Cargo commands that resolve this repository's Cargo.lock must not update it."""
     for line in _active_run_lines(document):
         for command in CARGO_LOCKED_COMMANDS:
+            # Arguments after a bare `--` go to the test binary, not to cargo.
             if _active_run_has_marker([line], f"cargo {command}") and (
-                "--locked" not in line.split()
+                "--locked" not in line.split(" -- ")[0].split()
             ):
                 errors.append(f"{name}: 'cargo {command}' must pass --locked: {line.strip()}")
 

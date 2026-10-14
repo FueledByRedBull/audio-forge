@@ -112,7 +112,8 @@ held-out split, with the pass rule written before the run, as described in
 [evaluation/README.md](evaluation/README.md). State which hardware was covered
 and which was not. Remove a model that does not beat the current one on those
 gates. A model that ships also needs an entry in the explicit model list in
-`AudioForge.spec`.
+`AudioForge.spec`, in `package_smoke.py`'s required files, and in the reviewed
+bundle paths, `evaluation/release-bundle-path-baseline.json`.
 
 ## Runtime assets and configuration
 

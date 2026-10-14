@@ -46,8 +46,8 @@ archive, and one `SHA256SUMS.txt`.
    SHA-256. The candidate artifact expires after three days; an expired
    candidate must be rebuilt and revalidated.
 4. **Tag the candidate commit** with an annotated `v<version>` tag; promotion
-   refuses a lightweight one. A tag push doesn't rebuild anything. Never move a released tag to fix documentation;
-   reconcile documentation in a later commit.
+   refuses a lightweight one. A tag push doesn't rebuild anything. Never move a
+   released tag to fix documentation; reconcile documentation in a later commit.
 5. **Review hardware evidence (optional).** Hardware qualification workflows
    can add measurements when a suitable runner exists; they don't block
    publication. Keep each measurement bound to its candidate revision and
@@ -177,8 +177,8 @@ cargo audit
 - **Dependabot:** GitHub Actions version updates stay on, weekly and grouped
   into one pull request, to keep the pinned actions current. Python and Cargo
   version updates are off (`open-pull-requests-limit: 0`); security updates stay
-  on. Scope each dependency refresh on its own and pass the build, benchmark,
-  hardware, and package gates.
+  on. Scope each dependency refresh on its own and pass the build, hardware,
+  and package gates.
 
 ## Packaging invariants
 

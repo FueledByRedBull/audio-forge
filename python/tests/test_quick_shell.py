@@ -29,7 +29,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from mic_eq.config import AppConfig, DeviceIdentity
 from mic_eq.config_parts.settings import q_from_bandwidth_octaves
-from mic_eq.ui.main_window import MainWindow
+from mic_eq.ui.main_window import PAGE_NAMES, MainWindow
 from mic_eq.ui.eq_quick_graph import EQGraphItem
 from mic_eq.ui.eq_graph import EQGraphGeometry
 from mic_eq.ui.level_meter import CLIP_FLAT_TOP_SAMPLES
@@ -408,6 +408,22 @@ def test_scene_loads_cleanly(quick_window) -> None:
     meter = quick_window.input_meter
     meter.set_levels(-30.0, -0.2)
     assert meter.clip_flash_counter == 10 and meter.decay_timer.isActive()
+
+
+def test_the_menu_bar_stays_hidden_and_the_window_can_shrink_to_900_by_640(quick_window) -> None:
+    assert quick_window.menuBar().isHidden()
+    assert quick_window.minimumWidth() <= 900
+    assert quick_window.minimumHeight() <= 640
+
+
+def test_the_page_state_ignores_an_index_outside_the_pages(quick_window) -> None:
+    page = quick_window.shell_page
+    page.setIndex(len(PAGE_NAMES))
+    page.setIndex(-1)
+    assert page.currentIndex() == 0
+    page.setIndex(quick_window.HEALTH_PAGE_INDEX)
+    page.setIndex(len(PAGE_NAMES))
+    assert page.currentIndex() == quick_window.HEALTH_PAGE_INDEX
 
 
 def test_field_proxy_writes_through_to_the_gate_state(quick_window) -> None:

@@ -9,7 +9,6 @@ DEBUG: Added terminal logging for processor state tracking
 from PySide6.QtWidgets import (
     QMainWindow,
     QDialog,
-    QComboBox,
     QMessageBox,
     QFileDialog,
     QInputDialog,
@@ -901,7 +900,7 @@ class MainWindow(QMainWindow):
         return saved
 
     @staticmethod
-    def _combo_device_identity(combo: QComboBox | ChoiceState) -> DeviceIdentity | None:
+    def _combo_device_identity(combo: ChoiceState) -> DeviceIdentity | None:
         return coerce_device_identity(combo.currentData())
 
     @staticmethod
@@ -924,13 +923,13 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _find_combo_index_by_identity(
-        combo: QComboBox | ChoiceState, identity: DeviceIdentity | None
+        combo: ChoiceState, identity: DeviceIdentity | None
     ) -> int:
         return find_identity_index(MainWindow._combo_identities(combo), identity)
 
     def _select_combo_identity(
         self,
-        combo: QComboBox | ChoiceState,
+        combo: ChoiceState,
         identity: DeviceIdentity | None,
     ) -> bool:
         index = self._find_combo_index_by_identity(combo, identity)
@@ -940,18 +939,18 @@ class MainWindow(QMainWindow):
         return False
 
     @staticmethod
-    def _default_combo_index(combo: QComboBox | ChoiceState) -> int:
+    def _default_combo_index(combo: ChoiceState) -> int:
         return default_device_index(MainWindow._combo_identities(combo))
 
     @staticmethod
-    def _preferred_output_combo_index(combo: QComboBox | ChoiceState) -> int:
+    def _preferred_output_combo_index(combo: ChoiceState) -> int:
         return preferred_output_index(MainWindow._combo_identities(combo))
 
     @staticmethod
-    def _combo_identities(combo: QComboBox | ChoiceState) -> list[DeviceIdentity | None]:
+    def _combo_identities(combo: ChoiceState) -> list[DeviceIdentity | None]:
         return [coerce_device_identity(combo.itemData(i)) for i in range(combo.count())]
 
-    def _device_selection_to_name(self, combo: QComboBox | ChoiceState) -> str:
+    def _device_selection_to_name(self, combo: ChoiceState) -> str:
         identity = self._combo_device_identity(combo)
         if identity is not None:
             return identity.name

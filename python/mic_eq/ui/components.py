@@ -11,8 +11,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QSizePolicy,
-    QToolButton,
-    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -21,7 +19,6 @@ from .layout_constants import MARGIN_PANEL, SPACING_SECTION
 from .theme import (
     CARD_STYLE,
     PALETTE,
-    RADIUS_CONTROL,
     STEP_CURRENT_STYLE,
     STEP_STYLE,
     prefers_reduced_motion,
@@ -46,16 +43,6 @@ class Glyph:
     REFRESH = ""
     UNDO = ""
     REDO = ""
-
-
-# Short stand-ins for machines without a system icon font.
-_GLYPH_TEXT = {
-    Glyph.MORE: "...",
-    Glyph.HELP: "?",
-    Glyph.PREVIOUS: "<",
-    Glyph.NEXT: ">",
-    Glyph.REFRESH: "Refresh",
-}
 
 
 def icon_font(point_size: int = 12) -> QFont | None:
@@ -201,40 +188,13 @@ class StepHeader(QWidget):
             label.setStyleSheet(STEP_CURRENT_STYLE if index == step else STEP_STYLE)
 
 
-class IconButton(QToolButton):
-    """A borderless glyph button that always carries an accessible name."""
-
-    def __init__(self, glyph: str, name: str, parent: QWidget | None = None):
-        super().__init__(parent)
-        font = icon_font()
-        if font is None:
-            self.setText(_GLYPH_TEXT.get(glyph, name))
-        else:
-            self.setFont(font)
-            self.setText(glyph)
-        self.setAccessibleName(name)
-        self.setToolTip(name)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setAutoRaise(True)
-        self.setStyleSheet(
-            f"QToolButton {{ border: none; border-radius: {RADIUS_CONTROL}px; "
-            f"padding: 6px; color: {PALETTE.text_muted}; }} "
-            f"QToolButton:hover {{ background-color: {PALETTE.control_hover}; "
-            f"color: {PALETTE.text_primary}; }} "
-            f"QToolButton:focus {{ border: 1px solid {PALETTE.text_primary}; }} "
-            "QToolButton::menu-indicator { image: none; }"
-        )
-
-
 class Card(QFrame):
-    """A titled surface: optional switch and help in the header, then content."""
+    """A titled surface: a title in the header, then content."""
 
     def __init__(
         self,
         title: str,
         *,
-        switch: QCheckBox | None = None,
-        help_text: str = "",
         parent: QWidget | None = None,
     ):
         super().__init__(parent)
@@ -246,9 +206,6 @@ class Card(QFrame):
 
         self.header = QHBoxLayout()
         self.header.setSpacing(10)
-        self.switch = switch
-        if switch is not None:
-            self.header.addWidget(switch)
         self.title_label = QLabel(title.upper())
         title_font = self.title_label.font()
         title_font.setPointSize(10)
@@ -256,20 +213,9 @@ class Card(QFrame):
         title_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 106)
         self.title_label.setFont(title_font)
         self.header.addWidget(self.title_label)
-        self.help_button: IconButton | None = None
-        if help_text:
-            self.help_button = IconButton(Glyph.HELP, f"About {title}")
-            self.help_button.setToolTip(help_text)
-            self.help_button.clicked.connect(self._show_help)
-            self.header.addWidget(self.help_button)
         self.header.addStretch(1)
         outer.addLayout(self.header)
 
         self.body = QVBoxLayout()
         self.body.setSpacing(12)
         outer.addLayout(self.body)
-
-    def _show_help(self) -> None:
-        button = self.help_button
-        assert button is not None
-        QToolTip.showText(button.mapToGlobal(button.rect().bottomLeft()), button.toolTip())

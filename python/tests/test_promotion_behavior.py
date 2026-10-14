@@ -31,6 +31,8 @@ def _origin_gate_script() -> str:
         (("conclusion", "failure"), "not a successful completed"),
         (("headSha", "b" * 40), "did not build the release tag commit"),
         (("event", "schedule"), "unsupported event"),
+        (("event", "push"), "unsupported event"),
+        (("tag_type", "commit"), "must be an annotated tag"),
         (("attempt", 0), "invalid attempt number"),
     ],
 )
@@ -51,7 +53,10 @@ def test_promotion_origin_gate_executes_commit_and_run_binding(
         "headSha": commit,
         "attempt": 1,
     }
-    if mutation:
+    tag_type = "tag"
+    if mutation and mutation[0] == "tag_type":
+        tag_type = str(mutation[1])
+    elif mutation:
         run[mutation[0]] = mutation[1]
     output = tmp_path / "github-output"
     setup = textwrap.dedent(
@@ -67,6 +72,8 @@ def test_promotion_origin_gate_executes_commit_and_run_binding(
         function git {
           param([Parameter(ValueFromRemainingArguments=$true)][string[]]$CommandArgs)
           $global:LASTEXITCODE = 0
+          if ($CommandArgs[0] -eq 'fetch') { return }
+          if ($CommandArgs[0] -eq 'cat-file') { $env:TEST_TAG_TYPE; return }
           $env:TEST_COMMIT
         }
         function gh {
@@ -85,6 +92,7 @@ def test_promotion_origin_gate_executes_commit_and_run_binding(
             "GITHUB_OUTPUT": str(output),
             "TEST_TAG": "v1.12.0",
             "TEST_COMMIT": commit,
+            "TEST_TAG_TYPE": tag_type,
             "TEST_RUN_JSON": json.dumps(run),
         }
     )

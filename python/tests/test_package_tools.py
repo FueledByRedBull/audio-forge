@@ -465,7 +465,7 @@ def _set_step_run(job, name, run):
         ),
         (
             lambda jobs: _set_step_run(
-                jobs["rust-tests"], "Rust tests", "cargo test -p mic_eq_core -- --skip other_test --exact"
+                jobs["rust-tests"], "Rust tests", "cargo test --locked -p mic_eq_core -- --skip other_test --exact"
             ),
             "may skip only seeded_control_and_dsp_loops_remain_finite_under_contention",
         ),
@@ -473,7 +473,7 @@ def _set_step_run(job, name, run):
             lambda jobs: _set_step_run(
                 jobs["rust-tests"],
                 "Rust tests",
-                "cargo test -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention",
+                "cargo test --locked -p mic_eq_core -- --skip seeded_control_and_dsp_loops_remain_finite_under_contention",
             ),
             "(with --exact)",
         ),
@@ -531,7 +531,7 @@ def test_release_rust_tests_require_pythonpath_on_the_test_step(location):
     pythonpath = rust_tests["env"].pop("PYTHONPATH")
     if location != "comment":
         steps.append({
-            "run": "cargo test -p mic_eq_core" if location == "disabled-step" else "echo ready",
+            "run": "cargo test --locked -p mic_eq_core" if location == "disabled-step" else "echo ready",
             "env": {"PYTHONPATH": pythonpath},
             "if": location != "disabled-step",
         })
@@ -692,7 +692,7 @@ def test_release_shell_text_is_not_a_gate():
         ),
         (
             lambda jobs: _move_to_end(jobs["rust-tests"], "Verify the packaged runtime files"),
-            "rust-tests must run 'cargo test -p mic_eq_core' after verifying the runtime files",
+            "rust-tests must run 'cargo test --locked -p mic_eq_core' after verifying the runtime files",
         ),
         (
             lambda jobs: _move_to_end(jobs["pytest"], "Verify the packaged runtime files"),
@@ -850,6 +850,33 @@ def test_promotion_keeps_package_gates_without_hardware_runner():
     assert "self-hosted" not in source
     assert "--require-hashes -r requirements/runtime.txt" in source
     assert "git fetch --no-tags origin $env:GITHUB_SHA --depth=1" in source
+
+
+@pytest.mark.parametrize("command", ["build", "test", "clippy", "run"])
+def test_cargo_commands_must_pass_locked(command):
+    def errors_for(line):
+        document = {"jobs": {"j": {"steps": [{"run": line}]}}}
+        errors: list[str] = []
+        check_workflows._check_cargo_locked("x.yml", document, errors)
+        return errors
+
+    assert len(errors_for(f"cargo {command} -p mic_eq_core")) == 1
+    assert errors_for(f"cargo {command} --locked -p mic_eq_core") == []
+    assert len(errors_for(f"cargo {command} -p mic_eq_core -- --locked")) == 1
+
+
+@pytest.mark.parametrize(
+    "needle", ['$run.event -ne "workflow_dispatch"', "git cat-file -t $tagRef"]
+)
+def test_promotion_requires_dispatch_candidate_and_annotated_tag(needle):
+    path = check_workflows.WORKFLOW_DIR / "release-promote.yml"
+    source = path.read_text(encoding="utf-8")
+    assert needle in source
+    errors: list[str] = []
+
+    check_workflows._check_required_gates(path.name, source.replace(needle, "true"), errors)
+
+    assert any(needle in error for error in errors)
 
 
 def test_promotion_binds_portable_and_msi_to_the_candidate_run():
@@ -2438,3 +2465,17 @@ def test_version_check_accepts_generated_archive_sidecar_references(
     monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
 
     check_versions._check_no_static_current_archive_claims("9.8.7")
+
+
+def test_version_check_rejects_extra_release_notes(tmp_path, monkeypatch):
+    notes = tmp_path / "release-notes"
+    notes.mkdir()
+    (notes / "release-notes-v9.8.7.md").write_text("Notes.\n", encoding="utf-8")
+    monkeypatch.setattr(check_versions, "REPO_ROOT", tmp_path)
+    version = check_versions.parse_version("9.8.7")
+
+    check_versions._check_only_current_release_notes(version)
+
+    (notes / "release-notes-v9.8.6.md").write_text("Old.\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="must hold only release-notes-v9.8.7.md"):
+        check_versions._check_only_current_release_notes(version)

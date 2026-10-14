@@ -122,6 +122,15 @@ def _check_no_static_current_archive_claims(version: ReleaseVersion | str) -> No
             )
 
 
+def _check_only_current_release_notes(version: ReleaseVersion) -> None:
+    found = sorted(path.name for path in (REPO_ROOT / "release-notes").iterdir())
+    expected = [f"release-notes-{version.tag}.md"]
+    if found != expected:
+        raise ValueError(
+            f"release-notes/ must hold only {expected[0]}, found: {', '.join(found)}"
+        )
+
+
 def main() -> int:
     _check_python_runtime()
     _check_release_asset_hydration()
@@ -166,6 +175,7 @@ def main() -> int:
         raise ValueError(
             f"release notes: expected file is missing: {release_notes_path.relative_to(REPO_ROOT)}"
         )
+    _check_only_current_release_notes(expected)
 
     mismatches = {
         path: version

@@ -1957,14 +1957,6 @@ impl PyAudioProcessor {
         self.processor.set_gate_enabled(enabled);
     }
 
-    fn is_gate_enabled(&self) -> bool {
-        self.processor.is_gate_enabled()
-    }
-
-    fn get_gate_chatter_event_count(&self) -> u64 {
-        self.processor.get_gate_chatter_event_count()
-    }
-
     fn set_gate_threshold(&self, threshold_db: f64) {
         self.processor.set_gate_threshold(threshold_db);
     }
@@ -1992,12 +1984,6 @@ impl PyAudioProcessor {
     #[cfg(feature = "vad")]
     fn get_vad_probability(&self) -> f32 {
         self.processor.get_vad_probability()
-    }
-
-    /// Get fused gate open score (0.0-1.0)
-    #[cfg(feature = "vad")]
-    fn get_gate_fused_score(&self) -> f32 {
-        self.processor.get_gate_fused_score()
     }
 
     /// Check whether VAD backend is available (model/runtime loaded)
@@ -2044,12 +2030,6 @@ impl PyAudioProcessor {
         self.processor.get_noise_floor()
     }
 
-    /// Get current gate margin (in dB)
-    #[cfg(feature = "vad")]
-    fn gate_margin(&self) -> f32 {
-        self.processor.gate_margin()
-    }
-
     /// Check if auto-threshold is enabled
     #[cfg(feature = "vad")]
     fn auto_threshold_enabled(&self) -> bool {
@@ -2093,11 +2073,6 @@ impl PyAudioProcessor {
     /// Get current noise model name
     fn get_noise_model(&self) -> String {
         self.processor.get_noise_model().id().to_string()
-    }
-
-    /// Get current noise model display name
-    fn get_noise_model_display_name(&self) -> String {
-        self.processor.get_noise_model().display_name().to_string()
     }
 
     /// List available noise models: [(id, display_name), ...]
@@ -2218,10 +2193,6 @@ impl PyAudioProcessor {
         self.processor.set_deesser_enabled(enabled);
     }
 
-    fn is_deesser_enabled(&self) -> bool {
-        self.processor.is_deesser_enabled()
-    }
-
     fn set_deesser_low_cut_hz(&self, hz: f64) {
         self.processor.set_deesser_low_cut_hz(hz);
     }
@@ -2255,10 +2226,6 @@ impl PyAudioProcessor {
         self.processor.set_deesser_auto_enabled(auto_enabled);
     }
 
-    fn is_deesser_auto_enabled(&self) -> bool {
-        self.processor.is_deesser_auto_enabled()
-    }
-
     fn set_deesser_auto_amount(&self, amount: f64) {
         self.processor.set_deesser_auto_amount(amount);
     }
@@ -2271,28 +2238,12 @@ impl PyAudioProcessor {
         self.processor.get_deesser_high_cut_hz()
     }
 
-    fn get_deesser_threshold_db(&self) -> f64 {
-        self.processor.get_deesser_threshold_db()
-    }
-
-    fn get_deesser_ratio(&self) -> f64 {
-        self.processor.get_deesser_ratio()
-    }
-
-    fn get_deesser_max_reduction_db(&self) -> f64 {
-        self.processor.get_deesser_max_reduction_db()
-    }
-
     fn get_deesser_auto_amount(&self) -> f64 {
         self.processor.get_deesser_auto_amount()
     }
 
     fn get_deesser_gain_reduction_db(&self) -> f32 {
         self.processor.get_deesser_gain_reduction_db()
-    }
-
-    fn get_deesser_detector_confidence(&self) -> f32 {
-        self.processor.get_deesser_detector_confidence()
     }
 
     // === Compressor ===
@@ -2338,30 +2289,15 @@ impl PyAudioProcessor {
         self.processor.set_compressor_adaptive_release(enabled);
     }
 
-    /// Get compressor adaptive release mode
-    fn get_compressor_adaptive_release(&self) -> bool {
-        self.processor.get_compressor_adaptive_release()
-    }
-
     /// Set compressor base release time (milliseconds)
     fn set_compressor_base_release(&self, release_ms: f64) {
         self.processor.set_compressor_base_release(release_ms);
-    }
-
-    /// Get compressor base release time (milliseconds)
-    fn get_compressor_base_release(&self) -> f64 {
-        self.processor.get_compressor_base_release()
     }
 
     /// Set compressor detector sidechain high-pass mode
     fn set_compressor_sidechain_highpass_enabled(&self, enabled: bool) {
         self.processor
             .set_compressor_sidechain_highpass_enabled(enabled);
-    }
-
-    /// Get compressor detector sidechain high-pass mode
-    fn get_compressor_sidechain_highpass_enabled(&self) -> bool {
-        self.processor.get_compressor_sidechain_highpass_enabled()
     }
 
     /// Get current compressor release time (adaptive or base, in milliseconds)
@@ -2388,11 +2324,6 @@ impl PyAudioProcessor {
     /// Set compressor target LUFS
     fn set_compressor_target_lufs(&self, target_lufs: f64) {
         self.processor.set_compressor_target_lufs(target_lufs);
-    }
-
-    /// Get compressor target LUFS
-    fn get_compressor_target_lufs(&self) -> f64 {
-        self.processor.get_compressor_target_lufs()
     }
 
     /// Set confidence in Auto Voice Setup's room-noise reference (0.0-1.0).
@@ -2434,10 +2365,6 @@ impl PyAudioProcessor {
             .set_limiter_careful_output_enabled(enabled);
     }
 
-    fn is_limiter_careful_output_enabled(&self) -> bool {
-        self.processor.is_limiter_careful_output_enabled()
-    }
-
     fn get_limiter_effective_ceiling_db(&self) -> f64 {
         self.processor.limiter_effective_ceiling_db()
     }
@@ -2452,20 +2379,12 @@ impl PyAudioProcessor {
         self.processor.get_input_rms_db()
     }
 
-    fn get_input_crest_factor_db(&self) -> f32 {
-        self.processor.get_input_crest_factor_db()
-    }
-
     fn get_output_peak_db(&self) -> f32 {
         self.processor.get_output_peak_db()
     }
 
     fn get_output_rms_db(&self) -> f32 {
         self.processor.get_output_rms_db()
-    }
-
-    fn get_output_crest_factor_db(&self) -> f32 {
-        self.processor.get_output_crest_factor_db()
     }
 
     fn take_input_peak_since_read(&self) -> f32 {
@@ -2488,18 +2407,6 @@ impl PyAudioProcessor {
         self.processor.get_output_full_scale_count()
     }
 
-    fn get_output_short_term_lufs(&self) -> f32 {
-        self.processor.get_output_short_term_lufs()
-    }
-
-    fn get_input_stereo_correlation(&self) -> f32 {
-        self.processor.get_input_stereo_correlation()
-    }
-
-    fn get_input_phase_warning_count(&self) -> u64 {
-        self.processor.get_input_phase_warning_count()
-    }
-
     fn get_compressor_gain_reduction_db(&self) -> f32 {
         self.processor.get_compressor_gain_reduction_db()
     }
@@ -2516,19 +2423,7 @@ impl PyAudioProcessor {
         self.processor.set_latency_compensation_ms(compensation_ms);
     }
 
-    fn get_latency_compensation_ms(&self) -> f32 {
-        self.processor.get_latency_compensation_ms()
-    }
-
     // === DSP Performance Metrics ===
-
-    fn get_dsp_time_ms(&self) -> f32 {
-        self.processor.get_dsp_time_ms()
-    }
-
-    fn get_input_buffer_samples(&self) -> u32 {
-        self.processor.get_input_buffer_samples()
-    }
 
     fn get_input_buffer_smoothed_samples(&self) -> u32 {
         self.processor.get_input_buffer_smoothed_samples()
@@ -2550,10 +2445,6 @@ impl PyAudioProcessor {
         self.processor.input_fixed_buffer_frames()
     }
 
-    fn get_rnnoise_buffer_samples(&self) -> u32 {
-        self.processor.get_rnnoise_buffer_samples()
-    }
-
     /// Get smoothed DSP processing time in milliseconds
     fn get_dsp_time_smoothed_ms(&self) -> f32 {
         let us = self.processor.dsp_time_smoothed_us.load(Ordering::Relaxed);
@@ -2567,20 +2458,8 @@ impl PyAudioProcessor {
 
     // === Dropped Sample Tracking ===
 
-    fn get_dropped_samples(&self) -> u64 {
-        self.processor.get_dropped_samples()
-    }
-
     fn reset_dropped_samples(&self) {
         self.processor.reset_dropped_samples();
-    }
-
-    fn get_lock_contention_count(&self) -> u64 {
-        self.processor.get_lock_contention_count()
-    }
-
-    fn reset_lock_contention_count(&self) {
-        self.processor.reset_lock_contention_count();
     }
 
     fn get_input_callback_age_ms(&self) -> u64 {
@@ -2589,58 +2468,6 @@ impl PyAudioProcessor {
 
     fn get_output_callback_age_ms(&self) -> u64 {
         self.processor.get_output_callback_age_ms()
-    }
-
-    fn get_output_underrun_streak(&self) -> u32 {
-        self.processor.get_output_underrun_streak()
-    }
-
-    fn get_output_underrun_total(&self) -> u64 {
-        self.processor.get_output_underrun_total()
-    }
-
-    fn get_jitter_dropped_samples(&self) -> u64 {
-        self.processor.get_jitter_dropped_samples()
-    }
-
-    fn get_output_retime_adjustment_count(&self) -> u64 {
-        self.processor.get_output_retime_adjustment_count()
-    }
-
-    fn get_output_recovery_event_count(&self) -> u64 {
-        self.processor.get_output_recovery_event_count()
-    }
-
-    fn get_output_recovery_count(&self) -> u64 {
-        self.processor.get_output_recovery_count()
-    }
-
-    fn get_suppressor_non_finite_count(&self) -> u64 {
-        self.processor.get_suppressor_non_finite_count()
-    }
-
-    fn get_rt_error_code(&self) -> u32 {
-        self.processor.get_rt_error_code()
-    }
-
-    fn get_rt_error_name(&self) -> &'static str {
-        self.processor.get_rt_error_name()
-    }
-
-    fn get_input_callback_error_count(&self) -> u64 {
-        self.processor.get_input_callback_error_count()
-    }
-
-    fn get_output_callback_error_count(&self) -> u64 {
-        self.processor.get_output_callback_error_count()
-    }
-
-    fn get_rt_buffer_overflow_count(&self) -> u64 {
-        self.processor.get_rt_buffer_overflow_count()
-    }
-
-    fn is_noise_backend_available(&self) -> bool {
-        self.processor.is_noise_backend_available()
     }
 
     fn noise_backend_failed(&self) -> bool {

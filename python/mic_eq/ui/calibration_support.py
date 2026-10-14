@@ -200,3 +200,25 @@ def diagnostic_state(confidence: float) -> str:
     if confidence >= 0.45:
         return "warn"
     return "bad"
+
+
+# The two dialogs bind these as methods (``name = function`` in the class body).
+def on_analysis_thread_finished(self: Any, worker: Any) -> None:
+    if worker in self._analysis_workers:
+        self._analysis_workers.remove(worker)
+    if self.analysis_worker is worker:
+        self.analysis_worker = None
+    worker.deleteLater()
+    if self._close_requested:
+        self._finish_close()
+
+
+def wait_for_analysis_workers(self: Any) -> None:
+    """Keep application shutdown from destroying a running QThread."""
+    self._request_close(False)
+    for worker in tuple(self._analysis_workers):
+        if worker.isRunning():
+            worker.stop()
+            worker.wait()
+    self._analysis_workers.clear()
+    self.analysis_worker = None

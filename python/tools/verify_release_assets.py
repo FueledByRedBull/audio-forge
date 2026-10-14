@@ -183,10 +183,6 @@ def load_asset_manifest(
     )
 
 
-def _load_manifest(path: Path = MANIFEST_PATH) -> list[dict[str, Any]]:
-    return list(load_asset_manifest(path).assets)
-
-
 def _validate_manifest_path(raw_path: str, field_name: str) -> str | None:
     local_path = Path(raw_path)
     posix_path = PurePosixPath(raw_path.replace("\\", "/"))

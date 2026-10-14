@@ -121,8 +121,6 @@ TEXT_SPECS = {
         "Times the audio stream restarted, and output recoveries.\n"
         "Small timing corrections are normal and do not warn.",
     ),
-    # Only the widget view shows it, after the Qt Quick view could not take over.
-    "interface_notice": _TextSpec("", "Interface notice", shown=False),
 }
 # The chips the health summary is computed from, in the order it reports them.
 HEALTH_DECISION_KEYS = (

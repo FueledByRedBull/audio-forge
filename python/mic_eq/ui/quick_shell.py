@@ -1,7 +1,7 @@
 """Qt Quick view of the main window.
 
 Processing and shell controls consume shared state and Qt action notifications.
-The classic view stays available for rendering failure recovery.
+When the scene cannot start or stops rendering, the window shows an error screen.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from .quick_meter import QuickMeterItem
 from .shell_specs import ACTION_SPECS
 from .shell_state import ActionControl
 from .noise_controls import NoiseControl
+from .quick_error_screen import show_quick_error
 from .processing_controls import SettingControl, GateText
 from .theme import (
     PALETTE,
@@ -49,7 +50,6 @@ QML_DIR = Path(__file__).parent / "qml"
 TRACE_INTERVAL_MS = 50
 TRACE_POINTS = 120
 MINIMUM_SCENE_SIZE = (900, 600)
-QUICK_VIEW_UNAVAILABLE = "The Qt Quick view could not start; using the classic view."
 _LOG = logging.getLogger(__name__)
 
 class LevelTrace(QQuickPaintedItem):
@@ -95,7 +95,12 @@ class QuickBridge(QObject):
     def __init__(self, window):
         super().__init__(window)
         self._window = window
-        self._model = self._build_model(window)
+        try:
+            self._model = self._build_model(window)
+        except Exception:
+            # Its controls are wired to shared state; none may outlive the failure.
+            self.deleteLater()
+            raise
         self._levels: deque[list[float]] = deque(maxlen=TRACE_POINTS)
         self._trace_timer = QTimer(self)
         self._trace_timer.setInterval(TRACE_INTERVAL_MS)
@@ -106,7 +111,7 @@ class QuickBridge(QObject):
     model = Property(dict, lambda self: self._model, constant=True)
 
     def release(self) -> None:
-        """Release scene adapters when the classic view takes over."""
+        """Release scene adapters when the scene is dropped."""
 
         self.deleteLater()
 
@@ -420,22 +425,18 @@ def graphics_api(window) -> str:
     return "unknown" if interface is None else _GRAPHICS_APIS.get(interface.graphicsApi(), "unknown")
 
 
-def install_quick_shell(window) -> bool:
-    """Make the QML scene the window's content.
-
-    No widget view exists yet, and none is built. Returns ``False`` when the
-    scene does not load; the caller then builds the widget view.
-    """
+def install_quick_shell(window) -> None:
+    """Make the QML scene the window's content, or the error screen if it cannot start."""
 
     qmlRegisterType(EQGraphItem, "AudioForge", 1, 0, "EQGraphItem")  # type: ignore[call-overload]
     qmlRegisterType(QuickMeterItem, "AudioForge", 1, 0, "QuickMeterItem")  # type: ignore[call-overload]
     qmlRegisterType(LevelTrace, "AudioForge", 1, 0, "LevelTrace")  # type: ignore[call-overload]
     try:
         bridge = QuickBridge(window)
-    except Exception:
+    except Exception as error:
         _LOG.exception("Qt Quick view could not be prepared")
-        _announce_fallback(window)
-        return False
+        show_quick_error(window, "bridge_failed", f"{type(error).__name__}: {error}")
+        return
     view = QQuickWidget(window)
     view.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
     view.setMinimumSize(*MINIMUM_SCENE_SIZE)
@@ -443,45 +444,32 @@ def install_quick_shell(window) -> bool:
     view.rootContext().setContextProperty("ui", bridge)
     view.setSource(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
     if view.status() != QQuickWidget.Status.Ready:
-        _LOG.error(
-            "Qt Quick view failed to load: %s",
-            "; ".join(error.toString() for error in view.errors()),
-        )
+        reason = "; ".join(error.toString() for error in view.errors()) or "no details were reported"
+        _LOG.error("Qt Quick view failed to load: %s", reason)
         view.deleteLater()
         bridge.release()
-        _announce_fallback(window)
-        return False
+        show_quick_error(window, "qml_not_ready", reason)
+        return
 
     window.setCentralWidget(view)
     window.quick_bridge = bridge
     # A scene that loads can still fail to render, for example without a
     # usable graphics adapter.
-    view.sceneGraphError.connect(
-        lambda _error, message: restore_classic_view(window, message)
-    )
+    view.sceneGraphError.connect(lambda _error, message: _scene_stopped(window, message))
     # Left to interpreter shutdown, the scene is torn down in no fixed order
     # and the process can crash on exit; delete it as the event loop ends.
     app = QCoreApplication.instance()
     if app is not None:
         app.aboutToQuit.connect(view.deleteLater)
-    return True
 
 
-def _announce_fallback(window) -> None:
-    # Shared state the widget view renders: a transient status message would
-    # replace the notice, and the view may not exist yet.
-    window.quick_view_failed = True
-    window.shell_texts["interface_notice"].update(text=QUICK_VIEW_UNAVAILABLE, shown=True)
-
-
-def restore_classic_view(window, reason: str) -> None:
-    """Drop the Qt Quick view for the widget view, and say why."""
+def _scene_stopped(window, reason: str) -> None:
+    """Replace a scene that stopped rendering with the error screen."""
 
     bridge = window.__dict__.pop("quick_bridge", None)
     if bridge is None:
         return
     _LOG.error("Qt Quick view stopped rendering: %s", reason)
-    _announce_fallback(window)
-    # Qt hides and deletes the replaced central widget once the event loop runs.
-    window._show_classic_view()
+    # Read before the scene is replaced; the export names the backend that failed.
+    show_quick_error(window, "scene_graph_error", reason, graphics_api(window))
     bridge.release()

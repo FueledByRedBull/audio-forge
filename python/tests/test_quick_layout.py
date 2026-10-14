@@ -183,3 +183,81 @@ def test_the_status_strip_texts_do_not_overlap(minimum_window) -> None:
     for left, right in zip(boxes, boxes[1:]):
         assert left.right() <= right.left(), f"{left} runs into {right}"
     assert boxes[-1].right() <= scene_rect(named(minimum_window, "meterPanel")).left()
+
+
+LONG_HEALTH_TEXTS = [
+    "Drops: 256 samples dropped, 0 dropouts, 1 restart (needs attention: the audio engine reported a fault)",
+    "Device activity: input has not started sending sound yet, output has not started playing sound yet",
+    "Output: LIMITER WORKING HARD (7.5 dB)",
+]
+
+
+def settle(qapp) -> None:
+    for _ in range(3):
+        qapp.processEvents()
+        QTest.qWait(30)
+
+
+def health_chip(window: MainWindow) -> QQuickItem:
+    strip = named(window, "statusStrip")
+    return next(child for child in strip.childItems() if "Chip" in child.metaObject().className())
+
+
+@pytest.mark.parametrize("text", LONG_HEALTH_TEXTS)
+def test_a_long_health_text_is_cut_short_and_whole_in_the_tooltip_and_the_name(
+    minimum_window, qapp, text
+) -> None:
+    from PySide6.QtGui import QAccessible
+
+    window = minimum_window
+    window._set_health_chip("health_summary_label", text, "warn")
+    window.shell_texts["health_summary_label"].update(tip="What to do about it.")
+    settle(qapp)
+
+    # The other texts keep their room and nothing runs past the strip or into the meters.
+    test_the_status_strip_texts_do_not_overlap(window)
+    chip = health_chip(window)
+    shown = next(child for child in chip.childItems() if child.metaObject().className() == "QQuickText")
+    assert shown.property("truncated") is True
+    assert caption_tip(chip) == f"{text}\n\nWhat to do about it."
+    was_active = QAccessible.isActive()
+    QAccessible.setActive(True)
+    try:
+        toggle = named(window, "healthToggle")
+        assert QAccessible.queryAccessibleInterface(toggle).text(QAccessible.Text.Name) == text
+    finally:
+        QAccessible.setActive(was_active)
+
+
+def test_a_short_health_text_keeps_its_natural_width_and_its_own_tooltip(minimum_window, qapp) -> None:
+    window = minimum_window
+    window._set_health_chip("health_summary_label", "Health: OK", "ok")
+    window.shell_texts["health_summary_label"].update(tip="Everything looks fine.")
+    settle(qapp)
+
+    chip = health_chip(window)
+    shown = next(child for child in chip.childItems() if child.metaObject().className() == "QQuickText")
+    assert shown.property("truncated") is False
+    assert chip.width() == pytest.approx(chip.implicitWidth())
+    assert caption_tip(chip) == "Everything looks fine."
+
+
+def test_the_status_message_keeps_a_quarter_of_the_strip_at_the_worst_combination(
+    minimum_window, qapp
+) -> None:
+    window = minimum_window
+    transmission = "Transmission: Running / Raw monitor / Mute pending"
+    window.shell_texts["transmission_status_label"].update(text=transmission, status="warn")
+    window._set_health_chip("health_summary_label", LONG_HEALTH_TEXTS[0], "warn")
+    window.status_message.showMessage("Loaded preset: DaBest")
+    settle(qapp)
+
+    # The note gives way first, then the transmission text and the chip; the message does not.
+    test_the_status_strip_texts_do_not_overlap(window)
+    strip = named(window, "statusStrip")
+    message = named(window, "statusMessage")
+    assert message.width() >= strip.width() / 4 - 1
+    for text in (transmission, STALE_CALIBRATION):
+        caption = status_caption(window, text)
+        assert caption.property("truncated") is True
+        assert caption_tip(caption) == text

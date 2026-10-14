@@ -23,6 +23,7 @@ from mic_eq.ui.main_window import (
     _fit_window_geometry_to_screens,
 )
 from mic_eq.ui.level_meter import SCALE_TEXT_GAP, _scale_mark_geometry
+from mic_eq.ui.shell_specs import TEXT_SPECS
 from mic_eq.ui.theme import (
     PALETTE,
     TEXT_CONTRAST_PAIRS,
@@ -60,6 +61,9 @@ def test_compact_health_aggregation_and_stop(isolated_main_window, states, mute_
     window._update_meters()
     assert window.shell_texts["health_summary_label"].text == "Health: --"
     assert window.shell_texts["health_summary_label"].state == "idle"
+    # Nothing the last reading said about itself is left behind.
+    assert window.shell_texts["health_advice_label"].text == TEXT_SPECS["health_advice_label"].text
+    assert window.shell_texts["health_summary_label"].toolTip == TEXT_SPECS["health_summary_label"].tip
 
 
 def test_all_semantic_text_pairs_meet_wcag_aa_contrast() -> None:

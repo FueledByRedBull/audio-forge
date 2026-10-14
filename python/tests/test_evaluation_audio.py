@@ -106,6 +106,53 @@ def test_read_mono_wav_rejects_truncated_and_unsupported_data(tmp_path) -> None:
         read_mono_wav(_wav(tmp_path / "adpcm.wav", bytes(8), tag=2, bits=16))
 
 
+class _RecordedReads:
+    """File proxy that logs read sizes and never serves more than 1 MiB per read."""
+
+    def __init__(self, stream, sizes: list[int]) -> None:
+        self._stream, self._sizes = stream, sizes
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stream.close()
+
+    def read(self, size: int = -1) -> bytes:
+        self._sizes.append(size)
+        return self._stream.read(min(size, 1 << 20) if size >= 0 else size)
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+
+@pytest.mark.parametrize("chunk", [b"fmt ", b"data"])
+def test_read_wav_checks_a_declared_chunk_size_before_reading_it(tmp_path, monkeypatch, chunk) -> None:
+    good = _wav(tmp_path / "good.wav", bytes(8)).read_bytes()
+    at = good.index(chunk)
+    path = tmp_path / "huge.wav"
+    path.write_bytes(good[: at + 4] + struct.pack("<I", 0xFFFFFFF0) + good[at + 8 :])
+    sizes: list[int] = []
+    monkeypatch.setattr(
+        "mic_eq.analysis.wav_io.open",
+        lambda *args: _RecordedReads(open(*args), sizes),
+        raising=False,
+    )
+
+    with pytest.raises(ValueError, match="truncated"):
+        _read_wav(path)
+
+    assert max(sizes) <= path.stat().st_size
+
+
+def test_read_wav_rejects_a_format_chunk_cut_short_by_the_file_end(tmp_path) -> None:
+    good = _wav(tmp_path / "good.wav", bytes(8)).read_bytes()
+    path = tmp_path / "cut.wav"
+    path.write_bytes(good[: good.index(b"fmt ") + 8 + 10])
+    with pytest.raises(ValueError, match="truncated format"):
+        _read_wav(path)
+
+
 ODD_CHUNK = b"LIST\x03\x00\x00\x00abc\x00"
 
 

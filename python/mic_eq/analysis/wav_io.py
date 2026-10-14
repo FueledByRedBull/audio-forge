@@ -37,6 +37,7 @@ def _read_wav(path: Path) -> tuple[int, np.ndarray]:
     The array may be a read-only view of the bytes read.
     """
 
+    file_size = path.stat().st_size
     with open(path, "rb") as stream:
         preamble = stream.read(12)
         if preamble[:4] != b"RIFF" or preamble[8:] != b"WAVE":
@@ -47,14 +48,18 @@ def _read_wav(path: Path) -> tuple[int, np.ndarray]:
             if len(chunk) < 8:
                 raise ValueError(f"{path.name} has no data chunk after its format chunk")
             chunk_id, size = struct.unpack("<4sI", chunk)
+            # A declared size is untrusted: check it before allocating a read of that size.
+            remaining = file_size - stream.tell()
             if chunk_id == b"fmt ":
+                if size > remaining:
+                    raise ValueError(f"{path.name} has a truncated format chunk")
                 header = stream.read(size)
             elif chunk_id == b"data":
                 if not header:
                     raise ValueError(f"{path.name} has no format chunk before its data")
-                payload = stream.read(size)
-                if len(payload) != size:
+                if size > remaining:
                     raise ValueError(f"{path.name} data chunk is truncated")
+                payload = stream.read(size)
                 break
             else:
                 stream.seek(size, 1)

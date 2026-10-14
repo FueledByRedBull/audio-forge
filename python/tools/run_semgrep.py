@@ -33,7 +33,7 @@ def _suppressed_in_source(result: dict[str, object]) -> bool:
     )
 
 
-def _error_findings(sarif_path: Path) -> list[str]:
+def _blocking_findings(sarif_path: Path) -> list[str]:
     payload = json.loads(sarif_path.read_text(encoding="utf-8"))
     findings: list[str] = []
     for run in payload.get("runs", []):
@@ -46,7 +46,7 @@ def _error_findings(sarif_path: Path) -> list[str]:
         for result in run.get("results", []):
             rule_id = str(result.get("ruleId", "unknown-rule"))
             severity = str(result.get("level") or rules.get(rule_id, ""))
-            if severity == "error" and not _suppressed_in_source(result):
+            if severity in ("error", "warning") and not _suppressed_in_source(result):
                 findings.append(str(result.get("ruleId", "unknown-rule")))
     return findings
 
@@ -159,11 +159,11 @@ def main() -> int:
         print(f"Semgrep did not create {sarif_path}", file=sys.stderr)
         return 2
 
-    error_findings = _error_findings(sarif_path)
-    if error_findings:
+    blocking_findings = _blocking_findings(sarif_path)
+    if blocking_findings:
         print(
-            "Semgrep found reviewed ERROR-severity findings: "
-            + ", ".join(sorted(set(error_findings))),
+            "Semgrep found unsuppressed ERROR or WARNING findings: "
+            + ", ".join(sorted(set(blocking_findings))),
             file=sys.stderr,
         )
         return 1

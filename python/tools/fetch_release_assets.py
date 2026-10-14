@@ -165,6 +165,9 @@ def _download_direct_url(url: str, destination: Path) -> None:
         headers={"User-Agent": "AudioForge-release-assets"},
     )
     with (
+        # The scheme, host, userinfo, port and fragment are checked above, and
+        # callers hash-verify the download.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         urllib.request.urlopen(request, timeout=60) as response,
         destination.open("wb") as output,
     ):

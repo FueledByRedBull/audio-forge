@@ -141,8 +141,9 @@ Quick view.
 ## Runtime checks and screenshots
 
 For route changes, use `python/tools/health_check.py --duration 1800` and
-`python/tools/self_test.py` through the project interpreter. Collect optional
-route measurements with explicit endpoints:
+`python/tools/self_test.py` through the project interpreter. Both need a real
+audio route, the native module and the ONNX Runtime, so no hosted CI job runs
+them. Collect optional route measurements with explicit endpoints:
 
 ```powershell
 .\.venv\Scripts\python.exe python/tools/evaluate_hardware_validation.py `

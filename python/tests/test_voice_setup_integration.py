@@ -841,6 +841,34 @@ def _start_noise_take(dialog: VoiceSetupDialog) -> None:
     dialog._capture_start_timer.stop()
 
 
+def test_a_new_take_starts_with_an_empty_level_window(real_main_window, monkeypatch) -> None:
+    class _Session:
+        def __init__(self, *_args) -> None:
+            pass
+
+        def start(self, *_args, **_kwargs) -> None:
+            pass
+
+        def cleanup(self) -> None:
+            pass
+
+    monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.CaptureSession", _Session)
+    dialog = VoiceSetupDialog(parent=real_main_window)
+    try:
+        dialog._recent_rms_db.extend([-20.0] * 15)  # the last take's levels
+        dialog._recent_peak_db.extend([-6.0] * 15)
+        dialog.setup_state = "noise_recording"
+
+        dialog._begin_recording_capture()
+        dialog.recording_timer.stop()
+
+        assert len(dialog._recent_rms_db) == 0
+        assert len(dialog._recent_peak_db) == 0
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
 @pytest.mark.parametrize("capture", ["noise", "voice"])
 def test_a_rejected_capture_gives_the_target_controls_back(real_main_window, monkeypatch, capture) -> None:
     window = real_main_window

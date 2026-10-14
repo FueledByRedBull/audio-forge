@@ -1024,12 +1024,14 @@ def test_a_new_take_starts_with_an_empty_level_window(qapp, monkeypatch):
     dialog = CalibrationDialog(owner)
     try:
         dialog._recent_rms_db.extend([-20.0] * 15)  # the last take's levels
+        dialog._recent_peak_db.extend([-6.0] * 15)
         dialog.recording_state = "recording"
 
         dialog._begin_recording_capture()
         dialog.recording_timer.stop()
 
         assert len(dialog._recent_rms_db) == 0
+        assert len(dialog._recent_peak_db) == 0
     finally:
         dialog.reject()
         owner.close()

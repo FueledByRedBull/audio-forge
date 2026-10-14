@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..analysis.auto_eq_parts.headroom import headroom_shortfall_db
+from ..analysis.auto_eq_parts.headroom import headroom_excess_split_db, headroom_shortfall_db
 
 
 _REMOVED_REASON = "headroom validation removed the usable correction"
@@ -267,8 +268,25 @@ def headroom_advice(
     compressor = (chain or {}).get("compressor") or {}
     makeup = bool(compressor.get("enabled") and compressor.get("auto_makeup_enabled"))
     shortfall = headroom_shortfall_db(headroom) if compressor.get("enabled") is False else None
+    # That figure is for the full correction. When the correction's own boost is most of
+    # the excess, the microphone only needs to give the recording's part of it.
+    recording, boost = (None if over_rule else headroom_excess_split_db(headroom)) or (0.0, 0.0)
+    boost_leads = boost > recording
+    if boost_leads:
+        parts.append(
+            "Most of the shortfall comes from the correction's own boost "
+            f"({boost:.1f} of {recording + boost:.1f} dB), not from your recording."
+        )
+        if recording <= 0.0:
+            parts.append("Your microphone level is fine.")
+            return " ".join(parts)
+        shortfall = math.ceil(recording) if shortfall is not None else None
     if proposed:
-        purpose = " to allow the full correction" if scale < 1.0 else " to leave enough room"
+        purpose = (
+            " to give your own peaks enough room"
+            if boost_leads
+            else " to allow the full correction" if scale < 1.0 else " to leave enough room"
+        )
     else:
         purpose = ", then record again"
     amount = f" by about {shortfall} dB" if shortfall is not None else ""

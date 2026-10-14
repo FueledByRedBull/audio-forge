@@ -353,6 +353,8 @@ def test_main_window_invalidates_all_live_meters_on_stop_and_getter_failure(qapp
         processor=processor,
         input_meter=LevelMeter(),
         output_meter=LevelMeter(),
+        limiter_state=SimpleNamespace(get_applied_settings=lambda: {"enabled": True}),
+        _processing_mode=lambda: "normal",
         gate_state=gate_state,
         processing_meters=ProcessingMeters(processor, gate_state, meter_host),
         _reset_health_labels=Mock(),

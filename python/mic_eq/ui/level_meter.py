@@ -237,6 +237,18 @@ class LevelMeter(MeterModel):
         self._last_full_scale_count = None
         self._full_scale_rises.clear()
 
+    def clear_clip_marker(self) -> None:
+        """Drop the marker and the clips that lit it; counting carries on from the last count."""
+        lit = self.clip_marker
+        self.clip_marker = False
+        self.clip_peak_db = self.DB_MIN
+        self.clip_samples = 0
+        self._last_clip_at = None
+        self._full_scale_rises.clear()
+        self._sync_decay_timer()
+        if lit:
+            self.changed.emit()
+
     def _clear_clip(self) -> None:
         self.clip_marker = False
         self.clip_peak_db = self.DB_MIN

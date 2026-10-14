@@ -462,3 +462,80 @@ def test_the_auto_eq_button_does_not_promise_a_fit_to_the_voice() -> None:
         "Record a short passage and set the EQ toward a tone preset\n"
         "Choose a tone preset, read a short passage, then review the result"
     )
+
+
+# The full correction leaves 3.4 dB too little room. How much of that is the recording and how
+# much is what the correction adds decides what the microphone level can do about it.
+def _split(status: str, scale: float, flat: float | None, **extra: object) -> dict:
+    headroom = _headroom(status, scale, _render(-2.4), **extra)  # 1.0 - (-2.4) = 3.4 dB over
+    if flat is not None:
+        headroom["flat_excess_db"] = flat
+    return headroom
+
+
+_BOOST_LEADS = _split("safe", 0.40, 0.6)
+_BOOST_ONLY = _split("safe", 0.40, -0.5)
+
+
+def test_headroom_advice_cuts_the_microphone_only_by_the_recordings_part_when_the_boost_leads() -> None:
+    assert headroom_advice(_BOOST_LEADS, _NO_DYNAMICS, proposed=True) == (
+        "Most of the shortfall comes from the correction's own boost (2.8 of 3.4 dB), "
+        "not from your recording. "
+        "Lower the microphone gain by about 1 dB (in Windows or on the microphone) "
+        "to give your own peaks enough room."
+    )
+    assert headroom_advice(_BOOST_LEADS, _NO_DYNAMICS, proposed=False) == (
+        "Most of the shortfall comes from the correction's own boost (2.8 of 3.4 dB), "
+        "not from your recording. "
+        "Lower the microphone gain by about 1 dB (in Windows or on the microphone), "
+        "then record again."
+    )
+
+
+def test_headroom_advice_leaves_the_microphone_alone_when_only_the_boost_is_too_much() -> None:
+    assert headroom_advice(_BOOST_ONLY, _NO_DYNAMICS, proposed=True) == (
+        "Most of the shortfall comes from the correction's own boost (3.4 of 3.4 dB), "
+        "not from your recording. Your microphone level is fine."
+    )
+
+
+def test_headroom_advice_gives_no_microphone_figure_for_the_boost_when_a_compressor_works() -> None:
+    chain = {"compressor": {"enabled": True}, "limiter": {"enabled": True}}
+
+    assert headroom_advice(_BOOST_LEADS, chain, proposed=True) == (
+        "Most of the shortfall comes from the correction's own boost (2.8 of 3.4 dB), "
+        "not from your recording. "
+        "Lower the microphone gain (in Windows or on the microphone) "
+        "to give your own peaks enough room."
+    )
+
+
+def test_headroom_advice_keeps_the_full_figure_when_the_recording_leads() -> None:
+    headroom = _split("safe", 0.40, 3.0)
+
+    assert headroom_advice(headroom, _NO_DYNAMICS, proposed=True) == (
+        "Lower the microphone gain by about 4 dB (in Windows or on the microphone) "
+        "to allow the full correction."
+    )
+
+
+def test_headroom_advice_does_not_split_when_the_current_eq_is_over_the_rule() -> None:
+    headroom = _split(
+        "risk_not_worsened", 1.0, 0.2, incumbent_excess_db=3.4, incumbent_output_true_peak_db=-0.6
+    )
+
+    assert headroom_advice(headroom, _NO_DYNAMICS, proposed=True) == (
+        "Your current settings already leave too little room for loud peaks. "
+        "This EQ is no worse than your current one. "
+        "Lower the microphone gain by about 4 dB (in Windows or on the microphone) "
+        "to leave enough room. " + _LIMITER_OFF_LINE
+    )
+
+
+def test_headroom_advice_names_the_target_loudness_for_the_recordings_part_with_automatic_makeup() -> None:
+    assert headroom_advice(_BOOST_LEADS, _MAKEUP_ON, proposed=True) == (
+        "Most of the shortfall comes from the correction's own boost (2.8 of 3.4 dB), "
+        "not from your recording. "
+        "Lower the compressor's target loudness to give your own peaks enough room. "
+        "Automatic makeup would undo a lower microphone gain."
+    )

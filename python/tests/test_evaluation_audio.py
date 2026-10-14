@@ -102,6 +102,9 @@ def test_read_mono_wav_rejects_truncated_and_unsupported_data(tmp_path) -> None:
     truncated.write_bytes(good[:-2])
     with pytest.raises(ValueError, match="truncated"):
         read_mono_wav(truncated)
+    # One byte past the end of the file, with no pad byte to hide it.
+    with pytest.raises(ValueError, match="truncated"):
+        read_mono_wav(_wav(tmp_path / "long.wav", bytes(10), bits=8, data_size=11))
     with pytest.raises(ValueError, match="unsupported WAV format"):
         read_mono_wav(_wav(tmp_path / "adpcm.wav", bytes(8), tag=2, bits=16))
 

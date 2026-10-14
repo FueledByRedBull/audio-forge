@@ -57,9 +57,10 @@ def _read_wav(path: Path) -> tuple[int, np.ndarray]:
             elif chunk_id == b"data":
                 if not header:
                     raise ValueError(f"{path.name} has no format chunk before its data")
-                if size > remaining:
+                payload = stream.read(size) if size <= remaining else b""
+                # Also catches a file that shrank after its size was read.
+                if len(payload) != size:
                     raise ValueError(f"{path.name} data chunk is truncated")
-                payload = stream.read(size)
                 break
             else:
                 stream.seek(size, 1)

@@ -30,7 +30,7 @@ class QuickErrorScreen(QWidget):
         super().__init__(window)
         title = QLabel(TITLE)
         title.setObjectName("errorTitle")
-        title.setStyleSheet("font-size: 20px; font-weight: 600;")
+        title.setStyleSheet("font-size: 15pt; font-weight: 600;")
         body = QLabel(BODY)
         body.setObjectName("errorBody")
         caption = QLabel("Reason")

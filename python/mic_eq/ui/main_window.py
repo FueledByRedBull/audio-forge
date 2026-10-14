@@ -223,7 +223,10 @@ def _ago_text(age_ms: int | None, *, output: bool = False) -> str:
 
 
 def _output_muted(window) -> bool:
-    """Whether a mute the engine accepted is silencing the output (not one still pending)."""
+    """Whether a mute the engine accepted is silencing the output (not one still pending).
+
+    The Output row, the OUT meter and the status dot all read this, so they agree.
+    """
     return not window.__dict__.get("_output_mute_error") and bool(
         window.__dict__.get("user_muted", False) or window.__dict__.get("_temporary_mute_reasons", set())
     )
@@ -3294,11 +3297,6 @@ class MainWindow(QMainWindow):
         if callable(sync_meters):
             sync_meters()
         if not self.processor.is_running():
-            if self._stream_recovery.processing_started_at is not None and self.stop_btn_action.isEnabled():
-                # Stop was never pressed, so the engine stopped by itself.
-                self.status_message.showMessage(
-                    "Processing stopped unexpectedly. Check the audio devices, then press Start."
-                )
             self._stream_recovery.mark_processing_stopped()
             self._device_wait_since = None
             self._last_backend_warning = None
@@ -3536,7 +3534,7 @@ class MainWindow(QMainWindow):
         )
 
         output_health_text, output_health_state = build_output_health_state(
-            muted=bool(diagnostics.get("output_muted", False)) or _output_muted(self),
+            muted=_output_muted(self),
             rms_db=output_rms_db,
             at_full_scale=output_at_full_scale,
             limiter_enabled=limiter_enabled,

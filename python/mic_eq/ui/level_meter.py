@@ -403,10 +403,11 @@ class LevelMeter(MeterModel):
             painter.fillRect(2, 0, meter_width - 2, 4, self.COLOR_CLIP)
 
         # Draw label at bottom; while the clip marker is lit a "CLIP" tag replaces it,
-        # so the warning is a word on a shape and does not depend on colour.
+        # so the warning is a word on a shape and does not depend on colour. A mute
+        # comes first: the output is silent, so a clip is not heard.
         if self.label_text:
             text = "MUTE" if self.muted else self.label_text
-            if self.clip_marker:
+            if self.clip_marker and not self.muted:
                 text = "CLIP"
                 painter.setPen(Qt.PenStyle.NoPen)
                 painter.setBrush(self.COLOR_CLIP)

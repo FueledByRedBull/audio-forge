@@ -240,3 +240,24 @@ def test_a_short_health_text_keeps_its_natural_width_and_its_own_tooltip(minimum
     assert shown.property("truncated") is False
     assert chip.width() == pytest.approx(chip.implicitWidth())
     assert caption_tip(chip) == "Everything looks fine."
+
+
+def test_the_status_message_keeps_a_quarter_of_the_strip_at_the_worst_combination(
+    minimum_window, qapp
+) -> None:
+    window = minimum_window
+    transmission = "Transmission: Running / Raw monitor / Mute pending"
+    window.shell_texts["transmission_status_label"].update(text=transmission, status="warn")
+    window._set_health_chip("health_summary_label", LONG_HEALTH_TEXTS[0], "warn")
+    window.status_message.showMessage("Loaded preset: DaBest")
+    settle(qapp)
+
+    # The note gives way first, then the transmission text and the chip; the message does not.
+    test_the_status_strip_texts_do_not_overlap(window)
+    strip = named(window, "statusStrip")
+    message = named(window, "statusMessage")
+    assert message.width() >= strip.width() / 4 - 1
+    for text in (transmission, STALE_CALIBRATION):
+        caption = status_caption(window, text)
+        assert caption.property("truncated") is True
+        assert caption_tip(caption) == text

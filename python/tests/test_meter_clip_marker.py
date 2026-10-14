@@ -300,3 +300,23 @@ def test_a_muted_meter_labels_itself_and_says_its_level_is_from_before_the_mute(
 
     meter.set_muted(False)
     assert meter.property("description") == "" and label_strip(meter) == unmuted
+
+
+def test_a_mute_wins_over_the_clip_tag_on_the_label(qapp):
+    def label_strip(meter: LevelMeter) -> QImage:
+        image = QImage(60, 160, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(Qt.GlobalColor.black)
+        painter = QPainter(image)
+        meter.paint_meter(painter, 60, 160)
+        painter.end()
+        return image.copy(0, 140, 60, 20)
+
+    meter = _meter(_Clock(), "OUT")
+    meter.set_muted(True)
+    muted = label_strip(meter)
+    _clip(meter)
+    assert meter.clip_marker
+
+    assert label_strip(meter) == muted
+    description = meter.property("description")
+    assert "Muted" in description and "Clipping" in description

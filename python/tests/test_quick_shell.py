@@ -1628,29 +1628,6 @@ def test_the_status_dot_shows_sound_running_and_heard(engine_window, qapp) -> No
     assert colour() == palette("border_strong")
 
 
-def test_the_message_says_so_when_the_engine_stops_by_itself(engine_window) -> None:
-    window, engine = engine_window
-    window.start_btn_action.trigger()
-    window._update_diagnostics()
-    assert window.status_message.text == "Processing: started"
-
-    engine.running = False
-    window._update_diagnostics()
-
-    assert "stopped" in window.status_message.text
-    assert window.start_btn_action.isEnabled() and not window.stop_btn_action.isEnabled()
-
-    # A stop the user asked for keeps its own message, and so does a start that never ran.
-    window.start_btn_action.trigger()
-    window.stop_btn_action.trigger()
-    window._update_diagnostics()
-    assert window.status_message.text == "Processing stopped"
-    window.status_message.showMessage("Login stopped: saved endpoints did not become available")
-    window.stop_btn_action.setEnabled(True)
-    window._update_diagnostics()
-    assert window.status_message.text.startswith("Login stopped")
-
-
 def test_the_device_grace_starts_over_after_stop_and_start(engine_window, monkeypatch) -> None:
     window, _engine = engine_window
     clock = [1000.0]
@@ -1685,7 +1662,7 @@ def _meter_items(item):
 def test_a_muted_output_says_its_levels_are_from_before_the_mute(engine_window, qapp) -> None:
     from PySide6.QtGui import QAccessible
 
-    window, _engine = engine_window
+    window, engine = engine_window
     window.start_btn_action.trigger()
     row = window.shell_texts["output_health_label"]
     summary = window.shell_texts["health_summary_label"]
@@ -1716,10 +1693,17 @@ def test_a_muted_output_says_its_levels_are_from_before_the_mute(engine_window, 
         assert summary.state == "ok"
         assert "before the mute" in description()
 
-        # The engine's own report counts as well.
         window.user_mute_checkbox_action.setChecked(False)
         assert description() == ""
+
+        # The row, the meter and the dot follow one state: a mute change the engine
+        # refused is pending, not muted, whatever the engine still reports.
+        window.user_mute_checkbox_action.setChecked(True)
+        engine.mute_error = True
+        window.user_mute_checkbox_action.setChecked(False)
         _diagnostic_labels(window, **{**loud, "diagnostics": {**loud["diagnostics"], "output_muted": True}})
-        assert row.state == "info"
+        assert window.shell_texts["transmission_status_label"].text.endswith("Mute pending")
+        assert row.state == "bad"
+        assert description() == ""
     finally:
         QAccessible.setActive(was_active)

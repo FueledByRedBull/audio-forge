@@ -896,6 +896,7 @@ Rectangle {
     }
 
     ColumnLayout {
+        id: content
         objectName: "contentColumn"
         anchors.left: rail.right
         anchors.right: meters.left
@@ -1293,6 +1294,9 @@ Rectangle {
         // Status strip
         RowLayout {
             objectName: "statusStrip"
+            // The room the texts share, read from the column: sizes taken from the strip's
+            // own width would feed back into its minimum width.
+            readonly property real room: content.width - 24
             Layout.fillWidth: true
             Layout.leftMargin: 8
             Layout.rightMargin: 16
@@ -1301,6 +1305,8 @@ Rectangle {
                 objectName: "statusMessage"
                 text: root.m.status.message.text
                 Layout.fillWidth: true
+                // The other texts give way before the message does.
+                Layout.minimumWidth: parent.room / 4
                 tip: truncated ? text : ""
             }
             // Heard (green), muted or waiting for a mute (amber), or stopped.
@@ -1311,7 +1317,13 @@ Rectangle {
                 color: ({ ok: root.t.status_ok_text, warn: root.t.status_warn_text })[
                     root.m.status.transmission.state] ?? root.t.border_strong
             }
-            StatusText { objectName: "statusTransmission"; text: root.m.status.transmission.text; color: root.t.text_primary }
+            StatusText {
+                objectName: "statusTransmission"
+                text: root.m.status.transmission.text
+                color: root.t.text_primary
+                Layout.maximumWidth: parent.room * 0.3
+                tip: truncated ? text : ""
+            }
             StatusText {
                 objectName: "statusCalibration"
                 text: root.m.status.calibration.text
@@ -1325,7 +1337,7 @@ Rectangle {
                 single: true
                 implicitHeight: 28
                 // A long reading must not push the other texts out of the strip.
-                Layout.maximumWidth: parent.width / 3
+                Layout.maximumWidth: parent.room * 0.3
                 KeyButton {
                     id: healthToggle
                     objectName: "healthToggle"

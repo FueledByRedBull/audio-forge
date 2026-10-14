@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QHBoxLayout,
 )
-from PySide6.QtCore import QSignalBlocker, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt
 
 from .components import Card, ToggleSwitch
 from .compressor_state import CompressorState
@@ -40,8 +40,6 @@ from .layout_constants import (
 
 class CompressorPanel(QWidget):
     """Compressor and Limiter control panel."""
-
-    configurationEdited = Signal(str)
 
     def __init__(
         self, processor, limiter_state: LimiterState | None = None,
@@ -404,7 +402,6 @@ class CompressorPanel(QWidget):
                 )
                 slider.sliderReleased.connect(self.compressor_state.flush)
         self.compressor_state.changed.connect(self._render_compressor_settings)
-        self.compressor_state.configurationEdited.connect(self.configurationEdited.emit)
         self.compressor_state.configurationEdited.connect(self._update_current_release)
 
         # Limiter
@@ -428,7 +425,6 @@ class CompressorPanel(QWidget):
         )
         self.ceiling_slider.sliderReleased.connect(self.limiter_state.flush)
         self.limiter_state.changed.connect(self._render_limiter_settings)
-        self.limiter_state.configurationEdited.connect(self.configurationEdited.emit)
 
         self._render_limiter_settings()
         self._render_compressor_settings()

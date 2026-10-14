@@ -131,11 +131,20 @@ class BoundedConfigurationHistory:
     def record(self, snapshot: ConfigurationSnapshot) -> bool:
         snapshot.to_preset()
         current = self.current
+        # A device or input-mode change alters the context key and clears the live reliability
+        # without touching the configuration. It is not an edit: recording it would put a phantom
+        # entry on top of the history that every undo press then has to step over. The stale key
+        # on the kept entry is safe, since restore only trusts a reliability whose key matches.
         if current is not None and (
             current.payload_json == snapshot.payload_json
-            and current.noise_reference_reliability == snapshot.noise_reference_reliability
-            and current.calibration_context_key == snapshot.calibration_context_key
             and current.processing_mode == snapshot.processing_mode
+            and (
+                current.noise_reference_reliability == snapshot.noise_reference_reliability
+                or (
+                    current.calibration_context_key != snapshot.calibration_context_key
+                    and snapshot.noise_reference_reliability == 0.0
+                )
+            )
         ):
             return False
         if self._cursor < len(self._entries) - 1:

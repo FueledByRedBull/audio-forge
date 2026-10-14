@@ -118,7 +118,7 @@ def test_a_graph_drag_is_one_undo_step_and_the_whole_scene_follows(scene) -> Non
     assert scene.band() == dragged
     assert scene.graph_model.bands[BAND][2] == pytest.approx(dragged.gain_db)
     assert scene.shown("gain") == f"{dragged.gain_db:+.1f}"
-    assert scene.fader().property("value") == pytest.approx(dragged.gain_db * 10)
+    assert scene.fader().property("value") == pytest.approx(dragged.gain_db)
     assert not scene.history.can_redo
 
 
@@ -190,7 +190,7 @@ def test_a_fader_drag_is_one_undo_step(scene) -> None:
 
     scene.redo()
     assert scene.band() == moved
-    assert fader.property("value") == pytest.approx(moved.gain_db * 10)
+    assert fader.property("value") == pytest.approx(moved.gain_db)
 
 
 def test_each_keyboard_step_on_a_fader_undoes_by_that_step(scene) -> None:
@@ -209,7 +209,7 @@ def test_each_keyboard_step_on_a_fader_undoes_by_that_step(scene) -> None:
 
     scene.undo()
     assert scene.band().gain_db == pytest.approx(0.1)
-    assert fader.property("value") == pytest.approx(1)
+    assert fader.property("value") == pytest.approx(0.1)
     scene.undo()
     assert scene.band().gain_db == 0
     assert scene.shown("gain") == "0"
@@ -390,15 +390,6 @@ def test_muting_is_not_an_undo_step(routed) -> None:
     assert scene.history.size == size and not scene.window._undo_action.isEnabled()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A device or input-mode change alters the calibration context in the history key, so "
-        "every Ctrl+Z first records a phantom 'Manual processing edit' and 'undoes' that; the "
-        "real edit is never reached however often it is pressed. The commit lives in "
-        "MainWindow._commit_pending_configuration_snapshot, shared with the classic view."
-    ),
-)
 def test_a_route_change_does_not_cost_the_next_undo_press(routed) -> None:
     scene = routed
     scene.drag_handle()
@@ -430,15 +421,6 @@ def test_ctrl_z_in_a_value_box_undoes_the_typing_not_the_configuration(scene) ->
     assert scene.history.can_undo
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "A focused value box takes Ctrl+Z for its own text history even when it has nothing to "
-        "undo, so the reflex 'type a value, Enter, Ctrl+Z' does nothing. Letting the shortcut "
-        "through when the box has no typing to undo is a product decision, and the classic "
-        "spin boxes behave the same way."
-    ),
-)
 def test_ctrl_z_right_after_entering_a_value_takes_it_back(scene) -> None:
     scene.window.eq_state.select_band(BAND)
     start = scene.band()

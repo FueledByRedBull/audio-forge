@@ -179,13 +179,16 @@ Rectangle {
     component Fader: Slider {
         id: fader
         property var proxy
-        from: proxy ? proxy.minimum : 0
-        to: proxy ? proxy.maximum : 1
-        value: proxy ? proxy.value : 0
+        // The slider's units per proxy unit. A screen reader announces the slider's own value,
+        // so a proxy that counts in tenths of a dB sets 0.1 here and is announced in dB.
+        property real unit: 1
+        from: proxy ? proxy.minimum * unit : 0
+        to: proxy ? proxy.maximum * unit : unit
+        value: proxy ? proxy.value * unit : 0
         stepSize: 0
         enabled: proxy ? proxy.enabled : false
         implicitHeight: 24
-        onMoved: proxy.setValue(value)
+        onMoved: proxy.setValue(value / unit)
         onPressedChanged: if (!pressed) proxy.released()
         Keys.onLeftPressed: nudge(-1)
         Keys.onRightPressed: nudge(1)
@@ -258,6 +261,17 @@ Rectangle {
             onEditingFinished: if (!readOnly && text !== box.source.text) box.proxy.setText(text)
             Keys.onUpPressed: step(1)
             Keys.onDownPressed: step(-1)
+            // The field keeps Ctrl+Z only while it has typing to take back (it claims the shortcut
+            // whatever its history holds, so the key arrives here). Otherwise the app's undo and
+            // redo take it, and "type a value, Enter, Ctrl+Z" takes the value back.
+            Keys.onPressed: event => {
+                const undo = event.matches(StandardKey.Undo) && !canUndo
+                const redo = event.matches(StandardKey.Redo) && !canRedo
+                if (undo || redo) {
+                    (undo ? root.m.presets.undo : root.m.presets.redo).click()
+                    event.accepted = true
+                }
+            }
             // Put the shown value back; the abandoned text is never applied.
             Keys.onEscapePressed: event => {
                 if (readOnly || text === box.source.text)
@@ -1102,7 +1116,7 @@ Rectangle {
                             Toggle { proxy: eqCard.band.enabled }
                             Picker { proxy: eqCard.band.type; implicitWidth: 130 }
                             Caption { text: "Gain" }
-                            Fader { proxy: eqCard.band.gain; Layout.fillWidth: true }
+                            Fader { proxy: eqCard.band.gain; unit: 0.1; Layout.fillWidth: true }
                             ValueBox {
                                 objectName: "gainBox"
                                 proxy: eqCard.band.gain

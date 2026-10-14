@@ -1,6 +1,9 @@
-from unittest.mock import Mock
+# pyright: reportMissingImports=false
+# (the sibling test modules are found by pytest at run time)
+import test_eq_editing_state as eq_editing
+from test_eq_editing_state import SLOPES, TYPES, edit, eq_control
 
-from mic_eq.ui.eq_panel import EQPanel
+quick_window = eq_editing.quick_window
 
 
 def _bands() -> list[tuple[float, float, float]]:
@@ -25,69 +28,48 @@ def _diagnostics() -> dict[str, float | str]:
 
 
 def test_manual_eq_edits_invalidate_diagnostics_and_fresh_results_restore_them(
-    qapp,
+    quick_window, qapp
 ):
-    panel = EQPanel(Mock())
+    window = quick_window
+    state = window.eq_state
+    shown = eq_control(window, "diagnostics")
     diagnostics = _diagnostics()
 
     def apply_candidate() -> None:
-        panel.apply_auto_eq_results(_bands(), diagnostics=diagnostics)
-        assert panel._auto_eq_diagnostics == diagnostics
+        state.apply_auto_eq_results(_bands(), diagnostics=diagnostics)
+        assert state.auto_eq_diagnostics == diagnostics
 
     def assert_cleared() -> None:
-        assert panel._auto_eq_diagnostics is None
-        assert panel.auto_eq_diag_label.text() == (
-            "Auto-EQ: no calibration diagnostics"
-        )
+        assert state.auto_eq_diagnostics is None
+        assert shown.text == "Auto-EQ: no calibration diagnostics"
 
-    band = panel.band_sliders[4]
+    def band(key: str):
+        return eq_control(window, key, 4)
 
     def edit_gain() -> None:
-        band.slider.setValue(band.slider.value() + 1)
-        band._rate_limiter.flush()
-
-    def edit_q() -> None:
-        band.q_spinbox.setValue(1.5)
-        band._rate_limiter.flush()
+        edit(band("gain"), band("gain").value + 1)
 
     def edit_slope() -> None:
-        band.filter_type_combo.setCurrentIndex(
-            band.filter_type_combo.findData("high_pass")
-        )
-        panel.set_auto_eq_diagnostics(diagnostics)
-        band.slope_combo.setCurrentIndex(band.slope_combo.findData(24))
-
-    def edit_frequency() -> None:
-        band.frequency_spinbox.setValue(1100.0)
-        band._frequency_rate_limiter.flush()
-
-    def edit_graph() -> None:
-        panel.eq_state.edit_curve_band(4, 2100.0, 2.0)
-        panel._curve_rate_limiter.flush()
+        band("type").setIndex(TYPES.index("high_pass"))
+        state.set_auto_eq_diagnostics(diagnostics)
+        band("slope").setIndex(SLOPES.index(24))
 
     edits = (
         edit_gain,
-        edit_q,
-        lambda: band.filter_type_combo.setCurrentIndex(
-            band.filter_type_combo.findData("notch")
-        ),
+        lambda: edit(band("q"), 1.5),
+        lambda: band("type").setIndex(TYPES.index("notch")),
         edit_slope,
-        lambda: band.band_enabled_checkbox.setChecked(False),
-        edit_frequency,
-        edit_graph,
-        lambda: panel.enabled_checkbox.setChecked(False),
+        lambda: band("enabled").click(),
+        lambda: edit(band("frequency"), 1100.0),
+        lambda: (state.edit_curve_band(4, 2100.0, 2.0), state.flush()),
+        lambda: eq_control(window, "toggle").click(),
     )
 
-    try:
-        for edit in edits:
-            apply_candidate()
-            edit()
-            qapp.processEvents()
-            assert_cleared()
-
+    for change in edits:
         apply_candidate()
-        assert panel.auto_eq_diag_label.text().startswith("Auto-EQ: ")
-    finally:
-        panel.close()
-        panel.deleteLater()
+        change()
         qapp.processEvents()
+        assert_cleared()
+
+    apply_candidate()
+    assert shown.text.startswith("Auto-EQ: ")

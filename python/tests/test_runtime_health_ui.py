@@ -99,7 +99,8 @@ def test_window_state_change_pauses_and_restarts_fast_meter_timer(qapp):
 
 def test_unavailable_vad_does_not_present_default_noise_floor(qapp):
     from mic_eq import AudioProcessor
-    from mic_eq.ui.gate_panel import GatePanel
+    from mic_eq.ui.gate_state import GateState
+    from mic_eq.ui.processing_meters import ProcessingMeters
 
     native = AudioProcessor()
 
@@ -113,15 +114,15 @@ def test_unavailable_vad_does_not_present_default_noise_floor(qapp):
         def get_noise_floor(self):
             return -60.0
 
-    panel = GatePanel(Processor())
+    processor = Processor()
+    state = GateState(processor)
+    meters = ProcessingMeters(processor, state)
     try:
-        panel.update_vad_confidence(0.0)
-        assert panel.noise_floor_label.text() == "Noise Floor: --"
-        assert not panel.confidence_meter.measurement_available
+        state.update_vad_confidence(0.0)
+        assert state.presentation()["noise_floor"] == "Noise Floor: --"
+        assert not meters.confidence.measurement_available
     finally:
         native.stop()
-        panel.deleteLater()
-        qapp.processEvents()
 
 
 def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
@@ -164,17 +165,9 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         "recovery_diag_label",
         "health_summary_label",
     )
-    for name in names:
-        label = QLabel()
-        state = TextState(state_owner, text=label.text(), name=name)
-        state.bind_label(label)
-        setattr(window, name, label)
-        window.shell_texts[name] = state
-    advice_label = QLabel()
-    advice_state = TextState(state_owner, text="", name="health_advice_label")
-    advice_state.bind_label(advice_label)
-    window.health_advice_label = advice_label
-    window.shell_texts["health_advice_label"] = advice_state
+    for name in (*names, "health_advice_label"):
+        window.shell_texts[name] = TextState(state_owner, name=name)
+    texts = window.shell_texts
     window._set_health_chip = lambda key, text, state: MainWindow._set_health_chip(
         window, key, text, state
     )
@@ -193,20 +186,20 @@ def test_recovered_stream_clears_live_health_but_keeps_lifetime_counts(
         output_callback_age_ms=0,
     )
     MainWindow._update_diagnostic_labels(window, **args)
-    assert window.health_summary_label.property("health_state") == "warn"
+    assert texts["health_summary_label"].state == "warn"
     assert not route_health_reason(processor, health_window=window._stream_health)[0]
     clock[0] += 5.1
     MainWindow._update_diagnostic_labels(window, **args)
-    assert window.health_summary_label.property("health_state") == "ok"
-    assert window.recovery_diag_label.property("health_state") == "ok"
-    assert "1 restart" in window.recovery_diag_label.text()
-    assert "ICE:1" in window.dropped_label.toolTip()
+    assert texts["health_summary_label"].state == "ok"
+    assert texts["recovery_diag_label"].state == "ok"
+    assert "1 restart" in texts["recovery_diag_label"].text
+    assert "ICE:1" in texts["dropped_label"].toolTip
     assert route_health_reason(processor, health_window=window._stream_health)[0]
     assert diagnostics["input_callback_error_count"] == 1
     assert diagnostics["last_restart_reason"] == "input callback error"
     diagnostics["input_callback_error_count"] += 1
     MainWindow._update_diagnostic_labels(window, **args)
-    assert window.health_summary_label.property("health_state") == "warn"
+    assert texts["health_summary_label"].state == "warn"
 
 
 @pytest.mark.parametrize(
@@ -413,12 +406,12 @@ def test_failed_diagnostics_still_service_recovery_when_presentation_is_hidden(q
     assert "could not read" in advice and "Stop and start processing" in advice
 
 
-def test_panel_measurements_begin_unavailable_and_failed_noise_floor_does_not_invent_default(
+def test_measurements_begin_unavailable_and_failed_noise_floor_does_not_invent_default(
     qapp,
 ):
     from mic_eq import AudioProcessor
-    from mic_eq.ui.compressor_panel import CompressorPanel
-    from mic_eq.ui.gate_panel import GatePanel
+    from mic_eq.ui.gate_state import GateState
+    from mic_eq.ui.processing_meters import ProcessingMeters
 
     native = AudioProcessor()
 
@@ -426,21 +419,24 @@ def test_panel_measurements_begin_unavailable_and_failed_noise_floor_does_not_in
         def __getattr__(self, name):
             return getattr(native, name)
 
+        # The noise floor is only read while a VAD backend is present.
+        def is_vad_available(self):
+            return True
+
         def get_noise_floor(self):
             raise RuntimeError("missing noise floor")
 
     processor = Processor()
-    compressor, gate = CompressorPanel(processor), GatePanel(processor)
+    gate = GateState(processor)
+    meters = ProcessingMeters(processor, gate)
     try:
-        assert compressor.current_lufs_label.text() == "--"
-        assert compressor.current_makeup_gain_label.text() == "--"
-        compressor._update_current_release()
-        assert compressor.current_release_label.text() == "--"
-        assert gate.noise_floor_label.text() == "Noise Floor: --"
+        assert meters.text_states["current_lufs"].text == "--"
+        assert meters.text_states["current_makeup_gain"].text == "--"
+        meters.update_current_release()
+        assert meters.text_states["current_release"].text == "--"
+        assert gate.presentation()["noise_floor"] == "Noise Floor: --"
         gate.update_vad_confidence(0.5)
-        assert gate.noise_floor_label.text() == "Noise Floor: --"
+        assert gate.confidence == 0.5
+        assert gate.presentation()["noise_floor"] == "Noise Floor: --"
     finally:
         native.stop()
-        compressor.deleteLater()
-        gate.deleteLater()
-        qapp.processEvents()

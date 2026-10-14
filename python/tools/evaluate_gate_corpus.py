@@ -46,6 +46,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 import zipfile
 import zlib
@@ -94,14 +95,22 @@ RULE_METRICS = ("estoi", "si_sdr", "onset_db", "pause_db", "tail_db")
 MODES ={1: "vad_assisted", 2: "vad_only"}
 QUALIFY_MODELS = ("rnnoise", "deepfilter-ll")
 RANGE_BLOCK = 1 << 20
+RANGE_HOSTS = ("github.com", "zenodo.org")
 
 
 class _RangeFile(io.RawIOBase):
     """Seekable reader over an HTTP resource using byte-range requests."""
 
     def __init__(self, url: str) -> None:
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != "https" or parsed.hostname not in RANGE_HOSTS:
+            raise ValueError("corpus archives must use trusted GitHub or Zenodo HTTPS")
+        # The scheme and host are checked above.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
         with urllib.request.urlopen(urllib.request.Request(url, method="HEAD")) as response:
             self.url = response.geturl()
+            if urllib.parse.urlsplit(self.url).scheme != "https":
+                raise ValueError("corpus archive redirected away from HTTPS")
             self.size = int(response.headers["Content-Length"])
         self.position = 0
         self.cache: dict[int, bytes] = {}
@@ -124,6 +133,8 @@ class _RangeFile(io.RawIOBase):
             start = index * RANGE_BLOCK
             end = min(self.size, start + RANGE_BLOCK) - 1
             request = urllib.request.Request(self.url, headers={"Range": f"bytes={start}-{end}"})
+            # self.url is the HTTPS URL checked in __init__.
+            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             with urllib.request.urlopen(request) as response:
                 self.cache[index] = response.read()
             if len(self.cache) > 64:

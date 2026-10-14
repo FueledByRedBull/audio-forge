@@ -1222,12 +1222,17 @@ def test_semgrep_gate_uses_rule_default_severity_when_result_omits_level(
                                         "id": "warning-rule",
                                         "defaultConfiguration": {"level": "warning"},
                                     },
+                                    {
+                                        "id": "note-rule",
+                                        "defaultConfiguration": {"level": "note"},
+                                    },
                                 ]
                             }
                         },
                         "results": [
                             {"ruleId": "error-rule"},
                             {"ruleId": "warning-rule"},
+                            {"ruleId": "note-rule"},
                         ],
                     }
                 ]
@@ -1236,10 +1241,10 @@ def test_semgrep_gate_uses_rule_default_severity_when_result_omits_level(
         encoding="utf-8",
     )
 
-    assert run_semgrep._error_findings(sarif) == ["error-rule"]
+    assert run_semgrep._blocking_findings(sarif) == ["error-rule", "warning-rule"]
 
 
-def test_semgrep_error_findings_honor_only_in_source_suppressions(tmp_path):
+def test_semgrep_blocking_findings_honor_only_in_source_suppressions(tmp_path):
     sarif = tmp_path / "results.sarif"
     sarif.write_text(
         json.dumps(
@@ -1281,7 +1286,7 @@ def test_semgrep_error_findings_honor_only_in_source_suppressions(tmp_path):
         encoding="utf-8",
     )
 
-    assert run_semgrep._error_findings(sarif) == [
+    assert run_semgrep._blocking_findings(sarif) == [
         "external-error",
         "rejected-error",
         "under-review-error",
@@ -1339,7 +1344,7 @@ def test_semgrep_publishes_windows_file_uris_without_changing_findings(
             "tool": {"driver": {"name": "Semgrep"}},
             "results": [{
                 "ruleId": "example-rule",
-                "level": "warning",
+                "level": "note",
                 "message": {"text": source_uri},
                 "locations": [{"physicalLocation": {
                     "artifactLocation": {"uri": source_uri, "uriBaseId": "%SRCROOT%"},
@@ -1410,6 +1415,41 @@ def test_semgrep_publishes_only_findings_not_suppressed_in_source(
     assert run_semgrep.main() == 0
     published = json.loads(output.read_text(encoding="utf-8"))["runs"][0]["results"]
     assert [result["ruleId"] for result in published] == ["rejected", "external", "active"]
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        ({"ruleId": "r", "level": "error"}, 1),
+        ({"ruleId": "r", "level": "warning"}, 1),
+        ({"ruleId": "r", "level": "note"}, 0),
+        (
+            {
+                "ruleId": "r",
+                "level": "warning",
+                "suppressions": [{"kind": "inSource"}],
+            },
+            0,
+        ),
+    ],
+)
+def test_semgrep_exit_code_fails_on_unsuppressed_errors_and_warnings(
+    tmp_path, monkeypatch, result, expected,
+):
+    monkeypatch.setattr(run_semgrep, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(run_semgrep, "_scan_command", lambda path: ["semgrep"])
+    monkeypatch.setattr(
+        sys, "argv", ["run_semgrep.py", "--sarif", str(tmp_path / "out.sarif")]
+    )
+
+    def scan(command, *, cwd, env, check):
+        (cwd / ".semgrep-results.sarif").write_text(
+            json.dumps({"runs": [{"results": [result]}]}), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(run_semgrep.subprocess, "run", scan)
+    assert run_semgrep.main() == expected
 
 
 def test_cpython313_offline_imports_work_without_ssl(tmp_path):

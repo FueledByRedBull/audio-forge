@@ -50,9 +50,12 @@ archive, and one `SHA256SUMS.txt`.
    released tag to fix documentation; reconcile documentation in a later commit.
 5. **Review hardware evidence (optional).** Hardware qualification workflows
    can add measurements when a suitable runner exists; they don't block
-   publication. Keep each measurement bound to its candidate revision and
-   digest, never attribute an earlier candidate's results to the final
-   binary, and name untested configurations in the release notes.
+   publication. `self_test.py` and `health_check.py` are the hardware checks
+   that `release-hardware-qualify.yml` runs through
+   `evaluate_hardware_validation.py`. They need a real audio route, so no
+   hosted job can run them. Keep each measurement bound to its candidate
+   revision and digest, never attribute an earlier candidate's results to the
+   final binary, and name untested configurations in the release notes.
 6. **Promote.** Run `Promote release candidate` with `release_tag`,
    `candidate_run_id`, and `expected_archive_sha256`. It downloads the same
    candidate bytes, verifies sidecars, evidence, and corresponding source
@@ -159,11 +162,11 @@ stress test, then:
 .\.venv\Scripts\python.exe python\tools\package_smoke.py --source-only
 cargo audit
 .\.venv\Scripts\python.exe python\tools\package_smoke.py
-.\.venv\Scripts\python.exe python\tools\self_test.py
 ```
 
-- **Semgrep:** CI fails reviewed ERROR findings; triage every WARNING (FFI and
-  process-boundary findings) by hand in the SARIF.
+- **Semgrep:** `run_semgrep.py` fails on any ERROR or WARNING that isn't
+  suppressed in source with `nosemgrep` and a reason. Review the notes by
+  hand in the SARIF.
 - **RustSec:** `cargo audit` must be clean for the application lockfile; never
   add an ignore just to release. The separate
   `build-support/deepfilter/Cargo.lock` graph ignores only three reviewed

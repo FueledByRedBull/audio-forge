@@ -128,6 +128,8 @@ logger = logging.getLogger(__name__)
 NOISE_RECORDING_DURATION = 2.0
 VOICE_RECORDING_DURATION = 10.0
 _VOICE_SETUP_MUTE_REASON = "auto_voice_setup"
+# "&&" is a literal ampersand; a single "&" makes Qt underline the next character.
+_APPLY_VERIFY_AGAIN_LABEL = "Apply && Verify Again"
 _UNSTEADY_ROOM_ADVICE = "Setup will play safe; retake it if that was a one-off sound."
 # A click does not stop the take, but it makes the whole room-noise reference weak.
 _CLICK_REASONS = frozenset(
@@ -596,6 +598,7 @@ class VoiceSetupDialog(QDialog):
         self._verification_bad_capture_count = 0
         self._verification_last_reduction_metrics: dict[str, float] | None = None
         self._recent_rms_db: deque[float] = deque(maxlen=LEVEL_HOLD_UPDATES)
+        self._recent_peak_db: deque[float] = deque(maxlen=LEVEL_HOLD_UPDATES)
         # A result that did not pass every check: Apply is then the secondary action.
         self._advisory_only = False
         # The level check before the takes: its verdict and, if the user went on past it, which.
@@ -1122,6 +1125,7 @@ class VoiceSetupDialog(QDialog):
             return
 
         self._recent_rms_db.clear()
+        self._recent_peak_db.clear()
         try:
             get_input = getattr(parent.processor, "get_active_input_device", None)
             get_mode = getattr(parent.processor, "get_input_channel_mode", None)
@@ -1205,6 +1209,7 @@ class VoiceSetupDialog(QDialog):
     def _update_level(self, rms_db: float, peak_db: float) -> None:
         self.level_meter.set_levels(rms_db, peak_db)
         self._recent_rms_db.append(rms_db)
+        self._recent_peak_db.append(peak_db)
 
         if self.setup_state == "noise_recording":
             message, state = room_noise_message(self._recent_rms_db)
@@ -1215,7 +1220,7 @@ class VoiceSetupDialog(QDialog):
         # The loudest of a full window of blocks: the pauses between words are not "quiet".
         verdict = live_verdict(
             self._recent_rms_db,
-            peak_db,
+            self._recent_peak_db,
             again="check again" if self.setup_state == "level_check" else "record again",
         )
         if verdict is not None:
@@ -2060,7 +2065,7 @@ class VoiceSetupDialog(QDialog):
             self.setup_state = "completed"
             self.compare_button.setEnabled(True)
             self.start_button.setEnabled(True)
-            self.start_button.setText("Apply & Verify Again")
+            self.start_button.setText(_APPLY_VERIFY_AGAIN_LABEL)
             self.phase_label.setText(
                 "Final comparison declined; previous settings put back"
                 if restored
@@ -2626,7 +2631,7 @@ class VoiceSetupDialog(QDialog):
             self.setup_state = "completed"
             self.compare_button.setEnabled(True)
             self.start_button.setEnabled(True)
-            self.start_button.setText("Apply & Verify Again")
+            self.start_button.setText(_APPLY_VERIFY_AGAIN_LABEL)
             self.warning_label.setText(
                 f"{plain_stale(identity_error)} "
                 + (
@@ -2739,7 +2744,7 @@ class VoiceSetupDialog(QDialog):
                 self.setup_state = "completed"
                 self.compare_button.setEnabled(True)
                 self.start_button.setEnabled(True)
-                self.start_button.setText("Apply & Verify Again")
+                self.start_button.setText(_APPLY_VERIFY_AGAIN_LABEL)
                 self.phase_label.setText(
                     "Check passed, but the settings are out of date"
                     if restored
@@ -2760,7 +2765,7 @@ class VoiceSetupDialog(QDialog):
             self._refresh_review()
             self.setup_state = "final_comparison_ready"
             self.compare_button.setEnabled(True)
-            self.start_button.setEnabled(False)
+            self.start_button.setEnabled(True)
             self.start_button.setText("Compare Final Candidate")
             self.phase_label.setText("Check passed; final comparison ready")
             adjustment_note = self.setup_result.get("verification_adjustment_note")
@@ -2870,7 +2875,7 @@ class VoiceSetupDialog(QDialog):
             self._final_comparison_pending = False
             self.setup_state = "completed"
             self.compare_button.setEnabled(True)
-            self.start_button.setText("Apply & Verify Again")
+            self.start_button.setText(_APPLY_VERIFY_AGAIN_LABEL)
             reason = (
                 f"{reason} "
                 + (
@@ -2927,7 +2932,7 @@ class VoiceSetupDialog(QDialog):
         self.compare_button.setEnabled(self.setup_result is not None)
         self.start_button.setEnabled(True)
         self.start_button.setText(
-            "Apply & Verify Again"
+            _APPLY_VERIFY_AGAIN_LABEL
             if self.setup_result is not None
             else "Record Voice"
         )
@@ -3006,7 +3011,7 @@ class VoiceSetupDialog(QDialog):
             restored = self._restore_pre_setup_snapshot()
             self._reset_verification_state()
             self._final_comparison_pending = False
-            self.start_button.setText("Apply & Verify Again")
+            self.start_button.setText(_APPLY_VERIFY_AGAIN_LABEL)
             self.setup_state = "completed"
             self.compare_button.setEnabled(True)
             self.retake_btn.setVisible(True)
@@ -3143,7 +3148,7 @@ class VoiceSetupDialog(QDialog):
             self.compare_button.setEnabled(self.setup_result is not None)
             self.start_button.setEnabled(True)
             self.start_button.setText(
-                "Apply & Verify Again"
+                _APPLY_VERIFY_AGAIN_LABEL
                 if self.setup_result is not None
                 else "Record Voice"
             )

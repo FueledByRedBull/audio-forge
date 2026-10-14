@@ -71,6 +71,12 @@ AudioForge remains unsigned. Virtual audio cable setup is described in the
 - The Auto-EQ tone modes are named "Subtle" and "Full strength". Stored values
   are unchanged. The help text no longer says the EQ is calibrated to your voice
   and microphone.
+- After the second Voice Setup recording passes, the main button opens the
+  final comparison. It used to be greyed out.
+- The "Apply & Verify Again" button no longer reads "Apply _Verify Again".
+- The Drops line in Health says why it needs attention.
+- At the smallest window size the Mic page no longer runs under the level
+  meters, and long preset names are shortened.
 
 ## Changes
 

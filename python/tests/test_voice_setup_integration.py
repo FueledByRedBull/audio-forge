@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtCore import QElapsedTimer, QEventLoop, QThread, QTimer
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QDialog, QMessageBox
 
 from mic_eq.analysis.voice_setup import analyze_voice_setup
@@ -411,13 +412,30 @@ def test_an_unreadable_verification_take_restores_and_offers_another_try(
             "The recording held invalid audio data, which usually means the audio "
             "driver glitched. Restart processing and record again."
         )
-        assert dialog.start_button.text() == "Apply & Verify Again"
+        assert dialog.start_button.text() == "Apply && Verify Again"
         assert dialog.start_button.isEnabled()
         assert dialog.preview_verification_audio is None
         assert dialog.phase_label.text() == "Second recording failed; previous settings put back"
 
         dialog._on_start_clicked()
         assert dialog.setup_state == "verification_ready"
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_apply_and_verify_again_button_shows_a_literal_ampersand(real_main_window) -> None:
+    window = real_main_window
+    dialog = VoiceSetupDialog(parent=window)
+    noise, speech = _short_voice_captures(int(window.processor.sample_rate()))
+    _bind_capture_context(dialog, noise, speech)
+    _apply_complete_candidate(window, dialog, _voice_setup_result(window, dialog))
+    dialog.setup_state = "verification_recording"
+    try:
+        dialog._on_recording_complete(np.full_like(speech, np.nan))
+
+        assert dialog.start_button.text().startswith("Apply")
+        assert QKeySequence.mnemonic(dialog.start_button.text()).isEmpty()
     finally:
         dialog.reject()
         dialog.deleteLater()
@@ -841,6 +859,34 @@ def _start_noise_take(dialog: VoiceSetupDialog) -> None:
     dialog._capture_start_timer.stop()
 
 
+def test_a_new_take_starts_with_an_empty_level_window(real_main_window, monkeypatch) -> None:
+    class _Session:
+        def __init__(self, *_args) -> None:
+            pass
+
+        def start(self, *_args, **_kwargs) -> None:
+            pass
+
+        def cleanup(self) -> None:
+            pass
+
+    monkeypatch.setattr("mic_eq.ui.voice_setup_dialog.CaptureSession", _Session)
+    dialog = VoiceSetupDialog(parent=real_main_window)
+    try:
+        dialog._recent_rms_db.extend([-20.0] * 15)  # the last take's levels
+        dialog._recent_peak_db.extend([-6.0] * 15)
+        dialog.setup_state = "noise_recording"
+
+        dialog._begin_recording_capture()
+        dialog.recording_timer.stop()
+
+        assert len(dialog._recent_rms_db) == 0
+        assert len(dialog._recent_peak_db) == 0
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
 @pytest.mark.parametrize("capture", ["noise", "voice"])
 def test_a_rejected_capture_gives_the_target_controls_back(real_main_window, monkeypatch, capture) -> None:
     window = real_main_window
@@ -1226,6 +1272,34 @@ def test_the_confidence_row_follows_the_verification_and_the_restore(
 
         assert dialog.setup_state == "completed"
         assert dialog.overall_label.text() == advisory
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
+def test_the_final_comparison_opens_from_the_enabled_primary_button(
+    real_main_window, monkeypatch
+) -> None:
+    window = real_main_window
+    dialog, _speech = _review_dialog(window)
+    result = _voice_setup_result(window, dialog)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes
+    )
+    _apply_complete_candidate(window, dialog, result)
+    shown: dict[str, Any] = {}
+    _comparison_dialog(monkeypatch, shown)
+    try:
+        dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
+
+        assert dialog.setup_state == "final_comparison_ready"
+        assert dialog.start_button.text() == "Compare Final Candidate"
+        assert dialog.start_button.isEnabled()
+
+        dialog.start_button.click()
+
+        assert shown
+        assert dialog.setup_state == "completed"
     finally:
         dialog.reject()
         dialog.deleteLater()

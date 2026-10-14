@@ -104,17 +104,38 @@ def test_the_levels_form_gives_the_same_verdict_as_the_audio_form():
 
 
 def test_the_live_verdict_waits_out_the_pauses_and_says_a_peak_at_once():
-    assert live_verdict([-70.0] * (LEVEL_HOLD_UPDATES - 1), -60.0) is None
+    assert live_verdict([-70.0] * (LEVEL_HOLD_UPDATES - 1), [-60.0] * (LEVEL_HOLD_UPDATES - 1)) is None
 
-    quiet = live_verdict([-70.0] * LEVEL_HOLD_UPDATES, -60.0)
+    quiet = live_verdict([-70.0] * LEVEL_HOLD_UPDATES, [-60.0] * LEVEL_HOLD_UPDATES)
     assert quiet is not None and quiet.code == "too_quiet"
 
-    assert live_verdict([-25.0] * 3 + [-70.0] * 12, -12.0) is not None
-    good = live_verdict([-25.0] * 3 + [-70.0] * 12, -12.0)
+    good = live_verdict([-25.0] * 3 + [-70.0] * 12, [-12.0] * 15)
     assert good is not None and good.code == "good"
 
-    hot = live_verdict([-20.0], -1.0)
+    hot = live_verdict([-20.0], [-1.0])
     assert hot is not None and hot.code == "too_hot" and "-1.0 dB" in hot.message
+
+
+def test_the_live_verdict_names_the_loudest_peak_of_the_window_not_the_latest_block():
+    # A loud word, then a pause: the latest block's peak is -34.8 dB, the window's is -7.0 dB.
+    rms = [-25.0] * 3 + [-70.0] * 12
+    peaks = [-7.0] + [-12.0] * 2 + [-34.8] * 12
+
+    verdict = live_verdict(rms, peaks)
+
+    assert verdict is not None and verdict.code == "good"
+    assert "-7.0 dB" in verdict.message and "-34.8" not in verdict.message
+    assert verdict.peak_db == -7.0
+
+
+def test_a_level_just_below_zero_prints_as_zero():
+    hot = verdict_from_levels(-0.04, -10.0)
+    clipped = verdict_from_levels(-0.04, -10.0, clipped=True)
+
+    assert "peaks at 0.0 dB, close to the limit" in hot.message
+    assert "peaks reach 0.0 dB" in clipped.message
+    assert "-0.0" not in hot.message + clipped.message
+    assert room_noise_message([-0.3])[0].startswith("The room is loud (0 dB)")
 
 
 def test_the_room_noise_message_names_the_level_when_the_room_is_loud():
@@ -204,7 +225,7 @@ def test_a_take_with_almost_no_speech_asks_for_speech_instead_of_a_raise():
     "verdict",
     [
         verdict_from_levels(-3.5, -41.0),
-        live_verdict([-42.0] * LEVEL_HOLD_UPDATES, 0.0),
+        live_verdict([-42.0] * LEVEL_HOLD_UPDATES, [0.0] * LEVEL_HOLD_UPDATES),
     ],
 )
 def test_a_quiet_voice_with_a_peak_near_the_limit_is_not_told_to_raise_the_level(verdict):

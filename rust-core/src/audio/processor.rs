@@ -424,6 +424,20 @@ pub struct AudioProcessor {
     clip_event_count: Arc<AtomicU64>,
     /// Peak pre-clamp level in dBFS.
     clip_peak_db: Arc<AtomicU32>,
+    /// Largest absolute input sample since `take_input_peak_since_read`
+    /// (f32 bits, linear; measured on the mono engine-rate signal before the
+    /// pre-filter, in every processing path).
+    input_peak_hold: Arc<AtomicU32>,
+    /// Input samples at or above `FULL_SCALE_LINEAR`, cumulative since start.
+    input_full_scale_count: Arc<AtomicU64>,
+    /// Largest absolute sample of the meter's OUT tap (before the final
+    /// true-peak limiter and clamp) since the last take (f32 bits, linear).
+    output_pre_limiter_peak_hold: Arc<AtomicU32>,
+    /// Largest absolute sample written to the output queue, after the final
+    /// limiter, clamp and fade, since the last take (f32 bits, linear).
+    output_final_peak_hold: Arc<AtomicU32>,
+    /// Queued output samples at or above `FULL_SCALE_LINEAR`, cumulative since start.
+    output_full_scale_count: Arc<AtomicU64>,
     /// Number of final output samples clamped by output protection.
     output_clip_event_count: Arc<AtomicU64>,
     /// Peak final pre-clamp output level in dBFS.
@@ -704,6 +718,11 @@ impl AudioProcessor {
             suppressor_non_finite_count: Arc::new(AtomicU64::new(0)),
             clip_event_count: Arc::new(AtomicU64::new(0)),
             clip_peak_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
+            input_peak_hold: Arc::new(AtomicU32::new(0)),
+            input_full_scale_count: Arc::new(AtomicU64::new(0)),
+            output_pre_limiter_peak_hold: Arc::new(AtomicU32::new(0)),
+            output_final_peak_hold: Arc::new(AtomicU32::new(0)),
+            output_full_scale_count: Arc::new(AtomicU64::new(0)),
             output_clip_event_count: Arc::new(AtomicU64::new(0)),
             output_clip_peak_db: Arc::new(AtomicU32::new((-120.0_f32).to_bits())),
             output_true_peak_event_count: Arc::new(AtomicU64::new(0)),

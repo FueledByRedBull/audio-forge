@@ -2468,6 +2468,26 @@ impl PyAudioProcessor {
         self.processor.get_output_crest_factor_db()
     }
 
+    fn take_input_peak_since_read(&self) -> f32 {
+        self.processor.take_input_peak_since_read()
+    }
+
+    fn take_output_pre_limiter_peak_since_read(&self) -> f32 {
+        self.processor.take_output_pre_limiter_peak_since_read()
+    }
+
+    fn take_output_peak_since_read(&self) -> f32 {
+        self.processor.take_output_peak_since_read()
+    }
+
+    fn get_input_full_scale_count(&self) -> u64 {
+        self.processor.get_input_full_scale_count()
+    }
+
+    fn get_output_full_scale_count(&self) -> u64 {
+        self.processor.get_output_full_scale_count()
+    }
+
     fn get_output_short_term_lufs(&self) -> f32 {
         self.processor.get_output_short_term_lufs()
     }

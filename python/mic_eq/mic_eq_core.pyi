@@ -151,6 +151,83 @@ class AudioProcessor:
     def get_output_peak_db(self) -> float: ...
     def get_output_rms_db(self) -> float: ...
     def get_output_crest_factor_db(self) -> float: ...
+    def take_input_peak_since_read(self) -> float:
+        """Largest absolute input sample since the previous call, then reset it.
+
+        Linear amplitude, not dB: 0.0 means silence (or nothing since the last
+        call), 1.0 is full scale, and a float device can deliver more than 1.0
+        (reported unclamped). Convert and clamp in Python. Non-finite samples
+        are ignored. The value is held by the realtime thread between calls, so
+        a transient between two polls is never missed; the first call after
+        ``start`` covers the time since ``start``.
+
+        This is a destructive read (an atomic swap to zero): a second caller,
+        such as a setup dialog polling beside the main window, would take the
+        peak away from the first. Exactly one object in the Python process may
+        call this; it must keep the running maximum and share it with anyone
+        else who needs it. A peak published between the read and the reset is
+        not lost; it appears in the next call.
+
+        Measured on the mono signal that enters the DSP loop: after channel
+        mix-down and any input resampling, before sanitizing, the 80 Hz
+        pre-filter and cleanup, in every processing path (including raw
+        monitor and bypass). It is therefore not the value ``get_input_peak_db``
+        shows, which is taken after the pre-filter and cleanup.
+        """
+        ...
+
+    def take_output_peak_since_read(self) -> float:
+        """Largest absolute sample queued for the output device since the previous call.
+
+        Same semantics as ``take_input_peak_since_read`` (linear amplitude,
+        destructive read, single caller). Measured after the final true-peak
+        limiter, the output clamp, the non-finite sanitizer and the start-up
+        fade, at the output device's sample rate, on samples that were actually
+        written to the output queue (samples dropped by a short write are not
+        included). With the limiter off the clamp is at 1.0, so this is at most
+        1.0. It is taken before the device callback, so it keeps reporting while
+        the output is muted or the device is stalled.
+        """
+        ...
+
+    def take_output_pre_limiter_peak_since_read(self) -> float:
+        """Largest absolute sample of the OUT meter tap since the previous call.
+
+        Same semantics as ``take_input_peak_since_read``. Measured where
+        ``get_output_peak_db`` is measured: after the compressor, the main
+        limiter and makeup, before the final true-peak limiter and clamp, so it
+        can exceed 1.0 and is the held counterpart of the OUT meter bar. Use
+        ``take_output_peak_since_read`` for what the output actually carries.
+        Must be called by the same single reader as the other ``take_*`` methods.
+        """
+        ...
+
+    def get_input_full_scale_count(self) -> int:
+        """Input samples with absolute value >= 0.999 (-0.009 dBFS), cumulative since start.
+
+        Non-destructive and monotonic like ``get_input_callback_error_count``:
+        it restarts at zero on ``start``, any number of readers may call it, and
+        each reader takes its own difference between two calls. 0.999 is the
+        level ``raw_capture_is_clipped`` uses, and it counts a saturated
+        converter's exact +/-1.0 (and 32767/32768) that the older
+        ``clip_event_count`` (strictly above 1.0) does not. It rises by one per
+        sample, so it cannot tell a single touch of full scale from a flat top;
+        ``raw_capture_is_clipped`` needs a run of samples for that. Same
+        measurement point as ``take_input_peak_since_read``.
+        """
+        ...
+
+    def get_output_full_scale_count(self) -> int:
+        """Queued output samples with absolute value >= 0.999, cumulative since start.
+
+        Non-destructive and monotonic, same threshold as
+        ``get_input_full_scale_count``, same measurement point as
+        ``take_output_peak_since_read``. With the limiter on and its ceiling at
+        or above 0.999 a hard-limited signal counts too, so judge "full scale
+        with the limiter off" together with the limiter setting.
+        """
+        ...
+
     def get_output_short_term_lufs(self) -> float: ...
     def get_input_stereo_correlation(self) -> float: ...
     def get_input_phase_warning_count(self) -> int: ...
@@ -173,8 +250,14 @@ class AudioProcessor:
     def reset_dropped_samples(self) -> None: ...
     def get_lock_contention_count(self) -> int: ...
     def reset_lock_contention_count(self) -> None: ...
-    def get_input_callback_age_ms(self) -> int: ...
-    def get_output_callback_age_ms(self) -> int: ...
+    def get_input_callback_age_ms(self) -> int:
+        """Milliseconds since the input callback last ran; ``2**64 - 1`` before its first call."""
+        ...
+
+    def get_output_callback_age_ms(self) -> int:
+        """Milliseconds since the output callback last ran; ``2**64 - 1`` before its first call."""
+        ...
+
     def get_output_underrun_streak(self) -> int: ...
     def get_output_underrun_total(self) -> int: ...
     def get_jitter_dropped_samples(self) -> int: ...

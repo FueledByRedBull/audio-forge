@@ -1803,6 +1803,253 @@ mod tests {
     }
 
     #[test]
+    fn test_peak_hold_keeps_a_transient_until_read_and_take_resets() {
+        let processor = AudioProcessor::new();
+        let record = |block: &[f32]| {
+            record_level_extremes(
+                block,
+                &processor.input_peak_hold,
+                Some(&processor.input_full_scale_count),
+            );
+        };
+        let quiet = [0.01_f32; 480];
+        let mut transient = quiet;
+        transient[200] = -1.0;
+
+        record(&transient);
+        record(&quiet);
+        record(&quiet);
+        assert_eq!(processor.take_input_peak_since_read(), 1.0);
+
+        // The take reset the hold; the next one only sees what arrived since.
+        assert_eq!(processor.take_input_peak_since_read(), 0.0);
+        record(&quiet);
+        assert_eq!(processor.take_input_peak_since_read(), 0.01);
+
+        // Amplitudes above full scale are reported as delivered, not clamped.
+        record(&[0.2, -1.5]);
+        assert_eq!(processor.take_input_peak_since_read(), 1.5);
+    }
+
+    #[test]
+    fn test_peak_hold_take_loses_no_peak_published_during_a_read() {
+        let hold = std::sync::Arc::new(AtomicU32::new(0));
+        let writer_hold = std::sync::Arc::clone(&hold);
+        let writer = std::thread::spawn(move || {
+            let mut maximum = 0.0_f32;
+            for index in 0..50_000_u32 {
+                // Deterministic scatter of peaks in (0, 1); the largest lands mid-run.
+                let value = (index.wrapping_mul(2_654_435_761) % 99_991) as f32 / 100_000.0;
+                maximum = maximum.max(value);
+                record_level_extremes(&[value], &writer_hold, None);
+            }
+            maximum
+        });
+        let mut seen = 0.0_f32;
+        while !writer.is_finished() {
+            seen = seen.max(f32::from_bits(hold.swap(0, Ordering::Relaxed)));
+        }
+        let written_maximum = writer.join().unwrap();
+        seen = seen.max(f32::from_bits(hold.swap(0, Ordering::Relaxed)));
+        assert_eq!(seen, written_maximum);
+    }
+
+    #[test]
+    fn test_full_scale_count_includes_exactly_full_scale_and_excludes_below() {
+        let processor = AudioProcessor::new();
+        let record = |block: &[f32]| {
+            record_level_extremes(
+                block,
+                &processor.input_peak_hold,
+                Some(&processor.input_full_scale_count),
+            );
+        };
+
+        record(&[0.99, -0.9989, 0.5]);
+        assert_eq!(processor.get_input_full_scale_count(), 0);
+        assert_eq!(processor.take_input_peak_since_read(), 0.9989);
+
+        // 1.0 and -1.0 (a saturated converter), the 0.999 threshold, and an
+        // over-range float sample all count; the count is cumulative.
+        record(&[1.0, -1.0, 0.999, 1.2, 0.0]);
+        assert_eq!(processor.get_input_full_scale_count(), 4);
+        record(&[1.0]);
+        assert_eq!(processor.get_input_full_scale_count(), 5);
+        // Reading the peak does not touch the cumulative count.
+        assert_eq!(processor.take_input_peak_since_read(), 1.2);
+        assert_eq!(processor.get_input_full_scale_count(), 5);
+    }
+
+    #[test]
+    fn test_peak_hold_ignores_non_finite_samples() {
+        let hold = AtomicU32::new(0);
+        let count = AtomicU64::new(0);
+
+        record_level_extremes(&[f32::NAN, f32::INFINITY, f32::NEG_INFINITY], &hold, Some(&count));
+        assert_eq!(hold.load(Ordering::Relaxed), 0);
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+
+        // Non-finite samples in a block do not hide or inflate its finite peak.
+        record_level_extremes(&[f32::NAN, 0.5, f32::INFINITY, -0.25], &hold, Some(&count));
+        assert_eq!(f32::from_bits(hold.load(Ordering::Relaxed)), 0.5);
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    /// Writes one chunk through the production output writer and returns what
+    /// reached the output queue with the final peak and full-scale count.
+    fn run_final_output_writer(
+        limiter_on: bool,
+        ceiling: f32,
+        input: &[f32],
+    ) -> (Vec<f32>, f32, u64) {
+        run_output_writer_with(limiter_on, ceiling, input, |writer, chunk| {
+            writer.write_chunk(chunk, true)
+        })
+    }
+
+    /// Like `run_final_output_writer`, with the caller driving the writer.
+    fn run_output_writer_with(
+        limiter_on: bool,
+        ceiling: f32,
+        input: &[f32],
+        drive: impl FnOnce(&mut OutputWriteContext<'_, 1024, 1024, 1024>, &[f32]) -> bool,
+    ) -> (Vec<f32>, f32, u64) {
+        let rb = AudioRingBuffer::new(4096);
+        let (mut producer, mut consumer) = rb.split();
+        let mut control_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut fade_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut safety_scratch = FixedAudioBuffer::<f32, 1024>::new();
+        let mut true_peak_detector = TruePeakDetector::new();
+        let mut true_peak_limiter = TruePeakLimiter::default();
+        let mut drift_error_ema = 0.0_f32;
+        let mut drift_retimer = DriftRetimer::default();
+        let fade_remaining = Cell::new(0usize);
+        let limiter_enabled = AtomicBool::new(limiter_on);
+        let output_ceiling_linear = Cell::new(ceiling);
+        let jitter_dropped_samples = AtomicU64::new(0);
+        let output_retime_adjustment_count = AtomicU64::new(0);
+        let output_recovery_event_count = AtomicU64::new(0);
+        let output_short_write_dropped_samples = AtomicU64::new(0);
+        let rt_buffer_overflow_count = AtomicU64::new(0);
+        let rt_error_code = AtomicU32::new(RtErrorCode::None as u32);
+        let output_buffer_len = AtomicU32::new(0);
+        let last_output_write_time = AtomicU64::new(0);
+        let final_peak = AtomicU32::new(0);
+        let full_scale_count = AtomicU64::new(0);
+        let mut writer = OutputWriteContext {
+            output_producer: &mut producer,
+            output_queue_control_scratch: &mut control_scratch,
+            discontinuity_fade_scratch: &mut fade_scratch,
+            output_safety_scratch: &mut safety_scratch,
+            true_peak_detector: &mut true_peak_detector,
+            true_peak_limiter: &mut true_peak_limiter,
+            drift_error_ema: &mut drift_error_ema,
+            drift_retimer: &mut drift_retimer,
+            discontinuity_fade_remaining: &fade_remaining,
+            output_fade_remaining: 0,
+            limiter_enabled: &limiter_enabled,
+            output_ceiling_linear: &output_ceiling_linear,
+            counters: OutputWriteCounters {
+                output_final_peak_hold: &final_peak,
+                output_full_scale_count: &full_scale_count,
+                ..output_writer_counters(
+                    (
+                        &jitter_dropped_samples,
+                        &output_retime_adjustment_count,
+                        &output_recovery_event_count,
+                    ),
+                    &output_short_write_dropped_samples,
+                    &rt_buffer_overflow_count,
+                    &rt_error_code,
+                    &output_buffer_len,
+                    &last_output_write_time,
+                )
+            },
+            limits: test_output_writer_limits(4, 8, 4),
+        };
+        assert!(drive(&mut writer, input));
+        let mut queued = vec![0.0_f32; input.len()];
+        assert_eq!(consumer.read(&mut queued), input.len());
+        (
+            queued,
+            f32::from_bits(final_peak.load(Ordering::Relaxed)),
+            full_scale_count.load(Ordering::Relaxed),
+        )
+    }
+
+    #[test]
+    fn test_level_extremes_and_output_writer_do_not_allocate() {
+        let hold = AtomicU32::new(0);
+        let count = AtomicU64::new(0);
+        let block = [0.25_f32, -1.0, 0.999, f32::NAN, 1.4];
+        record_level_extremes(&block, &hold, Some(&count));
+        crate::test_alloc::assert_no_allocations("level extremes with a count", || {
+            record_level_extremes(&block, &hold, Some(&count));
+        });
+        crate::test_alloc::assert_no_allocations("level extremes without a count", || {
+            record_level_extremes(&block, &hold, None);
+        });
+
+        let mut input = [0.0_f32; 512];
+        input[100..140].fill(0.9);
+        input[200] = f32::NAN;
+        for clean_path in [true, false] {
+            run_output_writer_with(true, 0.5, &input, |writer, chunk| {
+                // The first write warms the writer up; the second is measured.
+                assert!(writer.write_chunk(chunk, clean_path));
+                let mut written = false;
+                crate::test_alloc::assert_no_allocations("output writer", || {
+                    written = writer.write_chunk(chunk, clean_path);
+                });
+                written
+            });
+        }
+    }
+
+    #[test]
+    fn test_final_output_peak_is_measured_after_the_limiter() {
+        let mut input = [0.0_f32; 1024];
+        input[300..340].fill(0.9);
+        let input_peak = 0.9_f32;
+
+        let (queued, final_peak, full_scale) = run_final_output_writer(true, 0.5, &input);
+
+        let queued_peak = queued.iter().fold(0.0_f32, |peak, s| peak.max(s.abs()));
+        assert_eq!(final_peak, queued_peak, "must equal what was queued");
+        assert!(final_peak > 0.1, "the burst must reach the output");
+        assert!(final_peak <= 0.5 + 1e-6, "limited to the ceiling: {final_peak}");
+        assert!(final_peak < input_peak - 0.3, "post-limiter must differ from the input");
+        assert_eq!(full_scale, 0);
+    }
+
+    #[test]
+    fn test_final_output_reports_full_scale_after_clamp_with_limiter_off() {
+        let mut input = [0.0_f32; 1024];
+        input[300..340].fill(1.4);
+        input[400] = f32::NAN;
+
+        let (queued, final_peak, full_scale) = run_final_output_writer(false, 0.5, &input);
+
+        // Limiter off: the ceiling is 1.0 whatever the setting, the clamp holds
+        // the over-range burst at full scale, and the NaN became silence.
+        assert!(queued.iter().all(|sample| sample.is_finite() && sample.abs() <= 1.0));
+        assert_eq!(final_peak, 1.0);
+        assert!(full_scale >= 40, "full_scale={full_scale}");
+    }
+
+    #[test]
+    fn test_dsp_loop_publishes_peak_holds_in_every_path() {
+        let source = include_str!("dsp_loop.rs");
+        let region = marked_region(source, "dsp_processing_loop");
+        // Input: once, on the raw block, before the processing paths split.
+        assert_eq!(region.matches("record_level_extremes(").count(), 1);
+        assert!(region.contains("input_peak_hold.as_ref()"));
+        // OUT meter tap (before the final limiter): raw monitor, bypass and the
+        // two normal-path sites. Input sites pass no hold.
+        assert_eq!(region.matches("Some(&output_pre_limiter_peak_hold)").count(), 4);
+    }
+
+    #[test]
     fn test_careful_output_mode_lowers_effective_limiter_ceiling() {
         let processor = AudioProcessor::new();
 
@@ -2151,6 +2398,8 @@ mod tests {
     ) -> OutputWriteCounters<'a> {
         static OUTPUT_CLIP_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
         static OUTPUT_CLIP_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
+        static OUTPUT_FINAL_PEAK_HOLD: AtomicU32 = AtomicU32::new(0);
+        static OUTPUT_FULL_SCALE_COUNT: AtomicU64 = AtomicU64::new(0);
         static OUTPUT_TRUE_PEAK_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
         static OUTPUT_TRUE_PEAK_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
         static OUTPUT_TRUE_PEAK_INPUT_DB: AtomicU32 = AtomicU32::new((-120.0_f32).to_bits());
@@ -2175,6 +2424,8 @@ mod tests {
             last_output_write_time,
             output_clip_event_count: &OUTPUT_CLIP_EVENT_COUNT,
             output_clip_peak_db: &OUTPUT_CLIP_PEAK_DB,
+            output_final_peak_hold: &OUTPUT_FINAL_PEAK_HOLD,
+            output_full_scale_count: &OUTPUT_FULL_SCALE_COUNT,
             output_true_peak_event_count: &OUTPUT_TRUE_PEAK_EVENT_COUNT,
             output_true_peak_db: &OUTPUT_TRUE_PEAK_DB,
             output_true_peak_input_db: &OUTPUT_TRUE_PEAK_INPUT_DB,
@@ -2714,6 +2965,8 @@ mod tests {
         let last_output_write_time = AtomicU64::new(0);
         let output_clip_event_count = AtomicU64::new(0);
         let output_clip_peak_db = AtomicU32::new((-120.0_f32).to_bits());
+        let output_final_peak_hold = AtomicU32::new(0);
+        let output_full_scale_count = AtomicU64::new(0);
         let output_true_peak_event_count = AtomicU64::new(0);
         let output_true_peak_db = AtomicU32::new((-120.0_f32).to_bits());
         let output_true_peak_input_db = AtomicU32::new((-120.0_f32).to_bits());
@@ -2745,6 +2998,8 @@ mod tests {
                 last_output_write_time: &last_output_write_time,
                 output_clip_event_count: &output_clip_event_count,
                 output_clip_peak_db: &output_clip_peak_db,
+                output_final_peak_hold: &output_final_peak_hold,
+                output_full_scale_count: &output_full_scale_count,
                 output_true_peak_event_count: &output_true_peak_event_count,
                 output_true_peak_db: &output_true_peak_db,
                 output_true_peak_input_db: &output_true_peak_input_db,
@@ -3976,6 +4231,25 @@ mod tests {
                 assert_no_forbidden_rt_patterns(&format!("{file}:{region_name}"), region);
             }
         }
+    }
+
+    #[test]
+    fn test_level_meter_and_output_writer_sources_reject_blocking_or_allocating_apis() {
+        // These files carry no RT_REGION markers, so the functions are cut out by name.
+        let writer = include_str!("output_writer.rs");
+        assert_no_forbidden_rt_patterns(
+            "output_writer.rs:OutputWriteContext",
+            source_between(writer, "fn write_chunk(", "fn new(total: usize)"),
+        );
+        let routing = include_str!("routing.rs");
+        assert_no_forbidden_rt_patterns(
+            "routing.rs:record_level_extremes",
+            source_between(
+                routing,
+                "fn record_level_extremes(",
+                "fn sanitize_and_clamp_output_inplace(",
+            ),
+        );
     }
 
     #[test]

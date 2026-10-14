@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import Mock
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QCheckBox, QComboBox, QWidget
 
 from mic_eq.config import AppConfig, DeviceIdentity
+from mic_eq.config_parts.app_config import FIRST_RUN_SETUP_STEPS
 from mic_eq.ui.first_run_setup_dialog import (
     FirstRunSetupDialog,
     route_health_reason,
 )
+from mic_eq.ui.main_window import MainWindow
 from mic_eq.ui.shell_state import TextState
 from mic_eq.ui.theme import status_chip_style
 
@@ -708,7 +711,9 @@ def test_closing_rerun_setup_restores_completed_state(
                                "latency": "pending", "voice": outcome},
     )
     dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+    saves_after_constructor = len(saved_states)
     dialog._skip_step()
+    saves_after_step_change = len(saved_states)
 
     if how == "reject":
         dialog.reject()
@@ -716,7 +721,7 @@ def test_closing_rerun_setup_restores_completed_state(
         assert dialog._finish_setup() is True
 
     assert config.first_run_setup_state == entry_state
-    assert len(saved_states) >= 3
+    assert 0 < saves_after_constructor < saves_after_step_change < len(saved_states)
     assert set(saved_states) == {entry_state}
 
 
@@ -765,3 +770,94 @@ def test_closing_first_run_setup_stays_in_progress(qapp, monkeypatch, entry_stat
     FirstRunSetupDialog(_Owner(config, _Processor())).reject()
 
     assert config.first_run_setup_state == "in_progress"
+
+
+@pytest.mark.parametrize("how", ["reject", "pause"])
+def test_rerun_resumes_paused_progress_from_settings(qapp, monkeypatch, how):
+    saved_states = []
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config",
+        lambda config: saved_states.append(config.first_run_setup_state) or True,
+    )
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.QMessageBox.information",
+        lambda *_args: None,
+    )
+    config = AppConfig(
+        first_run_setup_state="completed",
+        first_run_setup_steps={step: "completed" for step in FIRST_RUN_SETUP_STEPS},
+    )
+    owner = _Owner(config, _Processor())
+    dialog = FirstRunSetupDialog(owner, restart_completed=True)
+    config.first_run_setup_steps["devices"] = "completed"
+    dialog._advance_or_finish()
+    if how == "reject":
+        dialog.reject()
+    else:
+        assert dialog._finish_setup() is True
+
+    resumed = FirstRunSetupDialog(owner, restart_completed=True)
+
+    assert config.first_run_setup_steps["devices"] == "completed"
+    assert resumed.current_step == "route"
+    assert set(saved_states) == {"completed"}
+
+
+def test_fully_completed_setup_restarts_from_settings(qapp, monkeypatch):
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config", lambda _config: True
+    )
+    config = AppConfig(
+        first_run_setup_state="completed",
+        first_run_setup_step="voice",
+        first_run_setup_steps={step: "completed" for step in FIRST_RUN_SETUP_STEPS},
+    )
+    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+
+    assert dialog.current_step == "devices"
+    assert set(config.first_run_setup_steps.values()) == {"pending"}
+
+
+@pytest.mark.parametrize("entry_state", ["completed", "completed_with_skips"])
+def test_failed_save_on_close_keeps_entry_state_in_memory(qapp, monkeypatch, entry_state):
+    save_results = iter((True, False))
+    monkeypatch.setattr(
+        "mic_eq.ui.first_run_setup_dialog.save_config",
+        lambda _config: next(save_results),
+    )
+    config = AppConfig(first_run_setup_state=entry_state)
+    dialog = FirstRunSetupDialog(_Owner(config, _Processor()), restart_completed=True)
+
+    dialog.reject()
+
+    assert config.first_run_setup_state == entry_state
+    assert "could not be saved" in dialog.owner.status_message.showMessage.call_args.args[0]
+
+
+@pytest.mark.parametrize(
+    ("state", "steps", "prompts"),
+    [
+        ("not_started", {}, True),
+        ("in_progress", {}, True),
+        ("completed", {}, False),
+        ("completed", {"devices": "pending"}, False),
+        ("completed_with_skips", {"voice": "skipped"}, False),
+        ("completed_with_skips", {"devices": "pending"}, False),
+    ],
+)
+def test_launch_prompts_only_for_unfinished_first_run(
+    monkeypatch, state, steps, prompts
+):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("AUDIOFORGE_SMOKE_TEST", raising=False)
+    shown = []
+    # Unbound call on a minimal stand-in: MainWindow construction is heavy and
+    # the method only reads config and calls _show_first_run_setup.
+    window = SimpleNamespace(
+        config=AppConfig(first_run_setup_state=state, first_run_setup_steps=steps),
+        _show_first_run_setup=lambda **kwargs: shown.append(kwargs),
+    )
+
+    MainWindow._maybe_show_first_run_setup(window)  # type: ignore[arg-type]
+
+    assert shown == ([{"restart_completed": False}] if prompts else [])

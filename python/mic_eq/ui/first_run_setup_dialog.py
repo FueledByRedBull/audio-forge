@@ -166,12 +166,23 @@ class FirstRunSetupDialog(QDialog):
             else "in_progress"
         )
 
-        if restart_completed and self.config.first_run_setup_state == "completed":
+        # A paused re-run resumes; only a fully finished setup restarts from scratch.
+        paused = any(
+            self.config.first_run_setup_steps.get(step) == "pending"
+            for step in DEFAULT_SETUP_STEPS
+        )
+        if (
+            restart_completed
+            and self.config.first_run_setup_state == "completed"
+            and not paused
+        ):
             self.config.first_run_setup_steps = {
                 step: "pending" for step in FIRST_RUN_SETUP_STEPS
             }
             self.config.first_run_setup_step = "devices"
-        elif self.config.first_run_setup_state == "completed_with_skips":
+        elif self._exit_state != "in_progress" and (
+            paused or self._exit_state == "completed_with_skips"
+        ):
             for step in DEFAULT_SETUP_STEPS:
                 if self.config.first_run_setup_steps.get(step) == "skipped":
                     self.config.first_run_setup_steps[step] = "pending"

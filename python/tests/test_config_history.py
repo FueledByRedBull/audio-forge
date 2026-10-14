@@ -150,6 +150,23 @@ def test_routing_back_to_a_calibrated_route_is_not_an_entry_and_undo_restores_it
     assert history.current.label == "E1"
 
 
+def test_a_route_that_drops_out_and_comes_back_is_not_an_entry() -> None:
+    history = BoundedConfigurationHistory()
+    history.initialize(_on_route(-40.0, "K1", 0.7))
+    # A device briefly gone leaves no route key; coming back returns the saved calibration.
+    assert not history.record(_on_route(-40.0, None, 0.0))
+    assert not history.record(_on_route(-40.0, "K1", 0.7))
+    assert history.size == 1
+
+
+def test_a_route_resolving_after_startup_without_one_is_not_an_entry() -> None:
+    history = BoundedConfigurationHistory()
+    history.initialize(_on_route(-40.0, None, 0.0))
+    # The saved calibration matches once the devices are known; nothing was calibrated just now.
+    assert not history.record(_on_route(-40.0, "K1", 0.7))
+    assert history.size == 1
+
+
 def test_a_calibration_landing_on_the_new_route_is_one_entry() -> None:
     history = BoundedConfigurationHistory()
     history.initialize(_on_route(-40.0, "K1", 0.7))
@@ -472,6 +489,8 @@ def test_history_restores_calibration_only_in_the_same_capture_context(window, m
             "noise_reference_reliability"
         ]
 
+    # The route resolving is context, not an edit; the calibration landing on it is one.
+    assert not window._commit_pending_configuration_snapshot()
     window.compressor_state.set_settings({"noise_reference_reliability": 0.7})
     assert window._commit_pending_configuration_snapshot()
     snapshot = window._configuration_history.current

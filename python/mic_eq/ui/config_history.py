@@ -140,12 +140,13 @@ class BoundedConfigurationHistory:
         # on top of the history for every undo press to step over. So the commit is judged against
         # the last state observed, not the last entry. Restore trusts a reliability only under a
         # matching key, so an entry kept under an old key never carries calibration to a new route.
+        # A route that cannot be identified (a device briefly gone) has no key and counts like any.
         if current is not None and (
             current.payload_json == snapshot.payload_json
             and current.processing_mode == snapshot.processing_mode
         ):
             key, reliability = self._observed
-            if key is not None and snapshot.calibration_context_key != key:
+            if snapshot.calibration_context_key != key:
                 self._observe(snapshot)
                 return False
             if snapshot.noise_reference_reliability == reliability:

@@ -2763,7 +2763,7 @@ class VoiceSetupDialog(QDialog):
             self._refresh_review()
             self.setup_state = "final_comparison_ready"
             self.compare_button.setEnabled(True)
-            self.start_button.setEnabled(False)
+            self.start_button.setEnabled(True)
             self.start_button.setText("Compare Final Candidate")
             self.phase_label.setText("Check passed; final comparison ready")
             adjustment_note = self.setup_result.get("verification_adjustment_note")

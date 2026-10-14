@@ -1231,6 +1231,34 @@ def test_the_confidence_row_follows_the_verification_and_the_restore(
         dialog.deleteLater()
 
 
+def test_the_final_comparison_opens_from_the_enabled_primary_button(
+    real_main_window, monkeypatch
+) -> None:
+    window = real_main_window
+    dialog, _speech = _review_dialog(window)
+    result = _voice_setup_result(window, dialog)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes
+    )
+    _apply_complete_candidate(window, dialog, result)
+    shown: dict[str, Any] = {}
+    _comparison_dialog(monkeypatch, shown)
+    try:
+        dialog._on_verification_complete(_verdict_with_dulling_advisory("accept", advised=False))
+
+        assert dialog.setup_state == "final_comparison_ready"
+        assert dialog.start_button.text() == "Compare Final Candidate"
+        assert dialog.start_button.isEnabled()
+
+        dialog.start_button.click()
+
+        assert shown
+        assert dialog.setup_state == "completed"
+    finally:
+        dialog.reject()
+        dialog.deleteLater()
+
+
 def test_the_manual_makeup_gain_is_named_instead_of_a_loudness_target(
     real_main_window
 ) -> None:

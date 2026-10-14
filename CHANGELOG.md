@@ -25,6 +25,7 @@
 - While a take records, the level message names the loudest peak of the last 1.5 seconds. It used to name the peak of the latest block, so a pause between words could read "peaks at -34.8 dB" for a voice that peaks at -7 dB.
 - A peak just under 0 dB prints as 0.0 dB, not -0.0 dB.
 - After the second Voice Setup recording passes, the main button opens the final comparison. It was shown greyed out, and only "Compare Recording" opened it.
+- The "Apply & Verify Again" button shows its ampersand. It read "Apply _Verify Again", because Qt took the "&" for a keyboard shortcut marker.
 
 ### Meters, Health and clipping
 

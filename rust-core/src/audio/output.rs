@@ -27,6 +27,16 @@ pub(crate) struct OutputProbeControl {
     pub(crate) cancel_requested: Arc<AtomicBool>,
 }
 
+/// Output-callback underrun accounting shared with the processor.
+pub(crate) struct OutputUnderruns {
+    pub(crate) streak: Arc<AtomicU32>,
+    pub(crate) total: Arc<AtomicU64>,
+    /// Empty-queue callbacks before the DSP loop queued its first real audio.
+    pub(crate) priming_total: Arc<AtomicU64>,
+    /// Time of the DSP loop's first queued write (0 until then); a start resets it.
+    pub(crate) audio_queued_at_us: Arc<AtomicU64>,
+}
+
 /// Audio output stream
 pub struct AudioOutput {
     stream: Stream,
@@ -218,8 +228,7 @@ impl AudioOutput {
         num_channels: usize,
         consumer: &mut AudioConsumer,
         scratch: &mut [f32],
-        underrun_streak: &AtomicU32,
-        total_underruns: &AtomicU64,
+        underruns: &OutputUnderruns,
     ) -> usize
     where
         T: SizedSample + FromSample<f32>,
@@ -256,12 +265,18 @@ impl AudioOutput {
         }
 
         if copied_frames < frames_needed {
-            underrun_streak.fetch_add(1, Ordering::Relaxed);
-            total_underruns.fetch_add(1, Ordering::Relaxed);
+            // Before the DSP loop's first write the queue only holds the silent
+            // prime, so running dry is start-up priming, not a dropout.
+            if underruns.audio_queued_at_us.load(Ordering::Relaxed) == 0 {
+                underruns.priming_total.fetch_add(1, Ordering::Relaxed);
+            } else {
+                underruns.streak.fetch_add(1, Ordering::Relaxed);
+                underruns.total.fetch_add(1, Ordering::Relaxed);
+            }
             Self::fill_underrun_tail(data, copied_frames, num_channels, consumer.last_sample());
             consumer.set_last_sample(0.0);
         } else {
-            underrun_streak.store(0, Ordering::Relaxed);
+            underruns.streak.store(0, Ordering::Relaxed);
         }
 
         copied_frames
@@ -363,8 +378,7 @@ impl AudioOutput {
         recording_active: Arc<AtomicBool>,
         output_muted: Arc<AtomicBool>,
         last_callback_time_us: Arc<AtomicU64>,
-        underrun_streak: Arc<AtomicU32>,
-        total_underruns: Arc<AtomicU64>,
+        underruns: OutputUnderruns,
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
         output_probe: Option<OutputProbeControl>,
@@ -406,7 +420,7 @@ impl AudioOutput {
                                 frames_needed,
                                 &mut mono_scratch,
                             );
-                            underrun_streak.store(0, Ordering::Relaxed);
+                            underruns.streak.store(0, Ordering::Relaxed);
                             let complete =
                                 Self::render_probe(data, num_channels, probe, &mut mono_scratch);
                             if complete {
@@ -426,7 +440,7 @@ impl AudioOutput {
                             data.len() / num_channels
                         };
                         Self::drain_muted_consumer(&mut consumer, frames_needed, &mut mono_scratch);
-                        underrun_streak.store(0, Ordering::Relaxed);
+                        underruns.streak.store(0, Ordering::Relaxed);
                         let silence = Self::convert_output_sample::<T>(0.0);
                         for sample in data.iter_mut() {
                             *sample = silence;
@@ -439,8 +453,7 @@ impl AudioOutput {
                         num_channels,
                         &mut consumer,
                         &mut mono_scratch,
-                        underrun_streak.as_ref(),
-                        total_underruns.as_ref(),
+                        &underruns,
                     );
                     // RT_REGION_END: cpal_output_callback
                 },
@@ -467,8 +480,7 @@ impl AudioOutput {
         recording_active: Arc<AtomicBool>,
         output_muted: Arc<AtomicBool>,
         last_callback_time_us: Arc<AtomicU64>,
-        underrun_streak: Arc<AtomicU32>,
-        total_underruns: Arc<AtomicU64>,
+        underruns: OutputUnderruns,
         error_count: Arc<AtomicU64>,
         rt_error_code: Arc<AtomicU32>,
         output_probe: Option<OutputProbeControl>,
@@ -496,8 +508,7 @@ impl AudioOutput {
                 recording_active,
                 output_muted,
                 last_callback_time_us,
-                underrun_streak,
-                total_underruns,
+                underruns,
                 error_count,
                 rt_error_code,
                 output_probe,
@@ -511,8 +522,7 @@ impl AudioOutput {
                 recording_active,
                 output_muted,
                 last_callback_time_us,
-                underrun_streak,
-                total_underruns,
+                underruns,
                 error_count,
                 rt_error_code,
                 output_probe,
@@ -526,8 +536,7 @@ impl AudioOutput {
                 recording_active,
                 output_muted,
                 last_callback_time_us,
-                underrun_streak,
-                total_underruns,
+                underruns,
                 error_count,
                 rt_error_code,
                 output_probe,
@@ -541,8 +550,7 @@ impl AudioOutput {
                 recording_active,
                 output_muted,
                 last_callback_time_us,
-                underrun_streak,
-                total_underruns,
+                underruns,
                 error_count,
                 rt_error_code,
                 output_probe,
@@ -556,8 +564,7 @@ impl AudioOutput {
                 recording_active,
                 output_muted,
                 last_callback_time_us,
-                underrun_streak,
-                total_underruns,
+                underruns,
                 error_count,
                 rt_error_code,
                 output_probe,
@@ -571,8 +578,7 @@ impl AudioOutput {
                 recording_active,
                 output_muted,
                 last_callback_time_us,
-                underrun_streak,
-                total_underruns,
+                underruns,
                 error_count,
                 rt_error_code,
                 output_probe,
@@ -586,8 +592,7 @@ impl AudioOutput {
                 recording_active,
                 output_muted,
                 last_callback_time_us,
-                underrun_streak,
-                total_underruns,
+                underruns,
                 error_count,
                 rt_error_code,
                 output_probe,
@@ -601,8 +606,7 @@ impl AudioOutput {
                 recording_active,
                 output_muted,
                 last_callback_time_us,
-                underrun_streak,
-                total_underruns,
+                underruns,
                 error_count,
                 rt_error_code,
                 output_probe,
@@ -616,8 +620,7 @@ impl AudioOutput {
                 recording_active,
                 output_muted,
                 last_callback_time_us,
-                underrun_streak,
-                total_underruns,
+                underruns,
                 error_count,
                 rt_error_code,
                 output_probe,
@@ -631,8 +634,7 @@ impl AudioOutput {
                 recording_active,
                 output_muted,
                 last_callback_time_us,
-                underrun_streak,
-                total_underruns,
+                underruns,
                 error_count,
                 rt_error_code,
                 output_probe,
@@ -704,6 +706,15 @@ mod tests {
         let _ = list_output_devices();
     }
 
+    fn queued_underruns(streak: u32, total: u64) -> OutputUnderruns {
+        OutputUnderruns {
+            streak: Arc::new(AtomicU32::new(streak)),
+            total: Arc::new(AtomicU64::new(total)),
+            priming_total: Arc::new(AtomicU64::new(0)),
+            audio_queued_at_us: Arc::new(AtomicU64::new(1)),
+        }
+    }
+
     #[test]
     fn test_convert_output_i16_sample() {
         let sample = AudioOutput::convert_output_sample::<i16>(1.0);
@@ -744,25 +755,18 @@ mod tests {
 
         let mut output = [0.0_f32; 5];
         let mut scratch = [0.0_f32; 2];
-        let streak = AtomicU32::new(3);
-        let total = AtomicU64::new(7);
+        let underruns = queued_underruns(3, 7);
 
         let mut copied = 0;
         crate::test_alloc::assert_no_allocations("output renderer full read", || {
-            copied = AudioOutput::render_output(
-                &mut output,
-                1,
-                &mut consumer,
-                &mut scratch,
-                &streak,
-                &total,
-            );
+            copied =
+                AudioOutput::render_output(&mut output, 1, &mut consumer, &mut scratch, &underruns);
         });
 
         assert_eq!(copied, source.len());
         assert_eq!(output, source);
-        assert_eq!(streak.load(Ordering::Relaxed), 0);
-        assert_eq!(total.load(Ordering::Relaxed), 7);
+        assert_eq!(underruns.streak.load(Ordering::Relaxed), 0);
+        assert_eq!(underruns.total.load(Ordering::Relaxed), 7);
     }
 
     #[test]
@@ -774,19 +778,12 @@ mod tests {
 
         let mut output = [9.0_f32; 5];
         let mut scratch = [0.0_f32; 3];
-        let streak = AtomicU32::new(2);
-        let total = AtomicU64::new(4);
+        let underruns = queued_underruns(2, 4);
 
         let mut copied = 0;
         crate::test_alloc::assert_no_allocations("output renderer short mono read", || {
-            copied = AudioOutput::render_output(
-                &mut output,
-                1,
-                &mut consumer,
-                &mut scratch,
-                &streak,
-                &total,
-            );
+            copied =
+                AudioOutput::render_output(&mut output, 1, &mut consumer, &mut scratch, &underruns);
         });
 
         assert_eq!(copied, source.len());
@@ -794,8 +791,8 @@ mod tests {
         assert!(output[2] < 0.0);
         assert_eq!(output[4], 0.0);
         assert_eq!(consumer.last_sample(), 0.0);
-        assert_eq!(streak.load(Ordering::Relaxed), 3);
-        assert_eq!(total.load(Ordering::Relaxed), 5);
+        assert_eq!(underruns.streak.load(Ordering::Relaxed), 3);
+        assert_eq!(underruns.total.load(Ordering::Relaxed), 5);
     }
 
     #[test]
@@ -806,19 +803,12 @@ mod tests {
 
         let mut output = [9.0_f32; 6];
         let mut scratch = [0.0_f32; 2];
-        let streak = AtomicU32::new(4);
-        let total = AtomicU64::new(8);
+        let underruns = queued_underruns(4, 8);
 
         let mut copied = 0;
         crate::test_alloc::assert_no_allocations("output renderer short stereo read", || {
-            copied = AudioOutput::render_output(
-                &mut output,
-                2,
-                &mut consumer,
-                &mut scratch,
-                &streak,
-                &total,
-            );
+            copied =
+                AudioOutput::render_output(&mut output, 2, &mut consumer, &mut scratch, &underruns);
         });
 
         assert_eq!(copied, 1);
@@ -827,32 +817,72 @@ mod tests {
         assert_eq!(output[4], 0.0);
         assert_eq!(output[5], 0.0);
         assert_eq!(consumer.last_sample(), 0.0);
-        assert_eq!(streak.load(Ordering::Relaxed), 5);
-        assert_eq!(total.load(Ordering::Relaxed), 9);
+        assert_eq!(underruns.streak.load(Ordering::Relaxed), 5);
+        assert_eq!(underruns.total.load(Ordering::Relaxed), 9);
 
         let rb = crate::audio::AudioRingBuffer::new(16);
         let (_producer, mut consumer) = rb.split();
         let mut output = [9.0_f32; 4];
         let mut scratch = [0.0_f32; 2];
-        let streak = AtomicU32::new(0);
-        let total = AtomicU64::new(0);
+        let underruns = queued_underruns(0, 0);
 
         let mut copied = 0;
         crate::test_alloc::assert_no_allocations("output renderer empty read", || {
-            copied = AudioOutput::render_output(
-                &mut output,
-                2,
-                &mut consumer,
-                &mut scratch,
-                &streak,
-                &total,
-            );
+            copied =
+                AudioOutput::render_output(&mut output, 2, &mut consumer, &mut scratch, &underruns);
         });
 
         assert_eq!(copied, 0);
         assert_eq!(output, [0.0; 4]);
-        assert_eq!(streak.load(Ordering::Relaxed), 1);
-        assert_eq!(total.load(Ordering::Relaxed), 1);
+        assert_eq!(underruns.streak.load(Ordering::Relaxed), 1);
+        assert_eq!(underruns.total.load(Ordering::Relaxed), 1);
+    }
+
+    fn render_empty_queue(underruns: &OutputUnderruns) {
+        let rb = crate::audio::AudioRingBuffer::new(16);
+        let (_producer, mut consumer) = rb.split();
+        let mut output = [9.0_f32; 4];
+        let mut scratch = [0.0_f32; 2];
+        crate::test_alloc::assert_no_allocations("output renderer empty queue", || {
+            AudioOutput::render_output(&mut output, 2, &mut consumer, &mut scratch, underruns);
+        });
+        assert_eq!(output, [0.0; 4]);
+    }
+
+    #[test]
+    fn test_render_output_empty_queue_before_first_real_audio_is_priming_not_dropout() {
+        let underruns = queued_underruns(0, 0);
+        underruns.audio_queued_at_us.store(0, Ordering::Relaxed);
+
+        render_empty_queue(&underruns);
+        render_empty_queue(&underruns);
+        render_empty_queue(&underruns);
+
+        assert_eq!(underruns.priming_total.load(Ordering::Relaxed), 3);
+        assert_eq!(underruns.total.load(Ordering::Relaxed), 0);
+        assert_eq!(underruns.streak.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_render_output_empty_queue_after_first_real_audio_is_a_dropout() {
+        let underruns = queued_underruns(0, 0);
+        underruns.audio_queued_at_us.store(0, Ordering::Relaxed);
+        render_empty_queue(&underruns);
+
+        // The DSP loop queues its first block; the next empty callback is a real underrun.
+        underruns.audio_queued_at_us.store(42, Ordering::Relaxed);
+        render_empty_queue(&underruns);
+        render_empty_queue(&underruns);
+
+        assert_eq!(underruns.priming_total.load(Ordering::Relaxed), 1);
+        assert_eq!(underruns.total.load(Ordering::Relaxed), 2);
+        assert_eq!(underruns.streak.load(Ordering::Relaxed), 2);
+
+        // A restart clears the marker; the next start-up is priming again.
+        underruns.audio_queued_at_us.store(0, Ordering::Relaxed);
+        render_empty_queue(&underruns);
+        assert_eq!(underruns.priming_total.load(Ordering::Relaxed), 2);
+        assert_eq!(underruns.total.load(Ordering::Relaxed), 2);
     }
 
     #[test]

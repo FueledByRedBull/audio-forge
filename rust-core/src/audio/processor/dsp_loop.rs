@@ -282,6 +282,20 @@ mod startup_tests {
     }
 
     #[test]
+    fn every_start_re_enters_output_priming_before_the_stream_exists() {
+        // Restart and device-change recovery both go through this start function.
+        let source = include_str!("dsp_loop.rs");
+        let start = source.rfind("pub fn start_with_device_ordinals_and_ids(").unwrap();
+        let start = &source[start..];
+        let reset = start
+            .find("self.last_output_write_time.store(0, Ordering::Relaxed);")
+            .unwrap();
+        assert!(reset < start.find("AudioOutput::from_setup(").unwrap());
+        let recovery = include_str!("recovery.rs");
+        assert!(recovery.contains("self.start_with_device_ordinals_and_ids("));
+    }
+
+    #[test]
     fn startup_failure_check_precedes_both_stream_starts() {
         let source = include_str!("dsp_loop.rs");
         let worker_published = source.rfind("self.process_thread = Some(handle);").unwrap();
@@ -413,6 +427,7 @@ impl AudioProcessor {
         self.input_dropped_baseline.store(0, Ordering::Relaxed);
         self.output_underrun_streak.store(0, Ordering::Relaxed);
         self.output_underrun_total.store(0, Ordering::Relaxed);
+        self.output_priming_underrun_total.store(0, Ordering::Relaxed);
         self.jitter_dropped_samples.store(0, Ordering::Relaxed);
         self.output_retime_adjustment_count
             .store(0, Ordering::Relaxed);
@@ -581,8 +596,12 @@ impl AudioProcessor {
         let recording_active = Arc::clone(&self.recording_active);
         let output_muted = Arc::clone(&self.output_muted);
         let last_output_callback_time_us = Arc::clone(&self.last_output_callback_time_us);
-        let output_underrun_streak = Arc::clone(&self.output_underrun_streak);
-        let output_underrun_total = Arc::clone(&self.output_underrun_total);
+        let output_underruns = OutputUnderruns {
+            streak: Arc::clone(&self.output_underrun_streak),
+            total: Arc::clone(&self.output_underrun_total),
+            priming_total: Arc::clone(&self.output_priming_underrun_total),
+            audio_queued_at_us: Arc::clone(&self.last_output_write_time),
+        };
         let output_callback_error_count = Arc::clone(&self.output_callback_error_count);
         let rt_error_code_for_output = Arc::clone(&self.rt_error_code);
         let output_result = AudioOutput::from_setup(
@@ -591,8 +610,7 @@ impl AudioProcessor {
             recording_active.clone(),
             output_muted.clone(),
             last_output_callback_time_us,
-            output_underrun_streak,
-            output_underrun_total,
+            output_underruns,
             output_callback_error_count,
             rt_error_code_for_output,
             Some(output_probe),

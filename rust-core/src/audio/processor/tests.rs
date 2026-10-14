@@ -2942,6 +2942,8 @@ mod tests {
         assert!(!writer.write_chunk(&[], false));
         assert!(consumer.is_empty());
         assert_eq!(output_buffer_len.load(Ordering::Relaxed), 0);
+        // Nothing queued yet: the output callback must still treat an empty queue as priming.
+        assert_eq!(last_output_write_time.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -3007,6 +3009,8 @@ mod tests {
         assert_eq!(writer.output_fade_remaining, 4);
         assert_eq!(fade_remaining.get(), 0);
         assert_eq!(output_buffer_len.load(Ordering::Relaxed), 4);
+        // The first queued audio ends start-up priming for the output callback.
+        assert_ne!(last_output_write_time.load(Ordering::Relaxed), 0);
 
         let mut drained = [0.0_f32; 4];
         assert_eq!(consumer.read(&mut drained), 4);

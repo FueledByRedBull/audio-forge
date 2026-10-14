@@ -124,8 +124,9 @@ location. See the
 ## Everyday Controls
 
 - **Processing mode:** **Normal** runs the full chain. **Bypass** skips voice
-  effects, adaptive input cleanup and the limiter, and keeps the fixed 80 Hz
-  high-pass. **Raw** also skips the input filter, for troubleshooting.
+  effects, adaptive input cleanup and the lookahead limiter, and keeps the fixed
+  80 Hz high-pass and, while the limiter is on, the final true-peak limiter and
+  ceiling. **Raw** also skips the input filter, for troubleshooting.
 - **Compare Recording:** after calibration, hear the same passage as original,
   current, and proposed processing before you apply anything. The Review page
   also draws the proposed EQ over the current one.
@@ -225,8 +226,10 @@ Reliability and diagnostics:
 - Input/output peak lines that catch the highest sample between updates
   (output: before the limiter) and show a CLIP tag once six samples at full scale arrive within three
   seconds. One touch of full scale only warns that peaks are too high. The
-  output tag stays dark while the limiter holds the output at its ceiling and
-  lights when it is off or not running (Bypass, Raw monitor).
+  output tag stays dark while the limiter is on, because the output is held at
+  its ceiling, and lights when the limiter is off. Bypass and Raw monitor skip
+  the lookahead limiter, but the final true-peak limiter and the ceiling still
+  apply there.
 - Health indicators that give the number and the action, for example how many
   decibels to lower the microphone level, plus technical counters behind
   **Details**.

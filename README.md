@@ -30,7 +30,7 @@ your audio never leaves your PC.
 | Sound consistent | A compressor with speech-aware automatic makeup gain, plus peak protection that stops clipping. |
 | Shape your voice | A ten-band EQ you can drag or type into, Auto-EQ, and guided Auto Voice Setup. |
 | Tame harshness | A de-esser for sharp "s" and "sh" sounds and persistent harshness. |
-| Stay in control | Presets, undo and redo, a global mute shortcut, level meters, and health indicators. |
+| Stay in control | Presets, undo and redo, a global mute shortcut, level meters that flag clipping, and health advice that says what to change. |
 
 <details>
 <summary>More screenshots: processing cards and Auto Voice Setup</summary>
@@ -49,7 +49,7 @@ Screenshots use example devices and settings.
 
 ## Download
 
-Current version: `v1.15.3` ([release notes](release-notes/release-notes-v1.15.3.md)).
+Current version: `v1.16.0` ([release notes](release-notes/release-notes-v1.16.0.md)).
 This is the source-checkout version; the latest published package may be older.
 Open the [latest release](https://github.com/FueledByRedBull/audio-forge/releases/latest)
 and download **one** of these files. **Not sure? Choose the installer.**
@@ -87,8 +87,9 @@ and compare the result with the matching line in
    recording in your app should contain your processed voice.
 5. **Tune and save.** Noise suppression starts with RNNoise, the low-latency
    default. Run **Auto Voice Setup** for a guided starting point, or adjust the
-   EQ and dynamics yourself. Press **Ctrl+S** to save a preset when it sounds
-   right.
+   EQ and dynamics yourself. Setup starts with a three-second check of your
+   microphone level and says how much to raise or lower it when a change helps.
+   Press **Ctrl+S** to save a preset when it sounds right.
 
 Opening AudioForge normally leaves processing stopped. **Stop Processing** keeps
 the window open. Closing the window stops audio and quits, unless you turn on
@@ -123,10 +124,14 @@ location. See the
 ## Everyday Controls
 
 - **Processing mode:** **Normal** runs the full chain. **Bypass** skips voice
-  effects but keeps input cleanup and output protection. **Raw** also skips
-  input cleanup, for troubleshooting.
+  effects, adaptive input cleanup and the limiter, and keeps the fixed 80 Hz
+  high-pass. **Raw** also skips the input filter, for troubleshooting.
 - **Compare Recording:** after calibration, hear the same passage as original,
-  current, and proposed processing before you apply anything.
+  current, and proposed processing before you apply anything. The Review page
+  also draws the proposed EQ over the current one.
+- **EQ graph:** hover to read the frequency and gain of the total curve.
+  Double-click a band handle, or press **Delete** on the selected band, to reset
+  that band as one undo step. In Bypass and Raw the graph says "EQ not running".
 - **Shortcuts:** **Ctrl+S** saves your preset, **Ctrl+Shift+S** saves a copy,
   and **Ctrl+Z** / **Ctrl+Shift+Z** undo and redo. **Ctrl+Alt+M** mutes from
   anywhere once you enable it under **Settings > Tray and background**.
@@ -141,16 +146,31 @@ location. See the
   slopes keeps the calibration. Older presets keep their combined EQ as the
   tone stage. The graph draws each band as a thin curve, the correction stage
   as a dashed line and the fixed input filter (the DC blocker and an 80 Hz
-  high-pass, or only the DC blocker when Gentle or Strong cleanup is on) as a
-  dotted line. The thick curve is what the signal really gets: the input
-  filter plus the EQ, or the input filter alone while the EQ is off. Adaptive
-  cleanup follows the signal, so it is not drawn.
+  high-pass, which Gentle and Strong cleanup keep) as a dotted line. The thick
+  curve is what the signal really gets: the input filter plus the EQ, or the
+  input filter alone while the EQ is off. Adaptive cleanup also follows the
+  signal beyond that: it raises the high-pass to 100 or 120 Hz when it detects
+  rumble and notches hum, and neither is drawn.
 - **Your voice stays yours.** Speech alone can't reveal a microphone's exact
   frequency response, so automatic targets keep the recorded voice and apply
   bounded tonal preferences. Natural / No Added Tone stays neutral. Warm / Full
   Voice adds low-mid body with restrained upper presence. **Subtle** aims for
   small tone changes, never more than 2 dB from flat; **Full strength** aims for
   the tone preset's whole curve, up to 5 dB.
+- **A level check comes first.** Voice Setup and Auto-EQ listen for three
+  seconds before any take and say whether the microphone is too hot, too quiet
+  or silent. For a hot or quiet voice they give the level they heard and, where
+  a level change helps, the change to make. A good level continues with one
+  click. A hot or quiet level can be checked again or continued anyway; silence
+  can only be checked again. One stray full-scale sample doesn't reject a take;
+  clipping needs a flat top of about 125 microseconds or more, or more than 20
+  separate hits.
+- **Results in plain words.** Each reason a recording was not used says what
+  was withheld and what to do. If a hot microphone leaves no full-size
+  correction within the headroom rule, Auto-EQ offers the largest correction
+  that is no worse than your current EQ, or says by about how much to lower the
+  microphone level. When the correction's own boost is most of the excess, that
+  amount counts only your recording's part, and the advice says so.
 - **Suggestions have to earn a change.** Auto Voice Setup tries gate and noise
   suppression options before calibrating compression. It tests speech followed
   by noise without resetting the processing, so pause noise is checked too.
@@ -185,7 +205,8 @@ Sound processing:
   speech-confidence gain control, and an automatic threshold that tracks the
   room's noise floor in the VAD modes.
 - Ten-band EQ with bell, notch, shelf, and pass filters, 12–48 dB/octave pass
-  slopes, click-free bypass, and drag or keyboard editing on the graph.
+  slopes, click-free bypass, drag or keyboard editing on the graph, a readout
+  under the pointer, and per-band reset.
 - Auto-EQ that uses speech detection, rejects unreliable parts of a capture,
   and declines to correct when a safe correction isn't supported.
 - Dynamic-EQ de-esser, compressor with speech-aware automatic makeup gain, and
@@ -201,15 +222,21 @@ Sound processing:
 
 Reliability and diagnostics:
 
-- Input/output meters, health indicators, and technical counters behind
+- Input/output peak lines that catch the highest sample between updates
+  (output: before the limiter) and show a CLIP tag once six samples at full scale arrive within three
+  seconds. One touch of full scale only warns that peaks are too high. The
+  output tag stays dark while the limiter holds the output at its ceiling and
+  lights when it is off or not running (Bypass, Raw monitor).
+- Health indicators that give the number and the action, for example how many
+  decibels to lower the microphone level, plus technical counters behind
   **Details**.
 - Automatic stream restart after device errors.
 - Device refresh keeps your selection when the device is still available.
   Streams prefer 48 kHz when the device supports it.
 - **Settings > Help > Export Diagnostics** writes a size-limited support file. It
-  includes configuration and health fields, replaces device names with
-  report-specific codes, and excludes audio, environment variables, secrets,
-  and arbitrary paths.
+  includes configuration, health fields and the last setup result, replaces
+  device names with report-specific codes, and excludes audio, environment
+  variables, secrets, and arbitrary paths.
 
 </details>
 

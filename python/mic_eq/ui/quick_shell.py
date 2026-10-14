@@ -513,7 +513,7 @@ def _watch_for_renderer(window, view: QQuickWidget) -> None:
 
 
 def _renderer_missing(window) -> None:
-    """Relaunch once in software rendering, or show the error screen."""
+    """Quit and relaunch once in software rendering, or show the error screen."""
 
     bridge = window.__dict__.pop("quick_bridge", None)
     if bridge is None:
@@ -522,11 +522,14 @@ def _renderer_missing(window) -> None:
     api = graphics_api(window)
     _LOG.error("Qt Quick view has no renderer (%s)", api)
     relaunched = os.environ.get(RENDERER_RELAUNCH_ENV)
-    if api != "software" and not relaunched and relaunch_with_software_rendering(
-        getattr(window, "single_instance", None)
-    ):
+    # Live audio stays; a login-started copy has it running while the window is hidden.
+    if api != "software" and not relaunched and not window.processor.is_running():
+        # The new copy starts only once this one is gone: closing can be cancelled.
         window._quit_from_tray()
-    else:
-        reason = "The graphics renderer did not start" + (", even with software rendering" if relaunched else "")
-        show_quick_error(window, "no_renderer", reason, api)
+        if window._quitting:
+            relaunch_with_software_rendering(getattr(window, "single_instance", None))
+            bridge.release()
+            return
+    reason = "The graphics renderer did not start" + (", even with software rendering" if relaunched else "")
+    show_quick_error(window, "no_renderer", reason, api)
     bridge.release()

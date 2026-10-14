@@ -333,6 +333,7 @@ class SingleInstanceCoordinator:
             socket.disconnected.connect(socket.deleteLater)
             socket.disconnectFromServer()
 
+
 def relaunch_with_software_rendering(instance: SingleInstanceCoordinator | None) -> bool:
     """Start this app again with software rendering; False if it could not be started.
 

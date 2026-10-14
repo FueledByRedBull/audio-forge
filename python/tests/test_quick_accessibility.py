@@ -199,12 +199,13 @@ def test_a_fader_reports_slider_role_name_value_and_range(quick_window, qapp) ->
         assert interface.role() == Role.Slider
         assert interface.text(Text.Name) == "EQ band 1 gain"
         value = interface.valueInterface()
-        assert (value.minimumValue(), value.maximumValue()) == (gain.minimum, gain.maximum)
-        assert value.currentValue() == gain.value
+        # The proxy counts tenths of a dB; the announced value is in dB.
+        assert (value.minimumValue(), value.maximumValue()) == (-12.0, 12.0)
+        assert value.currentValue() == gain.value / 10
 
         gain.setValue(25)
         qapp.processEvents()
-        assert value.currentValue() == 25
+        assert value.currentValue() == 2.5
         # A band that cannot take gain greys the fader out.
         window.eq_state.set_band_value(0, "filter_type", "high_pass")
         window.eq_state.flush()
@@ -218,13 +219,6 @@ def _announced_range(window, fader) -> tuple[float, float, float]:
     return value.minimumValue(), value.maximumValue(), value.currentValue()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "EQControl keeps band gain in tenths of a dB (-120..120), so a screen reader announces 25 "
-        "for +2.5 dB. The unit is set in eq_controls.py and shared with the numeric proxies."
-    ),
-)
 def test_a_gain_fader_announces_its_value_in_decibels(quick_window, qapp) -> None:
     window = quick_window
     _show(window, qapp)
@@ -715,6 +709,21 @@ def test_a_fader_moves_one_step_per_arrow_key(quick_window, qapp) -> None:
     ):
         _press(window, key, qapp)
         assert window.eq_state.get_band(0).gain_db == pytest.approx(expected), key
+
+
+def test_a_fader_without_a_step_moves_a_hundredth_of_its_range_per_key(quick_window, qapp) -> None:
+    window = quick_window
+    _show(window, qapp)
+    gain = window.quick_bridge.model["eq"]["bands"][0]["gain"]
+    gain._view["step"] = 0.0  # a proxy that names no step; the gain proxy counts tenths of a dB
+    gain.changed.emit()
+    fader = _with_proxy(window, "Fader", gain)
+    _focus(window, fader, qapp)
+
+    _press(window, Qt.Key.Key_Right, qapp)
+
+    # 1/100 of the 24 dB range is 0.24 dB, which the proxy rounds to its 0.1 dB grid.
+    assert window.eq_state.get_band(0).gain_db == pytest.approx(0.2)
 
 
 def test_a_value_box_steps_with_up_and_down(quick_window, qapp) -> None:

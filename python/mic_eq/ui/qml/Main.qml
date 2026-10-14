@@ -179,20 +179,23 @@ Rectangle {
     component Fader: Slider {
         id: fader
         property var proxy
-        from: proxy ? proxy.minimum : 0
-        to: proxy ? proxy.maximum : 1
-        value: proxy ? proxy.value : 0
+        // The slider's units per proxy unit. A screen reader announces the slider's own value,
+        // so a proxy that counts in tenths of a dB sets 0.1 here and is announced in dB.
+        property real unit: 1
+        from: proxy ? proxy.minimum * unit : 0
+        to: proxy ? proxy.maximum * unit : unit
+        value: proxy ? proxy.value * unit : 0
         stepSize: 0
         enabled: proxy ? proxy.enabled : false
         implicitHeight: 24
-        onMoved: proxy.setValue(value)
+        onMoved: proxy.setValue(value / unit)
         onPressedChanged: if (!pressed) proxy.released()
         Keys.onLeftPressed: nudge(-1)
         Keys.onRightPressed: nudge(1)
         Keys.onUpPressed: nudge(1)
         Keys.onDownPressed: nudge(-1)
         function nudge(direction) {
-            proxy.setValue(proxy.value + direction * (proxy.step > 0 ? proxy.step : (to - from) / 100))
+            proxy.setValue(proxy.value + direction * (proxy.step > 0 ? proxy.step : (to - from) / unit / 100))
             proxy.released()
         }
         Accessible.name: proxy ? proxy.name : ""
@@ -258,6 +261,19 @@ Rectangle {
             onEditingFinished: if (!readOnly && text !== box.source.text) box.proxy.setText(text)
             Keys.onUpPressed: step(1)
             Keys.onDownPressed: step(-1)
+            // The field claims Ctrl+Z and Ctrl+Shift+Z whatever its history holds, so the keys arrive
+            // here. With no typing to take back, forward exactly the window's own shortcuts
+            // (Edit > Undo, Edit > Redo in main_window.py), so a box behaves like the page around it.
+            Keys.onPressed: event => {
+                if (event.key !== Qt.Key_Z)
+                    return
+                const undo = event.modifiers === Qt.ControlModifier && !canUndo
+                const redo = event.modifiers === (Qt.ControlModifier | Qt.ShiftModifier) && !canRedo
+                if (undo || redo) {
+                    (undo ? root.m.presets.undo : root.m.presets.redo).click()
+                    event.accepted = true
+                }
+            }
             // Put the shown value back; the abandoned text is never applied.
             Keys.onEscapePressed: event => {
                 if (readOnly || text === box.source.text)
@@ -1102,7 +1118,7 @@ Rectangle {
                             Toggle { proxy: eqCard.band.enabled }
                             Picker { proxy: eqCard.band.type; implicitWidth: 130 }
                             Caption { text: "Gain" }
-                            Fader { proxy: eqCard.band.gain; Layout.fillWidth: true }
+                            Fader { proxy: eqCard.band.gain; unit: 0.1; Layout.fillWidth: true }
                             ValueBox {
                                 objectName: "gainBox"
                                 proxy: eqCard.band.gain

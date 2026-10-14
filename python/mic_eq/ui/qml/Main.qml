@@ -811,6 +811,7 @@ Rectangle {
     // Level meters, in a panel of their own so they read as one instrument.
     Rectangle {
         id: meters
+        objectName: "meterPanel"
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
@@ -842,6 +843,7 @@ Rectangle {
     }
 
     ColumnLayout {
+        objectName: "contentColumn"
         anchors.left: rail.right
         anchors.right: meters.left
         anchors.top: parent.top
@@ -924,14 +926,19 @@ Rectangle {
             // Mic page
             Page {
                 objectName: "micPage"
-                RowLayout {
+                // The buttons drop under the name when the two do not fit side by side.
+                GridLayout {
                     id: presetBar
+                    objectName: "presetBar"
                     readonly property var preset: root.m.presets.status.data
+                    columns: presetTitle.implicitWidth + presetActions.implicitWidth + columnSpacing <= width ? 2 : 1
+                    columnSpacing: 12
+                    rowSpacing: 8
                     Layout.fillWidth: true
                     Layout.topMargin: 2
-                    spacing: 12
                     Accessible.name: root.m.presets.status.name + ": " + root.m.presets.status.text
                     ColumnLayout {
+                        id: presetTitle
                         spacing: 2
                         Layout.fillWidth: true
                         Text {
@@ -944,12 +951,16 @@ Rectangle {
                         RowLayout {
                             spacing: 10
                             Text {
+                                objectName: "presetName"
                                 text: presetBar.preset.name
                                 color: root.t.text_primary
                                 font.pixelSize: 19
                                 font.weight: Font.DemiBold
                                 elide: Text.ElideRight
-                                Layout.maximumWidth: 420
+                                Layout.fillWidth: true
+                                Layout.maximumWidth: Math.min(implicitWidth, 420)
+                                // A name cut short is shown whole in the tooltip.
+                                Hint { text: parent.truncated ? parent.text : "" }
                             }
                             Rectangle {
                                 implicitWidth: stateText.implicitWidth + 16
@@ -971,15 +982,21 @@ Rectangle {
                             Item { Layout.fillWidth: true }
                         }
                     }
-                    Btn { proxy: root.m.presets.menu }
-                    IconBtn { proxy: root.m.presets.undo; glyph: root.m.glyphs.undo }
-                    IconBtn { proxy: root.m.presets.redo; glyph: root.m.glyphs.redo }
-                    // Without a system icon font the two are spelled out.
-                    Btn { proxy: root.m.presets.undo; visible: root.t.iconFont === "" }
-                    Btn { proxy: root.m.presets.redo; visible: root.t.iconFont === "" }
-                    Btn { proxy: root.m.presets.testSound }
-                    Btn { proxy: root.m.presets.autoEq }
-                    Btn { proxy: root.m.presets.voiceSetup; look: "primary" }
+                    RowLayout {
+                        id: presetActions
+                        spacing: 12
+                        Layout.fillWidth: false
+                        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                        Btn { proxy: root.m.presets.menu }
+                        IconBtn { proxy: root.m.presets.undo; glyph: root.m.glyphs.undo }
+                        IconBtn { proxy: root.m.presets.redo; glyph: root.m.glyphs.redo }
+                        // Without a system icon font the two are spelled out.
+                        Btn { proxy: root.m.presets.undo; visible: root.t.iconFont === "" }
+                        Btn { proxy: root.m.presets.redo; visible: root.t.iconFont === "" }
+                        Btn { proxy: root.m.presets.testSound }
+                        Btn { proxy: root.m.presets.autoEq }
+                        Btn { objectName: "voiceSetupButton"; proxy: root.m.presets.voiceSetup; look: "primary" }
+                    }
                 }
 
                 Surface {
@@ -1022,6 +1039,7 @@ Rectangle {
                         opacity: eqCard.on ? 1 : 0.5
                         Layout.fillWidth: true
                         RowLayout {
+                            objectName: "bandEditorRow"
                             spacing: 12
                             Layout.fillWidth: true
                             IconBtn {
@@ -1060,6 +1078,7 @@ Rectangle {
                             Caption { text: "Gain" }
                             Fader { proxy: eqCard.band.gain; Layout.fillWidth: true }
                             ValueBox {
+                                objectName: "gainBox"
                                 proxy: eqCard.band.gain
                                 display: eqCard.band.gainLabel
                                 implicitWidth: 64
@@ -1218,11 +1237,13 @@ Rectangle {
 
         // Status strip
         RowLayout {
+            objectName: "statusStrip"
             Layout.fillWidth: true
             Layout.leftMargin: 8
             Layout.rightMargin: 16
             spacing: 14
             Caption {
+                objectName: "statusMessage"
                 text: root.m.status.message.text
                 Layout.fillWidth: true
             }
@@ -1232,8 +1253,8 @@ Rectangle {
                 radius: 4
                 color: root.running ? root.t.status_ok_text : root.t.border_strong
             }
-            Caption { text: root.m.status.transmission.text; color: root.t.text_primary }
-            Caption { text: root.m.status.calibration.text }
+            Caption { objectName: "statusTransmission"; text: root.m.status.transmission.text; color: root.t.text_primary }
+            Caption { text: root.m.status.calibration.text; Layout.fillWidth: true }
             Chip {
                 proxy: root.m.status.health
                 implicitHeight: 28

@@ -271,11 +271,13 @@ def input_prefilter_response_db(
     cleanup_mode: str,
     sample_rate: float,
 ) -> list[float]:
-    """Static part of the fixed input conditioning, in dB, built from the DSP's own filter.
+    """Static part of the fixed input conditioning, in dB, built from the DSP's own filters.
 
-    "off": the DC blocker and the 80 Hz high-pass. "gentle" and "strong": the DC
-    blocker only, since adaptive cleanup replaces the high-pass with one that
-    follows the signal. Raw monitor skips the conditioning altogether.
+    Every cleanup mode gives the DC blocker and an 80 Hz high-pass: "off" uses
+    the fixed one, "gentle" and "strong" the cleanup's own, which starts at
+    80 Hz. While rumble is detected cleanup raises it to 100 Hz (gentle) or
+    120 Hz (strong), and while hum is detected it adds notches; both follow the
+    signal and are not included. Raw monitor skips the conditioning altogether.
     """
     ...
 def simulate_eq_v2(

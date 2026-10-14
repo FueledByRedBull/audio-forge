@@ -22,13 +22,16 @@
 - Spectrum analysis is faster. `analyze_voice_spectrum` built the same octave-band tables for every frame and smoothing width. It now builds them once per frequency grid and smooths all frames in one batch. Five seconds at 48 kHz took 233 ms and now takes 34 ms; thirty seconds took 1158 ms and now takes 157 ms (one machine). The results are bit-identical to the old code, and a test compares the two exactly. The cache holds 16 entries, one per frequency grid and smoothing width; the app's grids need well under 1 MB.
 - The Auto-EQ fit no longer needs SciPy. NumPy and the standard library now provide the bounded least-squares fit, the gain projection and the constrained refinement, in `python/mic_eq/analysis/auto_eq_parts/eq_fit.py`. The least-squares fit is a port of SciPy's `least_squares` (`trf`) and keeps its stopping rule; SciPy's BSD-3-Clause notice is kept in that file and in `licenses/THIRD_PARTY_NOTICES.md`. The fit stays in Python because the problems are tiny (about ten gains and eighteen linear limits) and a Rust solver would call back into Python for every residual evaluation.
 - A new RIFF reader in `wav_io.py` replaces `scipy.io.wavfile` for the development tools that read WAV files. It is stricter and repairs nothing. A test compares it with SciPy byte for byte on the formats both read, and all 4,019 WAV files in the local corpora pass its checks.
+- While a take records, the level message names the loudest peak of the last 1.5 seconds. It used to name the peak of the latest block, so a pause between words could read "peaks at -34.8 dB" for a voice that peaks at -7 dB.
+- A peak just under 0 dB prints as 0.0 dB, not -0.0 dB.
+- After the second Voice Setup recording passes, the main button opens the final comparison. It was shown greyed out, and only "Compare Recording" opened it.
 
 ### Meters, Health and clipping
 
 - The engine now keeps two more readings, written with atomics only: the highest sample value since the last read (input, output, and output before the limiter) and a running count of samples at or above 0.999. The first is a sample peak, not a true peak: there is no oversampling. The old input clip counter ignored samples at exactly full scale, which is what a saturated converter delivers.
 - The IN and OUT peak lines take the highest sample value since the last read (OUT: before the limiter) and then fall back, so a transient between two updates still moves them. They show a CLIP tag once the count has risen by six samples within three seconds. Six samples at 48 kHz is the flat top that Voice Setup's take rule calls clipping, so a single touch of full scale is a "peaks too high" warning, not a clip. The engine counts samples, not runs, so six separate touches also light the tag; the text says "reached full scale N times" for that reason. On the 12 hard-clipped takes above, the tag lights for 16 of the 29 cases the take rule accepts: the tag counts how often full scale was reached, and the rule judges damage. A limiter holding the output at its ceiling is normal, so the OUT tag stays dark while the limiter runs and lights when it is off or does not run (Bypass, Raw monitor). Peaks taken while the window was hidden are dropped when it comes back, so a restored window does not report an old clip as recent.
 - Health says what to do with a number. Input: "Input peaks at -0.3 dB, close to the top of the microphone's range, so loud sounds can be cut off and sound distorted. Lower the microphone level by about 6 dB in Windows or on the interface." Output at full scale with the limiter off is shown as a problem (red) and says by about how much to lower the makeup gain.
-- The device activity, dropout, buffer, backend and recovery lines are reworded and carry their numbers. A device that has not started after waiting five seconds is a warning, not a huge number of milliseconds. The Drops line no longer says "needs attention" when nothing was dropped.
+- The device activity, dropout, buffer, backend and recovery lines are reworded and carry their numbers. A device that has not started after waiting five seconds is a warning, not a huge number of milliseconds. The Drops line no longer says "needs attention" when nothing was dropped, and when something was, it says why, for example "(needs attention: the output ran out of audio)".
 - In the classic view, the Health chips word-wrap so the page does not scroll sideways at 1280 px.
 - The new Rust code paths have allocation tests and are covered by the realtime source scan.
 
@@ -39,6 +42,10 @@
 - Shelf and filter handles sit on their own curves.
 - Double-click a handle, or press Delete or Backspace on the selected band, to reset that band. It is one undo step and keeps the band's on/off state. A press becomes a drag only after the platform's drag distance, so a jittery double-click does not leave an extra undo step.
 - Bypass and Raw monitor show "EQ not running". In Bypass the graph draws the fixed input filter the signal still gets (the DC blocker and the 80 Hz high-pass), whatever the cleanup mode; adaptive cleanup is not drawn. Raw monitor skips input cleanup, so the curve is flat.
+
+### Main window
+
+- At the smallest window size the Mic page no longer runs under the level meters. A long preset name is shortened, with the full name in its tooltip, and the preset buttons move to a second row when they do not fit beside it. The status line shortens its texts instead of drawing them over each other.
 
 ### Diagnostics and packaging
 
